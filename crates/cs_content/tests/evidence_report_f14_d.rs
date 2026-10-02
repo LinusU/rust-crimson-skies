@@ -27,6 +27,13 @@
 //! 4. Commit a copy of `acceptance.json` as
 //!    `docs/findings/evidence/F14-D.json`.
 //!
+//! F14-D.1 (#388) reuses this harness, because its acceptance suite is the
+//! same `accept_f14_d_` prefix: run the four steps with
+//! `private/evidence/F14-D.1` as `CS_EVIDENCE_DIR`, add
+//! `CS_EVIDENCE_TASK_ID=F14-D.1` to step 2 (it defaults to `F14-D`), pass
+//! `CS_EVIDENCE_REVIEW` to record the reviewing agent's identity and method,
+//! and commit `docs/findings/evidence/F14-D.1.json`.
+//!
 //! Every field of the report is derived here from real inputs: the recorded
 //! test log, the environment, production discovery of `$CS_GAME_DIR`, the
 //! production baseline builder's own report over that installation (the
@@ -330,22 +337,29 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
      directory holds (its ia.zrd record is not decoded), and which of the four multiplayer \
      modes a slot is launched under (F56-A records the slot-to-mode binding as unknown), so \
      the denominator unit is the scenario directory and may undercount launch \
-     configurations. Affected content: instant-action presets, multiplayer slot/mode pairs. \
+     configurations. The role of one scenario directory is also read partly from its name: ia.zrd \
+     occurs in no other reader, but net.zrd also occurs in the campaign-mission readers, so a \
+     multiplayer row rests on the MP<n> directory name (F56-A measured the same 21 slots \
+     independently) and not on a member that no campaign mission has. Affected content: \
+     instant-action presets, multiplayer slot/mode pairs, the role of each scenario directory. \
      Resolving tasks: F49 (instant-action presets), F56-B (mode rules and slot binding); until \
      they land no claim may read the denominator as every launch configuration.",
-    "Only three collections are populated: install files, campaign missions and mission \
-     programs. Affected content: worlds, airframes, loadouts, factions, weapons, sounds, \
-     dialogue, media, stunts, scrapbook items, instant-action presets and multiplayer rules, which have \
-     no source-derived row yet. Resolving tasks: the F09-F13, F18-F21 and F42-F49/F56 stages \
-     that read those formats; the report's collections object states what exists today.",
-    "Mission rows carry no display name: the localized title is bound per work order by the \
-     M01-A source binding, not by the campaign directory layout. Affected content: the 24 \
-     campaign mission display names. Resolving task: the F50/M01 per-mission binding stages.",
-    "No row claims a runtime consumer and no mission program is decoded, so the coverage \
-     accounting reports 0 ready and every launchable mission as unsupported. Affected content: \
-     every campaign mission's readiness. Resolving tasks: F37 (mission IR) and F38 (native \
-     behavior bindings), then the closure_sha256 field the published M01 binding still reports \
-     as null.",
+    "Only five collections are populated: install files, campaign missions, reader programs (the \
+     campaign mission programs plus the scenario readers), instant-action scenario directories and \
+     multiplayer scenario directories. Affected content: worlds, airframes, loadouts, factions, \
+     weapons, sounds, dialogue, media, stunts, scrapbook items, instant-action presets and \
+     multiplayer rules, which have no source-derived row yet. Resolving tasks: the F09-F13, F18-F21 \
+     and F42-F49/F56 stages that read those formats; the report's collections object states what \
+     exists today.",
+    "Mission and scenario rows carry no display name: the localized title is bound per work order \
+     by the M01-A source binding, not by the campaign or scenario directory layout. Affected \
+     content: the 24 campaign mission display names and the 29 scenario directory display names. \
+     Resolving task: the F50/M01 per-mission binding stages.",
+    "No row claims a runtime consumer and no reader program is decoded, so the coverage \
+     accounting reports 0 ready and every launchable row as unsupported. Affected content: \
+     every campaign mission's and scenario directory's readiness. Resolving tasks: F37 (mission \
+     IR) and F38 (native behavior bindings), then the closure_sha256 field the published M01 \
+     binding still reports as null.",
 ];
 
 // ---------------------------------------------------------------- inputs ---

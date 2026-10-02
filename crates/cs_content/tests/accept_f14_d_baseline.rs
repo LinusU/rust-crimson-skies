@@ -70,9 +70,10 @@ impl Drop for TempInstall {
 }
 
 /// The synthetic installation tree: eight regular files, one campaign
-/// mission directory (`ZBD/C1C/M01`) and two reader-archive directories the
-/// campaign layout does **not** classify (`ZBD` itself and the
-/// instant-action-looking `ZBD/C1C/IA1`).
+/// mission directory (`ZBD/C1C/M01`) and two reader-archive directories
+/// (`ZBD` itself and the instant-action-shaped `ZBD/C1C/IA1`) whose archives
+/// hold no readable member index, so F14-D.1 cannot classify them and they
+/// stay named as unknowns.
 fn tree(label: &str) -> TempInstall {
     let temp = TempInstall::new(label);
     temp.write("ZBD/C1C/M01/zrdr.zbd", b"mission program bytes");
@@ -220,8 +221,11 @@ fn accept_f14_d_baseline_inventory_covers_every_inventoried_file_and_declared_mi
         "every unreachable row is unknown and still needs a classification"
     );
 
-    // Reader-archive directories the campaign layout does not classify stay
-    // visible: they are neither counted in the denominator nor dropped.
+    // Reader-archive directories no rule classifies stay visible: they are
+    // neither counted in the denominator nor dropped. These two hold
+    // unlistable fixture bytes, so the member evidence is missing rather than
+    // negative: an archive that cannot be listed is unknown, never a guess
+    // from its directory name.
     let unclassified: Vec<&str> = baseline
         .unrecognized_program_dirs
         .iter()
@@ -230,7 +234,11 @@ fn accept_f14_d_baseline_inventory_covers_every_inventoried_file_and_declared_mi
     assert_eq!(
         unclassified,
         vec!["ZBD", "ZBD/C1C/IA1"],
-        "the two reader-archive directories no campaign mission claims"
+        "the two reader-archive directories whose archives cannot be listed"
+    );
+    assert!(
+        baseline.classified_reader_dirs.is_empty(),
+        "an archive with no member index classifies nothing"
     );
     assert_eq!(
         baseline.unrecognized_program_dirs[1].program,
@@ -579,7 +587,7 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     // are classified from their own member index. The scenario directories
     // join the denominator; the expected count is measured by a separate walk
     // of the directory tree, not by the production classifier.
-    let (ia_dirs, mp_dirs) = scenario_directories(&game_dir);
+    let (ia_dirs, mp_dirs, groups) = scenario_directories(&game_dir);
     assert_eq!(ia_dirs, 8, "one IA1 directory per world group");
     assert_eq!(mp_dirs, 21, "MP1 and MP3 in every world group, MP2 in five");
     let scenarios = ia_dirs + mp_dirs;
@@ -608,10 +616,33 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
             .count();
         assert_eq!(rows, expected, "{} rows", kind.label());
     }
-    // Every reader directory is accounted for: 29 launchable scenarios, the
-    // eight world-group readers and the shared reader are classified and
-    // nothing is left unrecognized.
-    assert_eq!(baseline.classified_reader_dirs.len(), scenarios + 8 + 1);
+    // Every reader directory is accounted for: the launchable scenario
+    // directories, one world-group reader per world-group directory and the
+    // install-wide reader are classified, and nothing is left unrecognized.
+    assert_eq!(
+        baseline.classified_reader_dirs.len(),
+        scenarios + groups + 1
+    );
+    assert_eq!(
+        groups, 8,
+        "one world-group reader per world-group directory"
+    );
+    assert_eq!(
+        baseline
+            .classified_reader_dirs
+            .iter()
+            .filter(|dir| dir.role == ReaderDirRole::WorldGroupReader)
+            .count(),
+        groups
+    );
+    assert_eq!(
+        baseline
+            .classified_reader_dirs
+            .iter()
+            .filter(|dir| dir.role == ReaderDirRole::SharedReader)
+            .count(),
+        1
+    );
     assert!(
         baseline.unrecognized_program_dirs.is_empty(),
         "unclassified: {:?}",
@@ -755,11 +786,11 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     );
 }
 
-/// Counts the `IA<n>` and `MP<n>` directories under each world-group
-/// directory of `ZBD/` by walking the tree directly, independent of the
+/// Counts the world-group directories under `ZBD/` and the `IA<n>` and `MP<n>`
+/// directories inside them by walking the tree directly, independent of the
 /// production classifier.
-fn scenario_directories(game_dir: &Path) -> (usize, usize) {
-    let (mut ia, mut mp) = (0, 0);
+fn scenario_directories(game_dir: &Path) -> (usize, usize, usize) {
+    let (mut ia, mut mp, mut groups) = (0, 0, 0);
     for group in fs::read_dir(game_dir.join("ZBD"))
         .expect("ZBD reads")
         .flatten()
@@ -767,6 +798,7 @@ fn scenario_directories(game_dir: &Path) -> (usize, usize) {
         if !group.path().is_dir() {
             continue;
         }
+        groups += 1;
         for leaf in fs::read_dir(group.path())
             .expect("a world group reads")
             .flatten()
@@ -782,7 +814,7 @@ fn scenario_directories(game_dir: &Path) -> (usize, usize) {
             }
         }
     }
-    (ia, mp)
+    (ia, mp, groups)
 }
 
 /// The workspace root, for reading the frozen denominator beside the tests.

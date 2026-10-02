@@ -15,8 +15,21 @@
 //!   and its reader lists the per-mission members (`map.zrd`, `aiv.zrd`,
 //!   `objectives.zrd`). A leaf named `IA<n>` whose reader also lists `ia.zrd`
 //!   is an instant-action scenario directory; a leaf named `MP<n>` whose
-//!   reader also lists `net.zrd` is a multiplayer scenario directory. The
-//!   name alone never decides: the member must corroborate it;
+//!   reader also lists `net.zrd` is a multiplayer scenario directory. A name
+//!   its own archive does not corroborate is never counted;
+//! * **what the corroboration is worth differs between the two roles**, and
+//!   the rules below do not hide that. `ia.zrd` occurs in no other reader on
+//!   the owner's installation, so it decides instant action on its own.
+//!   `net.zrd` occurs in the campaign-mission readers too, so it marks a
+//!   networked reader and rules instant action *out*; what separates a
+//!   multiplayer scenario from a campaign mission is the directory name, and
+//!   that is measured independently by F56-A
+//!   (`docs/findings/2026-10-02-f56-a-multiplayer-catalog.md`, the same 21
+//!   `MP<n>` slots). A leaf named `M<nn>` is therefore never classified as a
+//!   scenario, however its reader is shaped;
+//! * a group is only a group because the campaign walk declares it, so a
+//!   scenario directory under a group the layout does not declare stays
+//!   unknown rather than being counted (world rows are F14-D.2 / #389);
 //! * a **world-group reader** (`ZBD/<world group>/zrdr.zbd`) lists the shared
 //!   world members (`templates.zrd`, `cam_anim.zrd`) and none of the
 //!   per-mission ones, and has no `mis_anim.zbd` beside it;
@@ -78,7 +91,10 @@ pub struct ClassifiedReaderDir {
     pub program_sha256: String,
     /// What the directory is.
     pub role: ReaderDirRole,
-    /// How many members the archive's own index declares.
+    /// How many distinct lowercase member names the archive's own index
+    /// lists. This is the count of distinct names, not the count the archive
+    /// declares: the owner's `ZBD/zrdr.zbd` declares 221 members and lists
+    /// `player.zrd` twice, so it is 220 here.
     pub members: usize,
     /// The member names (lowercase) that corroborate the role, sorted.
     pub evidence: Vec<&'static str>,
@@ -94,6 +110,13 @@ const MISSION_MEMBERS: [&str; 3] = ["map.zrd", "aiv.zrd", "objectives.zrd"];
 /// member names of its reader archive, `has_mis_anim` whether a
 /// `mis_anim.zbd` sits beside the archive, and `world_groups` the lowercase
 /// world-group directory names the campaign layout declares.
+///
+/// The leaf name carries the role, and the members keep a directory whose
+/// name says something its own archive does not corroborate out of the
+/// denominator. `ia.zrd` is decisive on its own; `net.zrd` only proves the
+/// reader is a networked one, which campaign missions are too, so a
+/// multiplayer role additionally rests on the `MP<n>` name (see the module
+/// doc and F56-A).
 pub(super) fn classify(
     path: &str,
     members: &BTreeSet<String>,
@@ -210,6 +233,12 @@ mod tests {
             )
             .is_none()
         );
+        // `net.zrd` is no discriminator on its own: every campaign-mission
+        // reader lists it too, so a campaign-mission-shaped directory is only
+        // ever a scenario when its name says `IA<n>` or `MP<n>`. An `M<nn>`
+        // directory the campaign walk does not claim stays unknown instead of
+        // joining the denominator as a multiplayer scenario.
+        assert!(classify("ZBD/C1C/M05", &with(&["net.zrd"]), true, &groups()).is_none());
     }
 
     #[test]
