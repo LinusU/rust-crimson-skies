@@ -160,6 +160,43 @@ explicit entry and decides `Restore` itself, so a broken rule arm is caught by
 the pure table test while the repair entry stays green; a bridge that applied
 nothing (probe one) fails every contact-sensitive test.
 
+## Review record
+
+Reviewer: **deepseek-1** — the same agent name that implemented the branch, in a
+new session, so the review context was fresh but it was **not** an independent
+reviewer. Recorded here and in the handover because the policy asks for the
+actual identities. Nothing in this stage carries an original-fidelity claim, so
+the independent-review requirement (evidence machinery, format and mission
+semantics, fidelity claims) is not engaged; the overlap is on the record.
+
+Checked against task #511, `specs/F29-...` (`### F29-B`/`### F29-C`, AC02/AC03),
+`docs/contracts/STATE-TRANSACTIONS.md` and the F20-C.04 finding. The decision is
+read from F29's own record, the rule is pure and total, the seam stays the only
+writer of `NodeColliderPresence`, `crates/cs_app/src/physics/collider.rs` and
+`crates/cs_app/src/animation/` are untouched, and no protected path is in the
+diff. One independent sensitivity check recomputed probe one: stubbing
+`apply_damage_events` to apply nothing failed 5 of the 7 tests, matching the
+table above.
+
+Fixes made during the review, both in the branch's own owner paths and both
+documentation accuracy rather than behavior:
+
+1. **An overstated report doc.** `DamageColliderReport::restored` and
+   `DamageColliderEvent::Restored` said the collider "returned", but the
+   repair-under-a-hiding-clip test asserts `restored: 1` while the record stays
+   `HiddenByAnimation` and Avian's marker stays in place. Reworded to say the
+   *damage removal* was lifted and the collider may stay hidden until the clip
+   shows the node.
+2. **The defensive `ReleasedNode` arm.** `apply_zone_decision` resolves the zone
+   from a *live* `DamageZoneBinding`, so a zone whose entity the teardown
+   released is indistinguishable from one the spawn path never bound and
+   surfaces as `UnboundZone`, not `ReleasedNode`. The arm stays because the
+   seam's error type can carry it, and it is now documented as defensive; no
+   test claims to reach it through the public entries.
+
+Neither fix changes an acceptance criterion. The stage remains **checked**; it
+cannot be more, and nothing here should be read as `verified_original`.
+
 ## Unknowns
 
 - **Whether the original couples destruction to collision at all, and which
