@@ -460,11 +460,11 @@ fn evidence_report_m01_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: opencode-1 (Rally #258, session of 2026-09-29T05:06Z); reviewer: \
-             opencode-1 — a separate session with fresh context that did not take part in the \
-             implementation — regenerating this report on the rebased commit. Same agent name, \
-             different context: this review is not independent original-reference evidence and \
-             no agent review replaces the owner's human approval"
+            "implementer: opencode-1/opencode-1 (Rally #258, session of 2026-09-29T05:06Z); \
+             reviewer: opencode-1/opencode-1 again — a separate session with fresh context that \
+             did not take part in the implementation — regenerating this report on the rebased \
+             commit. Same agent instance, different context: this review is not independent \
+             original-reference evidence and no agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite re-run locally with the retail capability by the reviewer; this \
@@ -652,8 +652,9 @@ fn evidence_report_m02_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: bunny-alpha-2 (Rally #261, session of 2026-10-01T04:31Z); reviewer: \
-             bunny-alpha-2 again, on the same Rally review claim (2026-10-01T05:25Z). Same agent \
+            "implementer: bunny-alpha-2/bunny-alpha-2 (Rally #261, session of 2026-10-01T04:31Z); \
+             reviewer: bunny-alpha-2/bunny-alpha-2 again, on the same Rally review claim \
+             (2026-10-01T05:25Z). Same agent \
              identity, so this is NOT independent review and is not independent original-reference \
              evidence; the reviewer's context was fresh (a new session that re-read the tree, the \
              installation and the task history) but a fresh context does not make a reviewer \
@@ -859,10 +860,14 @@ fn evidence_report_m03_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: claude-1 (Rally #264, Sonnet 5.5, session of 2026-10-01T19:25Z); reviewer: \
-             not yet assigned at hand-over. The implementer's own run is not independent review and \
-             is not independent original-reference evidence; no agent review replaces the owner's \
-             human approval"
+            "implementer: claude-2/claude-1 (Rally #264, Sonnet 5.5, session of 2026-10-01T19:25Z); \
+             reviewer: claude-2/claude-1 again, as the Rally reviewing agent on the review claim \
+             of 2026-10-01T19:35Z — the same agent instance that implemented the stage, so this \
+             is NOT independent review and is not independent original-reference evidence; the \
+             review claim is a separate session from the implementation claim, but the activity \
+             log cannot prove a fresh context and none is claimed. The implementer's own run is \
+             not independent review and is not independent original-reference evidence; no agent \
+             review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; this harness derives every \
@@ -1057,10 +1062,14 @@ fn evidence_report_m04_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: deepseek-v4.1-flash (Rally #267, session of 2026-10-01); reviewer: \
-             not yet assigned at hand-over. The implementer's own run is not independent review \
-             and is not independent original-reference evidence; no agent review replaces the \
-             owner's human approval"
+            "implementer: deepseek-1/deepseek-1 (Rally #267, DeepSeek V4.1 Flash, session of \
+             2026-10-01); reviewer: deepseek-1/deepseek-1 again, as the Rally reviewing agent on \
+             the review claim of 2026-10-01T20:25Z — the same agent instance that implemented the \
+             stage, so this is NOT independent review and is not independent original-reference \
+             evidence; the review claim is a separate session from the implementation claim, but \
+             the activity log cannot prove a fresh context and none is claimed. The implementer's \
+             own run is not independent review and is not independent original-reference evidence; \
+             no agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; this harness derives every \
@@ -1456,10 +1465,14 @@ fn evidence_report_m08_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: claude-1 (Rally #279, Claude Sonnet 5.5, session of 2026-10-01T23:16Z); \
-             reviewer: none yet. The implementer's own run is not independent review, is not \
-             independent original-reference evidence, and no agent review replaces the owner's \
-             human approval"
+            "implementer: claude-2/claude-1 (Rally #279, Claude Sonnet 5.5, session of \
+             2026-10-01T23:16Z); reviewer: claude-2/claude-1 again, as the Rally reviewing agent \
+             on the review claim of 2026-10-01T23:50Z — the same agent instance that implemented \
+             the stage, so this is NOT independent review and is not independent \
+             original-reference evidence; the review claim is a separate session from the \
+             implementation claim, but the activity log cannot prove a fresh context and none is \
+             claimed. The implementer's own run is not independent review, is not independent \
+             original-reference evidence, and no agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability by the implementer; this \
@@ -1655,10 +1668,14 @@ fn evidence_report_m12_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: claude-1 (Rally #291, Claude Sonnet 5.5, session of 2026-10-01T23:58Z); \
-             reviewer: none yet. The implementer's own run is not independent review, is not \
-             independent original-reference evidence, and no agent review replaces the owner's \
-             human approval"
+            "implementer: claude-2/claude-1 (Rally #291, Claude Sonnet 5.5, session of \
+             2026-10-01T23:58Z); reviewer: claude-2/claude-1 again, as the Rally reviewing agent \
+             on the review claim of 2026-10-02T00:05Z — the same agent instance that implemented \
+             the stage, so this is NOT independent review and is not independent \
+             original-reference evidence; the review claim is a separate session from the \
+             implementation claim, but the activity log cannot prove a fresh context and none is \
+             claimed. The implementer's own run is not independent review, is not independent \
+             original-reference evidence, and no agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability by the implementer; this \
@@ -1854,10 +1871,14 @@ fn evidence_report_m13_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: claude-1 (Rally #294, Claude Sonnet 5.5, session of 2026-10-02T00:10Z); \
-             reviewer: none yet. The implementer's own run is not independent review, is not \
-             independent original-reference evidence, and no agent review replaces the owner's \
-             human approval"
+            "implementer: claude-2/claude-1 (Rally #294, Claude Sonnet 5.5, session of \
+             2026-10-02T00:10Z); reviewer: claude-2/claude-1 again, as the Rally reviewing agent \
+             on the review claim of 2026-10-02T00:15Z — the same agent instance that implemented \
+             the stage, so this is NOT independent review and is not independent \
+             original-reference evidence; the review claim is a separate session from the \
+             implementation claim, but the activity log cannot prove a fresh context and none is \
+             claimed. The implementer's own run is not independent review, is not independent \
+             original-reference evidence, and no agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability by the implementer; this \
