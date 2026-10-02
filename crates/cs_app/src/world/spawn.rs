@@ -24,6 +24,36 @@
 //! [`SpawnedWorld`] reports every instance whose collision could **not** be
 //! built instead of silently presenting geometry it never collided with.
 //!
+//! # One engine asset per mesh, not one per object
+//!
+//! The **source** already de-duplicates: two object records that name the same
+//! mesh resolve to the same [`WorldMesh`](super::meshes::WorldMesh), one upload
+//! with one fingerprint, and [`MeshReference`] is what proves it. The **engine**
+//! asset has to be shared as well, or N objects naming one mesh add N identical
+//! copies of the same geometry to [`Assets<Mesh>`] — the triangles F17-B
+//! uploaded once, copied once per instance that draws or collides with them.
+//! [`WorldMeshAssets`] is the map that makes it one: the first object to name a
+//! reference uploads it, and every later object naming that reference gets a
+//! clone of the **same strong handle**, so the second object's `Mesh3d` *is* the
+//! first one's and Avian derives both colliders from one asset. The cache is
+//! keyed by the authored [`ContentId`] *and* the upload's [`ContentHash`], so a
+//! caller that registers different geometry under a reference it used before is
+//! given a new asset rather than the one a previous load left behind.
+//!
+//! **The world loader does keep an owning handle, and it is released with the
+//! world.** [`WorldMeshAssets`] holds the strong handles, so a sector that
+//! streams away and comes back re-uses the geometry the engine already has
+//! instead of uploading the same triangles again — the same lifetime as
+//! [`WorldMeshes`] itself, which the caller owns and passes to
+//! [`super::residency::load_world`] and [`super::residency::load_sector`] by
+//! shared reference, so it outlives every sector. The cost is that the handles
+//! must be given up somewhere, and [`super::residency::unload_world`] is that
+//! place: it removes the resource, and once the world's entities have been
+//! despawned no strong handle is left, so the engine frees the assets rather
+//! than the next world paying for the last one's geometry. A **sector** unload
+//! releases nothing: per-sector release is a streaming decision, and the policy
+//! that would make it ([`super::visibility`]) does not own the assets.
+//!
 //! **Every body this module spawns carries a `Collider` on its own entity**,
 //! which is what makes it visible to Avian's swept CCD: the collider-on-body
 //! rule is stated, measured and enforced in [`crate::asset_stack`]. The mesh
@@ -52,13 +82,17 @@
 //! `accept_f18_b_a_swept_body_crosses_a_world_trigger_volume_untouched`.
 //!
 //! The one place this module is deliberately *not* the single conversion is the
-//! mesh path's body-less bundle, which is spawned here rather than through
-//! [`crate::asset_stack::spawn_static_mesh_collider_on_body`]: that helper *is*
-//! the collider-on-body layout, and a trigger volume must not use it. Adding
-//! the body-less layout beside the one that needs it would have meant editing
-//! `asset_stack`, which is F00-A's path, so the trigger bundle is written here
-//! and the two layouts are held against each other by
+//! mesh path's entity layout, which is spawned here rather than through
+//! [`crate::asset_stack::spawn_static_mesh_collider_on_body`] — for two reasons
+//! that now have one answer. That helper *is* the collider-on-body layout, and a
+//! trigger volume must not use it; and it takes a [`Mesh`] and uploads it itself,
+//! which is exactly what a shared [`Handle`] forbids. So the solid layout is
+//! written out here too — the same components, in the same order, through the
+//! same [`avian_layers`] — and the two bundles are held against each other by
 //! `accept_f18_b_the_trigger_and_solid_mesh_paths_differ_only_in_the_body`.
+//! `asset_stack` is F00-A's path and this module does not edit it; adding a
+//! handle-taking variant there instead would have been a second place to keep in
+//! step with this one.
 
 //! What this stage deliberately does *not* do, and where it goes:
 //!
@@ -80,6 +114,8 @@
 //! * **retail geometry import** is F18-B/D: everything spawned from a fixture
 //!   here is `Origin::SyntheticFixture` and never claims to be original.
 
+use std::collections::BTreeMap;
+
 use avian3d::parry::shape::{Cuboid, SharedShape};
 use avian3d::prelude::{
     Collider, ColliderConstructor, CollisionEventsEnabled, CollisionLayers as AvianCollisionLayers,
@@ -87,7 +123,7 @@ use avian3d::prelude::{
 };
 use bevy::asset::{Assets, Handle};
 use bevy::mesh::{Mesh, Mesh3d};
-use bevy::prelude::{App, Entity, GlobalTransform, Mat4, Quat, Transform, Vec3, Vec4};
+use bevy::prelude::{App, Entity, GlobalTransform, Mat4, Quat, Resource, Transform, Vec3, Vec4};
 use cs_content::scene::CanonicalTransform;
 use cs_content::world::{
     WorldCollisionRole, WorldCollisionShape, WorldDefinition, WorldId, WorldObjectId,
@@ -193,6 +229,79 @@ impl MeshReference {
             fingerprint: upload.fingerprint(),
             triangles: upload.triangles(),
         }
+    }
+}
+
+/// One engine mesh asset as this Bevy world holds it: the handle, and the
+/// upload that handle is the geometry of.
+///
+/// The fingerprint is what makes the entry safe to re-use. A `ContentId` says
+/// *which* mesh; the fingerprint says *which upload of it*, and a caller that
+/// registered different geometry under the same reference must be given a new
+/// asset instead of the previous one.
+#[derive(Clone, Debug)]
+struct SharedWorldMesh {
+    fingerprint: ContentHash,
+    handle: Handle<Mesh>,
+}
+
+/// The engine mesh assets this Bevy world holds for the mesh references its
+/// world object records named.
+///
+/// One [`WorldMesh`](super::meshes::WorldMesh) becomes **one** asset, however
+/// many objects name it: the first object to name a reference uploads it into
+/// [`Assets<Mesh>`], and every later object gets a clone of that same strong
+/// handle. Presentation-only and colliding objects therefore share one
+/// [`Mesh3d`] handle, and so does the collider Avian derives from it, which is
+/// what "one upload, one fingerprint, one asset" means at the engine boundary.
+///
+/// **This resource is the world loader's owning handle**, and it is released by
+/// [`super::residency::unload_world`], which removes it. See the module docs for
+/// why a sector unload deliberately does not.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct WorldMeshAssets {
+    assets: BTreeMap<ContentId, SharedWorldMesh>,
+}
+
+impl WorldMeshAssets {
+    /// The asset this Bevy world already holds for `id`, when it holds the
+    /// upload named by `fingerprint`.
+    #[must_use]
+    pub fn handle(&self, id: &ContentId, fingerprint: ContentHash) -> Option<Handle<Mesh>> {
+        self.assets
+            .get(id)
+            .filter(|shared| shared.fingerprint == fingerprint)
+            .map(|shared| shared.handle.clone())
+    }
+
+    /// How many engine mesh assets this world holds for world object records.
+    ///
+    /// The number of **meshes**, not the number of objects: a world whose
+    /// objects name six records over two meshes holds two assets here. It is a
+    /// statement about the loader's own bookkeeping, and the engine's own count
+    /// is `Assets::<Mesh>::len()` — the two agree for a Bevy world this crate
+    /// built, and a consumer that needs the engine's number should read it.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.assets.len()
+    }
+
+    /// Whether this world holds no world mesh asset at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.assets.is_empty()
+    }
+
+    /// Records `handle` as the asset for the upload named by `fingerprint`,
+    /// replacing any earlier asset for `id`.
+    fn insert(&mut self, id: ContentId, fingerprint: ContentHash, handle: Handle<Mesh>) {
+        self.assets.insert(
+            id,
+            SharedWorldMesh {
+                fingerprint,
+                handle,
+            },
+        );
     }
 }
 
@@ -674,6 +783,42 @@ fn resolve_upload<'a>(
         .ok_or(SkipReason::MeshUnavailable)
 }
 
+/// The one engine asset **both halves** of `upload` use: the asset this Bevy
+/// world already holds for that exact upload, or a newly uploaded one.
+///
+/// This is the whole of the sharing, and it is deliberately the only place the
+/// engine mesh is added. Two records that resolve to the same
+/// [`WorldMesh`](super::meshes::WorldMesh) end up holding the *same*
+/// [`Handle`], and two records that resolve to different meshes cannot meet in
+/// the cache: a different [`ContentId`], or the same id with different geometry,
+/// is a different entry and a different asset.
+///
+/// # Panics
+///
+/// If `app` has no [`Assets<Mesh>`] to add to, because it was not built by
+/// [`super::fixture::world_app`] or otherwise given [`crate::asset_stack`].
+fn shared_mesh(app: &mut App, upload: ResolvedUpload<'_>) -> Handle<Mesh> {
+    let id = upload.id.clone();
+    let fingerprint = upload.upload.fingerprint();
+    if let Some(handle) = app
+        .world()
+        .get_resource::<WorldMeshAssets>()
+        .and_then(|assets| assets.handle(&id, fingerprint))
+    {
+        return handle;
+    }
+    // Uploaded here and nowhere else in this module: this is the only line that
+    // puts a world mesh into the engine's asset stack.
+    let handle = app
+        .world_mut()
+        .resource_mut::<Assets<Mesh>>()
+        .add(upload.upload.mesh().clone());
+    app.world_mut()
+        .get_resource_or_insert_with(WorldMeshAssets::default)
+        .insert(id, fingerprint, handle.clone());
+    handle
+}
+
 /// Spawns one object instance into `app`.
 ///
 /// This is the unit [`spawn_world`] and the sector load transaction in
@@ -853,7 +998,11 @@ fn present(
     let pose = pose_for(placement);
     match upload {
         Some(upload) => {
-            spawn_mesh_presentation(app, pose, affine, upload.upload.mesh().clone(), binding)
+            // The shared handle, so a record that names a mesh another record
+            // already named draws the *same* engine asset rather than a second
+            // copy of the same geometry.
+            let handle = shared_mesh(app, upload);
+            spawn_mesh_presentation(app, pose, affine, handle, binding)
         }
         None => spawn_presentation(app, object, pose, binding),
     }
@@ -904,9 +1053,13 @@ fn spawn_presentation(
     }
 }
 
-/// Presents geometry for an object that never collides: the upload goes into
-/// the world's asset stack once and a `Mesh3d` points at it. No rigid body and
-/// no collider are created, so role `None` stays a presentation.
+/// Presents geometry for an object that never collides: the object's shared
+/// asset handle goes on a `Mesh3d` and nothing else is created. No rigid body
+/// and no collider are created, so role `None` stays a presentation.
+///
+/// The handle is the one [`shared_mesh`] hands out, which is what lets a
+/// presentation-only record share its engine asset with every other record that
+/// names the same mesh.
 ///
 /// The pose components are the same choice [`spawn_presentation`] makes, and for
 /// the same reason: see [`pose_for`].
@@ -914,10 +1067,9 @@ fn spawn_mesh_presentation(
     app: &mut App,
     pose: Option<Transform>,
     affine: GlobalTransform,
-    mesh: Mesh,
+    handle: Handle<Mesh>,
     binding: WorldObjectBinding,
 ) -> Entity {
-    let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
     if let Some(pose) = pose {
         app.world_mut()
             .spawn((WorldVisual, binding, pose, affine, Mesh3d(handle)))
@@ -971,9 +1123,13 @@ fn spawn_cuboid_collider(
 /// The node Avian derives the collider onto is the same entity that holds the
 /// [`Mesh3d`] the object draws, so there is one asset handle behind both
 /// consumers: Avian reads that handle to build the collider, and the render
-/// path reads the same handle to draw. The collider is
+/// path reads the same handle to draw. That handle is the **shared** one
+/// ([`shared_mesh`]), so "one asset handle behind both consumers" now holds
+/// *across* objects too: two records naming one mesh present and collide from a
+/// single [`Assets<Mesh>`] entry. The collider is
 /// `ColliderConstructor::TrimeshFromMesh` — the constructor that keeps every
-/// stored triangle, so nothing here can close a traversable opening.
+/// stored triangle, so nothing here can close a traversable opening, and sharing
+/// the asset does not change what the constructor derives from it.
 ///
 /// **For `Solid`, that node is also the rigid body.** The entity carries
 /// [`RigidBody::Static`], the [`Mesh3d`] and the constructor together, so the
@@ -999,6 +1155,10 @@ fn spawn_mesh_collider(
     role: WorldCollisionRole,
     binding: WorldObjectBinding,
 ) -> Entity {
+    // The same handle whichever layout this role takes, and the same asset every
+    // other record naming this mesh already got: a trigger volume is a
+    // presentation too, so sharing has to reach it as well.
+    let handle = shared_mesh(app, upload);
     if is_trigger_volume(role) {
         // A trigger volume: the same bundle with the rigid body left off, so the
         // derived collider is a standalone one. Spawned here rather than by
@@ -1006,18 +1166,13 @@ fn spawn_mesh_collider(
         // Avian's `ColliderOf` observer may already have bound a collider to.
         return spawn_mesh_trigger_volume(
             app,
-            upload.upload.mesh().clone(),
+            handle,
             transform,
             static_world_membership(),
             binding,
         );
     }
-    let entity = crate::asset_stack::spawn_static_mesh_collider_on_body(
-        app,
-        upload.upload.mesh().clone(),
-        transform,
-        static_world_membership(),
-    );
+    let entity = spawn_mesh_body(app, transform, handle, static_world_membership());
     // The event opt-in is read from the collider's own entity, and the derived
     // collider lands there, so marking it now is enough.
     app.world_mut().entity_mut(entity).insert((
@@ -1029,12 +1184,58 @@ fn spawn_mesh_collider(
     entity
 }
 
+/// Spawns one mesh-derived **static body**: the collider-on-body layout, on an
+/// already-shared asset handle.
+///
+/// These are the components of
+/// [`crate::asset_stack::spawn_static_mesh_collider_on_body`], in its order,
+/// through the same [`avian_layers`]. It is written out here rather than called
+/// because that helper takes a [`Mesh`] and uploads it itself — which is exactly
+/// what sharing one asset between objects forbids — and `asset_stack` is F00-A's
+/// path, which this stage does not edit.
+///
+/// The returned entity is the body, the presentation node and the constructor's
+/// entity at once, which is the collider-on-body rule: Avian's
+/// `init_collider_constructors` derives onto the entity holding the constructor,
+/// so the [`Collider`] lands on the body itself and swept CCD can resolve it.
+///
+/// # Panics
+///
+/// If `app` was not given [`Assets<Mesh>`] — it does not add one here, so the
+/// caller must have a mesh asset stack (see [`crate::asset_stack`]).
+fn spawn_mesh_body(
+    app: &mut App,
+    transform: Transform,
+    handle: Handle<Mesh>,
+    membership: CollisionLayers,
+) -> Entity {
+    // `ColliderConstructor::TrimeshFromMesh` needs the `Mesh3d` it derives from
+    // on the *same* entity, which is why the body, the presentation and the
+    // constructor are one entity here rather than a body with a child node.
+    //
+    // The layers go on the entity rather than through
+    // `ColliderConstructorHierarchy::with_default_layers`, which the hierarchy
+    // form has and this one does not: the derived `Collider` lands here, so the
+    // `CollisionLayers` component beside it is the membership Avian reads.
+    app.world_mut()
+        .spawn((
+            RigidBody::Static,
+            Mesh3d(handle),
+            ColliderConstructor::TrimeshFromMesh,
+            avian_layers(membership),
+            transform,
+            Position(transform.translation),
+            Rotation(transform.rotation),
+        ))
+        .id()
+}
+
 /// Spawns a mesh-derived **trigger volume**: presentation, binding, layers,
 /// event opt-in and [`Sensor`] marker on one entity that carries **no**
 /// [`RigidBody`].
 ///
-/// This is [`crate::asset_stack::spawn_static_mesh_collider_on_body`] minus the
-/// rigid body, and the difference is the whole decision (task #401): with a
+/// This is [`spawn_mesh_body`] minus the rigid body, and the difference is the
+/// whole decision (task #401): with a
 /// body on the entity, Avian's `ColliderHierarchyPlugin` binds the derived
 /// collider to it through `ColliderOf`, `solve_swept_ccd` resolves that body
 /// through `SweptCcdBodyQuery`, and a swept body is stopped at the volume's
@@ -1047,12 +1248,11 @@ fn spawn_mesh_collider(
 /// what holds the two to each other.
 fn spawn_mesh_trigger_volume(
     app: &mut App,
-    mesh: Mesh,
+    handle: Handle<Mesh>,
     transform: Transform,
     membership: CollisionLayers,
     binding: WorldObjectBinding,
 ) -> Entity {
-    let handle: Handle<Mesh> = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
     // `ColliderConstructor::TrimeshFromMesh` derives from the `Mesh3d` on the
     // *same* entity, and the constructor resolves no body, so the collider lands
     // here as a standalone one. Every stored triangle is kept, exactly as on

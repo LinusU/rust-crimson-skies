@@ -42,6 +42,15 @@
 //! belongs to two sectors, and one object whose mesh this source deliberately
 //! does not hold.
 //!
+//! # The twin hangar world
+//!
+//! [`twin_harbor_world`] is the F18-B fixture for asset **sharing**: four object
+//! records name **one** stored mesh — two solids, a presentation-only banner and
+//! a trigger volume — while a fifth names a mesh of its own and a sixth is a
+//! cuboid that needs none. It is the only way "one engine asset per named mesh"
+//! is a claim about the world and not about one fixture, because it puts all four
+//! mesh consumers on the same reference at once.
+//!
 //! # The depot world
 //!
 //! [`depot_world`] is the F18-C fixture: the same arch, with a **door panel**
@@ -224,6 +233,55 @@ pub const HARBOR_GROUND_POS_M: [f64; 3] = [0.0, -0.5, 0.0];
 
 /// The absent-mesh object's placement, inside the `approach` sector.
 pub const HARBOR_ABSENT_POS_M: [f64; 3] = [-20.0, 3.0, 4.0];
+
+// -------------------------------------------------------- twin hangar world ---
+
+/// The twin hangar world's id key.
+pub const TWIN_WORLD_KEY: &str = "synthetic.twin_harbor_world";
+
+/// The one sector of the twin hangar world. Every object is in it, so a sector
+/// transaction never moves geometry and the twin question is the only thing the
+/// fixture is about.
+pub const TWIN_SECTOR: &str = "twin";
+
+/// The first shell: the arch as one stored mesh, 36 triangles over three
+/// material groups.
+pub const TWIN_OBJECT_SHELL_A: &str = "shell.stand_a";
+/// The second shell, on the **same** mesh reference as the first.
+pub const TWIN_OBJECT_SHELL_B: &str = "shell.stand_b";
+/// A presentation-only object naming the same mesh again: role `None`, so it
+/// draws and never collides.
+pub const TWIN_OBJECT_BANNER: &str = "banner.twin";
+/// A trigger volume naming the same mesh again: role `Sensor`, so it reports
+/// and never blocks.
+pub const TWIN_OBJECT_TRIGGER: &str = "trigger.twin";
+/// A solid object naming a **different** mesh, so "one asset per mesh" is not
+/// "one asset for the whole world".
+pub const TWIN_OBJECT_PANEL: &str = "panel.solo";
+/// A cuboid object: it names a mesh the source does not hold, because a cuboid
+/// never resolves one. It must therefore add no engine asset at all.
+pub const TWIN_OBJECT_GROUND: &str = "terrain.twin";
+
+/// The shell's placement: the origin, so the opening is `z ∈ (-1, 1)`,
+/// `y ∈ (0, 3)` exactly as in the harbor world.
+pub const TWIN_SHELL_POS_M: [f64; 3] = [0.0, 0.0, 0.0];
+/// The second shell's placement: the same arch, a hundred metres downrange, so
+/// the two are visibly two objects rather than one drawn twice.
+pub const TWIN_SHELL_TWIN_POS_M: [f64; 3] = [100.0, 0.0, 0.0];
+/// The banner's placement, clear of both shells.
+pub const TWIN_BANNER_POS_M: [f64; 3] = [-15.0, 6.0, -4.0];
+/// The trigger volume's placement, clear of both shells.
+pub const TWIN_TRIGGER_POS_M: [f64; 3] = [10.0, 1.5, -6.0];
+/// The panel's placement: its own mesh, well clear of everything else.
+pub const TWIN_PANEL_POS_M: [f64; 3] = [-30.0, 2.0, 0.0];
+/// The twin ground slab's half extents.
+pub const TWIN_GROUND_HALF_M: [f64; 3] = [80.0, 0.5, 20.0];
+/// The twin ground slab's centre, its top face at `y = 0`.
+pub const TWIN_GROUND_POS_M: [f64; 3] = [50.0, -0.5, 0.0];
+
+/// The panel's half extents as a stored mesh box: deliberately not the shell's
+/// shape, so a test can tell the two assets apart by geometry alone.
+pub const TWIN_PANEL_HALF_M: [f64; 3] = [1.0, 2.0, 0.25];
 
 /// How many updates a mesh-derived collider needs before it exists: the
 /// `ColliderConstructorHierarchy` is an `Update` system, and the collider is
@@ -804,6 +862,156 @@ pub fn harbor_meshes() -> WorldMeshes {
             box_mesh(half_f32(HARBOR_BANNER_HALF_M)),
         ),
         (HARBOR_OBJECT_WATER, box_mesh(half_f32(HARBOR_WATER_HALF_M))),
+    ] {
+        let reference = mesh(key)
+            .known()
+            .expect("the fixture mesh references are known");
+        meshes
+            .insert_render_mesh(reference, &render_mesh(&stored), &MESH_UNKNOWNS)
+            .expect("the fixture's stored meshes upload through every material group");
+    }
+    meshes
+}
+
+/// Builds the twin hangar world: two records naming **one** stored mesh, plus
+/// the other three roles that mesh path has to cover.
+///
+/// | object | role | shape | mesh |
+/// | --- | --- | --- | --- |
+/// | `shell.stand_a` | `Solid` | `FromMesh` | the arch shell |
+/// | `shell.stand_b` | `Solid` | `FromMesh` | **the same** shell |
+/// | `banner.twin` | `None` | `FromMesh` | **the same** shell |
+/// | `trigger.twin` | `Sensor` | `FromMesh` | **the same** shell |
+/// | `panel.solo` | `Solid` | `FromMesh` | a panel of its own |
+/// | `terrain.twin` | `Solid` | `Cuboid` | *named but unresolved* |
+///
+/// Four records name one stored mesh on purpose: they are the four consumers the
+/// spawn path has for a mesh record — two solids, a presentation-only object and
+/// a trigger volume — so a shared-asset claim that only held for the solid path
+/// would be caught here. The fifth names a **different** mesh, because "one
+/// asset per mesh" is a claim about how the source is keyed and would also be
+/// satisfied by one asset for the whole world; the sixth is a cuboid, whose mesh
+/// reference this source does not resolve, so the number of engine assets must
+/// not move when it spawns.
+///
+/// The two shells are a hundred metres apart, so a reader can see they are two
+/// objects and not one object drawn twice.
+///
+/// # Errors
+///
+/// Never for this fixture, like [`harbor_world`]: its ids, transforms and shapes
+/// are constants validated on the path here.
+pub fn twin_harbor_world() -> Result<WorldDefinition, WorldError> {
+    let yard = sector(TWIN_SECTOR);
+
+    let sectors = vec![Sector::new(
+        yard.clone(),
+        Aabb::try_new([-40.0, -2.0, -30.0], [140.0, 12.0, 30.0])
+            .expect("the twin world's bounds are well formed"),
+    )];
+
+    let ground_surface = known(SurfaceRole::Ground, "twin.surface.ground");
+    let solid = known(WorldCollisionRole::Solid, "twin.collision-role.solid");
+    let sensor = known(WorldCollisionRole::Sensor, "twin.collision-role.sensor");
+    let none_role = known(WorldCollisionRole::None, "twin.collision-role.none");
+    let from_mesh = known(
+        WorldCollisionShape::FromMesh,
+        "twin.collision-shape.from-mesh",
+    );
+    // One stored mesh, named by four records. The reference is *this* fixture's
+    // own helper, so the records and the mesh source below agree by
+    // construction rather than by two literals that happen to match.
+    let shell = mesh(TWIN_OBJECT_SHELL_A);
+
+    let mesh_record = |key: &str, mesh_ref: Resolved<ContentId>, pos: [f64; 3]| {
+        WorldObjectInstance::try_new(
+            object(key),
+            mesh_ref,
+            translated(pos),
+            solid.clone(),
+            from_mesh.clone(),
+            ground_surface.clone(),
+            vec![yard.clone()],
+            fixture_provenance(&format!("twin.{key}.record")),
+        )
+        .expect("the fixture sector lists contain no duplicates")
+    };
+
+    let objects = vec![
+        mesh_record(TWIN_OBJECT_SHELL_A, shell.clone(), TWIN_SHELL_POS_M),
+        mesh_record(TWIN_OBJECT_SHELL_B, shell.clone(), TWIN_SHELL_TWIN_POS_M),
+        mesh_record(TWIN_OBJECT_PANEL, mesh(TWIN_OBJECT_PANEL), TWIN_PANEL_POS_M),
+        // The presentation-only record, on the same mesh: role `None`, so it must
+        // present the shared asset and never get a collider.
+        WorldObjectInstance::try_new(
+            object(TWIN_OBJECT_BANNER),
+            shell.clone(),
+            translated(TWIN_BANNER_POS_M),
+            none_role,
+            from_mesh.clone(),
+            ground_surface.clone(),
+            vec![yard.clone()],
+            fixture_provenance("twin.banner.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
+        // The trigger volume, on the same mesh: the body-less layout, which has
+        // to reach the same asset as the solid path.
+        WorldObjectInstance::try_new(
+            object(TWIN_OBJECT_TRIGGER),
+            shell,
+            translated(TWIN_TRIGGER_POS_M),
+            sensor,
+            from_mesh,
+            ground_surface.clone(),
+            vec![yard.clone()],
+            fixture_provenance("twin.trigger.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
+        // A cuboid, whose named mesh this source does not hold: its mesh
+        // reference stays unresolved on purpose, so "a record that names a mesh
+        // without needing one adds no engine asset" is exercised here too.
+        WorldObjectInstance::try_new(
+            object(TWIN_OBJECT_GROUND),
+            mesh(TWIN_OBJECT_GROUND),
+            translated(TWIN_GROUND_POS_M),
+            solid,
+            cuboid(TWIN_GROUND_HALF_M),
+            ground_surface,
+            vec![yard],
+            fixture_provenance("twin.ground.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
+    ];
+
+    let boundary = known(
+        WorldBoundary::try_new(Some(-50.0), Some(500.0), None)
+            .expect("the twin world boundary is well formed"),
+        "twin_harbor_world.boundary",
+    );
+
+    WorldDefinition::try_new(
+        WorldId::from_key(TWIN_WORLD_KEY).expect("the twin world key is valid"),
+        Origin::SyntheticFixture,
+        boundary,
+        sectors,
+        objects,
+        fixture_provenance("twin_harbor_world.record"),
+    )
+}
+
+/// The mesh source the twin hangar world is loaded with: the arch shell under the
+/// reference **four** of its records name, and the panel under its own.
+///
+/// The shell is the same stored mesh [`harbor_meshes`] builds for the hangar —
+/// three boxes on three material indices, 36 triangles — so a triangle-count
+/// assertion on the shared asset means the *merged* mesh is what is shared, not
+/// one material group of it.
+#[must_use]
+pub fn twin_harbor_meshes() -> WorldMeshes {
+    let mut meshes = WorldMeshes::new();
+    for (key, stored) in [
+        (TWIN_OBJECT_SHELL_A, hangar_shell_mesh()),
+        (TWIN_OBJECT_PANEL, box_mesh(half_f32(TWIN_PANEL_HALF_M))),
     ] {
         let reference = mesh(key)
             .known()

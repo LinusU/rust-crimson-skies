@@ -18,7 +18,10 @@
 //!   and stamped with the same [`contacts::WorldObjectBinding`], so visual and
 //!   collision cannot drift apart (F18 non-negotiable behavior 1). A `FromMesh`
 //!   object is presented and collided by **one** node holding one `Mesh3d`
-//!   handle, which Avian derives a `TrimeshFromMesh` collider from — no hull, no
+//!   handle, which Avian derives a `TrimeshFromMesh` collider from — and that
+//!   handle is the **shared** one in [`spawn::WorldMeshAssets`], so every record
+//!   naming a given mesh presents and collides from a single engine asset rather
+//!   than one copy per object. No hull, no
 //!   bounding box, no decimation, so a traversable opening cannot be closed by a
 //!   simplification this stage never made. That node is also the static rigid
 //!   body, so the derived collider lands on the body entity itself and the
@@ -107,10 +110,12 @@ pub use fixture::{
     MESH_SETTLE_UPDATES, NON_COLLIDING_HALF_M, NON_COLLIDING_POS_M, OBJECT_GROUND, OBJECT_LEG_LEFT,
     OBJECT_LEG_RIGHT, OBJECT_LINTEL, OBJECT_NON_COLLIDING, OBJECT_SENSOR, OBJECT_UNEVIDENCED_ROLE,
     OBJECT_UNEVIDENCED_SHAPE, OBJECT_WATER, ProbeError, ProbeSpec, SECTOR_APPROACH, SECTOR_ARCH,
-    SECTOR_BEYOND, SENSOR_HALF_M, SENSOR_POS_M, WORLD_KEY, WorldFixture, WorldFixtureBuilder,
-    WorldFixtureError, arch_world, depot_meshes, depot_mission, depot_population, depot_world,
-    door_overlay, fixture_provenance, harbor_meshes, harbor_world, mesh_reference, object_set,
-    probe_layers, spawn_discrete_probe, spawn_swept_probe, static_world_layers, world_app,
+    SECTOR_BEYOND, SENSOR_HALF_M, SENSOR_POS_M, TWIN_OBJECT_BANNER, TWIN_OBJECT_GROUND,
+    TWIN_OBJECT_PANEL, TWIN_OBJECT_SHELL_A, TWIN_OBJECT_SHELL_B, TWIN_OBJECT_TRIGGER, TWIN_SECTOR,
+    TWIN_WORLD_KEY, WORLD_KEY, WorldFixture, WorldFixtureBuilder, WorldFixtureError, arch_world,
+    depot_meshes, depot_mission, depot_population, depot_world, door_overlay, fixture_provenance,
+    harbor_meshes, harbor_world, mesh_reference, object_set, probe_layers, spawn_discrete_probe,
+    spawn_swept_probe, static_world_layers, twin_harbor_meshes, twin_harbor_world, world_app,
     world_instance,
 };
 pub use gpu_capture::{
@@ -129,8 +134,9 @@ pub use residency::{
 };
 pub use spawn::{
     INSTANCE_TRANSFORM_TOLERANCE, InstanceTransform, MeshReference, SkipReason, SkippedInstance,
-    SpawnedCollider, SpawnedObject, SpawnedWorld, WorldSpawnError, avian_layers, canonical_matrix,
-    instance_placement, instance_placements, spawn_object, spawn_world, static_world_membership,
+    SpawnedCollider, SpawnedObject, SpawnedWorld, WorldMeshAssets, WorldSpawnError, avian_layers,
+    canonical_matrix, instance_placement, instance_placements, spawn_object, spawn_world,
+    static_world_membership,
 };
 pub use visibility::{
     VisibilityError, VisibilityRequest, VisibilityUpdate, holds_sector, retained_sectors,

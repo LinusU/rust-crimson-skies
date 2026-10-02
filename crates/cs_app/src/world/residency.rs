@@ -49,6 +49,14 @@
 //! unload — the next load seeds it from its own initial damage. The same is
 //! true of the applied overlays: they belong to this load, and the next load
 //! gets a world whose door is shut again.
+//!
+//! **The engine mesh assets are released here too.** [`super::spawn::WorldMeshAssets`]
+//! is the owning handle behind the one asset every object naming a mesh shares,
+//! so an unload that forgot it would leave the geometry of a world nobody is in
+//! resident for the next one. A *sector* unload releases nothing: the source the
+//! assets were built from is caller-owned and outlives every sector
+//! (`docs/findings/2026-09-30-f18-b-followup-mesh-source-from-catalog.md`), and
+//! releasing per sector is a streaming decision no policy owns yet.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -63,7 +71,8 @@ use super::contacts::WorldObjectBinding;
 use super::meshes::WorldMeshes;
 use super::overlays::reapply_object;
 use super::spawn::{
-    SpawnedObject, SpawnedWorld, WorldSpawnError, instance_placements, spawn_object,
+    SpawnedObject, SpawnedWorld, WorldMeshAssets, WorldSpawnError, instance_placements,
+    spawn_object,
 };
 
 /// The condition of the object an entity belongs to.
@@ -760,6 +769,10 @@ pub fn unload_world(app: &mut App) -> Option<SectorLoad> {
     let despawned: Vec<WorldObjectId> = resident.objects.keys().cloned().collect();
     let spawned: Vec<SpawnedObject> = resident.objects.values().cloned().collect();
     despawn_all(world, spawned.iter());
+    // The world's engine meshes go with it. `WorldMeshAssets` is the loader's
+    // owning handle, and it is released here and nowhere else, so the assets are
+    // freed by refcount rather than kept alive for a world that no longer exists.
+    world.remove_resource::<WorldMeshAssets>();
     Some(SectorLoad {
         sector: None,
         spawned: Vec::new(),

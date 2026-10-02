@@ -36,7 +36,10 @@
 //! the collided geometry, each declared role honoured, water bounded, missing
 //! geometry reported — and `residency` owns AC02: a damaged objective survives
 //! unloading and reloading its sector, and a second mission loads its own
-//! population and damage with nothing left over.
+//! population and damage with nothing left over. `shared_asset` owns the
+//! **engine-asset** half of that claim (#425): four records naming one stored
+//! mesh share one `Assets<Mesh>` entry on all four mesh layouts, records naming
+//! different meshes do not, and unloading the world releases the shared asset.
 //!
 //! **F18-D** (`accept_f18_d_`) is the evidence stage over the original
 //! installation: `audit` owns AC04 — every discovered world group visited, its
@@ -59,6 +62,7 @@ mod import;
 mod overlays;
 mod records;
 mod residency;
+mod shared_asset;
 mod shear;
 mod spawn;
 mod sweep;
