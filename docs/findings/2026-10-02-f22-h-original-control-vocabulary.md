@@ -67,11 +67,19 @@ parse fails the acceptance test instead of merely agreeing with itself.
 | `crimson.icd` | `0e3b4724f045e0bedf7203cd40cdeb5b6e0b9a0bab78c3d04c278cb146e9833b`, 2 580 578 bytes |
 | `GOSDATA/ASSETS/crimson.rof` | 846 members |
 
-`crimson.icd` is the packed original game executable: its version resource
-carries `ProductName "Microsoft Crimson Skies"` and `OriginalFilename`
-`"Crimson.exe"`, and the payload begins with the packed `InternalName
-"Crimson"`. It imports only `KERNEL32`, `USER32`, `ADVAPI32` and `VERSION`;
-direct input reading is not done by that image.
+`crimson.icd` (2 580 578 bytes) is the installation's engine image: a PE32
+whose `.text` and `.data` are packed (entropy ≈ 7.9, entry point not
+recognisable code, matching `docs/findings/2026-09-29-t351-keyed-list-reading-rules.md`)
+while `.rdata`, `.idata` and `.rsrc` are intact. Its version resource carries
+`ProductName "Microsoft Crimson Skies"`, `OriginalFilename "Crimson.exe"` and
+`InternalName "Crimson"`. Its intact import directory lists **21** DLLs,
+including `DINPUT.dll`: `ole32`, `WINMM`, `DSOUND`, `IFC21`, `IMM32`, `MFC42`,
+`MSVCRT`, `KERNEL32`, `USER32`, `GDI32`, `comdlg32`, `ADVAPI32`, `SHELL32`,
+`MSVCP60`, `DDRAW`, `DPLAYX`, `DINPUT`, `MSACM32`, `zTiff`, `AVIFIL32` and
+`MSVFW32`. That is consistent with this being the DirectInput-reading game
+image whose `key_*` pool Observation 2 measures; the separate 344 851-byte
+`crimson.exe` imports only `KERNEL32`, `USER32`, `ADVAPI32` and `VERSION`, and
+both files carry the same version resource.
 
 ## Observation 1 — `strings.dll` carries the named control vocabulary
 
@@ -249,11 +257,21 @@ original-only set below.
 | `pause` | observed-in-original | `MSG_CMD_PAUSE_GAME` (11037) | |
 
 `absent-from-observation` is a strong statement here only because every label
-of both command ranges is named (see Observation 1): the original's command
-vocabulary is fully enumerated by name, so a bomb, gear, flap or
-countermeasure command could not be hiding anonymously. It still means
-"absent from the shipped observation", not "the original cannot do it"; the
-runtime behaviour stays unknown.
+of both command ranges is named (see Observation 1) and every symbolic command
+name in the whole 1 023-entry table — all 29 `MSG_CMD_*` names — lies inside
+those two ranges (asserted by
+`accept_f22_h_retail_strings_dll_names_the_original_command_vocabulary`), so a
+bomb, gear, flap or countermeasure command could not be hiding anonymously. It
+still means "absent from the shipped observation", not "the original cannot do
+it"; the runtime behaviour stays unknown.
+
+The only names in the table that mention these systems are the non-command
+game-option labels `MSG_OPT_GEAR` (2006, "gear"), `MSG_OPT_CHAFF_FLARES`
+(2005, "chaff/flares") and `MSG_OPT_LANDING` (2004), plus the weapon-type names
+`MSG_WEAP_GLIDEBOMB` (12141, "Glidebomb"). They are options and weapon
+identities, not bindable flight commands, and none sits in either command range,
+so they do not change the four `absent` classifications; they are recorded here
+so the "no gear label / no chaff-flare label" shorthand is not misread.
 
 The project also declares four continuous axes with no direct original
 counterpart command event; they are `observed` through the named movement
@@ -343,7 +361,8 @@ Task-test prefix `accept_f22_h_`:
     (`#[ignore = "requires CS_GAME_DIR"]`) — production `discover`/`fingerprint`,
     `StringCatalog` accounting, the test-local `.data` table and the 65 command
     labels resolved through `StringCatalog`, the category/device/key/button
-    labels, and the measured 15/50/44 range counts.
+    labels, the measured 15/50/44 range counts, and that every `MSG_CMD_*` name
+    in the table lies inside the two command ranges.
   - `accept_f22_h_retail_the_game_executable_and_control_scripts_expose_the_key_vocabulary`
     (`#[ignore = "requires CS_GAME_DIR"]`) — the `crimson.icd` fingerprint and
     its 120 `key_*` names, and the three control scripts decoded through the
@@ -366,12 +385,28 @@ Run locally by the implementer before hand-over
 
 ## Review
 
-**Not yet reviewed.** This branch is submitted for review by a different agent
-instance; per `AGENTS.md` the reviewer must record the implementer and reviewer
-identities and whether the reviewer's context was fresh, and no agent review is
-the owner's human approval. What the reviewer should verify: that every
-`observed` classification is backed by the cited measured label, that the
-`absent` claims rest on the "every label in both command ranges is named"
-argument, that the two retail tests really read `$CS_GAME_DIR` and fail when it
-is absent, and that no default binding has been asserted anywhere. This stage
-is **checked** at most; it is not `verified_original`.
+**Reviewed and corrected (fresh-context agent review), at most `checked`; not
+`verified_original`.** Implementer: `deepseek-1/deepseek-1`
+(deepseek-v4.1-flash). Reviewer: `deepseek-1/deepseek-1` (deepseek-v4.1-flash)
+in a **fresh session context** — the same agent and model, so per `AGENTS.md`
+review policy this is not an independent original-reference observation and no
+agent review replaces the owner's human approval.
+
+The reviewer independently re-read the installation and confirmed the
+quantitative claims: both fingerprints, the 1 023-entry `.data` table, the
+15/50/44 label counts, the exact 65 `MSG_*` command names and ids, the
+`crimson.icd` 120-name `key_*` pool at `0x20ce10–0x20d30a`, and the eight
+representative spans in Observation 1. Two problems were fixed:
+
+1. The import-list sentence was wrong: it attributed `crimson.exe`'s four
+   imports to `crimson.icd`. `crimson.icd`'s intact import directory lists 21
+   DLLs including `DINPUT.dll`; `crimson.exe` (344 851 bytes) is the four-import
+   image. Corrected above.
+2. The `absent` argument now also asserts, in the retail test, that every
+   `MSG_CMD_*` name in the whole table lies inside the two command ranges, and
+   the section notes the non-command `MSG_OPT_*`/weapon-name label variants.
+
+Both retail tests were run with `CS_GAME_DIR` set and pass; removing
+`CS_GAME_DIR` makes `game_dir()` panic, so neither passes without retail. No
+default binding is asserted anywhere. This stage is **checked** at most; it is
+not `verified_original`.

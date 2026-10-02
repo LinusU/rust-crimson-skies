@@ -156,6 +156,21 @@ fn accept_f22_h_retail_strings_dll_names_the_original_command_vocabulary() {
     }
     let (low, high, expected) = KEY_BUTTON_RANGE;
     assert_eq!(non_empty(low, high), expected, "range {low}..={high}");
+
+    // No symbolic command name hides outside the two command ranges: every
+    // `MSG_CMD_*` name in the whole table sits in one of them. This is what
+    // makes an `absent-from-observation` classification a claim about the
+    // original's *complete* command vocabulary, not just the scanned range.
+    for (name, id) in &table {
+        if name.starts_with("MSG_CMD_") {
+            assert!(
+                COMMAND_RANGES
+                    .iter()
+                    .any(|(range_low, range_high, _)| (*range_low..=*range_high).contains(id)),
+                "{name} (id {id}) is a command name outside the measured command ranges"
+            );
+        }
+    }
 }
 
 #[test]
