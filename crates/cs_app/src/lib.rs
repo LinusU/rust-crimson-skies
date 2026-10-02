@@ -184,7 +184,17 @@
 //! pass nor an animation pass can silently lose the other's decision, and a
 //! destroyed node is never re-drawn by a loop pass or a distance change — not
 //! even in the frame between damage's marker and that frame's LOD pass
-//! (non-negotiable behavior 3).
+//! (non-negotiable behavior 3). The F20-C integration step adds the missing
+//! producers: [`animation::bind_animated_node`] is the spawn-side entry that
+//! writes the generation-stamped [`animation::AnimatedNodeBinding`] and starts
+//! the `(track, instance)` it names, and [`animation::AnimationPlugin`] is the
+//! one-stop production composition — its [`animation::commit_session_tick`]
+//! copies the F23-A physics ledger's committed tick into
+//! [`animation::CommittedSessionTick`] and it installs the fixed-tick advance,
+//! so a [`physics::PhysicsSession`] that adds the plugin through its
+//! `configure` seam drives the whole path. The mission-marker consumer of
+//! [`animation::AnimationLog`] is still absent (the mission/objective layers
+//! are F37/F39) and is filed as a follow-up rather than stubbed.
 //!
 //! [`camera`] is the F21-A camera boundary
 //! (`specs/F21-cameras-cockpit-views-and-spyglass.md`, stage `### F21-A`):

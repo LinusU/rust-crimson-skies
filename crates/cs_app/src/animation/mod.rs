@@ -75,6 +75,20 @@
 //! neither the LOD pass nor an animation pass can silently lose the other's
 //! decision, and a destroyed node stays destroyed in the frame its marker
 //! appears (F20 non-negotiable behavior 3).
+//!
+//! The F20-C **integration** step adds the two producers the stage was missing:
+//! [`binding::bind_animated_node`] is the spawn-side entry that writes the
+//! generation-stamped [`AnimatedNodeBinding`] and starts the
+//! `(track, instance)` it names, and [`schedule::AnimationPlugin`] is the
+//! one-stop production composition — [`schedule::commit_session_tick`] copies
+//! the F23-A physics ledger's committed tick into
+//! [`schedule::CommittedSessionTick`] and installs the fixed-tick advance, so
+//! a real [`PhysicsSession`](crate::physics::PhysicsSession) that adds the
+//! plugin through its `configure` seam drives the whole path. The mission
+//! marker consumer is still absent (the mission/objective layers are F37/F39);
+//! the [`AnimationLog`](playback::AnimationLog) drain is the seam it will bind
+//! to, recorded in
+//! `docs/findings/2026-10-02-f20-c-wired-session-integration.md`.
 
 use std::fmt;
 
@@ -84,6 +98,7 @@ use cs_types::content::ContentId;
 use crate::scene::SceneGeneration;
 
 pub mod attachment;
+pub mod binding;
 pub mod lower;
 pub mod playback;
 pub mod presentation;
@@ -95,14 +110,15 @@ pub use attachment::{
     VelocitySkipReason, apply_attachment_transitions, release_animated_attachment,
     release_attachments_before_despawn,
 };
+pub use binding::{AnimatedNodeBindError, bind_animated_node};
 pub use playback::{
     AnimationLog, AnimationPlayError, AnimationPlayback, AnimationRefusal, BlockedTrack,
     InstanceKey, NodeAnimatedAttachment, NodeAnimatedMaterial, NodeAnimatedPose, TrackKind,
     advance_animation, play_animation, stop_animation,
 };
 pub use schedule::{
-    AnimationSchedulePlugin, CommittedSessionTick, advance_animation_on_session_tick,
-    release_superseded_instances,
+    AnimationPlugin, AnimationSchedulePlugin, CommittedSessionTick,
+    advance_animation_on_session_tick, commit_session_tick, release_superseded_instances,
 };
 pub use visibility::{
     ColliderVerdict, DrawVerdict, NodeAnimatedVisibility, VisibilityVerdict,

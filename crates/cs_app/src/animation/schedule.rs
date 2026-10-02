@@ -82,6 +82,7 @@ use bevy::ecs::world::World;
 use bevy::prelude::{FixedPostUpdate, Resource};
 use cs_types::Tick;
 
+use crate::physics::PhysicsTickLedger;
 use crate::scene::SceneGenerations;
 
 use super::playback::{AnimationPlayback, InstanceKey, advance_animation, release_instance};
@@ -160,6 +161,80 @@ impl Plugin for AnimationSchedulePlugin {
         app.add_systems(
             FixedPostUpdate,
             advance_animation_on_session_tick.after(PhysicsSystems::StepSimulation),
+        );
+    }
+}
+
+/// The session driver's production writer: commits the physics adapter's
+/// fixed-tick count into [`CommittedSessionTick`].
+///
+/// [`CommittedSessionTick`] is a **stamp**: something outside the animation
+/// path has to write the session tick it is simulating, and nothing did. The
+/// world's authoritative count of committed fixed ticks is the F23-A physics
+/// adapter's [`PhysicsTickLedger`] — the F23-C [`PhysicsSession`] pumps the
+/// world and that ledger counts every fixed step it ran — so this system reads
+/// that ledger and nothing else. It is not a second clock authority: it never
+/// reads `Time<Fixed>`, never advances time, and copies a counter the session
+/// already owns.
+///
+/// A world with **no** [`PhysicsTickLedger`] commits nothing, exactly like a
+/// world with no session: the schedule then advances nothing, which is the
+/// "no session, no animation" rule `play_animation` and
+/// [`advance_animation_on_session_tick`] already enforce. A world that has the
+/// ledger but never steps it also commits nothing new.
+///
+/// Installed by [`AnimationPlugin`], ordered after
+/// [`PhysicsSystems::StepSimulation`](avian3d::prelude::PhysicsSystems) and
+/// before [`advance_animation_on_session_tick`], so the advance in the same
+/// fixed tick reads the tick that step committed.
+///
+/// [`PhysicsSession`]: crate::physics::PhysicsSession
+pub fn commit_session_tick(world: &mut World) {
+    let Some(ticks) = world
+        .get_resource::<PhysicsTickLedger>()
+        .map(|ledger| ledger.ticks)
+    else {
+        // No physics session: no committed tick, no animation.
+        return;
+    };
+    match world.get_resource_mut::<CommittedSessionTick>() {
+        Some(mut committed) => committed.0 = Tick(ticks),
+        None => {
+            world.insert_resource(CommittedSessionTick::new(Tick(ticks)));
+        }
+    }
+}
+
+/// The one-stop production animation plugin: the session tick driver plus the
+/// fixed-tick schedule.
+///
+/// Add it once to a world that runs a session's fixed loop — the production
+/// [`PhysicsSession`](crate::physics::PhysicsSession) composes one through its
+/// [`configure`](crate::physics::PhysicsSessionBuilder::configure) seam, the
+/// same seam [`FlightForcesPlugin`](crate::physics::FlightForcesPlugin) uses.
+/// It installs:
+///
+/// * [`commit_session_tick`] in `FixedPostUpdate`, after the physics step and
+///   before the advance, so the session's committed tick reaches
+///   [`CommittedSessionTick`]; and
+/// * [`AnimationSchedulePlugin`], the fixed-tick advance itself.
+///
+/// Add it once: adding it twice (or adding [`AnimationSchedulePlugin`]
+/// alongside it) would install the advance twice. A caller that wants only the
+/// schedule, without the driver, keeps using [`AnimationSchedulePlugin`]
+/// directly — but then nothing commits a tick and the schedule advances
+/// nothing, which is the honest state of a world with no session driver.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AnimationPlugin;
+
+impl Plugin for AnimationPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(AnimationSchedulePlugin);
+        app.add_systems(
+            FixedPostUpdate,
+            commit_session_tick
+                .after(PhysicsSystems::StepSimulation)
+                .before(advance_animation_on_session_tick),
         );
     }
 }
