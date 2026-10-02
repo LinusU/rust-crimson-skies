@@ -18,7 +18,7 @@ use cs_content::cinematics::{
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
 use cs_types::space::{Meters, Radians};
 
-use crate::common::{claim, known};
+use crate::common::{claim, known, known_look_limits, placement};
 
 /// A designed projection policy, with the fields a caller wants to corrupt
 /// overridden.
@@ -38,7 +38,14 @@ fn mode(
     projection: ProjectionPolicy,
     magnification: Magnification,
 ) -> Result<DeclaredCameraMode, CameraModeError> {
-    DeclaredCameraMode::try_new(kind, projection, known(magnification), known(false))
+    DeclaredCameraMode::try_new(
+        kind,
+        projection,
+        known(magnification),
+        known(false),
+        placement(kind),
+        known_look_limits(),
+    )
 }
 
 fn owner_subject() -> ContentId {

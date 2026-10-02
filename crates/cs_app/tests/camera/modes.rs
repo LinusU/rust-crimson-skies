@@ -15,7 +15,7 @@ use cs_content::cameras::{
 use cs_types::content::{ContentId, ContentKind, Provenance, Resolved};
 use cs_types::space::{Meters, Radians};
 
-use crate::common::{assert_close, claim, known};
+use crate::common::{assert_close, claim, known, known_look_limits, placement};
 
 fn projection(fov: f64) -> ProjectionPolicy {
     ProjectionPolicy {
@@ -69,6 +69,8 @@ fn accept_f21_a_unknown_mode_fields_refuse_to_lower() {
         projection(1.0),
         Resolved::unknown(claim(), "the original magnification is unmeasured").expect("reason"),
         known(true),
+        placement(CameraModeKind::Spyglass),
+        known_look_limits(),
     )
     .expect("unknown values are valid declared content");
     assert_eq!(
@@ -86,6 +88,8 @@ fn accept_f21_a_unknown_mode_fields_refuse_to_lower() {
         projection(1.0),
         known(Magnification::ONE),
         Resolved::unknown(claim(), "no original tracking behavior was read").expect("reason"),
+        placement(CameraModeKind::Cockpit),
+        known_look_limits(),
     )
     .expect("unknown values are valid declared content");
     assert_eq!(
@@ -108,6 +112,8 @@ fn accept_f21_a_unknown_mode_fields_refuse_to_lower() {
         unknown_fov_policy,
         known(Magnification::ONE),
         known(false),
+        placement(CameraModeKind::Cockpit),
+        known_look_limits(),
     )
     .expect("unknown values are valid declared content");
     assert_eq!(
