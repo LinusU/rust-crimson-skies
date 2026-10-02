@@ -215,12 +215,65 @@ pub enum SystemKind {
 }
 
 impl SystemKind {
+    /// Every system kind, in a stable order.
+    pub const ALL: &'static [SystemKind] = &[Self::Propulsion, Self::Weapon];
+
     /// The stable label used in reports.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Propulsion => "propulsion",
             Self::Weapon => "weapon",
         }
+    }
+}
+
+/// The aggregated observable state of one [`SystemKind`] on one actor (F29-B).
+///
+/// The resolver emits a [`SystemDisabled`](crate::damage::DamageEventKind::SystemDisabled)
+/// event when a part's destruction takes its declared system down, but an event
+/// is transient: a consumer that gates firing or thrust has to ask what is true
+/// *now*, not replay the session's event history. This is that answer, derived
+/// from the same part states the events come from.
+///
+/// Aggregation is deliberately the union of the declaring parts, never a
+/// per-part interpretation: with the designed vocabulary a destroyed carrier
+/// disables the system it carries (the `SystemDisabled` event exactly), so
+/// [`Disabled`](Self::Disabled) means *at least one* part declaring this system
+/// is destroyed. A game that weights several engines of one system is a
+/// distinct authored rule and is not invented here.
+///
+/// **Designed vocabulary.** Which systems the original attached to which parts,
+/// and whether it aggregated them this way, is unrecovered (F29 "Research
+/// boundary"); see
+/// `docs/findings/2026-10-02-f29-b-zones-armor-and-system-disablement.md`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SystemState {
+    /// Every part declaring the system is intact or damaged; the capability
+    /// is available.
+    Enabled,
+    /// At least one part declaring the system is destroyed; the capability is
+    /// down, exactly as the emitted `SystemDisabled` recorded it.
+    Disabled,
+    /// No declaring part is destroyed, but at least one declares a pool whose
+    /// integrity is `Resolved::Unknown`: no state can be asserted, so none is
+    /// guessed.
+    Unknown,
+}
+
+impl SystemState {
+    /// The stable label used in reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl fmt::Display for SystemState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
     }
 }
 

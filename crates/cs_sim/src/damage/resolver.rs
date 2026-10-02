@@ -19,6 +19,14 @@
 //!   targets and delayed callbacks are always generation-qualified"). A
 //!   restarted session is a *new* resolver — per-part damage, lifecycle
 //!   records and deferred events never carry over (non-negotiable 5).
+//! * **Armor routing and system state (F29-B).** An [`DamageChannel::Armor`]
+//!   hit on a guarded node enters through its armor zone; the zone's own
+//!   `overflow` is honored when declared, otherwise the remainder continues
+//!   into the node the shot named, so a guard never silently swallows
+//!   overkill and one zone can protect several parts. [`SystemState`] is the
+//!   aggregated, queryable enablement of each declared [`SystemKind`],
+//!   derived from the carriers' part states because a
+//!   [`DamageEventKind::SystemDisabled`] event is transient.
 //! * **Simultaneous lethals.** Each hit applies in order; when an actor's
 //!   first lethal node depletes, the resolution remembers the blow and
 //!   every attacker's contribution. After the batch, each newly destroyed
@@ -48,7 +56,7 @@ use super::events::{
     ActorId, AttributionRule, DamageEvent, DamageEventId, DamageEventKind, HitEvent, HitEventId,
     LifecycleKind, RefusalReason,
 };
-use super::graph::{DamageChannel, DamageGraph, DamageNodeKey, PartState};
+use super::graph::{DamageChannel, DamageGraph, DamageNodeKey, PartState, SystemKind, SystemState};
 
 /// The declared rules one actor's resolution runs under.
 ///
@@ -203,6 +211,37 @@ impl ActorDamage {
             }
         }
     }
+
+    /// The aggregated state of `system`, or `None` when no node of the graph
+    /// declares it.
+    ///
+    /// A destroyed declaring node makes the system `Disabled` — the same
+    /// transition whose `SystemDisabled` event the resolver emitted — an
+    /// unresolved declaring node makes it `Unknown` when nothing declaring it
+    /// is destroyed, and otherwise the system is `Enabled`. See
+    /// [`SystemState`].
+    fn system_state(&self, system: SystemKind) -> Option<SystemState> {
+        let mut declared = false;
+        let mut unresolved = false;
+        for node in self.graph.nodes() {
+            if node.disables() != Some(system) {
+                continue;
+            }
+            declared = true;
+            match self.part_state(node.key()) {
+                PartState::Destroyed => return Some(SystemState::Disabled),
+                PartState::Unknown => unresolved = true,
+                PartState::Intact | PartState::Damaged => {}
+            }
+        }
+        if !declared {
+            None
+        } else if unresolved {
+            Some(SystemState::Unknown)
+        } else {
+            Some(SystemState::Enabled)
+        }
+    }
 }
 
 /// What one [`DamageResolver::resolve`] produced: the tick's ordered
@@ -342,6 +381,41 @@ impl DamageResolver {
         self.actors
             .get(actor)
             .is_some_and(|state| state.lifecycle.contains(&LifecycleKind::Destroyed))
+    }
+
+    /// The aggregated current state of one [`SystemKind`] on `actor`, derived
+    /// from its parts' [`PartState`]s — the state a firing or thrust gate
+    /// reads, as opposed to replaying the transient
+    /// [`DamageEventKind::SystemDisabled`] events.
+    ///
+    /// A destroyed part that declares the system makes it
+    /// [`SystemState::Disabled`]; an unresolved declaring pool makes it
+    /// [`SystemState::Unknown`] when nothing declaring it is destroyed; and a
+    /// system every declaring part still carries is [`SystemState::Enabled`].
+    ///
+    /// `None` when the actor is unknown or no node of its graph declares the
+    /// system — "this actor has no such system" is not the same as "the system
+    /// is down".
+    #[must_use]
+    pub fn system_state(&self, actor: &ActorId, system: SystemKind) -> Option<SystemState> {
+        self.actors
+            .get(actor)
+            .and_then(|state| state.system_state(system))
+    }
+
+    /// The systems currently [`Disabled`](SystemState::Disabled) on `actor`,
+    /// in stable [`SystemKind::ALL`] order; empty when none are down, `None`
+    /// when the actor is unknown.
+    #[must_use]
+    pub fn disabled_systems(&self, actor: &ActorId) -> Option<BTreeSet<SystemKind>> {
+        let state = self.actors.get(actor)?;
+        Some(
+            SystemKind::ALL
+                .iter()
+                .copied()
+                .filter(|system| state.system_state(*system) == Some(SystemState::Disabled))
+                .collect(),
+        )
     }
 
     /// Records a non-damage lifecycle transition — bailout, capture,
@@ -537,7 +611,10 @@ impl DamageResolver {
 
         // Channel routing picks the entry node: an `Armor`-channel hit on a
         // guarded node enters through its armor guard; every other hit
-        // enters at the named node.
+        // enters at the named node. When the shot entered through a guard,
+        // the node the shot named becomes the chain's fallback: a guard that
+        // declares no `overflow` of its own must not swallow the shot's
+        // remainder — it continues into the part the guard protects.
         let Some(named) = state.graph.node(&hit.node) else {
             kinds.push(DamageEventKind::HitRefused {
                 hit: hit.id,
@@ -545,10 +622,19 @@ impl DamageResolver {
             });
             return;
         };
-        let mut current = match hit.channel {
-            DamageChannel::Armor => named.guarded_by().unwrap_or(&hit.node).clone(),
-            DamageChannel::Internal => hit.node.clone(),
+        let guarded = match hit.channel {
+            DamageChannel::Armor => named.guarded_by().is_some(),
+            DamageChannel::Internal => false,
         };
+        let mut current = if guarded {
+            named
+                .guarded_by()
+                .expect("the guarded flag is set from this edge")
+                .clone()
+        } else {
+            hit.node.clone()
+        };
+        let mut fallback = guarded.then(|| hit.node.clone());
 
         let mut remaining_damage = hit.damage;
         let mut total_applied = 0.0;
@@ -611,7 +697,11 @@ impl DamageResolver {
             if remaining_damage <= 0.0 {
                 break;
             }
-            let Some(next) = overflow else {
+            // The guard's own `overflow` is the authored edge when it has
+            // one; otherwise the shot's remainder continues into the node
+            // the shot named — a guard never swallows overkill.
+            let fallback_next = fallback.take();
+            let Some(next) = overflow.or(fallback_next) else {
                 break;
             };
             current = next;
