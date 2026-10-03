@@ -96,15 +96,71 @@
 //!   reported a spawn-tick crossing at all, and with what delay, is **unknown**
 //!   and is left to the calibration stage (F26). What is measured here is this
 //!   project on the pinned pair (`bevy 0.19.1` / `avian3d 0.7.0`).
+//!
+//! # F39-C: the mission-program wiring
+//!
+//! The second half of this module is the F39-C integration stage
+//! (`specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`,
+//! stage `### F39-C`; shared contract `docs/contracts/SCRIPT-MISSION.md`):
+//!
+//! * [`lower_program`] is the conversion boundary: a validated
+//!   [`cs_content::objectives::DeclaredObjectiveProgram`] becomes the
+//!   [`LoweredObjectives`] a session launches — every runtime declaration
+//!   (`ObjectiveSpec`, `CountCondition`, `MissionTimer`, `SweptTrigger`) built
+//!   field-wise from the declared record, every `Resolved::Unknown` refused by
+//!   name, a non-gameplay timer domain refused by name, and the spawn-group
+//!   symbols bound to the subject content a wave instantiates.
+//! * [`ObjectiveSession`] is the wired producer→runtime→consumer path of one
+//!   session. `step` hands the runtime one [`TickInput`] — the whole producer
+//!   surface, filled by the mission host with the tick's lifecycle
+//!   transitions, real movement segments, signals and declared requests — and
+//!   dispatches the ordered `ObjectiveEvent` stream to the consumers:
+//!   [`ObjectiveDisplay`] (the objective rows the UI shows), the pending
+//!   [`EmittedCue`] queue the dialogue consumer drains exactly once, the
+//!   [`SpawnDirective`]s a world instantiates (each naming its bound subject),
+//!   the settled outcome, and a [`SessionRefusal`] record naming every refusal
+//!   the stream reported, so error propagation is a queryable fact rather than
+//!   a line buried in the trace.
+//! * [`ObjectiveSession::retry`] is teardown/retry: it reports what the old
+//!   session still owns (live spawned actors to despawn, undrained cues, armed
+//!   deadlines, a settled outcome) and rebuilds a fresh runtime for the new
+//!   [`SessionGeneration`] from the same lowered program — so no old timer,
+//!   actor, counter, ledger key or cue survives (F39 AC03).
+//!
+//! Mid-mission save is **declared unsupported** for this runtime: a snapshot of
+//! `ObjectiveRuntime` would need its own format, and the contract permits
+//! declaring that unsupported rather than inventing one. Retry is the session
+//! lifecycle this stage wires.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use avian3d::prelude::PhysicsSystems;
 use bevy::{
     ecs::schedule::IntoScheduleConfigs,
     prelude::{App, Entity, FixedPostUpdate, Plugin, Res, ResMut, Resource},
 };
-use cs_sim::objectives::trigger::CrossingKind;
+use cs_content::objectives::{
+    DeclaredCompletion, DeclaredCountKind, DeclaredCountReaction, DeclaredObjectiveProgram,
+    DeclaredObjectiveState, DeclaredPrecedence, DeclaredRevealRule, DeclaredTerminalOutcome,
+    DeclaredTimeDomain, DeclaredTimer, DeclaredTimerAction, DeclaredTimerStart, DeclaredVolume,
+    ProgramActor, ProgramSymbol,
+};
+use cs_script::ir::{ActorId, SymbolId};
+use cs_script::runtime::SessionGeneration;
+use cs_sim::objectives::counters::CountKind;
+use cs_sim::objectives::runtime::{
+    CountCondition, CountReaction, ObjectiveCompletion, ObjectiveEventKind, ObjectiveRuntime,
+    ObjectiveSpec, ObjectiveTick, RevealRule, RuntimeError, RuntimeLimits, StopReason, TickInput,
+};
+use cs_sim::objectives::spawn::IdempotencyKey;
+use cs_sim::objectives::state::ObjectiveState;
+use cs_sim::objectives::terminal::{TerminalOutcome, TerminalPrecedence};
+use cs_sim::objectives::timer::{MissionTimer, TimerAction, TimerError, TimerStart};
+use cs_sim::objectives::trigger::{CrossingKind, SweptTrigger, TriggerError, Volume};
+use cs_sim::time::ClockPolicy;
+use cs_types::Tick;
+use cs_types::content::{ContentId, Resolved};
+use cs_types::evidence::ClaimId;
 
 use crate::physics::{PhysicsTickLedger, SpawnPreflightLog};
 
@@ -363,5 +419,996 @@ impl Plugin for SpawnTickTriggerPlugin {
             FixedPostUpdate,
             deliver_spawn_tick_crossings.after(PhysicsSystems::StepSimulation),
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F39-C: the mission-program wiring
+// ---------------------------------------------------------------------------
+//
+// The three pieces below are the whole stage:
+//
+// 1. [`lower_program`] — the declared→lowered boundary. A
+//    `cs_content::objectives::DeclaredObjectiveProgram` (its own vocabulary:
+//    `ProgramSymbol`, `ProgramActor`, declared enums) becomes the
+//    [`LoweredObjectives`] a session launches. `cs_content` cannot depend on
+//    `cs_sim`/`cs_script`, so the boundary maps field-wise: `ProgramSymbol(u)`
+//    → `SymbolId(u)`, `ProgramActor(u)` → `ActorId(u)`, declared variants →
+//    runtime variants. What lowering refuses is named:
+//    [`ProgramLowerError::UnknownPrecedence`], [`ProgramLowerError::NonGameplayDomain`]
+//    and the constructor failures of `CountCondition::new`, `MissionTimer::new`
+//    and `SweptTrigger::new` — each reported with the declared symbol.
+// 2. [`ObjectiveSession`] — the one place a session owns the runtime and every
+//    per-session consumer state: the objective display the UI reads, the
+//    pending cue queue the dialogue consumer drains once, the live wave
+//    registry a teardown despawns, and the outcome once settled.
+// 3. [`ObjectiveSession::retry`] — the teardown/retry contract the acceptance
+//    case is about. It answers "what did the old session still own" as data
+//    ([`TeardownReport`]) *before* rebuilding, so the world despawns the old
+//    wave's actors — which the fresh session's instance counter will reuse —
+//    instead of meeting them twice.
+
+/// A spawn group's lowered binding: what one instance of a wave is built
+/// from. The group symbol is the program's identity; the subject is the
+/// content the world instantiates for each admitted instance id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoweredSpawnGroup {
+    /// The group's program symbol.
+    pub group: SymbolId,
+    /// The content one instance is built from.
+    pub subject: ContentId,
+}
+
+/// What [`lower_program`] produces: the runtime declarations plus the
+/// spawn-group content bindings, ready for [`ObjectiveSession::launch`].
+///
+/// The lists keep authored order, which is also registration order; identity
+/// is always the symbol, never the position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoweredObjectives {
+    /// The declared terminal precedence.
+    pub precedence: TerminalPrecedence,
+    /// The bounds the session's runtime runs under. `RuntimeLimits::default()`
+    /// unless overridden through [`LoweredObjectives::with_limits`].
+    pub limits: RuntimeLimits,
+    /// The lowered objectives, in authored order.
+    pub objectives: Vec<ObjectiveSpec>,
+    /// The lowered count conditions with their reactions, in authored order.
+    pub conditions: Vec<(CountCondition, CountReaction)>,
+    /// The lowered timers, in authored order.
+    pub timers: Vec<MissionTimer>,
+    /// The lowered swept triggers, in authored order.
+    pub triggers: Vec<SweptTrigger>,
+    /// The lowered spawn groups, keyed by group symbol.
+    pub spawn_groups: BTreeMap<SymbolId, LoweredSpawnGroup>,
+}
+
+impl LoweredObjectives {
+    /// Overrides the runtime bounds; [`RuntimeLimits::default`] otherwise.
+    #[must_use]
+    pub fn with_limits(mut self, limits: RuntimeLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+}
+
+/// Why a declared objective program could not be lowered.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProgramLowerError {
+    /// The declared precedence is `Resolved::Unknown`: the original rule is
+    /// unmeasured and a session must not pick one in the record's place.
+    UnknownPrecedence {
+        /// The claim the unknown is recorded under.
+        claim_id: ClaimId,
+        /// Why the precedence is unknown.
+        reason: String,
+    },
+    /// A timer declared a domain that is not gameplay (`UiWall` or
+    /// `MediaUnscaled`): a menu frame or a cutscene would advance a mission
+    /// deadline, which is not a mission timer.
+    NonGameplayDomain {
+        /// The declared timer.
+        timer: ProgramSymbol,
+        /// The domain it declared.
+        domain: DeclaredTimeDomain,
+    },
+    /// `MissionTimer::new` refused the lowered declaration.
+    Timer {
+        /// The declared timer.
+        timer: ProgramSymbol,
+        /// The constructor's refusal.
+        error: TimerError,
+    },
+    /// `SweptTrigger::new` refused the lowered declaration.
+    Trigger {
+        /// The declared trigger.
+        trigger: ProgramSymbol,
+        /// The constructor's refusal.
+        error: TriggerError,
+    },
+    /// `CountCondition::new` refused the lowered declaration.
+    Condition {
+        /// The declared condition.
+        condition: ProgramSymbol,
+        /// The constructor's refusal.
+        error: RuntimeError,
+    },
+}
+
+impl std::fmt::Display for ProgramLowerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownPrecedence { reason, .. } => {
+                write!(f, "the terminal precedence is unknown: {reason}")
+            }
+            Self::NonGameplayDomain { timer, domain } => write!(
+                f,
+                "timer {timer} declares a non-gameplay domain ({domain:?})"
+            ),
+            Self::Timer { timer, error } => {
+                write!(f, "timer {timer} cannot be declared: {error}")
+            }
+            Self::Trigger { trigger, error } => {
+                write!(f, "trigger {trigger} cannot be declared: {error}")
+            }
+            Self::Condition { condition, error } => {
+                write!(f, "count condition {condition} cannot be declared: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProgramLowerError {}
+
+const fn lower_symbol(symbol: ProgramSymbol) -> SymbolId {
+    SymbolId(symbol.0)
+}
+
+const fn lower_actor(actor: ProgramActor) -> ActorId {
+    ActorId(actor.0)
+}
+
+const fn lower_state(state: DeclaredObjectiveState) -> ObjectiveState {
+    match state {
+        DeclaredObjectiveState::Hidden => ObjectiveState::Hidden,
+        DeclaredObjectiveState::Pending => ObjectiveState::Pending,
+        DeclaredObjectiveState::Active => ObjectiveState::Active,
+        DeclaredObjectiveState::Succeeded => ObjectiveState::Succeeded,
+        DeclaredObjectiveState::Failed => ObjectiveState::Failed,
+        DeclaredObjectiveState::Optional => ObjectiveState::Optional,
+        DeclaredObjectiveState::Superseded => ObjectiveState::Superseded,
+    }
+}
+
+const fn lower_outcome(outcome: DeclaredTerminalOutcome) -> TerminalOutcome {
+    match outcome {
+        DeclaredTerminalOutcome::Success => TerminalOutcome::Success,
+        DeclaredTerminalOutcome::Extraction => TerminalOutcome::Extraction,
+        DeclaredTerminalOutcome::Failure => TerminalOutcome::Failure,
+    }
+}
+
+const fn lower_precedence(precedence: DeclaredPrecedence) -> TerminalPrecedence {
+    match precedence {
+        DeclaredPrecedence::SyntheticConservative => TerminalPrecedence::SyntheticConservative,
+    }
+}
+
+const fn lower_reveal(reveal: DeclaredRevealRule) -> RevealRule {
+    match reveal {
+        DeclaredRevealRule::Immediate => RevealRule::Immediate,
+        DeclaredRevealRule::OnCondition(condition) => RevealRule::OnCondition {
+            condition: lower_symbol(condition),
+        },
+        DeclaredRevealRule::OnTimer(timer) => RevealRule::OnTimer {
+            timer: lower_symbol(timer),
+        },
+        DeclaredRevealRule::OnSignal(signal) => RevealRule::OnSignal {
+            signal: lower_symbol(signal),
+        },
+        DeclaredRevealRule::OnObjectiveState { objective, state } => RevealRule::OnObjectiveState {
+            objective: lower_symbol(objective),
+            state: lower_state(state),
+        },
+    }
+}
+
+const fn lower_completion(completion: DeclaredCompletion) -> ObjectiveCompletion {
+    match completion {
+        DeclaredCompletion::Continue => ObjectiveCompletion::Continue,
+        DeclaredCompletion::Requests(outcome) => {
+            ObjectiveCompletion::Requests(lower_outcome(outcome))
+        }
+    }
+}
+
+const fn lower_kind(kind: DeclaredCountKind) -> CountKind {
+    match kind {
+        DeclaredCountKind::Destroyed => CountKind::Destroyed,
+        DeclaredCountKind::Disabled => CountKind::Disabled,
+        DeclaredCountKind::Captured => CountKind::Captured,
+        DeclaredCountKind::Escaped => CountKind::Escaped,
+        DeclaredCountKind::Despawned => CountKind::Despawned,
+    }
+}
+
+const fn lower_reaction(reaction: DeclaredCountReaction) -> CountReaction {
+    match reaction {
+        DeclaredCountReaction::ReportOnly => CountReaction::ReportOnly,
+        DeclaredCountReaction::SetObjectiveState { objective, state } => {
+            CountReaction::SetObjectiveState {
+                objective: lower_symbol(objective),
+                state: lower_state(state),
+            }
+        }
+        DeclaredCountReaction::Finish(outcome) => CountReaction::Finish(lower_outcome(outcome)),
+    }
+}
+
+const fn lower_start(start: DeclaredTimerStart) -> TimerStart {
+    match start {
+        DeclaredTimerStart::OnArm => TimerStart::OnArm,
+        DeclaredTimerStart::AtTick(tick) => TimerStart::AtTick(Tick(tick)),
+        DeclaredTimerStart::OnSignal(signal) => TimerStart::OnSignal(lower_symbol(signal)),
+        DeclaredTimerStart::OnObjectiveState { objective, state } => TimerStart::OnObjectiveState {
+            objective: lower_symbol(objective),
+            state: lower_state(state),
+        },
+        DeclaredTimerStart::Never => TimerStart::Never,
+    }
+}
+
+/// Maps the declared domain onto the session's clock policy for that domain.
+///
+/// A deadline's pause and speed-up rules are *the domain's*, not a second
+/// declaration: `Simulation` is the single-player simulation clock and
+/// `AuthoritativeGameplay` the authoritative one — both freeze on pause. A
+/// `UiWall`/`MediaUnscaled` deadline is refused, because a clock that keeps
+/// running through a pause is not a mission timer.
+fn lower_policy(timer: &DeclaredTimer) -> Result<ClockPolicy, ProgramLowerError> {
+    match timer.domain {
+        DeclaredTimeDomain::Simulation => Ok(ClockPolicy::single_player_simulation()),
+        DeclaredTimeDomain::AuthoritativeGameplay => Ok(ClockPolicy::authoritative_gameplay()),
+        domain => Err(ProgramLowerError::NonGameplayDomain {
+            timer: timer.symbol,
+            domain,
+        }),
+    }
+}
+
+fn lower_action(action: &DeclaredTimerAction) -> TimerAction {
+    match action {
+        DeclaredTimerAction::SetObjectiveState { objective, state } => {
+            TimerAction::SetObjectiveState {
+                objective: lower_symbol(*objective),
+                state: lower_state(*state),
+            }
+        }
+        DeclaredTimerAction::Signal(signal) => TimerAction::Signal(lower_symbol(*signal)),
+        DeclaredTimerAction::SpawnGroup { key, group, count } => TimerAction::SpawnGroup {
+            key: IdempotencyKey(key.clone()),
+            group: lower_symbol(*group),
+            count: *count,
+        },
+        DeclaredTimerAction::Cue { key, dialogue } => TimerAction::Cue {
+            key: IdempotencyKey(key.clone()),
+            dialogue: dialogue.clone(),
+        },
+        DeclaredTimerAction::GrantOptionalReward { reward } => TimerAction::GrantOptionalReward {
+            reward: reward.clone(),
+        },
+        DeclaredTimerAction::Finish(outcome) => TimerAction::Finish(lower_outcome(*outcome)),
+    }
+}
+
+const fn lower_volume(volume: DeclaredVolume) -> Volume {
+    match volume {
+        DeclaredVolume::Sphere { center_m, radius_m } => Volume::Sphere { center_m, radius_m },
+        DeclaredVolume::Aabb { min_m, max_m } => Volume::Aabb { min_m, max_m },
+    }
+}
+
+/// Lowers a validated declared objective program into the runtime records a
+/// session launches from.
+///
+/// Every `Resolved::Unknown` refuses by name rather than becoming a default,
+/// and every constructor refusal of the runtime layer is reported with the
+/// declared symbol that caused it — the same boundary discipline as
+/// [`crate::roster::lower_roster`].
+///
+/// # Errors
+///
+/// [`ProgramLowerError`] naming the first declaration that could not lower.
+pub fn lower_program(
+    declared: &DeclaredObjectiveProgram,
+) -> Result<LoweredObjectives, ProgramLowerError> {
+    let precedence = match declared.precedence() {
+        Resolved::Known(known) => lower_precedence(known.value),
+        Resolved::Unknown { claim_id, reason } => {
+            return Err(ProgramLowerError::UnknownPrecedence {
+                claim_id: claim_id.clone(),
+                reason: reason.clone(),
+            });
+        }
+    };
+
+    let objectives = declared
+        .objectives()
+        .iter()
+        .map(|objective| ObjectiveSpec {
+            id: lower_symbol(objective.symbol),
+            content: objective.content.clone(),
+            initial: lower_state(objective.initial),
+            reveal: lower_reveal(objective.reveal),
+            on_complete: lower_completion(objective.on_complete),
+        })
+        .collect();
+
+    let mut conditions = Vec::with_capacity(declared.conditions().len());
+    for declared_condition in declared.conditions() {
+        let condition = CountCondition::new(
+            lower_symbol(declared_condition.symbol),
+            lower_kind(declared_condition.kind),
+            declared_condition
+                .roster
+                .iter()
+                .map(|actor| lower_actor(*actor)),
+            declared_condition.required,
+        )
+        .map_err(|error| ProgramLowerError::Condition {
+            condition: declared_condition.symbol,
+            error,
+        })?;
+        conditions.push((condition, lower_reaction(declared_condition.reaction)));
+    }
+
+    let mut timers = Vec::with_capacity(declared.timers().len());
+    for declared_timer in declared.timers() {
+        let timer = MissionTimer::new(
+            lower_symbol(declared_timer.symbol),
+            lower_policy(declared_timer)?,
+            lower_start(declared_timer.start),
+            declared_timer.period_ticks,
+            lower_action(&declared_timer.action),
+        )
+        .map_err(|error| ProgramLowerError::Timer {
+            timer: declared_timer.symbol,
+            error,
+        })?;
+        timers.push(timer);
+    }
+
+    let mut triggers = Vec::with_capacity(declared.triggers().len());
+    for declared_trigger in declared.triggers() {
+        let trigger = SweptTrigger::new(
+            lower_symbol(declared_trigger.symbol),
+            lower_actor(declared_trigger.actor),
+            lower_volume(declared_trigger.volume),
+        )
+        .map_err(|error| ProgramLowerError::Trigger {
+            trigger: declared_trigger.symbol,
+            error,
+        })?;
+        triggers.push(trigger);
+    }
+
+    let spawn_groups = declared
+        .spawn_groups()
+        .iter()
+        .map(|group| {
+            (
+                lower_symbol(group.symbol),
+                LoweredSpawnGroup {
+                    group: lower_symbol(group.symbol),
+                    subject: group.subject.clone(),
+                },
+            )
+        })
+        .collect();
+
+    Ok(LoweredObjectives {
+        precedence,
+        limits: RuntimeLimits::default(),
+        objectives,
+        conditions,
+        timers,
+        triggers,
+        spawn_groups,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The session: producer → runtime → consumers
+// ---------------------------------------------------------------------------
+
+/// Why a session could not launch (or a retry could not rebuild).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionLaunchError {
+    /// A lowered declaration the runtime refused at registration — a defect
+    /// in the lowered program, named by the symbol that failed.
+    Declaration {
+        /// The declaration's symbol.
+        declaration: SymbolId,
+        /// The runtime's refusal.
+        error: RuntimeError,
+    },
+}
+
+impl std::fmt::Display for SessionLaunchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Declaration { declaration, error } => {
+                write!(f, "declaration {declaration:?} was refused: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SessionLaunchError {}
+
+/// A wave the runtime admitted, for the world to instantiate.
+///
+/// `subject` is the content the group's binding names — the part of the
+/// directive the event stream alone does not carry. `session` travels with
+/// the directive so a stale wave can never be confused with the current
+/// generation's, and `instances` are the stable per-session ids the runtime
+/// allocated: the world spawns exactly these, never its own count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpawnDirective {
+    /// The session that admitted the wave.
+    pub session: SessionGeneration,
+    /// The tick it was admitted on.
+    pub tick: Tick,
+    /// The idempotency key the wave was admitted under.
+    pub key: IdempotencyKey,
+    /// The spawn group's symbol.
+    pub group: SymbolId,
+    /// The content each instance is built from.
+    pub subject: ContentId,
+    /// The session-stable instance ids to instantiate.
+    pub instances: Vec<ActorId>,
+}
+
+/// One dialogue cue waiting to be played once.
+///
+/// The queue is the dialogue consumer's input: [`ObjectiveSession::drain_cues`]
+/// hands over every pending cue exactly once, and a retry drops what was
+/// never played into the [`TeardownReport`]. `session` travels with the cue so
+/// a stale one can never be confused with the current generation's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmittedCue {
+    /// The session that emitted the cue.
+    pub session: SessionGeneration,
+    /// The tick it was emitted on.
+    pub tick: Tick,
+    /// The idempotency key the cue was admitted under.
+    pub key: IdempotencyKey,
+    /// The dialogue content to play.
+    pub dialogue: ContentId,
+}
+
+/// A refusal the event stream reported, lifted into one typed list.
+///
+/// The runtime never drops a refused request silently — this is where those
+/// reports land for a consumer that does not want to re-walk the stream.
+/// Nothing here is a mission failure; each entry names what was asked and why
+/// nothing was applied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionRefusal {
+    /// A declared objective state change was refused; the objective kept its
+    /// state.
+    ObjectiveChange {
+        /// The objective.
+        objective: SymbolId,
+        /// The state it keeps.
+        from: ObjectiveState,
+        /// The state that was refused.
+        to: ObjectiveState,
+    },
+    /// A timer request or start was refused; the timer kept its state.
+    Timer {
+        /// The timer.
+        timer: SymbolId,
+        /// Why it was refused.
+        reason: TimerError,
+    },
+    /// A request named a declaration the runtime does not have.
+    Request {
+        /// The named declaration.
+        request: SymbolId,
+        /// Why it was refused.
+        reason: RuntimeError,
+    },
+    /// A repeated spawn key was refused; `instances` are the ids the first
+    /// admission allocated, so a wave is never spawned twice under one key.
+    Spawn {
+        /// The idempotency key.
+        key: IdempotencyKey,
+        /// The group.
+        group: SymbolId,
+        /// The ids the first admission took.
+        instances: Vec<ActorId>,
+    },
+    /// A spawn admission whose group symbol is bound to no content — the wave
+    /// has ids and nothing to build them from. Unreachable from a lowered
+    /// program (the schema closes the reference), reported anyway.
+    UnboundSpawn {
+        /// The group.
+        group: SymbolId,
+        /// The ids the admission took.
+        instances: Vec<ActorId>,
+    },
+    /// A repeated cue key was refused; the dialogue is not repeated.
+    Cue {
+        /// The idempotency key.
+        key: IdempotencyKey,
+        /// The dialogue that was not played.
+        dialogue: ContentId,
+    },
+}
+
+/// One row of the objective display the UI reads.
+///
+/// The row is a fact about the *stream*, not about the runtime: `revealed` is
+/// set by the reveal event, `state` by change events, so a display driven by
+/// this model can only show what the ordered stream reported — F39
+/// non-negotiable behavior 5 on the consumer side.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayedObjective {
+    /// The objective's program symbol.
+    pub symbol: SymbolId,
+    /// The content id it was authored as.
+    pub content: ContentId,
+    /// Its state as last reported.
+    pub state: ObjectiveState,
+    /// Whether its reveal rule has fired.
+    pub revealed: bool,
+}
+
+/// The objective display the UI consumes: one row per declared objective, in
+/// authored order, updated only from the ordered event stream.
+///
+/// The model is **event-driven**, not runtime-queried: [`visible`](Self::visible)
+/// filters `revealed && state.is_visible()`, and both fields only ever move
+/// when an `ObjectiveRevealed` or `ObjectiveChanged` event reports them. A
+/// refused change therefore moves nothing on the display either — the same
+/// fact the runtime reported, seen by the player.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ObjectiveDisplay {
+    rows: Vec<DisplayedObjective>,
+}
+
+impl ObjectiveDisplay {
+    /// Seeds the display from the declared specs at launch (or retry): an
+    /// `Immediate` objective is born revealed — its registration emits no
+    /// event — every other row waits for its rule.
+    fn seed(objectives: &[ObjectiveSpec]) -> Self {
+        Self {
+            rows: objectives
+                .iter()
+                .map(|spec| DisplayedObjective {
+                    symbol: spec.id,
+                    content: spec.content.clone(),
+                    state: spec.initial,
+                    revealed: spec.reveal == RevealRule::Immediate,
+                })
+                .collect(),
+        }
+    }
+
+    /// Applies one stream event. Returns whether any row moved.
+    fn apply(&mut self, event: &ObjectiveEventKind) -> bool {
+        match event {
+            ObjectiveEventKind::ObjectiveRevealed { objective, state } => {
+                let Some(row) = self.rows.iter_mut().find(|row| row.symbol == *objective) else {
+                    return false;
+                };
+                let changed = !row.revealed || row.state != *state;
+                row.revealed = true;
+                row.state = *state;
+                changed
+            }
+            ObjectiveEventKind::ObjectiveChanged { objective, to, .. } => {
+                let Some(row) = self.rows.iter_mut().find(|row| row.symbol == *objective) else {
+                    return false;
+                };
+                let changed = row.state != *to;
+                row.state = *to;
+                changed
+            }
+            _ => false,
+        }
+    }
+
+    /// The rows the player may be shown, in authored order.
+    #[must_use]
+    pub fn visible(&self) -> Vec<DisplayedObjective> {
+        self.rows
+            .iter()
+            .filter(|row| row.revealed && row.state.is_visible())
+            .cloned()
+            .collect()
+    }
+
+    /// One row by symbol, whether or not it is visible.
+    #[must_use]
+    pub fn row(&self, symbol: SymbolId) -> Option<DisplayedObjective> {
+        self.rows.iter().find(|row| row.symbol == symbol).cloned()
+    }
+
+    /// How many objectives the display tracks.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether the display tracks nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+/// What [`ObjectiveSession::step`] answered with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionTick {
+    /// The runtime's ordered event stream for the tick — the authoritative
+    /// trace every consumer answer below was dispatched from.
+    pub tick: ObjectiveTick,
+    /// The waves admitted this tick, for the world to instantiate.
+    pub spawns: Vec<SpawnDirective>,
+    /// Every refusal the stream reported, named.
+    pub refusals: Vec<SessionRefusal>,
+    /// The session's outcome once settled.
+    pub outcome: Option<TerminalOutcome>,
+    /// Set when a bound stopped the tick before any effect applied.
+    pub stop: Option<StopReason>,
+    /// Whether any display row moved this tick.
+    pub display_changed: bool,
+}
+
+/// What a retry's teardown reports: everything the old session still owned.
+///
+/// This is data, not a narrative: `actors` are the wave instances the world
+/// must despawn (the new session's instance counter will reuse those same
+/// ids, which is why the report exists and why it precedes the new session's
+/// first step), `cues` are the emitted-but-never-drained lines that will now
+/// never play, `armed_timers` the deadlines that were still counting, and
+/// `session`/`outcome` stamp which generation this report belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TeardownReport {
+    /// The generation that was torn down.
+    pub session: SessionGeneration,
+    /// The live wave instances the world must despawn.
+    pub actors: Vec<ActorId>,
+    /// The cues emitted but never drained — dropped, never played.
+    pub cues: Vec<EmittedCue>,
+    /// The declared timers still armed at teardown.
+    pub armed_timers: Vec<SymbolId>,
+    /// The outcome the old session settled, if it did.
+    pub outcome: Option<TerminalOutcome>,
+}
+
+/// The wired objective session of one mission generation: the producer→
+/// runtime→consumer path the stage exists to wire.
+///
+/// One session owns one [`ObjectiveRuntime`] and every piece of per-session
+/// consumer state. `step` is the only way in: it hands the runtime one
+/// [`TickInput`] — the whole producer surface — and dispatches the ordered
+/// stream to the consumers. `retry` is the only way out that keeps the
+/// session object: it reports what the old generation still owned and
+/// rebuilds a fresh runtime for the new one.
+#[derive(Debug)]
+pub struct ObjectiveSession {
+    /// The lowered program this session launches and relaunches from. Kept so
+    /// a retry rebuilds the authored declarations rather than carrying the
+    /// failed generation's state.
+    program: LoweredObjectives,
+    /// The live runtime of the current generation.
+    runtime: ObjectiveRuntime,
+    /// The objective display the UI reads.
+    display: ObjectiveDisplay,
+    /// Dialogue cues emitted and not yet drained.
+    pending_cues: VecDeque<EmittedCue>,
+    /// The wave instances admitted this generation and still live, per group
+    /// symbol, in admission order. An actor the stream counts in a
+    /// gone-category (`Destroyed`, `Captured`, `Escaped`, `Despawned` — not
+    /// `Disabled`, which still exists in the world) leaves the registry, so a
+    /// teardown names exactly the actors the world still has to remove.
+    live: BTreeMap<SymbolId, Vec<ActorId>>,
+}
+
+impl ObjectiveSession {
+    /// Builds a runtime from the lowered program: every declaration
+    /// registered in authored order, each refusal named by the symbol that
+    /// caused it.
+    fn build_runtime(
+        program: &LoweredObjectives,
+        session: SessionGeneration,
+    ) -> Result<ObjectiveRuntime, SessionLaunchError> {
+        let mut runtime = ObjectiveRuntime::new(session, program.precedence, program.limits);
+        for spec in &program.objectives {
+            runtime.add_objective(spec.clone()).map_err(|error| {
+                SessionLaunchError::Declaration {
+                    declaration: spec.id,
+                    error,
+                }
+            })?;
+        }
+        for (condition, reaction) in &program.conditions {
+            runtime
+                .add_condition(condition.clone(), *reaction)
+                .map_err(|error| SessionLaunchError::Declaration {
+                    declaration: condition.key,
+                    error,
+                })?;
+        }
+        for trigger in &program.triggers {
+            runtime.add_trigger(trigger.clone()).map_err(|error| {
+                SessionLaunchError::Declaration {
+                    declaration: trigger.id(),
+                    error,
+                }
+            })?;
+        }
+        for timer in &program.timers {
+            runtime
+                .add_timer(timer.clone())
+                .map_err(|error| SessionLaunchError::Declaration {
+                    declaration: timer.id(),
+                    error,
+                })?;
+        }
+        Ok(runtime)
+    }
+
+    /// Launches one session of the lowered program.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionLaunchError::Declaration`] naming the first declaration the
+    /// runtime refused.
+    pub fn launch(
+        program: LoweredObjectives,
+        session: SessionGeneration,
+    ) -> Result<Self, SessionLaunchError> {
+        let runtime = Self::build_runtime(&program, session)?;
+        let display = ObjectiveDisplay::seed(&program.objectives);
+        Ok(Self {
+            program,
+            runtime,
+            display,
+            pending_cues: VecDeque::new(),
+            live: BTreeMap::new(),
+        })
+    }
+
+    /// The session generation this session owns.
+    #[must_use]
+    pub const fn session(&self) -> SessionGeneration {
+        self.runtime.session()
+    }
+
+    /// The lowered program this session runs.
+    #[must_use]
+    pub const fn program(&self) -> &LoweredObjectives {
+        &self.program
+    }
+
+    /// The live runtime, for state inspection (timer states, counters,
+    /// `is_visible`).
+    #[must_use]
+    pub const fn runtime(&self) -> &ObjectiveRuntime {
+        &self.runtime
+    }
+
+    /// The objective display the UI reads.
+    #[must_use]
+    pub const fn display(&self) -> &ObjectiveDisplay {
+        &self.display
+    }
+
+    /// The session's outcome once settled.
+    #[must_use]
+    pub const fn outcome(&self) -> Option<TerminalOutcome> {
+        self.runtime.outcome()
+    }
+
+    /// The subject content a spawn group is bound to, when it is bound.
+    #[must_use]
+    pub fn group_subject(&self, group: SymbolId) -> Option<&ContentId> {
+        self.program.spawn_groups.get(&group).map(|g| &g.subject)
+    }
+
+    /// Every wave instance admitted this generation and still live, in
+    /// (group, admission) order.
+    #[must_use]
+    pub fn live_actors(&self) -> Vec<ActorId> {
+        self.live.values().flatten().copied().collect()
+    }
+
+    /// The live instances of one group.
+    #[must_use]
+    pub fn live_wave(&self, group: SymbolId) -> &[ActorId] {
+        self.live.get(&group).map_or(&[], Vec::as_slice)
+    }
+
+    /// How many cues are waiting to be drained.
+    #[must_use]
+    pub fn pending_cues(&self) -> usize {
+        self.pending_cues.len()
+    }
+
+    /// Hands over every pending cue, in emission order, exactly once.
+    ///
+    /// This is the dialogue consumer's only read: a drained cue is gone from
+    /// the session, so a line plays once — and a cue still pending when the
+    /// session is retried is reported in the [`TeardownReport`], never played.
+    pub fn drain_cues(&mut self) -> Vec<EmittedCue> {
+        self.pending_cues.drain(..).collect()
+    }
+
+    /// Applies one tick's facts and dispatches the ordered stream to the
+    /// consumers.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError`] when the runtime refuses the tick — a non-advancing
+    /// tick or a refused movement. The error is propagated unchanged and
+    /// nothing was applied anywhere: the display, the cue queue and the wave
+    /// registry are untouched, matching the runtime's own "a refused tick
+    /// changed nothing".
+    pub fn step(&mut self, input: &TickInput<'_>) -> Result<SessionTick, RuntimeError> {
+        let tick = self.runtime.step(input)?;
+        let mut spawns = Vec::new();
+        let mut refusals = Vec::new();
+        let mut display_changed = false;
+        for event in &tick.events {
+            match &event.kind {
+                ObjectiveEventKind::ObjectiveRevealed { .. }
+                | ObjectiveEventKind::ObjectiveChanged { .. } => {
+                    display_changed |= self.display.apply(&event.kind);
+                }
+                ObjectiveEventKind::ObjectiveChangeRefused {
+                    objective,
+                    from,
+                    to,
+                } => {
+                    refusals.push(SessionRefusal::ObjectiveChange {
+                        objective: *objective,
+                        from: *from,
+                        to: *to,
+                    });
+                }
+                ObjectiveEventKind::TimerRefused { timer, reason } => {
+                    refusals.push(SessionRefusal::Timer {
+                        timer: *timer,
+                        reason: *reason,
+                    });
+                }
+                ObjectiveEventKind::RequestRefused { request, reason } => {
+                    refusals.push(SessionRefusal::Request {
+                        request: *request,
+                        reason: reason.clone(),
+                    });
+                }
+                ObjectiveEventKind::SpawnAdmitted {
+                    key,
+                    group,
+                    instances,
+                } => match self.group_subject(*group).cloned() {
+                    Some(subject) => {
+                        self.live.entry(*group).or_default().extend(instances);
+                        spawns.push(SpawnDirective {
+                            session: self.runtime.session(),
+                            tick: tick.tick,
+                            key: key.clone(),
+                            group: *group,
+                            subject,
+                            instances: instances.clone(),
+                        });
+                    }
+                    None => refusals.push(SessionRefusal::UnboundSpawn {
+                        group: *group,
+                        instances: instances.clone(),
+                    }),
+                },
+                ObjectiveEventKind::SpawnRefused {
+                    key,
+                    group,
+                    instances,
+                } => {
+                    refusals.push(SessionRefusal::Spawn {
+                        key: key.clone(),
+                        group: *group,
+                        instances: instances.clone(),
+                    });
+                }
+                ObjectiveEventKind::CueEmitted { key, dialogue } => {
+                    self.pending_cues.push_back(EmittedCue {
+                        session: self.runtime.session(),
+                        tick: tick.tick,
+                        key: key.clone(),
+                        dialogue: dialogue.clone(),
+                    });
+                }
+                ObjectiveEventKind::CueRefused { key, dialogue } => {
+                    refusals.push(SessionRefusal::Cue {
+                        key: key.clone(),
+                        dialogue: dialogue.clone(),
+                    });
+                }
+                ObjectiveEventKind::Counted { actor, kind } => {
+                    // An actor in a gone-category leaves the wave registry:
+                    // `Disabled` is not gone — the actor still exists in the
+                    // world and is still this session's to tear down.
+                    if !matches!(kind, CountKind::Disabled) {
+                        for instances in self.live.values_mut() {
+                            instances.retain(|instance| *instance != *actor);
+                        }
+                    }
+                }
+                ObjectiveEventKind::OutcomeSettled { .. }
+                | ObjectiveEventKind::ConditionMet { .. }
+                | ObjectiveEventKind::TriggerCrossed(_)
+                | ObjectiveEventKind::SignalRaised { .. }
+                | ObjectiveEventKind::TimerArmed { .. }
+                | ObjectiveEventKind::TimerExpired { .. }
+                | ObjectiveEventKind::OptionalReward { .. } => {}
+            }
+        }
+        Ok(SessionTick {
+            stop: tick.stop,
+            outcome: tick.outcome,
+            tick,
+            spawns,
+            refusals,
+            display_changed,
+        })
+    }
+
+    /// Tears the current generation down and relaunches the same program
+    /// under a new session generation.
+    ///
+    /// The [`TeardownReport`] is built *first* and names everything the old
+    /// session still owned — the live wave actors to despawn, the cues that
+    /// will now never play, the deadlines that were still armed, the settled
+    /// outcome — because the fresh runtime's instance counter reuses the same
+    /// ids, and a world that misses the report meets the old wave twice.
+    ///
+    /// The fresh runtime is built before the old one is released, so a launch
+    /// defect can never leave the session half-torn-down.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionLaunchError::Declaration`] when the same program that launched
+    /// before cannot be registered again — unreachable for a program that was
+    /// lowered, but reported rather than assumed.
+    pub fn retry(
+        &mut self,
+        session: SessionGeneration,
+    ) -> Result<TeardownReport, SessionLaunchError> {
+        let fresh = Self::build_runtime(&self.program, session)?;
+        let report = TeardownReport {
+            session: self.runtime.session(),
+            actors: self.live_actors(),
+            cues: self.pending_cues.drain(..).collect(),
+            armed_timers: self
+                .program
+                .timers
+                .iter()
+                .map(MissionTimer::id)
+                .filter(|timer| {
+                    self.runtime
+                        .timer_state(*timer)
+                        .is_some_and(|state| state.is_armed())
+                })
+                .collect(),
+            outcome: self.runtime.outcome(),
+        };
+        self.runtime = fresh;
+        self.display = ObjectiveDisplay::seed(&self.program.objectives);
+        self.live.clear();
+        Ok(report)
     }
 }

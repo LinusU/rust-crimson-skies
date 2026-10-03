@@ -449,6 +449,18 @@
 //! read: it cannot move a body. The decision, its measurement and the
 //! boundaries of the claim are in
 //! `docs/findings/2026-10-02-t415-spawn-tick-trigger-crossing.md`.
+//! Stage `### F39-C` adds the mission-program wiring (the same module):
+//! [`objectives::lower_program`], which lowers a validated
+//! `cs_content::objectives::DeclaredObjectiveProgram` into the
+//! [`objectives::LoweredObjectives`] a session launches — every
+//! `Resolved::Unknown` and every non-gameplay timer domain refused by name —
+//! and [`objectives::ObjectiveSession`], the producer→runtime→consumer path
+//! that feeds the `cs_sim::objectives` runtime each tick's `TickInput` and
+//! dispatches the ordered event stream to the spawn world, the dialogue cue
+//! queue and the objective display, plus the [`objectives::ObjectiveSession::retry`]
+//! teardown/retry contract that returns what the old generation still owned
+//! (live wave actors, undrained cues, armed deadlines) so nothing survives
+//! into the new one.
 //!
 //! [`cinematics`] is the F40-A cinematic boundary
 //! (`specs/F40-cutscenes-video-scripted-cameras-and-transitions.md`, stage
