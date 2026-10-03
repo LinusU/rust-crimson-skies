@@ -83,6 +83,7 @@ acceptance suite's synthetic fixtures:
 | `OBJECTIVE<N>` blocks declared (F39-D's count, unchanged) | 1338 |
 | counted-condition stages (`INACTIVE<n>` sites) | 1335 |
 | completion-count thresholds (`INACTIVE_COMPLETION_COUNT`) | 130 |
+| …F39-D's optionality sites, which the two above partition | 1465 |
 | blocks with **both** a threshold and a stage | 129 |
 | stage shapes, by names per site | 1 → 35, 2 → 356, 3 → 944 |
 | distinct names the counted conditions write | 226 |
@@ -96,6 +97,14 @@ empty reading: `RetailObjectiveRow::target_kinds` is `None` there and
 kind" is never reported about a member nobody read. The two surfaces therefore
 have different denominators (53 and 52) and neither was widened to the other.
 
+The stage and threshold numbers are also a **reconciliation** of two
+independent walks over the same population, not one walk counted twice: F39-D's
+flat key census counts every `is_optional_objective_key` site (1465 over the
+installation), and this stage's per-block walk splits exactly that population
+into stages and thresholds (1335 + 130 = 1465, mission by mission as well). The
+retail test asserts the partition, so a walk that drifted from F39-D's census
+would fail rather than publish two truths.
+
 ### The five categories, measured
 
 | category | declaring sites | what the corpus writes | missions |
@@ -105,6 +114,17 @@ have different denominators (53 and 52) and neither was widened to the other.
 | `Captured` | 0 | — | 0 |
 | `Escaped` | 0 | — | 0 |
 | `Despawned` | 0 | — | 0 |
+
+The shared contract asks for **six** distinctions, not five:
+`docs/contracts/SCRIPT-MISSION.md` ("Objective event ordering") says conditions
+distinguish *disabled, dead, captured, escaped, detached and despawned*, and
+**`Detached` has no counterpart in either vocabulary** — not a
+`CountKind`, not a `DeclaredCountKind`, not a measured spelling, and not
+recorded as an unknown by F39-A/B/C/D either. This stage did not measure it
+(what detaching an actor means is F20-C's socket semantics and F36's
+docking/transfer rules), so the vocabulary stays five where the contract says
+six. Recorded as unknown below and filed as its own task rather than guessed
+here.
 
 The classification is one declared rule, `DeclaredCountKind::names_spelling`: the
 name is split on `_` and a category claims it when one of its segments begins
@@ -215,7 +235,7 @@ So:
 | `an_original_record_may_not_count_an_undeclared_category` | the gate: four categories refused by name with the right verdict each, `Destroyed` accepted, all five accepted for an authored record, and the gate decided in one place |
 | `the_unproduced_categories_are_named_where_a_session_reads` | `needs_declared_reporter()` for exactly two categories, labels shared with the declared half, and a bailout/mission-removal counting toward neither |
 | `a_measured_record_carries_the_category_reading` | both surfaces merged into one evidence, the three undeclared categories reading empty, and the support gate still refusing |
-| `retail_objective_records_declare_no_disabled_or_escaped_count` (retail) | the whole table above over `$CS_GAME_DIR`, the differing denominators, `declared_by_original()` against the corpus in both directions, and the per-mission disable sites adding up |
+| `retail_objective_records_declare_no_disabled_or_escaped_count` (retail) | the whole table above over `$CS_GAME_DIR`, the differing denominators, the stages+thresholds partition reconciled against F39-D's independent optionality census, `declared_by_original()` against the corpus in both directions, and the per-mission disable sites adding up |
 
 ## Measured sensitivity (mutation probes, all observed)
 
@@ -241,6 +261,10 @@ stated rather than defaulted). `ObjectivesSchemaError` gains one variant.
 `DeclaredObjectiveProgram::try_new` can now fail on a condition a caller passed
 before; `cs_content::objectives::objectives_schema_tests` covers the existing
 refusals unchanged, and the new one is covered by the acceptance suite.
+`UNDECLARED_COUNT_CATEGORY`'s **text** changed during review (it now states the
+bound the measurement was taken under instead of claiming the original has no
+such category); a caller matching on that string is matching a diagnostic, not a
+stable API, and the verdict it names is unchanged.
 
 ## Unknown / deferred (not guessed)
 
@@ -270,6 +294,61 @@ refusals unchanged, and the new one is covered by the acceptance suite.
    will have to widen that type — a separate, larger change.
 7. **The census reads no opcode and no compiled program**, so nothing here is
    evidence of how the original behaves, only of what its files declare.
+8. **`Detached` is in the shared contract's six and in neither vocabulary.**
+   `docs/contracts/SCRIPT-MISSION.md` requires conditions to distinguish
+   disabled, dead, captured, escaped, detached and despawned; the engine's
+   `CountKind` and the declared `DeclaredCountKind` both have five, and the
+   missing one is `Detached` — no variant, no producer, no measured spelling and
+   no prior finding recording it as unknown. It is **not** resolved here by
+   inventing a category: what detaching an actor means belongs to F20-C (part
+   sockets and detach velocity) and F36 (docking, boarding, transfers), and the
+   gate this stage added does not claim anything about a detached actor. Filed
+   as its own task so the contract's sixth distinction is tracked against a
+   measurement instead of against this stage's silence.
+
+## Independent review
+
+Implementer and reviewer are the same agent **name** (`bunny-alpha-2`) in two
+separate sessions; the review session started from the Rally task description
+alone, so its context was fresh but it is not a different agent instance, and
+under AGENTS.md it is therefore **not independent evidence**. Nothing in this
+stage was re-verified against an original run, so no level above `checked` is
+claimed anywhere.
+
+What the review session did independently:
+
+* re-ran the four checks on the branch head and the `accept_f39_e4_` selection
+  with `--include-ignored` against `$CS_GAME_DIR` (7/7, retail one included);
+* re-derived the measured table from the committed census artifact
+  (`stage_sites` 1335, `threshold_sites` 130, `thresholded_blocks` 129, 53
+  readers, 52 target readers, 327 records, 289 labelled, 107 destroy over 25
+  missions, 13 disable over 10 missions, 0/0/0 for the rest, stage shapes
+  1 → 35 / 2 → 356 / 3 → 944, 226 distinct counted-condition spellings) and
+  checked every number quoted in this document against it, including the
+  part-state and part-name spellings (`healthy` 983, `panels` 194, `piratezep`
+  381, `reng11` 46);
+* confirmed by reading production code that the three measured producers really
+  exist — `DamageResolver::record_lifecycle` for `Destroyed`, `Captured` and
+  `Despawned`; the `record_lifecycle(player, LifecycleKind::OwnershipCaptured)`
+  call in `cs_sim/src/allies.rs`; and the `CountKind::Disabled` teardown
+  exception in `cs_app/src/objectives.rs` — so no claim in this document rests
+  on an enum variant alone;
+* repeated three mutation probes from scratch: removing the `try_new` refusal
+  (1 failure), `declared_by_original()` always `true` (2 failures, one of them
+  the retail test), and recording only a stage's last name (1 failure).
+
+What the review session fixed: the harness prose that reported the 52 target
+readers as the missions declaring *no* `targets.zrd` (it named 52 for the count
+that declares one and 1 for the count that declares none), three copy-paste
+references to `evidence_report_f39_e2.rs`/`accept_f39_e2_` inside the E4 harness,
+the missing `detached` unknown above, the new reconciliation of the stages and
+thresholds against F39-D's independent optionality census, and the wording of
+`UNDECLARED_COUNT_CATEGORY` — it read "the original declares no such actor
+count", which is a universal claim about a census that deliberately covers only
+the mission-scoped readers, so it now states the bound it was measured under and
+names the wider denominator it does not cover. The refusal's *verdict* is
+unchanged: same four categories refused, same gate, same single place deciding
+it.
 
 ## Commands
 
