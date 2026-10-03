@@ -32,8 +32,8 @@ use cs_content::scene::{
     MeshBinding, MeshSlot, NodeKind, ParsedNode, ParsedNodeKind, PartRole, RosterAvailability,
     RosterDeclarations, RosterDiscoveryError, RosterDiscoveryIssue, RosterDiscoveryUnknown,
     RosterEntry, RosterError, RosterRoleRule, SceneContainerRef, SceneError, SceneGraph,
-    SceneNodeId, SceneRootRef, SemanticBinding, discover_airframe_roster, parsed_nodes_from_gamez,
-    scene_graph_from_gamez, select_lod_variant,
+    SceneNodeId, SceneRootRef, SemanticBinding, discover_airframe_roster, escape_scene_node_name,
+    parsed_nodes_from_gamez, scene_graph_from_gamez, select_lod_variant,
 };
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
@@ -487,13 +487,21 @@ fn accept_f11_a_rejects_cycles_dangling_parents_and_ambiguous_roots() {
         "same-named roots must collide, got {collided:?}"
     );
 
-    // An authored name that cannot form a content key is refused by name.
-    let bad = ParsedNode::new(0, "bad name", ParsedNodeKind::World);
+    // A name the key grammar cannot spell is escaped, not refused: `brigturret2 `
+    // derives `...brigturret2-20` and still converts (the rule and its retail
+    // evidence are the F11-E1 tests). What is left to refuse here is a
+    // name-path whose key outgrows MAX_CONTENT_KEY_LEN.
+    let escaped = ParsedNode::new(0, "bad name", ParsedNodeKind::World);
+    let escaped_graph = build(&[escaped]).expect("an escaped name still forms an id");
+    assert_eq!(escaped_graph.len(), 1);
+    assert_eq!(escaped_graph.roots()[0].key(), "fix_planes.bad-20name");
+
+    let too_long = ParsedNode::new(0, "n".repeat(200), ParsedNodeKind::World);
     assert_eq!(
-        build(&[bad]).map(|_| ()),
+        build(&[too_long]).map(|_| ()),
         Err(SceneError::NodeId {
             node: 0,
-            source: cs_types::content::ContentIdError::BadKeyCharacter { ch: ' ' }
+            source: cs_types::content::ContentIdError::KeyTooLong { len: 211 }
         })
     );
 }
@@ -2830,6 +2838,401 @@ fn sha256(bytes: &[u8]) -> cs_types::evidence::ContentHash {
 }
 
 // ===========================================================================
+// F11-E1: a `scene_node` id for an authored name the key grammar cannot spell
+// ===========================================================================
+//
+// The GameZ node array stores names the `ContentId` key grammar
+// (`[a-z0-9._-]`) refuses — `planes.zbd` node 640 is `brigturret2 `, with a
+// trailing space — and F11-A's id scheme refused the whole container over
+// six nodes because of it. These tests pin the rule that replaced the refusal:
+// the name crosses over unchanged and is *escaped* on its way into the key
+// (`escape_scene_node_name`), the escape is reversible
+// (`SceneNodeId::authored_names`), and the stored bytes stay visible on the
+// record. The `#[ignore]`d test at the end of this section is the evidence:
+// the real `planes.zbd` converts end to end.
+
+/// **A name the grammar cannot spell is escaped into the id, and the escape
+/// reads back.**
+#[test]
+fn accept_f11_e1_an_unspellable_authored_name_is_escaped_into_its_id_and_reads_back() {
+    let container = cid(ContentKind::SceneNode, "container.zbd.planes");
+
+    // The rule over the three spellings the installation actually stores: the
+    // trailing space of `planes.zbd` node 640, the world containers'
+    // directory-ish `z:\crimsonrun\data\common\vessels\`, a name holding the
+    // escape character, and a name holding the path separator.
+    assert_eq!(escape_scene_node_name("brigturret2 "), "brigturret2-20");
+    assert_eq!(
+        escape_scene_node_name("z:\\crimsonrun\\data\\common\\vessels\\"),
+        "z-3a-5ccrimsonrun-5cdata-5ccommon-5cvessels-5c"
+    );
+    assert_eq!(escape_scene_node_name("wing-l"), "wing-2dl");
+    assert_eq!(
+        escape_scene_node_name("ap_lightpole.flt"),
+        "ap_lightpole-2eflt"
+    );
+    // A name the grammar can already spell keeps its spelling. This is why the
+    // escape character is `-` and not `_`: the nine archives' 56 620 names hold
+    // `_` 7 514 times, so escaping `_` would rewrite nearly every id in the
+    // installation, and an id nobody asked to change must not move.
+    assert_eq!(escape_scene_node_name("r_aileron1"), "r_aileron1");
+    assert_eq!(escape_scene_node_name("player_bhawk"), "player_bhawk");
+    // Case is ContentId's to fold, not the escape's.
+    assert_eq!(escape_scene_node_name("Cockpit1"), "Cockpit1");
+
+    // Whatever the name holds, the escaped spelling is a legal key: that is
+    // what makes the derivation total.
+    for name in [
+        "brigturret2 ",
+        " ",
+        "-",
+        ".",
+        "..",
+        "a-b",
+        "a-20b",
+        "z:\\crimsonrun\\data\\common\\vessels\\",
+        "\u{7f}",
+        "geometry",
+        "cockpit1",
+    ] {
+        ContentId::from_source(ContentKind::SceneNode, &escape_scene_node_name(name))
+            .unwrap_or_else(|error| panic!("{name:?} must spell a key, got {error}"));
+    }
+
+    // The real container's shape, over the production reader: the six nodes the
+    // old id scheme refused.
+    // Written in slot order, so the array slot each record lands on is its
+    // position here: 0 … 6.
+    let specs = vec![
+        NodeSpec::new("player_brigand", 5)
+            .children(&[1])
+            .object(ObjectSpec::identity()),
+        NodeSpec::new("cockpit1", 5)
+            .parent(0)
+            .children(&[2])
+            .object(ObjectSpec::identity()),
+        NodeSpec::new("brigand_turret2", 5)
+            .parent(1)
+            .children(&[3])
+            .object(ObjectSpec::identity()),
+        NodeSpec::new("brigturret2 ", 5)
+            .parent(2)
+            .children(&[4, 5])
+            .object(ObjectSpec::identity()),
+        NodeSpec::new("hgun2", 5)
+            .parent(3)
+            .children(&[6])
+            .object(ObjectSpec::identity()),
+        NodeSpec::new("g938", 5)
+            .parent(3)
+            .object(ObjectSpec::identity()),
+        NodeSpec::new("hfirepoint2", 5)
+            .parent(4)
+            .object(ObjectSpec::identity()),
+    ];
+    let records = read_fixture("fixture.escaped-name", &specs);
+    let graph = scene_graph_from_gamez(
+        &container,
+        &records,
+        &[],
+        &radian_adapter(),
+        &BindingMap::default(),
+    )
+    .expect("a name with a trailing space is escaped, not refused");
+
+    let prefix = "container.zbd.planes.player_brigand.cockpit1.brigand_turret2";
+    for (name, key) in [
+        ("hgun2", format!("{prefix}.brigturret2-20.hgun2")),
+        ("g938", format!("{prefix}.brigturret2-20.g938")),
+        (
+            "hfirepoint2",
+            format!("{prefix}.brigturret2-20.hgun2.hfirepoint2"),
+        ),
+    ] {
+        let id = SceneNodeId::from_content_id(cid(ContentKind::SceneNode, &key))
+            .expect("a scene_node id");
+        let node = graph
+            .node(&id)
+            .unwrap_or_else(|| panic!("{name} must be in the graph as {key}"));
+        assert_eq!(node.name(), name, "the record keeps the stored bytes");
+        let read_back = id
+            .authored_names(&container)
+            .expect("an escaped id reads back");
+        assert_eq!(
+            read_back.last().map(String::as_str),
+            Some(name),
+            "the last component is the node's own stored name"
+        );
+        assert_eq!(
+            read_back.join("."),
+            node.path(),
+            "the id reads back to the name-path the file holds"
+        );
+    }
+
+    // The node that *stores* the space is the one the old scheme refused first.
+    let spaced = cid(ContentKind::SceneNode, &format!("{prefix}.brigturret2-20"));
+    let spaced = SceneNodeId::from_content_id(spaced).expect("a scene_node id");
+    assert_eq!(
+        graph.node(&spaced).map(|node| node.name()),
+        Some("brigturret2 "),
+        "the stored name is not trimmed, transliterated or escaped on the record"
+    );
+    assert_eq!(
+        graph.node(&spaced).map(|node| node.path()),
+        Some("player_brigand.cockpit1.brigand_turret2.brigturret2 "),
+        "the authored name-path keeps the space too, because binding rules match on it"
+    );
+    assert_eq!(
+        spaced
+            .authored_names(&container)
+            .map(|names| names.join(".")),
+        Some("player_brigand.cockpit1.brigand_turret2.brigturret2 ".to_owned())
+    );
+
+    // Every node of a converted container reads back to its own authored path:
+    // the escape is a spelling, not a second identity.
+    for node in graph.nodes() {
+        assert_eq!(
+            node.id()
+                .authored_names(&container)
+                .map(|names| names.join(".")),
+            Some(node.path().to_owned()),
+            "node {} must read back",
+            node.index()
+        );
+    }
+}
+
+/// **The escape is injective and the documented loss is still a refusal.**
+#[test]
+fn accept_f11_e1_the_escape_is_injective_and_a_case_clash_is_still_refused() {
+    let container = cid(ContentKind::SceneNode, "container.zbd.planes");
+    let adapter = radian_adapter();
+    let no_bindings = BindingMap::default();
+    let build = |nodes: &[ParsedNode]| SceneGraph::build(&container, nodes, &adapter, &no_bindings);
+
+    // A naive "replace the space with `-20`" spelling would give the first two
+    // of these one id. The escape escapes itself, so they stay apart and the
+    // container converts.
+    let mut spaced = ParsedNode::new(0, "brigturret2 ", ParsedNodeKind::Object3d);
+    spaced.zone_id = 1;
+    let mut spelled = ParsedNode::new(1, "brigturret2-20", ParsedNodeKind::Object3d);
+    spelled.zone_id = 2;
+    let mut dashed = ParsedNode::new(2, "brigturret2-2d20", ParsedNodeKind::Object3d);
+    dashed.zone_id = 3;
+    let graph = build(&[spaced, spelled, dashed]).expect(
+        "three names that differ only in escapable bytes stay three ids, and the container \
+         converts",
+    );
+
+    // The stored spellings are what differ, and each id reads back to its own.
+    let keys: Vec<String> = graph
+        .roots()
+        .iter()
+        .map(|root| root.key().to_owned())
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            "container.zbd.planes.brigturret2-20",
+            "container.zbd.planes.brigturret2-2d20",
+            "container.zbd.planes.brigturret2-2d2d20",
+        ]
+    );
+
+    // Case is the one documented loss, and it stays a refusal rather than a
+    // silent merge: `ContentId` folds case, so two roots differing only in case
+    // derive one id and the build says so.
+    let upper = ParsedNode::new(0, "Main", ParsedNodeKind::Object3d);
+    let lower = ParsedNode::new(1, "main", ParsedNodeKind::Object3d);
+    assert!(matches!(
+        build(&[upper, lower]),
+        Err(SceneError::DuplicateNodeId { .. })
+    ));
+
+    // The reading half is checked, not trusted: an id outside the container, or
+    // one holding an escape the escaping cannot have written, reads back as
+    // nothing rather than as a plausible name.
+    let other = cid(ContentKind::SceneNode, "container.zbd.c1.brigturret2-20");
+    let other = SceneNodeId::from_content_id(other).expect("a scene_node id");
+    assert_eq!(other.authored_names(&container), None);
+    for malformed in ["brigturret2-2", "brigturret2-2z", "brigturret2-"] {
+        let id = cid(
+            ContentKind::SceneNode,
+            &format!("container.zbd.planes.{malformed}"),
+        );
+        let id = SceneNodeId::from_content_id(id).expect("a scene_node id");
+        assert_eq!(
+            id.authored_names(&container),
+            None,
+            "{malformed} is not something the escaping writes"
+        );
+    }
+    // ... while a well-formed id that is *not* in the container is still
+    // refused, so a lookup cannot wander between containers.
+    let nested = cid(
+        ContentKind::SceneNode,
+        "container.zbd.planes.player_brigand.cockpit1",
+    );
+    let nested = SceneNodeId::from_content_id(nested).expect("a scene_node id");
+    assert_eq!(
+        nested.authored_names(&container),
+        Some(vec!["player_brigand".to_owned(), "cockpit1".to_owned()])
+    );
+}
+
+/// **A name holding the path separator stays a root, and a nested node does
+/// not.**
+#[test]
+fn accept_f11_e1_a_dotted_root_name_is_a_root_and_a_nested_node_is_not() {
+    let container = cid(ContentKind::SceneNode, "container.zbd.c1");
+    let mut dotted = ParsedNode::new(0, "ap_lightpole.flt", ParsedNodeKind::Object3d);
+    dotted.children = vec![1];
+    let mut child = ParsedNode::new(1, "pole_top", ParsedNodeKind::Object3d);
+    child.parent = Some(0);
+    let graph = SceneGraph::build(
+        &container,
+        &[dotted, child],
+        &radian_adapter(),
+        &BindingMap::default(),
+    )
+    .expect("a dotted name is escaped into one key component");
+
+    let root = &graph.roots()[0];
+    assert_eq!(root.key(), "container.zbd.c1.ap_lightpole-2eflt");
+    assert_eq!(
+        root.authored_names(&container),
+        Some(vec!["ap_lightpole.flt".to_owned()])
+    );
+    // The root check is a check on separators, and a name's own `.` no longer
+    // looks like one: 407 of the installation's stored names hold a dot.
+    SceneRootRef::new(container.clone(), root.clone())
+        .expect("a dotted name still lives directly under its container");
+
+    let nested = cid(
+        ContentKind::SceneNode,
+        "container.zbd.c1.ap_lightpole-2eflt.pole_top",
+    );
+    let nested = SceneNodeId::from_content_id(nested).expect("a scene_node id");
+    assert_eq!(
+        SceneRootRef::new(container, nested),
+        Err(SceneError::NotARootNode {
+            root: "container.zbd.c1.ap_lightpole-2eflt.pole_top".to_owned()
+        }),
+        "a nested node is still refused as a root"
+    );
+}
+
+/// **The retail half: the real `planes.zbd` converts end to end, and the six
+/// nodes the id grammar used to refuse carry exactly the keys this rule
+/// derives.**
+///
+/// Without `$CS_GAME_DIR` this fails loudly rather than skipping: the claim
+/// under test is about the installation's bytes, and a fixture cannot make it.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f11_e1_retail_planes_node_array_builds_every_node_id() {
+    let path = retail_dir().join("ZBD/planes.zbd");
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("zbd/planes.zbd: the installation must hold it: {error}"));
+    let mut context = cs_formats::ParseContext::with_defaults("zbd/planes.zbd");
+    let records = cs_formats::gamez::read_gamez_nodes(&mut context, &bytes)
+        .expect("the retail node array must read");
+
+    let container = cid(ContentKind::SceneNode, "container.zbd.planes");
+    let bounds = records.mesh_index_bounds();
+    let meshes: Vec<MeshSlot> = (0..=bounds.max.expect("planes names meshes"))
+        .map(|slot| {
+            MeshSlot::new(
+                cid(ContentKind::Mesh, &format!("container.zbd.planes.s{slot}")),
+                designed("f11e1.retail.mesh-slot"),
+            )
+            .expect("a mesh id")
+        })
+        .collect();
+
+    // The whole container: 3 317 records and 28 roots, no refusal anywhere.
+    let graph = scene_graph_from_gamez(
+        &container,
+        &records,
+        &meshes,
+        &radian_adapter(),
+        &BindingMap::default(),
+    )
+    .expect("the real container must convert once the name is escaped, not refused");
+    assert_eq!(graph.len(), 3_317);
+    assert_eq!(graph.roots().len(), 28);
+
+    // Every one of the 3 317 ids reads back to the name-path the file holds:
+    // the escape never invents, drops or reorders a name.
+    for node in graph.nodes() {
+        assert_eq!(
+            node.id()
+                .authored_names(&container)
+                .map(|names| names.join(".")),
+            Some(node.path().to_owned()),
+            "node {} must read back to its stored name-path",
+            node.index()
+        );
+    }
+
+    // The six nodes that inherited the trailing space, by stored slot and by
+    // exact key. Node 640 stores the space; 641-645 are its descendants, whose
+    // name-paths carry it through 640.
+    let prefix = "container.zbd.planes.player_brigand.cockpit1.brigand_turret2";
+    let expected = [
+        (640, "brigturret2 ", format!("{prefix}.brigturret2-20")),
+        (641, "g938", format!("{prefix}.brigturret2-20.g938")),
+        (642, "hgun2", format!("{prefix}.brigturret2-20.hgun2")),
+        (
+            643,
+            "hfirepoint2",
+            format!("{prefix}.brigturret2-20.hgun2.hfirepoint2"),
+        ),
+        (644, "g65", format!("{prefix}.brigturret2-20.hgun2.g65")),
+        (
+            645,
+            "hfirepoint2b",
+            format!("{prefix}.brigturret2-20.hgun2.hfirepoint2b"),
+        ),
+    ];
+    let affected: Vec<&cs_content::scene::SceneNode> = graph
+        .nodes()
+        .iter()
+        .filter(|node| node.path().contains(' '))
+        .collect();
+    assert_eq!(
+        affected.len(),
+        expected.len(),
+        "exactly six nodes carry the space: 640 and its five descendants"
+    );
+    for (slot, name, key) in expected {
+        let id = cid(ContentKind::SceneNode, &key);
+        let id = SceneNodeId::from_content_id(id).expect("a scene_node id");
+        let node = graph
+            .node(&id)
+            .unwrap_or_else(|| panic!("node {slot} must be in the graph as {key}"));
+        assert_eq!(node.index(), slot);
+        assert_eq!(node.name(), name, "the stored name is unchanged");
+        assert_eq!(
+            id.authored_names(&container).map(|names| names.join(".")),
+            Some(node.path().to_owned()),
+            "{key} must read back to what the file says"
+        );
+    }
+
+    // A name the grammar could already spell keeps the id it always had: the
+    // six escaped ids are the only ones this rule moves.
+    let untouched = cid(ContentKind::SceneNode, "container.zbd.planes.player_bhawk");
+    let untouched = SceneNodeId::from_content_id(untouched).expect("a scene_node id");
+    assert!(
+        graph.node(&untouched).is_some(),
+        "an unaffected root keeps its key"
+    );
+}
+
+// ===========================================================================
 // Task #392: the GameZ node array decoded into `ParsedNode` records
 // ===========================================================================
 //
@@ -3909,27 +4312,33 @@ fn accept_t392_scene_graph_is_built_from_a_decoded_node_array() {
         "{error}"
     );
 
-    // A name the id grammar refuses is reported as such and never transliterated.
+    // A name the key grammar cannot spell keeps the stored bytes and is escaped
+    // into the id instead of being refused or trimmed: the `planes.zbd` node 640
+    // spelling, over a fixture. The F11-E1 tests carry the real container.
     let awkward = vec![NodeSpec::new("brigturret2 ", 5).object(ObjectSpec::identity())];
     let awkward_records = read_fixture("fixture.awkward-name", &awkward);
     assert_eq!(
         awkward_records.get(0).expect("one node").name,
         "brigturret2 "
     );
-    let error = scene_graph_from_gamez(
+    let awkward_graph = scene_graph_from_gamez(
         &cid(ContentKind::SceneNode, "container.fixture"),
         &awkward_records,
         &[],
         &radian_adapter(),
         &BindingMap::default(),
     )
-    .expect_err("a trailing space is not a key character");
-    assert!(
-        matches!(
-            error,
-            GameZSceneError::Build(SceneError::NodeId { node: 0, .. })
-        ),
-        "{error}"
+    .expect("a trailing space is escaped, not refused");
+    assert_eq!(
+        awkward_graph.roots()[0].key(),
+        "container.fixture.brigturret2-20",
+        "the space is spelled as its byte"
+    );
+    let awkward_root = awkward_graph.roots()[0].clone();
+    assert_eq!(
+        awkward_graph.node(&awkward_root).map(|n| n.name()),
+        Some("brigturret2 "),
+        "the record keeps what the store said"
     );
 }
 
@@ -4483,8 +4892,10 @@ fn accept_t392_records_outside_the_asserted_profile_are_reported_not_dropped() {
 /// This is the evidence that the layout is not a guess. It reads the real
 /// `planes.zbd` through the production reader, checks the numbers the pinned
 /// reference records for that archive, and then reports the *conversion's*
-/// verdict on it honestly — including the refusal, which is a fact about the
-/// data meeting F11-A's id scheme and not about this reader.
+/// verdict on it. That verdict used to be a typed `NodeId` refusal over six
+/// nodes carrying a trailing space; since F11-E1 the name is escaped into its
+/// key instead, so the container converts, and `accept_f11_e1_retail_planes_
+/// node_array_builds_every_node_id` carries that half — including the six ids.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_t392_retail_planes_node_array_decodes_and_its_conversion_verdict_is_typed() {
@@ -4589,53 +5000,40 @@ fn accept_t392_retail_planes_node_array_decodes_and_its_conversion_verdict_is_ty
     let bound = parsed.iter().filter_map(|node| node.mesh.as_ref()).count();
     assert_eq!(bound, 1_766, "one binding per non-negative mesh_index");
 
-    // The conversion's verdict on the real container is a typed refusal, and it
-    // is the authored name that causes it: `brigturret2 ` stores a trailing
-    // space, which the id grammar does not allow. This is a fact about the data
-    // meeting F11-A's id scheme, recorded rather than worked around.
-    let error = scene_graph_from_gamez(
+    // The name the id grammar used to refuse is on the record, unchanged and
+    // untrimmed: the trailing space of node 640 crosses over exactly as stored,
+    // and the whole container now converts because the *key* escapes it rather
+    // than rewriting the name. `accept_f11_e1_retail_planes_node_array_builds_
+    // every_node_id` pins the escaped ids and the round trip.
+    assert_eq!(
+        parsed[640].name, "brigturret2 ",
+        "the stored name, verbatim"
+    );
+    let graph = scene_graph_from_gamez(
         &container,
         &records,
         &meshes,
         &radian_adapter(),
         &BindingMap::default(),
     )
-    .expect_err("the stored name with a trailing space is not a key character");
-    let GameZSceneError::Build(SceneError::NodeId { node, source }) = &error else {
-        panic!("expected a node id refusal, got {error}");
-    };
-    assert_eq!(*node, 640, "the first node the id grammar refuses");
-    assert!(
-        source.to_string().contains('\''),
-        "the refusal names the offending character: {source}"
-    );
-    // Exactly six nodes carry that name or descend from it; the whole container
-    // is otherwise a forest of usable name-paths.
-    let mut refused = 0usize;
-    for node in &parsed {
-        let mut path = String::new();
-        let mut cursor = Some(node.index);
-        while let Some(index) = cursor {
-            let current = &parsed[index as usize];
-            if path.is_empty() {
-                path = current.name.clone();
-            } else {
-                path = format!("{path}.{}", current.name);
-            }
-            cursor = current.parent;
-        }
-        if ContentId::from_source(
-            ContentKind::SceneNode,
-            &format!("container.zbd.planes.{path}"),
-        )
-        .is_err()
-        {
-            refused += 1;
-        }
-    }
+    .expect("the real container converts: the awkward name is escaped, not refused");
+    assert_eq!(graph.len(), 3_317);
+    // Exactly six nodes carry that name or descend from it, and every one of
+    // them has an id.
+    let spaced: Vec<&cs_content::scene::SceneNode> = graph
+        .nodes()
+        .iter()
+        .filter(|node| node.path().contains(' '))
+        .collect();
     assert_eq!(
-        refused, 6,
+        spaced.len(),
+        6,
         "the six nodes whose name-path carries the space: 640 and its five descendants"
+    );
+    assert_eq!(
+        spaced[0].index(),
+        640,
+        "the first of them stores the space itself"
     );
 }
 
@@ -5791,19 +6189,22 @@ fn retail_script_extent(decoded: &cs_formats::interp::DecodedInterp<'_>, name: &
 /// The measured conversion verdict of every container of the census.
 ///
 /// The production readers run over the real bytes and `SceneGraph::build`
-/// decides, so the blocker the audit reports is the container's own refusal
-/// and not a constant this file wrote down. Every measured refusal is
-/// returned, including the `planes.zbd` one whose cause — node 640's stored
-/// name `brigturret2 ` carries a trailing space — is asserted by the test.
-fn retail_container_blockers(
+/// decides, so what the audit is handed is each container's own outcome and not
+/// a constant this file wrote down: a container that converts is handed over as
+/// its graph, and one that refuses carries its own typed blocker. Since F11-E1
+/// the shared aircraft archive is in the first group — its awkward stored name
+/// is escaped into its key instead of refused — and the eight world containers
+/// are in the second, because their child lists still do not cover every node
+/// that names a parent.
+fn retail_container_verdicts(
     game_dir: &std::path::Path,
     census: &[GameZCensusRow],
-) -> BTreeMap<String, ContainerBlocker> {
+) -> BTreeMap<String, Result<SceneGraph, ContainerBlocker>> {
     use cs_content::scene::{ParsedNode, SceneGraph, parsed_nodes_from_gamez};
     use cs_formats::gamez::read_gamez_nodes;
     use cs_formats::io::ParseContext;
 
-    let mut blockers = BTreeMap::new();
+    let mut verdicts = BTreeMap::new();
     for row in census {
         let bytes = std::fs::read(game_dir.join(&row.logical)).unwrap_or_else(|error| {
             panic!("{}: the installation must hold it: {error}", row.logical)
@@ -5822,35 +6223,19 @@ fn retail_container_blockers(
             "{}: every stored record converts",
             row.logical
         );
-        // The honest graph source for this stage: the node array reads and every
-        // record converts, but `SceneGraph::build` refuses — `planes.zbd` at a
-        // node whose stored name the id grammar cannot spell, the eight world
-        // containers because their child lists do not cover every node that
-        // names a parent. Both refusals are recorded findings, and neither is
-        // worked around here.
-        let blocker = SceneGraph::build(
+        let verdict = SceneGraph::build(
             &container,
             &parsed,
             &radian_adapter(),
             &BindingMap::default(),
         )
-        .err()
-        .map_or_else(
-            || {
-                panic!(
-                    "{}: the measured verdict is that this container converts; the audit below \
-                         would map it and the blockers it expects would be wrong",
-                    row.logical
-                )
-            },
-            |error| ContainerBlocker::SceneRefused {
-                container: container.clone(),
-                reason: error.to_string(),
-            },
-        );
-        blockers.insert(container.as_str().to_owned(), blocker);
+        .map_err(|error| ContainerBlocker::SceneRefused {
+            container: container.clone(),
+            reason: error.to_string(),
+        });
+        verdicts.insert(container.as_str().to_owned(), verdict);
     }
-    blockers
+    verdicts
 }
 
 /// AC04 over the real installation, with a **real** roster: the eleven airframes
@@ -5858,14 +6243,18 @@ fn retail_container_blockers(
 /// script created inside `ZBD/planes.zbd`, audited against the same nine
 /// GameZ archives F11-D measured.
 ///
-/// What this test changes about the previous verdict is stated exactly: the
-/// roster the audit takes is no longer empty, so the audit now reports one
-/// verdict **per airframe** instead of nine container blockers and nothing
-/// else — and each of those verdicts says the same thing, because no production
-/// path has yet turned the shared airframe archive into a `SceneGraph`: the
-/// node array **reads and every record converts**, and `SceneGraph::build`
-/// refuses. The blocker is therefore the container's own measured refusal
-/// ([`ContainerBlocker::SceneRefused`]), never the "node array undecoded" of the
+/// What this test changed when F11-E1 landed the escaped id derivation is
+/// stated exactly: the audit's graph source answers from each container's own
+/// measured verdict, and `ZBD/planes.zbd` now **converts** — its node array
+/// reads, all 3 317 records convert, and `SceneGraph::build` answers with 28
+/// roots. So the audit maps that container and ten of the eleven airframes,
+/// each with the measured size of the subtree its root owns, and reports the
+/// eleventh as [`AirframeBlocker::RootMissing`] because the store nests
+/// `player_pfighter` under `player`. No sockets are mapped yet: no
+/// evidence-backed binding rule exists, which the audit reports as
+/// [`AuditGap::MissingRole`] per row rather than passing it. The eight world
+/// containers still refuse, each with its own measured
+/// [`ContainerBlocker::SceneRefused`], never the "node array undecoded" of the
 /// stage before #392. Every declared root is additionally cross-checked against
 /// the real node array of `ZBD/planes.zbd`, so the `SceneRootRef` each row
 /// carries names a root the container really holds rather than a name the script
@@ -6108,26 +6497,17 @@ fn accept_f11_d_2_retail_the_installation_declares_the_shared_airframe_roster() 
             )
         })
         .collect();
-    let blockers = retail_container_blockers(&game_dir, &census);
-    assert_eq!(blockers.len(), 9, "every census container has a verdict");
-    let planes_refusal = match &blockers[container_id.as_str()] {
-        ContainerBlocker::SceneRefused { reason, .. } => reason.clone(),
-        other => panic!("{other} is not the measured refusal"),
-    };
-    assert!(
-        planes_refusal.contains("node 640") && planes_refusal.contains('\''),
-        "the shared archive's own refusal is node 640's stored name, quoted verbatim: \
-         {planes_refusal}"
-    );
+    let verdicts = retail_container_verdicts(&game_dir, &census);
+    assert_eq!(verdicts.len(), 9, "every census container has a verdict");
     let report = found.roster().audit(&containers, |container| {
-        Err(blockers
+        verdicts
             .get(container.as_str())
             .expect("the audit only asks about the containers it was given")
-            .clone())
+            .as_ref()
+            .map_err(Clone::clone)
     });
 
     assert_eq!(report.container_count(), 9);
-    assert_eq!(report.mapped_containers().count(), 0);
     // The census's measured record counts and node-array offsets are the
     // container verdict's own facts, so F11-D's coverage is not lost by
     // reporting a refusal instead of an undecoded array.
@@ -6145,46 +6525,142 @@ fn accept_f11_d_2_retail_the_installation_declares_the_shared_airframe_roster() 
         "the audit now reports a verdict per discovered airframe, which is what an empty roster \
          could never do"
     );
-    assert_eq!(report.mapped_airframes().count(), 0);
-    assert_eq!(report.blocked_airframes().count(), 11);
-    assert!(!report.is_complete());
-    for audit in report.airframes() {
+    // The shared aircraft archive is the one container that converts now that
+    // F11-E1 escapes its awkward stored name, and the audit maps it: 3 317 nodes
+    // and the container's own 28 roots, with no container-level gap.
+    assert_eq!(report.mapped_containers().count(), 1);
+    let planes_audit = report
+        .containers()
+        .iter()
+        .find(|audit| audit.container() == &container_id)
+        .expect("the shared archive is audited");
+    let mapped = planes_audit
+        .mapping()
+        .expect("the shared archive's own verdict is the mapping");
+    assert_eq!(mapped.node_count(), 3_317);
+    assert_eq!(mapped.roots().len(), 28);
+    assert_eq!(mapped.airframes().len(), 11);
+    let container_gaps: Vec<&AuditGap> = planes_audit.gaps().collect();
+    assert!(
+        container_gaps.is_empty(),
+        "the decoded count is the declared count and no rule went unmatched: {container_gaps:?}"
+    );
+    // The eight world containers still refuse, each with its own measured
+    // reason: their child lists do not cover every node that names a parent.
+    let refused: Vec<&cs_content::scene::ContainerAudit> = report
+        .containers()
+        .iter()
+        .filter(|audit| audit.blocker().is_some())
+        .collect();
+    assert_eq!(refused.len(), 8, "the eight world containers");
+    for audit in refused {
+        let ContainerBlocker::SceneRefused { reason, .. } = audit
+            .blocker()
+            .expect("a blocked container names its blocker")
+        else {
+            panic!("{}: {audit:?}", audit.container());
+        };
         assert!(
-            !audit.is_proven_selectable(),
-            "{} is not selectable: nothing discovered a mode's selection list",
-            audit.airframe()
+            reason.contains("disagree on the link"),
+            "{}: the measured reason is the inconsistent parent/child link, not a constant: \
+             {reason}",
+            audit.container()
         );
-        assert!(audit.forced_missions().is_empty());
-        let blocker = audit
-            .first_blocker()
-            .expect("a blocked airframe names its blocker")
-            .clone();
-        match blocker {
-            AirframeBlocker::ContainerUndecoded {
-                airframe,
-                blocker: ContainerBlocker::SceneRefused { container, reason },
-            } => {
-                assert_eq!(airframe, *audit.airframe());
-                assert_eq!(
-                    container, container_id,
-                    "every row's root lives in planes.zbd"
-                );
-                assert_eq!(
-                    reason, planes_refusal,
-                    "every row quotes the container's own refusal rather than a constant"
-                );
-            }
-            other => panic!("{other} is not the measured container blocker"),
-        }
-        // The declared cockpit role is still an unmet requirement, and the
-        // audit says so rather than passing the row.
+    }
+
+    assert_eq!(
+        report.airframe_count(),
+        RETAIL_DECLARED_AIRFRAMES.len(),
+        "the audit reports a verdict per discovered airframe"
+    );
+    assert_eq!(report.mapped_airframes().count(), 10);
+    assert_eq!(report.blocked_airframes().count(), 1);
+    assert_eq!(report.mapped_root_count(), 10);
+    assert_eq!(report.mapped_socket_count(), 0);
+    assert_eq!(
+        report.blocker_count(),
+        9,
+        "eight container refusals and the one wrong root reference"
+    );
+    assert_eq!(report.gap_count(), 21);
+    assert!(!report.is_complete());
+
+    // Every declared airframe, with the size of the subtree its root really
+    // owns. These are the measured node counts of the shared archive: they are
+    // what makes "the audit maps the roster" more than a count of rows.
+    let subtree_sizes = [
+        ("player_bhawk", 199),
+        ("player_fbrand", 202),
+        ("player_brigand", 215),
+        ("player_fury", 202),
+        ("player_autogyro", 174),
+        ("player_avenger", 215),
+        ("player_kestrel", 216),
+        ("player_peacemaker", 211),
+        ("player_warhawk", 208),
+        ("player_balmoral", 235),
+    ];
+    for (root, nodes) in subtree_sizes {
+        let audit = report
+            .airframes()
+            .iter()
+            .find(|audit| audit.airframe().key() == root)
+            .unwrap_or_else(|| panic!("{root} must be audited"));
+        let mapping = audit
+            .mapping()
+            .unwrap_or_else(|| panic!("{root} must map: {audit:?}"));
+        assert_eq!(mapping.root().key(), format!("zbd_2f_planes.zbd.{root}"));
+        assert_eq!(mapping.node_count(), nodes, "{root}'s measured subtree");
+        assert_eq!(
+            mapping.sockets().count(),
+            0,
+            "{root}: no evidence-backed binding rule exists yet, so nothing is a socket"
+        );
+        // Two gaps per mapped row, both named: availability is undiscovered and
+        // the declared cockpit role is unbound.
         assert!(
             audit
                 .gaps()
                 .any(|gap| matches!(gap, AuditGap::AvailabilityUndiscovered { .. })),
-            "{audit:?}"
+            "{root}: {audit:?}"
         );
+        assert!(
+            audit.gaps().any(|gap| matches!(
+                gap,
+                AuditGap::MissingRole {
+                    role: PartRole::Cockpit,
+                    ..
+                }
+            )),
+            "{root}: the declared cockpit requirement is unmet and the audit says so: {audit:?}"
+        );
+        assert!(
+            !audit.is_proven_selectable(),
+            "{root} is not selectable: nothing discovered a mode's selection list"
+        );
+        assert!(audit.forced_missions().is_empty());
     }
+
+    // The eleventh row is the one the archive contradicts, and the verdict is
+    // `RootMissing`: the script created `player_pfighter` as a root, but the
+    // store nests it under the script's own parentless `player` node, so the id
+    // the row names is a node the container does not hold. It is not repointed
+    // at `player` (F11 deliverable: a reference is checked, never resolved to
+    // the nearest match).
+    let fighter = report
+        .airframes()
+        .iter()
+        .find(|audit| audit.airframe().key() == "player_pfighter")
+        .expect("the pirate fighter is audited");
+    assert_eq!(fighter.mapping(), None);
+    assert!(
+        fighter.blockers().any(|blocker| matches!(
+            blocker,
+            AirframeBlocker::RootMissing { root, .. }
+                if root.key() == "zbd_2f_planes.zbd.player_pfighter"
+        )),
+        "{fighter:?}"
+    );
 }
 
 /// The F11-D2 evidence harness.
@@ -6338,25 +6814,26 @@ fn evidence_report_f11_d_2_writes_the_acceptance_report() {
     let roster = discover_airframe_roster(&decoded, &retail_roster_declarations(install_hash))
         .expect("eleven distinct roots are not a contradiction");
     // The audit's graph source answers from the containers' own measured
-    // refusals, exactly as the retail acceptance test does: the node arrays
-    // read, every record converts, and `SceneGraph::build` is what refuses.
-    let blockers = retail_container_blockers(&game_dir, &census);
+    // verdicts, exactly as the retail acceptance test does: the node arrays
+    // read, every record converts, and `SceneGraph::build` decides.
+    let verdicts = retail_container_verdicts(&game_dir, &census);
     assert_eq!(
-        blockers.len(),
+        verdicts.len(),
         census.len(),
         "every census container has a measured verdict"
     );
     let report = roster.roster().audit(&containers, |container| {
-        Err(blockers
+        verdicts
             .get(container.as_str())
             .expect("the audit only asks about the containers it was given")
-            .clone())
+            .as_ref()
+            .map_err(Clone::clone)
     });
 
     let total_nodes: u32 = census.iter().map(|row| row.stored_nodes).sum();
     let discovery_path = evidence_dir.join("roster-discovery.json");
     let discovery_json =
-        roster_discovery_json(&roster, &report, total_nodes, &install_sha256, &blockers);
+        roster_discovery_json(&roster, &report, total_nodes, &install_sha256, &verdicts);
     fs::write(&discovery_path, &discovery_json)
         .unwrap_or_else(|error| panic!("write {}: {error}", discovery_path.display()));
     for needle in [
@@ -6368,10 +6845,10 @@ fn evidence_report_f11_d_2_writes_the_acceptance_report() {
         "\"selectable_rows\":0",
         "\"availability_undiscovered\":true",
         "\"audit_airframes\":11",
-        "\"mapped_roots\":0",
+        "\"mapped_roots\":10",
         "\"mapped_sockets\":0",
-        "\"blockers\":20",
-        "\"refused_containers\":9",
+        "\"blockers\":9",
+        "\"refused_containers\":8",
         "\"complete\":false",
         "\"discovery_complete\":false",
         &format!("\"install_sha256\":\"{install_sha256}\""),
@@ -6498,7 +6975,7 @@ fn roster_discovery_json(
     report: &cs_content::scene::RosterAuditReport,
     total_nodes: u32,
     install_sha256: &str,
-    blockers: &BTreeMap<String, ContainerBlocker>,
+    verdicts: &BTreeMap<String, Result<SceneGraph, ContainerBlocker>>,
 ) -> String {
     let rows: Vec<String> = discovery
         .discovered()
@@ -6522,22 +6999,21 @@ fn roster_discovery_json(
         .filter(|entry| entry.availability().is_known())
         .count();
     // One entry per measured refusal, so the artifact records *why* a container
-    // is unmapped instead of only counting that it is.
-    let refusals: Vec<String> = blockers
+    // is unmapped instead of only counting that it is. A container that
+    // converted has no entry: its graph is the mapping.
+    let refusals: Vec<String> = verdicts
         .iter()
-        .map(|(container, blocker)| match blocker {
-            ContainerBlocker::SceneRefused { reason, .. } => {
-                format!(
-                    "{{\"container\": {}, \"reason\": {}}}",
-                    jstr(container),
-                    jstr(reason)
-                )
-            }
-            other => format!(
+        .filter_map(|(container, verdict)| {
+            let blocker = verdict.as_ref().err()?;
+            let reason = match blocker {
+                ContainerBlocker::SceneRefused { reason, .. } => reason.clone(),
+                other => other.to_string(),
+            };
+            Some(format!(
                 "{{\"container\": {}, \"reason\": {}}}",
                 jstr(container),
-                jstr(&other.to_string())
-            ),
+                jstr(&reason)
+            ))
         })
         .collect();
     format!(
@@ -6601,18 +7077,21 @@ const F11_D2_LIMITATIONS: &[&str] = &[
      configuration. Resolving tasks: the F39 mission-language stage and the F13 mission-opcode \
      stage.",
     "player_pfighter is declared as a root by its own build script but ZBD/planes.zbd nests it \
-     under the script's parentless `player` node, so that row's SceneRootRef names a node the \
-     container does not hold as a root. Affected content: the pirate fighter's scene root. \
-     Resolving task: the F11-E producer (#398) together with a production path that converts ZBD/\
-     planes.zbd into a SceneGraph, after which AirframeRoster::audit reports AirframeBlocker::\
-     RootMissing for it. The row is not repointed at `player`.",
-    "ZBD/planes.zbd still does not convert: its node array reads and all 3317 records convert, \
-     but SceneGraph::build refuses node 640 because its stored name carries a trailing space, and \
-     all eight world containers refuse with InconsistentParentage, so the audit reports each \
-     container's own measured SceneRefused rather than a mapping. Affected content: every \
-     airframe's socket mapping. Resolving task: the F11-D2.2 follow-up (#501) for the shared \
-     archive, plus #392's findings file for the world containers' partial child lists; neither \
-     refusal is worked around here.",
+     under the script's parentless `player` node (node 44 under node 1418), so that row's \
+     SceneRootRef names a node the container does not hold. Since F11-E1 the archive converts, so \
+     this is no longer hypothetical: AirframeRoster::audit reports AirframeBlocker::RootMissing for \
+     that one row and maps the other ten. Affected content: the pirate fighter's scene root. \
+     Resolving task: the F11-E producer (#398) and the loading-script stage that has to reconcile \
+     the script's root declaration with the stored parent link; the row is not repointed at \
+     `player`, because a reference is checked and never resolved to the nearest match.",
+    "ZBD/planes.zbd converts since F11-E1 (its node array reads, all 3317 records convert and \
+     SceneGraph::build answers with 28 roots, the awkward stored name `brigturret2 ` being escaped \
+     into its key rather than refused), but all eight world containers still refuse with \
+     InconsistentParentage, so the audit reports each of those containers' own measured \
+     SceneRefused. Affected content: every world container's hierarchy, and every roster row or \
+     airframe that lives in one instead of in the shared archive. Resolving tasks: F18's world \
+     import for the partial child lists (see #392's findings file) and the F11-D2.2 follow-up \
+     (#501) for the rest of the shared archive; neither refusal is worked around here.",
     "Cross-script variable inheritance is unmeasured: each declaration walks its own declaring \
      script and include chain against an empty variable table, because nothing measured says one \
      declaring script's variables are visible to another. Affected content: a corpus whose two \

@@ -20,6 +20,41 @@
 //! (F11 non-negotiable behavior 1), keeps the authored transform beside the
 //! canonical one, and keeps every LOD variant: nothing is flattened.
 //!
+//! # Authored names and the key grammar
+//!
+//! An authored name does not always fit the `ContentId` key grammar
+//! (`[a-z0-9._-]`, `normalize_key` in `cs_types::content`), and the real
+//! aircraft container stores one that does not: `ZBD/planes.zbd` node 640 is
+//! `brigturret2 ` with a trailing space, and the world containers store
+//! directory-ish names such as `z:\crimsonrun\data\common\vessels\`. A name
+//! the grammar cannot spell is therefore **escaped** on its way into the key by
+//! [`escape_scene_node_name`], and read back by
+//! [`SceneNodeId::authored_names`]:
+//!
+//! | stored name | in the key |
+//! | --- | --- |
+//! | letters, digits, `_` | unchanged |
+//! | `-` (the escape character) | `-2d` |
+//! | `.` (the name-path separator) | `-2e` |
+//! | any other byte | `-` + that byte's two lowercase hex digits (a space, `0x20`, becomes `-20`) |
+//!
+//! The escape character is `-`, chosen because the nine archives' 56 620 names
+//! hold `_` 7 514 times but `-` only twice, and a name the grammar *can*
+//! spell must not have its id rewritten. An escape character is itself inside
+//! the grammar and so has to be escaped, which is what makes the reading
+//! unambiguous left to right: at a `-`, exactly two following lowercase hex
+//! digits are a byte and nothing else is an escape. The rule is therefore
+//! **reversible**, and no name is invented, trimmed or transliterated:
+//! [`ParsedNode::name`] and [`SceneNode::name`] keep the stored bytes, so the
+//! escape only ever decides how the name is *spelled in an id*.
+//!
+//! Case is the one documented loss: [`ContentId`] folds ASCII case centrally
+//! (`M01` and `m01` are one content item), so two stored names differing only
+//! in case derive one id and are refused as [`SceneError::DuplicateNodeId`]
+//! rather than disambiguated. Escaping the case would break the roster
+//! discovery's own case-insensitive match between a script-declared root name
+//! and the stored node name, so folding stays.
+//!
 //! # Transforms and mirroring
 //!
 //! An authored transform is a rotation (an euler triple, or the stored 3×3
@@ -163,13 +198,95 @@ pub const ZONE_DEFAULT: u32 = 255;
 
 // -------------------------------------------------------------- identity ---
 
+/// The character a `scene_node` key uses to spell a byte the key grammar
+/// cannot write as itself.
+///
+/// It has to be a character the grammar *allows*, because it is written into
+/// the key, and it has to be one names rarely hold: measured over all 56 620
+/// names of the nine GameZ archives, the grammar's punctuation is `_` 7 514
+/// times, `.` 1 599 times and `-` **twice** (`terpat01-128`, `terpat04-128`,
+/// both roots in world containers). Reserving `_` would rewrite the id of
+/// almost every node in the installation, so `-` is the one reserved, and
+/// [`escape_scene_node_name`] writes it as `-2d`.
+pub const SCENE_NODE_KEY_ESCAPE: u8 = b'-';
+
+/// The lowercase hex digits an escaped byte is written with.
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+/// Escapes one authored node name so it can be written as one `.`-separated
+/// component of a `scene_node` key.
+///
+/// The key grammar (`normalize_key` in `cs_types::content`) allows ASCII
+/// alphanumerics, `.`, `_` and `-`, so three kinds of stored name need help:
+///
+/// * a literal [`SCENE_NODE_KEY_ESCAPE`] (`-`), because the escape character
+///   itself must be escapable — it is written `-2d`;
+/// * a `.`, because `.` is this scheme's name-path separator, so a name
+///   spelling one itself would be indistinguishable from a nested path — it is
+///   written `-2e`;
+/// * anything else the grammar refuses — the name is written byte by byte as
+///   `-` plus that byte's two lowercase hex digits, so a trailing space
+///   (`0x20`) becomes `-20` and a stored `z:\crimsonrun\data\common\vessels\`
+///   becomes `z-3a-5ccrimsonrun-5cdata-5ccommon-5cvessels-5c`.
+///
+/// Letters, digits and `_` cross over unchanged and [`ContentId`] folds ASCII
+/// case itself. The transformation is **reversible**: read the result left to
+/// right, and at a `-` take the next two lowercase hex digits as one byte.
+/// Nothing here trims, transliterates or otherwise rewrites the name, and the
+/// stored name itself stays on [`ParsedNode::name`] and [`SceneNode::name`].
+#[must_use]
+pub fn escape_scene_node_name(name: &str) -> String {
+    let mut escaped = String::with_capacity(name.len());
+    for byte in name.bytes() {
+        match byte {
+            SCENE_NODE_KEY_ESCAPE => escaped.push_str("-2d"),
+            b'.' => escaped.push_str("-2e"),
+            b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'_' => escaped.push(char::from(byte)),
+            _ => {
+                escaped.push(char::from(SCENE_NODE_KEY_ESCAPE));
+                escaped.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+                escaped.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+            }
+        }
+    }
+    escaped
+}
+
+/// Reads one escaped name component back, or `None` when it is not something
+/// [`escape_scene_node_name`] could have written.
+fn unescape_scene_node_name(component: &str) -> Option<String> {
+    let bytes = component.as_bytes();
+    let mut name = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != SCENE_NODE_KEY_ESCAPE {
+            name.push(bytes[at]);
+            at += 1;
+            continue;
+        }
+        let digit = |byte: u8| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        };
+        let high = digit(*bytes.get(at + 1)?)?;
+        let low = digit(*bytes.get(at + 2)?)?;
+        name.push(high * 16 + low);
+        at += 3;
+    }
+    String::from_utf8(name).ok()
+}
+
 /// The stable identity of one scene node.
 ///
 /// Wraps a [`ContentId`] in the `scene_node` namespace. The key is the
 /// owning container's key plus the node's authored name-path joined by `.`
 /// (`scene_node/planes.corsair.wing_l`), so identity is semantic and stable
 /// across parses — never a mesh-array or node-array position (F11
-/// deliverable).
+/// deliverable). Every name in that path is escaped by
+/// [`escape_scene_node_name`] first, so a stored name the key grammar cannot
+/// spell still derives an id, and [`Self::authored_names`] reads the names
+/// back.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SceneNodeId(ContentId);
 
@@ -187,22 +304,53 @@ impl SceneNodeId {
         Ok(Self(id))
     }
 
-    /// The id derived from a container and an authored name-path.
+    /// The id for a name-path whose names are already escaped by
+    /// [`escape_scene_node_name`].
     ///
-    /// The path uses the authored names joined by `.`; normalization
-    /// (lowercasing, the key grammar) is [`ContentId`]'s, so a path that
-    /// cannot form a key is refused rather than transliterated.
+    /// Escaping is per authored name and never on the joined path: the `.`
+    /// between two names is the separator and has to stay unescaped, which is
+    /// what [`Self::authored_names`] relies on to read the path apart again.
     ///
     /// # Errors
     ///
-    /// [`SceneError::NodeId`] when the derived key violates the id grammar.
-    fn for_path(container: &ContentId, path: &str, node: u32) -> Result<Self, SceneError> {
+    /// [`SceneError::NodeId`] when the derived key violates the id grammar —
+    /// in practice an over-long name-path against
+    /// [`MAX_CONTENT_KEY_LEN`](cs_types::content::MAX_CONTENT_KEY_LEN), since
+    /// escaping leaves every name itself inside the grammar.
+    fn for_escaped_path(
+        container: &ContentId,
+        escaped_path: &str,
+        node: u32,
+    ) -> Result<Self, SceneError> {
         ContentId::from_source(
             ContentKind::SceneNode,
-            &format!("{}.{}", container.key(), path),
+            &format!("{}.{}", container.key(), escaped_path),
         )
         .map(Self)
         .map_err(|source| SceneError::NodeId { node, source })
+    }
+
+    /// The authored names this id spells, read back out of its key.
+    ///
+    /// `container` is the id of the owning container: the key is
+    /// `<container key>.<escaped name-path>`, so the path is what stands behind
+    /// that prefix, split on the `.` separators the escaping never produces
+    /// (`-2e`), and each component unescaped. This is the reading half of the
+    /// reversible rule [`escape_scene_node_name`] defines, and it is what makes
+    /// "the id says what the file said" checkable from outside this module.
+    ///
+    /// `None` when the key does not live directly under `container` or carries
+    /// an escape the escaping cannot have written, so a caller never reads back
+    /// a name out of an id this scheme could not have derived.
+    #[must_use]
+    pub fn authored_names(&self, container: &ContentId) -> Option<Vec<String>> {
+        let rest = self
+            .0
+            .key()
+            .strip_prefix(&format!("{}.", container.key()))?;
+        rest.split('.')
+            .map(unescape_scene_node_name)
+            .collect::<Option<Vec<_>>>()
     }
 
     /// The underlying catalog id.
@@ -239,6 +387,13 @@ pub struct SceneRootRef {
 
 impl SceneRootRef {
     /// Binds `root` to `container`.
+    ///
+    /// The check is on the key, and the key is built from escaped names (see
+    /// [`escape_scene_node_name`]), so the `.` separators that are left in it
+    /// are the name-path separators and a name holding a `.` of its own
+    /// contributes none: `ap_lightpole.flt` is spelled
+    /// `ap_lightpole-2eflt` and stays a root, while a nested path still
+    /// carries a separator and is refused.
     ///
     /// # Errors
     ///
@@ -536,7 +691,10 @@ pub struct MeshBinding {
 pub struct ParsedNode {
     /// Stored array slot.
     pub index: u32,
-    /// Authored display name (the stored 36-byte name field, decoded).
+    /// Authored display name: the stored name field exactly as it decoded,
+    /// spaces and punctuation included. Identity escapes this text (see
+    /// [`escape_scene_node_name`]) but never rewrites it, so what the store
+    /// said stays visible here.
     pub name: String,
     /// The node's kind tag and kind-specific data.
     pub kind: ParsedNodeKind,
@@ -1009,12 +1167,16 @@ impl SceneGraph {
     /// The hierarchy is validated before any node is produced: unique stored
     /// slots, in-range parent/child links, consistent parent↔child records,
     /// at least one root and no cycles. Each node's id derives from the
-    /// container key and its authored name-path; a collision between derived
-    /// ids is refused rather than disambiguated by position.
+    /// container key and its authored name-path, each name escaped by
+    /// [`escape_scene_node_name`] so a stored name the key grammar cannot spell
+    /// still derives an id; a collision between derived ids is refused rather
+    /// than disambiguated by position.
     ///
     /// `adapter` is the declared source convention every authored value is
     /// converted through exactly once; `bindings` supplies the
-    /// evidence-backed semantic mapping and may be empty.
+    /// evidence-backed semantic mapping and may be empty. Binding rules match
+    /// on the **authored** name-path ([`SceneNode::path`]), not on the escaped
+    /// one the id spells, so escaping changes no rule's spelling.
     ///
     /// # Errors
     ///
@@ -1092,27 +1254,40 @@ impl SceneGraph {
         // parent position. A node is reachable at most once — consistency
         // above forces a single parent — so a revisited node is an ownership
         // cycle (IDENTITY-CONTENT: invalid in parent hierarchies).
+        //
+        // Two paths are carried per node: the authored one, which binding rules
+        // match on and which [`SceneNode::path`] exposes, and the escaped one,
+        // which is what an id spells. They differ only where a stored name holds
+        // a character the key grammar cannot write, and the authored name
+        // itself is never rewritten.
         let mut order: Vec<usize> = Vec::with_capacity(nodes.len());
         let mut paths: Vec<Option<String>> = vec![None; nodes.len()];
+        let mut escaped: Vec<Option<String>> = vec![None; nodes.len()];
         let mut visited = vec![false; nodes.len()];
         for &root in &roots {
-            let mut stack: Vec<(usize, String)> = vec![(root, String::new())];
-            while let Some((position, prefix)) = stack.pop() {
+            let mut stack: Vec<(usize, String, String)> =
+                vec![(root, String::new(), String::new())];
+            while let Some((position, prefix, escaped_prefix)) = stack.pop() {
                 if visited[position] {
                     return Err(SceneError::Cycle {
                         node: nodes[position].index,
                     });
                 }
                 visited[position] = true;
-                let path = if prefix.is_empty() {
-                    nodes[position].name.clone()
+                let name = &nodes[position].name;
+                let (path, key) = if prefix.is_empty() {
+                    (name.clone(), escape_scene_node_name(name))
                 } else {
-                    format!("{prefix}.{}", nodes[position].name)
+                    (
+                        format!("{prefix}.{name}"),
+                        format!("{escaped_prefix}.{}", escape_scene_node_name(name)),
+                    )
                 };
                 paths[position] = Some(path.clone());
+                escaped[position] = Some(key.clone());
                 order.push(position);
                 for &child in nodes[position].children.iter().rev() {
-                    stack.push((position_of[&child], path.clone()));
+                    stack.push((position_of[&child], path.clone(), key.clone()));
                 }
             }
         }
@@ -1127,10 +1302,10 @@ impl SceneGraph {
 
         let mut ids: Vec<SceneNodeId> = Vec::with_capacity(nodes.len());
         let mut seen_ids: HashSet<SceneNodeId> = HashSet::new();
-        for (position, path) in paths.iter().enumerate() {
-            let id = SceneNodeId::for_path(
+        for (position, key) in escaped.iter().enumerate() {
+            let id = SceneNodeId::for_escaped_path(
                 container,
-                path.as_ref().expect("every node was reached"),
+                key.as_ref().expect("every node was reached"),
                 nodes[position].index,
             )?;
             if !seen_ids.insert(id.clone()) {
@@ -3138,6 +3313,10 @@ pub enum SceneError {
         name: String,
     },
     /// An authored name-path could not form a `scene_node` id.
+    ///
+    /// Escaping ([`escape_scene_node_name`]) keeps every name itself inside
+    /// the key grammar, so what is left here is a name-path whose key exceeds
+    /// [`MAX_CONTENT_KEY_LEN`](cs_types::content::MAX_CONTENT_KEY_LEN).
     NodeId {
         /// The stored slot of the offending node.
         node: u32,
@@ -3457,10 +3636,11 @@ impl From<SceneError> for GameZSceneError {
 ///   stated as a fact about the record, not invented;
 /// * `flags`, `zone_id`, the parent slot and the child slots cross over
 ///   untouched, and a node's **name** crosses over exactly as stored,
-///   including a name the id grammar will later refuse. Whether a name can
-///   form a `scene_node` key is [`SceneGraph::build`]'s verdict, not this
-///   function's: transliterating it here would invent an identity the store
-///   never had;
+///   including a name the key grammar cannot spell (`brigturret2 ` in the real
+///   `planes.zbd`). How such a name is *written into an id* is
+///   [`escape_scene_node_name`]'s rule and [`SceneGraph::build`]'s to apply:
+///   transliterating the name here would invent an identity the store never
+///   had;
 /// * a `mesh_index` of `-1` means no mesh and produces no binding; a
 ///   non-negative one resolves through `meshes`, or stays an explicit
 ///   [`Resolved::Unknown`] under claim `f11-node-array.mesh-slot-unresolved`
@@ -3477,7 +3657,7 @@ impl From<SceneError> for GameZSceneError {
 ///
 /// [`GameZSceneError::LodNearBound`] for a LOD record whose near bound has no
 /// real root. The hierarchy is **not** checked here: a cycle, a dangling
-/// parent, an inconsistent link, an unusable name or a derived-id collision is
+/// parent, an inconsistent link or a derived-id collision is
 /// [`SceneGraph::build`]'s refusal and is reported by
 /// [`scene_graph_from_gamez`], so the records survive a conversion that failed.
 pub fn parsed_nodes_from_gamez(
@@ -4702,7 +4882,15 @@ impl<'a> RosterWalk<'a> {
                     continue;
                 }
             };
-            let node = match SceneNodeId::for_path(&container, &pending.name, 0) {
+            // The root's id spells the script-declared name exactly as
+            // `SceneGraph::build` spells the stored node's name, so a script
+            // and a container agree through one escaping rule and not through
+            // two spellings that could drift.
+            let node = match SceneNodeId::for_escaped_path(
+                &container,
+                &escape_scene_node_name(&pending.name),
+                0,
+            ) {
                 Ok(node) => node,
                 Err(error) => {
                     self.issues.push(RosterDiscoveryIssue::RootRefRefused {
