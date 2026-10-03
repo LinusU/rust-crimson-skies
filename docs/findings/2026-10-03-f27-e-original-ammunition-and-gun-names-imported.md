@@ -106,9 +106,12 @@ rockets, F28's subject, not gun ammunition.)
   `OriginalAmmunitionIdentity::declared` /
   `OriginalGunAmmunitionCatalogue::declared_ammunition`.
 - `crates/cs_content/tests/accept_f27_e_original_ammunition_catalogue.rs` (new):
-  nine fast tests over the production importer and three `#[ignore = "requires
-  CS_GAME_DIR"]` tests that re-measure every id from the installation.
-- This file.
+  ten fast tests over the production importer and F27-D's audit, and three
+  `#[ignore = "requires CS_GAME_DIR"]` tests that re-measure every id from the
+  installation.
+- `crates/cs_content/tests/evidence_report_f27_e.rs` (new): the evidence
+  harness.
+- This file and `docs/findings/evidence/F27-E.json`.
 
 No protected path, no `Cargo.toml`/`Cargo.lock` change, no original asset, no
 binary file. **`crates/cs_sim/src/weapons/guns.rs` and
