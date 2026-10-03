@@ -1385,8 +1385,8 @@ pub const ORIGINAL_GUN_GROUP_NAMES_LAST_ID: u32 = 3080;
 /// assigning an inner- or outer-wing group to a side needs the per-airframe gun
 /// tables inside the executable, which no agent can read. F27-E narrowed that
 /// gap and left it open with evidence: the shipped UI language image does name
-/// nineteen of the twenty groups, and **none of the eleven uncovered groups'
-/// names says which side or which airframe** — `INNERWINGGUNS 3061` is "Inner
+/// nineteen of the twenty groups, and **no name among the eleven uncovered
+/// groups says which side or which airframe** — `INNERWINGGUNS 3061` is "Inner
 /// Wing Guns", with no left or right. So
 /// [`DeclaredGunMountKind::covers_group`] covers only the groups the label
 /// itself determines and [`ORIGINAL_GUN_GROUPS`] keeps every group addressable
@@ -2572,9 +2572,9 @@ pub fn synthetic_sound_id() -> ContentId {
 // a C include the original build generated, declares the identifier blocks
 // `IDS_GUNLONGNAME 3310`, `IDS_GUNSHORTNAME 3320`, `IDS_GUNDESCRIPTION 3330`,
 // `IDS_AMMOLONGNAME 3350`, `IDS_AMMOSHORTNAME 3360`, `IDS_AMMOABBRNAME 3365`
-// and `IDS_AMMODESCRIPTION 3370`, each a four-wide run for the ammunition
-// names, and the loadout screens ask the engine for four ammunition names
-// and five gun names.
+// and `IDS_AMMODESCRIPTION 3370`. The declares give each block's first id, not
+// its width: the loadout screens ask the engine for four ammunition names and
+// five gun names, and the widths below are what the shipped image holds.
 //
 // Those declares say *where* the text is; this section reads *what* it is.
 // The text is not in `crimson.exe` — whose code sections are copy-protected
