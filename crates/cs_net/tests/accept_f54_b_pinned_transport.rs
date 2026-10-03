@@ -38,7 +38,7 @@ use cs_net::transport::{
 use cs_net::validation::{Admission, SessionViolation, synthetic_fire_message};
 use cs_types::Tick;
 use cs_types::evidence::ContentHash;
-use cs_types::net::{ActorId, PeerId, SessionId};
+use cs_types::net::{ActorId, PeerId, SessionAllocator, SessionId};
 
 /// The elapsed time fed to each transport update. Loopback delivery needs no
 /// real sleep; the updates only need to run often enough to exchange the
@@ -728,6 +728,19 @@ fn accept_f54_b_disconnect_event_arrives_once() {
     link.host_until(
         |event| matches!(event, HostEvent::PeerDeparted { peer } if *peer == grant.peer),
     );
+}
+
+#[test]
+fn accept_f54_b_session_allocator_mints_live_epochs() {
+    let mut allocator = SessionAllocator::new();
+    let first = allocator.allocate().expect("the first session allocates");
+    let second = allocator.allocate().expect("the second session allocates");
+    assert_eq!(first, SessionId::new(1).expect("session 1"));
+    assert!(second > first, "session epochs are monotonic");
+
+    // A minted epoch is a live session the transport binds and grants.
+    let (_link, grant) = Link::admitted(second, synthetic_parameters(), 42);
+    assert_eq!(grant.session, second);
 }
 
 #[test]
