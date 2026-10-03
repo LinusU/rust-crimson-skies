@@ -3,7 +3,7 @@
 Status: designed behavior, **not** original-verified. Code:
 `cs_content::objectives` (declared schema), `cs_app::objectives`
 (`lower_program`, `ObjectiveSession`, consumers), acceptance:
-`crates/cs_app/tests/accept_f39_c_objective_session.rs` (8 tests, prefix
+`crates/cs_app/tests/accept_f39_c_objective_session.rs` (9 tests, prefix
 `accept_f39_c_`) plus the two schema tests inside
 `crates/cs_content/src/objectives.rs` (`accept_f39_c_` unit tests).
 
@@ -27,8 +27,14 @@ observable failure this stage closed. The wiring is three pieces:
   Because `cs_content` cannot depend on `cs_sim`/`cs_script`, the record keeps
   its own vocabulary (`ProgramSymbol`, `ProgramActor`, `Declared*` enums) and
   `try_new` closes the world: every reveal rule, timer start, timer action
-  and count reaction may only name a declaration of the same program (signals
-  are the open set — a program may raise one nothing declared).
+  and count reaction may only name a declaration of the same program; a
+  signal name may name the open set but never an ambiguous one — not the
+  reserved actor-event symbol, not a symbol the program declares — because a
+  raised signal reports under its own name and would alias that
+  declaration's events; and a move or watch may only target a state a
+  declared event can produce (`Active`, `Succeeded`, `Failed`, `Superseded`),
+  because the transitions into `Hidden`, `Pending` and `Optional` all start
+  from `Hidden`, which only the reveal rule may leave.
 - `cs_app::objectives::lower_program` — the conversion boundary
   (`LoweredObjectives`): each declared record lowered field-wise into the
   runtime declarations (`ObjectiveSpec`, `CountCondition`, `MissionTimer`,
@@ -121,10 +127,14 @@ fail the suite if removed:
 - Cross-reference validation dropped from the schema: the
   dangling-name/dead-declaration refusals in
   `accept_f39_c_the_schema_refuses_dangling_names_and_dead_declarations`
-  fail. One subtlety found while wiring: a `Vec` roster with duplicates would
-  have passed `required <= roster.len()` while the lowered `BTreeSet`
-  collapsed it below `required` — a dead declaration; `required` is now
-  checked against the deduplicated roster.
+  fail — including the signal non-aliasing refusals (a signal named `0` or a
+  declared symbol) and the dead-target refusals (a move or watch aiming at
+  `Hidden`, `Pending` or `Optional`). One subtlety found while wiring: a
+  `Vec` roster with duplicates would have passed `required <= roster.len()`
+  while the lowered `BTreeSet` collapsed it below `required` — a dead
+  declaration; `required` is now checked against the deduplicated roster.
+- `retry` accepting the live generation: the
+  `accept_f39_c_a_retry_cannot_rebuild_the_live_generation` test fails.
 
 ## Designed rules (synthetic only)
 
@@ -132,7 +142,27 @@ fail the suite if removed:
   action or count reaction may only name a declaration of the same program;
   a mission whose deadline or wave was never declared is refused at
   `try_new`, where F39-B noted the runtime could only catch a dangling name
-  at use. Signal symbols are the declared open set.
+  at use. Signal symbols are the declared open set, bounded by
+  non-aliasing: a signal reference naming the reserved actor-event source
+  or a declared symbol is refused, and a move or watch may only target a
+  state a declared event can produce — `Hidden`, `Pending` and `Optional`
+  are unreachable targets and refused as dead declarations.
+- **Declared actors and spawned instances share one `ActorId` space.** The
+  runtime allocates wave instances from `ActorId(1)` upward in admission
+  order (earlier tick first, then the expiring timers' symbol order), so a
+  roster or trigger naming one of those ids names the spawned instance —
+  the only way a condition counts a wave. A pre-placed actor's id must
+  therefore sit outside the range its program's waves allocate; the fixture
+  keeps `actor(7)` and `actor(41)` above the six ids its three two-raider
+  waves take. Which actor ids original missions used is unmeasured.
+- **A retry must advance the generation.** `retry` refuses the live
+  `SessionGeneration` by name: the whole staleness guarantee is that the
+  rebuilt session's artifacts carry a stamp the torn-down ones do not.
+- **A raised signal is the producer's contract.** The schema refuses the
+  colliding names it can see; a `TickInput.signals` fact under a declared
+  name or `0` is a producer-side violation the runtime does not police —
+  the producer surface already injects lifecycles, movements and requests
+  on trust.
 - **Declared domains map to declared policies.** `Simulation` lowers to
   `ClockPolicy::single_player_simulation` and `AuthoritativeGameplay` to
   `authoritative_gameplay` — both freeze while paused; a `UiWall` or
@@ -169,6 +199,15 @@ fail the suite if removed:
   F39-A/B): reachable only by a caller that reports them. The live registry
   treats `Escaped` as gone and keeps `Disabled`, on the semantics of the
   categories themselves.
+- **Self-watching and mutually watching declarations are still allowed.**
+  An `OnObjectiveState` watch on its own symbol, or a cycle of them, simply
+  never fires — a deferred liveness question, not a dead-declaration one,
+  so the schema does not refuse it.
+- **Reward and spawn-subject content kinds are unchecked.** A
+  `GrantOptionalReward` id that is not an `objective`/reward kind and a
+  spawn-group subject that is not an airframe still lower and run: the
+  original vocabulary for both is unmeasured, so this stage keeps them
+  open rather than guessing a kind.
 - **Cue playback and spawn instantiation are hand-offs, not consumers.**
   `drain_cues` hands one `EmittedCue` to the dialogue system once; what plays
   the `dialogue` content id is the audio/dialogue stage's business (F41+).
