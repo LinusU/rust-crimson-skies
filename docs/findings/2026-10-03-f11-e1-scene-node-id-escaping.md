@@ -130,6 +130,33 @@ the 3 317 ids reads back to the name-path the file holds, and `planes.zbd`
 holds **no** name with a `-`, a `.` or an upper-case letter, so those six ids
 are the only ones this rule moves in that container.
 
+### How much of the corpus's refusal rate the escaping removes
+
+Counted over each archive's **stored** hierarchy (a name-path walked up the
+`parent` links, spelled once with the old unescaped scheme and once with this
+one, and each spelling offered to `ContentId::from_source`):
+
+| archive | refused by the unescaped scheme | refused after the escaping | records sharing a name-path with another record |
+| --- | --- | --- | --- |
+| `planes.zbd` | 6 | **0** | 0 |
+| `C1` | 314 | 314 | 879 |
+| `C1B` | 380 | **356** | 1 830 |
+| `C1C` | 685 | 685 | 1 106 |
+| `C2` | 294 | 294 | 346 |
+| `C2B` | 355 | 355 | 1 227 |
+| `C3` | 312 | **288** | 32 |
+| `C4` | 418 | 418 | 1 822 |
+| `C5` | 724 | 724 | 2 015 |
+
+So the rule removes every character refusal the corpus holds — the six in
+`planes.zbd`, the 24 in `C1B` (the `:` name) and the 24 in `C3` (the `\` name) —
+and leaves two refusals it does not touch: a name-path longer than
+`MAX_CONTENT_KEY_LEN`, and two records sharing one name-path (which stays
+`SceneError::DuplicateNodeId`, because F11-A's rule is that ambiguity is never
+resolved by position). The last column corroborates F18-A0's own
+`docs/findings/2026-10-03-f18-world-hierarchy-authority.md`, which measured
+"32 to 2 015" duplicate name-paths over the same archives.
+
 ### What the escaping changes outside `planes.zbd`
 
 Measured over the other eight archives (none of which converts yet, see the
@@ -213,6 +240,11 @@ only its column entry needs the retail capability:
   **Unmeasured:** whether the child lists are a partial index or the parent slots
   are authoritative. Filed as a follow-up; the reference reads both and asserts
   they agree, so it would refuse them too.
+  (F18-A0, merged after this task was written, reconciles those child lists and
+  reaches the build through `cs_content::world::world_scene_graph_from_gamez`; the
+  refusal it then meets is this id scheme's, and the table above says how much of
+  it this escaping removes: the character half of it, leaving the over-long paths
+  and the duplicate name-paths.)
 - **A name-path longer than `MAX_CONTENT_KEY_LEN` (128 bytes) is still refused**,
   as `SceneError::NodeId { source: KeyTooLong }`. **Affected content:** the world
   containers, whose longest authored name-paths measure **136 bytes** in six
