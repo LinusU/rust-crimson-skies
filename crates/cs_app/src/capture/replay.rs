@@ -366,11 +366,27 @@ pub struct RunRequest<'a> {
     pub ticks: u64,
 }
 
+/// One recorded run: the promise and the readings behind it.
+///
+/// The readings are the *raw* measurements — the pose Avian reported and the
+/// forces the tick's own law computed — so a caller (or a review) can inspect
+/// what each promised hash was taken over instead of taking the hash's word for
+/// it. `readings[0]` is the run's initial state and the rest are ticks
+/// `1..=record.last_tick` in order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordedRun {
+    /// The record the run produced.
+    pub record: ReplayRecord,
+    /// Every measured reading, oldest first, starting with the spawn state.
+    pub readings: Vec<StateReading>,
+}
+
 /// Records a run: flies `stream` for `ticks` ticks and returns the promise.
 ///
 /// The returned record's `promised` envelope is the state the world actually
 /// produced, measured by [`StateProbe`]; nothing here writes a state hash from
-/// the input or from a fixture description.
+/// the input or from a fixture description. Use [`record_run`] when the raw
+/// readings behind the promise are wanted too.
 ///
 /// # Errors
 ///
@@ -379,8 +395,16 @@ pub struct RunRequest<'a> {
 /// requested tick count disagree, and [`CaptureRunError::UnconsumedAction`],
 /// which means the stream carries a press this run cannot execute.
 pub fn record(request: &RunRequest<'_>) -> Result<ReplayRecord, CaptureRunError> {
-    let (record, _) = fly(request)?;
-    Ok(record)
+    record_run(request).map(|run| run.record)
+}
+
+/// Records a run and returns the measurements the promise was taken over.
+///
+/// # Errors
+///
+/// As [`record`].
+pub fn record_run(request: &RunRequest<'_>) -> Result<RecordedRun, CaptureRunError> {
+    fly(request)
 }
 
 /// Replays a record in a fresh world and reports what happened.
@@ -419,21 +443,21 @@ pub fn replay(
         stream: &record.stream,
         ticks,
     };
-    let (candidate, probe) = fly(&request)?;
+    let candidate = fly(&request)?;
     Ok(ReplayOutcome {
-        verdict: record.compatibility_with(&candidate, policy),
-        observed: probe.envelope().clone(),
-        comparison: record.verdict_against(probe.envelope()),
+        verdict: record.compatibility_with(&candidate.record, policy),
+        observed: candidate.record.promised.clone(),
+        comparison: record.verdict_against(&candidate.record.promised),
         ticks,
     })
 }
 
-/// Flies one request and returns both the record and the probe that measured it.
+/// Flies one request and returns the record and the readings behind it.
 ///
 /// Recording and replaying share this one function on purpose: a replay that
 /// took a different path from the recording would be comparing a promise to
 /// something other than a replay of it.
-fn fly(request: &RunRequest<'_>) -> Result<(ReplayRecord, StateProbe), CaptureRunError> {
+fn fly(request: &RunRequest<'_>) -> Result<RecordedRun, CaptureRunError> {
     let subject = request.subject;
     if subject.fixed_hz == 0 {
         return Err(CaptureRunError::ZeroTickRate);
@@ -458,11 +482,14 @@ fn fly(request: &RunRequest<'_>) -> Result<(ReplayRecord, StateProbe), CaptureRu
 
     let mut controls = ControlBuffer::new();
     let mut probe = StateProbe::new();
-    probe.start(&StateReading::at_spawn(
+    let mut readings = Vec::with_capacity(request.ticks as usize + 1);
+    let start = StateReading::at_spawn(
         session
             .pose(body)
             .ok_or(CaptureRunError::BodyLost { tick: Tick(0) })?,
-    ))?;
+    );
+    probe.start(&start)?;
+    readings.push(start);
 
     for step in 1..=request.ticks {
         let tick = Tick(step);
@@ -493,7 +520,9 @@ fn fly(request: &RunRequest<'_>) -> Result<(ReplayRecord, StateProbe), CaptureRu
             .and_then(|world| world.get::<FlightAircraft>(body))
             .and_then(FlightAircraft::last_output)
             .ok_or(CaptureRunError::BodyLost { tick })?;
-        probe.measure(&StateReading::after_tick(tick, pose, output))?;
+        let reading = StateReading::after_tick(tick, pose, output);
+        probe.measure(&reading)?;
+        readings.push(reading);
     }
 
     if probe.is_empty() {
@@ -530,7 +559,7 @@ fn fly(request: &RunRequest<'_>) -> Result<(ReplayRecord, StateProbe), CaptureRu
         extra: Vec::new(),
     };
     record.validate().map_err(CaptureRunError::Record)?;
-    Ok((record, probe))
+    Ok(RecordedRun { record, readings })
 }
 
 /// Refuses a stream whose frames fall outside the ticks the run drives.

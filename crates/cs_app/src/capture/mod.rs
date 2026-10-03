@@ -62,7 +62,7 @@ pub use identity::{
 };
 pub use render::{render_for, settings_for, tonemap_for, tonemap_label};
 pub use replay::{
-    BuildContext, CaptureRunError, INITIAL_STATE_LABEL_SUFFIX, ReplayOutcome, ReplaySubject,
-    RunRequest, record, replay,
+    BuildContext, CaptureRunError, INITIAL_STATE_LABEL_SUFFIX, RecordedRun, ReplayOutcome,
+    ReplaySubject, RunRequest, record, record_run, replay,
 };
 pub use state::{STATE_DIGEST_DOMAIN, StateProbe, StateProbeError, StateReading};

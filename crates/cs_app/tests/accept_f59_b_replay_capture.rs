@@ -15,7 +15,7 @@
 use cs_app::capture::identity::{AIRFRAME_CONTENT_KEY, LoadedContent, airframe_content_digest};
 use cs_app::capture::render::{render_for, settings_for};
 use cs_app::capture::replay::{
-    BuildContext, CaptureRunError, ReplaySubject, RunRequest, record, replay,
+    BuildContext, CaptureRunError, ReplaySubject, RunRequest, record, record_run, replay,
 };
 use cs_app::capture::state::{StateProbe, StateProbeError, StateReading};
 use cs_app::physics::{FlightSpawnSpec, PhysicsSample};
@@ -515,6 +515,55 @@ fn accept_f59_b_a_non_finite_state_is_refused_rather_than_hashed() {
     );
 }
 
+/// The state hash covers the tick it was measured at and the forces that tick
+/// computed, not only the pose.
+///
+/// Two readings that share a pose must still separate when their tick differs or
+/// when the tick's own law produced different forces — otherwise a hash that
+/// only looked at where the aircraft was would call a run identical while the
+/// flight model's own reading of that tick moved. This fails if the digest drops
+/// the tick, the world force or the instrument state.
+#[test]
+fn accept_f59_b_a_state_hash_covers_the_tick_and_the_forces_it_computed() {
+    let pose = rest_pose();
+    let neutral = finite_output();
+    let pulled = output_for(cs_sim::flight::FlightInput {
+        pitch: 0.5,
+        ..cs_sim::flight::FlightInput::NEUTRAL
+    });
+
+    assert_ne!(
+        StateReading::after_tick(Tick(1), pose, neutral).digest(),
+        StateReading::after_tick(Tick(2), pose, neutral).digest(),
+        "the measured tick is part of what the hash is about"
+    );
+    assert_ne!(
+        StateReading::after_tick(Tick(1), pose, neutral).digest(),
+        StateReading::after_tick(Tick(1), pose, pulled).digest(),
+        "the tick's computed forces are part of the measured state"
+    );
+    assert_eq!(
+        StateReading::after_tick(Tick(1), pose, neutral).digest(),
+        StateReading::after_tick(Tick(1), pose, neutral).digest(),
+        "the same measurement hashes the same way twice"
+    );
+
+    // And the two land as two different entries of one real envelope.
+    let mut probe = StateProbe::new();
+    probe
+        .start(&StateReading::at_spawn(pose))
+        .expect("a finite spawn state is measured");
+    probe
+        .measure(&StateReading::after_tick(Tick(1), pose, neutral))
+        .expect("tick 1 is measured");
+    probe
+        .measure(&StateReading::after_tick(Tick(2), pose, pulled))
+        .expect("tick 2 is measured");
+    let entries = probe.envelope().entries();
+    assert_eq!(entries.len(), 2);
+    assert_ne!(entries[0].state, entries[1].state);
+}
+
 /// A tick measured before the run's start is refused: the envelope chains from
 /// the initial state, so an envelope without one has nothing to hang from.
 #[test]
@@ -545,6 +594,63 @@ fn accept_f59_b_the_recorded_run_survives_the_document_form() {
         decoded.compatibility_signature(),
         recorded.compatibility_signature()
     );
+}
+
+/// Each recorded hash is over a reading the world's own aircraft produced.
+///
+/// The recorder must read the pose Avian reported **and** the forces the tick's
+/// own flight law computed, and the two halves must describe the same tick. The
+/// airspeed the law reports and the speed Avian integrated are two independent
+/// measurements of the same instant: if the recorder fabricated the output, or
+/// reused one tick's output for every tick, the second half would contradict the
+/// first and this fails.
+#[test]
+fn accept_f59_b_every_promised_hash_is_over_this_tick_s_own_measurement() {
+    let build = build();
+    let subject = subject();
+    let stream = fixture_stream();
+    let run = record_run(&request(&subject, &build, &stream)).expect("the run records");
+
+    assert_eq!(run.readings.len(), RUN_TICKS as usize + 1);
+    assert_eq!(run.readings[0].tick, Tick(0));
+    assert!(
+        run.readings[0].output.is_none(),
+        "no tick ran before the spawn state"
+    );
+
+    let mut previous_speed: Option<f64> = None;
+    for reading in &run.readings[1..] {
+        let output = reading
+            .output
+            .as_ref()
+            .expect("every tick after the spawn ran one flight computation");
+        let integrated = speed_m_s(&reading.pose.linear_velocity_m_s);
+        let reported = output.instrument_state.airspeed_mps;
+        assert!(
+            (reported - integrated).abs() < 1.0,
+            "tick {} reports {reported} m/s while the world integrated {integrated} m/s",
+            reading.tick.0
+        );
+        // `q = 1/2 rho V^2` at sea-level density: the instrument state must be
+        // internally consistent with the airspeed it reports.
+        let expected_q = 0.5 * 1.225 * reported * reported;
+        assert!(
+            (output.instrument_state.dynamic_pressure_pa - expected_q).abs() < 1.0,
+            "tick {} reports a dynamic pressure inconsistent with its own airspeed",
+            reading.tick.0
+        );
+        // A held stick keeps pulling, so the ticks cannot all report one
+        // repeated value: a constant output for the whole run would satisfy the
+        // checks above at tick 1 and nothing after it.
+        if let Some(previous) = previous_speed {
+            assert_ne!(
+                previous.to_bits(),
+                reported.to_bits(),
+                "every tick reported the same airspeed; the law was not re-evaluated"
+            );
+        }
+        previous_speed = Some(reported);
+    }
 }
 
 /// The render configuration the capture record pins and the settings the
@@ -674,18 +780,42 @@ fn rest_pose() -> PhysicsSample {
     }
 }
 
+/// The magnitude of a velocity vector, in m/s.
+fn speed_m_s(velocity: &[f32; 3]) -> f64 {
+    velocity
+        .iter()
+        .map(|component| f64::from(*component) * f64::from(*component))
+        .sum::<f64>()
+        .sqrt()
+}
+
 /// A finite flight output, for the probe-only cases that never integrate.
 fn finite_output() -> cs_sim::flight::FlightOutput {
+    output_for(cs_sim::flight::FlightInput::NEUTRAL)
+}
+
+/// One tick of the production flight law's output for `command`, at the
+/// fixture's declared cruise state.
+///
+/// The state carries airspeed rather than being at rest: at zero dynamic
+/// pressure the attitude controller has no authority, so a pulled stick would
+/// compute exactly the neutral tick's forces and the comparison above would be
+/// comparing two equal values.
+fn output_for(command: cs_sim::flight::FlightInput) -> cs_sim::flight::FlightOutput {
+    let state = cs_sim::flight::FlightState {
+        linear_velocity_mps: [0.0, 0.0, -120.0],
+        ..cs_sim::flight::FlightState::at_rest(cs_types::space::Quaternion::IDENTITY)
+    };
     cs_sim::flight::FlightModel::new(synthetic_fixed_wing())
         .compute(
             &cs_sim::flight::FlightEnvironment::SEA_LEVEL,
             &cs_sim::flight::LoadoutMass::EMPTY,
             &cs_sim::flight::DamageState::PRISTINE,
-            &cs_sim::flight::FlightState::at_rest(cs_types::space::Quaternion::IDENTITY),
-            &cs_sim::flight::FlightInput::NEUTRAL,
+            &state,
+            &command,
             1.0 / 64.0,
         )
-        .expect("the neutral state computes finite forces")
+        .expect("the cruise state computes finite forces")
 }
 
 fn file_row(key: &str, bytes: &[u8]) -> cs_types::install::InstallFileRecord {

@@ -50,7 +50,7 @@ pub const STATE_DIGEST_DOMAIN: &[u8] = b"cs.f59.state.reading.v1";
 /// authoritative Avian read-back and `output` is what the tick's own flight law
 /// computed. [`at_spawn`](Self::at_spawn) is the one reading without an output,
 /// because no tick has run yet.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StateReading {
     /// The tick the reading describes.
     pub tick: Tick,
