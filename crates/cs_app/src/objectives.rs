@@ -141,6 +141,8 @@
 //! lifecycle this stage wires.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::fmt;
+use std::path::Path;
 
 use avian3d::prelude::PhysicsSystems;
 use bevy::{
@@ -148,11 +150,13 @@ use bevy::{
     prelude::{App, Entity, FixedPostUpdate, Plugin, Res, ResMut, Resource},
 };
 use cs_content::objectives::{
-    DeclaredCompletion, DeclaredCountKind, DeclaredCountReaction, DeclaredObjectiveProgram,
-    DeclaredObjectiveState, DeclaredPrecedence, DeclaredRevealRule, DeclaredTerminalOutcome,
-    DeclaredTimeDomain, DeclaredTimer, DeclaredTimerAction, DeclaredTimerStart, DeclaredVolume,
-    ProgramActor, ProgramSymbol,
+    BRANCH_KEY_VOCABULARY, DeclaredCompletion, DeclaredCountKind, DeclaredCountReaction,
+    DeclaredObjectiveProgram, DeclaredObjectiveState, DeclaredPrecedence, DeclaredRevealRule,
+    DeclaredTerminalOutcome, DeclaredTimeDomain, DeclaredTimer, DeclaredTimerAction,
+    DeclaredTimerStart, DeclaredVolume, FAILURE_KEY_VOCABULARY, ProgramActor, ProgramSymbol,
+    is_optional_objective_key,
 };
+use cs_content::stunts::SCENARIO_OBJECTIVES_MEMBER;
 use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
 use cs_sim::objectives::counters::CountKind;
@@ -169,6 +173,7 @@ use cs_sim::time::ClockPolicy;
 use cs_types::Tick;
 use cs_types::content::{ContentId, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::install::RelativePath;
 
 use crate::physics::{PhysicsTickLedger, SpawnPreflightLog};
 
@@ -503,6 +508,21 @@ impl LoweredObjectives {
 /// Why a declared objective program could not be lowered.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProgramLowerError {
+    /// The record's [`DeclaredSupport`](cs_content::objectives::DeclaredSupport)
+    /// says its objective semantics are not recovered, so a designed
+    /// progression must not be run under this mission's id
+    /// (`docs/contracts/SCRIPT-MISSION.md`: *"If the actual program is
+    /// unavailable or cannot be decoded, the mission remains Unsupported."*).
+    ///
+    /// This is the gate, not a warning. A mission whose branching, optional and
+    /// failure conditions were not recovered has no objectives a session may
+    /// complete, so there is nothing to launch.
+    UnsupportedProgram {
+        /// The mission the record belongs to.
+        subject: ContentId,
+        /// Why the semantics are not recovered, as the record states it.
+        reason: String,
+    },
     /// The declared precedence is `Resolved::Unknown`: the original rule is
     /// unmeasured and a session must not pick one in the record's place.
     UnknownPrecedence {
@@ -546,6 +566,9 @@ pub enum ProgramLowerError {
 impl std::fmt::Display for ProgramLowerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::UnsupportedProgram { subject, reason } => {
+                write!(f, "mission {subject} has no recovered objectives: {reason}")
+            }
             Self::UnknownPrecedence { reason, .. } => {
                 write!(f, "the terminal precedence is unknown: {reason}")
             }
@@ -719,6 +742,12 @@ const fn lower_volume(volume: DeclaredVolume) -> Volume {
 /// Lowers a validated declared objective program into the runtime records a
 /// session launches from.
 ///
+/// A record whose [`DeclaredSupport`](cs_content::objectives::DeclaredSupport)
+/// says its semantics were not recovered is refused **first**, by name, with
+/// the reason the record carries: there are no supported objectives to lower,
+/// and a session that ran them would be substituting a designed progression for
+/// an original mission's branching, optional and failure conditions.
+///
 /// Every `Resolved::Unknown` refuses by name rather than becoming a default,
 /// and every constructor refusal of the runtime layer is reported with the
 /// declared symbol that caused it — the same boundary discipline as
@@ -726,10 +755,18 @@ const fn lower_volume(volume: DeclaredVolume) -> Volume {
 ///
 /// # Errors
 ///
-/// [`ProgramLowerError`] naming the first declaration that could not lower.
+/// [`ProgramLowerError::UnsupportedProgram`] for an unrecovered record, then
+/// [`ProgramLowerError::UnknownPrecedence`] and the runtime constructor
+/// refusals, naming the first declaration that could not lower.
 pub fn lower_program(
     declared: &DeclaredObjectiveProgram,
 ) -> Result<LoweredObjectives, ProgramLowerError> {
+    if let Some(reason) = declared.support().refusal() {
+        return Err(ProgramLowerError::UnsupportedProgram {
+            subject: declared.subject().clone(),
+            reason: reason.to_owned(),
+        });
+    }
     let precedence = match declared.precedence() {
         Resolved::Known(known) => lower_precedence(known.value),
         Resolved::Unknown { claim_id, reason } => {
@@ -1437,4 +1474,380 @@ impl ObjectiveSession {
         self.live.clear();
         Ok(report)
     }
+}
+
+// ---------------------------------------------------------------------------
+// F39-D: the retail objective-record census
+// ---------------------------------------------------------------------------
+//
+//
+// The stage's own question — "validate original branching, optional and
+// failure conditions" — is not answerable from design, so this half measures
+// the original's own objective records on the read-only installation.
+//
+// **What is measured.** Every mission-scoped reader archive
+// (`zbd/<group>/<mission>/zrdr.zbd`) is opened with the F06 two-key dispatch,
+// its `objectives.zrd` member is decoded with the production `.zrd` reader, and
+// the numbered `OBJECTIVE<N>` blocks are read through
+// [`cs_content::stunts::objective_state_machine`]. The census reports, per
+// mission: the member's provenance span, how many blocks the mission declares,
+// the **complete** key vocabulary inside those blocks with the number of blocks
+// each key occurs in, and which keys match a declared search vocabulary for
+// branching, for optionality and for failure.
+//
+// **What is not measured, and why.** A census of key *names* is a vocabulary
+// measurement, not a decoded behaviour: it says which declarations the original
+// writes, never what one does, and a negative result ("no such key occurs")
+// bounds the vocabulary, not the game's behaviour. F13's mission-language
+// instruction table is still unmeasured, so the compiled program behind these
+// records is not decoded at all; nothing here reads an opcode. And no original
+// executable was run, so nothing here is evidence of how the game behaves —
+// only of what its files declare.
+//
+// **Why it matters to the engine.** F39 AC04 speaks of completing *supported*
+// objectives. This census is where "supported" gets its content: whatever the
+// original's objective records do and do not declare is what a declared
+// program may claim to have recovered, and
+// [`cs_content::objectives::DeclaredSupport`] carries the verdict. On the
+// owner's installation the measured answer is that no original mission declares
+// a branching, optional or failure condition this stage can read — so every
+// original mission is Unsupported for exactly the semantics F39 names, and
+// [`lower_program`] refuses such a record by name rather than substituting a
+// designed progression for it.
+
+/// The reader archive a mission's objective record lives in.
+const MISSION_READER_ARCHIVE: &str = "zrdr.zbd";
+
+/// Why the retail objective-record census could not be produced.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ObjectiveCensusError {
+    /// The installation could not be discovered. The reason is rendered rather
+    /// than carried as the discovery error type, so the census's own error
+    /// stays comparable and printable on its own.
+    Discovery(String),
+    /// A mission reader archive could not be read from disk or is missing from
+    /// the inventory.
+    Read {
+        /// The archive's logical key.
+        container: String,
+        /// Why the read failed.
+        reason: String,
+    },
+    /// A mission's objective record did not decode as `.zrd`.
+    Decode {
+        /// The archive's logical key.
+        container: String,
+        /// The decoder's refusal code.
+        code: &'static str,
+        /// Offset of the refusal inside the member.
+        offset: u64,
+    },
+}
+
+impl fmt::Display for ObjectiveCensusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Discovery(reason) => {
+                write!(f, "the installation could not be discovered: {reason}")
+            }
+            Self::Read { container, reason } => {
+                write!(f, "reader archive {container} could not be read: {reason}")
+            }
+            Self::Decode {
+                container,
+                code,
+                offset,
+            } => write!(
+                f,
+                "{container}'s objective record did not decode: {code} at offset {offset}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ObjectiveCensusError {}
+
+/// One mission's measured objective record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailObjectiveRow {
+    /// The mission, as `zbd/<group>/<mission>`.
+    pub mission: String,
+    /// The reader archive's logical key.
+    pub container: String,
+    /// SHA-256 of that whole archive, from production discovery.
+    pub container_sha256: String,
+    /// The objective member's name (`objectives.zrd`).
+    pub member: String,
+    /// The absolute offset of the member's first byte inside the archive.
+    pub member_offset: u64,
+    /// The member's length in bytes.
+    pub member_len: u64,
+    /// SHA-256 of the member's own bytes.
+    pub member_sha256: String,
+    /// How many numbered `OBJECTIVE<N>` blocks the mission declares. This is
+    /// the measured count of *declared* objectives, in blocks, not a decoded
+    /// objective graph.
+    pub blocks: u32,
+    /// The complete key vocabulary inside those blocks, sorted by key, with the
+    /// number of blocks each key occurs in.
+    pub keys: Vec<(String, u32)>,
+    /// Occurrences of [`BRANCH_KEY_VOCABULARY`] keys across those blocks.
+    pub branching_sites: u32,
+    /// Occurrences of the optionality keys across those blocks: the
+    /// `INACTIVE<n>` stages, `INACTIVE_COMPLETION_COUNT` and `BEGIN_DORMANT`.
+    pub optional_sites: u32,
+    /// Occurrences of [`FAILURE_KEY_VOCABULARY`] keys across those blocks.
+    pub failure_sites: u32,
+}
+
+impl RetailObjectiveRow {
+    /// The census's per-mission measurement, as the record's own type.
+    ///
+    /// The same numbers under the same names, so a refusal can carry the census
+    /// without a second translation of them.
+    #[must_use]
+    pub fn measured(&self) -> cs_content::objectives::MeasuredObjectiveRecord {
+        cs_content::objectives::MeasuredObjectiveRecord {
+            container: self.container.clone(),
+            member: self.member.clone(),
+            sha256: self.member_sha256.clone(),
+            byte_len: self.member_len,
+            blocks: self.blocks,
+            branching_sites: self.branching_sites,
+            optional_sites: self.optional_sites,
+            failure_sites: self.failure_sites,
+        }
+    }
+}
+
+/// The measured objective records of every mission-scoped reader archive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailObjectiveCensus {
+    install_sha256: String,
+    rows: Vec<RetailObjectiveRow>,
+}
+
+impl RetailObjectiveCensus {
+    /// SHA-256 of the whole installation manifest, from production discovery.
+    #[must_use]
+    pub fn install_sha256(&self) -> &str {
+        &self.install_sha256
+    }
+
+    /// The measured rows, one per mission, sorted by mission.
+    #[must_use]
+    pub fn rows(&self) -> &[RetailObjectiveRow] {
+        &self.rows
+    }
+
+    /// How many missions the census measured.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether the census measured nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The row for one mission, by its `zbd/<group>/<mission>` label.
+    #[must_use]
+    pub fn row(&self, mission: &str) -> Option<&RetailObjectiveRow> {
+        self.rows.iter().find(|row| row.mission == mission)
+    }
+
+    /// How many `OBJECTIVE<N>` blocks the installation declares in total.
+    #[must_use]
+    pub fn blocks(&self) -> u32 {
+        self.rows.iter().map(|row| row.blocks).sum()
+    }
+
+    /// The union of every measured key vocabulary, sorted, with the total
+    /// number of blocks each key occurs in.
+    ///
+    /// The census publishes this beside every classification, so the families
+    /// below can be read against the vocabulary they were drawn from instead of
+    /// taken on trust.
+    #[must_use]
+    pub fn vocabulary(&self) -> Vec<(String, u32)> {
+        let mut totals: BTreeMap<String, u32> = BTreeMap::new();
+        for row in &self.rows {
+            for (key, count) in &row.keys {
+                *totals.entry(key.clone()).or_insert(0) += count;
+            }
+        }
+        totals.into_iter().collect()
+    }
+
+    /// Total occurrences of the measured branching keys across every mission.
+    #[must_use]
+    pub fn branching_sites(&self) -> u32 {
+        self.rows.iter().map(|row| row.branching_sites).sum()
+    }
+
+    /// Total occurrences of the measured optionality keys across every mission.
+    #[must_use]
+    pub fn optional_sites(&self) -> u32 {
+        self.rows.iter().map(|row| row.optional_sites).sum()
+    }
+
+    /// Total occurrences of the measured outcome keys across every mission.
+    #[must_use]
+    pub fn failure_sites(&self) -> u32 {
+        self.rows.iter().map(|row| row.failure_sites).sum()
+    }
+
+    /// Whether the original's objective records declare **any** branching site:
+    /// an objective block naming what another objective does when this one
+    /// completes, or an explicit order.
+    ///
+    /// A measurement of declaration sites, not of rules: `true` says the
+    /// original writes such a declaration, never what it does. Which is why
+    /// [`cs_content::objectives::DeclaredSupport::Original`] stays unplayable
+    /// either way.
+    #[must_use]
+    pub fn declares_branching(&self) -> bool {
+        self.branching_sites() > 0
+    }
+
+    /// See [`Self::declares_branching`] for what a `true` means.
+    #[must_use]
+    pub fn declares_optionality(&self) -> bool {
+        self.optional_sites() > 0
+    }
+
+    /// See [`Self::declares_branching`] for what a `true` means.
+    #[must_use]
+    pub fn declares_outcome(&self) -> bool {
+        self.failure_sites() > 0
+    }
+
+    /// The missions that declare at least one branching site, with their counts.
+    #[must_use]
+    pub fn branching_missions(&self) -> BTreeMap<&str, u32> {
+        self.missions_with_sites(|row| row.branching_sites)
+    }
+
+    /// The missions that declare at least one outcome site, with their counts.
+    #[must_use]
+    pub fn outcome_missions(&self) -> BTreeMap<&str, u32> {
+        self.missions_with_sites(|row| row.failure_sites)
+    }
+
+    fn missions_with_sites(&self, sites: fn(&RetailObjectiveRow) -> u32) -> BTreeMap<&str, u32> {
+        self.rows
+            .iter()
+            .filter_map(|row| {
+                let count = sites(row);
+                (count > 0).then_some((row.mission.as_str(), count))
+            })
+            .collect()
+    }
+}
+
+/// Measures every mission-scoped objective record in `install_root`.
+///
+/// Read-only: the walk uses production discovery, so it never writes inside the
+/// installation. The census **fails** rather than skipping a mission whose
+/// archive cannot be read or whose record does not decode, because a mission
+/// that silently vanished from the denominator would look like a mission with
+/// no declared objectives.
+///
+/// # Errors
+///
+/// [`ObjectiveCensusError::Discovery`] when the installation cannot be
+/// discovered, and [`ObjectiveCensusError::Read`] /
+/// [`ObjectiveCensusError::Decode`] for the first mission that cannot be
+/// measured.
+pub fn survey_retail_objective_records(
+    install_root: &Path,
+) -> Result<RetailObjectiveCensus, ObjectiveCensusError> {
+    let found = cs_assets::install::discover(install_root)
+        .map_err(|error| ObjectiveCensusError::Discovery(error.to_string()))?;
+    let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
+
+    let mut rows: Vec<RetailObjectiveRow> = Vec::new();
+    for record in &found.manifest.files {
+        let container_key = record.relative_spelling.logical_key();
+        if !container_key.ends_with(MISSION_READER_ARCHIVE) {
+            continue;
+        }
+        // Mission scope is F13-B's own rule: exactly `zbd/<group>/<mission>`, so
+        // the shared reader and the world-group readers are not missions and
+        // never enter the denominator.
+        let spelling = record.relative_spelling.as_str().to_owned();
+        let path = RelativePath::new(&spelling.to_lowercase()).map_err(|error| {
+            ObjectiveCensusError::Read {
+                container: container_key.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        let Some(mission) = cs_formats::script_raw::mission_scope(&path) else {
+            continue;
+        };
+        let container_sha256 = record.sha256.to_hex();
+        let bytes = std::fs::read(found.manifest.host_root.join(&spelling)).map_err(|error| {
+            ObjectiveCensusError::Read {
+                container: container_key.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        let discovery = cs_formats::script_raw::discover_container(&container_key, &path, &bytes);
+        let member = discovery
+            .programs()
+            .iter()
+            .find(|program| {
+                program
+                    .locator()
+                    .member()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(SCENARIO_OBJECTIVES_MEMBER))
+            })
+            .ok_or_else(|| ObjectiveCensusError::Read {
+                container: container_key.clone(),
+                reason: format!(
+                    "the archive declares no {} objective record",
+                    SCENARIO_OBJECTIVES_MEMBER
+                ),
+            })?;
+        let document = cs_content::stunts::decode_zrd(member.bytes()).map_err(|error| {
+            ObjectiveCensusError::Decode {
+                container: container_key.clone(),
+                code: error.code(),
+                offset: error.offset(),
+            }
+        })?;
+        let machine = cs_content::stunts::objective_state_machine(&document);
+        let locator = member.locator();
+        let span = locator.span();
+        let sites = |family: fn(&str) -> bool| -> u32 {
+            machine
+                .keys()
+                .iter()
+                .filter(|(key, _)| family(key))
+                .map(|(_, count)| count)
+                .sum()
+        };
+        rows.push(RetailObjectiveRow {
+            mission,
+            container: spelling,
+            container_sha256,
+            member: locator.member().unwrap_or_default().to_owned(),
+            member_offset: span.offset,
+            member_len: span.len,
+            member_sha256: cs_assets::install::sha256(member.bytes()).to_hex(),
+            blocks: machine.blocks(),
+            keys: machine.keys().to_vec(),
+            branching_sites: sites(|key| BRANCH_KEY_VOCABULARY.contains(&key)),
+            optional_sites: sites(is_optional_objective_key),
+            failure_sites: sites(|key| FAILURE_KEY_VOCABULARY.contains(&key)),
+        });
+    }
+
+    rows.sort_by(|left, right| left.mission.cmp(&right.mission));
+    Ok(RetailObjectiveCensus {
+        install_sha256,
+        rows,
+    })
 }

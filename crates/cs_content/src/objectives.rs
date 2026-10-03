@@ -81,11 +81,40 @@
 //! # Designed vocabulary, not original data
 //!
 //! No original mission program has been decoded into this form (F38 owns the
-//! original mission language; F39-D calibrates the rules with `retail`).
-//! Every kind, rule name and fixture value here is newly authored project
-//! design carrying `Origin::SyntheticFixture`/designed provenance.
+//! original mission language). Every kind, rule name and fixture value here is
+//! newly authored project design carrying `Origin::SyntheticFixture`/designed
+//! provenance.
+//!
+//! # F39-D: support, and branches that cannot fire
+//!
+//! Two things this module gained in the calibration stage, both answers to
+//! questions F39-D had to put to the original installation
+//! (`docs/findings/2026-10-03-f39-d-branching-optional-and-failure-validation.md`):
+//!
+//! * **Support.** Every record carries a [`DeclaredSupport`], derived from its
+//!   `origin`: a newly authored record is [`DeclaredSupport::Authored`] and
+//!   playable, while an `installation` record is
+//!   [`DeclaredSupport::Original`] with **no** recovery and is therefore
+//!   unplayable until an importer attaches one through
+//!   [`DeclaredObjectiveProgram::with_recovery`]. F39-D's retail census read
+//!   every mission directory's `objectives.zrd` on the owner's installation
+//!   and decoded **none** of them, because the mission-language instruction
+//!   table is still unmeasured (F13-B/C) — so `docs/contracts/SCRIPT-MISSION.md`'s
+//!   rule ("if the actual program … cannot be decoded, the mission remains
+//!   Unsupported") currently holds for *every* original mission, and the
+//!   record says so instead of shipping a designed progression under an
+//!   original mission's id.
+//! * **Dead branches.** F39 AC04 asks that supported objectives be completable
+//!   out of the common order without deadlocking the program, and F39-D found
+//!   two declarations that do exactly that: a reveal rule waiting for the
+//!   objective it reveals ([`ObjectivesSchemaError::DeadSelfReveal`]) and a
+//!   watch on a state the watched objective already holds
+//!   ([`ObjectivesSchemaError::DeadWatch`]). Neither can fire in any order, so
+//!   both are refused at declaration, by name, with the rule stated. The
+//!   order-independent *completion* rule lives with the state table in
+//!   `cs_sim::objectives::state`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
@@ -412,6 +441,174 @@ pub struct DeclaredSpawnGroup {
     pub subject: ContentId,
 }
 
+/// What makes a mission's objective program playable, and what that claim is
+/// worth.
+///
+/// This is F39-D's answer to the word **supported** in F39's acceptance case
+/// AC04 ("complete *supported* objectives …") and to
+/// `docs/contracts/SCRIPT-MISSION.md`'s rule: *"If the actual program is
+/// unavailable or cannot be decoded, the mission remains Unsupported."*
+///
+/// The two variants are the two claims a record can make, and only one of them
+/// is playable today:
+///
+/// * [`DeclaredSupport::Authored`] — the record was written by this project (a
+///   synthetic fixture or a designed engine rule). It may be lowered and played,
+///   and it is **never** a claim about the original game.
+/// * [`DeclaredSupport::Original`] — the record's bytes came from the owner's
+///   installation. It may carry a [`MeasuredObjectiveRecord`] — what F39-D
+///   measured of the mission's `objectives.zrd` member — but it is **not**
+///   playable, because a census of declaration sites is not a set of rules: the
+///   original declares 1338 objective blocks across 53 mission readers, and
+///   F39-D could read *which* declarations a block carries and not *what any of
+///   them does*. Playing a designed progression in its place would substitute
+///   invented semantics for 1338 measured declarations.
+///
+/// A record whose rules are later recovered by a measured probe — which needs
+/// the mission-language instruction table F13-C/F38 own — becomes playable then,
+/// under its own support variant. Nothing constructs that variant today and this
+/// stage does not invent it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeclaredSupport {
+    /// Newly authored: a synthetic fixture or designed engine rule. Runnable,
+    /// and never an original-fidelity claim.
+    Authored,
+    /// Original installation data, with or without a measurement.
+    Original {
+        /// What F39-D measured of the mission's objective record. `None` when
+        /// nothing was measured.
+        record: Option<Box<MeasuredObjectiveRecord>>,
+        /// Why this program's semantics may not be run. Always present, so a
+        /// refusal names itself instead of only reporting that something is
+        /// missing.
+        reason: String,
+    },
+}
+
+impl DeclaredSupport {
+    /// Whether a session may lower and run a program carrying this support.
+    ///
+    /// The single place the answer is given, so no consumer can decide support
+    /// from the record's contents instead of from its provenance.
+    #[must_use]
+    pub fn is_playable(&self) -> bool {
+        matches!(self, Self::Authored)
+    }
+
+    /// Why a program carrying this support may not be played, by name.
+    #[must_use]
+    pub fn refusal(&self) -> Option<&str> {
+        match self {
+            Self::Authored => None,
+            Self::Original { reason, .. } => Some(reason),
+        }
+    }
+}
+
+/// What F39-D measured of one mission's original objective record.
+///
+/// A **census of declaration sites**, deliberately not a rule: each number says
+/// how many times a measured key occurs inside that mission's numbered
+/// `OBJECTIVE<N>` blocks, never what one occurrence does. Nothing here may be
+/// read as a decoded behaviour, and the counts are exactly why a designed
+/// progression must not stand in for the original (see
+/// [`DeclaredSupport::Original`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MeasuredObjectiveRecord {
+    /// The logical key of the reader archive the record is a member of, as
+    /// `zbd/<group>/<mission>/zrdr.zbd`.
+    pub container: String,
+    /// The member's name inside that archive (`objectives.zrd`).
+    pub member: String,
+    /// The member's SHA-256, hex.
+    pub sha256: String,
+    /// The member's length in bytes.
+    pub byte_len: u64,
+    /// How many numbered `OBJECTIVE<N>` blocks the mission declares.
+    pub blocks: u32,
+    /// Occurrences of [`BRANCH_KEY_VOCABULARY`] keys across those blocks: the
+    /// measured *sites* where one objective's completion is declared to change
+    /// another, or where an order is declared.
+    pub branching_sites: u32,
+    /// Occurrences of the optionality keys across those blocks.
+    pub optional_sites: u32,
+    /// Occurrences of [`FAILURE_KEY_VOCABULARY`] keys across those blocks: the
+    /// measured sites where an outcome is declared.
+    pub failure_sites: u32,
+}
+
+/// The measured key names an objective block uses to say what happens to
+/// *another* objective when this one completes, plus the one explicit ordering
+/// dependency.
+///
+/// Measured over the owner's installation (F39-D): every mission-scoped reader
+/// archive was opened, its `objectives.zrd` member decoded with the production
+/// `.zrd` reader, and the numbered `OBJECTIVE<N>` blocks read. Across 53 mission
+/// readers and 1338 blocks these keys occur 1091 times in all
+/// (`WAKE_OBJECTIVE_WHEN_I_COMPLETE` 412, `NAP_OBJECTIVE_WHEN_I_COMPLETE` 417,
+/// `KILL_OBJECTIVE_WHEN_I_COMPLETE` 225, `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` 2,
+/// `TICK_DEPENDS_ON_OBJ` 35).
+///
+/// The spellings are **measured**; what they do is an **inference and stays
+/// one**. No original executable has been run, and the compiled program behind
+/// these records is not decoded — F13-C/F38 own the instruction table.
+pub const BRANCH_KEY_VOCABULARY: [&str; 5] = [
+    "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
+    "NAP_OBJECTIVE_WHEN_I_COMPLETE",
+    "KILL_OBJECTIVE_WHEN_I_COMPLETE",
+    "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE",
+    "TICK_DEPENDS_ON_OBJ",
+];
+
+/// The measured prefix of an *inactive stage* key inside an objective block.
+///
+/// Measured: `INACTIVE1` through `INACTIVE18`, one per numbered stage. That a
+/// dormant stage becomes active once its count is met is an **inference** from
+/// [`OBJECTIVE_INACTIVE_COUNT_KEY`] sitting beside the stages, and stays one.
+pub const OBJECTIVE_INACTIVE_STAGE_PREFIX: &str = "INACTIVE";
+
+/// The measured count key that sits beside an objective block's inactive
+/// stages. Measured in 130 of the 1338 blocks.
+pub const OBJECTIVE_INACTIVE_COUNT_KEY: &str = "INACTIVE_COMPLETION_COUNT";
+
+/// The measured key an objective block carries to begin dormant. Measured in
+/// 1096 of the 1338 blocks.
+pub const OBJECTIVE_DORMANT_KEY: &str = "BEGIN_DORMANT";
+
+/// The measured key names an objective block uses to declare an outcome.
+///
+/// Measured over the same corpus: `INSTANTWIN` occurs 15 times and
+/// `INSTANTLOSS` 9 times across 53 mission readers. Which outcome each one
+/// means, and what ends the mission, is **not** measured.
+pub const FAILURE_KEY_VOCABULARY: [&str; 2] = ["INSTANTWIN", "INSTANTLOSS"];
+
+/// Whether a measured key is one of the optionality declarations.
+///
+/// [`OBJECTIVE_INACTIVE_COUNT_KEY`] is matched exactly; a stage key is
+/// `INACTIVE` followed by the stage number. Exact matching keeps
+/// `INACTIVE_COMPLETION_COUNT` from reading as a stage and keeps a key this
+/// stage never saw — `INACTIVATED`, `INACTIVE_A` — out of the count.
+#[must_use]
+pub fn is_optional_objective_key(key: &str) -> bool {
+    if key == OBJECTIVE_INACTIVE_COUNT_KEY {
+        return true;
+    }
+    let Some(rest) = key.strip_prefix(OBJECTIVE_INACTIVE_STAGE_PREFIX) else {
+        return false;
+    };
+    !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Why an original record's rules are unmeasured, stated once so the refusal,
+/// the finding and the census all say the same thing.
+///
+/// It names the measured fact behind it: the objective record's declaration
+/// vocabulary is readable and its rules are not.
+pub const UNMEASURED_OBJECTIVE_SEMANTICS: &str = "the mission's objective record was measured and its branching, optionality and outcome \
+     declarations were counted, but no rule was recovered: what any declaration means is unmeasured, \
+     so the mission's branching, optional and failure conditions are unknown and a designed \
+     progression must not stand in for them";
+
 /// Why a [`DeclaredObjectiveProgram`] was refused.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ObjectivesSchemaError {
@@ -564,6 +761,38 @@ pub enum ObjectivesSchemaError {
         /// The unreachable target state.
         state: DeclaredObjectiveState,
     },
+    /// A reveal rule watches the objective it reveals.
+    ///
+    /// An objective leaves `Hidden` only through its own reveal rule, and a
+    /// state change against a still-hidden objective is refused, so a rule
+    /// waiting for that objective's own state change has no order in which it
+    /// can fire first: the branch is dead, and a mission with a dead reveal
+    /// never shows the objective at all.
+    DeadSelfReveal {
+        /// The objective carrying the rule.
+        objective: ProgramSymbol,
+    },
+    /// A reveal rule or a timer start watches a state the named objective
+    /// already holds.
+    ///
+    /// The runtime fires a watch on a *state change*, and no state is
+    /// reachable from itself: from `Active` the only moves are to the three
+    /// final states, from `Pending` and `Optional` to states no row returns
+    /// from, and the reveal out of `Hidden` emits a reveal rather than a
+    /// state change. A watch on the state an objective is born in therefore
+    /// can never fire — a reveal that never reveals, or a deadline that never
+    /// arms, which is a program waiting on an event no declaration can
+    /// produce.
+    DeadWatch {
+        /// The declaration carrying the watch.
+        by: ProgramSymbol,
+        /// The objective it watches.
+        objective: ProgramSymbol,
+        /// The state it waits for.
+        state: DeclaredObjectiveState,
+    },
+    /// A measurement names no archive or member, so it measures nothing.
+    EmptyMeasurement,
 }
 
 impl fmt::Display for ObjectivesSchemaError {
@@ -661,6 +890,22 @@ impl fmt::Display for ObjectivesSchemaError {
                 f,
                 "{by} targets objective state {state:?}, which no declared action or event can produce"
             ),
+            Self::DeadSelfReveal { objective } => write!(
+                f,
+                "objective {objective} is revealed by its own state change, which it cannot make while hidden"
+            ),
+            Self::DeadWatch {
+                by,
+                objective,
+                state,
+            } => write!(
+                f,
+                "{by} watches objective {objective} reaching {state:?}, a state it already holds and can never reach again"
+            ),
+            Self::EmptyMeasurement => write!(
+                f,
+                "a measured objective record must name the archive and member it was read from"
+            ),
         }
     }
 }
@@ -678,11 +923,21 @@ impl std::error::Error for ObjectivesSchemaError {}
 /// the original game declared is unmeasured; the record carries `origin`
 /// and `provenance` so an `installation` row and a `synthetic_fixture` row
 /// are never interchangeable.
+///
+/// It also carries a [`DeclaredSupport`], derived from `origin` at
+/// construction: a newly authored record is [`DeclaredSupport::Authored`] and
+/// playable, while an `installation` record starts
+/// [`DeclaredSupport::Original`] with **no** recovery and is therefore
+/// unplayable until an importer attaches one through
+/// [`with_recovery`](Self::with_recovery). That default is the safe direction
+/// on purpose: an importer that forgets its recovery gets a program nobody can
+/// run, not a generic progression wearing an original mission's name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeclaredObjectiveProgram {
     subject: ContentId,
     origin: Origin,
     provenance: Provenance,
+    support: DeclaredSupport,
     precedence: Resolved<DeclaredPrecedence>,
     objectives: Vec<DeclaredObjective>,
     conditions: Vec<DeclaredCondition>,
@@ -718,6 +973,7 @@ impl DeclaredObjectiveProgram {
             &spawn_groups,
         )?;
         Ok(Self {
+            support: support_for(&origin),
             subject,
             origin,
             provenance,
@@ -728,6 +984,38 @@ impl DeclaredObjectiveProgram {
             triggers,
             spawn_groups,
         })
+    }
+
+    /// Attaches what F39-D measured of this mission's original objective record.
+    ///
+    /// The measurement is a census of **declaration sites** — which keys a
+    /// mission's objective blocks carry, and how often — and it never makes the
+    /// program playable: [`DeclaredSupport::Original`] stays unplayable because
+    /// a declaration site is not a rule. Attaching it is what lets a refusal
+    /// name the numbers instead of only naming the absence, and it is the only
+    /// way a record's support stops saying "nothing was measured".
+    ///
+    /// # Errors
+    ///
+    /// [`ObjectivesSchemaError::EmptyMeasurement`] when the measurement names
+    /// no archive or no member, which would be a measurement of nothing.
+    pub fn with_measured_record(
+        mut self,
+        record: MeasuredObjectiveRecord,
+    ) -> Result<Self, ObjectivesSchemaError> {
+        if record.container.trim().is_empty() || record.member.trim().is_empty() {
+            return Err(ObjectivesSchemaError::EmptyMeasurement);
+        }
+        if let DeclaredSupport::Original { reason, .. } = &self.support {
+            let reason = reason.clone();
+            self.support = DeclaredSupport::Original {
+                record: Some(Box::new(record)),
+                reason,
+            };
+        }
+        // A newly authored record needs no measurement and is not turned into
+        // an original claim by attaching one.
+        Ok(self)
     }
 
     /// The mission catalog id this program belongs to.
@@ -746,6 +1034,19 @@ impl DeclaredObjectiveProgram {
     #[must_use]
     pub const fn provenance(&self) -> &Provenance {
         &self.provenance
+    }
+
+    /// What this record's objective semantics are worth, and whether they may
+    /// be run.
+    #[must_use]
+    pub const fn support(&self) -> &DeclaredSupport {
+        &self.support
+    }
+
+    /// Whether a session may lower and run this program.
+    #[must_use]
+    pub fn is_playable(&self) -> bool {
+        self.support.is_playable()
     }
 
     /// The declared terminal precedence, or an explicit unknown.
@@ -785,6 +1086,21 @@ impl DeclaredObjectiveProgram {
     }
 }
 
+/// The support a record's origin implies before anything is measured from it.
+///
+/// The safe direction is the whole point: `installation` data starts
+/// **unplayable**, so an importer that never attaches its census cannot publish
+/// a runnable objective progression under an original mission's id.
+fn support_for(origin: &Origin) -> DeclaredSupport {
+    match origin {
+        Origin::SyntheticFixture | Origin::Designed => DeclaredSupport::Authored,
+        Origin::Installation { .. } => DeclaredSupport::Original {
+            record: None,
+            reason: UNMEASURED_OBJECTIVE_SEMANTICS.to_owned(),
+        },
+    }
+}
+
 /// The structural and closed-world validation
 /// [`DeclaredObjectiveProgram::try_new`] applies.
 fn validate(
@@ -802,6 +1118,7 @@ fn validate(
     }
 
     let mut objective_ids = BTreeSet::new();
+    let mut objective_by_symbol: BTreeMap<ProgramSymbol, &DeclaredObjective> = BTreeMap::new();
     for objective in objectives {
         check_reserved(objective.symbol)?;
         if !objective_ids.insert(objective.symbol) {
@@ -822,6 +1139,7 @@ fn validate(
                 id: objective.content.clone(),
             });
         }
+        objective_by_symbol.insert(objective.symbol, objective);
     }
 
     let mut condition_ids = BTreeSet::new();
@@ -914,7 +1232,7 @@ fn validate(
             objective,
             &condition_ids,
             &timer_ids,
-            &objective_ids,
+            &objective_by_symbol,
             &declared,
         )?;
     }
@@ -930,7 +1248,7 @@ fn validate(
         }
     }
     for timer in timers {
-        check_timer(timer, &objective_ids, &group_ids, &declared)?;
+        check_timer(timer, &objective_by_symbol, &group_ids, &declared)?;
     }
     Ok(())
 }
@@ -959,11 +1277,10 @@ fn check_signal(
     Ok(())
 }
 
-/// The state a declared move or watch may target. `Hidden`, `Pending` and
-/// `Optional` are unreachable: the only legal transitions into them start
-/// from `Hidden`, which a declared action can never leave — leaving `Hidden`
-/// is the reveal rule's alone, and it emits no state change. The live target
-/// set is `Active`, `Succeeded`, `Failed` and `Superseded`.
+/// A declared state change a live declared action can perform never leaves
+/// `Hidden`, so the rows into `Hidden`, `Pending` and `Optional` are reachable
+/// only from `Hidden`, which only the reveal rule leaves. A declaration aiming
+/// at one of them could never apply: dead, refused at declaration.
 fn check_state_target(
     by: ProgramSymbol,
     state: DeclaredObjectiveState,
@@ -976,11 +1293,35 @@ fn check_state_target(
     }
 }
 
+/// A watch that can never fire, because the objective it watches already holds
+/// the state it waits for.
+///
+/// A watch is satisfied by a *state change*, and no state is reachable from
+/// itself: from `Active` the only moves are the three final states, and from
+/// `Pending`/`Optional` every move is to a state no row returns from. The
+/// reveal out of `Hidden` is not a state change either — it reports
+/// `ObjectiveRevealed`. So watching a state the objective is *born* in waits
+/// for an event the program can never produce.
+fn check_watch(
+    by: ProgramSymbol,
+    objective: &DeclaredObjective,
+    state: DeclaredObjectiveState,
+) -> Result<(), ObjectivesSchemaError> {
+    if objective.initial == state {
+        return Err(ObjectivesSchemaError::DeadWatch {
+            by,
+            objective: objective.symbol,
+            state,
+        });
+    }
+    Ok(())
+}
+
 fn check_reveal(
     objective: &DeclaredObjective,
     conditions: &BTreeSet<ProgramSymbol>,
     timers: &BTreeSet<ProgramSymbol>,
-    objectives: &BTreeSet<ProgramSymbol>,
+    objectives: &BTreeMap<ProgramSymbol, &DeclaredObjective>,
     declared: &BTreeSet<ProgramSymbol>,
 ) -> Result<(), ObjectivesSchemaError> {
     match objective.reveal {
@@ -1000,13 +1341,23 @@ fn check_reveal(
             objective: watched,
             state,
         } => {
-            if !objectives.contains(&watched) {
+            let Some(target) = objectives.get(&watched) else {
                 return Err(ObjectivesSchemaError::UnknownObjective {
                     by: objective.symbol,
                     objective: watched,
                 });
+            };
+            check_state_target(objective.symbol, state)?;
+            // A reveal rule that waits for the objective it reveals has no
+            // order in which it fires: the objective leaves `Hidden` through
+            // this very rule, and a state change against a still-hidden
+            // objective is refused.
+            if watched == objective.symbol {
+                return Err(ObjectivesSchemaError::DeadSelfReveal {
+                    objective: objective.symbol,
+                });
             }
-            check_state_target(objective.symbol, state)
+            check_watch(objective.symbol, target, state)
         }
         DeclaredRevealRule::OnSignal(signal) => check_signal(objective.symbol, signal, declared),
         _ => Ok(()),
@@ -1015,31 +1366,32 @@ fn check_reveal(
 
 fn check_timer(
     timer: &DeclaredTimer,
-    objectives: &BTreeSet<ProgramSymbol>,
+    objectives: &BTreeMap<ProgramSymbol, &DeclaredObjective>,
     groups: &BTreeSet<ProgramSymbol>,
     declared: &BTreeSet<ProgramSymbol>,
 ) -> Result<(), ObjectivesSchemaError> {
     match timer.start {
         DeclaredTimerStart::OnObjectiveState { objective, state } => {
-            if !objectives.contains(&objective) {
+            let Some(target) = objectives.get(&objective) else {
                 return Err(ObjectivesSchemaError::UnknownObjective {
                     by: timer.symbol,
                     objective,
                 });
-            }
+            };
             check_state_target(timer.symbol, state)?;
+            check_watch(timer.symbol, target, state)?;
         }
         DeclaredTimerStart::OnSignal(signal) => check_signal(timer.symbol, signal, declared)?,
         _ => {}
     }
     match &timer.action {
         DeclaredTimerAction::SetObjectiveState { objective, state } => {
-            if !objectives.contains(objective) {
+            let Some(_) = objectives.get(objective) else {
                 return Err(ObjectivesSchemaError::UnknownObjective {
                     by: timer.symbol,
                     objective: *objective,
                 });
-            }
+            };
             check_state_target(timer.symbol, *state)
         }
         DeclaredTimerAction::Signal(signal) => check_signal(timer.symbol, *signal, declared),
