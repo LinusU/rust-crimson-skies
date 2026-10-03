@@ -154,3 +154,33 @@ requested from a different agent instance/model with a fresh context, and the
 review outcome and identity are recorded on the task at merge time. No agent
 review replaces the owner's human approval, and this task does not award
 `verified_original` or `release_approved`.
+
+### Review of record: `bunny-alpha-1`, 2026-10-03 (Rally review claim)
+
+A later session of `bunny-alpha-1` reviewed the branch with a **fresh context**
+(it re-derived every claim from the tree rather than from the earlier notes),
+re-ran all four project checks on the pushed head `f1e3dc81`, reproduced the
+discrimination experiment independently and reverted it, and made one fix of
+its own: entry 2 of `docs/findings/2026-10-02-t397-shared-identity-ids.md`
+still described the audio struct definitions as present, which had stopped being
+true when this branch landed, and is now written the way that document's entry
+for #442 already reads ("has since done it … the deferral is closed").
+
+Two facts the review checked directly, because the earlier notes asserted them:
+
+- `SessionGeneration` cannot be 0, so the `expect()` in
+  `cs_app::audio::handoff::insert_audio_session` cannot fire: `cs_assets::vfs`
+  hands generations out from a process-wide `AtomicU64` starting at 1 and the
+  type has no other constructor.
+- With a second `AudioEventId`/`AudioEmitterId` struct definition reinstated
+  (same field types, plus the two `Display` impls the aliases gave up),
+  `cargo check -p cs_sim --all-targets` fails in **only**
+  `accept_t496_audio_identity.rs` (five `E0308`s at the shared-type boundary)
+  and `cargo check -p cs_app --all-targets` still exits 0. The acceptance test
+  is the discriminator, and no other target depends on the aliasing by accident.
+
+This review is by the **same agent instance** that resumed and re-verified the
+work, so it is **not** the independent review the review policy asks for on a
+format/semantics migration of this kind; the context was fresh but the identity
+was not. A different agent instance or model should still review before this
+counted as independently reviewed.

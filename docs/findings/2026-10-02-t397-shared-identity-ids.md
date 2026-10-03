@@ -103,12 +103,16 @@ each is recorded rather than silently conflated.
    `cs_types::content::DamageNodeKey`. This entry is kept for the audit
    trail; the deferral is closed.
 
-2. **Audio identity — a new follow-up task.** `cs_sim::audio_events` defines
-   `AudioEventId { session: u64, tick: Tick, producer: u32, sequence: u32 }`
+2. **Audio identity — a new follow-up task, now closed.** `cs_sim::audio_events`
+   defined `AudioEventId { session: u64, tick: Tick, producer: u32, sequence: u32 }`
    (exactly `EventId`) and `AudioEmitterId { session: u64, serial: u64 }`
    (exactly `ActorId`). Unlike the damage case there was no task tracking it;
-   one is filed from this task (see "Follow-ups filed"). The F41-A findings
-   note the same gap and are updated to point at it.
+   one was filed from this task (see "Follow-ups filed"). Task **#496**
+   (`T-IDENTITY-AUDIO`) has since done it: `AudioEventId` is now the shared
+   `cs_types::net::EventId` and `AudioEmitterId` the shared
+   `cs_types::net::ActorId` (both audio-facing aliases), and the router, mixer,
+   radio queue and music director are bound to the shared nonzero `SessionId`.
+   This entry is kept for the audit trail; the deferral is closed.
 
 3. **Scene generation and load-transaction tickets — not applicable.**
    `cs_app::scene::SceneGeneration(u64)`, `cs_assets::vfs::session::SessionGeneration(u64)`
@@ -173,7 +177,9 @@ existing animation acceptance suites (F20-A/B/C) to green.
   (`T-IDENTITY-AUDIO`).** Alias/convert `AudioEventId` to `EventId` and
   `AudioEmitterId` to the shared `ActorId`, with a discriminating acceptance
   test. It is the same mechanical migration this task did for animation, and it
-  stays out of #442's damage scope.
+  stays out of #442's damage scope. **Landed 2026-10-03** (#496): both audio
+  names are aliases of the shared types
+  (`docs/findings/2026-10-03-t496-shared-audio-identity.md`).
 
 ## Evidence
 
