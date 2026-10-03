@@ -46,13 +46,19 @@
 //! ([`recovery`]). The rate/resource caps (F58-B) and the runtime
 //! disconnect/recovery flow (F58-C) build on them.
 //!
-//! Not here yet: the pinned transport and its codec (F54-B), connection and
-//! lifecycle wiring (F54-C), and the F58-B rate caps / F58-C recovery flow.
-//! The F57-B interpolation buffer and bounded local prediction consume
-//! [`snapshot`] rather than extending it.
+//! F54-B adds the pinned transport: [`codec`], the bounded wire format every
+//! F54-A record travels in, and [`transport`], the `renet2`/`renet2_netcode`
+//! `=0.16.1` UDP path that delivers the hello, returns the grant or the named
+//! rejection before launch, and runs every session packet through the
+//! [`validation::SessionGate`] before it can authorize fire requests.
+//!
+//! Not here yet: connection and lifecycle wiring (F54-C), and the F58-B rate
+//! caps / F58-C recovery flow. The F57-B interpolation buffer and bounded
+//! local prediction consume [`snapshot`] rather than extending it.
 
 pub mod authority;
 pub mod bounds;
+pub mod codec;
 pub mod compat;
 pub mod fixture;
 pub mod lobby;
@@ -60,4 +66,5 @@ pub mod message;
 pub mod recovery;
 pub mod rules;
 pub mod snapshot;
+pub mod transport;
 pub mod validation;

@@ -216,3 +216,70 @@ impl ActorAllocator {
         })
     }
 }
+
+/// Why a [`SessionAllocator`] refused to allocate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionAllocError {
+    /// The id space is exhausted: no further session generation can ever be
+    /// issued by this allocator.
+    Exhausted,
+}
+
+impl fmt::Display for SessionAllocError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Exhausted => write!(f, "session generations exhausted"),
+        }
+    }
+}
+
+impl std::error::Error for SessionAllocError {}
+
+/// Host-side allocation of [`SessionId`] generations.
+///
+/// The host owns session epochs (`docs/contracts/UI-NETWORK.md` ownership
+/// table); a lobby launch, a mission retry and a reconnect's fresh epoch
+/// (F58-A) each take a new id here. Ids are handed out monotonically from 1
+/// and never recycled, so a packet stamped with a dead epoch is rejected
+/// rather than applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionAllocator {
+    next_session: u64,
+}
+
+impl SessionAllocator {
+    /// Starts allocation at session 1, so session 0 is never a live epoch.
+    pub const fn new() -> Self {
+        Self { next_session: 1 }
+    }
+
+    /// The generation the next allocation would issue.
+    pub const fn next_session(&self) -> u64 {
+        self.next_session
+    }
+
+    /// Allocates the next session id.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionAllocError::Exhausted`] when the id space is at the top of its
+    /// range; the allocator then stays exhausted rather than wrapping onto a
+    /// generation that was already issued.
+    pub const fn allocate(&mut self) -> Result<SessionId, SessionAllocError> {
+        let value = self.next_session;
+        let Some(next) = value.checked_add(1) else {
+            return Err(SessionAllocError::Exhausted);
+        };
+        let Some(session) = SessionId::new(value) else {
+            return Err(SessionAllocError::Exhausted);
+        };
+        self.next_session = next;
+        Ok(session)
+    }
+}
+
+impl Default for SessionAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
