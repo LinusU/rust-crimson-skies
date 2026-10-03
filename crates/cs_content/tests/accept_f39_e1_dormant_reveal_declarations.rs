@@ -281,6 +281,10 @@ fn accept_f39_e1_only_inactive_with_digits_is_a_stage() {
         ("INACTIVATED", list(vec![text("geminizep")])),
         ("INACTIVE_A", list(vec![text("geminizep")])),
         ("INACTIVE", list(vec![text("geminizep")])),
+        // A `u32` parse would accept a signed spelling, so the digits rule is
+        // what keeps `+1` out of the ladder.
+        ("INACTIVE+1", list(vec![text("geminizep")])),
+        ("INACTIVE-1", list(vec![text("geminizep")])),
     ])
     .expect("the non-stage spellings are ignored");
     assert_eq!(block.condition_count(), 1);
