@@ -79,7 +79,35 @@ pub fn pickup_eligible(
     taker_velocity_m_s: [f64; 3],
     envelope: PickupEnvelope,
 ) -> Result<AnchorSample, PickupRefusal> {
-    let a = anchor_sample(tick, &anchor_trajectory.sample(tick), socket);
+    pickup_eligible_pose(
+        tick,
+        &anchor_trajectory.sample(tick),
+        socket,
+        taker_position_m,
+        taker_velocity_m_s,
+        envelope,
+    )
+}
+
+/// Evaluates the pickup against an already-sampled `pose`: the F34-B
+/// production entry point, because a route-following or held actor has no
+/// [`Trajectory`] to re-sample — its [`crate::world_actors::runtime::WorldActorSet`]
+/// pose *is* the canonical motion, and this consumes the identical value
+/// the renderer reads through `anchor_sample`. Uses relative velocity,
+/// never ground speed.
+///
+/// # Errors
+///
+/// [`PickupRefusal`] when out of the envelope.
+pub fn pickup_eligible_pose(
+    tick: Tick,
+    pose: &Pose,
+    socket: &AnchorSocket,
+    taker_position_m: [f64; 3],
+    taker_velocity_m_s: [f64; 3],
+    envelope: PickupEnvelope,
+) -> Result<AnchorSample, PickupRefusal> {
+    let a = anchor_sample(tick, pose, socket);
     let rel = relative_velocity_m_s(taker_velocity_m_s, a.velocity_m_s);
     let distance_m = super::math::norm(sub(taker_position_m, a.position_m));
     let relative_speed_m_s = super::math::norm(rel);
