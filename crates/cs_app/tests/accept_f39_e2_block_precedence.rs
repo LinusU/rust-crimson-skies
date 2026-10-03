@@ -396,6 +396,136 @@ fn accept_f39_e2_the_authored_order_is_measured_not_ranked() {
 }
 
 #[test]
+fn accept_f39_e2_two_sites_of_one_effect_are_not_a_precedence_question() {
+    // A record that spells the SAME effect key twice in one block declares the
+    // same effect twice. "Which of WAKE and NAP wins" cannot be asked of a block
+    // that names only one of them, so this shape is neither a multi-effect block
+    // nor a conflict however many targets the two sites share. The corpus spells
+    // no effect key twice (F39-E2 measured 0 such blocks over 1338), so this is
+    // the reading a counter has to keep when the shape does appear — it is a
+    // count over *different* effects, not over sites.
+    let document = objective_member(&[
+        (
+            "OBJECTIVE1",
+            vec![
+                (WAKE, zrd_list(&[zrd_int(2), zrd_int(3)])),
+                (WAKE, zrd_list(&[zrd_int(2), zrd_int(3)])),
+            ],
+        ),
+        // A different effect, so this block *is* a multi-effect block and the two
+        // sites it does share a target with do raise the question.
+        (
+            "OBJECTIVE4",
+            vec![
+                (WAKE, zrd_list(&[zrd_int(2)])),
+                (NAP, zrd_list(&[zrd_int(2), zrd_float(3.0)])),
+            ],
+        ),
+        ("OBJECTIVE2", Vec::new()),
+        ("OBJECTIVE3", Vec::new()),
+    ]);
+
+    let measured = measure_block_precedence(&document);
+
+    assert_eq!(measured.blocks, 4);
+    assert_eq!(
+        measured.effect_blocks, 2,
+        "both blocks declare a completion effect"
+    );
+    assert_eq!(
+        measured.effect_sites, 4,
+        "every declared site is counted, repeated key or not: this is a count of \
+         declarations, not of distinct effects"
+    );
+    assert_eq!(
+        measured.multi_effect_blocks, 1,
+        "only OBJECTIVE4 declares two DIFFERENT effects"
+    );
+    assert_eq!(
+        measured.disjoint_multi_effect_blocks, 0,
+        "the one multi-effect block shares objective 2"
+    );
+    assert_eq!(
+        measured.conflicts.len(),
+        1,
+        "and it raises exactly one condition"
+    );
+    assert_eq!(measured.conflicts[0].block, "OBJECTIVE4");
+    assert_eq!(
+        measured.conflicts[0].effect_labels(),
+        vec!["WAKE", "NAP"],
+        "the conflict is the pair of different effects, never one effect twice"
+    );
+    assert_eq!(
+        measured.conflicting_blocks(),
+        1,
+        "one block carries the condition"
+    );
+}
+
+#[test]
+fn accept_f39_e2_conflicting_blocks_are_counted_as_blocks_not_missions_or_conflicts() {
+    // Three conflicts across two blocks of one record: OBJECTIVE3 shares both
+    // objective 1 and objective 4 with a different effect, OBJECTIVE6 shares only
+    // objective 4. A consumer asking "how many blocks must I handle?" has to be
+    // answered in blocks — one per conflicting block — and not in conflicts
+    // (three) or in missions that carry one (one).
+    let document = objective_member(&[
+        (
+            "OBJECTIVE3",
+            vec![
+                (WAKE, zrd_list(&[zrd_int(1), zrd_int(4)])),
+                (KILL, zrd_list(&[zrd_int(1), zrd_int(4)])),
+            ],
+        ),
+        (
+            "OBJECTIVE6",
+            vec![
+                (NAP, zrd_list(&[zrd_int(4), zrd_float(1.5)])),
+                (KILL, zrd_list(&[zrd_int(4)])),
+            ],
+        ),
+        ("OBJECTIVE1", Vec::new()),
+        ("OBJECTIVE4", Vec::new()),
+    ]);
+
+    let measured = measure_block_precedence(&document);
+
+    assert_eq!(
+        measured.multi_effect_blocks, 2,
+        "both blocks declare two different effects"
+    );
+    assert_eq!(
+        measured.conflicts.len(),
+        3,
+        "one condition per shared objective: 1 and 4 in OBJECTIVE3, 4 in OBJECTIVE6"
+    );
+    assert_eq!(
+        measured.conflicting_blocks(),
+        2,
+        "two BLOCKS carry them, whatever the conflict count"
+    );
+    assert_eq!(
+        measured.conflict_combinations(),
+        vec![("NAP+KILL".to_owned(), 1), ("WAKE+KILL".to_owned(), 2)],
+        "the two OBJECTIVE3 conditions share one combination and the OBJECTIVE6 \
+         condition has another, each counted once, and the key is canonical — the \
+         labels come out in `BranchEffectKind` order, not the block's field order"
+    );
+    assert!(
+        measured.needs_unmeasured_order(),
+        "a record with conflicts needs a rule it does not have"
+    );
+    // The corpus-wide form sums the per-record block count, so it agrees with the
+    // records it is built from instead of counting the missions that carry one.
+    assert_eq!(
+        measured.disjoint_multi_effect_blocks + measured.conflicting_blocks(),
+        measured.multi_effect_blocks,
+        "every multi-effect block is either disjoint or carries a condition"
+    );
+}
+
+#[test]
 fn accept_f39_e2_the_measured_effect_vocabulary_is_exactly_four_keys() {
     // The measured completion-effect family and the measured order dependency
     // partition F39-D's branching vocabulary: no key is in both and none is
@@ -825,6 +955,22 @@ fn accept_f39_e2_retail_objective_blocks_declare_one_unordered_completion_effect
         assert!(
             row.branching_sites == row.completion_effect_sites + row.order_dependency_sites,
             "{}: the branching families do not reconcile",
+            row.mission
+        );
+        // The two ways of counting the same declarations must agree: F39-D's key
+        // census counts the four measured keys inside the blocks, and F39-E2's
+        // per-block walk finds the sites the four-key vocabulary maps onto. A
+        // disagreement means the walk missed a site (or the enum drifted from the
+        // key list) and every per-block count below would be an under-count.
+        assert_eq!(
+            row.completion_effect_sites, measured.effect_sites,
+            "{}: the key census and the per-block walk count different sites",
+            row.mission
+        );
+        assert!(
+            measured.targets >= measured.effect_sites,
+            "{}: a completion-effect site carries no objective number at all, so \
+             the reader is dropping a value shape rather than measuring it",
             row.mission
         );
     }

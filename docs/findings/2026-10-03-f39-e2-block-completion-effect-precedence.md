@@ -21,8 +21,9 @@ take effect?
   `BRANCH_ORDER_KEY`, `BRANCH_EFFECT_MULTI_TARGET_KEYS`, `BranchEffectKind`,
   `MeasuredBranchSite`, `MeasuredBranchConflict`, `MeasuredBranchPrecedence`,
   `UNMEASURED_BLOCK_PRECEDENCE`, `MeasuredObjectiveRecord::branch_precedence`,
-  `MeasuredBranchPrecedence::{declared_order, unmeasured_order_reason}`, and the
-  `DeclaredPrecedence` / `DeclaredSupport` documentation.
+  `MeasuredBranchPrecedence::{declared_order, conflicting_blocks,
+  unmeasured_order_reason}`, and the `DeclaredPrecedence` / `DeclaredSupport`
+  documentation.
 * `crates/cs_app/src/objectives.rs`: `measure_block_precedence`,
   `is_objective_block`, `objective_block_number`, `measured_numbers`,
   `RetailBranchConflict`, `RetailObjectiveRow::{completion_effect_sites,
@@ -31,7 +32,7 @@ take effect?
   multi_effect_blocks, disjoint_multi_effect_blocks, conflicts,
   conflicting_blocks, needs_unmeasured_order, conflict_combinations,
   declared_order}`.
-* `crates/cs_app/tests/accept_f39_e2_block_precedence.rs` (new): 6 tests,
+* `crates/cs_app/tests/accept_f39_e2_block_precedence.rs` (new): 8 tests,
   prefix `accept_f39_e2_`.
 * `crates/cs_app/tests/evidence_report_f39_e2.rs` (new): the evidence harness.
 * `crates/cs_app/tests/accept_f39_d_objective_branching.rs`: the F39-D fixture
@@ -202,16 +203,18 @@ than choosing.**
 
 ## Test inventory (`accept_f39_e2_*`)
 
-`crates/cs_app/tests/accept_f39_e2_block_precedence.rs` (5 unignored + 1 retail):
+`crates/cs_app/tests/accept_f39_e2_block_precedence.rs` (7 unignored + 1 retail):
 
 | Test | Covers |
 | --- | --- |
 | `two_effects_naming_one_objective_are_one_measured_conflict` | the isolated condition's shape: one conflict, the shared objective, both sites in authored order, the NAP argument, the canonical combination |
 | `effects_on_disjoint_objectives_raise_no_ordering_question` | the 269 measured blocks: disjoint targets raise no question; the order key is not an effect; the closure reading is falsifiable |
 | `the_authored_order_is_measured_not_ranked` | the declared order is data: reversed input changes the site order and nothing else |
+| `two_sites_of_one_effect_are_not_a_precedence_question` | a count of **different** effects, not of sites: a block spelling one key twice declares one effect and raises no question |
+| `conflicting_blocks_are_counted_as_blocks_not_missions_or_conflicts` | three conflicts over two blocks read as two blocks, not three and not one mission |
 | `the_measured_effect_vocabulary_is_exactly_four_keys` | the closed vocabulary, the two families partitioning F39-D's, `WAKE` ≠ `WAKEUP`, round-trip, no unmeasured spelling |
 | `a_measured_record_carries_the_per_block_reading` | `RetailObjectiveRow::measured()` hands the reading over, the row names its mission's condition, and the support gate still refuses |
-| `retail_objective_blocks_declare_one_unordered_completion_effect_pair` (retail) | the whole table above over `$CS_GAME_DIR`, plus the per-row invariants and the both-directions declared order |
+| `retail_objective_blocks_declare_one_unordered_completion_effect_pair` (retail) | the whole table above over `$CS_GAME_DIR`, plus the per-row invariants, the F39-D key census against the per-block walk, and the both-directions declared order |
 
 ## Measured sensitivity (mutation probes, all observed)
 
@@ -228,6 +231,12 @@ than choosing.**
   test fails on the family reconciliation (`1126` against `1091`).
 * `RetailObjectiveRow::measured()` dropping the reading (defaulting it) →
   `a_measured_record_carries_the_per_block_reading` fails.
+* `conflicting_blocks()` counting `conflicts.len()` instead of distinct blocks →
+  `conflicting_blocks_are_counted_as_blocks_not_missions_or_conflicts` fails
+  (`3` against `2`).
+* The `multi_effect_blocks` / disjoint / conflict counters keyed on the number of
+  **sites** rather than on **different effects** → `two_sites_of_one_effect_are_not_a_precedence_question`
+  fails (two multi-effect blocks instead of one).
 
 ## One public-API change worth naming
 
@@ -259,10 +268,18 @@ the cost of a subtler equality. `PartialEq` is unchanged.
    stage does not invent one. A later stage may add the declared form *with* its
    runtime support and a refusal for the conflicting shape; that is a different,
    larger slice and is filed as a follow-up rather than smuggled in here.
-6. **The census's denominator** (F39-D unknown #5) is unchanged: mission-scoped
+6. **A block that spells one effect key twice.** Measured: **no** block in the
+   installation does (270 blocks declare two or more sites and every one of them
+   spells two *different* keys), so `multi_effect_blocks`, the disjoint count and
+   the conflicts are the same numbers under either reading. What the original
+   would do with a repeated key is unmeasured, and it is not a precedence question
+   between two effects: it is recorded as two sites and counted as one effect.
+   Follow-up **F39-E6** measures the shape on the archives this census excludes
+   and gives it its own named verdict; this stage does not decide it.
+7. **The census's denominator** (F39-D unknown #5) is unchanged: mission-scoped
    archives only, so the shared and world-group readers may declare completions
    for the same objectives outside this census.
-7. **The terminal-outcome precedence** (`INSTANTWIN` / `INSTANTLOSS`, 24 sites)
+8. **The terminal-outcome precedence** (`INSTANTWIN` / `INSTANTLOSS`, 24 sites)
    is F39-D's unknown and is not touched here.
 
 ## Commands

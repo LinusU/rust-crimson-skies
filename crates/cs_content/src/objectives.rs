@@ -797,19 +797,16 @@ impl MeasuredBranchConflict {
     /// The conflicting effects' measured keys, sorted, joined with `+`.
     ///
     /// A canonical combination key, so `NAP` before `WAKE` and `WAKE` before
-    /// `NAP` are counted as the same combination.
+    /// `NAP` are counted as the same combination. The `BTreeSet` does both jobs —
+    /// it drops a kind a block spells twice and yields `BranchEffectKind` order,
+    /// which is the enum's own declaration order.
     #[must_use]
     pub fn combination(&self) -> String {
-        let mut kinds: Vec<BranchEffectKind> = self
-            .sites
+        self.sites
             .iter()
             .map(|site| site.kind)
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .collect();
-        kinds.sort_unstable();
-        kinds
-            .iter()
             .map(|kind| kind.label())
             .collect::<Vec<_>>()
             .join("+")
@@ -875,6 +872,20 @@ impl MeasuredBranchPrecedence {
     #[must_use]
     pub fn needs_unmeasured_order(&self) -> bool {
         !self.conflicts.is_empty()
+    }
+
+    /// How many **blocks** of this record carry at least one conflict.
+    ///
+    /// Blocks, not [`Self::conflicts`]: one block can name two objectives in
+    /// common, so a count of conflicts is not a count of blocks, and a consumer
+    /// asking "how many blocks must I handle?" has to be answered in blocks.
+    #[must_use]
+    pub fn conflicting_blocks(&self) -> u32 {
+        self.conflicts
+            .iter()
+            .map(|conflict| conflict.block.as_str())
+            .collect::<BTreeSet<_>>()
+            .len() as u32
     }
 
     /// Whether every measured completion-effect target names another block of the

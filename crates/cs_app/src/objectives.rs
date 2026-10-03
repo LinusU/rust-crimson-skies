@@ -150,12 +150,12 @@ use bevy::{
     prelude::{App, Entity, FixedPostUpdate, Plugin, Res, ResMut, Resource},
 };
 use cs_content::objectives::{
-    BRANCH_KEY_VOCABULARY, DeclaredCompletion, DeclaredCountKind, DeclaredCountReaction,
-    DeclaredObjectiveProgram, DeclaredObjectiveState, DeclaredPrecedence, DeclaredRevealRule,
-    DeclaredTerminalOutcome, DeclaredTimeDomain, DeclaredTimer, DeclaredTimerAction,
-    DeclaredTimerStart, DeclaredVolume, FAILURE_KEY_VOCABULARY, MeasuredBranchConflict,
-    MeasuredBranchPrecedence, MeasuredBranchSite, ProgramActor, ProgramSymbol,
-    is_optional_objective_key,
+    BRANCH_EFFECT_KEY_VOCABULARY, BRANCH_KEY_VOCABULARY, BRANCH_ORDER_KEY, BranchEffectKind,
+    DeclaredCompletion, DeclaredCountKind, DeclaredCountReaction, DeclaredObjectiveProgram,
+    DeclaredObjectiveState, DeclaredPrecedence, DeclaredRevealRule, DeclaredTerminalOutcome,
+    DeclaredTimeDomain, DeclaredTimer, DeclaredTimerAction, DeclaredTimerStart, DeclaredVolume,
+    FAILURE_KEY_VOCABULARY, MeasuredBranchConflict, MeasuredBranchPrecedence, MeasuredBranchSite,
+    ProgramActor, ProgramSymbol, is_optional_objective_key,
 };
 use cs_content::stunts::{
     OBJECTIVE_BLOCK_PREFIX, SCENARIO_OBJECTIVES_MEMBER, ZrdValue, objective_record, zrd_flat_fields,
@@ -1578,7 +1578,7 @@ pub fn measure_block_precedence(document: &ZrdValue) -> MeasuredBranchPrecedence
         let sites: Vec<MeasuredBranchSite> = zrd_flat_fields(block_value)
             .into_iter()
             .filter_map(|(field, value)| {
-                let kind = cs_content::objectives::BranchEffectKind::from_measured_key(field)?;
+                let kind = BranchEffectKind::from_measured_key(field)?;
                 Some(MeasuredBranchSite {
                     kind,
                     targets: measured_numbers(value, |entry| match entry {
@@ -1619,6 +1619,21 @@ pub fn measure_block_precedence(document: &ZrdValue) -> MeasuredBranchPrecedence
         if sites.len() < 2 {
             continue;
         }
+        // A **multi-effect** block declares two or more *different* effects, and
+        // the whole question is which of two effects wins, so the counting below
+        // is over pairs of different effects. A record that spelled the same key
+        // twice in one block declares the same effect twice, which is a different
+        // (and separately unmeasured) shape and is never counted as an ordering
+        // question. Measured: no block in the installation spells an effect key
+        // twice, so this distinction changes no measured number — it is here so
+        // the counter keeps meaning what
+        // [`MeasuredBranchPrecedence::multi_effect_blocks`] says it means, and
+        // what the repeated-key shape would mean is filed as **F39-E6** rather
+        // than decided here.
+        let kinds: BTreeSet<BranchEffectKind> = sites.iter().map(|site| site.kind).collect();
+        if kinds.len() < 2 {
+            continue;
+        }
         measured.multi_effect_blocks += 1;
         // The block's own declared order, counted for every pair of *different*
         // effects: the measurement that shows the field order is authored per
@@ -1634,12 +1649,15 @@ pub fn measure_block_precedence(document: &ZrdValue) -> MeasuredBranchPrecedence
                     .or_insert(0) += 1;
             }
         }
-        // Two effects can only collide if their target sets overlap; the
-        // disjoint blocks are measured as such so the isolated conditions below
-        // can never be read as "every multi-effect block conflicts".
+        // Two *different* effects can only collide if their target sets overlap;
+        // the disjoint blocks are measured as such so the isolated conditions
+        // below can never be read as "every multi-effect block conflicts".
         let mut disjoint = true;
         for (index, site) in sites.iter().enumerate() {
             for later in sites.iter().skip(index + 1) {
+                if site.kind == later.kind {
+                    continue;
+                }
                 if site.targets.iter().any(|target| later.names(*target)) {
                     disjoint = false;
                 }
@@ -1663,7 +1681,16 @@ pub fn measure_block_precedence(document: &ZrdValue) -> MeasuredBranchPrecedence
                 .filter(|site| site.names(target))
                 .cloned()
                 .collect();
-            if conflicting.len() < 2 {
+            // Two *different* effects on one objective, never the same effect
+            // spelled twice: a conflict is a precedence question, and one effect
+            // repeated is not two of them.
+            if conflicting
+                .iter()
+                .map(|site| site.kind)
+                .collect::<BTreeSet<_>>()
+                .len()
+                < 2
+            {
                 continue;
             }
             measured.conflicts.push(MeasuredBranchConflict {
@@ -2051,15 +2078,20 @@ impl RetailObjectiveCensus {
         conflicts
     }
 
-    /// How many conflicts corpus-wide: blocks where two completion effects name
-    /// the same objective, which is the only shape in which the original's order
+    /// How many **blocks** corpus-wide name a common objective with two
+    /// different completion effects: the only shape in which the original's order
     /// between them would decide anything.
+    ///
+    /// Blocks, not conflicts and not missions: one block can name two objectives
+    /// in common and one mission can hold several conflicting blocks, so counting
+    /// either of those instead would under-report the blocks an importer has to
+    /// handle.
     #[must_use]
     pub fn conflicting_blocks(&self) -> u32 {
         self.rows
             .iter()
-            .filter(|row| row.branch_precedence.needs_unmeasured_order())
-            .count() as u32
+            .map(|row| row.branch_precedence.conflicting_blocks())
+            .sum()
     }
 
     /// Whether the installation's objective records need a completion-effect
@@ -2093,11 +2125,7 @@ impl RetailObjectiveCensus {
     /// corpus imposes no order on the pair — see
     /// [`MeasuredBranchPrecedence::declared_order`].
     #[must_use]
-    pub fn declared_order(
-        &self,
-        first: cs_content::objectives::BranchEffectKind,
-        second: cs_content::objectives::BranchEffectKind,
-    ) -> (u32, u32) {
+    pub fn declared_order(&self, first: BranchEffectKind, second: BranchEffectKind) -> (u32, u32) {
         self.rows.iter().fold((0, 0), |(forward, back), row| {
             let (row_forward, row_back) = row.branch_precedence.declared_order(first, second);
             (forward + row_forward, back + row_back)
@@ -2205,10 +2233,8 @@ pub fn survey_retail_objective_records(
             blocks: machine.blocks(),
             keys: machine.keys().to_vec(),
             branching_sites: sites(|key| BRANCH_KEY_VOCABULARY.contains(&key)),
-            completion_effect_sites: sites(|key| {
-                cs_content::objectives::BRANCH_EFFECT_KEY_VOCABULARY.contains(&key)
-            }),
-            order_dependency_sites: sites(|key| key == cs_content::objectives::BRANCH_ORDER_KEY),
+            completion_effect_sites: sites(|key| BRANCH_EFFECT_KEY_VOCABULARY.contains(&key)),
+            order_dependency_sites: sites(|key| key == BRANCH_ORDER_KEY),
             optional_sites: sites(is_optional_objective_key),
             failure_sites: sites(|key| FAILURE_KEY_VOCABULARY.contains(&key)),
             branch_precedence: measure_block_precedence(&document),
