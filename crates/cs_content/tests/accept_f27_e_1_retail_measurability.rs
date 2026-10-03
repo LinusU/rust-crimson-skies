@@ -42,7 +42,9 @@ mod support;
 use std::collections::BTreeSet;
 
 use cs_content::weapons::{
-    LimitEvidence, LimitOutcome, ORIGINAL_GUN_GROUPS, OriginalLimitClaim, OriginalLimitReport,
+    LimitEvidence, LimitOutcome, ORIGINAL_AMMO_NAME_BLOCKS, ORIGINAL_GUN_GROUPS,
+    ORIGINAL_GUN_LONG_NAME_IDS, ORIGINAL_GUN_SHORT_NAME_IDS, ORIGINAL_SELECTABLE_GUNS,
+    OriginalLimitClaim, OriginalLimitReport,
 };
 use support::*;
 
@@ -74,6 +76,11 @@ fn accept_f27_e_1_retail_no_shipped_ammunition_row_states_a_damage_amount() {
     let descriptions = read_rows(&root, description_base, description_count);
     assert_eq!(descriptions.len(), 4);
     for row in &descriptions {
+        assert_eq!(
+            row.language, ENGLISH_US,
+            "row {} is the English string the screens ask for",
+            row.id
+        );
         assert!(row.marked, "row {} carries the shipped markup code", row.id);
         assert!(!row.empty, "row {} is not empty", row.id);
         assert!(
@@ -90,21 +97,12 @@ fn accept_f27_e_1_retail_no_shipped_ammunition_row_states_a_damage_amount() {
         );
     }
 
-    // The three ammunition name blocks and the gun name block are checked the
-    // same way: a type's name, short name and abbreviation are the vocabulary F27
-    // non-negotiable 1 asks for, and a number in any of them would be an amount
-    // wearing a label. The gun *long* names are the one run that carries no
-    // markup code **and** the one run that legitimately states a number — their
-    // own caliber — so the allowance is exactly the caliber row's digits and
-    // nothing more.
+    // The three ammunition name blocks are checked the same way: a type's name,
+    // short name and abbreviation are the vocabulary F27 non-negotiable 1 asks
+    // for, and a number in any of them would be an amount wearing a label.
     let header = read_member(&root, RESOURCE_HEADER);
-    let (caliber_base, caliber_count) = gun_caliber_block(&root);
-    let caliber_digits: Vec<Vec<char>> = read_rows(&root, caliber_base, caliber_count)
-        .into_iter()
-        .map(|row| row.digits)
-        .collect();
     for (macro_name, role) in MEASURED_BLOCK_MACROS {
-        if macro_name == "IDS_GUNSHORTNAME" {
+        if macro_name == "IDS_GUNSHORTNAME" || macro_name == "IDS_GUNLONGNAME" {
             continue;
         }
         let base = declared_id(&header, macro_name);
@@ -112,20 +110,6 @@ fn accept_f27_e_1_retail_no_shipped_ammunition_row_states_a_damage_amount() {
         assert!(!rows.is_empty(), "{macro_name} must carry rows: {role}");
         for row in &rows {
             assert!(!row.empty, "row {} of {macro_name} is not empty", row.id);
-            if macro_name == "IDS_GUNLONGNAME" {
-                let own = caliber_digits
-                    .get(
-                        rows.iter()
-                            .position(|other| other.id == row.id)
-                            .unwrap_or(0),
-                    )
-                    .expect("the gun name run and the caliber run are the same width");
-                assert_eq!(
-                    &row.digits, own,
-                    "a gun name states its own caliber and no other number"
-                );
-                continue;
-            }
             assert!(
                 row.digits.is_empty(),
                 "row {} of {macro_name} states a number: {:?}",
@@ -138,6 +122,36 @@ fn accept_f27_e_1_retail_no_shipped_ammunition_row_states_a_damage_amount() {
                 row.id
             );
         }
+    }
+
+    // The gun *long* names are the one run that legitimately states a number —
+    // their own caliber — so the allowance is exactly the caliber row at the
+    // same index and nothing more. All five are measured: the run is as wide as
+    // the caliber run, and each row is paired with that row's own caliber rather
+    // than with whichever row happens to sit at the same offset.
+    let (caliber_base, caliber_count) = gun_caliber_block(&root);
+    let caliber_digits: Vec<Vec<char>> = read_rows(&root, caliber_base, caliber_count)
+        .iter()
+        .map(|row| row.digits.clone())
+        .collect();
+    let long_base = declared_id(&header, "IDS_GUNLONGNAME");
+    let long_rows = read_rows(&root, long_base, caliber_count);
+    assert_eq!(
+        long_rows.len(),
+        caliber_digits.len(),
+        "the gun name run is as wide as the caliber run"
+    );
+    for (index, row) in long_rows.iter().enumerate() {
+        assert!(!row.empty, "row {} of IDS_GUNLONGNAME is not empty", row.id);
+        assert!(
+            !row.marked,
+            "row {} of IDS_GUNLONGNAME carries no markup code: it is the one run that does not",
+            row.id
+        );
+        assert_eq!(
+            &row.digits, &caliber_digits[index],
+            "a gun name states its own caliber and no other number"
+        );
     }
 }
 
@@ -237,6 +251,58 @@ fn accept_f27_e_1_retail_the_two_generated_headers_declare_no_damage_constant() 
     for (macro_name, _) in MEASURED_BLOCK_MACROS {
         declared_id(&header, macro_name);
     }
+    // The four ammunition row blocks are pinned against the schema's own table as
+    // well, so a header that renumbered them fails here instead of quietly
+    // changing which ids this stage reads rows from — and the two gun name blocks
+    // are pinned against F27-E's measured gun-name runs.
+    for (macro_name, label) in [
+        ("IDS_AMMOLONGNAME", "ammo_long_name"),
+        ("IDS_AMMOSHORTNAME", "ammo_short_name"),
+        ("IDS_AMMOABBRNAME", "ammo_abbreviation"),
+        ("IDS_AMMODESCRIPTION", "ammo_description"),
+    ] {
+        let pinned = ORIGINAL_AMMO_NAME_BLOCKS
+            .iter()
+            .find(|(_, block)| *block == label)
+            .map(|(id, _)| *id)
+            .unwrap_or_else(|| panic!("the schema carries the {label} block"));
+        assert_eq!(
+            declared_id(&header, macro_name),
+            pinned,
+            "{macro_name} must be declared at the id the schema pins"
+        );
+    }
+    for (macro_name, pinned) in [
+        ("IDS_GUNLONGNAME", ORIGINAL_GUN_LONG_NAME_IDS[0]),
+        ("IDS_GUNSHORTNAME", ORIGINAL_GUN_SHORT_NAME_IDS[0]),
+    ] {
+        assert_eq!(
+            declared_id(&header, macro_name),
+            pinned,
+            "{macro_name} must be declared at the base id of its measured run"
+        );
+    }
+    // The rows the runs are read from are the schema's own ids, one by one.
+    let long_rows = read_rows(
+        &root,
+        ORIGINAL_GUN_LONG_NAME_IDS[0],
+        ORIGINAL_SELECTABLE_GUNS,
+    );
+    assert_eq!(
+        long_rows.iter().map(|row| row.id).collect::<Vec<u32>>(),
+        ORIGINAL_GUN_LONG_NAME_IDS.to_vec(),
+        "the gun long-name run is exactly the five measured ids"
+    );
+    let caliber_rows = read_rows(
+        &root,
+        ORIGINAL_GUN_SHORT_NAME_IDS[0],
+        ORIGINAL_SELECTABLE_GUNS,
+    );
+    assert_eq!(
+        caliber_rows.iter().map(|row| row.id).collect::<Vec<u32>>(),
+        ORIGINAL_GUN_SHORT_NAME_IDS.to_vec(),
+        "the caliber run is exactly the five measured ids"
+    );
 }
 
 /// **The image that would hold the table carries no plaintext to read.** The
@@ -372,12 +438,14 @@ fn accept_f27_e_1_retail_every_f27_d_limit_claim_is_deferred_and_re_filed() {
 
     let mut report = OriginalLimitReport::new();
     for claim in OriginalLimitClaim::ALL {
-        report.record(
-            claim,
-            LimitEvidence::Unmeasurable {
-                reason: claim.deferral_reason().to_owned(),
-            },
-        );
+        report
+            .record(
+                claim,
+                LimitEvidence::Unmeasurable {
+                    reason: claim.deferral_reason().to_owned(),
+                },
+            )
+            .expect("a deferral is recorded");
     }
     for (claim_id, target) in REFILED {
         let claim = OriginalLimitClaim::ALL

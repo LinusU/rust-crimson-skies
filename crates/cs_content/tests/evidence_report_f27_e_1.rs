@@ -286,12 +286,14 @@ fn evidence_report_f27_e_1_writes_the_acceptance_report() {
 fn stage_report() -> OriginalLimitReport {
     let mut report = OriginalLimitReport::new();
     for claim in OriginalLimitClaim::ALL {
-        report.record(
-            claim,
-            cs_content::weapons::LimitEvidence::Unmeasurable {
-                reason: claim.deferral_reason().to_owned(),
-            },
-        );
+        report
+            .record(
+                claim,
+                cs_content::weapons::LimitEvidence::Unmeasurable {
+                    reason: claim.deferral_reason().to_owned(),
+                },
+            )
+            .unwrap_or_else(|error| panic!("{claim} must be recordable as deferred: {error}"));
     }
     for (claim_id, target) in REFILED {
         let claim = OriginalLimitClaim::ALL

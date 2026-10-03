@@ -28,19 +28,17 @@
 use cs_content::damage::DamageNodeKey;
 use cs_content::scene::SceneNodeId;
 use cs_content::weapons::{
-    AmmunitionAudit, AmmunitionId, DamageBindingRefusal, DeclaredAmmunition, DeclaredCaliber,
-    DeclaredDamageChannel, DeclaredGunDefinition, DeclaredGunMountKind, DeclaredGunRate,
-    DeclaredInheritanceRule, DeclaredLoadout, DeclaredSpreadCone, DeclaredWeaponDamage,
-    GunMountField, GunMountRefusal, InteractionOption, InteractionRules, LimitEvidence,
-    LimitOutcome, LimitReportError, MeasuredAmmunitionDamage, MeasuredGunMount,
+    AmmunitionAudit, AmmunitionId, DamageBindingRefusal, DeclaredAmmunition, DeclaredDamageChannel,
+    DeclaredGunDefinition, DeclaredGunMountKind, DeclaredLoadout, DeclaredSpreadCone,
+    DeclaredWeaponDamage, GunMountField, GunMountRefusal, InteractionOption, InteractionRules,
+    LimitEvidence, LimitOutcome, LimitReportError, MeasuredAmmunitionDamage, MeasuredGunMount,
     ORIGINAL_AMMUNITION_TYPES, ORIGINAL_GUN_GROUPS, ORIGINAL_GUN_SLOTS, ORIGINAL_HARDPOINT_POINTS,
     ORIGINAL_ROCKET_SLOTS, ORIGINAL_SELECTABLE_GUNS, OriginalGunLoadout, OriginalLimitClaim,
-    OriginalLimitReport, OriginalLoadoutCounts, bind_ammunition_damage, bind_gun_mount,
-    is_observed_evidence, unmeasured_ammunition_types, unmeasured_gun_mounts,
+    OriginalLimitReport, OriginalLoadoutCounts, WeaponSchemaError, bind_ammunition_damage,
+    bind_gun_mount, is_observed_evidence, unmeasured_ammunition_types, unmeasured_gun_mounts,
 };
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimStatus;
-use cs_types::space::Radians;
 
 /// The claim every measurement in this file is recorded under.
 const MEASURED: &str = "f27.e1.test-measurement";
@@ -238,6 +236,10 @@ fn accept_f27_e_1_a_measured_mount_replaces_the_placeholder_and_keeps_the_rest_u
     assert!(record.scene_binding().is_none());
 
     let measured = measured_mount(GUN);
+    assert!(
+        measured.unmeasured().is_empty() && measured.is_complete(),
+        "the fixture measurement is observation-backed in all three fields"
+    );
     let bound = bind_gun_mount(&record, &measured).expect("a complete measurement binds");
 
     // The three mount fields are the measurement's, each with its provenance.
@@ -599,6 +601,117 @@ fn accept_f27_e_1_the_closure_helpers_count_incomplete_mounts_as_unmeasured() {
         unmeasured_ammunition_types(&types, &[]),
         vec![ammunition_id(AMMO), ammunition_id("fixture.ammo_beta")]
     );
+
+    // A profile that exists but measures nothing is the input
+    // `bind_ammunition_damage` refuses, so counting it as coverage would let
+    // four empty measurements report every type's damage as measured.
+    let empty = MeasuredAmmunitionDamage::new(
+        ammunition_id(AMMO),
+        DeclaredWeaponDamage {
+            armor: unknown(
+                "f27.e1.test.armor",
+                "this type's armor amount is unmeasured",
+            ),
+            internal: unknown(
+                "f27.e1.test.internal",
+                "this type's internal amount is unmeasured",
+            ),
+        },
+    );
+    assert!(!empty.is_measurable());
+    assert_eq!(
+        unmeasured_ammunition_types(&types, &[empty]),
+        vec![ammunition_id(AMMO), ammunition_id("fixture.ammo_beta")],
+        "an empty measurement covers no type"
+    );
+}
+
+/// **A measured amount the schema rejects is refused, not bound**: a NaN or a
+/// negative armor amount carries an observed provenance and still cannot become
+/// a declared damage, because the reassembled record would not reassemble.
+#[test]
+fn accept_f27_e_1_a_measured_amount_the_schema_rejects_is_refused() {
+    let record = unmeasured_ammunition(AMMO);
+    for (amount, expected) in [
+        (
+            f64::NAN,
+            WeaponSchemaError::NonFiniteDamage {
+                channel: DeclaredDamageChannel::Armor,
+            },
+        ),
+        (
+            -1.0_f64,
+            WeaponSchemaError::NegativeDamage {
+                channel: DeclaredDamageChannel::Armor,
+                amount: -1.0,
+            },
+        ),
+    ] {
+        let measured = MeasuredAmmunitionDamage::new(
+            ammunition_id(AMMO),
+            DeclaredWeaponDamage {
+                armor: known(amount, observed()),
+                internal: unknown("f27.e1.test.internal", "not measured"),
+            },
+        );
+        assert_eq!(
+            measured.measured_channels(),
+            vec![DeclaredDamageChannel::Armor],
+            "the amount is observed; the schema is what refuses it"
+        );
+        match bind_ammunition_damage(&record, &measured) {
+            Err(DamageBindingRefusal::Assembly { source }) => assert_eq!(source, expected),
+            other => panic!("a {amount} amount must be refused, got {other:?}"),
+        }
+        assert_eq!(
+            record.known_damage(DeclaredDamageChannel::Armor),
+            None,
+            "the refused record is untouched"
+        );
+    }
+}
+
+/// **Binding replaces a scene binding the record already carries**: a bound mount
+/// may not keep another gun's visual node beside a measured mount, which is why
+/// the gate treats the binding as part of the mount rather than as an optional
+/// extra.
+#[test]
+fn accept_f27_e_1_a_bound_mount_replaces_a_scene_binding_the_record_already_carried() {
+    let stale = known(node_id("fixture.other_airframe.wing_left.9"), designed());
+    let record = DeclaredGunDefinition::try_new(
+        gun_id(GUN),
+        Origin::SyntheticFixture,
+        DamageNodeKey::new("placeholder_mount").expect("the placeholder mount key is valid"),
+        DeclaredGunMountKind::Gondola,
+        Some(stale.clone()),
+        unknown("f27.e1.test.caliber", "unmeasured in this fixture"),
+        unknown("f27.e1.test.ammunition", "unmeasured in this fixture"),
+        unknown("f27.e1.test.rate", "unmeasured in this fixture"),
+        unknown("f27.e1.test.velocity", "unmeasured in this fixture"),
+        unknown("f27.e1.test.lifetime", "unmeasured in this fixture"),
+        DeclaredSpreadCone {
+            half_angle: unknown("f27.e1.test.spread", "unmeasured in this fixture"),
+        },
+        DeclaredWeaponDamage {
+            armor: unknown("f27.e1.test.damage_armor", "unmeasured in this fixture"),
+            internal: unknown("f27.e1.test.damage_internal", "unmeasured in this fixture"),
+        },
+        unknown("f27.e1.test.inheritance", "unmeasured in this fixture"),
+        unknown("f27.e1.test.effect", "unmeasured in this fixture"),
+        unknown("f27.e1.test.sound", "unmeasured in this fixture"),
+        unmeasured_rules(),
+        designed(),
+    )
+    .expect("the record with a designed binding is structurally valid");
+    assert_eq!(record.scene_binding(), Some(&stale));
+
+    let bound =
+        bind_gun_mount(&record, &measured_mount(GUN)).expect("a complete measurement binds");
+    assert_eq!(
+        bound.scene_binding(),
+        Some(measured_mount(GUN).scene_binding()),
+        "the measured node replaces the designed one"
+    );
 }
 
 /// **A partial measurement cannot record a claim as resolved**: the report keeps
@@ -607,13 +720,15 @@ fn accept_f27_e_1_the_closure_helpers_count_incomplete_mounts_as_unmeasured() {
 #[test]
 fn accept_f27_e_1_a_partial_measurement_cannot_resolve_a_claim() {
     let mut report = OriginalLimitReport::new();
-    report.record(
-        OriginalLimitClaim::AmmoNamesDamage,
-        LimitEvidence::PartlyMeasured {
-            provenance: observed(),
-            unmeasured: 1,
-        },
-    );
+    report
+        .record(
+            OriginalLimitClaim::AmmoNamesDamage,
+            LimitEvidence::PartlyMeasured {
+                provenance: observed(),
+                unmeasured: 1,
+            },
+        )
+        .expect("a partial measurement is recorded as a deferral");
 
     assert!(
         report.bound().is_empty(),
@@ -679,12 +794,14 @@ fn accept_f27_e_1_every_f27_d_limit_claim_is_accounted_or_the_report_is_incomple
     assert!(report.rows().is_empty());
 
     for claim in OriginalLimitClaim::ALL {
-        report.record(
-            claim,
-            LimitEvidence::Unmeasurable {
-                reason: claim.deferral_reason().to_owned(),
-            },
-        );
+        report
+            .record(
+                claim,
+                LimitEvidence::Unmeasurable {
+                    reason: claim.deferral_reason().to_owned(),
+                },
+            )
+            .expect("a deferral is recorded");
     }
     assert_eq!(
         report.unaccounted(),
@@ -725,12 +842,14 @@ fn accept_f27_e_1_every_f27_d_limit_claim_is_accounted_or_the_report_is_incomple
 
     // One measurement resolves exactly one claim, and the other four stay
     // deferred — which is what a partial resolution looks like.
-    report.record(
-        OriginalLimitClaim::GunGroupAssignment,
-        LimitEvidence::Measured {
-            provenance: observed(),
-        },
-    );
+    report
+        .record(
+            OriginalLimitClaim::GunGroupAssignment,
+            LimitEvidence::Measured {
+                provenance: observed(),
+            },
+        )
+        .expect("an observed measurement resolves the claim it is recorded for");
     assert_eq!(report.bound(), vec![OriginalLimitClaim::GunGroupAssignment]);
     assert_eq!(report.deferred().len(), 4);
     assert!(report.is_complete());
@@ -748,12 +867,14 @@ fn accept_f27_e_1_a_refiling_refuses_a_bound_claim_and_an_empty_target() {
         ))
     );
 
-    report.record(
-        OriginalLimitClaim::Convergence,
-        LimitEvidence::Measured {
-            provenance: observed(),
-        },
-    );
+    report
+        .record(
+            OriginalLimitClaim::Convergence,
+            LimitEvidence::Measured {
+                provenance: observed(),
+            },
+        )
+        .expect("an observed measurement resolves the claim");
     assert_eq!(
         report.refile(OriginalLimitClaim::Convergence, "#547"),
         Err(LimitReportError::AlreadyBound(
@@ -761,12 +882,14 @@ fn accept_f27_e_1_a_refiling_refuses_a_bound_claim_and_an_empty_target() {
         ))
     );
 
-    report.record(
-        OriginalLimitClaim::Inheritance,
-        LimitEvidence::Unmeasurable {
-            reason: OriginalLimitClaim::Inheritance.deferral_reason().to_owned(),
-        },
-    );
+    report
+        .record(
+            OriginalLimitClaim::Inheritance,
+            LimitEvidence::Unmeasurable {
+                reason: OriginalLimitClaim::Inheritance.deferral_reason().to_owned(),
+            },
+        )
+        .expect("a deferral is recorded");
     assert_eq!(
         report.refile(OriginalLimitClaim::Inheritance, "  "),
         Err(LimitReportError::EmptyTarget(
@@ -794,10 +917,63 @@ fn accept_f27_e_1_a_refiling_refuses_a_bound_claim_and_an_empty_target() {
     }
 }
 
-/// **The claim ids are the ones F27-D's report carries**, so two reports can be
-/// diffed by id rather than by prose.
+/// **A claim cannot be recorded as resolved on evidence that is not an
+/// observation.** Otherwise this project's own designed fixture could report
+/// that the original's damage amounts, mount assignment, convergence, inherited
+/// velocity and interaction rules were all measured, and the machine-readable
+/// report would say so with an empty list of unknowns.
 #[test]
-fn accept_f27_e_1_the_five_claims_carry_f27_ds_own_ids() {
+fn accept_f27_e_1_a_claim_is_not_resolved_on_an_unobserved_provenance() {
+    let mut report = OriginalLimitReport::new();
+    for class in [
+        ClaimStatus::Designed,
+        ClaimStatus::Documented,
+        ClaimStatus::Inferred,
+        ClaimStatus::Unknown,
+        ClaimStatus::Contradicted,
+    ] {
+        let provenance = Provenance::new(claim(DESIGNED), class, None)
+            .unwrap_or_else(|_| Provenance::designed(claim(DESIGNED)));
+        assert_eq!(
+            report.record(
+                OriginalLimitClaim::AmmoNamesDamage,
+                LimitEvidence::Measured { provenance }
+            ),
+            Err(LimitReportError::Unobserved {
+                claim: OriginalLimitClaim::AmmoNamesDamage,
+                class,
+            }),
+            "a {class} provenance resolves nothing"
+        );
+        assert_eq!(
+            report.row(OriginalLimitClaim::AmmoNamesDamage),
+            None,
+            "the refused recording leaves the claim exactly as open as it was"
+        );
+        assert!(report.bound().is_empty(), "no {class} claim is ever bound");
+        assert_eq!(report.unaccounted(), OriginalLimitClaim::ALL.to_vec());
+        assert!(!report.is_complete());
+    }
+    // An observation resolves the claim. (`VerifiedOriginal` is the other
+    // observation class and is asserted as such in
+    // `a_known_field_that_is_not_an_observation_is_refused`; building one here
+    // would need a source span, which belongs to a retail measurement.)
+    report
+        .record(
+            OriginalLimitClaim::AmmoNamesDamage,
+            LimitEvidence::Measured {
+                provenance: observed(),
+            },
+        )
+        .unwrap_or_else(|error| panic!("an observed measurement must resolve a claim: {error}"));
+    assert_eq!(report.bound(), vec![OriginalLimitClaim::AmmoNamesDamage]);
+}
+
+/// **The claim ids are traceable to F27-D's own report**: four of the five are
+/// F27-D's id verbatim, and the damage-amount claim is the narrowed remainder of
+/// F27-D's `f27.d.limit.ammo_names`, which is stated rather than papered over.
+#[test]
+fn accept_f27_e_1_every_tracked_claim_carries_f27_ds_own_id() {
     let ids: Vec<&str> = OriginalLimitClaim::ALL
         .iter()
         .map(|claim| claim.claim_id())
@@ -812,6 +988,36 @@ fn accept_f27_e_1_the_five_claims_carry_f27_ds_own_ids() {
             "f27.d.limit.interaction_rules",
         ]
     );
+    // F27-D's own report spells four of the five identically; the fifth is the
+    // damage-amount remainder of its `f27.d.limit.ammo_names`.
+    let f27_d: Vec<&str> = OriginalLimitClaim::ALL
+        .iter()
+        .map(|claim| claim.f27_d_claim_id())
+        .collect();
+    assert_eq!(
+        f27_d,
+        vec![
+            "f27.d.limit.ammo_names",
+            "f27.d.limit.gun_group_assignment",
+            "f27.d.limit.convergence",
+            "f27.d.limit.inheritance",
+            "f27.d.limit.interaction_rules",
+        ]
+    );
+    assert_eq!(
+        OriginalLimitClaim::ALL
+            .iter()
+            .filter(|claim| claim.claim_id() != claim.f27_d_claim_id())
+            .count(),
+        1,
+        "exactly one claim is tracked under a narrower id than F27-D recorded"
+    );
+    // F27-D's sixth claim, the set of five guns, is measured by F27-E from the
+    // shipped `IDS_GUNLONGNAME` rows, so this stage does not carry it; nothing
+    // here may claim to resolve it.
+    for claim in OriginalLimitClaim::ALL {
+        assert_ne!(claim.f27_d_claim_id(), "f27.d.limit.gun_set");
+    }
     for claim in OriginalLimitClaim::ALL {
         assert!(!claim.subject().is_empty());
         assert!(
@@ -835,12 +1041,4 @@ fn accept_f27_e_1_the_five_claims_carry_f27_ds_own_ids() {
     // The designed values a `Known` may carry elsewhere are still not
     // observations.
     assert!(!is_observed_evidence(ClaimStatus::Designed));
-    let _ = (
-        DeclaredCaliber::try_new(" .30-cal.").expect("a caliber is valid"),
-        DeclaredGunRate {
-            ticks_between_shots: 4,
-        },
-        DeclaredInheritanceRule::Full,
-        Radians(0.004),
-    );
 }

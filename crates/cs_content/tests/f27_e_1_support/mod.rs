@@ -50,16 +50,17 @@ use cs_assets::rof::mount_rof_into;
 use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
 use cs_content::weapons::{ORIGINAL_AMMO_NAME_BLOCKS, ORIGINAL_GUN_GROUPS};
 use cs_formats::text::read_resource_header;
-use cs_types::asset_id::{
-    AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan,
-};
-use cs_types::evidence::{ClaimId, ContentHash};
+use cs_types::asset_id::{AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext};
+use cs_types::evidence::ContentHash;
 
 /// The retail container that holds the two generated headers.
 pub const BASE_CONTAINER: &str = "GOSDATA/ASSETS/crimson.rof";
 
 /// The engine's own generated header, a C include the original build produced.
-pub const RESOURCE_HEADER: &str = "ASSETS/SCRIPTS/RESOURCE.H";
+///
+/// The spelling is the production constant's, so this module cannot read a
+/// different member than the schema names.
+pub const RESOURCE_HEADER: &str = cs_content::weapons::ORIGINAL_RESOURCE_HEADER;
 
 /// The original build's second generated header.
 pub const RESOURCE_HEADER_SECOND: &str = "ASSETS/SCRIPTS/RESRC1.H";
@@ -136,14 +137,15 @@ pub const REFILED: [(&str, &str); 5] = [
     (
         "f27.d.limit.ammo_names_damage",
         "#547 F27-E.1 re-filed to #358 REF-OWNER-FIRST-CAPTURE (owner-supplied original run; \
-         capture protocol #357) and to #545's follow-up surface: the amounts are in the \
-         executable's own tables",
+         capture protocol #357) and to #549 F27-E.2, the one agent-reachable route: recover the \
+         tables from the protected image, or record which static routes were tried and why each \
+         fails",
     ),
     (
         "f27.d.limit.gun_group_assignment",
         "#547 F27-E.1 re-filed to #358 REF-OWNER-FIRST-CAPTURE for the per-airframe gun tables, \
-         and to F29's armor-zone work for the four armor positions the original's own armor \
-         screen names",
+         and to #550 F27-E.3 for the four armor positions the original's own armor screen names \
+         (a measured lead, not a resolution)",
     ),
     (
         "f27.d.limit.convergence",
@@ -262,23 +264,6 @@ pub fn read_loose(root: &Path, relative: &str) -> Vec<u8> {
         .unwrap_or_else(|error| panic!("{relative}: the installation must hold it: {error}"))
 }
 
-/// The [`SourceSpan`] of `needle` inside one retail member: which installation,
-/// which container, which member, which bytes and what digest.
-pub fn span_of(install: ContentHash, member: &str, haystack: &[u8], needle: &str) -> SourceSpan {
-    let offset = find(haystack, needle.as_bytes()).unwrap_or_else(|| {
-        panic!("the member must contain {needle:?} for this claim to have a span")
-    });
-    SourceSpan::new(
-        install,
-        BASE_CONTAINER,
-        Some(member),
-        offset as u64,
-        needle.len() as u64,
-        Some(sha256(haystack)),
-    )
-    .expect("a span inside one named member is valid")
-}
-
 /// The offset of `needle` inside `haystack`.
 pub fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
@@ -286,14 +271,11 @@ pub fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-/// The claim the measurability observation is recorded under.
-pub fn claim() -> ClaimId {
-    ClaimId::new("f27.e1.retail-measurability").expect("a valid claim id")
-}
-
-/// The shipped `[TAG]` markup code every measured ammunition and gun row of the
-/// language image carries. The code is split off and never interpreted.
-pub const TEXT_MARKUP: &str = "[COUR9]";
+/// The shipped `[TAG]` markup code every measured ammunition and caliber row of the
+/// language image carries, and which the gun *long* names do not. The code is the
+/// production constant's, so this module cannot measure a different code than the
+/// schema pins; it is split off and never interpreted.
+pub const TEXT_MARKUP: &str = cs_content::weapons::ORIGINAL_TEXT_MARKUP;
 
 /// Splits the shipped markup code off one measured row, leaving the display
 /// text. A row with no code is returned unchanged, and a row whose whole content
@@ -580,8 +562,12 @@ pub struct NodeCensus {
     pub distinct_names: usize,
     /// The distinct names that mention a gun, in sorted order.
     pub gun_bearing: Vec<String>,
-    /// The declared gun-group labels that appear as a node name, in sorted
-    /// order.
+    /// The declared gun-group labels that appear **anywhere inside** a node name,
+    /// in sorted order.
+    ///
+    /// The test is a substring test, not an equality test, and that is the
+    /// conservative direction for the claim this stage makes: if no node name
+    /// even *contains* a group's label, then certainly no node name *is* one.
     pub declared_groups_present: Vec<String>,
 }
 

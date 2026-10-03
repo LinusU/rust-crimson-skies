@@ -109,9 +109,9 @@ That is a description of four *behaviors*, and no quantity anywhere in it.
 The block `IDS_GUNSHORTNAME 3320` holds five rows; each carries exactly two ASCII
 digits, and the five bores are `3`, `4`, `5`, `6`, `7`, each followed by `0`.
 The five gun *long* names at `IDS_GUNLONGNAME 3310` carry **no** markup code —
-the one run that does not — and state exactly their own caliber's two digits and
-no other number. So the installation's own gun vocabulary is "which bore", never
-"how much damage".
+the one run that does not — and, paired row by row with the caliber run at the
+same index, state exactly their own caliber's two digits and no other number. So
+the installation's own gun vocabulary is "which bore", never "how much damage".
 
 ### 3. Neither generated header declares a damage or ballistic constant
 
@@ -121,9 +121,12 @@ members **not one `#define` value spells a decimal point or a comma** — a
 multiplier table would need both. And of the defines whose *name* mentions a
 gun, an ammunition or armor, **not one is named after damage, caliber, calibre
 spelling, penetration, ricochet or a bullet**: they are all string ids and UI
-constants. The twenty gun-group ids `3061..=3080` and the six row-block ids are
-re-measured from these headers on every run and pinned against
-`ORIGINAL_GUN_GROUPS` and `ORIGINAL_AMMO_NAME_BLOCKS`.
+constants (46 of them, listed in the hashed artifact). The twenty gun-group ids
+`3061..=3080` are re-measured from the header on every run and pinned against
+`ORIGINAL_GUN_GROUPS`; the four ammunition row-block ids against
+`ORIGINAL_AMMO_NAME_BLOCKS`; and the two gun name blocks against F27-E's
+measured runs `ORIGINAL_GUN_LONG_NAME_IDS` and `ORIGINAL_GUN_SHORT_NAME_IDS`,
+whose five ids each are then compared with the rows actually read.
 
 ### 4. The image that would hold the table carries no plaintext
 
@@ -135,10 +138,13 @@ and the `IMAGE_DIRECTORY_ENTRY_RESOURCE` directory describes **1 962** of them,
 under 5 % of the section: there is no room in it for a table. The directory's
 depth-one resource types are exactly **3, 14 and 16** — icon, version and group
 icon — so the executable carries **no `RT_STRING` at all**. `crimson.icd`
-(2 580 578 bytes) is a second `MZ` image at whole-length entropy **7.811**, and
-across eleven words a damage table would be spelled with (`caliber`, `calibre`,
-`ammo`, `armor`, `armour`, `piercing`, `incend`, `damage`, `rocket`, `shell`,
-`heat`) its bytes carry **three occurrences in total**.
+(2 580 578 bytes) is a second `MZ` image at whole-length entropy **7.811** bits
+per byte, and across eleven words a damage table would be spelled with
+(`caliber`, `calibre`, `ammo`, `armor`, `armour`, `piercing`, `incend`, `damage`,
+`rocket`, `shell`, `heat`) its bytes carry **two occurrences in total**, both of
+them `shell`. (The suite asserts the weaker "at most three", so an installation
+that spells one more of these words does not fail a test whose subject is "no
+table is in here".)
 
 The entropy figures above are computed in the test, not by a production reader:
 no production reader measures entropy. The *bytes* are production-read, which is
@@ -162,6 +168,24 @@ re-filed, so `unaccounted()` is empty and `is_complete()` is **true** — while
 `bound()` is **empty**. That pairing is the honest result and the report's
 `is_complete` doc says so in as many words: *accounting is not resolution*.
 
+### 7. The claim ids, and how they line up with F27-D's
+
+F27-D's evidence report (`docs/findings/evidence/F27-D.json`) carries **six**
+`f27.d.limit.*` limitations. This stage tracks five, and the difference is
+stated in production code rather than left for a reader to infer:
+
+| F27-D's id | tracked here as | why |
+| --- | --- | --- |
+| `f27.d.limit.ammo_names` | `f27.d.limit.ammo_names_damage` | F27-D's claim covered the four types' names, calibers **and** per-type damage amounts together. F27-E measured the names and the caliber labels from `langui.dll`, so the open remainder is the damage amounts alone; the narrowed id is the one F27-E.1's task description names — and the one **F27-E's own report on `main` already uses** for that remainder, so both stages and both reports agree. |
+| `f27.d.limit.gun_set` | *(not carried)* | which five guns the original offers is a measurement of their **names**, which F27-E made and records as resolved in `docs/findings/evidence/F27-E.json`; what is open about a gun is its mount, which is `f27.d.limit.gun_group_assignment`. This stage claims nothing about `gun_set`. |
+| the other four | unchanged | `gun_group_assignment`, `convergence`, `inheritance`, `interaction_rules` are carried verbatim. |
+
+`OriginalLimitClaim::f27_d_claim_id()` returns F27-D's spelling and
+`OriginalLimitClaim::claim_id()` the one this stage reports under, so the
+by-id diff the code originally promised is actually possible;
+`accept_f27_e_1_every_tracked_claim_carries_f27_ds_own_id` pins both lists and
+asserts that exactly one claim is tracked under a narrower id.
+
 ## The gate
 
 `bind_gun_mount(record, measured)` is the only production path from a measurement
@@ -175,13 +199,14 @@ observation — `VerifiedOriginal` or `ObservedTool`. A `Known` value carrying
 reported as unmeasured, which is what keeps the project's own designed fixture
 mount out of an original gun record.
 
-`bind_ammunition_damage(record, measured)` copies the measured amounts across
-**verbatim**, channel by channel: a channel the measurement leaves open keeps the
-record's own `Resolved::Unknown`, with its own claim id and reason. Nothing is
-interpolated, scaled or copied from another type, so a five-by-four multiplier
-table cannot be expressed through this gate even if someone wrote one. A profile
-with no usable amount on either channel binds nothing, and a profile measured for
-another type is refused.
+`bind_ammunition_damage(record, measured)` copies the measurement's profile
+across **verbatim**, channel by channel: a channel the measurement leaves open
+carries the *measurement's* own `Resolved::Unknown` with its own claim id and
+reason, and the record's value for that channel is replaced rather than kept.
+Nothing is interpolated, scaled or copied from another type, so a five-by-four
+multiplier table cannot be expressed through this gate even if someone wrote one.
+A profile with no usable amount on either channel binds nothing, and a profile
+measured for another type is refused.
 
 The two closure helpers exist because a claim is about *every* type or *every*
 gun: `unmeasured_ammunition_types` and `unmeasured_gun_mounts` list what a
@@ -248,7 +273,7 @@ disappear for the same type once a measurement is bound through the gate.
 The gate's whole value is that it cannot be talked into inventing a value, so
 every decision it makes was removed one at a time — production **or** test
 source patched in place, restored after each run — and the whole
-`accept_f27_e_1_` selection re-run with `--include-ignored`. **21 mutations, 21
+`accept_f27_e_1_` selection re-run with `--include-ignored`. **28 mutations, 28
 caught.** The "caught by" column is what the run reported, not an estimate, and
 the harness that applied them was a scratch script under `private/` (not
 committed): it rewrites source in place and restores it, which is a one-off
@@ -259,20 +284,26 @@ measurement rather than a test.
 | `unmeasured()` skips the mount kind | `a_mount_missing_any_one_field_is_refused_by_name`, `the_closure_helpers_count_incomplete_mounts_as_unmeasured` |
 | `unmeasured()` skips the scene binding | the same two |
 | `unmeasured_of` ignores the provenance class | `a_damage_measurement_with_no_usable_amount_binds_nothing`, `a_known_field_that_is_not_an_observation_is_refused` |
-| `is_observed_evidence` accepts every class | the same two plus `the_five_claims_carry_f27_ds_own_ids` |
+| `is_observed_evidence` accepts every class | the same two plus `every_tracked_claim_carries_f27_ds_own_id` |
 | `bind_gun_mount` drops the gun-mismatch check | `a_mount_measured_for_another_gun_is_refused` |
 | `bind_gun_mount` drops the measurement's scene binding | `a_measured_mount_replaces_the_placeholder_and_keeps_the_rest_unknown` |
 | `bind_ammunition_damage` copies the record's damage instead of the measurement's | `a_bound_type_stops_the_audit_reporting_no_damage_consumer`, `a_measured_damage_binds_only_the_measured_channel` |
 | `bind_ammunition_damage` fills an unmeasured channel from the measured one | `a_measured_damage_binds_only_the_measured_channel` |
 | `bind_ammunition_damage` accepts a profile with no usable amount | `a_damage_measurement_with_no_usable_amount_binds_nothing` |
 | `bind_ammunition_damage` drops the type-mismatch check | `damage_measured_for_another_type_is_refused` |
-| `measured_channels` counts a measured zero as nothing | `the_five_claims_carry_f27_ds_own_ids` |
+| `measured_channels` counts a measured zero as nothing | `every_tracked_claim_carries_f27_ds_own_id` |
 | `unmeasured_gun_mounts` counts an incomplete measurement as coverage | `the_closure_helpers_count_incomplete_mounts_as_unmeasured` |
 | `record()` maps `PartlyMeasured` to `Bound` | `a_partial_measurement_cannot_resolve_a_claim` |
 | `unaccounted` ignores a deferral with no destination | `a_partial_measurement_cannot_resolve_a_claim`, `every_f27_d_limit_claim_is_accounted_or_the_report_is_incomplete` |
 | `refile` accepts a bound claim | `a_refiling_refuses_a_bound_claim_and_an_empty_target` |
 | `refile` accepts an empty target | the same test |
-| a `f27.d.limit.*` claim id is renamed | `the_five_claims_carry_f27_ds_own_ids` |
+| a tracked `f27.d.limit.*` claim id is renamed | `every_tracked_claim_carries_f27_ds_own_id`, `every_f27_d_limit_claim_is_accounted_or_the_report_is_incomplete` |
+| `f27_d_claim_id` renames the narrowed claim back to the tracked id | `every_tracked_claim_carries_f27_ds_own_id` |
+| `f27_d_claim_id` returns the tracked id for every claim | `every_tracked_claim_carries_f27_ds_own_id` |
+| `record()` drops the `is_observed_evidence` check | `a_claim_is_not_resolved_on_an_unobserved_provenance` |
+| `unmeasured_ammunition_types` counts an empty profile as coverage | `the_closure_helpers_count_incomplete_mounts_as_unmeasured` |
+| `validate_damage` stops rejecting a measured amount | `a_measured_amount_the_schema_rejects_is_refused` |
+| `bind_gun_mount` keeps the record's scene binding | `a_bound_mount_replaces_a_scene_binding_the_record_already_carried`, `a_measured_mount_replaces_the_placeholder_and_keeps_the_rest_unknown` |
 | the support module stops splitting the markup code off | the three retail row tests |
 | the support module counts digits with the markup still attached | the same three |
 | `declared_id` returns a constant | the same three plus `retail_the_two_generated_headers_declare_no_damage_constant` |
@@ -287,6 +318,12 @@ was written, and **no row above rests on a patch that failed to build**: the
 harness records an anchor miss separately and the two rows that had one were
 re-measured, not counted.
 
+**28 mutations, 28 caught.** The seven rows added during review (2026-10-03,
+reviewer `bunny-alpha-1`) were measured by the reviewer with the same method —
+patch, run the fast `accept_f27_e_1_` selection, restore — after the fixes in
+"Review" below; the other 21 are the implementer's rows, whose test names were
+updated only where the test they name was renamed.
+
 ## Unknowns recorded (not guessed)
 
 All five are `f27.d.limit.*` claims, all measured above to be unmeasurable in
@@ -295,12 +332,13 @@ this installation, all **re-filed** by this stage in
 evidence report's `review.method`, in the hashed artifact
 `binding-measurability.json`, and in follow-up tasks filed with Rally:
 
-- **`f27.d.limit.ammo_names_damage`** — the per-type damage amounts. Affected
-  content: every damage amount F27 simulates. Resolving task: the owner-supplied
-  original-run capture (#358 `REF-OWNER-FIRST-CAPTURE`, protocol #357), **or**
-  follow-up **#549 (F27-E.2)**, the one agent-reachable route to the same
-  numbers: recovering the tables from the image itself, or recording precisely
-  which static routes were tried and why each fails.
+- **`f27.d.limit.ammo_names_damage`** — the per-type damage amounts, the open
+  remainder of F27-D's `f27.d.limit.ammo_names` (see "The claim ids" above).
+  Affected content: every damage amount F27 simulates. Resolving task: the
+  owner-supplied original-run capture (#358 `REF-OWNER-FIRST-CAPTURE`, protocol
+  #357), **or** follow-up **#549 (F27-E.2)**, the one agent-reachable route to the
+  same numbers: recovering the tables from the image itself, or recording
+  precisely which static routes were tried and why each fails.
 - **`f27.d.limit.gun_group_assignment`** — which side each of the eleven
   wing-station groups is on, and which airframe mounts which group. Affected
   content: `DeclaredGunMountKind`'s vocabulary and every mount transform.
@@ -348,9 +386,84 @@ is `implemented`, never `verified_original`: what was verified is what the
 installation's **files** declare, and `retail` here is read access, not evidence
 that the original executable ran.
 
-The reviewer should regenerate the report on the rebased commit and compare it.
-The tree hash is in the report and is checked against `HEAD^{tree}` by the harness
-itself, so a report from another commit cannot be reused.
+The reviewer regenerated the report on the reviewed commit and committed the new
+copy; the previous copy attested a tree from before the implementer's rebase
+(`candidate_tree f9991b45…`, which is neither the tip's tree nor either parent's),
+so it described a commit that does not exist in this branch. The tree hash is in
+the report and the harness checks it against `HEAD^{tree}` at the moment it runs,
+so a report from another commit cannot be reused. One consequence is worth
+stating plainly: the report copy is committed **after** the run, so
+`candidate_tree` is the tree of the commit that carries the code and the tests —
+the report's own bytes cannot be inside the tree they attest, and the commit that
+adds them is a documentation-only commit.
+
+## Review (2026-10-03, reviewer `bunny-alpha-1`)
+
+**Implementer and reviewer are the same agent instance, so this review is NOT
+independent evidence** — `AGENTS.md` and the owner directive both ask for a
+different instance or model for format and fidelity claims. It is recorded that
+way in the evidence report's `review.identity` as well. An independent read of
+this stage's *measurability* claims is still owed by the owner.
+
+What the review found, and fixed on the branch (every fix is in an owner path):
+
+1. **`unmeasured_ammunition_types` counted an empty measurement as coverage.**
+   Its sibling `unmeasured_gun_mounts` requires a complete mount; this one
+   matched on the id alone, so four profiles with both channels `Unknown` — the
+   exact input `bind_ammunition_damage` refuses — made it return empty, and a
+   caller could have reported every type's damage as measured. It now requires
+   `is_measurable()`.
+2. **`OriginalLimitReport::record` accepted a designed provenance as a
+   resolution.** `LimitEvidence::Measured` became `Bound` with no check, so the
+   machine-readable report could state that all five original behaviors were
+   measured on this project's own invention — in the one module whose purpose is
+   to prevent that. `record` now returns `Result` and refuses with
+   `LimitReportError::Unobserved`, leaving the claim untouched.
+3. **The claim ids were not F27-D's**, though three places said they were: F27-D
+   spells the damage claim `f27.d.limit.ammo_names` and carries a sixth claim,
+   `f27.d.limit.gun_set`, that this stage dropped silently. See "The claim ids"
+   above; `f27_d_claim_id()` now carries F27-D's spelling and a fast test pins
+   both lists.
+4. **A dead arm in `bind_gun_mount` fabricated a reason.** Its fallback
+   (`unwrap_or`) was unreachable and would have invented an `Unknown` about a
+   measurement that never reported one; it is now a named
+   `GunMountRefusal::Inconsistent`.
+5. **Three doc/behaviour mismatches**, all corrected: `bind_ammunition_damage`
+   said an open channel "keeps the record's own `Resolved::Unknown`" (the
+   measurement's replaces it); `GunMountField` said all three mount fields are
+   not `Resolved` (`scene_binding` is an optional `Resolved` with a real
+   consumer, `cs_app::weapons::declared_scene_binding`); and
+   `deferral_reason` called `crimson.exe` "encrypted" where the measurement is an
+   entropy that is equally consistent with packing.
+6. **`GunMountRefusal::Assembly` is unreachable today** and is now documented as
+   such — kept deliberately, so a future `try_new` validation refuses instead of
+   panicking.
+7. **The committed evidence report attested a stale tree** (above), so it was
+   regenerated on the reviewed commit.
+8. **Test and finding overstatements**: the finding claimed all five gun long
+   names carry no markup code and state only their own caliber, while the suite
+   read four of the five and never asserted the markup; the `crimson.icd` keyword
+   census is **two** occurrences (`shell` twice), not three; and the four
+   ammunition row-block ids are now pinned against `ORIGINAL_AMMO_NAME_BLOCKS`
+   instead of only being asserted present. Three tests were added for paths that
+   had none (a measured amount the schema rejects, a scene binding the record
+   already carried, the unobserved-provenance refusal) and a no-op block that
+   constructed values only to keep imports alive was deleted.
+9. **Dead code removed**: `UnobservedValue` (an error type nothing constructed,
+   duplicating `UnmeasuredCause::Unobserved`) and two unused helpers in the test
+   support module; `RESOURCE_HEADER` in that module now *is* the production
+   constant `ORIGINAL_RESOURCE_HEADER` instead of a copy of its spelling.
+10. **`REFILED` disagreed with this finding**: it re-filed the damage claim to
+    "#545's follow-up surface" — #545 being this stage's completed predecessor —
+    while the finding named #549 (F27-E.2) and #550 (F27-E.3). The table now
+    names the same follow-ups, so the hashed artifact and this document agree.
+
+An independent fresh-context audit of the original branch tip ran alongside this
+review and is the source of items 1, 2, 4, 6 and 9; every item above was
+re-checked against the code before being fixed, and two of its claims were found
+to be wrong and not acted on (it reported that nothing reads `scene_binding` —
+`cs_app::weapons` does — and that `entropy` is not measured by a production
+reader, which the finding already discloses).
 
 ## Not claimed
 
