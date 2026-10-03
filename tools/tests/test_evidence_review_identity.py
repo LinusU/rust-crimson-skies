@@ -143,6 +143,55 @@ def read_rust_string(text, quote):
         i += 1
 
 
+def string_literals(text):
+    """Every Rust string literal value in `text`, continuations joined.
+
+    The identity a harness commits usually spans many lines with
+    backslash-newline continuations, so the raw bytes of the file do not hold
+    the report's `review.identity` and a plain substring search would call even
+    a literal harness `runtime`.  This walks the literals the way the compiler
+    joins them: a backslash before a newline drops the next line's leading
+    whitespace, and the escapes the harness texts use are decoded.  A char
+    literal that contains a quote (`'"'`) is stepped over, and an escape this
+    reader does not know is kept as its own character, so a format string
+    elsewhere in the file cannot stop the scan.
+    """
+    values, i, size = [], 0, len(text)
+    while i < size:
+        if text[i] == "'" and i + 2 < size:
+            if text[i + 1] == '\\' and i + 3 < size and text[i + 3] == "'":
+                i += 4
+                continue
+            if text[i + 2] == "'":
+                i += 3
+                continue
+        if text[i] != '"':
+            i += 1
+            continue
+        value = []
+        i += 1
+        while i < size:
+            char = text[i]
+            if char == '\\':
+                following = text[i + 1] if i + 1 < size else ''
+                if following == '\n':
+                    i += 2
+                    while i < size and text[i] in ' \t':
+                        i += 1
+                    continue
+                value.append({'n': '\n', 't': '\t', '"': '"', '\\': '\\',
+                              'r': '\r', '0': '\0'}.get(following, following))
+                i += 2
+                continue
+            if char == '"':
+                i += 1
+                break
+            value.append(char)
+            i += 1
+        values.append(''.join(value))
+    return values
+
+
 def format_arguments(text, marker_start):
     """The top-level arguments of the `format!` call that writes the report.
 
@@ -286,6 +335,37 @@ def read_reports(directory=REPORTS):
     return {report['task_id']: report
             for report in (json.loads(path.read_text())
                            for path in sorted(Path(directory).glob('*.json')))}
+
+
+def committed_identity_literals(harnesses):
+    """Every string literal value in each harness source, keyed by relative path."""
+    literals = {}
+    for harness in harnesses.values():
+        source = harness['source']
+        if source not in literals:
+            literals[source] = set(string_literals((ROOT / source).read_text()))
+    return literals
+
+
+def runtime_identity_expectation(harnesses, reports):
+    """The harnesses whose committed report no literal can be compared against.
+
+    A harness that writes `review.identity` from a committed literal can be
+    compared byte-for-byte with its report; a harness that reads the identity
+    from the environment (`CS_EVIDENCE_REVIEW`/`CS_EVIDENCE_REVIEWER`) cannot,
+    and that exemption is what this set records.  It is derived from the reports
+    rather than listed, so a stage that adds a runtime harness needs no edit
+    here: when no string literal in the harness holds the report's identity, the
+    harness must be the one that supplies it at run time.  A list would rot -
+    this check pinned seven keys, and by 2026-10-03 eleven more committed
+    harnesses took the same deliberate exemption - while an equality against
+    this derivation still fails when the reader classifies a harness one way and
+    the report's own text says the other.
+    """
+    literals = committed_identity_literals(harnesses)
+    return {key for key, harness in harnesses.items()
+            if key in reports
+            and reports[key]['review']['identity'] not in literals[harness['source']]}
 
 
 def states_the_reviewer_context(identity):
@@ -587,8 +667,12 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
         self.assertGreaterEqual(len(self.harnesses), len(expected),
                                 'the reader stopped finding evidence harnesses')
         self.assertNotIn('unknown', {harness['shape'] for harness in self.harnesses.values()})
-        self.assertEqual({key for key, harness in self.harnesses.items() if harness['shape'] == 'runtime'},
-                         {'F11-D', 'F14-D', 'F15-D', 'F56-A', 'T342', 'T345', 'T346'})
+        runtime = {key for key, harness in self.harnesses.items() if harness['shape'] == 'runtime'}
+        self.assertLessEqual(runtime, set(self.reports),
+                             'a runtime-identity harness has no committed report to compare against')
+        self.assertEqual(runtime, runtime_identity_expectation(self.harnesses, self.reports),
+                         'the harnesses that read `review.identity` at run time no longer match the'
+                         ' committed reports no literal can produce')
         for key, harness in self.harnesses.items():
             if harness['shape'] == 'runtime':
                 self.assertIn(harness['via'], ('CS_EVIDENCE_REVIEW', 'CS_EVIDENCE_REVIEWER'), key)
@@ -651,9 +735,13 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
                             f'{phrase!r} passed: {problems}')
 
     def test_accept_m16_a_fu4_a_runtime_identity_harness_is_exempt_and_pinned(self):
-        """`CS_EVIDENCE_REVIEW` harnesses have no literal; the exemption is deliberate."""
+        """`CS_EVIDENCE_REVIEW` harnesses have no literal; the exemption is derived, not listed."""
         runtime = {key for key, harness in self.harnesses.items() if harness['shape'] == 'runtime'}
-        self.assertEqual(runtime, {'F11-D', 'F14-D', 'F15-D', 'F56-A', 'T342', 'T345', 'T346'})
+        self.assertLessEqual(runtime, set(self.reports),
+                             'a runtime-identity harness has no committed report to compare against')
+        self.assertEqual(runtime, runtime_identity_expectation(self.harnesses, self.reports),
+                         'the harnesses that read `review.identity` at run time no longer match the'
+                         ' committed reports no literal can produce')
         problems = review_problems(self.snapshots, self.harnesses, self.reports)[0]
         for key in runtime:
             self.assertIn(self.harnesses[key]['via'],
@@ -666,6 +754,24 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
                                                           via='review')})
         self.assertTrue(any('cannot work out how the F02-B harness' in problem
                             for problem in review_problems(self.snapshots, harnesses, self.reports)[0]))
+
+    def test_accept_m16_a_fu4_the_runtime_expectation_comes_from_the_report(self):
+        """The exemption is derived from the report, so it must follow the report.
+
+        A harness is expected to read `review.identity` at run time exactly when
+        no string literal in its source holds the report's identity.  A report
+        whose text is committed leaves its harness pinned no matter what shape
+        the reader reports, and a report no literal holds is expected to be
+        runtime even when its harness committed one: that is what makes the
+        equality a check rather than a list.
+        """
+        harness = {'F14-D': self.harnesses['F14-D']}
+        committed = {'F14-D': report('F14-D', 'CS_EVIDENCE_REVIEW')}
+        self.assertEqual(runtime_identity_expectation(harness, committed), set(),
+                         'a report whose identity is a committed literal is not an exemption')
+        uncommitted = {'F14-D': report('F14-D', 'reviewer: nobody committed this text')}
+        self.assertEqual(runtime_identity_expectation(harness, uncommitted), {'F14-D'},
+                         'a report no committed literal holds must be a runtime exemption')
 
     def test_accept_m16_a_fu4_a_harness_the_reader_cannot_resolve_is_reported(self):
         """A `review` block with no task id, or no `claim`, is a hole, not a harness to skip."""
