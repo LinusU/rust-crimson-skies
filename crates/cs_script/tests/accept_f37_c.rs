@@ -471,6 +471,208 @@ fn accept_f37_c_restore_refuses_a_corrupt_pending_queue() {
     );
 }
 
+/// A queued item's action list comes out of the record, not out of the program,
+/// so it is the one piece of the record the evaluator would otherwise run on
+/// trust. Each case below is an action pre-launch validation refuses; before
+/// this was checked, restoring such a record either aborted the process
+/// (`Unknown` hits the evaluator's unreachable, an empty `Draw` range divides
+/// by zero) or wrote a variable the program never declared, which made the
+/// *next* save of the restored session refusable.
+#[test]
+fn accept_f37_c_restore_refuses_a_record_whose_deferred_work_cannot_run() {
+    let p = program(vec![objective(
+        1,
+        Condition::Const(true),
+        vec![Action::Schedule {
+            delay_ticks: DELAY,
+            actions: vec![reward("r-delayed")],
+        }],
+    )]);
+    let mut live = state(&p);
+    live.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
+    let good = live.snapshot(&p);
+    assert_eq!(good.pending.len(), 1);
+
+    // The first queued item's actions, replaced by something validation would
+    // have refused before launch.
+    let with_deferred = |actions: Vec<Action>| {
+        let mut record = good.clone();
+        record.pending[0].actions = actions;
+        MissionState::restore(&p, record)
+    };
+
+    // An undecodable instruction: the evaluator treats `Unknown` as impossible.
+    assert!(matches!(
+        with_deferred(vec![Action::Unknown {
+            instruction: "op".into()
+        }]),
+        Err(RestoreError::DeferredActions {
+            ordinal: 0,
+            error: ValidationError::UnsupportedInstruction { .. }
+        })
+    ));
+
+    // An empty draw range: `span` would be zero.
+    assert!(matches!(
+        with_deferred(vec![Action::Draw {
+            variable: SymbolId(100),
+            min: 1,
+            max: 0,
+        }]),
+        Err(RestoreError::DeferredActions {
+            ordinal: 0,
+            error: ValidationError::InvalidRange { .. }
+        })
+    ));
+
+    // A write to a variable this program does not declare.
+    assert!(matches!(
+        with_deferred(vec![Action::SetVariable {
+            variable: SymbolId(999),
+            value: Value::Int(1),
+        }]),
+        Err(RestoreError::DeferredActions {
+            ordinal: 0,
+            error: ValidationError::UnknownVariable { .. }
+        })
+    ));
+
+    // Longer than any objective's list may be, so a record cannot smuggle in
+    // work the launch-time cap exists to bound.
+    let long = (0..=MAX_ACTIONS_PER_OBJECTIVE)
+        .map(|_| reward("r-delayed"))
+        .collect();
+    assert!(matches!(
+        with_deferred(long),
+        Err(RestoreError::DeferredActions {
+            ordinal: 0,
+            error: ValidationError::TooManyActions { .. }
+        })
+    ));
+
+    // A queue past the cap the live path enforces.
+    let mut crowded = good.clone();
+    let next = crowded.next_item_ordinal;
+    crowded.pending = (0..=MAX_PENDING_ITEMS)
+        .map(|i| cs_script::runtime::ScheduledWork {
+            source: SymbolId(1),
+            ordinal: next + i as u32,
+            due: Tick(DELAY + 2 + i as u64),
+            next: 0,
+            actions: vec![reward("r-delayed")],
+        })
+        .collect();
+    crowded.next_item_ordinal = next + MAX_PENDING_ITEMS as u32 + 1;
+    assert_eq!(
+        MissionState::restore(&p, crowded),
+        Err(RestoreError::Corrupt {
+            defect: RestoreDefect::PendingQueueTooLong {
+                count: MAX_PENDING_ITEMS + 1,
+                allowed: MAX_PENDING_ITEMS,
+            },
+        })
+    );
+
+    // A record that drops or duplicates a declared variable. Every state of this
+    // program holds every declared variable, and a condition on an absent one
+    // is false, so a dropped variable would disarm the mission silently.
+    let mut dropped = good.clone();
+    dropped
+        .variables
+        .retain(|(symbol, _)| *symbol != SymbolId(100));
+    assert_eq!(
+        MissionState::restore(&p, dropped),
+        Err(RestoreError::Corrupt {
+            defect: RestoreDefect::MissingVariable {
+                symbol: SymbolId(100)
+            },
+        })
+    );
+    let mut doubled = good.clone();
+    doubled.variables.push((SymbolId(100), Value::Int(7)));
+    assert_eq!(
+        MissionState::restore(&p, doubled),
+        Err(RestoreError::Corrupt {
+            defect: RestoreDefect::DuplicateVariable {
+                symbol: SymbolId(100)
+            },
+        })
+    );
+
+    // The intact record still restores and its deferred reward still fires, so
+    // the refusals above are the defects and not a fixture that never restores.
+    let mut restored = MissionState::restore(&p, good).unwrap();
+    let t5 = restored
+        .step(&p, &MissionFacts::default(), Tick(1 + DELAY))
+        .unwrap();
+    assert_eq!(
+        t5.events
+            .iter()
+            .filter(|e| e.kind == EventKind::RewardGranted(cid(ContentKind::Blueprint, "r-delayed")))
+            .count(),
+        1
+    );
+}
+
+/// The work and queue bounds are engine policy, not gameplay state: a record
+/// may keep the host's tighter budget across a save, but it may not install a
+/// looser one than the engine's own maximum, and a queue within the cap still
+/// runs.
+#[test]
+fn accept_f37_c_restore_keeps_the_bounds_within_the_engine_maximum() {
+    let p = program(vec![objective(
+        1,
+        Condition::Const(true),
+        vec![Action::Schedule {
+            delay_ticks: DELAY,
+            actions: vec![reward("r-delayed")],
+        }],
+    )]);
+    let mut live = state(&p);
+    live.set_limits(WorkLimits {
+        max_work_per_tick: 8,
+        max_pending_items: 4,
+    });
+    live.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
+
+    // A host-tightened budget survives the save, because it is the host's.
+    let tight = live.snapshot(&p);
+    assert_eq!(
+        MissionState::restore(&p, tight.clone())
+            .unwrap()
+            .snapshot(&p)
+            .limits,
+        tight.limits
+    );
+
+    // A record claiming unbounded work and an unbounded queue is clamped to the
+    // engine's own maxima instead of being obeyed.
+    let mut greedy = tight.clone();
+    greedy.limits = WorkLimits {
+        max_work_per_tick: u64::MAX,
+        max_pending_items: usize::MAX,
+    };
+    let mut restored = MissionState::restore(&p, greedy).unwrap();
+    assert_eq!(
+        restored.snapshot(&p).limits,
+        WorkLimits {
+            max_work_per_tick: MAX_WORK_PER_TICK,
+            max_pending_items: MAX_PENDING_ITEMS,
+        },
+        "a save file may tighten the engine's bounds, never lift them"
+    );
+    let t5 = restored
+        .step(&p, &MissionFacts::default(), Tick(1 + DELAY))
+        .unwrap();
+    assert_eq!(
+        t5.events
+            .iter()
+            .filter(|e| e.kind == EventKind::RewardGranted(cid(ContentKind::Blueprint, "r-delayed")))
+            .count(),
+        1
+    );
+}
+
 /// Teardown: once a mission is over, deferred work is dropped instead of being
 /// left to fire on a later tick or to survive into the next save.
 #[test]

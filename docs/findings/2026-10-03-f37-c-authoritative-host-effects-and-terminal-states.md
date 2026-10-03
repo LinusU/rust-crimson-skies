@@ -62,11 +62,17 @@ game, and no original opcode, reward or precedence rule is claimed here.
 - **Restore refusals.** A record is refused whole, with its defect named:
   another snapshot version, another mission, a variable or objective the program
   no longer declares, a value whose type the program does not declare, a
-  duplicate or never-allocated item ordinal, a resume cursor outside the item's
-  action list, a queue that is not due-ordered, a consumed key from another
-  session, a host record from another session, a foreign or duplicated host
-  key, an effect recorded as both applied and outstanding, and an outstanding
-  queue past its bound.
+  declared variable the record is missing or holds twice, a queued item whose
+  action list this program would refuse at launch, a duplicate or never-allocated
+  item ordinal, a resume cursor outside the item's action list, a queue that is
+  not due-ordered or is past the queue cap, a consumed key from another session,
+  a host record from another session, a foreign or duplicated host key, an effect
+  recorded as both applied and outstanding, and an applied, outstanding or
+  catalog collection past its bound.
+- **A record may tighten the engine's bounds, never lift them.** The work and
+  queue limits are host policy, so they travel in the record and survive a save.
+  A restore clamps them to `MAX_WORK_PER_TICK` / `MAX_PENDING_ITEMS`, so a save
+  file cannot talk the evaluator out of the bounds the process guarantees.
 - **RNG rewind.** `SplitMix64` exposes no state getter, so the record stores how
   many draws the session took and a restore re-seeds the same domain-separated
   stream and replays them, bounded by `MAX_RNG_REPLAY_DRAWS`. A session past
@@ -75,13 +81,55 @@ game, and no original opcode, reward or precedence rule is claimed here.
   of an action list, so the resume point cannot be re-derived from program data
   alone; `ScheduledWork` carries the item's actions. Program data is immutable
   and shared, so this costs space in a record and never a second source of truth.
+- **Retry order.** `HostLedger::retry` applies and reports in execution-key
+  order whatever order the refusals were held in, because the contract fixes
+  ordering keys and not arrival order. A refusal that stays outstanding is handed
+  back in arrival order, which is what the record stores.
 
 ## Design bounds, not original limits
 
-`MAX_RNG_REPLAY_DRAWS` (2^22 draws per restore) and `MAX_OUTSTANDING_EFFECTS`
-(256 refused effects held for a retry) are engineering bounds on restore work and
-record size. They are not measured original limits and must not be cited as
-original behavior.
+`MAX_RNG_REPLAY_DRAWS` (2^22 draws per restore), `MAX_OUTSTANDING_EFFECTS`
+(256 refused effects held for a retry), `MAX_APPLIED_EFFECTS` (2^16 applied
+effects in one host record) and `MAX_REWARD_CATALOG` (2^12 catalog ids in one
+host record) are engineering bounds on restore work and record size. The last two
+are unreachable for a live session — every applied effect cost one bounded work
+unit — so they refuse a record only. They are not measured original limits and
+must not be cited as original behavior.
+
+## Review findings (bunny-2, review of ee45cee5)
+
+The review of the submitted commit found the save record trusted in places its
+own documentation claimed it was checked. Each was reproduced first as a probe
+against the submitted code and then fixed:
+
+- A queued item's action list comes out of the record, not out of the program, and
+  was never validated. A record carrying `Action::Unknown` in a deferred item
+  **aborted the process** on the next tick (the evaluator's
+  `unreachable!("validated program")`), a record carrying `Draw { min: 1, max: 0 }`
+  **aborted it** with a modulo by zero, and a record carrying a write to an
+  undeclared variable made the restored session **unsaveable** — its next record
+  held a variable the program does not declare, which the next restore refuses.
+  Restore now validates every queued list with a new
+  `ValidatedProgram::validate_actions`, the same rules launch validation applies.
+- A record could drop or duplicate a declared variable. A dropped one is not
+  inert: a condition on an absent variable is false, so the mission could be
+  restored into a state where it can never reach its own objectives. Both are
+  refused now.
+- A record could lift the engine's work and queue bounds to `u64::MAX` /
+  `usize::MAX`, which the live path's caps exist to prevent. A restore clamps
+  them to the engine's maxima; a host-tightened budget still survives a save.
+- A record could carry a pending queue longer than the cap the live path
+  enforces, and a host record an unbounded applied ledger or catalog. All three
+  are refused now.
+- `HostLedger::retry` reported in arrival order while its documentation claimed
+  execution-key order. It sorts by execution key now; the refusals that stay
+  outstanding are still handed back in arrival order.
+- `HostFault::OutcomeConflict` and `HostOutcome::SessionRefused` were documented
+  behaviours with no test. Both arms are covered now.
+
+The review's own regression tests are named `accept_f37_c_*` like the rest, and
+each fix was mutation-checked: reverting it individually makes the matching test
+fail.
 
 ## Unknowns, none resolved by this task
 
@@ -99,10 +147,24 @@ original behavior.
 
 ## Acceptance
 
-`accept_f37_c_*` covers AC03 (exact remaining ticks across a save/restore), the
-restore refusal cases, mid-item resume at its cursor, RNG continuation,
-teardown, host effect exactly-once, the retry of a refused reward, the resolved
-outcome, abort-time refusal and the joint session save/restore. Each of the
-snapshot, rewind, resume-cursor, exactly-once, catalog, teardown and
-session-mismatch behaviours was checked by mutating the implementation and
+`accept_f37_c_*` (16 tests) covers AC03 (exact remaining ticks across a
+save/restore), the restore refusal cases — foreign, corrupt, unrunnable deferred
+work, missing or duplicated variable, out-of-bounds queue and bounds, RNG replay
+past the bound — mid-item resume at its cursor, RNG continuation, teardown, host
+effect exactly-once, the retry of a refused reward and its ordering, the resolved
+outcome and the refusal of an outcome that contradicts it, abort-time refusal and
+the joint session save/restore. Each of the snapshot, rewind, resume-cursor,
+exactly-once, catalog, teardown, session-mismatch, deferred-action,
+missing-variable, queue-bound, bounds-clamp, host-record-bound, retry-order and
+outcome-conflict behaviours was checked by mutating the implementation and
 observing the matching test fail.
+
+## Follow-ups filed
+
+- `SplitMix64` exposes no state getter, which is why the record stores a draw
+  count and a restore replays it (`MAX_RNG_REPLAY_DRAWS`,
+  `RestoreError::RngReplayTooLong`). `SplitMix64::new` is public, so one getter in
+  `cs_types::random` would let the record store the state itself and make the
+  restore O(1). Filed separately; `cs_types` is outside this stage's owner paths.
+- The evaluator's RNG is still seeded from the session generation rather than the
+  run root seed; that is `F37-C-FU1` (#581), already open.
