@@ -208,6 +208,14 @@ fail the suite if removed:
   spawn-group subject that is not an airframe still lower and run: the
   original vocabulary for both is unmeasured, so this stage keeps them
   open rather than guessing a kind.
+- **The declared-vs-spawned `ActorId` contract is documented, not
+  enforced.** A declared actor inside the range a program's waves can
+  allocate is not refused today — it is *defined* to name the spawned
+  instance, which is how a roster could count a wave, but an importer that
+  collides by accident would silently miscount. Choosing and enforcing a
+  policy (schema-computed bound, a reserved band, or a separate id type)
+  is task #594, which may need F38's importer shape and F39-D's
+  measurements first.
 - **Cue playback and spawn instantiation are hand-offs, not consumers.**
   `drain_cues` hands one `EmittedCue` to the dialogue system once; what plays
   the `dialogue` content id is the audio/dialogue stage's business (F41+).
