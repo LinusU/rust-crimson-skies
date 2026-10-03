@@ -370,6 +370,52 @@ The reviewer should regenerate the report on the rebased commit and compare it.
 The tree hash is in the report and is checked against `HEAD^{tree}` by the
 harness itself, so a report from another commit cannot be reused.
 
+## Review pass (2026-10-03)
+
+Reviewed by `bunny-alpha-1` in a **fresh session** — but the **same agent
+instance that implemented this stage**, so this is not independent evidence and
+no agent review replaces the owner's human approval.
+
+Every retail constant was **re-measured from scratch** by the reviewer, outside
+this project's readers: `cs-inspect rof --member` exported each member, and the
+twenty gun-group `#define` lines, the four ammunition blocks, all fifteen count
+bounds and the eight dictionary names were checked against the exported bytes.
+All of them hold, and so do the two claims the "not measurable" argument rests
+on: `crimson.exe`'s resource directory holds only types 3, 14 and 16 (no
+`RT_STRING`), and `strings.dll`'s `RT_STRING` blocks run 7..=1072 **without**
+block 211, the block that would hold id 3370. A bounded scan of the container's
+uncompressed members found no readable ammunition display names either.
+
+Four defects were found and fixed:
+
+1. **A false measured-fact claim, in four places.** The resource header declares
+   `IDS_ROCKETLONGNAME 3380` after the ammunition blocks, so the four bases are
+   gaps of `10`, `5` and `5` apart — the blocks are **not** "four ids wide each"
+   as `cs_sim::weapons::ORIGINAL_AMMO_NAME_BLOCKS`,
+   `cs_content::weapons::ORIGINAL_AMMO_NAME_BLOCKS`, this file and the evidence
+   report's `review.method` all stated, and as a test was named for. The type
+   count of four is unaffected (it comes from the screens' `3370 + selection - 1`
+   indexing), and that is now the only stated source. The block bound is itself
+   re-measured by `accept_f27_d_retail_the_resource_header_declares_four_ammunition_name_blocks`.
+2. **The five-guns count rested on its weakest witness.** `V6=GUNS,5` in
+   `LAYOUT.CSV` is a five-entry group, but the file never says what the group
+   holds. The count now rests on the two five-element *gun-name arrays*
+   (`string UHA[5]` and `object ZAA[5]`), and the outlaw gun and ammunition
+   screens' entry counts are re-measured rather than asserted in prose.
+3. **A guessed label presented as measured.** The finding called the ammunition
+   screen's index-0 dropdown row the `"all ammo out"` header. Its label comes
+   from `callback($$NB$$,10139,THA)` and is readable from no file, so the row is
+   now described as the header row it demonstrably is.
+4. Cosmetic: a duplicated doc paragraph, and a gun-identity-block row that
+   implied `IDS_ROCKETLONGNAME` directly followed `IDS_GUNDESCRIPTION` (the
+   ammunition blocks sit between them).
+
+The reviewer also re-ran the full check set, confirmed the six retail tests fail
+loudly without `CS_GAME_DIR`, and independently applied six mutations (dropping
+the closure check, widening `covers_group`, dropping the closed-session guard,
+overwriting on divergence, folding a refused mount in, and staleness in the new
+block bound); every one was caught.
+
 ## Not claimed
 
 No original-data *verification* of gameplay behavior. This stage measured what
