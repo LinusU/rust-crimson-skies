@@ -58,7 +58,11 @@
 //! *ambiguous* name: a signal reference may not carry the reserved
 //! actor-event symbol or a symbol this program declares, because a raised
 //! signal reports under its own name and would alias that declaration's
-//! events.
+//! events. A declared move or watch may likewise target only a state a
+//! declared event can produce (`Active`, `Succeeded`, `Failed`,
+//! `Superseded`): the legal transitions into `Hidden`, `Pending` and
+//! `Optional` all start from `Hidden`, which only the reveal rule may
+//! leave, so a declaration aiming at them could never apply or fire.
 //!
 //! # The actor id space
 //!
@@ -549,6 +553,17 @@ pub enum ObjectivesSchemaError {
         /// The colliding signal name.
         signal: ProgramSymbol,
     },
+    /// A declared move or watch targets a state nothing produces. No legal
+    /// transition a declared action can perform reaches `Hidden`, `Pending`
+    /// or `Optional` — the rows into them start from `Hidden`, which only
+    /// the reveal rule may leave — so the declaration could never apply or
+    /// fire: dead, refused at declaration.
+    DeadState {
+        /// The declaration carrying the target.
+        by: ProgramSymbol,
+        /// The unreachable target state.
+        state: DeclaredObjectiveState,
+    },
 }
 
 impl fmt::Display for ObjectivesSchemaError {
@@ -641,6 +656,10 @@ impl fmt::Display for ObjectivesSchemaError {
             Self::CollidingSignal { by, signal } => write!(
                 f,
                 "{by} references signal {signal}, which is a declared name and would report under it"
+            ),
+            Self::DeadState { by, state } => write!(
+                f,
+                "{by} targets objective state {state:?}, which no declared action or event can produce"
             ),
         }
     }
@@ -888,18 +907,20 @@ fn validate(
 
     // Closed-world references: every name a declaration carries must name a
     // declaration of this program, so nothing waits on or acts on a row that
-    // was never declared.
+    // was never declared — and every target state it names must be one a
+    // declared event can produce, so nothing dead is authored.
     for objective in objectives {
         check_reveal(objective, &condition_ids, &timer_ids, &objective_ids, &declared)?;
     }
     for condition in conditions {
-        if let DeclaredCountReaction::SetObjectiveState { objective, .. } = condition.reaction
-            && !objective_ids.contains(&objective)
-        {
-            return Err(ObjectivesSchemaError::UnknownObjective {
-                by: condition.symbol,
-                objective,
-            });
+        if let DeclaredCountReaction::SetObjectiveState { objective, state } = condition.reaction {
+            if !objective_ids.contains(&objective) {
+                return Err(ObjectivesSchemaError::UnknownObjective {
+                    by: condition.symbol,
+                    objective,
+                });
+            }
+            check_state_target(condition.symbol, state)?;
         }
     }
     for timer in timers {
@@ -932,6 +953,25 @@ fn check_signal(
     Ok(())
 }
 
+/// The state a declared move or watch may target. `Hidden`, `Pending` and
+/// `Optional` are unreachable: the only legal transitions into them start
+/// from `Hidden`, which a declared action can never leave — leaving `Hidden`
+/// is the reveal rule's alone, and it emits no state change. The live target
+/// set is `Active`, `Succeeded`, `Failed` and `Superseded`.
+fn check_state_target(
+    by: ProgramSymbol,
+    state: DeclaredObjectiveState,
+) -> Result<(), ObjectivesSchemaError> {
+    match state {
+        DeclaredObjectiveState::Hidden
+        | DeclaredObjectiveState::Pending
+        | DeclaredObjectiveState::Optional => {
+            Err(ObjectivesSchemaError::DeadState { by, state })
+        }
+        _ => Ok(()),
+    }
+}
+
 fn check_reveal(
     objective: &DeclaredObjective,
     conditions: &BTreeSet<ProgramSymbol>,
@@ -953,11 +993,17 @@ fn check_reveal(
             })
         }
         DeclaredRevealRule::OnObjectiveState {
-            objective: watched, ..
-        } if !objectives.contains(&watched) => Err(ObjectivesSchemaError::UnknownObjective {
-            by: objective.symbol,
             objective: watched,
-        }),
+            state,
+        } => {
+            if !objectives.contains(&watched) {
+                return Err(ObjectivesSchemaError::UnknownObjective {
+                    by: objective.symbol,
+                    objective: watched,
+                });
+            }
+            check_state_target(objective.symbol, state)
+        }
         DeclaredRevealRule::OnSignal(signal) => {
             check_signal(objective.symbol, signal, declared)
         }
@@ -971,25 +1017,28 @@ fn check_timer(
     groups: &BTreeSet<ProgramSymbol>,
     declared: &BTreeSet<ProgramSymbol>,
 ) -> Result<(), ObjectivesSchemaError> {
-    if let DeclaredTimerStart::OnObjectiveState { objective, .. } = timer.start
-        && !objectives.contains(&objective)
-    {
-        return Err(ObjectivesSchemaError::UnknownObjective {
-            by: timer.symbol,
-            objective,
-        });
-    }
-    if let DeclaredTimerStart::OnSignal(signal) = timer.start {
-        check_signal(timer.symbol, signal, declared)?;
+    match timer.start {
+        DeclaredTimerStart::OnObjectiveState { objective, state } => {
+            if !objectives.contains(&objective) {
+                return Err(ObjectivesSchemaError::UnknownObjective {
+                    by: timer.symbol,
+                    objective,
+                });
+            }
+            check_state_target(timer.symbol, state)?;
+        }
+        DeclaredTimerStart::OnSignal(signal) => check_signal(timer.symbol, signal, declared)?,
+        _ => {}
     }
     match &timer.action {
-        DeclaredTimerAction::SetObjectiveState { objective, .. }
-            if !objectives.contains(objective) =>
-        {
-            Err(ObjectivesSchemaError::UnknownObjective {
-                by: timer.symbol,
-                objective: *objective,
-            })
+        DeclaredTimerAction::SetObjectiveState { objective, state } => {
+            if !objectives.contains(objective) {
+                return Err(ObjectivesSchemaError::UnknownObjective {
+                    by: timer.symbol,
+                    objective: *objective,
+                });
+            }
+            check_state_target(timer.symbol, *state)
         }
         DeclaredTimerAction::Signal(signal) => check_signal(timer.symbol, *signal, declared),
         DeclaredTimerAction::SpawnGroup { key, group, count } => {
@@ -1348,6 +1397,49 @@ mod tests {
             ObjectivesSchemaError::CollidingSignal {
                 by: SYNTHETIC_WAVE_TIMERS[0],
                 signal: SYNTHETIC_WAVE_TIMERS[1]
+            }
+        );
+        // A move or a watch to a state nothing produces is dead the same way
+        // an oversized required count is: `Hidden`, `Pending` and `Optional`
+        // are reachable only from `Hidden`, which no declared action can
+        // leave.
+        assert_eq!(
+            rebuild(&|_, c, _, _, _| {
+                c[0].reaction = DeclaredCountReaction::SetObjectiveState {
+                    objective: SYNTHETIC_PRIMARY,
+                    state: DeclaredObjectiveState::Hidden,
+                };
+            })
+            .unwrap_err(),
+            ObjectivesSchemaError::DeadState {
+                by: SYNTHETIC_PROTECTED_LOST,
+                state: DeclaredObjectiveState::Hidden
+            }
+        );
+        assert_eq!(
+            rebuild(&|_, _, t, _, _| {
+                t[4].action = DeclaredTimerAction::SetObjectiveState {
+                    objective: SYNTHETIC_PRIMARY,
+                    state: DeclaredObjectiveState::Pending,
+                };
+            })
+            .unwrap_err(),
+            ObjectivesSchemaError::DeadState {
+                by: SYNTHETIC_DEADLINE,
+                state: DeclaredObjectiveState::Pending
+            }
+        );
+        assert_eq!(
+            rebuild(&|o, _, _, _, _| {
+                o[1].reveal = DeclaredRevealRule::OnObjectiveState {
+                    objective: SYNTHETIC_PRIMARY,
+                    state: DeclaredObjectiveState::Optional,
+                };
+            })
+            .unwrap_err(),
+            ObjectivesSchemaError::DeadState {
+                by: SYNTHETIC_SECONDARY,
+                state: DeclaredObjectiveState::Optional
             }
         );
     }
