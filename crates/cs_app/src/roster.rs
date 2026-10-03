@@ -37,16 +37,23 @@
 //! survivability records are the `AlliesRoster`'s; these are the conversion
 //! and binding records the ECS wiring consumes (F33-B/C).
 
+use std::path::Path;
+
 use bevy::ecs::component::Component;
+use cs_assets::install;
 use cs_content::pilots::{DeclaredPilot, DeclaredRoster, DeclaredSurvivability, DeclaredWingmate};
+use cs_formats::script_raw::discover_container;
 use cs_sim::allies::{
-    AlliesError, AlliesRoster, AllyEvent, AllyEventKind, BriefingError, BriefingPlan, FactionId,
-    GeometryId, IdentityError, PilotId, SurvivabilityPolicy, WingmateAssignment, WingmateSlot,
+    AlliesError, AlliesRoster, AllyEvent, AllyEventKind, AllyRecord, AllyRole, BriefingError,
+    BriefingPlan, FactionId, GeometryId, IdentityError, PilotId, SurvivabilityPolicy,
+    WingmateAssignment, WingmateSlot,
 };
 use cs_sim::damage::{ActorId, DamageNodeKey, DamageResolver, LifecycleKind};
 use cs_sim::weapons::FireResolver;
 use cs_types::content::{ContentId, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::install::RelativePath;
+use cs_types::net::SessionId;
 
 use crate::scene::SceneGeneration;
 
@@ -360,6 +367,219 @@ pub fn open_roster(
     roster.set_player_faction(lowered.player_faction.clone());
     roster.reset_wingmates(&lowered.wingmates, plan)?;
     Ok(roster)
+}
+
+// ------------------------------------- neutral-traffic population seam (F33-D) ---
+//
+// F33-D. F33-A proves the *contract* half of AC04: an omitted declared neutral
+// list lowers to an empty list. This is the *runtime* half. The session's
+// neutral population is built from the lowered authored list and nothing else,
+// so a mission that authors no neutral traffic spawns none. The "global
+// population system" AC04 forbids — a fixed table that fills the world with
+// traffic regardless of what the mission authored — is unreachable by
+// construction rather than merely unused: the only constructor consumes
+// [`LoweredRoster::neutral_traffic`], and the population can only ever hand
+// back the actors it was built from. A request for a traffic index the mission
+// did not author is answered with `None`, never with a default.
+
+/// One neutral actor the session will spawn, bound to its session actor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NeutralSpawn {
+    /// The mission-authored traffic index.
+    pub traffic: u32,
+    /// The session actor that presents the neutral.
+    pub actor: ActorId,
+    /// The pilot flying it.
+    pub pilot: PilotId,
+    /// The geometry it is built from.
+    pub geometry: GeometryId,
+    /// The faction it starts on.
+    pub faction: FactionId,
+    /// The declared survivability.
+    pub survivability: SurvivabilityPolicy,
+}
+
+/// Why a session could not build its neutral-traffic population.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PopulationError {
+    /// The session generation is zero; `SessionId`s are one-based.
+    ZeroSession,
+    /// The serial list does not match the authored traffic one-for-one. An
+    /// authored neutral is never dropped and a serial is never invented.
+    SerialCount {
+        /// How many neutral actors the mission authored.
+        authored: usize,
+        /// How many actor serials the session supplied.
+        provided: usize,
+    },
+    /// Two authored neutral actors share a traffic index.
+    DuplicateTraffic {
+        /// The repeated index.
+        traffic: u32,
+    },
+    /// An actor serial is zero; `ActorId` serials are one-based.
+    ZeroSerial {
+        /// The index in the supplied serial list.
+        index: usize,
+    },
+}
+
+impl std::fmt::Display for PopulationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroSession => write!(f, "session generation zero cannot own a population"),
+            Self::SerialCount { authored, provided } => write!(
+                f,
+                "the mission authored {authored} neutral actors but {provided} actor serials were \
+                 supplied"
+            ),
+            Self::DuplicateTraffic { traffic } => {
+                write!(f, "neutral traffic #{traffic} is authored more than once")
+            }
+            Self::ZeroSerial { index } => {
+                write!(f, "actor serial #{index} is zero; serials are one-based")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PopulationError {}
+
+/// The session's neutral-traffic population: exactly the actors the authored
+/// mission declares, bound to session actors in authored order.
+///
+/// The population is the *only* source of neutral traffic for its session. It
+/// holds no fallback table and no default actor; a mission that authored no
+/// neutral traffic produces an empty population, which is the AC04 case.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NeutralPopulation {
+    session: u64,
+    spawns: Vec<NeutralSpawn>,
+}
+
+impl NeutralPopulation {
+    /// The session generation the population belongs to.
+    #[must_use]
+    pub const fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// Every spawn, in authored order.
+    #[must_use]
+    pub fn spawns(&self) -> &[NeutralSpawn] {
+        &self.spawns
+    }
+
+    /// How many neutral actors the mission authored.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.spawns.len()
+    }
+
+    /// Whether the mission authored no neutral traffic at all — the AC04 case.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.spawns.is_empty()
+    }
+
+    /// The spawn for one traffic index, or `None` when the mission authored no
+    /// such traffic. A global population's request for an unauthored index is
+    /// answered with `None`, never with a default actor.
+    #[must_use]
+    pub fn spawn(&self, traffic: u32) -> Option<&NeutralSpawn> {
+        self.spawns.iter().find(|spawn| spawn.traffic == traffic)
+    }
+
+    /// The session actor bound to one traffic index, or `None` when the
+    /// mission authored no such traffic.
+    #[must_use]
+    pub fn actor(&self, traffic: u32) -> Option<ActorId> {
+        self.spawn(traffic).map(|spawn| spawn.actor)
+    }
+
+    /// Registers every authored neutral with the identity roster under
+    /// [`AllyRole::Neutral`], the role F33-C uses to classify a
+    /// protected-neutral loss as a mission event rather than a kill.
+    ///
+    /// The records carry no voice: a neutral whose mission authored no voice
+    /// speaks through none, never a random line (F33 non-negotiable 5).
+    ///
+    /// # Errors
+    ///
+    /// [`AlliesError::ForeignSession`] when the population belongs to another
+    /// session generation, [`AlliesError::DuplicateActor`] when an actor is
+    /// already registered.
+    pub fn register_into(&self, roster: &mut AlliesRoster) -> Result<(), AlliesError> {
+        for spawn in &self.spawns {
+            roster.register_with_role(
+                AllyRecord {
+                    actor: spawn.actor,
+                    pilot: spawn.pilot.clone(),
+                    faction: spawn.faction.clone(),
+                    geometry: spawn.geometry.clone(),
+                    voice: None,
+                    survivability: spawn.survivability,
+                },
+                AllyRole::Neutral(spawn.traffic),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Builds a session's neutral-traffic population from the authored lowered
+/// roster and one actor serial per authored neutral.
+///
+/// `serials` is positional with `lowered.neutral_traffic`: the caller's actor
+/// allocator supplies one one-based serial per authored neutral. Because the
+/// count must match exactly, the population can never contain an actor the
+/// mission did not author and never silently drops one it did.
+///
+/// # Errors
+///
+/// [`PopulationError`] on a zero session, a serial-count mismatch, a repeated
+/// traffic index or a zero serial.
+pub fn build_neutral_population(
+    session: u64,
+    lowered: &LoweredRoster,
+    serials: &[u64],
+) -> Result<NeutralPopulation, PopulationError> {
+    let Some(session_id) = SessionId::new(session) else {
+        return Err(PopulationError::ZeroSession);
+    };
+    let authored = lowered.neutral_traffic.len();
+    if serials.len() != authored {
+        return Err(PopulationError::SerialCount {
+            authored,
+            provided: serials.len(),
+        });
+    }
+    let mut spawns = Vec::with_capacity(authored);
+    for (index, (neutral, serial)) in lowered.neutral_traffic.iter().zip(serials).enumerate() {
+        if *serial == 0 {
+            return Err(PopulationError::ZeroSerial { index });
+        }
+        if spawns
+            .iter()
+            .any(|spawn: &NeutralSpawn| spawn.traffic == neutral.traffic)
+        {
+            return Err(PopulationError::DuplicateTraffic {
+                traffic: neutral.traffic,
+            });
+        }
+        spawns.push(NeutralSpawn {
+            traffic: neutral.traffic,
+            actor: ActorId {
+                session: session_id,
+                serial: *serial,
+            },
+            pilot: neutral.pilot.clone(),
+            geometry: neutral.geometry.clone(),
+            faction: neutral.faction.clone(),
+            survivability: neutral.survivability,
+        });
+    }
+    Ok(NeutralPopulation { session, spawns })
 }
 
 // ------------------------------------- the ally lifecycle consumer seam (F33-C) ---
@@ -682,6 +902,317 @@ mod refusals {
     }
 }
 
+// ---------------------------------- retail neutral-traffic census (F33-D) ---
+//
+// F33-D. The runtime seam above proves the authored-only rule; this is the
+// read-only observation of the original installation that the rule is measured
+// against. It records, per mission, whether the mission's own reader archive
+// carries the observed placed-traffic member `zeppelins.zrd`, and whether any
+// installation-scope archive (`ZBD/zrdr.zbd` or `ZBD/<group>/zrdr.zbd`) does.
+//
+// The member's *role* and encoding are inferred from its name and are not
+// decoded: whether the original 2000 PC game uses it for neutral traffic, and
+// how it encodes any actor, is unmeasured (recorded in the F33-D finding). This
+// census is a carrier coverage, not a roster decode, and asserts nothing about
+// the original game's behavior.
+
+/// The observed member name whose per-mission presence this census records: a
+/// mission-scoped placed-traffic carrier candidate. A name rule inferred from
+/// the mission archives, never a decode.
+pub const OBSERVED_PLACED_TRAFFIC_MEMBER: &str = "zeppelins.zrd";
+
+/// One mission's observed placed-traffic authorship.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailMissionTraffic {
+    /// The world group the mission directory is under.
+    group: String,
+    /// The mission directory name.
+    mission: String,
+    /// The installation-relative archive the observation read.
+    archive: String,
+    /// The archive's SHA-256.
+    archive_sha256: String,
+    /// Whether the archive carries [`OBSERVED_PLACED_TRAFFIC_MEMBER`].
+    carrier_present: bool,
+    /// How many members the reader archive located.
+    members: usize,
+}
+
+impl RetailMissionTraffic {
+    /// The world group the mission directory is under.
+    #[must_use]
+    pub fn group(&self) -> &str {
+        &self.group
+    }
+
+    /// The mission directory name.
+    #[must_use]
+    pub fn mission(&self) -> &str {
+        &self.mission
+    }
+
+    /// The installation-relative archive the observation read.
+    #[must_use]
+    pub fn archive(&self) -> &str {
+        &self.archive
+    }
+
+    /// The archive's SHA-256.
+    #[must_use]
+    pub fn archive_sha256(&self) -> &str {
+        &self.archive_sha256
+    }
+
+    /// Whether the archive carries the observed placed-traffic member.
+    #[must_use]
+    pub const fn carrier_present(&self) -> bool {
+        self.carrier_present
+    }
+
+    /// How many members the reader archive located.
+    #[must_use]
+    pub const fn members(&self) -> usize {
+        self.members
+    }
+}
+
+/// The installation-wide placed-traffic census: one row per
+/// `ZBD/<group>/<mission>` directory, in canonical `(group, mission)` order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailNeutralTrafficCensus {
+    install_sha256: String,
+    content_sha256: String,
+    carrier_member: String,
+    missions: Vec<RetailMissionTraffic>,
+    installation_scope_carrier: bool,
+}
+
+impl RetailNeutralTrafficCensus {
+    /// The fingerprint of the installation the census read.
+    #[must_use]
+    pub fn install_sha256(&self) -> &str {
+        &self.install_sha256
+    }
+
+    /// The canonical-content fingerprint of the installation.
+    #[must_use]
+    pub fn content_sha256(&self) -> &str {
+        &self.content_sha256
+    }
+
+    /// The observed member name the census checked for.
+    #[must_use]
+    pub fn carrier_member(&self) -> &str {
+        &self.carrier_member
+    }
+
+    /// Every mission row, in canonical `(group, mission)` order.
+    #[must_use]
+    pub fn missions(&self) -> &[RetailMissionTraffic] {
+        &self.missions
+    }
+
+    /// How many mission directories the installation declares.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.missions.len()
+    }
+
+    /// Whether the installation declares no mission directory at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.missions.is_empty()
+    }
+
+    /// The missions whose own archive omits the observed placed-traffic
+    /// carrier: the authored omissions AC04 protects.
+    pub fn missions_without_carrier(&self) -> impl Iterator<Item = &RetailMissionTraffic> {
+        self.missions.iter().filter(|row| !row.carrier_present)
+    }
+
+    /// Whether any installation-scope archive (`ZBD/zrdr.zbd` or
+    /// `ZBD/<group>/zrdr.zbd`) carries the observed placed-traffic member. A
+    /// session population driven by such an archive would be the "global
+    /// population system" AC04 forbids.
+    #[must_use]
+    pub const fn installation_scope_carrier(&self) -> bool {
+        self.installation_scope_carrier
+    }
+}
+
+/// Why the F33-D retail census could not be produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrafficCensusError {
+    /// The installation could not be discovered.
+    Discovery(String),
+    /// An archive named by the installation could not be read.
+    Read {
+        /// The installation-relative archive.
+        container: String,
+        /// Why the read failed.
+        reason: String,
+    },
+    /// A discovered archive spelling is not a usable relative path.
+    Path {
+        /// The installation-relative archive.
+        container: String,
+        /// Why the spelling was refused.
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for TrafficCensusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Discovery(reason) => write!(f, "the installation is undiscoverable: {reason}"),
+            Self::Read { container, reason } => {
+                write!(f, "archive {container} could not be read: {reason}")
+            }
+            Self::Path { container, reason } => {
+                write!(
+                    f,
+                    "archive {container} is not a usable relative path: {reason}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for TrafficCensusError {}
+
+/// One archive's observed shape.
+struct ArchiveScan {
+    sha256: String,
+    members: usize,
+    carrier_present: bool,
+}
+
+/// Reads one installation archive through the production reader-archive
+/// discovery and reports its shape.
+///
+/// # Errors
+///
+/// [`TrafficCensusError`] when the installation declares no such archive, it
+/// cannot be read, or its spelling is not a relative path. A missing archive is
+/// a refusal, not an empty row: an unreadable mission must never read as "the
+/// mission authored no traffic".
+fn scan_archive(
+    found: &install::Discovery,
+    container: &str,
+) -> Result<ArchiveScan, TrafficCensusError> {
+    let record = found
+        .manifest
+        .files
+        .iter()
+        .find(|record| record.relative_spelling.logical_key() == container)
+        .ok_or_else(|| TrafficCensusError::Read {
+            container: container.to_owned(),
+            reason: "production discovery inventoried no such archive".to_owned(),
+        })?;
+    let bytes = std::fs::read(
+        found
+            .manifest
+            .host_root
+            .join(record.relative_spelling.as_str()),
+    )
+    .map_err(|error| TrafficCensusError::Read {
+        container: container.to_owned(),
+        reason: error.to_string(),
+    })?;
+    let path = RelativePath::new(record.relative_spelling.as_str()).map_err(|error| {
+        TrafficCensusError::Path {
+            container: container.to_owned(),
+            reason: error.to_string(),
+        }
+    })?;
+    let discovery = discover_container(container, &path, &bytes);
+    let carrier_present = discovery
+        .programs()
+        .iter()
+        .any(|program| program.locator().member() == Some(OBSERVED_PLACED_TRAFFIC_MEMBER));
+    Ok(ArchiveScan {
+        sha256: record.sha256.to_hex(),
+        members: discovery.programs().len(),
+        carrier_present,
+    })
+}
+
+/// Measures the original installation's per-mission placed-traffic authorship
+/// (F33-D).
+///
+/// One production discovery, one production reader-archive discovery per
+/// archive. Each mission row carries its archive key and SHA-256, so every
+/// number can be traced back to the bytes; the installation and canonical
+/// content fingerprints cover the whole source.
+///
+/// # Errors
+///
+/// [`TrafficCensusError`] on an undiscoverable installation or an archive that
+/// cannot be read or located. The census does not turn a failed read into a
+/// shorter list.
+pub fn survey_retail_neutral_traffic(
+    install_root: &Path,
+) -> Result<RetailNeutralTrafficCensus, TrafficCensusError> {
+    let found = install::discover(install_root)
+        .map_err(|error| TrafficCensusError::Discovery(error.to_string()))?;
+    let install_sha256 = install::fingerprint(&found.manifest).to_hex();
+    let content_sha256 = install::content_fingerprint(&found.manifest).to_hex();
+
+    // Every `ZBD/<group>/<mission>` directory, from the production diagnosis
+    // (directories are the authoritative set; a mission directory that carries
+    // no archive is still a row and refuses at read time).
+    let mut mission_dirs: Vec<(String, String)> = Vec::new();
+    let mut groups: Vec<String> = Vec::new();
+    for directory in &found.diagnosis.directories {
+        let key = directory.logical_key();
+        let parts: Vec<&str> = key.split('/').collect();
+        match parts.as_slice() {
+            ["zbd", group] => groups.push((*group).to_owned()),
+            ["zbd", group, mission] if !group.is_empty() && !mission.is_empty() => {
+                mission_dirs.push(((*group).to_owned(), (*mission).to_owned()));
+            }
+            _ => {}
+        }
+    }
+    mission_dirs.sort();
+    groups.sort();
+    groups.dedup();
+
+    // The installation-scope archives: the root and every world group.
+    let mut scope_keys: Vec<String> = vec!["zbd/zrdr.zbd".to_owned()];
+    for group in &groups {
+        scope_keys.push(format!("zbd/{group}/zrdr.zbd"));
+    }
+    let mut installation_scope_carrier = false;
+    for key in &scope_keys {
+        if scan_archive(&found, key)?.carrier_present {
+            installation_scope_carrier = true;
+        }
+    }
+
+    let mut missions = Vec::with_capacity(mission_dirs.len());
+    for (group, mission) in mission_dirs {
+        let archive = format!("zbd/{group}/{mission}/zrdr.zbd");
+        let scan = scan_archive(&found, &archive)?;
+        missions.push(RetailMissionTraffic {
+            group,
+            mission,
+            archive,
+            archive_sha256: scan.sha256,
+            carrier_present: scan.carrier_present,
+            members: scan.members,
+        });
+    }
+
+    Ok(RetailNeutralTrafficCensus {
+        install_sha256,
+        content_sha256,
+        carrier_member: OBSERVED_PLACED_TRAFFIC_MEMBER.to_owned(),
+        missions,
+        installation_scope_carrier,
+    })
+}
+
 /// Component: ties an entity to one session-qualified actor and the declared
 /// roster subject it was spawned under.
 ///
@@ -711,6 +1242,8 @@ mod tests {
     use cs_types::content::{ContentKind, Known, Origin, Provenance};
     use cs_types::evidence::ClaimId;
     use cs_types::net::SessionId;
+
+    const NEUTRAL_SESSION: u64 = 71;
 
     fn id(kind: ContentKind, key: &str) -> ContentId {
         ContentId::from_source(kind, key).expect("test id is valid")
@@ -901,5 +1434,157 @@ mod tests {
             ..binding.clone()
         };
         assert_ne!(binding, stale, "a reload cannot alias a stale binding");
+    }
+
+    /// A mission that authored no neutral traffic lowers to an empty list and
+    /// builds an empty population: a global population system's request for
+    /// any traffic index is answered with `None`, and registering the
+    /// population spawns no actor at all (F33 AC04's runtime half).
+    #[test]
+    fn accept_f33_d_omitted_neutral_traffic_spawns_nothing() {
+        let pilot = DeclaredPilot::try_new(
+            id(ContentKind::Pilot, "synthetic.nathan"),
+            known(id(ContentKind::Voice, "synthetic.nathan")),
+            Origin::SyntheticFixture,
+            Provenance::designed(claim("f33d.test")),
+        )
+        .expect("the pilot is valid");
+        let declared = DeclaredRoster::try_new(
+            id(ContentKind::Mission, "m01"),
+            Origin::SyntheticFixture,
+            id(ContentKind::Faction, "synthetic.nathan"),
+            vec![pilot],
+            Vec::new(),
+            Vec::new(),
+            Provenance::designed(claim("f33d.test")),
+        )
+        .expect("the roster is valid");
+        let lowered = lower_roster(&declared).expect("the roster lowers");
+        assert!(
+            lowered.neutral_traffic.is_empty(),
+            "an omitted list stays empty at the contract boundary"
+        );
+
+        let population = build_neutral_population(NEUTRAL_SESSION, &lowered, &[])
+            .expect("an omitted per-mission list needs no serial");
+        assert!(population.is_empty());
+        assert_eq!(population.len(), 0);
+        assert_eq!(population.session(), NEUTRAL_SESSION);
+        for index in 1..=3 {
+            assert!(
+                population.spawn(index).is_none(),
+                "traffic #{index} was never authored, so no global population may fill it"
+            );
+            assert!(population.actor(index).is_none());
+        }
+
+        let mut roster = AlliesRoster::new(NEUTRAL_SESSION);
+        population
+            .register_into(&mut roster)
+            .expect("the empty population registers cleanly");
+        assert_eq!(
+            roster.actors().count(),
+            0,
+            "the omitted mission spawned no neutral actor"
+        );
+    }
+
+    /// An authored neutral actor binds to exactly its session actor and
+    /// registers under its authored role; an unauthored index stays `None`.
+    #[test]
+    fn accept_f33_d_authored_neutral_binds_its_actor_and_role() {
+        let lowered = lower_roster(&cs_content::pilots::declared_synthetic_roster())
+            .expect("the fixture lowers");
+        assert_eq!(lowered.neutral_traffic.len(), 1);
+
+        let population = build_neutral_population(NEUTRAL_SESSION, &lowered, &[7])
+            .expect("one authored neutral takes one serial");
+        assert_eq!(population.len(), 1);
+        assert!(!population.is_empty());
+
+        let spawn = population.spawn(1).expect("traffic #1 is authored");
+        assert_eq!(spawn.traffic, 1);
+        assert_eq!(spawn.actor.session.get(), NEUTRAL_SESSION);
+        assert_eq!(spawn.actor.serial, 7);
+        assert_eq!(spawn.pilot.as_content().as_str(), "pilot/synthetic.trader");
+        assert_eq!(
+            spawn.geometry.as_content().as_str(),
+            "airframe/synthetic.freighter"
+        );
+        assert_eq!(
+            spawn.faction.as_content().as_str(),
+            "faction/synthetic.traders"
+        );
+        assert_eq!(spawn.survivability, SurvivabilityPolicy::ProtectedNeutral);
+        assert_eq!(population.actor(1), Some(spawn.actor));
+        for unauthored in [2, 3, 99] {
+            assert!(
+                population.spawn(unauthored).is_none(),
+                "traffic #{unauthored} was never authored"
+            );
+            assert!(population.actor(unauthored).is_none());
+        }
+
+        let mut roster = AlliesRoster::new(NEUTRAL_SESSION);
+        population
+            .register_into(&mut roster)
+            .expect("the authored neutral registers");
+        assert!(roster.is_registered(&spawn.actor));
+        assert_eq!(roster.role_of(&spawn.actor), Some(AllyRole::Neutral(1)));
+        assert_eq!(roster.pilot_of(&spawn.actor), Some(&spawn.pilot));
+        assert_eq!(roster.faction_of(&spawn.actor), Some(&spawn.faction));
+        assert_eq!(roster.geometry_of(&spawn.actor), Some(&spawn.geometry));
+        assert_eq!(
+            roster.voice_of(&spawn.actor),
+            None,
+            "a neutral whose mission authored no voice speaks through none"
+        );
+    }
+
+    /// The population refuses a serial-count mismatch, a zero serial, a zero
+    /// session and a repeated authored index rather than inventing or dropping
+    /// an actor.
+    #[test]
+    fn accept_f33_d_population_refuses_mismatched_or_invalid_serials() {
+        let lowered = lower_roster(&cs_content::pilots::declared_synthetic_roster())
+            .expect("the fixture lowers");
+
+        assert_eq!(
+            build_neutral_population(NEUTRAL_SESSION, &lowered, &[]),
+            Err(PopulationError::SerialCount {
+                authored: 1,
+                provided: 0,
+            })
+        );
+        assert_eq!(
+            build_neutral_population(NEUTRAL_SESSION, &lowered, &[7, 8]),
+            Err(PopulationError::SerialCount {
+                authored: 1,
+                provided: 2,
+            })
+        );
+        assert_eq!(
+            build_neutral_population(NEUTRAL_SESSION, &lowered, &[0]),
+            Err(PopulationError::ZeroSerial { index: 0 })
+        );
+        assert_eq!(
+            build_neutral_population(0, &lowered, &[7]),
+            Err(PopulationError::ZeroSession)
+        );
+
+        // A repeated index cannot come through `lower_roster` (the declared
+        // schema refuses it), but the runtime seam must not silently collapse
+        // two authored actors onto one traffic index either.
+        let duplicate = LoweredRoster {
+            neutral_traffic: vec![
+                lowered.neutral_traffic[0].clone(),
+                lowered.neutral_traffic[0].clone(),
+            ],
+            ..lowered.clone()
+        };
+        assert_eq!(
+            build_neutral_population(NEUTRAL_SESSION, &duplicate, &[7, 8]),
+            Err(PopulationError::DuplicateTraffic { traffic: 1 })
+        );
     }
 }
