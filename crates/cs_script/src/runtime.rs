@@ -46,7 +46,7 @@ use cs_types::random::SplitMix64;
 
 use crate::ir::{
     Action, ActorId, ActorState, CompareOp, Condition, MAX_ACTIONS_PER_OBJECTIVE, Outcome,
-    ProgramLocator, SymbolId, ValidatedProgram, Value, ValueType,
+    ProgramLocator, SymbolId, ValidatedProgram, ValidationError, Value, ValueType,
 };
 
 /// SplitMix64 domain separating the mission evaluator's stream from every
@@ -358,7 +358,7 @@ impl MissionStateSnapshot {
 /// the process, so every field is checked instead of trusted: restoring a
 /// record that broke these invariants would silently change which events
 /// fire, which is the one thing an execution key exists to prevent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RestoreDefect {
     /// Two queued items share one ordinal, so their event keys can collide and
     /// the exactly-once guard would swallow one item's events.
@@ -373,6 +373,16 @@ pub enum RestoreDefect {
     PendingOrder { previous: Tick, given: Tick },
     /// A consumed execution key belongs to another session.
     ForeignExecutionKey { session: SessionGeneration },
+    /// The record drops a variable the program declares. Every state of this
+    /// program holds all of them, and a condition on a missing variable is
+    /// false, so an absent one would silently disarm the mission.
+    MissingVariable { symbol: SymbolId },
+    /// The record carries two values for one variable, so which one a restore
+    /// installed would be an accident of order.
+    DuplicateVariable { symbol: SymbolId },
+    /// The record carries more queued items than the session's queue may hold:
+    /// the live path enforces that cap and a restore must not route around it.
+    PendingQueueTooLong { count: usize, allowed: usize },
 }
 
 /// Why a save record could not be restored.
@@ -401,6 +411,14 @@ pub enum RestoreError {
     /// The session took more draws than [`MAX_RNG_REPLAY_DRAWS`], so rewinding
     /// its RNG stream would exceed the restore work bound.
     RngReplayTooLong { draws: u64 },
+    /// A queued item's action list is one this program would refuse: an
+    /// undecodable instruction, an empty `Draw` range or a write to a variable
+    /// the program does not declare. Restoring it would hand the evaluator an
+    /// action validation guarantees cannot occur.
+    DeferredActions {
+        ordinal: u32,
+        error: ValidationError,
+    },
 }
 
 impl fmt::Display for RestoreError {
@@ -456,11 +474,28 @@ impl fmt::Display for RestoreError {
                 RestoreDefect::ForeignExecutionKey { session } => {
                     write!(f, "execution key belongs to session {}", session.0)
                 }
+                RestoreDefect::MissingVariable { symbol } => {
+                    write!(
+                        f,
+                        "snapshot has no value for declared variable #{}",
+                        symbol.0
+                    )
+                }
+                RestoreDefect::DuplicateVariable { symbol } => {
+                    write!(f, "snapshot holds variable #{} twice", symbol.0)
+                }
+                RestoreDefect::PendingQueueTooLong { count, allowed } => write!(
+                    f,
+                    "snapshot carries {count} pending items, more than the queue's {allowed}"
+                ),
             },
             Self::RngReplayTooLong { draws } => write!(
                 f,
                 "{draws} RNG draws exceed the restore replay bound {MAX_RNG_REPLAY_DRAWS}"
             ),
+            Self::DeferredActions { ordinal, error } => {
+                write!(f, "pending item {ordinal} carries refused actions: {error}")
+            }
         }
     }
 }
@@ -680,7 +715,21 @@ impl MissionState {
                     found: value.value_type(),
                 });
             }
-            variables.insert(*symbol, value.clone());
+            if variables.insert(*symbol, value.clone()).is_some() {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::DuplicateVariable { symbol: *symbol },
+                });
+            }
+        }
+        // Every state of this program holds every declared variable, and a
+        // condition on an absent one is false: a record that dropped one would
+        // restore a mission that can no longer reach its own objectives.
+        for variable in program.program().variables.iter().map(|v| v.id) {
+            if !variables.contains_key(&variable) {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::MissingVariable { symbol: variable },
+                });
+            }
         }
         for symbol in &snapshot.completed {
             if !program.program().objectives.iter().any(|o| o.id == *symbol) {
@@ -699,6 +748,21 @@ impl MissionState {
         if snapshot.rng_draws > MAX_RNG_REPLAY_DRAWS {
             return Err(RestoreError::RngReplayTooLong {
                 draws: snapshot.rng_draws,
+            });
+        }
+        // The queue cap is an engine bound, so a record cannot install a longer
+        // one: the restored session may be *tighter* than the record claims, but
+        // never looser than [`MAX_PENDING_ITEMS`].
+        let limits = WorkLimits {
+            max_work_per_tick: snapshot.limits.max_work_per_tick.min(MAX_WORK_PER_TICK),
+            max_pending_items: snapshot.limits.max_pending_items.min(MAX_PENDING_ITEMS),
+        };
+        if snapshot.pending.len() > limits.max_pending_items {
+            return Err(RestoreError::Corrupt {
+                defect: RestoreDefect::PendingQueueTooLong {
+                    count: snapshot.pending.len(),
+                    allowed: limits.max_pending_items,
+                },
             });
         }
         let mut pending = BTreeMap::new();
@@ -739,6 +803,17 @@ impl MissionState {
                 });
             }
             previous = Some(item.due);
+            // The evaluator runs an item's actions on the assumption that
+            // pre-launch validation already refused an `Unknown` node, an empty
+            // `Draw` range and a write to an undeclared variable. A record
+            // carries its deferred text verbatim, so that assumption is checked
+            // here instead of asserted.
+            if let Err(error) = program.validate_actions(&item.actions) {
+                return Err(RestoreError::DeferredActions {
+                    ordinal: item.ordinal,
+                    error,
+                });
+            }
             pending
                 .entry(item.due)
                 .or_insert_with(VecDeque::new)
@@ -766,7 +841,7 @@ impl MissionState {
             pending,
             pending_len,
             next_item_ordinal: snapshot.next_item_ordinal,
-            limits: snapshot.limits,
+            limits,
             rng,
             rng_draws: snapshot.rng_draws,
         })

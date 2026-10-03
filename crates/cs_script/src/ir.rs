@@ -399,6 +399,37 @@ impl ValidatedProgram {
     pub fn program(&self) -> &MissionProgram {
         &self.0
     }
+
+    /// Checks one standalone action list against this program's declarations:
+    /// the same rules [`MissionProgram::validate`] applies to an objective's
+    /// list, at the same bounds.
+    ///
+    /// A deferred work item in a save record is data from outside the process
+    /// (`crate::runtime::MissionState::restore`), and the evaluator's actions
+    /// are written on the assumption that validation already refused an
+    /// `Unknown` node, an empty `Draw` range and an undeclared write. A record
+    /// can carry none of those, so its deferred lists are validated here before
+    /// they are allowed back into the queue.
+    ///
+    /// # Errors
+    ///
+    /// The first [`ValidationError`] in declaration order, with its locator.
+    pub fn validate_actions(&self, actions: &[Action]) -> Result<(), ValidationError> {
+        let ctx = Ctx {
+            program: &self.0,
+            objective: None,
+        };
+        if actions.len() > MAX_ACTIONS_PER_OBJECTIVE {
+            return Err(ValidationError::TooManyActions {
+                at: ctx.at(&["deferred actions"]),
+                count: actions.len(),
+            });
+        }
+        for (i, action) in actions.iter().enumerate() {
+            ctx.action(action, i, 0)?;
+        }
+        Ok(())
+    }
 }
 
 struct Ctx<'a> {

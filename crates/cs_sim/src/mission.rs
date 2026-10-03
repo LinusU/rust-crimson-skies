@@ -53,6 +53,16 @@ use cs_types::content::ContentId;
 /// limit. Beyond it a refusal is still reported, it is just not queued.
 const MAX_OUTSTANDING_EFFECTS: usize = 256;
 
+/// Most applied effects one ledger's save record may hold. A live session
+/// cannot reach it — every applied effect cost one work unit, and a tick is
+/// bounded — so this only refuses a record that would grow the ledger without
+/// bound. A designed bound, not a measured original limit.
+const MAX_APPLIED_EFFECTS: usize = 1 << 16;
+
+/// Most reward ids one ledger's save record may declare. Also unreachable for a
+/// live ledger that was given a bounded catalog; a designed bound.
+const MAX_REWARD_CATALOG: usize = 1 << 12;
+
 /// One launched mission.
 #[derive(Debug)]
 pub struct MissionSession {
@@ -516,10 +526,19 @@ impl HostLedger {
     /// earned before the session ended is still that session's to hand over.
     pub fn retry(&mut self, tick: Tick) -> HostReport {
         let mut report = HostReport::new(tick);
-        let outstanding = std::mem::take(&mut self.outstanding);
-        let mut still = Vec::new();
-        for (key, effect) in outstanding {
+        // Sorted by execution key so the report's order is the order it claims,
+        // while a refusal that stays outstanding is handed back in the order it
+        // arrived, which is the order the record holds.
+        let mut held: Vec<_> = std::mem::take(&mut self.outstanding)
+            .into_iter()
+            .enumerate()
+            .collect();
+        held.sort_by_key(|(_, (key, _))| *key);
+        let mut still: Vec<(usize, (ExecutionKey, HostEffect))> = Vec::new();
+        for (arrival, (key, effect)) in held {
             let HostEffect::Reward { reward } = &effect else {
+                // Only a refused reward is ever held: a terminal request has no
+                // retry, and the outcome it lost was never owed anything.
                 continue;
             };
             if self.applied.contains_key(&key) {
@@ -532,13 +551,14 @@ impl HostLedger {
                         reward: reward.clone(),
                     },
                 });
-                still.push((key, effect));
+                still.push((arrival, (key, effect)));
                 continue;
             }
             self.applied.insert(key, effect.clone());
             report.record(HostOutcome::Applied { key, effect });
         }
-        self.outstanding = still;
+        still.sort_by_key(|(arrival, _)| *arrival);
+        self.outstanding = still.into_iter().map(|(_, held)| held).collect();
         report
     }
 
@@ -582,6 +602,16 @@ impl HostLedger {
         if snapshot.outstanding.len() > MAX_OUTSTANDING_EFFECTS {
             return Err(HostRestoreError::TooManyOutstanding {
                 count: snapshot.outstanding.len(),
+            });
+        }
+        if snapshot.applied.len() > MAX_APPLIED_EFFECTS {
+            return Err(HostRestoreError::TooManyApplied {
+                count: snapshot.applied.len(),
+            });
+        }
+        if snapshot.rewards.len() > MAX_REWARD_CATALOG {
+            return Err(HostRestoreError::RewardCatalogTooLong {
+                count: snapshot.rewards.len(),
             });
         }
         let rewards: BTreeSet<_> = snapshot.rewards.iter().cloned().collect();
@@ -658,6 +688,15 @@ pub enum HostRestoreError {
     TooManyOutstanding {
         count: usize,
     },
+    /// The record claims more effects applied than any bounded session could
+    /// have applied, so it would grow the ledger without bound.
+    TooManyApplied {
+        count: usize,
+    },
+    /// The record declares a reward catalog past the bound.
+    RewardCatalogTooLong {
+        count: usize,
+    },
 }
 
 impl fmt::Display for HostRestoreError {
@@ -690,6 +729,14 @@ impl fmt::Display for HostRestoreError {
             Self::TooManyOutstanding { count } => write!(
                 f,
                 "{count} outstanding effects exceed the bound {MAX_OUTSTANDING_EFFECTS}"
+            ),
+            Self::TooManyApplied { count } => write!(
+                f,
+                "{count} applied effects exceed the bound {MAX_APPLIED_EFFECTS}"
+            ),
+            Self::RewardCatalogTooLong { count } => write!(
+                f,
+                "{count} catalog rewards exceed the bound {MAX_REWARD_CATALOG}"
             ),
         }
     }
@@ -1113,6 +1160,159 @@ mod tests {
         );
     }
 
+    /// The resolved outcome is the session's one answer. A result offered later
+    /// that asks for a different one is refused, and it is refused whether the
+    /// contradiction arrives as an event or as the tick's own claim.
+    #[test]
+    fn accept_f37_c_host_refuses_an_outcome_that_contradicts_the_settled_record() {
+        let mut s = session(
+            vec![objective(
+                1,
+                Condition::Const(true),
+                vec![Action::Finish(Outcome::Succeeded)],
+            )],
+            vec![],
+        );
+        // Settled without a teardown, so the record still answers this tick.
+        let result = s.step(&facts(), Tick(1)).unwrap();
+        let first = s.host_mut().apply(&result);
+        assert!(first.faults.is_empty(), "{first:?}");
+        assert_eq!(
+            s.host().settled(),
+            Some((Tick(1), TerminalState::Succeeded))
+        );
+        assert!(s.host().torn_down().is_none());
+
+        // A request for the outcome that already settled is still a request the
+        // host records; it changes nothing.
+        let agreeing = TickResult {
+            tick: Tick(2),
+            events: vec![MissionEvent {
+                key: cs_script::runtime::EventKey {
+                    session: SESSION,
+                    tick: Tick(2),
+                    source: SymbolId(1),
+                    sequence: 1,
+                },
+                kind: EventKind::TerminalRequested(Outcome::Succeeded),
+            }],
+            terminal: TerminalState::Running,
+            stop: None,
+        };
+        assert!(s.host_mut().apply(&agreeing).faults.is_empty());
+
+        // A request for the other outcome is refused: success cannot coexist
+        // with failure.
+        let conflicting = TickResult {
+            tick: Tick(3),
+            events: vec![MissionEvent {
+                // A fresh execution key: the request above already spent
+                // sequence 1, and the exactly-once guard fires first.
+                key: cs_script::runtime::EventKey {
+                    session: SESSION,
+                    tick: Tick(3),
+                    source: SymbolId(1),
+                    sequence: 2,
+                },
+                kind: EventKind::TerminalRequested(Outcome::Failed),
+            }],
+            terminal: TerminalState::Running,
+            stop: None,
+        };
+        let refused = s.host_mut().apply(&conflicting);
+        assert_eq!(
+            refused.faults,
+            [HostFault::OutcomeConflict {
+                settled: TerminalState::Succeeded,
+                offered: TerminalState::Failed,
+            }]
+        );
+
+        // And so is a tick that asserts the other outcome outright.
+        let contradiction = TickResult {
+            tick: Tick(4),
+            events: Vec::new(),
+            terminal: TerminalState::Failed,
+            stop: None,
+        };
+        let refused = s.host_mut().apply(&contradiction);
+        assert_eq!(
+            refused.outcomes,
+            [HostOutcome::SessionRefused {
+                fault: HostFault::OutcomeConflict {
+                    settled: TerminalState::Succeeded,
+                    offered: TerminalState::Failed,
+                }
+            }]
+        );
+
+        // The record still holds the outcome it settled on, not the one that was
+        // offered against it.
+        assert_eq!(
+            s.host().settled(),
+            Some((Tick(1), TerminalState::Succeeded))
+        );
+    }
+
+    /// A retry applies what the catalog now allows, in the execution-key order
+    /// the report claims — not in the order the refusals happened to be held.
+    #[test]
+    fn accept_f37_c_retry_reports_in_execution_key_order() {
+        let r_five = cid(ContentKind::Blueprint, "r-five");
+        let r_one = cid(ContentKind::Blueprint, "r-one");
+        let mut s = MissionSession::launch(
+            MissionProgram {
+                version: IR_VERSION,
+                mission: cid(ContentKind::Mission, "synthetic-f37c"),
+                variables: vec![Variable {
+                    id: SymbolId(100),
+                    name: "phase".into(),
+                    initial: Value::Int(0),
+                }],
+                objectives: vec![
+                    objective(
+                        5,
+                        Condition::Const(true),
+                        vec![
+                            Action::SetVariable {
+                                variable: SymbolId(100),
+                                value: Value::Int(1),
+                            },
+                            reward("r-five"),
+                        ],
+                    ),
+                    objective(
+                        1,
+                        Condition::Compare {
+                            variable: SymbolId(100),
+                            op: CompareOp::Eq,
+                            value: Value::Int(1),
+                        },
+                        vec![reward("r-one")],
+                    ),
+                ],
+            },
+            SESSION,
+            [],
+        )
+        .unwrap();
+        // Objective #5 fires first, so its refusal (source #5) is held before
+        // objective #1's (source #1): the two arrive in the opposite order to
+        // the execution keys that order a retry.
+        s.advance(&facts(), Tick(1)).unwrap();
+        s.advance(&facts(), Tick(2)).unwrap();
+        assert_eq!(s.host().outstanding(), 2);
+        assert!(!s.host().can_apply(&r_five));
+
+        s.host_mut().declare_reward(r_five.clone());
+        s.host_mut().declare_reward(r_one.clone());
+        let retry = s.retry_host();
+        assert_eq!(reward_ids(&retry), vec![r_one, r_five]);
+        assert_eq!(s.host().outstanding(), 0);
+        assert_eq!(s.host().granted_rewards(), 2);
+        assert!(s.retry_host().outcomes.is_empty());
+    }
+
     /// A record is refused whole, with its defect named: a mismatched version,
     /// records from two different sessions, a foreign execution key, an effect
     /// recorded as both applied and outstanding, and a program that does not
@@ -1202,5 +1402,86 @@ mod tests {
         let back = MissionSession::restore(build(), good).unwrap();
         assert_eq!(back.host().granted_rewards(), 1);
         assert_eq!(back.state().terminal(), TerminalState::Running);
+    }
+
+    /// The host record is data from outside the process too: a record whose
+    /// ledger is past the bounds a live session could reach is refused instead
+    /// of being turned into memory and work.
+    #[test]
+    fn accept_f37_c_host_restore_refuses_a_record_past_its_bounds() {
+        let build = || {
+            program(vec![objective(
+                1,
+                Condition::Const(true),
+                vec![reward("r")],
+            )])
+        };
+        let mut s =
+            MissionSession::launch(build(), SESSION, vec![cid(ContentKind::Blueprint, "r")])
+                .unwrap();
+        s.advance(&facts(), Tick(1)).unwrap();
+        let good = s.snapshot();
+
+        let key = |sequence: u32| ExecutionKey {
+            session: SESSION,
+            source: SymbolId(1),
+            sequence,
+        };
+
+        let mut applied = good.clone();
+        applied.host.applied = (0..=MAX_APPLIED_EFFECTS)
+            .map(|i| {
+                (
+                    key(i as u32),
+                    HostEffect::Reward {
+                        reward: cid(ContentKind::Blueprint, "r"),
+                    },
+                )
+            })
+            .collect();
+        assert!(matches!(
+            MissionSession::restore(build(), applied),
+            Err(SessionRestoreError::Host(
+                HostRestoreError::TooManyApplied { .. }
+            ))
+        ));
+
+        let mut catalog = good.clone();
+        catalog.host.rewards = (0..=MAX_REWARD_CATALOG)
+            .map(|i| cid(ContentKind::Blueprint, &format!("r-{i}")))
+            .collect();
+        assert!(matches!(
+            MissionSession::restore(build(), catalog),
+            Err(SessionRestoreError::Host(
+                HostRestoreError::RewardCatalogTooLong { .. }
+            ))
+        ));
+
+        let mut held = good.clone();
+        held.host.outstanding = (0..=MAX_OUTSTANDING_EFFECTS)
+            .map(|i| {
+                (
+                    key(i as u32),
+                    HostEffect::Reward {
+                        reward: cid(ContentKind::Blueprint, "r"),
+                    },
+                )
+            })
+            .collect();
+        assert!(matches!(
+            MissionSession::restore(build(), held),
+            Err(SessionRestoreError::Host(
+                HostRestoreError::TooManyOutstanding { .. }
+            ))
+        ));
+
+        // The intact record still restores.
+        assert_eq!(
+            MissionSession::restore(build(), good)
+                .unwrap()
+                .host()
+                .granted_rewards(),
+            1
+        );
     }
 }
