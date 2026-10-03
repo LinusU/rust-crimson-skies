@@ -303,11 +303,9 @@ impl fmt::Display for HostFault {
                     "outcome already settled as {settled:?}, refused {offered:?}"
                 )
             }
-            Self::ForeignSession { session } => write!(
-                f,
-                "result carries an execution key from session {}",
-                session.0
-            ),
+            Self::ForeignSession { session } => {
+                write!(f, "result belongs to session {}", session.0)
+            }
         }
     }
 }
