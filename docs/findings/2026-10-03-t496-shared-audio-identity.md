@@ -84,15 +84,53 @@ The existing F41 suites were updated to the new signatures — each test file
 gained the same `fn session(...) -> SessionId` helper the T397 suites use —
 and are unchanged in intent; no test was weakened, skipped or deleted.
 
+### The discrimination was checked, not assumed
+
+Reinstatement of a second definition was actually performed and reverted. Two
+variants were tried:
+
+1. Restoring the original structs verbatim (`session: u64`) — 299 errors, all
+   inside `audio_events.rs`, because the module body compares the ids against
+   the shared `SessionId`. This fails the build but says nothing about the
+   test file, so it is not the interesting result.
+2. Restoring second structs with the **same** field types (`session: SessionId`)
+   plus the two audio-scoped `Display` impls the aliases had to give up. The
+   library and every other test target then compile, and the *only* errors
+   anywhere are five in `accept_t496_audio_identity.rs`, all at the
+   shared-type boundary:
+
+   ```
+   accept_t496_audio_identity.rs:68:26: expected `AudioEventId`, found `EventId`
+   accept_t496_audio_identity.rs:69:29: expected `EventId`, found `AudioEventId`
+   accept_t496_audio_identity.rs:77:35: expected `AudioEmitterId`, found `ActorId`
+   accept_t496_audio_identity.rs:78:35: expected `ActorId`, found `AudioEmitterId`
+   accept_t496_audio_identity.rs:80:29: expected `ActorId`, found `AudioEmitterId`
+   ```
+
+   That is exactly the intended discrimination: `shared_event`/`shared_actor`
+   and the `let through_shared: ActorId = emitter` binding are what fail, not
+   incidental trait plumbing. The file was restored (`git checkout --`) and the
+   tree is clean.
+
 ## Commands
 
+Run on the rebased tree; exit codes as recorded.
+
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --locked
-cargo test --workspace --locked -- accept_t496_ --include-ignored
-cargo test --workspace --locked -- accept_f41_
+cargo fmt --all -- --check                                                       # 0
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  # 0
+cargo test --workspace --locked                                                 # 0: 3287 passed, 0 failed, 360 ignored
+cargo test --workspace --locked -- accept_t496_ --include-ignored               # 0: 3 passed
+cargo test --workspace --locked -- accept_f41_                                  # 0: 52 passed
 ```
+
+One caveat a reviewer should know: several runs aborted with
+`error: test failed, to rerun pass -p cs_xtask` and the cause
+`could not execute process .../cs_xtask-<hash> (never executed) / No such file
+or directory (os error 2)`. That is a shared-`target/` artifact race with other
+agents on this machine — the test binary was absent from disk while its object
+files were present — not a test failure. `cargo test -p cs_xtask --locked`
+passes on its own and a re-run of the whole workspace suite completed green.
 
 ## Evidence
 
@@ -102,8 +140,17 @@ audible or ordinary-play claim; this stage can award at most **checked**. No
 
 ## Review
 
-Implemented by `devin-1` (Devin, SWE-2, session of 2026-10-03). Review is
-requested from a different agent instance/model with a fresh context; the
+Implemented by `devin-1` (Devin, SWE-2, session of 2026-10-03). Resumed and
+re-verified by `bunny-alpha-1` on the same branch after the implement lease
+expired: the four checks above were run again on the rebased tree, the
+discrimination experiment was performed and reverted, and the two findings
+statements that had gone stale were corrected (the "realized for audio" wording
+in the F41-A findings, and the claim that the emitter type is distinct from
+`cs_sim::damage::ActorId`, which stopped being true when #442 landed).
+
+That re-verification is **not** an independent review: the same work, the same
+branch, and a session that read the implementer's own notes. Review is still
+requested from a different agent instance/model with a fresh context, and the
 review outcome and identity are recorded on the task at merge time. No agent
 review replaces the owner's human approval, and this task does not award
 `verified_original` or `release_approved`.
