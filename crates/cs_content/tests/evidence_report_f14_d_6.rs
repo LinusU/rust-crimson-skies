@@ -497,11 +497,13 @@ fn declared_roots(game_dir: &Path) -> Vec<String> {
 fn review_identity() -> String {
     let recorded = String::from(
         "implementer: bunny-alpha-2/bunny-alpha-2 (Rally #489, implement claim of \
-         2026-10-03T04:01:52Z). No review claim had run when this report was generated, so the \
-         implementer is the only identity recorded: the reviewing agent replaces this literal and \
-         names itself here in the same commit that regenerates the report. The reviewing session \
-         should record whether its context was fresh. `checked` is the ceiling for an agent review \
-         and no agent review replaces the owner's human approval",
+         2026-10-03T04:01:52Z); reviewer: bunny-alpha-2/bunny-alpha-2 again (Rally #489, review \
+         claim of 2026-10-03T05:04:30Z), in a fresh session whose context was empty, so the \
+         review re-derived the retail facts from the installation with production code instead of \
+         trusting the implementer's notes. The reviewer is the implementer's own agent instance, \
+         so this review is not independent original-reference evidence and nothing here is raised \
+         above `checked`: no human, retail-run, visual, audible or ordinary-play evidence is \
+         claimed, and no agent review replaces the owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
@@ -529,7 +531,12 @@ fn review_method() -> String {
          removing the airframe_rows call from retail_baseline, keying an airframe row by the \
          model spelling instead of the declared root, dropping the collection's row reasons, and \
          locating a row by the container as a whole instead of by its naming line each fail the \
-         acceptance tests named in the finding.",
+         acceptance tests named in the finding. Reviewer probes on this branch: the F14-D retail \
+         completeness test was failing over the installation (357 rows against 346 expected) \
+         because the airframe rows were not counted, which the review repaired; a corpus that \
+         reads but holds no declaring script was an untested branch, which the review covered with \
+         a seventh synthetic test; and renaming a roster finding's stable gap label is killed by \
+         that test.",
     );
     recorded
         + &UNKNOWN_LIMITATIONS

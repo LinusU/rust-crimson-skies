@@ -97,8 +97,9 @@ follow-up tasks created from #489.
   `airframe_row`, `airframe_unknowns`, `roster_issue_label`, and the
   `collection_status` record. No other file of the crate changed; the module
   needs no new dependency (`cs_formats` and `cs_types` were already there).
-- `crates/cs_content/tests/accept_f14_d_6_airframe_collection.rs` (new): six
-  `accept_f14_d_6_*` tests plus one `#[ignore]`d retail test.
+- `crates/cs_content/tests/accept_f14_d_6_airframe_collection.rs` (new): seven
+  `accept_f14_d_6_*` tests plus one `#[ignore]`d retail test (the seventh
+  synthetic test was added by the review; see **Review record** below).
 - `crates/cs_content/tests/evidence_report_f14_d_6.rs` (new): the evidence
   harness, deliberately not named with the acceptance prefix.
 - `docs/findings/evidence/F14-D.6.json` (new): the validated acceptance report.
@@ -177,7 +178,7 @@ member kind.
 | unresolved references | **0** |
 | declared roots (the denominator) | **53**, unchanged |
 | coverage ready | **0** |
-| `accept_f14_d_6_*` tests executed | **7** (6 synthetic, 1 retail), all passing |
+| `accept_f14_d_6_*` tests executed | **8** (7 synthetic, 1 retail), all passing |
 
 The eleven identities are F11-D2's measured roster; the catalog renders them in
 canonical id order while the declaration order the container creates them in is
@@ -191,6 +192,7 @@ script.
 | --- | --- | --- |
 | `a_declared_roster_becomes_one_row_per_airframe` (cs_content/tests/accept_f14_d_6_airframe_collection.rs) | the mapping arm over a synthetic installation: two declared roots become two rows in canonical id order; each row's origin is installation data over the **naming line's** span, checked to lie inside the declaring script's extent *and* to start at a stored line of the authored container; two `None` display names; distinct offsets; `parsed`/`not_normalized`/`unavailable`; the reason codes `["unknown","unknown","missing_runtime_consumer"]` in order with `f14.d.6.airframe_statistics` then `f11d.roster-availability-undiscovered`, each unknown carrying why; one static edge onto `install_file/zbd_2f_interp.zbd` with `observed_tool` provenance at the row's own span; the row's fingerprint equal to that inventory row's; the record's source/language/rows/gaps/diagnostic; the report's `airframe` count and collection fragment; no synthetic origin; and the report is byte-stable for the same installation | a row is keyed by the model spelling instead of the declared root, a display name is invented, a span is taken over the whole container or no longer covers the naming line, an unknown is dropped or replaced by a value, the edge moves off the container's inventory row, the fingerprint stops matching it, or the report stops being deterministic |
 | `a_container_that_declares_no_airframe_is_named_not_invented` | a container that binds the container variable and writes it but never creates a root: **no** row, `no_airframes_declared: 1`, a diagnostic naming the container, and the campaign mission rows and the launchable count unchanged — a collection's failure never takes the missions with it | a container that creates no root yields an airframe, a finding is dropped, or another collection's rows disappear |
+| `a_container_without_the_declaring_script_is_named_not_invented` (added by the review) | a container that reads as the interp container but holds a script that is not `support\planes.gw`, so the idiom has no script to measure its provenance span over: **no** row, `declaring_script_absent: 1` and `no_airframes_declared: 1` under their own labels, `roster_unknown: 1` (no row exists to be unavailable), a diagnostic quoting the finding itself, and the mission row and launchable count intact | the absent declaring script is passed over silently, its finding is not counted or is counted under a label of somebody else's, or a row is borrowed from another script's bytes |
 | `an_unreadable_line_is_a_finding_and_the_other_row_survives` | a `set` line stored with four arguments, which is not the declared shape: the airframe the container really declares still becomes a row, `roster_issue: 1` and `line_unreadable: 1` on the record, and no diagnostic because the collection holds rows | the unreadable line is silently skipped, the real row is lost with it, or the finding is not counted |
 | `an_unreadable_or_absent_loading_container_is_a_named_gap` | (a) a container that is not an INTERP container at all and (b) an installation with no container: both `rows: 0` with a diagnostic naming the source, the mission row and the root intact, and no `airframe` key in the report | a refused container is reported as an empty reading, or its diagnostic is dropped |
 | `airframes_are_not_launchable_and_the_denominator_does_not_move` | `ContentKind::Airframe.is_launchable()` is false; one root; `launchable_count == original_launchable_count == 1`; `coverage.roots == 1`; `reachable == 3` (mission, program, file); `unresolved_references == 0`; `unreachable_by_kind.airframe == 2`; the catalog is neither fully nor retail ready | the denominator moves when the collection is populated, a row becomes a closure root, or an edge dangles |
@@ -211,8 +213,9 @@ acceptance run failed.
 ## Sensitivity check
 
 Every mutation below was applied to `crates/cs_content/src/catalog/baseline.rs`,
-the acceptance file was run (the six non-retail tests, in 0.01 s), and the file
-was restored. **All six are killed.**
+the acceptance file was run (the six non-retail tests the implementer had at the
+time, in 0.01 s), and the file was restored. **All six are killed.** The review
+added a seventh probe against the same file; see **Review record** below.
 
 | # | Mutation | Killed by |
 | --- | --- | --- |
@@ -227,6 +230,59 @@ The retail test additionally pins the eleven identities, the eleven distinct
 naming-line offsets and the two claim ids against the real installation, so
 mutations 2, 3 and 5 fail there too — at the cost of a 150 s run over the
 installation, which is why the fast synthetic arms carry the same checks.
+
+## Review record
+
+Reviewer: `bunny-alpha-2/bunny-alpha-2` again (Rally #489, review claim of
+2026-10-03T05:04:30Z), in a fresh session with an empty context. **That is the
+implementer's own agent instance, so this review is not independent
+original-reference evidence**, and nothing here is raised above `checked`. The
+reviewer re-derived the retail facts from `$CS_GAME_DIR` with production code
+rather than trusting the implementer's notes, and found:
+
+1. **A regression the implementer missed (repaired here).** This stage's own
+   stage-level test, `accept_f14_d_baseline.rs`'s
+   `accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic`,
+   asserted `catalog.len() == files + 2*launchable + mode_rows + world_rows`.
+   Eleven airframe rows are not launchable, so every other total in that test
+   still held, but the row count did not: the test failed over the real
+   installation with `left: 357, right: 346`. The accounting is repaired the way
+   F14-D.2 and F14-D.3 repaired it — the airframe rows are **counted** and the
+   equality kept, with the count pinned here as well — rather than filtered out
+   or relaxed. This is the spec's own instruction for this stage ("repair
+   discovered regressions without weakening the specification"). The repair is
+   the only change to a file outside this stage's own.
+2. **A branch no test covered (covered here).** A container that reads as the
+   interp container but holds **no** declaring script takes the
+   `unique_script` → `None` path: the idiom then has no script to measure its
+   provenance span over, the discovery reports `declaring_script_absent`, and the
+   collection must still name the gap rather than borrow another script's bytes.
+   That path was untested; `a_container_without_the_declaring_script_is_named_not_invented`
+   now covers it, and renaming that finding's stable gap label
+   (`declaring_script_absent` → `absent_script`) is killed by it.
+
+Checked and found sound, with the measurement restated here rather than assumed:
+the naming line's span really is the stored record (`InterpLine::offset()` is the
+`size` word and `data_offset() + size` its end, so the extent covers the whole
+record); the collection's `files` lookup uses the same `logical_key()` convention
+as the neighbouring collections, so an installation that spells the path with
+either separator is found; a colliding id would fail the whole baseline through
+`insert` rather than silently replace a row; the closure reports the airframes as
+unreachable unknowns and moves neither the root set nor the ready count; the
+evidence harness's second derivation really never calls
+`discover_airframe_roster`; `docs/findings/evidence/F14-D.6.json` validated with
+`--require-pass` before and after the regeneration; and no protected path is
+touched by this branch.
+
+Not this branch's problem, and left alone: `tools/tests/
+test_evidence_review_identity.py` fails its two runtime-harness pins on
+`origin/main` as well (verified in a clean worktree at `db047e41`), which #562
+owns. The measured roster idiom now exists in **three** copies — the production
+`airframe_roster_declarations` in `catalog/baseline.rs`, which measures its
+provenance span from the container, and two test-local `retail_roster_declarations`
+helpers in `crates/cs_content/tests/scene.rs` and
+`crates/cs_app/tests/camera/coverage.rs` that hard-code retail byte offsets; a
+follow-up task was filed for them rather than editing another stage's test here.
 
 ## Unknowns and limitations (all recorded, none guessed)
 
@@ -278,12 +334,16 @@ installation, which is why the fast synthetic arms carry the same checks.
   (`set`, `source`, `NewObject3D`, `GameZWriteZBDFile`, `%NAME%`) are the
   corpus's own spelling and were not verified against the running engine. No
   original run happened and nothing claims `verified_original`.
-- **Independent review is outstanding for this work.** AGENTS.md asks a different
-  agent instance or model with a fresh context to review format and catalog work.
-  This report names the implementer only; the reviewing agent regenerates it with
-  `CS_EVIDENCE_REVIEW` and replaces the literal in the same commit. No agent
-  review awards more than `checked`, and none replaces the owner's approval.
-- **Fixture scope.** The six unignored tests are synthetic and newly authored;
+- **Independent review is still outstanding for this work.** AGENTS.md asks a
+  different agent instance or model with a fresh context to review format and
+  catalog work. The review recorded above was made by the implementer's own
+  instance in a fresh session, so it is **not** independent, and
+  `docs/findings/evidence/F14-D.6.json` says so in `review.identity` rather than
+  leaving the field to a later reader. **Affected content:** the independence of
+  this stage's format and catalog claims. **Resolving task:** an owner-scheduled
+  review by another agent instance or model; until then nothing here is above
+  `checked`, and no agent review replaces the owner's human approval.
+- **Fixture scope.** The seven unignored tests are synthetic and newly authored;
   only the `#[ignore]`d retail test reads original data. Nothing derived from it
   beyond ids, counts, offsets and digests is committed.
 - **The four research locations above are read-only research.** No extracted
