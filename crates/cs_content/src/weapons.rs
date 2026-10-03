@@ -2549,3 +2549,624 @@ pub fn synthetic_sound_id() -> ContentId {
     ContentId::from_source(ContentKind::Sound, SYNTHETIC_SOUND_KEY)
         .expect("the fixture sound id is valid")
 }
+
+// ---------------------------------------------------------------------------
+// F27-E: the original's ammunition and gun identity vocabulary, measured
+// ---------------------------------------------------------------------------
+//
+// F27-A left the original ammunition set unknown on purpose (F27
+// non-negotiable 1) and F27-D measured its *shape*: `ASSETS/SCRIPTS/RESOURCE.H`,
+// a C include the original build generated, declares the identifier blocks
+// `IDS_GUNLONGNAME 3310`, `IDS_GUNSHORTNAME 3320`, `IDS_GUNDESCRIPTION 3330`,
+// `IDS_AMMOLONGNAME 3350`, `IDS_AMMOSHORTNAME 3360`, `IDS_AMMOABBRNAME 3365`
+// and `IDS_AMMODESCRIPTION 3370`, each a four-wide run for the ammunition
+// names, and the loadout screens ask the engine for four ammunition names
+// and five gun names.
+//
+// Those declares say *where* the text is; this section reads *what* it is.
+// The text is not in `crimson.exe` — whose code sections are copy-protected
+// at rest — and not in `strings.dll`; it is in
+// `GOSDATA/ASSETS/BINARIES/langui.dll`, the original's own UI language
+// image, whose `RT_STRING` blocks `cs_formats::pe_resources` decodes under
+// the shipped numbering `(block - 1) * 16 + index` (measured in
+// `docs/findings/2026-10-02-t374-string-id-numbering.md`).
+//
+// What is measured here is **identity**: which four ammunition types and
+// which five guns the original names, and the caliber label each gun
+// declares. What stays unknown is everything the executable holds: the
+// per-type damage amounts, the penetration/ricochet/ammo-switching
+// behavior, and which hardpoint group each gun fires from. Those stay
+// [`Resolved::Unknown`] or unbuilt, never invented.
+
+/// The claim the measured original ammunition identity carries.
+#[must_use]
+pub fn original_ammunition_claim() -> ClaimId {
+    ClaimId::new("f27.e.original-ammunition-identity").expect("the claim id is valid")
+}
+
+/// The claim the measured original gun identity carries.
+#[must_use]
+pub fn original_gun_claim() -> ClaimId {
+    ClaimId::new("f27.e.original-gun-identity").expect("the claim id is valid")
+}
+
+/// The claim that stays unknown: the original's per-type damage amounts and
+/// its interaction behavior.
+#[must_use]
+pub fn original_ammunition_behavior_claim() -> ClaimId {
+    ClaimId::new("f27.e.ammunition-behavior").expect("the claim id is valid")
+}
+
+/// The claim that stays unknown: a caliber the ammunition type itself
+/// declares, as opposed to the caliber its gun declares.
+#[must_use]
+pub fn original_ammunition_caliber_claim() -> ClaimId {
+    ClaimId::new("f27.e.ammunition-type-caliber").expect("the claim id is valid")
+}
+
+/// The original's four ammunition types: the four-wide run
+/// `IDS_AMMOLONGNAME` declares and the four rows the loadout screen builds.
+pub const ORIGINAL_AMMUNITION_TYPE_COUNT: usize = 4;
+
+/// The original's five selectable guns, as the loadout screens index them
+/// (`string UHA[5]` in `MULTIPLAYER_AMMOG.SCRIPT`, `V6=GUNS,5` in
+/// `ASSETS/LAYOUT.CSV`).
+pub const ORIGINAL_SELECTABLE_GUN_COUNT: usize = 5;
+
+/// `IDS_AMMOLONGNAME`'s four long names, `3350..=3353`.
+pub const ORIGINAL_AMMUNITION_LONG_NAME_IDS: [u32; ORIGINAL_AMMUNITION_TYPE_COUNT] =
+    [3350, 3351, 3352, 3353];
+
+/// `IDS_AMMOSHORTNAME`'s four short names, `3360..=3363`.
+pub const ORIGINAL_AMMUNITION_SHORT_NAME_IDS: [u32; ORIGINAL_AMMUNITION_TYPE_COUNT] =
+    [3360, 3361, 3362, 3363];
+
+/// `IDS_AMMOABBRNAME`'s four abbreviations, `3365..=3368`.
+pub const ORIGINAL_AMMUNITION_ABBREVIATION_IDS: [u32; ORIGINAL_AMMUNITION_TYPE_COUNT] =
+    [3365, 3366, 3367, 3368];
+
+/// `IDS_AMMODESCRIPTION`'s four descriptions, `3370..=3373` — the run the
+/// ammunition screens index as `3370 + selection - 1` for `selection` in
+/// `1..=4`.
+pub const ORIGINAL_AMMUNITION_DESCRIPTION_IDS: [u32; ORIGINAL_AMMUNITION_TYPE_COUNT] =
+    [3370, 3371, 3372, 3373];
+
+/// The id each ammunition name block carries after its four types: the
+/// loadout's "no ammunition loaded" row, `3354`, `3364` and `3369`.
+pub const ORIGINAL_AMMUNITION_NONE_LABEL_IDS: [u32; 3] = [3354, 3364, 3369];
+
+/// The five `IDS_GUNLONGNAME` rows the loadout offers, `3310..=3314`.
+///
+/// These rows carry no markup code; the caliber rows and the ammunition rows
+/// do (see [`ORIGINAL_TEXT_MARKUP`]), which is measured, not assumed.
+pub const ORIGINAL_GUN_LONG_NAME_IDS: [u32; ORIGINAL_SELECTABLE_GUN_COUNT] =
+    [3310, 3311, 3312, 3313, 3314];
+
+/// The five `IDS_GUNSHORTNAME` rows: one caliber label per gun, `3320..=3324`.
+pub const ORIGINAL_GUN_SHORT_NAME_IDS: [u32; ORIGINAL_SELECTABLE_GUN_COUNT] =
+    [3320, 3321, 3322, 3323, 3324];
+
+/// The five `IDS_GUNDESCRIPTION` rows, `3330..=3334`.
+pub const ORIGINAL_GUN_DESCRIPTION_IDS: [u32; ORIGINAL_SELECTABLE_GUN_COUNT] =
+    [3330, 3331, 3332, 3333, 3334];
+
+/// The row after each gun block that names the loadout's **empty** gun slot:
+/// `3315` in `IDS_GUNLONGNAME` and `3325` in `IDS_GUNSHORTNAME`, both spelled
+/// "No Gun".
+pub const ORIGINAL_NO_GUN_LONG_NAME_ID: u32 = 3315;
+/// The short-name row that spells "No Gun", `3325`.
+pub const ORIGINAL_NO_GUN_SHORT_NAME_ID: u32 = 3325;
+
+/// The `[TAG]` markup code the shipped language image prefixes its
+/// **ammunition and caliber** rows with.
+///
+/// The code is **not** interpreted here: it is recorded as
+/// [`OriginalMeasuredText::markup`] and the display text is what follows it,
+/// so no style rule is invented. Every ammunition-name id and every
+/// gun-short-name id this stage reads is measured to carry exactly this
+/// code; the gun *long* names carry none, and the gun and engine blurbs carry
+/// a different one, so a caller must not assume a markup per id.
+pub const ORIGINAL_TEXT_MARKUP: &str = "[COUR9]";
+
+/// The original's string catalog as the importer receives it: the text the
+/// installation holds under each string id.
+///
+/// The ids are the original's own (`RESOURCE.H`); the text is what the
+/// shipped language image holds under them. A caller fills this from
+/// `cs_formats::pe_resources` or `cs_content::localization`; nothing here
+/// reads a file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OriginalStringTable {
+    entries: BTreeMap<u32, String>,
+}
+
+impl OriginalStringTable {
+    /// An empty catalog.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+        }
+    }
+
+    /// Records the text one string id holds, replacing any earlier text for
+    /// it, and returns what was there.
+    pub fn insert(&mut self, id: u32, text: impl Into<String>) -> Option<String> {
+        self.entries.insert(id, text.into())
+    }
+
+    /// Builds a catalog from `(id, text)` pairs; a repeated id keeps the last
+    /// text.
+    #[must_use]
+    pub fn from_pairs<I>(pairs: I) -> Self
+    where
+        I: IntoIterator<Item = (u32, String)>,
+    {
+        let mut table = Self::new();
+        for (id, text) in pairs {
+            table.insert(id, text);
+        }
+        table
+    }
+
+    /// The raw text one string id holds.
+    #[must_use]
+    pub fn raw(&self, id: u32) -> Option<&str> {
+        self.entries.get(&id).map(String::as_str)
+    }
+
+    /// Drops one string id and returns the text it held, so a caller can take
+    /// a row back out and see the importer refuse the catalog without it.
+    pub fn remove(&mut self, id: u32) -> Option<String> {
+        self.entries.remove(&id)
+    }
+
+    /// How many string ids the catalog holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the catalog holds nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Every string id the catalog holds, ascending.
+    pub fn ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.entries.keys().copied()
+    }
+}
+
+/// One string the original's catalog holds, split into the bracketed markup
+/// code the shipped language image prefixes and the display text after it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginalMeasuredText {
+    id: u32,
+    markup: Option<String>,
+    text: String,
+}
+
+impl OriginalMeasuredText {
+    /// Splits one raw string: a leading `[TAG]` of bracketed alphanumeric
+    /// characters becomes [`OriginalMeasuredText::markup`] and the rest
+    /// becomes [`OriginalMeasuredText::text`].
+    ///
+    /// A raw string with no such prefix is all text. The split is purely
+    /// positional and says nothing about what the code means.
+    #[must_use]
+    pub fn measure(id: u32, raw: &str) -> Self {
+        let trimmed = raw.trim();
+        if let Some(rest) = trimmed.strip_prefix('[')
+            && let Some(close) = rest.find(']')
+        {
+            let code = &rest[..close];
+            if !code.is_empty() && code.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+                return Self {
+                    id,
+                    markup: Some(format!("[{code}]")),
+                    text: rest[close + 1..].to_owned(),
+                };
+            }
+        }
+        Self {
+            id,
+            markup: None,
+            text: trimmed.to_owned(),
+        }
+    }
+
+    /// The string id the text was read from.
+    #[must_use]
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// The bracketed markup code, when the raw string carried one.
+    #[must_use]
+    pub fn markup(&self) -> Option<&str> {
+        self.markup.as_deref()
+    }
+
+    /// The display text after the markup code.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Whether the row carried no display text at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+}
+
+/// Why the original's ammunition catalogue could not be imported.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OriginalImportError {
+    /// The catalog holds no text for a string id the declares require.
+    MissingString {
+        /// The missing string id.
+        id: u32,
+        /// What the id is for.
+        role: &'static str,
+    },
+    /// The catalog holds an empty row where the declares require a name.
+    EmptyString {
+        /// The empty string id.
+        id: u32,
+        /// What the id is for.
+        role: &'static str,
+    },
+    /// A caliber row the original declares cannot become a
+    /// [`DeclaredCaliber`].
+    Caliber {
+        /// The string id the caliber text came from.
+        id: u32,
+        /// The schema refusal.
+        source: Box<WeaponSchemaError>,
+    },
+    /// The ammunition id this stage derives from a selection index is not a
+    /// usable content id.
+    AmmunitionId {
+        /// The selection index the id was derived from.
+        selection: u32,
+        /// The content-id refusal, as text.
+        source: String,
+    },
+}
+
+impl fmt::Display for OriginalImportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingString { id, role } => {
+                write!(f, "the catalog holds no text for {role} string {id}")
+            }
+            Self::EmptyString { id, role } => {
+                write!(f, "the {role} string {id} carries no display text")
+            }
+            Self::Caliber { id, source } => {
+                write!(f, "the caliber text at string {id} is unusable: {source}")
+            }
+            Self::AmmunitionId { selection, source } => {
+                write!(
+                    f,
+                    "the ammunition id for selection {selection} is unusable: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for OriginalImportError {}
+
+/// One of the original's ammunition types, named by its own four rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginalAmmunitionIdentity {
+    ammunition: AmmunitionId,
+    selection: u32,
+    long_name: OriginalMeasuredText,
+    short_name: OriginalMeasuredText,
+    abbreviation: OriginalMeasuredText,
+    description: OriginalMeasuredText,
+}
+
+impl OriginalAmmunitionIdentity {
+    /// The ammunition type's catalog id, `ammo/original-<selection>`.
+    #[must_use]
+    pub const fn ammunition(&self) -> &AmmunitionId {
+        &self.ammunition
+    }
+
+    /// The type's position in the loadout screen's own four-row list,
+    /// `1..=4` — the index `MULTIPLAYER_AMMOG.SCRIPT` uses as
+    /// `3370 + selection - 1` for the description.
+    #[must_use]
+    pub const fn selection(&self) -> u32 {
+        self.selection
+    }
+
+    /// `IDS_AMMOLONGNAME`'s row for this type.
+    #[must_use]
+    pub const fn long_name(&self) -> &OriginalMeasuredText {
+        &self.long_name
+    }
+
+    /// `IDS_AMMOSHORTNAME`'s row for this type.
+    #[must_use]
+    pub const fn short_name(&self) -> &OriginalMeasuredText {
+        &self.short_name
+    }
+
+    /// `IDS_AMMOABBRNAME`'s row for this type.
+    #[must_use]
+    pub const fn abbreviation(&self) -> &OriginalMeasuredText {
+        &self.abbreviation
+    }
+
+    /// `IDS_AMMODESCRIPTION`'s row for this type.
+    #[must_use]
+    pub const fn description(&self) -> &OriginalMeasuredText {
+        &self.description
+    }
+
+    /// The declared record for this type.
+    ///
+    /// Every value the copy-protected executable holds stays an explicit
+    /// unknown: the caliber belongs to the gun that fires the type, and the
+    /// damage amounts and interaction behavior are not in any shipped data
+    /// file. The four names are evidence about the type's *identity*, so
+    /// they travel on [`OriginalAmmunitionIdentity`] rather than as a
+    /// gameplay field the schema does not have.
+    ///
+    /// # Errors
+    ///
+    /// [`WeaponSchemaError`] when the schema refuses the record; no current
+    /// rule does, because every amount is an explicit unknown.
+    pub fn declared(
+        &self,
+        source: cs_types::asset_id::SourceSpan,
+        provenance: Provenance,
+    ) -> Result<DeclaredAmmunition, WeaponSchemaError> {
+        fn unknown_behavior<T>(reason: &str) -> Resolved<T> {
+            Resolved::Unknown {
+                claim_id: original_ammunition_behavior_claim(),
+                reason: reason.to_owned(),
+            }
+        }
+        DeclaredAmmunition::try_new(
+            self.ammunition.clone(),
+            Origin::Installation { source },
+            Resolved::Unknown {
+                claim_id: original_ammunition_caliber_claim(),
+                reason: "the caliber is declared by the gun, not by the ammunition type: \
+                 the original enumerates caliber and type as one vocabulary \
+                 (30/40/50/60/70 cal against slug, dum-dum, armor-piercing and \
+                 explosive), and which gun fires which type is per-airframe data"
+                    .to_owned(),
+            },
+            DeclaredWeaponDamage {
+                armor: unknown_behavior(
+                    "the original's per-type armor damage is held in the copy-protected \
+                     executable image, not in any shipped data file",
+                ),
+                internal: unknown_behavior(
+                    "the original's per-type internal damage is held in the copy-protected \
+                     executable image, not in any shipped data file",
+                ),
+            },
+            InteractionRules {
+                self_hit: unknown_behavior(
+                    "unmeasured original behavior; F27 non-negotiable 4 forbids a modeled \
+                     rule game content does not declare",
+                ),
+                friendly_fire: unknown_behavior(
+                    "unmeasured original behavior; F27 non-negotiable 4 forbids a modeled \
+                     rule game content does not declare",
+                ),
+                penetration: unknown_behavior(
+                    "unmeasured original behavior; see InteractionOption::Penetration",
+                ),
+                ricochet: unknown_behavior(
+                    "unmeasured original behavior; see InteractionOption::Ricochet",
+                ),
+                ammo_switching: unknown_behavior(
+                    "unmeasured original behavior; see InteractionOption::AmmoSwitching",
+                ),
+            },
+            provenance,
+        )
+    }
+}
+
+/// One of the original's five selectable guns, named by its own three rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginalGunIdentity {
+    selection: u32,
+    long_name: OriginalMeasuredText,
+    short_name: OriginalMeasuredText,
+    description: OriginalMeasuredText,
+    caliber: Resolved<DeclaredCaliber>,
+}
+
+impl OriginalGunIdentity {
+    /// The gun's position in the loadout screen's own five-row list,
+    /// `1..=5`.
+    #[must_use]
+    pub const fn selection(&self) -> u32 {
+        self.selection
+    }
+
+    /// `IDS_GUNLONGNAME`'s row for this gun.
+    #[must_use]
+    pub const fn long_name(&self) -> &OriginalMeasuredText {
+        &self.long_name
+    }
+
+    /// `IDS_GUNSHORTNAME`'s row for this gun — the caliber label.
+    #[must_use]
+    pub const fn short_name(&self) -> &OriginalMeasuredText {
+        &self.short_name
+    }
+
+    /// `IDS_GUNDESCRIPTION`'s row for this gun.
+    #[must_use]
+    pub const fn description(&self) -> &OriginalMeasuredText {
+        &self.description
+    }
+
+    /// The caliber the original's own short name declares, e.g. `.30-cal.`.
+    ///
+    /// The text is the original's label verbatim and is not parsed into a
+    /// numeric bore: no caliber value is derived from it here.
+    #[must_use]
+    pub const fn caliber(&self) -> &Resolved<DeclaredCaliber> {
+        &self.caliber
+    }
+}
+
+/// The original's ammunition and gun vocabulary, imported from one catalog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginalGunAmmunitionCatalogue {
+    ammunition: Vec<OriginalAmmunitionIdentity>,
+    guns: Vec<OriginalGunIdentity>,
+}
+
+impl OriginalGunAmmunitionCatalogue {
+    /// Imports the four ammunition types and the five guns a catalog names.
+    ///
+    /// Every required string id must be present and carry display text; a
+    /// missing or empty row is refused by id rather than skipped, because a
+    /// silently shorter catalogue would leave "four types, five guns"
+    /// unfalsifiable.
+    ///
+    /// # Errors
+    ///
+    /// [`OriginalImportError`] for a missing row, an empty row, a caliber the
+    /// schema refuses, or an unusable ammunition id.
+    pub fn import(
+        table: &OriginalStringTable,
+        provenance: Provenance,
+    ) -> Result<Self, OriginalImportError> {
+        let mut ammunition = Vec::with_capacity(ORIGINAL_AMMUNITION_TYPE_COUNT);
+        for index in 0..ORIGINAL_AMMUNITION_TYPE_COUNT {
+            let selection = index as u32 + 1;
+            let long_name = measure_required(
+                table,
+                ORIGINAL_AMMUNITION_LONG_NAME_IDS[index],
+                "ammunition long name",
+            )?;
+            let short_name = measure_required(
+                table,
+                ORIGINAL_AMMUNITION_SHORT_NAME_IDS[index],
+                "ammunition short name",
+            )?;
+            let abbreviation = measure_required(
+                table,
+                ORIGINAL_AMMUNITION_ABBREVIATION_IDS[index],
+                "ammunition abbreviation",
+            )?;
+            let description = measure_required(
+                table,
+                ORIGINAL_AMMUNITION_DESCRIPTION_IDS[index],
+                "ammunition description",
+            )?;
+            let key = format!("original-{selection}");
+            let id = ContentId::from_source(ContentKind::Ammo, &key).map_err(|error| {
+                OriginalImportError::AmmunitionId {
+                    selection,
+                    source: error.to_string(),
+                }
+            })?;
+            let type_id =
+                AmmunitionId::try_new(id).map_err(|error| OriginalImportError::AmmunitionId {
+                    selection,
+                    source: error.to_string(),
+                })?;
+            ammunition.push(OriginalAmmunitionIdentity {
+                ammunition: type_id,
+                selection,
+                long_name,
+                short_name,
+                abbreviation,
+                description,
+            });
+        }
+
+        let mut guns = Vec::with_capacity(ORIGINAL_SELECTABLE_GUN_COUNT);
+        for index in 0..ORIGINAL_SELECTABLE_GUN_COUNT {
+            let long_name =
+                measure_required(table, ORIGINAL_GUN_LONG_NAME_IDS[index], "gun long name")?;
+            let short_name =
+                measure_required(table, ORIGINAL_GUN_SHORT_NAME_IDS[index], "gun short name")?;
+            let description = measure_required(
+                table,
+                ORIGINAL_GUN_DESCRIPTION_IDS[index],
+                "gun description",
+            )?;
+            let caliber = Resolved::Known(cs_types::content::Known::new(
+                DeclaredCaliber::try_new(&short_name.text).map_err(|source| {
+                    OriginalImportError::Caliber {
+                        id: short_name.id,
+                        source: Box::new(source),
+                    }
+                })?,
+                provenance.clone(),
+            ));
+            guns.push(OriginalGunIdentity {
+                selection: index as u32 + 1,
+                long_name,
+                short_name,
+                description,
+                caliber,
+            });
+        }
+
+        Ok(Self { ammunition, guns })
+    }
+
+    /// The four ammunition types, in the loadout screen's own order.
+    #[must_use]
+    pub fn ammunition(&self) -> &[OriginalAmmunitionIdentity] {
+        &self.ammunition
+    }
+
+    /// The five selectable guns, in the loadout screen's own order.
+    #[must_use]
+    pub fn guns(&self) -> &[OriginalGunIdentity] {
+        &self.guns
+    }
+
+    /// The ammunition types as [`DeclaredAmmunition`] records.
+    ///
+    /// # Errors
+    ///
+    /// [`WeaponSchemaError`] from [`OriginalAmmunitionIdentity::declared`].
+    pub fn declared_ammunition(
+        &self,
+        source: cs_types::asset_id::SourceSpan,
+        provenance: Provenance,
+    ) -> Result<Vec<DeclaredAmmunition>, WeaponSchemaError> {
+        self.ammunition
+            .iter()
+            .map(|identity| identity.declared(source.clone(), provenance.clone()))
+            .collect()
+    }
+}
+
+/// Reads one required string row and refuses a missing or empty one.
+fn measure_required(
+    table: &OriginalStringTable,
+    id: u32,
+    role: &'static str,
+) -> Result<OriginalMeasuredText, OriginalImportError> {
+    let raw = table
+        .raw(id)
+        .ok_or(OriginalImportError::MissingString { id, role })?;
+    let measured = OriginalMeasuredText::measure(id, raw);
+    if measured.is_empty() {
+        return Err(OriginalImportError::EmptyString { id, role });
+    }
+    Ok(measured)
+}
