@@ -315,6 +315,24 @@
 //! [`cs_types::content::Resolved`]. Its runtime counterpart is
 //! `cs_sim::interaction`; the conversion boundary is `cs_app::interaction`.
 //!
+//! [`objectives`] is the F39-C declared objective-program schema
+//! (`specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`,
+//! stage `### F39-C`): the provenance-carrying
+//! [`objectives::DeclaredObjectiveProgram`] of one mission — its
+//! [`objectives::DeclaredObjective`]s with initial states and
+//! [`objectives::DeclaredRevealRule`]s, its [`objectives::DeclaredCondition`]s
+//! (a roster, one [`objectives::DeclaredCountKind`], a required count and a
+//! [`objectives::DeclaredCountReaction`]), its [`objectives::DeclaredTimer`]s
+//! with declared starts, domains and single [`objectives::DeclaredTimerAction`]s,
+//! its [`objectives::DeclaredTrigger`] volumes and its
+//! [`objectives::DeclaredSpawnGroup`] bindings — plus the declared terminal
+//! [`objectives::DeclaredPrecedence`] kept a `Resolved` because the original
+//! rule is unmeasured. The schema is closed: a declaration may only name a
+//! declaration of the same program, so a dangling objective, condition, timer
+//! or spawn-group reference is refused at declaration rather than waiting to
+//! be caught in use. Its runtime counterpart is `cs_sim::objectives`; the
+//! conversion boundary is `cs_app::objectives`.
+//!
 //! [`cinematics`] is the F40-A declared cutscene/video schema
 //! (`specs/F40-cutscenes-video-scripted-cameras-and-transitions.md`, stage
 //! `### F40-A`): the provenance-carrying [`cinematics::DeclaredCinematic`]
@@ -500,6 +518,7 @@ pub mod localization;
 pub mod mesh;
 pub mod mods;
 pub mod multiplayer;
+pub mod objectives;
 pub mod ordnance;
 pub mod pilots;
 pub mod replay;
