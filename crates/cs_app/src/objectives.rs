@@ -139,6 +139,30 @@
 //! `ObjectiveRuntime` would need its own format, and the contract permits
 //! declaring that unsupported rather than inventing one. Retry is the session
 //! lifecycle this stage wires.
+//!
+//! # F39-E5: completion effects cross the boundary
+//!
+//! The third piece of this module is the lowering of the declared completion
+//! effects ([`lower_effect`]): a `DeclaredObjective`'s
+//! [`completion_effects`](cs_content::objectives::DeclaredObjective::completion_effects)
+//! become the runtime's [`CompletionEffect`]s on the lowered [`ObjectiveSpec`],
+//! field-wise like every other declared field. Two boundaries worth naming:
+//!
+//! * **The nap's number crosses as a number, never as a duration.** It becomes a
+//!   [`UnmeasuredNumber`] and nothing downstream reads it as a time: the runtime
+//!   applies the same move whatever it says. Carrying it rather than dropping it
+//!   keeps the record's number available to a later measurement.
+//! * **The one refused shape never reaches here.** A program whose two different
+//!   effects name the same objective is refused by
+//!   [`DeclaredObjectiveProgram::try_new`](cs_content::objectives::DeclaredObjectiveProgram::try_new)
+//!   before a session exists, and the runtime refuses the same shape again at
+//!   registration — no order is applied anywhere, because nothing measured which
+//!   effect wins (F39-E2).
+//!
+//! The consumer side needs nothing new: an effect is an ordinary declared state
+//! change, so the objective display moves from the same
+//! [`ObjectiveEventKind::ObjectiveChanged`] event as every other state change
+//! and no game state is read from the UI.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
@@ -151,11 +175,12 @@ use bevy::{
 };
 use cs_content::objectives::{
     BRANCH_EFFECT_KEY_VOCABULARY, BRANCH_KEY_VOCABULARY, BRANCH_ORDER_KEY, BranchEffectKind,
-    DeclaredCompletion, DeclaredCountKind, DeclaredCountReaction, DeclaredObjectiveProgram,
-    DeclaredObjectiveState, DeclaredPrecedence, DeclaredRevealRule, DeclaredTerminalOutcome,
-    DeclaredTimeDomain, DeclaredTimer, DeclaredTimerAction, DeclaredTimerStart, DeclaredVolume,
-    FAILURE_KEY_VOCABULARY, MeasuredBranchConflict, MeasuredBranchPrecedence, MeasuredBranchSite,
-    ProgramActor, ProgramSymbol, is_optional_objective_key,
+    DeclaredCompletion, DeclaredCompletionEffect, DeclaredCountKind, DeclaredCountReaction,
+    DeclaredObjectiveProgram, DeclaredObjectiveState, DeclaredPrecedence, DeclaredRevealRule,
+    DeclaredTerminalOutcome, DeclaredTimeDomain, DeclaredTimer, DeclaredTimerAction,
+    DeclaredTimerStart, DeclaredVolume, FAILURE_KEY_VOCABULARY, MeasuredBranchConflict,
+    MeasuredBranchPrecedence, MeasuredBranchSite, ProgramActor, ProgramSymbol, UnmeasuredQuantity,
+    is_optional_objective_key,
 };
 use cs_content::stunts::{
     OBJECTIVE_BLOCK_PREFIX, SCENARIO_OBJECTIVES_MEMBER, ZrdValue, objective_record, zrd_flat_fields,
@@ -164,8 +189,9 @@ use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
 use cs_sim::objectives::counters::CountKind;
 use cs_sim::objectives::runtime::{
-    CountCondition, CountReaction, ObjectiveCompletion, ObjectiveEventKind, ObjectiveRuntime,
-    ObjectiveSpec, ObjectiveTick, RevealRule, RuntimeError, RuntimeLimits, StopReason, TickInput,
+    CompletionEffect, CompletionEffectKind, CountCondition, CountReaction, ObjectiveCompletion,
+    ObjectiveEventKind, ObjectiveRuntime, ObjectiveSpec, ObjectiveTick, RevealRule, RuntimeError,
+    RuntimeLimits, StopReason, TickInput, UnmeasuredNumber,
 };
 use cs_sim::objectives::spawn::IdempotencyKey;
 use cs_sim::objectives::state::ObjectiveState;
@@ -656,6 +682,44 @@ const fn lower_completion(completion: DeclaredCompletion) -> ObjectiveCompletion
     }
 }
 
+const fn lower_effect_kind(kind: BranchEffectKind) -> CompletionEffectKind {
+    match kind {
+        BranchEffectKind::Wake => CompletionEffectKind::Wake,
+        BranchEffectKind::Nap => CompletionEffectKind::Nap,
+        BranchEffectKind::Kill => CompletionEffectKind::Kill,
+        BranchEffectKind::Wakeup => CompletionEffectKind::Wakeup,
+    }
+}
+
+/// Lowers one declared completion effect field-wise.
+///
+/// The nap's number crosses the boundary as a
+/// [`UnmeasuredNumber`] — **not** as a duration, a weight or a threshold. Nothing
+/// here divides by it, compares it or stores it in a clock, and the runtime's own
+/// [`CompletionEffectKind::moves_to`] never looks at it: a nap moves its target
+/// whatever the number says, because what the number measures is unmeasured.
+/// Carrying it rather than dropping it keeps the record's number visible to a
+/// later measurement instead of losing it at the boundary.
+///
+/// The declared shape (a nap carries a number, nothing else does) is already
+/// enforced by the schema, and `CompletionEffect`'s own constructor re-checks it
+/// so a struct literal cannot skip the rule.
+fn lower_effect(effect: &DeclaredCompletionEffect) -> CompletionEffect {
+    CompletionEffect {
+        kind: lower_effect_kind(effect.kind),
+        target: lower_symbol(effect.objective),
+        // A declared quantity is finite by construction, so this is the identity
+        // in practice; if a future declared form ever carries a non-finite
+        // number the mapping drops it here and the runtime's own shape check
+        // refuses the declaration by name instead of running it with a number it
+        // could not read.
+        argument: effect
+            .argument
+            .map(UnmeasuredQuantity::value)
+            .and_then(UnmeasuredNumber::new),
+    }
+}
+
 const fn lower_kind(kind: DeclaredCountKind) -> CountKind {
     match kind {
         DeclaredCountKind::Destroyed => CountKind::Destroyed,
@@ -789,6 +853,11 @@ pub fn lower_program(
             initial: lower_state(objective.initial),
             reveal: lower_reveal(objective.reveal),
             on_complete: lower_completion(objective.on_complete),
+            completion_effects: objective
+                .completion_effects
+                .iter()
+                .map(lower_effect)
+                .collect(),
         })
         .collect();
 
