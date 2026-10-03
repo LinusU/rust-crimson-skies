@@ -635,6 +635,10 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
                                  task['reviewer']['review_claim_started'])
             self.assertIn(task['reviewer']['merge_event']['type'],
                           self.non_campaign['review_event_types'])
+            # The commit on main that carries the stage. Only its shape is checked
+            # here: resolving it would need the git history, which a shallow CI
+            # checkout does not have.
+            self.assertRegex(task['merged_sha'], r'^[0-9a-f]{40}$')
         self.assertLessEqual(set(self.non_campaign_by_key()), set(self.reports))
 
     def test_accept_m16_a_fu4_the_reader_covers_the_whole_family(self):
@@ -915,11 +919,140 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
                                   identity='implementer: nobody; reviewer: nobody')
             self.assertTrue(review_problems(self.snapshots, harnesses, drifted)[0], key)
 
+    # -- F14-D.7-SNAPSHOT (#578): a review recorded after its merge event -----
+
+    def test_accept_f14_d_7_is_no_longer_an_advisory(self):
+        """The snapshot-backed rules must cover F14-D.7, whose report already named both agents.
+
+        The report itself was honest from the start; what was missing was the Rally
+        review facts, and an entry that is missing cannot fail anything, so this pins
+        the stage as resolved instead of relying on an advisory note having gone away.
+        """
+        key = 'F14-D.7'
+        problems, unrecorded = review_problems(self.snapshots, self.harnesses, self.reports)
+        self.assertEqual(problems, [])
+        self.assertIn(key, self.reports)
+        self.assertNotIn(key, unrecorded, f'{key} is still an advisory')
+        recorded = self.non_campaign_by_key()[key]
+        self.assertEqual(recorded['rally_task'], 490)
+        self.assertEqual(recorded['evidence_report'], f'docs/findings/evidence/{key}.json')
+        identity = self.reports[key]['review']['identity']
+        for role in ('implementer', 'reviewer'):
+            self.assertIn(recorded[role]['actor'], identity, role)
+        # One instance did both, so the report has to say the review is not independent;
+        # the snapshot records the spelling the report uses next to Rally's own actor
+        # string, which is the same instance.
+        self.assertEqual(recorded['implementer']['actor'], recorded['reviewer']['actor'])
+        self.assertEqual(recorded['implementer']['rally_actor'], 'bunny-alpha-2/bunny-alpha-2')
+        self.assertEqual(recorded['reviewer']['rally_actor'], recorded['implementer']['rally_actor'])
+        self.assertIn('not independent', identity.lower())
+        # A landing-queue merge is a system event; the reviewer approved it.
+        self.assertEqual(recorded['reviewer']['merge_event']['type'], 'task.merged')
+        self.assertEqual(recorded['reviewer']['merge_event']['actor'], 'rally')
+        self.assertEqual(recorded['reviewer']['approval_event']['type'], 'task.approved')
+        self.assertEqual(recorded['reviewer']['approval_event']['actor'],
+                         recorded['reviewer']['rally_actor'])
+        approval, merge = recorded['reviewer']['approval_event'], recorded['reviewer']['merge_event']
+        self.assertLessEqual(approval['at'], merge['at'])
+
+    def test_accept_f14_d_7_detects_drift(self):
+        """Dropping the entry, the reviewer's name or the independence claim must fail."""
+        key = 'F14-D.7'
+        recorded = self.non_campaign_by_key()[key]
+
+        # The entry removed from the snapshot: the stage falls back to an advisory, which
+        # `test_accept_f14_d_7_is_no_longer_an_advisory` reports, and nothing else moves.
+        problems, unrecorded = review_problems(drop_task(self.snapshots, key),
+                                               self.harnesses, self.reports)
+        self.assertIn(key, unrecorded, 'removing the entry did not even downgrade the stage')
+        self.assertEqual(problems, [])
+
+        # The entry kept but its reviewer unnamed: the snapshot stops naming one.
+        nameless = with_task(self.non_campaign, key, 'reviewer', {**recorded['reviewer'], 'actor': ''})
+        problems = review_problems(nameless, self.harnesses, self.reports)[0]
+        self.assertTrue(any('records no implementer or no reviewer' in problem for problem in problems),
+                        problems)
+
+        # The report stops naming the reviewer.
+        renamed = copy_reports(self.reports)
+        renamed[key]['review']['identity'] = renamed[key]['review']['identity'].replace(
+            recorded['reviewer']['actor'], 'agent-9')
+        problems = review_problems(self.snapshots, self.harnesses, renamed)[0]
+        self.assertTrue(any('does not name the reviewer' in problem for problem in problems), problems)
+
+        # The same instance on both sides, so the independence claim is load-bearing.
+        silent = copy_reports(self.reports)
+        silent[key]['review']['identity'] = re.sub(r'(?i)not independent', 'independent',
+                                                   silent[key]['review']['identity'])
+        self.assertTrue(any('does not say the review is not independent' in problem
+                            for problem in review_problems(self.snapshots, self.harnesses, silent)[0]),
+                        'a report that no longer says the review is not independent passed')
+
+        reverted = copy_reports(self.reports)
+        reverted[key]['review']['identity'] = reverted[key]['review']['identity'].replace(
+            recorded['reviewer']['actor'], 'none yet')
+        self.assertTrue(any("still says 'none yet'" in problem
+                            for problem in review_problems(self.snapshots, self.harnesses, reverted)[0]))
+
+        quiet = copy_reports(self.reports)
+        quiet[key]['review']['identity'] = re.sub(r'(?i)context|fresh', 'that review',
+                                                  quiet[key]['review']['identity'])
+        self.assertNotIn('context', quiet[key]['review']['identity'].lower())
+        self.assertNotIn('fresh', quiet[key]['review']['identity'].lower())
+        self.assertTrue(any("whether the reviewer's context was fresh" in problem
+                            for problem in review_problems(self.snapshots, self.harnesses, quiet)[0]))
+
+        drifted = dict(self.harnesses)
+        drifted[key] = dict(drifted[key], identity='implementer: nobody; reviewer: nobody')
+        self.assertTrue(any('writes a different `review.identity`' in problem
+                            for problem in review_problems(self.snapshots, drifted, self.reports)[0]))
+
+        awarded = copy_reports(self.reports)
+        awarded[key]['claim'] = 'checked'
+        self.assertTrue(any('nobody self-awards a level' in problem
+                            for problem in review_problems(self.snapshots, self.harnesses, awarded)[0]))
+
+    def test_accept_f14_d_7_the_merge_event_is_not_invented(self):
+        """The entry may only name a merge event this file already calls a review event.
+
+        An entry written before its merge event exists can only guess at one, so the
+        recorded event has to be one of this file's declared review events, timestamped
+        after the review claim it closes and after the implement claim it follows.
+        """
+        key = 'F14-D.7'
+        task = self.non_campaign_by_key()[key]
+        merge = task['reviewer']['merge_event']
+        self.assertIn(merge['type'], self.non_campaign['review_event_types'])
+        self.assertRegex(merge['at'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+        self.assertGreaterEqual(merge['at'], task['reviewer']['review_claim_started'])
+        self.assertLessEqual(task['implementer']['claim_started'], task['reviewer']['review_claim_started'])
+        self.assertLessEqual(task['reviewer']['review_claim_started'], merge['at'])
+
 
 def copy_reports(reports, **extra):
     copied = json.loads(json.dumps(reports))
     copied.update(json.loads(json.dumps(extra)))
     return copied
+
+
+def with_task(snapshot, key, role, value):
+    """One snapshot with `key`'s `role` record replaced, the other snapshots dropped.
+
+    Only what `review_problems` reads is passed back, so a mutation of one entry
+    cannot be masked by the rest of the file.
+    """
+    tasks = [{**task, role: value} if task['task_key'] == key else task
+             for task in snapshot['tasks']]
+    return [{'task': snapshot['task'], 'review_event_types': snapshot['review_event_types'],
+             'tasks': tasks}]
+
+
+def drop_task(snapshots, key):
+    """The same snapshots with `key`'s entry removed from whichever one recorded it."""
+    return [{'task': snapshot['task'],
+             'review_event_types': snapshot['review_event_types'],
+             'tasks': [task for task in snapshot['tasks'] if task['task_key'] != key]}
+            for snapshot in snapshots]
 
 
 def report(task_id, identity, claim='implemented'):

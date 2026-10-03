@@ -10,8 +10,19 @@
   "actor_meaning": "Rally actor strings are `<agent instance>/<session label>`. Two claims from the same actor string are the same agent instance, so the second is not independent of the first (owner ruling 2026-09-28, review policy).",
   "independent_is_derived": "The check derives independence from actor equality; this file records the actors and the event timestamps, not a verdict.",
   "every_merged_stage_has_a_review_claim": "Rally only merges a stage through complete_review or its landing queue, so every stage listed here has at least one review claim and a reviewer to name.",
-  "scope": "Only the stages whose committed `review.identity` was still a hand-over placeholder when this file was written. Every other committed report is either already honest or names no reviewer at all without carrying a placeholder; the latter are filed as follow-up #484 rather than rewritten here.",
+  "scope": "Only the stages whose committed `review.identity` was still a hand-over placeholder when this file was written. Every other committed report is either already honest or names no reviewer at all without carrying a placeholder; the latter are filed as follow-up #484 rather than rewritten here. F14-D.7 was added to this file later, under F14-D.7-SNAPSHOT (#578): its report already named the implementer and the reviewer honestly but was written before any snapshot covered it, so the snapshot-backed rules were not enforced for it; see `entries_added_after_writing`.",
+  "actor_spelling": "The check matches the recorded `actor` verbatim against the committed report's `review.identity`, so `actor` holds the spelling the report itself uses. Every entry this file's author wrote spells Rally's `<agent instance>/<session label>` actor string out in its report, so there `actor` is that whole string. F14-D.7's report spells the agent as `openrouter/stealth-space-bunny-alpha (bunny-alpha-2, ...)`, so its `actor` is the agent-instance name `bunny-alpha-2` and its `rally_actor` holds Rally's verbatim actor string. Both spellings name the same instance and the same session, and nothing else in the check reads the spelling: the equality that derives independence compares the two recorded actors, so it is unaffected.",
   "report_written_by_meaning": "Derived from the report's own `created_at` against the claim windows in the Rally log: a `created_at` inside a review claim means the reviewer regenerated the report, one inside the implement claim means the committed copy is the implementer's. `report_regenerated_on_reviewed_commit` is `true` only when the reviewer's run wrote the copy that reached `main`.",
+  "entries_added_after_writing": [
+    {
+      "task_key": "F14-D.7",
+      "rally_task": 490,
+      "added_under": "F14-D.7-SNAPSHOT (#578)",
+      "added_by": "bunny-alpha-2/bunny-alpha-2",
+      "read_at": "2026-10-03T08:52:00Z",
+      "note": "The review of #490 was done by the same agent instance that implemented it and the branch landed through Rally's landing queue, so its `task.merged` event is a system event rather than a reviewer action. The entry was therefore added only after that event really existed (2026-10-03T08:47:46Z); the reviewer of #490 declined to predict one. Read with the `rally` MCP server (get_activity for #490) from the activity log, not from the hand-over summaries."
+    }
+  ],
   "tasks": [
     {
       "task_key": "F02-B",
@@ -201,6 +212,31 @@
       },
       "report_written_by": "implementer",
       "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "F14-D.7",
+      "rally_task": 490,
+      "evidence_report": "docs/findings/evidence/F14-D.7.json",
+      "merged_sha": "e4f66156fa7b8be57d15b667cadb4f6c46756a94",
+      "implementer": {
+        "actor": "bunny-alpha-2",
+        "rally_actor": "bunny-alpha-2/bunny-alpha-2",
+        "model": "openrouter/stealth-space-bunny-alpha",
+        "claim_started": "2026-10-03T06:16:44Z",
+        "submitted": "2026-10-03T07:26:30Z"
+      },
+      "reviewer": {
+        "actor": "bunny-alpha-2",
+        "rally_actor": "bunny-alpha-2/bunny-alpha-2",
+        "model": "openrouter/stealth-space-bunny-alpha",
+        "review_claim_started": "2026-10-03T07:26:53Z",
+        "merge_event": {"type": "task.merged", "actor": "rally", "at": "2026-10-03T08:47:46Z"},
+        "approval_event": {"type": "task.approved", "actor": "bunny-alpha-2/bunny-alpha-2", "at": "2026-10-03T08:41:11Z"}
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true,
+      "self_review": "The implementer and the reviewer are the same agent instance and model, so this review is not independent evidence and the check requires the report to keep saying so; the reviewer of #490 recorded the same in its `complete_review` notes.",
+      "notes": "`merge_event` is a system event: the reviewer approved the stage at `approval_event` and Rally's landing queue rebased the branch onto main and fast-forwarded main to `merged_sha`, so the copy of the report on main is the one the reviewer's own run wrote (`created_at` 2026-10-03T08:32:27Z, inside the review claim). See `actor_spelling` for why `actor` is the agent-instance name rather than Rally's `<instance>/<session>` string."
     }
   ]
 }
