@@ -33,6 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cs_app::objectives::{RetailObjectiveCensus, survey_retail_objective_records};
 use cs_assets::install::{content_fingerprint, discover, fingerprint};
+use cs_content::objectives::BranchEffectKind;
 
 /// Every acceptance test the report must see pass.
 const ACCEPTANCE_PREFIX: &str = "accept_f39_e2_";
@@ -218,6 +219,26 @@ fn evidence_report_f39_e2_writes_the_acceptance_report() {
             )
         })
         .collect();
+    // The declared order of every measured pair of effects, both directions, so
+    // the report carries the measurement that keeps the field order from being
+    // read as a precedence rule.
+    let mut declared_orders: Vec<String> = Vec::new();
+    for first in BranchEffectKind::all() {
+        for second in BranchEffectKind::all() {
+            if first >= second {
+                continue;
+            }
+            let (forward, back) = census.declared_order(first, second);
+            declared_orders.push(format!(
+                "{{\"first\": {}, \"second\": {}, \"first_before_second\": {}, \
+                 \"second_before_first\": {}}}",
+                jstr(first.label()),
+                jstr(second.label()),
+                forward,
+                back
+            ));
+        }
+    }
     let census_path = evidence_dir.join("block-precedence-census.json");
     fs::write(
         &census_path,
@@ -227,7 +248,7 @@ fn evidence_report_f39_e2_writes_the_acceptance_report() {
              \"optional_sites\": {}, \"outcome_sites\": {}, \"multi_effect_blocks\": {}, \
              \"disjoint_multi_effect_blocks\": {}, \"conflicting_blocks\": {}, \
              \"needs_unmeasured_order\": {}, \"vocabulary\": [{}], \"conflict_combinations\": [{}], \
-             \"rows\": [{}]}}\n",
+             \"declared_orders\": [{}], \"rows\": [{}]}}\n",
             jstr(&install_sha256),
             jstr(&candidate_tree),
             census.len(),
@@ -243,6 +264,7 @@ fn evidence_report_f39_e2_writes_the_acceptance_report() {
             census.needs_unmeasured_order(),
             vocabulary.join(", "),
             combinations.join(", "),
+            declared_orders.join(", "),
             rows.join(", "),
         ),
     )

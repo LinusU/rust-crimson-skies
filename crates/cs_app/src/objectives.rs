@@ -1618,6 +1618,20 @@ pub fn measure_block_precedence(document: &ZrdValue) -> MeasuredBranchPrecedence
             continue;
         }
         measured.multi_effect_blocks += 1;
+        // The block's own declared order, counted for every pair of *different*
+        // effects: the measurement that shows the field order is authored per
+        // block rather than imposed by the format.
+        for (index, site) in sites.iter().enumerate() {
+            for later in sites.iter().skip(index + 1) {
+                if site.kind == later.kind {
+                    continue;
+                }
+                *measured
+                    .authored_orders
+                    .entry((site.kind, later.kind))
+                    .or_insert(0) += 1;
+            }
+        }
         // Two effects can only collide if their target sets overlap; the
         // disjoint blocks are measured as such so the isolated conditions below
         // can never be read as "every multi-effect block conflicts".
@@ -2068,6 +2082,24 @@ impl RetailObjectiveCensus {
             *counts.entry(conflict.conflict.combination()).or_insert(0) += 1;
         }
         counts.into_iter().collect()
+    }
+
+    /// How many blocks corpus-wide spell `first` before `second`, and how many
+    /// spell it the other way round.
+    ///
+    /// The corpus-wide declared-order measurement. Both counts positive means the
+    /// corpus imposes no order on the pair — see
+    /// [`MeasuredBranchPrecedence::declared_order`].
+    #[must_use]
+    pub fn declared_order(
+        &self,
+        first: cs_content::objectives::BranchEffectKind,
+        second: cs_content::objectives::BranchEffectKind,
+    ) -> (u32, u32) {
+        self.rows.iter().fold((0, 0), |(forward, back), row| {
+            let (row_forward, row_back) = row.branch_precedence.declared_order(first, second);
+            (forward + row_forward, back + row_back)
+        })
     }
 }
 

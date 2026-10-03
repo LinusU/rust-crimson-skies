@@ -59,6 +59,7 @@
 //! (the `.zrd` bytes are built here, tag by tag), never original game data. The
 //! retail test reads the installation read-only and asserts measurements.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use cs_app::objectives::{
@@ -295,6 +296,25 @@ fn accept_f39_e2_effects_on_disjoint_objectives_raise_no_ordering_question() {
          would decide nothing"
     );
     assert!(measured.conflict_combinations().is_empty());
+
+    // The declared order is counted per pair of different effects, and it is the
+    // corpus's own order — never a ranking.
+    assert_eq!(
+        measured.declared_order(BranchEffectKind::Wake, BranchEffectKind::Nap),
+        (1, 0),
+        "OBJECTIVE1 spells the wake site before the nap site, and nothing ranks \
+         them"
+    );
+    assert_eq!(
+        measured.declared_order(BranchEffectKind::Nap, BranchEffectKind::Kill),
+        (1, 0),
+        "OBJECTIVE1 spells the nap site before the kill site"
+    );
+    assert_eq!(
+        measured.declared_order(BranchEffectKind::Wake, BranchEffectKind::Kill),
+        (2, 0),
+        "both multi-effect blocks spell the wake site first"
+    );
 }
 
 #[test]
@@ -336,6 +356,16 @@ fn accept_f39_e2_the_authored_order_is_measured_not_ranked() {
     assert_eq!(
         forward.conflict_combinations(),
         reversed.conflict_combinations()
+    );
+    // The *declared* order does follow the record, which is why it is recorded
+    // and never applied: it is data about the block, not a rule about the game.
+    assert_eq!(
+        forward.declared_order(BranchEffectKind::Wake, BranchEffectKind::Nap),
+        (1, 0)
+    );
+    assert_eq!(
+        reversed.declared_order(BranchEffectKind::Wake, BranchEffectKind::Nap),
+        (0, 1)
     );
     assert_eq!(
         forward.effect_blocks, reversed.effect_blocks,
@@ -428,6 +458,7 @@ fn accept_f39_e2_a_measured_record_carries_the_per_block_reading() {
         widest_site: 3,
         self_referencing_sites: 0,
         dangling_sites: 0,
+        authored_orders: BTreeMap::from([((BranchEffectKind::Wake, BranchEffectKind::Nap), 1)]),
         conflicts: vec![MeasuredBranchConflict {
             block: "OBJECTIVE3".to_owned(),
             target: 7,
@@ -486,6 +517,13 @@ fn accept_f39_e2_a_measured_record_carries_the_per_block_reading() {
         "synthetic/f39e2.block-precedence OBJECTIVE3"
     );
     assert_eq!(conflicts[0].conflict.combination(), "WAKE+NAP");
+    assert_eq!(
+        measured
+            .branch_precedence
+            .declared_order(BranchEffectKind::Wake, BranchEffectKind::Nap),
+        (1, 0),
+        "the record's declared order travels with the reading as data"
+    );
 
     // Attaching the reading does not make the record playable: F39-E2 measured
     // *where* the original is ambiguous, never what it does, so the support gate
@@ -602,6 +640,23 @@ fn accept_f39_e2_retail_objective_blocks_declare_one_unordered_completion_effect
         "every multi-effect block is either disjoint or a conflict, and the \
          census says which"
     );
+
+    // The field order is **authored**, not a property of the format: measured
+    // over the whole corpus, every pair of effects appears in both directions. A
+    // reader that took the first declared effect as the winner would therefore be
+    // reading a per-block authoring choice, and the corpus says so.
+    for (first, second) in [
+        (BranchEffectKind::Wake, BranchEffectKind::Nap),
+        (BranchEffectKind::Nap, BranchEffectKind::Kill),
+        (BranchEffectKind::Wake, BranchEffectKind::Kill),
+    ] {
+        let (forward, back) = census.declared_order(first, second);
+        assert!(
+            forward > 0 && back > 0,
+            "{first}/{second} is declared in one direction only ({forward} / {back}), \
+             so the field order could be read as a format invariant after all"
+        );
+    }
 
     // The isolated condition. Exactly one, in one campaign mission, naming one
     // objective, with both sites kept in the record's own order.

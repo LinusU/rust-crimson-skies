@@ -851,6 +851,16 @@ pub struct MeasuredBranchPrecedence {
     pub dangling_sites: u32,
     /// The largest target list any site carries (measured `12`).
     pub widest_site: u32,
+    /// How many multi-effect blocks spell one effect **before** another, as the
+    /// ordered pairs of [`BranchEffectKind`], aggregated over the record.
+    ///
+    /// This is the corpus's *declared* order, and it is the measurement that
+    /// keeps the reading honest: measured over the installation, **both**
+    /// directions of every pair occur, so the order a block spells its effects in
+    /// is authored per block and is not a property of the format. Nothing may
+    /// rank two effects by it — a format order would carry no engine intent
+    /// either, and this order varies.
+    pub authored_orders: BTreeMap<(BranchEffectKind, BranchEffectKind), u32>,
     /// The blocks where two effects *do* name a common objective, with the
     /// shared objective and the authored order of the sites.
     pub conflicts: Vec<MeasuredBranchConflict>,
@@ -869,7 +879,6 @@ impl MeasuredBranchPrecedence {
 
     /// Whether every measured completion-effect target names another block of the
     /// same record.
-    ///
     /// The measured closure fact, and the reason the engine needs no external
     /// naming space for a branch target: an objective number indexes the record's
     /// own numbered blocks. A `false` is a real reading, not a defect to be
@@ -887,6 +896,26 @@ impl MeasuredBranchPrecedence {
     #[must_use]
     pub fn declares_multi_effect_blocks(&self) -> bool {
         self.multi_effect_blocks > 0
+    }
+
+    /// How many blocks spell `first` before `second`, and how many spell it the
+    /// other way round.
+    ///
+    /// The declared-order measurement in queryable form. `first > 0 && second > 0`
+    /// means the corpus does **not** impose an order on the pair, which is what
+    /// rules reading the field order as the original's precedence.
+    #[must_use]
+    pub fn declared_order(&self, first: BranchEffectKind, second: BranchEffectKind) -> (u32, u32) {
+        (
+            self.authored_orders
+                .get(&(first, second))
+                .copied()
+                .unwrap_or(0),
+            self.authored_orders
+                .get(&(second, first))
+                .copied()
+                .unwrap_or(0),
+        )
     }
 
     /// The measured completion-effect combination of every conflict, sorted, with
