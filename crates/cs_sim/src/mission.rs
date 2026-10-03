@@ -1,14 +1,14 @@
-//! The simulation-side mission session (F37-A).
+//! The simulation-side mission session (F37-A, F37-B).
 //!
 //! Owns one launched mission: refuses to launch a program that fails
 //! validation (an unsupported instruction means the mission is
 //! [`TerminalState::Unsupported`], with no progression and no reward) and
-//! drives [`MissionState`] one integer tick at a time. Host effect
-//! application is F37-C.
+//! drives [`MissionState`] one integer tick at a time under its
+//! [`WorkLimits`]. Host effect application is F37-C.
 
 use cs_script::ir::{MissionProgram, ValidatedProgram, ValidationError};
 use cs_script::runtime::{
-    MissionFacts, MissionState, SessionGeneration, TerminalState, TickError, TickResult,
+    MissionFacts, MissionState, SessionGeneration, TerminalState, TickError, TickResult, WorkLimits,
 };
 use cs_types::Tick;
 
@@ -53,6 +53,12 @@ impl MissionSession {
         self.state.step(&self.program, facts, tick)
     }
 
+    /// Overrides the evaluator's work/queue bounds; the default is
+    /// [`WorkLimits::default`].
+    pub fn set_limits(&mut self, limits: WorkLimits) {
+        self.state.set_limits(limits);
+    }
+
     pub fn state(&self) -> &MissionState {
         &self.state
     }
@@ -92,5 +98,22 @@ mod tests {
         let r = s.step(&MissionFacts::default(), Tick(1)).unwrap();
         assert_eq!(r.terminal, TerminalState::Succeeded);
         assert_eq!(s.state().terminal(), TerminalState::Succeeded);
+    }
+
+    #[test]
+    fn accept_f37_b_session_self_schedule_stops_on_budget_not_hang() {
+        use cs_script::runtime::StopReason;
+        // A zero-delay `Reschedule` re-queues its list forever; the session's
+        // work budget is what bounds it.
+        let looping = program(Action::Reschedule { delay_ticks: 0 });
+        let mut s = MissionSession::launch(looping, SessionGeneration(1)).unwrap();
+        s.set_limits(WorkLimits {
+            max_work_per_tick: 8,
+            ..WorkLimits::default()
+        });
+        let r = s.step(&MissionFacts::default(), Tick(1)).unwrap();
+        assert!(matches!(r.stop, Some(StopReason::WorkBudget { .. })));
+        assert_eq!(s.state().terminal(), TerminalState::Running);
+        assert_eq!(s.state().queued_items(), 1);
     }
 }

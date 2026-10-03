@@ -4,9 +4,10 @@
 //! This crate must never depend on Bevy or Avian.
 //!
 //! [`ir`] is the F37-A typed mission IR and its pre-launch validation;
-//! [`runtime`] is the mutable state and stable event ordering. The bounded
-//! evaluator, timers and snapshots are F37-B/F37-C. [`bindings`] is the F38-A
-//! host-binding registry that lowers an adapter's raw calls into the IR.
+//! [`runtime`] is the mutable state, stable event ordering, the bounded
+//! evaluator and the deferred-work queue (F37-B). Snapshots and host effect
+//! application are F37-C. [`bindings`] is the F38-A host-binding registry
+//! that lowers an adapter's raw calls into the IR.
 
 pub mod bindings;
 pub mod ir;

@@ -22,10 +22,14 @@ use cs_types::content::{ContentId, ContentKind};
 /// The IR version this crate understands.
 pub const IR_VERSION: u32 = 1;
 /// Most actions one objective may carry; bounds work per tick (contract:
-/// "control flow is explicit and bounded").
+/// "control flow is explicit and bounded"). The same bound covers the action
+/// list of one deferred work item ([`Action::Schedule`]).
 pub const MAX_ACTIONS_PER_OBJECTIVE: usize = 64;
 /// Deepest condition nesting accepted.
 pub const MAX_CONDITION_DEPTH: usize = 16;
+/// Deepest `Schedule` action-list nesting accepted (contract: "recursion /
+/// stack limits").
+pub const MAX_ACTION_NESTING: usize = 16;
 
 /// Stable identity of a mission-scoped actor. Never an entity index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -167,18 +171,44 @@ pub enum Phase {
     Host,
 }
 
-/// An ordered action run when an objective's condition first becomes true.
+/// An ordered action run when an objective's condition first becomes true, or
+/// as part of a deferred work item ([`Action::Schedule`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     SetVariable {
         variable: SymbolId,
         value: Value,
     },
+    /// Writes the variable with the next draw of the mission's explicit RNG
+    /// stream, uniform over the inclusive range `[min, max]` (contract:
+    /// "explicit RNG"; determinism comes from the seeded stream, never from
+    /// ambient entropy).
+    Draw {
+        variable: SymbolId,
+        min: i32,
+        max: i32,
+    },
     /// Request the mission's terminal outcome.
     Finish(Outcome),
     /// A reward intent; the host applies it, the runtime emits it once.
     GrantReward {
         reward: ContentId,
+    },
+    /// Enqueues `actions` as one deferred work item, eligible on the tick
+    /// `delay_ticks` after the current one. `delay_ticks == 0` appends to
+    /// this tick's work queue, so it still runs this tick — after everything
+    /// already queued (non-negotiable behavior 2: no reentrancy).
+    Schedule {
+        delay_ticks: u64,
+        actions: Vec<Action>,
+    },
+    /// Re-queues the action list containing this action — the objective's
+    /// list when reached from an objective, or the scheduled item's list when
+    /// reached from a deferred item — eligible `delay_ticks` from now. A
+    /// zero-delay `Reschedule` is how a program schedules *itself*; the
+    /// per-tick work budget is what bounds it.
+    Reschedule {
+        delay_ticks: u64,
     },
     /// An instruction or native call that could not be decoded.
     Unknown {
@@ -190,7 +220,12 @@ impl Action {
     /// The phase in which this action resolves.
     pub fn phase(&self) -> Phase {
         match self {
-            Self::SetVariable { .. } => Phase::State,
+            // `Draw` writes a variable and `Schedule`/`Reschedule` mutate the
+            // pending queue; both are runtime state, resolved in place.
+            Self::SetVariable { .. }
+            | Self::Draw { .. }
+            | Self::Schedule { .. }
+            | Self::Reschedule { .. } => Phase::State,
             Self::Finish(_) => Phase::Terminal,
             Self::GrantReward { .. } | Self::Unknown { .. } => Phase::Host,
         }
@@ -283,6 +318,14 @@ pub enum ValidationError {
     ConditionTooDeep {
         at: ProgramLocator,
     },
+    /// A `Schedule` action list nested deeper than [`MAX_ACTION_NESTING`].
+    ActionsTooDeep {
+        at: ProgramLocator,
+    },
+    /// A `Draw` whose `min` exceeds its `max`.
+    InvalidRange {
+        at: ProgramLocator,
+    },
     TooManyActions {
         at: ProgramLocator,
         count: usize,
@@ -324,6 +367,13 @@ impl fmt::Display for ValidationError {
             Self::ConditionTooDeep { at } => {
                 write!(f, "{at}: condition deeper than {MAX_CONDITION_DEPTH}")
             }
+            Self::ActionsTooDeep { at } => {
+                write!(
+                    f,
+                    "{at}: scheduled actions deeper than {MAX_ACTION_NESTING}"
+                )
+            }
+            Self::InvalidRange { at } => write!(f, "{at}: draw min exceeds max"),
             Self::TooManyActions { at, count } => {
                 write!(
                     f,
@@ -428,15 +478,49 @@ impl Ctx<'_> {
         }
     }
 
-    fn action(&self, a: &Action, index: usize) -> Result<(), ValidationError> {
+    fn action(&self, a: &Action, index: usize, depth: usize) -> Result<(), ValidationError> {
         let label = format!("action {index}");
         let at = || self.at(&[label.as_str()]);
+        if depth > MAX_ACTION_NESTING {
+            return Err(ValidationError::ActionsTooDeep { at: at() });
+        }
         match a {
-            Action::Finish(_) | Action::GrantReward { .. } => Ok(()),
+            Action::Finish(_) | Action::GrantReward { .. } | Action::Reschedule { .. } => Ok(()),
             Action::Unknown { instruction } => Err(ValidationError::UnsupportedInstruction {
                 at: at(),
                 instruction: instruction.clone(),
             }),
+            Action::Schedule { actions, .. } => {
+                if actions.len() > MAX_ACTIONS_PER_OBJECTIVE {
+                    return Err(ValidationError::TooManyActions {
+                        at: at(),
+                        count: actions.len(),
+                    });
+                }
+                for (i, nested) in actions.iter().enumerate() {
+                    self.action(nested, i, depth + 1)?;
+                }
+                Ok(())
+            }
+            Action::Draw { variable, min, max } => {
+                let Some(expected) = self.variable_type(*variable) else {
+                    return Err(ValidationError::UnknownVariable {
+                        at: at(),
+                        symbol: *variable,
+                    });
+                };
+                if expected != ValueType::Int {
+                    return Err(ValidationError::TypeMismatch {
+                        at: at(),
+                        expected: ValueType::Int,
+                        found: expected,
+                    });
+                }
+                if min > max {
+                    return Err(ValidationError::InvalidRange { at: at() });
+                }
+                Ok(())
+            }
             Action::SetVariable { variable, value } => {
                 let Some(expected) = self.variable_type(*variable) else {
                     return Err(ValidationError::UnknownVariable {
@@ -523,7 +607,7 @@ impl MissionProgram {
             }
             ctx.condition(&o.condition, 0, &["condition"])?;
             for (i, a) in o.actions.iter().enumerate() {
-                ctx.action(a, i)?;
+                ctx.action(a, i, 0)?;
             }
         }
         Ok(ValidatedProgram(self))
