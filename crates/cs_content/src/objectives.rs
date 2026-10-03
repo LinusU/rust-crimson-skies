@@ -113,6 +113,20 @@
 //!   both are refused at declaration, by name, with the rule stated. The
 //!   order-independent *completion* rule lives with the state table in
 //!   `cs_sim::objectives::state`.
+//!
+//! # F39-E2: precedence between completion effects in one block
+//!
+//! The original declares, inside one `OBJECTIVE<N>` block, what happens to
+//! *other* objectives when this one completes: [`BranchEffectKind`] is the
+//! measured vocabulary of those keys, and [`MeasuredBranchPrecedence`] is what a
+//! census measures about them — how many blocks declare more than one effect,
+//! whether their target sets overlap, and the isolated conditions where two
+//! effects name the same objective. The measured answer is that the corpus asks
+//! the ordering question exactly once in 1338 blocks and answers it nowhere, so
+//! [`UNMEASURED_BLOCK_PRECEDENCE`] is the verdict and
+//! [`MeasuredObjectiveRecord`] carries the reading. The authored field order is
+//! recorded as the only ordering the bytes carry and is measured *not* to be a
+//! format invariant, so nothing may rank effects by it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -221,6 +235,19 @@ pub enum DeclaredCompletion {
 /// unmeasured; a measured rule becomes a new variant, and a program whose
 /// precedence is unrecovered carries [`Resolved::Unknown`] so the lowering
 /// refuses it by name instead of picking one.
+///
+/// # The two precedence questions are not one (F39-E2)
+///
+/// This precedence resolves two **terminal outcome requests** — success,
+/// extraction, failure — colliding on one tick. It does **not** resolve two
+/// completion effects on one objective, which is a different question about a
+/// different record: F39-E2 measured that corpus and found the original's answer
+/// for it nowhere in the data (one instance in 1338 blocks, unresolved; see
+/// [`MeasuredBranchPrecedence`] and [`UNMEASURED_BLOCK_PRECEDENCE`]). Nothing in
+/// this module ranks `WAKE` against `NAP` against `KILL`, and adding a ranking
+/// here would be the invented rule F39-E2 was asked to measure instead of
+/// assume. The original has no measured precedence for either question, so this
+/// variant stays designed and stays labelled synthetic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DeclaredPrecedence {
     /// `Failure` > `Extraction` > `Success`. Designed; synthetic only.
@@ -468,7 +495,10 @@ pub struct DeclaredSpawnGroup {
 /// the mission-language instruction table F13-C/F38 own — becomes playable then,
 /// under its own support variant. Nothing constructs that variant today and this
 /// stage does not invent it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Eq` is not derived: it carries a [`MeasuredObjectiveRecord`], which F39-E2's
+/// per-block reading makes a float-carrying value.
+#[derive(Clone, Debug, PartialEq)]
 pub enum DeclaredSupport {
     /// Newly authored: a synthetic fixture or designed engine rule. Runnable,
     /// and never an original-fidelity claim.
@@ -507,13 +537,17 @@ impl DeclaredSupport {
 
 /// What F39-D measured of one mission's original objective record.
 ///
-/// A **census of declaration sites**, deliberately not a rule: each number says
+/// A census of declaration sites**, deliberately not a rule: each number says
 /// how many times a measured key occurs inside that mission's numbered
 /// `OBJECTIVE<N>` blocks, never what one occurrence does. Nothing here may be
 /// read as a decoded behaviour, and the counts are exactly why a designed
 /// progression must not stand in for the original (see
 /// [`DeclaredSupport::Original`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Eq` is deliberately **not** derived: F39-E2's per-block reading carries the
+/// measured numbers beside the completion-effect targets, and a float is not
+/// `Eq`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct MeasuredObjectiveRecord {
     /// The reader archive the record is a member of, as the installation spells
     /// it (`ZBD/<GROUP>/<MISSION>/zrdr.zbd`).
@@ -541,6 +575,14 @@ pub struct MeasuredObjectiveRecord {
     /// Occurrences of [`FAILURE_KEY_VOCABULARY`] keys across those blocks: the
     /// measured sites where an outcome is declared.
     pub failure_sites: u32,
+    /// What F39-E2 measured of the **order** between two completion effects in
+    /// one block: which blocks declare more than one effect, whether their
+    /// targets overlap, and the isolated conditions where they do.
+    ///
+    /// Not optional: a record that carries no per-block reading has not measured
+    /// the one thing F39-E2 was asked to measure, and a default of "no
+    /// conflict" would assert that the original's corpus is unambiguous.
+    pub branch_precedence: MeasuredBranchPrecedence,
 }
 
 /// The measured key names an objective block uses to say what happens to
@@ -566,6 +608,43 @@ pub const BRANCH_KEY_VOCABULARY: [&str; 5] = [
     "TICK_DEPENDS_ON_OBJ",
 ];
 
+/// The measured **completion-effect** keys: the part of
+/// [`BRANCH_KEY_VOCABULARY`] that declares what happens to *another* objective
+/// when this one completes. F39-E2 separated this family from
+/// [`BRANCH_ORDER_KEY`] because they answer different questions: an effect names
+/// a target, while an order key names an objective this one is sequenced behind.
+///
+/// Measured over the owner's installation (F39-E2), reusing F39-D's census of the
+/// same 53 mission readers and 1338 blocks: 412 `WAKE`, 417 `NAP`, 225 `KILL` and
+/// 2 `WAKEUP` sites, 1056 in all. The four spellings are **measured**; what any
+/// of them does is an **inference from the spelling** and stays one.
+pub const BRANCH_EFFECT_KEY_VOCABULARY: [&str; 4] = [
+    "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
+    "NAP_OBJECTIVE_WHEN_I_COMPLETE",
+    "KILL_OBJECTIVE_WHEN_I_COMPLETE",
+    "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE",
+];
+
+/// The measured **order-dependency** key, the rest of
+/// [`BRANCH_KEY_VOCABULARY`]: measured 35 times, always with a single integer
+/// naming another objective of the same mission. It is not a completion effect
+/// and never counts as one.
+pub const BRANCH_ORDER_KEY: &str = "TICK_DEPENDS_ON_OBJ";
+
+/// The measured completion-effect key that names **several** objectives in one
+/// site, beside the NAP key that carries a second number.
+///
+/// Measured (F39-E2): `WAKE` and `KILL` sites hold a list of one to twelve
+/// integers and nothing else; every one of the 417 `NAP` sites holds exactly one
+/// integer followed by exactly one float. **What the float is** — a duration, a
+/// weight, a threshold — is **unmeasured**: no original executable has been run
+/// and the program behind the record is not decoded. It is therefore carried as
+/// an unnamed number, never as a unit.
+pub const BRANCH_EFFECT_MULTI_TARGET_KEYS: [&str; 2] = [
+    "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
+    "KILL_OBJECTIVE_WHEN_I_COMPLETE",
+];
+
 /// The measured prefix of an *inactive stage* key inside an objective block.
 ///
 /// Measured: `INACTIVE1` through `INACTIVE18`, one per numbered stage. That a
@@ -580,6 +659,258 @@ pub const OBJECTIVE_INACTIVE_COUNT_KEY: &str = "INACTIVE_COMPLETION_COUNT";
 /// The measured key an objective block carries to begin dormant. Measured in
 /// 1096 of the 1338 blocks.
 pub const OBJECTIVE_DORMANT_KEY: &str = "BEGIN_DORMANT";
+
+/// One measured **completion effect**: a key an objective block carries to
+/// declare what happens to *another* objective when this one completes.
+///
+/// The four spellings are measured (see [`BRANCH_EFFECT_KEY_VOCABULARY`]) and
+/// this enum is exactly that set — a closed vocabulary, never an open one. It
+/// deliberately keeps `WAKEUP` apart from `WAKE`: the original writes both
+/// spellings in the same corpus (`c1b/m03` `OBJECTIVE13` carries one of each), so
+/// normalising one into the other would assert a difference or an identity the
+/// data does not show. What each effect *does* is an inference from its spelling
+/// and is labelled as one everywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BranchEffectKind {
+    /// `WAKE_OBJECTIVE_WHEN_I_COMPLETE`: 412 measured sites.
+    Wake,
+    /// `NAP_OBJECTIVE_WHEN_I_COMPLETE`: 417 measured sites, each carrying a
+    /// second number whose meaning is unmeasured.
+    Nap,
+    /// `KILL_OBJECTIVE_WHEN_I_COMPLETE`: 225 measured sites.
+    Kill,
+    /// `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`: 2 measured sites.
+    Wakeup,
+}
+
+impl BranchEffectKind {
+    /// The measured key this effect is spelled as.
+    ///
+    /// The inverse of [`Self::from_measured_key`] for every variant, so the
+    /// vocabulary and this enum cannot drift apart.
+    #[must_use]
+    pub const fn measured_key(self) -> &'static str {
+        match self {
+            Self::Wake => "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
+            Self::Nap => "NAP_OBJECTIVE_WHEN_I_COMPLETE",
+            Self::Kill => "KILL_OBJECTIVE_WHEN_I_COMPLETE",
+            Self::Wakeup => "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE",
+        }
+    }
+
+    /// The short stable label used in diagnostics, evidence and conflict keys
+    /// (`"WAKE"`, `"NAP"`, `"KILL"`, `"WAKEUP"`).
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Wake => "WAKE",
+            Self::Nap => "NAP",
+            Self::Kill => "KILL",
+            Self::Wakeup => "WAKEUP",
+        }
+    }
+
+    /// Whether `key` is one of the four measured completion-effect spellings.
+    ///
+    /// Only those four. `TICK_DEPENDS_ON_OBJ` is a measured order dependency and
+    /// returns `None` here, so an order key can never be counted as an effect or
+    /// make two "effects" that never collide.
+    #[must_use]
+    pub fn from_measured_key(key: &str) -> Option<Self> {
+        BRANCH_EFFECT_KEY_VOCABULARY
+            .iter()
+            .find(|measured| **measured == key)
+            .and_then(|measured| {
+                [Self::Wake, Self::Nap, Self::Kill, Self::Wakeup]
+                    .into_iter()
+                    .find(|kind| kind.measured_key() == *measured)
+            })
+    }
+
+    /// Every measured effect, in [`Self`] order.
+    ///
+    /// The enumeration a consumer walks instead of the key list, so a new
+    /// variant cannot be added without every consumer seeing it.
+    #[must_use]
+    pub const fn all() -> [Self; 4] {
+        [Self::Wake, Self::Nap, Self::Kill, Self::Wakeup]
+    }
+}
+
+impl fmt::Display for BranchEffectKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// One measured completion-effect site: a measured key inside one
+/// `OBJECTIVE<N>` block, the objective numbers it names and the numbers that are
+/// **not** objective numbers.
+///
+/// A **site**, not a rule. `targets` are the measured integers of the key's
+/// value list and `arguments` the measured floats beside them; whether a target
+/// is an objective *number* is F39-E2's inference from the corpus (all 1706
+/// measured targets name a block the same mission declares, and none names its
+/// own block), and the argument list is deliberately unnamed because the
+/// original does not say what it measures.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredBranchSite {
+    /// Which measured completion effect this site declares.
+    pub kind: BranchEffectKind,
+    /// The measured integers of the value, in the order the record spells them.
+    pub targets: Vec<u32>,
+    /// The measured non-integer numbers of the value, in order.
+    pub arguments: Vec<f32>,
+}
+
+impl MeasuredBranchSite {
+    /// Whether this site names `target`.
+    #[must_use]
+    pub fn names(&self, target: u32) -> bool {
+        self.targets.contains(&target)
+    }
+}
+
+/// One block in which two measured completion effects name the **same**
+/// objective: the only shape in which "in which order do they take effect" has a
+/// answer, and the shape the corpus contains exactly once (F39-E2).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredBranchConflict {
+    /// The `OBJECTIVE<N>` block the conflict sits in, as the record spells it.
+    pub block: String,
+    /// The objective number the conflicting sites both name.
+    pub target: u32,
+    /// The conflicting sites, in the block's **authored field order** — the only
+    /// ordering the bytes carry, and measured to be authored per block rather
+    /// than fixed by the format (both orders of every pair occur in the corpus),
+    /// so it is recorded and never read as a precedence rule.
+    pub sites: Vec<MeasuredBranchSite>,
+}
+
+impl MeasuredBranchConflict {
+    /// The conflicting effects' short labels, in authored order.
+    #[must_use]
+    pub fn effect_labels(&self) -> Vec<&'static str> {
+        self.sites.iter().map(|site| site.kind.label()).collect()
+    }
+
+    /// The conflicting effects' measured keys, sorted, joined with `+`.
+    ///
+    /// A canonical combination key, so `NAP` before `WAKE` and `WAKE` before
+    /// `NAP` are counted as the same combination.
+    #[must_use]
+    pub fn combination(&self) -> String {
+        let mut kinds: Vec<BranchEffectKind> = self
+            .sites
+            .iter()
+            .map(|site| site.kind)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        kinds.sort_unstable();
+        kinds
+            .iter()
+            .map(|kind| kind.label())
+            .collect::<Vec<_>>()
+            .join("+")
+    }
+}
+
+/// What F39-E2 measured of one record's per-block completion-effect precedence.
+///
+/// A census of **declaration sites and their targets**, deliberately not a rule.
+/// The question `docs/contracts/SCRIPT-MISSION.md` demands be measured rather
+/// than assumed — *in which order do two completion effects on the same
+/// objective take effect* — is measured here as far as the data allows, and the
+/// answer is that the corpus gives it **one** instance and resolves **none** of
+/// it (see [`UNMEASURED_BLOCK_PRECEDENCE`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MeasuredBranchPrecedence {
+    /// How many numbered `OBJECTIVE<N>` blocks the record declares.
+    pub blocks: u32,
+    /// How many blocks declare at least one completion effect.
+    pub effect_blocks: u32,
+    /// How many completion-effect sites the record declares in all.
+    pub effect_sites: u32,
+    /// How many sites carry a number that is not an objective number.
+    pub argument_sites: u32,
+    /// How many blocks declare two or more **different** effects.
+    pub multi_effect_blocks: u32,
+    /// How many of those blocks name disjoint target sets, so no two of their
+    /// effects can act on the same objective and no ordering question arises.
+    pub disjoint_multi_effect_blocks: u32,
+    /// Objective numbers the completion-effect sites name in all, sites included.
+    pub targets: u32,
+    /// Sites whose target list names the site's **own** block.
+    pub self_referencing_sites: u32,
+    /// Sites naming an objective number the record does **not** declare.
+    ///
+    /// Measured zero over the owner's installation: a target is another objective
+    /// of the same mission, so the corpus needs no cross-record namespace the
+    /// engine would have to invent.
+    pub dangling_sites: u32,
+    /// The largest target list any site carries (measured `12`).
+    pub widest_site: u32,
+    /// The blocks where two effects *do* name a common objective, with the
+    /// shared objective and the authored order of the sites.
+    pub conflicts: Vec<MeasuredBranchConflict>,
+}
+
+impl MeasuredBranchPrecedence {
+    /// Whether the record needs an ordering rule between completion effects that
+    /// is not measured.
+    ///
+    /// The single place that answer is given, so no consumer decides it from the
+    /// counts instead of from the isolated conditions.
+    #[must_use]
+    pub fn needs_unmeasured_order(&self) -> bool {
+        !self.conflicts.is_empty()
+    }
+
+    /// Whether every measured completion-effect target names another block of the
+    /// same record.
+    ///
+    /// The measured closure fact, and the reason the engine needs no external
+    /// naming space for a branch target: an objective number indexes the record's
+    /// own numbered blocks. A `false` is a real reading, not a defect to be
+    /// papered over — it would mean a target the record does not declare.
+    #[must_use]
+    pub fn is_closed_over_its_record(&self) -> bool {
+        self.self_referencing_sites == 0 && self.dangling_sites == 0
+    }
+
+    /// Whether the record declares more than one effect for one event at all.
+    ///
+    /// Distinct from [`Self::needs_unmeasured_order`]: most multi-effect blocks
+    /// name disjoint targets and raise no ordering question whatever rule the
+    /// original uses.
+    #[must_use]
+    pub fn declares_multi_effect_blocks(&self) -> bool {
+        self.multi_effect_blocks > 0
+    }
+
+    /// The measured completion-effect combination of every conflict, sorted, with
+    /// how many conflicts carry it (`"KILL+NAP"`, `"WAKE+NAP"`, …).
+    #[must_use]
+    pub fn conflict_combinations(&self) -> Vec<(String, u32)> {
+        let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+        for conflict in &self.conflicts {
+            *counts.entry(conflict.combination()).or_insert(0) += 1;
+        }
+        counts.into_iter().collect()
+    }
+}
+
+/// Why the original's per-block completion-effect order stays unmeasured, stated
+/// once so the census, the record and the finding say the same thing.
+///
+/// It names the measured fact behind it: the corpus declares two or more effects
+/// on one objective in a single block exactly once across 1338 blocks, and the
+/// bytes cannot say which of the two the original applies.
+pub const UNMEASURED_BLOCK_PRECEDENCE: &str = "the record's completion-effect sites were measured per block, with their targets and \
+     the order the block spells them in, and the corpus declares two effects for one objective in exactly one of its \
+     blocks; which of them the original applies, and in which order, is unmeasured because the compiled program behind \
+     the record is not decoded, so a session must not apply an authored field order as if it were a rule";
 
 /// The measured key names an objective block uses to declare an outcome.
 ///

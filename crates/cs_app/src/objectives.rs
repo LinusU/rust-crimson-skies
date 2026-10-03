@@ -140,7 +140,7 @@
 //! declaring that unsupported rather than inventing one. Retry is the session
 //! lifecycle this stage wires.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
 use std::path::Path;
 
@@ -153,10 +153,13 @@ use cs_content::objectives::{
     BRANCH_KEY_VOCABULARY, DeclaredCompletion, DeclaredCountKind, DeclaredCountReaction,
     DeclaredObjectiveProgram, DeclaredObjectiveState, DeclaredPrecedence, DeclaredRevealRule,
     DeclaredTerminalOutcome, DeclaredTimeDomain, DeclaredTimer, DeclaredTimerAction,
-    DeclaredTimerStart, DeclaredVolume, FAILURE_KEY_VOCABULARY, ProgramActor, ProgramSymbol,
+    DeclaredTimerStart, DeclaredVolume, FAILURE_KEY_VOCABULARY, MeasuredBranchConflict,
+    MeasuredBranchPrecedence, MeasuredBranchSite, ProgramActor, ProgramSymbol,
     is_optional_objective_key,
 };
-use cs_content::stunts::SCENARIO_OBJECTIVES_MEMBER;
+use cs_content::stunts::{
+    OBJECTIVE_BLOCK_PREFIX, SCENARIO_OBJECTIVES_MEMBER, ZrdValue, objective_record, zrd_flat_fields,
+};
 use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
 use cs_sim::objectives::counters::CountKind;
@@ -1479,8 +1482,6 @@ impl ObjectiveSession {
 // ---------------------------------------------------------------------------
 // F39-D: the retail objective-record census
 // ---------------------------------------------------------------------------
-//
-//
 // The stage's own question — "validate original branching, optional and
 // failure conditions" — is not answerable from design, so this half measures
 // the original's own objective records on the read-only installation.
@@ -1493,7 +1494,8 @@ impl ObjectiveSession {
 // mission: the member's provenance span, how many blocks the mission declares,
 // the **complete** key vocabulary inside those blocks with the number of blocks
 // each key occurs in, and which keys match a declared search vocabulary for
-// branching, for optionality and for failure.
+// branching, for optionality and for failure. F39-E2 adds a per-block reading of
+// the branching keys' *targets* below.
 //
 // **What is not measured, and why.** A census of key *names* is a vocabulary
 // measurement, not a decoded behaviour: it says which declarations the original
@@ -1517,6 +1519,196 @@ impl ObjectiveSession {
 
 /// The reader archive a mission's objective record lives in.
 const MISSION_READER_ARCHIVE: &str = "zrdr.zbd";
+
+// ---------------------------------------------------------------------------
+// F39-E2: precedence between completion effects in one block
+// ---------------------------------------------------------------------------
+//
+// F39-D counted the branching *sites* per mission, which answers "does the
+// original declare branching at all" and nothing finer. F39-E2's question is the
+// per-block one: when a block declares more than one completion effect, which
+// one applies to the objective they name in common, and in which order? That
+// needs the **targets**, not the key names, so it needs a per-block walk.
+//
+// [`measure_block_precedence`] is that walk, and it is deliberately a pure
+// function over one decoded member: no filesystem, no installation, so a
+// synthetic record can be measured with the same production code the census
+// runs. It reads each numbered `OBJECTIVE<N>` block's fields **in the record's own
+// order** (`zrd_flat_fields` preserves it), which is the only ordering the bytes
+// carry — and which is measured *not* to be a format invariant, because the
+// corpus spells both orders of every effect pair. So the authored order is
+// recorded on each [`MeasuredBranchConflict`] and never ranked by it.
+//
+// Two facts the walk measures that a key census cannot:
+//
+// * a **target** is an objective of the same mission: every measured target
+//   names a block the same record declares, and none names its own block, so no
+//   cross-record or self reference needs a namespace the engine does not have;
+// * a `NAP` site carries a **second number** that is not an objective number, so
+//   the effect's value is not a bare target list.
+
+/// Measures the completion-effect declarations of one decoded objective record,
+/// per block.
+///
+/// A census of declaration sites and their targets, never a rule: it says which
+/// effects a block declares, which objectives each names, and which blocks name
+/// the same objective twice — the only shape in which the original's order would
+/// have to decide an outcome. What any effect *does*, and which of two effects on
+/// one objective the original applies, stay unmeasured
+/// ([`cs_content::objectives::UNMEASURED_BLOCK_PRECEDENCE`]).
+#[must_use]
+pub fn measure_block_precedence(document: &ZrdValue) -> MeasuredBranchPrecedence {
+    // Two passes, because "does this record declare objective 68?" is a question
+    // about the whole record: a target is only dangling if no block names it.
+    let record = objective_record(document);
+    let declared: BTreeSet<u32> = zrd_flat_fields(record)
+        .into_iter()
+        .filter(|(key, _)| is_objective_block(key))
+        .filter_map(|(key, _)| objective_block_number(key))
+        .collect();
+
+    let mut measured = MeasuredBranchPrecedence::default();
+    for (block, block_value) in zrd_flat_fields(record) {
+        let Some(number) = objective_block_number(block) else {
+            continue;
+        };
+        measured.blocks += 1;
+        let sites: Vec<MeasuredBranchSite> = zrd_flat_fields(block_value)
+            .into_iter()
+            .filter_map(|(field, value)| {
+                let kind = cs_content::objectives::BranchEffectKind::from_measured_key(field)?;
+                Some(MeasuredBranchSite {
+                    kind,
+                    targets: measured_numbers(value, |entry| match entry {
+                        ZrdValue::Int(target) => Some(*target),
+                        _ => None,
+                    }),
+                    arguments: measured_numbers(value, |entry| match entry {
+                        ZrdValue::Float(number) => Some(*number),
+                        _ => None,
+                    }),
+                })
+            })
+            .collect();
+        if sites.is_empty() {
+            continue;
+        }
+        measured.effect_blocks += 1;
+        measured.effect_sites += u32::try_from(sites.len()).unwrap_or(u32::MAX);
+        measured.argument_sites += u32::try_from(
+            sites
+                .iter()
+                .filter(|site| !site.arguments.is_empty())
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
+        for site in &sites {
+            measured.targets += u32::try_from(site.targets.len()).unwrap_or(u32::MAX);
+            measured.widest_site = measured
+                .widest_site
+                .max(u32::try_from(site.targets.len()).unwrap_or(u32::MAX));
+            if site.names(number) {
+                measured.self_referencing_sites += 1;
+            }
+            if site.targets.iter().any(|target| !declared.contains(target)) {
+                measured.dangling_sites += 1;
+            }
+        }
+        if sites.len() < 2 {
+            continue;
+        }
+        measured.multi_effect_blocks += 1;
+        // Two effects can only collide if their target sets overlap; the
+        // disjoint blocks are measured as such so the isolated conditions below
+        // can never be read as "every multi-effect block conflicts".
+        let mut disjoint = true;
+        for (index, site) in sites.iter().enumerate() {
+            for later in sites.iter().skip(index + 1) {
+                if site.targets.iter().any(|target| later.names(*target)) {
+                    disjoint = false;
+                }
+            }
+        }
+        if disjoint {
+            measured.disjoint_multi_effect_blocks += 1;
+            continue;
+        }
+        // One condition per shared objective, in authored order and sorted by
+        // target so the reading of a block does not depend on hash order.
+        let mut targets: Vec<u32> = sites
+            .iter()
+            .flat_map(|site| site.targets.iter().copied())
+            .collect();
+        targets.sort_unstable();
+        targets.dedup();
+        for target in targets {
+            let conflicting: Vec<MeasuredBranchSite> = sites
+                .iter()
+                .filter(|site| site.names(target))
+                .cloned()
+                .collect();
+            if conflicting.len() < 2 {
+                continue;
+            }
+            measured.conflicts.push(MeasuredBranchConflict {
+                block: block.to_owned(),
+                target,
+                sites: conflicting,
+            });
+        }
+    }
+    measured
+}
+
+/// `OBJECTIVE17` → `true`; `OBJECTIVE_X` → `false`. F13's own block rule, the
+/// same one `objective_state_machine` counts blocks with.
+fn is_objective_block(key: &str) -> bool {
+    objective_block_number(key).is_some()
+}
+
+/// `OBJECTIVE17` → `Some(17)`; anything else → `None`.
+///
+/// The number is an **objective index**: F39-E2 measured every completion-effect
+/// target naming a block of the same record, which is what makes it an index
+/// into the numbered blocks rather than a name.
+fn objective_block_number(key: &str) -> Option<u32> {
+    key.strip_prefix(OBJECTIVE_BLOCK_PREFIX)
+        .filter(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|digits| digits.parse().ok())
+}
+
+/// The numbers of a `.zrd` value a measurement accepts, keeping the record's own
+/// order. A value the original never writes (a bare number, a text node) yields
+/// nothing rather than a guessed reading.
+fn measured_numbers<T: Copy>(value: &ZrdValue, accept: fn(&ZrdValue) -> Option<T>) -> Vec<T> {
+    match value {
+        ZrdValue::List(children) => children.iter().filter_map(accept).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A conflict measured in one mission's record, named with the mission it came
+/// from.
+///
+/// The census flattens the per-record conflicts into these so a corpus-wide
+/// answer can name every instance, while each [`MeasuredBranchConflict`] stays
+/// the record's own reading.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetailBranchConflict {
+    /// The mission, as `zbd/<group>/<mission>`.
+    pub mission: String,
+    /// The condition measured inside that mission's record.
+    pub conflict: MeasuredBranchConflict,
+}
+
+impl RetailBranchConflict {
+    /// The mission's `zbd/<group>/<mission>` label with the block it sits in,
+    /// as one locatable string (`zbd/c3/m05 OBJECTIVE8`).
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!("{} {}", self.mission, self.conflict.block)
+    }
+}
 
 /// Why the retail objective-record census could not be produced.
 #[derive(Clone, Debug, PartialEq)]
@@ -1568,7 +1760,10 @@ impl fmt::Display for ObjectiveCensusError {
 impl std::error::Error for ObjectiveCensusError {}
 
 /// One mission's measured objective record.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Eq` is not derived: F39-E2's `branch_precedence` carries the measured numbers
+/// beside the completion-effect targets, and a float is not `Eq`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct RetailObjectiveRow {
     /// The mission, as `zbd/<group>/<mission>`.
     pub mission: String,
@@ -1596,11 +1791,24 @@ pub struct RetailObjectiveRow {
     pub keys: Vec<(String, u32)>,
     /// Occurrences of [`BRANCH_KEY_VOCABULARY`] keys across those blocks.
     pub branching_sites: u32,
+    /// The part of `branching_sites` that declares a **completion effect** on
+    /// another objective
+    /// ([`cs_content::objectives::BRANCH_EFFECT_KEY_VOCABULARY`]). F39-E2 splits
+    /// it out because it is the family whose *targets* decide whether an ordering
+    /// question exists at all.
+    pub completion_effect_sites: u32,
+    /// The part of `branching_sites` that declares an explicit **order
+    /// dependency** (`TICK_DEPENDS_ON_OBJ`), which names an objective this one is
+    /// sequenced behind and is never a completion effect.
+    pub order_dependency_sites: u32,
     /// Occurrences of the optionality keys across those blocks: the
-    /// `INACTIVE<n>` stages, `INACTIVE_COMPLETION_COUNT` and `BEGIN_DORMANT`.
+    /// `INACTIVE<n>` stages and `INACTIVE_COMPLETION_COUNT`.
     pub optional_sites: u32,
     /// Occurrences of [`FAILURE_KEY_VOCABULARY`] keys across those blocks.
     pub failure_sites: u32,
+    /// F39-E2's per-block reading of this record's completion effects, measured by
+    /// [`measure_block_precedence`] on the same decoded member.
+    pub branch_precedence: MeasuredBranchPrecedence,
 }
 
 impl RetailObjectiveRow {
@@ -1619,12 +1827,30 @@ impl RetailObjectiveRow {
             branching_sites: self.branching_sites,
             optional_sites: self.optional_sites,
             failure_sites: self.failure_sites,
+            branch_precedence: self.branch_precedence.clone(),
         }
+    }
+
+    /// This row's measured completion-effect conflicts, named with the mission.
+    #[must_use]
+    pub fn conflicts(&self) -> Vec<RetailBranchConflict> {
+        self.branch_precedence
+            .conflicts
+            .iter()
+            .cloned()
+            .map(|conflict| RetailBranchConflict {
+                mission: self.mission.clone(),
+                conflict,
+            })
+            .collect()
     }
 }
 
 /// The measured objective records of every mission-scoped reader archive.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Eq` is not derived, for the same reason [`RetailObjectiveRow`] does not
+/// derive it.
+#[derive(Clone, Debug, PartialEq)]
 pub struct RetailObjectiveCensus {
     install_sha256: String,
     rows: Vec<RetailObjectiveRow>,
@@ -1748,6 +1974,101 @@ impl RetailObjectiveCensus {
             })
             .collect()
     }
+
+    // ------------------------------------------------------------ F39-E2 ---
+
+    /// Total completion-effect sites across every mission: the part of
+    /// [`Self::branching_sites`] that declares what happens to another objective
+    /// when this one completes.
+    #[must_use]
+    pub fn completion_effect_sites(&self) -> u32 {
+        self.rows
+            .iter()
+            .map(|row| row.completion_effect_sites)
+            .sum()
+    }
+
+    /// Total explicit order-dependency sites across every mission, kept apart
+    /// from the completion effects because it names a sequencing relationship and
+    /// never a second effect on one objective.
+    #[must_use]
+    pub fn order_dependency_sites(&self) -> u32 {
+        self.rows.iter().map(|row| row.order_dependency_sites).sum()
+    }
+
+    /// How many blocks, corpus-wide, declare two or more **different**
+    /// completion effects for the same completion event.
+    #[must_use]
+    pub fn multi_effect_blocks(&self) -> u32 {
+        self.rows
+            .iter()
+            .map(|row| row.branch_precedence.multi_effect_blocks)
+            .sum()
+    }
+
+    /// How many of those blocks name **disjoint** target sets, so no two of their
+    /// effects can act on one objective and no ordering question arises in them
+    /// whatever rule the original uses.
+    #[must_use]
+    pub fn disjoint_multi_effect_blocks(&self) -> u32 {
+        self.rows
+            .iter()
+            .map(|row| row.branch_precedence.disjoint_multi_effect_blocks)
+            .sum()
+    }
+
+    /// Every measured conflict corpus-wide, named with the mission and the block
+    /// it sits in, sorted by mission and then by block and target.
+    #[must_use]
+    pub fn conflicts(&self) -> Vec<RetailBranchConflict> {
+        let mut conflicts: Vec<RetailBranchConflict> = self
+            .rows
+            .iter()
+            .flat_map(RetailObjectiveRow::conflicts)
+            .collect();
+        conflicts.sort_by(|left, right| {
+            left.mission
+                .cmp(&right.mission)
+                .then_with(|| left.conflict.block.cmp(&right.conflict.block))
+                .then_with(|| left.conflict.target.cmp(&right.conflict.target))
+        });
+        conflicts
+    }
+
+    /// How many conflicts corpus-wide: blocks where two completion effects name
+    /// the same objective, which is the only shape in which the original's order
+    /// between them would decide anything.
+    #[must_use]
+    pub fn conflicting_blocks(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter(|row| row.branch_precedence.needs_unmeasured_order())
+            .count() as u32
+    }
+
+    /// Whether the installation's objective records need a completion-effect
+    /// ordering rule that is not measured.
+    ///
+    /// The corpus-wide form of
+    /// [`MeasuredBranchPrecedence::needs_unmeasured_order`]: `true` says the
+    /// original's own records declare two effects for one objective somewhere, so
+    /// any importer recovering those declarations must refuse or name that case.
+    /// It never says what the original does about it.
+    #[must_use]
+    pub fn needs_unmeasured_order(&self) -> bool {
+        self.conflicting_blocks() > 0
+    }
+
+    /// The measured combination of every conflict, sorted, with how many
+    /// conflicts carry it (`"WAKE+NAP"`, `"NAP+KILL"`, …).
+    #[must_use]
+    pub fn conflict_combinations(&self) -> Vec<(String, u32)> {
+        let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+        for conflict in self.conflicts() {
+            *counts.entry(conflict.conflict.combination()).or_insert(0) += 1;
+        }
+        counts.into_iter().collect()
+    }
 }
 
 /// Measures every mission-scoped objective record in `install_root`.
@@ -1850,8 +2171,13 @@ pub fn survey_retail_objective_records(
             blocks: machine.blocks(),
             keys: machine.keys().to_vec(),
             branching_sites: sites(|key| BRANCH_KEY_VOCABULARY.contains(&key)),
+            completion_effect_sites: sites(|key| {
+                cs_content::objectives::BRANCH_EFFECT_KEY_VOCABULARY.contains(&key)
+            }),
+            order_dependency_sites: sites(|key| key == cs_content::objectives::BRANCH_ORDER_KEY),
             optional_sites: sites(is_optional_objective_key),
             failure_sites: sites(|key| FAILURE_KEY_VOCABULARY.contains(&key)),
+            branch_precedence: measure_block_precedence(&document),
         });
     }
 

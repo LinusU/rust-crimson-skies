@@ -72,9 +72,9 @@ use cs_content::objectives::{
     DeclaredObjective, DeclaredObjectiveProgram, DeclaredObjectiveState, DeclaredPrecedence,
     DeclaredRevealRule, DeclaredTerminalOutcome, DeclaredTimeDomain, DeclaredTimer,
     DeclaredTimerAction, DeclaredTimerStart, DeclaredTrigger, DeclaredVolume,
-    FAILURE_KEY_VOCABULARY, MeasuredObjectiveRecord, OBJECTIVE_INACTIVE_COUNT_KEY,
-    OBJECTIVE_INACTIVE_STAGE_PREFIX, ObjectivesSchemaError, ProgramActor, ProgramSymbol,
-    UNMEASURED_OBJECTIVE_SEMANTICS, is_optional_objective_key,
+    FAILURE_KEY_VOCABULARY, MeasuredBranchPrecedence, MeasuredObjectiveRecord,
+    OBJECTIVE_INACTIVE_COUNT_KEY, OBJECTIVE_INACTIVE_STAGE_PREFIX, ObjectivesSchemaError,
+    ProgramActor, ProgramSymbol, UNMEASURED_OBJECTIVE_SEMANTICS, is_optional_objective_key,
 };
 use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
@@ -799,6 +799,10 @@ fn accept_f39_d_a_measured_record_is_kept_and_a_bare_one_is_refused() {
         branching_sites: 42,
         optional_sites: 30,
         failure_sites: 2,
+        // F39-E2 measured the per-block completion-effect reading as part of what
+        // a census carries; this mission declares none of its blocks' effects in
+        // the reading, which the default states explicitly.
+        branch_precedence: MeasuredBranchPrecedence::default(),
     };
     let program = original_program()
         .with_measured_record(measured.clone())
