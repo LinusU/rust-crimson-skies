@@ -1282,3 +1282,350 @@ fn check_unit(orientation: Quat) -> Result<(), WorldActorError> {
         Err(WorldActorError::NonUnitOrientation)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! The F34-C carriage and scripted-gate surface at the layer that owns
+    //! it: a `Carried` actor's canonical pose is the socket on its carrier's
+    //! pose, every carriage operation refuses the states it must, and a
+    //! collected or destroyed gate never holds a follower again.
+
+    use cs_types::content::ContentKind;
+
+    use super::super::route::RouteGate;
+    use super::*;
+
+    const CARRIER: ActorId = ActorId(1);
+    const BOAT: ActorId = ActorId(2);
+    const CRATE: ActorId = ActorId(3);
+    const GATE: ActorId = ActorId(4);
+    const CONVOY: ActorId = ActorId(5);
+
+    fn faction() -> ContentId {
+        ContentId::from_source(ContentKind::Faction, "synthetic.f34c.faction")
+            .expect("a valid faction id")
+    }
+
+    fn socket(actor: ActorId, socket: u16, offset_m: [f64; 3]) -> AnchorSocket {
+        AnchorSocket {
+            actor,
+            socket,
+            offset_m,
+        }
+    }
+
+    /// The carrier's deck: three meters up, where the boat rides.
+    fn deck() -> AnchorSocket {
+        socket(CARRIER, 1, [0.0, 3.0, 0.0])
+    }
+
+    fn carrier() -> WorldActorSpec {
+        WorldActorSpec {
+            actor: CARRIER,
+            kind: WorldActorKind::Water,
+            faction: faction(),
+            objective: Some(SymbolId(7)),
+            motion: ActorMotion::Free {
+                position_m: [200.0, 0.0, 0.0],
+                velocity_m_s: [0.0, 8.0, 0.0],
+                orientation: Quat::IDENTITY,
+            },
+        }
+    }
+
+    fn boat() -> WorldActorSpec {
+        WorldActorSpec {
+            actor: BOAT,
+            kind: WorldActorKind::Water,
+            faction: faction(),
+            objective: Some(SymbolId(21)),
+            motion: ActorMotion::Carried {
+                carrier: CARRIER,
+                socket: deck(),
+            },
+        }
+    }
+
+    fn held(actor: ActorId, position_m: [f64; 3]) -> WorldActorSpec {
+        WorldActorSpec {
+            actor,
+            kind: WorldActorKind::Kinematic,
+            faction: faction(),
+            objective: None,
+            motion: ActorMotion::Held {
+                position_m,
+                orientation: Quat::IDENTITY,
+            },
+        }
+    }
+
+    /// A 100 m route at 10 m/s (1 m/tick at 10 ticks/s) held by the gate's
+    /// 45 m stop line until the gate opens.
+    fn convoy() -> WorldActorSpec {
+        WorldActorSpec {
+            actor: CONVOY,
+            kind: WorldActorKind::Road,
+            faction: faction(),
+            objective: None,
+            motion: ActorMotion::Route {
+                plan: RoutePlan::try_new(
+                    vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]],
+                    10.0,
+                    vec![RouteGate {
+                        gate: GATE,
+                        at_m: 50.0,
+                        stop_before_m: 5.0,
+                    }],
+                )
+                .expect("a legal route"),
+                start_progress_m: 0.0,
+            },
+        }
+    }
+
+    fn set(specs: Vec<WorldActorSpec>) -> WorldActorSet {
+        let mut set = WorldActorSet::new(10).expect("a positive tick rate");
+        for spec in specs {
+            set.register(spec).expect("a legal registration");
+        }
+        set
+    }
+
+    /// Ten ticks of drift are not exactly eight meters; the pose is.
+    fn assert_approx(got: [f64; 3], want: [f64; 3]) {
+        for (g, w) in got.into_iter().zip(want) {
+            assert!((g - w).abs() < 1e-9, "{got:?} != {want:?}");
+        }
+    }
+
+    /// The carrier, the boat on its deck and a held crate.
+    fn harbor() -> WorldActorSet {
+        set(vec![carrier(), boat(), held(CRATE, [200.0, 40.0, 0.0])])
+    }
+
+    #[test]
+    fn accept_f34_c_a_destroyed_carrier_freezes_its_cargo_at_the_pre_destruction_pose() {
+        let mut set = harbor();
+        set.advance_to(Tick(10)).expect("ten legal ticks");
+
+        // The boat's canonical pose is the deck socket on the carrier's pose,
+        // so it carries the carrier's velocity with it.
+        let deck_pose = set.pose(BOAT).expect("a registered boat");
+        assert_approx(deck_pose.position_m, [200.0, 11.0, 0.0]);
+        assert_eq!(deck_pose.velocity_m_s, [0.0, 8.0, 0.0]);
+
+        // Destroying the carrier resolves the wreck poses against the
+        // still-live set first: the cargo freezes where the deck stood.
+        assert_eq!(
+            set.destroy(CARRIER).expect("a registered actor"),
+            vec![CARRIER]
+        );
+        let wreck = set.pose(CARRIER).expect("a registered carrier");
+        let frozen_cargo = set.pose(BOAT).expect("a registered boat");
+        assert_approx(wreck.position_m, [200.0, 8.0, 0.0]);
+        assert_eq!(wreck.velocity_m_s, [0.0; 3]);
+        assert_approx(frozen_cargo.position_m, [200.0, 11.0, 0.0]);
+        assert_eq!(frozen_cargo.velocity_m_s, [0.0; 3]);
+
+        // A carried actor is never stepped on its own, so the cargo stays on
+        // the wreck instead of drifting away from it.
+        set.advance_to(Tick(30)).expect("legal ticks");
+        assert_approx(
+            set.pose(BOAT).expect("a registered boat").position_m,
+            [200.0, 11.0, 0.0],
+        );
+        assert_approx(
+            set.pose(CARRIER).expect("registered").position_m,
+            [200.0, 8.0, 0.0],
+        );
+    }
+
+    #[test]
+    fn accept_f34_c_cargo_collects_at_the_socket_it_rode_and_answers_nothing_after() {
+        let mut set = harbor();
+
+        // The collected pose is the socket anchor the cargo left the world
+        // at — the same value the renderer and pickup judge read.
+        assert_eq!(
+            set.collect(BOAT).expect("a live actor"),
+            set.pose(BOAT).expect("pose")
+        );
+        assert_eq!(
+            set.pose(BOAT).expect("a registered boat").position_m,
+            [200.0, 3.0, 0.0]
+        );
+        assert!(set.is_collected(BOAT).expect("a registered boat"));
+        // Collection ends the carriage and the id is still the actor's own.
+        assert_eq!(set.carried_by(BOAT).expect("a registered boat"), None);
+        assert_eq!(set.carried_by(CARRIER).expect("registered"), None);
+        assert_eq!(set.faction(BOAT).expect("registered"), &faction());
+
+        // Twice is a named refusal, not a second collection.
+        assert_eq!(
+            set.collect(BOAT).unwrap_err(),
+            WorldActorError::AlreadyCollected { actor: BOAT }
+        );
+        // And it cannot re-enter the world through any carriage operation.
+        assert_eq!(
+            set.attach(BOAT, CARRIER, deck()).unwrap_err(),
+            WorldActorError::AlreadyCollected { actor: BOAT }
+        );
+        assert_eq!(
+            set.detach(BOAT, [0.0; 3]).unwrap_err(),
+            WorldActorError::NotCarried { actor: BOAT }
+        );
+    }
+
+    #[test]
+    fn accept_f34_c_a_collected_or_destroyed_actor_refuses_every_carriage_operation() {
+        // A collected carrier cannot winch anything aboard.
+        let mut set = harbor();
+        set.collect(CARRIER).expect("a live actor");
+        assert_eq!(
+            set.attach(CRATE, CARRIER, deck()).unwrap_err(),
+            WorldActorError::AlreadyCollected { actor: CARRIER }
+        );
+
+        // A destroyed carrier cannot either, and a destroyed cargo cannot
+        // leave: wrecks are named, never guessed.
+        let mut set = harbor();
+        set.destroy(CARRIER).expect("a registered actor");
+        assert_eq!(
+            set.attach(CRATE, CARRIER, deck()).unwrap_err(),
+            WorldActorError::ActorDestroyed { actor: CARRIER }
+        );
+        let mut set = harbor();
+        set.destroy(CRATE).expect("a registered actor");
+        assert_eq!(
+            set.attach(CRATE, CARRIER, deck()).unwrap_err(),
+            WorldActorError::ActorDestroyed { actor: CRATE }
+        );
+        assert_eq!(
+            set.collect(CRATE).unwrap_err(),
+            WorldActorError::ActorDestroyed { actor: CRATE }
+        );
+
+        // A detached cargo released on its socket's velocity plus the
+        // authored ejection, keeping its faction and objective (AC03).
+        let mut set = harbor();
+        let payload = set.detach(BOAT, [0.0, 0.0, 2.0]).expect("a carried actor");
+        assert_eq!(payload.position_m, [200.0, 3.0, 0.0]);
+        assert_eq!(payload.velocity_m_s, [0.0, 8.0, 2.0]);
+        assert_eq!(set.carried_by(BOAT).expect("registered"), None);
+        assert_eq!(set.faction(BOAT).expect("registered"), &faction());
+        assert_eq!(set.objective(BOAT).expect("registered"), Some(SymbolId(21)));
+        assert_eq!(
+            set.pose(BOAT).expect("registered").velocity_m_s,
+            [0.0, 8.0, 2.0]
+        );
+
+        // A second release is `NotCarried`, and a non-finite ejection never
+        // turns cargo into drift.
+        assert_eq!(
+            set.detach(BOAT, [0.0; 3]).unwrap_err(),
+            WorldActorError::NotCarried { actor: BOAT }
+        );
+        let mut set = harbor();
+        assert_eq!(
+            set.detach(BOAT, [f64::NAN, 0.0, 0.0]).unwrap_err(),
+            WorldActorError::NonFinite { field: "eject_m_s" }
+        );
+        assert_eq!(
+            set.carried_by(BOAT).expect("registered"),
+            Some((CARRIER, deck())),
+            "a refused release leaves the carriage untouched"
+        );
+    }
+
+    #[test]
+    fn accept_f34_c_attach_refuses_a_foreign_socket_a_cycle_and_a_non_finite_offset() {
+        let mut set = harbor();
+
+        // The socket must be the named carrier's own attachment point.
+        assert_eq!(
+            set.attach(CRATE, GATE, deck()).unwrap_err(),
+            WorldActorError::AnchorOwnerMismatch {
+                actor: CRATE,
+                carrier: GATE,
+                socket_owner: CARRIER,
+            }
+        );
+        // A non-finite offset never becomes cargo motion.
+        assert_eq!(
+            set.attach(
+                CRATE,
+                CARRIER,
+                socket(CARRIER, 2, [f64::INFINITY, 0.0, 0.0])
+            )
+            .unwrap_err(),
+            WorldActorError::NonFinite { field: "offset_m" }
+        );
+        // Cargo that already rides the carrier cannot carry it back.
+        assert!(set.attach(CRATE, CARRIER, deck()).is_ok());
+        assert_eq!(
+            set.attach(CARRIER, CRATE, socket(CRATE, 1, [0.0, 0.0, 0.0]))
+                .unwrap_err(),
+            WorldActorError::CarriageCycle {
+                actor: CARRIER,
+                carrier: CRATE
+            }
+        );
+        assert_eq!(set.carried_by(CARRIER).expect("registered"), None);
+
+        // An unregistered carrier is named, never invented.
+        let mut set = harbor();
+        assert_eq!(
+            set.attach(CRATE, ActorId(77), socket(ActorId(77), 1, [0.0, 3.0, 0.0]))
+                .unwrap_err(),
+            WorldActorError::UnknownCarrier {
+                actor: CRATE,
+                carrier: ActorId(77)
+            }
+        );
+        assert_eq!(
+            set.attach(ActorId(77), CARRIER, deck()).unwrap_err(),
+            WorldActorError::UnknownActor(ActorId(77))
+        );
+    }
+
+    #[test]
+    fn accept_f34_c_a_collected_gate_can_never_hold_a_follower_again() {
+        // Control: an intact closed gate holds the convoy on its stop line.
+        let mut intact = set(vec![held(GATE, [50.0, 0.0, 0.0]), convoy()]);
+        let events = intact.advance_to(Tick(50)).expect("legal ticks");
+        assert!(events.contains(&WorldActorEvent::HeldAtGate {
+            actor: CONVOY,
+            gate: GATE,
+            at: Tick(45)
+        }));
+        assert_eq!(intact.held_gate(CONVOY).expect("registered"), Some(GATE));
+
+        // A taker that collected the gate took it out of the world: the
+        // passage is open from then on, and the scripted flag is dead state
+        // on a gate that is no longer there.
+        let mut taken = set(vec![held(GATE, [50.0, 0.0, 0.0]), convoy()]);
+        taken.collect(GATE).expect("a live actor");
+        assert!(!taken.set_gate_open(GATE, false).expect("registered"));
+        let events = taken.advance_to(Tick(50)).expect("legal ticks");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, WorldActorEvent::HeldAtGate { actor: CONVOY, .. })),
+            "a collected gate never holds: {events:?}"
+        );
+        let progress = taken
+            .route_progress_m(CONVOY)
+            .expect("registered")
+            .expect("a route");
+        assert!((progress - 50.0).abs() < 1e-9, "progress {progress}");
+        // The open flag itself is still settable and reported, so a script
+        // that drives it is never silently dropped.
+        assert!(taken.set_gate_open(GATE, true).expect("registered"));
+        assert!(taken.gate_open(GATE).expect("registered"));
+        assert!(
+            taken.set_gate_open(GATE, false).expect("registered"),
+            "closing a scripted-open gate is a real state change"
+        );
+        assert!(!taken.gate_open(GATE).expect("registered"));
+    }
+}
