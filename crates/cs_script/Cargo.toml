@@ -12,8 +12,10 @@ cs_types.workspace = true
 [dev-dependencies]
 # The F38-B acceptance test measures authored UI-script bytes with the
 # production reader (`cs_formats::script_raw::ui_host_calls`) and then feeds the
-# measurement to `cs_script::bindings::observed`. `cs_script` itself does **not**
-# link `cs_formats` (`docs/01-ARCHITECTURE.md`: `cs_script` may depend on
-# `cs_types` only); this is a test-only edge, the same shape as
-# `cs_content`'s test-only `cs_sim` edge.
+# measurement to `cs_script::bindings::observed`; the evidence harness hashes the
+# installation with `cs_assets::install`. `cs_script` itself does **not** link
+# either crate (`docs/01-ARCHITECTURE.md`: `cs_script` may depend on `cs_types`
+# only); these are test-only edges, the same shape as `cs_content`'s test-only
+# `cs_sim` edge.
+cs_assets.workspace = true
 cs_formats.workspace = true

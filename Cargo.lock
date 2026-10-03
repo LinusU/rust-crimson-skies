@@ -2583,6 +2583,7 @@ dependencies = [
 name = "cs_script"
 version = "0.0.0"
 dependencies = [
+ "cs_assets",
  "cs_formats",
  "cs_types",
 ]
