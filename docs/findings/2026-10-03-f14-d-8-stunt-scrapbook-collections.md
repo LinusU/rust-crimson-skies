@@ -38,6 +38,7 @@ The baseline report over the owner's installation now reads:
 | `faction` | 11 | F14-D.5's paint records |
 | `paint_mask` | 184 | F14-D.5's verified library members |
 | `airframe` | 11 | `ZBD/interp.zbd`'s loading scripts |
+| `sound` | 4 951 | F14-D.7's ZBD sound family (measured by that stage; this stage only has to account for it, below) |
 | **`stunt`** | **45** | **the `stunt_flying` instant-action scenarios** |
 | **`scrapbook_item`** | **461** | **`GOSDATA/ASSETS/crimson.rof`'s `ASSETS/SCRAPBOOK.CSV`** |
 
@@ -46,8 +47,11 @@ missions plus 29 scenario directories), unchanged. Neither a stunt nor a
 scrapbook item is launchable content, so the 506 new rows are counted as
 unreachable unknowns in `coverage.unreachable_by_kind.stunt` (45) and
 `coverage.unreachable_by_kind.scrapbook_item` (461) rather than entering the
-denominator. The catalog now holds **1 058** rows, **159** reachable, **899**
-unreachable, **0** ready, **0** unresolved references.
+denominator. Over the merged tree — F14-D.7's 4 951 sound rows landed after the
+stage-level completeness total was last widened — the catalog holds **6 009**
+rows, **159** reachable, **5 850** unreachable, **0** ready, **0** unresolved
+references. This stage's own contribution is the 506 new rows; the rest is the
+collection set the later stages already measured.
 
 ## Where the stunts come from
 
@@ -169,7 +173,16 @@ follow-up task created from #491.
 - `crates/cs_content/tests/accept_f14_d_baseline.rs`: the stage-level retail
   completeness total now accounts for the 45 stunt and 461 scrapbook rows (the
   same repair F14-D.6 made for the airframes; the equality is not weakened and
-  the rows are not filtered out).
+  the rows are not filtered out). It also accounts for F14-D.7's 4 951 sound
+  rows: that collection landed on `main` after the total was last widened and
+  did not add itself to the equality, so on the rebased tree
+  `accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic`
+  failed before this stage touched it. The test now counts the sound rows as
+  **F14-D.7's** collection — it does not restate that stage's own number — so
+  the merged tree's completeness equality holds. This is a two-line accounting
+  repair inside this stage's owner path (`crates/cs_content/tests/`), recorded
+  here because it fixes a defect that was already on `main`; the F14-D.7 stage's
+  own acceptance test still owns the sound identities.
 - `docs/findings/evidence/F14-D.8.json` (new): the validated acceptance report.
 
 ## Design decisions
