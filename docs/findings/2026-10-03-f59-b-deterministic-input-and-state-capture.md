@@ -232,10 +232,11 @@ value of the root reaches any state a replay compares).
 
 - `accept_f59_b_every_field_the_state_digest_covers_moves_it` perturbs each of
   the 22 fields `StateReading::digest` claims to cover, one at a time. Before it
-  existed, three mutations of the digest passed the whole file: dropping the
-  instrument state, dropping the linear velocity, and (verified again) dropping
-  the tick. The implementer's mutation pass had only exercised the pose→forces
-  direction.
+  existed, two mutations of the digest passed the whole file — dropping the
+  instrument state, and dropping the linear velocity — because every test that
+  compared two readings held the pose fixed and only varied the forces. (A third
+  mutation, dropping the tick, was already caught by
+  `..._a_state_hash_covers_the_tick_and_the_forces_it_computed` and still is.)
 - `accept_f59_b_a_tick_whose_forces_were_not_measured_is_refused`,
   `..._a_record_with_an_inverted_tick_range_is_refused`,
   `..._a_zero_fixed_rate_is_refused` and
@@ -244,8 +245,8 @@ value of the root reaches any state a replay compares).
   also pins `ReplayError::MissingInitialState`.
 - Mutations re-run by the reviewer and confirmed to fail: the
   `measured_at != Some(tick)` refusal, `replay`'s `validate()`, the zero-rate
-  refusal, `settings_for`'s exposure/gamma refusal, and the three digest
-  mutations above.
+  refusal, `settings_for`'s exposure/gamma refusal, and the digest mutations
+  above (instrument state, linear velocity, tick).
 
 Deliberately **not** changed: `identity.rs` keeps both `put_text` and
 `put_label`. Their bodies are identical, but the two names mark two
