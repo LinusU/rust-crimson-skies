@@ -188,6 +188,7 @@ fn out_of_order_program() -> DeclaredObjectiveProgram {
                 on_complete: cs_content::objectives::DeclaredCompletion::Requests(
                     DeclaredTerminalOutcome::Success,
                 ),
+                completion_effects: Vec::new(),
             },
             DeclaredObjective {
                 symbol: ProgramSymbol(SECONDARY.0),
@@ -195,6 +196,7 @@ fn out_of_order_program() -> DeclaredObjectiveProgram {
                 initial: DeclaredObjectiveState::Hidden,
                 reveal: DeclaredRevealRule::OnSignal(ProgramSymbol(REACHED_WRECK)),
                 on_complete: cs_content::objectives::DeclaredCompletion::Continue,
+                completion_effects: Vec::new(),
             },
             DeclaredObjective {
                 symbol: ProgramSymbol(SIDE.0),
@@ -202,6 +204,7 @@ fn out_of_order_program() -> DeclaredObjectiveProgram {
                 initial: DeclaredObjectiveState::Optional,
                 reveal: DeclaredRevealRule::Immediate,
                 on_complete: cs_content::objectives::DeclaredCompletion::Continue,
+                completion_effects: Vec::new(),
             },
         ],
         vec![DeclaredCondition {
@@ -372,6 +375,7 @@ fn accept_f39_d_a_revealed_objective_can_complete_before_it_is_pursued() {
             on_complete: cs_content::objectives::DeclaredCompletion::Requests(
                 DeclaredTerminalOutcome::Success,
             ),
+            completion_effects: Vec::new(),
         }],
         vec![],
         vec![timer(
@@ -680,6 +684,7 @@ fn accept_f39_d_a_mutually_watching_branch_still_fires() {
                 initial: DeclaredObjectiveState::Pending,
                 reveal: DeclaredRevealRule::OnSignal(ProgramSymbol(REACHED_WRECK)),
                 on_complete: cs_content::objectives::DeclaredCompletion::Continue,
+                completion_effects: Vec::new(),
             },
             DeclaredObjective {
                 symbol: ProgramSymbol(SECONDARY.0),
@@ -690,6 +695,7 @@ fn accept_f39_d_a_mutually_watching_branch_still_fires() {
                     state: DeclaredObjectiveState::Active,
                 },
                 on_complete: cs_content::objectives::DeclaredCompletion::Continue,
+                completion_effects: Vec::new(),
             },
         ],
         vec![],

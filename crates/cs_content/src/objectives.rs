@@ -127,6 +127,45 @@
 //! [`MeasuredObjectiveRecord`] carries the reading. The authored field order is
 //! recorded as the only ordering the bytes carry and is measured *not* to be a
 //! format invariant, so nothing may rank effects by it.
+//!
+//! # F39-E5: completion effects, and the one shape that is refused
+//!
+//! F39-E2 measured the *vocabulary* and the isolated conflict. What the engine
+//! could not do with them is this stage's subject: the declared form now carries
+//! them as a typed [`DeclaredCompletionEffect`] list on the declaring
+//! [`DeclaredObjective`], over the measured [`BranchEffectKind`] vocabulary, and
+//! `cs_sim::objectives::runtime` applies each one as a declared move on the
+//! objective it names. Every such target names an objective of the **same
+//! record** (all 1706 measured targets do, and none names its own block), so a
+//! program symbol is the right identity and there is no cross-record name to
+//! resolve. The nap's second number is kept as an [`UnmeasuredQuantity`] — a
+//! number with **no unit**, because nothing measured what it measures.
+//!
+//! What each spelling *does* stays an inference from the spelling; the state the
+//! engine moves the target to is designed vocabulary living in
+//! `cs_sim::objectives::runtime::CompletionEffectKind`. Nothing here is an
+//! original-fidelity claim, and [`DeclaredSupport::Original`] stays unplayable:
+//! giving the engine a way to *say* what a record declares is not recovering what
+//! it means.
+//!
+//! One shape is refused rather than resolved, by name at declaration: **two
+//! different effects naming the same objective** in one program
+//! ([`ObjectivesSchemaError::AmbiguousCompletionEffect`]). F39-E2 measured that
+//! shape in exactly one of 1338 blocks (`zbd/c3/m05` `OBJECTIVE8` naming
+//! objective 68) and could not say which of the two wins there. The declaration's
+//! own field order cannot stand in for the answer either: the corpus writes
+//! every conflicting pair **both** ways round (`WAKE`/`NAP` 99 vs 81,
+//! `WAKE`/`KILL` 93 vs 20, `NAP`/`KILL` 70 vs 34), so the order is authored per
+//! block and carries no engine intent — the same conclusion
+//! [`UNMEASURED_BLOCK_PRECEDENCE`] records on the measurement side. Dead
+//! declarations are refused with it: an effect on the objective that fires it
+//! ([`ObjectivesSchemaError::SelfCompletionEffect`]), one naming a target born
+//! finished ([`ObjectivesSchemaError::DeadCompletionEffect`]), one declared by an
+//! objective that never completes
+//! ([`ObjectivesSchemaError::UnfiredCompletionEffects`]) and one whose declared
+//! number contradicts the measured shape
+//! ([`ObjectivesSchemaError::EffectArgumentShape`]) — a nap without its number,
+//! or a number on an effect that carries none.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -181,6 +220,19 @@ pub enum DeclaredObjectiveState {
     Superseded,
 }
 
+impl DeclaredObjectiveState {
+    /// Whether no further transition is legal, mirroring
+    /// `cs_sim::objectives::state::ObjectiveState::is_final`.
+    ///
+    /// The schema uses it to refuse the declarations that could never fire
+    /// because their objective is already finished: a watch waiting for a state
+    /// no row leaves, and a completion effect naming such an objective.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed | Self::Superseded)
+    }
+}
+
 /// When a hidden objective may be shown.
 ///
 /// Mirrors `cs_sim::objectives::runtime::RevealRule` with declared-side
@@ -226,6 +278,81 @@ pub enum DeclaredCompletion {
     Continue,
     /// Completion requests this terminal outcome.
     Requests(DeclaredTerminalOutcome),
+}
+
+/// A number a nap declaration carried beside its objective list, with **no
+/// measured unit**.
+///
+/// F39-E2 measured 417 such numbers over the installation — 42 distinct values
+/// between 0.5 and 170 — and could not say what any of them measures; the verdict
+/// is [`UNMEASURED_NAP_ARGUMENT`]. Nothing in this project has run the original,
+/// and the program behind the record is not decoded, so a duration, a weight and
+/// a threshold are all consistent with the bytes. The wrapper exists so that no
+/// caller can read the value as a time: a non-finite value cannot be built at all
+/// ([`UnmeasuredQuantity::new`] returns `None`), the schema refuses a declaration
+/// whose number is missing where the measurement says one is there
+/// ([`ObjectivesSchemaError::EffectArgumentShape`]), and the runtime carries the
+/// number without ever interpreting it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UnmeasuredQuantity(f64);
+
+impl UnmeasuredQuantity {
+    /// Wraps a finite number, or refuses a non-finite one.
+    #[must_use]
+    pub fn new(value: f64) -> Option<Self> {
+        value.is_finite().then_some(Self(value))
+    }
+
+    /// The number exactly as declared. It has no unit, and this accessor is the
+    /// only way to read it back.
+    #[must_use]
+    pub const fn value(self) -> f64 {
+        self.0
+    }
+}
+
+/// What completing one declared objective does to one other objective of the same
+/// program.
+///
+/// The measured record writes one *site* per key with a list of objective
+/// numbers (one to twelve for `WAKE`/`KILL`, exactly one for a `NAP`), while
+/// the engine acts on one objective at a time. So a site is modelled as one entry
+/// per named objective — a six-target wake is six entries — and `objective` is
+/// the declared identity of the block it names. F39-E2 measured that every target
+/// names a block the *same* record declares, so no cross-record naming space
+/// exists to express.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeclaredCompletionEffect {
+    /// Which effect this is.
+    pub kind: BranchEffectKind,
+    /// The objective it acts on: a symbol of the same program.
+    pub objective: ProgramSymbol,
+    /// The number only [`BranchEffectKind::Nap`] carries.
+    pub argument: Option<UnmeasuredQuantity>,
+}
+
+impl DeclaredCompletionEffect {
+    /// Builds one effect. The number's *shape* is checked by
+    /// [`DeclaredObjectiveProgram::try_new`], so this constructor only wraps the
+    /// value.
+    ///
+    /// # Errors
+    ///
+    /// `None` when `value` is not finite; there is no number to declare.
+    pub fn new(
+        kind: BranchEffectKind,
+        objective: ProgramSymbol,
+        argument: Option<f64>,
+    ) -> Option<Self> {
+        Some(Self {
+            kind,
+            objective,
+            argument: match argument {
+                Some(value) => Some(UnmeasuredQuantity::new(value)?),
+                None => None,
+            },
+        })
+    }
 }
 
 /// The declared precedence resolving two terminal requests on one tick.
@@ -413,6 +540,15 @@ pub struct DeclaredObjective {
     pub reveal: DeclaredRevealRule,
     /// What completing it requests.
     pub on_complete: DeclaredCompletion,
+    /// What completing it does to *other* objectives, in authored order. Empty
+    /// for an objective whose completion moves nothing else, which is the whole
+    /// of the behaviour before completion effects existed.
+    ///
+    /// `on_complete` and this list answer two different questions, and both stay
+    /// apart: `on_complete` is what the completion means for the **mission**
+    /// (a terminal outcome request), while these are what it does to other
+    /// **objectives** (a declared move on each one it names).
+    pub completion_effects: Vec<DeclaredCompletionEffect>,
 }
 
 /// One declared count condition: a roster, one category, a required count
@@ -735,6 +871,20 @@ impl BranchEffectKind {
     pub const fn all() -> [Self; 4] {
         [Self::Wake, Self::Nap, Self::Kill, Self::Wakeup]
     }
+
+    /// Whether a declaration of this effect carries the measured number beside
+    /// its objective list.
+    ///
+    /// F39-E2 measured that only a nap does: all 417 measured `NAP` sites hold
+    /// exactly one integer followed by exactly one number, and no `WAKE`, `KILL`
+    /// or `WAKEUP` site carries one. The declared form uses this to refuse a
+    /// declaration whose number is missing where the measurement says one is
+    /// there — and **what** the number measures stays unmeasured
+    /// ([`UNMEASURED_NAP_ARGUMENT`]), so it is carried, never interpreted.
+    #[must_use]
+    pub const fn carries_argument(self) -> bool {
+        matches!(self, Self::Nap)
+    }
 }
 
 impl fmt::Display for BranchEffectKind {
@@ -964,6 +1114,19 @@ pub const UNMEASURED_BLOCK_PRECEDENCE: &str = "the record's completion-effect si
      blocks; which of them the original applies, and in which order, is unmeasured because the compiled program behind \
      the record is not decoded, so a session must not apply an authored field order as if it were a rule";
 
+/// Why the number a nap site carries stays unmeasured, stated once so the
+/// declared record, the runtime and a report say the same thing.
+///
+/// It names the measured fact behind it: every one of the 417 measured nap sites
+/// holds exactly one number after its objective list and no other effect site
+/// holds one, and 42 distinct values occur — but the bytes do not say what it
+/// measures, so the number is carried as an [`UnmeasuredQuantity`] with no unit
+/// and is never interpreted.
+pub const UNMEASURED_NAP_ARGUMENT: &str = "the record's nap sites were measured and each carries one number beside its \
+     objective list, while no other completion-effect site carries one; what that number measures, in what unit and \
+     over what domain is unmeasured because the compiled program behind the record is not decoded, so it is carried \
+     as a plain number and nothing may schedule, compare or weigh anything on it";
+
 /// The measured key names an objective block uses to declare an outcome.
 ///
 /// Measured over the same corpus: `INSTANTWIN` occurs 15 times and
@@ -1188,6 +1351,64 @@ pub enum ObjectivesSchemaError {
         /// The state it waits for.
         state: DeclaredObjectiveState,
     },
+    /// Two **different** completion effects name the same objective in one
+    /// program.
+    ///
+    /// F39-E2 measured this shape in exactly one of 1338 original blocks
+    /// (`zbd/c3/m05` `OBJECTIVE8`, a `WAKE` and a `NAP` both naming objective
+    /// 68) and could not say which of them wins there: the record's own field
+    /// order is refuted as a rule by the same corpus, which writes every
+    /// conflicting pair both ways round. So the declaration is refused by name
+    /// rather than resolved by an invented order.
+    AmbiguousCompletionEffect {
+        /// The objective whose declaration carries the second effect.
+        by: ProgramSymbol,
+        /// The objective both effects name.
+        objective: ProgramSymbol,
+        /// The effect declared first, in `(kind, declaring objective)` order.
+        first: BranchEffectKind,
+        /// The effect declared second.
+        second: BranchEffectKind,
+    },
+    /// An objective declares a completion effect on itself.
+    ///
+    /// The effect fires *because* the objective completed, so by the time it
+    /// applies the objective holds `Succeeded`, and no completion effect moves a
+    /// target out of a final state: the declaration could never apply.
+    SelfCompletionEffect {
+        /// The objective declaring the effect.
+        objective: ProgramSymbol,
+    },
+    /// A completion effect names an objective born in a state no completion
+    /// effect can move it out of. No row leaves `Succeeded`, `Failed` or
+    /// `Superseded`, so the effect could never apply.
+    DeadCompletionEffect {
+        /// The objective whose declaration carries the effect.
+        by: ProgramSymbol,
+        /// The objective the effect names.
+        objective: ProgramSymbol,
+        /// The state the target is born in.
+        state: DeclaredObjectiveState,
+    },
+    /// An objective born in a terminal state declares completion effects. It
+    /// never completes, so they can never apply.
+    UnfiredCompletionEffects {
+        /// The objective declaring the effects.
+        by: ProgramSymbol,
+        /// The state it is born in.
+        state: DeclaredObjectiveState,
+    },
+    /// A completion effect's declared number contradicts the measured shape: a
+    /// nap without the number every measured nap carries, or a number on an
+    /// effect that carries none.
+    EffectArgumentShape {
+        /// The objective whose declaration carries the effect.
+        by: ProgramSymbol,
+        /// The objective the effect names.
+        objective: ProgramSymbol,
+        /// The effect kind whose shape is wrong.
+        kind: BranchEffectKind,
+    },
     /// A measurement names no archive or member, so it measures nothing.
     EmptyMeasurement,
 }
@@ -1298,6 +1519,44 @@ impl fmt::Display for ObjectivesSchemaError {
             } => write!(
                 f,
                 "{by} watches objective {objective} reaching {state:?}, a state it already holds and can never reach again"
+            ),
+            Self::AmbiguousCompletionEffect {
+                by,
+                objective,
+                first,
+                second,
+            } => write!(
+                f,
+                "{by} declares a {second:?} completion effect on {objective}, which a {first:?} effect already names, and no measured rule says which applies"
+            ),
+            Self::SelfCompletionEffect { objective } => write!(
+                f,
+                "{objective} declares a completion effect on itself, which can only apply once it has completed"
+            ),
+            Self::DeadCompletionEffect {
+                by,
+                objective,
+                state,
+            } => write!(
+                f,
+                "{by} declares a completion effect on {objective}, which is born {state:?} and cannot be moved out of a finished state"
+            ),
+            Self::UnfiredCompletionEffects { by, state } => write!(
+                f,
+                "{by} is born {state:?} and never completes, so the completion effects it declares can never apply"
+            ),
+            Self::EffectArgumentShape {
+                by,
+                objective,
+                kind,
+            } => write!(
+                f,
+                "{by} declares a {kind:?} completion effect on {objective} whose declared {} contradicts the measured shape: the number belongs to a nap",
+                if kind.carries_argument() {
+                    "absence of a number"
+                } else {
+                    "number"
+                }
             ),
             Self::EmptyMeasurement => write!(
                 f,
@@ -1647,6 +1906,7 @@ fn validate(
     for timer in timers {
         check_timer(timer, &objective_by_symbol, &group_ids, &declared)?;
     }
+    check_completion_effects(objectives, &objective_ids, &objective_by_symbol)?;
     Ok(())
 }
 
@@ -1674,10 +1934,101 @@ fn check_signal(
     Ok(())
 }
 
+/// The closure and dead-declaration rules for the completion effects a program
+/// declares.
+///
+/// Every rule here is about a shape, never about an order of application:
+///
+/// * an effect names an objective **of the same program** (F39-E2 measured that
+///   all 1706 retail targets do), so a dangling target is refused here instead of
+///   waiting for an event no declaration can produce;
+/// * the number's shape is the measured one — a nap carries one, nothing else
+///   does — so an importer cannot attach a number to an effect that never had
+///   one and lose it silently;
+/// * three dead declarations are refused: an effect on the objective that fires
+///   it, an effect on a target born finished, and effects declared by an
+///   objective born finished (it never completes, so they never apply);
+/// * **two different effects naming the same objective is refused, not ordered**:
+///   that is the shape F39-E2 measured once in 1338 blocks and could not
+///   resolve, and the declaration's own field order is refuted as a rule by the
+///   same corpus. Two objectives naming the *same* effect kind for one objective
+///   are accepted — they agree on what happens, so there is no order to decide.
+fn check_completion_effects(
+    objectives: &[DeclaredObjective],
+    objective_ids: &BTreeSet<ProgramSymbol>,
+    objective_by_symbol: &BTreeMap<ProgramSymbol, &DeclaredObjective>,
+) -> Result<(), ObjectivesSchemaError> {
+    // What kind of effect each objective of the program is already named for.
+    // Keyed by the *target*, so this is the one place the contended question is
+    // even representable.
+    let mut named: BTreeMap<ProgramSymbol, BranchEffectKind> = BTreeMap::new();
+    for source in objectives {
+        if source.initial.is_terminal() {
+            return Err(ObjectivesSchemaError::UnfiredCompletionEffects {
+                by: source.symbol,
+                state: source.initial,
+            });
+        }
+        for effect in &source.completion_effects {
+            if effect.kind.carries_argument() != effect.argument.is_some() {
+                return Err(ObjectivesSchemaError::EffectArgumentShape {
+                    by: source.symbol,
+                    objective: effect.objective,
+                    kind: effect.kind,
+                });
+            }
+            if !objective_ids.contains(&effect.objective) {
+                return Err(ObjectivesSchemaError::UnknownObjective {
+                    by: source.symbol,
+                    objective: effect.objective,
+                });
+            }
+            if effect.objective == source.symbol {
+                return Err(ObjectivesSchemaError::SelfCompletionEffect {
+                    objective: source.symbol,
+                });
+            }
+            let target = objective_by_symbol
+                .get(&effect.objective)
+                .expect("the target was just found in the program's objectives");
+            if target.initial.is_terminal() {
+                return Err(ObjectivesSchemaError::DeadCompletionEffect {
+                    by: source.symbol,
+                    objective: effect.objective,
+                    state: target.initial,
+                });
+            }
+            match named.get(&effect.objective) {
+                Some(kind) if *kind != effect.kind => {
+                    return Err(ObjectivesSchemaError::AmbiguousCompletionEffect {
+                        by: source.symbol,
+                        objective: effect.objective,
+                        first: *kind,
+                        second: effect.kind,
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    named.insert(effect.objective, effect.kind);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A declared state change a live declared action can perform never leaves
-/// `Hidden`, so the rows into `Hidden`, `Pending` and `Optional` are reachable
-/// only from `Hidden`, which only the reveal rule leaves. A declaration aiming
-/// at one of them could never apply: dead, refused at declaration.
+/// `Hidden`, so the rows into `Hidden` and `Pending` are reachable only from
+/// `Hidden`, which only the reveal rule leaves. A declaration aiming at one of
+/// them could never apply: dead, refused at declaration.
+///
+/// `Optional` is refused here for a different reason, and it is the one state
+/// this stage gave a second source: a *completion effect* may put an objective
+/// aside, but only the completion of a **named other objective** can do it. A
+/// count reaction or a deadline is not a completion — it has no "when I
+/// complete" — so a declaration of either kind aiming at `Optional` would be
+/// reaching for the completion vocabulary from outside it, and is refused with
+/// the rule stated rather than allowed to drift in.
 fn check_state_target(
     by: ProgramSymbol,
     state: DeclaredObjectiveState,
@@ -1917,6 +2268,7 @@ pub fn declared_synthetic_objectives() -> DeclaredObjectiveProgram {
                 initial: DeclaredObjectiveState::Active,
                 reveal: DeclaredRevealRule::Immediate,
                 on_complete: DeclaredCompletion::Requests(DeclaredTerminalOutcome::Success),
+                completion_effects: Vec::new(),
             },
             DeclaredObjective {
                 symbol: SYNTHETIC_SECONDARY,
@@ -1924,6 +2276,7 @@ pub fn declared_synthetic_objectives() -> DeclaredObjectiveProgram {
                 initial: DeclaredObjectiveState::Hidden,
                 reveal: DeclaredRevealRule::OnSignal(SYNTHETIC_REACHED_WRECK),
                 on_complete: DeclaredCompletion::Continue,
+                completion_effects: Vec::new(),
             },
         ],
         vec![DeclaredCondition {
@@ -2002,6 +2355,134 @@ pub fn declared_synthetic_objectives() -> DeclaredObjectiveProgram {
         }],
     )
     .expect("the synthetic objective program is valid")
+}
+
+/// The synthetic fixture mission's program symbol for the objective whose
+/// completion moves the others (F39-E5).
+pub const SYNTHETIC_E5_COMPLETING: ProgramSymbol = ProgramSymbol(1);
+/// The fixture's wake target, born shown but not yet pursued.
+pub const SYNTHETIC_E5_WOKEN: ProgramSymbol = ProgramSymbol(2);
+/// The fixture's nap target, born pursued.
+pub const SYNTHETIC_E5_NAPPED: ProgramSymbol = ProgramSymbol(3);
+/// The fixture's wakeup target, born set aside.
+pub const SYNTHETIC_E5_RESUMED: ProgramSymbol = ProgramSymbol(4);
+/// The fixture's kill target, born pursued.
+pub const SYNTHETIC_E5_KILLED: ProgramSymbol = ProgramSymbol(5);
+/// The fixture's completion deadline: an explicit arm completes
+/// [`SYNTHETIC_E5_COMPLETING`] one tick later, which is what makes every effect
+/// fire from one ordinary deadline expiry rather than from a test-only request.
+pub const SYNTHETIC_E5_DEADLINE: ProgramSymbol = ProgramSymbol(30);
+
+/// The minimal synthetic mission program whose one completion moves four other
+/// objectives, in declared form.
+///
+/// Five objectives and one deadline:
+///
+/// * [`SYNTHETIC_E5_COMPLETING`] is born `Active`, completes without ending the
+///   mission, and declares **one** effect per target — a `Wake` of
+///   [`SYNTHETIC_E5_WOKEN`], a `Nap` of [`SYNTHETIC_E5_NAPPED`] carrying the
+///   number `2.0`, a `Wakeup` of [`SYNTHETIC_E5_RESUMED`] and a `Kill` of
+///   [`SYNTHETIC_E5_KILLED`]. No two of them names the same objective, which is
+///   the shape the schema accepts (the refused one is in
+///   `accept_f39_e5_two_effects_naming_one_objective_are_refused_by_name`);
+/// * the four targets are born in the states their effect moves them out of:
+///   shown-not-pursued, pursued, set aside and pursued;
+/// * [`SYNTHETIC_E5_DEADLINE`] completes the first objective on an explicit arm,
+///   so the effects are produced by an ordinary declared expiry.
+///
+/// The subject is `mission/synthetic.f39e.completion-effects`, every identity
+/// lives under `synthetic.f39e` keys and the record carries
+/// [`Origin::SyntheticFixture`] with designed provenance — it can never be
+/// mistaken for retail content and cannot stand in for it.
+#[must_use]
+pub fn declared_synthetic_completion_effects() -> DeclaredObjectiveProgram {
+    let provenance = Provenance::designed(
+        ClaimId::new("f39e.synthetic-completion-effects").expect("valid claim id"),
+    );
+    let objective_id = |key: &str| {
+        ContentId::from_source(ContentKind::Objective, key).expect("valid objective id")
+    };
+    let mission = ContentId::from_source(ContentKind::Mission, "synthetic.f39e.completion-effects")
+        .expect("valid mission id");
+    let effect = |kind, objective| {
+        DeclaredCompletionEffect::new(kind, objective, None).expect("a finite declared effect")
+    };
+    let nap = || {
+        DeclaredCompletionEffect::new(
+            BranchEffectKind::Nap,
+            SYNTHETIC_E5_NAPPED,
+            Some(2.0),
+        )
+        .expect("a nap with its measured number")
+    };
+
+    DeclaredObjectiveProgram::try_new(
+        mission,
+        Origin::SyntheticFixture,
+        provenance.clone(),
+        designed(DeclaredPrecedence::SyntheticConservative, &provenance),
+        vec![
+            DeclaredObjective {
+                symbol: SYNTHETIC_E5_COMPLETING,
+                content: objective_id("synthetic.f39e.completing"),
+                initial: DeclaredObjectiveState::Active,
+                reveal: DeclaredRevealRule::Immediate,
+                on_complete: DeclaredCompletion::Continue,
+                completion_effects: vec![
+                    effect(BranchEffectKind::Wake, SYNTHETIC_E5_WOKEN),
+                    nap(),
+                    effect(BranchEffectKind::Wakeup, SYNTHETIC_E5_RESUMED),
+                    effect(BranchEffectKind::Kill, SYNTHETIC_E5_KILLED),
+                ],
+            },
+            DeclaredObjective {
+                symbol: SYNTHETIC_E5_WOKEN,
+                content: objective_id("synthetic.f39e.woken"),
+                initial: DeclaredObjectiveState::Pending,
+                reveal: DeclaredRevealRule::Immediate,
+                on_complete: DeclaredCompletion::Continue,
+                completion_effects: Vec::new(),
+            },
+            DeclaredObjective {
+                symbol: SYNTHETIC_E5_NAPPED,
+                content: objective_id("synthetic.f39e.napped"),
+                initial: DeclaredObjectiveState::Active,
+                reveal: DeclaredRevealRule::Immediate,
+                on_complete: DeclaredCompletion::Continue,
+                completion_effects: Vec::new(),
+            },
+            DeclaredObjective {
+                symbol: SYNTHETIC_E5_RESUMED,
+                content: objective_id("synthetic.f39e.resumed"),
+                initial: DeclaredObjectiveState::Optional,
+                reveal: DeclaredRevealRule::Immediate,
+                on_complete: DeclaredCompletion::Continue,
+                completion_effects: Vec::new(),
+            },
+            DeclaredObjective {
+                symbol: SYNTHETIC_E5_KILLED,
+                content: objective_id("synthetic.f39e.killed"),
+                initial: DeclaredObjectiveState::Active,
+                reveal: DeclaredRevealRule::Immediate,
+                on_complete: DeclaredCompletion::Continue,
+                completion_effects: Vec::new(),
+            },
+        ],
+        vec![],
+        vec![DeclaredTimer {
+            symbol: SYNTHETIC_E5_DEADLINE,
+            domain: DeclaredTimeDomain::AuthoritativeGameplay,
+            start: DeclaredTimerStart::OnArm,
+            period_ticks: 1,
+            action: DeclaredTimerAction::SetObjectiveState {
+                objective: SYNTHETIC_E5_COMPLETING,
+                state: DeclaredObjectiveState::Succeeded,
+            },
+        }],
+        vec![],
+        vec![],
+    )
+    .expect("the synthetic completion-effect program is valid")
 }
 
 #[cfg(test)]
