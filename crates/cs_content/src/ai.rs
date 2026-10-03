@@ -79,7 +79,7 @@ use cs_types::space::{Meters, Radians};
 use crate::config::StringCatalog;
 use crate::stunts::{
     SCENARIO_MEMBER, ZrdValue, decode_zrd, scenario_mission_type, scenario_non_player_aircraft,
-    zrd_field, zrd_flat_fields,
+    zrd_field,
 };
 
 /// The largest reaction delay a declared role may carry, in ticks.
@@ -1131,12 +1131,13 @@ pub const ORIGINAL_IA_DIFFICULTY_LABEL: (&str, u32) = ("IDS_IA_DIFFICULTY", 3695
 
 /// Whether any measured per-scenario record carries the difficulty.
 ///
-/// **Measured**: **no**. The complete root-key vocabulary of all eight
-/// instant-action scenario descriptors contains no difficulty key, and the
-/// option itself is a screen row with a title and a description. So the
-/// original's difficulty is a *selection*, not a value any mission record
-/// stores: which step is in force is the player's choice at the options
-/// screen, and nothing in the measured data binds a step to a mission.
+/// **Measured**: **no**. The complete key vocabulary of all eight
+/// instant-action scenario descriptors — every key at **any** depth, not only
+/// the root ones, so a nested group record is covered too — contains no
+/// difficulty key, and the option itself is a screen row with a title and a
+/// description. So the original's difficulty is a *selection*, not a value any
+/// mission record stores: which step is in force is the player's choice at the
+/// options screen, and nothing in the measured data binds a step to a mission.
 ///
 /// This is the load-bearing negative of F32-D: it is why no
 /// [`DifficultyProfile`] may claim to be the original's per-mission
@@ -2819,8 +2820,14 @@ pub struct ScenarioSurface {
     pub container: String,
     /// The declared mission type, when the descriptor names one.
     pub mission_type: Option<String>,
-    /// The descriptor's complete root-key vocabulary.
-    pub root_keys: Vec<String>,
+    /// The descriptor's complete key vocabulary, at **every** depth, sorted and
+    /// deduplicated.
+    ///
+    /// Not only the root keys: a nested record could in principle carry a
+    /// difficulty of its own, so a negative measured over the root keys alone
+    /// would not be the negative a caller reads. This is the whole vocabulary
+    /// a `.zrd` value list spells, walked by [`zrd_key_census`].
+    pub keys: Vec<String>,
     /// How many enemy groups it declares.
     pub enemy_groups: u32,
     /// Every skill label it declares, over its groups and its named ace.
@@ -2910,13 +2917,20 @@ impl OriginalAiSurface {
         types
     }
 
-    /// The descriptor root-key vocabulary, sorted and deduplicated.
+    /// The complete descriptor key vocabulary, at every depth, sorted and
+    /// deduplicated.
+    ///
+    /// This is what makes
+    /// [`ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO`] a measurement of the whole
+    /// descriptor rather than of its root keys: a nested record is included, so
+    /// "no key anywhere names a difficulty" is a statement about everything the
+    /// eight descriptors spell.
     #[must_use]
     pub fn scenario_key_vocabulary(&self) -> Vec<&str> {
         let mut keys: Vec<&str> = self
             .scenarios
             .iter()
-            .flat_map(|scenario| scenario.root_keys.iter().map(String::as_str))
+            .flat_map(|scenario| scenario.keys.iter().map(String::as_str))
             .collect();
         keys.sort_unstable();
         keys.dedup();
@@ -3003,6 +3017,13 @@ impl std::error::Error for SurfaceError {}
 /// discovery would hash a multi-gigabyte installation once per measurement
 /// field; the digest is cached and every span is bound to *it*, which is what
 /// stops a report from one installation being reused for another's numbers.
+///
+/// The cache is keyed on nothing, so **the first root a process measures is
+/// the only one it can measure**: a caller that passes a second installation
+/// root in the same process is answered from the first one's manifest rather
+/// than from its own. Measuring two installations is two processes — which is
+/// what every `accept_f32_d_*` test does, since each binds its numbers to one
+/// fingerprint pair.
 fn installation(root: &Path) -> Result<&'static InstallManifest, SurfaceError> {
     static CACHE: OnceLock<Result<InstallManifest, String>> = OnceLock::new();
     let cached = CACHE.get_or_init(|| {
@@ -3218,15 +3239,42 @@ impl ScenarioSurface {
         Self {
             container: container.to_owned(),
             mission_type: scenario_mission_type(node).map(str::to_owned),
-            root_keys: zrd_flat_fields(node)
-                .into_iter()
-                .map(|(key, _)| key.to_owned())
-                .collect(),
+            keys: zrd_key_census(node),
             enemy_groups: roster.enemy_groups().len() as u32,
             skills,
             ace_stats,
         }
     }
+}
+
+/// Every key a `.zrd` value spells, at **any** depth, sorted and deduplicated.
+///
+/// [`crate::stunts::zrd_flat_fields`] reads one level of the alternating
+/// key/value list grammar, which is enough for the fields a caller looks up by
+/// name. A *negative* needs more: "no key in this descriptor names a difficulty"
+/// is only a statement about the descriptor if the walk descends, because a
+/// nested record (`group1 = [ ... ]`) could carry one of its own. So this walks
+/// every list recursively and collects every text that occupies a key position,
+/// sorted so the census is comparable between installations.
+fn zrd_key_census(node: &ZrdValue) -> Vec<String> {
+    fn walk(node: &ZrdValue, keys: &mut BTreeSet<String>) {
+        let Some(children) = node.as_list() else {
+            return;
+        };
+        let mut index = 0;
+        while index + 1 < children.len() {
+            if let ZrdValue::Text(name) = &children[index] {
+                keys.insert(name.clone());
+                walk(&children[index + 1], keys);
+                index += 2;
+            } else {
+                index += 1;
+            }
+        }
+    }
+    let mut keys = BTreeSet::new();
+    walk(node, &mut keys);
+    keys.into_iter().collect()
 }
 
 /// Measures the original's AI surface over one installation.
@@ -3276,7 +3324,7 @@ pub fn original_ai_surface(root: &Path) -> Result<OriginalAiSurface, SurfaceErro
     }
     let difficulty_recorded_per_scenario = scenarios.iter().any(|scenario| {
         scenario
-            .root_keys
+            .keys
             .iter()
             .any(|key| key.to_ascii_lowercase().contains("difficul"))
     });
@@ -3588,6 +3636,31 @@ mod f32_d {
                 .any(|key| key.to_ascii_lowercase().contains("difficul")),
             "no measured scenario key names a difficulty: {vocabulary:?}"
         );
+        // The negative is only as good as the census behind it, so the census is
+        // pinned too: a root key (`ace_stats`) and a key that only exists
+        // *inside* a nested record (`enemy_skill`, declared by each enemy
+        // group) are both present. A walk that stopped at the root would still
+        // have produced the negative above, so this is what makes it a
+        // measurement of the whole descriptor.
+        assert!(
+            vocabulary.contains(&"ace_stats"),
+            "a root key is in the census: {vocabulary:?}"
+        );
+        assert!(
+            vocabulary.contains(&ENEMY_SKILL_KEY),
+            "a key nested inside an enemy-group record is in the census: {vocabulary:?}"
+        );
+        assert!(
+            vocabulary.contains(&SCENARIO_ACE_SKILL_KEY),
+            "and one nested inside the ace record: {vocabulary:?}"
+        );
+        for scenario in &surface.scenarios {
+            assert!(
+                scenario.keys.iter().any(|key| key == ENEMY_SKILL_KEY),
+                "{}: this descriptor's own census descends into its groups",
+                scenario.container
+            );
+        }
         // The two origins stay distinct: a selected step is bounded by the
         // measurement, a designed extension is not.
         assert_ne!(
@@ -3697,7 +3770,7 @@ mod f32_d {
             }
             assert!(
                 !scenario
-                    .root_keys
+                    .keys
                     .iter()
                     .any(|key| key == "ace_damage" || key == "ace_health"),
                 "{}: the measured ace record names no damage or health slot",
@@ -4150,31 +4223,39 @@ mod evidence_report_f32_d {
         "steps; the difficulty row is ONE row of the game-options screen - IDS_GO_DIFFICULTY_TITLE at ",
         "1084 with IDS_GO_VIEW_TITLE at 1085 immediately after, and IDS_GO_DIFFICULTY_DESC at 1087 with ",
         "IDS_GO_VIEW_DESC at 1088 immediately after - and the instant-action screens' single ",
-        "IDS_IA_DIFFICULTY at 3695 with IDS_IA_PLANES at 3700 after it; the complete root-key ",
-        "vocabulary of all EIGHT instant-action scenario descriptors contains no difficulty key and no ",
-        "measured record anywhere binds a step to a scenario, so a difficulty is a SELECTION and not a ",
-        "per-mission value; the per-aircraft AI skill vocabulary is exactly THREE labels over FORTY ",
+        "IDS_IA_DIFFICULTY at 3695 with IDS_IA_PLANES at 3700 after it; the complete key vocabulary ",
+        "of all EIGHT instant-action scenario descriptors, at every depth rather than at the root ",
+        "only, contains no difficulty key and no measured record anywhere binds a step to a ",
+        "scenario, so a difficulty is a SELECTION and not a per-mission value; the per-aircraft AI ",
+        "skill vocabulary is exactly THREE labels over FORTY ",
         "declarations - thirty-two enemy groups (four per descriptor) plus eight named aces - with the ",
         "counts the census produced; the mission types the descriptors declare are exactly three; and ",
         "ace_stats is a NINE-slot integer vector saturated at 9 in every slot of every one of the eight ",
         "descriptors, with no measured key naming a damage or health slot. AC04: the production ",
         "cs_sim::ai::combat::CombatRuntime::probe_difficulties replays one mission-combat scenario 24 ",
-        "times at each of the four declared tiers, 600 ticks per run, from one recorded root seed; run n ",
+        "times at each of the four declared tiers, 600 ticks per run, from one recorded root seed under ",
+        "the contract's domain recipe (stream seed = SplitMix64 of root_seed ^ run << 32 ^ the probe's ",
+        "own domain constant); run n ",
         "replays byte-identical geometry and threat stamps at every tier (a per-index 64-bit FNV-1a ",
         "digest over every position and threat stamp, tier-invariant), the weapons snapshot is one ",
         "snapshot for every tier (tier-invariant digest), and every tier replayed the same number of ",
         "ticks, so the only thing that differs is the profile resolve_profile selected - which is F32 ",
         "non-negotiable 1 and non-negotiable 2 checked mechanically rather than by review. The measured ",
         "outcome over the synthetic fixture: the ticks that answered an authoritative attack against ",
-        "the protected actor rose at every step (relaxed 196.83 per run, standard 303.00, hard 351.00, ",
+        "the protected actor rose at every step (relaxed 190.04 per run, standard 303.00, hard 351.00, ",
         "elite 375.00) while the deferred-threat count fell (184.00, 97.00, 49.00, 25.00 per run), with ",
         "the engagements, range refusals and applied formation recoveries identical at every tier as ",
-        "controls; the relaxed tier's answer count has a non-zero population variance (568.81 of the ",
+        "controls; the relaxed tier's answer count has a non-zero population variance (380.87 of the ",
         "mean square) while the elite tier's is exactly zero, so the comparison is a distribution and ",
-        "not four deterministic traces. A degenerate roster that resolves ONE profile for all four tiers ",
+        "not four deterministic traces. Each run applies exactly ONE recovery, the declared ",
+        "assigned-target-destruction path at the tick the attacker disappears: the probe also loses a ",
+        "formation FOLLOWER mid-run, and a follower is not a leader, so it is a membership change and ",
+        "raises no recovery - DifficultyProbeRun::recovery_triggers measures the attribution rather than ",
+        "asserting it. A degenerate roster that resolves ONE profile for all four tiers ",
         "measures one distinct profile and no difference at all, which is the negative the probe exists ",
-        "to catch. FIDELITY LIMITATIONS (unmeasured original behavior, recorded in ai-surface.json, in ",
-        "the committed finding docs/findings/2026-10-03-f32-d-original-ai-roles-and-difficulty.md and ",
+        "to catch. FIDELITY LIMITATIONS (unmeasured original behavior, listed in this report's ",
+        "unknowns and in review.method, recorded in ai-surface.json, ",
+        "in the committed finding docs/findings/2026-10-03-f32-d-original-ai-roles-and-difficulty.md and ",
         "in the filed follow-up tasks; none of them is claimed by this report): claim ",
         "f32.d.limit.difficulty_effects - the option's THREE steps are measured but nothing in any ",
         "shipped file says what any step changes, so cs_content::ai::SkillKnob remains a designed ",
@@ -4215,6 +4296,26 @@ mod evidence_report_f32_d {
         "and no agent review replaces the owner's human approval. Validated with ",
         "tools/validate_evidence.py --require-pass."
     );
+
+    /// What the report's `unknowns` says: one line per unresolved original
+    /// behaviour, each naming the claim id, what is unknown, the content it
+    /// affects and the task that resolves it.
+    ///
+    /// The same eight claims are spelled out in [`REVIEW_METHOD`]. They are in
+    /// *both* places on purpose: `unknowns` is the machine-readable field a
+    /// validator and a reader look at first, and a limitation that lives only in
+    /// prose is a limitation a tool can drop. Nothing here is removed to make a
+    /// check pass.
+    const UNKNOWNS: &[&str] = &[
+        "f32.d.limit.difficulty_effects: the original's difficulty option has three measured steps and no measured file says what any step changes; cs_content::ai::SkillKnob and the runtime's tier profiles are designed alternatives under F32 non-negotiable 1, and nothing forces a tier's author to say which knobs are evidence-backed (resolving task #566 F32-DIFFICULTY-EFFECT)",
+        "f32.d.limit.skill_tier_effects: the measured per-aircraft labels novice/veteran/ace carry no measured effect, so cs_sim's skill knobs for them are designed and cs_content::ai::DeclaredSkillTier is a closed vocabulary with no production consumer yet (resolving task #567 F32-SKILL-EFFECT)",
+        "f32.d.limit.ace_stats: nine ace stat slots and the maximum of nine are measured, but no file names a slot, its order, or what a value below the maximum does, and no measured key names a damage or health slot (resolving task #568 F32-ACE-STATS)",
+        "f32.d.limit.ai_roles: the original's AI role set is in no measured file; cs_content::ai::DeclaredCombatRole's seven roles and cs_sim's mirror are designed vocabulary with no code check distinguishing them (resolving task #569 F32-ROLES)",
+        "f32.d.limit.difficulty_naming: the original's three step names live in its shipped localizable string image and are deliberately not reproduced in Git or in any report, so the declared tier labels claim nothing about the original's wording and the tier-to-step mapping is positional only (resolving task F32-LOWERING, #551)",
+        "f32.d.limit.per_mission_difficulty: measured negative - no key at any depth of any of the eight scenario descriptors names a difficulty, so this engine cannot read a per-mission difficulty from content (resolving task F32-LOWERING, #551)",
+        "f32.d.limit.probe_geometry: every number in the probe's scenario is newly authored project design because no measured file describes an original AI encounter, so the probe measures this engine's per-tier decision behavior and is not evidence about the original's numbers (resolving task #570 F32-PROBE-GEOMETRY)",
+        "f32.d.limit.fire_discipline: the runtime reports fire_discipline_ticks and aim_error_rad without enforcing them, so two tiers differing only in those two knobs measure as identical and the probe's firing-tick control cannot discriminate a tier (resolving task #571 F32-FIRE-DISCIPLINE)",
+    ];
 
     #[test]
     #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
@@ -4297,6 +4398,17 @@ mod evidence_report_f32_d {
             jstr(&reviewer),
             jstr(REVIEW_METHOD)
         );
+        let unknowns = str_array(
+            &UNKNOWNS
+                .iter()
+                .map(|unknown| (*unknown).to_owned())
+                .collect::<Vec<_>>(),
+        );
+        assert!(
+            !unknowns.is_empty() && UNKNOWNS.len() >= 8,
+            "a retail report that leaves its unresolved original behaviour out of \
+             `unknowns` is not reporting it"
+        );
 
         let report = format!(
             concat!(
@@ -4305,7 +4417,7 @@ mod evidence_report_f32_d {
                 "\"source\":{source},\"seed\":{seed},",
                 "\"ticks\":{{\"start\":0,\"end\":{ticks}}},\"overrides\":[],",
                 "\"capabilities\":[\"retail\",\"synthetic\"],\"tests\":{tests},",
-                "\"assertions\":{assertions},\"artifacts\":{artifacts},\"unknowns\":[],",
+                "\"assertions\":{assertions},\"artifacts\":{artifacts},\"unknowns\":{unknowns},",
                 "\"review\":{review},\"claim\":\"implemented\"}}\n"
             ),
             tree = jstr(&tree),
@@ -4318,6 +4430,7 @@ mod evidence_report_f32_d {
             tests = tests,
             assertions = assertion_array(&suite.assertions),
             artifacts = artifact_array(&artifacts),
+            unknowns = unknowns,
             review = review,
         );
         std::fs::write(evidence_dir.join("acceptance.json"), report)
@@ -4339,7 +4452,7 @@ mod evidence_report_f32_d {
             .iter()
             .map(|scenario| {
                 format!(
-                    "{{\"container\":{},\"mission_type\":{},\"enemy_groups\":{},\"skill_labels\":{},\"root_keys\":{},\"ace_stats\":{}}}",
+                    "{{\"container\":{},\"mission_type\":{},\"enemy_groups\":{},\"skill_labels\":{},\"keys\":{},\"ace_stats\":{}}}",
                     jstr(&scenario.container),
                     scenario
                         .mission_type
@@ -4347,7 +4460,7 @@ mod evidence_report_f32_d {
                         .map_or_else(|| "null".to_owned(), |value| jstr(value)),
                     scenario.enemy_groups,
                     str_array(&scenario.skills.clone()),
-                    str_array(&scenario.root_keys.clone()),
+                    str_array(&scenario.keys.clone()),
                     scenario
                         .ace_stats
                         .as_ref()
