@@ -278,6 +278,14 @@ pub enum HostFault {
         settled: TerminalState,
         offered: TerminalState,
     },
+    /// The result carries an execution key from another session generation, so
+    /// it is not this session's result: a stale replay of an earlier run of the
+    /// same mission, or a crossed record. Refused whole — its effects and its
+    /// outcome claim together — because the ledger cannot tell which part of it
+    /// belongs to this session. Applying it would grant a reward this session
+    /// never earned and write a foreign key into the record, which is a record
+    /// nothing can ever restore.
+    ForeignSession { session: SessionGeneration },
 }
 
 impl fmt::Display for HostFault {
@@ -293,6 +301,11 @@ impl fmt::Display for HostFault {
                     "outcome already settled as {settled:?}, refused {offered:?}"
                 )
             }
+            Self::ForeignSession { session } => write!(
+                f,
+                "result carries an execution key from session {}",
+                session.0
+            ),
         }
     }
 }
@@ -424,14 +437,34 @@ impl HostLedger {
 
     /// Applies one tick's events, in event-key order.
     ///
-    /// An event whose execution key is already spent is skipped: that is the
-    /// replay and restore guard. `ObjectiveCompleted` is a mission-state
-    /// observation rather than a host effect and is skipped too.
+    /// The order is recomputed from the keys rather than taken from the order the
+    /// caller handed the events over in, so `HostReport`'s claim of key order is
+    /// true of this report and not of the input. An event whose execution key is
+    /// already spent is skipped: that is the replay and restore guard.
+    /// `ObjectiveCompleted` is a mission-state observation rather than a host
+    /// effect and is skipped too.
+    ///
+    /// A result carrying another session's execution key is refused whole, before
+    /// any of it is applied: see [`HostFault::ForeignSession`].
     pub fn apply(&mut self, result: &TickResult) -> HostReport {
         let mut report = HostReport::new(result.tick);
+        if let Some(session) = result
+            .events
+            .iter()
+            .find(|event| event.key.session != self.session)
+            .map(|event| event.key.session)
+        {
+            report.record(HostOutcome::SessionRefused {
+                fault: HostFault::ForeignSession { session },
+            });
+            return report;
+        }
+        let mut order: Vec<usize> = (0..result.events.len()).collect();
+        order.sort_by_key(|index| result.events[*index].key);
         let torn_down = self.torn_down.is_some();
         let settled = self.settled;
-        for event in &result.events {
+        for index in order {
+            let event = &result.events[index];
             let effect = match &event.kind {
                 EventKind::ObjectiveCompleted => continue,
                 EventKind::RewardGranted(reward) => HostEffect::Reward {
@@ -614,6 +647,9 @@ impl HostLedger {
                 count: snapshot.rewards.len(),
             });
         }
+        if let Some((tick, TerminalState::Running)) = snapshot.settled {
+            return Err(HostRestoreError::SettledWhileRunning { tick });
+        }
         let rewards: BTreeSet<_> = snapshot.rewards.iter().cloned().collect();
         let mut applied: BTreeMap<_, _> = BTreeMap::new();
         for (key, effect) in &snapshot.applied {
@@ -697,6 +733,13 @@ pub enum HostRestoreError {
     RewardCatalogTooLong {
         count: usize,
     },
+    /// The record claims the session settled while it was still `Running`. A
+    /// live ledger settles only on a terminal outcome, so this record would make
+    /// every later outcome a contradiction and leave the session unable to
+    /// settle at all.
+    SettledWhileRunning {
+        tick: Tick,
+    },
 }
 
 impl fmt::Display for HostRestoreError {
@@ -737,6 +780,11 @@ impl fmt::Display for HostRestoreError {
             Self::RewardCatalogTooLong { count } => write!(
                 f,
                 "{count} catalog rewards exceed the bound {MAX_REWARD_CATALOG}"
+            ),
+            Self::SettledWhileRunning { tick } => write!(
+                f,
+                "host record claims the session settled as Running on tick {}",
+                tick.0
             ),
         }
     }
@@ -1472,6 +1520,290 @@ mod tests {
             MissionSession::restore(build(), held),
             Err(SessionRestoreError::Host(
                 HostRestoreError::TooManyOutstanding { .. }
+            ))
+        ));
+
+        // The intact record still restores.
+        assert_eq!(
+            MissionSession::restore(build(), good)
+                .unwrap()
+                .host()
+                .granted_rewards(),
+            1
+        );
+    }
+    /// An adversarial corpus member run through the *wired* path: objectives
+    /// declared out of symbol order, each with a delayed reward, so the host is
+    /// asked to apply effects whose key order differs from the order they were
+    /// produced in.
+    fn scrambled_program() -> MissionProgram {
+        MissionProgram {
+            version: IR_VERSION,
+            mission: cid(ContentKind::Mission, "synthetic-f37d"),
+            variables: vec![],
+            objectives: [9u32, 3, 7, 1, 5]
+                .into_iter()
+                .map(|id| {
+                    objective(
+                        id,
+                        Condition::Const(true),
+                        vec![
+                            reward(&format!("r-{id}")),
+                            delay(id as u64 % 3, vec![reward(&format!("r-{id}-late"))]),
+                        ],
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    use cs_script::runtime::EventKey;
+
+    /// The event key of every reward the producer emitted, in emission order.
+    fn reward_keys(events: &[MissionEvent]) -> Vec<ExecutionKey> {
+        events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::RewardGranted(_)))
+            .map(|e| e.key.execution_key())
+            .collect()
+    }
+
+    /// Every effect the host applied, in the order the report gave it.
+    fn applied_rewards(report: &HostReport) -> Vec<ContentId> {
+        report.rewards_granted.clone()
+    }
+
+    /// AC04 through the wired path: a mission with an undecodable instruction
+    /// never launches, so it is Unsupported, grants nothing and progresses
+    /// nothing — whatever the reward catalog declares for it.
+    #[test]
+    fn accept_f37_d_unsupported_mission_never_rewards_or_progresses() {
+        // The objectives declared before the undecodable one would reward and
+        // finish the mission on tick 1.
+        let rewarding = objective(
+            1,
+            Condition::Const(true),
+            vec![reward("r-reward"), Action::Finish(Outcome::Succeeded)],
+        );
+        let catalog = vec![cid(ContentKind::Blueprint, "r-reward")];
+        for (index, undecodable) in [
+            objective(
+                2,
+                Condition::Unknown {
+                    instruction: "native 0x1f".into(),
+                },
+                vec![reward("r-condition")],
+            ),
+            objective(
+                3,
+                Condition::Const(true),
+                vec![Action::Unknown {
+                    instruction: "op 0x77".into(),
+                }],
+            ),
+            objective(
+                4,
+                Condition::Const(true),
+                vec![delay(
+                    1,
+                    vec![delay(
+                        1,
+                        vec![Action::Unknown {
+                            instruction: "deep op".into(),
+                        }],
+                    )],
+                )],
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let built = MissionProgram {
+                version: IR_VERSION,
+                mission: cid(ContentKind::Mission, "synthetic-f37d"),
+                variables: vec![],
+                objectives: vec![rewarding.clone(), undecodable],
+            };
+            let refused = MissionSession::launch(built, SESSION, catalog.clone())
+                .expect_err("an undecodable instruction must refuse the launch");
+            assert_eq!(refused.terminal, TerminalState::Unsupported);
+            assert!(
+                matches!(
+                    refused.error,
+                    ValidationError::UnsupportedInstruction { .. }
+                ),
+                "corpus {index} refused for the wrong reason: {:?}",
+                refused.error
+            );
+            // The refusal is not a launch that produced nothing: there is no
+            // session, so there is no state, no host ledger and no record.
+            assert!(
+                refused
+                    .error
+                    .to_string()
+                    .contains("unsupported instruction"),
+                "corpus {index} diagnostic: {}",
+                refused.error
+            );
+        }
+    }
+
+    /// The reference ordering probe through the host: effects are applied and
+    /// reported in the documented key order, whatever order they arrive in, and
+    /// the applied ledger keeps that order too.
+    #[test]
+    fn accept_f37_d_host_orders_effects_by_reference_key_not_arrival_order() {
+        let catalog: Vec<ContentId> = ["r-1", "r-3", "r-5", "r-7", "r-9"]
+            .into_iter()
+            .map(|k| cid(ContentKind::Blueprint, k))
+            .collect();
+        let mut s = MissionSession::launch(scrambled_program(), SESSION, catalog.clone()).unwrap();
+        let tick = s.advance(&facts(), Tick(1)).unwrap();
+
+        // The five immediate rewards are reported in source-symbol order, not in
+        // the order their objectives were declared (9, 3, 7, 1, 5) and not in
+        // the order the delayed items fire.
+        assert_eq!(
+            applied_rewards(&tick.host),
+            catalog,
+            "the host applied effects out of reference key order"
+        );
+        // The producer emitted them in the same order: the host's report is the
+        // reference key order, not an accident of what arrived first.
+        let keys = reward_keys(&tick.events);
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(
+            keys, sorted,
+            "the producer emitted rewards out of key order"
+        );
+
+        // A result whose events arrive out of order is still applied and
+        // reported in key order: the ledger does not trust the arrival order for
+        // the order it claims.
+        let mut other =
+            MissionSession::launch(scrambled_program(), SESSION, catalog.clone()).unwrap();
+        let mut shuffled = other.step(&facts(), Tick(1)).unwrap();
+        assert_ne!(
+            shuffled.events.first().map(|e| e.key),
+            shuffled.events.last().map(|e| e.key),
+            "the fixture must not already be in reverse order"
+        );
+        shuffled.events.reverse();
+        let report = other.host_mut().apply(&shuffled);
+        assert_eq!(
+            applied_rewards(&report),
+            catalog,
+            "a shuffled result changed the order the host reported"
+        );
+        assert_eq!(other.host().granted_rewards(), 5);
+    }
+
+    /// A stale event from an earlier run of the same mission is refused, and the
+    /// refusal leaves the ledger saveable: applying it would grant a reward
+    /// this session never earned and write an execution key from another
+    /// session into the record, which is a record nothing can ever restore.
+    #[test]
+    fn accept_f37_d_host_refuses_a_stale_session_event_and_stays_saveable() {
+        let stale_reward = cid(ContentKind::Blueprint, "r-stale");
+        let live_reward = cid(ContentKind::Blueprint, "r-live");
+        let build = || {
+            program(vec![objective(
+                1,
+                Condition::Const(true),
+                vec![
+                    reward("r-live"),
+                    delay(LATER_TICK - 1, vec![reward("r-stale")]),
+                ],
+            )])
+        };
+        let mut s = MissionSession::launch(
+            build(),
+            SESSION,
+            vec![live_reward.clone(), stale_reward.clone()],
+        )
+        .unwrap();
+        s.advance(&facts(), Tick(1)).unwrap();
+        assert_eq!(s.host().granted_rewards(), 1);
+
+        // The previous run's session generation, replaying a result this run
+        // never produced.
+        let stale = TickResult {
+            tick: Tick(1),
+            events: vec![
+                MissionEvent {
+                    key: EventKey {
+                        session: SessionGeneration(SESSION.0 - 1),
+                        tick: Tick(1),
+                        source: SymbolId(1),
+                        sequence: 1,
+                    },
+                    kind: EventKind::RewardGranted(stale_reward.clone()),
+                },
+                MissionEvent {
+                    key: EventKey {
+                        session: SESSION,
+                        tick: Tick(1),
+                        source: SymbolId(1),
+                        sequence: 2,
+                    },
+                    kind: EventKind::RewardGranted(stale_reward.clone()),
+                },
+            ],
+            terminal: TerminalState::Succeeded,
+            stop: None,
+        };
+        let report = s.host_mut().apply(&stale);
+        assert_eq!(
+            report.faults,
+            [HostFault::ForeignSession {
+                session: SessionGeneration(SESSION.0 - 1)
+            }],
+            "a result carrying another session's key must be refused whole"
+        );
+        assert!(applied_rewards(&report).is_empty(), "{report:?}");
+        assert_eq!(s.host().granted_rewards(), 1, "{report:?}");
+        // The foreign outcome claim is refused with it: a stale result cannot
+        // settle this session.
+        assert_eq!(s.host().settled(), None);
+        assert!(s.host().applied().all(|(key, _)| key.session == SESSION));
+
+        // The session is still saveable, and the run continues to grant the
+        // reward this session really earned.
+        let record = s.snapshot();
+        let mut restored = MissionSession::restore(build(), record).unwrap();
+        assert_eq!(restored.host().granted_rewards(), 1);
+        let later = restored.advance(&facts(), Tick(LATER_TICK)).unwrap();
+        assert_eq!(applied_rewards(&later.host), vec![stale_reward]);
+        assert_eq!(restored.host().granted_rewards(), 2);
+    }
+
+    /// The host record is data from outside the process: one that claims the
+    /// session settled while it was still running is refused, because it would
+    /// make every later outcome a contradiction and leave the session unable to
+    /// settle at all.
+    #[test]
+    fn accept_f37_d_host_restore_refuses_a_record_that_settled_on_running() {
+        let build = || {
+            program(vec![objective(
+                1,
+                Condition::Const(true),
+                vec![reward("r")],
+            )])
+        };
+        let mut s =
+            MissionSession::launch(build(), SESSION, vec![cid(ContentKind::Blueprint, "r")])
+                .unwrap();
+        s.advance(&facts(), Tick(1)).unwrap();
+        let good = s.snapshot();
+        assert_eq!(good.host.settled, None);
+
+        let mut running = good.clone();
+        running.host.settled = Some((Tick(1), TerminalState::Running));
+        assert!(matches!(
+            MissionSession::restore(build(), running),
+            Err(SessionRestoreError::Host(
+                HostRestoreError::SettledWhileRunning { .. }
             ))
         ));
 

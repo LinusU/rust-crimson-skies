@@ -25,6 +25,12 @@
 //! 4. **Apply** — `State` writes become visible, `Terminal` requests are
 //!    resolved by the [`PrecedencePolicy`], `Host` effects are emitted.
 //!
+//! Two orders come out of one tick and they are not the same order. Execution
+//! follows phase 2 then 3, so two objectives writing one variable on one tick
+//! leave the later *declaration*'s write standing. Observation follows the
+//! [`EventKey`] total order, which is by source symbol and does not depend on
+//! declaration order at all. F37-D pinned both with its corpus.
+//!
 //! Bounds (contract: "each tick has an instruction/action budget and
 //! recursion/stack limits"):
 //! - every objective firing, pending dequeue and action execution spends one

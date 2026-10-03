@@ -252,13 +252,23 @@ pub struct Objective {
 }
 
 /// The versioned mission program: data only.
+///
+/// `objectives` contributes two different orders and neither is the other's sort
+/// (both are designed policies, pinned by the F37-D corpus):
+///
+/// - **Execution order** is declaration order. Within one tick the objectives
+///   resolve in the order they are declared here, then the deferred work queue
+///   drains. When two objectives write the same variable on the same tick, the
+///   later declaration's write is the one that lands.
+/// - **Observation order** is [`crate::runtime::EventKey`]: session, tick, source
+///   symbol, sequence. It does not depend on declaration order at all, so the
+///   same objectives declared in any order report the same event sequence.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MissionProgram {
     pub version: u32,
     /// The mission's stable id (`ContentKind::Mission`).
     pub mission: ContentId,
     pub variables: Vec<Variable>,
-    /// Declaration order is the program sequence used for stable ordering.
     pub objectives: Vec<Objective>,
 }
 

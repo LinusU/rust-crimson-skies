@@ -837,6 +837,65 @@ fn reschedules(program: &MissionProgram) -> bool {
     program.objectives.iter().any(|o| in_actions(&o.actions))
 }
 
+/// Execution order and observation order are different orders, and the corpus
+/// pins both.
+///
+/// Within one tick, objectives resolve in *declaration* order and the queue
+/// drains afterwards, so when two objectives write the same variable on the same
+/// tick the later declaration's write is the one that lands. The events those
+/// objectives emit are ordered by *source symbol*, so the one whose write was
+/// overwritten reports first. Neither order is the other's sort: a reader of the
+/// event stream cannot infer the surviving value from the report order.
+#[test]
+fn accept_f37_d_simultaneous_writes_follow_execution_order_events_follow_key_order() {
+    let build = |declaration: &[u32]| {
+        program(
+            vec![variable(100, 0)],
+            declaration
+                .iter()
+                .map(|id| objective(*id, Condition::Const(true), vec![set(100, *id as i32)]))
+                .collect(),
+        )
+        .validate()
+        .unwrap()
+    };
+    let survivor = |p: &ValidatedProgram| {
+        let mut run = state(p);
+        let mut observed = Vec::new();
+        for tick in 1..=2 {
+            let result = run.step(p, &MissionFacts::default(), Tick(tick)).unwrap();
+            observed.push(trace(&result.events));
+        }
+        (run.variable(SymbolId(100)).cloned(), observed)
+    };
+
+    // Declared 5 then 2: objective 2 runs last, so its value lands.
+    let five_first = build(&[5, 2]);
+    let (value, reported) = survivor(&five_first);
+    assert_eq!(value, Some(Value::Int(2)), "the later declaration must win");
+    assert_eq!(
+        reported,
+        // A state write emits no event: only the completion of each objective is
+        // observable, and those two are ordered by source symbol.
+        vec![vec![(1, 2, 0), (1, 5, 0)], vec![]],
+        "the events are ordered by source symbol, so #2 reports first"
+    );
+
+    // Declared 2 then 5: the same two objectives, the other survivor.
+    let two_first = build(&[2, 5]);
+    let (value, reported) = survivor(&two_first);
+    assert_eq!(
+        value,
+        Some(Value::Int(5)),
+        "the survivor follows declaration order, not symbol order"
+    );
+    assert_eq!(
+        reported,
+        vec![vec![(1, 2, 0), (1, 5, 0)], vec![]],
+        "the report order does not change with the declaration order"
+    );
+}
+
 /// The corpus is replayable: two independent save strategies produce the same
 /// trace for every program, so the record carries every piece of state a later
 /// observation depends on.
