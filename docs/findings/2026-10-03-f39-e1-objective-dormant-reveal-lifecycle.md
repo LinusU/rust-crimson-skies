@@ -338,7 +338,7 @@ is a run that was observed, not an estimate):
 | `measure_dormant_declarations` matches any `OBJECTIVE*` key, so `OBJECTIVE_DELAY` counts as a block | `…only_objective_with_digits_is_a_numbered_block` (fast, so CI kills it too) and `retail_…every_mission_record_is_measured_whole` |
 | `cue_ordered_dated_blocks` compares cue names without requiring a trailing index | `retail_…dated_arguments_order_the_original_s_own_cue_sequence` |
 | `condition_ladders` keys families by mission alone, ignoring the condition set | `retail_…shared_condition_sets_carry_several_thresholds` |
-| `counts_above_conditions` counts only blocks that have conditions | `retail_…a_completion_count_never_exceeds_its_own_conditions` |
+| `counts_above_conditions` counts only blocks that have conditions | `retail_…only_the_condition_free_block_declares_an_unreachable_count` |
 
 **9 mutations, 9 killed.** The third row is the one that needed a test change
 rather than a code change: with only `INACTIVATED`/`INACTIVE_A` in the fixture

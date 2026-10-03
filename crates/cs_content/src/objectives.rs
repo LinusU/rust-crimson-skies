@@ -2724,11 +2724,14 @@ impl MeasuredDormantBlock {
     /// Whether the block declares a completion count that its own conditions
     /// cannot satisfy.
     ///
-    /// Measured over the installation: **no** block declares a count larger than
-    /// its number of conditions, and exactly one declares a count with no
-    /// condition at all. Both facts are what a lowering needs in order to
-    /// refuse such a declaration instead of running it, so the check lives in
-    /// production and is queried rather than re-derived by each consumer.
+    /// Measured over the installation: exactly one block of the 130 that carry a
+    /// count declares one larger than its number of conditions, and it is the
+    /// **same** block that declares a count with no condition at all
+    /// (`zbd/c4/m03 OBJECTIVE52`, count 2 over zero conditions). Of the rest, 16
+    /// equal their condition count and 113 are below it. Both facts are what a
+    /// lowering needs in order to refuse such a declaration instead of running
+    /// it, so the check lives in production and is queried rather than re-derived
+    /// by each consumer.
     #[must_use]
     pub fn count_exceeds_conditions(&self) -> bool {
         self.completion_count

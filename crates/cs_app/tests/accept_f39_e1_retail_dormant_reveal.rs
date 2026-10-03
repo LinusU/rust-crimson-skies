@@ -251,13 +251,13 @@ fn accept_f39_e1_retail_both_sound_group_keys_are_read_from_the_installation() {
     assert!(completed.iter().all(|cue| !cue.is_empty()));
 }
 
-/// The completion count is a threshold over the block's own conditions: measured
-/// over 130 declarations it is never larger than the condition list, it equals
-/// the condition list in 16 blocks, and exactly one block declares a count with
-/// no condition at all.
+/// The completion count is a threshold over the block's own conditions: of the
+/// 130 measured declarations exactly one is larger than its condition list — and
+/// that is the one block whose list is empty (`zbd/c4/m03 OBJECTIVE52`, count 2)
+/// — 16 equal the list and 113 are below it.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_f39_e1_retail_a_completion_count_never_exceeds_its_own_conditions() {
+fn accept_f39_e1_retail_only_the_condition_free_block_declares_an_unreachable_count() {
     let census = census();
     assert_eq!(census.completion_count_blocks(), 130);
     assert_eq!(
