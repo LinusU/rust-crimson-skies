@@ -727,6 +727,22 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     // `main`. Only the accounting belongs here; F14-D.7's own retail test pins
     // which cues these are.
     let sound_rows = rows_of(ContentKind::Sound);
+    // F14-D.8 adds the two collections that stage measured: one stunt row per
+    // fly-through target of a `stunt_flying` instant-action scenario and one
+    // scrapbook row per `Mission_Spread_Item` of the shared archive's table.
+    // Neither row is launchable, so the denominator above is unchanged; the
+    // identities are pinned by accept_f14_d_8_retail_…, this total only has to
+    // account for them. `CustomPlane` contributes no row at all.
+    let stunt_rows = rows_of(ContentKind::Stunt);
+    assert_eq!(
+        stunt_rows, 45,
+        "the 45 stunt_flying fly-through targets T463 measured"
+    );
+    let scrapbook_rows = rows_of(ContentKind::ScrapbookItem);
+    assert_eq!(
+        scrapbook_rows, 461,
+        "the 461 Mission_Spread_Item records F12-D measured"
+    );
     // Every row of the catalog is one of the three groups above: an inventoried
     // file, a launchable row with its program, or a row of a collection that is
     // not launchable. Anything else — and any collection a later stage adds
@@ -754,7 +770,9 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
             + paint_mask_rows
             + scene_node_rows
             + mesh_rows
-            + sound_rows,
+            + sound_rows
+            + stunt_rows
+            + scrapbook_rows,
         "every non-launchable row belongs to a collection this total names"
     );
     assert_eq!(
@@ -762,7 +780,7 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
         discovery.manifest.files.len() + 2 * launchable + unaccounted,
         "files plus one program row and one launchable row per mission and scenario, plus every \
          non-launchable collection row (multiplayer rules, worlds, scene nodes, meshes, factions, \
-         paint masks, airframes and sound cues)"
+         paint masks, airframes, sound cues, stunts and scrapbook items)"
     );
 
     // Nothing authored reached the retail inventory, and every row is

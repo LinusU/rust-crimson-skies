@@ -112,6 +112,7 @@
 //!   cannot move the denominator,
 //!   and F41's declared bus/playback metadata stays an explicit
 //!   [`UnsupportedReason::Unknown`] on every row while no media player consumer
+<<<<<<< HEAD
 //!   is claimed;
 //! * one [`ContentKind::SceneNode`] row per stored node of every GameZ geometry
 //!   container the installation holds, and one [`ContentKind::Mesh`] row per
@@ -126,7 +127,41 @@
 //!   container and carries an explicit unknown naming exactly what could not be
 //!   derived. Neither kind is launchable, so the denominator does not move; the
 //!   per-container counts are reported in [`CollectionStatus`] rather than
-//!   dropped.
+//!   dropped,
+//! * one [`ContentKind::Stunt`] row per fly-through danger-zone target of an
+//!   instant-action scenario the installation's own `ia.zrd` marks
+//!   [`STUNT_MISSION_TYPE`] (F14-D.8), read by the producing stage's own
+//!   readers ([`decode_zrd`], [`scenario_mission_type`],
+//!   [`scenario_fly_through_targets`]) over the scenario reader archive's
+//!   `targets.zrd` member. The identity is the scenario directory's own
+//!   derivation plus the target's own zone label — never a file name — and the
+//!   row is located by the member's own checked span inside the archive, with a
+//!   `Static` edge onto the archive's inventory row. A stunt is **not**
+//!   launchable, so it adds nothing to the denominator; what the scenario bytes
+//!   do not state (direction, clearance, reward, repeat and geometry) stays an
+//!   explicit [`UnsupportedReason::Unknown`] and a fly-through target of a
+//!   non-stunt scenario is counted in [`CollectionStatus`] rather than dropped;
+//! * one [`ContentKind::ScrapbookItem`] row per `Mission_Spread_Item` record of
+//!   the shared archive's `ASSETS/SCRAPBOOK.CSV` member (F14-D.8), read through
+//!   the production ROF reader and the keyed-list configuration reader. The
+//!   identity is the record's own entry key, never its line number, and the row
+//!   is located by the member's decoded extent and points at the archive's
+//!   inventory row. A scrapbook item is **not** launchable; an entry the
+//!   documented schema does not cover is counted in [`CollectionStatus`]
+//!   instead of becoming a guessed row;
+//!
+//! `ContentKind::CustomPlane` gets **no** row and no collection record, and the
+//! reason is that **nothing has been measured**: F64-A's legacy inventory is a
+//! list of what must be known, and it was written without the `retail`
+//! capability, so its `LEGACY_LAYOUT_INVENTORY[CustomAircraft].referenced_by`
+//! is empty because no installation file was ever looked at, not because one was
+//! searched and found to reference nothing (`evidence` is `Unknown`, and its own
+//! unknowns list "whether any original content path references a custom aircraft
+//! at all" first). No byte of this installation has been shown to name a legacy
+//! aircraft either, so a row could only be guessed from a file name; the question
+//! is recorded as unmeasured in the task's findings note and evidence report and
+//! assigned to the follow-up that measures the layout before any row can exist.
+>>>>>>> 6c4186ef (Populate the stunt and scrapbook collections of the retail baseline)
 //!
 //! Every row's [`Origin`] is [`Origin::Installation`] with a checked
 //! [`SourceSpan`] and the installation fingerprint of the bytes that were read,
@@ -178,6 +213,7 @@ use cs_assets::zbd::{ContainerVerdict, audit_containers};
 use cs_formats::LANG_ENGLISH_US;
 use cs_formats::gamez::{GameZMeshes, GameZNodes, read_gamez_meshes, read_gamez_nodes};
 use cs_formats::interp::DecodedInterp;
+use cs_formats::script_raw::discover_container;
 use cs_formats::zbd::{
     ZbdFamily, ZbdProbe, ZbdRole, dispatch, read_sound_archive, read_version_one_index,
     role_for_path,
@@ -192,7 +228,7 @@ use cs_types::content::{
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash, Fingerprint, FingerprintKind};
 use cs_types::install::InstallFileRecord;
 
-use crate::config::StringCatalog;
+use crate::config::{ConfigDocument, RecordSchema, StringCatalog};
 use crate::livery::{
     FactionPaletteCatalog, PAINT_SHOP_CONTAINER, PALETTE_CONTAINER, StockLiveryCatalog,
 };
@@ -200,6 +236,10 @@ use crate::multiplayer::{ModeEntry, TextRef, discover_modes, mode_name_id};
 use crate::scene::{
     AVAILABILITY_DISCOVERY_CLAIM, AirframeDeclaration, DiscoveredAirframe, RosterDeclarations,
     RosterDiscoveryIssue, discover_airframe_roster,
+};
+use crate::stunts::{
+    SCENARIO_MEMBER, SCENARIO_TARGETS_MEMBER, STUNT_MISSION_TYPE, decode_zrd,
+    scenario_fly_through_targets, scenario_mission_type,
 };
 
 use super::closure::{Closure, ClosureError, CompatibilityOptions, json_string};
@@ -352,6 +392,64 @@ pub const AIRFRAME_SCRIPT_IMAGE: &str = "ZBD/interp.zbd";
 /// roster, as the container spells it.
 const AIRFRAME_DECLARING_SCRIPT: &str = "support\\planes.gw";
 
+/// The `CollectionStatus::source` pattern of the `stunt` collection: one
+/// instant-action scenario reader archive per row, so no single spelling is
+/// right for every row (see [`WORLD_READER_PATTERN`]).
+///
+/// The `<world group>` component is a directory the campaign layout declares
+/// and the `<n>` component is the scenario's `IA<n>` leaf; each row's own span
+/// names the exact archive.
+pub const STUNT_SCENARIO_PATTERN: &str = "ZBD/<world group>/IA<n>/zrdr.zbd";
+
+/// The claim id behind the observation that a stunt is one fly-through
+/// danger-zone target of an instant-action scenario the original marks
+/// `stunt_flying`, and that the row's edge points at the inventory row of the
+/// reader archive `targets.zrd` was read from (F14-D.8).
+const CLAIM_STUNT_TARGET: &str = "f14.d.8.baseline.stunt_target";
+
+/// The claim id of the unknown every stunt row carries: which heading or
+/// sequence of passes completes the gate. The scenario bytes carry no
+/// direction rule (F42-A/F42-D).
+pub const STUNT_DIRECTION_CLAIM: &str = "f14.d.8.stunt_direction_rule";
+
+/// The claim id of the unknown every stunt row carries: the rim margin or
+/// altitude a completion must keep. The scenario bytes carry no clearance rule
+/// (F42-A/F42-D).
+pub const STUNT_CLEARANCE_CLAIM: &str = "f14.d.8.stunt_clearance_rule";
+
+/// The claim id of the unknown every stunt row carries: what completing the
+/// gate pays. The scenario bytes carry no payout (F42-A/F42-D).
+pub const STUNT_REWARD_CLAIM: &str = "f14.d.8.stunt_reward";
+
+/// The claim id of the unknown every stunt row carries: whether a second pass
+/// pays again. The scenario bytes carry no repeat policy (F42-A/F42-D).
+pub const STUNT_REPEAT_CLAIM: &str = "f14.d.8.stunt_repeat_policy";
+
+/// The claim id of the unknown every stunt row carries: the world box of the
+/// detection zone the target names. The box is a measurement of the world
+/// container (F42-D's `cs_app::world::triggers` survey); `cs_content` cannot
+/// reach it, so no row carries geometry.
+pub const STUNT_GEOMETRY_CLAIM: &str = "f14.d.8.stunt_geometry";
+
+/// The installation-relative spelling of the reader archive the scrapbook
+/// items are read from: the same shared archive
+/// `crate::livery::PAINT_SHOP_CONTAINER` names, so the two spellings cannot
+/// drift.
+pub const SCRAPBOOK_CONTAINER: &str = PAINT_SHOP_CONTAINER;
+
+/// The member of [`SCRAPBOOK_CONTAINER`] that declares the scrapbook items.
+///
+/// Measured by F12-D (`docs/findings/2026-10-02-f12-d-installation-wide-
+/// configuration-account.md`): the one routed `KeyedList` member of the shared
+/// archive whose 461 `Mission_Spread_Item` records the dialect inventory names.
+pub const SCRAPBOOK_MEMBER: &str = "ASSETS/SCRAPBOOK.CSV";
+
+/// The claim id behind the observation that a scrapbook item is one
+/// `Mission_Spread_Item` record of [`SCRAPBOOK_MEMBER`], and that the row's
+/// edge points at the inventory row of the archive holding the member's bytes
+/// (F14-D.8).
+pub const SCRAPBOOK_ITEM_CLAIM: &str = "f14.d.8.baseline.scrapbook_item";
+
 /// The installation-relative spelling of the reader archive a world group's
 /// rows are read from: one `<container>/<group>/zrdr.zbd` per world group.
 ///
@@ -473,8 +571,22 @@ pub const MODE_STRING_LANGUAGE: u32 = LANG_ENGLISH_US;
 ///
 /// [`MAX_CONTENT_KEY_LEN`]: cs_types::content::MAX_CONTENT_KEY_LEN
 pub fn install_file_key(spelling: &str) -> String {
-    let mut key = String::with_capacity(spelling.len());
-    for byte in spelling.bytes() {
+    install_key_bytes(spelling.as_bytes())
+}
+
+/// Encodes arbitrary bytes into a `ContentId` key with the same grammar as
+/// [`install_file_key`].
+///
+/// The spellings a source-derived collection keys on are not always `str`:
+/// a configuration entry's key is a byte string (`ConfigEntry::key`), and
+/// escaping it through `String::from_utf8_lossy` would merge two keys that
+/// differ only in a non-UTF-8 byte. This encoder folds case and escapes every
+/// byte outside `[a-z0-9.-]` as `_` + two lowercase hex digits + `_`, exactly
+/// as [`install_file_key`] does, so the identity is injective and stays inside
+/// the id grammar.
+fn install_key_bytes(bytes: &[u8]) -> String {
+    let mut key = String::with_capacity(bytes.len());
+    for byte in bytes {
         let folded = byte.to_ascii_lowercase();
         match folded {
             b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' => key.push(folded as char),
@@ -1100,6 +1212,22 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
         insert(&mut catalog, element)?;
     }
     collection_status.push(geometry.mesh_status);
+
+    // The stunts the instant-action scenarios declare and the scrapbook items
+    // the shared archive's scrapbook table declares. Neither kind is
+    // launchable, so neither moves the denominator.
+    let (stunts, stunt_status) =
+        stunt_rows(install_root, install_hash, &classified_reader_dirs, &files)?;
+    for element in stunts {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(stunt_status);
+
+    let (scrapbook, scrapbook_status) = scrapbook_rows(install_root, install_hash, &files)?;
+    for element in scrapbook {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(scrapbook_status);
 
     let coverage = coverage(&catalog, &roots)?;
 
@@ -2878,6 +3006,435 @@ fn airframe_unknowns(
         )?,
         UnsupportedReason::MissingRuntimeConsumer,
     ])
+}
+
+/// The `stunt` rows the installation's instant-action scenarios declare, plus
+/// the record of what the producing readers could not turn into a row.
+///
+/// The rows come from the scenarios the reader directory classifier marked
+/// [`ReaderDirRole::InstantActionScenario`]: each archive is read, its own
+/// `ia.zrd` member names the scenario's mode, and only a scenario whose mode is
+/// [`STUNT_MISSION_TYPE`] contributes rows. The targets come from the same
+/// archive's `targets.zrd`, read by the producing stage's own readers
+/// ([`scenario_fly_through_targets`]) rather than by a rule derived here, so a
+/// non-danger-zone objective (a zeppelin, a target building) is never mistaken
+/// for a gate.
+///
+/// Each row's identity is the scenario directory's own key
+/// ([`scenario_key`]) plus the target's own scenario-local zone label — never a
+/// file name and never a position — and its span is the `targets.zrd` member's
+/// own checked extent, with the digest of exactly those bytes. The single
+/// static edge points at the inventory row of the archive the member came from,
+/// so the closure walks from a stunt to the bytes that declared it.
+///
+/// The scenario bytes state an objective, never a rule: which direction
+/// completes the gate, what clearance it must keep, what it pays, whether a
+/// second pass pays again, and the world box of the detection zone are all not
+/// in these bytes (F42-A/F42-D). Each becomes an explicit
+/// [`UnsupportedReason::Unknown`] under its own claim, so a consumer sees what
+/// is missing instead of a designed default. A fly-through target of a
+/// scenario the original does **not** mark `stunt_flying` is counted in
+/// [`CollectionStatus::gaps`] under `non_stunt_fly_through_targets` rather than
+/// dropped, and no row is invented from a directory name.
+///
+/// A stunt is **not** launchable content, so this collection adds no root and
+/// cannot move the coverage denominator.
+///
+/// # Errors
+///
+/// [`BaselineError::Read`] when a classified scenario archive cannot be read,
+/// [`BaselineError::UninventoriedProgram`] when a classified archive is absent
+/// from the inventory it was classified out of, [`BaselineError::Key`] when an
+/// identity has no valid id key, [`BaselineError::Span`] when a member span is
+/// refused and [`BaselineError::Provenance`] when a claim id is refused. A
+/// scenario whose members do not decode is a reported gap, not an error.
+fn stunt_rows(
+    install_root: &Path,
+    install_hash: ContentHash,
+    classified: &[ClassifiedReaderDir],
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<(Vec<CatalogElement>, CollectionStatus), BaselineError> {
+    // The claim ids are built once, up front, so a refused claim fails the
+    // build rather than a row.
+    let direction = claim(STUNT_DIRECTION_CLAIM)?;
+    let clearance = claim(STUNT_CLEARANCE_CLAIM)?;
+    let reward = claim(STUNT_REWARD_CLAIM)?;
+    let repeat = claim(STUNT_REPEAT_CLAIM)?;
+    let geometry = claim(STUNT_GEOMETRY_CLAIM)?;
+
+    let mut status = CollectionStatus {
+        kind: ContentKind::Stunt,
+        source: STUNT_SCENARIO_PATTERN.to_owned(),
+        language: None,
+        rows: 0,
+        gaps: BTreeMap::new(),
+        boundary_id: None,
+        diagnostic: None,
+    };
+
+    let mut rows = Vec::new();
+    for dir in classified
+        .iter()
+        .filter(|dir| dir.role == ReaderDirRole::InstantActionScenario)
+    {
+        // The record the classifier saw came out of this very inventory, so a
+        // miss is not an expected state; it is named rather than papered over.
+        let Some(record) = files.get(&dir.program.to_ascii_lowercase()) else {
+            return Err(BaselineError::UninventoriedProgram {
+                mission: dir.path.clone(),
+                asset: dir.program.clone(),
+            });
+        };
+        let spelling = record.relative_spelling.as_str();
+        let path = install_root.join(spelling);
+        let bytes = std::fs::read(&path).map_err(|source| BaselineError::Read {
+            path: spelling.to_owned(),
+            source,
+        })?;
+        // The production container discovery locates both members by the
+        // archive's own index; a member it does not locate is simply absent.
+        let discovery = discover_container(spelling, &record.relative_spelling, &bytes);
+        let scenario = discovery
+            .programs()
+            .iter()
+            .find(|program| program.locator().member() == Some(SCENARIO_MEMBER));
+        let targets = discovery
+            .programs()
+            .iter()
+            .find(|program| program.locator().member() == Some(SCENARIO_TARGETS_MEMBER));
+        let (Some(scenario), Some(targets)) = (scenario, targets) else {
+            continue;
+        };
+        let Ok(scenario_root) = decode_zrd(scenario.bytes()) else {
+            continue;
+        };
+        let stunt_flying = scenario_mission_type(&scenario_root) == Some(STUNT_MISSION_TYPE);
+        let Ok(targets_root) = decode_zrd(targets.bytes()) else {
+            continue;
+        };
+        let decorated = scenario_fly_through_targets(&targets_root);
+        if !stunt_flying {
+            // A fly-through objective of a scenario the original does not mark
+            // as a stunt is a real target this collection can only account
+            // for, not a stunt row.
+            *status
+                .gaps
+                .entry("non_stunt_fly_through_targets")
+                .or_default() += decorated.len();
+            continue;
+        }
+        if decorated.is_empty() {
+            continue;
+        }
+        let locator = targets.locator();
+        let member_sha256 = cs_assets::install::sha256(targets.bytes());
+        let span = SourceSpan::new(
+            install_hash,
+            spelling,
+            Some(SCENARIO_TARGETS_MEMBER),
+            locator.span().offset,
+            locator.span().len,
+            Some(member_sha256),
+        )
+        .map_err(|source| BaselineError::Span {
+            path: spelling.to_owned(),
+            source,
+        })?;
+        let file_id = ContentId::from_source(ContentKind::InstallFile, &install_file_key(spelling))
+            .map_err(|source| BaselineError::Key {
+                spelling: spelling.to_owned(),
+                source,
+            })?;
+        for target in decorated {
+            let key = install_key_bytes(
+                format!("{}-{}", scenario_key(dir), target.zone_label).as_bytes(),
+            );
+            let id = ContentId::from_source(ContentKind::Stunt, &key).map_err(|source| {
+                BaselineError::Key {
+                    spelling: key.clone(),
+                    source,
+                }
+            })?;
+            rows.push(CatalogElement {
+                kind: ContentKind::Stunt,
+                id,
+                // The installation states no display name for a stunt: the
+                // objective's description is a localized message *key*, not the
+                // text, and copying it would repeat a resource id as a name.
+                display_name: None,
+                origin: Origin::Installation {
+                    source: span.clone(),
+                },
+                dependencies: vec![Dependency {
+                    target: file_id.clone(),
+                    kind: DependencyKind::Static,
+                    provenance: observed(CLAIM_STUNT_TARGET, &span)?,
+                }],
+                parse_state: cs_types::install::ParseState::Parsed,
+                normalize_state: NormalizeState::NotNormalized,
+                runtime_consumers: Vec::new(),
+                readiness: Readiness::Unavailable,
+                unsupported_reasons: vec![
+                    UnsupportedReason::Unknown {
+                        claim_id: direction.clone(),
+                        reason: format!(
+                            "the scenario bytes name the {} zone but state no direction rule, so \
+                             which heading or sequence of passes completes it is unknown",
+                            target.zone_label
+                        ),
+                    },
+                    UnsupportedReason::Unknown {
+                        claim_id: clearance.clone(),
+                        reason: format!(
+                            "the scenario bytes name the {} zone but state no clearance rule, so \
+                             the rim margin or altitude a completion must keep is unknown",
+                            target.zone_label
+                        ),
+                    },
+                    UnsupportedReason::Unknown {
+                        claim_id: reward.clone(),
+                        reason: format!(
+                            "the scenario bytes name the {} zone but state no payout, so what a \
+                             completion pays is unknown",
+                            target.zone_label
+                        ),
+                    },
+                    UnsupportedReason::Unknown {
+                        claim_id: repeat.clone(),
+                        reason: format!(
+                            "the scenario bytes name the {} zone but state no repeat policy, so \
+                             whether a second pass pays again is unknown",
+                            target.zone_label
+                        ),
+                    },
+                    UnsupportedReason::Unknown {
+                        claim_id: geometry.clone(),
+                        reason: format!(
+                            "the {} target names a detection zone but carries no box; the world \
+                             container's measured trigger volume is not reachable from \
+                             cs_content, so the gate geometry is unknown",
+                            target.zone_label
+                        ),
+                    },
+                    UnsupportedReason::MissingRuntimeConsumer,
+                ],
+                fingerprint: Some(Fingerprint {
+                    kind: FingerprintKind::Installation,
+                    sha256: member_sha256,
+                }),
+            });
+        }
+    }
+
+    status.rows = rows.len();
+    if rows.is_empty() {
+        let scenarios = classified
+            .iter()
+            .filter(|dir| dir.role == ReaderDirRole::InstantActionScenario)
+            .count();
+        return Ok(unpopulated(
+            status,
+            format!(
+                "no instant-action scenario of the {scenarios} classified declares a \
+                 {STUNT_MISSION_TYPE} fly-through target, so no stunt row could be built"
+            ),
+        ));
+    }
+    Ok((rows, status))
+}
+
+/// The `scrapbook_item` rows the installation's scrapbook table declares, plus
+/// the record of what the producing reader could not turn into a row.
+///
+/// The rows are the `Mission_Spread_Item` records of the shared archive's
+/// [`SCRAPBOOK_MEMBER`], read through the production ROF reader and the
+/// keyed-list configuration reader ([`ConfigDocument`]). Each row's identity is
+/// the record's own entry key — never its line number or position — and its
+/// span is the member's **decoded** extent, whose digest is the digest of
+/// exactly the decoded bytes the document was read from (the same convention
+/// [`crate::livery::PaintShopCatalog`] uses for a compressed member). The
+/// single static edge points at the inventory row of the archive holding the
+/// member.
+///
+/// An entry the documented [`RecordSchema`] does not cover is counted in
+/// [`CollectionStatus::gaps`] under `entry_not_a_scrapbook_item` rather than
+/// dropped. A scrapbook item is **not** launchable content, so this collection
+/// adds no root and cannot move the coverage denominator.
+///
+/// # Errors
+///
+/// [`BaselineError::Session`] when the mount could not be built,
+/// [`BaselineError::Identity`] when the member key is refused,
+/// [`BaselineError::Read`] when the archive's bytes cannot be read,
+/// [`BaselineError::Key`] when an entry key has no valid id key and
+/// [`BaselineError::Span`] when a span is refused. A missing archive, a member
+/// the production reader refuses and a member that does not read as the
+/// keyed-list table all yield no rows and a [`CollectionStatus::diagnostic`]
+/// instead, which is a reported gap and not an error.
+fn scrapbook_rows(
+    install_root: &Path,
+    install_hash: ContentHash,
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<(Vec<CatalogElement>, CollectionStatus), BaselineError> {
+    let mut status = CollectionStatus {
+        kind: ContentKind::ScrapbookItem,
+        source: SCRAPBOOK_CONTAINER.to_owned(),
+        language: None,
+        rows: 0,
+        gaps: BTreeMap::new(),
+        boundary_id: None,
+        diagnostic: None,
+    };
+
+    let Some(record) = files.get(&SCRAPBOOK_CONTAINER.to_ascii_lowercase()) else {
+        return Ok(unpopulated(
+            status,
+            format!(
+                "the installation inventories no {SCRAPBOOK_CONTAINER}, so the scrapbook items \
+                 have no bytes to read"
+            ),
+        ));
+    };
+
+    let path = install_root.join(record.relative_spelling.as_str());
+    let mut builder = SessionBuilder::new(ResolveContext::new(install_hash));
+    let mount = MountBuilder::new(
+        MountId::new("rof-scrapbook").map_err(|error| BaselineError::Session(error.to_string()))?,
+        MountNamespace::new(INSTALL_NAMESPACE)
+            .map_err(|error| BaselineError::Session(error.to_string()))?,
+        PrecedenceClass::Shared,
+        SCRAPBOOK_CONTAINER,
+    )
+    .retail();
+    let source = match mount_rof_into(&mut builder, mount, &path) {
+        Ok(source) => source,
+        Err(error) => {
+            return Ok(unpopulated(
+                status,
+                format!(
+                    "the shared archive {SCRAPBOOK_CONTAINER} does not mount as the observed ROF \
+                     container: {error}"
+                ),
+            ));
+        }
+    };
+    let key = AssetKey::from_spelling(source.namespace().as_str(), SCRAPBOOK_MEMBER, "default")
+        .map_err(|error| BaselineError::Identity {
+            identity: SCRAPBOOK_MEMBER.to_owned(),
+            reason: error.to_string(),
+        })?;
+    let Some(info) = source.member(&key).cloned() else {
+        return Ok(unpopulated(
+            status,
+            format!(
+                "the shared archive {SCRAPBOOK_CONTAINER} holds no {SCRAPBOOK_MEMBER} member, so \
+                 the scrapbook table has no bytes to read"
+            ),
+        ));
+    };
+    let read = match source.read(&key) {
+        Ok(read) => read,
+        Err(error) => {
+            return Ok(unpopulated(
+                status,
+                format!("the scrapbook member {SCRAPBOOK_MEMBER} does not read: {error}"),
+            ));
+        }
+    };
+    let bytes = read.data.as_slice();
+    let span = SourceSpan::new(
+        install_hash,
+        SCRAPBOOK_CONTAINER,
+        Some(SCRAPBOOK_MEMBER),
+        info.offset,
+        info.declared_decoded_len,
+        Some(cs_assets::install::sha256(bytes)),
+    )
+    .map_err(|source| BaselineError::Span {
+        path: SCRAPBOOK_MEMBER.to_owned(),
+        source,
+    })?;
+    let mut context = cs_formats::ParseContext::with_defaults(SCRAPBOOK_CONTAINER);
+    let document = match ConfigDocument::read(&mut context, span.clone(), bytes) {
+        Ok(document) => document,
+        Err(error) => {
+            return Ok(unpopulated(
+                status,
+                format!(
+                    "the member {SCRAPBOOK_MEMBER} does not read as the keyed-list scrapbook \
+                     table: {error}"
+                ),
+            ));
+        }
+    };
+
+    let spelling = record.relative_spelling.as_str();
+    let file_id = ContentId::from_source(ContentKind::InstallFile, &install_file_key(spelling))
+        .map_err(|source| BaselineError::Key {
+            spelling: spelling.to_owned(),
+            source,
+        })?;
+    let member_sha256 = cs_assets::install::sha256(bytes);
+    let mut rows = Vec::new();
+    for entry in document.entries() {
+        if RecordSchema::for_entry(entry) != Some(RecordSchema::Scrapbook) {
+            *status.gaps.entry("entry_not_a_scrapbook_item").or_default() += 1;
+            continue;
+        }
+        let key = install_key_bytes(&entry.key);
+        let id = ContentId::from_source(ContentKind::ScrapbookItem, &key).map_err(|source| {
+            BaselineError::Key {
+                spelling: key.clone(),
+                source,
+            }
+        })?;
+        rows.push(CatalogElement {
+            kind: ContentKind::ScrapbookItem,
+            id,
+            // The record's own key is its identity; the member carries no
+            // separate display name, and the entry's field text is content the
+            // catalog must not copy into a name.
+            display_name: None,
+            origin: Origin::Installation {
+                source: span.clone(),
+            },
+            dependencies: vec![Dependency {
+                target: file_id.clone(),
+                kind: DependencyKind::Static,
+                provenance: observed(SCRAPBOOK_ITEM_CLAIM, &span)?,
+            }],
+            parse_state: cs_types::install::ParseState::Parsed,
+            normalize_state: NormalizeState::NotNormalized,
+            runtime_consumers: Vec::new(),
+            readiness: Readiness::Unavailable,
+            unsupported_reasons: vec![UnsupportedReason::NotNormalized],
+            fingerprint: Some(Fingerprint {
+                kind: FingerprintKind::Installation,
+                sha256: member_sha256,
+            }),
+        });
+    }
+
+    status.rows = rows.len();
+    if rows.is_empty() {
+        let entries = document.entries().count();
+        return Ok(unpopulated(
+            status,
+            format!(
+                "the member {SCRAPBOOK_MEMBER} holds no Mission_Spread_Item record of the {entries} \
+                 entries it declares, so no scrapbook item row could be built"
+            ),
+        ));
+    }
+    Ok((rows, status))
+}
+
+/// Builds one claim id, naming it when the grammar refuses it.
+fn claim(claim: &str) -> Result<ClaimId, BaselineError> {
+    ClaimId::new(claim).map_err(|error| BaselineError::Provenance {
+        claim: claim.to_owned(),
+        reason: error.to_string(),
+    })
 }
 
 /// The stable label one roster finding is counted under in
