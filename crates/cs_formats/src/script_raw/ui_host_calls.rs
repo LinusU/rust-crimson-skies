@@ -379,9 +379,11 @@ impl UiProgramScan {
 
     /// Whether this program's measurement depends on what `;` means.
     ///
-    /// `false` means the shipped bytes answer it: no call head, no measured site
-    /// and no brace sits after a `;`, so treating `;` as a comment would remove
-    /// nothing from this program and the measurement is the same either way.
+    /// `true` means this program's own bytes answer the question: no call head,
+    /// no measured site and no brace sits after a `;`, so treating `;` as a
+    /// comment would remove nothing from it and the measurement is the same
+    /// either way. `false` means at least one does, and this program's counts
+    /// would have to be re-measured before a comment rule could be assumed.
     pub fn semicolon_exposure_free(&self) -> bool {
         self.heads_after_semicolon == 0
             && self.sites_after_semicolon == 0
