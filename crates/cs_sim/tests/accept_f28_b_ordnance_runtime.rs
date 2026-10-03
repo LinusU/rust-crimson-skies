@@ -161,6 +161,11 @@ fn accept_f28_b_guidance_loses_a_destroyed_target_and_ends_safely() {
         "destruction is a loss with the declared behavior: {destroyed:?}"
     );
     assert_eq!(
+        destroyed.detonated.len(),
+        1,
+        "exactly one lost item detonates"
+    );
+    assert_eq!(
         destroyed
             .detonated
             .first()
