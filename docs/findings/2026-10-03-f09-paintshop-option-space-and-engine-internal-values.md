@@ -35,8 +35,8 @@ A **second original paint source** turned up while searching, and it answers the
 one question this task was opened for: every chapter's Instant Action scenario
 carries an `ace_*` paint record, and the one in `ZBD/C5/IA1/zrdr.zbd` names
 pattern `broadway` with its colours and decals. **BROADWAY's palette is in
-original data**, and this stage extracts it with spans. **ITSTAXI's is not
-anywhere.**
+original data**, and this stage extracts it with spans. **ITSTAXI has no paint
+record anywhere**, so its palette is not in the installation as a paint value.
 
 ## Files and the one observable failure (listed before editing)
 
@@ -71,11 +71,15 @@ missing everywhere when it is in the Instant Action ace records. With this stage
 control whose declared entry count, record line, field census or span does not
 match the original member,
 `accept_f09_paintshop_reports_a_control_that_stores_a_value` fails the moment any
-control record spells a colour literal,
+control record spells a value - a colour literal, a `0x…` hex value or a display
+name - because the gap for that whole role must disappear, the cross-check must
+report the control by name and the query must refuse rather than answer
+`EngineInternal`,
 `accept_f09_paintshop_retail_instant_action_ace_paints` fails on the first ace
 paint whose pattern, colour, decal, accent id or scenario field does not match
 its chapter's member, and `PaintShopValue` has no variant that could carry a
-swatch colour at all.
+swatch colour at all: the one thing this type cannot express is a value, and a
+control that stores one is refused as [`PaintShopRefusal::StoresValue`] instead.
 
 ## What the production extractor reads
 
@@ -250,15 +254,31 @@ read-only and reproducible, all recorded here rather than in a script:
    strings `paint_pattern`, `paint_color1` and `paint_decal` occur in exactly one
    member: `ZBD/zrdr.zbd:vehicle.zrd`. The same search over the per-chapter
    archives finds the eight `ia.zrd` members this stage also reads (below) and
-   nothing else that carries paint fields. `player_fortune`, `sactrust` and
-   `blckswan` occur in `vehicle.zrd` only; the other pattern names also occur in
-   briefing, AI, sound and scenario members, none of which carries a paint
-   record. **`itstaxi` occurs in no readable member at all**; `broadway` occurs
-   once, as the `ace_pattern` of `ZBD/C5/IA1/zrdr.zrd:ia.zrd`.
+   nothing else that carries paint fields; `ace_pattern` occurs in exactly those
+   eight archives.
    (The search is a byte-substring search, so a short name can coincide inside a
-   binary member — `cccp`, for instance, matches pixels in `.BM` and `.TIF`
+   binary member - `cccp`, for instance, matches pixels in `.BM` and `.TIF`
    members. That is why the finding leans on the long `paint_*` field names and on
    parsing every member it names, never on a short name's absence.)
+
+   A pattern name is therefore a statement about a **parsed `paint_pattern` /
+   `ace_pattern` value**, never about where the bytes of the name happen to sit.
+   Measured that way, and re-measured by the review of this branch:
+
+   | pattern | named as a paint-pattern value by | other places the bytes appear |
+   | --- | --- | --- |
+   | `broadway` | `ZBD/C5/IA1/zrdr.zbd:ia.zrd` (`ace_pattern`), and no `vehicle.zrd` record | the member-name stem `ASSETS/GRAPHICS/BROADWAY/` in `crimson.rof` (the F09-D stock livery inventory) |
+   | `itstaxi` | **nothing** | the member-name stem `ASSETS/GRAPHICS/ITSTAXI/` in `crimson.rof` |
+   | `sactrust` | `ZBD/zrdr.zbd:vehicle.zrd` | the member-name stem `ASSETS/GRAPHICS/SACTRUST/` |
+   | `blckswan` | `ZBD/zrdr.zbd:vehicle.zrd` and `ZBD/C1B/IA1/zrdr.zbd:ia.zrd` | the member-name stem `ASSETS/GRAPHICS/BLCKSWAN/` |
+   | `player_fortune` | `ZBD/zrdr.zbd:vehicle.zrd` only | nowhere else |
+
+   So ITSTAXI is absent as a *paint record* - the claim the rest of this finding
+   rests on - while every one of these names also occurs as a stock BM livery
+   directory stem. An earlier draft of this finding said that `itstaxi` "occurs in
+   no readable member at all" and that `broadway` "occurs once"; both were wrong
+   about the bytes and right about the records, and the table above is the
+   corrected statement.
 3. **The engine image's readable sections.** `crimson.icd`
    (`0e3b4724f045e0bedf7203cd40cdeb5b6e0b9a0bab78c3d04c278cb146e9833b`,
    2 580 578 bytes) is a PE32 whose `.text` (2 105 344 raw bytes, 7.91 bits/byte,
@@ -292,9 +312,10 @@ Resolved against the five unknowns F09-PALETTE recorded
    records. **BROADWAY is resolved**: `ZBD/C5/IA1/zrdr.zbd` member `ia.zrd` names
    paint pattern `broadway` with colours (74,40,132) / (0,0,0) / (237,221,0) and
    decals 21 / 1 / 0, and this stage extracts it with spans. **ITSTAXI is not
-   resolved and cannot be from a file**: `itstaxi` occurs in no readable member,
-   it is not one of the twelve patterns the shop offers, and no ace record names
-   it. It has a stock BM livery directory (F09-D), so its appearance comes from
+   resolved and cannot be from a file**: no `paint_pattern` and no `ace_pattern`
+   names it, and it is not one of the twelve patterns the shop offers. Its name
+   occurs in `crimson.rof` only as a member-name stem
+   (`ASSETS/GRAPHICS/ITSTAXI/`), never as a paint record. It has a stock BM livery directory (F09-D), so its appearance comes from
    the shipped BM planes themselves. Neither is a paint pattern, so the paint
    shop cannot recolour either. Which stock livery directory corresponds to which
    paint pattern stays engine-internal: the directories are `BLACKHAT`…`STUDIO`
@@ -331,8 +352,8 @@ ordinary build (CI); the two retail tests and the harness are
 | Test | What it pins |
 | --- | --- |
 | `accept_f09_paintshop_reads_the_declared_option_space_from_the_layout` | the ten controls with their declared counts and roles, every control's line checked against the member it was read from, the summed field census, the decal pane's art and frame count, the four gaps with their counts and censuses, `EngineInternal` for every in-range swatch/shade/decal/pattern query, `NotOffered` past the declared count and `NoControl` for a slot the shop does not declare |
-| `accept_f09_paintshop_refuses_a_layout_or_control_it_cannot_read` | a layout with no `[@Paint@]` section (`missing_section`), a control spelled as a pane (`wrong_kind`), a control one field short (`short_record`), an entry count spelled as a `<NAME>` (`entries_unreadable`), a slot digit above the shop's slots (`unknown_slot`) and an unreadable frame count (`frames_unreadable`) |
-| `accept_f09_paintshop_reports_a_control_that_stores_a_value` | a control whose `x` position spells a colour literal: the census measures `colour: 1`, the **swatch gap is not recorded** (a gap that survived a control that stores its values would be a lie) and the other gaps are unaffected |
+| `accept_f09_paintshop_refuses_a_layout_or_control_it_cannot_read` | a layout with no `[@Paint@]` section (`missing_section`), a control spelled as a pane (`wrong_kind`), a control one field short (`short_record`), an entry count spelled as a `<NAME>` (`entries_unreadable`), a slot digit above the shop's slots (`unknown_slot`), an unreadable frame count (`frames_unreadable`) and a decal pane whose art member is not text (`art_unreadable`, its own code rather than a misleading field count) |
+| `accept_f09_paintshop_reports_a_control_that_stores_a_value` | three spellings of a stored value in three different roles - a colour literal, a `0x…` hex value and a display name: each is measured by `stores_a_value()`, each stops its **whole role's** gap while the other three survive, each is named by exactly one `control_carries_value` finding from the cross-check, and each makes its query refuse with `StoresValue` instead of answering `EngineInternal`. A fourth case puts the value on the pattern list, which has no slot |
 | `accept_f09_paintshop_cross_check_closes_patterns_and_bounds_decals` | a pattern list that matches the stored pattern count reports only the uncoloured pattern; a list of three against two stored patterns reports `pattern_count_mismatch`; a stored decal inside the declared frames is not a finding and one past it is `decal_outside_sheet`; a layout with no decal pane reports `no_decal_sheet` |
 | `accept_f09_paintshop_extracts_the_instant_action_ace_paint` | an `ia.zrd` record's ace paint: the pattern, three colours, three decals, accent id, airframe, ace name and scenario type, a container-absolute span per field (with the 16-byte one-int-list and 32-byte three-int-list extents pinned) and the refusal for a slot the record does not store |
 | `accept_f09_paintshop_refuses_an_ace_paint_it_cannot_read` | an archive with no `ia.zrd` (`missing_member`), a member that is not the observed layout (`unknown_tag`), a record that names no ace paint (`no_ace_paint`), an incomplete colour triple and an incomplete decal triple (both `shape`, never padded) |
@@ -351,8 +372,15 @@ caught each:
 - reading `ace_color2` for slot 1 → every ace colour shifts; the retail ace test
   fails on the first chapter;
 
-- dropping the `colour`/`hex` guard in `paint_shop_gaps` → the value-carrying
-  fixture would still record a swatch gap; `…reports_a_control_that_stores_a_value`
+- dropping the `stores_a_value` guard in `paint_shop_gaps` → the value-carrying
+  fixture would still record its role's gap; `…reports_a_control_that_stores_a_value`
+  fails;
+- dropping the `stores_a_value` reporting in `PaintShopCatalog::cross_check` →
+  the gap would vanish with no finding naming the control;
+  `…reports_a_control_that_stores_a_value` fails;
+- dropping the `StoresValue` refusal in `PaintShopCatalog::value` → a control that
+  stores a value would answer `EngineInternal`, claiming the engine holds a value
+  the original data spells in a file; `…reports_a_control_that_stores_a_value`
   fails;
 - reading the entry count from position 10 instead of 11, or accepting any field
   as a whole number → the retail test fails on the control's declared count and
@@ -399,6 +427,58 @@ deliverable is that six limitations stay recorded. Concretely, on this tree:
 | --- | --- |
 | `python3 tools/validate_evidence.py private/evidence/F09-PAINTSHOP/acceptance.json --artifact-root private/evidence/F09-PAINTSHOP` | 0 (`structurally_valid: true`, 2 artifacts) |
 | `python3 tools/validate_evidence.py … --require-pass` | **3** (`Unresolved issues`) — expected: the recorded limitations are the deliverable |
+
+## Review pass (2026-10-03)
+
+Reviewed by `bunny-alpha-2` in a **fresh session** — but the **same agent
+instance that implemented this stage**, so this is not independent evidence in the
+owner directive's sense, and no agent review replaces the owner's human approval.
+
+The load-bearing negative search was **re-measured from scratch** over the
+installation, read-only: `paint_pattern`, `paint_color1` and `paint_decal` occur in
+exactly one file (`ZBD/zrdr.zbd`, member `vehicle.zrd`) and `ace_pattern` in
+exactly the eight per-chapter `IA1/zrdr.zbd` archives. The central engine-internal
+argument holds.
+
+Four defects were found and fixed:
+
+1. **A gap could disappear with no finding naming the control that stopped it.**
+   `paint_shop_gaps` treated a colour literal, a `0x…` hex value *and* a
+   second text field as "stores a value", but `PaintShopCatalog::cross_check`
+   only reported `colour > 0`. A control that spelled a name or a hex value would
+   therefore have lost its gap silently — exactly the failure the derived claim is
+   supposed to make impossible. Both sides now go through one predicate,
+   `PaintShopFieldCensus::stores_a_value()`, so they cannot drift apart.
+2. **The query answered `EngineInternal` for a value the file actually holds.**
+   `PaintShopCatalog::value` never looked at the census, so a control that *does*
+   store a colour was still reported as engine-internal — the strongest possible
+   wrong answer, and one the old test never asked for. It now refuses with the new
+   `PaintShopRefusal::StoresValue { role, slot, key }`. `PaintShopValue` still has
+   no value-carrying variant: the fix is a refusal, not a new invented value.
+3. **The gap was derived from slot 0 only.** The per-slot roles quoted slot 0's
+   control, so a value on slot 1 or 2 left the gap standing. The gap now covers
+   every control its role declares, and a value anywhere in the role stops it —
+   with a test case that puts the value on the last slot.
+4. **A wrong refusal for an unreadable decal sheet.** A non-UTF-8 art field was
+   reported as `short_record` with `fields: 9, expected: 9`, a message that says
+   the field count is wrong when it is not. It now has its own
+   `PaintShopError::ArtUnreadable` code and its own refusal case.
+
+Two research statements in this finding were **wrong about the bytes** and have
+been corrected in place (see the negative-search table above): `itstaxi` and
+`broadway` were described as occurring in no member / exactly once, when both
+also occur in `crimson.rof` as the member-name stems
+`ASSETS/GRAPHICS/ITSTAXI/` and `ASSETS/GRAPHICS/BROADWAY/` — the stock BM livery
+inventory F09-D measured. The same applied to `sactrust` and `blckswan`. What the
+finding actually rests on, and what now reads correctly, is that no
+`paint_pattern` and no `ace_pattern` names `itstaxi`. The evidence report's
+`itstaxi_palette_absent` unknown says the corrected thing too.
+
+The reviewer also re-ran the full check set, ran the nine task tests with
+`--include-ignored` against `$CS_GAME_DIR` (all pass), and applied three
+mutations (dropping the gap guard, dropping the cross-check report, dropping the
+`StoresValue` refusal); every one was caught by
+`accept_f09_paintshop_reports_a_control_that_stores_a_value`.
 
 ## Boundaries
 
