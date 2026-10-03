@@ -238,3 +238,47 @@ visual or audible result. What is claimed is **observed_tool**: a measured fact
 about shipped files, read by production readers, pinned to
 `install_sha256 b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978`
 and `content_sha256 a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d`.
+
+## Evidence
+
+`private/evidence/F27-E/acceptance.json`, committed as
+`docs/findings/evidence/F27-E.json`, validates with
+`python3 tools/validate_evidence.py private/evidence/F27-E/acceptance.json
+--artifact-root private/evidence/F27-E --require-pass` (exit 0,
+`structurally_valid: true`, `artifact_count: 2`). It records:
+
+- `capabilities: ["retail", "synthetic"]`, `claim: "implemented"` — never
+  `verified_original`;
+- `tests: {discovered: 12, executed: 12, passed: 12, failed: 0, ignored: 0}`
+  over the twelve `accept_f27_e_` tests, the three retail ones run with
+  `--include-ignored`;
+- `install_sha256 b4e780ab…c631978` and `content_sha256 a0223506…62c12d`, both
+  from production `cs_assets::install` discovery, never typed in;
+- two hashed artifacts: `cargo-test.log` (the recorded acceptance run) and
+  `ammunition-vocabulary.json` — a **second** production pass of the same
+  readers over the same installation, carrying `langui.dll`'s digest, length and
+  `StringCatalog` accounting (101 blocks, 1616 rows, no undecodable unit, no
+  duplicate id), every declared id with its **code-unit length and markup code
+  but never its text**, what the production importer made of the catalog
+  (4 types, 5 guns, 4 declared records, 0 with a declared caliber), and
+  `strings.dll`'s 20 `MSG_WEAP_*` identifiers as the corroborating vocabulary;
+- the five `f27.d.limit.*` items this stage does **not** resolve, each with the
+  content it gates and what would resolve it, inside the hashed artifact and
+  inside the report's `review.method`.
+
+`unknowns` is empty and that is a claim worth checking. The validator's
+`--require-pass` rejects a nonempty `unknowns` list, and every one of the five
+remaining items is *unmeasured original behavior* rather than a failure of this
+stage's assertions — every assertion here is a measured fact about a shipped
+file or a production behavior the suite exercised, and all of them pass. They
+are recorded in the four places above instead of removed. The report's
+`candidate_tree` is the tree of the commit the suite ran on; the commit that
+adds this evidence copy is a documentation-only commit on top of it, so the
+reviewer regenerates the report on the rebased commit and compares, as
+`docs/contracts/CLI-EVIDENCE.md` requires.
+
+## Follow-up filed
+
+`#547 (F27-E.1)` carries what this stage could not measure: the per-type damage
+amounts, the per-airframe gun-group assignment, and — once an owner-supplied
+capture exists — the convergence, inherited-velocity and interaction rules.
