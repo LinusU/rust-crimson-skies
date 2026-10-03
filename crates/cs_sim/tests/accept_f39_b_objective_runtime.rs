@@ -81,6 +81,7 @@ fn ac02_runtime() -> ObjectiveRuntime {
             initial: ObjectiveState::Active,
             reveal: RevealRule::Immediate,
             on_complete: ObjectiveCompletion::Requests(TerminalOutcome::Success),
+            completion_effects: Vec::new(),
         })
         .unwrap();
     runtime
@@ -432,6 +433,7 @@ fn accept_f39_b_a_condition_that_cannot_be_a_condition_is_refused() {
                 initial: ObjectiveState::Pending,
                 reveal: RevealRule::Immediate,
                 on_complete: ObjectiveCompletion::Continue,
+                completion_effects: Vec::new(),
             })
             .is_err()
     );
@@ -826,6 +828,7 @@ fn accept_f39_b_every_declaration_is_checked_for_a_collision() {
         initial: ObjectiveState::Active,
         reveal: RevealRule::Immediate,
         on_complete: ObjectiveCompletion::Continue,
+        completion_effects: Vec::new(),
     };
     assert_eq!(
         runtime.add_objective(spec()),
@@ -970,6 +973,7 @@ fn accept_f39_b_a_timer_declares_its_start_its_domain_and_one_action() {
             initial: ObjectiveState::Active,
             reveal: RevealRule::Immediate,
             on_complete: ObjectiveCompletion::Continue,
+            completion_effects: Vec::new(),
         })
         .unwrap();
 
@@ -1678,6 +1682,7 @@ fn accept_f39_b_reveal_is_the_only_way_to_show_an_objective_and_a_reward_is_not_
                 initial,
                 reveal,
                 on_complete: ObjectiveCompletion::Continue,
+                completion_effects: Vec::new(),
             })
             .unwrap();
     }
@@ -1690,6 +1695,7 @@ fn accept_f39_b_reveal_is_the_only_way_to_show_an_objective_and_a_reward_is_not_
             initial: ObjectiveState::Hidden,
             reveal: RevealRule::Immediate,
             on_complete: ObjectiveCompletion::Continue,
+            completion_effects: Vec::new(),
         }),
         Err(RuntimeError::HiddenButImmediate {
             objective: SymbolId(75)
@@ -1803,6 +1809,7 @@ fn accept_f39_b_the_event_stream_is_key_ordered_and_reproducible() {
                 initial: ObjectiveState::Active,
                 reveal: RevealRule::Immediate,
                 on_complete: ObjectiveCompletion::Continue,
+                completion_effects: Vec::new(),
             })
             .unwrap();
         runtime
@@ -1812,6 +1819,7 @@ fn accept_f39_b_the_event_stream_is_key_ordered_and_reproducible() {
                 initial: ObjectiveState::Active,
                 reveal: RevealRule::Immediate,
                 on_complete: ObjectiveCompletion::Continue,
+                completion_effects: Vec::new(),
             })
             .unwrap();
         runtime
@@ -1888,6 +1896,7 @@ fn accept_f39_b_a_tick_over_the_event_budget_is_stopped_before_it_applies_anythi
             initial: ObjectiveState::Active,
             reveal: RevealRule::Immediate,
             on_complete: ObjectiveCompletion::Continue,
+            completion_effects: Vec::new(),
         })
         .unwrap();
 

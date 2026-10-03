@@ -34,7 +34,23 @@
 //! declaration may be *born* in, so a declared action can never complete an
 //! objective that was never shown. `cs_content::objectives` enforces the same
 //! fact from the other side, by refusing a declared move or watch that targets
-//! `Hidden`, `Pending` or `Optional`.
+//! `Hidden` or `Pending`.
+//!
+//! # `Optional` is reachable again, by a completion effect
+//!
+//! The two rows into `Optional` that this stage adds — `Pending -> Optional` and
+//! `Active -> Optional` — exist for one declared case: **completing one
+//! objective puts another aside**. A *nap* (F39-E5) moves the objective it
+//! names to [`Optional`], the state the sheet describes as "never gates mission
+//! success", and a *wakeup* moves it back out to `Active`, which the table
+//! already allowed. Before them, `Optional` was reachable only from `Hidden`,
+//! so a nap could only ever land on an objective the player had not been shown,
+//! and the state table could not express "this objective is set aside" at all.
+//!
+//! Adding rows cannot break the order-independence above: nothing is removed,
+//! `Optional` already reached all three terminal states and `Active`, and
+//! `accept_f39_e5_a_set_aside_objective_can_still_be_completed_or_resumed`
+//! re-checks the property from the states that can now reach `Optional`.
 
 /// The seven states of an objective.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -87,6 +103,12 @@ impl ObjectiveState {
                 // complete at all.
                 | (Pending, Active | Succeeded | Superseded | Failed)
                 | (Active, Succeeded | Failed | Superseded)
+                // The two F39-E5 rows: a completion effect may put an objective
+                // aside (`Pending`/`Active` -> `Optional`) and a wakeup may take
+                // it out again (`Optional` -> `Active`, which the next line
+                // already allowed). No row leaves `Optional` for a final state
+                // it could not already reach, so order-independence is unchanged.
+                | (Pending | Active, Optional)
                 | (Optional, Active | Succeeded | Failed | Superseded)
         )
     }
@@ -220,5 +242,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// F39-E5: a completion effect that puts an objective aside needs a row into
+    /// `Optional` from every state a live objective can be in, and the wakeup
+    /// that takes it out again must still work from there — while every terminal
+    /// outcome stays reachable, which is the property the rows could have broken.
+    #[test]
+    fn accept_f39_e5_a_set_aside_objective_can_still_be_completed_or_resumed() {
+        // A nap lands on a shown objective (`Pending`) or a pursued one
+        // (`Active`); a wakeup takes it out again. Both were unreachable before
+        // this stage added the rows, so a nap could only ever have hit an
+        // objective the player had never been shown.
+        for live in [Pending, Active] {
+            assert!(live.can_become(Optional), "{live:?} must be settable aside");
+            assert!(
+                Optional.can_become(Active),
+                "a set-aside objective must resume"
+            );
+        }
+        // And the order-independence the F39-D rows established still holds from
+        // the states that can now reach `Optional`: a set-aside objective is not
+        // a dead end.
+        for state in [Pending, Active, Optional] {
+            assert!(
+                state.is_outcome_reachable(),
+                "{state:?} can no longer reach Succeeded, Failed and Superseded"
+            );
+        }
+        // Nothing else changed: an objective never un-pursues, and no row leaves a
+        // final state, so no completion effect can ever move an objective out of
+        // one — the fact `CompletionEffect`'s dead-effect refusal relies on.
+        assert!(!Active.can_become(Pending));
+        assert!(!Optional.can_become(Pending));
+        assert!(!Optional.can_become(Optional));
     }
 }

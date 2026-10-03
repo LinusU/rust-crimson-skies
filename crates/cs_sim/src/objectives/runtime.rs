@@ -62,11 +62,39 @@
 //! | 4 signals | this tick's declared signals are collected | a signal raised now is eligible next tick |
 //! | 5 objectives | the tick's declared objective state changes | state, before the actions that read it |
 //! | 6 timers | arms and cancellations, then whole committed ticks, then each expiry's one declared action | the last thing that may start work this tick |
-//! | 7 outcome | the tick's terminal requests are resolved **together** | one decision per tick, so no producer's request order decides the outcome |
+//! | 7 completion effects | the [`CompletionEffect`]s every objective that completed this tick declares, drained from a queue | an effect acts on *another* objective, so it is eligible after this tick's own state changes and never inside them |
+//! | 8 outcome | the tick's terminal requests are resolved **together** | one decision per tick, so no producer's request order decides the outcome |
 //!
 //! The returned stream is sorted by [`EventKey`], which is the *observation*
 //! order a consumer should use. Effects were applied in the phase order above;
 //! the sort does not undo that.
+//!
+//! # Completion effects: one completion moves other objectives
+//!
+//! [`ObjectiveSpec::completion_effects`] is what completing one objective does to
+//! *others*: the four declared effects [`CompletionEffectKind`] carries, each
+//! naming one objective of the same program. The effect is applied by draining a
+//! queue in phase 7, **not** by calling back into the state machine from inside
+//! the completion that raised it, which is the contract's *"actions do not
+//! directly recurse into callbacks"* rule made structural.
+//!
+//! Three properties keep the drain bounded and order-independent:
+//!
+//! * no effect kind moves its target to [`ObjectiveState::Succeeded`], so an
+//!   applied effect can never queue another one — a cascade cannot be written
+//!   even before the queue's own rule (a drain takes the due set, and anything
+//!   queued while draining waits for the next tick) applies;
+//! * a target named by **two different** effect kinds is refused at
+//!   registration ([`RuntimeError::AmbiguousCompletionEffect`]) rather than
+//!   ordered, because the original's own records declare exactly that shape in
+//!   exactly one place and nothing measured which of the two wins there;
+//! * the due set is applied in `(completing objective, authored effect)` order —
+//!   program order, never hash or entity order — and, since a contested target
+//!   cannot be declared, that order never decides an outcome.
+//!
+//! The NAP effect's declared number ([`UnmeasuredNumber`]) is carried and
+//! **never interpreted**: what it measures is unmeasured, so the effect applies
+//! the same move whatever the number says.
 //!
 //! # What is unknown
 //!
@@ -76,7 +104,13 @@
 //! * which deadline a mission declares, in which domain, armed by what, and
 //!   performing which action;
 //! * which terminal outcome wins a same-tick collision;
-//! * which actors a mission protects, and what losing one does.
+//! * which actors a mission protects, and what losing one does;
+//! * what `WAKE`/`NAP`/`KILL`/`WAKEUP` do in the original. Their spellings and
+//!   the fact that they name other objectives of the same record are measured
+//!   (F39-D/F39-E2), and that they name what happens to those objectives when
+//!   this one completes is an inference from the spelling. The state each effect
+//!   moves its target to below is a **designed** engine rule over the table in
+//!   `cs_sim::objectives::state`, never a measured one.
 //!
 //! No authored mission is bound to this runtime yet: the content binding is
 //! `cs_content::objectives` plus F39-C's wiring, so `content` here is a declared
@@ -254,8 +288,156 @@ pub enum ObjectiveCompletion {
     Requests(TerminalOutcome),
 }
 
+/// A number a completion effect declared with **no measured unit**.
+///
+/// F39-E2 measured that every `NAP_OBJECTIVE_WHEN_I_COMPLETE` site in the
+/// original's objective records carries one number after its objective list
+/// (42 distinct values between 0.5 and 170 across 417 sites) and that no other
+/// completion effect site carries one. **What the number measures is
+/// unmeasured**: nothing in this project has run the original, and the program
+/// behind the record is not decoded, so a duration, a weight and a threshold are
+/// all consistent with the bytes.
+///
+/// The type exists so that no caller can read the number as a time. Nothing in
+/// the runtime interprets it — a nap moves its target whatever the number says —
+/// and the state a *wakeup* may later reverse is a declared fact of the program,
+/// not a computation over this value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UnmeasuredNumber(f64);
+
+impl UnmeasuredNumber {
+    /// Wraps a finite number, or refuses a non-finite one: a declared value that
+    /// is not a number cannot be carried as data either.
+    #[must_use]
+    pub fn new(value: f64) -> Option<Self> {
+        value.is_finite().then_some(Self(value))
+    }
+
+    /// The number exactly as declared, with no unit attached to it.
+    #[must_use]
+    pub const fn value(self) -> f64 {
+        self.0
+    }
+}
+
+/// Which of the four completion effects one declaration carries.
+///
+/// The **spellings** are measured: the original's objective records write
+/// `WAKE_OBJECTIVE_WHEN_I_COMPLETE`, `NAP_OBJECTIVE_WHEN_I_COMPLETE`,
+/// `KILL_OBJECTIVE_WHEN_I_COMPLETE` and `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`
+/// (F39-D's `BRANCH_KEY_VOCABULARY`), and `WAKE` and `WAKEUP` appear in one
+/// corpus without any measurement saying they are the same effect, so they stay
+/// apart here too. What each spelling *does* is an inference from the spelling;
+/// [`moves_to`](Self::moves_to) is this project's **designed** reading of it over
+/// the transition table, and nothing measured confirms it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CompletionEffectKind {
+    /// The named objective starts being pursued.
+    Wake,
+    /// The named objective is put aside and no longer gates mission success,
+    /// carrying a declared number this engine cannot interpret.
+    Nap,
+    /// The named objective fails and is no longer available.
+    Kill,
+    /// The named objective starts being pursued again, after it was put aside.
+    Wakeup,
+}
+
+impl CompletionEffectKind {
+    /// The state this effect moves its target to.
+    ///
+    /// **Designed, not measured.** `Wake` and `Wakeup` both make the target
+    /// `Active` — the sheet's "being pursued" state — because no measurement
+    /// distinguishes the two spellings and the table has no separate
+    /// "woken again" state; they are kept apart so a measurement can split them
+    /// later. `Nap` makes the target `Optional` — the sheet's state that "never
+    /// gates mission success" — and `Kill` makes it `Failed`.
+    ///
+    /// **No kind returns [`ObjectiveState::Succeeded`]**, which is what makes the
+    /// effect queue non-cascading: an applied effect can never complete an
+    /// objective, so it can never queue another effect.
+    #[must_use]
+    pub const fn moves_to(self) -> ObjectiveState {
+        match self {
+            Self::Wake | Self::Wakeup => ObjectiveState::Active,
+            Self::Nap => ObjectiveState::Optional,
+            Self::Kill => ObjectiveState::Failed,
+        }
+    }
+
+    /// Whether a declaration of this kind carries the measured number beside its
+    /// objective list. Only a nap does.
+    #[must_use]
+    pub const fn carries_argument(self) -> bool {
+        matches!(self, Self::Nap)
+    }
+}
+
+/// What completing one declared objective does to one other objective of the
+/// same program.
+///
+/// An effect is a **declared** move, applied through
+/// [`ObjectiveRuntime::change_objective`](ObjectiveRuntime) like every other
+/// declared state change, so it obeys the same rules: the target's reveal rule
+/// still governs its visibility, the transition table still decides legality,
+/// and a refused move is *reported* rather than dropped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompletionEffect {
+    /// Which effect this is.
+    pub kind: CompletionEffectKind,
+    /// The objective it acts on.
+    pub target: SymbolId,
+    /// The number only [`CompletionEffectKind::Nap`] carries, with no unit.
+    pub argument: Option<UnmeasuredNumber>,
+}
+
+impl CompletionEffect {
+    /// Builds one effect, refusing a declaration that contradicts the measured
+    /// shape: the number belongs to a nap and to nothing else.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::EffectArgument`] when a nap declares no number or another
+    /// effect declares one.
+    pub fn new(
+        kind: CompletionEffectKind,
+        target: SymbolId,
+        argument: Option<UnmeasuredNumber>,
+    ) -> Result<Self, RuntimeError> {
+        let effect = Self {
+            kind,
+            target,
+            argument,
+        };
+        effect.validate()?;
+        Ok(effect)
+    }
+
+    /// The state this effect moves its target to. See
+    /// [`CompletionEffectKind::moves_to`].
+    #[must_use]
+    pub const fn moves_target_to(&self) -> ObjectiveState {
+        self.kind.moves_to()
+    }
+
+    /// The check [`new`](Self::new) performs, also applied to a struct literal:
+    /// every field is public, so registration is where the shape is enforced.
+    fn validate(&self) -> Result<(), RuntimeError> {
+        if self.kind.carries_argument() == self.argument.is_none() {
+            return Err(RuntimeError::EffectArgument { kind: self.kind });
+        }
+        Ok(())
+    }
+}
+
 /// One declared objective's registration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Eq` is not derived: `completion_effects` carries the nap's declared number,
+/// and a `f64` is not `Eq`. Wrapping that number in a hand-written `Eq` would
+/// buy the derive at the cost of a subtler equality — `0.0 == -0.0` but not
+/// their bit patterns — so the bound is dropped instead, as F39-E2 dropped it for
+/// the measured effect arguments on the content side.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ObjectiveSpec {
     /// The objective's program symbol.
     pub id: SymbolId,
@@ -267,6 +449,10 @@ pub struct ObjectiveSpec {
     pub reveal: RevealRule,
     /// What completing it means for the mission.
     pub on_complete: ObjectiveCompletion,
+    /// What completing it does to *other* objectives, in authored order. Empty
+    /// for an objective whose completion moves nothing else, which is the whole
+    /// of the behaviour before completion effects existed.
+    pub completion_effects: Vec<CompletionEffect>,
 }
 
 /// What one observed event is.
@@ -513,6 +699,25 @@ pub enum RuntimeError {
     /// A declaration pairs [`RevealRule::Immediate`] with a `Hidden` initial
     /// state, which says both "hidden" and "shown from the first tick".
     HiddenButImmediate { objective: SymbolId },
+    /// Two objectives of this runtime declare **different** completion effects
+    /// naming the same objective.
+    ///
+    /// This is refused, not ordered: the original's own objective records declare
+    /// exactly that shape, in exactly one place across 1338 measured blocks, and
+    /// nothing measured which of the two effects wins there — the record's own
+    /// authored order is written both ways round across the corpus, so it carries
+    /// no engine intent either (F39-E2). Applying one of them would be inventing
+    /// the rule the measurement refused.
+    AmbiguousCompletionEffect { source: SymbolId, target: SymbolId },
+    /// An objective declares a completion effect on itself.
+    ///
+    /// The effect fires *because* the objective completed, so by the time it is
+    /// applied the objective holds `Succeeded`; no effect kind moves a target out
+    /// of a final state, so the declaration could never apply.
+    SelfCompletionEffect { objective: SymbolId },
+    /// A completion effect's declared number contradicts the measured shape: a
+    /// nap without its number, or a number on an effect that carries none.
+    EffectArgument { kind: CompletionEffectKind },
     /// A trigger movement was refused; see [`TriggerError`].
     Trigger(TriggerError),
 }
@@ -561,6 +766,19 @@ impl fmt::Display for RuntimeError {
             Self::HiddenButImmediate { objective } => write!(
                 f,
                 "objective {objective:?} declares itself hidden and shown from the first tick"
+            ),
+            Self::AmbiguousCompletionEffect { source, target } => write!(
+                f,
+                "objective {source:?} declares a completion effect on {target:?} that another objective already declares a different one for, and no measured rule says which wins"
+            ),
+            Self::SelfCompletionEffect { objective } => write!(
+                f,
+                "objective {objective:?} declares a completion effect on itself, which can only apply once it has completed"
+            ),
+            Self::EffectArgument { kind } => write!(
+                f,
+                "a {kind:?} completion effect declares {:?} the number only a nap carries",
+                if kind.carries_argument() { "no" } else { "a" }
             ),
             Self::Trigger(error) => write!(f, "trigger movement refused: {error}"),
         }
@@ -630,6 +848,13 @@ pub struct ObjectiveRuntime {
     raised_signals: BTreeSet<SymbolId>,
     ledger: EmissionLedger,
     latch: TerminalLatch,
+    /// The completion effects of every objective that completed this tick, waiting
+    /// for phase 7. A queue and not a call: applying an effect inside the state
+    /// change that raised it would be the contract's forbidden recursion into a
+    /// callback. Anything queued while the queue is being drained waits for the
+    /// next tick — and no effect kind can queue anything, because none of them
+    /// moves its target to `Succeeded`.
+    pending_effects: Vec<QueuedEffect>,
     /// The next instance id an admitted spawn group takes.
     next_instance: u32,
     /// The tick's terminal requests raised by reactions and timer actions.
@@ -663,6 +888,7 @@ impl ObjectiveRuntime {
             raised_signals: BTreeSet::new(),
             ledger: EmissionLedger::new(session),
             latch: TerminalLatch::new(),
+            pending_effects: Vec::new(),
             next_instance: 1,
             requests: Vec::new(),
             sequence: 0,
@@ -712,10 +938,21 @@ impl ObjectiveRuntime {
 
     /// Registers one objective.
     ///
+    /// Its [`completion_effects`](ObjectiveSpec::completion_effects) are checked
+    /// here rather than in [`CompletionEffect::new`], because every field of a
+    /// [`CompletionEffect`] is public and a struct literal would otherwise let a
+    /// declaration slip past: the measured number's shape, an effect on the
+    /// objective itself, and the one rule that cannot be expressed in the effect
+    /// alone — a target named by **two different** effects, which is refused
+    /// rather than ordered because no measured rule says which wins (F39-E2).
+    ///
     /// # Errors
     ///
-    /// [`RuntimeError::DuplicateObjective`], [`RuntimeError::ReservedSymbol`]
-    /// and [`RuntimeError::HiddenButImmediate`].
+    /// [`RuntimeError::DuplicateObjective`], [`RuntimeError::ReservedSymbol`],
+    /// [`RuntimeError::HiddenButImmediate`],
+    /// [`RuntimeError::AmbiguousCompletionEffect`],
+    /// [`RuntimeError::SelfCompletionEffect`] and
+    /// [`RuntimeError::EffectArgument`].
     pub fn add_objective(&mut self, spec: ObjectiveSpec) -> Result<(), RuntimeError> {
         if spec.id == ACTOR_EVENT_SOURCE {
             return Err(RuntimeError::ReservedSymbol { symbol: spec.id });
@@ -726,6 +963,13 @@ impl ObjectiveRuntime {
         if spec.initial == ObjectiveState::Hidden && spec.reveal == RevealRule::Immediate {
             return Err(RuntimeError::HiddenButImmediate { objective: spec.id });
         }
+        for effect in &spec.completion_effects {
+            effect.validate()?;
+            if effect.target == spec.id {
+                return Err(RuntimeError::SelfCompletionEffect { objective: spec.id });
+            }
+        }
+        self.check_uncontested_targets(spec.id, &spec.completion_effects)?;
         let revealed = spec.reveal == RevealRule::Immediate;
         self.objectives.insert(
             spec.id,
@@ -735,8 +979,47 @@ impl ObjectiveRuntime {
                 reveal: spec.reveal,
                 revealed,
                 on_complete: spec.on_complete,
+                completion_effects: spec.completion_effects,
             },
         );
+        Ok(())
+    }
+
+    /// Refuses a target this runtime is already naming with a **different**
+    /// effect kind.
+    ///
+    /// Registration order cannot decide the question, and neither can the
+    /// declaration's own field order: the original writes each conflicting pair
+    /// both ways round, so the corpus refutes the authored order as a rule
+    /// (F39-E2). The refusal is therefore about the *shape*, not about who spoke
+    /// first — which is why the scan runs over every registered objective and
+    /// not only the previous one, so a conflict is found whichever of the two
+    /// objectives is registered second.
+    fn check_uncontested_targets(
+        &self,
+        source: SymbolId,
+        effects: &[CompletionEffect],
+    ) -> Result<(), RuntimeError> {
+        let mut declared: BTreeMap<SymbolId, CompletionEffectKind> = BTreeMap::new();
+        for tracked in self.objectives.values() {
+            for effect in &tracked.completion_effects {
+                declared.entry(effect.target).or_insert(effect.kind);
+            }
+        }
+        for effect in effects {
+            match declared.get(&effect.target) {
+                Some(kind) if *kind != effect.kind => {
+                    return Err(RuntimeError::AmbiguousCompletionEffect {
+                        source,
+                        target: effect.target,
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    declared.insert(effect.target, effect.kind);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -877,6 +1160,16 @@ impl ObjectiveRuntime {
         self.latched.contains(&condition)
     }
 
+    /// How many completion effects are queued for the next drain.
+    ///
+    /// A tick that ended with nothing queued has applied every effect the tick
+    /// declared, so a caller (and a test) can tell "the effect fired" from "the
+    /// effect is still waiting" without walking the stream.
+    #[must_use]
+    pub fn queued_completion_effects(&self) -> usize {
+        self.pending_effects.len()
+    }
+
     /// A declared timer's state.
     #[must_use]
     pub fn timer_state(&self, timer: SymbolId) -> Option<TimerState> {
@@ -956,6 +1249,7 @@ impl ObjectiveRuntime {
         self.collect_signals(input, &mut out);
         self.apply_objective_requests(input, &mut out);
         self.apply_timers(input, &mut out);
+        self.apply_completion_effects(&mut out);
         self.resolve_outcome(input, &mut out);
 
         self.sequence = out.sequence;
@@ -988,12 +1282,15 @@ impl ObjectiveRuntime {
     /// * one per signal, timer request and objective request;
     /// * two events per timer (one arm, one expiry) plus one per expiry action;
     /// * one event per objective for a reveal;
+    /// * one per queued completion effect (the move it declares, refused or not);
     /// * one per terminal request.
     ///
     /// A reaction's own cascade — the state change, the reveal it triggers and
     /// the deadlines that state arms — is covered by the objective and timer
     /// terms, which is why a tick may legitimately produce fewer events than
-    /// this reports.
+    /// this reports. The completion-effect queue is bounded by the same argument:
+    /// no effect kind completes an objective, so a drain cannot add to the queue
+    /// it is draining.
     fn declared_event_count(&self, input: &TickInput<'_>) -> usize {
         let counted = input
             .lifecycles
@@ -1012,6 +1309,7 @@ impl ObjectiveRuntime {
             + input.terminal_requests.len()
             + timers
             + self.objectives.len()
+            + self.pending_effects.len()
     }
 
     /// Refuses the whole tick's movements before observing any of them.
@@ -1254,7 +1552,29 @@ impl ObjectiveRuntime {
         }
     }
 
-    /// Phase 7: resolve every terminal request this tick made, together.
+    /// Phase 7: apply the completion effects every objective that completed this
+    /// tick declared.
+    ///
+    /// The due set is *taken* before the first effect is applied, so an effect
+    /// that somehow queued another one would wait for the next tick instead of
+    /// recursing here. That is belt and braces: no [`CompletionEffectKind`] moves
+    /// a target to `Succeeded`, so no applied effect can complete an objective
+    /// and the queue cannot grow while it drains.
+    ///
+    /// Order is `(completing objective, authored effect)`: the queue is filled in
+    /// the order objectives completed (itself a `BTreeMap` walk, never hash
+    /// order) and each objective's effects keep their declared order. A target
+    /// named by two *different* effects cannot be registered at all, so this
+    /// order never decides a contested outcome.
+    fn apply_completion_effects(&mut self, out: &mut Emitter) {
+        let due: Vec<QueuedEffect> = std::mem::take(&mut self.pending_effects);
+        for pending in due {
+            let state = pending.effect.moves_target_to();
+            self.change_objective(pending.effect.target, state, pending.source, out);
+        }
+    }
+
+    /// Phase 8: resolve every terminal request this tick made, together.
     fn resolve_outcome(&mut self, input: &TickInput<'_>, out: &mut Emitter) {
         let mut requested: BTreeMap<TerminalOutcome, SymbolId> = BTreeMap::new();
         for (source, outcome) in input.terminal_requests {
@@ -1350,10 +1670,14 @@ impl ObjectiveRuntime {
                 to,
             },
         );
-        if to == ObjectiveState::Succeeded
-            && let ObjectiveCompletion::Requests(outcome) = on_complete
-        {
-            self.requests.push((source, outcome));
+        if to == ObjectiveState::Succeeded {
+            if let ObjectiveCompletion::Requests(outcome) = on_complete {
+                self.requests.push((source, outcome));
+            }
+            // The objective completed, so whatever it declares happens to *other*
+            // objectives — queued, never called: the effects are applied by
+            // phase 7, after every state change this tick has already made.
+            self.queue_completion_effects(objective);
         }
         self.settle_reveals(
             RevealTrigger::ObjectiveState {
@@ -1387,6 +1711,30 @@ impl ObjectiveRuntime {
                 out,
             );
         }
+    }
+
+    /// Queues the completion effects an objective declares, remembering which
+    /// objective declared each one: that objective is the `source` its effects'
+    /// events report under, because the effect belongs to *its* declaration and
+    /// not to whatever request completed it.
+    ///
+    /// An objective that has already completed latches: no row leaves
+    /// `Succeeded`, so a completion happens once per session and so do the
+    /// effects it queues.
+    fn queue_completion_effects(&mut self, objective: SymbolId) {
+        let Some(tracked) = self.objectives.get(&objective) else {
+            return;
+        };
+        let source = objective;
+        self.pending_effects.extend(
+            tracked
+                .completion_effects
+                .iter()
+                .map(|effect| QueuedEffect {
+                    source,
+                    effect: *effect,
+                }),
+        );
     }
 
     /// Reveals every hidden objective whose declared rule this event satisfies.
@@ -1567,14 +1915,23 @@ struct CountBinding {
     reaction: CountReaction,
 }
 
+/// One queued completion effect: the effect, and the objective whose declaration
+/// carries it (the `source` its events report under).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct QueuedEffect {
+    source: SymbolId,
+    effect: CompletionEffect,
+}
+
 /// One objective's live state.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct TrackedObjective {
     content: ContentId,
     cell: ObjectiveCell,
     reveal: RevealRule,
     revealed: bool,
     on_complete: ObjectiveCompletion,
+    completion_effects: Vec<CompletionEffect>,
 }
 
 impl TrackedObjective {

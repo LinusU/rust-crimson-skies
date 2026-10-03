@@ -42,6 +42,21 @@
 //!   [`terminal::TerminalPrecedence`] that resolves a tick's conflicting
 //!   requests, and the [`terminal::TerminalLatch`] that holds one answer.
 //!
+//! # Stage F39-E5 — completion effects
+//!
+//! - [`runtime::CompletionEffect`] / [`runtime::CompletionEffectKind`]: what
+//!   completing one objective does to *another* — the four spellings the
+//!   original's objective records use, applied as declared moves through the
+//!   same transition table every other declared action obeys. They are drained
+//!   from a queue in their own phase, never called from inside the completion
+//!   that raised them (`docs/contracts/SCRIPT-MISSION.md`: "actions do not
+//!   directly recurse into callbacks"), no kind moves its target to `Succeeded`
+//!   so the queue cannot cascade, and a target named by two *different* effects
+//!   is refused rather than ordered.
+//! - [`runtime::UnmeasuredNumber`]: the number a nap declaration carries, kept
+//!   as data with no unit because what it measures is unmeasured, and never
+//!   interpreted.
+//!
 //! The mission wiring — the authored content form, the Bevy producers and the
 //! UI and dialogue consumers — is F39-C.
 
