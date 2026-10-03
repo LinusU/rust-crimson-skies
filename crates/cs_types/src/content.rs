@@ -35,6 +35,7 @@
 //! transitive dependency closure over these records. Nothing in this module
 //! is derived from original game data.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::asset_id::SourceSpan;
@@ -251,18 +252,81 @@ impl ContentKind {
         Self::ALL.iter().copied().find(|kind| kind.label() == label)
     }
 
+    /// How rows of this kind are accounted for in the installation-wide
+    /// baseline inventory (spec F14, `### F14-D`).
+    ///
+    /// This match deliberately has **no catch-all arm**, and that is the whole
+    /// point of the classification. The baseline completeness total used to be a
+    /// hand-maintained sum over the collections that existed when it was
+    /// written, so every later collection had to remember to edit a list in
+    /// another stage's test; two collections did not, and the retail
+    /// completeness check failed on `main` twice for that reason instead of when
+    /// the collection landed. A new [`ContentKind`] therefore does not compile
+    /// until it says which role it plays, and [`account_catalog_rows`] derives
+    /// the total from the kinds actually present.
+    ///
+    /// The roles: an inventoried file stands for bytes on disk; a launchable
+    /// row is one the player starts; a program is the archive a launchable row
+    /// is read from; everything else is a source-derived collection row, which
+    /// becomes usable as a dependency rather than as a row of its own.
+    pub const fn baseline_row_role(self) -> CatalogRowRole {
+        match self {
+            Self::InstallFile => CatalogRowRole::InstallFile,
+            Self::Mission | Self::IaScenario | Self::MultiplayerScenario => {
+                CatalogRowRole::Launchable
+            }
+            Self::Script => CatalogRowRole::Program,
+            Self::World
+            | Self::SceneNode
+            | Self::Mesh
+            | Self::Material
+            | Self::Image
+            | Self::CollisionSurface
+            | Self::Airframe
+            | Self::Engine
+            | Self::Armor
+            | Self::Gun
+            | Self::Ammo
+            | Self::HardpointEquipment
+            | Self::Blueprint
+            | Self::PaintMask
+            | Self::Pilot
+            | Self::Voice
+            | Self::Faction
+            | Self::Instruction
+            | Self::NativeBinding
+            | Self::AnimationTrack
+            | Self::CameraTrack
+            | Self::Objective
+            | Self::Trigger
+            | Self::Route
+            | Self::Sound
+            | Self::Music
+            | Self::Dialogue
+            | Self::Video
+            | Self::Font
+            | Self::StringResource
+            | Self::UiResource
+            | Self::Stunt
+            | Self::ScrapbookItem
+            | Self::IaPreset
+            | Self::MultiplayerRules
+            | Self::CustomPlane
+            | Self::Loadout
+            | Self::Weapon => CatalogRowRole::SourceDerivedCollection,
+        }
+    }
+
     /// Whether an element of this kind can be launched as playable content.
     ///
     /// The declared launchable baseline is what readiness is measured over
     /// (spec F14 non-negotiable behavior 4): a campaign mission, an
     /// instant-action scenario and a multiplayer scenario are launchable; a
     /// texture or a sound is a dependency of one, never a launchable row
-    /// itself.
+    /// itself. The answer is [`ContentKind::baseline_row_role`]'s, so the two
+    /// cannot disagree about a kind.
     pub const fn is_launchable(self) -> bool {
-        matches!(
-            self,
-            Self::Mission | Self::IaScenario | Self::MultiplayerScenario
-        )
+        matches!(self.baseline_row_role(), CatalogRowRole::Launchable)
     }
 }
 
@@ -270,6 +334,166 @@ impl fmt::Display for ContentKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.label())
     }
+}
+
+/// How a catalog row is accounted for in the installation-wide inventory.
+///
+/// The four roles partition [`ContentKind`] through
+/// [`ContentKind::baseline_row_role`], so every row of a catalog has exactly
+/// one role and a completeness total can be derived from the catalog's kinds
+/// rather than from a list of the collection names its author remembered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CatalogRowRole {
+    /// One inventoried installation file or container member: the row that
+    /// stands for bytes on disk. There is one per discovered file.
+    InstallFile,
+    /// A row the player starts on its own, with its own program: a campaign
+    /// mission, an instant-action scenario or a multiplayer scenario.
+    Launchable,
+    /// The program archive a [`CatalogRowRole::Launchable`] row is read from.
+    /// Each launchable row has exactly one, so the two totals are the same
+    /// size; a program row with no launchable row is an orphan.
+    Program,
+    /// A row of a collection derived from original bytes — a world, a scene
+    /// node, a mesh, a sound cue. Never launchable on its own; it becomes
+    /// usable as a dependency of a launchable row later.
+    SourceDerivedCollection,
+}
+
+impl CatalogRowRole {
+    /// Every role, in a stable order. The four roles partition
+    /// [`ContentKind`] through [`ContentKind::baseline_row_role`], so a report
+    /// can iterate them and find the classification total.
+    pub const ALL: &'static [CatalogRowRole] = &[
+        Self::InstallFile,
+        Self::Launchable,
+        Self::Program,
+        Self::SourceDerivedCollection,
+    ];
+
+    /// The stable label used in reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::InstallFile => "install_file",
+            Self::Launchable => "launchable",
+            Self::Program => "program",
+            Self::SourceDerivedCollection => "source_derived_collection",
+        }
+    }
+
+    /// Whether rows of this role can be started on their own: only
+    /// [`CatalogRowRole::Launchable`] rows are the readiness denominator
+    /// (spec F14 non-negotiable behavior 4).
+    pub const fn is_launchable(self) -> bool {
+        matches!(self, Self::Launchable)
+    }
+}
+
+impl fmt::Display for CatalogRowRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// How many rows of a catalog fall into each [`CatalogRowRole`], and which
+/// kinds they are.
+///
+/// The totals are derived from the rows themselves, so adding a collection
+/// that inserts rows of any kind — including a kind that no other collection
+/// uses — moves [`CatalogRowAccounting::source_derived`] on its own. Nothing
+/// here is a list a later stage has to remember to extend.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CatalogRowAccounting {
+    /// Every row counted, which is the number of rows the walk was given.
+    pub total: usize,
+    /// Rows that stand for inventoried installation files.
+    pub install_file: usize,
+    /// Rows that can be started on their own.
+    pub launchable: usize,
+    /// Mission program rows.
+    pub program: usize,
+    /// Rows of source-derived collections: every collection row of the
+    /// inventory, none of which is launchable.
+    pub source_derived: usize,
+    /// How many rows of each kind the catalog holds, keyed by kind. Kinds the
+    /// catalog holds no row of are absent rather than counted as zero.
+    pub rows_by_kind: BTreeMap<ContentKind, usize>,
+}
+
+impl CatalogRowAccounting {
+    /// The rows that are neither an inventoried file, nor a launchable row
+    /// with its program: the total of the source-derived collection rows,
+    /// counted from the kinds present in the catalog.
+    pub const fn unaccounted(&self) -> usize {
+        self.source_derived
+    }
+
+    /// The source-derived collections this accounting holds rows for, in
+    /// canonical kind order, as `(kind label, row count)` pairs — the list a
+    /// completeness failure message names.
+    ///
+    /// This walks the kinds the rows actually carry rather than
+    /// [`ContentKind::ALL`], so a kind missing from that list still appears
+    /// here with its rows: the totals and the breakdown cannot disagree about
+    /// which collection a row belongs to.
+    pub fn collections(&self) -> Vec<(&'static str, usize)> {
+        self.rows_by_kind
+            .iter()
+            .filter(|(kind, _)| kind.baseline_row_role() == CatalogRowRole::SourceDerivedCollection)
+            .map(|(kind, rows)| (kind.label(), *rows))
+            .collect()
+    }
+
+    /// Whether every counted row fell into exactly one role, which is what
+    /// [`account_catalog_rows`] does by construction: it asserts the sum of the
+    /// four roles equals the number of rows walked, so a caller can check its
+    /// own accounting rather than trust it.
+    pub const fn is_complete(&self) -> bool {
+        self.install_file + self.launchable + self.program + self.source_derived == self.total
+    }
+}
+
+impl fmt::Display for CatalogRowAccounting {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let collections: Vec<String> = self
+            .collections()
+            .into_iter()
+            .map(|(kind, rows)| format!("{kind} {rows}"))
+            .collect();
+        write!(
+            f,
+            "{} rows: {} install_file, {} launchable, {} program, {} source-derived ({})",
+            self.total,
+            self.install_file,
+            self.launchable,
+            self.program,
+            self.source_derived,
+            collections.join(", ")
+        )
+    }
+}
+
+/// Totals catalog rows by [`ContentKind::baseline_row_role`].
+///
+/// This is what the shared baseline completeness check derives its totals
+/// from: the rows are counted into the role their kind plays, so a collection
+/// that inserts rows of a kind no earlier stage used is accounted for without
+/// any list naming it.
+pub fn account_catalog_rows<'a>(
+    rows: impl IntoIterator<Item = &'a CatalogElement>,
+) -> CatalogRowAccounting {
+    let mut accounting = CatalogRowAccounting::default();
+    for row in rows {
+        accounting.total += 1;
+        *accounting.rows_by_kind.entry(row.kind).or_default() += 1;
+        match row.kind.baseline_row_role() {
+            CatalogRowRole::InstallFile => accounting.install_file += 1,
+            CatalogRowRole::Launchable => accounting.launchable += 1,
+            CatalogRowRole::Program => accounting.program += 1,
+            CatalogRowRole::SourceDerivedCollection => accounting.source_derived += 1,
+        }
+    }
+    accounting
 }
 
 /// Why a [`ContentId`] was rejected.
@@ -1596,5 +1820,124 @@ mod tests {
         assert_eq!(unsupported.validate(), Ok(()));
         assert!(!unsupported.is_ready());
         assert_eq!(unsupported.unsupported_codes(), vec!["parse_failed"]);
+    }
+
+    /// F14-D: every [`ContentKind`] plays exactly one baseline role, and
+    /// [`ContentKind::is_launchable`] is that role rather than a second
+    /// classification, so the two cannot drift apart.
+    ///
+    /// The classification is what makes the shared baseline completeness total
+    /// derivable: it is a `match` without a catch-all arm, so a kind added for
+    /// a new collection does not compile until it says which role it plays.
+    #[test]
+    fn accept_f14_d_every_content_kind_is_classified_for_the_baseline_accounting() {
+        let mut by_role: BTreeMap<CatalogRowRole, Vec<&'static str>> = BTreeMap::new();
+        for kind in ContentKind::ALL {
+            assert_eq!(
+                CatalogRowRole::ALL
+                    .iter()
+                    .filter(|role| **role == kind.baseline_row_role())
+                    .count(),
+                1,
+                "{} is classified exactly once",
+                kind.label()
+            );
+            by_role
+                .entry(kind.baseline_row_role())
+                .or_default()
+                .push(kind.label());
+            assert_eq!(
+                kind.is_launchable(),
+                kind.baseline_row_role() == CatalogRowRole::Launchable,
+                "{}: the launchable answer is the role's",
+                kind.label()
+            );
+        }
+        assert_eq!(by_role.len(), CatalogRowRole::ALL.len(), "all four roles");
+        assert_eq!(
+            by_role.values().map(|kinds| kinds.len()).sum::<usize>(),
+            ContentKind::ALL.len(),
+            "every kind the catalog can hold has a role"
+        );
+        assert_eq!(by_role[&CatalogRowRole::InstallFile], vec!["install_file"]);
+        assert_eq!(by_role[&CatalogRowRole::Program], vec!["script"]);
+        assert_eq!(
+            by_role[&CatalogRowRole::Launchable],
+            vec!["mission", "ia_scenario", "multiplayer_scenario"],
+            "the launchable denominator is exactly the three scenario kinds"
+        );
+        assert_eq!(
+            by_role[&CatalogRowRole::SourceDerivedCollection].len(),
+            ContentKind::ALL.len() - 5,
+            "everything except the three launchable kinds and the install-file and \
+             program kinds is a source-derived collection row"
+        );
+
+        // The two roles are named by label and cannot be confused: a program is
+        // not a launchable row, and a collection row is neither.
+        assert_eq!(CatalogRowRole::Program.label(), "program");
+        assert_eq!(
+            CatalogRowRole::SourceDerivedCollection.label(),
+            "source_derived_collection"
+        );
+        assert!(
+            CatalogRowRole::Launchable.is_launchable(),
+            "only a launchable row is the readiness denominator"
+        );
+        assert!(!CatalogRowRole::Program.is_launchable());
+        assert!(!CatalogRowRole::InstallFile.is_launchable());
+        assert!(!CatalogRowRole::SourceDerivedCollection.is_launchable());
+    }
+
+    /// F14-D: a catalog is accounted for by the roles its rows' kinds play, so
+    /// a collection nobody named is accounted for anyway.
+    ///
+    /// The sound and music rows below are the demonstration the old hand-summed
+    /// total could not give: `music` appears in no list, and the derived total
+    /// still holds it.
+    #[test]
+    fn accept_f14_d_catalog_rows_are_accounted_by_kind_and_not_by_a_named_list() {
+        let row = |kind: ContentKind, key: &str| {
+            let id = ContentId::from_source(kind, key).expect("test content id is valid");
+            ready_element(id)
+        };
+        let rows = vec![
+            row(ContentKind::InstallFile, "zbd_zrdr.zbd"),
+            row(ContentKind::Mission, "ch1-m01"),
+            row(ContentKind::Script, "ch1-m01-zrdr"),
+            row(ContentKind::Sound, "zbd-sfx_001"),
+            row(ContentKind::Music, "zbd-mus_001"),
+            row(ContentKind::Music, "zbd-mus_002"),
+        ];
+        let accounting = account_catalog_rows(rows.iter());
+
+        assert_eq!(accounting.total, 6);
+        assert_eq!(accounting.install_file, 1);
+        assert_eq!(accounting.launchable, 1);
+        assert_eq!(accounting.program, 1);
+        assert_eq!(
+            accounting.source_derived, 3,
+            "the two music rows and the sound row: a kind no list names is counted"
+        );
+        assert_eq!(accounting.unaccounted(), accounting.source_derived);
+        assert!(accounting.is_complete(), "every row has exactly one role");
+        assert_eq!(
+            accounting.collections(),
+            vec![("sound", 1), ("music", 2)],
+            "the collections are named in canonical kind order, which is declaration order"
+        );
+        let rendered = accounting.to_string();
+        assert!(rendered.contains("6 rows"), "{rendered}");
+        assert!(rendered.contains("3 source-derived"), "{rendered}");
+        assert!(rendered.contains("music 2"), "{rendered}");
+        assert!(rendered.contains("sound 1"), "{rendered}");
+
+        // Adding one more row of the unnamed kind moves the total by itself:
+        // no list is consulted, so nothing can be forgotten.
+        let mut extended = rows;
+        extended.push(row(ContentKind::Music, "zbd-mus_003"));
+        let extended = account_catalog_rows(extended.iter());
+        assert_eq!(extended.source_derived, accounting.source_derived + 1);
+        assert_eq!(extended.collections(), vec![("sound", 1), ("music", 3)]);
     }
 }

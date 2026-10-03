@@ -7,9 +7,19 @@
 //! row it produces is traced to that tree's own fingerprints. They exercise
 //! production code only — `cs_content::catalog::baseline::retail_baseline`
 //! over `cs_assets::install::discover` and the shared campaign walk, plus the
-//! production report renderer — so removing or neutering the inventory, the
-//! denominator declaration, the origin split or the coverage accounting makes
-//! them fail.
+//! production report renderer and the production
+//! [`cs_types::content::account_catalog_rows`] — so removing or neutering the
+//! inventory, the denominator declaration, the origin split, the coverage
+//! accounting or the row-role classification makes them fail.
+//!
+//! Completeness of the inventory is **derived, not remembered**: every catalog
+//! row falls into exactly one [`CatalogRowRole`] by its [`ContentKind`], and
+//! the total of the non-launchable collections is what the kinds present add up
+//! to. A collection that inserts rows is therefore accounted for without any
+//! list naming it, which is the defect
+//! `accept_f14_d_a_collection_named_by_no_list_is_still_accounted` pins: the
+//! hand-maintained sum it replaced had to be extended by hand, and twice was
+//! not.
 //!
 //! The retail test (`#[ignore = "requires CS_GAME_DIR"]`) reads the owner's
 //! original installation and pins the denominator against the frozen F50
@@ -17,6 +27,7 @@
 //! implementing and reviewing agents; without `CS_GAME_DIR` it fails loudly
 //! rather than passing vacuously.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,8 +43,8 @@ use cs_formats::zbd::{
     INDEX_ENTRY_BYTES, INDEX_NAME_BYTES, INDEX_UNEXPLAINED_BYTES, TRAILER_VERSION_ONE,
 };
 use cs_types::content::{
-    CatalogElement, ConsumerKind, ContentId, ContentKind, NormalizeState, Origin, Provenance,
-    Readiness, RuntimeConsumer,
+    CatalogElement, CatalogRowRole, ConsumerKind, ContentId, ContentKind, NormalizeState, Origin,
+    Provenance, Readiness, RuntimeConsumer, account_catalog_rows,
 };
 use cs_types::evidence::{ClaimId, ClaimStatus};
 use cs_types::install::ParseState;
@@ -274,6 +285,28 @@ fn accept_f14_d_baseline_inventory_covers_every_inventoried_file_and_declared_mi
     assert!(report.contains("\"roots\":1"));
     assert!(report.contains("\"unresolved_references\":0"));
     assert!(report.contains("\"path\":\"ZBD/C1C/IA1\""));
+
+    // Completeness is derived from the rows' kinds, not from a list of the
+    // collections that existed when this test was written, so it is asserted
+    // here too and runs in CI: the eight inventoried files, the one launchable
+    // row, its one program and nothing else.
+    let accounting = account_catalog_rows(catalog.elements());
+    assert!(
+        accounting.is_complete(),
+        "every row has one role: {accounting}"
+    );
+    assert_eq!(accounting.total, catalog.len());
+    assert_eq!(accounting.install_file, 8, "{accounting}");
+    assert_eq!(accounting.launchable, 1, "{accounting}");
+    assert_eq!(accounting.program, 1, "{accounting}");
+    assert_eq!(
+        accounting.source_derived, 0,
+        "this fixture builds no source-derived collection: {accounting}"
+    );
+    assert!(
+        accounting.collections().is_empty(),
+        "and the completeness message names no collection: {accounting}"
+    );
 }
 
 /// AC04, the F14-D minimum scenario: a synthetic launchable row is never
@@ -562,6 +595,164 @@ fn accept_f14_d_baseline_refuses_a_denominator_it_cannot_read() {
     }
 }
 
+/// One row of a collection this stage does not build, inserted the way a real
+/// collection stage inserts its own: a validated [`CatalogElement`] of the
+/// collection's kind, through the production catalog.
+///
+/// The origin is authored because the accounting is a property of the row's
+/// *kind*, not of where its bytes came from; the retail half of the same
+/// accounting runs over installation-origin rows.
+fn collection_row(kind: ContentKind, key: &str) -> CatalogElement {
+    CatalogElement {
+        kind,
+        id: cid(kind, key),
+        display_name: Some(key.to_owned()),
+        origin: Origin::SyntheticFixture,
+        dependencies: Vec::new(),
+        parse_state: ParseState::Parsed,
+        normalize_state: NormalizeState::Normalized,
+        runtime_consumers: Vec::new(),
+        readiness: Readiness::Ready,
+        unsupported_reasons: Vec::new(),
+        fingerprint: None,
+    }
+}
+
+/// The sum this check used to assert, kept only so the demonstration below can
+/// show it breaking: the collections named when the sum was written, added up
+/// by hand. A collection that inserts rows and is absent from this list moves
+/// the catalog but not this total, which is exactly how F14-D.6 and F14-D.7
+/// each failed the check on a rebase of `main`.
+fn hand_summed_collections(rows_by_kind: &BTreeMap<ContentKind, usize>) -> usize {
+    [
+        "world",
+        "scene_node",
+        "mesh",
+        "airframe",
+        "paint_mask",
+        "faction",
+        "sound",
+        "multiplayer_rules",
+    ]
+    .iter()
+    .filter_map(|label| ContentKind::from_label(label))
+    .filter_map(|kind| rows_by_kind.get(&kind).copied())
+    .sum()
+}
+
+/// The defect this file's completeness total had, demonstrated rather than
+/// described: a collection that inserts rows **without appearing in any
+/// hand-maintained list** cannot fail the completeness check any more.
+///
+/// The scenario is the real one. It starts from a production baseline over the
+/// synthetic tree with the collections the old hand-sum named already in it, so
+/// the old total is correct; then a new collection lands and inserts rows of
+/// two kinds nothing in this stage uses (`music` and `image`); then both shapes
+/// are evaluated against the same catalog. The hand-summed total no longer
+/// matches — which is the failure that landed on `main` twice — while the
+/// derived accounting is complete, names the new collections, and satisfies the
+/// completeness identity the retail test asserts.
+#[test]
+fn accept_f14_d_a_collection_named_by_no_list_is_still_accounted() {
+    let temp = tree("accounting");
+    let mut baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
+    let catalog = &mut baseline.catalog;
+
+    // Two rows of collections the old hand-sum named, so that shape is complete
+    // to begin with.
+    for (kind, key) in [
+        (ContentKind::World, "world-row"),
+        (ContentKind::Sound, "sound-row"),
+    ] {
+        catalog
+            .insert(collection_row(kind, key))
+            .expect("the row validates");
+    }
+    let before = account_catalog_rows(catalog.elements());
+    assert!(before.is_complete(), "{before}");
+    assert_eq!(
+        hand_summed_collections(&before.rows_by_kind),
+        before.unaccounted(),
+        "to begin with the hand-summed shape agrees with the catalog: {before}"
+    );
+
+    // A new collection lands. It uses two kinds no stage inserts today, so
+    // neither appears in any list in this file.
+    for (kind, key, rows) in [
+        (ContentKind::Music, "music-row", 3),
+        (ContentKind::Image, "image-row", 2),
+    ] {
+        for index in 0..rows {
+            catalog
+                .insert(collection_row(kind, &format!("{key}-{index}")))
+                .expect("the row validates");
+        }
+    }
+    let after = account_catalog_rows(catalog.elements());
+
+    // The shape this replaced, on the same catalog: its list did not grow.
+    assert_eq!(
+        hand_summed_collections(&after.rows_by_kind),
+        2,
+        "the hand-maintained sum does not move when an unnamed collection lands"
+    );
+    assert_ne!(
+        after.unaccounted(),
+        hand_summed_collections(&after.rows_by_kind),
+        "so asserting against it is the failure this task removes"
+    );
+
+    // The derived accounting, on the same catalog: complete, and it names the
+    // collections nobody declared.
+    assert!(after.is_complete(), "{after}");
+    assert_eq!(after.total, catalog.len());
+    assert_eq!(after.install_file, 8, "a collection adds no file row");
+    assert_eq!(
+        after.launchable, 1,
+        "a source-derived collection is not launchable: {after}"
+    );
+    assert_eq!(after.program, 1, "a collection adds no program row");
+    assert_eq!(
+        after.unaccounted(),
+        7,
+        "the two named collections plus the five rows of the unnamed one: {after}"
+    );
+    assert_eq!(
+        catalog.len(),
+        after.install_file + 2 * after.launchable + after.unaccounted(),
+        "the completeness identity the retail test asserts: {after}"
+    );
+    assert_eq!(
+        after.collections(),
+        vec![("world", 1), ("image", 2), ("sound", 1), ("music", 3)],
+        "the breakdown names every collection present, in canonical kind order"
+    );
+    let rendered = after.to_string();
+    assert!(rendered.contains("music 3"), "{rendered}");
+    assert!(rendered.contains("image 2"), "{rendered}");
+    assert!(rendered.contains("7 source-derived"), "{rendered}");
+
+    // And the classification itself: the unnamed kinds are source-derived
+    // collections, and a launchable kind is not one of them.
+    for kind in [ContentKind::Music, ContentKind::Image, ContentKind::World] {
+        assert_eq!(
+            kind.baseline_row_role(),
+            CatalogRowRole::SourceDerivedCollection,
+            "{} is a collection row",
+            kind.label()
+        );
+        assert!(!kind.is_launchable(), "{}", kind.label());
+    }
+    assert_eq!(
+        ContentKind::Mission.baseline_row_role(),
+        CatalogRowRole::Launchable
+    );
+    assert_eq!(
+        ContentKind::Script.baseline_row_role(),
+        CatalogRowRole::Program
+    );
+}
+
 /// The retail half: the denominator covers every campaign mission the
 /// installation declares, matches the frozen F50 inventory, and no row is
 /// synthetic.
@@ -594,6 +785,15 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     assert_eq!(mp_dirs, 21, "MP1 and MP3 in every world group, MP2 in five");
     let scenarios = ia_dirs + mp_dirs;
     let launchable = inventory.len() + scenarios;
+    assert_eq!(
+        scenarios, 29,
+        "eight instant-action and 21 multiplayer scenario directories, measured 2026-10-03"
+    );
+    assert_eq!(
+        launchable, 53,
+        "the original installation declares 53 launchable roots: 24 campaign missions and 29 \
+         scenario directories, measured 2026-10-03"
+    );
     assert_eq!(
         catalog.launchable_count(),
         launchable,
@@ -675,6 +875,10 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
         discovery.manifest.files.len(),
         "every inventoried file of the original installation is a catalog row"
     );
+    assert_eq!(
+        install_rows, 228,
+        "the original installation inventories 228 regular files, measured 2026-10-03"
+    );
     // F14-D.2 added the first of the collections this stage leaves open: the
     // multiplayer modes the installation's string image names. F14-D.3 added
     // the world groups whose shared readers the classifier read, F14-D.4 the
@@ -709,78 +913,99 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
         "one airframe row per declared root of the loading-script container; the identities \
          themselves are pinned by accept_f14_d_6_retail_…"
     );
-    // F14-D.5's two collections are counted by their own acceptance tests, which
-    // pin the identities; here they only have to be accounted for, so this total
-    // does not restate a number another stage owns.
-    let faction_rows = rows_of(ContentKind::Faction);
-    let paint_mask_rows = rows_of(ContentKind::PaintMask);
-    // F14-D.4's two collections are counted by their own acceptance tests, which
-    // pin every identity, the per-container totals and the exact record each row
-    // is located by; here they only have to be accounted for, so this total does
-    // not restate a number another stage owns.
-    let scene_node_rows = rows_of(ContentKind::SceneNode);
-    let mesh_rows = rows_of(ContentKind::Mesh);
-    // F14-D.7's sound collection is accounted for in the same way. It is named
-    // here because a collection that inserts rows without appearing in this sum
-    // fails the equality below — which is what happened when F14-D.7 landed: the
-    // sound rows were in the catalog and in no total, and this test failed on
-    // `main`. Only the accounting belongs here; F14-D.7's own retail test pins
-    // which cues these are.
-    let sound_rows = rows_of(ContentKind::Sound);
-    // F14-D.8 adds the two collections that stage measured: one stunt row per
-    // fly-through target of a `stunt_flying` instant-action scenario and one
-    // scrapbook row per `Mission_Spread_Item` of the shared archive's table.
-    // Neither row is launchable, so the denominator above is unchanged; the
-    // identities are pinned by accept_f14_d_8_retail_…, this total only has to
-    // account for them. `CustomPlane` contributes no row at all.
-    let stunt_rows = rows_of(ContentKind::Stunt);
-    assert_eq!(
-        stunt_rows, 45,
-        "the 45 stunt_flying fly-through targets T463 measured"
+    // F14-D.5's faction and paint-mask collections, F14-D.4's scene-node and mesh
+    // collections, F14-D.7's sound collection and F14-D.8's stunt and scrapbook
+    // collections are counted by their own acceptance tests, which pin the
+    // identities; this one does not restate a number another stage owns. Their
+    // measured row counts are the floor `MEASURED_COLLECTIONS` below, which is
+    // where their accounting lives now. None of them is launchable, so the
+    // denominator asserted above is unchanged; the row count is not, and
+    // nothing is filtered out to hide it.
+
+    // Completeness is **derived from the kinds present**, which is what this
+    // block used to get wrong. The equality it asserted compared the
+    // non-launchable row count with a hand-written sum of the collections that
+    // existed when the sum was written, so every later collection had to
+    // remember to edit a list in another stage's test: F14-D.6 → F14-D.4,
+    // F14-D.7 → F14-D.4 and F14-D.8 → F14-D.4 each broke it, and every time the
+    // failure landed on a rebase of somebody else's branch instead of on the
+    // collection that was forgotten. Every row now falls into exactly one
+    // `CatalogRowRole`, the role is the kind's own classification
+    // (`cs_types::content`, matched without a catch-all arm, so a new kind must
+    // declare its role to compile), and the total below is what the roles add
+    // up to.
+    let accounting = account_catalog_rows(catalog.elements());
+    assert!(
+        accounting.is_complete(),
+        "every catalog row falls into exactly one role: {accounting}"
     );
-    let scrapbook_rows = rows_of(ContentKind::ScrapbookItem);
     assert_eq!(
-        scrapbook_rows, 461,
-        "the 461 Mission_Spread_Item records F12-D measured"
+        accounting.total,
+        catalog.len(),
+        "the accounting counts every row and no other: {accounting}"
     );
-    // Every row of the catalog is one of the three groups above: an inventoried
-    // file, a launchable row with its program, or a row of a collection that is
-    // not launchable. Anything else — and any collection a later stage adds
-    // without appearing in this sum — fails here instead of slipping past the
-    // completeness check.
-    let unaccounted = catalog
-        .elements()
-        .filter(|element| {
-            !matches!(
-                element.kind,
-                ContentKind::InstallFile
-                    | ContentKind::Script
-                    | ContentKind::Mission
-                    | ContentKind::IaScenario
-                    | ContentKind::MultiplayerScenario
-            )
-        })
-        .count();
     assert_eq!(
-        unaccounted,
-        mode_rows
-            + world_rows
-            + airframe_rows
-            + faction_rows
-            + paint_mask_rows
-            + scene_node_rows
-            + mesh_rows
-            + sound_rows
-            + stunt_rows
-            + scrapbook_rows,
-        "every non-launchable row belongs to a collection this total names"
+        accounting.install_file, install_rows,
+        "an install-file row is one inventoried file: {accounting}"
+    );
+    assert_eq!(
+        accounting.launchable, launchable,
+        "a launchable row is one of the three scenario kinds: {accounting}"
+    );
+    assert_eq!(
+        accounting.program, launchable,
+        "each launchable row is read from exactly one program archive and every \
+         program archive belongs to one, so an orphan program row is a defect: \
+         {accounting}"
+    );
+    // The non-launchable collection rows are whatever the source-derived kinds
+    // present add up to — including a kind this test never names, which is the
+    // point. What is recorded here is the measurement, as a floor rather than
+    // an equality: a later collection raises these numbers without failing
+    // here, and a collection that loses rows or disappears still does.
+    const MEASURED_COLLECTIONS: [(&str, usize); 10] = [
+        ("world", 8),
+        ("scene_node", 56620),
+        ("mesh", 17139),
+        ("airframe", 11),
+        ("paint_mask", 184),
+        ("faction", 11),
+        ("sound", 4951),
+        ("multiplayer_rules", 4),
+        // F14-D.8's two collections, merged while this branch was in review:
+        // 45 `stunt_flying` fly-through targets and 461 `Mission_Spread_Item`
+        // records. `accept_f14_d_8_retail_…` pins both exactly; here they are
+        // the floor that says the collection did not lose rows. `CustomPlane`
+        // contributes no row at all, so it has no floor.
+        ("stunt", 45),
+        ("scrapbook_item", 461),
+    ];
+    let collections = accounting.collections();
+    for (kind, measured) in MEASURED_COLLECTIONS {
+        let held = collections
+            .iter()
+            .find(|(label, _)| *label == kind)
+            .map(|(_, rows)| *rows)
+            .unwrap_or_else(|| {
+                panic!("{kind} held {measured} rows on 2026-10-03 and is gone: {accounting}")
+            });
+        assert!(
+            held >= measured,
+            "{kind} held {measured} rows on 2026-10-03 and holds {held} now: {accounting}"
+        );
+    }
+    let unaccounted = accounting.unaccounted();
+    assert!(
+        unaccounted >= 79434,
+        "the non-launchable collection rows measured 79 434 on 2026-10-03 (228 inventoried \
+         files, 53 launchable rows and their 53 programs, and the 506 F14-D.8 stunt and \
+         scrapbook rows merged in while this branch was in review): {accounting}"
     );
     assert_eq!(
         catalog.len(),
-        discovery.manifest.files.len() + 2 * launchable + unaccounted,
+        install_rows + 2 * launchable + unaccounted,
         "files plus one program row and one launchable row per mission and scenario, plus every \
-         non-launchable collection row (multiplayer rules, worlds, scene nodes, meshes, factions, \
-         paint masks, airframes, sound cues, stunts and scrapbook items)"
+         non-launchable collection row the catalog holds: {accounting}"
     );
 
     // Nothing authored reached the retail inventory, and every row is
