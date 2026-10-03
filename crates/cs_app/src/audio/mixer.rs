@@ -37,6 +37,7 @@ use cs_sim::audio_events::{
     AudioDevice, AudioMixer, DeviceError, EmitterMix, Listener, MixerReport, MusicCue,
     RecordingAudioDevice, SpatialPolicy,
 };
+use cs_types::net::SessionId;
 
 use super::AudioEmitterBinding;
 use super::engine::EngineVoices;
@@ -92,7 +93,7 @@ pub struct AudioMixing(pub AudioMixer);
 impl AudioMixing {
     /// An empty mixer for `session`.
     #[must_use]
-    pub fn new(session: u64) -> Self {
+    pub fn new(session: SessionId) -> Self {
         Self(AudioMixer::new(session))
     }
 

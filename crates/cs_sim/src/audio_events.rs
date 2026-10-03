@@ -12,13 +12,16 @@
 //!
 //! # Event identity
 //!
-//! [`AudioEventId`] is the audio-scoped realization of the contract's
-//! `EventId(session, tick, producer, sequence)` shape. `cs_types` does not
-//! implement a shared `SessionId`/`EventId` type yet (the same gap
-//! `cs_sim::damage` and `cs_sim::animated_object` record), so this module
-//! carries the four fields itself rather than guessing a shared one. Session
-//! qualification is load-bearing: an event from a previous session generation
-//! can never alias a live one ([`AudioRouter`] refuses it by name).
+//! [`AudioEventId`] is the audio-facing name of the shared contract event id,
+//! [`cs_types::net::EventId`], and [`AudioEmitterId`] the audio-facing name of
+//! the shared [`cs_types::net::ActorId`]: identity is defined once in
+//! `cs_types` rather than mirrored here (`docs/contracts/IDENTITY-CONTENT.md`;
+//! the F41-A gap is closed by task #496, exactly as #397 and #442 closed the
+//! animation and damage ones). The session is the shared nonzero
+//! [`cs_types::net::SessionId`] at every constructor boundary, so a zero "no
+//! session" sentinel can never be built, and an event or emitter from a
+//! previous session generation can never alias a live one ([`AudioRouter`]
+//! refuses it by name).
 //!
 //! # One-shot dedup (F41 non-negotiable behavior 3)
 //!
@@ -52,6 +55,7 @@ use std::sync::{Arc, Mutex};
 
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::net::{ActorId, EventId, SessionId};
 
 /// Maximum validated linear gain; the same designed ceiling as
 /// `cs_content::audio::MAX_AUDIO_GAIN`.
@@ -141,53 +145,35 @@ impl fmt::Display for PlaybackMode {
 
 // -------------------------------------------------------------- identity ---
 
-/// One producer's event identity: `EventId(session, tick, producer, sequence)`.
+/// The identity of one audio event: the shared contract `EventId` from
+/// `docs/contracts/IDENTITY-CONTENT.md`, re-exported under its audio-facing
+/// name.
 ///
-/// `producer` is the serial of the system that emitted the cue (a weapon
-/// mount, an engine, the radio queue) and `sequence` orders that producer's own
-/// events. Ordering by the full id is the declared deterministic order the
-/// router applies within a tick.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct AudioEventId {
-    /// The session generation the event was produced in.
-    pub session: u64,
-    /// The simulation tick the event belongs to.
-    pub tick: Tick,
-    /// The producing system's serial.
-    pub producer: u32,
-    /// The event's sequence within its producer.
-    pub sequence: u32,
-}
+/// This is the shared [`EventId`] itself, not a second struct: its fields —
+/// session generation, simulation tick, producer serial and producer-relative
+/// sequence — are exactly the contract's
+/// `EventId(session, tick, producer, sequence)`, so event identity is defined
+/// once and an audio event compares, orders and deduplicates as the shared
+/// type (the F41-A gap is closed by task #496, exactly as #397 closed the
+/// animation one). `producer` is the serial of the system that emitted the cue
+/// (a weapon mount, an engine, the radio queue) and `sequence` orders that
+/// producer's own events; ordering by the full id is the declared deterministic
+/// order the router applies within a tick. `session` is a nonzero
+/// [`SessionId`], supplied by the caller, so a replayed or restarted session
+/// can never collide with the previous one's events.
+pub type AudioEventId = EventId;
 
-impl fmt::Display for AudioEventId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "audio event {}:{}:{}:{}",
-            self.session, self.tick.0, self.producer, self.sequence
-        )
-    }
-}
-
-/// One loop emitter inside one session generation; the contract's
-/// `ActorId { session, serial }` shape applied to audio.
+/// One loop emitter inside one session generation: the shared contract
+/// `ActorId { session, serial }` from `docs/contracts/IDENTITY-CONTENT.md`,
+/// re-exported under its audio-facing name.
 ///
-/// `cs_sim::damage::ActorId` is the same pair, but the audio contract must not
-/// depend on the damage module's vocabulary: F41-B binds an actor to an emitter
-/// explicitly, so the two identities stay independently testable.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct AudioEmitterId {
-    /// The session generation the emitter belongs to.
-    pub session: u64,
-    /// The emitter's serial within that session.
-    pub serial: u64,
-}
-
-impl fmt::Display for AudioEmitterId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "audio emitter {}:{}", self.session, self.serial)
-    }
-}
+/// This is the shared [`ActorId`] itself — the neutral `cs_types::net` one,
+/// not a second struct and not a damage-vocabulary type: F41-B binds an actor
+/// to an emitter explicitly, so audio identity stays independently testable,
+/// which the shared type satisfies while keeping emitter identity defined
+/// once (task #496). `session` is a nonzero [`SessionId`], so an emitter id
+/// minted by a previous session generation can never name a live emitter.
+pub type AudioEmitterId = ActorId;
 
 // ---------------------------------------------------------------- inputs ---
 
@@ -526,7 +512,7 @@ pub enum OneShotOutcome {
         /// The refused event.
         id: AudioEventId,
         /// The router's session.
-        session: u64,
+        session: SessionId,
     },
 }
 
@@ -565,7 +551,7 @@ pub enum LoopOutcome {
         /// The refused emitter.
         emitter: AudioEmitterId,
         /// The router's session.
-        session: u64,
+        session: SessionId,
     },
 }
 
@@ -579,7 +565,7 @@ pub enum LoopOutcome {
 /// is the typed input F41-B's actual mixer consumes.
 #[derive(Clone, Debug)]
 pub struct AudioRouter {
-    session: u64,
+    session: SessionId,
     /// Highest accepted one-shot sequence per producer.
     highest_sequence: BTreeMap<u32, u32>,
     /// At most one active loop per emitter.
@@ -588,8 +574,11 @@ pub struct AudioRouter {
 
 impl AudioRouter {
     /// A router for `session`, with no cues seen.
+    ///
+    /// `session` is the shared nonzero [`SessionId`] the router serves, so a
+    /// router can never be built for the "no session" sentinel.
     #[must_use]
-    pub fn new(session: u64) -> Self {
+    pub fn new(session: SessionId) -> Self {
         Self {
             session,
             highest_sequence: BTreeMap::new(),
@@ -599,7 +588,7 @@ impl AudioRouter {
 
     /// The session generation this router serves.
     #[must_use]
-    pub const fn session(&self) -> u64 {
+    pub const fn session(&self) -> SessionId {
         self.session
     }
 
@@ -1605,7 +1594,7 @@ pub enum MixerRefusal {
         /// The refused emitter.
         emitter: AudioEmitterId,
         /// The session the mixer serves.
-        session: u64,
+        session: SessionId,
     },
     /// A start outcome had no live loop binding to play.
     NoBinding {
@@ -1714,14 +1703,17 @@ struct MixerVoice {
 ///    spatial gain`, the spatial pan, and the engine's pitch ratio.
 #[derive(Clone, Debug)]
 pub struct AudioMixer {
-    session: u64,
+    session: SessionId,
     voices: BTreeMap<AudioEmitterId, MixerVoice>,
 }
 
 impl AudioMixer {
     /// A mixer for `session`, with nothing sounding.
+    ///
+    /// `session` is the shared nonzero [`SessionId`] the mixer serves, so a
+    /// mixer can never be built for the "no session" sentinel.
     #[must_use]
-    pub fn new(session: u64) -> Self {
+    pub fn new(session: SessionId) -> Self {
         Self {
             session,
             voices: BTreeMap::new(),
@@ -1730,7 +1722,7 @@ impl AudioMixer {
 
     /// The session generation this mixer serves.
     #[must_use]
-    pub const fn session(&self) -> u64 {
+    pub const fn session(&self) -> SessionId {
         self.session
     }
 
@@ -2186,7 +2178,7 @@ struct ActiveLine {
 /// tick-based completion that is independent of any audio device.
 #[derive(Clone, Debug)]
 pub struct RadioQueue {
-    session: u64,
+    session: SessionId,
     highest_sequence: BTreeMap<u32, u32>,
     pending: Vec<RadioLine>,
     active: Option<ActiveLine>,
@@ -2195,8 +2187,10 @@ pub struct RadioQueue {
 
 impl RadioQueue {
     /// An empty queue for `session` with a working device.
+    ///
+    /// `session` is the shared nonzero [`SessionId`] the queue serves.
     #[must_use]
-    pub fn new(session: u64) -> Self {
+    pub fn new(session: SessionId) -> Self {
         Self {
             session,
             highest_sequence: BTreeMap::new(),
@@ -2379,7 +2373,7 @@ pub enum MusicOutcome {
 /// state so it can be re-issued on retry.
 #[derive(Clone, Debug)]
 pub struct MusicDirector {
-    session: u64,
+    session: SessionId,
     highest_sequence: BTreeMap<u32, u32>,
     current: Option<MusicCue>,
     device_available: bool,
@@ -2387,8 +2381,10 @@ pub struct MusicDirector {
 
 impl MusicDirector {
     /// A director with no cue, over a working device.
+    ///
+    /// `session` is the shared nonzero [`SessionId`] the director serves.
     #[must_use]
-    pub fn new(session: u64) -> Self {
+    pub fn new(session: SessionId) -> Self {
         Self {
             session,
             highest_sequence: BTreeMap::new(),
@@ -2488,9 +2484,13 @@ pub fn synthetic_engine_loop(emitter: AudioEmitterId, id: AudioEventId) -> LoopB
 mod tests {
     use super::*;
 
+    fn session(value: u64) -> SessionId {
+        SessionId::new(value).expect("a nonzero session generation")
+    }
+
     fn event_id(sequence: u32) -> AudioEventId {
         AudioEventId {
-            session: 7,
+            session: session(7),
             tick: Tick(3),
             producer: 1,
             sequence,
@@ -2541,7 +2541,7 @@ mod tests {
     /// suppressed.
     #[test]
     fn accept_f41_a_router_accepts_one_shot_once() {
-        let mut router = AudioRouter::new(7);
+        let mut router = AudioRouter::new(session(7));
         let event = synthetic_weapon_one_shot(event_id(0));
         assert!(matches!(
             router.play_one_shot(&event),
@@ -2561,14 +2561,14 @@ mod tests {
     /// An event from another session is refused rather than deduplicated.
     #[test]
     fn accept_f41_a_router_refuses_foreign_sessions() {
-        let mut router = AudioRouter::new(7);
+        let mut router = AudioRouter::new(session(7));
         let mut foreign = synthetic_weapon_one_shot(event_id(0));
-        foreign.id.session = 8;
+        foreign.id.session = session(8);
         assert_eq!(
             router.play_one_shot(&foreign),
             OneShotOutcome::RefusedForeignSession {
                 id: foreign.id,
-                session: 7
+                session: session(7)
             }
         );
     }
@@ -2577,10 +2577,10 @@ mod tests {
     #[test]
     fn accept_f41_a_loops_swap_and_stop_by_reason() {
         let emitter = AudioEmitterId {
-            session: 7,
+            session: session(7),
             serial: 4,
         };
-        let mut router = AudioRouter::new(7);
+        let mut router = AudioRouter::new(session(7));
         assert_eq!(
             router.start_loop(&synthetic_engine_loop(emitter, event_id(0))),
             LoopOutcome::Started { emitter }
@@ -2614,8 +2614,11 @@ mod tests {
     /// Pausing suspends every loop; a device loss stops every loop.
     #[test]
     fn accept_f41_a_pause_and_device_loss_stop_loops() {
-        let emitter = |serial| AudioEmitterId { session: 7, serial };
-        let mut router = AudioRouter::new(7);
+        let emitter = |serial| AudioEmitterId {
+            session: session(7),
+            serial,
+        };
+        let mut router = AudioRouter::new(session(7));
         router.start_loop(&synthetic_engine_loop(emitter(1), event_id(0)));
         router.start_loop(&synthetic_engine_loop(emitter(2), event_id(1)));
         assert!(router.apply_pause(PausePolicy::Continue).is_empty());
@@ -2661,7 +2664,7 @@ mod tests {
         assert_eq!(
             spec.loop_binding(
                 AudioEmitterId {
-                    session: 7,
+                    session: session(7),
                     serial: 1
                 },
                 event_id(0)

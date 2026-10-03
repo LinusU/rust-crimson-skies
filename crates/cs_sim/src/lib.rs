@@ -264,7 +264,8 @@
 //!
 //! [`audio_events`] is the F41-A audio runtime
 //! (`specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stage
-//! `### F41-A`): the audio-scoped [`audio_events::AudioEventId`] event identity,
+//! `### F41-A`): the audio-facing [`audio_events::AudioEventId`] name of the
+//! shared `cs_types::net` event identity,
 //! the bounded [`audio_events::AudioRouter`] whose per-`(session, producer)`
 //! sequence ledger accepts a one-shot exactly once and suppresses a replay, and
 //! the loop-emitter registry that stops on despawn, swap, declared pause policy

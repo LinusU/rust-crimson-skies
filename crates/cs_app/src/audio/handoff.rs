@@ -45,6 +45,7 @@ use bevy::ecs::world::World;
 use cs_content::audio::{AudioCatalog, is_audio_kind};
 use cs_sim::audio_events::{AudioAssetSpec, AudioEmitterId, AudioRouter};
 use cs_types::content::ContentId;
+use cs_types::net::SessionId;
 
 use crate::loading::{LoadIdentity, LoadedItemBinding};
 use crate::scene::{SceneGeneration, SceneGenerations};
@@ -82,8 +83,9 @@ impl DeclaredAudioCatalog {
 pub struct AudioInstall {
     /// The load that owned the session.
     pub load: LoadIdentity,
-    /// The content session generation the session's router is bound to.
-    pub session: u64,
+    /// The session generation the session's router is bound to: the shared
+    /// nonzero [`SessionId`] built from the load's content session.
+    pub session: SessionId,
     /// The scene generation the session's emitter bindings must carry.
     pub generation: SceneGeneration,
     /// How many delivered audio records lowered into a playable spec.
@@ -259,8 +261,15 @@ pub fn insert_audio_session(world: &mut World) {
         }
     }
 
+    // The audio session binds to the content session generation the newest
+    // load ran under, wrapped as the shared nonzero `SessionId` the router
+    // and mixer require. A `SessionGeneration` is issued from a process-wide
+    // counter that starts at 1 (`cs_assets::vfs`), so the wrap cannot fail;
+    // the shared type is what makes "no session" unrepresentable.
+    let session = SessionId::new(newest.session.get())
+        .expect("a delivered content session generation is nonzero");
     world.insert_resource(AudioSession::new(
-        AudioRouter::new(newest.session.get()),
+        AudioRouter::new(session),
         generation,
         specs,
     ));
@@ -276,12 +285,12 @@ pub fn insert_audio_session(world: &mut World) {
         world.insert_resource(output);
         world.insert_resource(mixing);
     }
-    world.insert_resource(AudioMixing::new(newest.session.get()));
+    world.insert_resource(AudioMixing::new(session));
     log.installs += 1;
     log.released = released;
     log.installed = Some(AudioInstall {
         load: newest,
-        session: newest.session.get(),
+        session,
         generation,
         specs: lowered,
         refused,
