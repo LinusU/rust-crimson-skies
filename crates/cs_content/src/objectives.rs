@@ -910,7 +910,13 @@ fn validate(
     // was never declared — and every target state it names must be one a
     // declared event can produce, so nothing dead is authored.
     for objective in objectives {
-        check_reveal(objective, &condition_ids, &timer_ids, &objective_ids, &declared)?;
+        check_reveal(
+            objective,
+            &condition_ids,
+            &timer_ids,
+            &objective_ids,
+            &declared,
+        )?;
     }
     for condition in conditions {
         if let DeclaredCountReaction::SetObjectiveState { objective, state } = condition.reaction {
@@ -965,9 +971,7 @@ fn check_state_target(
     match state {
         DeclaredObjectiveState::Hidden
         | DeclaredObjectiveState::Pending
-        | DeclaredObjectiveState::Optional => {
-            Err(ObjectivesSchemaError::DeadState { by, state })
-        }
+        | DeclaredObjectiveState::Optional => Err(ObjectivesSchemaError::DeadState { by, state }),
         _ => Ok(()),
     }
 }
@@ -1004,9 +1008,7 @@ fn check_reveal(
             }
             check_state_target(objective.symbol, state)
         }
-        DeclaredRevealRule::OnSignal(signal) => {
-            check_signal(objective.symbol, signal, declared)
-        }
+        DeclaredRevealRule::OnSignal(signal) => check_signal(objective.symbol, signal, declared),
         _ => Ok(()),
     }
 }
