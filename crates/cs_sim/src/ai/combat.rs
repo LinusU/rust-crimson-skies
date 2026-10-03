@@ -4372,11 +4372,13 @@ pub fn synthetic_ace_variant() -> AceVariant {
 /// The escort profile at one tier: the declared behavior knobs scaled across
 /// the four designed tiers.
 ///
-/// A designed fixture, not original data: the original's difficulty option is
-/// unmeasured (F32-D). Only the four [`SkillKnobs`] and the protected-actor
-/// weight move with the tier; the engagement range, the threat window, the
-/// cadence and the role's [`RoleArsenal`] are identical at every tier, which
-/// is what keeps non-negotiable 1 and 2 checkable.
+/// A designed fixture, not original data: F32-D measured that the original's
+/// difficulty option has three steps and recorded nothing about what any step
+/// *does*, so these four reactions and aim errors are designed alternatives under
+/// non-negotiable 1, not a reproduction. Only the reaction, the aim error and the
+/// protected-actor weight move with the tier; the engagement range, the threat
+/// window, the cadence and the role's [`RoleArsenal`] are identical at every
+/// tier, which is what keeps non-negotiables 1 and 2 checkable.
 fn escort_profile_at(tier: DifficultyTier) -> SkillProfile {
     let (reaction, aim_error, protected_weight) = match tier {
         DifficultyTier::Relaxed => (48, 0.12, 1.0),
@@ -4507,8 +4509,10 @@ pub fn synthetic_combat_runtime() -> CombatRuntime {
 ///
 /// An arbitrary but fixed `u64` under the `docs/contracts/CLI-EVIDENCE.md`
 /// recipe — the stream seed is the SplitMix64 output of
-/// `root_seed ^ PROBE_DOMAIN` — so the probe's geometry is reproducible from a
-/// recorded root seed and never moves under another consumer's stream.
+/// `root_seed ^ DOMAIN`, with the run index folded into `root_seed` (see
+/// [`DifficultyProbeSpec::stream`]) — so the probe's geometry is reproducible
+/// from a recorded root seed and can never coincide with another consumer's
+/// stream for the same seed.
 pub const DIFFICULTY_PROBE_DOMAIN: u64 = 0x4633_3250_524F_4245;
 
 /// The largest number of probe runs a single spec may ask for per tier.
@@ -4609,10 +4613,19 @@ impl DifficultyProbeSpec {
     /// is what makes two tiers comparable: the same run index replays the same
     /// world at every tier, so any difference in outcome is attributable to
     /// the profile and to nothing else (non-negotiable 1).
+    ///
+    /// The recipe is the contract's, applied once: the run index is folded into
+    /// the *root* seed (`root_seed ^ run << 32`) and
+    /// [`DIFFICULTY_PROBE_DOMAIN`] is passed as the domain, so the stream seed
+    /// is the SplitMix64 output of `root_seed ^ run << 32 ^ DOMAIN` exactly as
+    /// `docs/contracts/CLI-EVIDENCE.md` fixes it. Mixing the domain into the
+    /// root argument *as well* would cancel it inside
+    /// [`cs_types::random::SplitMix64::for_domain`] and silently drop the
+    /// separation the domain exists for.
     #[must_use]
     pub fn stream(&self, run: u32) -> cs_types::random::SplitMix64 {
         cs_types::random::SplitMix64::for_domain(
-            self.root_seed ^ (u64::from(run) << 32) ^ DIFFICULTY_PROBE_DOMAIN,
+            self.root_seed ^ (u64::from(run) << 32),
             DIFFICULTY_PROBE_DOMAIN,
         )
     }
@@ -4656,6 +4669,21 @@ pub struct DifficultyProbeRun {
     pub range_rejects: u64,
     /// Formation recoveries the coordinator applied during the run.
     pub recoveries: u64,
+    /// The declared recovery trigger each applied recovery answered, in firing
+    /// order, with the tick it fired on.
+    ///
+    /// The count alone cannot say *which* declared path answered, and the answer
+    /// is not the one the geometry suggests: the coordinator raises
+    /// [`RecoveryTrigger::LeaderLost`] only when the **leader** is gone, so a
+    /// lost follower is a membership change and not a recovery. The probe's
+    /// geometry loses a follower, so the recoveries it measures are the ones the
+    /// assigned target's destruction raises — reported here rather than
+    /// narrated, so the attribution is measured instead of asserted.
+    ///
+    /// At most [`RecoveryTrigger::ALL`] entries per trigger: a trigger that has
+    /// answered once is latched until the fact it came from stops holding, and
+    /// the probe's facts hold for the rest of the run once they appear.
+    pub recovery_triggers: Vec<(RecoveryTrigger, u64)>,
     /// Ticks on which at least one mount fired.
     pub firing_ticks: u64,
     /// A digest of every position and threat stamp the run replayed.
@@ -4933,6 +4961,14 @@ impl DifficultyProbeReport {
 /// the harmless hostile, so an escort that has not noticed the attack yet scores
 /// the nearer hostile first, and the tick on which it stops doing so is the tick
 /// its reaction delay reached.
+///
+/// The scenario makes two membership facts the coordinator has to react to — a
+/// follower lost at [`probe_geometry::FOLLOWER_LOST_TICK`] and the formation's
+/// assigned target destroyed at [`probe_geometry::PROBE_TARGET_LOST_TICK`] —
+/// and only the second one raises a recovery trigger, because the coordinator
+/// recovers a *leader* loss, not any member's. Each run therefore measures one
+/// applied recovery, attributed in
+/// [`DifficultyProbeRun::recovery_triggers`].
 mod probe_geometry {
     /// The observer (an escort) starts here, flying `+x`.
     pub const OBSERVER_START_M: [f64; 3] = [0.0, 500.0, 0.0];
@@ -4950,10 +4986,14 @@ mod probe_geometry {
     pub const HARMLESS_VELOCITY_M_PER_TICK: [f64; 3] = [-0.6, 0.0, 1.2];
     /// How many ticks between two authoritative attacks on the charge.
     ///
-    /// Wider than the largest declared reaction delay
-    /// ([`super::MAX_REACTION_TICKS`]) so the gate is not saturated: the
-    /// observed ages run `0..=PROBE_THREAT_PERIOD_TICKS`, so even the slowest
-    /// tier notices for part of every period.
+    /// Wider than the **slowest declared tier's** reaction delay — the relaxed
+    /// escort waits 48 ticks, while [`super::MAX_REACTION_TICKS`] is the much
+    /// larger 3 600-tick *bound* a delay is validated against, not a delay the
+    /// tiers carry — so the reaction gate is never saturated: the observed
+    /// threat ages run `0..=PROBE_THREAT_PERIOD_TICKS`, and even the slowest tier
+    /// notices for part of every period. A period at or below the slowest delay
+    /// would leave the relaxed tier deferring every candidate forever and its
+    /// answer count would be a constant.
     pub const PROBE_THREAT_PERIOD_TICKS: u64 = 120;
     /// The first tick an attack is recorded on.
     pub const PROBE_FIRST_THREAT_TICK: u64 = 1;
@@ -5091,6 +5131,7 @@ impl CombatRuntime {
         let mut first_protected_answer: Option<u64> = None;
         let mut range_rejects = 0u64;
         let mut recoveries = 0u64;
+        let mut recovery_triggers: Vec<(RecoveryTrigger, u64)> = Vec::new();
         let mut firing_ticks = 0u64;
         let arsenal_fingerprint = arsenal_fingerprint(&arsenal);
 
@@ -5131,8 +5172,13 @@ impl CombatRuntime {
                         member.velocity_m_per_tick,
                         tick,
                     )),
-                    // The follower's first slot is lost mid-run so the probe
-                    // exercises a real recovery, not just a steady state.
+                    // The follower's first slot is lost mid-run, so the probe
+                    // replays a formation that has to live with a hole in its
+                    // membership. That is a membership change rather than a
+                    // recovery: only the *leader's* loss raises
+                    // `RecoveryTrigger::LeaderLost`, and the follower is not the
+                    // leader. The recoveries the probe measures are the declared
+                    // assigned-target path below.
                     alive: !(tick >= geom::FOLLOWER_LOST_TICK && member.slot == geom::LOST_SLOT),
                 })
                 .collect();
@@ -5145,8 +5191,9 @@ impl CombatRuntime {
                 assigned_target_alive: attacker_alive,
                 route_available: true,
             })?;
-            if update.trigger.is_some() {
+            if let Some(trigger) = update.trigger {
                 recoveries += 1;
+                recovery_triggers.push((trigger, tick));
             }
 
             let views = probe_views(spec, &candidates, tick, attacker_alive);
@@ -5220,6 +5267,7 @@ impl CombatRuntime {
             first_protected_answer_tick: first_protected_answer,
             range_rejects,
             recoveries,
+            recovery_triggers,
             firing_ticks,
             geometry_fingerprint: geometry.finish(),
             arsenal_fingerprint,

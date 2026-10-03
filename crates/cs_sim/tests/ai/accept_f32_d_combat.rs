@@ -29,9 +29,10 @@
 use cs_sim::ai::combat::{
     CombatRole, CombatRuntime, DIFFICULTY_PROBE_DOMAIN, DifficultyProbeReport, DifficultyProbeSpec,
     DifficultyTier, ORIGINAL_DIFFICULTY_STEPS, PROBE_FORMATION, PROBE_LATERAL_JITTER_M,
-    ProbeDifference, RoleAssignment, SYNTHETIC_SESSION, synthetic_actor, synthetic_combat_runtime,
-    synthetic_difficulty_probe_spec, synthetic_recovery_policies,
+    ProbeDifference, RecoveryTrigger, RoleAssignment, SYNTHETIC_SESSION, synthetic_actor,
+    synthetic_combat_runtime, synthetic_difficulty_probe_spec, synthetic_recovery_policies,
 };
+use cs_types::random::SplitMix64;
 
 /// The probe every scenario here starts from.
 fn report() -> DifficultyProbeReport {
@@ -63,7 +64,7 @@ fn short_report(runs: u32, ticks: u64, seed: u64) -> DifficultyProbeReport {
 ///
 /// The measured result over the synthetic fixture: the ticks that answered an
 /// authoritative attack against the charge rose at every step
-/// (`relaxed` 196.8 per run, `standard` 303.0, `hard` 351.0, `elite` 375.0)
+/// (`relaxed` 190.0 per run, `standard` 303.0, `hard` 351.0, `elite` 375.0)
 /// while the deferred-threat count fell (184.0, 97.0, 49.0, 25.0 per run) —
 /// the same ordering in opposite directions, which is what "a more demanding
 /// tier notices sooner" looks like in decisions rather than in a comment.
@@ -345,8 +346,16 @@ fn accept_f32_d_a_roster_whose_tiers_collapse_measures_nothing_to_compare() {
 }
 
 /// The probe is a *mission* probe, not a duel: it drives the formation
-/// coordinator, so a follower lost mid-run produces a recovery on every tier,
-/// and the loss is reported rather than absorbed.
+/// coordinator over a scenario that loses a follower mid-run and then loses the
+/// formation's assigned target, and the run reports what the coordinator
+/// actually did about it.
+///
+/// The attribution matters and is not the obvious one: the coordinator recovers
+/// a **leader** loss, so the probe's follower (slot 1, while the deciding escort
+/// leads in slot 0) is a membership change and raises nothing. The one recovery
+/// each run measures is the declared assigned-target-destruction path, at the
+/// tick the attacker disappears. A reader who assumed the follower loss
+/// answered a recovery would be reading a scenario into the count.
 #[test]
 fn accept_f32_d_the_probe_replays_a_mission_formation_loss_at_every_tier() {
     let report = report();
@@ -356,18 +365,41 @@ fn accept_f32_d_the_probe_replays_a_mission_formation_loss_at_every_tier() {
         assert_eq!(
             outcome.recoveries,
             u64::from(report.spec.runs_per_tier),
-            "{:?}: one applied recovery per run, from the formation the probe lost a follower from",
+            "{:?}: one applied recovery per run",
             tier
+        );
+    }
+    // Which declared path answered, measured rather than narrated: the assigned
+    // target's destruction, and never a leader loss the scenario does not have.
+    for run in &report.runs {
+        assert_eq!(
+            run.recovery_triggers,
+            vec![(RecoveryTrigger::AssignedTargetDestroyed, 400)],
+            "{:?} run {}: the applied recovery and the tick it answered on",
+            run.tier,
+            run.run
+        );
+        assert!(
+            !run.recovery_triggers
+                .iter()
+                .any(|(trigger, _)| *trigger == RecoveryTrigger::LeaderLost),
+            "a lost follower is not a leader loss, so it raises no recovery"
         );
     }
 
     // The recovery is a declared path the coordinator applied, not a per-tick
-    // invention: the probe registers the declared policies with the runtime.
+    // invention: the probe registers the declared policies with the runtime, and
+    // the action that answered is the policy's.
     assert_eq!(report.spec.policies(), synthetic_recovery_policies());
+    assert_eq!(
+        report.spec.policies().assigned_target_destroyed,
+        cs_sim::ai::combat::RecoveryAction::Regroup,
+        "the declared path the probe's one recovery answers"
+    );
     assert_eq!(
         report.spec.policies().leader_loss,
         cs_sim::ai::combat::RecoveryAction::ReassignLead,
-        "the probe's declared leader-loss path"
+        "the declared leader-loss path the probe registers but never triggers"
     );
     // And the formation it drives is the probe's own, not the fixture's.
     assert_ne!(
@@ -406,6 +438,52 @@ fn accept_f32_d_the_probe_is_reproducible_from_its_root_seed_and_nothing_else() 
         cs_types::random::SYNTHETIC_BODY_DOMAIN,
         "the probe does not consume the synthetic body's stream"
     );
+}
+
+/// The domain constant really separates the probe's stream, under the contract
+/// recipe: the stream seed is the SplitMix64 output of
+/// `root_seed ^ run << 32 ^ DOMAIN`.
+///
+/// Mixing [`DIFFICULTY_PROBE_DOMAIN`] into the *root* argument as well as
+/// passing it as the domain cancels it inside
+/// [`SplitMix64::for_domain`] — the probe would then draw exactly the stream a
+/// domain-less consumer draws for the same seed, which is the collision the
+/// recipe exists to prevent, while every other assertion in this file still
+/// passed. So the stream is pinned to the recipe here, and separately shown to
+/// *differ* from the domain-free stream.
+#[test]
+fn accept_f32_d_the_probe_stream_follows_the_documented_domain_recipe() {
+    let spec = DifficultyProbeSpec::try_new(
+        SYNTHETIC_SESSION,
+        600,
+        4,
+        20_260_903,
+        synthetic_recovery_policies(),
+    )
+    .expect("the probe spec is valid");
+
+    for run in 0..spec.runs_per_tier {
+        let recipe_root = spec.root_seed ^ (u64::from(run) << 32);
+        assert_eq!(
+            spec.stream(run).next_u64(),
+            SplitMix64::for_domain(recipe_root, DIFFICULTY_PROBE_DOMAIN).next_u64(),
+            "run {run}: the contract recipe, domain applied once"
+        );
+        assert_ne!(
+            spec.stream(run).next_u64(),
+            SplitMix64::for_domain(recipe_root, 0).next_u64(),
+            "run {run}: the probe's stream is not the domain-free one"
+        );
+        assert_ne!(
+            spec.stream(run).next_u64(),
+            SplitMix64::for_domain(
+                recipe_root ^ DIFFICULTY_PROBE_DOMAIN,
+                DIFFICULTY_PROBE_DOMAIN
+            )
+            .next_u64(),
+            "run {run}: the domain is not mixed into the root seed as well"
+        );
+    }
 }
 
 /// The bounds and the refusal: a spec that would measure nothing, or would run
