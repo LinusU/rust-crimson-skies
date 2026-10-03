@@ -64,7 +64,20 @@
 //!   the F09-PAINTSHOP finding records. Neither a faction nor a paint mask is
 //!   launchable, so neither collection adds a root or moves the denominator;
 //!   what the producing stages could not answer is reported in
-//!   [`CollectionStatus`] instead of being dropped.
+//!   [`CollectionStatus`] instead of being dropped;
+//! * one [`ContentKind::Airframe`] row per airframe the installation's
+//!   **loading-script container** (`ZBD/interp.zbd`) declares, read by the
+//!   producing stage's own discovery ([`crate::scene::discover_airframe_roster`],
+//!   F11-D2) rather than by a rule derived here (F14-D.6). The identity is the
+//!   root the script **created** (`airframe/<root>`), never the model spelling
+//!   it loaded, and each row is located by the byte extent of the very line
+//!   that named that root — measured in the decoded container, not written down
+//!   — and points at the inventory row of the container holding those bytes.
+//!   An airframe is **not** launchable, so it adds nothing to the denominator.
+//!   A container that does not read, or that does not declare an airframe,
+//!   yields **no** row: the reason is named in [`CollectionStatus`] and in the
+//!   discovery's own findings, and no airframe is invented from a model name,
+//!   a scene node or a UI message key.
 //!
 //! Every row's [`Origin`] is [`Origin::Installation`] with a checked
 //! [`SourceSpan`] and the installation fingerprint of the bytes that were read,
@@ -88,14 +101,15 @@
 //! derivation the per-mission bindings and the `cs-inspect campaign` report
 //! use, the file inventory is `cs_assets::install::discover`, the multiplayer
 //! rows are F56-A's [`crate::multiplayer::discover_modes`] over the string rows
-//! `cs_content::config::StringCatalog` reads out of [`MODE_STRING_IMAGE`], and
-//! the world rows are the groups [`classify`] read out of the world-group
+//! `cs_content::config::StringCatalog` reads out of [`MODE_STRING_IMAGE`], the
+//! world rows are the groups [`classify`] read out of the world-group
 //! readers' own member indexes, keyed by the same derivation
 //! [`crate::campaign_bindings`] uses for a mission's world identity, the faction
 //! rows are [`crate::livery::FactionPaletteCatalog`]'s own extracted paint
-//! patterns, and the paint-mask rows are the members
-//! [`crate::livery::StockLiveryCatalog`] verified in
-//! [`PAINT_MASK_CONTAINER`].
+//! patterns, the paint-mask rows are the members
+//! [`crate::livery::StockLiveryCatalog`] verified in [`PAINT_MASK_CONTAINER`],
+//! and the airframe rows are F11-D2's [`discover_airframe_roster`] over the
+//! decoded loading-script container.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -107,6 +121,7 @@ use cs_assets::rof::mount_rof_into;
 use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
 use cs_assets::zbd::{ContainerVerdict, audit_containers};
 use cs_formats::LANG_ENGLISH_US;
+use cs_formats::interp::DecodedInterp;
 use cs_types::asset_id::{
     AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan, SourceSpanError,
 };
@@ -122,6 +137,10 @@ use crate::livery::{
     FactionPaletteCatalog, PAINT_SHOP_CONTAINER, PALETTE_CONTAINER, StockLiveryCatalog,
 };
 use crate::multiplayer::{ModeEntry, TextRef, discover_modes, mode_name_id};
+use crate::scene::{
+    AVAILABILITY_DISCOVERY_CLAIM, AirframeDeclaration, DiscoveredAirframe, RosterDeclarations,
+    RosterDiscoveryIssue, discover_airframe_roster,
+};
 
 use super::closure::{Closure, ClosureError, CompatibilityOptions, json_string};
 use super::reader_dirs::{ClassifiedReaderDir, ReaderDirRole, classify};
@@ -181,6 +200,34 @@ pub const PAINT_MASK_CONTAINER: &str = PAINT_SHOP_CONTAINER;
 /// are read from: the shared archive whose `vehicle.zrd` member stores the
 /// original vehicle paint records.
 pub const FACTION_PALETTE_CONTAINER: &str = PALETTE_CONTAINER;
+/// The claim id behind the observation that an airframe is named by the line of
+/// the loading-script container that created its root, and that the row's edge
+/// points at the container holding those bytes (F14-D.6).
+const CLAIM_AIRFRAME_DECLARATION: &str = "f14.d.6.baseline.airframe_declaration";
+
+/// The claim id every airframe row carries for the one thing the installation
+/// states about an airframe's *numbers* that no reader in this stage has
+/// recovered: how it flies and what it carries (F14-D.6).
+///
+/// Measured in F14-D.6's own research and recorded in
+/// `docs/findings/2026-10-03-f14-d-6-airframe-collection.md`: the loading script
+/// names airframes, the per-plane `.zrd` members of `ZBD/zrdr.zbd` are animation
+/// definitions, and the hangar/lobby scripts of `GOSDATA/ASSETS/crimson.rof`
+/// fetch every airframe value through native callbacks this engine has not
+/// decoded (F38/F13). So the flight-tuning record of an airframe row is an
+/// explicit unknown, never a normalized SI value and never a zero
+/// (`IDENTITY-CONTENT`, numeric contract).
+pub const AIRFRAME_TUNING_CLAIM: &str = "f14.d.6.airframe_statistics";
+
+/// The installation-relative spelling of the loading-script container the
+/// airframe rows are read from: the container that carries the `support\*.gw`
+/// build scripts whose `NewObject3D %planeOutput%` line creates one airframe
+/// root each (F11-D2), and which writes `ZBD/planes.zbd` as a result.
+pub const AIRFRAME_SCRIPT_IMAGE: &str = "ZBD/interp.zbd";
+
+/// The script of [`AIRFRAME_SCRIPT_IMAGE`] that declares the shared airframe
+/// roster, as the container spells it.
+const AIRFRAME_DECLARING_SCRIPT: &str = "support\\planes.gw";
 
 /// The installation-relative spelling of the reader archive a world group's
 /// rows are read from: one `<container>/<group>/zrdr.zbd` per world group.
@@ -366,6 +413,20 @@ pub enum BaselineError {
     /// The installation could not be mounted to list the reader archives the
     /// campaign layout leaves over.
     Session(String),
+    /// The airframe roster the producing discovery derives contradicts itself,
+    /// so its rows cannot both be inventory entries: two declared roots would
+    /// be one identity. The baseline refuses rather than keeping one of them.
+    AirframeRoster(String),
+    /// A row of the airframe collection names a line the decoded loading-script
+    /// container does not hold at that offset, so the row's own bytes cannot be
+    /// located. The discovery's offsets are the decoder's, so a miss means the
+    /// two cannot be describing the same container.
+    AirframeLine {
+        /// The airframe whose naming line could not be located.
+        airframe: String,
+        /// The offset the producing discovery reported.
+        offset: u64,
+    },
 }
 
 impl fmt::Display for BaselineError {
@@ -405,6 +466,17 @@ impl fmt::Display for BaselineError {
                     "cannot mount the installation to classify its readers: {reason}"
                 )
             }
+            Self::AirframeRoster(reason) => {
+                write!(
+                    f,
+                    "the declared airframe roster contradicts itself: {reason}"
+                )
+            }
+            Self::AirframeLine { airframe, offset } => write!(
+                f,
+                "the airframe {airframe} is located by a line at offset {offset}, which the \
+                 loading-script container does not hold; the row's own bytes cannot be named"
+            ),
         }
     }
 }
@@ -423,6 +495,8 @@ impl std::error::Error for BaselineError {
             | Self::UninventoriedProgram { .. }
             | Self::Identity { .. }
             | Self::Provenance { .. }
+            | Self::AirframeRoster(_)
+            | Self::AirframeLine { .. }
             | Self::Session(_) => None,
         }
     }
@@ -794,6 +868,14 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
         insert(&mut catalog, element)?;
     }
     collection_status.push(paint_mask_status);
+    // The airframes the loading-script container declares, read by the producing
+    // stage's own discovery. One row per declared root; nothing is derived from
+    // a model name, a scene node or a UI message key.
+    let (airframes, airframe_status) = airframe_rows(install_root, install_hash, &files)?;
+    for element in airframes {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(airframe_status);
 
     let coverage = coverage(&catalog, &roots)?;
 
@@ -1399,6 +1481,375 @@ fn paint_mask_rows(
         *status.gaps.entry(finding.code()).or_default() += 1;
     }
     Ok((rows, status))
+}
+
+/// The `airframe` rows the installation's loading-script container declares,
+/// read by the producing stage's own discovery, plus the record of what that
+/// discovery could not answer about them.
+///
+/// The rows come from [`discover_airframe_roster`] — F11-D2's production
+/// discovery over the decoded [`AIRFRAME_SCRIPT_IMAGE`] — and never from a
+/// model name, a scene node or a UI message key. A container that does not read,
+/// or that does not declare an airframe, yields **no** row: the reason is named
+/// in [`CollectionStatus`] (exactly as F14-D.2 reports an unreadable mode table
+/// and F14-D.3 an unlistable world reader), because there is no identity to
+/// attach a row to.
+///
+/// Each row is located by the byte extent of the line that **named** its root,
+/// measured in the same decoded container the discovery walked, and points at
+/// the inventory row of that container, so the closure walks from an airframe to
+/// the bytes that declared it. The identity is the declared root — what the
+/// original bound, and what a scene reference must name — never the model
+/// spelling the script loaded, which is provenance in the producing stage and
+/// is **not** copied into identity or into `display_name` (F11 non-negotiable
+/// behavior 3). The installation states no display name for an airframe.
+///
+/// The row is `parsed` (its own line was read and decoded), never normalized
+/// (no quantity was converted) and unavailable, and it carries the two facts
+/// that keep it honest: the producing stage's explicit
+/// [`AVAILABILITY_DISCOVERY_CLAIM`] unknown, and [`AIRFRAME_TUNING_CLAIM`],
+/// which says that no original statistic of this airframe has been read. An
+/// airframe is not launchable content, so this collection adds no root and
+/// cannot move the coverage denominator.
+///
+/// # Errors
+///
+/// [`BaselineError::Read`] when the inventoried container cannot be read,
+/// [`BaselineError::Span`] when a span does not validate,
+/// [`BaselineError::AirframeRoster`] when the discovered rows contradict each
+/// other and [`BaselineError::AirframeLine`] when a row names a line the decoded
+/// container does not hold. A container the decoder refuses is a reported gap in
+/// [`CollectionStatus`], not an error.
+fn airframe_rows(
+    install_root: &Path,
+    install_hash: ContentHash,
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<(Vec<CatalogElement>, CollectionStatus), BaselineError> {
+    let mut status = CollectionStatus {
+        kind: ContentKind::Airframe,
+        source: AIRFRAME_SCRIPT_IMAGE.to_owned(),
+        language: None,
+        rows: 0,
+        gaps: BTreeMap::new(),
+        boundary_id: None,
+        diagnostic: None,
+    };
+
+    let Some(record) = files.get(&AIRFRAME_SCRIPT_IMAGE.to_ascii_lowercase()) else {
+        return Ok(unpopulated(
+            status,
+            format!(
+                "the installation inventories no {AIRFRAME_SCRIPT_IMAGE}, so the airframe roster \
+                 has no bytes to read"
+            ),
+        ));
+    };
+    let spelling = record.relative_spelling.as_str();
+    let path = install_root.join(spelling);
+    let bytes = std::fs::read(&path).map_err(|source| BaselineError::Read {
+        path: spelling.to_owned(),
+        source,
+    })?;
+    let mut context = cs_formats::ParseContext::with_defaults(spelling);
+    let decoded = match cs_formats::interp::decode_interp(&mut context, &bytes) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            return Ok(unpopulated(
+                status,
+                format!(
+                    "the loading-script container {spelling} does not read as the interp container \
+                     the airframe roster is declared in: {error}"
+                ),
+            ));
+        }
+    };
+
+    let file_id = ContentId::from_source(ContentKind::InstallFile, &install_file_key(spelling))
+        .map_err(|source| BaselineError::Key {
+            spelling: spelling.to_owned(),
+            source,
+        })?;
+    let declarations = airframe_roster_declarations(install_hash, spelling, &decoded)?;
+    let found = discover_airframe_roster(&decoded, &declarations)
+        .map_err(|error| BaselineError::AirframeRoster(error.to_string()))?;
+
+    // Every line the walk could not read and every fact it does not know stay
+    // visible on the record, so a reader of the report can tell "this container
+    // declares nothing" from "this container declares something I could not
+    // read" (the distinction F11-D2's discovery makes).
+    status.gaps.insert("roster_issue", found.issues().len());
+    status.gaps.insert("roster_unknown", found.unknowns().len());
+    for issue in found.issues() {
+        *status.gaps.entry(roster_issue_label(issue)).or_default() += 1;
+    }
+
+    let mut rows = Vec::with_capacity(found.discovered().len());
+    for airframe in found.discovered() {
+        rows.push(airframe_row(
+            airframe,
+            install_hash,
+            spelling,
+            &decoded,
+            &file_id,
+            record.sha256,
+        )?);
+    }
+
+    status.rows = rows.len();
+    if rows.is_empty() {
+        let findings = found
+            .issues()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        let mut diagnostic = format!(
+            "the loading-script container {spelling} declares no airframe, so no airframe row \
+             could be built"
+        );
+        if !findings.is_empty() {
+            diagnostic.push_str(&format!(": {findings}"));
+        }
+        return Ok(unpopulated(status, diagnostic));
+    }
+    Ok((rows, status))
+}
+
+/// The roster idiom this inventory declares, measured against the container it
+/// was found in.
+///
+/// `cs_content::scene` deliberately ships **no** idiom: "which lines of a
+/// loading script declare an airframe" is a claim somebody made against
+/// fingerprinted bytes and it carries its own [`Provenance`]. The baseline
+/// inventory needs one to *hold* the airframe collection — a report whose
+/// `collections` object simply lacks `airframe` reads like an installation with
+/// no airframes — so the claim is stated here, once, with the shapes F11-D2
+/// measured in `ZBD/interp.zbd`:
+///
+/// ```text
+/// set  ZBDFile     %ZBD_DIR%\planes.zbd
+/// set  planeInput  common\planes\bloodhawk\bloodhawk.flt
+/// set  planeOutput player_bhawk
+/// source support\util\planesurgery.gw      # … NewObject3D %planeOutput%
+/// GameZWriteZBDFile %ZBDFile%
+/// ```
+///
+/// The declaration's provenance span is **measured**, not written down: it is
+/// the extent of the declaring script inside the container this call just
+/// decoded, so an installation that lays the same script out at a different
+/// offset still gets a truthful span instead of a stale one. A container that
+/// does not hold the declaring script yields **no** span (and the discovery then
+/// reports `declaring_script_absent`), which is the honest answer rather than a
+/// span over somebody else's bytes.
+///
+/// `required_roles` is empty: a role requirement is a claim about an airframe's
+/// **node** bindings, which belong to F11-C/F29's name-path rules, and a catalog
+/// row asserts no role.
+fn airframe_roster_declarations(
+    install_hash: ContentHash,
+    spelling: &str,
+    decoded: &DecodedInterp<'_>,
+) -> Result<RosterDeclarations, BaselineError> {
+    let source = unique_script(decoded, AIRFRAME_DECLARING_SCRIPT)
+        .map(|script| {
+            let offset = u64::from(script.entry().script_offset);
+            SourceSpan::new(
+                install_hash,
+                spelling,
+                None,
+                offset,
+                script.end().saturating_sub(offset),
+                None,
+            )
+        })
+        .transpose()
+        .map_err(|source| BaselineError::Span {
+            path: spelling.to_owned(),
+            source,
+        })?;
+    let claim_id =
+        ClaimId::new(CLAIM_AIRFRAME_DECLARATION).map_err(|error| BaselineError::Provenance {
+            claim: CLAIM_AIRFRAME_DECLARATION.to_owned(),
+            reason: error.to_string(),
+        })?;
+    let provenance =
+        Provenance::new(claim_id, ClaimStatus::ObservedTool, source).map_err(|error| {
+            BaselineError::Provenance {
+                claim: CLAIM_AIRFRAME_DECLARATION.to_owned(),
+                reason: error.to_string(),
+            }
+        })?;
+    RosterDeclarations::new(vec![AirframeDeclaration {
+        script: AIRFRAME_DECLARING_SCRIPT.to_owned(),
+        bind_command: "set".to_owned(),
+        include_command: "source".to_owned(),
+        write_command: "GameZWriteZBDFile".to_owned(),
+        create_command: "NewObject3D".to_owned(),
+        container_variable: "ZBDFile".to_owned(),
+        root_variable: "planeOutput".to_owned(),
+        model_variable: "planeInput".to_owned(),
+        required_roles: Vec::new(),
+        provenance,
+    }])
+    .map_err(|error| BaselineError::AirframeRoster(error.to_string()))
+}
+
+/// The one script of `name` the container holds, or `None` when it holds none or
+/// more than one.
+///
+/// An ambiguous name yields `None` rather than the first match: the producing
+/// discovery reports `declaring_script_ambiguous` for that corpus, and a span
+/// over an arbitrary one of the candidates would claim bytes nobody pointed at.
+fn unique_script<'a>(
+    decoded: &'a DecodedInterp<'a>,
+    name: &str,
+) -> Option<&'a cs_formats::interp::InterpScript<'a>> {
+    let mut matching = decoded
+        .scripts()
+        .iter()
+        .filter(|script| script.name().eq_ignore_ascii_case(name.as_bytes()));
+    let script = matching.next()?;
+    matching.next().is_none().then_some(script)
+}
+
+/// The byte extent of the line a roster row names.
+///
+/// The offset is the producing discovery's own measurement inside the same
+/// decoded container, so this looks the line up rather than trusting a written
+/// down offset: a row whose line is not there cannot be located in original
+/// bytes at all, and that is [`BaselineError::AirframeLine`] rather than a span
+/// guessed around the number. The extent runs from the line's `size` word to the
+/// end of its stored data, which is the whole stored record.
+fn declaring_line_span(
+    install_hash: ContentHash,
+    spelling: &str,
+    decoded: &DecodedInterp<'_>,
+    offset: u64,
+) -> Option<SourceSpan> {
+    let line = decoded
+        .scripts()
+        .iter()
+        .flat_map(cs_formats::interp::InterpScript::lines)
+        .find(|line| line.offset() == offset)?;
+    let end = line.data_offset().checked_add(u64::from(line.size()))?;
+    if end > decoded.container_len() || end <= offset {
+        return None;
+    }
+    SourceSpan::new(install_hash, spelling, None, offset, end - offset, None).ok()
+}
+
+/// One declared airframe as a catalog row.
+///
+/// The span is the naming line's own record, the single dependency points at
+/// the inventory row of the container that record lives in, and both the row's
+/// origin and its edge carry the same [`CLAIM_AIRFRAME_DECLARATION`] observation
+/// at `observed_tool` class — an agent observation is never `verified_original`
+/// (`AGENTS.md` rule 8).
+fn airframe_row(
+    discovered: &DiscoveredAirframe,
+    install_hash: ContentHash,
+    spelling: &str,
+    decoded: &DecodedInterp<'_>,
+    file_id: &ContentId,
+    sha256: ContentHash,
+) -> Result<CatalogElement, BaselineError> {
+    let span = declaring_line_span(install_hash, spelling, decoded, discovered.declared_at())
+        .ok_or_else(|| BaselineError::AirframeLine {
+            airframe: discovered.airframe().to_string(),
+            offset: discovered.declared_at(),
+        })?;
+    Ok(CatalogElement {
+        kind: ContentKind::Airframe,
+        id: discovered.airframe().clone(),
+        // The installation states no display name for an airframe; the root it
+        // binds is its identity and the model it loads is provenance, so neither
+        // is repeated here.
+        display_name: None,
+        origin: Origin::Installation {
+            source: span.clone(),
+        },
+        dependencies: vec![Dependency {
+            target: file_id.clone(),
+            kind: DependencyKind::Static,
+            provenance: observed(CLAIM_AIRFRAME_DECLARATION, &span)?,
+        }],
+        parse_state: cs_types::install::ParseState::Parsed,
+        normalize_state: NormalizeState::NotNormalized,
+        runtime_consumers: Vec::new(),
+        readiness: Readiness::Unavailable,
+        unsupported_reasons: airframe_unknowns(discovered)?,
+        fingerprint: Some(Fingerprint {
+            kind: FingerprintKind::Installation,
+            sha256,
+        }),
+    })
+}
+
+/// What an airframe row says it does not know.
+///
+/// Two explicit unknowns and the missing runtime consumer, in that order:
+///
+/// * [`AIRFRAME_TUNING_CLAIM`] — nothing read so far states how this airframe
+///   flies or what it carries. Per the numeric contract the values stay
+///   `Resolved::Unknown`; a row never carries a normalized number, a unit
+///   assumption or a zero standing in for a missing measurement;
+/// * the producing stage's own [`AVAILABILITY_DISCOVERY_CLAIM`] — the container
+///   builds the airframe's scene root, which is not evidence that any mode lets
+///   a player choose it, and no selection list has been read.
+fn airframe_unknowns(
+    discovered: &DiscoveredAirframe,
+) -> Result<Vec<UnsupportedReason>, BaselineError> {
+    let unknown = |claim: &str, reason: String| {
+        let claim_id = ClaimId::new(claim).map_err(|error| BaselineError::Provenance {
+            claim: claim.to_owned(),
+            reason: error.to_string(),
+        })?;
+        Ok(UnsupportedReason::Unknown { claim_id, reason })
+    };
+    Ok(vec![
+        unknown(
+            AIRFRAME_TUNING_CLAIM,
+            format!(
+                "no original statistic of {} has been read: the loading script names its root and \
+                 loads its model, the per-plane animation member states no flight or armament \
+                 value, and the original's own airframe values reach its hangar through native \
+                 callbacks this engine has not decoded",
+                discovered.airframe().as_str()
+            ),
+        )?,
+        unknown(
+            AVAILABILITY_DISCOVERY_CLAIM,
+            format!(
+                "the loading script declares {} as an airframe root, but no mode's selection \
+                 list has been read, so nothing states whether a player may choose it",
+                discovered.airframe().as_str()
+            ),
+        )?,
+        UnsupportedReason::MissingRuntimeConsumer,
+    ])
+}
+
+/// The stable label one roster finding is counted under in
+/// [`CollectionStatus::gaps`].
+///
+/// Every variant gets its own label, so a report can name the kind of line the
+/// walk could not read rather than only counting it.
+fn roster_issue_label(issue: &RosterDiscoveryIssue) -> &'static str {
+    match issue {
+        RosterDiscoveryIssue::DeclaringScriptAbsent { .. } => "declaring_script_absent",
+        RosterDiscoveryIssue::DeclaringScriptAmbiguous { .. } => "declaring_script_ambiguous",
+        RosterDiscoveryIssue::ContainerUnresolved { .. } => "container_unresolved",
+        RosterDiscoveryIssue::ContainerUnwritten { .. } => "container_unwritten",
+        RosterDiscoveryIssue::RootUndeclared { .. } => "root_undeclared",
+        RosterDiscoveryIssue::ModelUndeclared { .. } => "model_undeclared",
+        RosterDiscoveryIssue::LineUnreadable { .. } => "line_unreadable",
+        RosterDiscoveryIssue::IncludeUnresolved { .. } => "include_unresolved",
+        RosterDiscoveryIssue::IncludeCycle { .. } => "include_cycle",
+        RosterDiscoveryIssue::IncludeDepthExceeded { .. } => "include_depth_exceeded",
+        RosterDiscoveryIssue::AirframeIdRefused { .. } => "airframe_id_refused",
+        RosterDiscoveryIssue::RootRefRefused { .. } => "root_ref_refused",
+        RosterDiscoveryIssue::NoAirframesDeclared { .. } => "no_airframes_declared",
+    }
 }
 
 /// One multiplayer mode as a catalog row.
