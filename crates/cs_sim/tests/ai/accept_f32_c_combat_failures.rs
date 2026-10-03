@@ -393,9 +393,15 @@ fn accept_f32_c_foreign_generations_never_touch_the_formation_or_the_decision() 
         Some(Allegiance::Hostile),
         true,
     )];
-    let assignment =
+    // The outsider holds a declared slot, so the request is coherent and the
+    // refusal that follows is the one under test: it is not a member.
+    let outsider =
         RoleAssignment::protecting(synthetic_actor(99), CombatRole::Escort, synthetic_actor(20))
-            .expect("an escort never protects itself");
+            .expect("an escort never protects itself")
+            .in_formation(cs_sim::ai::combat::FormationSlot {
+                formation: FORMATION,
+                slot: 5,
+            });
     let arsenal = synthetic_arsenal();
     assert_eq!(
         runtime
@@ -403,7 +409,7 @@ fn accept_f32_c_foreign_generations_never_touch_the_formation_or_the_decision() 
                 observer: synthetic_actor(99),
                 now: Tick(START),
                 observer_position: WorldPosition::try_new([0.0, 0.0, 0.0]).expect("finite"),
-                assignment: &assignment,
+                assignment: &outsider,
                 formation: Some(FORMATION),
                 protected_alive: Some(true),
                 candidates: &candidates,
@@ -417,15 +423,18 @@ fn accept_f32_c_foreign_generations_never_touch_the_formation_or_the_decision() 
             observer: synthetic_actor(99),
         }
     );
-    // The same request without a formation is fine: an actor outside a
-    // formation decides without any.
+    // The same actor without a slot decides without any formation: an actor
+    // outside a formation decides without any.
+    let detached =
+        RoleAssignment::protecting(synthetic_actor(99), CombatRole::Escort, synthetic_actor(20))
+            .expect("an escort never protects itself");
     assert!(
         runtime
             .step(&CombatantRequest {
                 observer: synthetic_actor(99),
                 now: Tick(START),
                 observer_position: WorldPosition::try_new([0.0, 0.0, 0.0]).expect("finite"),
-                assignment: &assignment,
+                assignment: &detached,
                 formation: None,
                 protected_alive: Some(true),
                 candidates: &candidates,
@@ -435,6 +444,79 @@ fn accept_f32_c_foreign_generations_never_touch_the_formation_or_the_decision() 
             })
             .is_ok()
     );
+}
+
+/// A decision may not run without the formation facts its own assignment
+/// declares. The coordinator builds the facts, so a request that withholds the
+/// formation — or names another one — would decide against state the mission
+/// never assigned, and report no recovery path for an actor that has one.
+#[test]
+fn accept_f32_c_a_request_may_not_withhold_or_replace_the_formations_facts() {
+    let runtime = synthetic_combat_runtime();
+    let candidates = vec![synthetic_candidate(
+        2,
+        [300.0, 0.0, 0.0],
+        Some(Allegiance::Hostile),
+        true,
+    )];
+    let arsenal = synthetic_arsenal();
+    let in_formation = RoleAssignment::protecting(
+        synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[0]),
+        CombatRole::Escort,
+        synthetic_actor(20),
+    )
+    .expect("an escort never protects itself")
+    .in_formation(cs_sim::ai::combat::FormationSlot {
+        formation: FORMATION,
+        slot: 1,
+    });
+    let step = |assignment: &RoleAssignment, formation: Option<FormationId>| {
+        runtime.step(&CombatantRequest {
+            observer: synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[0]),
+            now: Tick(START),
+            observer_position: WorldPosition::try_new([800.0, 0.0, 0.0]).expect("finite"),
+            assignment,
+            formation,
+            protected_alive: Some(true),
+            candidates: &candidates,
+            arsenal: Some(&arsenal),
+            ace: None,
+            tier: DifficultyTier::Standard,
+        })
+    };
+
+    // The formation the assignment declares, withheld by the request.
+    assert_eq!(
+        step(&in_formation, None).expect_err("the facts may not be withheld"),
+        CombatError::FormationFactsOmitted {
+            formation: FORMATION
+        }
+    );
+    // Named as a different formation than the one the assignment declares.
+    assert_eq!(
+        step(&in_formation, Some(FormationId(9))).expect_err("two formations at once is refused"),
+        CombatError::FormationAssignmentMismatch {
+            assigned: Some(FORMATION),
+            facts: FormationId(9),
+        }
+    );
+    // Named at all by an assignment that places the observer in no formation.
+    let detached = RoleAssignment::protecting(
+        synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[0]),
+        CombatRole::Escort,
+        synthetic_actor(20),
+    )
+    .expect("an escort never protects itself");
+    assert_eq!(
+        step(&detached, Some(FORMATION))
+            .expect_err("facts for a formation the assignment does not declare"),
+        CombatError::FormationAssignmentMismatch {
+            assigned: None,
+            facts: FORMATION,
+        }
+    );
+    // And the one agreeing pair still decides.
+    assert!(step(&in_formation, Some(FORMATION)).is_ok());
 }
 
 /// The ace registry refuses a variant that modifies one role and carries

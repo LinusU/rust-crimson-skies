@@ -3053,6 +3053,14 @@ impl FormationCoordinator {
     /// [`CombatError::UnknownFormation`] is what a caller sees instead of
     /// state from a mission that has moved on.
     ///
+    /// The coordinator holds runtime state only. The *declared* recovery path
+    /// stays registered with the planner that owns it, which is what lets
+    /// `UnknownFormation` ("torn down") stay distinguishable from
+    /// `NoRecoveryPolicy` ("never declared") — at the cost that a formation id
+    /// cannot be registered a second time in the same planner. Mission
+    /// execution owns spawn identity, so reusing an id is its call, not this
+    /// coordinator's.
+    ///
     /// # Errors
     ///
     /// [`CombatError::UnknownFormation`] when the coordinator does not hold
@@ -3136,6 +3144,11 @@ pub struct CombatantRequest<'a> {
     /// The observer's script-assigned role.
     pub assignment: &'a RoleAssignment,
     /// The formation the observer belongs to, when it belongs to one.
+    ///
+    /// It must agree with the assignment's own formation slot: an assignment
+    /// that places the observer in a formation and a request that names none (or
+    /// another) is refused by [`CombatError::FormationFactsOmitted`] and
+    /// [`CombatError::FormationAssignmentMismatch`].
     pub formation: Option<FormationId>,
     /// Whether the observer's protected actor is still alive. `None` means the
     /// caller did not report it, which is not the statement "destroyed".
@@ -3281,6 +3294,10 @@ impl CombatRuntime {
 
     /// Tears one formation down.
     ///
+    /// The runtime state goes; the declared recovery path stays registered with
+    /// the planner, so [`CombatError::UnknownFormation`] afterwards means "torn
+    /// down" rather than "never declared".
+    ///
     /// # Errors
     ///
     /// [`CombatError::UnknownFormation`] when the runtime holds no such
@@ -3381,12 +3398,36 @@ impl CombatRuntime {
     ///
     /// # Errors
     ///
-    /// Every error [`CombatRuntime::resolve_profile`] reports, plus
+    /// Every error [`CombatRuntime::resolve_profile`] reports,
+    /// [`CombatError::FormationAssignmentMismatch`] and
+    /// [`CombatError::FormationFactsOmitted`] when the request and its own role
+    /// assignment disagree about which formation the observer is in,
     /// [`CombatError::UnknownFormationMember`] when the request names a
     /// formation the observer is not a living member of, and every error
     /// [`CombatPlanner::decide`] reports. Nothing is mutated, so a refused
     /// step can be retried unchanged.
     pub fn step(&self, request: &CombatantRequest<'_>) -> Result<CombatStep, CombatError> {
+        // The formation the assignment places the observer in and the
+        // formation the request names are one statement about the observer.
+        // The runtime will not let the request withhold it: an actor the
+        // mission assigned to a formation, decided with no formation facts at
+        // all, would report no recovery path — the one answer the
+        // coordinator's authority exists to prevent.
+        let assigned = request.assignment.formation().map(|slot| slot.formation);
+        match (assigned, request.formation) {
+            (Some(assigned), None) => {
+                return Err(CombatError::FormationFactsOmitted {
+                    formation: assigned,
+                });
+            }
+            (assigned, Some(named)) if assigned != Some(named) => {
+                return Err(CombatError::FormationAssignmentMismatch {
+                    assigned,
+                    facts: named,
+                });
+            }
+            _ => {}
+        }
         let facts = match request.formation {
             None => None,
             Some(formation) => Some(self.formations.facts(formation, request.observer).ok_or(
@@ -3477,6 +3518,15 @@ pub enum CombatError {
         assigned: Option<FormationId>,
         /// The formation the supplied facts describe.
         facts: FormationId,
+    },
+    /// A request's role assignment places the observer in a formation and the
+    /// request supplies no formation facts at all. Deciding without them would
+    /// report no recovery path for an actor the mission did assign to one, so
+    /// the two statements are refused rather than resolved in favour of the
+    /// missing one.
+    FormationFactsOmitted {
+        /// The formation the assignment declares.
+        formation: FormationId,
     },
     /// Two arsenal entries share one mount key.
     DuplicateMount {
@@ -3742,6 +3792,11 @@ impl fmt::Display for CombatError {
                     facts.0
                 )
             }
+            Self::FormationFactsOmitted { formation } => write!(
+                f,
+                "the assignment places the observer in formation {formation} but the \
+                 request supplies no formation facts"
+            ),
             Self::DuplicateMount { mount } => {
                 write!(f, "the arsenal lists mount {mount} more than once")
             }
