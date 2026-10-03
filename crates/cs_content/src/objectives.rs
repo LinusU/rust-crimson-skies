@@ -1312,11 +1312,17 @@ pub enum ObjectivesSchemaError {
         /// The colliding signal name.
         signal: ProgramSymbol,
     },
-    /// A declared move or watch targets a state nothing produces. No legal
-    /// transition a declared action can perform reaches `Hidden`, `Pending`
-    /// or `Optional` — the rows into them start from `Hidden`, which only
-    /// the reveal rule may leave — so the declaration could never apply or
-    /// fire: dead, refused at declaration.
+    /// A declared move or watch targets a state nothing of *its* kind produces.
+    ///
+    /// No legal transition a **deadline action or count reaction** can perform
+    /// reaches `Hidden`, `Pending` or `Optional` — the rows into `Hidden` and
+    /// `Pending` start from `Hidden`, which only the reveal rule may leave, and
+    /// the rows into `Optional` are the ones a *completion effect* uses
+    /// (`Pending -> Optional`, `Active -> Optional`, F39-E5). So the declaration
+    /// could never apply or fire: dead, refused at declaration. Naming the real
+    /// reason matters, because the transition table itself does reach
+    /// `Optional`: what cannot reach it is a deadline or a count, which has no
+    /// "when I complete" to hang a set-aside on.
     DeadState {
         /// The declaration carrying the target.
         by: ProgramSymbol,
@@ -1365,9 +1371,15 @@ pub enum ObjectivesSchemaError {
         by: ProgramSymbol,
         /// The objective both effects name.
         objective: ProgramSymbol,
-        /// The effect declared first, in `(kind, declaring objective)` order.
+        /// The effect the schema met first, walking the program's objectives in
+        /// declaration order and each objective's effects in authored order.
+        ///
+        /// Reported as **data about the declaration**, not as a rule: the
+        /// refusal is about the shape, so which of the two the message calls
+        /// `first` never decides anything — declaring them the other way round
+        /// is refused by the same rule, with the two swapped.
         first: BranchEffectKind,
-        /// The effect declared second.
+        /// The effect the schema met second, on the same terms as `first`.
         second: BranchEffectKind,
     },
     /// An objective declares a completion effect on itself.
@@ -1392,6 +1404,13 @@ pub enum ObjectivesSchemaError {
     },
     /// An objective born in a terminal state declares completion effects. It
     /// never completes, so they can never apply.
+    ///
+    /// Only about *declared* effects: an objective born in a terminal state that
+    /// declares none is an ordinary declaration. Nothing measured how a program
+    /// may introduce an objective that is already finished, so this rule refuses
+    /// the effects that could never fire and nothing else — a schema that
+    /// refused such an objective outright would be enforcing an unmeasured rule
+    /// under a message blaming effects it never had.
     UnfiredCompletionEffects {
         /// The objective declaring the effects.
         by: ProgramSymbol,
@@ -1506,7 +1525,12 @@ impl fmt::Display for ObjectivesSchemaError {
             ),
             Self::DeadState { by, state } => write!(
                 f,
-                "{by} targets objective state {state:?}, which no declared action or event can produce"
+                "{by} targets objective state {state:?}, which no declared deadline or count reaction can produce{}",
+                if *state == DeclaredObjectiveState::Optional {
+                    ": only the completion of a named other objective can set one aside"
+                } else {
+                    ""
+                }
             ),
             Self::DeadSelfReveal { objective } => write!(
                 f,
@@ -1963,7 +1987,7 @@ fn check_completion_effects(
     // even representable.
     let mut named: BTreeMap<ProgramSymbol, BranchEffectKind> = BTreeMap::new();
     for source in objectives {
-        if source.initial.is_terminal() {
+        if source.initial.is_terminal() && !source.completion_effects.is_empty() {
             return Err(ObjectivesSchemaError::UnfiredCompletionEffects {
                 by: source.symbol,
                 state: source.initial,

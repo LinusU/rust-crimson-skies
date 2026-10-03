@@ -88,9 +88,13 @@
 //!   registration ([`RuntimeError::AmbiguousCompletionEffect`]) rather than
 //!   ordered, because the original's own records declare exactly that shape in
 //!   exactly one place and nothing measured which of the two wins there;
-//! * the due set is applied in `(completing objective, authored effect)` order —
-//!   program order, never hash or entity order — and, since a contested target
-//!   cannot be declared, that order never decides an outcome.
+//! * the due set is applied in the order the completions happened — the phase
+//!   order, then each objective's effects in their declared order — and nothing
+//!   hashes or walks an entity table to produce it. Two objectives completing in
+//!   one tick may therefore be *applied* in either order, and the stream's final
+//!   sort by [`EventKey`] makes them *observed* in symbol order regardless; and
+//!   since a contested target cannot be declared, no such order ever decides an
+//!   outcome.
 //!
 //! The NAP effect's declared number ([`UnmeasuredNumber`]) is carried and
 //! **never interpreted**: what it measures is unmeasured, so the effect applies
@@ -699,15 +703,17 @@ pub enum RuntimeError {
     /// A declaration pairs [`RevealRule::Immediate`] with a `Hidden` initial
     /// state, which says both "hidden" and "shown from the first tick".
     HiddenButImmediate { objective: SymbolId },
-    /// Two objectives of this runtime declare **different** completion effects
-    /// naming the same objective.
+    /// **Different** completion effects name the same objective — whether two
+    /// objectives of this runtime declare them or one objective declares both.
     ///
     /// This is refused, not ordered: the original's own objective records declare
     /// exactly that shape, in exactly one place across 1338 measured blocks, and
     /// nothing measured which of the two effects wins there — the record's own
     /// authored order is written both ways round across the corpus, so it carries
     /// no engine intent either (F39-E2). Applying one of them would be inventing
-    /// the rule the measurement refused.
+    /// the rule the measurement refused. Registration order decides nothing
+    /// either, because the scan covers every registered objective and not only
+    /// the one before this one.
     AmbiguousCompletionEffect { source: SymbolId, target: SymbolId },
     /// An objective declares a completion effect on itself.
     ///
@@ -769,7 +775,7 @@ impl fmt::Display for RuntimeError {
             ),
             Self::AmbiguousCompletionEffect { source, target } => write!(
                 f,
-                "objective {source:?} declares a completion effect on {target:?} that another objective already declares a different one for, and no measured rule says which wins"
+                "objective {source:?} declares a completion effect on {target:?} that is already declared differently, and no measured rule says which of the two applies"
             ),
             Self::SelfCompletionEffect { objective } => write!(
                 f,
@@ -1160,16 +1166,6 @@ impl ObjectiveRuntime {
         self.latched.contains(&condition)
     }
 
-    /// How many completion effects are queued for the next drain.
-    ///
-    /// A tick that ended with nothing queued has applied every effect the tick
-    /// declared, so a caller (and a test) can tell "the effect fired" from "the
-    /// effect is still waiting" without walking the stream.
-    #[must_use]
-    pub fn queued_completion_effects(&self) -> usize {
-        self.pending_effects.len()
-    }
-
     /// A declared timer's state.
     #[must_use]
     pub fn timer_state(&self, timer: SymbolId) -> Option<TimerState> {
@@ -1282,15 +1278,16 @@ impl ObjectiveRuntime {
     /// * one per signal, timer request and objective request;
     /// * two events per timer (one arm, one expiry) plus one per expiry action;
     /// * one event per objective for a reveal;
-    /// * one per queued completion effect (the move it declares, refused or not);
+    /// * one per completion effect any objective declares (the move it declares,
+    ///   refused or not);
     /// * one per terminal request.
     ///
     /// A reaction's own cascade — the state change, the reveal it triggers and
     /// the deadlines that state arms — is covered by the objective and timer
     /// terms, which is why a tick may legitimately produce fewer events than
-    /// this reports. The completion-effect queue is bounded by the same argument:
-    /// no effect kind completes an objective, so a drain cannot add to the queue
-    /// it is draining.
+    /// this reports. The completion-effect term is an upper bound for the same
+    /// reason and is bounded too: no effect kind completes an objective, so a
+    /// drain can never queue an effect of its own.
     fn declared_event_count(&self, input: &TickInput<'_>) -> usize {
         let counted = input
             .lifecycles
@@ -1309,7 +1306,24 @@ impl ObjectiveRuntime {
             + input.terminal_requests.len()
             + timers
             + self.objectives.len()
-            + self.pending_effects.len()
+            + self.declared_completion_effects()
+    }
+
+    /// How many completion effects one tick could apply at most: every effect
+    /// every objective declares, because any objective may complete in any tick
+    /// and each of its effects is then one event.
+    ///
+    /// The queue itself cannot be counted here. [`step`](Self::step) reaches this
+    /// before phase 7 of the tick it is starting, and the previous tick's drain
+    /// emptied the queue before that tick ended, so `pending_effects` is empty at
+    /// every call and would count the effects of a tick that has not queued
+    /// anything yet — leaving the effects this tick is about to queue outside the
+    /// bound they can most easily exceed.
+    fn declared_completion_effects(&self) -> usize {
+        self.objectives
+            .values()
+            .map(|objective| objective.completion_effects.len())
+            .sum()
     }
 
     /// Refuses the whole tick's movements before observing any of them.
@@ -1561,11 +1575,16 @@ impl ObjectiveRuntime {
     /// a target to `Succeeded`, so no applied effect can complete an objective
     /// and the queue cannot grow while it drains.
     ///
-    /// Order is `(completing objective, authored effect)`: the queue is filled in
-    /// the order objectives completed (itself a `BTreeMap` walk, never hash
-    /// order) and each objective's effects keep their declared order. A target
-    /// named by two *different* effects cannot be registered at all, so this
-    /// order never decides a contested outcome.
+    /// Order is the order the completions happened — phase 5's objective requests
+    /// as the caller listed them, then phase 6's expiries in timer order — and
+    /// within one objective, its effects in their declared order. No hash map or
+    /// entity iteration is involved. Two objectives completing in one tick can
+    /// therefore be applied in either order, which is why this is only a
+    /// *reported* order question: [`step`](Self::step) sorts the stream by
+    /// [`EventKey`], so their moves are observed in `(source, sequence)` order
+    /// however they were applied, and a target named by two *different* effects
+    /// cannot be registered at all, so no such order decides a contested
+    /// outcome.
     fn apply_completion_effects(&mut self, out: &mut Emitter) {
         let due: Vec<QueuedEffect> = std::mem::take(&mut self.pending_effects);
         for pending in due {

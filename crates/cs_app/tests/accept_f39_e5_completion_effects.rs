@@ -52,11 +52,18 @@
 //!   happened".
 //! * `accept_f39_e5_two_effects_naming_one_objective_are_refused_by_name` — the
 //!   refusal, in the declared schema and again in the runtime, in **both**
-//!   declaration orders, with the neighbour that stays legal (two objectives
-//!   agreeing on the same effect) so the refusal cannot widen into "no two
-//!   effects at all".
+//!   declaration orders and whether one declaration carries both effects or two
+//!   declarations carry one each, with the neighbour that stays legal (two
+//!   objectives agreeing on the same effect) so the refusal cannot widen into "no
+//!   two effects at all".
 //! * `accept_f39_e5_dead_completion_effects_are_refused_by_name` — the four dead
-//!   shapes and the number-shape rule, each with its own named error.
+//!   shapes and the number-shape rule, each with its own named error, plus the
+//!   declaration the rule must *not* refuse: an objective born finished that
+//!   declares no effects at all.
+//! * `accept_f39_e5_a_tick_over_its_event_budget_is_stopped_before_any_effect_applies`
+//!   — the effects a tick is about to queue are counted against
+//!   `max_events_per_tick`, so a tick that would exceed it is refused whole
+//!   instead of applying the completion and leaving four moves to arrive later.
 //! * `accept_f39_e5_the_effect_vocabulary_is_the_measured_one` — the four
 //!   spellings are the measured ones, `WAKE` and `WAKEUP` never collapse, only a
 //!   nap carries a number, and no effect kind completes an objective (which is
@@ -81,7 +88,8 @@ use cs_script::ir::SymbolId;
 use cs_script::runtime::SessionGeneration;
 use cs_sim::objectives::runtime::{
     CompletionEffect, CompletionEffectKind, ObjectiveCompletion, ObjectiveEventKind,
-    ObjectiveRuntime, ObjectiveSpec, RevealRule, RuntimeError, TickInput, UnmeasuredNumber,
+    ObjectiveRuntime, ObjectiveSpec, RevealRule, RuntimeError, RuntimeLimits, StopReason,
+    TickInput, UnmeasuredNumber,
 };
 use cs_sim::objectives::state::ObjectiveState;
 use cs_sim::objectives::terminal::TerminalPrecedence;
@@ -297,11 +305,6 @@ fn accept_f39_e5_a_completion_wakes_the_objectives_it_names() {
             .revealed,
         "a killed objective is still shown to the player; it failed, it did not vanish"
     );
-    assert_eq!(
-        session.runtime().queued_completion_effects(),
-        0,
-        "every declared effect was applied on the tick that completed its owner"
-    );
 
     // The stream is still ordered by (session, tick, source, sequence).
     let keys: Vec<_> = completed
@@ -376,7 +379,6 @@ fn accept_f39_e5_effects_apply_on_the_completion_tick_and_only_once() {
         replayed.is_empty(),
         "and no completion effect replayed: {replayed:?}"
     );
-    assert_eq!(session.runtime().queued_completion_effects(), 0);
 }
 
 #[test]
@@ -588,6 +590,52 @@ fn accept_f39_e5_two_effects_naming_one_objective_are_refused_by_name() {
         );
     }
 
+    // One objective declaring both is the same shape as two objectives declaring
+    // one each, and the runtime refuses it for the same reason: the retail block
+    // F39-E2 measured (`zbd/c3/m05` `OBJECTIVE8`) puts both effects in *one*
+    // block. The message must not blame "another objective" for a conflict the
+    // same declaration made.
+    let mut runtime = ObjectiveRuntime::new(
+        GEN,
+        TerminalPrecedence::SyntheticConservative,
+        Default::default(),
+    );
+    let both = ObjectiveSpec {
+        id: SymbolId(1),
+        content: ContentId::from_source(ContentKind::Objective, "synthetic.f39e.both")
+            .expect("an objective id"),
+        initial: ObjectiveState::Active,
+        reveal: RevealRule::Immediate,
+        on_complete: ObjectiveCompletion::Continue,
+        completion_effects: vec![
+            CompletionEffect {
+                kind: CompletionEffectKind::Wake,
+                target: SymbolId(3),
+                argument: None,
+            },
+            CompletionEffect {
+                kind: CompletionEffectKind::Kill,
+                target: SymbolId(3),
+                argument: None,
+            },
+        ],
+    };
+    let conflict = RuntimeError::AmbiguousCompletionEffect {
+        source: SymbolId(1),
+        target: SymbolId(3),
+    };
+    assert_eq!(
+        runtime.add_objective(both),
+        Err(conflict.clone()),
+        "one declaration carrying both effects is refused too"
+    );
+    assert!(
+        conflict
+            .to_string()
+            .contains("no measured rule says which of the two applies"),
+        "and the refusal states the rule without inventing an author: {conflict}"
+    );
+
     // And the refusal is not "no two effects at all": two objectives that *agree*
     // about what happens to one objective declare no order to decide.
     let base = declared_synthetic_completion_effects();
@@ -681,6 +729,30 @@ fn accept_f39_e5_dead_completion_effects_are_refused_by_name() {
         }
     );
 
+    // …and the refusal is about the *effects*, not about the state. An objective
+    // born finished that declares none is an ordinary declaration this stage has
+    // no rule about — nothing was measured about an objective that never
+    // completes, because it can never complete — so the schema must accept it
+    // rather than refuse it under a message claiming effects it never declared.
+    let mut objectives = base.objectives().to_vec();
+    objectives[0].completion_effects = Vec::new();
+    objectives[4].initial = DeclaredObjectiveState::Succeeded;
+    assert!(
+        DeclaredObjectiveProgram::try_new(
+            base.subject().clone(),
+            base.origin().clone(),
+            base.provenance().clone(),
+            base.precedence().clone(),
+            objectives,
+            base.conditions().to_vec(),
+            base.timers().to_vec(),
+            base.triggers().to_vec(),
+            base.spawn_groups().to_vec(),
+        )
+        .is_ok(),
+        "an objective born finished that declares no completion effects is not this refusal"
+    );
+
     // A nap without the number every measured nap carries, and a number on an
     // effect that never had one.
     let mut objectives = base.objectives().to_vec();
@@ -738,6 +810,70 @@ fn accept_f39_e5_dead_completion_effects_are_refused_by_name() {
         .contains("never completes"),
         "the unfired effects name their rule"
     );
+}
+
+#[test]
+fn accept_f39_e5_a_tick_over_its_event_budget_is_stopped_before_any_effect_applies() {
+    // The bound is decided before anything applies, and it has to *count* the
+    // completion effects a tick is about to queue — otherwise a program whose
+    // objectives each declare effects could emit more events in one tick than
+    // `max_events_per_tick` allows without the bound ever noticing. 8 is exactly
+    // what this fixture's tick declares without its four effects (1 timer request,
+    // 2 timer events, 5 objective events), so a tick stopped at 8 was stopped by
+    // the effects and by nothing else.
+    let budget = 8;
+    let program = declared_synthetic_completion_effects();
+    let mut session = ObjectiveSession::launch(
+        lower_program(&program)
+            .expect("the program lowers")
+            .with_limits(RuntimeLimits {
+                max_events_per_tick: budget,
+                max_timers: 1024,
+            }),
+        GEN,
+    )
+    .expect("the lowered program launches");
+
+    let stopped = arm_deadline(&mut session, 1);
+    assert_eq!(
+        stopped.stop,
+        Some(StopReason::EventBudget {
+            at_tick: Tick(1),
+            limit: budget,
+            declared: budget + 4,
+        }),
+        "the four declared effects are counted against the bound: {:?}",
+        stopped.stop
+    );
+    assert!(
+        stopped.tick.events.is_empty(),
+        "a stopped tick applies nothing at all: {:?}",
+        stopped.tick.events
+    );
+    assert!(!stopped.display_changed, "so no row moved");
+
+    // Nothing is left half-applied: not the completion, not one effect, and no
+    // effect waiting for a later tick to apply it late.
+    for (index, state) in [
+        ObjectiveState::Active,
+        ObjectiveState::Pending,
+        ObjectiveState::Active,
+        ObjectiveState::Optional,
+        ObjectiveState::Active,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(
+            session
+                .display()
+                .row(symbol(program.objectives()[index].symbol))
+                .expect("tracked")
+                .state,
+            state,
+            "objective {index} still holds the state it was born in"
+        );
+    }
 }
 
 #[test]
