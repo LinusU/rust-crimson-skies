@@ -35,6 +35,14 @@
 //!   a material index finally resolves to a texture **name** — the material
 //!   record stores an index into the container's texture table, not a name.
 //!
+//! * [`bindings`] is the cross-section check the two sections above cannot make
+//!   alone: [`NodeMeshBindings::of`] is handed one container's [`GameZNodes`]
+//!   **and** its [`GameZMeshes`] and reports every node whose stored
+//!   `mesh_index` names no present mesh — a slot outside the array, or a slot
+//!   inside it that holds an all-zero stub, reported as two different facts.
+//!   The mesh index is non-sequential, so the check uses
+//!   [`GameZMeshes::get`], the lookup the pinned reference performs, and not a
+//!   compact enumeration of the meshes that are there.
 //! * [`nodes`] is the last section: the node array, which is **two passes over
 //!   two sections** — `node_array_size` × (a 208-byte info record followed by a
 //!   4-byte `node_index` word), then a variable-length data section holding one
@@ -72,6 +80,7 @@
 //! values; only the `#[ignore]`d retail tests read original game data, and
 //! nothing derived from it is committed.
 
+pub mod bindings;
 pub mod census;
 pub mod materials;
 pub mod mesh;
@@ -80,6 +89,7 @@ pub mod polygon;
 pub mod reader;
 pub mod strip;
 
+pub use bindings::{MeshSlotIssue, NodeMeshBindings, NodeMeshFinding};
 pub use census::{FaceCensus, MissingFace, MissingFaceReason};
 
 pub use materials::{

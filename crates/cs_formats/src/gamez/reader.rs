@@ -917,10 +917,33 @@ impl GameZMeshes {
         self.present().count()
     }
 
+    /// Array slots this section has, absent stubs included. This is the bound a
+    /// scene node's `mesh_index` is range-checked against, so it is the array
+    /// size and never the number of meshes that are present in it.
+    #[must_use]
+    pub fn slot_count(&self) -> usize {
+        self.meshes.len()
+    }
+
     /// One present mesh by array index — the lookup a scene node's
     /// `mesh_index` performs.
     pub fn get(&self, mesh_index: u32) -> Option<&GameZMesh> {
         self.meshes.get(mesh_index as usize)?.as_ref()
+    }
+
+    /// Pairs one container's node array with this mesh section and reports
+    /// every node whose stored `mesh_index` names no present mesh.
+    ///
+    /// The node section is an argument rather than a field because the node
+    /// reader does not hold the mesh array either: this is the seam that has
+    /// both, and it keeps the check out of the node reader, where the index
+    /// stays raw.
+    #[must_use]
+    pub fn node_bindings(
+        &self,
+        nodes: &super::nodes::GameZNodes,
+    ) -> super::bindings::NodeMeshBindings {
+        super::bindings::NodeMeshBindings::of(nodes, self)
     }
 
     /// Every mesh's topology report, in array order, with the present meshes

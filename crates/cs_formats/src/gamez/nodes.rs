@@ -78,7 +78,10 @@
 //! reference — so `flags` is carried raw and nothing here interprets it. A
 //! node's `mesh_index` is carried raw too: the node reader does not hold the
 //! mesh section, so it cannot range-check a non-negative index, and it says so
-//! through [`GameZNodes::mesh_index_bounds`] instead of pretending to.
+//! through [`GameZNodes::mesh_index_bounds`] instead of pretending to. The
+//! check itself is [`super::bindings::NodeMeshBindings::of`], which is handed
+//! this section **and** the mesh array and reports every node whose index names
+//! no present mesh.
 
 use std::fmt;
 use std::mem::size_of;
@@ -879,7 +882,9 @@ impl fmt::Display for NodeFinding {
 ///
 /// The node reader does not hold the mesh section, so it cannot range-check an
 /// index; this is the honest substitute: it states which slots the nodes name
-/// so a caller holding the mesh array can check them itself.
+/// so a caller holding the mesh array can check them itself. The check itself is
+/// [`super::bindings::NodeMeshBindings::of`], which is handed this section **and**
+/// the mesh array.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeshIndexBounds {
     /// How many nodes store a non-negative `mesh_index`.

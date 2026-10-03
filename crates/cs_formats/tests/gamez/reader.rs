@@ -35,11 +35,11 @@ use cs_types::evidence::ClaimStatus;
 /// [`authored_container`], which lays the sections out in the order the layout
 /// requires so no fixture depends on a hand-computed byte count.
 #[derive(Clone)]
-struct HeaderSpec {
-    unk08: u32,
-    texture_count: u32,
-    node_array_size: u32,
-    light_index: u32,
+pub(crate) struct HeaderSpec {
+    pub(crate) unk08: u32,
+    pub(crate) texture_count: u32,
+    pub(crate) node_array_size: u32,
+    pub(crate) light_index: u32,
 }
 
 impl Default for HeaderSpec {
@@ -80,7 +80,7 @@ const MORPHS: u32 = 2;
 /// One mesh to write: its 100-byte record's fields and the parts its data is
 /// composed from.
 #[derive(Clone, Default)]
-struct MeshSpec {
+pub(crate) struct MeshSpec {
     file_ptr: u32,
     unk04: u32,
     unk08: u32,
@@ -119,7 +119,7 @@ struct MeshSpec {
 
 impl MeshSpec {
     /// A present mesh with the raw scalars a present record carries.
-    fn present() -> Self {
+    pub(crate) fn present() -> Self {
         Self {
             file_ptr: 1,
             parent_count: 1,
@@ -128,13 +128,13 @@ impl MeshSpec {
     }
 
     /// The all-zero stub record.
-    fn stub() -> Self {
+    pub(crate) fn stub() -> Self {
         Self::default()
     }
 
     /// A one-triangle mesh: three positions, three normals, one polygon, no
     /// lights. The smallest present mesh this reader accepts.
-    fn triangle() -> Self {
+    pub(crate) fn triangle() -> Self {
         let polygon = PolygonSpec::triangle();
         Self {
             polygon_count: 1,
@@ -501,7 +501,7 @@ impl LightSpec {
 }
 
 /// The mesh index a container stores: `array_size`, `count`, `last_index`.
-type IndexSpec = (i32, i32, i32);
+pub(crate) type IndexSpec = (i32, i32, i32);
 
 /// The index the layout says the mesh at array position `slot` carries: its own
 /// position plus one, and `-1` at the end of the array.
@@ -516,7 +516,7 @@ fn sequential_expectation(slot: u32, array_size: u32) -> i32 {
 
 /// The mesh index of a container whose present meshes are exactly `present`, in
 /// the layout's own sequential order.
-fn sequential_index(array_size: u32, present: &[u32]) -> IndexSpec {
+pub(crate) fn sequential_index(array_size: u32, present: &[u32]) -> IndexSpec {
     let count = present.len() as i32;
     let last = present
         .last()
@@ -526,19 +526,19 @@ fn sequential_index(array_size: u32, present: &[u32]) -> IndexSpec {
 }
 
 /// [`Fixup::Planes`]'s measured remap, as a function value.
-fn planes_remap(expected: i32) -> i32 {
+pub(crate) fn planes_remap(expected: i32) -> i32 {
     Fixup::Planes.mesh_index_remap(expected)
 }
 
 /// [`Fixup::C4`]'s measured remap, as a function value.
-fn c4_remap(expected: i32) -> i32 {
+pub(crate) fn c4_remap(expected: i32) -> i32 {
     Fixup::C4.mesh_index_remap(expected)
 }
 
 /// The stored word of every stub of a container, in slot order: the sequential
 /// expectation, rewritten by `remap`. A present slot's word is the data offset,
 /// which the fixture writer fills in, so it is left as zero here.
-fn stub_words(array_size: u32, present: &[u32], remap: impl Fn(i32) -> i32) -> Vec<i32> {
+pub(crate) fn stub_words(array_size: u32, present: &[u32], remap: impl Fn(i32) -> i32) -> Vec<i32> {
     (0..array_size)
         .map(|slot| {
             if present.contains(&slot) {
@@ -557,7 +557,7 @@ fn stub_words(array_size: u32, present: &[u32], remap: impl Fn(i32) -> i32) -> V
 /// A present record's stored data offset is computed here; a stub's stored word
 /// is written as `stub_indices[slot]`, so a fixture states the remapped index it
 /// wants explicitly rather than leaving the writer to guess.
-fn authored_container(
+pub(crate) fn authored_container(
     spec: &HeaderSpec,
     meshes: &[MeshSpec],
     index: IndexSpec,
