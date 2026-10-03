@@ -59,7 +59,12 @@ pub enum Movement {
 }
 
 impl Movement {
-    fn is_finite(&self) -> bool {
+    /// Whether every position in this movement is finite. Public because a
+    /// runtime that drives many triggers per tick validates a whole tick's
+    /// movements *before* observing any of them, so a refused tick changes no
+    /// trigger's state at all.
+    #[must_use]
+    pub fn is_finite(&self) -> bool {
         match self {
             Self::Continuous { from_m, to_m } => {
                 from_m.iter().chain(to_m.iter()).all(|v| v.is_finite())
@@ -100,6 +105,21 @@ pub enum TriggerError {
     NotAdvancing { last: Tick, given: Tick },
 }
 
+impl std::fmt::Display for TriggerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonFinite => f.write_str("a volume or position was not finite"),
+            Self::NotAdvancing { last, given } => write!(
+                f,
+                "the last observed tick is {} and this observation is tick {}",
+                last.0, given.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TriggerError {}
+
 /// One trigger watching one actor. `inside` is the state as of the previous
 /// observation, so every transition is emitted exactly once.
 #[derive(Clone, Debug, PartialEq)]
@@ -133,6 +153,25 @@ impl SweptTrigger {
     #[must_use]
     pub const fn is_inside(&self) -> bool {
         self.inside
+    }
+
+    /// The trigger symbol this trigger reports under.
+    #[must_use]
+    pub const fn id(&self) -> SymbolId {
+        self.id
+    }
+
+    /// The one actor this trigger watches.
+    #[must_use]
+    pub const fn actor(&self) -> ActorId {
+        self.actor
+    }
+
+    /// The last tick this trigger observed, for a caller that validates a whole
+    /// tick's movements before observing any of them.
+    #[must_use]
+    pub const fn last_tick(&self) -> Option<Tick> {
+        self.last_tick
     }
 
     /// Observes one tick's movement and returns the crossings in order.

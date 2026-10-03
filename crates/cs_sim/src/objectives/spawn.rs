@@ -84,6 +84,16 @@ impl EmissionLedger {
         Ok(Admission::Admitted)
     }
 
+    /// What a key was admitted with, whenever it was admitted this session.
+    ///
+    /// The read side of exactly-once: a caller asks what a key already produced
+    /// instead of calling [`admit`](Self::admit) to find out, so "was this wave
+    /// spawned?" and "spawn it" cannot disagree.
+    #[must_use]
+    pub fn admitted(&self, key: &IdempotencyKey) -> Option<&Emission> {
+        self.done.get(key)
+    }
+
     /// How many keys have been admitted.
     #[must_use]
     pub fn len(&self) -> usize {

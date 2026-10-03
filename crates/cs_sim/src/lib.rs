@@ -226,11 +226,23 @@
 //! moves the evaluator state and that host record together across a save.
 //! Native host bindings are F38.
 //!
-//! [`objectives`] is the F39-A objective/trigger/spawn vocabulary
-//! (`specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`,
-//! stage `### F39-A`): the seven objective states, swept entry/exit triggers
+//! [`objectives`] is the F39 objective/trigger/spawn/timer runtime
+//! (`specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`):
+//! F39-A's vocabulary — the seven objective states, swept entry/exit triggers
 //! that never sweep a teleport, per-category actor counters and the
-//! per-session idempotency ledger for spawns and cues. The runtime is F39-B.
+//! per-session idempotency ledger for spawns and cues — and F39-B's
+//! [`objectives::runtime::ObjectiveRuntime`], which folds one tick's lifecycle
+//! transitions, real movement segments, declared signals and declared requests
+//! into a single [`objectives::runtime::ObjectiveEvent`] stream ordered by
+//! `cs_script::runtime::EventKey`, with a bounded per-tick budget, a declared
+//! [`objectives::runtime::CountCondition`] roster and consequence instead of an
+//! `enemy_alive == 0` shortcut, a
+//! [`objectives::timer::MissionTimer`] with a declared start condition, a
+//! validated gameplay time domain and exactly one declared action on expiry,
+//! and the declared [`objectives::terminal::TerminalPrecedence`] that resolves a
+//! tick's conflicting terminal requests behind a one-way
+//! [`objectives::terminal::TerminalLatch`]. The authored content form and the
+//! mission, UI and dialogue wiring are F39-C; F39-D measures the original rules.
 //!
 //! [`cinematic_state`] is the F40-A cutscene contract
 //! (`specs/F40-cutscenes-video-scripted-cameras-and-transitions.md`, stage

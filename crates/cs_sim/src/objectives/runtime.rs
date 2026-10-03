@@ -1,0 +1,1550 @@
+//! The continuous objective runtime: swept triggers, counted conditions, timer
+//! actions and the declared terminal latch, on one ordered event stream.
+//!
+//! Spec: `specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`
+//! (F39 owns trigger semantics), stage `### F39-B`, acceptance case AC02
+//! (*"Destroy a protected actor on the same tick as completing an objective;
+//! use declared terminal precedence"*). Shared contract:
+//! `docs/contracts/SCRIPT-MISSION.md`, "Objective event ordering" and "IR
+//! requirements".
+//!
+//! # What F39-A left and what this stage adds
+//!
+//! F39-A shipped the vocabulary — [`ObjectiveCell`](super::state::ObjectiveCell),
+//! [`SweptTrigger`](super::trigger::SweptTrigger),
+//! [`ActorCounters`](super::counters::ActorCounters) and
+//! [`EmissionLedger`](super::spawn::EmissionLedger) — each usable on its own.
+//! What a mission needs on top of that is the *continuous* part, and this
+//! module is it:
+//!
+//! * **One tick, one ordered stream.** [`ObjectiveRuntime::step`] takes the
+//!   facts one tick produced and answers with a [`Vec<ObjectiveEvent>`] sorted
+//!   by [`EventKey`]. The key is `(session, tick, source, sequence)` — the
+//!   contract's "session/tick/source/program sequence, not hash map or entity
+//!   iteration order" — so two runs that produced the same facts produce the
+//!   same stream in the same order.
+//! * **No reentrancy.** An action never runs a callback. A mission signal is
+//!   eligible to arm a [`TimerStart::OnSignal`] timer on the **next** tick, so
+//!   two timers cannot chase each other inside one tick.
+//! * **Terminal precedence is declared, not incidental.**
+//!   [`TerminalPrecedence::SyntheticConservative`](super::terminal::TerminalPrecedence::SyntheticConservative)
+//!   resolves the whole set of requests a tick made, and the
+//!   [`TerminalLatch`](super::terminal::TerminalLatch) then holds exactly one
+//!   answer forever. A request after the latch is refused by name instead of
+//!   changing a result the player has already been shown.
+//! * **A protected actor is a declared roster, not a heuristic.** A
+//!   [`CountCondition`] names the actors and the single
+//!   [`CountKind`](super::counters::CountKind) that satisfies it, and its
+//!   [`CountReaction`] names what satisfying it means. There is no operation
+//!   anywhere in this module that turns "no enemies alive" into a mission
+//!   outcome.
+//!
+//! # The declared phase order
+//!
+//! `step` applies effects in a fixed order:
+//!
+//! | phase | what it applies | why there |
+//! | --- | --- | --- |
+//! | 1 counters | [`LifecycleKind`](crate::damage::LifecycleKind) transitions into [`ActorCounters`](super::counters::ActorCounters) | a counter is a fact about this tick before anything may depend on it |
+//! | 2 conditions | a satisfied [`CountCondition`] latches once and applies its declared [`CountReaction`] | a condition is a decision, so it follows its facts |
+//! | 3 triggers | swept crossings from this tick's real movement segments | a crossing is a fact; a program sees it, and it never applies an effect itself |
+//! | 4 signals | this tick's declared signals are collected | a signal raised now is eligible next tick |
+//! | 5 objectives | the tick's declared objective state changes | state, before the actions that read it |
+//! | 6 timers | arms and cancellations, then whole committed ticks, then each expiry's one declared action | the last thing that may start work this tick |
+//! | 7 outcome | the tick's terminal requests are resolved **together** | one decision per tick, so no producer's request order decides the outcome |
+//!
+//! The returned stream is sorted by [`EventKey`], which is the *observation*
+//! order a consumer should use. Effects were applied in the phase order above;
+//! the sort does not undo that.
+//!
+//! # What is unknown
+//!
+//! Everything about the original game here is unmeasured and stays that way
+//! until F39-D calibrates it with `retail` capability:
+//!
+//! * which deadline a mission declares, in which domain, armed by what, and
+//!   performing which action;
+//! * which terminal outcome wins a same-tick collision;
+//! * which actors a mission protects, and what losing one does.
+//!
+//! No authored mission is bound to this runtime yet: the content binding is
+//! `cs_content::objectives` plus F39-C's wiring, so `content` here is a declared
+//! input rather than a table this module invented. What *is* checked here is the
+//! engine: ordering, refusals, bounds and stale-session handling.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+use cs_script::ir::{ActorId, SymbolId};
+use cs_script::runtime::{EventKey, SessionGeneration};
+use cs_types::Tick;
+use cs_types::content::ContentId;
+
+use crate::damage::LifecycleKind;
+
+use super::counters::{ActorCounters, CountKind};
+use super::spawn::{Admission, Emission, EmissionLedger, IdempotencyKey};
+use super::state::{IllegalTransition, ObjectiveCell, ObjectiveState};
+use super::terminal::{Resolution, TerminalLatch, TerminalOutcome, TerminalPrecedence};
+use super::timer::{MissionTimer, TimerAction, TimerError, TimerRequest, TimerStart, TimerState};
+use super::trigger::{Movement, SweptTrigger, TriggerError, TriggerEvent};
+
+/// The `source` of an event that belongs to no declaration: a counted actor's
+/// transition.
+///
+/// Actor identity is not a program symbol, so counted events share one reserved
+/// source and are ordered among themselves by their `sequence`. No declaration
+/// may use this symbol — [`ObjectiveRuntime::add_objective`],
+/// [`add_condition`](Self::add_condition), [`add_timer`](Self::add_timer) and
+/// [`add_trigger`](Self::add_trigger) all refuse it — so a counted event can
+/// never be mistaken for a declaration's event.
+pub const ACTOR_EVENT_SOURCE: SymbolId = SymbolId(0);
+
+/// A declared count condition: *which* actors, in *which* category, how many.
+///
+/// This type is the structural answer to F39 non-negotiable behavior 2
+/// ("counters distinguish destroyed, disabled, captured, escaped and despawned
+/// actors. Never approximate every objective by `enemy_alive == 0`"):
+///
+/// * `roster` is an explicit set of actors, so an actor outside it can never
+///   satisfy the condition;
+/// * `kind` is a single [`CountKind`], never a union, so a captured or despawned
+///   raider does not satisfy a *destroyed* condition;
+/// * `required` says how many of the roster must be in that category, so the
+///   condition is about a roster and not about the world's total.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CountCondition {
+    /// The condition's symbol; also the `source` of its events.
+    pub key: SymbolId,
+    /// The one category that satisfies this condition.
+    pub kind: CountKind,
+    /// The actors that can satisfy it. Never empty: a condition no actor can
+    /// reach is a defect, not a condition.
+    pub roster: BTreeSet<ActorId>,
+    /// How many roster actors in `kind` satisfy it. Never zero: a condition
+    /// satisfied by construction observes nothing.
+    pub required: usize,
+}
+
+impl CountCondition {
+    /// Builds a condition from a roster.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::EmptyRoster`] and [`RuntimeError::ZeroRequired`], and
+    /// [`RuntimeError::ReservedSymbol`] for the reserved
+    /// [`ACTOR_EVENT_SOURCE`].
+    pub fn new(
+        key: SymbolId,
+        kind: CountKind,
+        roster: impl IntoIterator<Item = ActorId>,
+        required: usize,
+    ) -> Result<Self, RuntimeError> {
+        if key == ACTOR_EVENT_SOURCE {
+            return Err(RuntimeError::ReservedSymbol { symbol: key });
+        }
+        let roster: BTreeSet<ActorId> = roster.into_iter().collect();
+        if roster.is_empty() {
+            return Err(RuntimeError::EmptyRoster { condition: key });
+        }
+        if required == 0 {
+            return Err(RuntimeError::ZeroRequired { condition: key });
+        }
+        Ok(Self {
+            key,
+            kind,
+            roster,
+            required,
+        })
+    }
+
+    /// How many roster actors are currently counted in `kind`.
+    #[must_use]
+    pub fn observed(&self, counters: &ActorCounters) -> usize {
+        self.roster
+            .iter()
+            .filter(|actor| counters.contains(self.kind, **actor))
+            .count()
+    }
+
+    /// Whether the condition holds right now.
+    #[must_use]
+    pub fn satisfied(&self, counters: &ActorCounters) -> bool {
+        self.observed(counters) >= self.required
+    }
+}
+
+/// What a satisfied [`CountCondition`] does.
+///
+/// The reaction is declared beside the condition, so a count can never *become*
+/// a mission ending by accident: an objective whose condition is satisfied
+/// reports itself unless the declaration also says what that means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CountReaction {
+    /// Report the condition and nothing else.
+    ReportOnly,
+    /// Move a declared objective to a declared state — the unlock, reset,
+    /// succeed or fail of F39 non-negotiable behavior 3.
+    SetObjectiveState {
+        objective: SymbolId,
+        state: ObjectiveState,
+    },
+    /// Request a terminal outcome. This is how a *protected* actor's declared
+    /// category fails a mission: the declaration names both the roster and the
+    /// outcome, so "the mission failed" and "a raider despawned" cannot be
+    /// confused.
+    Finish(TerminalOutcome),
+}
+
+/// When a hidden objective may be shown (F39 non-negotiable behavior 5: "show
+/// objectives only when the original reveal rules allow").
+///
+/// **The original reveal rules are unmeasured.** These are the declared hooks a
+/// program drives, and [`ObjectiveRuntime::is_visible`] is the only way to ask,
+/// so no consumer can show an objective by reading its state instead of its
+/// rule. A reveal rule firing *is* the reveal: a `Hidden` objective moves to
+/// [`ObjectiveState::Pending`] at that moment, and until then no declared action
+/// may move it out of `Hidden` at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RevealRule {
+    /// Shown from the first tick. A declaration that pairs this with a `Hidden`
+    /// initial state is refused: it would say both "hidden" and "shown".
+    Immediate,
+    /// Shown when a declared count condition first latches.
+    OnCondition { condition: SymbolId },
+    /// Shown when a declared timer runs out.
+    OnTimer { timer: SymbolId },
+    /// Shown when a named mission signal is raised.
+    OnSignal { signal: SymbolId },
+    /// Shown when a declared objective reaches a declared state.
+    OnObjectiveState {
+        objective: SymbolId,
+        state: ObjectiveState,
+    },
+}
+
+/// What completing a declared objective means for the mission.
+///
+/// A state change is a fact; the mission's ending is a declaration. Keeping the
+/// two apart is what makes AC02's collision *expressible*: the same tick can both
+/// complete an objective (which requests [`TerminalOutcome::Success`] here) and
+/// lose a protected actor (which requests failure through a
+/// [`CountReaction::Finish`]), and the declared precedence decides between two
+/// **requests** rather than between a fact and a guess.
+///
+/// A mission *failure* is not declared here: it belongs to the declared condition
+/// that watches for it, as a [`CountReaction::Finish`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ObjectiveCompletion {
+    /// The objective latches; the mission carries on.
+    #[default]
+    Continue,
+    /// The objective's completion requests this terminal outcome.
+    Requests(TerminalOutcome),
+}
+
+/// One declared objective's registration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectiveSpec {
+    /// The objective's program symbol.
+    pub id: SymbolId,
+    /// The stable content id this objective was authored as.
+    pub content: ContentId,
+    /// Its state before anything happens.
+    pub initial: ObjectiveState,
+    /// When it may be shown.
+    pub reveal: RevealRule,
+    /// What completing it means for the mission.
+    pub on_complete: ObjectiveCompletion,
+}
+
+/// What one observed event is.
+///
+/// Every variant is a fact a consumer may act on. None of them *is* the act: an
+/// objective unlocks because a declared [`CountReaction`] or [`TimerAction`]
+/// said so, never because a crossing occurred.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ObjectiveEventKind {
+    /// An actor's declared lifecycle transition was counted. A pilot bailout
+    /// and a mission removal produce none, because they are not one of the five
+    /// categories.
+    Counted { actor: ActorId, kind: CountKind },
+    /// A count condition latched: it is satisfied and stays satisfied.
+    ConditionMet {
+        condition: SymbolId,
+        kind: CountKind,
+        observed: usize,
+    },
+    /// A swept trigger crossing. The crossing's own `CrossingKind` distinguishes
+    /// entry from exit, and a body that stayed inside emits nothing.
+    TriggerCrossed(TriggerEvent),
+    /// A mission signal was raised. It becomes eligible to arm a
+    /// [`TimerStart::OnSignal`] timer on the **next** tick.
+    SignalRaised { signal: SymbolId },
+    /// An objective's state changed, through a declared action.
+    ObjectiveChanged {
+        objective: SymbolId,
+        from: ObjectiveState,
+        to: ObjectiveState,
+    },
+    /// A declared state change was refused; the objective kept its state.
+    ObjectiveChangeRefused {
+        objective: SymbolId,
+        from: ObjectiveState,
+        to: ObjectiveState,
+    },
+    /// A hidden objective became visible. `state` is the state it now holds:
+    /// [`ObjectiveState::Pending`] when it was `Hidden`, unchanged otherwise.
+    ObjectiveRevealed {
+        objective: SymbolId,
+        state: ObjectiveState,
+    },
+    /// A timer was armed, by its declared start or by a program action.
+    TimerArmed { timer: SymbolId, via: TimerStart },
+    /// A timer ran out. Its one declared action follows, later in this tick.
+    TimerExpired { timer: SymbolId },
+    /// A timer request or start was refused; the timer kept its state.
+    TimerRefused { timer: SymbolId, reason: TimerError },
+    /// A spawn group was admitted. `group` is the program's spawn-group symbol
+    /// and `instances` are the stable per-session instance ids it took, so the
+    /// host instantiates exactly the ids this event names.
+    SpawnAdmitted {
+        key: IdempotencyKey,
+        group: SymbolId,
+        instances: Vec<ActorId>,
+    },
+    /// A repeated spawn key was refused, carrying the ids the first admission
+    /// allocated, so a wave cannot be spawned twice under one key.
+    SpawnRefused {
+        key: IdempotencyKey,
+        group: SymbolId,
+        instances: Vec<ActorId>,
+    },
+    /// A dialogue cue was played once.
+    CueEmitted {
+        key: IdempotencyKey,
+        dialogue: ContentId,
+    },
+    /// A repeated cue key was refused; the dialogue is not repeated.
+    CueRefused {
+        key: IdempotencyKey,
+        dialogue: ContentId,
+    },
+    /// An optional reward intent. Never terminal.
+    OptionalReward { reward: ContentId },
+    /// The mission's outcome settled this tick. `superseded` names the
+    /// same-tick requests that lost, so the precedence decision is auditable.
+    OutcomeSettled {
+        outcome: TerminalOutcome,
+        superseded: Vec<TerminalOutcome>,
+    },
+    /// A terminal request arrived at an already-settled latch and was refused.
+    OutcomeRefused {
+        requested: TerminalOutcome,
+        settled: TerminalOutcome,
+    },
+}
+
+/// One ordered event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectiveEvent {
+    /// The stable observation key: session, tick, source symbol, sequence.
+    pub key: EventKey,
+    pub kind: ObjectiveEventKind,
+}
+
+impl ObjectiveEvent {
+    /// The source symbol this event attributes to.
+    #[must_use]
+    pub const fn source(&self) -> SymbolId {
+        self.key.source
+    }
+}
+
+/// Everything one tick's observation carries into the runtime.
+///
+/// A tick's input is *facts and declared requests only*. No field applies an
+/// effect, so a caller cannot unlock, reset, succeed or fail an objective except
+/// through the declared request types here or through a [`CountReaction`] /
+/// [`TimerAction`] the declaration already contains.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TickInput<'a> {
+    /// The tick these facts belong to. Must be strictly after the last stepped
+    /// tick.
+    pub tick: Tick,
+    /// Whole committed ticks the session's gameplay clock committed since the
+    /// last step. A paused frame commits zero, so no timer advances, and there
+    /// is no wall-time field, so a frame delta cannot become a variable dt.
+    pub committed_ticks: u64,
+    /// Lifecycle transitions recorded this tick, in observation order. An actor
+    /// recorded twice in one category counts once.
+    pub lifecycles: &'a [(ActorId, LifecycleKind)],
+    /// The movement each watched actor made this tick, as the **real** segment
+    /// from its previous position. An actor absent from this list is not
+    /// observed, so no crossing is invented for it.
+    pub movements: &'a [(ActorId, Movement)],
+    /// Mission signals raised this tick.
+    pub signals: &'a [SymbolId],
+    /// The tick's declared timer requests.
+    pub timer_requests: &'a [TimerRequest],
+    /// The tick's declared objective state changes, as `(objective, state)`.
+    pub objective_requests: &'a [(SymbolId, ObjectiveState)],
+    /// The tick's declared terminal outcome requests, as
+    /// `(requesting source, outcome)`, so a refused request names who asked.
+    pub terminal_requests: &'a [(SymbolId, TerminalOutcome)],
+}
+
+impl TickInput<'_> {
+    /// An input for `tick` carrying nothing but the tick.
+    #[must_use]
+    pub const fn at(tick: Tick) -> Self {
+        Self {
+            tick,
+            committed_ticks: 0,
+            lifecycles: &[],
+            movements: &[],
+            signals: &[],
+            timer_requests: &[],
+            objective_requests: &[],
+            terminal_requests: &[],
+        }
+    }
+}
+
+/// Why a tick stopped early. Never a mission failure: the tick applied nothing
+/// and the runtime keeps every bit of its state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    /// The tick's declared facts could produce more events than
+    /// [`RuntimeLimits::max_events_per_tick`] allows. Checked **before** any
+    /// effect is applied, so a bounded tick changes nothing at all.
+    EventBudget {
+        at_tick: Tick,
+        limit: usize,
+        declared: usize,
+    },
+    /// The mission's outcome was already settled, so this tick did no work.
+    OutcomeSettled { settled_at: Tick },
+}
+
+/// Result of one tick.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectiveTick {
+    /// The tick these events belong to.
+    pub tick: Tick,
+    /// Sorted by [`ObjectiveEvent::key`].
+    pub events: Vec<ObjectiveEvent>,
+    /// The session's outcome after this tick, when it has settled.
+    pub outcome: Option<TerminalOutcome>,
+    /// Set when a bound stopped the tick before any effect was applied.
+    pub stop: Option<StopReason>,
+}
+
+impl ObjectiveTick {
+    /// Whether the tick applied nothing.
+    #[must_use]
+    pub const fn is_stopped(&self) -> bool {
+        self.stop.is_some()
+    }
+
+    /// The events matching `predicate`, in observation order.
+    #[must_use]
+    pub fn filter(&self, predicate: impl Fn(&ObjectiveEventKind) -> bool) -> Vec<&ObjectiveEvent> {
+        self.events
+            .iter()
+            .filter(|event| predicate(&event.kind))
+            .collect()
+    }
+
+    /// The first event matching `predicate`, in observation order.
+    #[must_use]
+    pub fn first(
+        &self,
+        predicate: impl Fn(&ObjectiveEventKind) -> bool,
+    ) -> Option<&ObjectiveEvent> {
+        self.events.iter().find(|event| predicate(&event.kind))
+    }
+}
+
+/// Why a runtime operation was refused. Nothing here is a mission failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuntimeError {
+    /// The tick is not after the last stepped one: a replay or a retry cannot
+    /// re-evaluate a tick.
+    NotAdvancing { last: Tick, given: Tick },
+    /// Two objectives claim the same symbol.
+    DuplicateObjective { objective: SymbolId },
+    /// Two timers claim the same symbol.
+    DuplicateTimer { timer: SymbolId },
+    /// Two count conditions claim the same symbol.
+    DuplicateCondition { condition: SymbolId },
+    /// The same `(symbol, actor)` pair is registered twice.
+    DuplicateTrigger { trigger: SymbolId, actor: ActorId },
+    /// The timer table is full.
+    TimerTableFull { limit: usize },
+    /// A count condition declares no actor, so nothing can ever satisfy it.
+    EmptyRoster { condition: SymbolId },
+    /// A count condition requires zero actors, so it is satisfied by
+    /// construction and observes nothing.
+    ZeroRequired { condition: SymbolId },
+    /// A declaration used the reserved [`ACTOR_EVENT_SOURCE`].
+    ReservedSymbol { symbol: SymbolId },
+    /// A declaration pairs [`RevealRule::Immediate`] with a `Hidden` initial
+    /// state, which says both "hidden" and "shown from the first tick".
+    HiddenButImmediate { objective: SymbolId },
+    /// A trigger movement was refused; see [`TriggerError`].
+    Trigger(TriggerError),
+}
+
+impl fmt::Display for RuntimeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAdvancing { last, given } => write!(
+                f,
+                "the last stepped tick is {} and this tick is {}",
+                last.0, given.0
+            ),
+            Self::DuplicateObjective { objective } => {
+                write!(f, "objective {objective:?} is already registered")
+            }
+            Self::DuplicateTimer { timer } => write!(f, "timer {timer:?} is already registered"),
+            Self::DuplicateCondition { condition } => {
+                write!(f, "count condition {condition:?} is already registered")
+            }
+            Self::DuplicateTrigger { trigger, actor } => {
+                write!(
+                    f,
+                    "trigger {trigger:?} for actor {actor:?} is already registered"
+                )
+            }
+            Self::TimerTableFull { limit } => {
+                write!(f, "the timer table already holds its {limit} timers")
+            }
+            Self::EmptyRoster { condition } => write!(
+                f,
+                "count condition {condition:?} declares no actor and can never be met"
+            ),
+            Self::ZeroRequired { condition } => write!(
+                f,
+                "count condition {condition:?} requires zero actors and is met by construction"
+            ),
+            Self::ReservedSymbol { symbol } => {
+                write!(f, "{symbol:?} is reserved for actor-keyed events")
+            }
+            Self::HiddenButImmediate { objective } => write!(
+                f,
+                "objective {objective:?} declares itself hidden and shown from the first tick"
+            ),
+            Self::Trigger(error) => write!(f, "trigger movement refused: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeError {}
+
+impl From<TriggerError> for RuntimeError {
+    fn from(error: TriggerError) -> Self {
+        Self::Trigger(error)
+    }
+}
+
+/// The bounds one session's objective runtime runs under.
+///
+/// The contract requires bounded control flow with a diagnostic instead of
+/// silently skipped work, so [`ObjectiveRuntime::step`] refuses a tick whose
+/// *declared* facts already exceed `max_events_per_tick` **before** it applies
+/// anything, and the [`StopReason::EventBudget`] diagnostic names the tick, the
+/// bound and how much work was declared. `max_timers` bounds the declaration
+/// table the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeLimits {
+    /// Most events one tick may produce.
+    pub max_events_per_tick: usize,
+    /// Most timers one session may declare.
+    pub max_timers: usize,
+}
+
+impl Default for RuntimeLimits {
+    /// Bounds far above a normal mission's tick. **A designed bound, not a
+    /// measured original limit.**
+    fn default() -> Self {
+        Self {
+            max_events_per_tick: 4096,
+            max_timers: 1024,
+        }
+    }
+}
+
+/// The continuous objective runtime of one mission session.
+///
+/// One session owns one runtime. A retry is a new
+/// [`SessionGeneration`](cs_script::runtime::SessionGeneration) and a new
+/// runtime: no objective state, counter, trigger, timer, ledger entry or latch
+/// survives, because none of them is reachable from the old one — which is
+/// F39-C's retry acceptance case's precondition, and this stage's reason for
+/// owning every piece of mutable state itself.
+#[derive(Clone, Debug)]
+pub struct ObjectiveRuntime {
+    session: SessionGeneration,
+    precedence: TerminalPrecedence,
+    limits: RuntimeLimits,
+    objectives: BTreeMap<SymbolId, TrackedObjective>,
+    conditions: BTreeMap<SymbolId, CountBinding>,
+    latched: BTreeSet<SymbolId>,
+    triggers: BTreeMap<(SymbolId, ActorId), SweptTrigger>,
+    counters: ActorCounters,
+    timers: BTreeMap<SymbolId, MissionTimer>,
+    /// Signals raised on an earlier tick, eligible to arm timers now. Consumed
+    /// by the tick that observes them, so a signal arms a waiting deadline once.
+    eligible_signals: BTreeSet<SymbolId>,
+    /// Signals raised during the tick being evaluated. They become eligible when
+    /// the tick ends, which is how "an action does not recurse into callbacks"
+    /// is made structural rather than a convention.
+    raised_signals: BTreeSet<SymbolId>,
+    ledger: EmissionLedger,
+    latch: TerminalLatch,
+    /// The next instance id an admitted spawn group takes.
+    next_instance: u32,
+    /// The tick's terminal requests raised by reactions and timer actions.
+    requests: Vec<(SymbolId, TerminalOutcome)>,
+    sequence: u32,
+    last_tick: Option<Tick>,
+}
+
+impl ObjectiveRuntime {
+    /// A runtime for one session.
+    ///
+    /// `precedence` travels with the runtime so no consumer can resolve a
+    /// collision with a different rule than the session was built with.
+    #[must_use]
+    pub fn new(
+        session: SessionGeneration,
+        precedence: TerminalPrecedence,
+        limits: RuntimeLimits,
+    ) -> Self {
+        Self {
+            session,
+            precedence,
+            limits,
+            objectives: BTreeMap::new(),
+            conditions: BTreeMap::new(),
+            latched: BTreeSet::new(),
+            triggers: BTreeMap::new(),
+            counters: ActorCounters::default(),
+            timers: BTreeMap::new(),
+            eligible_signals: BTreeSet::new(),
+            raised_signals: BTreeSet::new(),
+            ledger: EmissionLedger::new(session),
+            latch: TerminalLatch::new(),
+            next_instance: 1,
+            requests: Vec::new(),
+            sequence: 0,
+            last_tick: None,
+        }
+    }
+
+    /// The session generation this runtime owns.
+    #[must_use]
+    pub const fn session(&self) -> SessionGeneration {
+        self.session
+    }
+
+    /// The declared terminal precedence.
+    #[must_use]
+    pub const fn precedence(&self) -> TerminalPrecedence {
+        self.precedence
+    }
+
+    /// The bounds this runtime runs under.
+    #[must_use]
+    pub const fn limits(&self) -> RuntimeLimits {
+        self.limits
+    }
+
+    /// The last stepped tick.
+    #[must_use]
+    pub const fn last_tick(&self) -> Option<Tick> {
+        self.last_tick
+    }
+
+    /// The mission's outcome once it has settled.
+    #[must_use]
+    pub const fn outcome(&self) -> Option<TerminalOutcome> {
+        self.latch.outcome()
+    }
+
+    /// Whether the mission's outcome is settled.
+    #[must_use]
+    pub const fn is_settled(&self) -> bool {
+        self.latch.is_settled()
+    }
+
+    // -----------------------------------------------------------------------
+    // Declaration
+    // -----------------------------------------------------------------------
+
+    /// Registers one objective.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::DuplicateObjective`], [`RuntimeError::ReservedSymbol`]
+    /// and [`RuntimeError::HiddenButImmediate`].
+    pub fn add_objective(&mut self, spec: ObjectiveSpec) -> Result<(), RuntimeError> {
+        if spec.id == ACTOR_EVENT_SOURCE {
+            return Err(RuntimeError::ReservedSymbol { symbol: spec.id });
+        }
+        if self.objectives.contains_key(&spec.id) {
+            return Err(RuntimeError::DuplicateObjective { objective: spec.id });
+        }
+        if spec.initial == ObjectiveState::Hidden && spec.reveal == RevealRule::Immediate {
+            return Err(RuntimeError::HiddenButImmediate { objective: spec.id });
+        }
+        let revealed = spec.reveal == RevealRule::Immediate;
+        self.objectives.insert(
+            spec.id,
+            TrackedObjective {
+                content: spec.content,
+                cell: ObjectiveCell::new(spec.initial),
+                reveal: spec.reveal,
+                revealed,
+                on_complete: spec.on_complete,
+            },
+        );
+        Ok(())
+    }
+
+    /// Registers one count condition and what satisfying it does.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::DuplicateCondition`], [`RuntimeError::EmptyRoster`],
+    /// [`RuntimeError::ZeroRequired`] and [`RuntimeError::ReservedSymbol`].
+    pub fn add_condition(
+        &mut self,
+        condition: CountCondition,
+        reaction: CountReaction,
+    ) -> Result<(), RuntimeError> {
+        if self.conditions.contains_key(&condition.key) {
+            return Err(RuntimeError::DuplicateCondition {
+                condition: condition.key,
+            });
+        }
+        self.conditions.insert(
+            condition.key,
+            CountBinding {
+                condition,
+                reaction,
+            },
+        );
+        Ok(())
+    }
+
+    /// Registers one swept trigger.
+    ///
+    /// The `(symbol, actor)` pair is the identity, so one authored volume may
+    /// legitimately be watched by several actors.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::DuplicateTrigger`] and [`RuntimeError::ReservedSymbol`].
+    pub fn add_trigger(&mut self, trigger: SweptTrigger) -> Result<(), RuntimeError> {
+        let (id, actor) = (trigger.id(), trigger.actor());
+        if id == ACTOR_EVENT_SOURCE {
+            return Err(RuntimeError::ReservedSymbol { symbol: id });
+        }
+        if self.triggers.contains_key(&(id, actor)) {
+            return Err(RuntimeError::DuplicateTrigger { trigger: id, actor });
+        }
+        self.triggers.insert((id, actor), trigger);
+        Ok(())
+    }
+
+    /// Registers one declared timer.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::DuplicateTimer`], [`RuntimeError::TimerTableFull`] and
+    /// [`RuntimeError::ReservedSymbol`].
+    pub fn add_timer(&mut self, timer: MissionTimer) -> Result<(), RuntimeError> {
+        if timer.id() == ACTOR_EVENT_SOURCE {
+            return Err(RuntimeError::ReservedSymbol { symbol: timer.id() });
+        }
+        if self.timers.contains_key(&timer.id()) {
+            return Err(RuntimeError::DuplicateTimer { timer: timer.id() });
+        }
+        if self.timers.len() >= self.limits.max_timers {
+            return Err(RuntimeError::TimerTableFull {
+                limit: self.limits.max_timers,
+            });
+        }
+        self.timers.insert(timer.id(), timer);
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Inspection
+    // -----------------------------------------------------------------------
+
+    /// An objective's current state.
+    #[must_use]
+    pub fn objective_state(&self, objective: SymbolId) -> Option<ObjectiveState> {
+        self.objectives.get(&objective).map(TrackedObjective::state)
+    }
+
+    /// The content id an objective was authored as.
+    #[must_use]
+    pub fn objective_content(&self, objective: SymbolId) -> Option<&ContentId> {
+        self.objectives
+            .get(&objective)
+            .map(|tracked| &tracked.content)
+    }
+
+    /// Whether the player may be shown this objective right now.
+    ///
+    /// The single place visibility is answered. An objective's own
+    /// [`ObjectiveState::is_visible`] is not enough: a `Pending` objective whose
+    /// reveal rule has not fired is not shown.
+    #[must_use]
+    pub fn is_visible(&self, objective: SymbolId) -> bool {
+        self.objectives
+            .get(&objective)
+            .is_some_and(|tracked| tracked.revealed && tracked.state().is_visible())
+    }
+
+    /// How many actors are counted in one category. Never a total across
+    /// categories.
+    #[must_use]
+    pub fn counted(&self, kind: CountKind) -> usize {
+        self.counters.count(kind)
+    }
+
+    /// Whether one actor is counted in one category.
+    #[must_use]
+    pub fn is_counted(&self, kind: CountKind, actor: ActorId) -> bool {
+        self.counters.contains(kind, actor)
+    }
+
+    /// Whether one count condition has latched.
+    #[must_use]
+    pub fn condition_met(&self, condition: SymbolId) -> bool {
+        self.latched.contains(&condition)
+    }
+
+    /// A declared timer's state.
+    #[must_use]
+    pub fn timer_state(&self, timer: SymbolId) -> Option<TimerState> {
+        self.timers.get(&timer).map(MissionTimer::state)
+    }
+
+    /// The instance ids a spawn key was admitted with, whenever it was admitted.
+    #[must_use]
+    pub fn spawned_instances(&self, key: &IdempotencyKey) -> Option<&[ActorId]> {
+        match self.ledger.admitted(key) {
+            Some(Emission::Spawn(instances)) => Some(instances),
+            _ => None,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The continuous tick
+    // -----------------------------------------------------------------------
+
+    /// Applies one tick's facts and returns the ordered events.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::NotAdvancing`] for a tick at or before the last stepped
+    /// one, and [`RuntimeError::Trigger`] for a refused movement. Both are
+    /// checked before any effect is applied, so a refused tick changes nothing
+    /// at all — including the swept triggers, which is why the whole tick's
+    /// movements are validated before any of them is observed. A bound is not an
+    /// error: it is reported in [`ObjectiveTick::stop`] with the tick it belongs
+    /// to.
+    pub fn step(&mut self, input: &TickInput<'_>) -> Result<ObjectiveTick, RuntimeError> {
+        if let Some(last) = self.last_tick
+            && input.tick <= last
+        {
+            return Err(RuntimeError::NotAdvancing {
+                last,
+                given: input.tick,
+            });
+        }
+        let declared = self.declared_event_count(input);
+        if declared > self.limits.max_events_per_tick {
+            return Ok(ObjectiveTick {
+                tick: input.tick,
+                events: Vec::new(),
+                outcome: self.latch.outcome(),
+                stop: Some(StopReason::EventBudget {
+                    at_tick: input.tick,
+                    limit: self.limits.max_events_per_tick,
+                    declared,
+                }),
+            });
+        }
+        self.validate_movements(input)?;
+        // A settled outcome ends the mission's objective work. This is where the
+        // contract's "a protected actor destroyed after a success latch" case is
+        // decided rather than left to a producer's ordering: on this engine the
+        // outcome cannot change, and a later tick says so instead of acting.
+        if self.latch.is_settled() {
+            self.last_tick = Some(input.tick);
+            return Ok(ObjectiveTick {
+                tick: input.tick,
+                events: Vec::new(),
+                outcome: self.latch.outcome(),
+                stop: Some(StopReason::OutcomeSettled {
+                    settled_at: self.latch.settled().map_or(input.tick, |(at, _)| at),
+                }),
+            });
+        }
+
+        self.requests.clear();
+        let mut out = Emitter::new(self.session, input.tick, self.sequence);
+
+        self.apply_counters(input, &mut out);
+        self.apply_conditions(&mut out);
+        self.apply_triggers(input, &mut out)?;
+        self.collect_signals(input, &mut out);
+        self.apply_objective_requests(input, &mut out);
+        self.apply_timers(input, &mut out);
+        self.resolve_outcome(input, &mut out);
+
+        self.sequence = out.sequence;
+        self.last_tick = Some(input.tick);
+        // A signal raised by an action this tick becomes eligible next tick, so
+        // an action never arms a timer through a callback in the same tick.
+        self.eligible_signals
+            .extend(std::mem::take(&mut self.raised_signals));
+        let mut events = out.events;
+        events.sort_by_key(|event| event.key);
+        Ok(ObjectiveTick {
+            tick: input.tick,
+            events,
+            outcome: self.latch.outcome(),
+            stop: None,
+        })
+    }
+
+    /// How many events this tick's declared facts could produce at most.
+    ///
+    /// An upper bound computed *before* anything is applied, so the bound check
+    /// in [`step`](Self::step) can never leave the runtime half-updated. Each
+    /// term is the most that source could produce:
+    ///
+    /// * one event per countable lifecycle transition;
+    /// * two events per count condition that has not latched (`ConditionMet`
+    ///   plus its reaction);
+    /// * two crossings per watched trigger per movement (entry then exit);
+    /// * one per signal, timer request and objective request;
+    /// * two events per timer (one arm, one expiry) plus one per expiry action;
+    /// * one event per objective for a reveal;
+    /// * one per terminal request.
+    fn declared_event_count(&self, input: &TickInput<'_>) -> usize {
+        let counted = input
+            .lifecycles
+            .iter()
+            .filter(|(_, kind)| CountKind::from_lifecycle(*kind).is_some())
+            .count();
+        let conditions = 2 * (self.conditions.len() - self.latched.len());
+        let crossings = 2 * self.triggers.len() * input.movements.len();
+        let timers = 2 * self.timers.len();
+        counted
+            + conditions
+            + crossings
+            + input.signals.len()
+            + input.timer_requests.len()
+            + input.objective_requests.len()
+            + input.terminal_requests.len()
+            + timers
+            + self.objectives.len()
+    }
+
+    /// Refuses the whole tick's movements before observing any of them.
+    ///
+    /// A [`SweptTrigger`] keeps its own state, so observing one and then failing
+    /// on another would leave the first advanced and the second not: a crossing
+    /// lost for one actor and kept for another. Validating first means a refused
+    /// tick moves nothing.
+    fn validate_movements(&self, input: &TickInput<'_>) -> Result<(), RuntimeError> {
+        for (actor, movement) in input.movements {
+            if !movement.is_finite() {
+                return Err(RuntimeError::Trigger(TriggerError::NonFinite));
+            }
+            for trigger in self.triggers.values() {
+                if trigger.actor() != *actor {
+                    continue;
+                }
+                if let Some(last) = trigger.last_tick()
+                    && input.tick <= last
+                {
+                    return Err(RuntimeError::Trigger(TriggerError::NotAdvancing {
+                        last,
+                        given: input.tick,
+                    }));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // -- phases -------------------------------------------------------------
+
+    /// Phase 1: fold this tick's lifecycle transitions into the counters.
+    fn apply_counters(&mut self, input: &TickInput<'_>, out: &mut Emitter) {
+        for (actor, kind) in input.lifecycles {
+            // A pilot bailout and a mission removal are not one of the five
+            // categories, so they are recorded nowhere and reported nowhere.
+            let Some(counted) = CountKind::from_lifecycle(*kind) else {
+                continue;
+            };
+            if self.counters.record(counted, *actor) {
+                out.push(
+                    ACTOR_EVENT_SOURCE,
+                    ObjectiveEventKind::Counted {
+                        actor: *actor,
+                        kind: counted,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Phase 2: latch the conditions this tick satisfied and apply their
+    /// declared reactions.
+    fn apply_conditions(&mut self, out: &mut Emitter) {
+        let newly_met: Vec<SymbolId> = self
+            .conditions
+            .iter()
+            .filter(|(key, _)| !self.latched.contains(key))
+            .filter(|(_, binding)| binding.condition.satisfied(&self.counters))
+            .map(|(key, _)| *key)
+            .collect();
+        for key in newly_met {
+            let Some(binding) = self.conditions.get(&key) else {
+                continue;
+            };
+            let observed = binding.condition.observed(&self.counters);
+            let kind = binding.condition.kind;
+            let reaction = binding.reaction;
+            self.latched.insert(key);
+            out.push(
+                key,
+                ObjectiveEventKind::ConditionMet {
+                    condition: key,
+                    kind,
+                    observed,
+                },
+            );
+            self.settle_reveals(RevealTrigger::Condition(key), out);
+            match reaction {
+                CountReaction::ReportOnly => {}
+                CountReaction::SetObjectiveState { objective, state } => {
+                    self.change_objective(objective, state, key, out);
+                }
+                CountReaction::Finish(outcome) => self.requests.push((key, outcome)),
+            }
+        }
+    }
+
+    /// Phase 3: sweep this tick's real movement segments. A crossing reports; it
+    /// never applies an effect.
+    fn apply_triggers(
+        &mut self,
+        input: &TickInput<'_>,
+        out: &mut Emitter,
+    ) -> Result<(), RuntimeError> {
+        for (actor, movement) in input.movements {
+            let watched: Vec<SymbolId> = self
+                .triggers
+                .iter()
+                .filter(|((_, watched), _)| *watched == *actor)
+                .map(|(key, _)| key.0)
+                .collect();
+            for key in watched {
+                let Some(trigger) = self.triggers.get_mut(&(key, *actor)) else {
+                    continue;
+                };
+                for event in trigger.observe(input.tick, *movement)? {
+                    out.push(key, ObjectiveEventKind::TriggerCrossed(event));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Phase 4: collect this tick's declared signals. They become eligible to
+    /// arm a timer on the *next* tick, so a signal never arms a timer through a
+    /// callback in the tick that raised it. A signal still reveals an objective
+    /// this tick: a reveal is a report about the player, not a work item.
+    fn collect_signals(&mut self, input: &TickInput<'_>, out: &mut Emitter) {
+        for signal in input.signals {
+            out.push(
+                *signal,
+                ObjectiveEventKind::SignalRaised { signal: *signal },
+            );
+            self.raised_signals.insert(*signal);
+            self.settle_reveals(RevealTrigger::Signal(*signal), out);
+        }
+    }
+
+    /// Phase 5: this tick's declared objective state changes.
+    fn apply_objective_requests(&mut self, input: &TickInput<'_>, out: &mut Emitter) {
+        for (objective, state) in input.objective_requests {
+            self.change_objective(*objective, *state, *objective, out);
+        }
+    }
+
+    /// Phase 6: this tick's timer requests, then the whole committed ticks, then
+    /// each expiry's one declared action.
+    fn apply_timers(&mut self, input: &TickInput<'_>, out: &mut Emitter) {
+        // Automatic arms first, so a deadline whose declared start tick is this
+        // one runs from this tick rather than the next.
+        let automatic: Vec<SymbolId> = self
+            .timers
+            .iter()
+            .filter(|(_, timer)| timer.auto_arms_on(out.tick))
+            .map(|(id, _)| *id)
+            .collect();
+        for timer in automatic {
+            self.arm_timer(timer, TimerStart::AtTick(out.tick), out);
+        }
+
+        // A signal raised on an earlier tick is eligible now, and is consumed by
+        // the tick that observes it: a signal arms a waiting deadline once.
+        let eligible: Vec<SymbolId> = self.eligible_signals.iter().copied().collect();
+        self.eligible_signals.clear();
+        for signal in eligible {
+            let waiting: Vec<SymbolId> = self
+                .timers
+                .iter()
+                .filter(|(_, timer)| timer.start() == TimerStart::OnSignal(signal))
+                .map(|(id, _)| *id)
+                .collect();
+            for timer in waiting {
+                self.arm_timer(timer, TimerStart::OnSignal(signal), out);
+            }
+        }
+
+        for request in input.timer_requests {
+            match request {
+                TimerRequest::Arm(timer) => {
+                    self.arm_timer(*timer, TimerStart::OnArm, out);
+                }
+                TimerRequest::Cancel(timer) => {
+                    let refused = match self.timers.get_mut(timer) {
+                        None => None,
+                        Some(declaration) => declaration.cancel().err(),
+                    };
+                    if let Some(reason) = refused {
+                        out.push(
+                            *timer,
+                            ObjectiveEventKind::TimerRefused {
+                                timer: *timer,
+                                reason,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        if input.committed_ticks > 0 {
+            // Collected in `SymbolId` order, which is declared order and never
+            // hash order: two runs with the same table expire the same timers in
+            // the same sequence.
+            let ids: Vec<SymbolId> = self.timers.keys().copied().collect();
+            let mut expired: Vec<SymbolId> = Vec::new();
+            for id in ids {
+                if let Some(timer) = self.timers.get_mut(&id)
+                    && timer.advance(input.committed_ticks)
+                {
+                    expired.push(id);
+                }
+            }
+            for timer in expired {
+                self.report_expiry(timer, out);
+            }
+        }
+
+        // The actions are collected before any of them is applied, so one
+        // timer's action can never observe another's half-applied state.
+        let expiries: Vec<(SymbolId, TimerAction)> = self
+            .timers
+            .iter()
+            .filter_map(|(id, timer)| match timer.state() {
+                TimerState::Expired { .. } => Some((*id, timer.action().clone())),
+                _ => None,
+            })
+            .collect();
+        for (timer, action) in expiries {
+            self.apply_timer_action(timer, action, out);
+        }
+    }
+
+    /// Phase 7: resolve every terminal request this tick made, together.
+    fn resolve_outcome(&mut self, input: &TickInput<'_>, out: &mut Emitter) {
+        let mut requested: BTreeMap<TerminalOutcome, SymbolId> = BTreeMap::new();
+        for (source, outcome) in input.terminal_requests {
+            requested.entry(*outcome).or_insert(*source);
+        }
+        for (source, outcome) in &self.requests {
+            requested.entry(*outcome).or_insert(*source);
+        }
+        if requested.is_empty() {
+            return;
+        }
+        let outcomes: BTreeSet<TerminalOutcome> = requested.keys().copied().collect();
+        match self.latch.resolve(out.tick, &outcomes, self.precedence) {
+            Resolution::NoneRequested => {}
+            Resolution::Settled {
+                outcome,
+                superseded,
+            } => {
+                let source = requested
+                    .get(&outcome)
+                    .copied()
+                    .unwrap_or(ACTOR_EVENT_SOURCE);
+                out.push(
+                    source,
+                    ObjectiveEventKind::OutcomeSettled {
+                        outcome,
+                        superseded: superseded.into_iter().collect(),
+                    },
+                );
+            }
+            Resolution::AlreadySettled { outcome, .. } => {
+                for (requested_outcome, source) in requested {
+                    out.push(
+                        source,
+                        ObjectiveEventKind::OutcomeRefused {
+                            requested: requested_outcome,
+                            settled: outcome,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    // -- helpers ------------------------------------------------------------
+
+    /// Applies one declared objective state change and its consequences.
+    fn change_objective(
+        &mut self,
+        objective: SymbolId,
+        to: ObjectiveState,
+        source: SymbolId,
+        out: &mut Emitter,
+    ) {
+        let Some(tracked) = self.objectives.get_mut(&objective) else {
+            return;
+        };
+        let from = tracked.state();
+        // A hidden objective leaves `Hidden` only through its own reveal rule
+        // (F39 non-negotiable behavior 5). A declared action that tries is
+        // refused and reported, so "show the objective" can never be a side
+        // effect of unlocking or resetting something else.
+        let still_hidden = from == ObjectiveState::Hidden && !tracked.revealed;
+        let on_complete = tracked.on_complete;
+        if still_hidden {
+            out.push(
+                source,
+                ObjectiveEventKind::ObjectiveChangeRefused {
+                    objective,
+                    from,
+                    to,
+                },
+            );
+            return;
+        }
+        if let Err(IllegalTransition { from, to }) = tracked.cell.transition(to) {
+            out.push(
+                source,
+                ObjectiveEventKind::ObjectiveChangeRefused {
+                    objective,
+                    from,
+                    to,
+                },
+            );
+            return;
+        }
+        out.push(
+            source,
+            ObjectiveEventKind::ObjectiveChanged {
+                objective,
+                from,
+                to,
+            },
+        );
+        if to == ObjectiveState::Succeeded
+            && let ObjectiveCompletion::Requests(outcome) = on_complete
+        {
+            self.requests.push((source, outcome));
+        }
+        self.settle_reveals(
+            RevealTrigger::ObjectiveState {
+                objective,
+                state: to,
+            },
+            out,
+        );
+        // A [`TimerStart::OnObjectiveState`] deadline starts from the state it
+        // declares. This is a declared start condition resolving, not a callback:
+        // the timer still cannot expire before phase 6's committed ticks.
+        let waiting: Vec<SymbolId> = self
+            .timers
+            .iter()
+            .filter(|(_, timer)| {
+                timer.start()
+                    == TimerStart::OnObjectiveState {
+                        objective,
+                        state: to,
+                    }
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for timer in waiting {
+            self.arm_timer(
+                timer,
+                TimerStart::OnObjectiveState {
+                    objective,
+                    state: to,
+                },
+                out,
+            );
+        }
+    }
+
+    /// Reveals every hidden objective whose declared rule this event satisfies.
+    ///
+    /// The reveal is itself the state change out of `Hidden`: the objective moves
+    /// to [`ObjectiveState::Pending`] and is reported once, so
+    /// [`is_visible`](Self::is_visible) has a single source of truth.
+    fn settle_reveals(&mut self, trigger: RevealTrigger, out: &mut Emitter) {
+        let ready: Vec<SymbolId> = self
+            .objectives
+            .iter()
+            .filter(|(_, tracked)| !tracked.revealed)
+            .filter(|(_, tracked)| tracked.reveal.satisfied_by(trigger))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ready {
+            let Some(tracked) = self.objectives.get_mut(&id) else {
+                continue;
+            };
+            tracked.revealed = true;
+            let state = match tracked.state() {
+                ObjectiveState::Hidden => {
+                    // The only legal move out of `Hidden` that is also the
+                    // reveal itself; a refusal here is impossible by
+                    // construction, so the state is written directly.
+                    let _ = tracked.cell.transition(ObjectiveState::Pending);
+                    tracked.state()
+                }
+                other => other,
+            };
+            out.push(
+                id,
+                ObjectiveEventKind::ObjectiveRevealed {
+                    objective: id,
+                    state,
+                },
+            );
+        }
+    }
+
+    fn arm_timer(&mut self, timer: SymbolId, via: TimerStart, out: &mut Emitter) {
+        let tick = out.tick;
+        let result = match self.timers.get_mut(&timer) {
+            None => return,
+            Some(declaration) => match via {
+                TimerStart::OnArm => declaration.arm(tick),
+                _ => declaration.auto_arm(tick),
+            },
+        };
+        match result {
+            Ok(()) => out.push(timer, ObjectiveEventKind::TimerArmed { timer, via }),
+            Err(reason) => out.push(timer, ObjectiveEventKind::TimerRefused { timer, reason }),
+        }
+    }
+
+    fn report_expiry(&mut self, timer: SymbolId, out: &mut Emitter) {
+        let tick = out.tick;
+        let Some(declaration) = self.timers.get_mut(&timer) else {
+            return;
+        };
+        declaration.stamp_expiry(tick);
+        out.push(timer, ObjectiveEventKind::TimerExpired { timer });
+        self.settle_reveals(RevealTrigger::Timer(timer), out);
+    }
+
+    fn apply_timer_action(&mut self, timer: SymbolId, action: TimerAction, out: &mut Emitter) {
+        match action {
+            TimerAction::SetObjectiveState { objective, state } => {
+                self.change_objective(objective, state, timer, out);
+            }
+            TimerAction::Signal(signal) => {
+                out.push(timer, ObjectiveEventKind::SignalRaised { signal });
+                self.raised_signals.insert(signal);
+                self.settle_reveals(RevealTrigger::Signal(signal), out);
+            }
+            TimerAction::SpawnGroup { key, group, count } => {
+                let instances = self.admit_spawn(&key, count);
+                match instances {
+                    Some(instances) => out.push(
+                        timer,
+                        ObjectiveEventKind::SpawnAdmitted {
+                            key,
+                            group,
+                            instances,
+                        },
+                    ),
+                    None => {
+                        let prior = self
+                            .spawned_instances(&key)
+                            .map_or_else(Vec::new, <[ActorId]>::to_vec);
+                        out.push(
+                            timer,
+                            ObjectiveEventKind::SpawnRefused {
+                                key,
+                                group,
+                                instances: prior,
+                            },
+                        );
+                    }
+                }
+            }
+            TimerAction::Cue { key, dialogue } => {
+                if self.admit_cue(&key) {
+                    out.push(timer, ObjectiveEventKind::CueEmitted { key, dialogue });
+                } else {
+                    out.push(timer, ObjectiveEventKind::CueRefused { key, dialogue });
+                }
+            }
+            TimerAction::GrantOptionalReward { reward } => {
+                out.push(timer, ObjectiveEventKind::OptionalReward { reward });
+            }
+            TimerAction::Finish(outcome) => self.requests.push((timer, outcome)),
+        }
+    }
+
+    /// Admits a spawn key once, allocating this session's instance ids on the
+    /// first admission. A repeated key is refused and returns `None`, so the
+    /// same wave is never spawned twice and the ids stay the ones the first
+    /// admission handed out.
+    fn admit_spawn(&mut self, key: &IdempotencyKey, count: u32) -> Option<Vec<ActorId>> {
+        if self.ledger.admitted(key).is_some() {
+            return None;
+        }
+        let mut instances = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            instances.push(ActorId(self.next_instance));
+            self.next_instance += 1;
+        }
+        match self.ledger.admit(
+            self.session,
+            key.clone(),
+            Emission::Spawn(instances.clone()),
+        ) {
+            Ok(Admission::Admitted) => Some(instances),
+            Ok(Admission::Repeated(_)) | Err(_) => None,
+        }
+    }
+
+    fn admit_cue(&mut self, key: &IdempotencyKey) -> bool {
+        matches!(
+            self.ledger.admit(self.session, key.clone(), Emission::Cue),
+            Ok(Admission::Admitted)
+        )
+    }
+}
+
+/// A count condition together with what satisfying it does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CountBinding {
+    condition: CountCondition,
+    reaction: CountReaction,
+}
+
+/// One objective's live state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TrackedObjective {
+    content: ContentId,
+    cell: ObjectiveCell,
+    reveal: RevealRule,
+    revealed: bool,
+    on_complete: ObjectiveCompletion,
+}
+
+impl TrackedObjective {
+    fn state(&self) -> ObjectiveState {
+        self.cell.state()
+    }
+}
+
+/// The event that may satisfy a [`RevealRule`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RevealTrigger {
+    Condition(SymbolId),
+    Timer(SymbolId),
+    Signal(SymbolId),
+    ObjectiveState {
+        objective: SymbolId,
+        state: ObjectiveState,
+    },
+}
+
+impl RevealRule {
+    fn satisfied_by(self, trigger: RevealTrigger) -> bool {
+        match trigger {
+            RevealTrigger::Condition(met) => {
+                matches!(self, Self::OnCondition { condition } if condition == met)
+            }
+            RevealTrigger::Timer(expired) => {
+                matches!(self, Self::OnTimer { timer } if timer == expired)
+            }
+            RevealTrigger::Signal(raised) => {
+                matches!(self, Self::OnSignal { signal } if signal == raised)
+            }
+            RevealTrigger::ObjectiveState {
+                objective: other,
+                state: reached,
+            } => matches!(
+                self,
+                Self::OnObjectiveState { objective, state }
+                    if objective == other && state == reached
+            ),
+        }
+    }
+}
+
+/// The tick's event buffer: assigns each event its stable [`EventKey`].
+struct Emitter {
+    session: SessionGeneration,
+    tick: Tick,
+    sequence: u32,
+    events: Vec<ObjectiveEvent>,
+}
+
+impl Emitter {
+    fn new(session: SessionGeneration, tick: Tick, sequence: u32) -> Self {
+        Self {
+            session,
+            tick,
+            sequence,
+            events: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, source: SymbolId, kind: ObjectiveEventKind) {
+        let key = EventKey {
+            session: self.session,
+            tick: self.tick,
+            source,
+            sequence: self.sequence,
+        };
+        self.sequence += 1;
+        self.events.push(ObjectiveEvent { key, kind });
+    }
+}
