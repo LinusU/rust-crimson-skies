@@ -60,12 +60,27 @@
 //! reports every gap by name; it never fills one. What stays unmeasured is
 //! recorded in
 //! `docs/findings/2026-10-03-f27-d-original-ammunition-and-loadout-audit.md`.
+//!
+//! # The measured binding gate
+//!
+//! F27-E imported the original's ammunition and gun **identity** and stopped
+//! there: the per-type damage amounts and the per-airframe mount assignment are
+//! the two things no shipped file declares, and a `DeclaredGunDefinition` needs
+//! a concrete `mount` and `mount_kind`, so no gun record for the original's five
+//! guns could be built without designing one. This module therefore also carries
+//! **the gate those measurements come through**: [`bind_gun_mount`] and
+//! [`bind_ammunition_damage`] assemble a record only out of a
+//! [`MeasuredGunMount`] / [`MeasuredAmmunitionDamage`] whose fields are
+//! *observations*, refusing by name whatever is missing rather than defaulting
+//! it, and [`OriginalLimitReport`] records each `f27.d.limit.*` claim as either
+//! bound with its provenance or deferred with the place it was re-filed. See
+//! `docs/findings/2026-10-03-f27-e-1-measured-binding-gate.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
-use cs_types::evidence::ClaimId;
+use cs_types::evidence::{ClaimId, ClaimStatus};
 use cs_types::space::Radians;
 
 use crate::damage::DamageNodeKey;
@@ -2398,6 +2413,922 @@ impl AmmunitionAudit {
         }
 
         AmmunitionAuditReport { rows, findings }
+    }
+}
+
+// ------------------------------------------ the measured binding gate ----
+//
+// F27-E.1 (`docs/findings/2026-10-03-f27-e-1-measured-binding-gate.md`): the
+// gate F27-E deliberately left shut. F27-E could import the original's
+// ammunition and gun **identity** from the shipped language image but built no
+// `DeclaredGunDefinition` for the original's five guns and left every imported
+// type's damage `Resolved::Unknown`, because the per-type damage amounts and the
+// per-airframe mount assignment are the two things no shipped file declares.
+//
+// The gate below is what runs when a measurement *does* arrive, and it is
+// deliberately hard to pass by accident:
+//
+// * a [`MeasuredGunMount`] must carry all three of mount, mount kind and scene
+//   binding, and every known field's provenance must be an **observation**
+//   ([`is_observed_evidence`]); [`bind_gun_mount`] refuses by naming whichever
+//   field is missing, so a record with a defaulted mount cannot exist;
+// * a [`MeasuredAmmunitionDamage`] must carry at least one observed channel, and
+//   [`bind_ammunition_damage`] copies the measured amounts across **verbatim**:
+//   a channel the measurement leaves open stays `Resolved::Unknown`, so no
+//   interpolation, no per-type ratio and no multiplier table can enter through
+//   the gate (F27 non-negotiable 1);
+// * [`OriginalLimitReport`] records, per `f27.d.limit.*` claim id, whether it is
+//   bound or deferred, and a deferred claim is only *accounted* once it names
+//   where it was re-filed. That is what makes "we could not measure it" a
+//   machine-readable state with a destination rather than a sentence.
+
+/// Whether an evidence class says somebody actually measured the value.
+///
+/// [`ClaimStatus::VerifiedOriginal`] is fingerprinted original-data evidence and
+/// [`ClaimStatus::ObservedTool`] is a tool reading bytes or a run. The other
+/// five classes do not: a [`ClaimStatus::Designed`] value is this project's own
+/// invention, a [`ClaimStatus::Documented`] one is a cited document (F27's
+/// research boundary rules that out for ammunition amounts), an
+/// [`ClaimStatus::Inferred`] one is reasoned rather than observed, and
+/// [`ClaimStatus::Unknown`] / [`ClaimStatus::Contradicted`] are not values at
+/// all. None of them may enter an original gun record through this gate.
+#[must_use]
+pub const fn is_observed_evidence(class: ClaimStatus) -> bool {
+    matches!(
+        class,
+        ClaimStatus::VerifiedOriginal | ClaimStatus::ObservedTool
+    )
+}
+
+/// One `f27.d.limit.*` fidelity limitation F27-D recorded and that this stage
+/// is asked to resolve once it becomes measurable.
+///
+/// The claim ids are the ones F27-D's evidence report carries, so a report this
+/// stage writes can be diffed against F27-D's by id rather than by prose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OriginalLimitClaim {
+    /// `f27.d.limit.ammo_names_damage`: the original's per-type damage amounts.
+    AmmoNamesDamage,
+    /// `f27.d.limit.gun_group_assignment`: which side each wing-station gun
+    /// group is on, and which airframe mounts which group.
+    GunGroupAssignment,
+    /// `f27.d.limit.convergence`: whether and where paired wing guns' barrels
+    /// meet.
+    Convergence,
+    /// `f27.d.limit.inheritance`: how much of the firing airframe's velocity a
+    /// round inherits.
+    Inheritance,
+    /// `f27.d.limit.interaction_rules`: penetration, ricochet and in-flight
+    /// ammunition switching.
+    InteractionRules,
+}
+
+impl OriginalLimitClaim {
+    /// Every claim, in a stable order.
+    pub const ALL: [Self; 5] = [
+        Self::AmmoNamesDamage,
+        Self::GunGroupAssignment,
+        Self::Convergence,
+        Self::Inheritance,
+        Self::InteractionRules,
+    ];
+
+    /// The `f27.d.limit.*` claim id, exactly as F27-D's report spells it.
+    #[must_use]
+    pub const fn claim_id(self) -> &'static str {
+        match self {
+            Self::AmmoNamesDamage => "f27.d.limit.ammo_names_damage",
+            Self::GunGroupAssignment => "f27.d.limit.gun_group_assignment",
+            Self::Convergence => "f27.d.limit.convergence",
+            Self::Inheritance => "f27.d.limit.inheritance",
+            Self::InteractionRules => "f27.d.limit.interaction_rules",
+        }
+    }
+
+    /// What the claim is about, in one line, for a report or an error.
+    #[must_use]
+    pub const fn subject(self) -> &'static str {
+        match self {
+            Self::AmmoNamesDamage => "the original's per-ammunition-type damage amounts",
+            Self::GunGroupAssignment => {
+                "which side each wing-station gun group is on and which airframe mounts it"
+            }
+            Self::Convergence => "whether and where paired wing guns' barrels meet",
+            Self::Inheritance => "how much of the firing airframe's velocity a round inherits",
+            Self::InteractionRules => {
+                "the original's penetration, ricochet and ammo-switching behaviors"
+            }
+        }
+    }
+
+    /// The claim's own subject as the reason a deferral carries, so a report
+    /// and a refusal cannot drift apart in wording.
+    #[must_use]
+    pub const fn deferral_reason(self) -> &'static str {
+        match self {
+            Self::AmmoNamesDamage => {
+                "the per-type damage amounts are in the executable's own tables: no shipped \
+                 member states a numeric amount, and the image that would is encrypted"
+            }
+            Self::GunGroupAssignment => {
+                "the per-airframe gun tables are in the executable, and the mesh nodes that do \
+                 ship name gun meshes, never one of the twenty declared gun groups"
+            }
+            Self::Convergence => {
+                "convergence is original behavior: no shipped file declares whether or where \
+                 paired wing guns' barrels meet"
+            }
+            Self::Inheritance => {
+                "inherited velocity is original behavior: no shipped file declares the rule"
+            }
+            Self::InteractionRules => {
+                "penetration, ricochet and in-flight ammunition switching are original \
+                 behavior, and a model for any of them would be invented"
+            }
+        }
+    }
+}
+
+impl fmt::Display for OriginalLimitClaim {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.claim_id())
+    }
+}
+
+/// The three fields of a gun mount that a [`DeclaredGunDefinition`] cannot be
+/// built without.
+///
+/// Unlike every other load-bearing field of the two declared records, these
+/// three are **not** [`Resolved`]: `DeclaredGunDefinition::try_new` requires a
+/// concrete `DamageNodeKey` and a concrete `DeclaredGunMountKind`. That is why
+/// F27-E could build no gun record for the original's five guns at all rather
+/// than build one with a designed mount — and why this stage's gate has to
+/// refuse before the record is assembled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum GunMountField {
+    /// The damage-node key the mount occupies.
+    Mount,
+    /// Where on the airframe the mount sits.
+    MountKind,
+    /// The visual binding into the live aircraft hierarchy.
+    SceneBinding,
+}
+
+impl GunMountField {
+    /// Every field, in the order a refusal names them.
+    pub const ALL: [Self; 3] = [Self::Mount, Self::MountKind, Self::SceneBinding];
+
+    /// The stable label used in refusals and reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Mount => "mount",
+            Self::MountKind => "mount_kind",
+            Self::SceneBinding => "scene_binding",
+        }
+    }
+}
+
+impl fmt::Display for GunMountField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Why one measured field cannot be treated as a measurement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnmeasuredCause {
+    /// The value is an explicit [`Resolved::Unknown`] with this reason.
+    Unknown {
+        /// The reason the importer recorded.
+        reason: String,
+    },
+    /// The value is known but its provenance does not say it was measured.
+    Unobserved {
+        /// The evidence class the provenance carries.
+        class: ClaimStatus,
+    },
+}
+
+impl fmt::Display for UnmeasuredCause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown { reason } => write!(f, "unknown ({reason})"),
+            Self::Unobserved { class } => write!(f, "{class} is not an observation"),
+        }
+    }
+}
+
+/// A known value whose provenance does not say anybody measured it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnobservedValue {
+    /// Which field of the measurement carried it.
+    pub field: &'static str,
+    /// The evidence class it carried instead.
+    pub class: ClaimStatus,
+}
+
+impl fmt::Display for UnobservedValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} is known but its provenance is {}, which is not an observation",
+            self.field, self.class
+        )
+    }
+}
+
+impl std::error::Error for UnobservedValue {}
+
+/// One measured mount, mount kind and scene binding for one gun.
+///
+/// Each field is its own [`Resolved`] so a partial measurement is expressible
+/// and *reportable*: [`unmeasured`](Self::unmeasured) names exactly which of the
+/// three is missing and why, and [`bind_gun_mount`] refuses rather than
+/// assembling a record around a hole.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredGunMount {
+    gun: ContentId,
+    mount: Resolved<DamageNodeKey>,
+    mount_kind: Resolved<DeclaredGunMountKind>,
+    scene_binding: Resolved<SceneNodeId>,
+}
+
+impl MeasuredGunMount {
+    /// Records what a measurement of one gun's mount found.
+    ///
+    /// Nothing is validated here: an `Unknown` field and a field whose
+    /// provenance is not an observation are both legal *states of a
+    /// measurement*, and refusing them at construction would make
+    /// [`unmeasured`](Self::unmeasured) unable to say what is missing. The
+    /// refusal belongs to [`bind_gun_mount`], which is the only path that
+    /// assembles a record.
+    #[must_use]
+    pub fn new(
+        gun: ContentId,
+        mount: Resolved<DamageNodeKey>,
+        mount_kind: Resolved<DeclaredGunMountKind>,
+        scene_binding: Resolved<SceneNodeId>,
+    ) -> Self {
+        Self {
+            gun,
+            mount,
+            mount_kind,
+            scene_binding,
+        }
+    }
+
+    /// The `weapon` catalog id this measurement is about.
+    #[must_use]
+    pub const fn gun(&self) -> &ContentId {
+        &self.gun
+    }
+
+    /// The measured mount, or an explicit unknown.
+    #[must_use]
+    pub const fn mount(&self) -> &Resolved<DamageNodeKey> {
+        &self.mount
+    }
+
+    /// The measured mount kind, or an explicit unknown.
+    #[must_use]
+    pub const fn mount_kind(&self) -> &Resolved<DeclaredGunMountKind> {
+        &self.mount_kind
+    }
+
+    /// The measured scene binding, or an explicit unknown.
+    #[must_use]
+    pub const fn scene_binding(&self) -> &Resolved<SceneNodeId> {
+        &self.scene_binding
+    }
+
+    /// Every field of this measurement that is not a usable measurement, in
+    /// [`GunMountField::ALL`] order, each with why.
+    ///
+    /// A field is usable when it is [`Resolved::Known`] *and* its provenance is
+    /// an observation ([`is_observed_evidence`]). A `Known` value carrying
+    /// `Designed` provenance is reported here rather than trusted, which is what
+    /// keeps a designed fixture mount out of an original gun record.
+    #[must_use]
+    pub fn unmeasured(&self) -> Vec<(GunMountField, UnmeasuredCause)> {
+        let mut missing = Vec::new();
+        for field in GunMountField::ALL {
+            let cause = match field {
+                GunMountField::Mount => unmeasured_of(&self.mount),
+                GunMountField::MountKind => unmeasured_of(&self.mount_kind),
+                GunMountField::SceneBinding => unmeasured_of(&self.scene_binding),
+            };
+            if let Some(cause) = cause {
+                missing.push((field, cause));
+            }
+        }
+        missing
+    }
+
+    /// Whether all three fields are usable measurements.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.unmeasured().is_empty()
+    }
+}
+
+/// Whether one [`Resolved`] value is a usable measurement, and if not why.
+fn unmeasured_of<T>(value: &Resolved<T>) -> Option<UnmeasuredCause> {
+    match value {
+        Resolved::Unknown { reason, .. } => Some(UnmeasuredCause::Unknown {
+            reason: reason.clone(),
+        }),
+        Resolved::Known(known) if !is_observed_evidence(known.provenance.class) => {
+            Some(UnmeasuredCause::Unobserved {
+                class: known.provenance.class,
+            })
+        }
+        Resolved::Known(_) => None,
+    }
+}
+
+/// Why a declared gun record could not be bound to a measured mount.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GunMountRefusal {
+    /// The measurement is about another gun than the record.
+    GunMismatch {
+        /// The gun the measurement is about.
+        measured: ContentId,
+        /// The gun the record describes.
+        record: ContentId,
+    },
+    /// One of the three mount fields is not a usable measurement, and it is
+    /// named rather than defaulted.
+    Unmeasured {
+        /// The gun whose record was refused.
+        gun: ContentId,
+        /// The field that is missing.
+        field: GunMountField,
+        /// Why it is missing.
+        cause: UnmeasuredCause,
+    },
+    /// The measurement is about another gun's mount but the record's own
+    /// fields could not be reassembled.
+    Assembly {
+        /// The underlying schema error.
+        source: WeaponSchemaError,
+    },
+}
+
+impl fmt::Display for GunMountRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::GunMismatch { measured, record } => write!(
+                f,
+                "the measurement is about {measured} and the record describes {record}"
+            ),
+            Self::Unmeasured { gun, field, cause } => write!(
+                f,
+                "{gun} cannot be bound: its {field} is not a measurement ({cause})"
+            ),
+            Self::Assembly { source } => {
+                write!(f, "the measured gun record does not reassemble: {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GunMountRefusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Assembly { source } => Some(source),
+            Self::GunMismatch { .. } | Self::Unmeasured { .. } => None,
+        }
+    }
+}
+
+/// Binds one measured mount onto one declared gun record.
+///
+/// This is the only production path from a measurement to a
+/// [`DeclaredGunDefinition`], and it holds one rule: **the record's mount,
+/// mount kind and scene binding are the measurement's**, never a default, never
+/// a neighbouring record's. Everything else — caliber, rate, muzzle velocity,
+/// lifetime, spread, damage, inheritance, effect, sound and the interaction
+/// rules — is carried across untouched, so a field nobody measured stays
+/// `Resolved::Unknown` and still refuses to lower.
+///
+/// # Errors
+///
+/// [`GunMountRefusal::GunMismatch`] when the measurement is about another gun,
+/// [`GunMountRefusal::Unmeasured`] naming the first field of
+/// [`GunMountField::ALL`] the measurement does not carry, and
+/// [`GunMountRefusal::Assembly`] when the reassembled record fails
+/// [`DeclaredGunDefinition::try_new`]'s structural validation.
+pub fn bind_gun_mount(
+    record: &DeclaredGunDefinition,
+    measured: &MeasuredGunMount,
+) -> Result<DeclaredGunDefinition, GunMountRefusal> {
+    if measured.gun() != record.gun() {
+        return Err(GunMountRefusal::GunMismatch {
+            measured: measured.gun().clone(),
+            record: record.gun().clone(),
+        });
+    }
+    if let Some((field, cause)) = measured.unmeasured().into_iter().next() {
+        return Err(GunMountRefusal::Unmeasured {
+            gun: record.gun().clone(),
+            field,
+            cause,
+        });
+    }
+    let mount = match measured.mount() {
+        Resolved::Known(known) => known.value.clone(),
+        Resolved::Unknown { .. } => unreachable!("a missing field is refused above"),
+    };
+    let mount_kind = match measured.mount_kind() {
+        Resolved::Known(known) => known.value,
+        Resolved::Unknown { .. } => unreachable!("a missing field is refused above"),
+    };
+    DeclaredGunDefinition::try_new(
+        record.gun().clone(),
+        record.origin().clone(),
+        mount,
+        mount_kind,
+        Some(measured.scene_binding().clone()),
+        record.caliber().clone(),
+        record.ammunition().clone(),
+        record.rate().clone(),
+        record.muzzle_velocity_mps().clone(),
+        record.lifetime_ticks().clone(),
+        record.spread().clone(),
+        record.damage().clone(),
+        record.inheritance().clone(),
+        record.effect().clone(),
+        record.sound().clone(),
+        record.rules().clone(),
+        record.provenance().clone(),
+    )
+    .map_err(|source| GunMountRefusal::Assembly { source })
+}
+
+/// One measured damage profile for one ammunition type.
+///
+/// The amounts are per channel and each carries its own provenance, exactly as
+/// [`DeclaredWeaponDamage`] requires: a type never gets its damage from a
+/// multiplier applied to another type's (F27 non-negotiable 1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredAmmunitionDamage {
+    ammunition: AmmunitionId,
+    damage: DeclaredWeaponDamage,
+}
+
+impl MeasuredAmmunitionDamage {
+    /// Records what a measurement of one type's damage found.
+    #[must_use]
+    pub fn new(ammunition: AmmunitionId, damage: DeclaredWeaponDamage) -> Self {
+        Self { ammunition, damage }
+    }
+
+    /// The `ammo` catalog id this measurement is about.
+    #[must_use]
+    pub const fn ammunition(&self) -> &AmmunitionId {
+        &self.ammunition
+    }
+
+    /// The measured amounts, per channel.
+    #[must_use]
+    pub const fn damage(&self) -> &DeclaredWeaponDamage {
+        &self.damage
+    }
+
+    /// The channels this measurement carries a usable amount for.
+    #[must_use]
+    pub fn measured_channels(&self) -> Vec<DeclaredDamageChannel> {
+        DeclaredDamageChannel::ALL
+            .iter()
+            .copied()
+            .filter(|channel| {
+                self.damage
+                    .channel(*channel)
+                    .is_some_and(|amount| unmeasured_of(amount).is_none())
+            })
+            .collect()
+    }
+
+    /// Every channel this measurement does **not** carry a usable amount for,
+    /// in [`DeclaredDamageChannel::ALL`] order, each with why.
+    #[must_use]
+    pub fn unmeasured(&self) -> Vec<(DeclaredDamageChannel, UnmeasuredCause)> {
+        let mut missing = Vec::new();
+        for channel in DeclaredDamageChannel::ALL {
+            let cause = self.damage.channel(*channel).and_then(unmeasured_of);
+            if let Some(cause) = cause {
+                missing.push((*channel, cause));
+            }
+        }
+        missing
+    }
+
+    /// Whether at least one channel is a usable measurement.
+    #[must_use]
+    pub fn is_measurable(&self) -> bool {
+        !self.measured_channels().is_empty()
+    }
+}
+
+/// Why a declared ammunition record could not be bound to a measured profile.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DamageBindingRefusal {
+    /// The measurement is about another ammunition type.
+    TypeMismatch {
+        /// The type the measurement is about.
+        measured: AmmunitionId,
+        /// The type the record describes.
+        record: AmmunitionId,
+    },
+    /// The measurement carries no usable amount on either channel, so binding
+    /// it would only move two unknowns.
+    NoMeasuredAmount {
+        /// The type nothing measured.
+        ammunition: AmmunitionId,
+    },
+    /// The reassembled record fails [`DeclaredAmmunition::try_new`].
+    Assembly {
+        /// The underlying schema error.
+        source: WeaponSchemaError,
+    },
+}
+
+impl fmt::Display for DamageBindingRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TypeMismatch { measured, record } => write!(
+                f,
+                "the measurement is about {measured} and the record describes {record}"
+            ),
+            Self::NoMeasuredAmount { ammunition } => write!(
+                f,
+                "{ammunition} carries no measured damage amount on any channel"
+            ),
+            Self::Assembly { source } => {
+                write!(
+                    f,
+                    "the measured ammunition record does not reassemble: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for DamageBindingRefusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Assembly { source } => Some(source),
+            Self::TypeMismatch { .. } | Self::NoMeasuredAmount { .. } => None,
+        }
+    }
+}
+
+/// Binds one measured damage profile onto one declared ammunition record.
+///
+/// The measured amounts replace the record's profile **verbatim**, channel by
+/// channel: a channel the measurement leaves open stays the record's own
+/// `Resolved::Unknown`, carrying its own claim id and reason. Nothing is
+/// interpolated, scaled or copied from another type, so a five-by-four
+/// multiplier table cannot be expressed here at all even if someone wrote one
+/// (F27 non-negotiable 1).
+///
+/// The caliber and the interaction rules are the record's own, untouched: a
+/// damage measurement says nothing about what caliber a round is or how it
+/// interacts with what it hits.
+///
+/// # Errors
+///
+/// [`DamageBindingRefusal::TypeMismatch`] when the measurement is about another
+/// type, [`DamageBindingRefusal::NoMeasuredAmount`] when no channel is a usable
+/// measurement, and [`DamageBindingRefusal::Assembly`] when the reassembled
+/// record fails [`DeclaredAmmunition::try_new`]'s structural validation.
+pub fn bind_ammunition_damage(
+    record: &DeclaredAmmunition,
+    measured: &MeasuredAmmunitionDamage,
+) -> Result<DeclaredAmmunition, DamageBindingRefusal> {
+    if measured.ammunition() != record.ammunition() {
+        return Err(DamageBindingRefusal::TypeMismatch {
+            measured: measured.ammunition().clone(),
+            record: record.ammunition().clone(),
+        });
+    }
+    if !measured.is_measurable() {
+        return Err(DamageBindingRefusal::NoMeasuredAmount {
+            ammunition: record.ammunition().clone(),
+        });
+    }
+    DeclaredAmmunition::try_new(
+        record.ammunition().clone(),
+        record.origin().clone(),
+        record.caliber().clone(),
+        measured.damage().clone(),
+        record.rules().clone(),
+        record.provenance().clone(),
+    )
+    .map_err(|source| DamageBindingRefusal::Assembly { source })
+}
+
+/// The declared ammunition types no measurement in `measured` covers.
+///
+/// This is the closure rule the [`OriginalLimitReport`] needs: a claim about
+/// "every type's damage" is only resolved when this is empty, so three measured
+/// types out of four cannot report themselves as measured.
+#[must_use]
+pub fn unmeasured_ammunition_types(
+    declared: &[DeclaredAmmunition],
+    measured: &[MeasuredAmmunitionDamage],
+) -> Vec<AmmunitionId> {
+    declared
+        .iter()
+        .filter(|record| {
+            !measured
+                .iter()
+                .any(|entry| entry.ammunition() == record.ammunition())
+        })
+        .map(|record| record.ammunition().clone())
+        .collect()
+}
+
+/// The declared guns no measurement in `measured` carries a complete mount for.
+///
+/// A measurement that exists but is incomplete does **not** cover its gun: the
+/// entry is reported here with the same weight as a gun nothing measured, so a
+/// partial measurement cannot be counted as coverage.
+#[must_use]
+pub fn unmeasured_gun_mounts(
+    declared: &[DeclaredGunDefinition],
+    measured: &[MeasuredGunMount],
+) -> Vec<ContentId> {
+    declared
+        .iter()
+        .filter(|record| {
+            !measured
+                .iter()
+                .any(|entry| entry.gun() == record.gun() && entry.is_complete())
+        })
+        .map(|record| record.gun().clone())
+        .collect()
+}
+
+/// What an observation says about one `f27.d.limit.*` claim.
+///
+/// The three variants exist so a *partial* measurement cannot be recorded as a
+/// resolved one: `Measured` is only constructible for a claim whose whole
+/// subject was measured, and `PartlyMeasured` keeps the shortfall counted.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LimitEvidence {
+    /// The whole subject was measured; the claim is resolved.
+    Measured {
+        /// The provenance the measurement carries.
+        provenance: Provenance,
+    },
+    /// Part of the subject was measured and the rest is counted here.
+    PartlyMeasured {
+        /// The provenance the measurement carries.
+        provenance: Provenance,
+        /// How many of the subject nothing measured.
+        unmeasured: usize,
+    },
+    /// Nothing in the subject is measurable; `reason` says why.
+    Unmeasurable {
+        /// Why no measurement is available.
+        reason: String,
+    },
+}
+
+/// How one `f27.d.limit.*` claim stands.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LimitOutcome {
+    /// A measurement resolved the claim.
+    Bound {
+        /// The provenance that resolved it.
+        provenance: Provenance,
+    },
+    /// The claim is unresolved, with the reason and — once it has been re-filed
+    /// — where it went.
+    Deferred {
+        /// Why it is unresolved.
+        reason: String,
+        /// How much of the subject nothing measured; `0` when none of it could
+        /// be measured at all.
+        unmeasured: usize,
+        /// Where the deferral was re-filed, or [`None`] while it is
+        /// unaccounted.
+        refiled_to: Option<String>,
+    },
+}
+
+impl LimitOutcome {
+    /// Whether this outcome resolves the claim.
+    #[must_use]
+    pub const fn is_bound(&self) -> bool {
+        matches!(self, Self::Bound { .. })
+    }
+
+    /// Whether this outcome names where the deferral was re-filed.
+    #[must_use]
+    pub fn is_refiled(&self) -> bool {
+        matches!(
+            self,
+            Self::Deferred {
+                refiled_to: Some(_),
+                ..
+            }
+        )
+    }
+}
+
+/// One claim's standing in an [`OriginalLimitReport`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct LimitClaimRow {
+    claim: OriginalLimitClaim,
+    outcome: LimitOutcome,
+}
+
+impl LimitClaimRow {
+    /// The claim this row is about.
+    #[must_use]
+    pub const fn claim(&self) -> OriginalLimitClaim {
+        self.claim
+    }
+
+    /// The claim's `f27.d.limit.*` id.
+    #[must_use]
+    pub const fn claim_id(&self) -> &'static str {
+        self.claim.claim_id()
+    }
+
+    /// How the claim stands.
+    #[must_use]
+    pub const fn outcome(&self) -> &LimitOutcome {
+        &self.outcome
+    }
+}
+
+/// Why a report could not be recorded as asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitReportError {
+    /// The claim has no row yet, so there is nothing to re-file.
+    NotRecorded(OriginalLimitClaim),
+    /// The claim is already resolved; a resolution is not re-filed.
+    AlreadyBound(OriginalLimitClaim),
+    /// The re-filing target was empty.
+    EmptyTarget(OriginalLimitClaim),
+}
+
+impl fmt::Display for LimitReportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotRecorded(claim) => {
+                write!(f, "{claim} has no recorded outcome to re-file")
+            }
+            Self::AlreadyBound(claim) => {
+                write!(f, "{claim} is already resolved and cannot be re-filed")
+            }
+            Self::EmptyTarget(claim) => write!(f, "{claim} cannot be re-filed to nothing"),
+        }
+    }
+}
+
+impl std::error::Error for LimitReportError {}
+
+/// Where each `f27.d.limit.*` claim stands.
+///
+/// The report is the machine-readable half of "nothing guessed": every claim is
+/// either [`LimitOutcome::Bound`] with the provenance that resolved it, or
+/// [`LimitOutcome::Deferred`] with the reason and, once the stage has filed it
+/// somewhere, the destination. [`unaccounted`](Self::unaccounted) is the list a
+/// caller must be able to print, because a deferral nobody re-filed is the one
+/// state that quietly loses an open question.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OriginalLimitReport {
+    rows: Vec<LimitClaimRow>,
+}
+
+impl OriginalLimitReport {
+    /// An empty report: every claim unaccounted.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records what an observation says about one claim, replacing any earlier
+    /// outcome for it.
+    pub fn record(&mut self, claim: OriginalLimitClaim, evidence: LimitEvidence) -> &mut Self {
+        let outcome = match evidence {
+            LimitEvidence::Measured { provenance } => LimitOutcome::Bound { provenance },
+            LimitEvidence::PartlyMeasured {
+                provenance,
+                unmeasured,
+            } => LimitOutcome::Deferred {
+                reason: format!(
+                    "{} of the claim's subject nothing measured; the measurement carries claim {}",
+                    unmeasured, provenance.claim_id
+                ),
+                unmeasured,
+                refiled_to: None,
+            },
+            LimitEvidence::Unmeasurable { reason } => LimitOutcome::Deferred {
+                reason,
+                unmeasured: 0,
+                refiled_to: None,
+            },
+        };
+        match self.rows.iter_mut().find(|row| row.claim == claim) {
+            Some(row) => row.outcome = outcome,
+            None => self.rows.push(LimitClaimRow { claim, outcome }),
+        }
+        self
+    }
+
+    /// Names where one deferred claim was re-filed.
+    ///
+    /// # Errors
+    ///
+    /// [`LimitReportError::NotRecorded`] when the claim has no row,
+    /// [`LimitReportError::AlreadyBound`] when it is resolved, and
+    /// [`LimitReportError::EmptyTarget`] when `target` is empty.
+    pub fn refile(
+        &mut self,
+        claim: OriginalLimitClaim,
+        target: &str,
+    ) -> Result<&mut Self, LimitReportError> {
+        let row = self
+            .rows
+            .iter_mut()
+            .find(|row| row.claim == claim)
+            .ok_or(LimitReportError::NotRecorded(claim))?;
+        if row.outcome.is_bound() {
+            return Err(LimitReportError::AlreadyBound(claim));
+        }
+        if target.trim().is_empty() {
+            return Err(LimitReportError::EmptyTarget(claim));
+        }
+        if let LimitOutcome::Deferred { refiled_to, .. } = &mut row.outcome {
+            *refiled_to = Some(target.trim().to_owned());
+        }
+        Ok(self)
+    }
+
+    /// One claim's row, when it has one.
+    #[must_use]
+    pub fn row(&self, claim: OriginalLimitClaim) -> Option<&LimitClaimRow> {
+        self.rows.iter().find(|row| row.claim == claim)
+    }
+
+    /// Every recorded row, in [`OriginalLimitClaim::ALL`] order.
+    #[must_use]
+    pub fn rows(&self) -> Vec<&LimitClaimRow> {
+        OriginalLimitClaim::ALL
+            .iter()
+            .filter_map(|claim| self.row(*claim))
+            .collect()
+    }
+
+    /// The claims a measurement resolved.
+    #[must_use]
+    pub fn bound(&self) -> Vec<OriginalLimitClaim> {
+        self.rows
+            .iter()
+            .filter(|row| row.outcome.is_bound())
+            .map(|row| row.claim)
+            .collect()
+    }
+
+    /// The claims that are still unresolved.
+    #[must_use]
+    pub fn deferred(&self) -> Vec<OriginalLimitClaim> {
+        self.rows
+            .iter()
+            .filter(|row| !row.outcome.is_bound())
+            .map(|row| row.claim)
+            .collect()
+    }
+
+    /// The claims that are neither resolved nor explicitly re-filed: no row at
+    /// all, or a deferral with no destination.
+    #[must_use]
+    pub fn unaccounted(&self) -> Vec<OriginalLimitClaim> {
+        OriginalLimitClaim::ALL
+            .iter()
+            .copied()
+            .filter(|claim| match self.row(*claim) {
+                None => true,
+                Some(row) => !row.outcome.is_bound() && !row.outcome.is_refiled(),
+            })
+            .collect()
+    }
+
+    /// Whether every claim is either resolved or explicitly re-filed.
+    ///
+    /// This is **not** a fidelity claim: it is an accounting one. A report of
+    /// five re-filed deferrals is complete, and every one of the five original
+    /// behaviors it names is still unmeasured — which is why
+    /// [`bound`](Self::bound) has to be read next to it.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.unaccounted().is_empty()
     }
 }
 
