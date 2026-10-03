@@ -156,17 +156,22 @@
 //! provenance-carrying producer record is `cs_content::routes`; F31-C wires
 //! the set into the ECS and the original routes.
 //!
-//! [`allies`] is the F33-A pilot/aircraft/faction identity contract
+//! [`allies`] is the F33-A pilot/aircraft/faction identity contract and the
+//! F33-B allegiance and wingmate assignment rules
 //! (`specs/F33-wingmates-factions-neutral-traffic-and-pilot-identity.md`,
-//! stage `### F33-A`): the per-session [`allies::AlliesRoster`] whose
-//! [`allies::AllyRecord`] keeps [`allies::PilotId`], [`allies::FactionId`],
-//! [`allies::GeometryId`] and the shared [`damage::ActorId`] identity as four
-//! distinct types; the [`allies::WingmateAssignment`] store and
-//! [`allies::SurvivabilityPolicy`]; and [`allies::AlliesRoster::capture`],
-//! the ownership transaction that changes an actor's faction and returns the
-//! geometry id it did **not** change (AC01). The declared roster schema is
+//! stages `### F33-A` and `### F33-B`): the per-session
+//! [`allies::AlliesRoster`] whose [`allies::AllyRecord`] keeps
+//! [`allies::PilotId`], [`allies::FactionId`], [`allies::GeometryId`] and the
+//! shared [`damage::ActorId`] identity as four distinct types; the
+//! [`allies::WingmateAssignment`] store and [`allies::SurvivabilityPolicy`];
+//! and [`allies::AlliesRoster::capture`], the ownership transaction that
+//! changes an actor's faction and returns the geometry id it did **not**
+//! change (AC01). F33-B adds [`allies::briefed_wingmates`], the pure rule
+//! that turns a [`allies::BriefingPlan`] into assignments, and
+//! [`allies::AlliesRoster::reset_wingmates`] / `register_wingmate`, the retry
+//! reset and the player-faction commitment. The declared roster schema is
 //! `cs_content::pilots`; the conversion boundary and ECS binding are
-//! `cs_app::roster`; the assignment rules and mission wiring are F33-B/C.
+//! `cs_app::roster`; the mission wiring is F33-C.
 //!
 //! [`world_actors`] is the F34-A world-actor contract
 //! (`specs/F34-ground-vehicles-boats-trains-and-mission-machinery.md`, stage
