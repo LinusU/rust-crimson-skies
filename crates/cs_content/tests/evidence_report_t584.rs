@@ -44,19 +44,21 @@
 //! production `account_catalog_rows` over that catalog, `rustc --version` and
 //! `Cargo.lock`. The only texts this file holds are the [`review_identity`]
 //! literal the committed `docs/findings/evidence/T584.json` carries — which
-//! names #584's implementer and #584's reviewer and states plainly that the
-//! two are the same agent instance, so the review was not independent — and the
-//! product-completeness limitations quoted into `review.method`.
+//! names both pairs of actors behind the record, #584's implementer and
+//! #584's reviewer and this harness's author and reviewer, and states plainly
+//! that each pair is one agent instance, so neither review was independent —
+//! and the product-completeness limitations quoted into `review.method`.
 //!
 //! Nothing about the totals is typed in by hand. `review.method` interpolates
 //! what this run measured, and it names every source-derived collection that
 //! still holds **no** row by reading `ContentKind::ALL` against the measured
 //! catalog, so a collection that has not landed cannot go missing from the
 //! record by being forgotten here (the 2026-09-28 owner directive). What is
-//! typed in are the *floors* of [`MEASURED_COLLECTIONS`]: per-collection row
-//! counts measured from the installation, which are asserted as `>=` so a later
-//! collection cannot fail this harness for arriving, while a collection that
-//! loses rows or disappears still does.
+//! typed in are the *floors* of [`MEASURED_COLLECTIONS`] and
+//! [`MEASURED_SOURCE_DERIVED`], which are #584's own numbers from
+//! `accept_f14_d_baseline.rs` rather than this file's own: they are asserted as
+//! `>=` so a later collection cannot fail this harness for arriving, while a
+//! collection that loses rows or disappears still does.
 //!
 //! `unknowns` is `[]` and the report validates with `--require-pass`: the
 //! **task's** acceptance is complete — the total is derived from the rows, the
@@ -79,13 +81,18 @@ use cs_content::campaign_bindings::{CampaignInventory, campaign_layout};
 use cs_content::catalog::baseline::{Baseline, baseline_report_json, retail_baseline};
 use cs_types::content::{CatalogRowAccounting, CatalogRowRole, ContentKind, account_catalog_rows};
 
-/// Per-collection row counts measured from the owner's installation by #584
-/// (2026-10-03), asserted as floors.
+/// Per-collection row counts measured from the owner's installation on
+/// 2026-10-03, asserted as floors.
+///
+/// They are #584's own `MEASURED_COLLECTIONS` in
+/// `crates/cs_content/tests/accept_f14_d_baseline.rs`: eight collections it
+/// measured itself, plus the 45 `stunt` and 461 `scrapbook_item` rows F14-D.8
+/// measured and #584 folded into its floor when it rebased onto that stage.
 ///
 /// They are floors rather than equalities on purpose: an exact total is the
-/// hand-maintained number this task's subject removed, and F14-D.8 already
-/// added two collections after #584 measured its eight. A collection that
-/// gains rows must not fail this record; a collection that loses rows, or
+/// hand-maintained number this task's subject removed, and a later collection
+/// must be able to add rows without failing somebody else's test. A collection
+/// that gains rows must not fail this record; a collection that loses rows, or
 /// disappears, must.
 const MEASURED_COLLECTIONS: &[(&str, usize)] = &[
     ("multiplayer_rules", 4),
@@ -100,9 +107,14 @@ const MEASURED_COLLECTIONS: &[(&str, usize)] = &[
     ("scrapbook_item", 461),
 ];
 
-/// #584's own measurement of the non-launchable collection rows of this
-/// installation, the floor the derived total has to clear.
-const MEASURED_SOURCE_DERIVED: usize = 78_928;
+/// #584's own floor for the non-launchable collection rows of this
+/// installation: the 78 928 it measured, plus the 506 rows F14-D.8 added and
+/// #584 folded in on its rebase.
+///
+/// This is the same number `accept_f14_d_baseline.rs` pins, deliberately: a
+/// record that floor-ed lower than the test it records would pass where the
+/// test fails, which is the one thing a reviewer must not have to notice.
+const MEASURED_SOURCE_DERIVED: usize = 79_434;
 
 /// The launchable denominator of this installation, measured 2026-10-03: 24
 /// campaign missions plus 29 scenario directories.
@@ -247,8 +259,9 @@ fn evidence_report_t584_writes_the_acceptance_report() {
     assert_eq!(accounting.launchable, MEASURED_LAUNCHABLE);
     assert!(
         accounting.unaccounted() >= MEASURED_SOURCE_DERIVED,
-        "the non-launchable collection rows measured 78 928 on 2026-10-03 and there are fewer \
-         now: {accounting}"
+        "the non-launchable collection rows measured {MEASURED_SOURCE_DERIVED} on 2026-10-03 \
+         (228 inventoried files, 53 launchable rows and their 53 programs, and F14-D.8's 506 \
+         stunt and scrapbook rows) and there are fewer now: {accounting}"
     );
     assert_eq!(
         catalog.len(),
@@ -518,20 +531,34 @@ impl Measured {
 /// A reviewing agent supplies their own text through `CS_EVIDENCE_REVIEW` and
 /// replaces the literal with it in the same commit, which is how the report
 /// then names the review that actually happened.
+///
+/// The literal names two pairs, because two pairs happened: #584's
+/// implementer and #584's reviewer are who the recorded measurements belong
+/// to, and the harness author and the harness reviewer are who produced this
+/// file. Both pairs are the same agent instance within their own task, so
+/// neither review is independent original-reference evidence.
 fn review_identity() -> String {
     let recorded = String::from(
-        "implementer: openrouter/stealth-space-bunny-alpha (bunny-alpha-2, Rally #584, implement \
-         claim of 2026-10-03T11:03:00Z, branch commit 41833076). reviewer: \
-         openrouter/stealth-space-bunny-alpha (bunny-alpha-2, Rally #584, review claim of \
-         2026-10-03T12:15:56Z) — the same agent instance and model as the implementer, so this \
+        "the subject of this record, Rally #584: implementer: \
+         openrouter/stealth-space-bunny-alpha (bunny-alpha-2, implement claim of \
+         2026-10-03T11:03:00Z, branch commit 41833076); reviewer: \
+         openrouter/stealth-space-bunny-alpha (bunny-alpha-2, review claim of \
+         2026-10-03T12:15:56Z) — the same agent instance and model as the implementer, so that \
          review is not independent evidence: it is a self-review and it cannot stand in for a \
          fresh-context agent or for the owner's human approval. Its context was not fresh: the \
          review session started from the implementer's own hand-over summary and read the branch \
          diff from there. The self-review found and fixed real defects (a kind-label uniqueness \
-         assertion, and the missing evidence record this task is) and the reviewer re-derived \
-         the retail counts from the installation rather than trusting the summary, but a review \
-         by the agent that wrote the code is `checked` evidence at best and never \
-         verified_original evidence.",
+         assertion, and the missing evidence record this task is) and re-derived the retail \
+         counts from the installation rather than trusting the summary, but a review by the \
+         agent that wrote the code is `checked` evidence at best and never verified_original \
+         evidence. This record's own harness: implementer opencode/space-bunny-free (bunny-2, \
+         Rally #587, implement claim of 2026-10-03T12:51:13Z); reviewer \
+         opencode/space-bunny-free (bunny-2, Rally #587, review claim of \
+         2026-10-03T16:27:45Z) — again the same agent instance and model, in a separate session \
+         whose context did not carry the implementing session's, so this review is not \
+         independent evidence either; it re-derived every recorded total from the installation, \
+         corrected the source-derived floor that had been left at the pre-F14-D.8 measurement, \
+         and regenerated this report on the rebased commit.",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
@@ -551,8 +578,10 @@ fn review_method(measured: &Measured) -> String {
          account_catalog_rows over that catalog, rustc and Cargo.lock; validated with \
          tools/validate_evidence.py --require-pass. The consumer trace is \
          cs_content::catalog::baseline::retail_baseline + baseline_report_json, the same \
-         functions `cs-inspect catalog --cs-path` writes. The totals this record covers are \
-         #584's: the completeness identity is production cs_types::content::account_catalog_rows \
+         functions `cs-inspect catalog --cs-path` writes. `candidate_tree` is the tree of the \
+         commit the acceptance suite and this harness ran on; the only later delta is this \
+         report's own copy under docs/findings/evidence/T584.json. The totals this record covers \
+         are #584's: the completeness identity is production cs_types::content::account_catalog_rows \
          classifying every row into one of four CatalogRowRole values and its Display naming the \
          collections that do not add up, so the record states that classification's output over \
          the owner's installation rather than a sum typed into a test.",
@@ -606,12 +635,14 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
      collection, and in particular the identities inside them. Resolving tasks: the per-collection \
      acceptance tests that pin those identities (accept_f14_d_2_ through accept_f14_d_8_retail_…) \
      and the producing stages' own findings notes.",
-    "The floors in this record were measured by #584 on 2026-10-03, before F14-D.8 added the \
-     stunt and scrapbook collections, so the source-derived total above is larger than the 78 928 \
-     #584 pinned. A collection that gains rows therefore does not fail this harness; a collection \
-     that loses rows or disappears does. Affected content: whichever collection regressed. \
-     Resolving tasks: the collection's own acceptance test, which pins the identities and the \
-     per-container totals.",
+    "The floors in this record are #584's own: `MEASURED_COLLECTIONS` and the 79 434 total floor \
+     in accept_f14_d_baseline.rs, measured on 2026-10-03, with F14-D.8's 45 stunt and 461 \
+     scrapbook rows folded in when #584 rebased onto that stage, so the source-derived total above \
+     is exactly the floor that test pins. They are floors rather than equalities on purpose — an \
+     exact total is the hand-maintained number #584 removed — so a collection that gains rows \
+     raises them without failing either place, while a collection that loses rows or disappears \
+     fails both. Affected content: whichever collection regressed. Resolving tasks: the \
+     collection's own acceptance test, which pins the identities and the per-container totals.",
     "No row claims a runtime consumer and no mission program is decoded, so the coverage \
      accounting reports 0 ready and every launchable row as unsupported. Affected content: the \
      playability of all 53 roots. Resolving tasks: F37 (mission IR) and F38 (native behavior \
