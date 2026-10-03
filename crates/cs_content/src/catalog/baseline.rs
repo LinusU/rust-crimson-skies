@@ -33,7 +33,19 @@
 //!   briefing, which stays a row with an explicit unknown instead of being
 //!   excluded from the collection. Those rules are **not** launchable, so they
 //!   add nothing to the denominator; what the producing parser could not answer
-//!   is reported in [`CollectionStatus`] instead of being dropped.
+//!   is reported in [`CollectionStatus`] instead of being dropped;
+//! * one [`ContentKind::World`] row per world group whose shared reader
+//!   (`ZBD/<group>/zrdr.zbd`) F14-D.1's classifier read from the archive's own
+//!   member index (F14-D.3). The row names the group directory the archive sits
+//!   in — the same lowercase identity `campaign_bindings` gives the `world` row
+//!   of a mission binding, so the two can never disagree — is located by the
+//!   archive's checked span and points at the inventory row of that archive, so
+//!   the closure can walk from a world to the bytes that named it. A world is
+//!   **not** launchable, so it adds nothing to the denominator, and a group
+//!   whose shared reader cannot be listed stays a named gap in
+//!   [`CollectionStatus`] and in
+//!   [`Baseline::unrecognized_program_dirs`] rather than becoming a row guessed
+//!   from a directory name.
 //!
 //! Every row's [`Origin`] is [`Origin::Installation`] with a checked
 //! [`SourceSpan`] and the installation fingerprint of the bytes that were read,
@@ -55,10 +67,12 @@
 //! [`retail_baseline`] derives nothing twice: the campaign walk is
 //! [`crate::campaign_bindings::campaign_layout`], the same production
 //! derivation the per-mission bindings and the `cs-inspect campaign` report
-//! use, the file inventory is `cs_assets::install::discover`, and the
-//! multiplayer rows are F56-A's [`crate::multiplayer::discover_modes`] over
-//! the string rows `cs_content::config::StringCatalog` reads out of
-//! [`MODE_STRING_IMAGE`].
+//! use, the file inventory is `cs_assets::install::discover`, the multiplayer
+//! rows are F56-A's [`crate::multiplayer::discover_modes`] over the string rows
+//! `cs_content::config::StringCatalog` reads out of [`MODE_STRING_IMAGE`], and
+//! the world rows are the groups [`classify`] read out of the world-group
+//! readers' own member indexes, keyed by the same derivation
+//! [`crate::campaign_bindings`] uses for a mission's world identity.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -107,6 +121,21 @@ const CLAIM_MODE_STRINGS: &str = "f14.d.2.baseline.mode_strings";
 /// carries pairs with no briefing block of the multiplayer family, so the
 /// name cannot be resolved to a mode this engine can read.
 const CLAIM_MODE_PAIRING: &str = "f14.d.2.baseline.mode_pairing";
+
+/// The claim id behind the observation that a world group's shared reader is
+/// the archive whose own member index named the group, and that the group's
+/// identity is the directory that archive sits in (F14-D.3).
+const CLAIM_WORLD_READER: &str = "f14.d.3.baseline.world_reader";
+
+/// The installation-relative spelling of the reader archive a world group's
+/// rows are read from: one `<container>/<group>/zrdr.zbd` per world group.
+///
+/// The `CollectionStatus` of a collection whose rows come from one file names
+/// that file; a collection with one source file *per row* cannot, so it names
+/// this pattern instead and every row's own span names the exact archive. The
+/// container component is the installation's own (`ZBD` on the owner's
+/// installation) and the group component is the world-group directory.
+pub const WORLD_READER_PATTERN: &str = "ZBD/<world group>/zrdr.zbd";
 
 /// The installation-relative spelling of the string image the multiplayer mode
 /// table is read from.
@@ -412,7 +441,9 @@ pub struct CollectionStatus {
     /// The collection's content kind.
     pub kind: ContentKind,
     /// The installation-relative file whose bytes the rows come from, as the
-    /// collection's stage reads it.
+    /// collection's stage reads it; a collection with one such file **per row**
+    /// names the pattern its rows follow instead ([`WORLD_READER_PATTERN`]),
+    /// because a single spelling would be wrong for every row but one.
     pub source: String,
     /// The language the rows were read in, for a localized table; `None` when
     /// the source has no language dimension.
@@ -683,6 +714,17 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
     }
     collection_status.push(rules_status);
 
+    // The world groups, from the world-group readers F14-D.1's classifier read:
+    // a group is a group because the campaign layout declares it *and* its own
+    // shared reader lists the shared world members, and the two must agree
+    // before a row is minted.
+    let (worlds, world_status) =
+        world_rows(install_hash, &classified_reader_dirs, &world_groups, &files)?;
+    for element in worlds {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(world_status);
+
     let coverage = coverage(&catalog, &roots)?;
 
     Ok(Baseline {
@@ -839,6 +881,157 @@ fn unpopulated(
     status.rows = 0;
     status.diagnostic = Some(diagnostic);
     (Vec::new(), status)
+}
+
+/// The `world` rows the installation's world-group readers name, plus the
+/// record of what the producing classifier could not answer about them.
+///
+/// The rows come from the readers F14-D.1 classified, read out of each archive's
+/// own member index by [`classify`] — never from a directory name alone. A
+/// reader that cannot be listed classifies nothing, so a group whose shared
+/// reader cannot be listed yields **no** row: it is counted in the record's
+/// [`CollectionStatus::gaps`] under `declared_group_without_reader` and stays
+/// named in [`Baseline::unrecognized_program_dirs`], exactly as F14-D.2 reports
+/// an unreadable mode table. When no group at all can be classified the record
+/// carries a [`CollectionStatus::diagnostic`] instead of rows.
+///
+/// Each row is located by the shared reader's own checked span and points at the
+/// inventory row of that archive, so the closure walks from a world to the bytes
+/// whose member index named it. The identity is the group directory, lowercased
+/// — the derivation `crate::campaign_bindings` uses for a mission binding's
+/// `world` row (`ContentId::from_source(ContentKind::World, world_group)`), so a
+/// mission's world and this row cannot disagree about what a group is called.
+/// The row is a world **group**, not a variant inside it: nothing here reads a
+/// record, so no variant identity exists to give.
+///
+/// Nothing is decoded at this stage, so every row is `unparsed` and
+/// `unavailable`, and a world is not launchable content — this collection adds
+/// no root and cannot move the coverage denominator.
+///
+/// # Errors
+///
+/// [`BaselineError::UninventoriedProgram`] when a classified reader archive is
+/// absent from the inventory it was classified out of,
+/// [`BaselineError::Key`] when the group directory has no valid identity and
+/// [`BaselineError::Span`] when the archive's span does not validate.
+fn world_rows(
+    install_hash: ContentHash,
+    classified: &[ClassifiedReaderDir],
+    declared_groups: &BTreeSet<String>,
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<(Vec<CatalogElement>, CollectionStatus), BaselineError> {
+    let mut status = CollectionStatus {
+        kind: ContentKind::World,
+        source: WORLD_READER_PATTERN.to_owned(),
+        language: None,
+        rows: 0,
+        gaps: BTreeMap::new(),
+        boundary_id: None,
+        diagnostic: None,
+    };
+
+    let mut rows = Vec::new();
+    let mut classified_groups: BTreeSet<String> = BTreeSet::new();
+    for dir in classified
+        .iter()
+        .filter(|dir| dir.role == ReaderDirRole::WorldGroupReader)
+    {
+        let group = world_group_key(&dir.path);
+        classified_groups.insert(group.clone());
+        // The record the classifier saw came out of this very inventory, so a
+        // miss is not an expected state; it is named rather than papered over
+        // with a span invented from a file name.
+        let Some(record) = files.get(&dir.program.to_ascii_lowercase()) else {
+            return Err(BaselineError::UninventoriedProgram {
+                mission: dir.path.clone(),
+                asset: dir.program.clone(),
+            });
+        };
+        rows.push(world_row(&group, &dir.path, record, install_hash)?);
+    }
+
+    status.rows = rows.len();
+    let unnamed = declared_groups.difference(&classified_groups).count();
+    status.gaps.insert("declared_group_without_reader", unnamed);
+    if rows.is_empty() {
+        let groups = declared_groups
+            .iter()
+            .map(|group| group.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Ok(unpopulated(
+            status,
+            format!(
+                "no world-group reader matching {WORLD_READER_PATTERN} could be listed, so no \
+                 world row could be built; the campaign layout declares {} world group(s) \
+                 ({groups})",
+                declared_groups.len()
+            ),
+        ));
+    }
+    Ok((rows, status))
+}
+
+/// The identity key of one world-group reader directory: the group directory
+/// name, lowercased.
+///
+/// `ZBD/C1C` is the shared reader of world group `c1c`. The lowercase form is
+/// the group's identity in `cs_content::campaign_bindings` too, so the world row
+/// of a campaign mission binding and this row are one id, not two spellings of
+/// it.
+fn world_group_key(dir: &str) -> String {
+    dir.rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+/// One world group as a catalog row.
+fn world_row(
+    group: &str,
+    dir: &str,
+    record: &InstallFileRecord,
+    install_hash: ContentHash,
+) -> Result<CatalogElement, BaselineError> {
+    let id =
+        ContentId::from_source(ContentKind::World, group).map_err(|source| BaselineError::Key {
+            spelling: group.to_owned(),
+            source,
+        })?;
+    let spelling = record.relative_spelling.as_str();
+    let span = SourceSpan::new(install_hash, spelling, None, 0, record.size_bytes, None).map_err(
+        |source| BaselineError::Span {
+            path: spelling.to_owned(),
+            source,
+        },
+    )?;
+    let file_id = ContentId::from_source(ContentKind::InstallFile, &install_file_key(spelling))
+        .map_err(|source| BaselineError::Key {
+            spelling: spelling.to_owned(),
+            source,
+        })?;
+    Ok(CatalogElement {
+        kind: ContentKind::World,
+        id,
+        display_name: Some(dir.to_owned()),
+        origin: Origin::Installation {
+            source: span.clone(),
+        },
+        dependencies: vec![Dependency {
+            target: file_id,
+            kind: DependencyKind::Static,
+            provenance: observed(CLAIM_WORLD_READER, &span)?,
+        }],
+        parse_state: cs_types::install::ParseState::Unparsed,
+        normalize_state: NormalizeState::NotNormalized,
+        runtime_consumers: Vec::new(),
+        readiness: Readiness::Unavailable,
+        unsupported_reasons: vec![UnsupportedReason::NotParsed],
+        fingerprint: Some(Fingerprint {
+            kind: FingerprintKind::Installation,
+            sha256: record.sha256,
+        }),
+    })
 }
 
 /// One multiplayer mode as a catalog row.
