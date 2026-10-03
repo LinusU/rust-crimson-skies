@@ -8,3 +8,13 @@ publish.workspace = true
 
 [dependencies]
 cs_types.workspace = true
+# The pinned F54-B transport (see docs/findings/2026-10-03-f54-b-*). Exact
+# versions are frozen per spec F54 non-negotiable 1; Cargo.lock + --locked
+# keeps the transitive set frozen too.
+renet2 = { version = "=0.16.1", default-features = false }
+renet2_netcode = { version = "=0.16.1", default-features = false, features = [
+    "native_transport",
+] }
+# Pinned transitively as well: renet2_netcode ^0.16.1 would otherwise float to
+# a newer patch; the whole transport wave stays at the 2026-09-18 release.
+renetcode2 = { version = "=0.16.1" }
