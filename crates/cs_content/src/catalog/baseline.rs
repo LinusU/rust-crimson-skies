@@ -2144,31 +2144,39 @@ fn container_span(
 /// used, so identity never depends on enumeration order.
 ///
 /// A chain can only fail to terminate if the stored parent slots form a **cycle**
-/// — a node that is its own ancestor. The walk is bounded by the record count
-/// plus one, which is the longest chain a cycle-free forest can have, so the
-/// bound is what stops the loop and never a guess about where it ends. A node
-/// whose walk hits that bound has a name path made of the part of the loop that
-/// fitted, so its path means nothing: it is **counted** here, reported in
+/// — a node that is its own ancestor. A cycle-free chain visits each stored node
+/// at most once, so it can never hold **more** names than the array holds nodes:
+/// a walk that runs out of nodes to visit before the cursor reaches a root has
+/// found a cycle. The bound therefore counts the names a chain has consumed and
+/// stops when a chain would need one more than the array holds, which lets a
+/// chain that ends on the array's last node be a chain that ends. A node in a
+/// cycle has a name path made of the part of the loop that fitted, so its path
+/// means nothing: it is **counted** here, reported in
 /// [`GeometryContainerReport::unterminated`] and in the collection's
 /// `unterminated_parent_chain` record, and keyed by its record address with an
 /// explicit unknown, never published as a semantic path.
 fn node_name_paths(nodes: &GameZNodes) -> (BTreeMap<u32, String>, BTreeSet<u32>) {
     let mut paths: BTreeMap<u32, String> = BTreeMap::new();
     let mut unterminated: BTreeSet<u32> = BTreeSet::new();
+    let longest = nodes.nodes.len();
     for node in &nodes.nodes {
         let mut names: Vec<&str> = Vec::new();
         let mut cursor = Some(node.index);
-        let mut remaining = nodes.nodes.len() + 1;
-        while remaining > 0 {
-            remaining -= 1;
-            let Some(current) = cursor else { break };
+        let mut loops = false;
+        while let Some(current) = cursor {
+            if names.len() == longest {
+                loops = true;
+                break;
+            }
+            // Unreachable for a container the reader accepted: a parent slot
+            // outside the array is `GameZNodeError::ParentSlot`, not a finding.
             let Some(record) = nodes.get(current) else {
                 break;
             };
             names.push(&record.name);
             cursor = record.parent;
         }
-        if remaining == 0 {
+        if loops {
             unterminated.insert(node.index);
         }
         names.reverse();

@@ -1041,6 +1041,93 @@ fn accept_f14_d_4_a_node_whose_parent_chain_never_ends_is_a_row_with_an_explicit
     );
 }
 
+/// A hierarchy that is **one chain covering every stored node** is not a loop,
+/// and the walk has to be able to say so: the deepest node's parent chain holds
+/// exactly as many names as the array holds nodes, which is the longest a
+/// cycle-free forest can be and is exactly what the cycle bound has to allow.
+///
+/// This is the boundary case of
+/// `accept_f14_d_4_a_node_whose_parent_chain_never_ends_is_a_row_with_an_explicit_unknown`:
+/// a bound that stops the loop one step too early passes the cycle test and
+/// fails this one, and a bound that is one step too loose loops forever. The
+/// container here is three nodes deep, so the deepest chain spends the whole
+/// array.
+#[test]
+fn accept_f14_d_4_a_chain_as_long_as_the_node_array_is_not_a_cycle() {
+    let temp = TempInstall::new("full-chain");
+    write_campaign(&temp);
+    temp.write("ZBD/planes.zbd", &write_container(&fixture_nodes(), 3, 2));
+    // One chain of three: `c`'s ancestors are `b` and `a`, so its name path is
+    // `a.b.c` and its parent chain is as long as the array is.
+    let mut chained = vec![
+        object("a", 0, None),
+        object("b", 0, Some(0)),
+        object("c", 0, Some(1)),
+    ];
+    with_child_lists(&mut chained, &[]);
+    for group in ["C1", "C1C"] {
+        temp.write(
+            &format!("ZBD/{group}/{GEOMETRY_CONTAINER_FILE}"),
+            &write_container(&chained, 1, 1),
+        );
+    }
+    let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
+    let world_key = container_key("ZBD/C1/gamez.zbd");
+
+    // Every node of the chain is a name path, the deepest one included.
+    let leaf = row(
+        &baseline,
+        &cid(ContentKind::SceneNode, &format!("{world_key}.a.b.c")),
+    );
+    assert_eq!(
+        leaf.display_name.as_deref(),
+        Some("c"),
+        "the longest terminating chain is still an authored name path: {}",
+        leaf.id
+    );
+    assert_eq!(
+        unknown_claims(leaf),
+        Vec::<&str>::new(),
+        "a chain that ends at a root is not a loop and says nothing unknown about identity"
+    );
+    assert!(
+        leaf.dependencies
+            .iter()
+            .any(|edge| edge.target == cid(ContentKind::SceneNode, &format!("{world_key}.a.b"))),
+        "and its own parent edge still resolves: {:?}",
+        leaf.dependencies
+            .iter()
+            .map(|edge| edge.target.to_string())
+            .collect::<Vec<_>>()
+    );
+
+    // Nothing anywhere is counted as unterminated, and every node is one of the
+    // four classifications.
+    for spelling in ["ZBD/C1/gamez.zbd", "ZBD/C1C/gamez.zbd", "ZBD/planes.zbd"] {
+        let report = baseline
+            .geometry_containers
+            .iter()
+            .find(|report| report.spelling == spelling)
+            .unwrap_or_else(|| panic!("{spelling} is reported"));
+        assert_eq!(
+            report.unterminated, 0,
+            "{spelling}: every stored parent chain terminates"
+        );
+        assert_eq!(
+            report.named + report.ambiguous + report.unspellable + report.unterminated,
+            report.nodes,
+            "{spelling}: every node is named, ambiguous, unspellable or unterminated"
+        );
+    }
+    assert_eq!(
+        status_of(&baseline, ContentKind::SceneNode)
+            .gaps
+            .get("unterminated_parent_chain"),
+        Some(&0),
+        "no container in the tree holds a loop"
+    );
+}
+
 /// A mesh slot the node array names but the array leaves absent has no bytes of
 /// its own, so it gets no row and is counted in the collection's own record —
 /// and every node that names it says so, rather than pointing at the row that
