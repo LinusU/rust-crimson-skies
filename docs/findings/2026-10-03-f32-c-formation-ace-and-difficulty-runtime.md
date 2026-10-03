@@ -13,13 +13,14 @@ report required).
   `FormationRoster`/`FormationRosterMember`, `FormationMemberReport`,
   `FormationTick`, `StationAnchor`/`StationAssignment`/`station_offset_m`,
   `FormationUpdate`, `FormationCoordinator`, `ProfileSource`,
-  `CombatantRequest`, `CombatStep` and `CombatRuntime`, plus the twenty new
-  `CombatError` variants and the F32-C synthetic fixtures. One additive change
+  `CombatantRequest`, `CombatStep` and `CombatRuntime`, plus the new
+  `CombatError` variants (twenty-one in total after review) and the F32-C
+  synthetic fixtures. One additive change
   outside the new code: `RecoveryTrigger` gained `PartialOrd, Ord`.
-- `crates/cs_sim/tests/ai/accept_f32_c_combat.rs` (new, owner path): the ten
-  `accept_f32_c_*` scenario and integration tests.
+- `crates/cs_sim/tests/ai/accept_f32_c_combat.rs` (new, owner path): the twelve
+  `accept_f32_c_*` scenario and integration tests (fourteen after review).
 - `crates/cs_sim/tests/ai/accept_f32_c_combat_failures.rs` (new, owner path):
-  the eight `accept_f32_c_*` refusal and teardown tests.
+  the nine `accept_f32_c_*` refusal and teardown tests (ten after review).
 - `crates/cs_sim/tests/ai/main.rs` (owner path, wiring only): declares the two
   new test modules and updates the target's doc comment.
 - This file.
@@ -59,14 +60,26 @@ produce a bit-identical station.
   way to put a NaN into a guidance input. The anchor is either the *living*
   leader or the survivors' centroid; `StationAnchor::Leader` is never built
   for a destroyed member.
-- **A recovery is answered once.** A latched trigger stays reported in
-  `FormationUpdate::latched` and is not answered again until its fact
-  recovers. Without the latch a declared path would be re-applied every tick,
-  which is a permanent state, not a recovery.
+- **A recovery is answered once per fact, not once per trigger.** A latched
+  trigger stays reported in `FormationUpdate::latched` and is not answered
+  again until its fact recovers *or is replaced*: without the latch a declared
+  path would be re-applied every tick, which is a permanent state, not a
+  recovery. A latch that outlived its fact is the same permanent state with the
+  opposite cause — a promoted leader that is then destroyed in turn is a second
+  loss, not a repeat of the first, and an assigned target that is no longer the
+  assigned target is a new loss even if the new one is dead too. Both are
+  released when they are replaced. (The first version of this change got this
+  wrong; see the review section.)
 - **Teardown is a real state, not a flag.** A formation whose members are all
   destroyed, or whose declared path is `Withdraw`, is removed from the
-  coordinator: `facts` returns `None`, a later report is refused as
-  `UnknownFormation`, and nothing about the dissolved formation survives.
+  coordinator: `facts` returns `None` and a later report is refused as
+  `UnknownFormation`, so no membership, leadership or station of the dissolved
+  formation survives anywhere in the runtime state. The *declared* recovery
+  path deliberately stays registered with the planner that owns it, which is
+  what keeps `UnknownFormation` ("torn down") distinguishable from
+  `NoRecoveryPolicy` ("never declared"); the cost is that one formation id
+  cannot be registered twice in the same runtime. Mission execution owns spawn
+  identity, so that is its call, not this module's.
   `CombatRuntime::dissolve_formation` is the explicit form.
 - **A refused tick changes nothing.** `apply` validates the whole report and
   computes the whole next state before it commits any of it, so a refused tick
@@ -183,9 +196,116 @@ test that actually pins the anchor's liveness requirement (it forces the
 `HoldFormation` path, where the anchor deliberately becomes a
 `RegroupPoint` precisely because no living leader exists), and the survivor
 filter inside `resolve_anchor` as defensive rather than as the load-bearing
-guard.
+guard. The review re-ran this probe (see below) and the gap is still open; it
+is filed as task **#557 `F32-ANCHOR-DEADLINE`**.
 
-## Commands run
+## Review (bunny-2, review claim `clm_6hnhgk4b0mssrtri`)
+
+Reviewer and implementer are the same agent identity (`bunny-2`), which is
+**not** independent review; the reviewer context was fresh (no memory of the
+implementation session, only this branch and the task history), but a different
+agent instance or model should still re-check the semantics below. Every fix
+below was found by the reviewer in the committed tree, reproduced first as a
+failing test, then fixed.
+
+### Bug 1 (fixed): a latch outlived its fact and suppressed a second leader loss
+
+`release_latches` released `LeaderLost` only when a *living* leader existed. The
+answer taken for one loss therefore also silenced the next one: with the
+synthetic formation, destroying slot 0 promotes slot 1, and destroying slot 1 on
+the next tick was then *not* answered at all. The coordinator kept a destroyed
+leader, `resolve_anchor` had no living leader to return, and the one remaining
+follower was handed **no station on that tick or any later tick** — a
+permanently unrecovered formation, which is the exact failure the latch exists
+to prevent, reached by the opposite route. Reachable in three ticks, caught by
+neither the committed tests nor the implementer's probes.
+
+Fixed by making a latch per *fact*: `LeaderLost` is released when the fact
+recovered **or** when a new one replaced it (a leader that was living before
+this tick's report and is not living now). The same class of suppression
+existed for `AssignedTargetDestroyed` — a formation re-tasked onto a different
+already-destroyed target lost its recovery silently — so that latch is now also
+released when the assigned target changed.
+
+Tests added: `…a_second_leader_loss_is_answered_not_swallowed_by_the_first` and
+`…a_second_assigned_target_loss_is_answered_too`. Both fail on the
+pre-review tree (verified by reverting each clause individually) and pass after.
+
+### Bug 2 (fixed): a request could withhold the formation its assignment declares
+
+`CombatRuntime::step` built the `FormationFacts` from whichever formation the
+request named and never compared that name with the assignment's own formation
+slot. An actor the mission assigned to formation 1, decided with
+`formation: None`, therefore reported no recovery path at all — the one answer
+the coordinator's authority exists to prevent, reachable by omitting a field.
+`step` now refuses the disagreement in both directions:
+`FormationFactsOmitted` (the assignment declares one, the request names none)
+and the pre-existing `FormationAssignmentMismatch` (the two name different
+formations). Test added:
+`…a_request_may_not_withhold_or_replace_the_formations_facts`.
+
+This made one committed fixture incoherent rather than wrong:
+`accept_f32_c_foreign_generations_never_touch_the_formation_or_the_decision`
+used an assignment with *no* slot while naming a formation, i.e. exactly the
+contradiction now refused one step earlier. The fixture was corrected to give
+the outsider a declared slot (so the refusal under test is the membership one,
+`UnknownFormationMember`, unchanged) and the second half of that test now uses
+a genuinely detached assignment. No assertion was weakened, removed or
+relaxed; both original assertions still stand verbatim.
+
+### Documentation corrections (no behavior change)
+
+- `FormationUpdate::stations` claimed "the leader never receives one"; under a
+  declared regroup the anchor is the survivors' point and the whole formation,
+  leader included, is stationed on it. The doc now states the actual rule.
+- `FormationCoordinator::apply` listed `NoSurvivingMember` among the errors it
+  reports. It cannot report it: a recovery is applied only while a survivor
+  exists, so the variant is the *name of that guard* and is documented as
+  unreachable through this entry point rather than claimed as an error.
+- Teardown claims were corrected to say what actually survives a dissolution
+  (runtime state goes; the declared recovery path stays with the planner that
+  owns it, and a formation id is therefore not reusable in one runtime).
+- `AnchorMode::RegroupPoint` now records *why* the point is computed once: the
+  station offsets do not average to zero, so a per-tick recomputed centroid
+  makes the formation chase its own centre astern forever. This is a trap for a
+  later reader who reads "recomputes the regroup point" as "every tick".
+
+### Reviewer probes (run and reverted; none committed)
+
+Applied to the reviewed `crates/cs_sim/src/ai/combat.rs`, `cargo test -p cs_sim
+--test ai --locked -- accept_f32_c_` re-run, file restored from a copy. The
+committed tree is the green one (24 `accept_f32_c_*` tests: 14
+scenario/integration in `accept_f32_c_combat.rs`, 10 refusal/teardown in
+`accept_f32_c_combat_failures.rs`).
+
+| probe | result |
+| --- | --- |
+| the recovery is reported but never applied (`next.apply_action(…)` removed) | 9 failed (the implementer measured 7; the two new tests add one each) |
+| promotion picks the *highest* living slot instead of the lowest | 4 failed (the implementer measured 3) |
+| the latch no longer distinguishes a new loss from a repeat | 1 failed (`…a_second_leader_loss_is_answered_not_swallowed_by_the_first`) |
+| `step` no longer compares the request's formation with the assignment's | 5 failed |
+| the anchor follows the *registered* leader slot even when it is destroyed | **still not caught** — 24 passed, so #557 stays open |
+
+The last row is the implementer's documented gap, re-verified on the reviewed
+tree. The review adds one fact for whoever takes #557: before the latch fix, a
+destroyed registered leader under `AnchorMode::Leader` *was* reachable (it was
+the bug), and the survivor filter inside `resolve_anchor` was what stopped that
+tick from handing out a station anchored on a wreck. After the fix the state is
+unreachable again, so the guard is defensive; that is why no test can pin it
+without exposing internals.
+
+### Reviewer checks
+
+- `cargo fmt --all -- --check` — clean.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D
+  warnings` — exit 0.
+- `cargo test --workspace --locked` — exit 0.
+- `cargo test --workspace --locked -- accept_f32_c_ --include-ignored` — exit 0;
+  24 tests, all `accept_f32_c_*`, all passing.
+- `cargo test -p cs_sim --test ai --locked` — 65 passed (32 F32-A, 9 F32-B, 24
+  F32-C-prefixed).
+
+## Commands run (implementation session, pre-review)
 
 - `cargo fmt --all -- --check` — clean.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D
