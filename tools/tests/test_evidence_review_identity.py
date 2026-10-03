@@ -765,13 +765,36 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
         runtime even when its harness committed one: that is what makes the
         equality a check rather than a list.
         """
-        harness = {'F14-D': self.harnesses['F14-D']}
-        committed = {'F14-D': report('F14-D', 'CS_EVIDENCE_REVIEW')}
-        self.assertEqual(runtime_identity_expectation(harness, committed), set(),
+        # A real literal harness, so the first case holds the actual committed
+        # text rather than a string that happens to appear in the source (the
+        # F14-D env-var name is one such coincidence).
+        literal = {'F02-B': self.harnesses['F02-B']}
+        identity = self.harnesses['F02-B']['identity']
+        self.assertEqual(runtime_identity_expectation(literal, {'F02-B': report('F02-B', identity)}),
+                         set(),
                          'a report whose identity is a committed literal is not an exemption')
-        uncommitted = {'F14-D': report('F14-D', 'reviewer: nobody committed this text')}
-        self.assertEqual(runtime_identity_expectation(harness, uncommitted), {'F14-D'},
-                         'a report no committed literal holds must be a runtime exemption')
+        self.assertEqual(runtime_identity_expectation(
+            literal, {'F02-B': report('F02-B', f'{identity} reviewed by nobody committed')}),
+            {'F02-B'}, 'a report no committed literal holds must be a runtime exemption')
+        # A real runtime harness: the report text no literal holds is the one the
+        # environment supplies.
+        self.assertEqual(runtime_identity_expectation({'F14-D': self.harnesses['F14-D']},
+                                                      {'F14-D': self.reports['F14-D']}),
+                         {'F14-D'}, 'a report only the run-time harness supplies is an exemption')
+
+    def test_accept_m16_a_fu4_string_literals_join_continuations_and_skip_char_literals(self):
+        """The derivation's lexer must join `\\`-continuations and ignore char literals.
+
+        Every identity literal is `\\`-continued, so a raw search for the report
+        text never finds it.  A char literal such as `'"'` must not be read as
+        the start of a string, and an escape this lexer does not decode must not
+        stop the scan, or a real literal harness would look like a runtime one.
+        """
+        text = ('let a = "one \\\n           two";\n'
+                'let quote = \'"\';\n'
+                'let b = "three";\n'
+                'let c = "\\u{1f600} tail";\n')
+        self.assertEqual(string_literals(text), ['one two', 'three', 'u{1f600} tail'])
 
     def test_accept_m16_a_fu4_a_harness_the_reader_cannot_resolve_is_reported(self):
         """A `review` block with no task id, or no `claim`, is a hole, not a harness to skip."""
