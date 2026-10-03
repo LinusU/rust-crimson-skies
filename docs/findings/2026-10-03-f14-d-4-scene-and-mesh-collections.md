@@ -268,6 +268,27 @@ comparison of something else.
   counts, offsets and ranges; no node name, mesh, material or screenshot from the
   installation is in the repository.
 
+## Evidence
+
+`docs/findings/evidence/F14-D.4.json`, produced by
+`crates/cs_content/tests/evidence_report_f14_d_4.rs` and checked with
+\`python3 tools/validate_evidence.py private/evidence/F14-D.4/acceptance.json
+--artifact-root private/evidence/F14-D.4 --require-pass\`
+(\`{"structurally_valid": true, "artifact_count": 2}\`). It records the ten
+\`accept_f14_d_4_\` tests that ran (all passing, the retail one included), the
+installation and content digests measured by production discovery, and the
+64 MB consumer report as a hashed artifact.
+
+**Pre-existing failure, not this task's.** \`python3 -m unittest discover -s
+tools/tests -p 'test_evidence_review_identity.py'\` reports 2 failures on this
+branch **and on \`origin/main\`** with this branch's files absent:
+\`test_accept_m16_a_fu4_the_reader_covers_the_whole_family\` and
+\`test_accept_m16_a_fu4_a_runtime_identity_harness_is_exempt_and_pinned\` pin a
+\`runtime\`-shaped harness set that ten committed harnesses have outgrown. The
+identity cross-check this stage depends on — that the harness's literal equals the
+committed report's \`review.identity\`, and that the claim is \`implemented\` — passes
+for \`F14-D.4\`; filed as **#562 (TOOLS-EVID)** rather than fixed here.
+
 ## Sources used
 
 - `specs/F14-canonical-content-catalog-and-dependency-closure.md` (stage
