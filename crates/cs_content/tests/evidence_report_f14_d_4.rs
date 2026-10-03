@@ -58,7 +58,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 use cs_content::campaign_bindings::{CampaignInventory, campaign_layout};
 use cs_content::catalog::baseline::{
-    GEOMETRY_CONTAINER_FILE, baseline_report_json, retail_baseline,
+    GEOMETRY_CONTAINER_FILE, GEOMETRY_CONTAINER_PATTERN, baseline_report_json, retail_baseline,
 };
 use cs_types::content::ContentKind;
 
@@ -205,6 +205,24 @@ fn evidence_report_f14_d_4_writes_the_acceptance_report() {
         reported, containers,
         "one record per geometry container the installation's own diagnosis names"
     );
+    // Every parent-slot chain of all nine containers terminates inside its node
+    // array, so every name path this collection published names a real hierarchy
+    // rather than the part of a loop that fitted the walk.
+    assert!(
+        baseline
+            .geometry_containers
+            .iter()
+            .all(|report| report.unterminated == 0),
+        "no stored parent-slot chain loops in any of the nine containers"
+    );
+    assert!(
+        baseline
+            .collection_status
+            .iter()
+            .filter(|status| status.kind == ContentKind::SceneNode)
+            .all(|status| status.source == GEOMETRY_CONTAINER_PATTERN),
+        "the node collection names the pattern its nine files follow"
+    );
     let elements: Vec<&cs_types::content::CatalogElement> =
         node_rows.iter().chain(mesh_rows.iter()).copied().collect();
     {
@@ -254,6 +272,23 @@ fn evidence_report_f14_d_4_writes_the_acceptance_report() {
                 "{} must not claim readiness: nothing consumes a scene row yet",
                 element.id
             );
+            assert!(
+                !element.dependencies.is_empty(),
+                "{} carries the edge onto the file that holds its bytes",
+                element.id
+            );
+            // Checked directly, because `coverage.unresolved_references` only
+            // walks the closure from the declared roots and no geometry row is
+            // reachable yet: an edge onto an id the catalog does not hold is
+            // invisible to that count.
+            for edge in &element.dependencies {
+                assert!(
+                    baseline.catalog.get(&edge.target).is_some(),
+                    "{} points at {}, which the catalog does not hold",
+                    element.id,
+                    edge.target
+                );
+            }
         }
     }
     // Every edge of both collections resolves.
@@ -445,16 +480,31 @@ fn rows_of(
 fn review_identity() -> String {
     let recorded = String::from(
         "implementer: bunny-alpha-1/bunny-alpha-1 (Rally #487, implement claim of \
-         2026-10-03T03:30:51Z), Space Bunny Alpha. reviewer: this text names no reviewing \
-         identity, because none had taken place when it was written; the reviewing agent supplies \
-         their own through CS_EVIDENCE_REVIEW and replaces this text in the same commit, stating \
-         whether their context was fresh, whether their review is independent of the implementer, \
-         and which checks they ran. No agent review awards more than checked, and nothing here is \
-         verified_original: retail is read access to the installation's own files, the original \
-         game was never run, and both collections are structural — they record what the store holds \
-         and how it is named, not what the engine does with it. A format and identity claim like \
-         this one should be reviewed by a different agent instance or model with a fresh context, \
-         and no agent review replaces the owner's human approval",
+         2026-10-03T03:30:51Z), Space Bunny Alpha. reviewer: bunny-alpha-1/bunny-alpha-1 again, \
+         the same agent instance that wrote this stage, holding the review claim of \
+         2026-10-03T05:12:04Z, so this review is not independent evidence of anything and the \
+         format and identity claims still deserve a different agent instance or model; the \
+         reviewing session's context was fresh in the sense that it read only the branch, the \
+         specs, the findings note and the recorded handover summary, and carries no memory of \
+         writing the code. Checks the reviewer ran locally: cargo fmt --all -- --check; cargo \
+         clippy --workspace --all-targets --all-features --locked -- -D warnings; cargo test \
+         --workspace --locked; cargo test --workspace --locked -- accept_f14_d_4_ \
+         --include-ignored, which ran 11 tests including the retail one; and two mutations of \
+         the reviewed code, each killed by a test CI runs. The corrections made during the \
+         review are listed in \
+         docs/findings/2026-10-03-f14-d-4-scene-and-mesh-collections.md: a node row pointed at \
+         a mesh id no row holds, a parent-slot cycle produced a published name path, the \
+         inventory lookup case-folded a path, a guard could silently skip the shared container, \
+         the collection record named a bare file instead of the pattern its rows follow, an \
+         error variant nothing could construct was documented, two defects of the rebase onto \
+         F14-D.3 survived in the module documentation, and the note's byte total was wrong. The \
+         corpus measurements are unchanged: 56 620 scene node rows and 17 139 mesh rows over \
+         nine containers, 0 unreadable containers, 0 unterminated parent chains, and a coverage \
+         denominator that did not move. No agent review awards more than checked, and nothing \
+         here is verified_original: retail is read access to the installation's own files, the \
+         original game was never run, and both collections are structural — they record what \
+         the store holds and how it is named, not what the engine does with it. No agent review \
+         replaces the owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
@@ -485,7 +535,10 @@ fn review_method() -> String {
          pair of fields in the two-walk cross-check, and reporting the container counts as \
          the number of records pushed. Each of the seven is killed by at least one test CI \
          runs; the findings note lists which, and records the two that survived a first pass \
-         and the fixture change that killed them.",
+         and the fixture change that killed them. The reviewing agent's own two probes were: \
+         giving a node an edge onto a named mesh slot that no present record answers (killed by \
+         2 synthetic tests), and dropping the parent-chain termination measurement (killed by the \
+         one test that builds a parent cycle).",
     );
     recorded
         + &UNKNOWN_LIMITATIONS
@@ -519,10 +572,13 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
      and 3 488 more because the key the path forms is refused (a trailing space, a backslash or \
      a colon in a stored name, or a key over the 128-byte limit). Each such row is keyed by its \
      own record address inside its container and carries an explicit unknown naming which of the \
-     two happened; none is dropped and none is transliterated. Affected content: those nodes of \
-     all nine containers, and therefore every name-based binding that would address them. \
-     Resolving tasks: an owner ruling on an identity scheme that tolerates a repeated authored \
-     name, and the F11 stages for the bindings themselves.",
+     two happened; none is dropped and none is transliterated. A fourth class exists in the code — \
+     a node whose stored parent slots do not terminate inside the node array, so its name path \
+     names no hierarchy — and it occurs 0 times in this installation, which the acceptance test \
+     pins rather than assumes. Affected content: those nodes of all nine containers, and therefore \
+     every name-based binding that would address them. Resolving tasks: an owner ruling on an \
+     identity scheme that tolerates a repeated authored name, and the F11 stages for the bindings \
+     themselves.",
     "No row references a scene node or a mesh yet, so both collections are unreachable from the \
      declared roots and stay counted in coverage.unreachable_by_kind and \
      unreachable_needing_classification. Affected content: the reachability accounting of both \

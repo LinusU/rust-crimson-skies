@@ -15,8 +15,8 @@ run happened, so nothing here claims `verified_original`.
 "render meshes/materials/images" and "collision surfaces". Before this stage
 `cs_content::catalog::baseline::retail_baseline` held **no** `SceneNode`, `Mesh`,
 `Material`, `Image` or `CollisionSurface` row, so the retail catalog reported
-338 rows in six collections and the world's geometry — 46 MB of GameZ container
-across nine archives — was inventoried only as nine `install_file` rows.
+338 rows in six collections and the world's geometry — 52 386 080 bytes of GameZ
+container across nine archives — was inventoried only as nine `install_file` rows.
 
 ## Files and the one observable failure (listed before editing)
 
@@ -60,10 +60,18 @@ and the retail test both pin.
   `Diagnosis::planes_zbd` names the shared aircraft container, so the walk has
   nothing to guess. `GEOMETRY_CONTAINER_FILE` only says *which file inside a
   named group* holds the geometry, which is what F18-D's survey already treats as
-  a measured fact. The shared container is read although the task's goal sentence
-  speaks of world groups: it is 3 317 of the 56 620 node records and the only
-  aircraft geometry the installation has, and leaving it out would make the
-  collection read like an installation with none.
+  a measured fact. Each container is looked up under the inventory's own **logical
+  key** (`RelativePath::logical_key`) — never under a second, privately spelled
+  copy of it — and its bytes are read at the original spelling the manifest
+  holds, because joining a folded key onto the host root works on a
+  case-insensitive filesystem and fails on a case-sensitive one. The shared
+  container is read although the task's goal sentence speaks of world groups: it
+  is 3 317 of the 56 620 node records and the only aircraft geometry the
+  installation has, and leaving it out would make the collection read like an
+  installation with none. A group the diagnosis named but that stores no
+  `gamez.zbd` contributes no rows and is **named** in the collection's
+  diagnostic: a discovered group is not a promise that the file exists, so that
+  is a reported gap rather than an error.
 - **Both collections are read through the producing stages' readers**, over **one**
   shared `ParseContext`, because the two readers share the 40-byte header parser
   and a parse context labelled from a constant would name the wrong container in
@@ -93,25 +101,33 @@ and the retail test both pin.
   `MeshSlot` already uses, and the slot is the number a node's `mesh_index` names
   rather than a position in a walk.
 - **A node whose semantic key cannot be derived honestly is still a row.** Where
-  several nodes spell the same path, or where the key is refused (a byte the
-  grammar does not accept, or a key over `MAX_CONTENT_KEY_LEN`), the row is keyed
-  by `record<offset>` — its own record's address, which the reader cross-checks —
-  and carries one `UnsupportedReason::Unknown` naming which of the two happened
-  and quoting the stored path. Merging the rows, transliterating a name, inventing
-  a suffix and dropping the node are all refused: `IDENTITY-CONTENT` says a
-  collection cannot exclude a failed entry, and F11-A's rule is that a name is
-  never silently transliterated. The three-way classification lives in one place
-  (`NodeIdentity::of`) because the per-container counts and the rows themselves
-  must agree about it — the first version of this code had exactly that drift.
+  several nodes spell the same path, where the key is refused (a byte the
+  grammar does not accept, or a key over `MAX_CONTENT_KEY_LEN`), or where the
+  node's own parent-slot chain does not terminate inside the array, the row is
+  keyed by `record<offset>` — its own record's address, which the reader
+  cross-checks — and carries one `UnsupportedReason::Unknown` naming exactly
+  which of the three happened and quoting the stored path. Merging the rows,
+  transliterating a name, inventing a suffix and dropping the node are all
+  refused: `IDENTITY-CONTENT` says a collection cannot exclude a failed entry,
+  and F11-A's rule is that a name is never silently transliterated. The four-way
+  classification lives in one place (`NodeIdentity::of`) because the
+  per-container counts and the rows themselves must agree about it — the first
+  version of this code had exactly that drift.
 - **The parent→child edge follows the parent slots, not the child lists.** A
   node's parent is a field of its own record; a child list is a claim the parent
   makes about its children, and the world containers' two disagree (an unknown
   already recorded in `docs/findings/2026-10-02-gamez-node-array-layout.md`).
-  The name path is walked the same way.
+  The name path is walked the same way, and a chain that does not terminate (the
+  stored parent slots form a cycle, so the node is its own ancestor) yields a
+  path that names nothing: those rows are counted as `unterminated` and keyed by
+  their record address instead of being published under the part of the loop that
+  fitted. On this installation the count is **0** in all nine containers, which
+  the retail test pins.
 - **A mesh slot the node array names but the array leaves absent has no bytes of
   its own, so it gets no row** and is counted as the `named_slot_without_mesh`
-  gap. On this installation that count is 0: all 17 139 named slots hold a
-  present record.
+  gap. Every node that names such a slot says so on its own row and carries **no**
+  mesh edge: a catalog row may not point at an id nothing holds. On this
+  installation that count is 0: all 17 139 named slots hold a present record.
 - **Nothing is normalized and nothing is ready.** The stored translation, euler
   angles, LOD bounds and zone id are in source units and nothing in this
   workspace has established the original's world-vertex or angle unit, so every
@@ -142,7 +158,7 @@ builder over the read-only installation.
 Totals: **56 620 scene node rows** (42 897 keyed by their authored name path,
 10 235 keyed by their record address because the store spells that path for
 another node too, 3 488 keyed by their record address because the key the path
-forms is refused)
+forms is refused, **0** because their parent-slot chain does not terminate)
 and **17 139 mesh rows**, one per named slot, all of which hold a present record.
 Nine containers visited, nine read, none refused. The 56 620 node records match
 the corpus F11-A measured; the 17 139 present mesh records match the corpus F10-B
@@ -162,15 +178,16 @@ discovered later.
 
 | `accept_f14_d_4_*` test | Covers | Fails when |
 | --- | --- | --- |
-| `a_gamez_container_yields_one_node_row_per_node_and_one_mesh_row_per_named_slot` | one row per stored node and per present named slot across three containers; the F11-A name-path key; the span's container, `member_key`, offset and install fingerprint; the parse/normalize/readiness states and the fingerprint; the static edge onto the inventory row; `ObservedTool` provenance; the parent edge and its absence on a root; the mesh edge and its absence for a stored `-1`; the mesh row's own 36-byte extent; zero orphan references | a row is missing or merged, a span names the file rather than the record, a member key is invented, an edge class is upgraded, a root grows a parent edge, or `-1` grows a mesh edge |
+| `a_gamez_container_yields_one_node_row_per_node_and_one_mesh_row_per_named_slot` | one row per stored node and per present named slot across three containers; the F11-A name-path key; the span's container, `member_key`, offset and install fingerprint; the parse/normalize/readiness states and the fingerprint; the static edge onto the inventory row; `ObservedTool` provenance; the parent edge and its absence on a root; the mesh edge and its absence for a stored `-1`; the mesh row's own 36-byte extent; **every** edge of both collections resolving in the catalog | a row is missing or merged, a span names the file rather than the record, a member key is invented, an edge class is upgraded, a root grows a parent edge, `-1` grows a mesh edge, or an edge points at an id nothing holds |
 | `a_node_whose_name_path_is_shared_is_a_row_with_an_explicit_unknown` | two nodes spelling one path are two rows keyed by distinct record addresses, each with exactly one `node_path_ambiguous` unknown quoting the stored path; per-container counts (7 nodes, 4 named, 2 ambiguous, 1 unspellable, 6 paths, 1 absent slot); the collection's gap counts | the two rows are merged, one is dropped, either keeps the name-path key, or the counts and the rows disagree |
 | `a_node_whose_name_carries_unspellable_bytes_is_a_row_with_an_explicit_unknown` | a stored name ending in a space keeps its display name verbatim, is keyed by its record address with a `node_path_unspellable` unknown quoting `main.wing.brigturret `, appears nowhere as a trimmed identity, and still carries a resolving parent edge | the name is trimmed into an identity, transliterated, dropped, or the row loses its parent edge |
-| `a_named_mesh_slot_without_a_present_mesh_is_counted_not_rowed` | a slot named by a node but absent from the mesh array gets no row and is counted as `named_slot_without_mesh` | the absent slot is given a row, or the count is not reported |
+| `a_named_mesh_slot_without_a_present_mesh_is_counted_not_rowed` | a slot named by a node but absent from the mesh array gets no row and is counted as `named_slot_without_mesh`; the node that names it carries `node_mesh_slot_absent` and **no** mesh edge | the absent slot is given a row, the count is not reported, or the naming node grows an edge onto the id nothing holds |
+| `a_node_whose_parent_chain_never_ends_is_a_row_with_an_explicit_unknown` | two nodes that are each other's parent: no loop is spelled as a name path, each is keyed by its record address with `node_path_unterminated`, a node whose chain terminates is still a semantic path, and `unterminated` plus the four-way count identity hold per container and in the collection's gaps | a loop is published as a name path, the loop nodes are merged, or the counts and the rows disagree |
 | `a_container_the_readers_refuse_is_a_named_diagnostic_and_no_row` | a container that stops being a GameZ container yields no row, is named in the diagnostic, is counted in `unreadable_container`, and leaves the other two containers' rows and the F14-D inventory intact | a refused container is silently skipped, is guessed at, or takes the rest of the inventory with it |
 | `the_geometry_collections_do_not_move_the_coverage_denominator` | neither kind is launchable, no geometry row is a root, `launchable_count == roots.len()`, only the mission is an unsupported launchable, both kinds appear in `unreachable_by_kind`, zero orphan references | a geometry row becomes a root, or the denominator moves |
 | `the_report_renders_both_collections_and_the_per_container_counts` | the `collections` map and both `collection_status` records agree with the catalog, `geometry_containers` renders the per-container counts, no synthetic origin appears, and the report is byte-stable for the same installation | a count is missing, the two renderings disagree, or the report is not deterministic |
 | `a_world_group_without_a_geometry_container_is_named_not_guessed` | a discovered group that stores no `gamez.zbd` produces no row and is named in the diagnostic; no container is claimed to have been read | a row is minted from a directory's name |
-| `retail_every_gamez_container_yields_its_nodes_and_named_meshes` (retail) | the nine containers of `cs_assets::install::Diagnosis`; the 56 620 and 17 139 corpus totals; every container's `named + ambiguous + unspellable == nodes` and `mesh_rows + absent_meshes == named_meshes`; every row's span re-derived from the production readers as an exact record; no two records sharing an address; the install fingerprint and the container digest on every row; exactly a fallback-keyed row carrying an identity unknown; the frozen F50 denominator; zero orphan references | a container is missed, a corpus total moves, a span is not a record, a row loses its digest, or the denominator moves |
+| `retail_every_gamez_container_yields_its_nodes_and_named_meshes` (retail) | the nine containers of `cs_assets::install::Diagnosis`; the 56 620 and 17 139 corpus totals; every container's `named + ambiguous + unspellable + unterminated == nodes` and `mesh_rows + absent_meshes == named_meshes`; `unterminated == 0` and `unterminated_parent_chain == 0`; every row's span re-derived from the production readers as an exact record; no two records sharing an address; every edge of every row resolving in the catalog; the install fingerprint and the container digest on every row; exactly a fallback-keyed row carrying an identity unknown; the frozen F50 denominator | a container is missed, a corpus total moves, a span is not a record, a row loses its digest, an edge points at nothing, or the denominator moves |
 
 **Sensitivity check.** Seven mutations applied and reverted, each killed by a
 test CI runs (`cargo test --locked -p cs_content --test
@@ -185,6 +202,11 @@ accept_f14_d_4_geometry_collections`, no original data):
 | read the name path through the child lists instead of the parent slots | 2 |
 | compare a different pair of fields in the two-walk cross-check | 7 |
 | report the container counts as the number of records pushed rather than the number that read | 1 |
+| give a node an edge onto a named mesh slot no present record answers (reviewer pass) | 2 |
+| drop the parent-chain termination measurement (reviewer pass) | 1 |
+
+The last two are the reviewer's own mutations; both are recorded in the review
+section below with the corrections that killed them.
 
 The last two exist because the first pass of this suite let both mutations
 through, and that is worth recording rather than hiding: the fixture originally
@@ -273,20 +295,108 @@ comparison of something else.
 `docs/findings/evidence/F14-D.4.json`, produced by
 `crates/cs_content/tests/evidence_report_f14_d_4.rs` and checked with
 `python3 tools/validate_evidence.py private/evidence/F14-D.4/acceptance.json --artifact-root private/evidence/F14-D.4 --require-pass`
-(`{"structurally_valid": true, "artifact_count": 2}`). It records the ten
+(`{"structurally_valid": true, "artifact_count": 2}`). It records the eleven
 `accept_f14_d_4_` tests that ran (all passing, the retail one included), the
 installation and content digests measured by production discovery, and the
 consumer report as a hashed artifact.
 
 **Pre-existing failure, not this task's.** `python3 -m unittest discover -s
 tools/tests -p 'test_evidence_review_identity.py'` reports 2 failures on this
-branch **and on `origin/main`** with this branch's files absent:
+branch **and on `origin/main`** (checked by the reviewer in a clean worktree at
+`db047e41` with this branch's files absent):
 `test_accept_m16_a_fu4_the_reader_covers_the_whole_family` and
 `test_accept_m16_a_fu4_a_runtime_identity_harness_is_exempt_and_pinned` pin a
 `runtime`-shaped harness set that ten committed harnesses have outgrown. The
 identity cross-check this stage depends on — that the harness's literal equals the
 committed report's `review.identity`, and that the claim is `implemented` — passes
 for `F14-D.4`; filed as **#562 (TOOLS-EVID)** rather than fixed here.
+
+
+## Review additions to this stage (same task, reviewer pass)
+
+Reviewer: `bunny-alpha-1/bunny-alpha-1` (Rally #487, review claim of
+2026-10-03T05:12:04Z) — the **same agent instance** that implemented the stage,
+so this is **not independent review** and awards nothing above `checked`. The
+session that ran it was fresh (it read only the branch, the specs, this note and
+the recorded handover summary; it carries no memory of writing the code), but a
+different agent instance or model should still re-examine the format and identity
+claims, as `AGENTS.md` asks. Eight corrections were made while reviewing; none
+changes a measured count.
+
+1. **A dangling mesh edge, and the claim that hid it.** A node whose stored
+   `mesh_index` named a slot with no present mesh record still received a
+   `Static` edge onto `mesh/<container>.<slot>` — an id no row ever holds. The
+   collection's own fixture builds exactly that case (`ghost` names the absent
+   slot 2) and blessed it, and the suite's
+   `coverage.unresolved_references == 0` assertions could not see it: the closure
+   only walks **from the declared roots**, and no geometry row is reachable yet,
+   so "the baseline builds none" was unfalsifiable for these two collections. The
+   edge is now emitted only for a slot the container answers, and every node that
+   names an absent one carries `f14.d.4.baseline.node_mesh_slot_absent` naming the
+   slot instead. Both the synthetic and the retail suites now walk **every** edge
+   of both collections directly and require the catalog to hold its target; the
+   coverage count is kept as the global accounting, with a comment saying why it
+   cannot see this. Mutation check: restoring the old edge fails 2 synthetic
+   tests.
+2. **A bounded walk is not a terminated one.** `node_name_paths` bounded a parent
+   chain with `record count + 1` steps, which is correct for a forest and means
+   nothing for a cycle: a node that is its own ancestor got a name path made of
+   the part of the loop that fitted, and the row was published under it as
+   though the store had named it. A cycle is now **measured**: the walk reports
+   the nodes whose chain hit the bound, those rows are keyed by their record
+   address with `f14.d.4.baseline.node_path_unterminated`, and the count appears
+   per container (`unterminated`) and in the collection record
+   (`unterminated_parent_chain`). On this installation the count is **0** in all
+   nine containers, which the retail test now pins — so the corpus numbers
+   above are unchanged, and the "every name path names a real hierarchy" claim is
+   measured instead of assumed. New test:
+   `accept_f14_d_4_a_node_whose_parent_chain_never_ends_is_a_row_with_an_explicit_unknown`
+   (mutation check: dropping the detection fails exactly that test).
+3. **The inventory lookup was case-folded and separator-guessed.** The walk
+   looked each container up with `asset.to_ascii_lowercase()` although the
+   inventory is keyed by `RelativePath::logical_key()`; an installation whose
+   manifest spells a path with `\` would have missed its own file and reported a
+   gap. `geometry_sources` now returns logical keys, which is what
+   `retail_baseline` keys by.
+4. **A guard that could silently skip the shared container.** `geometry_sources`
+   compared `planes_zbd.logical_key()` against a second, privately spelled copy
+   of `zbd/planes.zbd` and skipped the container when they differed. Since
+   `Diagnosis::planes_zbd` is only ever `Some` when discovery found that key, the
+   guard can never fire — but if `cs_assets` ever changed the literal, the
+   baseline would have stopped reading `ZBD/planes.zbd` with nothing reported.
+   The guard and the duplicate constant are gone.
+5. **`CollectionStatus::source` named a bare file, not the pattern.** The struct
+   documents that a collection with one such file *per row* names the pattern its
+   rows follow — which is why the sibling world collection publishes
+   `WORLD_READER_PATTERN`. The geometry records published `gamez.zbd`, which is
+   not an installation-relative path at all. They now publish
+   `GEOMETRY_CONTAINER_PATTERN` (`ZBD/<world group>/gamez.zbd and
+   ZBD/planes.zbd`), with the nine real spellings in `geometry_containers`.
+6. **An error variant nothing could produce.** `BaselineError::UninventoriedContainer`
+   was documented in `# Errors` and matched in two `match` arms, but no code path
+   constructed it: a group with no `gamez.zbd` is an expected state that becomes
+   a named diagnostic (that is the behaviour the suite tests), so the variant was
+   documentation of a path that does not exist. Removed.
+7. **Two defects from the rebase onto the F14-D.3 commit.** The module
+   documentation had a duplicated, ungrammatical paragraph — the conflict
+   resolution spliced the F14-D.3 sentence onto the F14-D.4 one, leaving a
+   fragment starting "use, the file inventory is …" — and the bullet list was
+   split by a stray blank `//!` line. Both repaired; the paragraphs now read as
+   one derivation list.
+8. **A wrong number in this note.** The gap section said "46 MB of GameZ
+   container across nine archives"; the nine files measure 52 386 080 bytes
+   (≈50 MiB), which is what it now says.
+
+Two smaller corrections in the suites: a leftover `println!("DIAG …")` debug
+loop was removed from the first test, and the retail test's "no two records share
+an address" check compared `(offset, length)` **pairs**, so two records sharing a
+start with different lengths would have passed — it now compares the addresses on
+their own as well.
+
+`docs/findings/evidence/F14-D.4.json` was regenerated on the reviewed commit and
+its `review.identity` replaced with the reviewer's own text through
+`CS_EVIDENCE_REVIEW` in the same commit, as
+`tools/tests/test_evidence_review_identity.py` requires.
 
 
 ## Sources used

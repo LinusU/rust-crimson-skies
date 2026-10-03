@@ -30,8 +30,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use cs_content::campaign_bindings::CampaignInventory;
 use cs_content::catalog::baseline::{
-    Baseline, GAMEZ_CONTAINER_RECORD, GEOMETRY_CONTAINER_FILE, baseline_report_json,
-    install_file_key, retail_baseline,
+    Baseline, GAMEZ_CONTAINER_RECORD, GEOMETRY_CONTAINER_FILE, GEOMETRY_CONTAINER_PATTERN,
+    baseline_report_json, install_file_key, retail_baseline,
 };
 use cs_types::content::{
     CatalogElement, ContentId, ContentKind, NormalizeState, Origin, Readiness, UnsupportedReason,
@@ -387,12 +387,13 @@ fn row<'a>(baseline: &'a Baseline, id: &ContentId) -> &'a CatalogElement {
         .unwrap_or_else(|| panic!("the catalog holds {id}"))
 }
 
-fn unknown_claims(element: &CatalogElement) -> Vec<String> {
+/// The claim ids of every `UnsupportedReason::Unknown` a row carries.
+fn unknown_claims(element: &CatalogElement) -> Vec<&str> {
     element
         .unsupported_reasons
         .iter()
         .filter_map(|reason| match reason {
-            UnsupportedReason::Unknown { claim_id, .. } => Some(claim_id.as_str().to_owned()),
+            UnsupportedReason::Unknown { claim_id, .. } => Some(claim_id.as_str()),
             _ => None,
         })
         .collect()
@@ -403,9 +404,6 @@ fn unknown_claims(element: &CatalogElement) -> Vec<String> {
 fn accept_f14_d_4_a_gamez_container_yields_one_node_row_per_node_and_one_mesh_row_per_named_slot() {
     let temp = tree("complete", fixture_nodes(), fixture_nodes());
     let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
-    for s in &baseline.collection_status {
-        println!("DIAG {} {:?}", s.kind.label(), s.diagnostic);
-    }
     let world = "ZBD/C1/gamez.zbd";
     let planes = "ZBD/planes.zbd";
     let world_key = container_key(world);
@@ -451,11 +449,18 @@ fn accept_f14_d_4_a_gamez_container_yields_one_node_row_per_node_and_one_mesh_ro
                 !element.fingerprint.is_none(),
                 "the row names the bytes it was read from"
             );
-            // Nothing about this node's identity is unknown: its name path is
-            // its own and the id grammar accepts it.
+            // Nothing about this node's *identity* is unknown: its name path is
+            // its own and the id grammar accepts it. `main.ghost` names the mesh
+            // slot the array leaves absent, which is a fact about the mesh
+            // collection and is recorded on the row as its own unknown.
+            let expected_unknowns: &[&str] = if path.ends_with("ghost") {
+                &["f14.d.4.baseline.node_mesh_slot_absent"]
+            } else {
+                &[]
+            };
             assert_eq!(
                 unknown_claims(element),
-                Vec::<String>::new(),
+                expected_unknowns,
                 "a node the store distinguishes by its name needs no identity unknown"
             );
             assert!(
@@ -636,11 +641,35 @@ fn accept_f14_d_4_a_gamez_container_yields_one_node_row_per_node_and_one_mesh_ro
         "the stored positions are in source units, which nothing has calibrated"
     );
 
-    // Every edge in both collections resolves: no row references an id nothing
-    // holds, so the closure's orphan count stays zero.
+    // Every edge of both collections points at a row the catalog really holds.
+    //
+    // This is checked directly rather than through
+    // `coverage.unresolved_references`, because that count only walks the closure
+    // **from the declared roots** and no geometry row is reachable yet: an edge
+    // onto an id nothing holds would be invisible there. The direct walk is what
+    // makes "a row never references a row that does not exist" true of these two
+    // collections today; the coverage count is kept as the global accounting.
+    for element in rows_of(&baseline, ContentKind::SceneNode)
+        .into_iter()
+        .chain(rows_of(&baseline, ContentKind::Mesh))
+    {
+        assert!(
+            !element.dependencies.is_empty(),
+            "{} carries the file edge it was read from",
+            element.id
+        );
+        for edge in &element.dependencies {
+            assert!(
+                baseline.catalog.get(&edge.target).is_some(),
+                "{} points at {}, which the catalog does not hold",
+                element.id,
+                edge.target
+            );
+        }
+    }
     assert_eq!(
         baseline.coverage.unresolved_references, 0,
-        "a collection that pointed at ids it did not insert would report orphans"
+        "and the closure the declared roots reach reports no orphan reference either"
     );
 }
 
@@ -684,7 +713,7 @@ fn accept_f14_d_4_a_node_whose_name_path_is_shared_is_a_row_with_an_explicit_unk
     {
         assert_eq!(
             unknown_claims(element),
-            vec!["f14.d.4.baseline.node_path_ambiguous".to_owned()],
+            vec!["f14.d.4.baseline.node_path_ambiguous"],
             "the shared name path is this baseline's own claim, not a borrowed one"
         );
         let reason = element
@@ -803,7 +832,7 @@ fn accept_f14_d_4_a_node_whose_name_carries_unspellable_bytes_is_a_row_with_an_e
     );
     assert_eq!(
         unknown_claims(element),
-        vec!["f14.d.4.baseline.node_path_unspellable".to_owned()],
+        vec!["f14.d.4.baseline.node_path_unspellable"],
         "the refused spelling is this baseline's own claim"
     );
     let reason = element
@@ -899,8 +928,123 @@ fn accept_f14_d_4_the_two_walks_meet_at_the_headers_own_node_offset() {
     assert_eq!(nodes.data_offset, nodes.info_end);
 }
 
+/// A stored node whose parent slots form a **cycle** has no name path at all: the
+/// walk can only bound the loop, never end it, so the row is keyed by its record
+/// address, carries an explicit unknown naming the reason, and is counted in the
+/// collection's own record — instead of being published under a path made of the
+/// part of the loop that fitted.
+#[test]
+fn accept_f14_d_4_a_node_whose_parent_chain_never_ends_is_a_row_with_an_explicit_unknown() {
+    let temp = TempInstall::new("parent-cycle");
+    write_campaign(&temp);
+    // The shared container stays sound; both world groups store one pair of
+    // nodes that are each other's parent.
+    temp.write("ZBD/planes.zbd", &write_container(&fixture_nodes(), 3, 2));
+    let mut looping = vec![
+        object("loopa", -1, Some(1)),
+        object("loopb", -1, Some(0)),
+        object("free", -1, None),
+    ];
+    with_child_lists(&mut looping, &[]);
+    for group in ["C1", "C1C"] {
+        temp.write(
+            &format!("ZBD/{group}/{GEOMETRY_CONTAINER_FILE}"),
+            &write_container(&looping, 1, 1),
+        );
+    }
+    let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
+    let world_key = container_key("ZBD/C1/gamez.zbd");
+
+    // Three rows per world container, none of them published under a loop path,
+    // and the sound container's rows are untouched.
+    let world_rows: Vec<&CatalogElement> = rows_of(&baseline, ContentKind::SceneNode)
+        .into_iter()
+        .filter(|element| element.id.key().starts_with(&format!("{world_key}.")))
+        .collect();
+    assert_eq!(world_rows.len(), 3, "one row per stored node, cycle or not");
+    assert!(
+        baseline
+            .catalog
+            .elements()
+            .filter(|element| element.kind == ContentKind::SceneNode)
+            .all(|element| !element.id.key().contains(".loop")),
+        "a loop is never spelled as a name path: {:?}",
+        rows_of(&baseline, ContentKind::SceneNode)
+            .iter()
+            .map(|element| element.id.key().to_owned())
+            .collect::<Vec<_>>()
+    );
+    for name in ["loopa", "loopb"] {
+        let element = world_rows
+            .iter()
+            .copied()
+            .find(|element| element.display_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("the node the container calls {name} is a row of its own"));
+        assert!(
+            element.id.key().contains(GAMEZ_CONTAINER_RECORD),
+            "{name} is keyed by its own record address: {}",
+            element.id
+        );
+        assert_eq!(
+            unknown_claims(element),
+            vec!["f14.d.4.baseline.node_path_unterminated"],
+            "the reason is named, not guessed"
+        );
+        // The other container's rows are unaffected: the row still names the
+        // bytes it was read from.
+        assert!(
+            baseline
+                .catalog
+                .get(&cid(ContentKind::InstallFile, &world_key))
+                .is_some()
+        );
+    }
+    // The node that terminates its chain is still a semantic path.
+    let free = row(
+        &baseline,
+        &cid(ContentKind::SceneNode, &format!("{world_key}.free")),
+    );
+    assert_eq!(free.display_name.as_deref(), Some("free"));
+    assert_eq!(unknown_claims(free), Vec::<&str>::new());
+
+    // The per-container record and the collection's own gap count the two nodes
+    // whose chain never ends, per container.
+    for spelling in ["ZBD/C1/gamez.zbd", "ZBD/C1C/gamez.zbd"] {
+        let report = baseline
+            .geometry_containers
+            .iter()
+            .find(|report| report.spelling == spelling)
+            .expect("the container is reported");
+        assert_eq!(report.unterminated, 2, "{spelling}");
+        assert_eq!(
+            report.named + report.ambiguous + report.unspellable + report.unterminated,
+            report.nodes,
+            "{spelling}: every node is named, ambiguous, unspellable or unterminated"
+        );
+    }
+    assert_eq!(
+        status_of(&baseline, ContentKind::SceneNode)
+            .gaps
+            .get("unterminated_parent_chain"),
+        Some(&4),
+        "two nodes in each of the two world containers"
+    );
+    assert_eq!(
+        baseline
+            .geometry_containers
+            .iter()
+            .find(|report| report.spelling == "ZBD/planes.zbd")
+            .expect("the shared container is reported")
+            .unterminated,
+        0,
+        "a container whose chains terminate counts none"
+    );
+}
+
 /// A mesh slot the node array names but the array leaves absent has no bytes of
-/// its own, so it gets no row and is counted in the collection's own record.
+/// its own, so it gets no row and is counted in the collection's own record —
+/// and every node that names it says so, rather than pointing at the row that
+/// does not exist.
 #[test]
 fn accept_f14_d_4_a_named_mesh_slot_without_a_present_mesh_is_counted_not_rowed() {
     let temp = tree("absent-slot", fixture_nodes(), fixture_nodes());
@@ -922,6 +1066,39 @@ fn accept_f14_d_4_a_named_mesh_slot_without_a_present_mesh_is_counted_not_rowed(
             .all(|element| !element.id.key().ends_with(".2")),
         "the absent slot is nowhere in the catalog"
     );
+    // The node that names it carries the explicit unknown instead of an edge onto
+    // the id that holds nothing: a catalog row may not reference a row that does
+    // not exist, and the fact the container states must not disappear with it.
+    let ghost = row(
+        &baseline,
+        &cid(ContentKind::SceneNode, &format!("{world_key}.main.ghost")),
+    );
+    assert!(
+        !ghost
+            .dependencies
+            .iter()
+            .any(|edge| edge.target.kind() == ContentKind::Mesh),
+        "the node names no mesh edge onto a row the catalog does not hold: {:?}",
+        ghost
+            .dependencies
+            .iter()
+            .map(|edge| edge.target.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        unknown_claims(ghost),
+        vec!["f14.d.4.baseline.node_mesh_slot_absent"],
+        "the absent slot is an explicit unknown on the row that states it"
+    );
+    let reason = ghost
+        .unsupported_reasons
+        .iter()
+        .find_map(|reason| match reason {
+            UnsupportedReason::Unknown { reason, .. } => Some(reason.as_str()),
+            _ => None,
+        })
+        .expect("the row says why there is no mesh behind it");
+    assert!(reason.contains("mesh_index 2"), "{reason}");
     let status = status_of(&baseline, ContentKind::Mesh);
     assert_eq!(status.rows, FIXTURE_CONTAINERS * FIXTURE_MESH_ROWS);
     assert_eq!(
@@ -1081,7 +1258,7 @@ fn accept_f14_d_4_the_report_renders_both_collections_and_the_per_container_coun
         ("mesh", FIXTURE_CONTAINERS * FIXTURE_MESH_ROWS),
     ] {
         let record = format!(
-            "\"kind\":\"{kind}\",\"source\":\"{GEOMETRY_CONTAINER_FILE}\",\
+            "\"kind\":\"{kind}\",\"source\":\"{GEOMETRY_CONTAINER_PATTERN}\",\
              \"language\":null,\"rows\":{rows},"
         );
         assert!(report.contains(&record), "{kind} record: {report}");
@@ -1094,7 +1271,7 @@ fn accept_f14_d_4_the_report_renders_both_collections_and_the_per_container_coun
         report.contains(
             "\"container\":\"ZBD/C1/gamez.zbd\",\"nodes\":8,\"named\":5,\"ambiguous\":2,\
              \"unspellable\":1,\"paths\":7,\"roots\":1,\"named_meshes\":3,\"mesh_rows\":2,\
-             \"absent_meshes\":1}"
+             \"absent_meshes\":1,\"unterminated\":0}"
         ),
         "{report}"
     );
@@ -1208,11 +1385,19 @@ fn accept_f14_d_4_retail_every_gamez_container_yields_its_nodes_and_named_meshes
     // Every container read: nothing was refused, so no diagnostic is reported.
     let node_status = status_of(&baseline, ContentKind::SceneNode);
     let mesh_status = status_of(&baseline, ContentKind::Mesh);
-    assert_eq!(node_status.source, GEOMETRY_CONTAINER_FILE);
-    assert_eq!(mesh_status.source, GEOMETRY_CONTAINER_FILE);
+    assert_eq!(node_status.source, GEOMETRY_CONTAINER_PATTERN);
+    assert_eq!(mesh_status.source, GEOMETRY_CONTAINER_PATTERN);
     assert_eq!(node_status.language, None, "a container has no language");
     assert_eq!(node_status.gaps.get("unreadable_container"), Some(&0));
     assert_eq!(mesh_status.gaps.get("unreadable_container"), Some(&0));
+    // Every parent-slot chain of all nine containers terminates inside the array,
+    // which is what makes the corpus totals below comparable with F11-A's: no node
+    // is its own ancestor, so every name path names a real hierarchy.
+    assert_eq!(
+        node_status.gaps.get("unterminated_parent_chain"),
+        Some(&0),
+        "no stored parent-slot chain loops in any of the nine containers"
+    );
     assert_eq!(
         node_status.gaps.get("container_visited").copied(),
         Some(expected_containers.len()),
@@ -1264,9 +1449,14 @@ fn accept_f14_d_4_retail_every_gamez_container_yields_its_nodes_and_named_meshes
             report.spelling
         );
         assert_eq!(
-            report.named + report.ambiguous + report.unspellable,
+            report.unterminated, 0,
+            "{}: every chain terminates",
+            report.spelling
+        );
+        assert_eq!(
+            report.named + report.ambiguous + report.unspellable + report.unterminated,
             report.nodes,
-            "{}: every node is named, ambiguous or unspellable",
+            "{}: every node is named, ambiguous, unspellable or unterminated",
             report.spelling
         );
         assert_eq!(
@@ -1298,6 +1488,15 @@ fn accept_f14_d_4_retail_every_gamez_container_yields_its_nodes_and_named_meshes
             records.len(),
             decoded.nodes.len() + mesh_section.present_count(),
             "{}: no two records share an address inside one container",
+            report.spelling
+        );
+        // The extents alone would also pass if two records shared a start and
+        // differed in length, so the addresses are compared on their own.
+        let addresses: BTreeSet<u64> = records.iter().map(|(offset, _)| *offset).collect();
+        assert_eq!(
+            addresses.len(),
+            records.len(),
+            "{}: every record starts at its own address",
             report.spelling
         );
 
@@ -1343,8 +1542,33 @@ fn accept_f14_d_4_retail_every_gamez_container_yields_its_nodes_and_named_meshes
                 "{}: the row fingerprints the bytes it was read from",
                 element.id
             );
+            // Every edge of every row of this container points at a row the
+            // catalog holds. `coverage.unresolved_references` cannot see this:
+            // the closure only walks from the declared roots and no geometry row
+            // is reachable yet.
+            for edge in &element.dependencies {
+                assert!(
+                    baseline.catalog.get(&edge.target).is_some(),
+                    "{} points at {}, which the catalog does not hold",
+                    element.id,
+                    edge.target
+                );
+            }
         }
     }
+
+    // This installation names no mesh slot the container leaves absent, so the
+    // mesh-slot unknown this suite pins on a synthetic container occurs nowhere
+    // in the corpus: every node's mesh edge resolves to a mesh row.
+    assert!(
+        baseline
+            .catalog
+            .elements()
+            .filter(|element| element.kind == ContentKind::SceneNode)
+            .all(|element| !unknown_claims(element)
+                .contains(&"f14.d.4.baseline.node_mesh_slot_absent")),
+        "every named mesh slot of all nine containers holds a present record"
+    );
 
     // The denominator did not move: the campaign part of it is still the frozen
     // F50 inventory, and no geometry row is a root.
