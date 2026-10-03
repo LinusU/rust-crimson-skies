@@ -112,7 +112,7 @@ fn node_section(nodes_offset: u32, nodes: &[NodeSpec]) -> Vec<u8> {
         for axis in 0..3 {
             float(&mut out, record + 24 + 4 * axis, 0.0); // rotation
             float(&mut out, record + 36 + 4 * axis, 1.0); // scale
-            float(&mut out, record + 48 + 4 * (3 * axis + axis), 1.0); // matrix diagonal
+            float(&mut out, record + 48 + 16 * axis, 1.0); // matrix diagonal
             float(&mut out, record + 84 + 4 * axis, 0.0); // translation
         }
     }

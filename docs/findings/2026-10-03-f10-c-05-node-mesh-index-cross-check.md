@@ -153,16 +153,23 @@ test, because `NodeMeshBindings` deliberately carries no multiplicity.
 | `the_container_reports_node_and_mesh_problems_in_one_list` (`cs_content`) | a four-slot container whose node array names a present slot, a stub and an index past the array: both codes, both nodes, one joined list in stored order — while the container still opens and its meshes are still rows | the joined list loses either half, or the check fails the container |
 | `the_node_half_is_additive_to_the_material_audit` (`cs_content`) | a catalog with **no** node array is unchanged, and `blocked` with an empty verdict is exactly the material audit's own list | the node half becomes required of `MeshContainer::open` |
 
-**Sensitivity check.** Five mutations applied and reverted, each killed by a test
+**Sensitivity check.** Six mutations applied and reverted, each killed by a test
 CI can run:
 
 | mutation | killed by |
 | --- | --- |
-| resolve the slot from a compact enumeration of the present meshes instead of `GameZMeshes::get` | `the_slot_is_looked_up_where_it_is_stored_not_in_a_compact_list`, `a_node_naming_an_all_zero_stub_is_absent_not_out_of_range` |
+| resolve the slot from a compact enumeration of the present meshes instead of `GameZMeshes::get` | `the_slot_is_looked_up_where_it_is_stored_not_in_a_compact_list`, `a_node_naming_an_all_zero_stub_is_absent_not_out_of_range`, and the retail test (`resolved` 1 753 against a bound of 1 766 in `planes.zbd`) |
 | clamp an out-of-range index to the last slot | `a_node_naming_a_slot_outside_the_mesh_array_is_named_with_its_node_and_slot` |
 | report only the first node that names no mesh | `a_node_naming_an_all_zero_stub_is_absent_not_out_of_range`, `the_slot_is_looked_up_where_it_is_stored_not_in_a_compact_list` |
+| collapse the two codes into one (`Absent` reported as `OutOfRange`) | `a_node_naming_an_all_zero_stub_is_absent_not_out_of_range`, `the_slot_is_looked_up_where_it_is_stored_not_in_a_compact_list`, `the_container_reports_node_and_mesh_problems_in_one_list` |
 | drop the node half from `MeshContainer::blocked` | `the_container_reports_node_and_mesh_problems_in_one_list` |
 | `MeshContainer::node_bindings` ignores the caller's node array | `the_container_reports_node_and_mesh_problems_in_one_list` |
+
+Two of these — the compact enumeration and the collapsed codes — were applied and
+reverted a second time by the reviewer of #495, and the nine-archive table above
+was reproduced column for column by walking the same two production readers over
+the installation, so those numbers are measurements rather than figures copied
+from the task description.
 
 ## Unknowns and limitations (all recorded, none guessed)
 
@@ -189,6 +196,21 @@ CI can run:
   design decisions above). **Affected content:** a caller that could pass a node
   array from a sibling container. **Resolving it** belongs with whichever stage
   decides that the F10 catalog reads the node section.
+- **The F14 geometry walk answers the same question a second time.**
+  `crates/cs_content/src/catalog/baseline.rs` resolves every node's `mesh_index`
+  against the mesh section itself: `read_geometry_container` counts
+  `absent_meshes` over the distinct named slots, `geometry_node_rows` puts
+  `CLAIM_ABSENT_NODE_MESH` (`absent_node_mesh_unknown`) on each unresolved node,
+  and the caller inserts the `named_slot_without_mesh` collection gap. That copy
+  resolves on the **stored** slot, so it is not wrong about the non-sequential
+  mesh index, and its counts agree with this check over the whole measured
+  corpus. What it does not have is the two facts kept apart: a node naming a slot
+  past the array and a node naming an inside-the-array all-zero stub both become
+  "named slot without mesh". **Affected content:** the machine-readable
+  `Mesh` collection status and `SceneNode` row reasons on any container that
+  stores an index past its mesh array — nothing in the measured installation.
+  **Resolving task:** **#593 (F14-D-NODE-MESH-CODE)**, which makes the walk
+  answer through `NodeMeshBindings` so one check owns the rule.
 - **Which mesh a node ends up drawing is F11's and F17-B's.** This check
   establishes that every stored index names a present mesh. It does not decide which
   node's transform applies, how a LOD node selects, or what a renderer uploads;

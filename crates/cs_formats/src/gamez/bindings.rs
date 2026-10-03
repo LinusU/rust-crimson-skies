@@ -237,8 +237,10 @@ impl NodeMeshBindings {
         self.bound - self.resolved
     }
 
-    /// Every node names a present mesh. This is the reference's own assertion,
-    /// measured rather than assumed.
+    /// Every **non-negative** `mesh_index` in this container names a present
+    /// mesh. This is the reference's own assertion, measured rather than
+    /// assumed. A node storing the `-1` sentinel names no position in the array
+    /// and so is not part of the claim.
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.findings.is_empty()
@@ -255,9 +257,11 @@ impl fmt::Display for NodeMeshBindings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} of {} nodes name a present mesh across {} slots ({} present); {} name none",
+            "{} of {} nodes name a present mesh ({} of them name a slot at all) across {} slots \
+             ({} present); {} of those name none",
             self.resolved,
             self.nodes,
+            self.bound,
             self.slots,
             self.present,
             self.unresolved()
