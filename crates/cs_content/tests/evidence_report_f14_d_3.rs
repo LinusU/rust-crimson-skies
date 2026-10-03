@@ -409,11 +409,18 @@ fn reader_directory(container_path: &str) -> &str {
 fn review_identity() -> String {
     let recorded = String::from(
         "implementer: bunny-alpha-1/bunny-alpha-1 (Rally #486, implement claim of \
-         2026-10-03T00:47:15Z). No review claim had run when this report was generated, so \
-         the implementer is the only identity recorded: the reviewing agent replaces this \
-         literal and names itself here in the same commit that regenerates the report. The \
-         reviewing session should record whether its context was fresh. `checked` is the \
-         ceiling for an agent review and no agent review replaces the owner's human approval",
+         2026-10-03T00:47:15Z); reviewer: deepseek-1 (DeepSeek V4.1 Flash), the reviewing \
+         agent of Rally #486, in a fresh session on the reviewed and rebased tree — a \
+         different agent instance and model from the implementer, so this review is \
+         independent and the reviewer's context is fresh. The reviewing session built its \
+         context from the task description and history, the feature sheet, the \
+         IDENTITY-CONTENT and CLI-EVIDENCE contracts and the branch diff; it re-ran the four \
+         checks and the acceptance suite locally with CS_GAME_DIR, checked the eight world \
+         rows against an independent walk of the installation's ZBD groups, and regenerated \
+         this report on the reviewed tree. The world-collection code, its tests and the \
+         finding met the task acceptance; the only correction was this review-identity \
+         record. `checked` is the ceiling for an agent review and no agent review replaces \
+         the owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
