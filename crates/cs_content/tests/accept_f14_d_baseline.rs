@@ -387,6 +387,7 @@ fn accept_f14_d_synthetic_launchable_row_is_never_a_retail_catalog_entry() {
         },
         classified_reader_dirs: Vec::new(),
         unrecognized_program_dirs: Vec::<ProgramDirRecord>::new(),
+        geometry_containers: Vec::new(),
         collection_status: Vec::new(),
     });
     assert!(report.contains("\"retail\":false"));

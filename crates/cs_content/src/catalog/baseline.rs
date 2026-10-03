@@ -112,7 +112,21 @@
 //!   cannot move the denominator,
 //!   and F41's declared bus/playback metadata stays an explicit
 //!   [`UnsupportedReason::Unknown`] on every row while no media player consumer
-//!   is claimed.
+//!   is claimed;
+//! * one [`ContentKind::SceneNode`] row per stored node of every GameZ geometry
+//!   container the installation holds, and one [`ContentKind::Mesh`] row per
+//!   mesh slot those node arrays name (F14-D.4), read through the **producing
+//!   stages' own readers** (`cs_formats::gamez::read_gamez_nodes` and
+//!   `::read_gamez_meshes`, the readers F10 and F11 measured against every
+//!   archive) rather than a reader derived here. A node whose semantic key
+//!   cannot be derived honestly — because the store spells the same authored
+//!   name path for several nodes, because the path carries bytes the id grammar
+//!   refuses, or because the node's own parent-slot chain never reaches a root —
+//!   is still a row: it is located by its own record's address inside the
+//!   container and carries an explicit unknown naming exactly what could not be
+//!   derived. Neither kind is launchable, so the denominator does not move; the
+//!   per-container counts are reported in [`CollectionStatus`] rather than
+//!   dropped.
 //!
 //! Every row's [`Origin`] is [`Origin::Installation`] with a checked
 //! [`SourceSpan`] and the installation fingerprint of the bytes that were read,
@@ -144,8 +158,11 @@
 //! patterns, the paint-mask rows are the members
 //! [`crate::livery::StockLiveryCatalog`] verified in [`PAINT_MASK_CONTAINER`],
 //! the airframe rows are F11-D2's [`discover_airframe_roster`] over the
-//! decoded loading-script container, and the sound rows are the members the F06
-//! sound reader listed in the containers its own role rule names.
+//! decoded loading-script container, the sound rows are the members the F06
+//! sound reader listed in the containers its own role rule names, and the
+//! geometry containers are the ones [`cs_assets::install::Diagnosis`] names:
+//! every discovered world group plus the shared `ZBD/planes.zbd` the same
+//! diagnosis carries as its own field.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -165,6 +182,7 @@ use cs_formats::zbd::{
 use cs_types::asset_id::{
     AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan, SourceSpanError,
 };
+use cs_formats::gamez::{GameZMeshes, GameZNodes, read_gamez_meshes, read_gamez_nodes};
 use cs_types::content::{
     CatalogElement, ContentId, ContentIdError, ContentKind, Dependency, DependencyKind,
     NormalizeState, Origin, Provenance, Readiness, UnsupportedReason,
@@ -341,6 +359,61 @@ const AIRFRAME_DECLARING_SCRIPT: &str = "support\\planes.gw";
 /// container component is the installation's own (`ZBD` on the owner's
 /// installation) and the group component is the world-group directory.
 pub const WORLD_READER_PATTERN: &str = "ZBD/<world group>/zrdr.zbd";
+
+/// The claim id behind the observation that the `gamez.zbd` a world group (or
+/// the shared planes container) holds is a **loose installation file** whose
+/// bytes are the CS GameZ container itself, so a span into it names the file
+/// and carries no member key.
+const CLAIM_GEOMETRY_CONTAINER: &str = "f14.d.4.baseline.geometry_container";
+
+/// The claim id behind the observation that a stored node's parent slot names
+/// the node that owns it, so the parent→child edge between two `scene_node`
+/// rows is a link the container states rather than one this walk inferred.
+const CLAIM_NODE_PARENTAGE: &str = "f14.d.4.baseline.node_parentage";
+
+/// The claim id behind the observation that a node's stored `mesh_index`, when
+/// it is not negative, names the mesh-array slot whose stored record holds
+/// that mesh's bytes.
+const CLAIM_NODE_MESH_SLOT: &str = "f14.d.4.baseline.node_mesh_slot";
+
+/// The claim id behind the observation that several stored nodes of one
+/// container spell the same authored name path, so the semantic key a
+/// `scene_node` identity is built from cannot tell them apart.
+const CLAIM_AMBIGUOUS_NODE_PATH: &str = "f14.d.4.baseline.node_path_ambiguous";
+
+/// The claim id behind the observation that a stored node's authored name path
+/// carries bytes the `ContentId` key grammar refuses, so the same key cannot
+/// be built from it.
+const CLAIM_UNSPELLABLE_NODE_PATH: &str = "f14.d.4.baseline.node_path_unspellable";
+
+/// The installation-relative file name every world group's geometry container
+/// has, and the shared planes container's geometry container.
+///
+/// A **measured** fact about this installation family, not a general rule:
+/// `cs_assets::install::Diagnosis` names each world group as a discovered
+/// directory and `ZBD/planes.zbd` as its own field, so this constant only says
+/// which file inside a named directory holds the geometry. Nothing here infers
+/// a group that the diagnosis did not discover, and a group that stores its
+/// geometry under another name yields no rows and a diagnostic instead.
+pub const GEOMETRY_CONTAINER_FILE: &str = "gamez.zbd";
+
+/// The shared aircraft-geometry container's installation-relative logical key.
+///
+/// `cs_assets::install::Diagnosis::planes_zbd` reports the **original
+/// spelling**; this is the logical key that field is found under, stated once
+/// so the baseline and its tests never spell it twice.
+const PLANES_CONTAINER_KEY: &str = "zbd/planes.zbd";
+
+/// The key segment that stands in for a node's authored name path when the
+/// semantic key cannot be derived honestly.
+///
+/// The suffix is the node's own record address inside its container
+/// (`<GAMEZ_CONTAINER_RECORD>.<offset>`), the one byte position the reader
+/// checks against the stored pointer on every node. It is a property of the
+/// stored record, not of a walk, so two runs over the same container derive
+/// the same identity and a reordering of the array would move it — which is
+/// what distinguishes it from an enumeration counter.
+pub const GAMEZ_CONTAINER_RECORD: &str = "record";
 
 /// The installation-relative spelling of the string image the multiplayer mode
 /// table is read from.
@@ -529,6 +602,15 @@ pub enum BaselineError {
         airframe: String,
         /// The offset the producing discovery reported.
         offset: u64,
+    /// A `gamez.zbd` an inventoried geometry container holds is **not** in the
+    /// inventory (it was skipped as a symbolic link or a non-regular entry), so
+    /// no fingerprinted row can be built for it or for the scene content read
+    /// out of it.
+    UninventoriedContainer {
+        /// The container the geometry was looked for in.
+        container: String,
+        /// The geometry container's spelling.
+        asset: String,
     },
 }
 
@@ -579,6 +661,10 @@ impl fmt::Display for BaselineError {
                 f,
                 "the airframe {airframe} is located by a line at offset {offset}, which the \
                  loading-script container does not hold; the row's own bytes cannot be named"
+            Self::UninventoriedContainer { container, asset } => write!(
+                f,
+                "the geometry container {asset} of {container} is present but not inventoried, so no \
+                 fingerprinted scene row can be built for it"
             ),
         }
     }
@@ -596,6 +682,7 @@ impl std::error::Error for BaselineError {
             Self::Closure(error) => Some(error),
             Self::MissingProgram { .. }
             | Self::UninventoriedProgram { .. }
+            | Self::UninventoriedContainer { .. }
             | Self::Identity { .. }
             | Self::Provenance { .. }
             | Self::AirframeRoster(_)
@@ -728,6 +815,10 @@ pub struct Baseline {
     /// Reader-archive directories neither the campaign layout nor the member
     /// evidence classifies. They are named, never counted and never dropped.
     pub unrecognized_program_dirs: Vec<ProgramDirRecord>,
+    /// What each GameZ geometry container contributed to the `scene_node` and
+    /// `mesh` collections (F14-D.4), in walk order: the shared planes container
+    /// first, then every discovered world group.
+    pub geometry_containers: Vec<GeometryContainerReport>,
     /// What each source-derived collection contributed, in collection order.
     pub collection_status: Vec<CollectionStatus>,
 }
@@ -741,14 +832,16 @@ impl Baseline {
 
 /// Builds the complete private baseline inventory of `install_root`.
 ///
-/// The walk reads the installation four ways and nothing else: the F02
+/// The walk reads the installation five ways and nothing else: the F02
 /// inventory (`cs_assets::install::discover`) for every regular file, the
 /// shared campaign layout ([`crate::campaign_bindings::campaign_layout`]) for
 /// the mission directories, each mission's reader archive for its span and
-/// digest, and the string image F56-A reads the multiplayer mode table from
-/// ([`MODE_STRING_IMAGE`], one row per mode). Rows are inserted in a fixed
-/// order and every report array is rendered from canonical id order, so the
-/// same installation yields the same bytes (spec F14 AC02).
+/// digest, the string image F56-A reads the multiplayer mode table from
+/// ([`MODE_STRING_IMAGE`], one row per mode), and each geometry container
+/// `cs_assets::install::Diagnosis` names for its node array and mesh section.
+/// Rows are inserted in a fixed order and every report array is rendered from
+/// canonical id order, so the same installation yields the same bytes (spec F14
+/// AC02).
 ///
 /// # Errors
 ///
@@ -957,7 +1050,7 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
     }
     collection_status.push(world_status);
 
-    // The faction paint patterns, named in bytes by the shared archive's own
+// The faction paint patterns, named in bytes by the shared archive's own
     // paint records, and the verified BM members of the airframe library.
     // Neither kind is launchable, so neither moves the denominator.
     let (factions, faction_status) = faction_rows(install_root, &discovery, &files)?;
@@ -991,6 +1084,18 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
     collection_status.push(sound_status);
     collection_status.extend(unclassified_audio_statuses());
 
+    // The geometry collections: every node of every GameZ container the
+    // diagnosis names, and every mesh slot those nodes associate.
+    let geometry = gamez_geometry_rows(install_root, install_hash, &files, &discovery.diagnosis)?;
+    for element in geometry.nodes {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(geometry.node_status);
+    for element in geometry.meshes {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(geometry.mesh_status);
+
     let coverage = coverage(&catalog, &roots)?;
 
     Ok(Baseline {
@@ -1002,6 +1107,7 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
         coverage,
         classified_reader_dirs,
         unrecognized_program_dirs,
+        geometry_containers: geometry.reports,
         collection_status,
     })
 }
@@ -1238,20 +1344,6 @@ fn world_rows(
     Ok((rows, status))
 }
 
-/// The identity key of one world-group reader directory: the group directory
-/// name, lowercased.
-///
-/// `ZBD/C1C` is the shared reader of world group `c1c`. The lowercase form is
-/// the group's identity in `cs_content::campaign_bindings` too, so the world row
-/// of a campaign mission binding and this row are one id, not two spellings of
-/// it.
-fn world_group_key(dir: &str) -> String {
-    dir.rsplit(['/', '\\'])
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-}
-
 /// One world group as a catalog row.
 fn world_row(
     group: &str,
@@ -1297,6 +1389,690 @@ fn world_row(
             kind: FingerprintKind::Installation,
             sha256: record.sha256,
         }),
+    })
+}
+// -------------------------------------------------- geometry collections ---
+
+/// The identity key of one world-group reader directory: the group directory
+/// name, lowercased.
+///
+/// `ZBD/C1C` is the shared reader of world group `c1c`. The lowercase form is
+/// the group's identity in `cs_content::campaign_bindings` too, so the world row
+/// of a campaign mission binding and this row are one id, not two spellings of
+/// it.
+fn world_group_key(dir: &str) -> String {
+    dir.rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+/// What one GameZ geometry container contributed to the two geometry
+/// collections, and what its node array could not say.
+///
+/// Ordered: the shared planes container first, then every discovered world
+/// group in production-discovery order. Both collections render their rows in
+/// canonical id order and this vector is the order the report's
+/// `geometry_containers` array uses, so the same installation always produces
+/// the same bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeometryContainerReport {
+    /// The container's installation-relative spelling, original case.
+    pub spelling: String,
+    /// How many stored nodes its node array holds.
+    pub nodes: usize,
+    /// How many of those rows carry an identity derived from an authored name
+    /// path.
+    pub named: usize,
+    /// How many rows are located by their record's own address because the
+    /// store spells that name path for another node too.
+    pub ambiguous: usize,
+    /// How many rows are located by their record's own address because the name
+    /// path carries bytes the id grammar refuses.
+    pub unspellable: usize,
+    /// How many distinct authored name paths the container stores.
+    pub paths: usize,
+    /// How many stored nodes declare no parent.
+    pub roots: usize,
+    /// How many distinct mesh slots the node array names.
+    pub named_meshes: usize,
+    /// How many of those slots hold a present mesh record, which is how many
+    /// `mesh` rows exist.
+    pub mesh_rows: usize,
+    /// How many named slots no present mesh record answers.
+    pub absent_meshes: usize,
+}
+
+/// One decoded geometry container, held only as long as its rows are built.
+struct ContainerGeometry {
+    nodes: GameZNodes,
+    meshes: GameZMeshes,
+    /// The authored name path of every stored node, by array slot.
+    paths: BTreeMap<u32, String>,
+    /// The paths more than one stored node spells.
+    ambiguous: BTreeSet<String>,
+    report: GeometryContainerReport,
+}
+
+/// The `scene_node` and `mesh` collections, read out of every GameZ container
+/// the installation's own diagnosis names.
+///
+/// The containers are the shared `ZBD/planes.zbd`
+/// (`cs_assets::install::Diagnosis::planes_zbd`) and each discovered world
+/// group's own [`GEOMETRY_CONTAINER_FILE`]
+/// (`cs_assets::install::Diagnosis::world_groups`). Both are production
+/// derivations, so no container is discovered by guessing at a file name, and a
+/// group the installation stores under another file simply yields no rows and a
+/// named diagnostic.
+///
+/// Each container is read through the readers the producing stages measured —
+/// [`read_gamez_nodes`] for the node array and [`read_gamez_meshes`] for the
+/// mesh section, over **one** shared parse context so the two cannot disagree
+/// about the same 40 header bytes — and every row is located by a checked span
+/// into the container's own bytes.
+///
+/// # Errors
+///
+/// [`BaselineError::Read`] when an inventoried container cannot be read,
+/// [`BaselineError::UninventoriedContainer`] when the installation does not
+/// inventory the container a discovered group points at, and
+/// [`BaselineError::Span`] when a span does not validate. A container the
+/// readers refuse yields **no** rows and a named
+/// [`CollectionStatus::diagnostic`] instead, which is a reported gap and not an
+/// error: one unreadable world must not hide the eight that read.
+fn gamez_geometry_rows(
+    install_root: &Path,
+    install_hash: ContentHash,
+    files: &BTreeMap<String, &InstallFileRecord>,
+    diagnosis: &cs_assets::install::Diagnosis,
+) -> Result<GeometryRows, BaselineError> {
+    let sources = geometry_sources(diagnosis);
+    let mut node_status = CollectionStatus {
+        kind: ContentKind::SceneNode,
+        source: GEOMETRY_CONTAINER_FILE.to_owned(),
+        language: None,
+        rows: 0,
+        gaps: BTreeMap::new(),
+        boundary_id: None,
+        diagnostic: None,
+    };
+
+    let mut mesh_status = node_status.clone();
+    mesh_status.kind = ContentKind::Mesh;
+
+    let mut nodes = Vec::new();
+    let mut meshes = Vec::new();
+    let mut reports: Vec<GeometryContainerReport> = Vec::with_capacity(sources.len());
+    let mut refused: Vec<String> = Vec::new();
+
+    for (container, asset) in &sources {
+        let Some(record) = files.get(&asset.to_ascii_lowercase()) else {
+            // No row from a name: the container is not inventoried, so there are
+            // no bytes to locate a row in. It is named below instead.
+            refused.push(format!(
+                "the installation inventories no {asset} (the geometry container of {container})"
+            ));
+            continue;
+        };
+        let spelling = record.relative_spelling.as_str();
+        let path = install_root.join(spelling);
+        let bytes = std::fs::read(&path).map_err(|source| BaselineError::Read {
+            path: spelling.to_owned(),
+            source,
+        })?;
+
+        // One parse context for both sections: the two readers share the 40-byte
+        // header parser, and a label that came from a constant instead of the
+        // installation's own spelling would name the wrong container in every
+        // diagnostic.
+        let mut context = cs_formats::ParseContext::with_defaults(spelling);
+        let decoded = read_geometry_container(&mut context, spelling, &bytes);
+        let geometry = match decoded {
+            Ok(geometry) => geometry,
+            Err(reason) => {
+                refused.push(format!("{spelling}: {reason}"));
+                reports.push(GeometryContainerReport {
+                    spelling: spelling.to_owned(),
+                    nodes: 0,
+                    named: 0,
+                    ambiguous: 0,
+                    unspellable: 0,
+                    paths: 0,
+                    roots: 0,
+                    named_meshes: 0,
+                    mesh_rows: 0,
+                    absent_meshes: 0,
+                });
+                continue;
+            }
+        };
+
+        let file_id = ContentId::from_source(ContentKind::InstallFile, &install_file_key(spelling))
+            .map_err(|source| BaselineError::Key {
+                spelling: spelling.to_owned(),
+                source,
+            })?;
+        nodes.extend(geometry_node_rows(
+            install_hash,
+            spelling,
+            &geometry,
+            &file_id,
+            record.sha256,
+        )?);
+        meshes.extend(geometry_mesh_rows(
+            install_hash,
+            spelling,
+            &geometry,
+            &file_id,
+            record.sha256,
+        )?);
+        node_status.rows += geometry.report.nodes;
+        mesh_status.rows += geometry.report.mesh_rows;
+        reports.push(geometry.report);
+    }
+
+    let unread = refused.len();
+    let read = reports.len();
+    node_status.gaps.insert("container", read);
+    node_status.gaps.insert("unreadable_container", unread);
+    node_status.gaps.insert(
+        "ambiguous_name_path",
+        reports.iter().map(|report| report.ambiguous).sum(),
+    );
+    node_status.gaps.insert(
+        "unspellable_name_path",
+        reports.iter().map(|report| report.unspellable).sum(),
+    );
+    mesh_status.gaps.insert("container", read);
+    mesh_status.gaps.insert("unreadable_container", unread);
+    mesh_status.gaps.insert(
+        "named_slot_without_mesh",
+        reports.iter().map(|report| report.absent_meshes).sum(),
+    );
+    if !refused.is_empty() {
+        let diagnostic = format!(
+            "{} of the {} geometry containers could not be read: {}",
+            refused.len(),
+            sources.len(),
+            refused.join("; ")
+        );
+        node_status.diagnostic = Some(diagnostic.clone());
+        mesh_status.diagnostic = Some(diagnostic);
+    }
+
+    Ok(GeometryRows {
+        nodes,
+        meshes,
+        node_status,
+        mesh_status,
+        reports,
+    })
+}
+
+/// The four results the geometry walk produces.
+struct GeometryRows {
+    /// The `scene_node` rows, in container then stored order.
+    nodes: Vec<CatalogElement>,
+    /// The `mesh` rows, in container then stored slot order.
+    meshes: Vec<CatalogElement>,
+    /// What the node collection contributed, and what it could not.
+    node_status: CollectionStatus,
+    /// What the mesh collection contributed, and what it could not.
+    mesh_status: CollectionStatus,
+    /// One entry per container, in walk order.
+    reports: Vec<GeometryContainerReport>,
+}
+
+/// The geometry containers to read, as `(what owns the container, the file
+/// inside it)`.
+///
+/// [`cs_assets::install::Diagnosis::planes_zbd`] is looked up by the **logical
+/// key** it is measured under ([`PLANES_CONTAINER_KEY`]) and then read at the
+/// original spelling the manifest holds, so the bytes come from the path the
+/// installation really has — the same care F18-D's survey takes, because joining
+/// a folded key onto the host root works on a case-insensitive filesystem and
+/// fails on a case-sensitive one.
+fn geometry_sources(diagnosis: &cs_assets::install::Diagnosis) -> Vec<(String, String)> {
+    let mut sources = Vec::new();
+    if let Some(planes) = &diagnosis.planes_zbd
+        && planes.logical_key() == PLANES_CONTAINER_KEY
+    {
+        sources.push((PLANES_CONTAINER_KEY.to_owned(), planes.as_str().to_owned()));
+    }
+    for group in &diagnosis.world_groups {
+        sources.push((
+            group.as_str().to_owned(),
+            format!("{}/{GEOMETRY_CONTAINER_FILE}", group.logical_key()),
+        ));
+    }
+    sources
+}
+
+/// Reads one container's node array and mesh section, cross-checks the three
+/// walks against the container's own header, and measures both collections.
+fn read_geometry_container(
+    context: &mut cs_formats::ParseContext,
+    spelling: &str,
+    bytes: &[u8],
+) -> Result<ContainerGeometry, String> {
+    let nodes = read_gamez_nodes(context, bytes).map_err(|error| error.to_string())?;
+    let meshes = read_gamez_meshes(context, spelling, bytes).map_err(|error| error.to_string())?;
+
+    // The independent cross-check F18-D's survey makes, kept because both
+    // readers share one header parser: comparing two walks with each other would
+    // prove nothing, so each walk's own boundary is compared with the header
+    // instead. The mesh section must end exactly where the node array starts —
+    // that is the one boundary both readers describe — and the node walk must end
+    // on the container's last byte, which is what proves the variable-length data
+    // section was read whole.
+    let header_nodes = u64::from(meshes.header.nodes_offset);
+    let container_len = bytes.len() as u64;
+    if meshes.data_end != header_nodes
+        || nodes.info_offset != header_nodes
+        || nodes.data_end != container_len
+    {
+        return Err(format!(
+            "the header words do not agree with the two walks: the mesh data ends at {}, the node \
+             info array starts at {}, the node data ends at {} and the container is {} bytes long, \
+             while the header declares the node array at {}",
+            meshes.data_end, nodes.info_offset, nodes.data_end, container_len, header_nodes
+        ));
+    }
+
+    let paths = node_name_paths(&nodes);
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for path in paths.values() {
+        *counts.entry(path.as_str()).or_default() += 1;
+    }
+    let distinct_paths = counts.len();
+    let ambiguous: BTreeSet<String> = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(path, _)| path.to_owned())
+        .collect();
+
+    let mut named = 0usize;
+    let mut ambiguous_nodes = 0usize;
+    let mut unspellable = 0usize;
+    for path in paths.values() {
+        if ambiguous.contains(path) {
+            ambiguous_nodes += 1;
+            continue;
+        }
+        if scene_node_key("", path).is_none() {
+            unspellable += 1;
+            continue;
+        }
+        named += 1;
+    }
+
+    // Distinct slots, because that is what the collection has a row for: two
+    // nodes naming slot 12 name one mesh, not two. A node naming no mesh stores
+    // `-1`, which is not a slot at all and is counted nowhere.
+    let named_slots: BTreeSet<u32> = nodes
+        .nodes
+        .iter()
+        .filter_map(|node| u32::try_from(node.mesh_index()).ok())
+        .collect();
+    let mesh_rows = named_slots
+        .iter()
+        .filter(|slot| meshes.get(**slot).is_some())
+        .count();
+    let absent_meshes = named_slots.len() - mesh_rows;
+
+    Ok(ContainerGeometry {
+        report: GeometryContainerReport {
+            spelling: spelling.to_owned(),
+            nodes: nodes.nodes.len(),
+            named,
+            ambiguous: ambiguous_nodes,
+            unspellable,
+            paths: distinct_paths,
+            roots: nodes.roots().count(),
+            named_meshes: named_slots.len(),
+            mesh_rows,
+            absent_meshes,
+        },
+        nodes,
+        meshes,
+        paths,
+        ambiguous,
+    })
+}
+
+/// One `scene_node` row per stored node, in container then stored order.
+///
+/// Three facts about the row are measured rather than assumed, and each one
+/// comes from the container's own bytes:
+///
+/// * **The span is the node's own record.** `RawNode::data_offset` and
+///   `RawNode::data_bytes` are the record's address and size inside the
+///   container, and the reader checks that address against the pointer the
+///   record itself stores, so the span is the record and not the whole file.
+/// * **The identity is the authored name path** F11-A published, prefixed by the
+///   container's own inventory key — the same `<container>.<path>` shape
+///   `cs_content::scene::SceneNodeId` derives, so a row here and a scene-graph
+///   node can never disagree about what a node is called.
+/// * **A node whose name path is not a usable key is still a row.** Where
+///   several nodes spell the same path, or where the path carries bytes the id
+///   grammar refuses, the row is keyed by
+///   [`GAMEZ_CONTAINER_RECORD`].<record offset> instead and carries an explicit
+///   [`UnsupportedReason::Unknown`] naming which of the two happened and quoting
+///   the stored path. Inventing a suffix, transliterating a name or dropping the
+///   node are all refused: F11-A's rule is that a name is never silently
+///   transliterated, and a collection may not exclude an entry it failed to
+///   complete.
+fn geometry_node_rows(
+    install_hash: ContentHash,
+    spelling: &str,
+    geometry: &ContainerGeometry,
+    file_id: &ContentId,
+    sha256: ContentHash,
+) -> Result<Vec<CatalogElement>, BaselineError> {
+    let key = install_file_key(spelling);
+    let mut rows = Vec::with_capacity(geometry.nodes.nodes.len());
+    for node in &geometry.nodes.nodes {
+        let span = container_span(
+            install_hash,
+            spelling,
+            u64::from(node.data_offset),
+            node.data_bytes,
+        )?;
+        let path = geometry
+            .paths
+            .get(&node.index)
+            .map(String::as_str)
+            .unwrap_or_default();
+        // The path is a usable key only when it is this node's own alone and the
+        // id grammar accepts it; both facts are needed and neither is guessed.
+        let ambiguous_path = geometry.ambiguous.contains(path);
+        let spellable_path = !ambiguous_path && scene_node_key("", path).is_some();
+        let use_path = spellable_path && scene_node_key(&key, path).is_some();
+
+        // The file that holds the bytes, then the ownership edge the record
+        // itself states. A parent whose own key is refused contributes no edge
+        // rather than an edge to an id nothing carries: the row above states the
+        // same unknown, so the hierarchy is not silently wrong.
+        let mut dependencies = vec![Dependency {
+            target: file_id.clone(),
+            kind: DependencyKind::Static,
+            provenance: observed(CLAIM_GEOMETRY_CONTAINER, &span)?,
+        }];
+        if let Some(parent) = node.parent {
+            let parent_path = geometry
+                .paths
+                .get(&parent)
+                .map(String::as_str)
+                .unwrap_or_default();
+            let parent_ambiguous = geometry.ambiguous.contains(parent_path);
+            let parent_use_path = !parent_ambiguous
+                && scene_node_key("", parent_path).is_some()
+                && scene_node_key(&key, parent_path).is_some();
+            let address = geometry
+                .nodes
+                .get(parent)
+                .map_or(0, |record| u64::from(record.data_offset));
+            if let Some(target) = scene_node_id(&key, parent_path, parent_use_path, address) {
+                dependencies.push(Dependency {
+                    target,
+                    kind: DependencyKind::Static,
+                    provenance: observed(CLAIM_NODE_PARENTAGE, &span)?,
+                });
+            }
+        }
+        // A stored `mesh_index` of `-1` means the node associates no mesh, so no
+        // mesh edge follows from it.
+        if let Ok(slot) = u32::try_from(node.mesh_index()) {
+            dependencies.push(Dependency {
+                target: mesh_id(&key, slot)?,
+                kind: DependencyKind::Static,
+                provenance: observed(CLAIM_NODE_MESH_SLOT, &span)?,
+            });
+        }
+
+        // The stored transform, the LOD bounds and the zone id are all in
+        // source units, and nothing in this workspace has established the
+        // original's world unit or angle unit, so no quantity on this row is
+        // normalized and the row says so.
+        let mut unsupported_reasons = vec![UnsupportedReason::NotNormalized];
+        if ambiguous_path {
+            unsupported_reasons.push(node_key_unknown(
+                CLAIM_AMBIGUOUS_NODE_PATH,
+                node.index,
+                path,
+                "the same container spells this authored name path for another node as well",
+            )?);
+        } else if !spellable_path {
+            unsupported_reasons.push(node_key_unknown(
+                CLAIM_UNSPELLABLE_NODE_PATH,
+                node.index,
+                path,
+                "this authored name path carries bytes the content-id key grammar refuses",
+            )?);
+        }
+        let id =
+            scene_node_id(&key, path, use_path, u64::from(node.data_offset)).ok_or_else(|| {
+                BaselineError::Identity {
+                    identity: format!("{key}.{path}"),
+                    reason: "a node identity the grammar refused could not be rebuilt".to_owned(),
+                }
+            })?;
+        rows.push(CatalogElement {
+            kind: ContentKind::SceneNode,
+            display_name: Some(node.name.clone()),
+            origin: Origin::Installation { source: span },
+            dependencies,
+            parse_state: cs_types::install::ParseState::Parsed,
+            normalize_state: NormalizeState::NotNormalized,
+            runtime_consumers: Vec::new(),
+            readiness: Readiness::Unavailable,
+            unsupported_reasons,
+            fingerprint: Some(Fingerprint {
+                kind: FingerprintKind::Installation,
+                sha256,
+            }),
+            id,
+        });
+    }
+    Ok(rows)
+}
+
+/// The explicit unknown a node row carries when its semantic key could not be
+/// derived, quoting the stored name path so a reader can see which name the
+/// container actually spells.
+fn node_key_unknown(
+    claim: &str,
+    node: u32,
+    path: &str,
+    why: &str,
+) -> Result<UnsupportedReason, BaselineError> {
+    let claim_id = ClaimId::new(claim).map_err(|error| BaselineError::Provenance {
+        claim: claim.to_owned(),
+        reason: error.to_string(),
+    })?;
+    Ok(UnsupportedReason::Unknown {
+        claim_id,
+        reason: format!(
+            "node {node} of this container stores the authored name path {path:?}, and {why}, so \
+             this row is keyed by its own record's address inside the container instead; nothing \
+             the container states says which of the nodes sharing this name is meant"
+        ),
+    })
+}
+
+/// One `mesh` row per mesh slot the container's node array names, in stored slot
+/// order.
+///
+/// The identity is the container's own inventory key plus the **stored slot** a
+/// node's `mesh_index` names — the same `<container>.<slot>` shape the
+/// workspace's mesh catalog already uses (`cs_content::scene::MeshSlot`), and a
+/// number the container's bytes hold rather than a position in a walk. The span
+/// is the mesh record's own extent inside the container (`GameZMesh::data_offset`
+/// .. `GameZMesh::data_end`), which is what makes the row a checked address
+/// rather than "somewhere in the file".
+///
+/// A slot the node array names whose mesh array holds no present record has no
+/// bytes of its own, so it gets no row: it is counted as the
+/// `named_slot_without_mesh` gap instead, which is a fact about the corpus
+/// rather than an entry this collection can complete.
+fn geometry_mesh_rows(
+    install_hash: ContentHash,
+    spelling: &str,
+    geometry: &ContainerGeometry,
+    file_id: &ContentId,
+    sha256: ContentHash,
+) -> Result<Vec<CatalogElement>, BaselineError> {
+    let key = install_file_key(spelling);
+    let named: BTreeSet<u32> = geometry
+        .nodes
+        .nodes
+        .iter()
+        .filter_map(|node| u32::try_from(node.mesh_index()).ok())
+        .collect();
+
+    let mut rows = Vec::with_capacity(named.len());
+    for slot in named {
+        let Some(mesh) = geometry.meshes.get(slot) else {
+            continue;
+        };
+        let span = container_span(
+            install_hash,
+            spelling,
+            mesh.data_offset,
+            mesh.data_end - mesh.data_offset,
+        )?;
+        let provenance = observed(CLAIM_GEOMETRY_CONTAINER, &span)?;
+        let id = mesh_id(&key, slot)?;
+        rows.push(CatalogElement {
+            kind: ContentKind::Mesh,
+            display_name: None,
+            origin: Origin::Installation { source: span },
+            dependencies: vec![Dependency {
+                target: file_id.clone(),
+                kind: DependencyKind::Static,
+                provenance,
+            }],
+            parse_state: cs_types::install::ParseState::Parsed,
+            normalize_state: NormalizeState::NotNormalized,
+            runtime_consumers: Vec::new(),
+            readiness: Readiness::Unavailable,
+            // The stored positions are in source units and nothing in this
+            // workspace has established the original's world-vertex unit, so no
+            // quantity on this row is normalized and the row says so.
+            unsupported_reasons: vec![UnsupportedReason::NotNormalized],
+            fingerprint: Some(Fingerprint {
+                kind: FingerprintKind::Installation,
+                sha256,
+            }),
+            id,
+        });
+    }
+    Ok(rows)
+}
+
+/// A span into one geometry container's own bytes.
+///
+/// `member_key` is [`None`] on purpose: a GameZ geometry container **is** a loose
+/// installation file whose first word is the CS GameZ signature, and F06's
+/// container audit classifies all nine of them as `not_listed` ("GameZ
+/// containers are not member-listed by F06; their reader is F10"). `SourceSpan`
+/// documents `member_key: None` as "the container is the source itself", which
+/// is exactly this case, so inventing a member name would add a second,
+/// invented address for the same bytes.
+fn container_span(
+    install_hash: ContentHash,
+    spelling: &str,
+    offset: u64,
+    length: u64,
+) -> Result<SourceSpan, BaselineError> {
+    SourceSpan::new(install_hash, spelling, None, offset, length, None).map_err(|source| {
+        BaselineError::Span {
+            path: spelling.to_owned(),
+            source,
+        }
+    })
+}
+
+/// The authored name path of every stored node, keyed by its array slot.
+///
+/// The path is the stored names joined by `.` from the root down, which is the
+/// name path F11-A publishes and `SceneGraph::build` derives. It is walked
+/// through the **parent slots**, not through the child lists: a node's parent is
+/// a field of its own record, while a child list is a claim the parent makes
+/// about its children, and the world containers' two disagree (recorded as an
+/// unknown in `docs/findings/2026-10-02-gamez-node-array-layout.md`). A link the
+/// record does not state is not walked, and the record's own array slot is never
+/// used, so identity never depends on enumeration order.
+fn node_name_paths(nodes: &GameZNodes) -> BTreeMap<u32, String> {
+    let mut paths: BTreeMap<u32, String> = BTreeMap::new();
+    for node in &nodes.nodes {
+        let mut names: Vec<&str> = Vec::new();
+        let mut cursor = Some(node.index);
+        // A chain can only repeat if the stored parent slots form a cycle. The
+        // guard is the record count plus one, which is the longest chain a
+        // cycle-free forest can have, so it bounds the walk instead of
+        // guessing where the loop ends.
+        let mut remaining = nodes.nodes.len() + 1;
+        while remaining > 0 {
+            remaining -= 1;
+            let Some(current) = cursor else { break };
+            let Some(record) = nodes.get(current) else {
+                break;
+            };
+            names.push(&record.name);
+            cursor = record.parent;
+        }
+        names.reverse();
+        paths.insert(node.index, names.join("."));
+    }
+    paths
+}
+
+/// The identity of one `scene_node`.
+///
+/// `use_path` says whether the authored name path is a usable semantic key for
+/// this node: it is only so when no other node of the same container spells it
+/// **and** the id grammar accepts it. Otherwise the identity is
+/// [`GAMEZ_CONTAINER_RECORD`].<address> instead — the node's own record address
+/// inside its container, which the reader checks against the pointer the record
+/// stores — and the caller has already attached the unknown that says so.
+fn scene_node_id(
+    container_key: &str,
+    path: &str,
+    use_path: bool,
+    address: u64,
+) -> Option<ContentId> {
+    if use_path && let Some(id) = scene_node_key(container_key, path) {
+        return Some(id);
+    }
+    ContentId::from_source(
+        ContentKind::SceneNode,
+        &format!("{container_key}.{GAMEZ_CONTAINER_RECORD}{address}"),
+    )
+    .ok()
+}
+
+/// The identity F11-A's scheme gives a name path: `<container key>.<path>`.
+///
+/// `container_key` is empty in the one caller that only asks whether a path can
+/// form a key at all; the key is then the path alone, which is the longest form
+/// the grammar can ever be asked to accept.
+fn scene_node_key(container_key: &str, path: &str) -> Option<ContentId> {
+    let key = if container_key.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{container_key}.{path}")
+    };
+    ContentId::from_source(ContentKind::SceneNode, &key).ok()
+}
+
+/// The identity of one `mesh`: the container's key plus the stored mesh-array
+/// slot a node's `mesh_index` names.
+fn mesh_id(container_key: &str, slot: u32) -> Result<ContentId, BaselineError> {
+    let key = format!("{container_key}.{slot}");
+    ContentId::from_source(ContentKind::Mesh, &key).map_err(|source| BaselineError::Key {
+        spelling: key.clone(),
+        source,
     })
 }
 
@@ -2821,6 +3597,13 @@ pub fn baseline_report_json(baseline: &Baseline) -> String {
             evidence.join(","),
         );
     }
+    out.push_str("],\"geometry_containers\":[");
+    for (index, container) in baseline.geometry_containers.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        geometry_container_json(container, &mut out);
+    }
     out.push_str("],\"elements\":[");
     for (index, element) in catalog.elements().enumerate() {
         if index > 0 {
@@ -2830,6 +3613,34 @@ pub fn baseline_report_json(baseline: &Baseline) -> String {
     }
     out.push_str("]}");
     out
+}
+
+/// Renders one geometry container's contribution: what its node array and mesh
+/// section gave the two collections, and the three numbers that say what could
+/// not be derived from it.
+///
+/// The three are the point of the record. `ambiguous` and `unspellable` count
+/// nodes that **are** rows and carry an explicit unknown, so a reader of the
+/// report can tell "the store spells this name for several nodes" apart from
+/// "this node was dropped"; `absent_meshes` counts the named mesh slots no
+/// present mesh record answers, which is the only entry of the mesh collection
+/// with no row.
+fn geometry_container_json(container: &GeometryContainerReport, out: &mut String) {
+    let _ = write!(
+        out,
+        "{{\"container\":{},\"nodes\":{},\"named\":{},\"ambiguous\":{},\"unspellable\":{},\
+         \"paths\":{},\"roots\":{},\"named_meshes\":{},\"mesh_rows\":{},\"absent_meshes\":{}}}",
+        json_string(&container.spelling),
+        container.nodes,
+        container.named,
+        container.ambiguous,
+        container.unspellable,
+        container.paths,
+        container.roots,
+        container.named_meshes,
+        container.mesh_rows,
+        container.absent_meshes,
+    );
 }
 
 /// Renders one collection record: what it holds and, when it holds nothing,
