@@ -18,18 +18,25 @@ The paint shop's **option space is in the original data**: the `[@Paint@]`
 section of `ASSETS/LAYOUT.CSV` declares all ten paint-shop dropdowns, the number
 of entries each offers (12 paint patterns, 18 colour swatches and 10 shades and
 2 decals per paint slot) and the decal sheet (`PX_P_Decals.tga`, 50 frames).
-The shop's option space, the decal sheet, the 12 = 12 closure between the
-pattern list and the paint patterns `vehicle.zrd` names, and the fact that
-BROADWAY and ITSTAXI are **not** paint patterns are all measured, with spans.
-The paint shop's option space is also the *only* place the shop exists in
-readable form, and **no field of any of its ten control records carries a value**:
-not a colour, not a hex literal, not a name. The swatch palette, the shade table
-and the pattern display names are therefore produced inside the engine image by
-native callbacks, and no readable member of the installation stores them. The
-decal index semantics are partly closed — the sheet's frame count bounds every
-stored index — and the mapping from a stored index to a frame stays unknown.
-`player_fortune` has no stored palette and is a shop choice; its starting
-swatches and shades are engine-internal with the rest of the shop's values.
+That, the 12 = 12 closure between the pattern list and the paint patterns
+`vehicle.zrd` names, and the fact that BROADWAY and ITSTAXI are **not** paint
+patterns are all measured, with spans. It is also the *only* place the shop
+exists in readable form, and **no field of any of its ten control records carries
+a value**: not a colour, not a hex literal, not a name. The swatch palette, the
+shade table and the pattern display names are therefore produced inside the
+engine image by native callbacks, and no readable member of the installation
+stores them. The decal index semantics are partly closed — the sheet's frame
+count bounds every stored index — and the mapping from a stored index to a frame
+stays unknown. `player_fortune` has no stored palette and is a shop choice; its
+starting swatches and shades are engine-internal with the rest of the shop's
+values.
+
+A **second original paint source** turned up while searching, and it answers the
+one question this task was opened for: every chapter's Instant Action scenario
+carries an `ace_*` paint record, and the one in `ZBD/C5/IA1/zrdr.zbd` names
+pattern `broadway` with its colours and decals. **BROADWAY's palette is in
+original data**, and this stage extracts it with spans. **ITSTAXI's is not
+anywhere.**
 
 ## Files and the one observable failure (listed before editing)
 
@@ -41,7 +48,12 @@ swatches and shades are engine-internal with the rest of the shop's values.
   `PaintShopGap`, `PaintShopValue`, `PaintShopRefusal`, `PaintShopError`,
   `PaintShopCatalog::discover`, `PaintShopFinding`, `PaintShopCatalog::cross_check`,
   `paint_shop_stem`, `paint_shop_slot`, `paint_shop_control`,
-  `paint_shop_decal_sheet`, `whole_number`, `paint_shop_gaps`), the five inline
+  `paint_shop_decal_sheet`, `whole_number`, `paint_shop_gaps`) and the
+  Instant Action ace section (`ACE_PAINT_MEMBER`, `ACE_PATTERN`, `ACE_COLOR`,
+  `ACE_DECAL`, `ACE_ACCENT`, `AcePaint`, `AcePaintError`, `AcePaintFinding`,
+  `AcePaintCatalog::discover`, `AcePaintCatalog::cross_check`,
+  `extract_ace_paint`, `spans_into`, and the `member` field
+  `PaletteProvenance` gained so an ace-paint span names `ia.zrd`), the nine inline
   `accept_f09_paintshop_*` tests and the inline ignored evidence harness.
 - `docs/findings/2026-10-03-f09-paintshop-option-space-and-engine-internal-values.md`
   (this file), `docs/findings/evidence/F09-PAINTSHOP.json` and the private
@@ -53,12 +65,17 @@ swatches and shades are engine-internal with the rest of the shop's values.
 **One observable failure:** before this stage no production code read the
 paint-shop controls at all, and the paint shop's colour, shade and pattern-name
 values were not even known to be absent — a future edit could have introduced a
-swatch table with no test objecting. With this stage,
+swatch table with no test objecting, and BROADWAY's palette was recorded as
+missing everywhere when it is in the Instant Action ace records. With this stage,
 `accept_f09_paintshop_retail_option_space_and_recorded_gaps` fails on the first
 control whose declared entry count, record line, field census or span does not
-match the original member, `accept_f09_paintshop_reports_a_control_that_stores_a_value`
-fails the moment any control record spells a colour literal, and
-`PaintShopValue` has no variant that could carry a swatch colour at all.
+match the original member,
+`accept_f09_paintshop_reports_a_control_that_stores_a_value` fails the moment any
+control record spells a colour literal,
+`accept_f09_paintshop_retail_instant_action_ace_paints` fails on the first ace
+paint whose pattern, colour, decal, accent id or scenario field does not match
+its chapter's member, and `PaintShopValue` has no variant that could carry a
+swatch colour at all.
 
 ## What the production extractor reads
 
@@ -169,6 +186,50 @@ This stage does **not** parse `PAINT.SCRIPT`. The `UiScript` dialect's reader is
 whole grammar and every callback id"; writing a script reader here would take
 F13-A's slice. The table above is research output, cited as such.
 
+## The Instant Action ace paint
+
+The installation ships one Instant Action scenario directory, `IA1`, under each
+of its eight chapter groups. Each `ZBD/<chapter>/IA1/zrdr.zbd` carries an
+`ia.zrd` member whose root record holds the scenario's roster and, beside it, an
+`ace_*` paint: `ace_pattern`, `ace_color1..3`, `ace_decal1..3` and
+`ace_accentID`, with `ace_plane`, `ace_name` and `mission_type` naming what the
+ace is. `AcePaintCatalog` reads it through the same `.zrd` grammar and the same
+container-absolute spans as the vehicle palettes, and refuses an archive with no
+`ia.zrd`, a member that is not the observed layout, a record that names no ace
+paint, and a pattern whose colour or decal triple is incomplete.
+
+Measured, one row per chapter:
+
+| Chapter | pattern | colours | decals | accent | ace | airframe | scenario |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `C1` | `blake` | (149,163,195) (89,114,159) (233,228,240) | 21, 3, 3 | 24 | `MSG_PALBLAKE_NAME` | Peacemaker | `dogfight_squadron` |
+| `C1B` | `blckswan` | (23,23,21) (48,47,39) (196,193,186) | 21, 5, 5 | 23 | `MSG_BSWAN_NAME` | Fury | `stunt_flying` |
+| `C1C` | `hollywd` | (243,194,0) (0,0,0) (255,255,255) | 21, 11, 11 | 26 | `MSG_GKHAN_NAME` | Firebrand | `zeppelin_run` |
+| `C2` | `hughes` | (243,194,0) (0,0,0) (255,255,255) | 21, 11, 11 | 25 | `MSG_HHUGHES_NAME` | Bloodhawk | `stunt_flying` |
+| `C2B` | `hollywd` | (243,194,0) (0,0,0) (255,255,255) | 21, 11, 11 | 26 | `MSG_GKHAN_NAME` | Devastator | `zeppelin_run` |
+| `C3` | `medusas` | (95,125,143) (41,14,21) (141,137,93) | 21, 14, 14 | 17 | `MSG_JPEROT_NAME` | Kestrel | `dogfight_squadron` |
+| `C4` | `hughes` | (243,194,0) (0,0,0) (255,255,255) | 21, 11, 11 | 31 | `MSG_BREDMANN_NAME` | Bloodhawk | `stunt_flying` |
+| `C5` | `broadway` | (74,40,132) (0,0,0) (237,221,0) | 21, 1, 0 | 33 | `MSG_SSCRAWFORD_NAME` | Peacemaker | `stunt_flying` |
+
+Three things this settles, all through the cross-check against
+`FactionPaletteCatalog` rather than by assertion:
+
+* **Six scenarios agree with the vehicle records on every slot** — the same
+  colours and the same decals. That is agreement between two independent
+  original sources, which is worth more than either alone.
+* **Two scenarios disagree, and the disagreement is original.** `C1C` and
+  `C2B` — the two `zeppelin_run` scenarios of the same ace,
+  `MSG_GKHAN_NAME` — name paint pattern `hollywd` and store the **`hughes`**
+  palette at all three slots. The cross-check reports one `palette_mismatch`
+  per slot and reconciles nothing: which source the original renderer prefers
+  is not observable from any file.
+* **`C5` names `broadway`, which no vehicle record colours**, so BROADWAY's
+  palette comes from here. That is the F09-PALETTE gap #2 closing.
+
+Every stored decal index in the eight ace records is inside the 50 frames the
+paint shop's decal pane declares, which is the decal-index bound the cross-check
+asserts.
+
 ## Why the values are engine-internal (the negative search)
 
 The claim is that no readable member of the installation stores a swatch colour,
@@ -226,16 +287,19 @@ Resolved against the five unknowns F09-PALETTE recorded
    values. Affected content: the player paint on every airframe. Resolving task:
    #358 (owner run of the paint shop) or #351 (owner-authorised engine-image
    unpack).
-2. **`missing_faction_palettes` (BROADWAY, ITSTAXI)** — resolved as *not paint
-   patterns*. The shop's pattern list is exactly the twelve names `vehicle.zrd`
-   stores and neither of these two is among them, and neither string occurs in any
-   readable member, so the paint shop does not offer them and cannot recolour
-   them. Both have stock BM livery directories (F09-D), so their appearance comes
-   from the shipped BM planes themselves. Which stock livery directory
-   corresponds to which paint pattern stays engine-internal: the directories are
-   `BLACKHAT`…`STUDIO` plus `BROADWAY`, `FORTUNE` and `ITSTAXI`, while the player's
-   pattern is named `player_fortune`, so the naming is not a mapping. Affected
-   content: those two factions' liveries and the directory-to-pattern binding.
+2. **`missing_faction_palettes` (BROADWAY, ITSTAXI)** — split by the ace paint
+   records. **BROADWAY is resolved**: `ZBD/C5/IA1/zrdr.zbd` member `ia.zrd` names
+   paint pattern `broadway` with colours (74,40,132) / (0,0,0) / (237,221,0) and
+   decals 21 / 1 / 0, and this stage extracts it with spans. **ITSTAXI is not
+   resolved and cannot be from a file**: `itstaxi` occurs in no readable member,
+   it is not one of the twelve patterns the shop offers, and no ace record names
+   it. It has a stock BM livery directory (F09-D), so its appearance comes from
+   the shipped BM planes themselves. Neither is a paint pattern, so the paint
+   shop cannot recolour either. Which stock livery directory corresponds to which
+   paint pattern stays engine-internal: the directories are `BLACKHAT`…`STUDIO`
+   plus `BROADWAY`, `FORTUNE` and `ITSTAXI`, while the player's pattern is named
+   `player_fortune` and BROADWAY's palette lives in an ace record, so the naming
+   is not a mapping. Affected content: the directory-to-pattern binding.
    Resolving task: #358 or #351, with F17-D for the renderer.
 3. **`decal_index_semantics`** — narrowed, still open. The decal pane declares a
    50-frame sheet and **every** stored `paint_decal` index (`2..=21`) is inside it,
@@ -257,10 +321,10 @@ original game running. No original run was observed in this session.
 
 ## Tests
 
-Five `accept_f09_paintshop_` tests, all in `crates/cs_content/src/livery.rs`,
+Nine `accept_f09_paintshop_` tests, all in `crates/cs_content/src/livery.rs`,
 plus one ignored evidence harness beside them. Every assertion is produced by
-production code; each fails if the behavior it pins is removed. Four run on an
-ordinary build (CI); the retail test and the harness are
+production code; each fails if the behavior it pins is removed. Five run on an
+ordinary build (CI); the two retail tests and the harness are
 `#[ignore = "requires CS_GAME_DIR"]` and fail loudly when run without it.
 
 | Test | What it pins |
@@ -269,11 +333,22 @@ ordinary build (CI); the retail test and the harness are
 | `accept_f09_paintshop_refuses_a_layout_or_control_it_cannot_read` | a layout with no `[@Paint@]` section (`missing_section`), a control spelled as a pane (`wrong_kind`), a control one field short (`short_record`), an entry count spelled as a `<NAME>` (`entries_unreadable`), a slot digit above the shop's slots (`unknown_slot`) and an unreadable frame count (`frames_unreadable`) |
 | `accept_f09_paintshop_reports_a_control_that_stores_a_value` | a control whose `x` position spells a colour literal: the census measures `colour: 1`, the **swatch gap is not recorded** (a gap that survived a control that stores its values would be a lie) and the other gaps are unaffected |
 | `accept_f09_paintshop_cross_check_closes_patterns_and_bounds_decals` | a pattern list that matches the stored pattern count reports only the uncoloured pattern; a list of three against two stored patterns reports `pattern_count_mismatch`; a stored decal inside the declared frames is not a finding and one past it is `decal_outside_sheet`; a layout with no decal pane reports `no_decal_sheet` |
+| `accept_f09_paintshop_extracts_the_instant_action_ace_paint` | an `ia.zrd` record's ace paint: the pattern, three colours, three decals, accent id, airframe, ace name and scenario type, a container-absolute span per field (with the 16-byte one-int-list and 32-byte three-int-list extents pinned) and the refusal for a slot the record does not store |
+| `accept_f09_paintshop_refuses_an_ace_paint_it_cannot_read` | an archive with no `ia.zrd` (`missing_member`), a member that is not the observed layout (`unknown_tag`), a record that names no ace paint (`no_ace_paint`), an incomplete colour triple and an incomplete decal triple (both `shape`, never padded) |
+| `accept_f09_paintshop_cross_checks_the_ace_paint_against_the_palettes` | an ace paint naming a stored pattern with the same values closes with no finding; one different channel is a `palette_mismatch` at that slot; a pattern nothing colours is `pattern_without_palette` and stops the comparison; a stored decal inside the declared frames is not a finding and one past them is `decal_outside_sheet` |
+| `accept_f09_paintshop_retail_instant_action_ace_paints` | all eight chapters' ace paints with their measured patterns, colours, decals, accent ids, ace names, airframes and scenario types; the six that agree with the vehicle palettes slot for slot, the two (`C1C`, `C2B`) that disagree at three slots, the one (`C5`) whose pattern nothing colours, and the assertion that `broadway` and `itstaxi` are both absent from the vehicle records |
 | `accept_f09_paintshop_retail_option_space_and_recorded_gaps` | the original member: the stored and decoded spans and digests, zero trailing bytes, all ten controls with their counts, lines and per-record censuses, the summed census with `colour: 0` and `hex: 0`, the decal pane's art, 50 frames and line, exactly one cross-check finding (`pattern_without_palette`), and the 12 = 12 closure between the pattern list and the stored patterns |
 | `evidence_report_f09_paintshop_writes_the_acceptance_report` (ignored harness) | writes the acceptance report from the recorded suite, the production discovery/fingerprint and the production catalog plus its cross-check; it is **not** named `accept_f09_paintshop_*` so the task selection cannot pick it up |
 
 Mutation checks, applied to the production code and reverted, with the tests that
 caught each:
+
+- dropping the per-slot equality from `AcePaintCatalog::cross_check` → the two
+  Hollywood Khan scenarios would close silently; the retail ace test fails;
+- accepting a record whose colour triple is short and padding it → the refusal
+  test fails on `shape`;
+- reading `ace_color2` for slot 1 → every ace colour shifts; the retail ace test
+  fails on the first chapter;
 
 - dropping the `colour`/`hex` guard in `paint_shop_gaps` → the value-carrying
   fixture would still record a swatch gap; `…reports_a_control_that_stores_a_value`
@@ -295,17 +370,21 @@ This task used `retail` (read-only access to `$CS_GAME_DIR`), so
 `docs/contracts/CLI-EVIDENCE.md` requires an acceptance report. It is
 `docs/findings/evidence/F09-PAINTSHOP.json`, written by the inline harness from a
 real run: the recorded `cargo test --workspace --locked -- accept_f09_paintshop_
---include-ignored` log (5 tests, all pass), the production `install::discover` /
+--include-ignored` log (9 tests, all pass), the production `install::discover` /
 `fingerprint` / `content_fingerprint` of the installation, the production
 `PaintShopCatalog::discover` over the original member, the production
 `FactionPaletteCatalog::discover` over `ZBD/zrdr.zbd` member `vehicle.zrd`, their
-cross-check, and the private `paint-shop-catalog.json` artifact (per-control
-counts, lines, field censuses, both spans, the decal sheet declaration, the four
-gaps, the one finding and the `option_space_fingerprint`
-`ca8d21fcf1ce3383e887cc40663c973e33a4cb6a05d901e22e114355cb5c2940`). No original
-bytes, text or images are committed. The report's `capabilities` are
+cross-check, the production `AcePaintCatalog::discover` over all eight
+`ZBD/<chapter>/IA1/zrdr.zbd` members with their own cross-checks, and the private
+`paint-shop-catalog.json` artifact (per-control counts, lines, field censuses,
+both spans, the decal sheet declaration, the four gaps, the one shop finding, the
+eight ace paints with their values and byte spans, and the
+`option_space_fingerprint`). No original bytes, text or images are committed. The report's `capabilities` are
 `["retail", "synthetic"]`; `claim` is `implemented` — a merge awards `checked` at
-most and nothing here observed the original game running.
+most and nothing here observed the original game running. The report was
+regenerated on the candidate tree its own `candidate_tree` names, which is the
+tree before the commit that adds this copy; a reviewer regenerates it on the
+rebased tree and compares, as the F09-PALETTE and F09-D records do.
 
 The report is validated with `tools/validate_evidence.py` **without**
 `--require-pass`, for the reason the F09-PALETTE, F12-G and F12-H reports give:
@@ -315,7 +394,7 @@ deliverable is that six limitations stay recorded. Concretely, on this tree:
 | Command | Result |
 | --- | --- |
 | `python3 tools/validate_evidence.py private/evidence/F09-PAINTSHOP/acceptance.json --artifact-root private/evidence/F09-PAINTSHOP` | 0 (`structurally_valid: true`, 2 artifacts) |
-| `python3 tools/validate_evidence.py … --require-pass` | **3** (`Unresolved issues`) — expected: the six recorded limitations are the deliverable |
+| `python3 tools/validate_evidence.py … --require-pass` | **3** (`Unresolved issues`) — expected: the recorded limitations are the deliverable |
 
 ## Boundaries
 
@@ -325,6 +404,10 @@ swatch palette, the shade table, the pattern display names, the decal-index
 mapping or the player's default paint; those are the six recorded limitations
 above, each naming its affected content and what resolves it. A
 `verified_original` claim about paint-shop appearance still needs an owner
-capture or an owner-authorised engine-image unpack and is not made here. Nothing
-here observes how the original renderer bound a composed texture (F17-D), and the
-slot-to-mask mapping stays F17-D's.
+capture or an owner-authorised engine-image unpack and is not made here. What
+this stage does establish from original data is the shop's option space, the
+decal sheet, BROADWAY's palette and the agreement of six Instant Action ace paints
+with the vehicle palettes — which is agreement between two readers of two
+original sources, not the original renderer. Nothing here observes how the
+renderer bound a composed texture (F17-D), and the slot-to-mask mapping stays
+F17-D's.
