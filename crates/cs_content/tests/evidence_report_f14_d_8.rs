@@ -50,10 +50,12 @@
 //!   reader, which counts the `Mission_Spread_Item` records itself.
 //!
 //! The legacy custom-plane collection is **not** derived, because the task's own
-//! rule refuses a row from a file name: F64-A measured that no installation byte
-//! is known to reference an importable legacy aircraft, so the harness proves the
-//! refusal (no `custom_plane` row, no collection record) rather than inventing a
-//! count.
+//! rule refuses a row from a file name and nothing about that format has been
+//! measured: F64-A's `LEGACY_LAYOUT_INVENTORY[CustomAircraft].referenced_by` is
+//! empty because that stage was written without the `retail` capability and never
+//! opened an installation file, so it is the absence of a measurement rather than
+//! the result of one. The harness therefore proves the refusal (no `custom_plane`
+//! row, no collection record) rather than inventing a count.
 //!
 //! `unknowns` is `[]` and the report validates with `--require-pass`: the
 //! **task's** acceptance is complete — the two collections are populated from
@@ -380,7 +382,12 @@ fn evidence_report_f14_d_8_writes_the_acceptance_report() {
     }
 
     // The refused collection: no row and no collection record for legacy custom
-    // planes, because no installation byte is known to name one.
+    // planes, because nothing about that format has been measured. Measured here,
+    // so the refusal is a statement about this installation rather than an
+    // assumption: production discovery inventoried 228 files and none of them is
+    // named like a legacy custom-aircraft definition. A name check is not a
+    // layout measurement, so no row is derived from one and the collection stays
+    // unmeasured (see `UNKNOWN_LIMITATIONS` and the follow-up task).
     assert!(
         baseline
             .catalog
@@ -458,6 +465,27 @@ fn evidence_report_f14_d_8_writes_the_acceptance_report() {
         "the c1 and c3 dogfight fly-through targets stay a counted gap"
     );
     assert_eq!(stunt_status.diagnostic, None);
+    // Measured on this installation, so the "no repeat" statement in the
+    // limitations above is a measurement rather than an assumption: no scenario
+    // names a zone label twice, so neither repeat gap is counted here.
+    assert_eq!(
+        stunt_status
+            .gaps
+            .get("duplicate_zone_label")
+            .copied()
+            .unwrap_or_default(),
+        0,
+        "no `stunt_flying` scenario names a zone label twice"
+    );
+    assert_eq!(
+        stunt_status
+            .gaps
+            .get("ambiguous_zone_label")
+            .copied()
+            .unwrap_or_default(),
+        0,
+        "no scenario names one zone label twice with two different descriptions"
+    );
     let scrapbook_status = baseline
         .collection_status
         .iter()
@@ -473,6 +501,24 @@ fn evidence_report_f14_d_8_writes_the_acceptance_report() {
          recorded"
     );
     assert_eq!(scrapbook_status.diagnostic, None);
+    assert_eq!(
+        scrapbook_status
+            .gaps
+            .get("duplicate_entry_key")
+            .copied()
+            .unwrap_or_default(),
+        0,
+        "the scrapbook table declares no entry key twice"
+    );
+    assert_eq!(
+        scrapbook_status
+            .gaps
+            .get("ambiguous_entry_key")
+            .copied()
+            .unwrap_or_default(),
+        0,
+        "no entry key is declared twice with two different bodies"
+    );
 
     let report = baseline_report_json(&baseline);
     fs::write(&report_path, &report)
@@ -734,11 +780,17 @@ fn read_member(root: &Path, install: ContentHash) -> Vec<u8> {
 fn review_identity() -> String {
     let recorded = String::from(
         "implementer: deepseek-1/deepseek-1 (Rally #491, implement claim of \
-         2026-10-03T07:50:21Z). No review claim had run when this report was generated, so the \
-         implementer is the only identity recorded: the reviewing agent replaces this literal and \
-         names itself here in the same commit that regenerates the report. The reviewing session \
-         should record whether its review context was fresh. `checked` is the ceiling for an \
-         agent review and no agent review replaces the owner's human approval",
+         2026-10-03T07:50:21Z); reviewer: bunny-2/bunny-2 (Rally #491, review claim of \
+         2026-10-03T11:37:56Z), a different agent instance with a fresh review context, so this \
+         review is not independent original-reference evidence. The reviewer found and fixed two \
+         real defects: a repeated zone label or entry key in either new collection aborted the \
+         whole baseline instead of being counted as a repeat (both regression tests verified to \
+         fail without the fix), and the custom-plane refusal was justified by a F64-A measurement \
+         that stage never made (its `referenced_by` is empty because it had no `retail` \
+         capability, not because a search found nothing). The reviewer also corrected the five \
+         stunt claim ids this harness recorded, which named claims that do not exist, and rebase \
+         conflict resolutions against the current main. `checked` is the ceiling for an agent \
+         review and no agent review replaces the owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
@@ -773,7 +825,12 @@ fn review_method() -> String {
          target position, dropping the collections' explicit unknowns and clearing their gaps \
          each fail the synthetic acceptance tests named in the finding; substituting the stored \
          member digest for the decoded one in a scrapbook span is caught by the retail test, \
-         because a synthetic member is stored uncompressed and the two digests coincide there.",
+         because a synthetic member is stored uncompressed and the two digests coincide there. \
+         Reviewer mutation probes on this branch: un-grouping the stunt rows so every fly-through \
+         target is minted separately fails the repeated-zone-label test with the whole baseline \
+         erroring on a duplicate identity, and keeping only the first record of each repeated \
+         entry key fails the repeated-entry-key test on the missing duplicate_entry_key count; both \
+         are the reviewer's own regressions for the defects it fixed.",
     );
     recorded
         + &UNKNOWN_LIMITATIONS
@@ -789,9 +846,9 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
     "A stunt row is an *identity and a location*, not a playable stunt: the installation names \
      the fly-through danger-zone target of a `stunt_flying` scenario, but the scenario bytes do \
      not state the stunt's direction, clearance, reward, repeat behaviour or the joined gate \
-     geometry around it. Every row says so under claims f14.d.8.stunt.direction, \
-     f14.d.8.stunt.clearance, f14.d.8.stunt.reward, f14.d.8.stunt.repeat and \
-     f14.d.8.stunt.geometry instead of carrying a designed value. Affected content: every stunt \
+     geometry around it. Every row says so under claims f14.d.8.stunt_direction_rule, \
+     f14.d.8.stunt_clearance_rule, f14.d.8.stunt_reward, f14.d.8.stunt_repeat_policy and \
+     f14.d.8.stunt_geometry instead of carrying a designed value. Affected content: every stunt \
      flight and its scoring in F42. Resolving tasks: F42 (stunts, fame photos and optional \
      achievement events) and F26 (the calibration probes), together with F38 (native behavior \
      bindings) — the original's own gate geometry and reward reach its stunt screen through \
@@ -804,16 +861,23 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
      Affected content: every scrapbook spread, its thumbnails and its captions in F47. Resolving \
      task: F47 (scrapbook records, mementos and mission replay). \
      docs/findings/2026-10-03-f14-d-8-stunt-scrapbook-collections.md records the measurement.",
-    "The legacy `custom_plane` collection has **no row and no collection record**. F64-A \
-     measured that no installation file is known to reference an importable legacy aircraft, so \
-     a row could only be guessed from a file name, which the task's own rule rejects. The legacy \
-     custom-plane layout is a research question: the identity and the container format of a \
-     legacy aircraft must be measured before any row can be built. Affected content: the whole \
-     of F64 (legacy custom aircraft and optional save import). Resolving task: #582 (measure the \
-     legacy custom-aircraft layout before a custom-plane catalog collection), the follow-up \
-     created from #491, which must first measure the layout. \
+    "The legacy `custom_plane` collection has **no row and no collection record**, and nothing \
+     about it has been measured in either direction. F64-A's \
+     LEGACY_LAYOUT_INVENTORY[CustomAircraft].referenced_by is empty because that stage was \
+     written without the `retail` capability and never opened an installation file, so it is \
+     the absence of a measurement, not the result of one; its own first unknown for that row is \
+     whether any original content path references a custom aircraft at all. What this stage can \
+     say is only that none of the installation's 228 inventoried files is *named* like a legacy \
+     custom-aircraft definition, which is a name check and not a layout measurement. A row could \
+     therefore only be guessed from a file name, which the task's own rule rejects, and the \
+     legacy custom-plane layout remains a research question: the identity and the container \
+     format of a legacy aircraft must be measured before any row can be built. Affected content: \
+     the whole of F64 (legacy custom aircraft and optional save import). Resolving task: #582 \
+     (measure the legacy custom-aircraft layout before a custom-plane catalog collection), the \
+     follow-up created from #491, which must first measure the layout. \
      docs/findings/2026-10-01-f64-a-legacy-import-inventory-and-contracts.md and \
-     docs/findings/2026-10-03-f14-d-8-stunt-scrapbook-collections.md record the measurement.",
+     docs/findings/2026-10-03-f14-d-8-stunt-scrapbook-collections.md record what is and is not \
+     measured.",
     "The nine fly-through danger-zone targets of the scenarios the original marks \
      `dogfight_squadron` (`c1` and `c3`) are counted as the `non_stunt_fly_through_targets` gap \
      of the stunt collection rather than dropped or guessed into a row: the same target shape \
@@ -826,6 +890,16 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
      unreachable_needing_classification. Affected content: the reachability accounting of the \
      two collections. Resolving task: the stage that lets a scenario or a mission row point at \
      the stunt it awards or the scrapbook item it unlocks.",
+    "A repeated identity inside either new collection is a counted repeat rather than a row: a \
+     scenario naming one zone label twice yields one row plus duplicate_zone_label, and a scrapbook \
+     table declaring one entry key twice yields one row plus duplicate_entry_key; when the repeated \
+     records disagree with each other, neither is a row and the pair is counted under \
+     ambiguous_zone_label or ambiguous_entry_key, because nothing in the bytes says which one the \
+     engine reads. Without this, one repeated label cost the installation its entire catalog \
+     rather than one row. Affected content: the two collections on an installation that repeats a \
+     label or a key — none of the owner's data does, so all four counts are absent here. \
+     Resolving task: none needed; fixed in review, recorded in \
+     docs/findings/2026-10-03-f14-d-8-stunt-scrapbook-collections.md.",
     "The scenario idiom this collection declares (which scenario directory is a stunt) is a \
      claim somebody made against fingerprinted bytes, stated in \
      cs_content::catalog::baseline with its own observed_tool provenance over the scenario \

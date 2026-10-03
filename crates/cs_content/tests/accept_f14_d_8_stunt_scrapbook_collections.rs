@@ -20,11 +20,14 @@
 //! explicit `UnsupportedReason::Unknown`s.
 //!
 //! **What this stage refuses.** `ContentKind::CustomPlane` gets **no** row and
-//! no collection record: F64-A measured that no installation file is known to
-//! reference an importable legacy aircraft, so a row could only be guessed from
-//! a file name. A scenario's fly-through target that is not a stunt, and a
-//! scrapbook entry the documented schema does not cover, stay as counted gaps
-//! in the collection record instead of being dropped.
+//! no collection record: nothing about that format has been measured in either
+//! direction — F64-A's `referenced_by: &[]` is empty because *that* stage was
+//! written without the `retail` capability and opened no installation file, which
+//! is the absence of a measurement rather than the result of one — so a row could
+//! only be guessed from a file name. A scenario's fly-through target that is not a
+//! stunt, a scrapbook entry the documented schema does not cover, and a repeated
+//! identity in either collection stay as counted gaps in the collection record
+//! instead of being dropped or turned into a duplicate identity.
 //!
 //! The non-retail tests write **synthetic installation trees** into temporary
 //! directories: a version-one reader archive for the campaign mission, the world
@@ -356,6 +359,40 @@ fn add_scrapbook_archive(temp: &TempInstall, member: &[u8]) {
     );
 }
 
+/// One authored `Mission_Spread_Item` record line: the sixteen fields the
+/// documented schema covers, with `index` as the numeric first field and
+/// `variant` in the title so two records under one key can be made to agree
+/// (`variant` equal) or disagree (it differs).
+fn scrapbook_record(index: u32, variant: &str) -> String {
+    format!(
+        "={},IDS_IMG,thumb.png,PNG,10,20,255,64,64,0,\
+         \"0,0,64,64\",1,1,1,{variant},TEXT\r\n",
+        index
+    )
+}
+
+/// An authored scrapbook member holding exactly the `(key, variant)` records
+/// named, in that order, under the documented `[SCRAPBOOK]` section.
+///
+/// The numeric first field is derived from the key itself rather than from the
+/// record's position, so two records that carry the same key **and** the same
+/// variant are byte-identical lines — which is what "the table declares this item
+/// twice" means. A position-derived field would make every repeat look like a
+/// different body and the test would prove nothing.
+fn scrapbook_member_with(records: &[(&str, &str)]) -> Vec<u8> {
+    let mut csv = Vec::new();
+    csv.extend_from_slice(b"[SCRAPBOOK]\r\n");
+    csv.extend_from_slice(b"; Mission_Spread_Item\r\n");
+    for (key, variant) in records {
+        let index = key.bytes().fold(0_u32, |acc, byte| {
+            acc.wrapping_mul(31).wrapping_add(u32::from(byte)) % 900 + 1
+        });
+        csv.extend_from_slice(key.as_bytes());
+        csv.extend_from_slice(scrapbook_record(index, variant).as_bytes());
+    }
+    csv
+}
+
 // --------------------------------------------------------------- helpers ---
 
 fn cid(kind: ContentKind, key: &str) -> ContentId {
@@ -619,6 +656,89 @@ fn accept_f14_d_8_the_zone_label_is_the_identity_not_the_position() {
     );
 }
 
+/// One scenario naming one zone label twice is one gate named twice, not two
+/// rows and not a reason to lose the whole inventory.
+///
+/// The identity is the zone label, so a second target under the same label would
+/// be a second row with an identity the catalog refuses. Letting that refusal out
+/// of the collection builder cost the installation **every** row it had — 6 009 on
+/// the owner's data — over one repeated label, which is the defect this pins.
+#[test]
+fn accept_f14_d_8_a_zone_label_repeated_in_one_scenario_is_a_counted_repeat_not_a_second_row() {
+    // (a) The same label twice with the same description: one gate, the repeat
+    //     counted.
+    let repeated = campaign_tree("zone-repeat");
+    add_ia_scenario(
+        &repeated,
+        "IA1",
+        "stunt_flying",
+        vec![
+            fly_through_target("dz1", "MSG_OBJ_DZ_ONE"),
+            fly_through_target("dz1", "MSG_OBJ_DZ_ONE"),
+            fly_through_target("dz2", "MSG_OBJ_DZ_TWO"),
+        ],
+    );
+    let baseline = retail_baseline(&repeated.0).expect("the fixture installation reads");
+    assert_eq!(
+        rows_of(&baseline, ContentKind::Stunt)
+            .iter()
+            .map(|row| row.id.key().to_owned())
+            .collect::<Vec<_>>(),
+        vec!["c1-ia1-dz1".to_owned(), "c1-ia1-dz2".to_owned()],
+        "the repeated label is one gate, so the identity is unique again"
+    );
+    let status = status_of(&baseline, ContentKind::Stunt);
+    assert_eq!(status.rows, 2);
+    assert_eq!(
+        status.gaps.get("duplicate_zone_label"),
+        Some(&1),
+        "the repeat is accounted for under its own stable label"
+    );
+    assert_eq!(status.gaps.get("ambiguous_zone_label"), None);
+    // The whole inventory still reads: the mission and the scenario are rows.
+    assert_eq!(
+        baseline.roots,
+        vec![
+            cid(ContentKind::Mission, "ch1-m01"),
+            cid(ContentKind::IaScenario, "c1-ia1"),
+        ]
+    );
+
+    // (b) The same label twice with two different descriptions: the scenario says
+    //     nothing that tells the two apart, so neither is a row.
+    let ambiguous = campaign_tree("zone-ambiguous");
+    add_ia_scenario(
+        &ambiguous,
+        "IA1",
+        "stunt_flying",
+        vec![
+            fly_through_target("dz1", "MSG_OBJ_DZ_ONE"),
+            fly_through_target("dz1", "MSG_OBJ_DZ_OTHER"),
+        ],
+    );
+    let baseline = retail_baseline(&ambiguous.0).expect("the fixture installation reads");
+    assert!(
+        rows_of(&baseline, ContentKind::Stunt).is_empty(),
+        "a label the scenario gives two descriptions to is not keyed by guessing which one"
+    );
+    let status = status_of(&baseline, ContentKind::Stunt);
+    assert_eq!(status.rows, 0);
+    assert_eq!(
+        status.gaps.get("ambiguous_zone_label"),
+        Some(&2),
+        "both declarations are accounted for"
+    );
+    assert_eq!(status.gaps.get("duplicate_zone_label"), None);
+    assert_eq!(
+        baseline.roots,
+        vec![
+            cid(ContentKind::Mission, "ch1-m01"),
+            cid(ContentKind::IaScenario, "c1-ia1"),
+        ],
+        "the rest of the inventory still reads"
+    );
+}
+
 // ---------------------------------------------------------- scrapbook ---
 
 /// The mapping arm: every `Mission_Spread_Item` of the scrapbook member becomes
@@ -717,6 +837,71 @@ fn accept_f14_d_8_the_scrapbook_table_becomes_one_row_per_item() {
         report,
         baseline_report_json(&retail_baseline(&temp.0).expect("re-read")),
         "the report is byte-stable for the same installation"
+    );
+}
+
+/// One entry key the table declares twice is one item declared twice, not two
+/// rows and not a reason to lose the whole inventory.
+///
+/// Same defect as the repeated zone label, on the other collection: the entry key
+/// is this row's identity, so a repeated key is a duplicate identity, and letting
+/// [`Catalog::insert`]'s refusal out of the builder cost every catalog row the
+/// installation has.
+#[test]
+fn accept_f14_d_8_a_repeated_entry_key_is_a_counted_repeat_not_a_second_row() {
+    // (a) The same key twice with the same fields: one item, the repeat counted.
+    let repeated = campaign_tree("key-repeat");
+    add_scrapbook_archive(
+        &repeated,
+        &scrapbook_member_with(&[("SB0", "SAME"), ("SB1", "OTHER"), ("SB0", "SAME")]),
+    );
+    let baseline = retail_baseline(&repeated.0).expect("the fixture installation reads");
+    assert_eq!(
+        rows_of(&baseline, ContentKind::ScrapbookItem)
+            .iter()
+            .map(|row| row.id.key().to_owned())
+            .collect::<Vec<_>>(),
+        vec!["sb0".to_owned(), "sb1".to_owned()],
+        "the repeated key is one item, so the identity is unique again"
+    );
+    let status = status_of(&baseline, ContentKind::ScrapbookItem);
+    assert_eq!(status.rows, 2);
+    assert_eq!(
+        status.gaps.get("duplicate_entry_key"),
+        Some(&1),
+        "the repeat is accounted for under its own stable label"
+    );
+    assert_eq!(status.gaps.get("ambiguous_entry_key"), None);
+    assert_eq!(
+        baseline.roots,
+        vec![cid(ContentKind::Mission, "ch1-m01")],
+        "the rest of the inventory still reads"
+    );
+
+    // (b) The same key twice with different fields: the table says nothing that
+    //     tells the two apart, so neither is a row.
+    let ambiguous = campaign_tree("key-ambiguous");
+    add_scrapbook_archive(
+        &ambiguous,
+        &scrapbook_member_with(&[("SB0", "ONE"), ("SB0", "TWO")]),
+    );
+    let baseline = retail_baseline(&ambiguous.0).expect("the fixture installation reads");
+    assert!(
+        rows_of(&baseline, ContentKind::ScrapbookItem).is_empty(),
+        "a key the table gives two different bodies to is not keyed by guessing which one"
+    );
+    let status = status_of(&baseline, ContentKind::ScrapbookItem);
+    assert_eq!(status.rows, 0);
+    assert_eq!(
+        status.gaps.get("ambiguous_entry_key"),
+        Some(&2),
+        "both declarations are accounted for"
+    );
+    assert_eq!(status.gaps.get("duplicate_entry_key"), None);
+    assert_eq!(
+        baseline.roots,
+        vec![cid(ContentKind::Mission, "ch1-m01")],
+        "the rest of the inventory still reads"
     );
 }
 
@@ -963,6 +1148,24 @@ fn accept_f14_d_8_retail_the_installation_declares_its_stunt_and_scrapbook_colle
         "the five c1 and four c3 dogfight targets stay a counted gap"
     );
     assert_eq!(status.diagnostic, None);
+    assert_eq!(
+        status
+            .gaps
+            .get("duplicate_zone_label")
+            .copied()
+            .unwrap_or_default(),
+        0,
+        "no `stunt_flying` scenario names a zone label twice on this installation"
+    );
+    assert_eq!(
+        status
+            .gaps
+            .get("ambiguous_zone_label")
+            .copied()
+            .unwrap_or_default(),
+        0,
+        "and none names one label twice with two different descriptions"
+    );
 
     // --- scrapbook ------------------------------------------------------
     let scrapbook_rows = rows_of(&baseline, ContentKind::ScrapbookItem);
@@ -1016,11 +1219,29 @@ fn accept_f14_d_8_retail_the_installation_declares_its_stunt_and_scrapbook_colle
          recorded"
     );
     assert_eq!(status.diagnostic, None);
+    assert_eq!(
+        status
+            .gaps
+            .get("duplicate_entry_key")
+            .copied()
+            .unwrap_or_default(),
+        0,
+        "the scrapbook table declares no entry key twice on this installation"
+    );
+    assert_eq!(
+        status
+            .gaps
+            .get("ambiguous_entry_key")
+            .copied()
+            .unwrap_or_default(),
+        0,
+        "and no entry key is declared twice with two different bodies"
+    );
 
     // --- legacy custom planes ------------------------------------------
     assert!(
         rows_of(&baseline, ContentKind::CustomPlane).is_empty(),
-        "no installation byte names a legacy custom plane, so no row is guessed"
+        "nothing about the legacy custom-plane format has been measured, so no row is guessed"
     );
     assert!(
         baseline

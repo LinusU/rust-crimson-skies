@@ -22,7 +22,7 @@ its report had no such entries. This stage settles all three:
 * **`scrapbook_item` is populated** — one row per `Mission_Spread_Item` record of
   the shared archive's `ASSETS/SCRAPBOOK.CSV` member;
 * **`custom_plane` stays empty, deliberately** — no row and no collection record,
-  because no installation byte is known to name one (see below).
+  because nothing has been measured about it either way (see below).
 
 The baseline report over the owner's installation now reads:
 
@@ -139,21 +139,31 @@ consumer can build a spread yet.
 
 ## Why the legacy custom-plane collection stays empty
 
-The task's own rule refuses "no row from a file name", and F64-A measured that
-no installation file is known to reference an importable legacy aircraft:
-its `LEGACY_LAYOUT_INVENTORY[CustomAircraft]` entry has `referenced_by: &[]` and
+**Nothing has been measured, in either direction.** F64-A's
+`LEGACY_LAYOUT_INVENTORY[CustomAircraft]` entry has `referenced_by: &[]` and
 evidence `Unknown`
-(`docs/findings/2026-10-01-f64-a-legacy-import-inventory-and-contracts.md`).
-Since no byte supports an identity, any `custom_plane` row could only be
-invented from a file name — exactly what AGENTS rule 4 forbids. So the stage
+(`docs/findings/2026-10-01-f64-a-legacy-import-inventory-and-contracts.md`),
+but that list is empty because **F64-A was written without the `retail`
+capability and never opened an installation file** — its own finding says so, and
+its first unknown for that row is "whether any original content path references a
+custom aircraft at all". An empty `referenced_by` there is the absence of a
+measurement, not the result of one, and this stage must not present it as a
+measurement of the owner's installation.
+
+This stage did have `retail`, so it can say what it actually looked at: the
+installation's 228 inventoried files carry **no** legacy custom-aircraft file by
+name, and no byte of it has been *shown* to reference one. That is not a
+measurement of the layout either — naming a file is not identifying a format — so
+the collection stays **unmeasured**, exactly as `LEGACY_LAYOUT_INVENTORY` says it
+is, and no row and no `CollectionStatus` are written: the task's own rule refuses
+"no row from a file name", and a row could only be invented from one. So the stage
 writes **no** `custom_plane` row and, following the F14-D.6 precedent for a
 family with no located source, **no** `custom_plane` `CollectionStatus` either:
 a record must name the file its rows come from, and no such file has been
-measured. The refusal is proved by the acceptance test and the evidence harness
+located. The refusal is proved by the acceptance test and the evidence harness
 (no row, no collection record, no `custom_plane` key in the report) and the
-layout question is carried into the evidence report's limitations and
-**#582** (measure the legacy custom-aircraft layout before a custom-plane
-catalog collection), the follow-up created from #491.
+layout question is carried into the evidence report's limitations and the
+follow-up task created from #491, which must measure the layout first.
 
 ## What this stage adds
 
@@ -246,8 +256,10 @@ identified by their catalog ids and counts.
 | `a_non_stunt_scenario_is_a_gap_not_a_row` | a `dogfight_squadron` scenario with a fly-through target: **no** row, `non_stunt_fly_through_targets: 1`, a diagnostic naming `stunt_flying` | a non-stunt objective becomes a stunt row, or its gap is dropped |
 | `a_target_that_is_not_a_danger_zone_is_not_a_stunt` | a `stunt_flying` scenario whose only objective is a rearm base: **no** row, `rows: 0` | an objective is selected by position rather than by its own measured labels |
 | `the_zone_label_is_the_identity_not_the_position` | two scenarios naming the same zone label yield two distinct rows | the same label in two scenarios collides into one identity |
+| `a_zone_label_repeated_in_one_scenario_is_a_counted_repeat_not_a_second_row` (review) | one scenario naming `dz1` twice: one row for `dz1` plus `duplicate_zone_label: 1`, and the rest of the inventory still reads; and naming `dz1` twice with two descriptions: no row, `ambiguous_zone_label: 2`, and the rest of the inventory still reads | a repeated label becomes a second row with the same identity, the whole baseline fails on one repeated label, or a disagreeing pair is silently keyed by one of them |
 | `the_scrapbook_table_becomes_one_row_per_item` | the mapping arm: two `Mission_Spread_Item` records become two rows keyed by their own entry keys, located by the decoded member's extent and digest, with `not_normalized` and one static edge onto the archive's inventory row, the record's `SCRAPBOOK_CONTAINER` source and `entry_not_a_scrapbook_item: 1` for the one `B`-letter layout record, and byte-stability | a row is keyed by line number, the span uses the stored digest instead of the decoded one, a display name is invented, the layout record becomes a row, or the report stops being deterministic |
 | `an_absent_or_unreadable_scrapbook_is_a_named_gap` | (a) a missing `crimson.rof` and (b) a non-ROF file at its spelling: both `rows: 0` with a diagnostic naming the source, and the mission root intact | a refused archive is reported as an empty reading, or its diagnostic is dropped |
+| `a_repeated_entry_key_is_a_counted_repeat_not_a_second_row` (review) | one entry key declared twice with identical fields: one row plus `duplicate_entry_key: 1`, and the rest of the inventory still reads; and declared twice with different fields: no row, `ambiguous_entry_key: 2`, and the rest of the inventory still reads | a repeated key becomes a second row with the same identity, the whole baseline fails on one repeated key, or a disagreeing pair is silently keyed by one of them |
 | `the_new_collections_are_not_launchable` | `Stunt`/`ScrapbookItem`/`CustomPlane` are not launchable; the roots are only the mission and the scenario; `launchable_count == 2`; `unreachable_by_kind.stunt == 1`, `.scrapbook_item == 2` | the denominator moves when a collection is populated, or a row becomes a closure root |
 | `custom_planes_have_no_row_and_no_collection_record` | no `CustomPlane` row, no `CustomPlane` collection record and no `custom_plane` key in the report | a custom plane is fabricated from a file name |
 | `retail_the_installation_declares_its_stunt_and_scrapbook_collections` (`#[ignore = "requires CS_GAME_DIR"]`) | **the real installation**: 45 stunt rows equal to a second walk of the same scenarios from four distinct archives, the nine non-stunt targets as a gap, each row's five ordered claim ids and edge onto the archive; 461 scrapbook rows with the decoded member digest `28b5144c…`, `not_normalized` and the archive edge; no custom-plane row or record; no new root; and the report's `stunt: 45`, `scrapbook_item: 461`, no `custom_plane` | the corpus changes, a scenario stops being found or a non-stunt target becomes a row, the scrapbook count drifts, a row is promoted to a root, or the report claims completeness |
@@ -283,6 +295,74 @@ items and the five claim ids against the real installation, so mutations 3 and 5
 fail there too — at the cost of a ~2 min run over the installation, which is why
 the fast synthetic arms carry the same checks.
 
+## Review (bunny-2, reviewing deepseek-1's implementation)
+
+Context was **fresh**: a different agent instance than the implementer's, with no
+part in the implementation. Independently authored work is still not
+independent original-reference evidence, and `checked` remains the ceiling.
+
+Two real defects were found and fixed in review. Both were live behaviours, not
+style, and each has a regression test that fails when the fix is reverted.
+
+1. **One repeated identity cost the installation its whole inventory.** The
+   identity of a stunt row is the scenario directory plus the target's zone
+   label, and the identity of a scrapbook row is the record's entry key — so a
+   scenario that names one zone label twice, or a scrapbook table that declares
+   one entry key twice, produced two rows with the **same** `ContentId`.
+   `Catalog::insert` refuses a duplicate (spec F14 non-negotiable behavior 5) and
+   `insert()` propagates that as `BaselineError::Row`, so the refusal left
+   `retail_baseline` as an **error**: the caller gets no inventory at all, not
+   one fewer row. Probed on a synthetic tree before the fix — a scenario with two
+   fly-through targets naming `dz1` returned
+   `Row { id: "stunt/c1-ia1-dz1", source: DuplicateId { … } }`, and a scrapbook
+   table with a repeated `SB0` key returned
+   `Row { id: "scrapbook_item/sb0", source: DuplicateId { … } }`. On the owner's
+   installation that is **6 009 rows** — every inventoried file, every mission,
+   every other collection — thrown away because one member of one file repeats a
+   label. F14-D.7 had already met this and solved it for the sound collection
+   (`duplicate_member`, `ambiguous_member_name`, counted in `gaps` rather than
+   raised); these two collections did not carry the fix. Each collection now
+   groups by its own identity key before minting rows and resolves each group: a
+   group whose records agree is one row with the repeats counted under
+   `duplicate_zone_label` / `duplicate_entry_key`, and a group whose records
+   disagree is reported under `ambiguous_zone_label` / `ambiguous_entry_key` with
+   **neither** a row, because nothing in the bytes says which one the engine
+   reads. The two regression tests both assert the surrounding inventory still
+   reads, which is the half that was actually broken.
+
+2. **The custom-plane refusal rested on a measurement F64-A never made.** The
+   branch, the module docs, the findings note and the evidence report all
+   justified refusing to build a `custom_plane` collection by saying that "F64-A
+   measured that no installation byte is known to reference an importable legacy
+   aircraft". F64-A **did not measure that**. Its own finding states that the
+   stage was written with "ordinary build/test only", that "`$CS_GAME_DIR` was not
+   read, no original file was opened", and — over the very field quoted as
+   evidence — that "`referenced_by` is therefore empty on every row" **because**
+   the stage had no `retail` capability; its `CustomAircraft` row lists "whether
+   any original content path references a custom aircraft at all" as the **first**
+   unknown. An empty `referenced_by` there is the absence of a measurement, not
+   the result of one, and quoting it as a measurement asserts a fact about the
+   owner's installation that nobody checked. The refusal itself is still correct
+   and still stands — a row could only come from a file name, which the task
+   forbids — but its stated reason is now the true one: **nothing has been
+   measured in either direction**. This stage did have `retail`, so it now also
+   states what it actually looked at (production discovery's 228 inventoried
+   files, none named like a legacy custom-aircraft definition) and is explicit
+   that a name check is not a layout measurement. The collection stays unmeasured,
+   no row is invented, and the layout question stays assigned to the follow-up
+   that must measure it first.
+
+Rebased onto the current `origin/main` during review; the two conflicts were the
+F14-D.4 geometry collections in the same module doc and in the stage-level
+completeness total, both kept. `main` had already accounted for the F14-D.7
+sound rows in that total, so the branch's separate sound-accounting repair was
+dropped as redundant on the rebased tree rather than kept as a second copy.
+
+Nothing else in the diff was changed: the two collection builders, the span and
+edge conventions, the five explicit stunt unknowns, the gap accounting, the
+identity derivations, the non-launchability of both kinds and the evidence
+harness were re-read and are correct as written.
+
 ## Unknowns and limitations (all recorded, none guessed)
 
 - **A stunt row is an identity and a location, not a playable stunt.** The five
@@ -297,14 +377,26 @@ the fast synthetic arms carry the same checks.
   localization fields. **Affected content:** every scrapbook spread, its
   thumbnails and its captions in F47. **Resolving task:** F47 (scrapbook
   records, mementos and mission replay).
-- **The legacy `custom_plane` collection has no row and no collection record.**
-  The layout is a research question: the identity and container format of a
-  legacy aircraft must be *measured* before any row can exist, and a row from a
-  file name is exactly what the task forbids. **Affected content:** the whole of
-  F64 (legacy custom aircraft and optional save import). **Resolving task:**
-  #582 (measure the legacy custom-aircraft layout before a custom-plane catalog
-  collection), the follow-up created from #491, which must first measure the
-  layout.
+- **The legacy `custom_plane` collection has no row and no collection record, and
+  nothing about it has been measured in either direction.** The layout is a
+  research question: the identity and container format of a legacy aircraft must
+  be *measured* before any row can exist, and a row from a file name is exactly
+  what the task forbids. F64-A's `referenced_by: &[]` is **not** a measurement of
+  this installation — that stage had no `retail` capability and opened no
+  original file (see "Review" above). What this stage can say is only that none
+  of the installation's 228 inventoried files is *named* like a custom-aircraft
+  definition, which is a name check and not a layout measurement.
+  **Affected content:** the whole of F64 (legacy custom aircraft and optional
+  save import). **Resolving task:** #582 (measure the legacy custom-aircraft
+  layout before a custom-plane catalog collection), the follow-up created from
+  #491, which must first measure the layout.
+- **A repeated identity inside either new collection is a counted repeat, not a
+  row.** A scenario that names one zone label twice, or a scrapbook table that
+  declares one entry key twice, yields one row plus a `gaps` count rather than a
+  duplicate identity; when the repeated records disagree with each other, neither
+  is a row. **Affected content:** the two collections' behaviour on an
+  installation that repeats a label or a key — nothing in the owner's data does.
+  **Resolving task:** none needed; fixed in review (see "Review" defect 1).
 - **The nine `dogfight_squadron` fly-through targets are a counted gap, not
   stunts.** The same objective shape backs two mission types, and only the
   scenario's own `ia.zrd` says which; the distinction is F37/F42's to make.
@@ -356,7 +448,8 @@ the fast synthetic arms carry the same checks.
   (the 461 `Mission_Spread_Item` records, the decoded member's offset, lengths
   and digest).
 - `docs/findings/2026-10-01-f64-a-legacy-import-inventory-and-contracts.md`
-  (the measured legacy inventory, `referenced_by: &[]`, evidence `Unknown`).
+  (the legacy inventory of what must be known, written without `retail`:
+  `referenced_by: &[]`, evidence `Unknown`).
 - `docs/findings/2026-10-03-f14-d-6-airframe-collection.md` (the collection
   record pattern and the "no source, no record" precedent).
 - `crates/cs_formats::script_raw` (`discover_container`),
@@ -365,4 +458,7 @@ the fast synthetic arms carry the same checks.
   `crates/cs_content::config` (`ConfigDocument`, `RecordSchema`) and
   `crates/cs_assets::install` (production discovery and the fingerprints).
 - The owner's installation, read-only: the `ZBD/<group>/IA<n>/zrdr.zbd` reader
-  archives and `GOSDATA/ASSETS/crimson.rof`'s `ASSETS/SCRAPBOOK.CSV` member.
+  archives and `GOSDATA/ASSETS/crimson.rof`'s `ASSETS/SCRAPBOOK.CSV` member,
+  plus production discovery's 228-file inventory, whose **file names** were
+  checked for a legacy custom-aircraft file (none) — a name check, not a format
+  measurement.

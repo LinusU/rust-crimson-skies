@@ -112,7 +112,6 @@
 //!   cannot move the denominator,
 //!   and F41's declared bus/playback metadata stays an explicit
 //!   [`UnsupportedReason::Unknown`] on every row while no media player consumer
-<<<<<<< HEAD
 //!   is claimed;
 //! * one [`ContentKind::SceneNode`] row per stored node of every GameZ geometry
 //!   container the installation holds, and one [`ContentKind::Mesh`] row per
@@ -140,15 +139,18 @@
 //!   launchable, so it adds nothing to the denominator; what the scenario bytes
 //!   do not state (direction, clearance, reward, repeat and geometry) stays an
 //!   explicit [`UnsupportedReason::Unknown`] and a fly-through target of a
-//!   non-stunt scenario is counted in [`CollectionStatus`] rather than dropped;
+//!   non-stunt scenario — like a zone label the scenario names twice, or twice
+//!   with two different descriptions — is counted in [`CollectionStatus`] rather
+//!   than dropped or turned into a second row with the same identity;
 //! * one [`ContentKind::ScrapbookItem`] row per `Mission_Spread_Item` record of
 //!   the shared archive's `ASSETS/SCRAPBOOK.CSV` member (F14-D.8), read through
 //!   the production ROF reader and the keyed-list configuration reader. The
 //!   identity is the record's own entry key, never its line number, and the row
 //!   is located by the member's decoded extent and points at the archive's
 //!   inventory row. A scrapbook item is **not** launchable; an entry the
-//!   documented schema does not cover is counted in [`CollectionStatus`]
-//!   instead of becoming a guessed row;
+//!   documented schema does not cover, and an entry key the table declares twice,
+//!   is counted in [`CollectionStatus`] instead of becoming a guessed row or a
+//!   duplicate identity;
 //!
 //! `ContentKind::CustomPlane` gets **no** row and no collection record, and the
 //! reason is that **nothing has been measured**: F64-A's legacy inventory is a
@@ -161,7 +163,6 @@
 //! aircraft either, so a row could only be guessed from a file name; the question
 //! is recorded as unmeasured in the task's findings note and evidence report and
 //! assigned to the follow-up that measures the layout before any row can exist.
->>>>>>> 6c4186ef (Populate the stunt and scrapbook collections of the retail baseline)
 //!
 //! Every row's [`Origin`] is [`Origin::Installation`] with a checked
 //! [`SourceSpan`] and the installation fingerprint of the bytes that were read,
@@ -449,6 +450,31 @@ pub const SCRAPBOOK_MEMBER: &str = "ASSETS/SCRAPBOOK.CSV";
 /// edge points at the inventory row of the archive holding the member's bytes
 /// (F14-D.8).
 pub const SCRAPBOOK_ITEM_CLAIM: &str = "f14.d.8.baseline.scrapbook_item";
+
+/// Gap code: one target a `stunt_flying` scenario's `targets.zrd` names twice
+/// under the **same** first node, so both name the same gate and the identity is
+/// the zone label. The repeat is counted here rather than becoming a second row
+/// with the same identity, which [`Catalog::insert`] refuses — and refusing it
+/// there would cost the installation its whole inventory over one repeated label
+/// (spec F14 non-negotiable behavior 5, the same reasoning as
+/// [`GAP_SOUND_DUPLICATE_MEMBER`]).
+const GAP_STUNT_DUPLICATE_ZONE: &str = "duplicate_zone_label";
+
+/// Gap code: one target a scenario's `targets.zrd` names twice under the same
+/// first node but with a **different** `description` key. Neither is a row: the
+/// scenario gives no identity that tells the two apart, and minting one (a
+/// position, an index) would guess (AGENTS.md rule 4).
+const GAP_STUNT_AMBIGUOUS_ZONE: &str = "ambiguous_zone_label";
+
+/// Gap code: one entry key [`SCRAPBOOK_MEMBER`] declares more than once with
+/// **different** field text. Neither record is a row for the same reason as
+/// [`GAP_STUNT_AMBIGUOUS_ZONE`]: the key is the only identity the table states.
+const GAP_SCRAPBOOK_AMBIGUOUS_KEY: &str = "ambiguous_entry_key";
+
+/// Gap code: one entry key [`SCRAPBOOK_MEMBER`] declares more than once with
+/// **identical** field text. It is one item declared twice, so the repeat is
+/// counted here instead of becoming a second row with the same identity.
+const GAP_SCRAPBOOK_DUPLICATE_KEY: &str = "duplicate_entry_key";
 
 /// The installation-relative spelling of the reader archive a world group's
 /// rows are read from: one `<container>/<group>/zrdr.zbd` per world group.
@@ -3035,7 +3061,12 @@ fn airframe_unknowns(
 /// is missing instead of a designed default. A fly-through target of a
 /// scenario the original does **not** mark `stunt_flying` is counted in
 /// [`CollectionStatus::gaps`] under `non_stunt_fly_through_targets` rather than
-/// dropped, and no row is invented from a directory name.
+/// dropped, and a zone label one scenario names twice is counted under
+/// [`GAP_STUNT_DUPLICATE_ZONE`] — or, when the two disagree about their own
+/// description, under [`GAP_STUNT_AMBIGUOUS_ZONE`] with neither one a row. Both
+/// are resolved here rather than at [`Catalog::insert`], whose duplicate refusal
+/// would otherwise cost the installation its whole inventory. No row is invented
+/// from a directory name.
 ///
 /// A stunt is **not** launchable content, so this collection adds no root and
 /// cannot move the coverage denominator.
@@ -3126,6 +3157,22 @@ fn stunt_rows(
         if decorated.is_empty() {
             continue;
         }
+        // The zone label is this row's identity, so a scenario that names one
+        // label twice names one gate twice. Repeating it must not become a second
+        // row with the same identity — `Catalog::insert` refuses that, and letting
+        // the refusal out of this function would cost the installation its whole
+        // inventory over one repeated label. Grouped here and resolved per label:
+        // identical targets are one gate with the repeat counted, and targets that
+        // disagree about their own description are reported instead of keyed,
+        // because nothing in the scenario says which of them the engine takes.
+        let mut by_label: BTreeMap<&str, Vec<&crate::stunts::ScenarioFlyThroughTarget>> =
+            BTreeMap::new();
+        for target in &decorated {
+            by_label
+                .entry(target.zone_label.as_str())
+                .or_default()
+                .push(target);
+        }
         let locator = targets.locator();
         let member_sha256 = cs_assets::install::sha256(targets.bytes());
         let span = SourceSpan::new(
@@ -3145,10 +3192,24 @@ fn stunt_rows(
                 spelling: spelling.to_owned(),
                 source,
             })?;
-        for target in decorated {
-            let key = install_key_bytes(
-                format!("{}-{}", scenario_key(dir), target.zone_label).as_bytes(),
-            );
+        for (label, group) in by_label {
+            let Some(first) = group.first().copied() else {
+                continue;
+            };
+            if group
+                .iter()
+                .any(|target| target.description != first.description)
+            {
+                // The same zone named twice with different content: neither is a
+                // row, because the scenario states no identity that separates them.
+                *status.gaps.entry(GAP_STUNT_AMBIGUOUS_ZONE).or_default() += group.len();
+                continue;
+            }
+            if group.len() > 1 {
+                *status.gaps.entry(GAP_STUNT_DUPLICATE_ZONE).or_default() += group.len() - 1;
+            }
+            let target = first;
+            let key = install_key_bytes(format!("{}-{}", scenario_key(dir), label).as_bytes());
             let id = ContentId::from_source(ContentKind::Stunt, &key).map_err(|source| {
                 BaselineError::Key {
                     spelling: key.clone(),
@@ -3258,8 +3319,13 @@ fn stunt_rows(
 ///
 /// An entry the documented [`RecordSchema`] does not cover is counted in
 /// [`CollectionStatus::gaps`] under `entry_not_a_scrapbook_item` rather than
-/// dropped. A scrapbook item is **not** launchable content, so this collection
-/// adds no root and cannot move the coverage denominator.
+/// dropped, and an entry key the table declares twice is counted under
+/// [`GAP_SCRAPBOOK_DUPLICATE_KEY`] — or, when the two records disagree about
+/// their fields, under [`GAP_SCRAPBOOK_AMBIGUOUS_KEY`] with neither one a row.
+/// The duplicate is resolved here rather than at [`Catalog::insert`], whose
+/// duplicate refusal would otherwise cost the installation its whole inventory
+/// over one repeated key. A scrapbook item is **not** launchable content, so this
+/// collection adds no root and cannot move the coverage denominator.
 ///
 /// # Errors
 ///
@@ -3375,13 +3441,33 @@ fn scrapbook_rows(
             source,
         })?;
     let member_sha256 = cs_assets::install::sha256(bytes);
+    // The entry key is this row's identity, so a key the table declares twice
+    // names one item twice. Resolved here rather than at `Catalog::insert`,
+    // whose duplicate refusal would otherwise cost the installation its whole
+    // inventory over one repeated key: records that agree are one item with the
+    // repeat counted, and records that disagree are reported rather than keyed,
+    // because nothing in the table says which the engine would read.
+    let mut grouped: BTreeMap<Vec<u8>, Vec<&crate::config::ConfigEntry>> = BTreeMap::new();
     let mut rows = Vec::new();
     for entry in document.entries() {
         if RecordSchema::for_entry(entry) != Some(RecordSchema::Scrapbook) {
             *status.gaps.entry("entry_not_a_scrapbook_item").or_default() += 1;
             continue;
         }
-        let key = install_key_bytes(&entry.key);
+        grouped.entry(entry.key.clone()).or_default().push(entry);
+    }
+    for (raw_key, group) in grouped {
+        let Some(first) = group.first().copied() else {
+            continue;
+        };
+        if group.iter().any(|entry| entry.value != first.value) {
+            *status.gaps.entry(GAP_SCRAPBOOK_AMBIGUOUS_KEY).or_default() += group.len();
+            continue;
+        }
+        if group.len() > 1 {
+            *status.gaps.entry(GAP_SCRAPBOOK_DUPLICATE_KEY).or_default() += group.len() - 1;
+        }
+        let key = install_key_bytes(&raw_key);
         let id = ContentId::from_source(ContentKind::ScrapbookItem, &key).map_err(|source| {
             BaselineError::Key {
                 spelling: key.clone(),
