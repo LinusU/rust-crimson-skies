@@ -45,7 +45,26 @@
 //!   whose shared reader cannot be listed stays a named gap in
 //!   [`CollectionStatus`] and in
 //!   [`Baseline::unrecognized_program_dirs`] rather than becoming a row guessed
-//!   from a directory name.
+//!   from a directory name;
+//! * one [`ContentKind::Faction`] row per paint pattern the paint records of
+//!   [`crate::livery::PALETTE_MEMBER`] name in bytes (F14-D.5), read by the
+//!   producing stage's own extractor ([`crate::livery::FactionPaletteCatalog`]).
+//!   The identity is
+//!   that byte-named pattern — never a file or directory name — and each row is
+//!   located by the `paint_pattern` field's own checked span. A record that
+//!   names a pattern without a complete palette stays a named gap rather than a
+//!   guessed faction row;
+//! * one [`ContentKind::PaintMask`] row per BM member of the airframe library
+//!   [`PAINT_MASK_CONTAINER`] that the producing stage's own verifier
+//!   ([`crate::livery::StockLiveryCatalog`]) read and verified (F14-D.5), keyed
+//!   by the escaped member spelling and located by the member's stored extent —
+//!   the container path *and* the member key. The faction **directory** a member
+//!   sits in is not byte-backed content, so it is never identity and no
+//!   member-to-faction edge is minted; that binding is the engine-internal gap
+//!   the F09-PAINTSHOP finding records. Neither a faction nor a paint mask is
+//!   launchable, so neither collection adds a root or moves the denominator;
+//!   what the producing stages could not answer is reported in
+//!   [`CollectionStatus`] instead of being dropped.
 //!
 //! Every row's [`Origin`] is [`Origin::Installation`] with a checked
 //! [`SourceSpan`] and the installation fingerprint of the bytes that were read,
@@ -72,7 +91,11 @@
 //! `cs_content::config::StringCatalog` reads out of [`MODE_STRING_IMAGE`], and
 //! the world rows are the groups [`classify`] read out of the world-group
 //! readers' own member indexes, keyed by the same derivation
-//! [`crate::campaign_bindings`] uses for a mission's world identity.
+//! [`crate::campaign_bindings`] uses for a mission's world identity, the faction
+//! rows are [`crate::livery::FactionPaletteCatalog`]'s own extracted paint
+//! patterns, and the paint-mask rows are the members
+//! [`crate::livery::StockLiveryCatalog`] verified in
+//! [`PAINT_MASK_CONTAINER`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -80,10 +103,13 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use cs_assets::vfs::SessionBuilder;
+use cs_assets::rof::mount_rof_into;
+use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
 use cs_assets::zbd::{ContainerVerdict, audit_containers};
 use cs_formats::LANG_ENGLISH_US;
-use cs_types::asset_id::{AssetKey, ResolveContext, SourceSpan, SourceSpanError};
+use cs_types::asset_id::{
+    AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan, SourceSpanError,
+};
 use cs_types::content::{
     CatalogElement, ContentId, ContentIdError, ContentKind, Dependency, DependencyKind,
     NormalizeState, Origin, Provenance, Readiness, UnsupportedReason,
@@ -92,6 +118,9 @@ use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash, Fingerprint, Fingerp
 use cs_types::install::InstallFileRecord;
 
 use crate::config::StringCatalog;
+use crate::livery::{
+    FactionPaletteCatalog, PAINT_SHOP_CONTAINER, PALETTE_CONTAINER, StockLiveryCatalog,
+};
 use crate::multiplayer::{ModeEntry, TextRef, discover_modes, mode_name_id};
 
 use super::closure::{Closure, ClosureError, CompatibilityOptions, json_string};
@@ -126,6 +155,32 @@ const CLAIM_MODE_PAIRING: &str = "f14.d.2.baseline.mode_pairing";
 /// the archive whose own member index named the group, and that the group's
 /// identity is the directory that archive sits in (F14-D.3).
 const CLAIM_WORLD_READER: &str = "f14.d.3.baseline.world_reader";
+
+/// The claim id behind the observation that a faction's identity is the
+/// `paint_pattern` field of a `vehicle.zrd` paint record, read in bytes
+/// (F14-D.5).
+const CLAIM_FACTION_PATTERN: &str = "f14.d.5.baseline.faction_pattern";
+
+/// The claim id behind the observation that a paint mask is one BM member of
+/// the airframe library the installation holds, verified by the producing
+/// stage's own reader (F14-D.5).
+const CLAIM_PAINT_MASK_MEMBER: &str = "f14.d.5.baseline.paint_mask_member";
+
+/// The installation-relative spelling of the airframe library the paint-mask
+/// collection is read from.
+///
+/// This is the same container `crate::livery::PAINT_SHOP_CONTAINER` names; the
+/// constant below is tied to it by construction so the two spellings cannot
+/// drift. The BM members are verified one by one through
+/// [`crate::livery::StockLiveryCatalog::discover`], which reads each member
+/// through the production ROF reader, so a row exists only for a member whose
+/// bytes really are the observed BM layout.
+pub const PAINT_MASK_CONTAINER: &str = PAINT_SHOP_CONTAINER;
+
+/// The installation-relative spelling of the reader archive the faction rows
+/// are read from: the shared archive whose `vehicle.zrd` member stores the
+/// original vehicle paint records.
+pub const FACTION_PALETTE_CONTAINER: &str = PALETTE_CONTAINER;
 
 /// The installation-relative spelling of the reader archive a world group's
 /// rows are read from: one `<container>/<group>/zrdr.zbd` per world group.
@@ -725,6 +780,21 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
     }
     collection_status.push(world_status);
 
+    // The faction paint patterns, named in bytes by the shared archive's own
+    // paint records, and the verified BM members of the airframe library.
+    // Neither kind is launchable, so neither moves the denominator.
+    let (factions, faction_status) = faction_rows(install_root, &discovery, &files)?;
+    for element in factions {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(faction_status);
+
+    let (paint_masks, paint_mask_status) = paint_mask_rows(install_root, install_hash, &files)?;
+    for element in paint_masks {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(paint_mask_status);
+
     let coverage = coverage(&catalog, &roots)?;
 
     Ok(Baseline {
@@ -1034,12 +1104,304 @@ fn world_row(
     })
 }
 
-/// One multiplayer mode as a catalog row.
+/// The `faction` rows the installation's paint records name, plus the record of
+/// what the producing palette reader could not turn into a faction.
 ///
-/// The span is the name row's own `RT_STRING` block, so the row names the
-/// bytes it was read from rather than the file as a whole; the fingerprint and
-/// the single dependency both point at the inventory row of the image, which is
-/// what makes the edge walkable from a mode to its file.
+/// The rows are the [`crate::livery::FactionPalette`] list
+/// [`FactionPaletteCatalog::discover`]
+/// produces from the `vehicle.zrd` paint records of [`PALETTE_CONTAINER`]. Each
+/// row's identity is the pattern the record *names in bytes* — the
+/// `paint_pattern` field, never a file name or a directory name — and its span
+/// is that field's own checked range inside the container, so the row names the
+/// bytes it was read from (container path plus member key) rather than the
+/// archive as a whole. The single static edge points at the inventory row of the
+/// archive holding the member, so the closure can walk from a faction to its
+/// bytes.
+///
+/// A record that names a pattern without a complete color triple is not a
+/// faction palette: the producing stage reports it as a
+/// [`crate::livery::PaletteFinding`], and this collection counts it under its
+/// own stable code in [`CollectionStatus::gaps`] instead of minting a guessed
+/// faction row from the name. That is the `player_fortune` pattern-only records
+/// on the owner's installation.
+///
+/// A faction is **not** launchable content, so this collection adds no root and
+/// cannot move the coverage denominator. The row is `parsed` (the field was
+/// decoded) but not `normalized`, so it stays unavailable with an explicit
+/// [`UnsupportedReason::NotNormalized`].
+///
+/// # Errors
+///
+/// [`BaselineError::Session`] when the installation cannot be mounted to read
+/// the archive, [`BaselineError::Identity`] when a pattern the producing stage
+/// named has no record to locate, [`BaselineError::Key`] when a pattern has no
+/// valid id key and [`BaselineError::Span`] when a field span is refused. A
+/// missing archive or a parser refusal yields no rows and a
+/// [`CollectionStatus::diagnostic`] instead, which is a reported gap and not an
+/// error.
+fn faction_rows(
+    install_root: &Path,
+    discovery: &cs_assets::install::Discovery,
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<(Vec<CatalogElement>, CollectionStatus), BaselineError> {
+    let mut status = CollectionStatus {
+        kind: ContentKind::Faction,
+        source: FACTION_PALETTE_CONTAINER.to_owned(),
+        language: None,
+        rows: 0,
+        gaps: BTreeMap::new(),
+        boundary_id: None,
+        diagnostic: None,
+    };
+
+    let Some(record) = files.get(&FACTION_PALETTE_CONTAINER.to_ascii_lowercase()) else {
+        return Ok(unpopulated(
+            status,
+            format!(
+                "the installation inventories no {FACTION_PALETTE_CONTAINER}, so the faction paint \
+                 records have no bytes to read"
+            ),
+        ));
+    };
+
+    let install_hash = cs_assets::install::fingerprint(&discovery.manifest);
+    let mut builder = SessionBuilder::new(ResolveContext::new(install_hash));
+    builder
+        .mount_installation(install_root, &discovery.diagnosis)
+        .map_err(|error| BaselineError::Session(error.to_string()))?;
+    let session = builder.open();
+
+    let key = AssetKey::from_spelling(INSTALL_NAMESPACE, FACTION_PALETTE_CONTAINER, "default")
+        .map_err(|error| BaselineError::Identity {
+            identity: FACTION_PALETTE_CONTAINER.to_owned(),
+            reason: error.to_string(),
+        })?;
+    let catalog = match FactionPaletteCatalog::discover(&session, &key) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            return Ok(unpopulated(
+                status,
+                format!(
+                    "the paint records of {FACTION_PALETTE_CONTAINER} do not read as the observed \
+                     palette layout: {error}"
+                ),
+            ));
+        }
+    };
+
+    let spelling = record.relative_spelling.as_str();
+    let file_id = ContentId::from_source(ContentKind::InstallFile, &install_file_key(spelling))
+        .map_err(|source| BaselineError::Key {
+            spelling: spelling.to_owned(),
+            source,
+        })?;
+    let mut rows = Vec::new();
+    for palette in catalog.factions() {
+        let Some(pattern) = palette
+            .records()
+            .first()
+            .and_then(|name| catalog.record(name))
+        else {
+            return Err(BaselineError::Identity {
+                identity: palette.faction().to_owned(),
+                reason: "the producing stage named a faction but no paint record that carries it"
+                    .to_owned(),
+            });
+        };
+        let span = pattern.pattern_span().clone();
+        let id =
+            ContentId::from_source(ContentKind::Faction, palette.faction()).map_err(|source| {
+                BaselineError::Key {
+                    spelling: palette.faction().to_owned(),
+                    source,
+                }
+            })?;
+        rows.push(CatalogElement {
+            kind: ContentKind::Faction,
+            id,
+            display_name: Some(palette.faction().to_owned()),
+            origin: Origin::Installation {
+                source: span.clone(),
+            },
+            dependencies: vec![Dependency {
+                target: file_id.clone(),
+                kind: DependencyKind::Static,
+                provenance: observed(CLAIM_FACTION_PATTERN, &span)?,
+            }],
+            parse_state: cs_types::install::ParseState::Parsed,
+            normalize_state: NormalizeState::NotNormalized,
+            runtime_consumers: Vec::new(),
+            readiness: Readiness::Unavailable,
+            unsupported_reasons: vec![UnsupportedReason::NotNormalized],
+            fingerprint: Some(Fingerprint {
+                kind: FingerprintKind::Installation,
+                sha256: catalog.member_sha256(),
+            }),
+        });
+    }
+
+    status.rows = rows.len();
+    for finding in catalog.findings() {
+        *status.gaps.entry(finding.code()).or_default() += 1;
+    }
+    Ok((rows, status))
+}
+
+/// The `paint_mask` rows the installation's airframe library holds, plus the
+/// record of what the producing verifier could not turn into a row.
+///
+/// The rows are the [`crate::livery::StockLivery`] list
+/// [`StockLiveryCatalog::discover`]
+/// produces: every `.bm` member of [`PAINT_MASK_CONTAINER`] that the production
+/// ROF reader and BM reader read and verified. Each row's identity is the
+/// escaped member spelling inside the container and its span is the member's own
+/// **stored** extent — container path plus member key, offset, stored length and
+/// digest — so a reviewer can re-read exactly the bytes that were verified. The
+/// single static edge points at the inventory row of the airframe library the
+/// member came from.
+///
+/// The faction directory a member sits in is *not* used: it is not byte-backed
+/// content (the F09-PAINTSHOP finding records that the directory-to-pattern
+/// binding is engine-internal), so no faction identity and no member-to-faction
+/// edge is minted here. A `.bm` member the verifier could not read or parse is
+/// not a row: it is counted under the verifier's own stable code in
+/// [`CollectionStatus::gaps`] rather than dropped.
+///
+/// A paint mask is **not** launchable content, so this collection adds no root
+/// and cannot move the coverage denominator. The member bytes are `parsed` but
+/// not `normalized`, so the row is unavailable with an explicit
+/// [`UnsupportedReason::NotNormalized`].
+///
+/// # Errors
+///
+/// [`BaselineError::Session`] when the mount could not be built,
+/// [`BaselineError::Identity`] when a member the verifier read is no longer
+/// held, [`BaselineError::Key`] when a member spelling has no valid id key and
+/// [`BaselineError::Span`] when a member's stored extent has no valid span. A
+/// missing archive or a container the production reader refuses yields no rows
+/// and a [`CollectionStatus::diagnostic`] instead, which is a reported gap and
+/// not an error.
+fn paint_mask_rows(
+    install_root: &Path,
+    install_hash: ContentHash,
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<(Vec<CatalogElement>, CollectionStatus), BaselineError> {
+    let mut status = CollectionStatus {
+        kind: ContentKind::PaintMask,
+        source: PAINT_MASK_CONTAINER.to_owned(),
+        language: None,
+        rows: 0,
+        gaps: BTreeMap::new(),
+        boundary_id: None,
+        diagnostic: None,
+    };
+
+    let Some(record) = files.get(&PAINT_MASK_CONTAINER.to_ascii_lowercase()) else {
+        return Ok(unpopulated(
+            status,
+            format!(
+                "the installation inventories no {PAINT_MASK_CONTAINER}, so the faction paint \
+                 masks have no bytes to read"
+            ),
+        ));
+    };
+
+    let path = install_root.join(record.relative_spelling.as_str());
+    let mut builder = SessionBuilder::new(ResolveContext::new(install_hash));
+    let mount = MountBuilder::new(
+        MountId::new("rof-airframe-library")
+            .map_err(|error| BaselineError::Session(error.to_string()))?,
+        MountNamespace::new(INSTALL_NAMESPACE)
+            .map_err(|error| BaselineError::Session(error.to_string()))?,
+        PrecedenceClass::Shared,
+        PAINT_MASK_CONTAINER,
+    )
+    .retail();
+    let source = match mount_rof_into(&mut builder, mount, &path) {
+        Ok(source) => source,
+        Err(error) => {
+            return Ok(unpopulated(
+                status,
+                format!(
+                    "the airframe library {PAINT_MASK_CONTAINER} does not mount as the observed \
+                     ROF container: {error}"
+                ),
+            ));
+        }
+    };
+    let catalog = StockLiveryCatalog::discover(&source);
+
+    let spelling = record.relative_spelling.as_str();
+    let file_id = ContentId::from_source(ContentKind::InstallFile, &install_file_key(spelling))
+        .map_err(|source| BaselineError::Key {
+            spelling: spelling.to_owned(),
+            source,
+        })?;
+    let mut rows = Vec::new();
+    for asset in catalog.assets() {
+        let member = asset.spelling();
+        let key = AssetKey::from_spelling(source.namespace().as_str(), member, "default").map_err(
+            |error| BaselineError::Identity {
+                identity: member.to_owned(),
+                reason: error.to_string(),
+            },
+        )?;
+        let Some(info) = source.member(&key) else {
+            return Err(BaselineError::Identity {
+                identity: member.to_owned(),
+                reason: "the producing stage verified a member the mounted source no longer holds"
+                    .to_owned(),
+            });
+        };
+        let span = SourceSpan::new(
+            install_hash,
+            PAINT_MASK_CONTAINER,
+            Some(member),
+            info.offset,
+            info.stored_len,
+            Some(info.sha256),
+        )
+        .map_err(|source| BaselineError::Span {
+            path: member.to_owned(),
+            source,
+        })?;
+        let id = ContentId::from_source(ContentKind::PaintMask, &install_file_key(member))
+            .map_err(|source| BaselineError::Key {
+                spelling: member.to_owned(),
+                source,
+            })?;
+        rows.push(CatalogElement {
+            kind: ContentKind::PaintMask,
+            id,
+            display_name: Some(member.to_owned()),
+            origin: Origin::Installation {
+                source: span.clone(),
+            },
+            dependencies: vec![Dependency {
+                target: file_id.clone(),
+                kind: DependencyKind::Static,
+                provenance: observed(CLAIM_PAINT_MASK_MEMBER, &span)?,
+            }],
+            parse_state: cs_types::install::ParseState::Parsed,
+            normalize_state: NormalizeState::NotNormalized,
+            runtime_consumers: Vec::new(),
+            readiness: Readiness::Unavailable,
+            unsupported_reasons: vec![UnsupportedReason::NotNormalized],
+            fingerprint: Some(Fingerprint {
+                kind: FingerprintKind::Installation,
+                sha256: info.sha256,
+            }),
+        });
+    }
+
+    status.rows = rows.len();
+    for finding in catalog.findings() {
+        *status.gaps.entry(finding.code()).or_default() += 1;
+    }
+    Ok((rows, status))
+}
+
+/// One multiplayer mode as a catalog row.
 fn mode_row(
     mode: &ModeEntry,
     file_id: &ContentId,
