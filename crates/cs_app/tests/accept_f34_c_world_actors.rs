@@ -36,9 +36,9 @@ use cs_app::world_actors::{
 };
 use cs_content::objectives::{ProgramActor, ProgramSymbol};
 use cs_content::world_actors::{
-    DeclaredMotion, DeclaredPickup, DeclaredPickupCompletion, DeclaredPickupEnvelope,
-    DeclaredRoute, DeclaredTaker, DeclaredWorldActorParts, DeclaredWorldActorProgram,
-    declared_synthetic_world_actors,
+    DeclaredGateTransition, DeclaredMotion, DeclaredPickup, DeclaredPickupCompletion,
+    DeclaredPickupEnvelope, DeclaredRoute, DeclaredTaker, DeclaredWorldActorParts,
+    DeclaredWorldActorProgram, declared_synthetic_world_actors,
 };
 use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
@@ -102,6 +102,13 @@ fn probe(pickup: SymbolId, position_m: [f64; 3], velocity_m_s: [f64; 3]) -> Take
         position_m,
         velocity_m_s,
     }
+}
+
+/// The pickup socket the fixture declares on `actor`.
+fn declared_socket(actor: ActorId) -> cs_sim::world_actors::anchor::AnchorSocket {
+    lowered()
+        .socket(actor, PICKUP_SOCKET)
+        .expect("the fixture declares a pickup socket")
 }
 
 /// The `Pickup` events one step emitted.
@@ -1086,4 +1093,165 @@ fn accept_f34_c_identical_sessions_step_identically() {
         "the same producer surface yields the same session answer"
     );
     assert_eq!(a.set(), b.set());
+}
+
+#[test]
+fn accept_f34_c_a_collected_actor_answers_no_further_pickups() {
+    // Three pickups ride one judgement: the boat is collected off the deck,
+    // a second external pickup still courts it, and the collected boat is
+    // itself declared as the taker that would winch the crate. A collected
+    // actor left the world — it keeps its id and a frozen pose, so presence
+    // alone would let both keep answering.
+    let envelope = |max_distance_m: f64| DeclaredPickupEnvelope {
+        max_distance_m: designed(max_distance_m),
+        max_relative_speed_m_s: designed(12.0),
+    };
+    let mut parts = base_parts();
+    parts.pickups = vec![
+        DeclaredPickup {
+            symbol: ProgramSymbol(90),
+            target: ProgramActor(BOAT.0),
+            socket: PICKUP_SOCKET,
+            envelope: envelope(5.0),
+            taker: DeclaredTaker::External,
+            completion: DeclaredPickupCompletion::Collect,
+        },
+        DeclaredPickup {
+            symbol: ProgramSymbol(91),
+            target: ProgramActor(BOAT.0),
+            socket: PICKUP_SOCKET,
+            envelope: envelope(5.0),
+            taker: DeclaredTaker::External,
+            completion: DeclaredPickupCompletion::Latch,
+        },
+        DeclaredPickup {
+            symbol: ProgramSymbol(92),
+            target: ProgramActor(CRATE.0),
+            socket: PICKUP_SOCKET,
+            envelope: envelope(100.0),
+            taker: DeclaredTaker::WorldActor(ProgramActor(BOAT.0)),
+            completion: DeclaredPickupCompletion::Attach {
+                socket: PICKUP_SOCKET,
+            },
+        },
+    ];
+    let mut session =
+        WorldActorSession::launch(lower_world_actors(&rebuild(parts)).unwrap(), GEN1).unwrap();
+
+    // On the deck anchor at tick 0 both external probes satisfy their
+    // envelope, and the crate's envelope is wide enough that the boat's pose
+    // would satisfy it too.
+    let deck = session.anchor_pose(BOAT, &declared_socket(BOAT)).unwrap();
+    assert_eq!(deck.position_m, [200.0, 3.0, 0.0]);
+    let mut with_probes = input(0);
+    with_probes.probes = vec![
+        probe(SymbolId(90), deck.position_m, [0.0, 8.0, 0.0]),
+        probe(SymbolId(91), deck.position_m, [0.0, 8.0, 0.0]),
+    ];
+    let stepped = session.step(&with_probes).expect("a legal tick");
+
+    assert_eq!(
+        pickups(&stepped),
+        vec![(SymbolId(90), SessionCompletion::Collected, Tick(0))],
+        "only the collecting pickup answers: {:?}",
+        stepped.events
+    );
+    assert!(
+        stepped.refusals.is_empty(),
+        "a collected actor is not an error, it is gone: {:?}",
+        stepped.refusals
+    );
+    assert!(session.set().is_collected(BOAT).unwrap());
+    // The collected boat neither latches again nor winches the crate aboard.
+    assert_eq!(session.set().carried_by(CRATE).unwrap(), None);
+    assert_eq!(
+        session.set().pose(CRATE).unwrap().position_m,
+        [200.0, 40.0, 0.0]
+    );
+}
+
+#[test]
+fn accept_f34_c_a_scheduled_transition_on_an_unknown_gate_is_refused_once() {
+    // The declared schedule may name a gate anywhere; a gate the program
+    // never registers is reported when the transition fires, never guessed
+    // and never retried into a second refusal.
+    let mut parts = base_parts();
+    parts.transitions = vec![DeclaredGateTransition {
+        at: Tick(5),
+        gate: ProgramActor(77),
+        open: true,
+    }];
+    let mut session =
+        WorldActorSession::launch(lower_world_actors(&rebuild(parts)).unwrap(), GEN1).unwrap();
+
+    let stepped = step_to(&mut session, 10);
+    assert_eq!(
+        stepped.refusals,
+        vec![WorldActorRefusal::Gate {
+            gate: ActorId(77),
+            open: true,
+            error: WorldActorError::UnknownActor(ActorId(77)),
+        }]
+    );
+    assert!(gate_events(&stepped).is_empty());
+
+    // The entry left the schedule: the refusal is one fact, not a per-tick
+    // error stream.
+    let stepped = step_to(&mut session, 20);
+    assert!(stepped.refusals.is_empty());
+}
+
+#[test]
+fn accept_f34_c_carriage_launches_whatever_the_authored_order() {
+    // The boat rides the carrier's deck socket and the convoy's route runs
+    // through the gate, so both name something registered later than
+    // themselves: the authored order is the mission's, not the registry's.
+    let mut parts = base_parts();
+    let fixture = declared_synthetic_world_actors();
+    let declared = |id: ProgramActor| {
+        fixture
+            .actors()
+            .iter()
+            .find(|a| a.actor == id)
+            .expect("declared")
+            .clone()
+    };
+    parts.actors = vec![
+        declared(ProgramActor(CONVOY.0)),
+        declared(ProgramActor(BOAT.0)),
+        declared(ProgramActor(TRAIN.0)),
+        declared(ProgramActor(CRATE.0)),
+        declared(ProgramActor(GATE.0)),
+        declared(ProgramActor(BRIDGE.0)),
+        declared(ProgramActor(CARRIER.0)),
+        declared(ProgramActor(TRUCK.0)),
+    ];
+
+    // The lowered program still carries that authored order verbatim: only
+    // the launch order is derived.
+    assert_eq!(
+        lower_world_actors(&rebuild(parts.clone()))
+            .unwrap()
+            .actors
+            .iter()
+            .map(|s| s.actor)
+            .collect::<Vec<_>>(),
+        vec![CONVOY, BOAT, TRAIN, CRATE, GATE, BRIDGE, CARRIER, TRUCK]
+    );
+
+    let mut session =
+        WorldActorSession::launch(lower_world_actors(&rebuild(parts)).unwrap(), GEN1).unwrap();
+    let (carrier, socket) = session.set().carried_by(BOAT).unwrap().unwrap();
+    assert_eq!(carrier, CARRIER);
+    assert_eq!(socket.socket, DECK_SOCKET);
+
+    // And the carriage resolves: after ten ticks the boat rides the deck of
+    // a carrier that has moved 8 m up the water, and the convoy still holds
+    // at the gate the schedule opens on tick 60.
+    step_to(&mut session, 10);
+    let pose = session.set().pose(BOAT).unwrap();
+    assert_eq!(pose.position_m, [200.0, 11.0, 0.0]);
+    assert_eq!(pose.velocity_m_s, [0.0, 8.0, 0.0]);
+    step_to(&mut session, 45);
+    assert_eq!(session.set().held_gate(CONVOY).unwrap(), Some(GATE));
 }

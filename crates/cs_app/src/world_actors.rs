@@ -283,6 +283,55 @@ const fn lower_actor(actor: ProgramActor) -> ActorId {
     ActorId(actor.0)
 }
 
+/// The cross-references one registration validates: a `Carried` actor names
+/// its carrier, a route follower names the gates its passages run through.
+/// Registration refuses either one the set does not hold yet.
+fn registration_dependencies(spec: &WorldActorSpec) -> Vec<ActorId> {
+    match &spec.motion {
+        ActorMotion::Carried { carrier, .. } => vec![*carrier],
+        ActorMotion::Route { plan, .. } => plan.gates().iter().map(|g| g.gate).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The lowered registration order: every actor after the cross-references
+/// its registration validates.
+///
+/// Authored order is the mission's, not the registry's — a program that
+/// declares a follower before its gate, or cargo before its carrier, lowers
+/// and then cannot launch. This is a stable pass, so actors with no such
+/// dependency keep their authored order, and whatever a pass cannot place (a
+/// cycle, or a dependency no actor declares) is appended in authored order
+/// for the runtime to refuse by name.
+fn registration_order(lowered: &LoweredWorldActors) -> Vec<usize> {
+    let specs = &lowered.actors;
+    let mut emitted = vec![false; specs.len()];
+    let mut order: Vec<usize> = Vec::with_capacity(specs.len());
+    while order.len() < specs.len() {
+        let placed = order.len();
+        for (index, spec) in specs.iter().enumerate() {
+            if emitted[index] {
+                continue;
+            }
+            let ready = registration_dependencies(spec).iter().all(|dependency| {
+                specs
+                    .iter()
+                    .position(|s| s.actor == *dependency)
+                    .is_some_and(|carried| emitted[carried])
+            });
+            if ready {
+                emitted[index] = true;
+                order.push(index);
+            }
+        }
+        if order.len() == placed {
+            order.extend((0..specs.len()).filter(|&index| !emitted[index]));
+            break;
+        }
+    }
+    order
+}
+
 const fn lower_symbol(symbol: ProgramSymbol) -> SymbolId {
     SymbolId(symbol.0)
 }
@@ -828,7 +877,7 @@ pub struct WorldActorTeardown {
     pub session: SessionGeneration,
     /// Every registered actor — the entities the world must despawn.
     pub actors: Vec<ActorId>,
-    /// The actors an external taker had collected and still holds.
+    /// The actors a taker collected and still holds.
     pub collected: Vec<ActorId>,
     /// The pickups that had already latched.
     pub latched_pickups: Vec<SymbolId>,
@@ -863,12 +912,13 @@ pub struct WorldActorSession {
 
 impl WorldActorSession {
     /// Builds a runtime set from the lowered program: every actor
-    /// registered in authored order, each refusal named by the actor that
+    /// registered in dependency order, each refusal named by the actor that
     /// caused it, then the declared support edges.
     fn build_set(lowered: &LoweredWorldActors) -> Result<WorldActorSet, WorldActorLaunchError> {
         let mut set = WorldActorSet::new(lowered.ticks_per_second)
             .map_err(WorldActorLaunchError::TickRate)?;
-        for spec in &lowered.actors {
+        for index in registration_order(lowered) {
+            let spec = &lowered.actors[index];
             set.register(spec.clone())
                 .map_err(|source| WorldActorLaunchError::Actor {
                     actor: spec.actor,
@@ -1010,7 +1060,8 @@ impl WorldActorSession {
                 WorldActorCommand::Detach { actor, eject_m_s } => {
                     match self.set.detach(*actor, *eject_m_s) {
                         Ok(payload) => {
-                            self.collected.remove(actor);
+                            // A collected actor is never carried, so a
+                            // successful detach can never clear the ledger.
                             events.push(WorldActorSessionEvent::Detached { payload });
                         }
                         Err(error) => refusals.push(WorldActorRefusal::Command {
@@ -1126,14 +1177,26 @@ impl WorldActorSession {
         self.set.set_gate_open(gate, open)
     }
 
+    /// Whether `actor` is still under this set's motion: live in the support
+    /// graph *and* not collected by a taker.
+    ///
+    /// Collection keeps the registry id and freezes the pose, so presence
+    /// alone would let a second pickup latch onto — or a collected actor keep
+    /// driving — something that already left the world. A collected actor
+    /// answers no pickup, as a taker or as a target.
+    fn in_world(&self, actor: ActorId) -> bool {
+        self.set.presence(actor) == Some(Presence::Intact)
+            && !self.set.is_collected(actor).unwrap_or(false)
+    }
+
     /// Judges one pickup against the set's current tick.
     ///
-    /// Skips silently when the pickup already latched, its target left the
-    /// world, the taker is not a live world actor, or no probe poses an
-    /// external taker; skips without a refusal when the taker fails the
-    /// envelope. A satisfied envelope applies the declared completion:
-    /// `Latch` emits the judged [`AnchorSample`] for the taker's own
-    /// binding transaction, `Attach` rides the target on the taker's
+    /// Skips silently when the pickup already latched, its target or its
+    /// world-actor taker left the world, the taker is not a live world actor,
+    /// or no probe poses an external taker; skips without a refusal when the
+    /// taker fails the envelope. A satisfied envelope applies the declared
+    /// completion: `Latch` emits the judged [`AnchorSample`] for the taker's
+    /// own binding transaction, `Attach` rides the target on the taker's
     /// socket and `Collect` takes it out of the world — and a refused
     /// completion lands as a named [`WorldActorRefusal::Completion`].
     fn judge_pickup(
@@ -1143,14 +1206,12 @@ impl WorldActorSession {
         events: &mut Vec<WorldActorSessionEvent>,
         refusals: &mut Vec<WorldActorRefusal>,
     ) {
-        if self.latched.contains(&pickup.symbol)
-            || self.set.presence(pickup.target) != Some(Presence::Intact)
-        {
+        if self.latched.contains(&pickup.symbol) || !self.in_world(pickup.target) {
             return;
         }
         let taker_pose = match pickup.taker {
             LoweredTaker::WorldActor(taker) => {
-                if self.set.presence(taker) != Some(Presence::Intact) {
+                if !self.in_world(taker) {
                     return;
                 }
                 match self.set.pose(taker) {
