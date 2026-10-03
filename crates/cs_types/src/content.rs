@@ -1579,6 +1579,7 @@ impl CatalogElement {
 mod tests {
     use super::*;
     use crate::evidence::ContentHash;
+    use std::collections::BTreeSet;
 
     fn claim(id: &str) -> ClaimId {
         ClaimId::new(id).expect("test claim id is valid")
@@ -1858,6 +1859,17 @@ mod tests {
             by_role.values().map(|kinds| kinds.len()).sum::<usize>(),
             ContentKind::ALL.len(),
             "every kind the catalog can hold has a role"
+        );
+        // `CatalogRowAccounting::collections` publishes each kind's label as the
+        // name a completeness failure reports, and `ContentKind::from_label`
+        // resolves a kind by that same label, so two kinds sharing one would
+        // make the breakdown ambiguous and the lookup answer for the wrong kind.
+        let labels: BTreeSet<&str> = ContentKind::ALL.iter().map(|kind| kind.label()).collect();
+        assert_eq!(
+            labels.len(),
+            ContentKind::ALL.len(),
+            "every kind's label is its own: {:?}",
+            labels
         );
         assert_eq!(by_role[&CatalogRowRole::InstallFile], vec!["install_file"]);
         assert_eq!(by_role[&CatalogRowRole::Program], vec!["script"]);

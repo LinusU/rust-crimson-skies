@@ -20,6 +20,7 @@ branch rather than when the collection landed. That happened twice:
 | --- | --- | --- |
 | F14-D.6 (airframes) | F14-D.4 | fixed in #487's second review pass |
 | F14-D.7 (sound cues) | F14-D.4 | fixed in #487's third review pass |
+| F14-D.8 (stunts, scrapbook items) | F14-D.4 | fixed in F14-D.8's own rebase; see the review pass below |
 
 Both times the cost was a review pass, and
 `docs/findings/2026-10-03-f14-d-4-scene-and-mesh-collections.md` (item 14,
@@ -122,6 +123,64 @@ decorative:
    like `12 rows: 8 install_file, 1 launchable, 0 program, 2 source-derived
    (world 1, sound 1)`.
 
+## Review pass (Rally #584, bunny-alpha-2)
+
+The reviewer re-ran the full check set on the branch, confirmed the measurements
+above against the installation, and re-ran the mutations itself rather than
+trusting the two recorded here. Two further mutations, both caught:
+
+3. Moving `ContentKind::Sound` out of the source-derived group and into the
+   `Launchable` arm fails
+   `accept_f14_d_every_content_kind_is_classified_for_the_baseline_accounting`
+   with `the launchable denominator is exactly the three scenario kinds`,
+   `left: ["mission", "sound", "ia_scenario", "multiplayer_scenario"]` — so a
+   misclassification of an existing collection fails in seconds, without a
+   two-minute retail run.
+4. Making `account_catalog_rows` skip `Music` and `Image` — the kinds nothing in
+   this stage uses — fails both
+   `accept_f14_d_catalog_rows_are_accounted_by_kind_and_not_by_a_named_list` and
+   `accept_f14_d_a_collection_named_by_no_list_is_still_accounted`. The second
+   is the acceptance criterion's own demonstration, so the demonstration is
+   sensitive to exactly the property it claims.
+
+The review added one assertion: every `ContentKind`'s `label()` is its own, in
+`accept_f14_d_every_content_kind_is_classified_for_the_baseline_accounting`.
+`CatalogRowAccounting::collections()` publishes the label as the name a
+completeness failure reports and `ContentKind::from_label` resolves a kind by
+that same label, so two kinds sharing one label would make the breakdown
+ambiguous and the lookup answer for the wrong kind. It holds for all 43 kinds.
+
+### The rebase onto F14-D.8, and why the derivation earned its keep
+
+F14-D.8 (`fdc2b18c`, landed as `89ddb453`) merged while this branch was in
+review, and it conflicted — because it had to widen the hand-summed total by
+hand, which is the defect. Its own findings note says so in as many words:
+`crates/cs_content/tests/accept_f14_d_baseline.rs`: "the stage-level retail
+completeness total now accounts for the 45 stunt and 461 scrapbook rows (the
+same repair F14-D.6 made for the airframes; the equality is not weakened and the
+rows are not filtered out)". That is the **third** time a collection stage has
+had to perform this repair, and the third time the cost landed on a rebase of
+somebody else's branch rather than on the collection.
+
+The resolution keeps the derived accounting and takes F14-D.8's two
+measurements into `MEASURED_COLLECTIONS` as floors (`stunt` 45,
+`scrapbook_item` 461), raising the total floor from 78 928 to 79 434. The
+`stunt` and `scrapbook_item` **exact** counts are not restated here: F14-D.8's own
+suite pins both (`accept_f14_d_8_stunt_scrapbook_collections.rs`, lines 1080 and
+1174), which is the same division of labour the other six collections already
+have. `CustomPlane` holds no row and so has no floor.
+
+### Where the review disagreed, and what it did instead
+
+The "Scope notes" below argue this task produces no `acceptance.json` because it
+makes no *new* claim about original content. The review disagreed: the task's
+own acceptance criteria require the retail half to pass with `CS_GAME_DIR` set
+and put measurements of the original installation into the test, which makes it
+evidence-bound under AGENTS.md and `CLI-EVIDENCE.md`. The review did not grow the
+branch with a new evidence harness — that file is outside this task's declared
+owner paths — and filed **Rally #587** for the `T584` record instead, with the
+arguments on both sides written down so the owner can cancel it if they disagree.
+
 ## Scope notes
 
 - No production behaviour changed: `is_launchable()` returns what it returned
@@ -130,6 +189,7 @@ decorative:
 - This task makes no new claim about original content, so it produces no
   acceptance.json: the measurements above are a restatement of the existing F14-D
   acceptance, whose evidence record is `docs/findings/evidence/F14-D.7.json`.
+  **The review contests this reading** and filed #587; see above.
 - What the change does **not** catch: a collection stage that inserts rows of a
   *launchable* kind without declaring them (the launchable total stops matching
   `catalog.launchable_count()`), or one that inserts a `Script` row that no
