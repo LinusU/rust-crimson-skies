@@ -23,10 +23,108 @@
 //! they measure ids, counts and occupancies.
 
 use cs_sim::ai::combat::{
-    CombatRole, CombatRuntime, DifficultyProbeSpec, DifficultyTier, ORIGINAL_DIFFICULTY_STEPS,
-    PROBE_FORMATION, RoleAssignment, SYNTHETIC_SESSION, synthetic_actor, synthetic_combat_runtime,
-    synthetic_difficulty_probe_spec, synthetic_recovery_policies,
+    CombatRole, CombatRuntime, CombatStep, CombatantRequest, DifficultyProbeSpec, DifficultyTier,
+    ORIGINAL_DIFFICULTY_STEPS, PROBE_FORMATION, PriorityTerm, RoleAssignment, SYNTHETIC_SESSION,
+    answers_protected_threat, synthetic_actor, synthetic_arsenal, synthetic_candidate,
+    synthetic_combat_runtime, synthetic_difficulty_probe_spec, synthetic_recovery_policies,
+    synthetic_threat,
 };
+use cs_sim::targeting::Allegiance;
+use cs_types::Tick;
+
+/// One escort decision against a charging attacker, with the charge's
+/// lifecycle reported as the caller sees it.
+///
+/// `protected_alive: false` is the interesting half: the attack is fresh and
+/// noticed, but the actor it hit is already destroyed, so the
+/// protected-actor term contributes zero and the escort may still select the
+/// attacker for an unrelated reason.
+fn step_with(protected_alive: Option<bool>) -> CombatStep {
+    let runtime = synthetic_combat_runtime();
+    let observer = synthetic_actor(30);
+    let charge = synthetic_actor(40);
+    let assignment = RoleAssignment::protecting(observer, CombatRole::Escort, charge)
+        .expect("the escort assignment is valid");
+    let arsenal = synthetic_arsenal();
+    // The attacker is also the script objective and the nearer hostile, so it
+    // is selected whether or not the protected-actor term contributes: only
+    // the *term* tells the two cases apart.
+    let candidates = [
+        synthetic_candidate(31, [200.0, 500.0, 0.0], Some(Allegiance::Hostile), true)
+            .with_threat(synthetic_threat(31, 40, Tick(0), 1, 0)),
+        synthetic_candidate(32, [900.0, 500.0, 0.0], Some(Allegiance::Hostile), false),
+    ];
+    let here = synthetic_candidate(1, [0.0, 500.0, 0.0], None, false);
+    runtime
+        .step(&CombatantRequest {
+            observer,
+            // Thirty ticks after the attack was recorded: past the Standard
+            // tier's 24-tick reaction delay, inside the policy's 120-tick
+            // threat window, so the attack is fresh *and* noticed.
+            now: Tick(30),
+            observer_position: here.position,
+            assignment: &assignment,
+            formation: None,
+            protected_alive,
+            candidates: &candidates,
+            arsenal: Some(&arsenal),
+            ace: None,
+            tier: DifficultyTier::Standard,
+        })
+        .expect("the escort decides")
+}
+
+/// The probe counts an **answer** from the trace's own term score, not from
+/// the scenario's knowledge of who the attacker is.
+///
+/// The two readings coincide inside the probe's authored geometry — the
+/// attacker only out-scores the harmless hostile once its attack is noticed —
+/// so this test pins the distinction where it is visible: with the charge
+/// reported destroyed, the protected-actor term contributes nothing even though
+/// the attack is fresh, noticed, and the selected target may still be the
+/// attacker. A scenario-derived counter would say "answered"; the trace says
+/// "did not".
+#[test]
+fn accept_f32_d_an_answer_is_read_from_the_trace_and_not_from_the_scenarios_attacker() {
+    let answered = step_with(Some(true));
+    assert_eq!(
+        answered.target(),
+        Some(synthetic_actor(31)),
+        "with the charge alive, the noticed attacker is selected and its protected term contributes"
+    );
+    assert!(
+        answers_protected_threat(&answered),
+        "so this decision is an answer"
+    );
+
+    let destroyed = step_with(Some(false));
+    assert_eq!(
+        destroyed.target(),
+        Some(synthetic_actor(31)),
+        "with the charge destroyed the attacker is still the objective and the nearest hostile, \
+         so it is selected for those reasons"
+    );
+    assert!(
+        !answers_protected_threat(&destroyed),
+        "but the protected-actor term contributes zero, so this is not an answer"
+    );
+    let term = destroyed
+        .trace()
+        .candidate(synthetic_actor(31))
+        .and_then(|trace| trace.term(PriorityTerm::ProtectedActorThreat))
+        .expect("the selected target's trace carries the term");
+    assert_eq!(term.contribution, 0.0);
+    assert!(
+        term.weight > 0.0,
+        "the policy still weights the term; the charge is what is gone"
+    );
+
+    // An unreported lifecycle is not a reported-destroyed one.
+    assert!(
+        answers_protected_threat(&step_with(None)),
+        "an unreported lifecycle is not a destroyed charge"
+    );
+}
 
 /// The runtime tier vocabulary agrees with the measured option: exactly
 /// [`ORIGINAL_DIFFICULTY_STEPS`] declared tiers carry a measured step, and

@@ -3491,6 +3491,23 @@ mod f32_d {
             .find(|id| *id >= surface.difficulty_bound_id);
         assert_eq!(next_at_or_above, Some(surface.difficulty_bound_id));
 
+        // The occupancy reader is a *measurement*, not a restatement of the
+        // bound: a block the header declares but the shipped image leaves empty
+        // must read zero, which is the only way the two sides can be told
+        // apart at all. `IDS_KEYUNMAPPED` is such a block.
+        let empty_first = macro_id(&root, "IDS_KEYUNMAPPED").expect("the block exists");
+        let empty_bound = ids
+            .iter()
+            .copied()
+            .find(|id| *id > empty_first)
+            .expect("a macro above it is declared");
+        assert_eq!(
+            populated_difficulty_ids(&root, empty_first, empty_bound)
+                .expect("the empty block's occupancy reads"),
+            0,
+            "a declared block the shipped image leaves empty occupies nothing"
+        );
+
         // The counterexample: a gap is not a count.
         let view_first = macro_id(&root, "IDS_VIEWCOCKPIT").expect("the view block exists");
         let view_second =
@@ -3556,7 +3573,10 @@ mod f32_d {
             Some(3700),
             "the instant-action label is a single id"
         );
-        const { assert!(!ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO) };
+        assert!(
+            surface.difficulty_recorded_per_scenario == ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO,
+            "the measured negative and the committed constant agree"
+        );
         assert!(
             !surface.difficulty_recorded_per_scenario,
             "no measured scenario descriptor records a difficulty"

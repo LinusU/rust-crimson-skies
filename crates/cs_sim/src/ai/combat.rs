@@ -5186,16 +5186,9 @@ impl CombatRuntime {
             } else {
                 previous_target = None;
             }
-            // The escort's answer is the trace's own statement: the selected
-            // target's protected-actor term contributed, which can only happen
-            // for a candidate whose attack the reaction gate found noticed.
-            if step.target().is_some_and(|target| {
-                step.trace().candidate(target).is_some_and(|trace| {
-                    trace
-                        .term(PriorityTerm::ProtectedActorThreat)
-                        .is_some_and(|term| term.contribution > 0.0)
-                })
-            }) {
+            // The escort's answer is the trace's own statement, not the
+            // scenario's; see `answers_protected_threat`.
+            if answers_protected_threat(&step) {
                 protected_answers += 1;
                 first_protected_answer.get_or_insert(tick);
             }
@@ -5253,6 +5246,33 @@ impl CombatRuntime {
 
 /// The formation the probe's actors belong to.
 pub const PROBE_FORMATION: FormationId = FormationId(90);
+
+/// Whether one decision is the escort **answering an authoritative attack**
+/// against the actor it protects.
+///
+/// The answer is the trace's own statement, not the scenario's: the selected
+/// target's [`PriorityTerm::ProtectedActorThreat`] term must have contributed.
+/// Two consequences a scenario-derived shortcut would lose:
+///
+/// * the target must *be* the selected one, so an attack that is noticed but
+///   out-scored is not counted; and
+/// * the term must have contributed, which requires both a noticed attack and
+///   a **living** protected actor — an attack against a charge that is already
+///   destroyed contributes zero, so selecting that attacker for another reason
+///   is not an answer.
+///
+/// [`CombatPlanner::decide`] computes the term from the profile's weight, the
+/// threat's freshness and the protected actor's lifecycle report, so this is
+/// the decision the policy actually made rather than a fact the harness knows.
+#[must_use]
+pub fn answers_protected_threat(step: &CombatStep) -> bool {
+    step.target().is_some_and(|target| {
+        step.trace()
+            .candidate(target)
+            .and_then(|trace| trace.term(PriorityTerm::ProtectedActorThreat))
+            .is_some_and(|term| term.contribution > 0.0)
+    })
+}
 
 /// One probe candidate's authored straight-line path.
 struct ProbeCandidate {
