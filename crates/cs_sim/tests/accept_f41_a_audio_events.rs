@@ -20,12 +20,17 @@ use cs_sim::audio_events::{
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::net::SessionId;
 
 const SESSION: u64 = 11;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn event_id(producer: u32, sequence: u32) -> AudioEventId {
     AudioEventId {
-        session: SESSION,
+        session: session(SESSION),
         tick: Tick(4),
         producer,
         sequence,
@@ -36,7 +41,7 @@ fn event_id(producer: u32, sequence: u32) -> AudioEventId {
 /// twice produces exactly one accepted one-shot and one suppressed replay.
 #[test]
 fn accept_f41_a_a_replayed_weapon_event_plays_one_accepted_one_shot() {
-    let mut router = AudioRouter::new(SESSION);
+    let mut router = AudioRouter::new(session(SESSION));
     let event = synthetic_weapon_one_shot(event_id(1, 0));
 
     let first = router.play_one_shot(&event);
@@ -70,7 +75,7 @@ fn accept_f41_a_a_replayed_weapon_event_plays_one_accepted_one_shot() {
 /// sequence behind the accepted mark is suppressed rather than replayed.
 #[test]
 fn accept_f41_a_dedup_tracks_the_highest_sequence_per_producer() {
-    let mut router = AudioRouter::new(SESSION);
+    let mut router = AudioRouter::new(session(SESSION));
     assert!(matches!(
         router.play_one_shot(&synthetic_weapon_one_shot(event_id(1, 0))),
         OneShotOutcome::Accepted { .. }
@@ -94,14 +99,14 @@ fn accept_f41_a_dedup_tracks_the_highest_sequence_per_producer() {
 /// An event from a previous or future session generation is refused by name.
 #[test]
 fn accept_f41_a_events_from_another_session_are_refused() {
-    let mut router = AudioRouter::new(SESSION);
+    let mut router = AudioRouter::new(session(SESSION));
     let mut foreign = synthetic_weapon_one_shot(event_id(1, 0));
-    foreign.id.session = SESSION + 1;
+    foreign.id.session = session(SESSION + 1);
     assert_eq!(
         router.play_one_shot(&foreign),
         OneShotOutcome::RefusedForeignSession {
             id: foreign.id,
-            session: SESSION
+            session: session(SESSION)
         }
     );
     // A refused event must not have occupied the ledger.
@@ -116,10 +121,10 @@ fn accept_f41_a_events_from_another_session_are_refused() {
 #[test]
 fn accept_f41_a_loop_emitters_bind_swap_and_stop() {
     let emitter = AudioEmitterId {
-        session: SESSION,
+        session: session(SESSION),
         serial: 3,
     };
-    let mut router = AudioRouter::new(SESSION);
+    let mut router = AudioRouter::new(session(SESSION));
 
     assert_eq!(
         router.start_loop(&synthetic_engine_loop(emitter, event_id(1, 0))),
@@ -166,24 +171,24 @@ fn accept_f41_a_loop_emitters_bind_swap_and_stop() {
 #[test]
 fn accept_f41_a_loops_refuse_foreign_sessions() {
     let emitter = AudioEmitterId {
-        session: SESSION,
+        session: session(SESSION),
         serial: 1,
     };
-    let mut router = AudioRouter::new(SESSION);
+    let mut router = AudioRouter::new(session(SESSION));
     let mut foreign = synthetic_engine_loop(emitter, event_id(1, 0));
-    foreign.emitter.session = SESSION + 1;
+    foreign.emitter.session = session(SESSION + 1);
     assert_eq!(
         router.start_loop(&foreign),
         LoopOutcome::RefusedForeignSession {
             emitter: foreign.emitter,
-            session: SESSION
+            session: session(SESSION)
         }
     );
     assert_eq!(
         router.stop_loop(&foreign.emitter, EmitterStopReason::Despawned),
         LoopOutcome::RefusedForeignSession {
             emitter: foreign.emitter,
-            session: SESSION
+            session: session(SESSION)
         }
     );
 }
@@ -193,10 +198,10 @@ fn accept_f41_a_loops_refuse_foreign_sessions() {
 #[test]
 fn accept_f41_a_pause_policy_and_device_loss_stop_loops() {
     let emitter = |serial| AudioEmitterId {
-        session: SESSION,
+        session: session(SESSION),
         serial,
     };
-    let mut router = AudioRouter::new(SESSION);
+    let mut router = AudioRouter::new(session(SESSION));
     router.start_loop(&synthetic_engine_loop(emitter(1), event_id(1, 0)));
     router.start_loop(&synthetic_engine_loop(emitter(2), event_id(1, 1)));
 

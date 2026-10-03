@@ -50,6 +50,7 @@ use cs_sim::flight::{EngineState, FlightInput, FlightModel, synthetic_fixed_wing
 use cs_types::asset_id::{AssetKey, ResolveContext, WorldGroup};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ContentHash;
+use cs_types::net::SessionId;
 
 /// The fixed rate of the audio-sensitive worlds. The smoothing scenario runs a
 /// second world at twice this rate and compares, so no single rate is "the"
@@ -111,8 +112,8 @@ fn sound_item(key: &str) -> LoadItem {
 
 /// Runs one load over `items` to `Ready` and attaches its bundle to `world`
 /// through the production [`ExpectedLoad`] handoff, returning the bundle's
-/// session generation.
-fn deliver(world: &mut World, items: Vec<LoadItem>) -> u64 {
+/// session generation as the shared `SessionId` the audio session binds to.
+fn deliver(world: &mut World, items: Vec<LoadItem>) -> SessionId {
     let session = content_session().generation();
     let mut transaction = LoadTransaction::issue(LoadRequest {
         session,
@@ -138,7 +139,8 @@ fn deliver(world: &mut World, items: Vec<LoadItem>) -> u64 {
     );
     transaction.validate().expect("the load validates");
     let bundle = transaction.ready_bundle().expect("a ready bundle");
-    let generation = bundle.identity().session.get();
+    let generation = SessionId::new(bundle.identity().session.get())
+        .expect("a content session generation is nonzero");
     // The controlled handoff: announce, attach, consume the expectation.
     world.insert_resource(ExpectedLoad(bundle.identity()));
     bundle
@@ -152,8 +154,8 @@ fn deliver(world: &mut World, items: Vec<LoadItem>) -> u64 {
 /// a handle onto the recording device the plugin mixed to.
 struct AudioWorld {
     app: App,
-    /// The content session generation the delivered load ran under.
-    session: u64,
+    /// The session generation the delivered load ran under.
+    session: SessionId,
     /// The scene generation the load path consumed.
     generation: SceneGeneration,
     /// A second handle onto the plugin's device.

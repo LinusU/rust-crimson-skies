@@ -14,9 +14,14 @@ use cs_sim::audio_events::{
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::net::SessionId;
 
 const SESSION: u64 = 9;
 const GEN: SceneGeneration = SceneGeneration(1);
+
+fn session() -> SessionId {
+    SessionId::new(SESSION).expect("a nonzero session generation")
+}
 
 fn id(kind: ContentKind, key: &str) -> ContentId {
     ContentId::from_source(kind, key).expect("valid id")
@@ -24,7 +29,7 @@ fn id(kind: ContentKind, key: &str) -> ContentId {
 
 fn eid(producer: u32, sequence: u32) -> AudioEventId {
     AudioEventId {
-        session: SESSION,
+        session: session(),
         tick: Tick(0),
         producer,
         sequence,
@@ -53,7 +58,7 @@ fn app() -> App {
     )
     .expect("spec");
     let mut app = App::new();
-    app.insert_resource(AudioSession::new(AudioRouter::new(SESSION), GEN, [spec]));
+    app.insert_resource(AudioSession::new(AudioRouter::new(session()), GEN, [spec]));
     app.add_systems(Update, (sync_emitter_loops, advance_radio));
     app
 }
@@ -69,7 +74,7 @@ fn set_tick(app: &mut App, tick: u64) {
 fn accept_f41_c_device_loss_mid_mission_keeps_dialogue_completing() {
     let mut app = app();
     let emitter = AudioEmitterId {
-        session: SESSION,
+        session: session(),
         serial: 1,
     };
     app.world_mut().spawn(AudioEmitterBinding {
@@ -147,7 +152,7 @@ fn accept_f41_c_device_loss_mid_mission_keeps_dialogue_completing() {
 fn accept_f41_c_despawn_during_device_loss_is_not_resurrected() {
     let mut app = app();
     let emitter = AudioEmitterId {
-        session: SESSION,
+        session: session(),
         serial: 2,
     };
     let e = app

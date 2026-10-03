@@ -26,8 +26,13 @@ use cs_sim::audio_events::{
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 
 const SESSION: u64 = 21;
+
+fn session() -> SessionId {
+    SessionId::new(SESSION).expect("a nonzero session generation")
+}
 
 fn claim(id: &str) -> ClaimId {
     ClaimId::new(id).expect("valid claim id")
@@ -175,14 +180,14 @@ fn accept_f41_a_lowered_weapon_catalog_plays_one_shot_end_to_end() {
         .expect("the weapon lowered");
 
     let id = AudioEventId {
-        session: SESSION,
+        session: session(),
         tick: Tick(7),
         producer: 4,
         sequence: 0,
     };
     let event = weapon.spec.one_shot_event(id).expect("a one-shot spec");
 
-    let mut router = AudioRouter::new(SESSION);
+    let mut router = AudioRouter::new(session());
     assert_eq!(
         router.play_one_shot(&event),
         OneShotOutcome::Accepted {
@@ -202,7 +207,7 @@ fn accept_f41_a_lowered_weapon_catalog_plays_one_shot_end_to_end() {
         .get(&ContentId::from_source(ContentKind::Sound, "synthetic.engine.loop").expect("valid"))
         .expect("the engine loop lowered");
     let emitter = AudioEmitterId {
-        session: SESSION,
+        session: session(),
         serial: 2,
     };
     let binding = engine
@@ -223,7 +228,7 @@ fn accept_f41_a_emitter_binding_is_generation_qualified() {
     let asset = ContentId::from_source(ContentKind::Sound, "synthetic.engine.loop").expect("valid");
     let binding = AudioEmitterBinding {
         emitter: AudioEmitterId {
-            session: SESSION,
+            session: session(),
             serial: 1,
         },
         bus: AudioBus::Engine,

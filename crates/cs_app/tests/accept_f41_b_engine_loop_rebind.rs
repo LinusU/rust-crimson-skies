@@ -18,9 +18,14 @@ use cs_sim::audio_events::{
     PlaybackMode,
 };
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::net::SessionId;
 
 const SESSION: u64 = 5;
 const GEN: SceneGeneration = SceneGeneration(1);
+
+fn session_id() -> SessionId {
+    SessionId::new(SESSION).expect("a nonzero session generation")
+}
 
 fn engine_asset(key: &str) -> ContentId {
     ContentId::from_source(ContentKind::Sound, key).expect("valid id")
@@ -33,7 +38,7 @@ fn engine_spec(key: &str) -> AudioAssetSpec {
 
 fn emitter(serial: u64) -> AudioEmitterId {
     AudioEmitterId {
-        session: SESSION,
+        session: session_id(),
         serial,
     }
 }
@@ -50,7 +55,7 @@ fn binding(serial: u64, key: &str, generation: SceneGeneration) -> AudioEmitterB
 fn app() -> App {
     let mut app = App::new();
     app.insert_resource(AudioSession::new(
-        AudioRouter::new(SESSION),
+        AudioRouter::new(session_id()),
         GEN,
         [
             engine_spec("synthetic.engine.a"),
@@ -156,7 +161,11 @@ fn accept_f41_b_one_shot_spec_cannot_bind_as_a_loop() {
         .expect("a one-shot");
     let key = weapon.asset().clone();
     let mut app = App::new();
-    app.insert_resource(AudioSession::new(AudioRouter::new(SESSION), GEN, [weapon]));
+    app.insert_resource(AudioSession::new(
+        AudioRouter::new(session_id()),
+        GEN,
+        [weapon],
+    ));
     app.add_systems(Update, sync_emitter_loops);
     app.world_mut().spawn(AudioEmitterBinding {
         emitter: emitter(1),
