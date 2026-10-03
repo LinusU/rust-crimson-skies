@@ -106,10 +106,12 @@ mechanics on authored synthetic installation trees in CI.
   encoding are **not** decoded. The name is inferred from the mission archives
   (it is mission-scoped and absent exactly where a mission likely authors no
   placed traffic), so the census does not show that the original used it for
-  neutral traffic, nor how an actor is encoded in it.
+  neutral traffic, nor how an actor is encoded in it. Filed as task **#574**
+  ("Decode the mission-scoped zeppelins.zrd placed-traffic carrier").
 - **No mapping from a runtime `ActorId` to any original script/actor id.** The
   census reads container members; no correspondence to a session actor was
-  measured, so none was fabricated.
+  measured, so none was fabricated. Filed as task **#575** ("Map the runtime
+  session ActorId to the original mission script actor id").
 - **The original's runtime behavior is unmeasured.** Whether the original
   spawns any neutral traffic at all, how it treats an omitted author list,
   whether it postpones a death that happened during a cutscene, which loss/voice
@@ -117,9 +119,13 @@ mechanics on authored synthetic installation trees in CI.
   are unknown: no original executable was run, and reading the installation's
   files is not evidence of how the game behaves. This is not `verified_original`.
 - The other 50 missions' carriers are counted but their contents are not
-  decoded; a future format task can pick up the encoding.
+  decoded; task **#574** picks up the encoding.
 
-These follow-ups are filed with `create_tasks` rather than guessed here.
+These follow-ups are filed with `create_tasks` rather than guessed here: **#574**
+decodes the mission-scoped `zeppelins.zrd` carrier and **#575** maps the runtime
+session `ActorId` to the original mission script actor id; both are `todo` and
+neither gates this task's `checked`-level claim, which makes no runtime-behavior
+claim about the original game.
 
 ## Test counts
 
