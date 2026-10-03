@@ -52,15 +52,30 @@
 //! rejection before launch, and runs every session packet through the
 //! [`validation::SessionGate`] before it can authorize fire requests.
 //!
-//! Not here yet: connection and lifecycle wiring (F54-C), and the F58-B rate
-//! caps / F58-C recovery flow. The F57-B interpolation buffer and bounded
-//! local prediction consume [`snapshot`] rather than extending it.
+//! Not here yet: the F58-B rate caps, the F58-C disconnect/recovery flow, and
+//! the `cs_app`/`cs_sim` binding that drives a session from a Bevy schedule and
+//! a simulation ledger. The F57-B interpolation buffer and bounded local
+//! prediction consume the snapshot this crate hands them rather than extending
+//! it.
+//!
+//! F54-C adds [`lifecycle`]: the session owners that wire the pinned transport
+//! to its producers and consumers. [`lifecycle::ServerSession`] owns the
+//! launch/finish/teardown phase machine, drains admitted peer input into a
+//! bounded queue, publishes reliable lifecycle events, snapshots and input
+//! acknowledgments, and hangs up on the peers the declared threat dispositions
+//! say to cut off. [`lifecycle::ClientSession`] is the client side: it produces
+//! bounded wire input from locally sampled ticks (refusing a non-finite sample
+//! before it can become a packet), deduplicates reliable events by `EventId`,
+//! keeps only the newest snapshot, tracks the acknowledgment window and
+//! retransmits a lost input packet verbatim. Both report every refusal as a
+//! named fault or notice.
 
 pub mod authority;
 pub mod bounds;
 pub mod codec;
 pub mod compat;
 pub mod fixture;
+pub mod lifecycle;
 pub mod lobby;
 pub mod message;
 pub mod recovery;

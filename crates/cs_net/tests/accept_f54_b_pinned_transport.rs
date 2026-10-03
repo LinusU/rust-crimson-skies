@@ -577,6 +577,7 @@ fn accept_f54_b_duplicate_input_cannot_duplicate_fire_over_udp() {
         HostEvent::PeerPacket {
             peer,
             admission,
+            input,
             fires,
         } => {
             assert_eq!(*peer, grant.peer);
@@ -584,6 +585,11 @@ fn accept_f54_b_duplicate_input_cannot_duplicate_fire_over_udp() {
             assert_eq!(fires.len(), 1, "the first delivery fires once");
             assert_eq!(fires[0].actor, actor);
             assert_eq!(fires[0].sequence, 0);
+            let admitted = input
+                .as_ref()
+                .expect("the admitted frames reach the consumer");
+            assert_eq!(admitted.sequence, 0);
+            assert_eq!(admitted.batch.frames.len(), 1, "one frame was sent");
         }
         other => panic!("expected a peer packet, saw {other:?}"),
     }
@@ -591,6 +597,7 @@ fn accept_f54_b_duplicate_input_cannot_duplicate_fire_over_udp() {
         HostEvent::PeerPacket {
             peer,
             admission,
+            input,
             fires,
         } => {
             assert_eq!(*peer, grant.peer);
@@ -604,6 +611,10 @@ fn accept_f54_b_duplicate_input_cannot_duplicate_fire_over_udp() {
             assert!(
                 fires.is_empty(),
                 "a replayed packet must authorize no fire at all"
+            );
+            assert!(
+                input.is_none(),
+                "a replayed packet must hand the consumer no input at all"
             );
         }
         other => panic!("expected a peer packet, saw {other:?}"),
@@ -643,11 +654,17 @@ fn accept_f54_b_out_of_order_input_cannot_duplicate_fire_over_udp() {
         HostEvent::PeerPacket {
             peer,
             admission,
+            input,
             fires,
         } => {
             assert_eq!(*peer, grant.peer);
             assert_eq!(*admission, Admission::Accepted { sequence: 9 });
             assert_eq!(fires.len(), 1, "the in-order delivery fires once");
+            let admitted = input
+                .as_ref()
+                .expect("the admitted frames reach the consumer");
+            assert_eq!(admitted.sequence, 9);
+            assert_eq!(admitted.batch.frames.len(), 1, "one frame was sent");
         }
         other => panic!("expected a peer packet, saw {other:?}"),
     }
@@ -655,6 +672,7 @@ fn accept_f54_b_out_of_order_input_cannot_duplicate_fire_over_udp() {
         HostEvent::PeerPacket {
             peer,
             admission,
+            input,
             fires,
         } => {
             assert_eq!(*peer, grant.peer);
@@ -668,6 +686,10 @@ fn accept_f54_b_out_of_order_input_cannot_duplicate_fire_over_udp() {
             assert!(
                 fires.is_empty(),
                 "an out-of-order packet must authorize no fire at all"
+            );
+            assert!(
+                input.is_none(),
+                "an out-of-order packet must hand the consumer no input at all"
             );
         }
         other => panic!("expected a peer packet, saw {other:?}"),

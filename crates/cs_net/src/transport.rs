@@ -43,6 +43,21 @@
 //! Everything here is newly authored engine design on a third-party
 //! transport; no claim about the original game's networking is made or
 //! implied.
+//!
+//! # The F54-C handoff
+//!
+//! This module is the *transport*, not a session owner. [`crate::lifecycle`]
+//! wraps it in the launch/finish/teardown state machine and drives the bounded
+//! queues; it consumes what this module reports. Two F54-C changes are visible
+//! here because the lifecycle cannot be wired without them:
+//!
+//! * [`HostEvent::PeerPacket`] now carries the admitted [`AdmittedInput`] as
+//!   well as the fire requests. Without it the decoded frames were dropped on
+//!   the floor and no host had a path from a wire packet to the simulation.
+//! * The handshake verdict is encoded and sent **before** any session state is
+//!   committed, and an encode failure surfaces as [`HostEvent::ReplyFailed`]
+//!   instead of being swallowed. A client that cannot be told never becomes a
+//!   member.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -68,7 +83,7 @@ use crate::compat::{
     ClientHello, HandshakeReject, HelloReply, PeerAllocator, SessionGrant, SessionParameters,
     admit_hello,
 };
-use crate::message::{ClientMessage, ClientPayload, Delivery, ServerMessage};
+use crate::message::{ClientMessage, ClientPayload, Delivery, InputBatch, ServerMessage};
 use crate::validation::{Admission, FireRequest, SessionGate, fire_requests};
 
 /// The renet channel id carrying [`Delivery::Reliable`] traffic in both
@@ -208,6 +223,9 @@ pub enum HostEvent {
     /// A client's hello was refused; the named reason was sent back on the
     /// reliable channel. The client was never a peer.
     PeerRejected {
+        /// The connected client the hello came from, so a caller can hang up
+        /// on the rejected connection (F54-C teardown).
+        client: ClientId,
         /// Why the hello failed the admission gate.
         reason: HandshakeReject,
     },
@@ -220,8 +238,23 @@ pub enum HostEvent {
         peer: PeerId,
         /// The gate's verdict.
         admission: Admission,
+        /// The bounded tick-stamped input an admitted `ClientPayload::Input`
+        /// carried, which is what the authoritative simulation consumes.
+        /// `None` for every other payload and for every refusal.
+        input: Option<AdmittedInput>,
         /// The fire requests an admitted input batch authorized.
         fires: Vec<FireRequest>,
+    },
+    /// The host's answer to a hello could not be encoded, so it was never
+    /// sent. The client is recorded as rejected (it holds no peer id), but it
+    /// learns nothing, and the caller must hang up on it. Swallowing this
+    /// would leave a client waiting for a verdict that can never arrive
+    /// (F54-C error propagation).
+    ReplyFailed {
+        /// The connected client that will never get its verdict.
+        client: ClientId,
+        /// Why the reply could not be encoded.
+        reason: String,
     },
     /// A member peer left the session, by `Leave` or by losing its
     /// transport connection. Its replay window died with it.
@@ -247,6 +280,26 @@ pub enum HostEvent {
     },
 }
 
+/// One admitted in-session input packet, as the authoritative consumer sees
+/// it: the peer's bounded tick-stamped frames plus the sequence that admitted
+/// them.
+///
+/// This is the *handoff* of F54-C. F54-B proved the gate deduplicates replayed
+/// input but then dropped the frames, so a host had no production path from a
+/// wire packet to the simulation's input. Carrying them on
+/// [`HostEvent::PeerPacket`] keeps the property at the wire boundary (nothing
+/// reaches here without an [`Admission::Accepted`]) while giving the consumer
+/// the data it actually needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedInput {
+    /// The admitted packet sequence.
+    pub sequence: u32,
+    /// The bounded tick-stamped frames, oldest first. Already validated by
+    /// [`crate::message::InputBatch::validate`], so every frame is in strict
+    /// tick order and within the per-packet caps.
+    pub batch: InputBatch,
+}
+
 /// Why a received buffer was dropped before it could act on the session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DropReason {
@@ -256,6 +309,27 @@ pub enum DropReason {
     ExtraHello,
     /// A session packet arrived from a client with no peer id.
     NoPeer,
+    /// The host's bounded work queue was full, so an otherwise admitted packet
+    /// was never handed to the simulation (F54-C).
+    QueueOverflow {
+        /// The queue's cap.
+        limit: usize,
+    },
+}
+
+impl fmt::Display for DropReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decode(reason) => write!(f, "{reason}"),
+            Self::ExtraHello => {
+                f.write_str("a second hello from a client that already holds a verdict")
+            }
+            Self::NoPeer => f.write_str("session traffic from a client with no peer id"),
+            Self::QueueOverflow { limit } => {
+                write!(f, "the host work queue is full ({limit} packets)")
+            }
+        }
+    }
 }
 
 /// The host's pinned transport: one UDP socket running a netcode server with
@@ -443,6 +517,28 @@ impl HostTransport {
         true
     }
 
+    /// Hangs up on one connected client by transport identity, whether or not
+    /// it ever became a peer.
+    ///
+    /// This is the teardown a lifecycle owner needs for the clients that hold
+    /// no peer id: a refused hello and a client whose answer could not be
+    /// encoded. Those connections have nothing to keep serving, and leaving
+    /// them open lets a refused client occupy one of the
+    /// [`crate::bounds::MAX_SESSION_PEERS`] netcode slots forever.
+    ///
+    /// Returns `false` when the connection is already gone. A peer admitted
+    /// under this client loses its replay window too, exactly as
+    /// [`Self::disconnect_peer`] does.
+    pub fn disconnect_client(&mut self, client: ClientId) -> bool {
+        let kind = self.clients.remove(&client);
+        if let Some(ClientKind::Peer(peer)) = kind {
+            self.client_by_peer.remove(&peer);
+            self.gate.forget_peer(peer);
+        }
+        self.server.disconnect(client);
+        true
+    }
+
     /// Advances the connection layers and drains every arrived packet into
     /// session decisions. `elapsed` is the host tick's duration.
     ///
@@ -518,18 +614,28 @@ impl HostTransport {
             }
         }
         let reply = admit_hello(self.session, &self.params, hello, &mut self.peers);
+        // The verdict is sent *before* any session state is committed: a
+        // client that cannot be told must never become a member, because it
+        // would then act in a session it was never admitted to and would wait
+        // forever for a grant that was never sent.
+        if let Err(reason) = self.send_reply(client, &reply) {
+            self.clients.insert(client, ClientKind::Rejected);
+            return Some(HostEvent::ReplyFailed {
+                client,
+                reason: reason.to_string(),
+            });
+        }
         match &reply {
             HelloReply::Welcome(grant) => {
                 self.clients.insert(client, ClientKind::Peer(grant.peer));
                 self.client_by_peer.insert(grant.peer, client);
                 self.gate.admit_peer(grant.peer);
-                let _ = self.send_reply(client, &reply);
                 Some(HostEvent::PeerJoined { peer: grant.peer })
             }
             HelloReply::Rejected(reason) => {
                 self.clients.insert(client, ClientKind::Rejected);
-                let _ = self.send_reply(client, &reply);
                 Some(HostEvent::PeerRejected {
+                    client,
                     reason: reason.clone(),
                 })
             }
@@ -547,11 +653,17 @@ impl HostTransport {
         };
         let admission = self.gate.admit(peer, message);
         let mut fires = Vec::new();
+        let mut input = None;
         if let (Admission::Accepted { sequence }, ClientPayload::Input(batch)) =
             (&admission, &message.payload)
-            && let Some(actor) = self.gate.ownership().actor_of(peer)
         {
-            fires = fire_requests(batch, self.session, peer, actor, *sequence);
+            if let Some(actor) = self.gate.ownership().actor_of(peer) {
+                fires = fire_requests(batch, self.session, peer, actor, *sequence);
+            }
+            input = Some(AdmittedInput {
+                sequence: *sequence,
+                batch: batch.clone(),
+            });
         }
         if matches!(message.payload, ClientPayload::Leave) && admission.accepted() {
             self.clients.remove(&client);
@@ -562,6 +674,7 @@ impl HostTransport {
         Some(HostEvent::PeerPacket {
             peer,
             admission,
+            input,
             fires,
         })
     }

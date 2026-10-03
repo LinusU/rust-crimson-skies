@@ -36,3 +36,21 @@ pub const MAX_EDGES_PER_FRAME: usize = 32;
 /// (`crates/cs_net/src/snapshot.rs`); this bound is the envelope-level cap
 /// that applies before that schema runs.
 pub const MAX_SNAPSHOT_BYTES: usize = 8 * 1024;
+
+/// Most admitted client input packets one host pump hands to the
+/// authoritative simulation (`crate::lifecycle::ServerSession`). The host's
+/// receive path is otherwise unbounded — a peer may send as fast as the socket
+/// delivers — so the pump drains into a queue with this cap and refuses the
+/// surplus instead of growing (F54-C; the `ResourceExhaustion` threat class).
+pub const MAX_WORK_PER_PUMP: usize = 64;
+
+/// Most reliable-event ids one client remembers for deduplication. The
+/// reliable channel can replay an event after a retry, so the client keeps a
+/// bounded seen-set and evicts the *oldest* id when it is full (F54-C).
+pub const MAX_SEEN_EVENTS: usize = 256;
+
+/// Most sent-but-unacknowledged client input packets one client keeps for
+/// verbatim retransmission. Each entry is at most [`MAX_PACKET_BYTES`], so
+/// this bounds a client's retransmit memory at
+/// `MAX_PACKET_BYTES * MAX_UNACKED_PACKETS` (F54-C).
+pub const MAX_UNACKED_PACKETS: usize = 8;
