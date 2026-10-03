@@ -27,14 +27,20 @@
 //!   `none`/`filmic`, and [`tonemap_for`]/[`tonemap_label`] are the only two
 //!   places that translate, so a record cannot name a curve the renderer has
 //!   no name for.
-//! * **A setting the record cannot pin is refused, not dropped.**
-//!   [`ComparisonSettings`] has an internal render resolution that
-//!   [`RenderConfig`] has no field for. A capture taken under a resolution
-//!   override is not the fixed comparison capture, so [`render_for`] refuses it
-//!   as [`CaptureError::RenderSettingUnpinned`] instead of writing a record that
-//!   claims a frame this configuration does not describe.
+//! * **A setting one side cannot express is refused, not dropped.**
+//!   [`ComparisonSettings`] carries an internal render resolution that
+//!   [`RenderConfig`] has no field for, and it carries the *fixed comparison*
+//!   exposure and gamma only, while [`RenderConfig`] stores a designed range
+//!   wider than that. A capture taken under a resolution override, or pinning an
+//!   exposure or gamma the renderer cannot be configured with, is not the frame
+//!   the record would describe: [`render_for`] refuses the first with
+//!   [`CaptureError::RenderSettingUnpinned`] and [`settings_for`] the second
+//!   with [`CaptureError::RenderSettingUnsupported`], rather than writing a
+//!   record that claims a frame this configuration does not describe.
 
-use cs_content::replay::{CaptureError, RenderConfig, TonemapKind};
+use cs_content::replay::{
+    COMPARISON_EXPOSURE_MILLI, COMPARISON_GAMMA_MILLI, CaptureError, RenderConfig, TonemapKind,
+};
 
 use crate::render::capture::{ComparisonSettings, Tonemap};
 
@@ -70,12 +76,35 @@ pub const fn tonemap_label(tonemap: Tonemap) -> Option<TonemapKind> {
 /// [`ComparisonSettings`]: it sizes the target, not the settings, and
 /// [`RenderConfig`] carries it as the capture's own width and height.
 ///
+/// The exposure and gamma are checked rather than lowered, because
+/// [`ComparisonSettings`] can only be built with the fixed comparison pair:
+/// silently handing the renderer `1.0`/`2.2` for a record that pins anything
+/// else would render the frame under settings the record does not claim, which
+/// is the drift this module exists to prevent.
+///
 /// # Errors
 ///
 /// Every error of [`RenderConfig::validate`], so a configuration outside its
-/// declared ranges is refused here exactly as it would be at capture time.
+/// declared ranges is refused here exactly as it would be at capture time, and
+/// [`CaptureError::RenderSettingUnsupported`] for a pinned exposure or gamma the
+/// renderer has no setting for.
 pub fn settings_for(render: &RenderConfig) -> Result<ComparisonSettings, CaptureError> {
     render.validate()?;
+    for (field, pinned, supported) in [
+        (
+            "exposure_milli",
+            render.exposure_milli,
+            COMPARISON_EXPOSURE_MILLI,
+        ),
+        ("gamma_milli", render.gamma_milli, COMPARISON_GAMMA_MILLI),
+    ] {
+        if pinned != supported {
+            return Err(CaptureError::RenderSettingUnsupported {
+                field,
+                value: pinned,
+            });
+        }
+    }
     Ok(ComparisonSettings::for_presentation(
         tonemap_for(render.tonemap),
         render.msaa_samples,

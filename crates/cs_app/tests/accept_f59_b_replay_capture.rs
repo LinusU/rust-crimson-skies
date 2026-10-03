@@ -521,8 +521,7 @@ fn accept_f59_b_a_non_finite_state_is_refused_rather_than_hashed() {
 /// Two readings that share a pose must still separate when their tick differs or
 /// when the tick's own law produced different forces — otherwise a hash that
 /// only looked at where the aircraft was would call a run identical while the
-/// flight model's own reading of that tick moved. This fails if the digest drops
-/// the tick, the world force or the instrument state.
+/// flight model's own reading of that tick moved.
 #[test]
 fn accept_f59_b_a_state_hash_covers_the_tick_and_the_forces_it_computed() {
     let pose = rest_pose();
@@ -562,6 +561,299 @@ fn accept_f59_b_a_state_hash_covers_the_tick_and_the_forces_it_computed() {
     let entries = probe.envelope().entries();
     assert_eq!(entries.len(), 2);
     assert_ne!(entries[0].state, entries[1].state);
+}
+
+/// Every field the state digest claims to cover is load-bearing.
+///
+/// `StateReading::digest` is the whole statement the envelope makes about a tick,
+/// so a field it leaves out is a field a real divergence could hide in and a
+/// mutation could remove without any test noticing. Each variant below differs
+/// from one measured reading in exactly one hashed field, so dropping any single
+/// field from the digest fails here by name.
+#[test]
+fn accept_f59_b_every_field_the_state_digest_covers_moves_it() {
+    let pose = rest_pose();
+    let output = finite_output();
+    let baseline = reading(Tick(7), pose, output).digest();
+
+    let moved_pose = PhysicsSample {
+        position_m: [1.0, 0.0, 0.0],
+        ..pose
+    };
+    let moved_speed = PhysicsSample {
+        linear_velocity_m_s: [0.0, 0.0, -121.0],
+        ..pose
+    };
+    let moved_rate = PhysicsSample {
+        angular_velocity_rad_s: [0.0, 0.01, 0.0],
+        ..pose
+    };
+    let instruments = output.instrument_state;
+    let diagnostics = output.diagnostics;
+
+    let variants: [(&str, StateReading); 22] = [
+        ("the measured tick", reading(Tick(8), pose, output)),
+        ("pose.position_m", reading(Tick(7), moved_pose, output)),
+        (
+            "pose.linear_velocity_m_s",
+            reading(Tick(7), moved_speed, output),
+        ),
+        (
+            "pose.angular_velocity_rad_s",
+            reading(Tick(7), moved_rate, output),
+        ),
+        (
+            "output.world_force_n",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    world_force_n: [1.0, 2.0, 3.0],
+                    ..output
+                },
+            ),
+        ),
+        (
+            "output.world_torque_nm",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    world_torque_nm: [1.0, 2.0, 3.0],
+                    ..output
+                },
+            ),
+        ),
+        (
+            "output.accepted_boost_consumption",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    accepted_boost_consumption: 0.5,
+                    ..output
+                },
+            ),
+        ),
+        (
+            "instrument_state.airspeed_mps",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    instrument_state: cs_sim::flight::InstrumentState {
+                        airspeed_mps: instruments.airspeed_mps + 1.0,
+                        ..instruments
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "instrument_state.angle_of_attack_rad",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    instrument_state: cs_sim::flight::InstrumentState {
+                        angle_of_attack_rad: instruments.angle_of_attack_rad + 0.01,
+                        ..instruments
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "instrument_state.sideslip_rad",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    instrument_state: cs_sim::flight::InstrumentState {
+                        sideslip_rad: instruments.sideslip_rad + 0.01,
+                        ..instruments
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "instrument_state.dynamic_pressure_pa",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    instrument_state: cs_sim::flight::InstrumentState {
+                        dynamic_pressure_pa: instruments.dynamic_pressure_pa + 1.0,
+                        ..instruments
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "instrument_state.lift_coefficient",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    instrument_state: cs_sim::flight::InstrumentState {
+                        lift_coefficient: instruments.lift_coefficient + 0.01,
+                        ..instruments
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "instrument_state.drag_coefficient",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    instrument_state: cs_sim::flight::InstrumentState {
+                        drag_coefficient: instruments.drag_coefficient + 0.01,
+                        ..instruments
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "instrument_state.stall_scale",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    instrument_state: cs_sim::flight::InstrumentState {
+                        stall_scale: instruments.stall_scale - 0.01,
+                        ..instruments
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "instrument_state.thrust_n",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    instrument_state: cs_sim::flight::InstrumentState {
+                        thrust_n: instruments.thrust_n + 1.0,
+                        ..instruments
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "diagnostics.thrust_n",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    diagnostics: cs_sim::flight::FlightDiagnostics {
+                        thrust_n: diagnostics.thrust_n + 1.0,
+                        ..diagnostics
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "diagnostics.lift_n",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    diagnostics: cs_sim::flight::FlightDiagnostics {
+                        lift_n: diagnostics.lift_n + 1.0,
+                        ..diagnostics
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "diagnostics.drag_n",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    diagnostics: cs_sim::flight::FlightDiagnostics {
+                        drag_n: diagnostics.drag_n + 1.0,
+                        ..diagnostics
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "diagnostics.gravity_force_n",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    diagnostics: cs_sim::flight::FlightDiagnostics {
+                        gravity_force_n: [1.0, 2.0, 3.0],
+                        ..diagnostics
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "diagnostics.assist_force_n",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    diagnostics: cs_sim::flight::FlightDiagnostics {
+                        assist_force_n: [1.0, 2.0, 3.0],
+                        ..diagnostics
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "diagnostics.assist_torque_nm",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    diagnostics: cs_sim::flight::FlightDiagnostics {
+                        assist_torque_nm: [1.0, 2.0, 3.0],
+                        ..diagnostics
+                    },
+                    ..output
+                },
+            ),
+        ),
+        (
+            "diagnostics.control_authority",
+            reading(
+                Tick(7),
+                pose,
+                cs_sim::flight::FlightOutput {
+                    diagnostics: cs_sim::flight::FlightDiagnostics {
+                        control_authority: diagnostics.control_authority - 0.01,
+                        ..diagnostics
+                    },
+                    ..output
+                },
+            ),
+        ),
+    ];
+
+    for (field, other) in variants {
+        assert_ne!(
+            baseline,
+            other.digest(),
+            "the state digest must cover {field}; dropping it lets a divergence hide there"
+        );
+    }
 }
 
 /// A tick measured before the run's start is refused: the envelope chains from
@@ -799,6 +1091,31 @@ fn accept_f59_b_the_render_lowering_round_trips_and_refuses_an_unpinned_setting(
             field: "render_resolution",
         }
     );
+
+    // The other direction is refused too, and it is the one that would render a
+    // frame the record does not describe: the renderer can only be configured
+    // with the fixed comparison exposure and gamma, so a record that pins any
+    // other pair is refused by name instead of being rendered at `1.0`/`2.2`.
+    for (field, pinned) in [("exposure_milli", 1_500_u32), ("gamma_milli", 1_800)] {
+        let mut record_config = baseline;
+        if field == "exposure_milli" {
+            record_config.exposure_milli = pinned;
+        } else {
+            record_config.gamma_milli = pinned;
+        }
+        // Both values are inside the record's own declared range, so the record
+        // itself accepts them.
+        record_config
+            .validate()
+            .expect("the pinned value is inside RenderConfig's designed range");
+        assert_eq!(
+            settings_for(&record_config).expect_err("the renderer cannot render under it"),
+            cs_content::replay::CaptureError::RenderSettingUnsupported {
+                field,
+                value: pinned,
+            }
+        );
+    }
 }
 
 /// The content digest of an inventoried installation is F02's own content

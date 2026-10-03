@@ -517,6 +517,19 @@ pub enum CaptureError {
         /// The renderer setting that could not be pinned.
         field: &'static str,
     },
+    /// A pinned setting the renderer cannot be configured with.
+    ///
+    /// The record's exposure and gamma are stored over a designed range that is
+    /// wider than the renderer's fixed comparison set: a renderer comparison
+    /// configuration carries one exposure and one gamma. Lowering a record that
+    /// pins another pair would render the frame under settings the record does
+    /// not claim, so the run is refused by name instead of rendered wrongly.
+    RenderSettingUnsupported {
+        /// The pinned field.
+        field: &'static str,
+        /// The value the record pinned.
+        value: u32,
+    },
     /// The capture came from a build that is not the replay's build.
     BuildMismatch {
         /// The replay's build id.
@@ -555,6 +568,10 @@ impl fmt::Display for CaptureError {
             Self::RenderSettingUnpinned { field } => write!(
                 f,
                 "renderer setting {field} has no pinned field in a capture record"
+            ),
+            Self::RenderSettingUnsupported { field, value } => write!(
+                f,
+                "pinned {field} {value} is not a setting the renderer can be configured with"
             ),
             Self::BuildMismatch { replay, capture } => write!(
                 f,
