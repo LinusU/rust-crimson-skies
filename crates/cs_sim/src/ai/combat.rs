@@ -1,15 +1,18 @@
-//! Combat AI: roles, skill profiles, target priority and decision traces
-//! (F32-A).
+//! Combat AI: roles, skill profiles, target priority, maneuvers and firing
+//! solutions (F32-A and F32-B).
 //!
-//! Spec: `specs/F32-ai-combat-formations-aces-and-difficulty.md`, stage
-//! `### F32-A`. Shared contract: `docs/contracts/IDENTITY-CONTENT.md`.
+//! Spec: `specs/F32-ai-combat-formations-aces-and-difficulty.md`, stages
+//! `### F32-A` and `### F32-B`. Shared contract:
+//! `docs/contracts/IDENTITY-CONTENT.md`.
 //!
 //! Stage **F32-A** defines the typed contract and the minimal synthetic
-//! fixture; it is not the whole combat runtime. The consumer half of the
-//! combat-AI contract lives here; the provenance-carrying producer record an
-//! importer will emit is `cs_content::ai`. The conversion boundary between
-//! them is `cs_app::ai::combat` (F32-B lowers roles and the priority
-//! policy, F32-C lowers ace variants, difficulty profiles and formations).
+//! fixture; stage **F32-B** lowers that contract into the maneuver the role
+//! flies and the per-mount firing solution an ace fires. Neither is the
+//! whole combat runtime. The consumer half of the combat-AI contract lives
+//! here; the provenance-carrying producer record an importer will emit is
+//! `cs_content::ai`. The conversion boundary between them is
+//! `cs_app::ai::combat` (F32-C lowers ace variants, difficulty profiles and
+//! formations; its owner paths are not this task's).
 //!
 //! [`combat`] declares:
 //!
@@ -38,6 +41,14 @@
 //!   contribution, the total, and the *separate* fire veto. F32-D's
 //!   consumer trace and any later difficulty comparison read this record;
 //!   a decision without it would be unverifiable.
+//! * [`CombatManeuver`] (F32-B): the intent the role flies this tick,
+//!   selected from the role and whether a target was chosen. It names no
+//!   waypoint, heading or control law, so it cannot become a second pose
+//!   owner (`docs/contracts/FLIGHT-PHYSICS.md`).
+//! * [`FiringSolution`] (F32-B): the per-mount verdict for the selected
+//!   target. A disabled mount (F29) and an empty rack (F27/F28) are two
+//!   distinct refusals and neither is a question of skill: an ace fires off
+//!   the same [`ArsenalSnapshot`] the player does (AC02).
 //!
 //! # Hostility, friendly fire and line of fire are three predicates
 //!
@@ -54,7 +65,9 @@
 //! **unmeasured** (F32 "Research boundary"; F32-D's retail stage). Every
 //! constant, bound and fixture in this module is newly authored project
 //! design, recorded in
-//! `docs/findings/2026-10-01-f32-a-combat-roles-skill-knobs-and-decision-traces.md`.
+//! `docs/findings/2026-10-01-f32-a-combat-roles-skill-knobs-and-decision-traces.md`
+//! and, for the maneuvers and firing solutions, in
+//! `docs/findings/2026-10-03-f32-b-maneuvers-priority-and-firing-solutions.md`.
 //!
 //! `cs_sim` may depend only on [`cs_types`] and [`cs_script`]
 //! (`docs/01-ARCHITECTURE.md`): no Bevy, no renderer, no file access.
@@ -903,6 +916,332 @@ pub struct ArsenalReport {
     pub empty_mounts: u32,
 }
 
+// --------------------------------------------------------- maneuver ----
+
+/// The maneuver a role intends to fly this tick.
+///
+/// The F32 sheet separates *role selection* (what a script assigned) from
+/// *maneuver selection* (what that role does about the situation it is in).
+/// This is the typed intent the navigation layer consumes: it names no
+/// waypoint, no heading and no control law, so choosing it cannot make the
+/// planner a second pose owner (`docs/contracts/FLIGHT-PHYSICS.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CombatManeuver {
+    /// Close with and track the selected target.
+    Engage,
+    /// Fly an ordnance delivery run at the selected target.
+    AttackRun,
+    /// Hold station with the protected actor and answer what threatens it.
+    Screen,
+    /// Break away from the selected threat without leaving the mission.
+    BreakAway,
+    /// Withdraw from the engagement.
+    Withdraw,
+    /// Nothing to act on: no target was selected and the role is not
+    /// ordered to break off, so the current path is held.
+    Hold,
+}
+
+impl CombatManeuver {
+    /// Every maneuver, in a stable order.
+    pub const ALL: &'static [CombatManeuver] = &[
+        Self::Engage,
+        Self::AttackRun,
+        Self::Screen,
+        Self::BreakAway,
+        Self::Withdraw,
+        Self::Hold,
+    ];
+
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Engage => "engage",
+            Self::AttackRun => "attack_run",
+            Self::Screen => "screen",
+            Self::BreakAway => "break_away",
+            Self::Withdraw => "withdraw",
+            Self::Hold => "hold",
+        }
+    }
+
+    /// The maneuver one role flies with or without a selected target.
+    ///
+    /// The map is total and deterministic: the same `(role, has_target)`
+    /// always yields the same maneuver, so an output cannot depend on the
+    /// order a caller happened to consider the roles in.
+    #[must_use]
+    pub const fn select(role: CombatRole, has_target: bool) -> Self {
+        match role {
+            CombatRole::FighterAttack | CombatRole::Intercept => {
+                if has_target {
+                    Self::Engage
+                } else {
+                    Self::Hold
+                }
+            }
+            CombatRole::BomberRun | CombatRole::TorpedoRun => {
+                if has_target {
+                    Self::AttackRun
+                } else {
+                    Self::Hold
+                }
+            }
+            // An escort's default posture is to stay with its charge; it
+            // only closes when it has something to answer.
+            CombatRole::Escort => {
+                if has_target {
+                    Self::Engage
+                } else {
+                    Self::Screen
+                }
+            }
+            CombatRole::Evade => Self::BreakAway,
+            CombatRole::Retreat => Self::Withdraw,
+        }
+    }
+}
+
+impl fmt::Display for CombatManeuver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+// --------------------------------------------------- firing solution ----
+
+/// One mount's verdict in a firing solution.
+///
+/// The two availability reasons are deliberately distinct: a disabled gun
+/// and an empty rocket rack are different failures, and neither is a
+/// question of skill. A high-skill shooter cannot fire either one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MountFireState {
+    /// The mount fires this tick.
+    Firing,
+    /// The mount's damage node was destroyed (F29), so the shot is refused
+    /// whatever the shooter's skill.
+    Disabled,
+    /// The mount is intact but has no rounds left (F27/F28), so the shot
+    /// is refused whatever the shooter's skill.
+    Empty,
+    /// The mount is loaded but still on its cadence, so it is not fired
+    /// this tick. This is a *schedule* refusal, not an availability one:
+    /// the mount is intact and armed.
+    CoolingDown {
+        /// Ticks remaining before the mount may fire.
+        remaining_ticks: u64,
+    },
+    /// The role's [`RoleArsenal`] does not declare this mount's kind, so a
+    /// guns-only role never fires ordnance and a torpedo role never fires
+    /// guns.
+    WrongKind,
+}
+
+impl MountFireState {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Firing => "firing",
+            Self::Disabled => "disabled",
+            Self::Empty => "empty",
+            Self::CoolingDown { .. } => "cooling_down",
+            Self::WrongKind => "wrong_kind",
+        }
+    }
+}
+
+impl fmt::Display for MountFireState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// One mount's contribution to a firing solution.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MountFire {
+    /// The mount, in the same [`DamageNodeKey`] namespace the F29 damage
+    /// graph disables.
+    pub mount: DamageNodeKey,
+    /// Whether the mount carries a gun or ordnance.
+    pub kind: MountKind,
+    /// Whether the mount fires, and if not, why.
+    pub state: MountFireState,
+}
+
+/// Why a firing solution fires nothing this tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FireHoldReason {
+    /// The role's [`RoleArsenal`] declares no weapon kind at all — the
+    /// evasion and retreat roles.
+    RoleUnarmed,
+    /// No mount of a kind the role may use can fire this tick, with the
+    /// count of each distinct refusal. A checker that only looked at the
+    /// total would hide whether the cause was destruction, exhaustion or
+    /// cadence.
+    NoUsableMount {
+        /// Mounts whose damage node was destroyed.
+        disabled: u32,
+        /// Mounts that are intact but out of rounds.
+        empty: u32,
+        /// Mounts that are loaded but still cooling down.
+        cooling: u32,
+        /// Mounts whose kind the role does not declare.
+        wrong_kind: u32,
+    },
+}
+
+/// Which of one actor's mounts may fire this tick, and the aim error the
+/// shot carries.
+///
+/// F32-B's AC02: an ace fires off the same [`ArsenalSnapshot`] the player
+/// does, and a disabled mount or an empty rack is refused by name whatever
+/// the shooter's skill. The solution never invents a mount that the
+/// snapshot did not report, and it never fires two shots from one mount.
+///
+/// Line-of-fire avoidance is deliberately *not* folded in here (F32
+/// non-negotiable 3): the friendly-in-line-of-fire veto is a property of
+/// the selected candidate and stays on [`CandidateTrace::fire_veto`], so
+/// "my mount may fire" and "the line to my target is clear" remain two
+/// separate answers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FiringSolution {
+    /// The selected target the solution is for.
+    pub target: ActorId,
+    /// The tick the solution was made on.
+    pub tick: Tick,
+    /// The half-angle of aim error the profile adds to the shot.
+    pub aim_error_rad: f64,
+    /// The AI's own minimum cadence between fire decisions, from the
+    /// profile's `fire_discipline_ticks`.
+    ///
+    /// The per-mount `cooldown_ticks` a [`MountAvailability`] carries is the
+    /// weapon's schedule and is enforced here. This knob is the *actor's*
+    /// cadence across ticks; keeping that state is the session's job
+    /// (F32-C), so the solution reports it rather than silently dropping a
+    /// declared behavior knob.
+    pub fire_discipline_ticks: u64,
+    /// The role's declared arsenal rule the solution applied.
+    pub arsenal: RoleArsenal,
+    /// Every mount the snapshot reported, in declared order, with its
+    /// verdict.
+    pub mounts: Vec<MountFire>,
+}
+
+impl FiringSolution {
+    /// Solves one tick for one shooter against one already-selected target.
+    ///
+    /// The profile and the snapshot are both validated at construction, so
+    /// this is a pure classification: a mount the role may not use is
+    /// [`MountFireState::WrongKind`], otherwise a destroyed mount is
+    /// [`MountFireState::Disabled`], otherwise an out-of-rounds mount is
+    /// [`MountFireState::Empty`], otherwise a mount still on its cadence is
+    /// [`MountFireState::CoolingDown`], otherwise it
+    /// [`MountFireState::Firing`]s.
+    #[must_use]
+    pub fn solve(
+        profile: &SkillProfile,
+        target: ActorId,
+        tick: Tick,
+        arsenal: &ArsenalSnapshot,
+    ) -> Self {
+        let rule = profile.arsenal();
+        let mut mounts = Vec::with_capacity(arsenal.mounts().len());
+        for mount in arsenal.mounts() {
+            let allowed = match mount.kind {
+                MountKind::Gun => rule.gun,
+                MountKind::Ordnance => rule.ordnance,
+            };
+            let state = if !allowed {
+                MountFireState::WrongKind
+            } else if mount.disabled {
+                MountFireState::Disabled
+            } else if mount.rounds == 0 {
+                MountFireState::Empty
+            } else if mount.cooldown_ticks > 0 {
+                MountFireState::CoolingDown {
+                    remaining_ticks: mount.cooldown_ticks,
+                }
+            } else {
+                MountFireState::Firing
+            };
+            mounts.push(MountFire {
+                mount: mount.mount.clone(),
+                kind: mount.kind,
+                state,
+            });
+        }
+        Self {
+            target,
+            tick,
+            aim_error_rad: profile.knobs().aim_error_rad,
+            fire_discipline_ticks: profile.knobs().fire_discipline_ticks,
+            arsenal: rule,
+            mounts,
+        }
+    }
+
+    /// The mounts that fire this tick, in declared order.
+    pub fn firing(&self) -> impl Iterator<Item = &MountFire> {
+        self.mounts
+            .iter()
+            .filter(|fire| fire.state == MountFireState::Firing)
+    }
+
+    /// Whether at least one mount fires this tick.
+    #[must_use]
+    pub fn is_firing(&self) -> bool {
+        self.mounts
+            .iter()
+            .any(|fire| fire.state == MountFireState::Firing)
+    }
+
+    /// The verdict for one mount, by key.
+    #[must_use]
+    pub fn state(&self, mount: &DamageNodeKey) -> Option<MountFireState> {
+        self.mounts
+            .iter()
+            .find(|fire| &fire.mount == mount)
+            .map(|fire| fire.state)
+    }
+
+    /// Why nothing fires this tick, or `None` when a shot is available.
+    ///
+    /// An unarmed role reports [`FireHoldReason::RoleUnarmed`] whatever its
+    /// snapshot carries; any other role reports the count of each refusal
+    /// so the cause is visible rather than only the absence of a shot.
+    #[must_use]
+    pub fn hold(&self) -> Option<FireHoldReason> {
+        if self.is_firing() {
+            return None;
+        }
+        if self.arsenal == RoleArsenal::none() {
+            return Some(FireHoldReason::RoleUnarmed);
+        }
+        let mut disabled = 0;
+        let mut empty = 0;
+        let mut cooling = 0;
+        let mut wrong_kind = 0;
+        for fire in &self.mounts {
+            match fire.state {
+                MountFireState::Firing => {}
+                MountFireState::Disabled => disabled += 1,
+                MountFireState::Empty => empty += 1,
+                MountFireState::CoolingDown { .. } => cooling += 1,
+                MountFireState::WrongKind => wrong_kind += 1,
+            }
+        }
+        Some(FireHoldReason::NoUsableMount {
+            disabled,
+            empty,
+            cooling,
+            wrong_kind,
+        })
+    }
+}
+
 // ------------------------------------------------------------ terms ----
 
 /// One scored term of a decision.
@@ -1096,6 +1435,11 @@ pub struct DecisionTrace {
     /// The arsenal the decision was made with, when the caller supplied
     /// one.
     pub arsenal: Option<ArsenalReport>,
+    /// The maneuver the role flies this tick (F32-B).
+    pub maneuver: CombatManeuver,
+    /// The firing solution for the selected target, when there is one and
+    /// the caller supplied an arsenal snapshot (F32-B).
+    pub firing: Option<FiringSolution>,
     /// The pending recovery, when a trigger is pending.
     pub recovery: Option<RecoveryOutcome>,
     /// Every candidate the request carried: the eligible ones in selection
@@ -1252,14 +1596,44 @@ impl CombatPlanner {
         self.formations.get(&formation).copied()
     }
 
-    /// Decides one target for one tick.
+    /// Builds the firing solution for one selected target.
     ///
-    /// This is target *selection* and nothing more: the maneuver the role
-    /// flies, whether a shot may be taken and what happens after the
-    /// formation's recovery action are F32-B's and F32-C's, and the trace
-    /// is the record they consume. An `Evade` or `Retreat` assignment is
-    /// still given the target its policy ranks; what to do about it is the
-    /// maneuver stage's decision, not an omission here.
+    /// The per-session authority is preserved here as it is everywhere
+    /// else: a target from another session generation is refused by name,
+    /// so a caller cannot ask this session to solve fire against a stale
+    /// actor even though the classification itself only reads the profile
+    /// and the snapshot.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::ForeignSession`] when the target belongs to another
+    /// session generation.
+    pub fn firing_solution(
+        &self,
+        profile: &SkillProfile,
+        target: ActorId,
+        tick: Tick,
+        arsenal: &ArsenalSnapshot,
+    ) -> Result<FiringSolution, CombatError> {
+        if target.session.get() != self.session {
+            return Err(CombatError::ForeignSession {
+                actor: target,
+                session: self.session,
+            });
+        }
+        Ok(FiringSolution::solve(profile, target, tick, arsenal))
+    }
+
+    /// Decides one target for one tick, then selects the maneuver the role
+    /// flies and, when the caller supplied an arsenal and a target was
+    /// chosen, the firing solution for that target (F32-B).
+    ///
+    /// Target selection comes first and is unchanged: the trace's candidate
+    /// scoring is the record the later stages consume. An `Evade` or
+    /// `Retreat` assignment is still given the target its policy ranks;
+    /// [`CombatManeuver::select`] then chooses the break-away or withdrawal
+    /// the role actually flies, and [`FiringSolution::solve`] reads the
+    /// same availability the player's shot would.
     ///
     /// # Errors
     ///
@@ -1408,12 +1782,26 @@ impl CombatPlanner {
             None => None,
         };
 
+        // The maneuver is a function of the role and whether a target was
+        // chosen; the firing solution is a function of the effective
+        // profile and the snapshot the caller supplied. Neither consults
+        // the world, so the decision stays a pure function of its request.
+        let maneuver = CombatManeuver::select(profile.role(), chosen.is_some());
+        let firing = match (chosen, request.arsenal) {
+            (Some(target), Some(arsenal)) => {
+                Some(self.firing_solution(&profile, target, request.now, arsenal)?)
+            }
+            _ => None,
+        };
+
         let trace = DecisionTrace {
             observer: request.observer,
             tick: request.now,
             role: profile.role(),
             protected_actor: protected,
             arsenal: arsenal_report,
+            maneuver,
+            firing,
             recovery,
             candidates: traces,
             chosen,
@@ -1921,6 +2309,60 @@ pub fn synthetic_fighter_profile() -> SkillProfile {
         },
     )
     .expect("the synthetic fighter profile is valid")
+}
+
+/// The synthetic bomber profile: guns and ordnance, a 20-tick reaction, a
+/// 0.05 rad aim error, an 800 m engagement range and a policy that prefers
+/// the script-assigned objective (3.0) over proximity (1.0).
+///
+/// The ordnance-carrying role AC02's firing solution is checked against: a
+/// bomber is the simplest role that may fire both a gun and a rocket rack,
+/// so a disabled gun and an empty rack are both its business.
+#[must_use]
+pub fn synthetic_bomber_profile() -> SkillProfile {
+    SkillProfile::try_new(
+        CombatRole::BomberRun,
+        RoleArsenal::guns_and_ordnance(),
+        SkillKnobs {
+            reaction_ticks: 20,
+            aim_error_rad: 0.05,
+            engagement_range_m: 800.0,
+            fire_discipline_ticks: 24,
+        },
+        PriorityPolicy {
+            protected_actor_weight: 0.0,
+            objective_weight: 3.0,
+            self_defense_weight: 1.0,
+            proximity_weight: 1.0,
+            threat_window_ticks: 90,
+        },
+    )
+    .expect("the synthetic bomber profile is valid")
+}
+
+/// The synthetic ace variant of the bomber profile: a 6-tick reaction, a
+/// 0.015 rad aim error and a doubled objective weight, the same behavior
+/// overrides the escort ace carries.
+///
+/// It still declares guns and ordnance, so it is the shooter AC02 names: an
+/// ace that cannot fire a disabled gun or an empty rocket rack. It has no
+/// damage, armor or health field — the ace is *skill*, not durability.
+#[must_use]
+pub fn synthetic_ace_bomber_profile() -> SkillProfile {
+    synthetic_bomber_profile()
+        .with_knobs(SkillKnobs {
+            reaction_ticks: 6,
+            aim_error_rad: 0.015,
+            ..synthetic_bomber_profile().knobs()
+        })
+        .and_then(|profile| {
+            let priority = profile.priority();
+            profile.with_priority(PriorityPolicy {
+                objective_weight: 6.0,
+                ..priority
+            })
+        })
+        .expect("the synthetic ace bomber profile is valid")
 }
 
 /// The synthetic formation's declared recovery paths: reassign the lead when
