@@ -1,18 +1,22 @@
-//! Combat AI: roles, skill profiles, target priority, maneuvers and firing
-//! solutions (F32-A and F32-B).
+//! Combat AI: roles, skill profiles, target priority, maneuvers, firing
+//! solutions and the per-session runtime that composes them (F32-A, F32-B and
+//! F32-C).
 //!
 //! Spec: `specs/F32-ai-combat-formations-aces-and-difficulty.md`, stages
-//! `### F32-A` and `### F32-B`. Shared contract:
+//! `### F32-A`, `### F32-B` and `### F32-C`. Shared contract:
 //! `docs/contracts/IDENTITY-CONTENT.md`.
 //!
 //! Stage **F32-A** defines the typed contract and the minimal synthetic
 //! fixture; stage **F32-B** lowers that contract into the maneuver the role
-//! flies and the per-mount firing solution an ace fires. Neither is the
-//! whole combat runtime. The consumer half of the combat-AI contract lives
-//! here; the provenance-carrying producer record an importer will emit is
-//! `cs_content::ai`. The conversion boundary between them is
-//! `cs_app::ai::combat` (F32-C lowers ace variants, difficulty profiles and
-//! formations; its owner paths are not this task's).
+//! flies and the per-mount firing solution an ace fires; stage **F32-C**
+//! wires the pieces into the session runtime: the ace variants and difficulty
+//! profiles that select an actor's profile, and the formation coordinator
+//! that applies the declared recovery when a leader is lost. None of the three
+//! is the whole combat runtime. The consumer half of the combat-AI contract
+//! lives here; the provenance-carrying producer record an importer will emit
+//! is `cs_content::ai`. The conversion boundary between them is
+//! `cs_app::ai::combat`, which is **not** in this task's owner paths and is
+//! filed separately as #551 `F32-LOWERING`.
 //!
 //! [`combat`] declares:
 //!
@@ -49,6 +53,36 @@
 //!   target. A disabled mount (F29) and an empty rack (F27/F28) are two
 //!   distinct refusals and neither is a question of skill: an ace fires off
 //!   the same [`ArsenalSnapshot`] the player does (AC02).
+//! * [`CombatRuntime`] (F32-C): the per-session authority that owns the
+//!   planner, the [`AceVariant`] registry, the [`DifficultyRoster`] and the
+//!   [`FormationCoordinator`], and turns one mission tick into
+//!   [`CombatStep`]s. It is the wiring: the coordinator *produces* the
+//!   [`FormationFacts`] the planner *consumes*, so a leader promoted by a
+//!   recovery is the leader the next tick's decision reasons about.
+//!
+//! # Recovery is applied, not only reported
+//!
+//! F32-A's [`RecoveryOutcome`] *reports* the declared recovery path; on its own
+//! that is a trace entry and nothing would ever happen. F32-C's
+//! [`FormationCoordinator::apply`] is the half that acts: it promotes a new
+//! leader, recomputes the regroup point from the survivors, releases stations,
+//! and dissolves a formation whose members are all gone. Every station it
+//! hands out is a finite world point anchored on a **living** member or on the
+//! survivors' centroid — never on a destroyed actor, and never derived from a
+//! normalized direction that a coincident position could turn into a NaN. That
+//! is what AC03's "no NaNs or permanent orbit" means in code.
+//!
+//! # Difficulty selects, it never composes
+//!
+//! [`DifficultyRoster`] maps a tier to the already-lowered [`SkillProfile`]s
+//! for that tier and [`AceVariant`] names the tier its profile was lowered
+//! for. The runtime *selects* between them and refuses an unknown tier, an
+//! unknown ace, an ace of another role and an ace lowered for another tier.
+//! It never composes a tier onto a profile, because that composition belongs
+//! to the lowering boundary (#551). Since a [`SkillProfile`] has no field a
+//! rate, a time scale or a damage multiplier could be expressed in, F32
+//! non-negotiable 1 ("never increase simulation speed to fake difficulty")
+//! holds by construction rather than by review.
 //!
 //! # Hostility, friendly fire and line of fire are three predicates
 //!
@@ -75,10 +109,11 @@
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_types::Tick;
+use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ClaimId;
 use cs_types::net::SessionId;
 use cs_types::space::WorldPosition;
@@ -571,7 +606,11 @@ impl fmt::Display for RecoveryAction {
 }
 
 /// What can raise a formation's recovery path (non-negotiable 4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+///
+/// `Ord` follows [`RecoveryTrigger::ALL`], so the F32-C coordinator can hold
+/// the set of already-answered triggers in a `BTreeSet` and report them in a
+/// stable order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RecoveryTrigger {
     /// The formation's leader was destroyed.
     LeaderLost,
@@ -1996,6 +2035,1354 @@ fn distance(from: WorldPosition, to: WorldPosition) -> f64 {
     (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
+// ------------------------------------------------- difficulty ----
+
+/// The runtime mirror of `cs_content::ai::DifficultyTier`.
+///
+/// The tier is the *key* a mission's selected difficulty resolves against; it
+/// carries no number of its own. Every value a tier moves arrives already
+/// lowered into a [`SkillProfile`], so this crate never re-derives a tier's
+/// effect and cannot invent a simulation-rate difference instead
+/// (non-negotiable 1).
+///
+/// Whether the original game offers exactly these four steps, in this order,
+/// under these names is **unmeasured** (F32-D). The ordering is project design.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DifficultyTier {
+    /// The most forgiving declared tier.
+    Relaxed,
+    /// The declared baseline tier.
+    Standard,
+    /// A harder declared tier.
+    Hard,
+    /// The most demanding declared tier.
+    Elite,
+}
+
+impl DifficultyTier {
+    /// Every tier, from most forgiving to most demanding.
+    pub const ALL: &'static [DifficultyTier] =
+        &[Self::Relaxed, Self::Standard, Self::Hard, Self::Elite];
+
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Relaxed => "relaxed",
+            Self::Standard => "standard",
+            Self::Hard => "hard",
+            Self::Elite => "elite",
+        }
+    }
+}
+
+impl fmt::Display for DifficultyTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// The lowered effect of each declared difficulty tier: one [`SkillProfile`]
+/// per role for that tier.
+///
+/// A tier's entry is what the lowering boundary already produced, so this is
+/// the *only* place a difficulty choice becomes a behavior profile and it
+/// holds nothing else — no tick rate, no time scale, no damage multiplier, no
+/// weapon grant. Non-negotiable 1 therefore holds by construction: a
+/// [`SkillProfile`] has no field any of those could be expressed in, and
+/// [`RoleArsenal`] is the role's structural requirement rather than a knob,
+/// so no tier can hand a guns-only role a rocket rack.
+///
+/// An *undeclared* tier is refused by name rather than silently resolved to the
+/// baseline: choosing difficulty is an explicit mission decision, and defaulting
+/// it would hide a content bug behind a plausible profile.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DifficultyRoster {
+    tiers: BTreeMap<DifficultyTier, BTreeMap<CombatRole, SkillProfile>>,
+}
+
+impl DifficultyRoster {
+    /// An empty roster: no tier resolves yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            tiers: BTreeMap::new(),
+        }
+    }
+
+    /// Declares one tier's lowered role profiles.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::DuplicateDifficultyTier`] when the tier is declared
+    /// twice, [`CombatError::DuplicateRoleProfile`] when two profiles carry
+    /// the same role, and the validation errors of
+    /// [`SkillProfile::try_new`] — a caller cannot smuggle an unbounded or
+    /// non-finite number in through a difficulty profile, because the profile
+    /// it would have to build is validated first.
+    pub fn with_tier(
+        mut self,
+        tier: DifficultyTier,
+        profiles: &[SkillProfile],
+    ) -> Result<Self, CombatError> {
+        if self.tiers.contains_key(&tier) {
+            return Err(CombatError::DuplicateDifficultyTier { tier });
+        }
+        let mut declared = BTreeMap::new();
+        for profile in profiles {
+            if declared.insert(profile.role(), *profile).is_some() {
+                return Err(CombatError::DuplicateRoleProfile {
+                    role: profile.role(),
+                });
+            }
+        }
+        self.tiers.insert(tier, declared);
+        Ok(self)
+    }
+
+    /// Whether a tier is declared.
+    #[must_use]
+    pub fn has_tier(&self, tier: DifficultyTier) -> bool {
+        self.tiers.contains_key(&tier)
+    }
+
+    /// The declared tiers, from most forgiving to most demanding.
+    pub fn tiers(&self) -> impl Iterator<Item = DifficultyTier> + '_ {
+        self.tiers.keys().copied()
+    }
+
+    /// The roles one tier declares, in ascending order.
+    pub fn roles(&self, tier: DifficultyTier) -> Vec<CombatRole> {
+        self.tiers
+            .get(&tier)
+            .map(|roles| roles.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// The profile one role runs at one tier.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::UnknownDifficultyTier`] when the tier is not declared
+    /// and [`CombatError::DifficultyTierMissingRole`] when the tier is
+    /// declared but says nothing about that role.
+    pub fn profile(
+        &self,
+        tier: DifficultyTier,
+        role: CombatRole,
+    ) -> Result<SkillProfile, CombatError> {
+        let declared = self
+            .tiers
+            .get(&tier)
+            .ok_or(CombatError::UnknownDifficultyTier { tier })?;
+        declared
+            .get(&role)
+            .copied()
+            .ok_or(CombatError::DifficultyTierMissingRole { tier, role })
+    }
+}
+
+/// The runtime identity of one ace variant: a `pilot` catalog id.
+///
+/// A separate type from [`ActorId`] for the same reason
+/// `crates::allies::PilotId` is: the *content* identity of a behavior variant
+/// is not an *actor*, so a pilot id can never be mistaken for one
+/// (`docs/contracts/IDENTITY-CONTENT.md`, the `pilot` namespace).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AceId(ContentId);
+
+impl AceId {
+    /// Wraps a content id, refusing one outside the `pilot` namespace.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::AceKindMismatch`] for any other namespace: an ace is a
+    /// pilot's behavior, not an airframe's.
+    pub fn try_new(id: ContentId) -> Result<Self, CombatError> {
+        if id.kind() != ContentKind::Pilot {
+            return Err(CombatError::AceKindMismatch { id });
+        }
+        Ok(Self(id))
+    }
+
+    /// The wrapped catalog id.
+    #[must_use]
+    pub const fn as_content(&self) -> &ContentId {
+        &self.0
+    }
+}
+
+impl fmt::Display for AceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// One lowered ace variant: the behavior profile a pilot flies.
+///
+/// The variant is *data*: a pilot id, the role it modifies, the tier its
+/// profile was lowered for, and the profile itself. It has no damage, armor or
+/// health field and no tick rate, so an ace is a behavior/skill variant and
+/// not inflated health (F32 "Deliverable and interfaces", non-negotiable 1).
+///
+/// The declared counterpart is `cs_content::ai::DeclaredAceProfile`; the
+/// boundary (#551) turns its [`SkillKnob`](cs_content_ai::SkillKnob)
+/// overrides into this profile. This crate never re-applies an override list,
+/// so an ace can never be lowered twice.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AceVariant {
+    id: AceId,
+    base_role: CombatRole,
+    tier: DifficultyTier,
+    profile: SkillProfile,
+}
+
+impl AceVariant {
+    /// Assembles one lowered variant.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::AceRoleMismatch`] when the profile belongs to another
+    /// role than the variant modifies: an ace of the fighter role cannot fly
+    /// an escort, and re-interpreting it would silently give an actor a
+    /// behavior its mission never assigned.
+    pub fn try_new(
+        id: AceId,
+        base_role: CombatRole,
+        tier: DifficultyTier,
+        profile: SkillProfile,
+    ) -> Result<Self, CombatError> {
+        if profile.role() != base_role {
+            return Err(CombatError::AceRoleMismatch {
+                id,
+                base: base_role,
+                profile: profile.role(),
+            });
+        }
+        Ok(Self {
+            id,
+            base_role,
+            tier,
+            profile,
+        })
+    }
+
+    /// The variant's identity.
+    #[must_use]
+    pub const fn id(&self) -> &AceId {
+        &self.id
+    }
+
+    /// The role this variant modifies.
+    #[must_use]
+    pub const fn base_role(&self) -> CombatRole {
+        self.base_role
+    }
+
+    /// The tier this variant's profile was lowered for.
+    #[must_use]
+    pub const fn tier(&self) -> DifficultyTier {
+        self.tier
+    }
+
+    /// The behavior profile the ace flies.
+    #[must_use]
+    pub const fn profile(&self) -> &SkillProfile {
+        &self.profile
+    }
+}
+
+// ----------------------------------------------------- formations ----
+
+/// The designed trailing spacing between formation slots, in meters.
+///
+/// A station offset is an *authored constant* per slot, never the result of
+/// normalizing a direction: `normalize(zero_vector)` is the classic way to put
+/// a NaN into a guidance input, and AC03 requires that no follower ever
+/// receives one (F32 "Research boundary": the original's formation spacing is
+/// unmeasured, so this is project design).
+pub const FORMATION_TRAIL_SPACING_M: f64 = 120.0;
+
+/// The designed radius a follower aims for when it takes its station.
+pub const FORMATION_STATION_RADIUS_M: f64 = 60.0;
+
+/// The designed offset one slot keeps astern of its formation's anchor, in
+/// canonical world meters.
+///
+/// Slot 0 leads and keeps the anchor itself; every other slot trails it by a
+/// whole [`FORMATION_TRAIL_SPACING_M`] per index. The result is a pure
+/// function of the slot index, so it is finite for every index and never
+/// depends on the geometry of the actors in it.
+#[must_use]
+pub fn station_offset_m(slot: u32) -> [f64; 3] {
+    [-(slot as f64) * FORMATION_TRAIL_SPACING_M, 0.0, 0.0]
+}
+
+/// One declared member of a formation, as the runtime registers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FormationRosterMember {
+    /// The slot the member fills.
+    pub slot: u32,
+    /// The actor that fills it.
+    pub actor: ActorId,
+}
+
+/// The declared membership of one formation: which slot leads and who fills
+/// each slot.
+///
+/// The declared counterpart is `cs_content::ai::DeclaredFormation`; the
+/// boundary lowers its `leader_slot` and `members` onto this record.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormationRoster {
+    formation: FormationId,
+    leader_slot: u32,
+    members: Vec<FormationRosterMember>,
+}
+
+impl FormationRoster {
+    /// Assembles and validates a formation's membership.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::EmptyFormation`] for a formation with no member,
+    /// [`CombatError::FormationLeaderNotAMember`] when the leading slot is not
+    /// one of the members — a formation that leads nobody cannot elect a
+    /// successor — and [`CombatError::FormationSlotOccupiedTwice`] when two
+    /// members share one slot.
+    pub fn try_new(
+        formation: FormationId,
+        leader_slot: u32,
+        members: Vec<FormationRosterMember>,
+    ) -> Result<Self, CombatError> {
+        if members.is_empty() {
+            return Err(CombatError::EmptyFormation { formation });
+        }
+        if !members.iter().any(|member| member.slot == leader_slot) {
+            return Err(CombatError::FormationLeaderNotAMember {
+                formation,
+                leader_slot,
+            });
+        }
+        let mut slots = BTreeSet::new();
+        for member in &members {
+            if !slots.insert(member.slot) {
+                return Err(CombatError::FormationSlotOccupiedTwice {
+                    formation,
+                    slot: member.slot,
+                });
+            }
+        }
+        Ok(Self {
+            formation,
+            leader_slot,
+            members,
+        })
+    }
+
+    /// The formation this roster describes.
+    #[must_use]
+    pub const fn formation(&self) -> FormationId {
+        self.formation
+    }
+
+    /// The slot that leads the formation.
+    #[must_use]
+    pub const fn leader_slot(&self) -> u32 {
+        self.leader_slot
+    }
+
+    /// The declared members, in the order they were given.
+    #[must_use]
+    pub fn members(&self) -> &[FormationRosterMember] {
+        &self.members
+    }
+}
+
+/// One member's report for one formation tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FormationMemberReport {
+    /// The slot the report is about.
+    pub slot: u32,
+    /// The actor the runtime has in that slot.
+    pub actor: ActorId,
+    /// The member's canonical world position, as the motion producer reports
+    /// it.
+    pub position: WorldPosition,
+    /// Whether the member is still alive. A member reported destroyed is
+    /// retired: it leaves the formation's shape for good.
+    pub alive: bool,
+}
+
+/// One tick of formation facts, as the producers report them.
+///
+/// `members` must list **every** registered member exactly once. A partial
+/// report is refused rather than reconciled, because a centroid computed over
+/// a partial membership is a different point than the same centroid over the
+/// whole one, and a recovery that silently used the wrong point is exactly the
+/// kind of plausible-but-wrong output this engine refuses to produce.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FormationTick<'a> {
+    /// The formation this report is about.
+    pub formation: FormationId,
+    /// The tick the report is for.
+    pub now: Tick,
+    /// Every registered member, exactly once.
+    pub members: &'a [FormationMemberReport],
+    /// The formation's assigned target, when it has one.
+    pub assigned_target: Option<ActorId>,
+    /// Whether that assigned target is still alive.
+    pub assigned_target_alive: bool,
+    /// Whether the formation's declared route is available.
+    pub route_available: bool,
+}
+
+/// What one follower's station is anchored on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StationAnchor {
+    /// The formation's surviving leader. It is a live actor by construction:
+    /// [`StationAnchor::Leader`] is never built for a destroyed member, which
+    /// is the orbit AC03 forbids.
+    Leader(ActorId),
+    /// The regroup point, computed from the formation's surviving members.
+    RegroupPoint,
+}
+
+/// One follower's station: the world point it is to fly to.
+///
+/// A station is a *position*, never a pose: no heading, no attitude and no
+/// control law, so following it cannot make this module a second pose owner
+/// (`docs/contracts/FLIGHT-PHYSICS.md`). The navigation layer consumes it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StationAssignment {
+    /// The member the station belongs to.
+    pub actor: ActorId,
+    /// The slot the member holds.
+    pub slot: u32,
+    /// What the station is anchored on.
+    pub anchor: StationAnchor,
+    /// The station itself, in canonical world meters.
+    pub position: WorldPosition,
+    /// How close the member should come to it, in meters.
+    pub radius_m: f64,
+}
+
+/// What one formation's recovery did on one tick.
+///
+/// This is the runtime trace F32-D's probe and the consumer read: which
+/// trigger fired, which declared action answered it, who leads afterwards,
+/// where every living follower was sent, who was released and whether the
+/// formation dissolved.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormationUpdate {
+    /// The formation the update belongs to.
+    pub formation: FormationId,
+    /// The tick it was applied on.
+    pub now: Tick,
+    /// The leader before this tick's recovery, when one was living.
+    pub previous_leader: Option<ActorId>,
+    /// The leader after this tick's recovery, when one is living.
+    pub leader: Option<ActorId>,
+    /// The trigger this update answered, when it answered one.
+    pub trigger: Option<RecoveryTrigger>,
+    /// The declared action it applied.
+    pub action: Option<RecoveryAction>,
+    /// The station every living follower is now assigned, ascending by slot.
+    /// The leader never receives one: it leads.
+    pub stations: Vec<StationAssignment>,
+    /// The living members whose station was released, ascending by actor.
+    pub released: Vec<ActorId>,
+    /// A trigger that is still pending but has already been answered, so it is
+    /// not answered again until its fact recovers. A recovery that re-fired
+    /// every tick would be a permanent state, not a recovery.
+    pub latched: Option<RecoveryTrigger>,
+    /// Whether the formation dissolved on this tick because nothing survived.
+    pub dissolved: bool,
+}
+
+impl FormationUpdate {
+    /// The anchor every station in this update shares, when there is one.
+    #[must_use]
+    pub fn anchor(&self) -> Option<StationAnchor> {
+        self.stations.first().map(|station| station.anchor)
+    }
+
+    /// The station of one member, by identity.
+    #[must_use]
+    pub fn station(&self, actor: ActorId) -> Option<StationAssignment> {
+        self.stations
+            .iter()
+            .copied()
+            .find(|station| station.actor == actor)
+    }
+}
+
+/// One member's runtime state inside a formation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MemberRuntime {
+    actor: ActorId,
+    position: WorldPosition,
+    alive: bool,
+}
+
+/// What a formation's stations are currently anchored on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum AnchorMode {
+    /// The formation's surviving leader.
+    Leader,
+    /// The regroup point last computed from the survivors.
+    RegroupPoint(WorldPosition),
+}
+
+/// One formation's mutable runtime state.
+#[derive(Clone, Debug, PartialEq)]
+struct FormationRuntime {
+    formation: FormationId,
+    members: BTreeMap<u32, MemberRuntime>,
+    leader_slot: u32,
+    anchor: AnchorMode,
+    last_tick: Option<Tick>,
+    assigned_target: Option<ActorId>,
+    assigned_target_alive: bool,
+    route_available: bool,
+    latched: BTreeSet<RecoveryTrigger>,
+}
+
+impl FormationRuntime {
+    /// The living leader, when the leading slot still holds a living member.
+    fn leader(&self) -> Option<ActorId> {
+        self.members
+            .get(&self.leader_slot)
+            .filter(|member| member.alive)
+            .map(|member| member.actor)
+    }
+
+    /// The actor that occupies the leading slot, alive or not.
+    fn registered_leader(&self) -> Option<ActorId> {
+        self.members
+            .get(&self.leader_slot)
+            .map(|member| member.actor)
+    }
+
+    /// The living members, ascending by slot.
+    fn survivors(&self) -> impl Iterator<Item = (u32, &MemberRuntime)> {
+        self.members
+            .iter()
+            .filter(|(_, member)| member.alive)
+            .map(|(slot, member)| (*slot, member))
+    }
+
+    fn survivor_count(&self) -> usize {
+        self.survivors().count()
+    }
+
+    /// The trigger that is pending right now, in the same fixed precedence
+    /// [`FormationFacts::pending_trigger`] uses.
+    ///
+    /// With no survivor there is nothing to recover, so no trigger is raised:
+    /// the tick ends in dissolution instead of electing a leader out of the
+    /// dead.
+    fn pending_trigger(&self) -> Option<RecoveryTrigger> {
+        if self.leader().is_none() && self.survivor_count() > 0 {
+            return Some(RecoveryTrigger::LeaderLost);
+        }
+        if self.assigned_target.is_some() && !self.assigned_target_alive {
+            return Some(RecoveryTrigger::AssignedTargetDestroyed);
+        }
+        if !self.route_available {
+            return Some(RecoveryTrigger::RouteInterrupted);
+        }
+        None
+    }
+
+    /// The centroid of the living members, in canonical world meters.
+    ///
+    /// Only the survivors are averaged, so a leader at an extreme coordinate
+    /// cannot contaminate the point. The mean is re-validated as a
+    /// [`WorldPosition`] before it leaves here: summing two coordinates large
+    /// enough to overflow `f64` would otherwise produce an infinite station,
+    /// and a non-finite station must be refused by name rather than handed to
+    /// the navigation layer.
+    fn centroid(&self, formation: FormationId) -> Result<WorldPosition, CombatError> {
+        let mut sum = [0.0_f64; 3];
+        let mut count = 0.0_f64;
+        for member in self.members.values().filter(|member| member.alive) {
+            sum[0] += member.position.x();
+            sum[1] += member.position.y();
+            sum[2] += member.position.z();
+            count += 1.0;
+        }
+        if count == 0.0 {
+            return Err(CombatError::NoSurvivingMember { formation });
+        }
+        finite_position(formation, [sum[0] / count, sum[1] / count, sum[2] / count])
+    }
+
+    /// The point the stations are anchored on right now, or `None` when the
+    /// formation has nothing to anchor on (no leader and no computed regroup
+    /// point yet).
+    fn resolve_anchor(&self) -> Option<(StationAnchor, WorldPosition)> {
+        match self.anchor {
+            AnchorMode::RegroupPoint(point) => Some((StationAnchor::RegroupPoint, point)),
+            AnchorMode::Leader => {
+                let leader = self.leader()?;
+                let point = self.members.get(&self.leader_slot)?.position;
+                Some((StationAnchor::Leader(leader), point))
+            }
+        }
+    }
+
+    /// Every living follower's station, ascending by slot.
+    fn stations(&self, formation: FormationId) -> Result<Vec<StationAssignment>, CombatError> {
+        let Some((anchor, anchor_point)) = self.resolve_anchor() else {
+            return Ok(Vec::new());
+        };
+        let mut stations = Vec::with_capacity(self.survivor_count());
+        let leader_leads = matches!(anchor, StationAnchor::Leader(_));
+        for (slot, member) in self.survivors() {
+            // The leader leads: it holds no station of its own.
+            if slot == self.leader_slot && leader_leads {
+                continue;
+            }
+            let offset = station_offset_m(slot);
+            let position = finite_position(
+                formation,
+                [
+                    anchor_point.x() + offset[0],
+                    anchor_point.y() + offset[1],
+                    anchor_point.z() + offset[2],
+                ],
+            )?;
+            stations.push(StationAssignment {
+                actor: member.actor,
+                slot,
+                anchor,
+                position,
+                radius_m: FORMATION_STATION_RADIUS_M,
+            });
+        }
+        Ok(stations)
+    }
+
+    /// Promotes the lowest living slot to lead.
+    ///
+    /// A designed succession rule, not a measured one: the original's
+    /// promotion order is unmeasured (F32-D). "Lowest slot" is used because it
+    /// is total and deterministic, so two followers in the same situation can
+    /// never both believe they were promoted. A survivor that already holds the
+    /// leading slot keeps it.
+    fn promote_leader(&mut self) {
+        let leading = self.leader_slot;
+        let promotion = self
+            .survivors()
+            .map(|(slot, _)| slot)
+            .find(|slot| *slot != leading);
+        if let Some(slot) = promotion {
+            self.leader_slot = slot;
+        }
+        self.anchor = AnchorMode::Leader;
+    }
+
+    /// Folds one tick's report into this formation's state.
+    fn reconcile(&mut self, tick: &FormationTick<'_>) -> Result<(), CombatError> {
+        let mut seen = BTreeSet::new();
+        for report in tick.members {
+            if !seen.insert(report.slot) {
+                return Err(CombatError::FormationMemberReportedTwice {
+                    formation: self.formation,
+                    slot: report.slot,
+                });
+            }
+            let member = self.members.get(&report.slot).copied().ok_or(
+                CombatError::UnknownFormationSlot {
+                    formation: self.formation,
+                    slot: report.slot,
+                },
+            )?;
+            if member.actor != report.actor {
+                return Err(CombatError::FormationMemberMismatch {
+                    formation: self.formation,
+                    slot: report.slot,
+                    registered: member.actor,
+                    reported: report.actor,
+                });
+            }
+            if !member.alive && report.alive {
+                return Err(CombatError::RetiredFormationMember {
+                    formation: self.formation,
+                    slot: report.slot,
+                    actor: member.actor,
+                });
+            }
+            self.members.insert(
+                report.slot,
+                MemberRuntime {
+                    actor: report.actor,
+                    position: report.position,
+                    alive: report.alive,
+                },
+            );
+        }
+        for slot in self.members.keys() {
+            if !seen.contains(slot) {
+                return Err(CombatError::FormationMemberNotReported {
+                    formation: self.formation,
+                    slot: *slot,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies the declared action for one trigger.
+    fn apply_action(
+        &mut self,
+        trigger: RecoveryTrigger,
+        action: RecoveryAction,
+    ) -> Result<(), CombatError> {
+        let formation = self.formation;
+        match action {
+            RecoveryAction::ReassignLead => self.promote_leader(),
+            RecoveryAction::Regroup => {
+                self.anchor = AnchorMode::RegroupPoint(self.centroid(formation)?);
+            }
+            // "Hold the shape" means keep the shape, not keep aiming at a
+            // wreck: with a living leader nothing moves, and without one the
+            // survivors close onto the point they already share.
+            RecoveryAction::HoldFormation => {
+                if self.leader().is_none() {
+                    self.anchor = AnchorMode::RegroupPoint(self.centroid(formation)?);
+                }
+            }
+            // "Leave the engagement" has no geometry: the caller releases the
+            // stations and tears the formation down in the same breath.
+            RecoveryAction::Withdraw => {}
+            // "Return to the route" restores the shape the formation had
+            // before the interruption: leader-led when a leader lives, closed
+            // up otherwise. Route *following* belongs to navigation.
+            RecoveryAction::ResumeRoute => {
+                if self.leader().is_some() {
+                    self.anchor = AnchorMode::Leader;
+                } else {
+                    self.anchor = AnchorMode::RegroupPoint(self.centroid(formation)?);
+                }
+            }
+        }
+        self.latched.insert(trigger);
+        Ok(())
+    }
+
+    /// Forgets a latched trigger once the fact it came from recovered.
+    fn release_latches(&mut self) {
+        if self.leader().is_some() {
+            self.latched.remove(&RecoveryTrigger::LeaderLost);
+        }
+        if self.assigned_target.is_none() || self.assigned_target_alive {
+            self.latched
+                .remove(&RecoveryTrigger::AssignedTargetDestroyed);
+        }
+        if self.route_available {
+            self.latched.remove(&RecoveryTrigger::RouteInterrupted);
+        }
+    }
+}
+
+/// Validates a computed station point, refusing a non-finite one by name.
+fn finite_position(formation: FormationId, value: [f64; 3]) -> Result<WorldPosition, CombatError> {
+    WorldPosition::try_new(value).map_err(|_| CombatError::StationNotFinite { formation })
+}
+
+/// The per-session formation runtime: membership, leadership and the declared
+/// recovery actions, applied tick by tick.
+///
+/// This is the half of F32 that actually *acts*. [`CombatPlanner::decide`]
+/// reports which recovery path is pending; the coordinator applies it, keeps
+/// the resulting leadership and hands every living follower a finite station.
+///
+/// # Ordering, and why a refused tick changes nothing
+///
+/// [`FormationCoordinator::apply`] validates the whole report and computes the
+/// whole next state before it commits any of it, so a refused tick leaves the
+/// coordinator byte-identical and the caller may re-send a corrected report for
+/// the same tick. A tick that is not strictly newer than the last applied one
+/// is refused by name ([`CombatError::StaleFormationTick`]): replaying an old
+/// tick would let a stale leader come back from the dead and would elect a
+/// second leader, so the coordinator refuses rather than guessing.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FormationCoordinator {
+    session: u64,
+    formations: BTreeMap<FormationId, FormationRuntime>,
+}
+
+impl FormationCoordinator {
+    /// An empty coordinator for session `session`.
+    #[must_use]
+    pub const fn new(session: u64) -> Self {
+        Self {
+            session,
+            formations: BTreeMap::new(),
+        }
+    }
+
+    /// The session generation this coordinator owns.
+    #[must_use]
+    pub const fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// The formations currently held, in ascending order.
+    pub fn formations(&self) -> impl Iterator<Item = FormationId> + '_ {
+        self.formations.keys().copied()
+    }
+
+    /// Whether the coordinator still holds a formation.
+    #[must_use]
+    pub fn is_registered(&self, formation: FormationId) -> bool {
+        self.formations.contains_key(&formation)
+    }
+
+    /// Registers one formation's declared membership.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::DuplicateFormation`] when the formation is registered
+    /// twice, [`CombatError::ForeignSession`] when a member belongs to another
+    /// session generation, and the validation errors of
+    /// [`FormationRoster::try_new`].
+    pub fn register(&mut self, roster: &FormationRoster) -> Result<(), CombatError> {
+        if self.formations.contains_key(&roster.formation) {
+            return Err(CombatError::DuplicateFormation {
+                formation: roster.formation,
+            });
+        }
+        let mut members = BTreeMap::new();
+        for declared in &roster.members {
+            if declared.actor.session.get() != self.session {
+                return Err(CombatError::ForeignSession {
+                    actor: declared.actor,
+                    session: self.session,
+                });
+            }
+            members.insert(
+                declared.slot,
+                MemberRuntime {
+                    actor: declared.actor,
+                    position: WorldPosition::try_new([0.0, 0.0, 0.0])
+                        .expect("the origin is finite"),
+                    alive: true,
+                },
+            );
+        }
+        self.formations.insert(
+            roster.formation,
+            FormationRuntime {
+                formation: roster.formation,
+                members,
+                leader_slot: roster.leader_slot,
+                anchor: AnchorMode::Leader,
+                last_tick: None,
+                assigned_target: None,
+                assigned_target_alive: true,
+                route_available: true,
+                latched: BTreeSet::new(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Applies one tick of formation facts.
+    ///
+    /// `policies` is the formation's declared recovery set, owned by the
+    /// planner; the coordinator keeps no second copy of it, so the declared
+    /// path and the applied path cannot drift apart.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::UnknownFormation`] for a formation the coordinator does
+    /// not hold (including one it has already dissolved),
+    /// [`CombatError::StaleFormationTick`] for a tick that is not newer than
+    /// the last applied one, [`CombatError::ForeignSession`] for a member from
+    /// another generation, the report-shape errors
+    /// ([`CombatError::FormationMemberReportedTwice`],
+    /// [`CombatError::UnknownFormationSlot`],
+    /// [`CombatError::FormationMemberMismatch`],
+    /// [`CombatError::RetiredFormationMember`],
+    /// [`CombatError::FormationMemberNotReported`]),
+    /// [`CombatError::StationNotFinite`] when a station cannot be computed as a
+    /// finite point, and [`CombatError::NoSurvivingMember`] when a declared
+    /// recovery asks for a point that no living member can supply. Every one
+    /// leaves the coordinator unchanged.
+    pub fn apply(
+        &mut self,
+        policies: RecoveryPolicySet,
+        tick: &FormationTick<'_>,
+    ) -> Result<FormationUpdate, CombatError> {
+        let formation = tick.formation;
+        let current = self
+            .formations
+            .get(&formation)
+            .ok_or(CombatError::UnknownFormation { formation })?;
+        if let Some(last) = current.last_tick
+            && tick.now <= last
+        {
+            return Err(CombatError::StaleFormationTick {
+                formation,
+                now: tick.now,
+                last,
+            });
+        }
+        for report in tick.members {
+            if report.actor.session.get() != self.session {
+                return Err(CombatError::ForeignSession {
+                    actor: report.actor,
+                    session: self.session,
+                });
+            }
+        }
+        if let Some(target) = tick.assigned_target
+            && target.session.get() != self.session
+        {
+            return Err(CombatError::ForeignSession {
+                actor: target,
+                session: self.session,
+            });
+        }
+
+        // Work on a copy: nothing below commits until the whole tick is good.
+        let previous_leader = current.leader();
+        let mut next = current.clone();
+        next.assigned_target = tick.assigned_target;
+        next.assigned_target_alive = tick.assigned_target_alive;
+        next.route_available = tick.route_available;
+        next.reconcile(tick)?;
+        next.release_latches();
+
+        let pending = next.pending_trigger();
+        // Nothing survived: there is no shape left to recover, so the tick
+        // ends in dissolution rather than electing a leader out of the dead.
+        let nothing_survives = next.survivor_count() == 0;
+        let mut trigger = None;
+        let mut action = None;
+        if !nothing_survives
+            && let Some(pending) = pending
+            && !next.latched.contains(&pending)
+        {
+            let declared = policies.action(pending);
+            next.apply_action(pending, declared)?;
+            trigger = Some(pending);
+            action = Some(declared);
+        }
+
+        // "Leave the engagement" has no geometry either: the stations are
+        // released and the formation is torn down with them.
+        let dissolved = nothing_survives || action == Some(RecoveryAction::Withdraw);
+        let released = if dissolved {
+            next.members
+                .values()
+                .filter(|member| member.alive)
+                .map(|member| member.actor)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let stations = if dissolved {
+            Vec::new()
+        } else {
+            next.stations(formation)?
+        };
+        let leader = next.leader();
+        let latched = pending.filter(|pending| trigger != Some(*pending));
+
+        if dissolved {
+            self.formations.remove(&formation);
+        } else {
+            next.last_tick = Some(tick.now);
+            self.formations.insert(formation, next);
+        }
+        Ok(FormationUpdate {
+            formation,
+            now: tick.now,
+            previous_leader,
+            leader,
+            trigger,
+            action,
+            stations,
+            released,
+            latched,
+            dissolved,
+        })
+    }
+
+    /// Tears a formation down, dropping its membership and leadership.
+    ///
+    /// This is the teardown half of the recovery contract: a dissolved
+    /// formation is not resurrected by a later report, and
+    /// [`CombatError::UnknownFormation`] is what a caller sees instead of
+    /// state from a mission that has moved on.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::UnknownFormation`] when the coordinator does not hold
+    /// the formation.
+    pub fn dissolve(&mut self, formation: FormationId) -> Result<(), CombatError> {
+        self.formations
+            .remove(&formation)
+            .map(|_| ())
+            .ok_or(CombatError::UnknownFormation { formation })
+    }
+
+    /// The facts one actor's decision is made from, as this coordinator's state
+    /// currently sees them.
+    ///
+    /// `None` when the coordinator holds no such formation, or when the
+    /// observer is not one of its living members: a retired member has no
+    /// formation facts, so a stale request cannot resurrect its slot.
+    #[must_use]
+    pub fn facts(&self, formation: FormationId, observer: ActorId) -> Option<FormationFacts> {
+        let state = self.formations.get(&formation)?;
+        let living = state
+            .members
+            .values()
+            .any(|member| member.alive && member.actor == observer);
+        if !living {
+            return None;
+        }
+        let leader = state.leader();
+        Some(FormationFacts {
+            formation,
+            leader: state.registered_leader()?,
+            leader_alive: leader.is_some(),
+            observer_is_leader: leader == Some(observer),
+            assigned_target: state.assigned_target,
+            assigned_target_alive: state.assigned_target_alive,
+            route_available: state.route_available,
+        })
+    }
+
+    /// The tick the coordinator last applied for a formation.
+    #[must_use]
+    pub fn last_tick(&self, formation: FormationId) -> Option<Tick> {
+        self.formations
+            .get(&formation)
+            .and_then(|state| state.last_tick)
+    }
+}
+
+// -------------------------------------------------------- runtime ----
+
+/// Where the effective profile one decision ran under came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProfileSource {
+    /// The role's profile at the selected tier, with no ace variant.
+    Role {
+        /// The tier the profile was selected from.
+        tier: DifficultyTier,
+    },
+    /// An ace variant's lowered profile, at the tier it was lowered for.
+    Ace {
+        /// The ace's identity.
+        id: AceId,
+        /// The tier the profile was lowered for.
+        tier: DifficultyTier,
+    },
+}
+
+/// One actor's combat tick, as the mission runtime reports it.
+///
+/// The formation is named, not supplied: [`CombatRuntime`] builds the
+/// [`FormationFacts`] from its own coordinator, so a decision can never be
+/// made against facts the coordinator does not believe.
+#[derive(Debug)]
+pub struct CombatantRequest<'a> {
+    /// The deciding actor.
+    pub observer: ActorId,
+    /// The tick the decision is made on.
+    pub now: Tick,
+    /// The observer's canonical world position.
+    pub observer_position: WorldPosition,
+    /// The observer's script-assigned role.
+    pub assignment: &'a RoleAssignment,
+    /// The formation the observer belongs to, when it belongs to one.
+    pub formation: Option<FormationId>,
+    /// Whether the observer's protected actor is still alive. `None` means the
+    /// caller did not report it, which is not the statement "destroyed".
+    pub protected_alive: Option<bool>,
+    /// The candidates the approved perception model reported.
+    pub candidates: &'a [CandidateView],
+    /// The observer's weapons and launchers, when the caller has a snapshot.
+    pub arsenal: Option<&'a ArsenalSnapshot>,
+    /// The ace variant the mission assigned this actor, when it authored one.
+    pub ace: Option<&'a AceId>,
+    /// The difficulty tier the mission selected.
+    pub tier: DifficultyTier,
+}
+
+/// One actor's decision plus the record of what it ran under.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CombatStep {
+    /// The decision the planner made.
+    pub decision: CombatDecision,
+    /// Where the effective profile came from.
+    pub source: ProfileSource,
+    /// The formation facts the decision was made against.
+    pub formation: Option<FormationFacts>,
+}
+
+impl CombatStep {
+    /// The selected target, if any.
+    #[must_use]
+    pub fn target(&self) -> Option<ActorId> {
+        self.decision.target
+    }
+
+    /// The trace that explains the decision.
+    #[must_use]
+    pub fn trace(&self) -> &DecisionTrace {
+        &self.decision.trace
+    }
+}
+
+/// The per-session combat-AI runtime: the planner, the ace variants, the
+/// difficulty tiers and the formation coordinator, wired together.
+///
+/// One instance per session generation, like
+/// [`crate::damage::DamageResolver`],
+/// [`crate::targeting::TargetStore`] and [`crate::allies::AlliesRoster`]. Every
+/// actor identity it is asked about must belong to its own session.
+///
+/// # The order a tick runs in
+///
+/// 1. [`CombatRuntime::update_formation`] once per formation, with the facts
+///    the producers report. This *applies* any declared recovery.
+/// 2. [`CombatRuntime::step`] once per AI actor, in any order; it is a pure
+///    function of the request and the runtime's immutable policy, so one
+///    actor's decision cannot depend on another's.
+///
+/// Stepping before updating a formation is not an error — it reports the
+/// recovery that is pending, which is what F32-A's trace is for — it simply
+/// decides against the pre-recovery leadership.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CombatRuntime {
+    session: u64,
+    planner: CombatPlanner,
+    aces: BTreeMap<AceId, AceVariant>,
+    difficulty: DifficultyRoster,
+    formations: FormationCoordinator,
+}
+
+impl CombatRuntime {
+    /// Builds a runtime for one session generation.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::DuplicateRoleProfile`] and
+    /// [`CombatError::DuplicateAce`] for a repeated role or ace id, and the
+    /// validation errors of [`CombatPlanner::new`].
+    pub fn new(
+        session: u64,
+        profiles: &[SkillProfile],
+        aces: Vec<AceVariant>,
+        difficulty: DifficultyRoster,
+    ) -> Result<Self, CombatError> {
+        let mut declared = BTreeMap::new();
+        for variant in aces {
+            let id = variant.id().clone();
+            if declared.insert(id.clone(), variant).is_some() {
+                return Err(CombatError::DuplicateAce { id });
+            }
+        }
+        Ok(Self {
+            session,
+            planner: CombatPlanner::new(session, profiles)?,
+            aces: declared,
+            difficulty,
+            formations: FormationCoordinator::new(session),
+        })
+    }
+
+    /// The session generation this runtime owns.
+    #[must_use]
+    pub const fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// Registers one formation's declared recovery paths *and* its membership.
+    ///
+    /// One call registers both halves, so a formation can never exist as
+    /// declared policy without runtime state to apply it to.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::DuplicateFormation`] when the formation is registered
+    /// twice, [`CombatError::ForeignSession`] for a member of another
+    /// generation, and the validation errors of [`FormationRoster::try_new`].
+    pub fn with_formation(
+        mut self,
+        roster: FormationRoster,
+        policies: RecoveryPolicySet,
+    ) -> Result<Self, CombatError> {
+        self.formations.register(&roster)?;
+        self.planner = self.planner.with_formation(roster.formation(), policies)?;
+        Ok(self)
+    }
+
+    /// Applies one tick of formation facts and reports what the recovery did.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::NoRecoveryPolicy`] for a formation that was never
+    /// registered with [`CombatRuntime::with_formation`], plus every error
+    /// [`FormationCoordinator::apply`] reports. The runtime's state is
+    /// unchanged in each case.
+    pub fn update_formation(
+        &mut self,
+        tick: &FormationTick<'_>,
+    ) -> Result<FormationUpdate, CombatError> {
+        let policies = self.planner.recovery_policies(tick.formation).ok_or(
+            CombatError::NoRecoveryPolicy {
+                formation: tick.formation,
+            },
+        )?;
+        self.formations.apply(policies, tick)
+    }
+
+    /// Tears one formation down.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::UnknownFormation`] when the runtime holds no such
+    /// formation.
+    pub fn dissolve_formation(&mut self, formation: FormationId) -> Result<(), CombatError> {
+        self.formations.dissolve(formation)
+    }
+
+    /// The formation facts one actor's decision would be made from, as this
+    /// runtime's coordinator currently sees them.
+    #[must_use]
+    pub fn facts(&self, formation: FormationId, observer: ActorId) -> Option<FormationFacts> {
+        self.formations.facts(formation, observer)
+    }
+
+    /// The formations the runtime still holds, in ascending order.
+    pub fn formations(&self) -> impl Iterator<Item = FormationId> + '_ {
+        self.formations.formations()
+    }
+
+    /// The difficulty roster.
+    #[must_use]
+    pub const fn difficulty(&self) -> &DifficultyRoster {
+        &self.difficulty
+    }
+
+    /// The ace variants, in ascending id order.
+    pub fn aces(&self) -> impl Iterator<Item = (&AceId, &AceVariant)> {
+        self.aces.iter()
+    }
+
+    /// The immutable planner this runtime decides through.
+    #[must_use]
+    pub const fn planner(&self) -> &CombatPlanner {
+        &self.planner
+    }
+
+    /// Resolves the effective profile one actor runs under, and records where
+    /// it came from.
+    ///
+    /// The selection is total and checkable: the tier must be declared in the
+    /// roster, an ace must exist, must modify the actor's assigned role and
+    /// must have been lowered for the selected tier. Anything else is refused
+    /// by name. Composing a tier onto a profile is *not* done here — that
+    /// belongs to the declared→runtime lowering boundary (#551), and doing it
+    /// in two places is how a difficulty tier ends up meaning two things.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::UnknownDifficultyTier`],
+    /// [`CombatError::DifficultyTierMissingRole`], [`CombatError::UnknownAce`],
+    /// [`CombatError::AceAssignmentMismatch`] and
+    /// [`CombatError::AceTierMismatch`].
+    pub fn resolve_profile(
+        &self,
+        assignment: &RoleAssignment,
+        ace: Option<&AceId>,
+        tier: DifficultyTier,
+    ) -> Result<(SkillProfile, ProfileSource), CombatError> {
+        // The tier must be declared even when an ace overrides the role's
+        // profile: the mission's difficulty choice is explicit, and a tier the
+        // content never described is a content bug, not a reason to run at the
+        // baseline.
+        let role_profile = self.difficulty.profile(tier, assignment.role())?;
+        match ace {
+            None => Ok((role_profile, ProfileSource::Role { tier })),
+            Some(id) => {
+                let variant = self
+                    .aces
+                    .get(id)
+                    .ok_or_else(|| CombatError::UnknownAce { id: id.clone() })?;
+                if variant.base_role() != assignment.role() {
+                    return Err(CombatError::AceAssignmentMismatch {
+                        id: id.clone(),
+                        base: variant.base_role(),
+                        assigned: assignment.role(),
+                    });
+                }
+                if variant.tier() != tier {
+                    return Err(CombatError::AceTierMismatch {
+                        id: id.clone(),
+                        declared: variant.tier(),
+                        selected: tier,
+                    });
+                }
+                Ok((
+                    *variant.profile(),
+                    ProfileSource::Ace {
+                        id: id.clone(),
+                        tier,
+                    },
+                ))
+            }
+        }
+    }
+
+    /// Decides one actor for one tick under the selected tier and ace variant.
+    ///
+    /// # Errors
+    ///
+    /// Every error [`CombatRuntime::resolve_profile`] reports, plus
+    /// [`CombatError::UnknownFormationMember`] when the request names a
+    /// formation the observer is not a living member of, and every error
+    /// [`CombatPlanner::decide`] reports. Nothing is mutated, so a refused
+    /// step can be retried unchanged.
+    pub fn step(&self, request: &CombatantRequest<'_>) -> Result<CombatStep, CombatError> {
+        let facts = match request.formation {
+            None => None,
+            Some(formation) => Some(self.formations.facts(formation, request.observer).ok_or(
+                CombatError::UnknownFormationMember {
+                    formation,
+                    observer: request.observer,
+                },
+            )?),
+        };
+        let (profile, source) =
+            self.resolve_profile(request.assignment, request.ace, request.tier)?;
+        let decision = self.planner.decide(&CombatRequest {
+            observer: request.observer,
+            now: request.now,
+            observer_position: request.observer_position,
+            assignment: request.assignment,
+            formation: facts.as_ref(),
+            protected_alive: request.protected_alive,
+            candidates: request.candidates,
+            arsenal: request.arsenal,
+            profile: Some(&profile),
+        })?;
+        Ok(CombatStep {
+            decision,
+            source,
+            formation: facts,
+        })
+    }
+}
+
 // --------------------------------------------------------- errors ----
 
 /// Why a combat-AI request or profile was refused.
@@ -2105,6 +3492,179 @@ pub enum CombatError {
     /// Every priority weight is zero, so the policy would score no
     /// candidate and the decision would be an artifact of the tie-break.
     NoScoredPriorityTerm,
+    /// An ace variant's id is not in the `pilot` namespace.
+    AceKindMismatch {
+        /// The offending catalog id.
+        id: ContentId,
+    },
+    /// An ace variant is registered more than once.
+    DuplicateAce {
+        /// The repeated variant.
+        id: AceId,
+    },
+    /// The mission named an ace variant the runtime does not carry. An
+    /// unknown pilot's behavior is refused rather than replaced by the role's
+    /// plain profile, which would make a missing content record look like a
+    /// working one.
+    UnknownAce {
+        /// The ace the request named.
+        id: AceId,
+    },
+    /// An ace variant modifies a role the actor is not assigned: an ace of
+    /// the fighter role cannot defend a charge as an escort.
+    AceRoleMismatch {
+        /// The ace the request named.
+        id: AceId,
+        /// The role the ace variant modifies.
+        base: CombatRole,
+        /// The role the profile it carries belongs to.
+        profile: CombatRole,
+    },
+    /// The mission named an ace variant whose role does not match the
+    /// observer's assignment.
+    AceAssignmentMismatch {
+        /// The ace the request named.
+        id: AceId,
+        /// The role the ace variant modifies.
+        base: CombatRole,
+        /// The role the actor is assigned.
+        assigned: CombatRole,
+    },
+    /// An ace variant was lowered for one difficulty tier and the mission
+    /// selected another. Mixing the two would make the tier mean one thing for
+    /// an ace and another for the rest of the squadron.
+    AceTierMismatch {
+        /// The ace the request named.
+        id: AceId,
+        /// The tier the variant's profile was lowered for.
+        declared: DifficultyTier,
+        /// The tier the mission selected.
+        selected: DifficultyTier,
+    },
+    /// A difficulty tier is declared more than once.
+    DuplicateDifficultyTier {
+        /// The repeated tier.
+        tier: DifficultyTier,
+    },
+    /// The mission selected a difficulty tier the content never declared.
+    /// There is no baseline fallback: choosing difficulty is an explicit
+    /// mission decision, and defaulting it would hide a content bug.
+    UnknownDifficultyTier {
+        /// The undeclared tier.
+        tier: DifficultyTier,
+    },
+    /// A declared difficulty tier says nothing about a role the mission
+    /// assigned, so there is no behavior profile to run it under.
+    DifficultyTierMissingRole {
+        /// The tier.
+        tier: DifficultyTier,
+        /// The role it does not describe.
+        role: CombatRole,
+    },
+    /// A formation with no member was declared. An empty formation has no
+    /// leader to promote and no survivors to regroup on.
+    EmptyFormation {
+        /// The formation.
+        formation: FormationId,
+    },
+    /// A formation's leading slot is not one of its members, so it cannot
+    /// elect a successor when its leader is lost.
+    FormationLeaderNotAMember {
+        /// The formation.
+        formation: FormationId,
+        /// The slot that leads it.
+        leader_slot: u32,
+    },
+    /// Two declared members share one slot.
+    FormationSlotOccupiedTwice {
+        /// The formation.
+        formation: FormationId,
+        /// The repeated slot.
+        slot: u32,
+    },
+    /// A report names a slot the formation does not have.
+    UnknownFormationSlot {
+        /// The formation.
+        formation: FormationId,
+        /// The reported slot.
+        slot: u32,
+    },
+    /// A report names a different actor than the one registered in that slot.
+    FormationMemberMismatch {
+        /// The formation.
+        formation: FormationId,
+        /// The slot.
+        slot: u32,
+        /// The actor the runtime has in the slot.
+        registered: ActorId,
+        /// The actor the report named.
+        reported: ActorId,
+    },
+    /// A report named the same slot twice, so its membership would be
+    /// ambiguous.
+    FormationMemberReportedTwice {
+        /// The formation.
+        formation: FormationId,
+        /// The repeated slot.
+        slot: u32,
+    },
+    /// A report omitted a registered member. A centroid over a partial
+    /// membership is a different point, so a partial report is refused rather
+    /// than reconciled.
+    FormationMemberNotReported {
+        /// The formation.
+        formation: FormationId,
+        /// The slot that went unreported.
+        slot: u32,
+    },
+    /// A report brought a retired member back to life. A destroyed member
+    /// leaves the formation for good; a stale report cannot resurrect it.
+    RetiredFormationMember {
+        /// The formation.
+        formation: FormationId,
+        /// The slot.
+        slot: u32,
+        /// The retired actor.
+        actor: ActorId,
+    },
+    /// A formation tick is not newer than the last one applied. Replaying an
+    /// old tick would let a destroyed leader come back and would let a second
+    /// tick elect a second leader.
+    StaleFormationTick {
+        /// The formation.
+        formation: FormationId,
+        /// The tick the report claims.
+        now: Tick,
+        /// The last tick the coordinator applied.
+        last: Tick,
+    },
+    /// The formation is not held: it was never registered, or it has already
+    /// dissolved. A dissolved formation is not resurrected by a later report.
+    UnknownFormation {
+        /// The formation.
+        formation: FormationId,
+    },
+    /// A decision named a formation the observer is not a living member of,
+    /// so the runtime cannot produce facts for it.
+    UnknownFormationMember {
+        /// The formation.
+        formation: FormationId,
+        /// The observer.
+        observer: ActorId,
+    },
+    /// A declared recovery asked for a regroup point that no living member can
+    /// supply, or a tick left nothing alive to recover.
+    NoSurvivingMember {
+        /// The formation.
+        formation: FormationId,
+    },
+    /// A station could not be computed as a finite world point. Coordinates
+    /// large enough to overflow `f64` are a producer bug, and an infinite
+    /// station is refused by name rather than handed to navigation.
+    StationNotFinite {
+        /// The formation.
+        formation: FormationId,
+    },
 }
 
 impl fmt::Display for CombatError {
@@ -2176,6 +3736,103 @@ impl fmt::Display for CombatError {
             Self::NoScoredPriorityTerm => write!(
                 f,
                 "every priority weight is zero, so the policy would score no candidate"
+            ),
+            Self::AceKindMismatch { id } => {
+                write!(f, "ace variant id {id} is not in the pilot namespace")
+            }
+            Self::DuplicateAce { id } => write!(f, "ace variant {id} is declared more than once"),
+            Self::UnknownAce { id } => write!(f, "no ace variant {id} is registered"),
+            Self::AceRoleMismatch { id, base, profile } => write!(
+                f,
+                "ace variant {id} modifies role {base} but carries a {profile} profile"
+            ),
+            Self::AceAssignmentMismatch { id, base, assigned } => write!(
+                f,
+                "ace variant {id} modifies role {base}, but the actor is assigned {assigned}"
+            ),
+            Self::AceTierMismatch {
+                id,
+                declared,
+                selected,
+            } => write!(
+                f,
+                "ace variant {id} was lowered for the {declared} tier, not {selected}"
+            ),
+            Self::DuplicateDifficultyTier { tier } => {
+                write!(f, "difficulty tier {tier} is declared more than once")
+            }
+            Self::UnknownDifficultyTier { tier } => {
+                write!(f, "no difficulty tier {tier} is declared")
+            }
+            Self::DifficultyTierMissingRole { tier, role } => write!(
+                f,
+                "the {tier} difficulty tier declares no behavior profile for role {role}"
+            ),
+            Self::EmptyFormation { formation } => {
+                write!(f, "{formation} is declared with no member")
+            }
+            Self::FormationLeaderNotAMember {
+                formation,
+                leader_slot,
+            } => write!(
+                f,
+                "{formation} is led by slot {leader_slot}, which is not one of its members"
+            ),
+            Self::FormationSlotOccupiedTwice { formation, slot } => {
+                write!(f, "{formation} has more than one member in slot {slot}")
+            }
+            Self::UnknownFormationSlot { formation, slot } => {
+                write!(f, "{formation} has no slot {slot}")
+            }
+            Self::FormationMemberMismatch {
+                formation,
+                slot,
+                registered,
+                reported,
+            } => write!(
+                f,
+                "{formation} slot {slot} holds {registered}, but the report named {reported}"
+            ),
+            Self::FormationMemberReportedTwice { formation, slot } => {
+                write!(
+                    f,
+                    "the report for {formation} names slot {slot} more than once"
+                )
+            }
+            Self::FormationMemberNotReported { formation, slot } => write!(
+                f,
+                "the report for {formation} leaves slot {slot} unreported"
+            ),
+            Self::RetiredFormationMember {
+                formation,
+                slot,
+                actor,
+            } => write!(
+                f,
+                "the report for {formation} brings retired member {actor} in slot {slot} back to life"
+            ),
+            Self::StaleFormationTick {
+                formation,
+                now,
+                last,
+            } => write!(
+                f,
+                "tick {} is not newer than the tick {} already applied to {formation}",
+                now.0, last.0
+            ),
+            Self::UnknownFormation { formation } => {
+                write!(f, "{formation} is not held by this runtime")
+            }
+            Self::UnknownFormationMember {
+                formation,
+                observer,
+            } => write!(f, "{observer} is not a living member of {formation}"),
+            Self::NoSurvivingMember { formation } => {
+                write!(f, "{formation} has no living member left")
+            }
+            Self::StationNotFinite { formation } => write!(
+                f,
+                "a station for {formation} is not a finite world position"
             ),
         }
     }
@@ -2443,4 +4100,166 @@ pub fn synthetic_arsenal() -> ArsenalSnapshot {
 /// A damage-node key for a synthetic mount name.
 fn synthetic_mount(key: &str) -> DamageNodeKey {
     DamageNodeKey::new(key).expect("the fixture mount key is valid")
+}
+
+/// The synthetic ace identity: the same `pilot` id the declared fixture's ace
+/// variant carries (`cs_content::ai::declared_synthetic_ace_profile`), so the
+/// producer record and the runtime record name one pilot.
+#[must_use]
+pub fn synthetic_ace_id() -> AceId {
+    AceId::try_new(
+        ContentId::from_source(ContentKind::Pilot, "synthetic.ace-wing-leader")
+            .expect("the fixture ace id is valid"),
+    )
+    .expect("the fixture ace id is in the pilot namespace")
+}
+
+/// The synthetic ace variant: the escort role's ace behavior, lowered for the
+/// [`DifficultyTier::Standard`] tier — a 6-tick reaction and a 0.015 rad aim
+/// error.
+///
+/// Same three behavior overrides as
+/// `cs_content::ai::declared_synthetic_ace_profile`, presented as the profile
+/// the boundary produced. It has no damage, armor, health or rate field, so it
+/// cannot be an inflated-health ace or a faster simulation.
+#[must_use]
+pub fn synthetic_ace_variant() -> AceVariant {
+    AceVariant::try_new(
+        synthetic_ace_id(),
+        CombatRole::Escort,
+        DifficultyTier::Standard,
+        synthetic_ace_profile(),
+    )
+    .expect("the synthetic ace variant is valid")
+}
+
+/// The escort profile at one tier: the declared behavior knobs scaled across
+/// the four designed tiers.
+///
+/// A designed fixture, not original data: the original's difficulty option is
+/// unmeasured (F32-D). Only the four [`SkillKnobs`] and the protected-actor
+/// weight move with the tier; the engagement range, the threat window, the
+/// cadence and the role's [`RoleArsenal`] are identical at every tier, which
+/// is what keeps non-negotiable 1 and 2 checkable.
+fn escort_profile_at(tier: DifficultyTier) -> SkillProfile {
+    let (reaction, aim_error, protected_weight) = match tier {
+        DifficultyTier::Relaxed => (48, 0.12, 1.0),
+        DifficultyTier::Standard => (24, 0.06, 2.0),
+        DifficultyTier::Hard => (12, 0.03, 3.0),
+        DifficultyTier::Elite => (6, 0.015, 4.0),
+    };
+    let base = synthetic_escort_profile();
+    base.with_knobs(SkillKnobs {
+        reaction_ticks: reaction,
+        aim_error_rad: aim_error,
+        ..base.knobs()
+    })
+    .and_then(|profile| {
+        let priority = profile.priority();
+        profile.with_priority(PriorityPolicy {
+            protected_actor_weight: protected_weight,
+            ..priority
+        })
+    })
+    .expect("the tier escort profile is valid")
+}
+
+/// The synthetic difficulty roster: all four designed tiers, each declaring
+/// the escort and fighter roles.
+///
+/// Every tier is declared explicitly, including the baseline, so a tier is
+/// never resolved by a silent fallback.
+#[must_use]
+pub fn synthetic_difficulty_roster() -> DifficultyRoster {
+    let fighter_reaction = |tier: DifficultyTier| -> u64 {
+        match tier {
+            DifficultyTier::Relaxed => 36,
+            DifficultyTier::Standard => 18,
+            DifficultyTier::Hard => 12,
+            DifficultyTier::Elite => 6,
+        }
+    };
+    let mut roster = DifficultyRoster::new();
+    for tier in DifficultyTier::ALL {
+        let fighter = SkillProfile::try_new(
+            CombatRole::FighterAttack,
+            synthetic_fighter_profile().arsenal(),
+            SkillKnobs {
+                reaction_ticks: fighter_reaction(*tier),
+                ..synthetic_fighter_profile().knobs()
+            },
+            synthetic_fighter_profile().priority(),
+        )
+        .expect("the tier fighter profile is valid");
+        roster = roster
+            .with_tier(*tier, &[escort_profile_at(*tier), fighter])
+            .expect("the synthetic difficulty roster is valid");
+    }
+    roster
+}
+
+/// The synthetic formation's leader.
+pub const SYNTHETIC_FORMATION_LEADER: u64 = 10;
+
+/// The synthetic formation's two followers.
+pub const SYNTHETIC_FORMATION_WINGMEN: [u64; 2] = [11, 12];
+
+/// The synthetic formation's roster: slot 0 leads, slots 1 and 2 follow.
+///
+/// The same membership `cs_content::ai::declared_synthetic_formation` declares
+/// (a leader plus two followers), with the runtime's session-qualified actor
+/// identities.
+#[must_use]
+pub fn synthetic_formation_roster() -> FormationRoster {
+    FormationRoster::try_new(
+        FormationId(1),
+        0,
+        vec![
+            FormationRosterMember {
+                slot: 0,
+                actor: synthetic_actor(SYNTHETIC_FORMATION_LEADER),
+            },
+            FormationRosterMember {
+                slot: 1,
+                actor: synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[0]),
+            },
+            FormationRosterMember {
+                slot: 2,
+                actor: synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[1]),
+            },
+        ],
+    )
+    .expect("the synthetic formation roster is valid")
+}
+
+/// One member report for the synthetic formation.
+#[must_use]
+pub fn synthetic_member_report(
+    slot: u32,
+    serial: u64,
+    position_m: [f64; 3],
+    alive: bool,
+) -> FormationMemberReport {
+    FormationMemberReport {
+        slot,
+        actor: synthetic_actor(serial),
+        position: WorldPosition::try_new(position_m).expect("the fixture position is finite"),
+        alive,
+    }
+}
+
+/// The synthetic combat runtime: the synthetic session's escort and fighter
+/// roles, one ace variant, four difficulty tiers and formation 1 with its
+/// declared recovery paths.
+#[must_use]
+pub fn synthetic_combat_runtime() -> CombatRuntime {
+    CombatRuntime::new(
+        SYNTHETIC_SESSION,
+        &[synthetic_escort_profile(), synthetic_fighter_profile()],
+        vec![synthetic_ace_variant()],
+        synthetic_difficulty_roster(),
+    )
+    .expect("the synthetic combat runtime is valid")
+    .with_formation(synthetic_formation_roster(), synthetic_recovery_policies())
+    .expect("the synthetic formation registers")
 }
