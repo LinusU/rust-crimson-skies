@@ -537,7 +537,7 @@ impl DeclaredSupport {
 
 /// What F39-D measured of one mission's original objective record.
 ///
-/// A census of declaration sites**, deliberately not a rule: each number says
+/// A **census of declaration sites**, deliberately not a rule: each number says
 /// how many times a measured key occurs inside that mission's numbered
 /// `OBJECTIVE<N>` blocks, never what one occurrence does. Nothing here may be
 /// read as a decoded behaviour, and the counts are exactly why a designed
@@ -782,7 +782,7 @@ pub struct MeasuredBranchConflict {
     pub target: u32,
     /// The conflicting sites, in the block's **authored field order** — the only
     /// ordering the bytes carry, and measured to be authored per block rather
-    /// than fixed by the format (both orders of every pair occur in the corpus),
+    /// than fixed by the format (see [`MeasuredBranchPrecedence::declared_order`]),
     /// so it is recorded and never read as a precedence rule.
     pub sites: Vec<MeasuredBranchSite>,
 }
@@ -856,10 +856,10 @@ pub struct MeasuredBranchPrecedence {
     ///
     /// This is the corpus's *declared* order, and it is the measurement that
     /// keeps the reading honest: measured over the installation, **both**
-    /// directions of every pair occur, so the order a block spells its effects in
-    /// is authored per block and is not a property of the format. Nothing may
-    /// rank two effects by it — a format order would carry no engine intent
-    /// either, and this order varies.
+    /// directions of every pair the corpus writes more than once occur, so the
+    /// order a block spells its effects in is authored per block and is not a
+    /// property of the format. Nothing may rank two effects by it — a format
+    /// order would carry no engine intent either, and this order varies.
     pub authored_orders: BTreeMap<(BranchEffectKind, BranchEffectKind), u32>,
     /// The blocks where two effects *do* name a common objective, with the
     /// shared objective and the authored order of the sites.
@@ -879,6 +879,7 @@ impl MeasuredBranchPrecedence {
 
     /// Whether every measured completion-effect target names another block of the
     /// same record.
+    ///
     /// The measured closure fact, and the reason the engine needs no external
     /// naming space for a branch target: an objective number indexes the record's
     /// own numbered blocks. A `false` is a real reading, not a defect to be

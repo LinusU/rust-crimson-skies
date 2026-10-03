@@ -140,11 +140,11 @@ inference from the spelling "nap" and stays one.
 **The contrary hypotheses, and what would settle each.**
 
 1. *The first-declared effect wins (the authored field order is the rule).* It is
-   the cheapest hypothesis and the corpus **refutes** it as a format fact: the
-   declared order of every measured pair runs both ways —
-   `WAKE`/`NAP` 99 vs 81, `WAKE`/`KILL` 93 vs 20, `NAP`/`KILL` 70 vs 34, and
-   `WAKEUP` before `KILL` once (never the other way round). A fixed field order
-   in the record format would give one direction only. So the order is authored
+   the cheapest hypothesis and the corpus **refutes** it as a format fact: every
+   effect pair the corpus writes more than once is written **both** ways round —
+   `WAKE`/`NAP` 99 vs 81, `WAKE`/`KILL` 93 vs 20, `NAP`/`KILL` 70 vs 34 — and the
+   single `WAKEUP`/`KILL` pair is written `WAKEUP` first. A fixed field order in
+   the record format would give one direction only. So the order is authored
    per block, and even a format order would carry no engine intent. What would
    settle it: the compiled mission program, or an original run of `m05`.
 2. *The last-declared effect wins.* Equally unsupported, and equally

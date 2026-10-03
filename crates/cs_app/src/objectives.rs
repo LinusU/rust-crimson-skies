@@ -1482,6 +1482,7 @@ impl ObjectiveSession {
 // ---------------------------------------------------------------------------
 // F39-D: the retail objective-record census
 // ---------------------------------------------------------------------------
+//
 // The stage's own question — "validate original branching, optional and
 // failure conditions" — is not answerable from design, so this half measures
 // the original's own objective records on the read-only installation.
@@ -1535,9 +1536,10 @@ const MISSION_READER_ARCHIVE: &str = "zrdr.zbd";
 // synthetic record can be measured with the same production code the census
 // runs. It reads each numbered `OBJECTIVE<N>` block's fields **in the record's own
 // order** (`zrd_flat_fields` preserves it), which is the only ordering the bytes
-// carry — and which is measured *not* to be a format invariant, because the
-// corpus spells both orders of every effect pair. So the authored order is
-// recorded on each [`MeasuredBranchConflict`] and never ranked by it.
+// carry — and which is measured *not* to be a format invariant, because every
+// effect pair the corpus writes more than once is written both ways round (see
+// `MeasuredBranchPrecedence::declared_order`). So the authored order is recorded
+// on each [`MeasuredBranchConflict`] and never ranked by it.
 //
 // Two facts the walk measures that a key census cannot:
 //
