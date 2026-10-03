@@ -1033,13 +1033,230 @@ impl DeclaredFormation {
     }
 }
 
+// ------------------------------------------- original surface ----
+
+/// The retail member that holds the engine's own resource header, and
+/// therefore every string-id block the shipped UI is built from.
+///
+/// Re-used from [`crate::weapons`] rather than re-spelled, so the F32-D
+/// measurement and the F27/F28 ones name one member.
+pub use crate::weapons::ORIGINAL_RESOURCE_HEADER;
+
+/// The macro that opens the original's **campaign difficulty option** block.
+///
+/// **Measured** in [`ORIGINAL_RESOURCE_HEADER`], together with
+/// [`ORIGINAL_DIFFICULTY_OPTION_BOUND_MACRO`].
+pub const ORIGINAL_DIFFICULTY_OPTION_MACRO: &str = "IDS_DIFFICULTY";
+
+/// The id [`ORIGINAL_DIFFICULTY_OPTION_MACRO`] declares.
+pub const ORIGINAL_DIFFICULTY_OPTION_FIRST_ID: u32 = 109;
+
+/// The first macro the resource header declares **after** the difficulty
+/// option, with its id.
+///
+/// **Measured**: this is what bounds the difficulty block. The rule it applies
+/// — *a block of option labels runs from its macro's id up to the next
+/// declared macro's id, exclusive* — is not invented here: it is the same rule
+/// [`crate::ordnance::ORIGINAL_NEXT_ROCKET_BLOCK`] measured for the rocket
+/// name blocks (a 15-id run) and `IDS_AIRFRAMEGUNGROUPNAMES` measured for the
+/// gun-group block (a 20-id run).
+pub const ORIGINAL_DIFFICULTY_OPTION_BOUND_MACRO: &str = "IDS_VIEWCOCKPIT";
+
+/// The id [`ORIGINAL_DIFFICULTY_OPTION_BOUND_MACRO`] declares.
+pub const ORIGINAL_DIFFICULTY_OPTION_BOUND_ID: u32 = 112;
+
+/// How many steps the original's campaign difficulty option offers.
+///
+/// **Derived**, never hand-typed: it is the gap between the two measured ids,
+/// so a corrected measurement changes this constant instead of leaving a
+/// stale count beside a fresh span.
+///
+/// **Measured**: **three**. The block is ids `109..=111` and the shipped
+/// string image populates **all three** — see
+/// [`ORIGINAL_DIFFICULTY_OPTION_IDS`].
+pub const ORIGINAL_DIFFICULTY_STEPS: u32 =
+    ORIGINAL_DIFFICULTY_OPTION_BOUND_ID - ORIGINAL_DIFFICULTY_OPTION_FIRST_ID;
+
+/// The ids the original's campaign difficulty option occupies, in option order.
+///
+/// **Measured**: `109..=111`, one per step. Each id carries exactly one
+/// non-empty string in the shipped English string image
+/// (`GOSDATA/ASSETS/BINARIES/langui.dll`, language 1033), so the block is
+/// three *usable* steps and not three reserved slots.
+///
+/// The text behind those ids is the original's localizable display text and is
+/// **not** reproduced here, here or in any committed finding (AGENTS rule 3):
+/// the ids, their count and their occupancy are the measurement.
+pub const ORIGINAL_DIFFICULTY_OPTION_IDS: [u32; ORIGINAL_DIFFICULTY_STEPS as usize] =
+    [109, 110, 111];
+
+/// The macro and id of the difficulty row's **title** on the game-options
+/// screen, and of its **description**.
+///
+/// **Measured**: both are single ids — the next declared macro follows each
+/// immediately (`IDS_GO_VIEW_TITLE` 1085, `IDS_GO_VIEW_DESC` 1088) — so the
+/// difficulty option is **one row of one screen**, a selector with a label and
+/// a help line, not a list of per-objective difficulty records.
+pub const ORIGINAL_GAME_OPTION_DIFFICULTY_TITLE: (&str, u32) = ("IDS_GO_DIFFICULTY_TITLE", 1084);
+
+/// The macro and id of the difficulty row's description on the game-options
+/// screen.
+pub const ORIGINAL_GAME_OPTION_DIFFICULTY_DESC: (&str, u32) = ("IDS_GO_DIFFICULTY_DESC", 1087);
+
+/// The macro and id the instant-action story screens use for a difficulty
+/// **label**.
+///
+/// **Measured**: a single id (`IDS_IA_PLANES` 3700 follows it), and it is
+/// absent from every measured instant-action scenario descriptor — see
+/// [`ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO`].
+pub const ORIGINAL_IA_DIFFICULTY_LABEL: (&str, u32) = ("IDS_IA_DIFFICULTY", 3695);
+
+/// Whether any measured per-scenario record carries the difficulty.
+///
+/// **Measured**: **no**. The complete root-key vocabulary of all eight
+/// instant-action scenario descriptors contains no difficulty key, and the
+/// option itself is a screen row with a title and a description. So the
+/// original's difficulty is a *selection*, not a value any mission record
+/// stores: which step is in force is the player's choice at the options
+/// screen, and nothing in the measured data binds a step to a mission.
+///
+/// This is the load-bearing negative of F32-D: it is why no
+/// [`DifficultyProfile`] may claim to be the original's per-mission
+/// difficulty, and why [`DeclaredDifficultyOrigin`] distinguishes a *selected*
+/// option from a *recorded* one.
+pub const ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO: bool = false;
+
+/// One AI skill tier, as the original's scenario descriptors spell it.
+///
+/// **Measured** (F32-D) over the eight instant-action scenario descriptors of
+/// the owner's installation: **forty** skill labels across **thirty-two**
+/// enemy groups and **eight** named aces, and the label vocabulary is exactly
+/// these three. A label outside them is refused rather than carried, because a
+/// fourth tier would be a designed alternative with no measured spelling.
+///
+/// This is the **per-aircraft** tier (`enemy_skill`, `ace_skill`) and is a
+/// different thing from [`ORIGINAL_DIFFICULTY_STEPS`], which is the count of
+/// steps in the *player's* difficulty option. They happen to be three each;
+/// nothing in the measured data says the game maps one onto the other, so
+/// nothing here does either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DeclaredSkillTier {
+    /// The lowest measured tier.
+    Novice,
+    /// The middle measured tier.
+    Veteran,
+    /// The highest measured tier, the one the scenario's own named ace holds.
+    Ace,
+}
+
+impl DeclaredSkillTier {
+    /// Every measured tier, from lowest to highest.
+    pub const ALL: &'static [DeclaredSkillTier] = &[Self::Novice, Self::Veteran, Self::Ace];
+
+    /// The stable label, which is also the original's own spelling.
+    ///
+    /// **Measured**: these three are the label vocabulary of `enemy_skill`
+    /// and `ace_skill` in the eight measured scenario descriptors.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Novice => "novice",
+            Self::Veteran => "veteran",
+            Self::Ace => "ace",
+        }
+    }
+
+    /// The measured tier a label names, or `None` for a label the installation
+    /// never spells.
+    ///
+    /// The lookup is exact and case-sensitive because the measured corpus is:
+    /// every one of the forty measured labels is one of [`Self::ALL`]'s
+    /// spellings, byte for byte. A label this returns `None` for is a content
+    /// change or a new installation, and must be measured — not normalized
+    /// into the nearest tier.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|tier| tier.label() == label)
+    }
+}
+
+impl fmt::Display for DeclaredSkillTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// How many skill labels the measured scenario descriptors declare.
+///
+/// **Measured**: thirty-two enemy groups plus eight named aces.
+pub const ORIGINAL_SKILL_LABEL_COUNT: u32 = 40;
+
+/// How many enemy groups the measured scenario descriptors declare.
+///
+/// **Measured**: four groups in each of eight descriptors.
+pub const ORIGINAL_ENEMY_GROUP_COUNT: u32 = 32;
+
+/// How many instant-action scenario descriptors the measured installation
+/// carries.
+///
+/// **Measured**: one per world group, each an `IA1` reader archive's `ia.zrd`.
+pub const ORIGINAL_SCENARIO_DESCRIPTOR_COUNT: u32 = 8;
+
+/// How many integer slots the original's declared ace stat vector has.
+///
+/// **Measured**: `ace_stats` is a nine-element integer list in all eight
+/// descriptors, and every slot is [`ORIGINAL_ACE_STAT_MAX`] in all eight.
+///
+/// This is a *count and an extent*, deliberately not a meaning: no measured
+/// file names what the nine slots are, what order they are in, or what a slot
+/// below nine does. A reimplementation may therefore use a nine-slot vector as
+/// the shape of its ace record and must not claim what any slot controls.
+pub const ORIGINAL_ACE_STAT_SLOTS: usize = 9;
+
+/// The largest value any measured `ace_stats` slot carries.
+///
+/// **Measured**: 9, in every slot of every one of the eight descriptors. The
+/// original ships no descriptor with a slot below this, so the vector's
+/// *interior* — whether any tier below an ace exists in the data at all — is
+/// unmeasured and stays unmeasured.
+pub const ORIGINAL_ACE_STAT_MAX: i64 = 9;
+
+/// Where a declared [`DifficultyProfile`]'s tier came from, given what the
+/// original's option actually is.
+///
+/// **Measured** (F32-D): the original's difficulty option is a screen row with
+/// three steps and **no** measured per-mission difficulty record
+/// ([`ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO`]). A reimplementation
+/// therefore has to say which of those two worlds a declared profile belongs
+/// to, and the two are not interchangeable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DeclaredDifficultyOrigin {
+    /// The tier stands for one of the original option's measured steps, chosen
+    /// by the player. Its knobs are **designed**: the original's data names
+    /// the step but never says what any step changes.
+    SelectedOptionStep {
+        /// The measured step, `0..ORIGINAL_DIFFICULTY_STEPS`.
+        step: u32,
+    },
+    /// The tier is a project extension with no measured counterpart: this
+    /// engine offers a step the original's option does not, which is allowed
+    /// by non-negotiable 1 as an explicitly designed alternative and may not be
+    /// presented as the original's.
+    DesignedExtension,
+}
+
 // ------------------------------------------------ difficulty ----
 
 /// A declared difficulty tier.
 ///
-/// A designed four-step ordering. The original game's difficulty option
-/// names, count and effects are unmeasured (F32-D), so these labels are
-/// project design and nothing here claims to be the original's wording.
+/// A designed four-step ordering. **Measured** (F32-D) against the owner's
+/// installation, the original's campaign difficulty option offers
+/// [`ORIGINAL_DIFFICULTY_STEPS`] steps, so this vocabulary has one more step
+/// than the original's option; [`Self::measured_step`] says which steps
+/// correspond and [`Self::is_designed_extension`] names the one that does not.
+/// The original's own step *names* live in its shipped localizable string
+/// image and are not reproduced here (AGENTS rule 3), so these labels remain
+/// project design and claim nothing about the original's wording.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DifficultyTier {
     /// The most forgiving declared tier.
@@ -1066,6 +1283,63 @@ impl DifficultyTier {
             Self::Hard => "hard",
             Self::Elite => "elite",
         }
+    }
+
+    /// This tier's position in [`Self::ALL`], from `0`.
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        match self {
+            Self::Relaxed => 0,
+            Self::Standard => 1,
+            Self::Hard => 2,
+            Self::Elite => 3,
+        }
+    }
+
+    /// The measured original option step this designed tier stands for, when
+    /// it stands for one.
+    ///
+    /// **Measured** ([`ORIGINAL_DIFFICULTY_STEPS`] = 3) and **positional**:
+    /// [`Self::ALL`] runs most forgiving to most demanding and the measured
+    /// option runs the same way, so the first `ORIGINAL_DIFFICULTY_STEPS`
+    /// tiers correspond to the measured steps in order and any tier past them
+    /// has no measured counterpart.
+    ///
+    /// The mapping says nothing about the original's *names* and nothing about
+    /// what any step changes: no measured file records that, so a caller that
+    /// needs it must say so with a [`DeclaredDifficultyOrigin`].
+    #[must_use]
+    pub const fn measured_step(self) -> Option<u32> {
+        let step = self.index();
+        if step < ORIGINAL_DIFFICULTY_STEPS {
+            Some(step)
+        } else {
+            None
+        }
+    }
+
+    /// Whether this tier is a project extension past the original option's
+    /// measured steps.
+    #[must_use]
+    pub const fn is_designed_extension(self) -> bool {
+        self.measured_step().is_none()
+    }
+
+    /// How many declared tiers correspond to a measured original step.
+    ///
+    /// Computed, not written down, so the count follows
+    /// [`ORIGINAL_DIFFICULTY_STEPS`] when a measurement is corrected.
+    #[must_use]
+    pub const fn measured_tier_count() -> usize {
+        let mut count = 0;
+        let mut index = 0;
+        while index < Self::ALL.len() {
+            if Self::ALL[index].measured_step().is_some() {
+                count += 1;
+            }
+            index += 1;
+        }
+        count
     }
 }
 
@@ -2495,5 +2769,813 @@ mod tests {
         for tier in DifficultyTier::ALL {
             assert!(!tier.label().is_empty());
         }
+    }
+}
+
+// ------------------------------------------------ f32-d evidence ----
+
+/// The F32-D retail measurement harness.
+///
+/// It lives in this file because `crates/cs_content/tests/` is not F32-D's
+/// owner path and a `cs_sim` test cannot reach `cs_content`. Everything it
+/// calls is production code — `cs_assets`' ROF mount and installation
+/// discovery, `cs_formats`' resource-header and PE-resource readers,
+/// `cs_content::config::StringCatalog` and `cs_content::stunts`' `.zrd`
+/// decoder — so the numbers below are re-measured from the owner's
+/// installation on every run and a stale committed constant fails instead of
+/// passing.
+///
+/// **No display text leaves this module.** The measurement reads string
+/// *occupancy* (does an id carry a non-empty string, in how many languages,
+/// how many code units) and never the string itself, so nothing in this file
+/// or in any report it writes reproduces original display content
+/// (AGENTS rule 3).
+#[cfg(test)]
+mod f32_d {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+
+    use cs_assets::install::{self};
+    use cs_assets::rof::mount_rof_into;
+    use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
+    use cs_formats::text::resource_header::read_resource_header;
+    use cs_types::asset_id::{
+        AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan,
+    };
+    use cs_types::install::{InstallManifest, RelativePath};
+
+    use super::*;
+    use crate::config::StringCatalog;
+    use crate::stunts::{
+        ENEMY_SKILL_KEY, SCENARIO_ACE_SKILL_KEY, SCENARIO_MEMBER, decode_zrd,
+        scenario_mission_type, scenario_non_player_aircraft,
+    };
+    use cs_types::evidence::ClaimStatus;
+
+    /// The retail container the resource header and the screens live in.
+    const BASE_CONTAINER: &str = "GOSDATA/ASSETS/crimson.rof";
+
+    /// The shipped English UI string image, named as the installation spells it.
+    const STRING_IMAGE: &str = "GOSDATA/ASSETS/BINARIES/langui.dll";
+
+    /// The read-only installation root, or a loud failure: a retail test must
+    /// fail, not pass, when `CS_GAME_DIR` is absent.
+    fn game_dir() -> PathBuf {
+        let dir = std::env::var_os("CS_GAME_DIR").expect(
+            "CS_GAME_DIR is not set: this measurement needs the original installation \
+             (capability `retail`)",
+        );
+        let dir = PathBuf::from(dir);
+        assert!(
+            dir.is_dir(),
+            "CS_GAME_DIR {} is not a directory",
+            dir.display()
+        );
+        dir
+    }
+
+    /// The installation manifest, discovered once: production discovery hashes
+    /// every file, so a per-test discovery would hash the whole installation
+    /// once per test.
+    fn installation(root: &Path) -> InstallManifest {
+        static CACHE: OnceLock<InstallManifest> = OnceLock::new();
+        CACHE
+            .get_or_init(|| {
+                install::discover(root)
+                    .unwrap_or_else(|error| {
+                        panic!("the installation must be discoverable: {error:?}")
+                    })
+                    .manifest
+            })
+            .clone()
+    }
+
+    /// The installation digest every span in this measurement is bound to.
+    fn install_sha256(root: &Path) -> cs_types::evidence::ContentHash {
+        install::fingerprint(&installation(root))
+    }
+
+    /// Opens one retail member's bytes through the production ROF mount.
+    fn read_member(root: &Path, spelling: &str) -> Vec<u8> {
+        let install = install_sha256(root);
+        let id: String = format!("rof-{}", BASE_CONTAINER.to_ascii_lowercase())
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || character == '.' {
+                    character
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let mut builder = SessionBuilder::new(ResolveContext::new(install));
+        let source = mount_rof_into(
+            &mut builder,
+            MountBuilder::new(
+                MountId::new(&id).expect("a valid mount id"),
+                MountNamespace::new(INSTALL_NAMESPACE).expect("a valid namespace"),
+                PrecedenceClass::Shared,
+                BASE_CONTAINER,
+            )
+            .retail(),
+            &root.join(BASE_CONTAINER),
+        )
+        .expect("the base retail archive mounts");
+        let session = builder.open();
+        let key = AssetKey::from_spelling(INSTALL_NAMESPACE, spelling, "default")
+            .expect("a valid asset key");
+        session
+            .resolve(&key)
+            .unwrap_or_else(|error| panic!("{spelling}: the member must resolve: {error:?}"));
+        source
+            .read(&key)
+            .unwrap_or_else(|error| panic!("{spelling}: the member must decode: {error:?}"))
+            .data
+    }
+
+    /// The id one macro declares in the engine's resource header.
+    fn macro_id(root: &Path, name: &str) -> u32 {
+        let bytes = read_member(root, ORIGINAL_RESOURCE_HEADER);
+        let header = read_resource_header(
+            &mut cs_formats::ParseContext::with_defaults(ORIGINAL_RESOURCE_HEADER),
+            &bytes,
+        )
+        .expect("the production reader reads the engine's resource header");
+        header
+            .resource_id(name.as_bytes())
+            .unwrap_or_else(|| panic!("{name} must be declared in {ORIGINAL_RESOURCE_HEADER}"))
+    }
+
+    /// Every id the resource header declares, ascending.
+    fn declared_ids(root: &Path) -> Vec<u32> {
+        let bytes = read_member(root, ORIGINAL_RESOURCE_HEADER);
+        let header = read_resource_header(
+            &mut cs_formats::ParseContext::with_defaults(ORIGINAL_RESOURCE_HEADER),
+            &bytes,
+        )
+        .expect("the production reader reads the engine's resource header");
+        let mut ids: Vec<u32> = header
+            .defines()
+            .filter_map(|define| define.resource_id())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
+    /// The occupancy of one string id in the shipped string image: how many
+    /// languages carry it, how many of them carry a non-empty string, and the
+    /// code-unit extent of the first one.
+    ///
+    /// **Never returns the text**: only counts, so the measurement cannot
+    /// reproduce original display content.
+    fn string_occupancy(root: &Path, id: u32) -> (usize, usize, usize) {
+        let bytes = std::fs::read(root.join(STRING_IMAGE))
+            .unwrap_or_else(|error| panic!("read {STRING_IMAGE}: {error}"));
+        let source = SourceSpan::new(
+            install_sha256(root),
+            STRING_IMAGE,
+            None,
+            0,
+            bytes.len() as u64,
+            None,
+        )
+        .expect("the string image span is valid");
+        let catalog = StringCatalog::read(
+            &mut cs_formats::ParseContext::with_defaults(STRING_IMAGE),
+            source,
+            &bytes,
+        )
+        .expect("the production reader reads the string image");
+        let rows: Vec<_> = catalog.rows().iter().filter(|row| row.id == id).collect();
+        let populated = rows
+            .iter()
+            .filter(|row| row.text.as_ref().is_some_and(|text| !text.is_empty()))
+            .count();
+        let longest = rows
+            .iter()
+            .filter_map(|row| row.text.as_ref())
+            .map(|text| text.chars().count())
+            .max()
+            .unwrap_or(0);
+        (rows.len(), populated, longest)
+    }
+
+    /// Every instant-action scenario descriptor the installation carries, read
+    /// through the production reader-archive discovery and the production
+    /// `.zrd` decoder.
+    fn scenario_descriptors(root: &Path) -> Vec<(String, ScenarioCensus)> {
+        let found = installation(root);
+        let mut rows = Vec::new();
+        for record in &found.files {
+            let key = record.relative_spelling.logical_key();
+            if !key.ends_with("zrdr.zbd") || !key.contains("/ia1/") {
+                continue;
+            }
+            let spelling = record.relative_spelling.as_str();
+            let bytes = std::fs::read(found.host_root.join(spelling))
+                .unwrap_or_else(|error| panic!("read {spelling}: {error}"));
+            let path = RelativePath::new(spelling).expect("an installation-relative path");
+            let discovery =
+                cs_formats::script_raw::discovery::discover_container(&key, &path, &bytes);
+            for program in discovery.programs() {
+                if program.locator().member() != Some(SCENARIO_MEMBER) {
+                    continue;
+                }
+                let node = decode_zrd(program.bytes()).unwrap_or_else(|error| {
+                    panic!("{key}::{SCENARIO_MEMBER} must decode: {error:?}")
+                });
+                rows.push((key.clone(), ScenarioCensus::of(&node)));
+            }
+        }
+        rows
+    }
+
+    /// The measured facts one scenario descriptor carries, read through the
+    /// production `cs_content::stunts` parsers.
+    #[derive(Debug)]
+    struct ScenarioCensus {
+        mission_type: Option<String>,
+        root_keys: Vec<String>,
+        enemy_groups: usize,
+        skills: Vec<String>,
+        ace_stats: Option<Vec<i64>>,
+    }
+
+    impl ScenarioCensus {
+        fn of(node: &crate::stunts::ZrdValue) -> Self {
+            let roster = scenario_non_player_aircraft(node);
+            let mut skills: Vec<String> = roster
+                .enemy_groups()
+                .iter()
+                .filter_map(|group| group.skill().map(str::to_owned))
+                .collect();
+            if let Some(skill) = roster.ace().skill() {
+                skills.push(skill.to_owned());
+            }
+            let ace_stats = crate::stunts::zrd_field(node, "ace_stats").and_then(|value| {
+                let list = value.as_list()?;
+                let mut slots = Vec::with_capacity(list.len());
+                for entry in list {
+                    match entry {
+                        crate::stunts::ZrdValue::Int(value) => slots.push(*value as i64),
+                        _ => return None,
+                    }
+                }
+                Some(slots)
+            });
+            Self {
+                mission_type: scenario_mission_type(node).map(str::to_owned),
+                root_keys: crate::stunts::zrd_flat_fields(node)
+                    .into_iter()
+                    .map(|(key, _)| key.to_owned())
+                    .collect(),
+                enemy_groups: roster.enemy_groups().len(),
+                skills,
+                ace_stats,
+            }
+        }
+    }
+
+    /// The measurement the F32-D constants encode, taken over one installation.
+    ///
+    /// Kept as one function so the acceptance tests and the evidence harness
+    /// read the *same* installation the same way: a divergence between them
+    /// would make a report describe a state the suite never checked.
+    #[derive(Debug)]
+    struct Surface {
+        install_sha256: String,
+        content_sha256: String,
+        difficulty_macro_id: u32,
+        difficulty_bound_id: u32,
+        difficulty_ids: Vec<u32>,
+        game_option_title: (String, u32),
+        game_option_desc: (String, u32),
+        ia_difficulty_label: (String, u32),
+        difficulty_occupancy: Vec<(u32, usize, usize, usize)>,
+        scenarios: Vec<(String, ScenarioCensus)>,
+        reader_archives: usize,
+        declared_id_count: usize,
+        skill_census: BTreeMap<String, u32>,
+    }
+
+    fn surface(root: &Path) -> Surface {
+        let manifest = installation(root);
+        let mut reader_archives = 0usize;
+        for record in &manifest.files {
+            if record.relative_spelling.logical_key().ends_with("zrdr.zbd") {
+                reader_archives += 1;
+            }
+        }
+        let difficulty_macro_id = macro_id(root, ORIGINAL_DIFFICULTY_OPTION_MACRO);
+        let difficulty_bound_id = macro_id(root, ORIGINAL_DIFFICULTY_OPTION_BOUND_MACRO);
+        let mut difficulty_ids: Vec<u32> = (difficulty_macro_id..difficulty_bound_id).collect();
+        assert_eq!(
+            difficulty_ids.len() as u32,
+            ORIGINAL_DIFFICULTY_STEPS,
+            "the measured block width is the committed step count"
+        );
+        let mut skill_census: BTreeMap<String, u32> = BTreeMap::new();
+        let scenarios = scenario_descriptors(root);
+        for (_, census) in &scenarios {
+            for skill in &census.skills {
+                *skill_census.entry(skill.clone()).or_default() += 1;
+            }
+        }
+        let game_option_title = (
+            ORIGINAL_GAME_OPTION_DIFFICULTY_TITLE.0.to_owned(),
+            macro_id(root, ORIGINAL_GAME_OPTION_DIFFICULTY_TITLE.0),
+        );
+        let game_option_desc = (
+            ORIGINAL_GAME_OPTION_DIFFICULTY_DESC.0.to_owned(),
+            macro_id(root, ORIGINAL_GAME_OPTION_DIFFICULTY_DESC.0),
+        );
+        let ia_difficulty_label = (
+            ORIGINAL_IA_DIFFICULTY_LABEL.0.to_owned(),
+            macro_id(root, ORIGINAL_IA_DIFFICULTY_LABEL.0),
+        );
+        let difficulty_occupancy = difficulty_ids
+            .iter()
+            .map(|id| {
+                let (rows, populated, units) = string_occupancy(root, *id);
+                (*id, rows, populated, units)
+            })
+            .collect();
+        difficulty_ids.truncate(difficulty_ids.len()); // keep the measured order
+        Surface {
+            install_sha256: install::fingerprint(&manifest).to_hex(),
+            content_sha256: install::content_fingerprint(&manifest).to_hex(),
+            difficulty_macro_id,
+            difficulty_bound_id,
+            difficulty_ids,
+            game_option_title,
+            game_option_desc,
+            ia_difficulty_label,
+            difficulty_occupancy,
+            scenarios,
+            reader_archives,
+            declared_id_count: declared_ids(root).len(),
+            skill_census,
+        }
+    }
+
+    /// The installation fingerprint the F32-D constants were measured over.
+    const RETAIL_INSTALL_SHA256: &str =
+        "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978";
+
+    /// The measured surface, bound to the fingerprint the constants record.
+    fn measured() -> Surface {
+        let root = game_dir();
+        let surface = surface(&root);
+        assert_eq!(
+            surface.install_sha256, RETAIL_INSTALL_SHA256,
+            "the installation fingerprint the F32-D constants were measured over"
+        );
+        surface
+    }
+
+    /// **AC04, retail half.** The original's campaign difficulty option is a
+    /// **three**-step selector, and the project's four-step
+    /// [`DifficultyTier`] vocabulary is one step longer than the original's —
+    /// which [`DifficultyTier::measured_step`] and
+    /// [`DifficultyTier::is_designed_extension`] report instead of hiding.
+    ///
+    /// Every number is re-read from the installation: the two bounding macro
+    /// ids, the derived block width, the per-id occupancy and the vocabulary
+    /// coverage. A stale [`ORIGINAL_DIFFICULTY_STEPS`] fails here.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f32_d_retail_the_original_campaign_difficulty_option_is_a_three_step_selector() {
+        let surface = measured();
+
+        assert_eq!(
+            surface.difficulty_macro_id, ORIGINAL_DIFFICULTY_OPTION_FIRST_ID,
+            "IDS_DIFFICULTY is where the committed block starts"
+        );
+        assert_eq!(
+            surface.difficulty_bound_id, ORIGINAL_DIFFICULTY_OPTION_BOUND_ID,
+            "IDS_VIEWCOCKPIT is what bounds the committed block"
+        );
+        assert_eq!(ORIGINAL_DIFFICULTY_STEPS, 3, "three measured steps");
+        assert_eq!(
+            surface.difficulty_ids,
+            ORIGINAL_DIFFICULTY_OPTION_IDS.to_vec(),
+            "the block is exactly the committed id run"
+        );
+
+        // All three are usable steps, not reserved slots: each carries one
+        // non-empty string in the shipped image.
+        for (id, rows, populated, units) in &surface.difficulty_occupancy {
+            assert_eq!(rows, &1, "id {id} carries exactly one string");
+            assert_eq!(populated, &1, "id {id} carries a non-empty string");
+            assert!(
+                *units > 0,
+                "id {id} carries display text whose extent is measurable"
+            );
+        }
+
+        // The designed vocabulary is one step longer, and says so.
+        assert_eq!(DifficultyTier::ALL.len(), 4);
+        assert_eq!(
+            DifficultyTier::measured_tier_count(),
+            ORIGINAL_DIFFICULTY_STEPS as usize,
+            "exactly as many declared tiers have a measured step as the option has steps"
+        );
+        let extensions: Vec<&str> = DifficultyTier::ALL
+            .iter()
+            .filter(|tier| tier.is_designed_extension())
+            .map(|tier| tier.label())
+            .collect();
+        assert_eq!(
+            extensions,
+            vec!["elite"],
+            "the fourth tier is the extension"
+        );
+        for tier in DifficultyTier::ALL {
+            match tier.measured_step() {
+                Some(step) => assert!(step < ORIGINAL_DIFFICULTY_STEPS),
+                None => assert!(tier.is_designed_extension()),
+            }
+        }
+
+        // The option is one row of one screen, not a per-mission record: the
+        // title and the description are single ids, and no measured scenario
+        // descriptor carries a difficulty key.
+        let ids = declared_ids(&game_dir());
+        let after = |id: u32| ids.iter().copied().find(|other| *other > id);
+        assert_eq!(
+            surface.game_option_title,
+            (ORIGINAL_GAME_OPTION_DIFFICULTY_TITLE.0.to_owned(), 1084)
+        );
+        assert_eq!(
+            surface.game_option_desc,
+            (ORIGINAL_GAME_OPTION_DIFFICULTY_DESC.0.to_owned(), 1087)
+        );
+        assert_eq!(after(1084), Some(1085), "the title is a single id");
+        assert_eq!(after(1087), Some(1088), "the description is a single id");
+        assert_eq!(surface.ia_difficulty_label.1, 3695);
+        assert_eq!(
+            after(3695),
+            Some(3700),
+            "the instant-action label is a single id"
+        );
+        const { assert!(!ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO) };
+    }
+
+    /// The difficulty count is the **header's bound met by the string
+    /// image**, not a block width read as a count.
+    ///
+    /// The header's next declared id after `IDS_DIFFICULTY` bounds the name
+    /// list at **three** ids — an *upper* bound, because the header is allowed
+    /// to declare an id *inside* a list. The default-view list is the case
+    /// that shows it is: `IDS_VIEWCOCKPIT` 112 and `IDS_VIEWCHASE` 113 are
+    /// both declared and both are view entries, so the gap from 112 to 113 is
+    /// one while the list holds two. Reading a gap as a count is the mistake
+    /// F27-D repaired in the ammunition blocks; here it would have been right
+    /// by luck, so the count is pinned from both sides instead:
+    ///
+    /// * **at most** three, from the header's bound, and
+    /// * **at least** three, because the shipped string image populates all
+    ///   three ids of the bound with one non-empty string each.
+    ///
+    /// The rule is also re-measured against the two blocks F27-D/F28-D already
+    /// measured, so the bound this constant uses is the bound those constants
+    /// were read with.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f32_d_retail_the_difficulty_count_is_a_bound_the_string_image_meets() {
+        let root = game_dir();
+        let surface = measured();
+        let ids = declared_ids(&root);
+
+        // The bound, from the header alone.
+        let capacity = surface.difficulty_bound_id - surface.difficulty_macro_id;
+        assert_eq!(
+            capacity, ORIGINAL_DIFFICULTY_STEPS,
+            "the header's upper bound"
+        );
+        // No id inside the bound is declared by the header, so all three are
+        // free for the option to use.
+        for id in surface.difficulty_macro_id + 1..surface.difficulty_bound_id {
+            assert!(
+                !ids.contains(&id),
+                "id {id} lies inside the measured bound and is declared by the header"
+            );
+        }
+        // The lower bound: the shipped image gives every id of the bound a
+        // non-empty label, so the option offers exactly that many steps.
+        assert_eq!(
+            surface.difficulty_occupancy.len() as u32,
+            capacity,
+            "every id of the bound is measured"
+        );
+        for (id, rows, populated, _) in &surface.difficulty_occupancy {
+            assert_eq!(*rows, 1, "id {id} carries exactly one string");
+            assert_eq!(*populated, 1, "id {id} carries a non-empty string");
+        }
+        // The next id above the bound is the next list's first entry, so the
+        // difficulty names cannot run past it.
+        let next_above_bound = ids
+            .iter()
+            .copied()
+            .filter(|id| *id >= surface.difficulty_bound_id)
+            .min()
+            .expect("an id at or above the bound is declared");
+        assert_eq!(next_above_bound, surface.difficulty_bound_id);
+
+        // The counterexample: a gap is not a count.
+        let view_first = macro_id(&root, "IDS_VIEWCOCKPIT");
+        let view_second = macro_id(&root, "IDS_VIEWCHASE");
+        assert_eq!(
+            view_second - view_first,
+            1,
+            "the gap inside the view list is one"
+        );
+        let view_populated = (view_first..macro_id(&root, "IDS_LIGHTINGLEVELS"))
+            .filter(|id| string_occupancy(&root, *id).1 == 1)
+            .count();
+        assert_eq!(
+            view_populated, 2,
+            "and the view list really holds two entries"
+        );
+
+        // The rule the two constants share, re-measured on the blocks that
+        // were already measured with it.
+        assert_eq!(
+            macro_id(&root, "IDS_ROCKETSHORTNAME") - macro_id(&root, "IDS_ROCKETLONGNAME"),
+            crate::ordnance::ORIGINAL_ROCKET_NAME_BLOCKS[1].0
+                - crate::ordnance::ORIGINAL_ROCKET_NAME_BLOCKS[0].0,
+            "the rocket name block is fifteen ids wide"
+        );
+        assert_eq!(
+            macro_id(&root, "IDS_AIRFRAMESHORTNAME") - macro_id(&root, "IDS_AIRFRAMELONGNAME"),
+            20,
+            "the airframe name block is twenty ids wide"
+        );
+    }
+
+    /// The measured per-aircraft skill vocabulary is exactly
+    /// [`DeclaredSkillTier`]'s three labels, and a label outside them is
+    /// refused rather than carried.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f32_d_retail_the_original_declares_exactly_three_ai_skill_tiers() {
+        let surface = measured();
+
+        assert_eq!(
+            surface.scenarios.len() as u32,
+            ORIGINAL_SCENARIO_DESCRIPTOR_COUNT,
+            "one scenario descriptor per world group"
+        );
+        assert_eq!(
+            surface.reader_archives, 62,
+            "every reader archive in the installation"
+        );
+
+        let groups: usize = surface.scenarios.iter().map(|(_, c)| c.enemy_groups).sum();
+        assert_eq!(groups as u32, ORIGINAL_ENEMY_GROUP_COUNT);
+        let labels: u32 = surface
+            .scenarios
+            .iter()
+            .map(|(_, c)| c.skills.len() as u32)
+            .sum();
+        assert_eq!(
+            labels, ORIGINAL_SKILL_LABEL_COUNT,
+            "group labels plus the named aces"
+        );
+
+        let mut measured_labels: Vec<&str> =
+            surface.skill_census.keys().map(String::as_str).collect();
+        measured_labels.sort_unstable();
+        let mut declared: Vec<&str> = DeclaredSkillTier::ALL.iter().map(|t| t.label()).collect();
+        declared.sort_unstable();
+        assert_eq!(
+            measured_labels, declared,
+            "the measured vocabulary is exactly three"
+        );
+        assert_eq!(
+            surface.skill_census.values().sum::<u32>(),
+            ORIGINAL_SKILL_LABEL_COUNT
+        );
+
+        // Every label resolves; nothing is normalized into the nearest tier.
+        for (label, count) in &surface.skill_census {
+            assert!(
+                DeclaredSkillTier::from_label(label).is_some(),
+                "{label} is a measured tier"
+            );
+            assert!(*count > 0, "{label} is actually declared");
+        }
+        assert_eq!(
+            DeclaredSkillTier::from_label("novice"),
+            Some(DeclaredSkillTier::Novice)
+        );
+        assert_eq!(
+            DeclaredSkillTier::from_label("veteran"),
+            Some(DeclaredSkillTier::Veteran)
+        );
+        assert_eq!(
+            DeclaredSkillTier::from_label("ace"),
+            Some(DeclaredSkillTier::Ace)
+        );
+        for unknown in ["ACE", "Ace", "ace ", "elite", "recruit", "", "hard"] {
+            assert_eq!(
+                DeclaredSkillTier::from_label(unknown),
+                None,
+                "{unknown:?} is not a measured spelling and must be refused"
+            );
+        }
+    }
+
+    /// The declared skill vocabulary is the one the `.zrd` reader already
+    /// spells, so the two cannot drift: the same three constants in
+    /// `cs_content::stunts` are what `enemy_skill` is read with.
+    #[test]
+    fn accept_f32_d_the_declared_skill_vocabulary_is_the_one_the_zrd_reader_spells() {
+        assert_eq!(
+            DeclaredSkillTier::ALL
+                .iter()
+                .map(|tier| tier.label())
+                .collect::<Vec<_>>(),
+            [
+                crate::stunts::ENEMY_SKILL_NOVICE,
+                crate::stunts::ENEMY_SKILL_VETERAN,
+                crate::stunts::ENEMY_SKILL_ACE,
+            ]
+        );
+        // The keys the scenario descriptors declare, so a reader that stops
+        // reading one of them is visible.
+        assert_eq!(ENEMY_SKILL_KEY, "enemy_skill");
+        assert_eq!(SCENARIO_ACE_SKILL_KEY, "ace_skill");
+    }
+
+    /// The ace is a **nine**-slot integer vector in every measured scenario,
+    /// saturated at nine in every slot — and this records the extent *without*
+    /// claiming what a slot means.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f32_d_retail_every_scenario_declares_a_nine_slot_ace_stat_vector() {
+        let surface = measured();
+        assert_eq!(
+            surface.scenarios.len() as u32,
+            ORIGINAL_SCENARIO_DESCRIPTOR_COUNT
+        );
+        for (key, census) in &surface.scenarios {
+            let stats = census
+                .ace_stats
+                .as_ref()
+                .unwrap_or_else(|| panic!("{key} declares no ace_stats"));
+            assert_eq!(
+                stats.len(),
+                ORIGINAL_ACE_STAT_SLOTS,
+                "{key}: the ace vector has nine slots"
+            );
+            for (slot, value) in stats.iter().enumerate() {
+                assert_eq!(
+                    *value, ORIGINAL_ACE_STAT_MAX,
+                    "{key}: slot {slot} is saturated at the measured maximum"
+                );
+            }
+            assert!(
+                !census
+                    .root_keys
+                    .iter()
+                    .any(|key| key == "ace_damage" || key == "ace_health"),
+                "{key}: the measured ace record names no damage or health slot"
+            );
+        }
+    }
+
+    /// No measured scenario descriptor records a difficulty, so a
+    /// [`DeclaredDifficultyProfile`]'s tier can only ever be a *selected*
+    /// option step or a designed extension.
+    ///
+    /// The complete root-key vocabulary is checked, so this fails if a
+    /// scenario ever starts carrying one.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f32_d_retail_no_scenario_records_a_difficulty_so_only_a_selection_is_measurable() {
+        let surface = measured();
+        let mut vocabulary: Vec<&str> = Vec::new();
+        for (_, census) in &surface.scenarios {
+            for key in &census.root_keys {
+                if !vocabulary.contains(&key.as_str()) {
+                    vocabulary.push(key.as_str());
+                }
+            }
+        }
+        assert!(
+            !vocabulary.iter().any(|key| key.contains("difficult")),
+            "no measured scenario key names a difficulty: {vocabulary:?}"
+        );
+        const { assert!(!ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO) };
+        // The two origins stay distinct: a selected step is bounded by the
+        // measurement, a designed extension is not.
+        assert_eq!(
+            DeclaredDifficultyOrigin::SelectedOptionStep { step: 0 },
+            DeclaredDifficultyOrigin::SelectedOptionStep { step: 0 }
+        );
+        assert_ne!(
+            DeclaredDifficultyOrigin::SelectedOptionStep { step: 0 },
+            DeclaredDifficultyOrigin::DesignedExtension
+        );
+        for step in 0..ORIGINAL_DIFFICULTY_STEPS {
+            assert!(
+                DifficultyTier::ALL
+                    .iter()
+                    .any(|tier| tier.measured_step() == Some(step)),
+                "measured step {step} has a declared tier"
+            );
+        }
+    }
+
+    /// The declared mission types the installation measures: three of them,
+    /// each on at least one descriptor. This is what the difficulty probe's
+    /// scenario vocabulary is checked against — no invented fourth mission
+    /// type.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f32_d_retail_the_scenarios_declare_exactly_three_measured_mission_types() {
+        let surface = measured();
+        let mut types: Vec<&str> = Vec::new();
+        for (_, census) in &surface.scenarios {
+            let mission_type = census
+                .mission_type
+                .as_deref()
+                .expect("every measured scenario declares a mission_type");
+            if !types.contains(&mission_type) {
+                types.push(mission_type);
+            }
+        }
+        types.sort_unstable();
+        assert_eq!(
+            types,
+            vec!["dogfight_squadron", "stunt_flying", "zeppelin_run"]
+        );
+    }
+
+    /// A test that skipped itself would report a pass it never earned: every
+    /// retail measurement in this module refuses to run without the
+    /// installation.
+    /// The measurement binds every number it reports to one installation: the
+    /// digest pair and the header's declared-id count travel with the surface,
+    /// so a report cannot describe one installation's numbers under another
+    /// one's fingerprint.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f32_d_retail_the_measurement_is_bound_to_one_installation() {
+        let surface = measured();
+        assert_eq!(surface.install_sha256, RETAIL_INSTALL_SHA256);
+        assert_eq!(
+            surface.content_sha256,
+            "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d",
+            "the canonical-content digest of the installation the numbers came from"
+        );
+        assert!(
+            surface.declared_id_count > 100,
+            "the resource header declares the id vocabulary the option blocks are cut from"
+        );
+    }
+
+    /// The negative the measurement must not be able to fake: the *declared*
+    /// fixture carries no measured step, so a synthetic profile can never be
+    /// reported as one of the original's three.
+    ///
+    /// A retail measurement that skipped itself would report a pass it never
+    /// earned, so the harness reaches the installation only through
+    /// [`game_dir`], which panics rather than falling back. This asserts the
+    /// other half: nothing the designed fixture carries is measured.
+    #[test]
+    fn accept_f32_d_the_declared_fixture_stands_for_no_measured_step() {
+        let rules = declared_synthetic_combat_rules();
+        assert_eq!(rules.origin(), &Origin::SyntheticFixture);
+        for profile in rules.difficulties() {
+            assert_eq!(
+                profile.provenance().class,
+                ClaimStatus::Designed,
+                "a declared difficulty profile is designed, never measured"
+            );
+            assert!(
+                !profile
+                    .overrides()
+                    .iter()
+                    .any(|change| change.provenance.class == ClaimStatus::VerifiedOriginal),
+                "no fixture override claims original measurement"
+            );
+        }
+        // The measured ids are a count and an extent, not values any declared
+        // record may carry: nothing in the schema can hold "step 2" as data.
+        assert_eq!(
+            ORIGINAL_DIFFICULTY_OPTION_IDS.len() as u32,
+            ORIGINAL_DIFFICULTY_STEPS
+        );
+        assert!(
+            ORIGINAL_DIFFICULTY_OPTION_IDS
+                .iter()
+                .all(|id| *id >= ORIGINAL_DIFFICULTY_OPTION_FIRST_ID
+                    && *id < ORIGINAL_DIFFICULTY_OPTION_BOUND_ID),
+            "every id the option occupies lies inside the measured bound"
+        );
     }
 }
