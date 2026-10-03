@@ -23,7 +23,10 @@
 //!   lifecycle transitions, real movement segments, declared signals, timer
 //!   requests and terminal requests into a single event stream ordered by
 //!   [`cs_script::runtime::EventKey`], with bounded work, a session generation
-//!   of its own and a declared reveal rule per objective.
+//!   of its own and a declared reveal rule per objective. Nothing it is asked to
+//!   do is dropped in silence: a refused request, a refused movement and a
+//!   request naming a declaration that does not exist are each *reported*, so a
+//!   consumer can tell "the program asked" from "the world did nothing".
 //! - [`runtime::CountCondition`] / [`runtime::CountReaction`]: a *declared
 //!   roster* plus a *declared category* plus a *declared consequence*, which is
 //!   what makes "never approximate every objective by `enemy_alive == 0`"
@@ -32,7 +35,9 @@
 //!   [`timer::TimerStart`], a validated gameplay
 //!   [`crate::time::TimeDomain`], and exactly one [`timer::TimerAction`] on
 //!   expiry — so reaching a waypoint unlocks or resets an objective only
-//!   through a declared program action.
+//!   through a declared program action. That action belongs to the expiry, not
+//!   to the [`timer::TimerState::Expired`] the table then sits in, so a deadline
+//!   that ran out does not run again by itself.
 //! - [`terminal`]: [`terminal::TerminalOutcome`], the declared
 //!   [`terminal::TerminalPrecedence`] that resolves a tick's conflicting
 //!   requests, and the [`terminal::TerminalLatch`] that holds one answer.

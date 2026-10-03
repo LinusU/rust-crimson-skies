@@ -103,6 +103,11 @@ pub enum TriggerError {
     NonFinite,
     /// The tick is not after the last observed one.
     NotAdvancing { last: Tick, given: Tick },
+    /// One tick listed the same watched actor twice, so a trigger watching that
+    /// actor would be observed twice on one tick. A trigger observes one
+    /// movement per tick, so the second observation is not an advance; the
+    /// caller must send one movement per actor per tick.
+    RepeatedActor { actor: ActorId, tick: Tick },
 }
 
 impl std::fmt::Display for TriggerError {
@@ -113,6 +118,11 @@ impl std::fmt::Display for TriggerError {
                 f,
                 "the last observed tick is {} and this observation is tick {}",
                 last.0, given.0
+            ),
+            Self::RepeatedActor { actor, tick } => write!(
+                f,
+                "actor {actor:?} was listed twice on tick {} but a trigger observes it once per tick",
+                tick.0
             ),
         }
     }

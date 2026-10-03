@@ -597,6 +597,332 @@ fn accept_f39_b_a_refused_movement_leaves_the_whole_tick_untouched() {
     assert_eq!(kinds, [CrossingKind::Exit]);
 }
 
+/// The refusal that is easiest for a *caller* to produce is the one this covers:
+/// a tick that lists a watched actor twice. A trigger observes one movement per
+/// tick, so the second listing is not an advance — and it is only detectable once
+/// the first listing has already moved the trigger, which is after the counter
+/// and condition phases have run. So it must be refused up front, where refusing
+/// costs nothing, or the promise that a refused tick changed nothing is a lie
+/// with a counter already moved.
+#[test]
+fn accept_f39_b_a_tick_that_lists_a_watched_actor_twice_is_refused_whole() {
+    let mut runtime = ac02_runtime();
+    runtime
+        .add_trigger(SweptTrigger::new(APPROACH, PLAYER, synthetic_small_volume()).unwrap())
+        .unwrap();
+    runtime
+        .step(&TickInput {
+            movements: &[(
+                PLAYER,
+                Movement::Continuous {
+                    from_m: [-5.0, 0.0, 0.0],
+                    to_m: [0.0, 0.0, 0.0],
+                },
+            )],
+            ..input(1)
+        })
+        .unwrap();
+
+    // Both segments are finite and the tick advances, so only the repetition can
+    // refuse it — and it must refuse it before the destruction is counted.
+    let refused = runtime.step(&TickInput {
+        lifecycles: &[(PROTECTED, LifecycleKind::Destroyed)],
+        movements: &[
+            (
+                PLAYER,
+                Movement::Continuous {
+                    from_m: [0.0, 0.0, 0.0],
+                    to_m: [0.5, 0.0, 0.0],
+                },
+            ),
+            (
+                PLAYER,
+                Movement::Continuous {
+                    from_m: [0.5, 0.0, 0.0],
+                    to_m: [90.0, 0.0, 0.0],
+                },
+            ),
+        ],
+        ..input(2)
+    });
+    assert!(
+        matches!(
+            refused,
+            Err(RuntimeError::Trigger(
+                cs_sim::objectives::trigger::TriggerError::RepeatedActor { actor, tick: Tick(2) }
+            )) if actor == PLAYER
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        runtime.counted(CountKind::Destroyed),
+        0,
+        "a refused tick counted nothing"
+    );
+    assert_eq!(
+        runtime.outcome(),
+        None,
+        "and settled nothing: the count condition never saw its fact"
+    );
+    assert_eq!(
+        runtime.last_tick(),
+        Some(Tick(1)),
+        "a refused tick did not advance the runtime"
+    );
+
+    // The trigger did not observe the refused tick either, so the retry with one
+    // segment reports the exit from the position tick 1 left it in.
+    let retry = runtime
+        .step(&TickInput {
+            lifecycles: &[(PROTECTED, LifecycleKind::Destroyed)],
+            movements: &[(
+                PLAYER,
+                Movement::Continuous {
+                    from_m: [0.0, 0.0, 0.0],
+                    to_m: [90.0, 0.0, 0.0],
+                },
+            )],
+            ..input(2)
+        })
+        .unwrap();
+    let mut kinds: Vec<CrossingKind> = Vec::new();
+    for event in &retry.events {
+        if let ObjectiveEventKind::TriggerCrossed(crossing) = event.kind {
+            kinds.push(crossing.kind);
+        }
+    }
+    assert_eq!(kinds, [CrossingKind::Exit]);
+    assert_eq!(runtime.counted(CountKind::Destroyed), 1);
+
+    // An actor no trigger watches may repeat freely: nothing observes it, so
+    // nothing can be out of order.
+    let unwatched = ActorId(123);
+    assert!(
+        runtime
+            .step(&TickInput {
+                movements: &[
+                    (
+                        unwatched,
+                        Movement::Continuous {
+                            from_m: [0.0, 0.0, 0.0],
+                            to_m: [1.0, 0.0, 0.0],
+                        },
+                    ),
+                    (
+                        unwatched,
+                        Movement::Continuous {
+                            from_m: [1.0, 0.0, 0.0],
+                            to_m: [2.0, 0.0, 0.0],
+                        },
+                    ),
+                ],
+                ..input(3)
+            })
+            .unwrap()
+            .events
+            .is_empty()
+    );
+}
+
+/// A request that names a declaration this runtime does not have applies nothing,
+/// and says so. Silently dropping it would make "the program asked for something"
+/// and "the world did nothing" the same observation, and a mission whose deadline
+/// never existed would look exactly like one that simply never came due.
+#[test]
+fn accept_f39_b_a_request_naming_nothing_is_reported_not_dropped() {
+    const NO_SUCH_TIMER: SymbolId = SymbolId(999);
+    const NO_SUCH_OBJECTIVE: SymbolId = SymbolId(888);
+    let mut runtime = ac02_runtime();
+    let tick = runtime
+        .step(&TickInput {
+            timer_requests: &[
+                TimerRequest::Arm(NO_SUCH_TIMER),
+                TimerRequest::Cancel(NO_SUCH_TIMER),
+            ],
+            objective_requests: &[(NO_SUCH_OBJECTIVE, ObjectiveState::Succeeded)],
+            ..input(1)
+        })
+        .unwrap();
+
+    let refused: Vec<&ObjectiveEventKind> = tick
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            ObjectiveEventKind::RequestRefused { .. } => Some(&event.kind),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        refused.len(),
+        3,
+        "every nameless reference is reported: {:?}",
+        tick.events
+    );
+    let reasons = refused;
+    assert!(
+        reasons
+            .iter()
+            .all(|kind| matches!(kind, ObjectiveEventKind::RequestRefused { .. }))
+    );
+    assert_eq!(
+        reasons
+            .iter()
+            .filter(|kind| matches!(
+                kind,
+                ObjectiveEventKind::RequestRefused {
+                    reason: RuntimeError::UnknownTimer { timer },
+                    ..
+                } if *timer == NO_SUCH_TIMER
+            ))
+            .count(),
+        2,
+        "both timer requests name the missing timer: {reasons:?}"
+    );
+    assert!(
+        reasons.iter().any(|kind| matches!(
+            kind,
+            ObjectiveEventKind::RequestRefused {
+                request,
+                reason: RuntimeError::UnknownObjective { objective },
+            } if *request == NO_SUCH_OBJECTIVE && *objective == NO_SUCH_OBJECTIVE
+        )),
+        "the objective request names the missing objective: {reasons:?}"
+    );
+
+    // Nothing was applied: the real declaration is still exactly as declared.
+    assert_eq!(
+        runtime.timer_state(COMPLETE_DEADLINE),
+        Some(TimerState::NotArmed)
+    );
+    assert_eq!(
+        runtime.objective_state(PRIMARY),
+        Some(ObjectiveState::Active)
+    );
+    assert_eq!(runtime.outcome(), None);
+}
+
+/// Every declaration entry point refuses a collision, and the reserved
+/// [`ACTOR_EVENT_SOURCE`] is refused by the runtime and not only by
+/// [`CountCondition::new`]: every field of a `CountCondition` is public, so a
+/// struct literal would otherwise let a condition claim the source a counted
+/// actor event reports under.
+#[test]
+fn accept_f39_b_every_declaration_is_checked_for_a_collision() {
+    let mut runtime = ac02_runtime();
+    let condition = || CountCondition::new(SymbolId(410), CountKind::Destroyed, [PROTECTED], 1);
+    runtime
+        .add_condition(condition().unwrap(), CountReaction::ReportOnly)
+        .unwrap();
+    assert_eq!(
+        runtime.add_condition(condition().unwrap(), CountReaction::ReportOnly),
+        Err(RuntimeError::DuplicateCondition {
+            condition: SymbolId(410)
+        })
+    );
+
+    let spec = || ObjectiveSpec {
+        id: PRIMARY,
+        content: objective("deliver-the-medicine"),
+        initial: ObjectiveState::Active,
+        reveal: RevealRule::Immediate,
+        on_complete: ObjectiveCompletion::Continue,
+    };
+    assert_eq!(
+        runtime.add_objective(spec()),
+        Err(RuntimeError::DuplicateObjective { objective: PRIMARY })
+    );
+
+    let trigger = || SweptTrigger::new(APPROACH, PLAYER, synthetic_small_volume());
+    runtime.add_trigger(trigger().unwrap()).unwrap();
+    assert_eq!(
+        runtime.add_trigger(trigger().unwrap()),
+        Err(RuntimeError::DuplicateTrigger {
+            trigger: APPROACH,
+            actor: PLAYER
+        })
+    );
+    // The same volume watched by a different actor is a different declaration.
+    assert!(
+        runtime
+            .add_trigger(SweptTrigger::new(APPROACH, ActorId(8), synthetic_small_volume()).unwrap())
+            .is_ok()
+    );
+
+    // A condition built by struct literal cannot claim the reserved source.
+    assert_eq!(
+        CountCondition::new(ACTOR_EVENT_SOURCE, CountKind::Destroyed, [PROTECTED], 1),
+        Err(RuntimeError::ReservedSymbol {
+            symbol: ACTOR_EVENT_SOURCE
+        })
+    );
+    assert_eq!(
+        runtime.add_condition(
+            CountCondition {
+                key: ACTOR_EVENT_SOURCE,
+                kind: CountKind::Destroyed,
+                roster: [PROTECTED].into_iter().collect(),
+                required: 1,
+            },
+            CountReaction::ReportOnly,
+        ),
+        Err(RuntimeError::ReservedSymbol {
+            symbol: ACTOR_EVENT_SOURCE
+        })
+    );
+    assert_eq!(
+        runtime.add_trigger(
+            SweptTrigger::new(ACTOR_EVENT_SOURCE, PLAYER, synthetic_small_volume()).unwrap()
+        ),
+        Err(RuntimeError::ReservedSymbol {
+            symbol: ACTOR_EVENT_SOURCE
+        })
+    );
+    assert_eq!(
+        runtime.add_timer(
+            MissionTimer::new(
+                ACTOR_EVENT_SOURCE,
+                ClockPolicy::authoritative_gameplay(),
+                TimerStart::Never,
+                1,
+                TimerAction::Finish(TerminalOutcome::Success),
+            )
+            .unwrap()
+        ),
+        Err(RuntimeError::ReservedSymbol {
+            symbol: ACTOR_EVENT_SOURCE
+        })
+    );
+    // A condition the struct literal left degenerate is refused here too.
+    assert_eq!(
+        runtime.add_condition(
+            CountCondition {
+                key: SymbolId(400),
+                kind: CountKind::Destroyed,
+                roster: BTreeSet::new(),
+                required: 1,
+            },
+            CountReaction::ReportOnly,
+        ),
+        Err(RuntimeError::EmptyRoster {
+            condition: SymbolId(400)
+        })
+    );
+    assert_eq!(
+        runtime.add_condition(
+            CountCondition {
+                key: SymbolId(401),
+                kind: CountKind::Destroyed,
+                roster: [PROTECTED].into_iter().collect(),
+                required: 0,
+            },
+            CountReaction::ReportOnly,
+        ),
+        Err(RuntimeError::ZeroRequired {
+            condition: SymbolId(401)
+        })
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Timers: declared start, declared domain, one declared action
 // ---------------------------------------------------------------------------
@@ -805,14 +1131,23 @@ fn accept_f39_b_a_paused_frame_commits_no_ticks_and_moves_no_deadline() {
     assert_eq!(runtime.outcome(), Some(TerminalOutcome::Failure));
 }
 
-/// A timer runs once per declared start. The same signal again does not replay
-/// its action, so a repeated cue cannot become a second wave — F39
-/// non-negotiable behavior 4 through the timer table — and a cancelled or
+/// A timer runs once per declared start, and performs its one declared action
+/// **once**. The same signal again does not replay it — the action is not even
+/// attempted a second time, so a repeated cue cannot become a second wave
+/// (F39 non-negotiable behavior 4 through the timer table) — and a cancelled or
 /// unarmed timer refuses instead of running.
+///
+/// The second half is the discriminating one. A runtime that kept re-deriving the
+/// action list from the timer table would emit the wave request again on every
+/// later tick that commits a tick; only the [`EmissionLedger`] would hide the
+/// repeat, and only for spawns and cues. So this test watches an action the
+/// ledger cannot protect, too.
 #[test]
 fn accept_f39_b_a_signal_arms_a_timer_once_and_a_repeat_does_not_replay_it() {
     const WAVES: SymbolId = SymbolId(40);
+    const REINFORCEMENTS: SymbolId = SymbolId(41);
     let key = || IdempotencyKey("wave-2".into());
+    let reward = content(ContentKind::Objective, "commendation");
     let mut runtime = runtime();
     runtime
         .add_timer(
@@ -832,7 +1167,6 @@ fn accept_f39_b_a_signal_arms_a_timer_once_and_a_repeat_does_not_replay_it() {
         .unwrap();
     // A second wave under its own key and its own signal, so the test can watch
     // which instance ids the refused repeat consumed.
-    const REINFORCEMENTS: SymbolId = SymbolId(41);
     runtime
         .add_timer(
             MissionTimer::new(
@@ -844,6 +1178,23 @@ fn accept_f39_b_a_signal_arms_a_timer_once_and_a_repeat_does_not_replay_it() {
                     key: IdempotencyKey("wave-3".into()),
                     group: SymbolId(53),
                     count: 2,
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    // A third deadline whose action the ledger cannot deduplicate at all: a
+    // reward intent. If the action were replayed, every later tick would grant
+    // the reward again.
+    runtime
+        .add_timer(
+            MissionTimer::new(
+                SymbolId(42),
+                ClockPolicy::authoritative_gameplay(),
+                TimerStart::OnSignal(SymbolId(53)),
+                1,
+                TimerAction::GrantOptionalReward {
+                    reward: reward.clone(),
                 },
             )
             .unwrap(),
@@ -880,8 +1231,9 @@ fn accept_f39_b_a_signal_arms_a_timer_once_and_a_repeat_does_not_replay_it() {
     let first = runtime.spawned_instances(&key()).map(<[ActorId]>::to_vec);
     assert_eq!(first, Some(vec![ActorId(1), ActorId(2)]));
 
-    // The same signal again: refused, and the ids stay the ones the first
-    // admission handed out.
+    // The same signal again: the re-arm is refused by name, and the action is not
+    // performed again — there is no second wave request at all, admitted or
+    // refused.
     let repeat = runtime
         .step(&TickInput {
             signals: &[SymbolId(50)],
@@ -890,10 +1242,23 @@ fn accept_f39_b_a_signal_arms_a_timer_once_and_a_repeat_does_not_replay_it() {
         })
         .unwrap();
     assert!(matches!(
-        repeat.first(|kind| matches!(kind, ObjectiveEventKind::SpawnRefused { .. })),
-        Some(ObjectiveEvent { kind: ObjectiveEventKind::SpawnRefused { instances, .. }, .. })
-            if instances == &vec![ActorId(1), ActorId(2)]
+        repeat.first(|kind| matches!(kind, ObjectiveEventKind::TimerRefused { .. })),
+        Some(ObjectiveEvent {
+            kind: ObjectiveEventKind::TimerRefused {
+                timer,
+                reason: TimerError::AlreadyExpired { .. },
+            },
+            ..
+        }) if *timer == WAVES
     ));
+    assert!(
+        repeat.events.iter().all(|event| !matches!(
+            event.kind,
+            ObjectiveEventKind::SpawnAdmitted { .. } | ObjectiveEventKind::SpawnRefused { .. }
+        )),
+        "an expired timer does not ask for its wave again: {:?}",
+        repeat.events
+    );
     assert_eq!(
         runtime.spawned_instances(&key()).map(<[ActorId]>::to_vec),
         first
@@ -926,9 +1291,270 @@ fn accept_f39_b_a_signal_arms_a_timer_once_and_a_repeat_does_not_replay_it() {
     }));
 }
 
-/// An explicit program arm may run a timer again; a cancellation stops it; and a
-/// request that names nothing, or an unarmed cancellation, is reported rather
-/// than silently ignored.
+/// An expiry's one action belongs to the expiry, not to the state the timer then
+/// sits in. A deadline that ran out does not re-grant its reward on every later
+/// tick that commits one, and it does not re-raise a signal either — otherwise a
+/// signal action would re-arm its own `OnSignal` deadline forever and the mission
+/// would spin on a chain of deadlines that each believe they are the first.
+///
+/// Nothing here ends the mission, on purpose: a settled latch would stop the work
+/// and hide the very repeat this test looks for.
+///
+/// It is still re-runnable the declared way: an explicit
+/// [`TimerRequest::Arm`] performs the action again, because the program asked for
+/// a second run rather than for a repeat of somebody else's event.
+#[test]
+fn accept_f39_b_an_expired_timer_performs_its_declared_action_exactly_once() {
+    const RAISER: SymbolId = SymbolId(110);
+    const STANDING: SymbolId = SymbolId(112);
+    const LISTENER: SymbolId = SymbolId(111);
+    const CHAIN: SymbolId = SymbolId(60);
+    let standing_reward = content(ContentKind::Objective, "optional-scrapbook-page");
+    let chained_reward = content(ContentKind::Objective, "chained-scrapbook-page");
+    let mut chained = runtime();
+    for (id, start, action) in [
+        (
+            RAISER,
+            TimerStart::AtTick(Tick(1)),
+            TimerAction::Signal(CHAIN),
+        ),
+        (
+            STANDING,
+            TimerStart::AtTick(Tick(1)),
+            TimerAction::GrantOptionalReward {
+                reward: standing_reward.clone(),
+            },
+        ),
+        (
+            LISTENER,
+            TimerStart::OnSignal(CHAIN),
+            TimerAction::GrantOptionalReward {
+                reward: chained_reward.clone(),
+            },
+        ),
+    ] {
+        chained
+            .add_timer(
+                MissionTimer::new(id, ClockPolicy::authoritative_gameplay(), start, 1, action)
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+
+    let mut rewards: Vec<(u64, ContentId)> = Vec::new();
+    let mut signals = 0;
+    for tick in 1..=6u64 {
+        let stepped = chained
+            .step(&TickInput {
+                committed_ticks: 1,
+                ..input(tick)
+            })
+            .unwrap();
+        assert!(!stepped.is_stopped(), "nothing bounds a live mission");
+        for event in &stepped.events {
+            match &event.kind {
+                ObjectiveEventKind::OptionalReward { reward } => {
+                    rewards.push((tick, reward.clone()));
+                }
+                ObjectiveEventKind::SignalRaised { signal } if *signal == CHAIN => signals += 1,
+                _ => {}
+            }
+        }
+        if tick > 2 {
+            assert!(
+                stepped.events.is_empty(),
+                "a deadline that already ran does no work again, and says nothing: {:?}",
+                stepped.events
+            );
+        }
+    }
+
+    assert_eq!(
+        rewards,
+        [(1, standing_reward.clone()), (2, chained_reward.clone())],
+        "a reward intent is a grant, not a per-tick state: each happened once"
+    );
+    assert_eq!(
+        signals, 1,
+        "the deadline raised its signal once, not once per tick"
+    );
+    assert_eq!(
+        chained.outcome(),
+        None,
+        "a reward is not an ending, so the mission is still running"
+    );
+    assert_eq!(
+        chained.timer_state(STANDING),
+        Some(TimerState::Expired { at: Tick(1) })
+    );
+
+    // The declared way to run it again: an explicit arm, which is a program
+    // action rather than a repeat of somebody else's event. Each arm is exactly
+    // one grant, and the ticks between the arms grant nothing.
+    let mut fresh = runtime();
+    fresh
+        .add_timer(
+            MissionTimer::new(
+                STANDING,
+                ClockPolicy::authoritative_gameplay(),
+                TimerStart::OnArm,
+                1,
+                TimerAction::GrantOptionalReward {
+                    reward: standing_reward.clone(),
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let mut granted: Vec<u64> = Vec::new();
+    for tick in 1..=5u64 {
+        let requests: &[TimerRequest] = if tick % 2 == 1 {
+            &[TimerRequest::Arm(STANDING)]
+        } else {
+            &[]
+        };
+        let stepped = fresh
+            .step(&TickInput {
+                timer_requests: requests,
+                committed_ticks: 1,
+                ..input(tick)
+            })
+            .unwrap();
+        for event in &stepped.events {
+            if matches!(event.kind, ObjectiveEventKind::OptionalReward { .. }) {
+                granted.push(tick);
+            }
+        }
+    }
+    assert_eq!(
+        granted,
+        [1, 3, 5],
+        "each explicit arm is exactly one grant, and an unarmed tick grants nothing"
+    );
+}
+
+/// Two deadlines that ask for the *same* authored key are the one case where a
+/// repeated request is genuinely reported rather than structurally impossible:
+/// each timer's own action runs exactly once, and the ledger is what refuses the
+/// second wave. The refusal names the instances the first admission allocated, so
+/// a host binds one wave's ids and does not spawn a second one under a second
+/// name.
+#[test]
+fn accept_f39_b_two_deadlines_asking_for_one_key_produce_one_wave() {
+    const FIRST: SymbolId = SymbolId(120);
+    const SECOND: SymbolId = SymbolId(121);
+    let wave = IdempotencyKey("wave-2".into());
+    let wave_instances = vec![ActorId(1), ActorId(2)];
+    let mut waves = runtime();
+    for id in [FIRST, SECOND] {
+        waves
+            .add_timer(
+                MissionTimer::new(
+                    id,
+                    ClockPolicy::authoritative_gameplay(),
+                    TimerStart::OnArm,
+                    1,
+                    TimerAction::SpawnGroup {
+                        key: wave.clone(),
+                        group: SymbolId(51),
+                        count: 2,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+
+    let both = waves
+        .step(&TickInput {
+            timer_requests: &[TimerRequest::Arm(FIRST), TimerRequest::Arm(SECOND)],
+            committed_ticks: 1,
+            ..input(1)
+        })
+        .unwrap();
+    let admissions = both.events.iter().filter(|event| {
+        matches!(
+            &event.kind,
+            ObjectiveEventKind::SpawnAdmitted { key, instances, .. }
+                if *key == wave && *instances == wave_instances
+        )
+    });
+    assert_eq!(admissions.count(), 1, "{:?}", both.events);
+    let refusals = both.events.iter().filter(|event| {
+        matches!(
+            &event.kind,
+            ObjectiveEventKind::SpawnRefused { key, instances, .. }
+                if *key == wave && *instances == wave_instances
+        )
+    });
+    assert_eq!(
+        refusals.count(),
+        1,
+        "the second deadline is refused by name, carrying the first admission's ids: {:?}",
+        both.events
+    );
+    assert_eq!(
+        waves.spawned_instances(&wave).map(<[ActorId]>::to_vec),
+        Some(wave_instances),
+        "one key admits one wave however many deadlines ask for it"
+    );
+
+    // A cue is the same rule with a different payload.
+    let mut cues_runtime = runtime();
+    let line = IdempotencyKey("radio-call-4".into());
+    for id in [SymbolId(130), SymbolId(131)] {
+        cues_runtime
+            .add_timer(
+                MissionTimer::new(
+                    id,
+                    ClockPolicy::authoritative_gameplay(),
+                    TimerStart::OnArm,
+                    1,
+                    TimerAction::Cue {
+                        key: line.clone(),
+                        dialogue: content(ContentKind::Dialogue, "convoy-ambush"),
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    let cues = cues_runtime
+        .step(&TickInput {
+            timer_requests: &[
+                TimerRequest::Arm(SymbolId(130)),
+                TimerRequest::Arm(SymbolId(131)),
+            ],
+            committed_ticks: 1,
+            ..input(1)
+        })
+        .unwrap();
+    assert_eq!(
+        cues.events
+            .iter()
+            .filter(|event| matches!(event.kind, ObjectiveEventKind::CueEmitted { .. }))
+            .count(),
+        1,
+        "a repeated cue key is one radio line, not two: {:?}",
+        cues.events
+    );
+    assert_eq!(
+        cues.events
+            .iter()
+            .filter(|event| {
+                matches!(&event.kind, ObjectiveEventKind::CueRefused { key, .. } if *key == line)
+            })
+            .count(),
+        1,
+        "the repeat is reported rather than dropped: {:?}",
+        cues.events
+    );
+}
+
+/// An explicit program arm may run a timer again; a cancellation stops it; and an
+/// unarmed cancellation is reported rather than silently ignored. (The other
+/// half of "reported, never ignored" — a request that names no timer at all — is
+/// [`accept_f39_b_a_request_naming_nothing_is_reported_not_dropped`].)
 #[test]
 fn accept_f39_b_timer_requests_are_applied_or_reported_never_ignored() {
     const DEADLINE: SymbolId = SymbolId(60);

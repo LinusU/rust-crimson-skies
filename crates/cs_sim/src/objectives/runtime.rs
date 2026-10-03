@@ -26,6 +26,17 @@
 //! * **No reentrancy.** An action never runs a callback. A mission signal is
 //!   eligible to arm a [`TimerStart::OnSignal`] timer on the **next** tick, so
 //!   two timers cannot chase each other inside one tick.
+//! * **A timer performs its one declared action once.** The action belongs to
+//!   the expiry, not to the [`TimerState::Expired`](super::timer::TimerState)
+//!   the table then sits in: a deadline that ran out on tick 4 does not re-grant
+//!   its reward, re-raise its signal or re-request its wave on ticks 5, 6 and 7
+//!   after that. Only a declared start or a fresh [`TimerRequest::Arm`] runs it
+//!   again. The [`EmissionLedger`](super::spawn::EmissionLedger) would hide the
+//!   repeat for a spawn or a cue, and for nothing else.
+//! * **A named reference is never dropped.** A request that names a timer or an
+//!   objective this runtime does not have applies nothing and is *reported*, so
+//!   "the program asked for something" and "the world did nothing" are
+//!   distinguishable from the stream alone.
 //! * **Terminal precedence is declared, not incidental.**
 //!   [`TerminalPrecedence::SyntheticConservative`](super::terminal::TerminalPrecedence::SyntheticConservative)
 //!   resolves the whole set of requests a tick made, and the
@@ -305,6 +316,13 @@ pub enum ObjectiveEventKind {
     TimerExpired { timer: SymbolId },
     /// A timer request or start was refused; the timer kept its state.
     TimerRefused { timer: SymbolId, reason: TimerError },
+    /// A declared request or action named a declaration this runtime does not
+    /// have. Nothing was applied and the reference is named, so a request is
+    /// never dropped in silence.
+    RequestRefused {
+        request: SymbolId,
+        reason: RuntimeError,
+    },
     /// A spawn group was admitted. `group` is the program's spawn-group symbol
     /// and `instances` are the stable per-session instance ids it took, so the
     /// host instantiates exactly the ids this event names.
@@ -338,11 +356,6 @@ pub enum ObjectiveEventKind {
         outcome: TerminalOutcome,
         superseded: Vec<TerminalOutcome>,
     },
-    /// A terminal request arrived at an already-settled latch and was refused.
-    OutcomeRefused {
-        requested: TerminalOutcome,
-        settled: TerminalOutcome,
-    },
 }
 
 /// One ordered event.
@@ -366,7 +379,9 @@ impl ObjectiveEvent {
 /// A tick's input is *facts and declared requests only*. No field applies an
 /// effect, so a caller cannot unlock, reset, succeed or fail an objective except
 /// through the declared request types here or through a [`CountReaction`] /
-/// [`TimerAction`] the declaration already contains.
+/// [`TimerAction`] the declaration already contains. A request naming a
+/// declaration the runtime does not have is refused and reported
+/// ([`ObjectiveEventKind::RequestRefused`]) rather than dropped in silence.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TickInput<'a> {
     /// The tick these facts belong to. Must be strictly after the last stepped
@@ -381,7 +396,8 @@ pub struct TickInput<'a> {
     pub lifecycles: &'a [(ActorId, LifecycleKind)],
     /// The movement each watched actor made this tick, as the **real** segment
     /// from its previous position. An actor absent from this list is not
-    /// observed, so no crossing is invented for it.
+    /// observed, so no crossing is invented for it. A watched actor listed twice
+    /// is refused: a trigger observes one movement per tick.
     pub movements: &'a [(ActorId, Movement)],
     /// Mission signals raised this tick.
     pub signals: &'a [SymbolId],
@@ -489,6 +505,11 @@ pub enum RuntimeError {
     ZeroRequired { condition: SymbolId },
     /// A declaration used the reserved [`ACTOR_EVENT_SOURCE`].
     ReservedSymbol { symbol: SymbolId },
+    /// A timer request or start named a timer this runtime does not have.
+    UnknownTimer { timer: SymbolId },
+    /// An objective request or action named an objective this runtime does not
+    /// have.
+    UnknownObjective { objective: SymbolId },
     /// A declaration pairs [`RevealRule::Immediate`] with a `Hidden` initial
     /// state, which says both "hidden" and "shown from the first tick".
     HiddenButImmediate { objective: SymbolId },
@@ -530,6 +551,12 @@ impl fmt::Display for RuntimeError {
             ),
             Self::ReservedSymbol { symbol } => {
                 write!(f, "{symbol:?} is reserved for actor-keyed events")
+            }
+            Self::UnknownTimer { timer } => {
+                write!(f, "no timer {timer:?} is declared in this runtime")
+            }
+            Self::UnknownObjective { objective } => {
+                write!(f, "no objective {objective:?} is declared in this runtime")
             }
             Self::HiddenButImmediate { objective } => write!(
                 f,
@@ -715,6 +742,11 @@ impl ObjectiveRuntime {
 
     /// Registers one count condition and what satisfying it does.
     ///
+    /// The reserved [`ACTOR_EVENT_SOURCE`] is refused here and not only by
+    /// [`CountCondition::new`], because every field of a `CountCondition` is
+    /// public and a struct literal would otherwise let a condition claim the
+    /// source a counted event reports under.
+    ///
     /// # Errors
     ///
     /// [`RuntimeError::DuplicateCondition`], [`RuntimeError::EmptyRoster`],
@@ -724,8 +756,23 @@ impl ObjectiveRuntime {
         condition: CountCondition,
         reaction: CountReaction,
     ) -> Result<(), RuntimeError> {
+        if condition.key == ACTOR_EVENT_SOURCE {
+            return Err(RuntimeError::ReservedSymbol {
+                symbol: condition.key,
+            });
+        }
         if self.conditions.contains_key(&condition.key) {
             return Err(RuntimeError::DuplicateCondition {
+                condition: condition.key,
+            });
+        }
+        if condition.roster.is_empty() {
+            return Err(RuntimeError::EmptyRoster {
+                condition: condition.key,
+            });
+        }
+        if condition.required == 0 {
+            return Err(RuntimeError::ZeroRequired {
                 condition: condition.key,
             });
         }
@@ -854,12 +901,13 @@ impl ObjectiveRuntime {
     /// # Errors
     ///
     /// [`RuntimeError::NotAdvancing`] for a tick at or before the last stepped
-    /// one, and [`RuntimeError::Trigger`] for a refused movement. Both are
-    /// checked before any effect is applied, so a refused tick changes nothing
-    /// at all — including the swept triggers, which is why the whole tick's
-    /// movements are validated before any of them is observed. A bound is not an
-    /// error: it is reported in [`ObjectiveTick::stop`] with the tick it belongs
-    /// to.
+    /// one, and [`RuntimeError::Trigger`] for a refused movement — a non-finite
+    /// segment, a repeated watched actor, or an observation that would not
+    /// advance. Every one of them is decided in [`validate_movements`] before any
+    /// effect is applied, so a refused tick changes nothing at all: counters keep
+    /// their counts, conditions do not latch, no deadline runs and no spawn is
+    /// admitted. A bound is not an error: it is reported in [`ObjectiveTick::stop`]
+    /// with the tick it belongs to.
     pub fn step(&mut self, input: &TickInput<'_>) -> Result<ObjectiveTick, RuntimeError> {
         if let Some(last) = self.last_tick
             && input.tick <= last
@@ -926,11 +974,12 @@ impl ObjectiveRuntime {
         })
     }
 
-    /// How many events this tick's declared facts could produce at most.
+    /// How many events this tick's declared facts could produce.
     ///
-    /// An upper bound computed *before* anything is applied, so the bound check
-    /// in [`step`](Self::step) can never leave the runtime half-updated. Each
-    /// term is the most that source could produce:
+    /// An estimate computed *before* anything is applied, so the bound check in
+    /// [`step`](Self::step) can never leave the runtime half-updated: the point
+    /// is to refuse an obviously unbounded tick, not to meter it exactly. Each
+    /// term is the most that source could contribute:
     ///
     /// * one event per countable lifecycle transition;
     /// * two events per count condition that has not latched (`ConditionMet`
@@ -940,6 +989,11 @@ impl ObjectiveRuntime {
     /// * two events per timer (one arm, one expiry) plus one per expiry action;
     /// * one event per objective for a reveal;
     /// * one per terminal request.
+    ///
+    /// A reaction's own cascade — the state change, the reveal it triggers and
+    /// the deadlines that state arms — is covered by the objective and timer
+    /// terms, which is why a tick may legitimately produce fewer events than
+    /// this reports.
     fn declared_event_count(&self, input: &TickInput<'_>) -> usize {
         let counted = input
             .lifecycles
@@ -966,15 +1020,34 @@ impl ObjectiveRuntime {
     /// on another would leave the first advanced and the second not: a crossing
     /// lost for one actor and kept for another. Validating first means a refused
     /// tick moves nothing.
+    ///
+    /// This covers both refusals [`SweptTrigger::observe`] can make. The repeated
+    /// actor is the one a caller can produce by listing a watched actor twice:
+    /// the first observation would advance the trigger to this tick and the
+    /// second would then be refused *mid-tick*, after the counter and condition
+    /// phases had already applied — so it is caught here, where refusing costs
+    /// nothing.
     fn validate_movements(&self, input: &TickInput<'_>) -> Result<(), RuntimeError> {
+        let mut observed: BTreeSet<ActorId> = BTreeSet::new();
         for (actor, movement) in input.movements {
             if !movement.is_finite() {
                 return Err(RuntimeError::Trigger(TriggerError::NonFinite));
             }
-            for trigger in self.triggers.values() {
-                if trigger.actor() != *actor {
-                    continue;
-                }
+            let watched: Vec<&SweptTrigger> = self
+                .triggers
+                .values()
+                .filter(|trigger| trigger.actor() == *actor)
+                .collect();
+            if watched.is_empty() {
+                continue;
+            }
+            if !observed.insert(*actor) {
+                return Err(RuntimeError::Trigger(TriggerError::RepeatedActor {
+                    actor: *actor,
+                    tick: input.tick,
+                }));
+            }
+            for trigger in watched {
                 if let Some(last) = trigger.last_tick()
                     && input.tick <= last
                 {
@@ -1099,10 +1172,15 @@ impl ObjectiveRuntime {
     /// each expiry's one declared action.
     fn apply_timers(&mut self, input: &TickInput<'_>, out: &mut Emitter) {
         // Automatic arms first, so a deadline whose declared start tick is this
-        // one runs from this tick rather than the next.
+        // one runs from this tick rather than the next. A declared start is
+        // *consumed* by the tick that took it: without the state filter the
+        // runtime would retry the arm on every later tick and report the refusal
+        // forever, so a one-shot declaration would produce an unbounded event
+        // stream instead of running once.
         let automatic: Vec<SymbolId> = self
             .timers
             .iter()
+            .filter(|(_, timer)| timer.state() == TimerState::NotArmed)
             .filter(|(_, timer)| timer.auto_arms_on(out.tick))
             .map(|(id, _)| *id)
             .collect();
@@ -1131,30 +1209,16 @@ impl ObjectiveRuntime {
                 TimerRequest::Arm(timer) => {
                     self.arm_timer(*timer, TimerStart::OnArm, out);
                 }
-                TimerRequest::Cancel(timer) => {
-                    let refused = match self.timers.get_mut(timer) {
-                        None => None,
-                        Some(declaration) => declaration.cancel().err(),
-                    };
-                    if let Some(reason) = refused {
-                        out.push(
-                            *timer,
-                            ObjectiveEventKind::TimerRefused {
-                                timer: *timer,
-                                reason,
-                            },
-                        );
-                    }
-                }
+                TimerRequest::Cancel(timer) => self.cancel_timer(*timer, out),
             }
         }
 
+        let mut expired: Vec<SymbolId> = Vec::new();
         if input.committed_ticks > 0 {
             // Collected in `SymbolId` order, which is declared order and never
             // hash order: two runs with the same table expire the same timers in
             // the same sequence.
             let ids: Vec<SymbolId> = self.timers.keys().copied().collect();
-            let mut expired: Vec<SymbolId> = Vec::new();
             for id in ids {
                 if let Some(timer) = self.timers.get_mut(&id)
                     && timer.advance(input.committed_ticks)
@@ -1162,22 +1226,30 @@ impl ObjectiveRuntime {
                     expired.push(id);
                 }
             }
-            for timer in expired {
+            for timer in expired.iter().copied() {
                 self.report_expiry(timer, out);
             }
         }
 
-        // The actions are collected before any of them is applied, so one
+        // Only the timers that ran out on **this** tick perform their action,
+        // and the whole set is collected before any of them is applied, so one
         // timer's action can never observe another's half-applied state.
-        let expiries: Vec<(SymbolId, TimerAction)> = self
-            .timers
+        //
+        // Deriving the set from the timer table instead would replay every
+        // expired action on every later tick that commits a tick, because
+        // [`TimerState::Expired`] is where a timer stays: a reward intent, a
+        // raised signal or a second wave request would repeat forever. Only the
+        // [`EmissionLedger`](super::spawn::EmissionLedger) would hide the repeat,
+        // and only for spawns and cues.
+        let actions: Vec<(SymbolId, TimerAction)> = expired
             .iter()
-            .filter_map(|(id, timer)| match timer.state() {
-                TimerState::Expired { .. } => Some((*id, timer.action().clone())),
-                _ => None,
+            .filter_map(|id| {
+                self.timers
+                    .get(id)
+                    .map(|declaration| (*id, declaration.action().clone()))
             })
             .collect();
-        for (timer, action) in expiries {
+        for (timer, action) in actions {
             self.apply_timer_action(timer, action, out);
         }
     }
@@ -1213,17 +1285,11 @@ impl ObjectiveRuntime {
                     },
                 );
             }
-            Resolution::AlreadySettled { outcome, .. } => {
-                for (requested_outcome, source) in requested {
-                    out.push(
-                        source,
-                        ObjectiveEventKind::OutcomeRefused {
-                            requested: requested_outcome,
-                            settled: outcome,
-                        },
-                    );
-                }
-            }
+            // `step` returns before this runs when the latch already holds an
+            // outcome, so there is no reachable tick in which a request set here
+            // meets a settled latch: the tick that found one applied nothing and
+            // said so through `StopReason::OutcomeSettled` instead.
+            Resolution::AlreadySettled { .. } => {}
         }
     }
 
@@ -1238,6 +1304,13 @@ impl ObjectiveRuntime {
         out: &mut Emitter,
     ) {
         let Some(tracked) = self.objectives.get_mut(&objective) else {
+            out.push(
+                source,
+                ObjectiveEventKind::RequestRefused {
+                    request: objective,
+                    reason: RuntimeError::UnknownObjective { objective },
+                },
+            );
             return;
         };
         let from = tracked.state();
@@ -1356,16 +1429,43 @@ impl ObjectiveRuntime {
 
     fn arm_timer(&mut self, timer: SymbolId, via: TimerStart, out: &mut Emitter) {
         let tick = out.tick;
-        let result = match self.timers.get_mut(&timer) {
-            None => return,
-            Some(declaration) => match via {
-                TimerStart::OnArm => declaration.arm(tick),
-                _ => declaration.auto_arm(tick),
-            },
+        let Some(declaration) = self.timers.get_mut(&timer) else {
+            out.push(
+                timer,
+                ObjectiveEventKind::RequestRefused {
+                    request: timer,
+                    reason: RuntimeError::UnknownTimer { timer },
+                },
+            );
+            return;
+        };
+        let result = match via {
+            TimerStart::OnArm => declaration.arm(tick),
+            _ => declaration.auto_arm(tick),
         };
         match result {
             Ok(()) => out.push(timer, ObjectiveEventKind::TimerArmed { timer, via }),
             Err(reason) => out.push(timer, ObjectiveEventKind::TimerRefused { timer, reason }),
+        }
+    }
+
+    /// Cancels a declared timer, or names the request that named no timer.
+    fn cancel_timer(&mut self, timer: SymbolId, out: &mut Emitter) {
+        let reason = match self.timers.get_mut(&timer) {
+            None => {
+                out.push(
+                    timer,
+                    ObjectiveEventKind::RequestRefused {
+                        request: timer,
+                        reason: RuntimeError::UnknownTimer { timer },
+                    },
+                );
+                return;
+            }
+            Some(declaration) => declaration.cancel().err(),
+        };
+        if let Some(reason) = reason {
+            out.push(timer, ObjectiveEventKind::TimerRefused { timer, reason });
         }
     }
 
