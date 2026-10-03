@@ -1215,8 +1215,9 @@ pub const ORIGINAL_ORDNANCE_HARDPOINT_POINTS: u32 = ORIGINAL_HARDPOINT_POINTS;
 /// stable recipient, which is what the timed engine-status path consumes; the
 /// radius and the area's own bounded lifetime reach no gameplay code, so
 /// non-negotiable 3's "bounded lifetimes and stable recipient ids" is enforced
-/// for the status ledger and **not** for the area's reach. Follow-up task
-/// #454 owns implementing it; this list is where it is recorded until then.
+/// for the status ledger and **not** for the area's reach. Follow-up task #552
+/// (F28-AE1) owns implementing it; this list is where it is recorded until
+/// then.
 pub const DECLARED_FIELDS_WITHOUT_CONSUMER: [(&str, &str); 2] = [
     (
         "area_effect.radius_m",

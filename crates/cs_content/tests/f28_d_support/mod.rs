@@ -432,12 +432,11 @@ impl Observation {
 
 /// The trailing `[n]` of a literal like `object EIA[8]`, or `for(... < n; ...)`.
 fn literal_bound(literal: &str) -> Option<u32> {
-    if let Some(open) = literal.rfind('[') {
-        if let Some(close) = literal.rfind(']') {
-            if close > open {
-                return literal[open + 1..close].parse::<u32>().ok();
-            }
-        }
+    if let Some(open) = literal.rfind('[')
+        && let Some(close) = literal.rfind(']')
+        && close > open
+    {
+        return literal[open + 1..close].parse::<u32>().ok();
     }
     let after = literal.split("< ").nth(1)?;
     after

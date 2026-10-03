@@ -2241,7 +2241,8 @@ impl SessionOrdnanceRow {
     /// Always `false`: the radius and lifetime lower into
     /// [`cs_sim::weapons::ordnance::AreaEffect`] and no production path reads
     /// them, so the report says so rather than implying a splash was applied
-    /// to whoever happened to be nearby. Follow-up task #454 owns it.
+    /// to whoever happened to be nearby. Follow-up task #552 (F28-AE1) owns
+    /// it.
     #[must_use]
     pub const fn area_applied(&self) -> bool {
         self.area_applied
@@ -2374,7 +2375,8 @@ pub enum SessionOrdnanceFinding {
     /// reaches no recipient.
     ///
     /// The record lowers, so the session flies it, and the area's radius and
-    /// lifetime stop there.
+    /// lifetime stop there. Follow-up task #552 (F28-AE1) owns implementing
+    /// the reach.
     UnconsumedAreaEffect {
         /// The actor carrying it.
         shooter: ActorId,
