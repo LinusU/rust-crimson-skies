@@ -533,3 +533,4 @@ pub mod textures;
 pub mod ui_layout;
 pub mod weapons;
 pub mod world;
+pub mod world_actors;
