@@ -300,16 +300,21 @@ comparison of something else.
 installation and content digests measured by production discovery, and the
 consumer report as a hashed artifact.
 
-**Pre-existing failure, not this task's.** `python3 -m unittest discover -s
-tools/tests -p 'test_evidence_review_identity.py'` reports 2 failures on this
-branch **and on `origin/main`** (checked by the reviewer in a clean worktree at
-`db047e41` with this branch's files absent):
+**A tools-test failure that this stage did not cause, and that main has since
+fixed.** On the branch as submitted, `python3 -m unittest discover -s
+tools/tests -p 'test_evidence_review_identity.py'` reported 2 failures, and the
+reviewer reproduced exactly those two in a clean worktree at `db047e41`
+(`origin/main` at the time) with this branch's files absent:
 `test_accept_m16_a_fu4_the_reader_covers_the_whole_family` and
-`test_accept_m16_a_fu4_a_runtime_identity_harness_is_exempt_and_pinned` pin a
-`runtime`-shaped harness set that ten committed harnesses have outgrown. The
-identity cross-check this stage depends on — that the harness's literal equals the
-committed report's `review.identity`, and that the claim is `implemented` — passes
-for `F14-D.4`; filed as **#562 (TOOLS-EVID)** rather than fixed here.
+`test_accept_m16_a_fu4_a_runtime_identity_harness_is_exempt_and_pinned` pinned a
+`runtime`-shaped harness set that committed harnesses had outgrown — filed as
+**#562 (TOOLS-EVID)** rather than fixed here. The rebase onto the current
+`origin/main` brought #562's fix with it (`ab45cb88`, `eb8438e9`), so on the
+reviewed branch the whole selection passes (20 tests, exit 0) and this note no
+longer claims a pre-existing failure. The identity cross-check this stage depends
+on — that the harness's literal equals the committed report's
+`review.identity`, and that the claim stays `implemented` — passes for
+`F14-D.4`.
 
 
 ## Review additions to this stage (same task, reviewer pass)
@@ -377,12 +382,16 @@ changes a measured count.
    constructed it: a group with no `gamez.zbd` is an expected state that becomes
    a named diagnostic (that is the behaviour the suite tests), so the variant was
    documentation of a path that does not exist. Removed.
-7. **Two defects from the rebase onto the F14-D.3 commit.** The module
-   documentation had a duplicated, ungrammatical paragraph — the conflict
-   resolution spliced the F14-D.3 sentence onto the F14-D.4 one, leaving a
-   fragment starting "use, the file inventory is …" — and the bullet list was
-   split by a stray blank `//!` line. Both repaired; the paragraphs now read as
-   one derivation list.
+7. **Two defects from the rebase.** The module documentation had a duplicated,
+   ungrammatical paragraph — a conflict resolution had spliced the F14-D.3
+   sentence onto the F14-D.4 one, leaving a fragment starting "use, the file
+   inventory is …" — and the bullet list was split by a stray blank `//!` line.
+   Both repaired; the paragraphs now read as one derivation list. The same
+   mangled fragment was **already on `origin/main`**, introduced by an earlier
+   stage's own rebase, so this fixes text two stages touched; a second conflict
+   with F14-D.5's faction and paint-mask collections was resolved by keeping
+   both sides, and `git diff origin/main...HEAD` shows this branch adds its own
+   collections without removing any of F14-D.5's.
 8. **A wrong number in this note.** The gap section said "46 MB of GameZ
    container across nine archives"; the nine files measure 52 386 080 bytes
    (≈50 MiB), which is what it now says.
@@ -393,10 +402,12 @@ an address" check compared `(offset, length)` **pairs**, so two records sharing 
 start with different lengths would have passed — it now compares the addresses on
 their own as well.
 
-`docs/findings/evidence/F14-D.4.json` was regenerated on the reviewed commit and
-its `review.identity` replaced with the reviewer's own text through
-`CS_EVIDENCE_REVIEW` in the same commit, as
-`tools/tests/test_evidence_review_identity.py` requires.
+`docs/findings/evidence/F14-D.4.json` was regenerated on the reviewed commit (11
+tests, `retail` capability, both artifacts re-hashed) and its `review.identity`
+now names the reviewer, as `tools/tests/test_evidence_review_identity.py`
+requires. The reviewer ran the harness without `CS_EVIDENCE_REVIEW` and replaced
+the harness's literal with the reviewer's own text in the same commit, so the
+report and the harness that writes it cannot drift apart.
 
 
 ## Sources used

@@ -832,12 +832,15 @@ impl Baseline {
 
 /// Builds the complete private baseline inventory of `install_root`.
 ///
-/// The walk reads the installation five ways and nothing else: the F02
+/// The walk reads the installation seven ways and nothing else: the F02
 /// inventory (`cs_assets::install::discover`) for every regular file, the
 /// shared campaign layout ([`crate::campaign_bindings::campaign_layout`]) for
 /// the mission directories, each mission's reader archive for its span and
 /// digest, the string image F56-A reads the multiplayer mode table from
-/// ([`MODE_STRING_IMAGE`], one row per mode), and each geometry container
+/// ([`MODE_STRING_IMAGE`], one row per mode), the world-group readers
+/// [`classify`] lists for the world collection, the faction palette archive
+/// ([`crate::livery::PALETTE_MEMBER`]) and the airframe library's BM members
+/// ([`PAINT_MASK_CONTAINER`]), and each geometry container
 /// `cs_assets::install::Diagnosis` names for its node array and mesh section.
 /// Rows are inserted in a fixed order and every report array is rendered from
 /// canonical id order, so the same installation yields the same bytes (spec F14
