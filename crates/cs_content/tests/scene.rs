@@ -3057,7 +3057,15 @@ fn accept_f11_e1_the_escape_is_injective_and_a_case_clash_is_still_refused() {
     let other = cid(ContentKind::SceneNode, "container.zbd.c1.brigturret2-20");
     let other = SceneNodeId::from_content_id(other).expect("a scene_node id");
     assert_eq!(other.authored_names(&container), None);
-    for malformed in ["brigturret2-2", "brigturret2-2z", "brigturret2-"] {
+    for malformed in [
+        "brigturret2-2",
+        "brigturret2-2z",
+        "brigturret2-",
+        // `-ff` is a well-formed escape of one byte that is not valid UTF-8 on
+        // its own: the escaping writes bytes, so the reading has to reject a
+        // name the writer could have written but the store never stores.
+        "brigturret2-ff",
+    ] {
         let id = cid(
             ContentKind::SceneNode,
             &format!("container.zbd.planes.{malformed}"),

@@ -185,21 +185,24 @@ real shortfall, reported as one, not a pass.
 | `accept_f11_e1_*` test | Covers | Fails when |
 | --- | --- | --- |
 | `an_unspellable_authored_name_is_escaped_into_its_id_and_reads_back` | the escape table over the three spellings the installation stores (`brigturret2 `, `z:\crimsonrun\data\common\vessels\`, a `-`, a `.`); that a name the grammar can already spell is untouched; that every spelling is a legal key; the real container's shape over the production reader and writer (slots 640–645's analogue), each id read back to the stored name-path; the stored name and the authored path unchanged on the record; every node of the converted container reading back | the escaping is removed, a name the grammar spells is rewritten, the record's stored name is trimmed or escaped, or the reading half disagrees with the authored path |
-| `the_escape_is_injective_and_a_case_clash_is_still_refused` | `brigturret2 `, `brigturret2-20` and `brigturret2-2d20` deriving three distinct ids (a naive "replace the space" spelling would give the first two one); the exact three keys; two roots differing only in case still refused as `DuplicateNodeId`; `authored_names` returning `None` for another container and for three malformed escapes, and the names of a well-formed nested id | the escape character is not escaped itself, the case clash is silently merged, or a malformed key reads back as a plausible name |
+| `the_escape_is_injective_and_a_case_clash_is_still_refused` | `brigturret2 `, `brigturret2-20` and `brigturret2-2d20` deriving three distinct ids (a naive "replace the space" spelling would give the first two one); the exact three keys; two roots differing only in case still refused as `DuplicateNodeId`; `authored_names` returning `None` for another container and for four malformed escapes (a truncated one, a non-hex one, a dangling one, and one escaping `0xff`, which is not valid UTF-8 on its own) | the escape character is not escaped itself, the case clash is silently merged, or a malformed key reads back as a plausible name |
 | `a_dotted_root_name_is_a_root_and_a_nested_node_is_not` | `ap_lightpole.flt` spelled `ap_lightpole-2eflt` and accepted by `SceneRootRef::new`, while a nested id is still refused as `NotARootNode` (the corpus has 245 dotted roots) | `.` is escaped as something else, or the root check stops being a check on separators |
 | `retail_planes_node_array_builds_every_node_id` (retail) | the real `planes.zbd`: the whole container converts (3 317 nodes, 28 roots); every id reads back; the six affected nodes by slot, stored name and exact key; and that an unaffected root keeps the key it always had | the conversion is refused, an id moves, a name is rewritten, or a seventh node is affected |
 
-**Sensitivity check.** Mutations applied and reverted, each killed by a test CI
-runs (only the fourth is `#[ignore]`d):
+**Sensitivity check.** Every mutation below was applied and reverted, with the
+test that killed it recorded as observed. Only the last row is `#[ignore]`d, so
+only its column entry needs the retail capability:
 
 | mutation | killed by |
 | --- | --- |
-| escaping removed (the old behaviour: the joined authored path straight into the key) | the retail test and the first synthetic test |
-| the escape character changed to `_` | `an_unspellable_…` (the `r_aileron1` and `player_bhawk` cases) and `retail_planes_…` |
-| `.` no longer escaped | `a_dotted_root_name_…`, and the first test's escape table |
-| the reading half made to skip the container prefix, or to accept an uppercase hex digit | `the_escape_is_injective_…` |
-| `unescape_scene_node_name` losing the `String::from_utf8` check (returning a lossy string) | `the_escape_is_injective_…` and the first test's round trip |
-| a name trimmed instead of escaped | the first test and the retail test |
+| the escaping removed (the old behaviour: the joined authored path straight into the key) | all four tests |
+| the escape character changed to `_` | all four tests |
+| the escape character not escaped itself (`-` passing through) | `an_unspellable_…`, `the_escape_is_injective_…` |
+| `.` no longer escaped | `a_dotted_root_name_…`, `an_unspellable_…` (the `planes.zbd` test is unaffected: that container has no dotted name) |
+| the reading half skipping the container prefix | all four tests |
+| the decoder losing its UTF-8 check (returning a lossy string) | `the_escape_is_injective_…` (`-ff`) |
+| the stored name trimmed in `parsed_node_from_gamez` | `an_unspellable_…` and the retail test |
+| the decoder accepting an uppercase hex digit | **nothing, and nothing can**: `ContentId::from_source` lowercases every key, so no id can hold one. The decoder stays strict because that is the alphabet the writer emits, but this strictness is not observable through the public API and is not claimed as tested |
 
 ## Unknowns and limitations (all recorded, none guessed)
 
