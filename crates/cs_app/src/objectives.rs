@@ -2266,8 +2266,14 @@ pub fn survey_retail_objective_records(
 /// The shared walk of F39-D's census and F39-E1's
 /// [`survey_retail_dormant_reveal`]: both need every mission's decoded
 /// `objectives.zrd`, and two walks would mean two definitions of "every
-/// mission". The document is carried here (not its bytes) because each survey
-/// walks it with its own reader and neither re-reads the archive.
+/// mission". The decoded document is carried (not the member bytes) because
+/// each survey walks it with its own reader.
+///
+/// Every record is held until the caller returns, so the walk decodes all 53
+/// installation readers at once — a few megabytes of `.zrd` — rather than
+/// streaming them. Calling this helper from both surveys therefore decodes the
+/// installation twice per process, which is a deliberate simplicity trade for
+/// one definition of "every mission", not a cache.
 struct MissionObjectiveRecord {
     mission: String,
     container: String,
@@ -2698,6 +2704,26 @@ impl DormantRevealCensus {
         attributes.into_iter().collect()
     }
 
+    /// Every part any `INACTIVE<n>` condition names, with how many declarations
+    /// name it.
+    ///
+    /// Measured over the installation: 88 distinct spellings, which include the
+    /// engine and gasbag node names of the actors' own airframe records next to
+    /// the same words used without a part. None of them is decoded, so they stay
+    /// text.
+    #[must_use]
+    pub fn condition_parts(&self) -> Vec<(String, usize)> {
+        let mut parts: BTreeMap<String, usize> = BTreeMap::new();
+        for (_, block) in self.blocks() {
+            for condition in &block.conditions {
+                if let Some(part) = &condition.part {
+                    *parts.entry(part.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        parts.into_iter().collect()
+    }
+
     /// The declared arities, with how many `INACTIVE<n>` declarations hold each.
     #[must_use]
     pub fn condition_arities(&self) -> Vec<(usize, usize)> {
@@ -2708,6 +2734,49 @@ impl DormantRevealCensus {
             }
         }
         arities.into_iter().collect()
+    }
+
+    /// How many blocks declare the sound group they play when the objective
+    /// activates.
+    ///
+    /// This is the population
+    /// [`cue_ordered_dated_blocks`](Self::cue_ordered_dated_blocks) draws its
+    /// controlled condition from, and it is what pins the measured spelling:
+    /// a wrong key would read no block and quietly empty the controlled
+    /// condition rather than fail.
+    #[must_use]
+    pub fn wakeup_sound_group_blocks(&self) -> usize {
+        self.blocks()
+            .filter(|(_, block)| block.wakeup_sound_group.is_some())
+            .count()
+    }
+
+    /// How many blocks declare the sound group they play when the objective
+    /// completes.
+    ///
+    /// Measured, and pinned like [`Self::wakeup_sound_group_blocks`]: the
+    /// completion cue is a *declared* cue and nothing else, so a wrong spelling
+    /// here would read as "no block declares one" instead of failing.
+    #[must_use]
+    pub fn completed_sound_group_blocks(&self) -> usize {
+        self.blocks()
+            .filter(|(_, block)| block.completed_sound_group.is_some())
+            .count()
+    }
+
+    /// How many of the dated blocks also name the cue they play on activation.
+    ///
+    /// Measured: this is the population the two cue-ordered families are drawn
+    /// from, and it is how many dated declarations are cross-checked by the
+    /// original's own sound numbering.
+    #[must_use]
+    pub fn dated_wakeup_sound_group_blocks(&self) -> usize {
+        self.blocks()
+            .filter(|(_, block)| {
+                block.dormant.is_some_and(|reading| !reading.is_sentinel())
+                    && block.wakeup_sound_group.is_some()
+            })
+            .count()
     }
 
     /// Controlled condition B: the **condition ladders**.
@@ -2771,6 +2840,10 @@ impl DormantRevealCensus {
     /// which a *count* of anything would not do. Only cue names with a common
     /// prefix and a trailing number are compared, so the test never invents an
     /// ordering for names that carry none.
+    ///
+    /// The population this is drawn from is measured, not assumed:
+    /// 123 blocks declare an activation cue and 37 of the dated blocks declare
+    /// one, and both figures are asserted by the retail suite.
     #[must_use]
     pub fn cue_ordered_dated_blocks(&self) -> Vec<CueOrderedFamily> {
         let mut groups: BTreeMap<(String, String), Vec<CueOrderedEntry>> = BTreeMap::new();
@@ -2861,7 +2934,8 @@ pub struct ConditionLadder {
     pub condition_count: usize,
     /// The shared condition set, in stage order.
     pub signature: ConditionSignature,
-    /// The blocks declaring it, in block-name order.
+    /// The blocks declaring it, in the order the mission declares them (measured
+    /// to be ascending block number).
     pub rungs: Vec<LadderRung>,
 }
 
@@ -2958,7 +3032,7 @@ pub fn survey_retail_dormant_reveal(
             measure_dormant_declarations(&record.document).map_err(|error: DormantReadError| {
                 DormantCensusError::Declaration {
                     mission: record.mission.clone(),
-                    block: declared_block_of(&error),
+                    block: error.block().to_owned(),
                     reason: error.to_string(),
                 }
             })?;
@@ -2976,15 +3050,4 @@ pub fn survey_retail_dormant_reveal(
         install_sha256,
         rows,
     })
-}
-
-/// The block a [`DormantReadError`] is about, as a declared key.
-///
-/// Every refusal variant carries its own block name; this reads it back so the
-/// census's own error names the block without re-deriving it from the message.
-fn declared_block_of(error: &DormantReadError) -> String {
-    let message = error.to_string();
-    message
-        .split_once(": ")
-        .map_or_else(|| message.clone(), |(block, _)| block.to_owned())
 }

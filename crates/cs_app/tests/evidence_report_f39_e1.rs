@@ -59,8 +59,9 @@ fn review_method(census: &DormantRevealCensus) -> String {
      member decoded with the production .zrd reader and its numbered OBJECTIVE<N> blocks read through \
      cs_content::objectives::measure_dormant_declarations; over {} mission readers the installation declares {} \
      objective blocks, {} of which carry BEGIN_DORMANT ({} the measured -1 sentinel, {} a positive argument), \
-     {} blocks carry {} INACTIVE<n> conditions and {} carry an INACTIVE_COMPLETION_COUNT, and {} blocks carry \
-     an IDENTITY display declaration. CONTROLLED CONDITIONS isolated from the files, each recorded with its \
+     {} blocks carry {} INACTIVE<n> conditions, {} carry an INACTIVE_COMPLETION_COUNT, {} carry an IDENTITY \
+     display declaration ({} declarations in all) and {} name a WAKEUP_SOUND_GROUP beside a dated argument. \
+     CONTROLLED CONDITIONS isolated from the files, each recorded with its \
      contrary hypotheses in docs/findings/2026-10-03-f39-e1-objective-dormant-reveal-lifecycle.md: {} of {} \
      shared-condition families declare more than one threshold over the same condition set, and {} of {} \
      dated-block families whose cues are numbered in sequence are also in argument order. LIMITS OF WHAT WAS \
@@ -85,7 +86,9 @@ fn review_method(census: &DormantRevealCensus) -> String {
         census.condition_blocks(),
         census.condition_count(),
         census.completion_count_blocks(),
+        census.identity_blocks(),
         census.identity_declarations(),
+        census.dated_wakeup_sound_group_blocks(),
         isolating,
         ladders.len(),
         agreeing,
@@ -216,63 +219,73 @@ fn evidence_report_f39_e1_writes_the_acceptance_report() {
         })
         .collect();
     let census_path = evidence_dir.join("dormant-reveal-census.json");
-    fs::write(
-        &census_path,
-        format!(
-            "{{\"install_sha256\": {}, \"candidate_tree\": {}, \"readers\": {}, \"blocks\": {}, \
+    let census_text = format!(
+        "{{\"install_sha256\": {}, \"candidate_tree\": {}, \"readers\": {}, \"blocks\": {}, \
              \"dormant_blocks\": {}, \"sentinel_blocks\": {}, \"dated_blocks\": {}, \"dated_arguments\": [{}], \
              \"condition_blocks\": {}, \"conditions\": {}, \"completion_count_blocks\": {}, \
              \"completion_counts\": [{}], \"counts_matching_conditions\": {}, \"counts_above_conditions\": {}, \
              \"counts_without_conditions\": {}, \"identity_blocks\": {}, \"identity_declarations\": {}, \
              \"identity_messages\": {}, \"dormant_identity_blocks\": {}, \"condition_arities\": [{}], \
-             \"condition_attributes\": [{}], \"condition_subjects\": [{}], \"condition_ladders\": [{}], \
+             \"condition_attributes\": [{}], \"condition_subjects\": [{}], \"condition_parts\": [{}], \
+             \"wakeup_sound_group_blocks\": {}, \"completed_sound_group_blocks\": {}, \
+             \"dated_wakeup_sound_group_blocks\": {}, \"condition_ladders\": [{}], \
              \"cue_ordered_families\": [{}], \"rows\": [{}]}}\n",
-            jstr(&install_sha256),
-            jstr(&candidate_tree),
-            census.readers(),
-            census.block_count(),
-            census.dormant_blocks(),
-            census.sentinel_blocks(),
-            census.dated_blocks(),
-            census
-                .dated_arguments()
-                .iter()
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-                .join(", "),
-            census.condition_blocks(),
-            census.condition_count(),
-            census.completion_count_blocks(),
-            census
-                .completion_counts()
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-            census.counts_matching_conditions(),
-            census.counts_above_conditions(),
-            census.counts_without_conditions(),
-            census.identity_blocks(),
-            census.identity_declarations(),
-            census.identity_messages(),
-            census.dormant_identity_blocks(),
-            counted(&census.condition_arities(), |(arity, count)| format!(
-                "{{\"arity\": {arity}, \"declarations\": {count}}}"
-            )),
-            counted(&census.condition_attributes(), |(name, count)| format!(
-                "{{\"name\": {}, \"declarations\": {count}}}",
-                jstr(name)
-            )),
-            counted(&census.condition_subjects(), |(name, count)| format!(
-                "{{\"subject\": {}, \"declarations\": {count}}}",
-                jstr(name)
-            )),
-            ladders.join(", "),
-            cues.join(", "),
-            rows.join(", "),
-        ),
-    )
-    .expect("write dormant-reveal-census.json");
+        jstr(&install_sha256),
+        jstr(&candidate_tree),
+        census.readers(),
+        census.block_count(),
+        census.dormant_blocks(),
+        census.sentinel_blocks(),
+        census.dated_blocks(),
+        census
+            .dated_arguments()
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        census.condition_blocks(),
+        census.condition_count(),
+        census.completion_count_blocks(),
+        census
+            .completion_counts()
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+        census.counts_matching_conditions(),
+        census.counts_above_conditions(),
+        census.counts_without_conditions(),
+        census.identity_blocks(),
+        census.identity_declarations(),
+        census.identity_messages(),
+        census.dormant_identity_blocks(),
+        counted(&census.condition_arities(), |(arity, count)| format!(
+            "{{\"arity\": {arity}, \"declarations\": {count}}}"
+        )),
+        counted(&census.condition_attributes(), |(name, count)| format!(
+            "{{\"name\": {}, \"declarations\": {count}}}",
+            jstr(name)
+        )),
+        counted(&census.condition_subjects(), |(name, count)| format!(
+            "{{\"subject\": {}, \"declarations\": {count}}}",
+            jstr(name)
+        )),
+        counted(&census.condition_parts(), |(name, count)| format!(
+            "{{\"part\": {}, \"declarations\": {count}}}",
+            jstr(name)
+        )),
+        census.wakeup_sound_group_blocks(),
+        census.completed_sound_group_blocks(),
+        census.dated_wakeup_sound_group_blocks(),
+        ladders.join(", "),
+        cues.join(", "),
+        rows.join(", "),
+    );
+    // Nothing outside this harness ever parses the census artifact — it is
+    // hashed and committed — so it is checked here rather than committed as if it
+    // were a measurement.
+    assert_well_formed_json(&census_text, &census_path.display().to_string());
+    fs::write(&census_path, census_text).expect("write dormant-reveal-census.json");
 
     let artifacts = vec![
         artifact(&log_path, "log", &evidence_dir),
@@ -304,6 +317,7 @@ fn evidence_report_f39_e1_writes_the_acceptance_report() {
         jstr(&review_method(&census)),
     );
     let out = evidence_dir.join("acceptance.json");
+    assert_well_formed_json(&report, &out.display().to_string());
     fs::write(&out, &report).expect("write acceptance.json");
     assert!(
         suite.failed == 0 && exit_code == 0,
@@ -311,6 +325,70 @@ fn evidence_report_f39_e1_writes_the_acceptance_report() {
         suite.failed
     );
     println!("wrote {}", out.display());
+}
+
+/// Whether a rendered JSON document is well formed: balanced braces and
+/// brackets outside strings, no empty value where one is required, no trailing
+/// comma.
+///
+/// This is not a JSON parser. It is the small set of properties a hand-rolled
+/// renderer of this shape breaks, checked in the harness that writes the
+/// document, because a malformed evidence artifact would otherwise be committed
+/// as if it were a measurement.
+fn assert_well_formed_json(text: &str, what: &str) {
+    let mut braces = 0_i64;
+    let mut brackets = 0_i64;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut previous = '\0';
+    let bytes = text.as_bytes();
+    for (index, character) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            previous = character;
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            '{' => braces += 1,
+            '}' => braces -= 1,
+            '[' => brackets += 1,
+            ']' => brackets -= 1,
+            // `": ,`, `": }` and `": ]`: an empty value where the grammar
+            // requires one, which is what an unbracketed empty list produces.
+            ':' => {
+                let next = bytes.get(index + 1).map(|byte| char::from(*byte));
+                assert!(
+                    !matches!(next, Some(',' | '}' | ']')),
+                    "{what}: a JSON key with an empty value at byte {index}"
+                );
+            }
+            _ => {}
+        }
+        assert!(
+            braces >= 0 && brackets >= 0,
+            "{what}: unbalanced JSON at byte {index} ({character:?})"
+        );
+        if previous == ',' {
+            assert!(
+                !matches!(character, '}' | ']'),
+                "{what}: a trailing comma before byte {index} ({character:?})"
+            );
+        }
+        previous = character;
+    }
+    assert!(!in_string, "{what}: an unterminated JSON string");
+    assert_eq!(
+        (braces, brackets),
+        (0, 0),
+        "{what}: unbalanced JSON at end of document"
+    );
 }
 
 /// One measured block, as one JSON object.

@@ -183,6 +183,10 @@ fn accept_f39_e1_retail_the_dormant_and_staged_families_are_counted_apart() {
         vec![("healthy".to_owned(), 750), ("panels".to_owned(), 194)]
     );
     assert_eq!(census.condition_subjects().len(), 141);
+    // The second element's 88 distinct spellings: engine and gasbag node names
+    // of the actors' own airframe records, and the attribute words used without
+    // a part. None is decoded, which is why they stay text.
+    assert_eq!(census.condition_parts().len(), 88);
 
     // Every stage number the installation writes is inside the measured range,
     // and every stage key it writes is a stage this stage can number.
@@ -192,6 +196,59 @@ fn accept_f39_e1_retail_the_dormant_and_staged_families_are_counted_apart() {
             assert!(inactive_stage_number(&format!("INACTIVE{}", condition.stage)).is_some());
         }
     }
+
+    // Every mission numbers its blocks `OBJECTIVE1`…`OBJECTIVE<n>` in the order
+    // it declares them, which is what `measure_dormant_declarations` documents
+    // as the row's block order. This measures that claim rather than asserting
+    // it, and a reader that dropped or reordered a block would fail here.
+    for row in census.rows() {
+        let numbers: Vec<u32> = row
+            .blocks
+            .iter()
+            .map(|block| {
+                cs_content::objectives::objective_block_number(&block.block)
+                    .unwrap_or_else(|| panic!("{} is a numbered block", block.block))
+            })
+            .collect();
+        assert_eq!(
+            numbers,
+            (1..=numbers.len() as u32).collect::<Vec<_>>(),
+            "{} does not number its blocks 1..=n in declaration order: {numbers:?}",
+            row.mission
+        );
+    }
+}
+
+/// Both declared sound-group keys are read, and the dated population the
+/// cue-ordered controlled condition is drawn from is measured rather than
+/// assumed: a wrong key spelling would read as an empty population instead of
+/// failing.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f39_e1_retail_both_sound_group_keys_are_read_from_the_installation() {
+    let census = census();
+    assert_eq!(census.wakeup_sound_group_blocks(), 123);
+    assert_eq!(census.completed_sound_group_blocks(), 585);
+    // 37 of the 104 dated blocks also name the cue they play on activation, and
+    // those 37 are the population the two cue-ordered families are found in.
+    assert_eq!(census.dated_wakeup_sound_group_blocks(), 37);
+    assert!(census.dated_wakeup_sound_group_blocks() <= census.dated_blocks());
+
+    // Every cue read is a name, and every dated cue the controlled condition
+    // uses is one of them: an empty reading would empty the families instead of
+    // failing them.
+    let cues: Vec<&str> = census
+        .blocks()
+        .filter_map(|(_, block)| block.wakeup_sound_group.as_deref())
+        .collect();
+    assert_eq!(cues.len(), census.wakeup_sound_group_blocks());
+    assert!(cues.iter().all(|cue| !cue.is_empty()));
+    let completed: Vec<&str> = census
+        .blocks()
+        .filter_map(|(_, block)| block.completed_sound_group.as_deref())
+        .collect();
+    assert_eq!(completed.len(), census.completed_sound_group_blocks());
+    assert!(completed.iter().all(|cue| !cue.is_empty()));
 }
 
 /// The completion count is a threshold over the block's own conditions: measured
@@ -234,7 +291,7 @@ fn accept_f39_e1_retail_a_completion_count_never_exceeds_its_own_conditions() {
 }
 
 /// Controlled condition B: 53 families of two or more blocks in one mission
-/// share an identical condition set, and 38 of those declare more than one
+/// share an identical condition set, and 35 of those declare more than one
 /// threshold over it. That is the isolated condition for "`the count is a
 /// threshold over this block's own conditions`".
 #[test]

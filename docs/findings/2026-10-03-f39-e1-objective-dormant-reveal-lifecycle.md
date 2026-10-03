@@ -124,6 +124,9 @@ constant fails the test instead of passing.
 | distinct condition subjects | 141 |
 | shared-condition families (≥ 2 blocks) | 53, of which 35 declare > 1 threshold |
 | dated/cue-ordered families | 2, both in agreement |
+| blocks declaring a `WAKEUP_SOUND_GROUP` | 123 (37 of them a dated block) |
+| blocks declaring a `COMPLETED_SOUND_GROUP` | 585 |
+| condition parts (the second element's spellings) | 88 distinct |
 
 ### The five families every block falls into
 
@@ -297,9 +300,10 @@ behavior 5 that a `RevealRule` would have to recover.
   a `BEGIN_DORMANT` that is not exactly one finite number, a negative argument
   that is not the measured `-1`, a count that is not one integer, a condition
   with no text or with more elements than the measured three, a stage numbering
-  that is not `1..=N`, an `IDENTITY` of the wrong shape. Failing loudly is the
-  point: a block that silently vanished would read as a block that declares
-  nothing dormant.
+  that is not `1..=N`, a sound group that is not one non-empty name, and an
+  `IDENTITY` of the wrong shape or with an element of the wrong kind. Failing
+  loudly is the point: a block that silently vanished would read as a block that
+  declares nothing dormant.
 - `DormantReading` names the sentinel and "an elapsed-time quantity in an
   unmeasured unit", and nothing more. `InactiveCondition` keeps its arity and
   its spellings verbatim — `healthy` is a measured string, not an enum variant,
@@ -316,8 +320,8 @@ behavior 5 that a `RevealRule` would have to recover.
 
 ## Test sensitivity
 
-`cargo test --workspace --locked -- accept_f39_e1_ --include-ignored` runs 16
-tests: 9 fast (cs_content, CI) and 7 retail (cs_app, `#[ignore]`d, run locally
+`cargo test --workspace --locked -- accept_f39_e1_ --include-ignored` runs 20
+tests: 12 fast (cs_content, CI) and 8 retail (cs_app, `#[ignore]`d, run locally
 and by the reviewer with `CS_GAME_DIR` set).
 
 Nine mutations were applied to production source, measured and reverted (the
@@ -331,7 +335,7 @@ is a run that was observed, not an estimate):
 | `inactive_stage_number` drops its all-digits rule, so `INACTIVE+1` parses as stage 1 | `…only_inactive_with_digits_is_a_stage` |
 | the `1..=N` stage-numbering check dropped | `…stage_numbering_is_either_measured_or_refused` |
 | `IDENTITY` keeps only the last declaration instead of all of them | `…an_identity_reads_as_role_ordinal_and_message` |
-| `measure_dormant_declarations` matches any `OBJECTIVE*` key, so `OBJECTIVE_DELAY` counts as a block | `retail_…every_mission_record_is_measured_whole` |
+| `measure_dormant_declarations` matches any `OBJECTIVE*` key, so `OBJECTIVE_DELAY` counts as a block | `…only_objective_with_digits_is_a_numbered_block` (fast, so CI kills it too) and `retail_…every_mission_record_is_measured_whole` |
 | `cue_ordered_dated_blocks` compares cue names without requiring a trailing index | `retail_…dated_arguments_order_the_original_s_own_cue_sequence` |
 | `condition_ladders` keys families by mission alone, ignoring the condition set | `retail_…shared_condition_sets_carry_several_thresholds` |
 | `counts_above_conditions` counts only blocks that have conditions | `retail_…a_completion_count_never_exceeds_its_own_conditions` |
@@ -354,6 +358,107 @@ so a reviewer can check them by reading:
   installation exercises — every block of this installation measures — so it is
   asserted only through the fast reader's own refusals, not through a retail
   fixture.
+
+## Review (bunny-2, fresh session, same agent instance as the implementer)
+
+Reviewed against this sheet, `docs/contracts/SCRIPT-MISSION.md` and AGENTS.md,
+and the four checks were re-run on the rebased tree. **This is not independent
+evidence**: the reviewer is the same agent instance that implemented the work,
+in a session that started with no memory of it. The measurement reproduced on
+its own — install `b4e780ab…`, 53 readers, 1338 blocks, 1096 dormant (992
+sentinel, 104 dated), 271 staged blocks over 1335 conditions, 130 counts, 111
+identity blocks over 112 declarations, 53 condition families of which 35 declare
+more than one threshold, and the two cue-ordered families with
+`77/156/210/257/300` and `2/20` — every figure in the tables above.
+
+The stage's central judgement is sound and was left alone: nothing was decoded
+into a rule, `DeclaredSupport::Original` was not widened, and the two
+controlled conditions are labelled as inferences with the contrary hypotheses
+that fail on the shipped files *and* the one that does not. Five real problems
+were found and fixed on the branch:
+
+1. **A refusal named the wrong declaration.** `read_identity` reported a
+   malformed `IDENTITY` element as `NonTextConditionElement { stage: 0 }`,
+   whose message reads `OBJECTIVE7: INACTIVE0 element 0 is not text and names
+   nothing` — a stage key the block never declared, for a declaration the stage
+   does measure. There is a new `DormantReadError::IdentityElement { block,
+   index, wanted }`, which names the position and what that position is measured
+   to hold, and `IdentityShape` now covers only the arity refusal its doc claims.
+   `…an_identity_refusal_names_the_identity` pins all three positions, both
+   empty-text positions, and that every refusal carries its own block.
+2. **The census recovered the block by parsing an error message.**
+   `declared_block_of` split the rendered `Display` output on `": "` to get the
+   block name back, so a block whose name ever held that separator would have
+   been misreported. `DormantReadError::block()` is now the structured way to
+   place a refusal and the string parsing is gone.
+3. **A cue declaration of an unmeasured shape was dropped silently.**
+   `WAKEUP_SOUND_GROUP` and `COMPLETED_SOUND_GROUP` were read through a helper
+   that returned `None` for anything that was not one text element, so a block
+   declaring a cue the reader cannot read looked exactly like a block declaring
+   none — which is the precise failure the module promises never to allow, and
+   it would empty controlled condition A rather than fail it. Both keys are read
+   strictly now (`SoundGroupShape` refusal), and the retail suite passing is the
+   measurement that **every** one of the installation's 708 cue declarations
+   (123 activation, 585 completion) is one non-empty name.
+4. **A measured figure was reported as a different kind of figure.** The
+   evidence harness's review-method prose interpolated
+   `identity_declarations()` into a sentence that read "…and *112 blocks* carry
+   an IDENTITY display declaration": 112 is the number of declarations, over 111
+   blocks. The template now interpolates both, and also states the measured
+   dated-plus-activation-cue population (37) that controlled condition A is
+   drawn from.
+5. **A test comment contradicted its own assertion**, and three measured claims
+   had no test at all. The retail ladder test's doc said "38 of those" where the
+   assertion and this finding say 35. `OBJECTIVE_COMPLETED_SOUND_GROUP_KEY` was
+   pinned by nothing: a wrong spelling would have read as "no block declares
+   one" and passed. Four census queries (`completed_sound_group_blocks`,
+   `wakeup_sound_group_blocks`, `dated_wakeup_sound_group_blocks`,
+   `condition_parts`) now measure 585 / 123 / 37 / 88, so both cue spellings and
+   the 88 part spellings are asserted against the installation rather than
+   assumed from the key's name.
+
+Three smaller corrections, in the same spirit — a claim that was asserted but
+not measured, a doc that overstated a code path, and coverage that only existed
+where CI cannot run it:
+
+* `measure_dormant_declarations`' doc said the blocks come back "in the order
+  the original's own numbering follows". That is now **measured**: the retail
+  suite asserts `1..=n` in declaration order for all 53 readers, so the claim
+  survives instead of resting on nothing.
+* `DormantReading`' doc said the *unit* of the positive argument was unmeasured,
+  which is true, and left the larger inference implicit: that the argument is a
+  *time* at all is also an inference from the key's spelling plus controlled
+  condition A, and a mission-relative event ordinal is not excluded by any
+  shipped file. The type docs now say so. (This is a wording fix; the variant
+  keeps its name, which is about the reading, and the finding keeps the label.)
+* The `OBJECTIVE*`-prefix mutation was only killed by the retail suite, so CI
+  could not see it. `…only_objective_with_digits_is_a_numbered_block` covers the
+  digits rule, nine near-miss spellings and a record that declares
+  `OBJECTIVE_DELAY` beside its blocks.
+
+The evidence harness also gained the repository's own JSON self-check
+(`assert_well_formed_json`, as `evidence_report_t465.rs` carries it) over **both**
+documents it writes: `dormant-reveal-census.json` is only ever hashed and
+committed, so a malformed artifact would otherwise be committed as if it were a
+measurement. The census artifact now also publishes the three new queries and
+their per-value breakdowns.
+
+Checked and left alone: the shared `locate_mission_objective_records` helper
+keeps F39-D's census behaviour identical and its `1..=N` block numbering and
+member-name handling unchanged; `condition_ladders` and
+`cue_ordered_dated_blocks` are queries that report a co-occurrence and never a
+rule; the twice-decoded installation (each survey calls the shared walk) is a
+simplicity trade, now stated in the helper's doc instead of being described as a
+cache; and `unknowns: []` matches the convention every `implemented` report in
+this repository follows, with all seven limits named in this finding and in the
+report's own `review.method`.
+
+Three reviewer probes were applied to the fixes above, measured and reverted:
+reading an unreadable cue as a placeholder name instead of refusing it is killed
+by `…an_identity_refusal_names_the_identity`; matching any `OBJECTIVE*` key is
+killed by `…only_objective_with_digits_is_a_numbered_block`; and returning a
+fixed block from `DormantReadError::block()` is killed by the same refusal test.
+No measured value was changed by the review, and no protected path was touched.
 
 ## Unknown / deferred (not guessed)
 

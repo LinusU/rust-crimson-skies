@@ -21,6 +21,7 @@ use cs_content::objectives::{
     DORMANT_NO_ELAPSED_TIME, DormantReadError, DormantReading, InactiveCondition,
     MeasuredDormantBlock, MeasuredIdentity, OBJECTIVE_DORMANT_KEY, OBJECTIVE_IDENTITY_KEY,
     OBJECTIVE_INACTIVE_COUNT_KEY, measure_dormant_block, measure_dormant_declarations,
+    objective_block_number,
 };
 use cs_content::stunts::{ZrdValue, zrd_flat_fields};
 
@@ -439,9 +440,21 @@ fn accept_f39_e1_every_unmeasured_shape_is_refused_by_name() {
             list(vec![text("PRIMARY"), text("1")])
         )])
         .unwrap_err(),
+        DormantReadError::IdentityElement {
+            block: "OBJECTIVE1".to_owned(),
+            index: 1,
+            wanted: "an ordinal",
+        }
+    );
+    assert_eq!(
+        measure(vec![(
+            OBJECTIVE_IDENTITY_KEY,
+            list(vec![text("PRIMARY"), int(1), text("a"), text("b")])
+        )])
+        .unwrap_err(),
         DormantReadError::IdentityShape {
             block: "OBJECTIVE1".to_owned(),
-            arity: 2,
+            arity: 4,
         }
     );
 }
@@ -520,4 +533,178 @@ fn accept_f39_e1_unmeasured_keys_are_ignored_and_named_fields_still_read() {
     assert_eq!(block.identities[0].ordinal, 3);
     assert_eq!(block.completion_count, None);
     assert!(block.conditions.is_empty());
+}
+
+/// Only `OBJECTIVE` plus a non-empty run of digits is a block, and a
+/// mission-level key that shares the prefix measures nothing.
+///
+/// The installation writes one such key, `OBJECTIVE_DELAY`, beside its blocks;
+/// counting it as a block would inflate every population this stage publishes,
+/// so the rule is pinned here where CI can run it, not only in the retail suite.
+#[test]
+fn accept_f39_e1_only_objective_with_digits_is_a_numbered_block() {
+    assert_eq!(objective_block_number("OBJECTIVE1"), Some(1));
+    assert_eq!(objective_block_number("OBJECTIVE42"), Some(42));
+    for key in [
+        "OBJECTIVE",
+        "OBJECTIVE_DELAY",
+        "OBJECTIVE_A",
+        "OBJECTIVE1_A",
+        "OBJECTIVE+1",
+        "OBJECTIVE-1",
+        "OBJECTIVE1.5",
+        "INACTIVE1",
+        "MISSIONTYPE",
+    ] {
+        assert_eq!(
+            objective_block_number(key),
+            None,
+            "{key} is not a numbered objective block"
+        );
+    }
+
+    // A record that declares the mission-level key beside its blocks measures
+    // the blocks only.
+    let document = list(vec![list(vec![
+        text("MISSIONTYPE"),
+        int(3),
+        text("OBJECTIVE_DELAY"),
+        list(vec![float(30.0)]),
+        text("OBJECTIVE1"),
+        list(vec![text(OBJECTIVE_DORMANT_KEY), list(vec![float(-1.0)])]),
+    ])]);
+    let blocks = measure_dormant_declarations(&document).expect("the record measures");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].block, "OBJECTIVE1");
+    assert_eq!(blocks[0].dormant, Some(DormantReading::Sentinel));
+}
+
+/// A refusal names the declaration it is about: an `IDENTITY` element of the
+/// wrong kind, or a sound group that is not one name, must not be reported as
+/// some other declaration or silently read as an absent one.
+#[test]
+fn accept_f39_e1_an_identity_refusal_names_the_identity() {
+    assert_eq!(
+        measure(vec![(OBJECTIVE_IDENTITY_KEY, list(vec![int(1), int(2)]))]).unwrap_err(),
+        DormantReadError::IdentityElement {
+            block: "OBJECTIVE1".to_owned(),
+            index: 0,
+            wanted: "a role",
+        }
+    );
+    assert_eq!(
+        measure(vec![(
+            OBJECTIVE_IDENTITY_KEY,
+            list(vec![text("PRIMARY"), text("2")])
+        )])
+        .unwrap_err(),
+        DormantReadError::IdentityElement {
+            block: "OBJECTIVE1".to_owned(),
+            index: 1,
+            wanted: "an ordinal",
+        }
+    );
+    assert_eq!(
+        measure(vec![(
+            OBJECTIVE_IDENTITY_KEY,
+            list(vec![text("PRIMARY"), int(2), int(9)])
+        )])
+        .unwrap_err(),
+        DormantReadError::IdentityElement {
+            block: "OBJECTIVE1".to_owned(),
+            index: 2,
+            wanted: "a message id",
+        }
+    );
+    // An empty name declares nothing, so it is refused rather than read as an
+    // identity with no message or a cue that is not a name.
+    assert_eq!(
+        measure(vec![(OBJECTIVE_IDENTITY_KEY, list(vec![text(""), int(2)]))]).unwrap_err(),
+        DormantReadError::IdentityElement {
+            block: "OBJECTIVE1".to_owned(),
+            index: 0,
+            wanted: "a non-empty role",
+        }
+    );
+    assert_eq!(
+        measure(vec![(
+            OBJECTIVE_IDENTITY_KEY,
+            list(vec![text("PRIMARY"), int(2), text("")])
+        )])
+        .unwrap_err(),
+        DormantReadError::IdentityElement {
+            block: "OBJECTIVE1".to_owned(),
+            index: 2,
+            wanted: "a non-empty message id",
+        }
+    );
+    for (key, arity) in [
+        ("WAKEUP_SOUND_GROUP", 0_usize),
+        ("WAKEUP_SOUND_GROUP", 2),
+        ("COMPLETED_SOUND_GROUP", 1),
+    ] {
+        let value = if arity == 2 {
+            list(vec![text("snd_a"), text("snd_b")])
+        } else {
+            list(vec![int(7); arity])
+        };
+        assert_eq!(
+            measure(vec![(key, value)]).unwrap_err(),
+            DormantReadError::SoundGroupShape {
+                block: "OBJECTIVE1".to_owned(),
+                key,
+                arity,
+            }
+        );
+    }
+
+    // Every refusal carries the block it is about, so a caller can place it
+    // without reading the rendered message.
+    for error in [
+        measure(vec![(OBJECTIVE_DORMANT_KEY, list(vec![]))]).unwrap_err(),
+        measure(vec![(OBJECTIVE_INACTIVE_COUNT_KEY, list(vec![float(4.0)]))]).unwrap_err(),
+        measure(vec![("INACTIVE1", list(vec![int(7)]))]).unwrap_err(),
+        measure(vec![("INACTIVE0", list(vec![text("geminizep")]))]).unwrap_err(),
+        measure(vec![(OBJECTIVE_IDENTITY_KEY, list(vec![text("PRIMARY")]))]).unwrap_err(),
+        measure(vec![(OBJECTIVE_IDENTITY_KEY, list(vec![int(1), int(2)]))]).unwrap_err(),
+        measure(vec![("WAKEUP_SOUND_GROUP", list(vec![int(7)]))]).unwrap_err(),
+    ] {
+        assert_eq!(error.block(), "OBJECTIVE1");
+        assert!(
+            error.to_string().starts_with("OBJECTIVE1: "),
+            "a refusal must name its block: {error}"
+        );
+    }
+}
+
+/// A sound group is read as the name the original wrote, and a block that
+/// declares none declares none.
+#[test]
+fn accept_f39_e1_a_sound_group_is_read_as_its_measured_name() {
+    let block = measure(vec![
+        (
+            "WAKEUP_SOUND_GROUP",
+            list(vec![text("snd_c2-NW-m2_Ilsa_5")]),
+        ),
+        (
+            "COMPLETED_SOUND_GROUP",
+            list(vec![text("snd_c2-NW-m2_Ilsa_done")]),
+        ),
+        (OBJECTIVE_DORMANT_KEY, list(vec![float(77.0)])),
+    ])
+    .expect("both cue keys read");
+    assert_eq!(
+        block.wakeup_sound_group.as_deref(),
+        Some("snd_c2-NW-m2_Ilsa_5")
+    );
+    assert_eq!(
+        block.completed_sound_group.as_deref(),
+        Some("snd_c2-NW-m2_Ilsa_done")
+    );
+    assert_eq!(block.dormant, Some(DormantReading::ElapsedTime(77.0)));
+
+    let plain = measure(vec![(OBJECTIVE_DORMANT_KEY, list(vec![float(-1.0)]))])
+        .expect("a block without a cue reads");
+    assert_eq!(plain.wakeup_sound_group, None);
+    assert_eq!(plain.completed_sound_group, None);
 }

@@ -2577,6 +2577,8 @@ use crate::stunts::{OBJECTIVE_BLOCK_PREFIX, ZrdValue, objective_record, zrd_flat
 pub const OBJECTIVE_IDENTITY_KEY: &str = "IDENTITY";
 
 /// The key a block uses to play a sound group when the objective completes.
+///
+/// Measured in 585 of the 1338 blocks, always as exactly one name.
 pub const OBJECTIVE_COMPLETED_SOUND_GROUP_KEY: &str = "COMPLETED_SOUND_GROUP";
 
 /// The key a block uses to play a sound group when the objective *activates*.
@@ -2598,13 +2600,20 @@ pub const DORMANT_NO_ELAPSED_TIME: f32 = -1.0;
 /// *does* when the value elapses, and whether the elapsed time is measured in
 /// seconds, is unmeasured and stays that way; see [`InactiveCondition`] and the
 /// module section above.
+///
+/// The split into the two arms is **measured** (992 arguments are exactly `-1`
+/// and 104 are positive). That the positive arm is a *time* rather than some
+/// other quantity that merely increases through the mission is an **inference**
+/// from the key's spelling and from F39-E1's controlled condition over the
+/// activation cues, and it is labelled as one in the finding: a mission-relative
+/// event ordinal is not excluded by any shipped file.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DormantReading {
     /// The measured `-1`: the block declares that it begins dormant and no
     /// elapsed time of its own.
     Sentinel,
     /// A measured positive argument: an elapsed-time quantity in an
-    /// **unmeasured** unit.
+    /// **unmeasured** unit, and in an **unmeasured kind** (see the note above).
     ElapsedTime(f32),
 }
 
@@ -2690,9 +2699,12 @@ pub struct MeasuredDormantBlock {
     /// declaration order. Empty when it declares none; more than one when the
     /// original wrote more than one (measured: one block of 1338).
     pub identities: Vec<MeasuredIdentity>,
-    /// The sound group the block plays when the objective activates.
+    /// The sound group the block plays when the objective activates, as the
+    /// name the original wrote. Whether the block is *shown* anything when it
+    /// activates is unmeasured; this is a declared cue, not a reveal rule.
     pub wakeup_sound_group: Option<String>,
-    /// The sound group the block plays when the objective completes.
+    /// The sound group the block plays when the objective completes, as the
+    /// name the original wrote.
     pub completed_sound_group: Option<String>,
 }
 
@@ -2815,13 +2827,56 @@ pub enum DormantReadError {
         /// The stage numbers as declared, in declaration order.
         declared: Vec<u32>,
     },
-    /// `IDENTITY` did not hold a role and an ordinal.
+    /// `IDENTITY` did not hold two or three elements: a role and an ordinal, with
+    /// an optional message id.
     IdentityShape {
         /// The block that refused.
         block: String,
         /// How many elements the declaration held.
         arity: usize,
     },
+    /// An `IDENTITY` element was not the kind of value its position is measured
+    /// to hold, so no role, ordinal or message can be named for it.
+    IdentityElement {
+        /// The block that refused.
+        block: String,
+        /// The zero-based position of the element that refused.
+        index: usize,
+        /// What that position is measured to hold.
+        wanted: &'static str,
+    },
+    /// A sound-group declaration did not hold exactly one non-empty name.
+    SoundGroupShape {
+        /// The block that refused.
+        block: String,
+        /// The key that refused.
+        key: &'static str,
+        /// How many elements the declaration held.
+        arity: usize,
+    },
+}
+
+impl DormantReadError {
+    /// The objective block this refusal is about.
+    ///
+    /// Every variant carries the block it names, so a caller that has to place
+    /// the refusal (the retail census names the block in its own error) reads
+    /// it from here instead of parsing the rendered message.
+    #[must_use]
+    pub fn block(&self) -> &str {
+        match self {
+            Self::DormantArgument { block, .. }
+            | Self::NonFiniteDormant { block, .. }
+            | Self::UnmeasuredDormantArgument { block, .. }
+            | Self::CompletionCount { block, .. }
+            | Self::ConditionShape { block, .. }
+            | Self::NonTextConditionElement { block, .. }
+            | Self::StageNumbering { block, .. }
+            | Self::IdentityShape { block, .. }
+            | Self::IdentityElement { block, .. }
+            | Self::SoundGroupShape { block, .. } => block,
+        }
+    }
 }
 
 impl fmt::Display for DormantReadError {
@@ -2868,6 +2923,18 @@ impl fmt::Display for DormantReadError {
             Self::IdentityShape { block, arity } => write!(
                 f,
                 "{block}: IDENTITY held {arity} elements, the measured shapes hold two or three"
+            ),
+            Self::IdentityElement {
+                block,
+                index,
+                wanted,
+            } => write!(
+                f,
+                "{block}: IDENTITY element {index} is not {wanted} and names nothing"
+            ),
+            Self::SoundGroupShape { block, key, arity } => write!(
+                f,
+                "{block}: {key} held {arity} elements, the measured shape is one name"
             ),
         }
     }
@@ -2924,10 +2991,18 @@ pub fn measure_dormant_block(
                 measured.identities.push(read_identity(block, value)?);
             }
             OBJECTIVE_WAKEUP_SOUND_GROUP_KEY => {
-                measured.wakeup_sound_group = single_text(value);
+                measured.wakeup_sound_group = Some(read_sound_group(
+                    block,
+                    OBJECTIVE_WAKEUP_SOUND_GROUP_KEY,
+                    value,
+                )?);
             }
             OBJECTIVE_COMPLETED_SOUND_GROUP_KEY => {
-                measured.completed_sound_group = single_text(value);
+                measured.completed_sound_group = Some(read_sound_group(
+                    block,
+                    OBJECTIVE_COMPLETED_SOUND_GROUP_KEY,
+                    value,
+                )?);
             }
             key => {
                 let Some(stage) = inactive_stage_number(key) else {
@@ -2958,9 +3033,10 @@ pub fn measure_dormant_block(
 /// Measures every numbered `OBJECTIVE<N>` block of one decoded objective
 /// record.
 ///
-/// The blocks are returned in declaration order, which is the order the
-/// original's own numbering follows (`OBJECTIVE1`, `OBJECTIVE2`, … with no gap
-/// in any measured reader).
+/// The blocks are returned in the order the record declares them, which F39-E1
+/// measured over the installation to be `OBJECTIVE1`, `OBJECTIVE2`, … with no
+/// gap and no offset in any of the 53 mission readers; the retail test asserts
+/// that per row, so this is a measurement and not an assumption.
 ///
 /// # Errors
 ///
@@ -3018,11 +3094,26 @@ pub fn inactive_stage_number(key: &str) -> Option<u32> {
     rest.parse::<u32>().ok()
 }
 
-/// The single text of a one-element declaration, or `None`.
-fn single_text(value: &ZrdValue) -> Option<String> {
-    match value.as_list() {
-        Some([ZrdValue::Text(text)]) => Some(text.clone()),
-        _ => None,
+/// Reads one declared sound group: a single non-empty text element, which is the
+/// shape every measured declaration holds.
+///
+/// A declaration of any other shape is a refusal rather than a silently absent
+/// cue: a cue this reader cannot read would leave the block looking like one
+/// that declares none, and the controlled condition over the dated blocks draws
+/// its population from exactly these names.
+fn read_sound_group(
+    block: &str,
+    key: &'static str,
+    value: &ZrdValue,
+) -> Result<String, DormantReadError> {
+    let elements = value.as_list().unwrap_or_default();
+    match elements {
+        [ZrdValue::Text(text)] if !text.is_empty() => Ok(text.clone()),
+        _ => Err(DormantReadError::SoundGroupShape {
+            block: block.to_owned(),
+            key,
+            arity: elements.len(),
+        }),
     }
 }
 
@@ -3119,29 +3210,28 @@ fn read_identity(block: &str, value: &ZrdValue) -> Result<MeasuredIdentity, Dorm
         block: block.to_owned(),
         arity: value.as_list().map_or(0, <[ZrdValue]>::len),
     };
+    let element = |index, wanted: &'static str| DormantReadError::IdentityElement {
+        block: block.to_owned(),
+        index,
+        wanted,
+    };
     let elements = value.as_list().unwrap_or_default();
     if !(2..=3).contains(&elements.len()) {
         return Err(shape());
     }
     let ZrdValue::Text(role) = &elements[0] else {
-        return Err(DormantReadError::NonTextConditionElement {
-            block: block.to_owned(),
-            stage: 0,
-            index: 0,
-        });
+        return Err(element(0, "a role"));
     };
+    if role.is_empty() {
+        return Err(element(0, "a non-empty role"));
+    }
     let Some(ZrdValue::Int(ordinal)) = elements.get(1) else {
-        return Err(shape());
+        return Err(element(1, "an ordinal"));
     };
     let message = match elements.get(2) {
-        Some(ZrdValue::Text(text)) => Some(text.clone()),
-        Some(_) => {
-            return Err(DormantReadError::NonTextConditionElement {
-                block: block.to_owned(),
-                stage: 0,
-                index: 2,
-            });
-        }
+        Some(ZrdValue::Text(text)) if !text.is_empty() => Some(text.clone()),
+        Some(ZrdValue::Text(_)) => return Err(element(2, "a non-empty message id")),
+        Some(_) => return Err(element(2, "a message id")),
         None => None,
     };
     Ok(MeasuredIdentity {
