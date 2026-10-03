@@ -4186,6 +4186,16 @@ impl OrdnanceRuntime {
         self.nitro.get(shooter)
     }
 
+    /// Every actor with a booster registered, in ascending actor order.
+    ///
+    /// The audit's walk: a caller that wants to read each ledger needs the
+    /// actor keys, and there is no other public way to enumerate them — a
+    /// session with two boosters and no way to list them could not report
+    /// either. Order is the map's, so two hosts agree.
+    pub fn nitro_actors(&self) -> impl Iterator<Item = ActorId> + '_ {
+        self.nitro.keys().copied()
+    }
+
     /// Launches one declared item from a supplied mount pose.
     ///
     /// The world release velocity is composed by the *declared*

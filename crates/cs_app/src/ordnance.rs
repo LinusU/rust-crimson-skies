@@ -1,7 +1,8 @@
-//! The ordnance application boundary (F28-A).
+//! The ordnance application boundary (F28-A/C) and the live-session catalogue
+//! audit (F28-D).
 //!
 //! Spec: `specs/F28-rockets-special-ordnance-counter-effects-and-nitro.md`,
-//! stage `### F28-A`. Shared contract:
+//! stages `### F28-A`, `### F28-C` and `### F28-D`. Shared contract:
 //! `docs/contracts/FLIGHT-PHYSICS.md`, sections "Boost and special models"
 //! and "Collision and ballistic tests".
 //!
@@ -33,6 +34,13 @@
 //! trackers, the status ledger and the nitro ledger are
 //! `cs_sim::weapons::ordnance`'s; these are the conversion and binding
 //! records the ECS wiring consumes (F28-C).
+//!
+//! [`session_ordnance_audit`] is the one reader that walks a whole live
+//! session at once: it reports, per registered component, which channels reach
+//! a consumer and which declared fields reach nothing, and per booster the
+//! declared numbers the flight model will read (F28-D). It reports and never
+//! repairs — the area effect whose radius no production path reads is named,
+//! not silently implemented.
 
 use std::collections::BTreeSet;
 
@@ -49,7 +57,8 @@ use cs_sim::weapons::{
     HardpointKind, InheritanceRule, LaunchGeometry, LostTargetBehavior, NitroActivationRule,
     NitroOrdnance, NitroParameters, NitroTradeoffs, OrdnanceComponent, OrdnanceDefinitionError,
     OrdnanceFamily, OrdnanceId, OrdnanceIdError, OrdnanceMedia, OrdnanceStatusEffect,
-    ProjectileOrdnance, ProximityFuse, StackLoad, StatusEffectKind, WeaponDamage,
+    ProjectileOrdnance, ProximityFuse, StackLoad, StatusEffectKind, WEAPON_DAMAGE_CHANNELS,
+    WeaponDamage,
 };
 use cs_types::content::{ContentId, Known, Resolved};
 use cs_types::evidence::ClaimId;
@@ -1238,6 +1247,31 @@ impl OrdnanceSession {
         !self.closed && self.runtime.status().is_under(target, kind)
     }
 
+    /// Every component registered for one actor, in ascending id order.
+    ///
+    /// A closed session holds none: teardown released the lowered loadout, so
+    /// an audit or a loadout check cannot read a fireable component out of a
+    /// session that no longer exists.
+    #[must_use]
+    pub fn registered_ids(&self, shooter: &ActorId) -> Vec<OrdnanceId> {
+        if self.closed {
+            return Vec::new();
+        }
+        self.components
+            .get(shooter)
+            .map(|by_actor| by_actor.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Every actor with a component registered, in ascending actor order.
+    #[must_use]
+    pub fn registered_shooters(&self) -> Vec<ActorId> {
+        if self.closed {
+            return Vec::new();
+        }
+        self.components.keys().copied().collect()
+    }
+
     /// The engine status one recipient is under: the consumer the flight
     /// model reads for a Propulsion choke, a stall, damage over time or a
     /// marker.
@@ -1354,19 +1388,24 @@ impl OrdnanceSession {
     }
 
     /// Ends the session: every live item and its tracker, the routed ledger,
-    /// the status ledger and the nitro tables are released, every mirror is
-    /// despawned, and no further order, step or registration is accepted.
+    /// the status ledger, the nitro tables and the lowered loadout are
+    /// released, every mirror is despawned, and no further order, step or
+    /// registration is accepted.
     ///
     /// The runtime is *dropped and rebuilt empty*, not merely made
     /// unreachable, so an accessor cannot read a stale effect or a spent
-    /// capacity out of a session that no longer exists. A restart must build a
-    /// new session, and this one carries nothing across it.
+    /// capacity out of a session that no longer exists. The lowered
+    /// components go with it: they are the session's loadout, and an audit
+    /// (F28-D's `session_ordnance_audit`) must not be able to report a
+    /// fireable loadout for a session that was torn down. A restart must
+    /// build a new session, and this one carries nothing across it.
     pub fn close(&mut self, world: &mut World) -> OrdnanceTeardownReport {
         self.closed = true;
         let mut projectiles: Vec<ProjectileId> =
             self.runtime.iter().map(|live| live.projectile()).collect();
         projectiles.sort_unstable();
         self.engagements.clear();
+        self.components.clear();
         let mirrors = despawn_ordnance_mirrors(world);
         self.runtime =
             OrdnanceRuntime::new(self.session, self.runtime.tick(), self.rate, self.producer);
@@ -2114,4 +2153,476 @@ fn despawn_ordnance_mirrors(world: &mut World) -> usize {
         world.entity_mut(*entity).despawn();
     }
     mirrors.len()
+}
+
+// ------------------------------------------------------- the session audit ----
+
+/// One registered component's audited row: what this session can actually do
+/// with the component it lowered.
+///
+/// This is the **runtime** half of F28-D's audit. `cs_content::ordnance`'s
+/// audit walks the *declared* records and can see their provenance; the
+/// lowering boundary drops provenance on purpose, so nothing here can claim a
+/// record is original data. What this half can do — and the content half
+/// cannot — is report which channels a registered component actually routes and
+/// whether any production path consumes each of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionOrdnanceRow {
+    shooter: ActorId,
+    ordnance: OrdnanceId,
+    family: OrdnanceFamily,
+    booster: bool,
+    launcher: Option<DamageNodeKey>,
+    damage_channels: usize,
+    status_effects: usize,
+    area_declared: bool,
+    area_applied: bool,
+    unconsumed_fields: Vec<&'static str>,
+}
+
+impl SessionOrdnanceRow {
+    /// The actor this component is registered for.
+    #[must_use]
+    pub const fn shooter(&self) -> ActorId {
+        self.shooter
+    }
+
+    /// The lowered catalog id.
+    #[must_use]
+    pub const fn ordnance(&self) -> &OrdnanceId {
+        &self.ordnance
+    }
+
+    /// The lowered behavior family.
+    #[must_use]
+    pub const fn family(&self) -> OrdnanceFamily {
+        self.family
+    }
+
+    /// Whether this component is a nitro booster rather than a launcher.
+    #[must_use]
+    pub const fn is_booster(&self) -> bool {
+        self.booster
+    }
+
+    /// The damage-node mount a launched item occupies, `None` for a booster.
+    #[must_use]
+    pub const fn launcher(&self) -> Option<&DamageNodeKey> {
+        self.launcher.as_ref()
+    }
+
+    /// Whether this session can launch it: a booster is driven, not launched,
+    /// so it has no mount.
+    #[must_use]
+    pub fn is_launchable(&self) -> bool {
+        !self.booster && self.launcher.is_some()
+    }
+
+    /// How many declared damage channels the item routes when its fuse fires.
+    #[must_use]
+    pub const fn damage_channels(&self) -> usize {
+        self.damage_channels
+    }
+
+    /// How many timed status effects the item applies when its fuse fires.
+    #[must_use]
+    pub const fn status_effects(&self) -> usize {
+        self.status_effects
+    }
+
+    /// Whether the component declares a bounded area effect.
+    #[must_use]
+    pub const fn declares_area(&self) -> bool {
+        self.area_declared
+    }
+
+    /// Whether the declared area's reach reached a recipient.
+    ///
+    /// Always `false`: the radius and lifetime lower into
+    /// [`cs_sim::weapons::ordnance::AreaEffect`] and no production path reads
+    /// them, so the report says so rather than implying a splash was applied
+    /// to whoever happened to be nearby. Follow-up task #454 owns it.
+    #[must_use]
+    pub const fn area_applied(&self) -> bool {
+        self.area_applied
+    }
+
+    /// The declared fields this component carries that no production path
+    /// reads.
+    #[must_use]
+    pub fn unconsumed_fields(&self) -> &[&'static str] {
+        &self.unconsumed_fields
+    }
+
+    /// Whether this component delivers any gameplay effect at all.
+    #[must_use]
+    pub const fn delivers_effect(&self) -> bool {
+        self.booster || self.damage_channels > 0 || self.status_effects > 0
+    }
+}
+
+/// One actor's booster, as this session holds it.
+///
+/// Every number here is the **declared** one the ledger was opened with, plus
+/// the ledger's live capacity. There is no position, no velocity and no
+/// duration: AC04's "boost changes thrust/consumption but never directly
+/// teleports or scales render dt" is enforced by the shape of the record as
+/// much as by its values, and `consumption_per_tick` is the only rate the
+/// ledger converts with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionNitroRow {
+    shooter: ActorId,
+    capacity_units: f64,
+    capacity_fraction: f64,
+    declared_capacity_units: f64,
+    consumption_per_s: f64,
+    consumption_per_tick: f64,
+    extra_thrust_n: f64,
+    authority_multiplier: f64,
+    activation: NitroActivationRule,
+    burn_running: bool,
+}
+
+impl SessionNitroRow {
+    /// The actor whose booster this is.
+    #[must_use]
+    pub const fn shooter(&self) -> ActorId {
+        self.shooter
+    }
+
+    /// Capacity remaining, in the component's own capacity units.
+    #[must_use]
+    pub const fn capacity_units(&self) -> f64 {
+        self.capacity_units
+    }
+
+    /// Capacity remaining as a fraction of the declared maximum.
+    #[must_use]
+    pub const fn capacity_fraction(&self) -> f64 {
+        self.capacity_fraction
+    }
+
+    /// The capacity the declared record carries.
+    #[must_use]
+    pub const fn declared_capacity_units(&self) -> f64 {
+        self.declared_capacity_units
+    }
+
+    /// The declared consumption rate, in capacity units per second.
+    #[must_use]
+    pub const fn consumption_per_s(&self) -> f64 {
+        self.consumption_per_s
+    }
+
+    /// What one tick of running nitro costs at the session's declared rate.
+    ///
+    /// This is the number a [`NitroTick`]'s `consumed_units` must equal, and
+    /// it is derived from the declared [`TickRate`] — never from a render
+    /// frame's elapsed time.
+    #[must_use]
+    pub const fn consumption_per_tick(&self) -> f64 {
+        self.consumption_per_tick
+    }
+
+    /// The extra thrust an accepted activation adds, in newtons.
+    #[must_use]
+    pub const fn extra_thrust_n(&self) -> f64 {
+        self.extra_thrust_n
+    }
+
+    /// The control-authority multiplier an accepted activation reports.
+    #[must_use]
+    pub const fn authority_multiplier(&self) -> f64 {
+        self.authority_multiplier
+    }
+
+    /// The declared activation rule.
+    #[must_use]
+    pub const fn activation(&self) -> NitroActivationRule {
+        self.activation
+    }
+
+    /// Whether a fixed-duration burn is running right now.
+    #[must_use]
+    pub const fn burn_running(&self) -> bool {
+        self.burn_running
+    }
+}
+
+/// One gap the session audit found, named.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionOrdnanceFinding {
+    /// A registered launched item the session can fire that delivers nothing:
+    /// no damage channel and no status effect. It flies, sounds and lands for
+    /// no gameplay effect at all.
+    ComponentDeliversNothing {
+        /// The actor carrying it.
+        shooter: ActorId,
+        /// The component nothing consumes.
+        ordnance: OrdnanceId,
+    },
+    /// A designed behavior family no registered component carries.
+    ///
+    /// The sheet's non-negotiable 1 — "do not substitute every rocket with one
+    /// homing missile" — is only checkable in this direction: a catalogue of
+    /// one family is otherwise indistinguishable from a complete one.
+    FamilyWithoutAComponent {
+        /// The family with no component.
+        family: OrdnanceFamily,
+    },
+    /// A registered component declares a bounded area effect whose reach
+    /// reaches no recipient.
+    ///
+    /// The record lowers, so the session flies it, and the area's radius and
+    /// lifetime stop there.
+    UnconsumedAreaEffect {
+        /// The actor carrying it.
+        shooter: ActorId,
+        /// The component whose area reaches nothing.
+        ordnance: OrdnanceId,
+    },
+}
+
+impl SessionOrdnanceFinding {
+    /// The stable machine-readable label of this finding.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::ComponentDeliversNothing { .. } => "component_delivers_nothing",
+            Self::FamilyWithoutAComponent { .. } => "family_without_a_component",
+            Self::UnconsumedAreaEffect { .. } => "unconsumed_area_effect",
+        }
+    }
+}
+
+impl std::fmt::Display for SessionOrdnanceFinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ComponentDeliversNothing { shooter, ordnance } => write!(
+                f,
+                "{shooter} can fire {ordnance}, which routes no damage channel and applies \
+                 no status effect"
+            ),
+            Self::FamilyWithoutAComponent { family } => {
+                write!(f, "the {family} family has no registered component")
+            }
+            Self::UnconsumedAreaEffect { shooter, ordnance } => write!(
+                f,
+                "{ordnance} declares an area effect registered for {shooter}, whose radius \
+                 and lifetime reach no recipient"
+            ),
+        }
+    }
+}
+
+/// The result of auditing one live ordnance session.
+///
+/// A closed session audits to nothing: [`OrdnanceSession::close`] releases the
+/// loadout's lowered components along with the runtime, so there is nothing
+/// left to audit and no stale row to read out of a session that no longer
+/// exists.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SessionOrdnanceAudit {
+    rows: Vec<SessionOrdnanceRow>,
+    families: Vec<(OrdnanceFamily, usize)>,
+    nitro: Vec<SessionNitroRow>,
+    findings: Vec<SessionOrdnanceFinding>,
+}
+
+impl SessionOrdnanceAudit {
+    /// One row per registered component, in ascending actor then id order.
+    #[must_use]
+    pub fn rows(&self) -> &[SessionOrdnanceRow] {
+        &self.rows
+    }
+
+    /// The row for one component, if it is registered.
+    #[must_use]
+    pub fn row(&self, shooter: &ActorId, ordnance: &OrdnanceId) -> Option<&SessionOrdnanceRow> {
+        self.rows
+            .iter()
+            .find(|row| row.shooter == *shooter && row.ordnance == *ordnance)
+    }
+
+    /// How many components each designed family carries, in family order and
+    /// including the families that carry none.
+    #[must_use]
+    pub fn families(&self) -> &[(OrdnanceFamily, usize)] {
+        &self.families
+    }
+
+    /// One row per actor's booster, in ascending actor order.
+    #[must_use]
+    pub fn nitro(&self) -> &[SessionNitroRow] {
+        &self.nitro
+    }
+
+    /// The booster row for one actor, if it has one.
+    #[must_use]
+    pub fn nitro_for(&self, shooter: &ActorId) -> Option<&SessionNitroRow> {
+        self.nitro.iter().find(|row| row.shooter == *shooter)
+    }
+
+    /// Every gap found, in report order.
+    #[must_use]
+    pub fn findings(&self) -> &[SessionOrdnanceFinding] {
+        &self.findings
+    }
+
+    /// The findings of one label, so a caller can name one gap at a time.
+    #[must_use]
+    pub fn findings_of(&self, label: &str) -> Vec<&SessionOrdnanceFinding> {
+        self.findings
+            .iter()
+            .filter(|finding| finding.label() == label)
+            .collect()
+    }
+
+    /// How many components the session holds.
+    #[must_use]
+    pub fn component_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// How many launchable components the session holds.
+    #[must_use]
+    pub fn launchable_count(&self) -> usize {
+        self.rows.iter().filter(|row| row.is_launchable()).count()
+    }
+
+    /// Whether the session holds nothing at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty() && self.nitro.is_empty()
+    }
+
+    /// Whether the audit found no gap at all.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.findings.is_empty()
+    }
+}
+
+/// Audits what one live ordnance session can actually fire.
+///
+/// The runtime counterpart of `cs_content::ordnance::OrdnanceAudit`: that one
+/// walks declared records and can read their provenance, this one walks the
+/// components a session **lowered and registered** and reports which channels
+/// each of them reaches a consumer through. Neither repairs a gap — the
+/// unconsumed area effect is *reported*, not implemented, because the
+/// original's area behavior is unmeasured and inventing a splash rule is the
+/// guess F28's research boundary forbids.
+#[must_use]
+pub fn session_ordnance_audit(session: &OrdnanceSession) -> SessionOrdnanceAudit {
+    let mut audit = SessionOrdnanceAudit::default();
+    // A closed session holds no components and no nitro ledger, so the family
+    // occupancy walk below would report every designed family as uncovered —
+    // a finding about a loadout that no longer exists. Teardown released the
+    // loadout; there is nothing left to audit and nothing to complain about.
+    if session.is_closed() {
+        return audit;
+    }
+
+    for (shooter, components) in &session.components {
+        for (ordnance, component) in components {
+            let booster = component.as_nitro().is_some();
+            let launcher = component
+                .as_projectile()
+                .map(|projectile| projectile.launch().mount().clone());
+            let damage_channels = component.as_projectile().map_or(0, |projectile| {
+                WEAPON_DAMAGE_CHANNELS
+                    .iter()
+                    .filter(|channel| projectile.channels().amount_on(**channel) > 0.0)
+                    .count()
+            });
+            let status_effects = component
+                .as_projectile()
+                .map_or(0, |projectile| projectile.status().len());
+            let area_declared = component
+                .as_projectile()
+                .is_some_and(|projectile| projectile.area_effect().is_some());
+            let row = SessionOrdnanceRow {
+                shooter: *shooter,
+                ordnance: ordnance.clone(),
+                family: component.family(),
+                booster,
+                launcher,
+                damage_channels,
+                status_effects,
+                area_declared,
+                area_applied: false,
+                unconsumed_fields: if area_declared {
+                    cs_content::ordnance::DECLARED_FIELDS_WITHOUT_CONSUMER
+                        .iter()
+                        .map(|(field, _)| *field)
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+            };
+            if !row.delivers_effect() {
+                audit
+                    .findings
+                    .push(SessionOrdnanceFinding::ComponentDeliversNothing {
+                        shooter: *shooter,
+                        ordnance: ordnance.clone(),
+                    });
+            }
+            if area_declared {
+                audit
+                    .findings
+                    .push(SessionOrdnanceFinding::UnconsumedAreaEffect {
+                        shooter: *shooter,
+                        ordnance: ordnance.clone(),
+                    });
+            }
+            audit.rows.push(row);
+        }
+    }
+
+    audit.families = OrdnanceFamily::ALL
+        .iter()
+        .map(|family| {
+            let count = audit
+                .rows
+                .iter()
+                .filter(|row| row.family == *family)
+                .count();
+            (*family, count)
+        })
+        .collect();
+    for (family, count) in &audit.families {
+        if *count == 0 {
+            audit
+                .findings
+                .push(SessionOrdnanceFinding::FamilyWithoutAComponent { family: *family });
+        }
+    }
+
+    audit.nitro = session
+        .runtime
+        .nitro_actors()
+        .map(|shooter| {
+            let ledger = session
+                .runtime
+                .nitro(&shooter)
+                .expect("nitro_actors names the runtime's own ledgers");
+            let parameters = ledger.parameters();
+            let tradeoffs = parameters.tradeoffs();
+            SessionNitroRow {
+                shooter,
+                capacity_units: ledger.capacity_units(),
+                capacity_fraction: ledger.capacity_fraction(),
+                declared_capacity_units: parameters.capacity_units(),
+                consumption_per_s: parameters.consumption_per_s(),
+                consumption_per_tick: parameters.consumption_per_s() * session.rate().dt_seconds(),
+                extra_thrust_n: parameters.extra_thrust_n(),
+                authority_multiplier: tradeoffs.authority_multiplier(),
+                activation: parameters.activation(),
+                burn_running: ledger.burn_running(),
+            }
+        })
+        .collect();
+
+    audit
 }

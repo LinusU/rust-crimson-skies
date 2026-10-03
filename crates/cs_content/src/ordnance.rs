@@ -1,8 +1,10 @@
 //! The declared ordnance schema: provenance-carrying hardpoint component,
-//! fuse, guidance, area-effect and nitro records (F28-A).
+//! fuse, guidance, area-effect and nitro records (F28-A), plus the measured
+//! original ordnance surface and the catalogue audit that compares against it
+//! (F28-D).
 //!
 //! Spec: `specs/F28-rockets-special-ordnance-counter-effects-and-nitro.md`,
-//! stage `### F28-A`. Shared contract:
+//! stages `### F28-A` and `### F28-D`. Shared contract:
 //! `docs/contracts/FLIGHT-PHYSICS.md`.
 //!
 //! This module is the **content half** of the ordnance contract — the
@@ -40,23 +42,40 @@
 //!
 //! # Designed vocabulary, not original data
 //!
-//! The original PC ordnance catalogue, its families, trigger radii, arming
-//! delays, lifetimes, blast radii, damage numbers, status effects, nitro
-//! capacity, consumption, recovery, thrust, duration and tradeoffs are
-//! **all unmeasured** — F28's "Research boundary" says the public manual
-//! establishes no ordnance table, and this stage had no `CS_GAME_DIR` at
-//! all. Every family name, rule name and fixture value here is **newly
-//! authored project design** carrying `Origin::SyntheticFixture` or designed
-//! provenance, recorded in
+//! The original PC ordnance catalogue's *behavior* — which families exist, their
+//! trigger radii, arming delays, lifetimes, blast radii, damage numbers,
+//! status effects, nitro capacity, consumption, recovery, thrust, duration and
+//! tradeoffs — is **all unmeasured**. F28's "Research boundary" says the
+//! public manual establishes no ordnance table, and nothing in the
+//! installation's files does either. Every family name, rule name and fixture
+//! value here is **newly authored project design** carrying
+//! `Origin::SyntheticFixture` or designed provenance, recorded in
 //! `docs/findings/2026-10-01-f28-a-ordnance-behavior-and-effect-registry.md`.
+//!
+//! # What the installation does declare (F28-D)
+//!
+//! The installation's files *do* declare the **shape** of the ordnance
+//! surface, and that is what [`OriginalOrdnanceSurface`] measures: eleven
+//! rocket ordnance types (from two independent selection screens, not from the
+//! string-block gaps), eight rocket slots per airframe, two hardpoint points,
+//! and a nitro control. What it does **not** declare is any mapping from a
+//! declared record to one of those eleven types, so [`OrdnanceAudit`] reports
+//! every component as unattributed and a six-component synthetic catalogue is
+//! correctly reported as incomplete. The measurements are re-derived from the
+//! owner's installation by
+//! `crates/cs_content/tests/accept_f28_d_retail_ordnance_catalogue.rs` on
+//! every run, and the details are in
+//! `docs/findings/2026-10-03-f28-d-original-ordnance-catalogue.md`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
-use cs_types::evidence::ClaimId;
+use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
+use cs_types::evidence::{ClaimId, ClaimStatus};
 
 use crate::damage::DamageNodeKey;
 use crate::scene::SceneNodeId;
+use crate::weapons::{ORIGINAL_HARDPOINT_POINTS, ORIGINAL_ROCKET_SLOTS};
 
 /// Where a launcher sits on the airframe — the declared counterpart of
 /// `cs_sim::weapons::ordnance::HardpointKind`.
@@ -1105,6 +1124,979 @@ fn validate_media(
         check(particles, ContentKind::HardpointEquipment)?;
     }
     Ok(())
+}
+
+// ------------------------------------------------- measured original surface ----
+
+// Everything in this section was read out of retail members of
+// `GOSDATA/ASSETS/crimson.rof` and is re-measured by
+// `crates/cs_content/tests/accept_f28_d_retail_ordnance_catalogue.rs` on every
+// run, so a stale constant here fails rather than passing. **It is a
+// measurement of what shipped files declare — ids and counts — and says
+// nothing about how the game behaves.** `retail` is read access, not evidence
+// that the original executable ran.
+
+/// The rocket identifier blocks the original's own resource header declares,
+/// with the macro that declares each.
+///
+/// **Measured** in `ASSETS/SCRIPTS/RESOURCE.H`. The bases are gaps of **15**
+/// apart and the first block the header declares after them is
+/// [`ORIGINAL_NEXT_ROCKET_BLOCK`] at `3425`, so the rocket run is bounded at
+/// 15 ids per block. The *type count* is **not** that width: it is
+/// [`ORIGINAL_ROCKET_ORDNANCE_TYPES`], read from the selection screens.
+pub const ORIGINAL_ROCKET_NAME_BLOCKS: [(u32, &str); 3] = [
+    (3380, "IDS_ROCKETLONGNAME"),
+    (3395, "IDS_ROCKETSHORTNAME"),
+    (3410, "IDS_ROCKETDESCRIPTION"),
+];
+
+/// The first string-id block the resource header declares **after** the three
+/// rocket blocks, with the macro that declares it.
+///
+/// **Measured**: this is what bounds the rocket run at 15 ids per block, and
+/// it is the reason the blocks are not read as a type count — the gap from
+/// `IDS_ROCKETDESCRIPTION 3410` is 15, which would give fifteen types, and
+/// the screens say eleven.
+pub const ORIGINAL_NEXT_ROCKET_BLOCK: (u32, &str) = (3425, "IDS_PAINTLONGNAME");
+
+/// The rocket ordnance types the original's selection screens offer.
+///
+/// **Measured twice, independently**, and *not* from the block gaps:
+///
+/// * `ASSETS/SCRIPTS/MULTIPLAYER_AMMOR.SCRIPT` declares `string DIA[11]` and
+///   asks the engine to fill it (`callback($$E$$,5058,DIA[0])`), builds a
+///   header row plus eleven rows (`for(AIA=0; AIA < 11 + 1; AIA++)`), tests
+///   eleven selectable types (`for(ZHA = 0; ZHA < 11; ZHA++)`) and indexes
+///   the description block as `3410 + selection - 1`, so the descriptions
+///   occupy `3410..=3420`;
+/// * `ASSETS/SCRIPTS/MULTIPLAYER_OUTLAWROC.SCRIPT` asks for the same eleven
+///   rocket names through a different callback on a different screen
+///   (`for(int RX=0; RX < 11; RX++)` then `callback($$E$$,5019,(RX),YIA[RX])`).
+pub const ORIGINAL_ROCKET_ORDNANCE_TYPES: u32 = 11;
+
+/// The nitro control the original's resource header declares, with its id.
+///
+/// **Measured** in `ASSETS/SCRIPTS/RESOURCE.H`, and corroborated by the
+/// engine's own dictionary, which names `fnitroout = SIA`. This is what makes
+/// non-negotiable 2 checkable: the PC build ships a nitro control, so a
+/// catalogue with no booster record is a gap rather than a complete design.
+/// What the control *does* — capacity, burn, recovery, thrust, tradeoffs — is
+/// not in any file and stays unmeasured.
+pub const ORIGINAL_NITRO_CONTROL: (&str, u32) = ("MPOUT_CHK_NITRO", 10135);
+
+/// The rocket slots one airframe offers, re-exported from
+/// [`crate::weapons::ORIGINAL_ROCKET_SLOTS`].
+///
+/// **Measured**: `object EIA[8]` in `MULTIPLAYER_AMMOR.SCRIPT` and
+/// `object RKA[8]` in `ORDINANCELAYOUT.SCRIPT`. One number, one place.
+pub const ORIGINAL_ORDNANCE_ROCKET_SLOTS: u32 = ORIGINAL_ROCKET_SLOTS;
+
+/// The hardpoint points one airframe offers, re-exported from
+/// [`crate::weapons::ORIGINAL_HARDPOINT_POINTS`].
+///
+/// **Measured**: `object DT[2]`, `for (int R=0; R < 2; R++)` and the
+/// `callback($$E$$, 2245, 0, (R), AT[R])` per-point read in
+/// `HARDPOINTS.SCRIPT`. The same member shows the hardpoint's **weight** and
+/// **cost** are named by the engine dictionary (`ohardpointweight`,
+/// `ohardpointcost`) — the numbers are in the executable, not in a file.
+pub const ORIGINAL_ORDNANCE_HARDPOINT_POINTS: u32 = ORIGINAL_HARDPOINT_POINTS;
+
+/// The declared fields that lower into a runtime definition and that **no
+/// production path reads**.
+///
+/// **Measured 2026-10-03 (F28-D)**, and recorded here so a field that is
+/// declared, lowered and then read by nothing is a *named* gap rather than a
+/// silent one. Each entry is `(declared field, the lowered field it reaches)`.
+///
+/// The area effect is the case: `cs_app::ordnance::lower_ordnance` lowers both
+/// of its values into `cs_sim::weapons::ordnance::AreaEffect`, and the only
+/// reader of `ProjectileOrdnance::area_effect` in the workspace is that
+/// accessor. F28-C applies the record's declared *status effects* to one
+/// stable recipient, which is what the timed engine-status path consumes; the
+/// radius and the area's own bounded lifetime reach no gameplay code, so
+/// non-negotiable 3's "bounded lifetimes and stable recipient ids" is enforced
+/// for the status ledger and **not** for the area's reach. Follow-up task
+/// #454 owns implementing it; this list is where it is recorded until then.
+pub const DECLARED_FIELDS_WITHOUT_CONSUMER: [(&str, &str); 2] = [
+    (
+        "area_effect.radius_m",
+        "cs_sim::weapons::ordnance::ProjectileOrdnance::area_effect",
+    ),
+    (
+        "area_effect.lifetime_ticks",
+        "cs_sim::weapons::ordnance::ProjectileOrdnance::area_effect",
+    ),
+];
+
+/// The measured counts of one installation's ordnance surface.
+///
+/// Every count is nonzero except [`nitro_named`](Self::nitro_named), which is
+/// a fact about the installation rather than a magnitude.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalOrdnanceCounts {
+    rocket_types: u32,
+    rocket_slots: u32,
+    hardpoint_points: u32,
+    nitro_named: bool,
+}
+
+/// Why a measured ordnance count was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OriginalOrdnanceSurfaceError {
+    /// The installation was measured as offering no rocket ordnance type,
+    /// which cannot be audited against.
+    NoRocketTypes,
+    /// The installation was measured as offering no rocket slot.
+    NoRocketSlots,
+    /// The installation was measured as offering no hardpoint point.
+    NoHardpointPoints,
+}
+
+impl fmt::Display for OriginalOrdnanceSurfaceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoRocketTypes => {
+                write!(
+                    f,
+                    "an installation must offer at least one rocket ordnance type"
+                )
+            }
+            Self::NoRocketSlots => {
+                write!(f, "an installation must offer at least one rocket slot")
+            }
+            Self::NoHardpointPoints => {
+                write!(f, "an installation must offer at least one hardpoint point")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OriginalOrdnanceSurfaceError {}
+
+impl OriginalOrdnanceCounts {
+    /// Assembles the measured counts, refusing the magnitudes that cannot be
+    /// audited against.
+    ///
+    /// # Errors
+    ///
+    /// [`OriginalOrdnanceSurfaceError`] on a zero type, slot or hardpoint
+    /// count.
+    pub const fn try_new(
+        rocket_types: u32,
+        rocket_slots: u32,
+        hardpoint_points: u32,
+        nitro_named: bool,
+    ) -> Result<Self, OriginalOrdnanceSurfaceError> {
+        if rocket_types == 0 {
+            return Err(OriginalOrdnanceSurfaceError::NoRocketTypes);
+        }
+        if rocket_slots == 0 {
+            return Err(OriginalOrdnanceSurfaceError::NoRocketSlots);
+        }
+        if hardpoint_points == 0 {
+            return Err(OriginalOrdnanceSurfaceError::NoHardpointPoints);
+        }
+        Ok(Self {
+            rocket_types,
+            rocket_slots,
+            hardpoint_points,
+            nitro_named,
+        })
+    }
+
+    /// How many rocket ordnance types the installation offers.
+    #[must_use]
+    pub const fn rocket_types(&self) -> u32 {
+        self.rocket_types
+    }
+
+    /// How many rocket slots one airframe offers.
+    #[must_use]
+    pub const fn rocket_slots(&self) -> u32 {
+        self.rocket_slots
+    }
+
+    /// How many hardpoint points one airframe offers.
+    #[must_use]
+    pub const fn hardpoint_points(&self) -> u32 {
+        self.hardpoint_points
+    }
+
+    /// Whether the installation names a nitro control at all.
+    #[must_use]
+    pub const fn nitro_named(&self) -> bool {
+        self.nitro_named
+    }
+}
+
+/// One installation's measured ordnance surface: what its files declare, with
+/// the span the measurement came from.
+///
+/// This is the closure target the audit needs. Without a number the
+/// installation itself declares, "every original rocket type" is unfalsifiable
+/// and a catalogue holding only the synthetic fixture's components would
+/// satisfy any check there was — which is the failure AC04 names.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalOrdnanceSurface {
+    origin: Origin,
+    counts: OriginalOrdnanceCounts,
+    provenance: Provenance,
+}
+
+impl OriginalOrdnanceSurface {
+    /// Assembles a measured surface.
+    #[must_use]
+    pub const fn new(
+        origin: Origin,
+        counts: OriginalOrdnanceCounts,
+        provenance: Provenance,
+    ) -> Self {
+        Self {
+            origin,
+            counts,
+            provenance,
+        }
+    }
+
+    /// The span the measurement came from.
+    #[must_use]
+    pub const fn origin(&self) -> &Origin {
+        &self.origin
+    }
+
+    /// The measured counts.
+    #[must_use]
+    pub const fn counts(&self) -> &OriginalOrdnanceCounts {
+        &self.counts
+    }
+
+    /// How many rocket ordnance types the installation offers.
+    #[must_use]
+    pub const fn rocket_types(&self) -> u32 {
+        self.counts.rocket_types()
+    }
+
+    /// How many rocket slots one airframe offers.
+    #[must_use]
+    pub const fn rocket_slots(&self) -> u32 {
+        self.counts.rocket_slots()
+    }
+
+    /// How many hardpoint points one airframe offers.
+    #[must_use]
+    pub const fn hardpoint_points(&self) -> u32 {
+        self.counts.hardpoint_points()
+    }
+
+    /// Whether the installation names a nitro control at all.
+    #[must_use]
+    pub const fn nitro_named(&self) -> bool {
+        self.counts.nitro_named()
+    }
+
+    /// The provenance of the measurement itself.
+    #[must_use]
+    pub const fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+// --------------------------------------------------------- the audit itself ----
+
+/// How many of a record's load-bearing values are declared, how many of those
+/// are explicit unknowns, and how many carry `verified_original` provenance.
+///
+/// The three numbers are what separate "the record has a number" from "the
+/// number is the original's": the synthetic fixture fills every field, so only
+/// the third one can tell a measured catalogue from a designed one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FieldTally {
+    total: usize,
+    unknown: usize,
+    verified: usize,
+}
+
+impl FieldTally {
+    /// How many load-bearing values the record declares.
+    #[must_use]
+    pub const fn total(&self) -> usize {
+        self.total
+    }
+
+    /// How many of them are explicit unknowns with a reason.
+    #[must_use]
+    pub const fn unknown(&self) -> usize {
+        self.unknown
+    }
+
+    /// How many of them carry `verified_original` provenance.
+    #[must_use]
+    pub const fn verified(&self) -> usize {
+        self.verified
+    }
+
+    /// Whether every declared value is an original measurement.
+    #[must_use]
+    pub const fn is_fully_measured(&self) -> bool {
+        self.total > 0 && self.verified == self.total
+    }
+
+    /// Whether every declared value carries `verified_original` provenance.
+    #[must_use]
+    pub const fn is_verified(&self) -> bool {
+        self.verified == self.total
+    }
+}
+
+/// One walk of a declared record's load-bearing values.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RecordWalk {
+    tally: FieldTally,
+    unknown_fields: Vec<&'static str>,
+}
+
+impl RecordWalk {
+    fn value<T>(&mut self, name: &'static str, resolved: &Resolved<T>) {
+        self.tally.total += 1;
+        match resolved {
+            Resolved::Unknown { .. } => {
+                self.tally.unknown += 1;
+                self.unknown_fields.push(name);
+            }
+            Resolved::Known(Known { provenance, .. }) => {
+                if provenance.class == ClaimStatus::VerifiedOriginal {
+                    self.tally.verified += 1;
+                }
+            }
+        }
+    }
+}
+
+/// Walks one declared record's load-bearing values, by their declared names.
+///
+/// The names are the ones the audit reports, so they are the ones a reader can
+/// grep for. A field the walk does not visit is a field no audit can report,
+/// which is why the list is spelled out here rather than derived.
+fn walk_record(record: &DeclaredOrdnance) -> RecordWalk {
+    let mut walk = RecordWalk::default();
+    match record.details() {
+        DeclaredOrdnanceDetails::Projectile(projectile) => {
+            walk.value("launch.hardpoint", &projectile.launch.hardpoint);
+            walk.value(
+                "launch.launch_speed_mps",
+                &projectile.launch.launch_speed_mps,
+            );
+            walk.value("launch.inheritance", &projectile.launch.inheritance);
+            walk.value(
+                "launch.release_delay_ticks",
+                &projectile.launch.release_delay_ticks,
+            );
+            walk.value("stack.capacity_units", &projectile.stack.capacity_units);
+            walk.value("stack.unit_mass_kg", &projectile.stack.unit_mass_kg);
+            match &projectile.arming {
+                DeclaredArmingRule::Disarmed => {}
+                DeclaredArmingRule::AfterTicks(ticks) => {
+                    walk.value("arming.after_ticks", ticks);
+                }
+                DeclaredArmingRule::AfterTravelMetres(metres) => {
+                    walk.value("arming.after_travel_m", metres);
+                }
+            }
+            match &projectile.fuse {
+                DeclaredFuseRule::Impact => {}
+                DeclaredFuseRule::Proximity(fuse) => {
+                    walk.value("fuse.trigger_radius_m", &fuse.trigger_radius_m);
+                }
+                DeclaredFuseRule::Timed { ticks } => walk.value("fuse.ticks", ticks),
+            }
+            match &projectile.guidance {
+                DeclaredGuidanceRule::Unguided => {}
+                DeclaredGuidanceRule::Targeted { lost_target } => {
+                    walk.value("guidance.lost_target", lost_target);
+                }
+            }
+            walk.value("lifetime_ticks", &projectile.lifetime_ticks);
+            if let Some(area) = &projectile.area_effect {
+                walk.value("area_effect.radius_m", &area.radius_m);
+                walk.value("area_effect.lifetime_ticks", &area.lifetime_ticks);
+            }
+            walk.value("armor_damage", &projectile.armor_damage);
+            walk.value("internal_damage", &projectile.internal_damage);
+            for (index, status) in projectile.status.iter().enumerate() {
+                // The index keeps two same-named status fields distinguishable
+                // in a report; the field name stays greppable.
+                let _ = index;
+                walk.value("status.duration_ticks", &status.duration_ticks);
+                walk.value("status.strength", &status.strength);
+            }
+            walk.value("media.visual", &projectile.media.visual);
+            walk.value("media.sound", &projectile.media.sound);
+            if let Some(particles) = &projectile.media.particles {
+                walk.value("media.particles", particles);
+            }
+            walk_equipment(&mut walk, &projectile.equipment_rules);
+        }
+        DeclaredOrdnanceDetails::Nitro(nitro) => {
+            let parameters = &nitro.parameters;
+            walk.value("nitro.capacity_units", &parameters.capacity_units);
+            walk.value("nitro.consumption_per_s", &parameters.consumption_per_s);
+            walk.value("nitro.recovery_per_s", &parameters.recovery_per_s);
+            walk.value("nitro.extra_thrust_n", &parameters.extra_thrust_n);
+            match &parameters.activation {
+                Resolved::Known(Known {
+                    value: DeclaredNitroActivationRule::FixedTicks { ticks },
+                    ..
+                }) => walk.value("nitro.activation.ticks", ticks),
+                _ => walk.value("nitro.activation", &parameters.activation),
+            }
+            walk.value(
+                "nitro.authority_multiplier",
+                &parameters.authority_multiplier,
+            );
+            walk.value("media.visual", &nitro.media.visual);
+            walk.value("media.sound", &nitro.media.sound);
+            if let Some(particles) = &nitro.media.particles {
+                walk.value("media.particles", particles);
+            }
+            walk_equipment(&mut walk, &nitro.equipment_rules);
+        }
+    }
+    walk
+}
+
+fn walk_equipment(walk: &mut RecordWalk, rules: &DeclaredEquipmentRules) {
+    if let Some(requires) = &rules.requires {
+        walk.value("equipment_rules.requires", requires);
+    }
+    for forbids in &rules.forbids {
+        walk.value("equipment_rules.forbids", forbids);
+    }
+}
+
+/// The known, nonzero damage channels a declared launched item routes.
+///
+/// A channel that is an explicit unknown is **not** counted: it delivers
+/// nothing that can be applied, which is the gap this number exists to expose.
+fn known_damage_channels(record: &DeclaredOrdnance) -> usize {
+    let Some(projectile) = record.projectile() else {
+        return 0;
+    };
+    [&projectile.armor_damage, &projectile.internal_damage]
+        .into_iter()
+        .filter_map(|channel| match channel {
+            Resolved::Known(known) => Some(known.value),
+            Resolved::Unknown { .. } => None,
+        })
+        .filter(|amount| *amount > 0.0)
+        .count()
+}
+
+/// One declared component's audited row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OrdnanceAuditRow {
+    ordnance: ContentId,
+    family: DeclaredOrdnanceFamily,
+    booster: bool,
+    tally: FieldTally,
+    damage_channels: usize,
+    status_effects: usize,
+    area_declared: bool,
+    origin: Origin,
+    provenance: Provenance,
+}
+
+impl OrdnanceAuditRow {
+    /// The catalog id this row audits.
+    #[must_use]
+    pub const fn ordnance(&self) -> &ContentId {
+        &self.ordnance
+    }
+
+    /// The declared behavior family.
+    #[must_use]
+    pub const fn family(&self) -> DeclaredOrdnanceFamily {
+        self.family
+    }
+
+    /// Whether this component is a booster rather than a launched item.
+    #[must_use]
+    pub const fn is_booster(&self) -> bool {
+        self.booster
+    }
+
+    /// How many load-bearing values the record declares, and how many of them
+    /// are original measurements.
+    #[must_use]
+    pub const fn tally(&self) -> FieldTally {
+        self.tally
+    }
+
+    /// How many known, nonzero damage channels the item routes.
+    #[must_use]
+    pub const fn damage_channels(&self) -> usize {
+        self.damage_channels
+    }
+
+    /// How many timed status effects the item applies.
+    #[must_use]
+    pub const fn status_effects(&self) -> usize {
+        self.status_effects
+    }
+
+    /// Whether the record declares a bounded area effect.
+    #[must_use]
+    pub const fn declares_area(&self) -> bool {
+        self.area_declared
+    }
+
+    /// Whether this component delivers **any** gameplay effect: a damage
+    /// channel, a status effect, a bounded area, or the boost itself.
+    #[must_use]
+    pub const fn delivers_effect(&self) -> bool {
+        self.booster || self.damage_channels > 0 || self.status_effects > 0 || self.area_declared
+    }
+
+    /// Whether every load-bearing value this record declares is an original
+    /// measurement, and the record itself was measured from the installation.
+    #[must_use]
+    pub fn is_measured(&self) -> bool {
+        self.tally.is_fully_measured() && self.provenance.class == ClaimStatus::VerifiedOriginal
+    }
+
+    /// Where the record came from.
+    #[must_use]
+    pub const fn origin(&self) -> &Origin {
+        &self.origin
+    }
+
+    /// Where the record itself was measured.
+    #[must_use]
+    pub const fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+/// One gap the ordnance catalogue audit found, named.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OrdnanceAuditFinding {
+    /// The installation offers more rocket ordnance types than the declared
+    /// catalogue enumerates, so at least one type has no row at all.
+    UndeclaredRocketType {
+        /// How many types the installation offers.
+        observed: u32,
+        /// How many the catalogue enumerates.
+        declared: u32,
+    },
+    /// The catalogue enumerates as many or more components as the installation
+    /// offers, but none of them is *attributed* to an original type.
+    ///
+    /// The rocket blocks in the resource header are a **count**, not a
+    /// mapping: no shipped file says which of the eleven types a given record
+    /// is, so a record can only be attributed by a measurement of that
+    /// mapping. Without it, a catalogue of eleven invented names would
+    /// satisfy the count check above and still name nothing the original has.
+    UnattributedRocketType {
+        /// How many types the installation offers.
+        observed: u32,
+        /// How many declared components are original measurements.
+        attributed: u32,
+    },
+    /// The declared airframe layout offers fewer rocket slots than the
+    /// installation's screens build.
+    UnsupportedRocketSlots {
+        /// How many slots the declared layout offers.
+        declared: u32,
+        /// How many the installation offers.
+        observed: u32,
+    },
+    /// The declared airframe layout offers fewer hardpoint points than the
+    /// installation's hardpoint screen builds.
+    UnsupportedHardpointPoints {
+        /// How many points the declared layout offers.
+        declared: u32,
+        /// How many the installation offers.
+        observed: u32,
+    },
+    /// The installation ships a nitro control and the catalogue declares no
+    /// booster record at all.
+    MissingNitroRecord,
+    /// A declared load-bearing value is an explicit unknown, so the lowering
+    /// boundary refuses the record rather than flying it.
+    UnmeasuredField {
+        /// The record with the unknown field.
+        ordnance: ContentId,
+        /// The declared field that is unknown.
+        field: &'static str,
+    },
+    /// A record whose values are not original measurements.
+    ///
+    /// The synthetic fixture fills every field, so this is what it reports for
+    /// each of its components: the numbers are *declared*, never measured.
+    UnmeasuredRecord {
+        /// The record nothing measured.
+        ordnance: ContentId,
+        /// The claim status its provenance actually carries.
+        class: &'static str,
+    },
+    /// A designed behavior family no declared record uses.
+    ///
+    /// The six families are leads from the sheet, not a catalogue. An unused
+    /// family is a lead nothing confirmed — and the sheet's non-negotiable 1,
+    /// "do not substitute every rocket with one homing missile", is only
+    /// checkable in this direction.
+    UnusedFamily {
+        /// The family with no component.
+        family: DeclaredOrdnanceFamily,
+    },
+    /// A declared field that lowers into the runtime and that no production
+    /// path reads.
+    ///
+    /// See [`DECLARED_FIELDS_WITHOUT_CONSUMER`]. The field reaches a runtime
+    /// definition and then stops: nothing applies it, so the rule it was
+    /// written for is not enforced at runtime.
+    UnconsumedField {
+        /// The record declaring the field.
+        ordnance: ContentId,
+        /// The declared field nothing reads.
+        field: &'static str,
+    },
+    /// A launched item that delivers nothing: no known nonzero damage channel,
+    /// no status effect and no bounded area. It flies, sounds and lands for
+    /// no gameplay effect at all.
+    DeliversNoEffect {
+        /// The record nothing consumes.
+        ordnance: ContentId,
+    },
+}
+
+impl OrdnanceAuditFinding {
+    /// The stable machine-readable label of this finding.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::UndeclaredRocketType { .. } => "undeclared_rocket_type",
+            Self::UnattributedRocketType { .. } => "unattributed_rocket_type",
+            Self::UnsupportedRocketSlots { .. } => "unsupported_rocket_slots",
+            Self::UnsupportedHardpointPoints { .. } => "unsupported_hardpoint_points",
+            Self::MissingNitroRecord => "missing_nitro_record",
+            Self::UnmeasuredField { .. } => "unmeasured_field",
+            Self::UnmeasuredRecord { .. } => "unmeasured_record",
+            Self::UnusedFamily { .. } => "unused_family",
+            Self::UnconsumedField { .. } => "unconsumed_field",
+            Self::DeliversNoEffect { .. } => "delivers_no_effect",
+        }
+    }
+}
+
+impl fmt::Display for OrdnanceAuditFinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UndeclaredRocketType { observed, declared } => write!(
+                f,
+                "the installation offers {observed} rocket ordnance types but the \
+                 catalogue enumerates only {declared}"
+            ),
+            Self::UnattributedRocketType {
+                observed,
+                attributed,
+            } => write!(
+                f,
+                "the installation offers {observed} rocket ordnance types and no shipped \
+                 file maps any of them to a declared record, so {attributed} are attributed"
+            ),
+            Self::UnsupportedRocketSlots { declared, observed } => write!(
+                f,
+                "the declared airframe layout offers {declared} rocket slots, but the \
+                 installation's screens build {observed}"
+            ),
+            Self::UnsupportedHardpointPoints { declared, observed } => write!(
+                f,
+                "the declared airframe layout offers {declared} hardpoint points, but the \
+                 installation's hardpoint screen builds {observed}"
+            ),
+            Self::MissingNitroRecord => write!(
+                f,
+                "the installation names the nitro control {}, and the catalogue declares \
+                 no booster",
+                ORIGINAL_NITRO_CONTROL.0
+            ),
+            Self::UnmeasuredField { ordnance, field } => {
+                write!(f, "{ordnance} leaves its {field} unmeasured")
+            }
+            Self::UnmeasuredRecord { ordnance, class } => write!(
+                f,
+                "{ordnance} is {class} content: none of its declared values is an \
+                 original measurement"
+            ),
+            Self::UnusedFamily { family } => {
+                write!(f, "the {family} family has no declared component")
+            }
+            Self::UnconsumedField { ordnance, field } => write!(
+                f,
+                "{ordnance} declares {field}, which lowers into the runtime and that no \
+                 production path reads"
+            ),
+            Self::DeliversNoEffect { ordnance } => write!(
+                f,
+                "{ordnance} declares no damage, no status effect and no area, so a round \
+                 of it costs a round and lands for nothing"
+            ),
+        }
+    }
+}
+
+/// The result of an ordnance catalogue audit.
+///
+/// `complete` is the only verdict, and it is deliberately hard to reach: the
+/// declared catalogue must enumerate at least as many launched components as
+/// the installation offers, *attribute* them to original types, cover the
+/// installation's rocket slots and hardpoint points, declare a booster when the
+/// installation names a nitro control, use every designed family, carry no
+/// unmeasured value and deliver something for every component. Anything else is
+/// a named finding.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OrdnanceAuditReport {
+    rows: Vec<OrdnanceAuditRow>,
+    findings: Vec<OrdnanceAuditFinding>,
+}
+
+impl OrdnanceAuditReport {
+    /// One row per distinct declared component, in ascending id order.
+    #[must_use]
+    pub fn rows(&self) -> &[OrdnanceAuditRow] {
+        &self.rows
+    }
+
+    /// The row for one component, if it is declared.
+    #[must_use]
+    pub fn row(&self, ordnance: &ContentId) -> Option<&OrdnanceAuditRow> {
+        self.rows.iter().find(|row| row.ordnance == *ordnance)
+    }
+
+    /// Every gap found, in report order.
+    #[must_use]
+    pub fn findings(&self) -> &[OrdnanceAuditFinding] {
+        &self.findings
+    }
+
+    /// The findings of one label, so a caller can name one gap at a time.
+    #[must_use]
+    pub fn findings_of(&self, label: &str) -> Vec<&OrdnanceAuditFinding> {
+        self.findings
+            .iter()
+            .filter(|finding| finding.label() == label)
+            .collect()
+    }
+
+    /// How many distinct launched components the catalogue declares.
+    #[must_use]
+    pub fn declared_rocket_types(&self) -> usize {
+        self.rows.iter().filter(|row| !row.is_booster()).count()
+    }
+
+    /// How many declared components are original measurements.
+    #[must_use]
+    pub fn attributed_rocket_types(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| !row.is_booster() && row.is_measured())
+            .count()
+    }
+
+    /// How many boosters the catalogue declares.
+    #[must_use]
+    pub fn declared_boosters(&self) -> usize {
+        self.rows.iter().filter(|row| row.is_booster()).count()
+    }
+
+    /// Whether the audit found no gap at all.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.findings.is_empty()
+    }
+}
+
+/// The declared ordnance catalogue audit (F28-D).
+///
+/// The audit walks one installation's declared components and compares them
+/// against the [`OriginalOrdnanceSurface`] its own files declare. It answers,
+/// per component: which family it is, how many load-bearing values it declares
+/// and how many of them are original measurements, whether it delivers any
+/// gameplay effect at all, and whether it declares a field nothing reads.
+///
+/// # Why it reports rather than repairs
+///
+/// Nothing here fills a gap. A rocket type the installation offers and no
+/// record enumerates, an unattributed component, an unused family and an
+/// unconsumed field all stay gaps and are named, because the alternatives —
+/// inventing an eleventh rocket, or assigning a family to a record nothing
+/// measured — are exactly the guesses F28's "Research boundary" and
+/// non-negotiable 1 forbid. An audit that always passed would be worse than
+/// none: it would let a six-component synthetic catalogue stand in for the
+/// original's eleven.
+#[derive(Clone, Debug, Default)]
+pub struct OrdnanceAudit {
+    ordnance: Vec<DeclaredOrdnance>,
+    rocket_slots: u32,
+    hardpoint_points: u32,
+}
+
+impl OrdnanceAudit {
+    /// An empty audit with no declared airframe layout, so every slot and
+    /// hardpoint finding fires until [`with_layout`](Self::with_layout) is
+    /// called.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// An empty audit over a declared airframe layout.
+    #[must_use]
+    pub const fn with_layout(rocket_slots: u32, hardpoint_points: u32) -> Self {
+        Self {
+            ordnance: Vec::new(),
+            rocket_slots,
+            hardpoint_points,
+        }
+    }
+
+    /// Adds one declared component record.
+    pub fn add(&mut self, record: DeclaredOrdnance) -> &mut Self {
+        self.ordnance.push(record);
+        self
+    }
+
+    /// How many declared records the audit holds, duplicates included.
+    #[must_use]
+    pub fn record_count(&self) -> usize {
+        self.ordnance.len()
+    }
+
+    /// The declared rocket slots per airframe the audit compares against.
+    #[must_use]
+    pub const fn declared_rocket_slots(&self) -> u32 {
+        self.rocket_slots
+    }
+
+    /// The declared hardpoint points per airframe the audit compares against.
+    #[must_use]
+    pub const fn declared_hardpoint_points(&self) -> u32 {
+        self.hardpoint_points
+    }
+
+    /// Runs the audit against a measured installation surface.
+    #[must_use]
+    pub fn run(&self, original: &OriginalOrdnanceSurface) -> OrdnanceAuditReport {
+        let mut rows = Vec::new();
+        let mut findings = Vec::new();
+
+        // One row per distinct component, in ascending id order, so two
+        // records for the same id cannot inflate the type count past the
+        // closure check. The first in insertion order is the one reported; the
+        // disagreement between two records for one id is the importer's
+        // business, not something to average away here.
+        let mut distinct: BTreeMap<&str, &DeclaredOrdnance> = BTreeMap::new();
+        for record in &self.ordnance {
+            distinct.entry(record.ordnance().as_str()).or_insert(record);
+        }
+
+        let mut families_in_use: BTreeSet<DeclaredOrdnanceFamily> = BTreeSet::new();
+        let mut launched = 0u32;
+        let mut attributed = 0u32;
+        let mut boosters = 0u32;
+
+        for record in distinct.values() {
+            let walk = walk_record(record);
+            let ordnance = record.ordnance().clone();
+            let booster = record.nitro().is_some();
+            let damage_channels = known_damage_channels(record);
+            let status_effects = record.projectile().map_or(0, |item| item.status.len());
+            let area_declared = record
+                .projectile()
+                .is_some_and(|item| item.area_effect.is_some());
+            let row = OrdnanceAuditRow {
+                ordnance: ordnance.clone(),
+                family: record.family(),
+                booster,
+                tally: walk.tally,
+                damage_channels,
+                status_effects,
+                area_declared,
+                origin: record.origin().clone(),
+                provenance: record.provenance().clone(),
+            };
+            families_in_use.insert(record.family());
+            if booster {
+                boosters += 1;
+            } else {
+                launched += 1;
+            }
+            if row.is_measured() && !booster {
+                attributed += 1;
+            }
+
+            for field in &walk.unknown_fields {
+                findings.push(OrdnanceAuditFinding::UnmeasuredField {
+                    ordnance: ordnance.clone(),
+                    field,
+                });
+            }
+            if record.provenance().class != ClaimStatus::VerifiedOriginal {
+                findings.push(OrdnanceAuditFinding::UnmeasuredRecord {
+                    ordnance: ordnance.clone(),
+                    class: record.provenance().class.label(),
+                });
+            }
+            if area_declared {
+                for (field, _) in DECLARED_FIELDS_WITHOUT_CONSUMER {
+                    findings.push(OrdnanceAuditFinding::UnconsumedField {
+                        ordnance: ordnance.clone(),
+                        field,
+                    });
+                }
+            }
+            if !row.delivers_effect() {
+                findings.push(OrdnanceAuditFinding::DeliversNoEffect { ordnance });
+            }
+            rows.push(row);
+        }
+
+        // The closure checks against the installation, in both directions.
+        if launched < original.rocket_types() {
+            findings.push(OrdnanceAuditFinding::UndeclaredRocketType {
+                observed: original.rocket_types(),
+                declared: launched,
+            });
+        }
+        if attributed < original.rocket_types() {
+            findings.push(OrdnanceAuditFinding::UnattributedRocketType {
+                observed: original.rocket_types(),
+                attributed,
+            });
+        }
+        if self.rocket_slots < original.rocket_slots() {
+            findings.push(OrdnanceAuditFinding::UnsupportedRocketSlots {
+                declared: self.rocket_slots,
+                observed: original.rocket_slots(),
+            });
+        }
+        if self.hardpoint_points < original.hardpoint_points() {
+            findings.push(OrdnanceAuditFinding::UnsupportedHardpointPoints {
+                declared: self.hardpoint_points,
+                observed: original.hardpoint_points(),
+            });
+        }
+        if original.nitro_named() && boosters == 0 {
+            findings.push(OrdnanceAuditFinding::MissingNitroRecord);
+        }
+        for family in DeclaredOrdnanceFamily::ALL {
+            if !families_in_use.contains(family) {
+                findings.push(OrdnanceAuditFinding::UnusedFamily { family: *family });
+            }
+        }
+
+        OrdnanceAuditReport { rows, findings }
+    }
 }
 
 // ---------------------------------------------------------------- fixture ----
