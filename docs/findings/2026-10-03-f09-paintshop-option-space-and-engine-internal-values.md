@@ -186,12 +186,17 @@ read-only and reproducible, all recorded here rather than in a script:
 2. **Every member of every version-one ZBD archive.** 64 containers, 6 334
    members (the `zbd-audit` inventory's reader and sound families). The byte
    strings `paint_pattern`, `paint_color1` and `paint_decal` occur in exactly one
-   member: `ZBD/zrdr.zbd:vehicle.zrd`. `blackhat`, `blckswan`, `medusas`,
-   `sactrust`, `hollywd` and `player_fortune` occur in that member only
-   (`british`, `blake`, `german`, `hughes`, `studio` and `fortune` also occur in
-   `Briefing.zrd`, `ai.zrd`, `sounds.zrd` and the faction `.zrd` members, none of
-   which carries a paint record). **`broadway` and `itstaxi` occur in no member
-   at all** — not even as a substring of a longer name.
+   member: `ZBD/zrdr.zbd:vehicle.zrd`. The same search over the per-chapter
+   archives finds the eight `ia.zrd` members this stage also reads (below) and
+   nothing else that carries paint fields. `player_fortune`, `sactrust` and
+   `blckswan` occur in `vehicle.zrd` only; the other pattern names also occur in
+   briefing, AI, sound and scenario members, none of which carries a paint
+   record. **`itstaxi` occurs in no readable member at all**; `broadway` occurs
+   once, as the `ace_pattern` of `ZBD/C5/IA1/zrdr.zrd:ia.zrd`.
+   (The search is a byte-substring search, so a short name can coincide inside a
+   binary member — `cccp`, for instance, matches pixels in `.BM` and `.TIF`
+   members. That is why the finding leans on the long `paint_*` field names and on
+   parsing every member it names, never on a short name's absence.)
 3. **The engine image's readable sections.** `crimson.icd`
    (`0e3b4724f045e0bedf7203cd40cdeb5b6e0b9a0bab78c3d04c278cb146e9833b`,
    2 580 578 bytes) is a PE32 whose `.text` (2 105 344 raw bytes, 7.91 bits/byte,

@@ -928,6 +928,8 @@ fn vehicle_record_nodes(root: &ZrdNode) -> Result<Vec<(&str, &ZrdNode)>, ZrdFail
 struct PaletteProvenance<'a> {
     install_sha256: ContentHash,
     container_path: &'a str,
+    /// The member every span of this extraction points into.
+    member: &'a str,
     member_sha256: ContentHash,
     member_offset: u64,
 }
@@ -937,7 +939,7 @@ impl PaletteProvenance<'_> {
         SourceSpan::new(
             self.install_sha256,
             self.container_path,
-            Some(PALETTE_MEMBER),
+            Some(self.member),
             self.member_offset + node.offset,
             node.length,
             Some(self.member_sha256),
@@ -1349,6 +1351,7 @@ impl FactionPaletteCatalog {
         let provenance = PaletteProvenance {
             install_sha256,
             container_path: &container_path,
+            member: PALETTE_MEMBER,
             member_sha256,
             member_offset: entry.span().offset,
         };
@@ -2870,6 +2873,525 @@ fn paint_shop_gaps(
         "every decal selection",
     );
     gaps
+}
+
+// ------------------------------------------- Instant Action ace paint ---
+
+/// The reader-archive member each Instant Action scenario's ace paint lives in.
+pub const ACE_PAINT_MEMBER: &str = "ia.zrd";
+
+/// The `ia.zrd` fields the ace paint is made of: the pattern it names, its
+/// three mask colours, its three decals and the accent id beside them. These
+/// are the original data's own field names, spelled as it spells them.
+const ACE_PATTERN: &str = "ace_pattern";
+const ACE_COLOR: [&str; 3] = ["ace_color1", "ace_color2", "ace_color3"];
+const ACE_DECAL: [&str; 3] = ["ace_decal1", "ace_decal2", "ace_decal3"];
+const ACE_ACCENT: &str = "ace_accentID";
+
+/// One Instant Action scenario's ace paint: the pattern it names, its three mask
+/// colours, its three decals and its accent id, each with the exact bytes it was
+/// decoded from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AcePaint {
+    pattern: String,
+    pattern_span: SourceSpan,
+    colors: Vec<PaletteColor>,
+    decals: Vec<PaletteDecal>,
+    accent: u32,
+    accent_span: SourceSpan,
+    plane: Option<String>,
+    ace_name: Option<String>,
+    mission_type: Option<String>,
+    span: SourceSpan,
+}
+
+impl AcePaint {
+    /// The paint pattern the scenario's ace flies, as the member spells it.
+    pub fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
+    /// The bytes `ace_pattern` was decoded from.
+    pub fn pattern_span(&self) -> &SourceSpan {
+        &self.pattern_span
+    }
+
+    /// The three mask colours, in mask order.
+    pub fn colors(&self) -> &[PaletteColor] {
+        &self.colors
+    }
+
+    /// The three decals, in mask order.
+    pub fn decals(&self) -> &[PaletteDecal] {
+        &self.decals
+    }
+
+    /// The colour at `slot` (0..3), or a [`PaletteRefusal`] naming this ace.
+    pub fn color(&self, slot: usize) -> Result<&PaletteColor, PaletteRefusal> {
+        self.colors
+            .get(slot)
+            .ok_or_else(|| PaletteRefusal::UnknownColorSlot {
+                owner: self.pattern.clone(),
+                slot,
+                available: self.colors.len(),
+            })
+    }
+
+    /// The decal at `slot` (0..3), or a [`PaletteRefusal`] naming this ace.
+    pub fn decal(&self, slot: usize) -> Result<&PaletteDecal, PaletteRefusal> {
+        self.decals
+            .get(slot)
+            .ok_or_else(|| PaletteRefusal::UnknownDecalSlot {
+                owner: self.pattern.clone(),
+                slot,
+                available: self.decals.len(),
+            })
+    }
+
+    /// The accent id the record carries beside the paint.
+    pub fn accent(&self) -> u32 {
+        self.accent
+    }
+
+    /// The bytes `ace_accentID` was decoded from.
+    pub fn accent_span(&self) -> &SourceSpan {
+        &self.accent_span
+    }
+
+    /// The airframe the scenario's ace flies, when the record names one.
+    pub fn plane(&self) -> Option<&str> {
+        self.plane.as_deref()
+    }
+
+    /// The localized name id the scenario's ace flies under, when the record
+    /// names one.
+    pub fn ace_name(&self) -> Option<&str> {
+        self.ace_name.as_deref()
+    }
+
+    /// The scenario's mission type, when the record names one.
+    pub fn mission_type(&self) -> Option<&str> {
+        self.mission_type.as_deref()
+    }
+
+    /// The whole record's range inside [`ACE_PAINT_MEMBER`].
+    pub fn span(&self) -> &SourceSpan {
+        &self.span
+    }
+}
+
+/// Why an Instant Action ace paint could not be read.
+#[derive(Debug)]
+pub enum AcePaintError {
+    /// The container did not resolve, route, index or list as a reader
+    /// archive.
+    Container(ZbdError),
+    /// The archive does not declare the [`ACE_PAINT_MEMBER`].
+    MissingMember {
+        /// The member that was looked for.
+        member: String,
+    },
+    /// The member is not the observed `.zrd` layout, or carries no ace paint.
+    /// The payload is the decoder's own stable code, the member-relative offset
+    /// it was found at and what was expected there.
+    Member {
+        /// The decoder's stable code.
+        code: &'static str,
+        /// Where in the member the failure was found.
+        offset: u64,
+        /// What was expected there.
+        detail: &'static str,
+    },
+    /// A [`SourceSpan`] for an extracted field was refused.
+    Span(SourceSpanError),
+}
+
+impl AcePaintError {
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Container(error) => error.code(),
+            Self::MissingMember { .. } => "missing_member",
+            Self::Member { code, .. } => code,
+            Self::Span(_) => "invalid_span",
+        }
+    }
+}
+
+impl fmt::Display for AcePaintError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Container(error) => write!(f, "{error}"),
+            Self::MissingMember { member } => {
+                write!(f, "the reader archive declares no {member:?} member")
+            }
+            Self::Member {
+                code,
+                offset,
+                detail,
+            } => write!(
+                f,
+                "{} is not the observed layout: {detail} (at {offset}, code {code})",
+                ACE_PAINT_MEMBER
+            ),
+            Self::Span(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for AcePaintError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Container(error) => Some(error),
+            Self::Span(error) => Some(error),
+            Self::MissingMember { .. } | Self::Member { .. } => None,
+        }
+    }
+}
+
+impl From<ZrdFailure> for AcePaintError {
+    fn from(failure: ZrdFailure) -> Self {
+        Self::Member {
+            code: failure.code,
+            offset: failure.offset,
+            detail: failure.detail,
+        }
+    }
+}
+
+/// A disagreement between an Instant Action ace paint and the faction palettes
+/// `vehicle.zrd` stores, kept rather than repaired.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AcePaintFinding {
+    code: &'static str,
+    detail: String,
+}
+
+impl AcePaintFinding {
+    fn pattern_without_palette(pattern: &str, member: &str) -> Self {
+        Self {
+            code: "pattern_without_palette",
+            detail: format!(
+                "the ace paint in {member} names paint pattern `{pattern}`, which no vehicle \
+                 record colours"
+            ),
+        }
+    }
+
+    fn palette_mismatch(pattern: &str, member: &str, slot: usize) -> Self {
+        Self {
+            code: "palette_mismatch",
+            detail: format!(
+                "the ace paint in {member} names paint pattern `{pattern}` but stores a \
+                 different colour or decal at slot {slot} than the vehicle records store for it"
+            ),
+        }
+    }
+
+    fn decal_outside_sheet(pattern: &str, member: &str, index: u32, frames: u32) -> Self {
+        Self {
+            code: "decal_outside_sheet",
+            detail: format!(
+                "the ace paint in {member} names paint pattern `{pattern}` and stores decal \
+                 {index}, outside the {frames} frames the decal pane declares"
+            ),
+        }
+    }
+
+    /// Stable lowercase identifier.
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// Human-readable detail naming the records and slots involved.
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+/// One Instant Action scenario's ace paint, read out of the `ia.zrd` member of a
+/// reader archive.
+///
+/// This is the second original source the F09-PALETTE extraction could not see:
+/// every chapter's `ZBD/<chapter>/IA1/zrdr.zrd` carries an `ace_*` paint record —
+/// `ace_pattern`, `ace_color1..3`, `ace_decal1..3` and `ace_accentID` — beside the
+/// scenario's roster. Seven of the eight name a pattern `vehicle.zrd` also stores,
+/// with the **same** colours and decals, which is a cross-source agreement worth
+/// asserting; the eighth names `broadway`, which no vehicle record colours, and so
+/// resolves BROADWAY's palette from original data.
+#[derive(Debug)]
+pub struct AcePaintCatalog {
+    install_sha256: ContentHash,
+    container_path: String,
+    member: String,
+    member_span: SourceSpan,
+    member_sha256: ContentHash,
+    paint: AcePaint,
+}
+
+impl AcePaintCatalog {
+    /// Opens `key` in `session`, reads its reader archive, and extracts the ace
+    /// paint out of [`ACE_PAINT_MEMBER`].
+    ///
+    /// # Errors
+    ///
+    /// [`AcePaintError::Container`] when the key does not open or is not a
+    /// reader archive, [`AcePaintError::MissingMember`] when the member is not
+    /// declared, [`AcePaintError::Member`] when its bytes are not the observed
+    /// `.zrd` layout or it names no complete ace paint, and
+    /// [`AcePaintError::Span`] when a field span is refused.
+    pub fn discover(session: &ContentSession, key: &AssetKey) -> Result<Self, AcePaintError> {
+        let container = ZbdContainer::open(session, key).map_err(AcePaintError::Container)?;
+        let mut context = ParseContext::with_defaults(container.label());
+        let index = container
+            .index(&mut context)
+            .map_err(AcePaintError::Container)?;
+        let table = index.member_table();
+        let archive = container
+            .reader_archive(&mut context, &index, &table)
+            .map_err(AcePaintError::Container)?;
+        let entry = archive
+            .entries()
+            .find(|entry| entry.name() == ACE_PAINT_MEMBER.as_bytes())
+            .ok_or_else(|| AcePaintError::MissingMember {
+                member: ACE_PAINT_MEMBER.to_owned(),
+            })?;
+
+        let install_sha256 = container.span().install_sha256();
+        let container_path = container.path().as_str().to_owned();
+        let member_sha256 = sha256(entry.content());
+        let member_span = SourceSpan::new(
+            install_sha256,
+            &container_path,
+            Some(ACE_PAINT_MEMBER),
+            entry.span().offset,
+            entry.span().length,
+            Some(member_sha256),
+        )
+        .map_err(AcePaintError::Span)?;
+
+        let root = parse_zrd(entry.content())?;
+        let provenance = PaletteProvenance {
+            install_sha256,
+            container_path: &container_path,
+            member: ACE_PAINT_MEMBER,
+            member_sha256,
+            member_offset: entry.span().offset,
+        };
+        let paint = extract_ace_paint(&root, &provenance)?;
+
+        Ok(Self {
+            install_sha256,
+            container_path,
+            member: ACE_PAINT_MEMBER.to_owned(),
+            member_span,
+            member_sha256,
+            paint,
+        })
+    }
+
+    /// The installation fingerprint every span was built with.
+    pub fn install_sha256(&self) -> ContentHash {
+        self.install_sha256
+    }
+
+    /// The container the member was read from.
+    pub fn container_path(&self) -> &str {
+        &self.container_path
+    }
+
+    /// The member the ace paint was read from.
+    pub fn member(&self) -> &str {
+        &self.member
+    }
+
+    /// The member's range inside the container.
+    pub fn member_span(&self) -> &SourceSpan {
+        &self.member_span
+    }
+
+    /// The digest of the whole member bytes.
+    pub fn member_sha256(&self) -> ContentHash {
+        self.member_sha256
+    }
+
+    /// The scenario's ace paint.
+    pub fn paint(&self) -> &AcePaint {
+        &self.paint
+    }
+
+    /// What this ace paint and the faction palettes `vehicle.zrd` stores say
+    /// about each other.
+    ///
+    /// Every disagreement is a finding, never a repaired value: a pattern no
+    /// vehicle record colours (that is how `broadway` arrives), a colour or
+    /// decal that disagrees with the palette of the same pattern, and a decal
+    /// at or past the frame count the paint shop's decal pane declares
+    /// (`PaintShopDecalSheet::frames`, or `None` when no decal pane is
+    /// declared).
+    pub fn cross_check(
+        &self,
+        palette: &FactionPaletteCatalog,
+        decal_frames: Option<u32>,
+    ) -> Vec<AcePaintFinding> {
+        let mut findings = Vec::new();
+        let pattern = self.paint.pattern();
+        let Ok(faction) = palette.palette(pattern) else {
+            findings.push(AcePaintFinding::pattern_without_palette(
+                pattern,
+                self.container_path(),
+            ));
+            return findings;
+        };
+        for slot in 0..PALETTE_SLOTS {
+            let ace_color = self.paint.color(slot).expect("a stored colour");
+            let faction_color = faction.color(slot).expect("a stored colour");
+            let ace_decal = self.paint.decal(slot).expect("a stored decal");
+            let faction_decal = faction.decal(slot).expect("a stored decal");
+            if ace_color.rgb() != faction_color.rgb() || ace_decal.index() != faction_decal.index()
+            {
+                findings.push(AcePaintFinding::palette_mismatch(
+                    pattern,
+                    self.container_path(),
+                    slot,
+                ));
+            }
+        }
+        if let Some(frames) = decal_frames {
+            for decal in self.paint.decals() {
+                if decal.index() >= frames {
+                    findings.push(AcePaintFinding::decal_outside_sheet(
+                        pattern,
+                        self.container_path(),
+                        decal.index(),
+                        frames,
+                    ));
+                }
+            }
+        }
+        findings
+    }
+}
+
+/// Reads the ace paint out of one `ia.zrd` record, or refuses: a record that
+/// names no `ace_pattern`, or one that names a pattern without a complete colour
+/// and decal triple, never yields a half paint.
+fn extract_ace_paint(
+    root: &ZrdNode,
+    provenance: &PaletteProvenance<'_>,
+) -> Result<AcePaint, AcePaintError> {
+    let fields = zrd_field_pairs(root);
+    let field = |key: &str| {
+        fields
+            .iter()
+            .find(|(key_of, _)| *key_of == Some(key))
+            .map(|(_, value)| *value)
+    };
+    let pattern_node = field(ACE_PATTERN).ok_or(ZrdFailure {
+        code: "no_ace_paint",
+        offset: root.offset,
+        detail: "the record names no ace paint",
+    })?;
+    let pattern = pattern_node
+        .as_list()
+        .and_then(|children| children.first())
+        .and_then(ZrdNode::as_text)
+        .ok_or(ZrdFailure {
+            code: "shape",
+            offset: pattern_node.offset,
+            detail: "ace_pattern is not a one-text list",
+        })?
+        .to_owned();
+    let pattern_span = provenance
+        .span(pattern_node)
+        .map_err(spans_into(ZrdFailure {
+            code: "invalid_span",
+            offset: pattern_node.offset,
+            detail: "the pattern's span was refused",
+        }))?;
+
+    let mut colors = Vec::with_capacity(PALETTE_SLOTS);
+    for name in ACE_COLOR {
+        let node = field(name).ok_or(ZrdFailure {
+            code: "shape",
+            offset: root.offset,
+            detail: "the ace paint has an incomplete colour triple",
+        })?;
+        colors.push(
+            palette_color(node, provenance).map_err(spans_into(ZrdFailure {
+                code: "invalid_span",
+                offset: node.offset,
+                detail: "a colour's span was refused",
+            }))?,
+        );
+    }
+    let mut decals = Vec::with_capacity(PALETTE_SLOTS);
+    for name in ACE_DECAL {
+        let node = field(name).ok_or(ZrdFailure {
+            code: "shape",
+            offset: root.offset,
+            detail: "the ace paint has an incomplete decal triple",
+        })?;
+        decals.push(
+            palette_decal(node, provenance).map_err(spans_into(ZrdFailure {
+                code: "invalid_span",
+                offset: node.offset,
+                detail: "a decal's span was refused",
+            }))?,
+        );
+    }
+    let accent_node = field(ACE_ACCENT).ok_or(ZrdFailure {
+        code: "shape",
+        offset: root.offset,
+        detail: "the ace paint names no accent id",
+    })?;
+    let accent = accent_node
+        .as_list()
+        .and_then(|children| children.first())
+        .and_then(ZrdNode::as_int)
+        .ok_or(ZrdFailure {
+            code: "shape",
+            offset: accent_node.offset,
+            detail: "ace_accentID is not a one-int list",
+        })?;
+    let accent_span = provenance
+        .span(accent_node)
+        .map_err(spans_into(ZrdFailure {
+            code: "invalid_span",
+            offset: accent_node.offset,
+            detail: "the accent id's span was refused",
+        }))?;
+
+    let text = |key: &str| {
+        field(key)
+            .and_then(|node| node.as_list())
+            .and_then(|children| children.first())
+            .and_then(ZrdNode::as_text)
+            .map(str::to_owned)
+    };
+
+    Ok(AcePaint {
+        pattern,
+        pattern_span,
+        colors,
+        decals,
+        accent,
+        accent_span,
+        plane: text("ace_plane"),
+        ace_name: text("ace_name"),
+        mission_type: text("mission_type"),
+        span: provenance.span(root).map_err(spans_into(ZrdFailure {
+            code: "invalid_span",
+            offset: root.offset,
+            detail: "the record's span was refused",
+        }))?,
+    })
+}
+
+/// Turns a refused [`PaletteError::Span`] into the decoder's own failure, so the
+/// ace-paint error stays the `.zrd` decoder's vocabulary.
+fn spans_into(failure: ZrdFailure) -> impl Fn(PaletteError) -> ZrdFailure {
+    move |_error: PaletteError| ZrdFailure { ..failure }
 }
 
 /// Acceptance stage F09-B. Every fixture is newly authored synthetic bytes
@@ -4462,6 +4984,26 @@ mod tests {
         (builder.open(), source)
     }
 
+    /// A session over `tree` with only its install root mounted, which is what a
+    /// reader archive is read through (`ZbdContainer` resolves its container
+    /// path in the session and reads the host file itself).
+    fn install_tree_session(tree: &PaletteTree) -> ContentSession {
+        let found = install::discover(&tree.0).expect("the fixture installation is discovered");
+        let context = ResolveContext::new(install::fingerprint(&found.manifest));
+        let mut builder = SessionBuilder::new(context);
+        let directory = MountBuilder::new(
+            MountId::new("install").expect("a valid mount id"),
+            MountNamespace::new(INSTALL_NAMESPACE).expect("a valid namespace"),
+            PrecedenceClass::Shared,
+            ".",
+        )
+        .retail();
+        builder
+            .mount_directory(directory, &tree.0)
+            .expect("the fixture installation mounts");
+        builder.open()
+    }
+
     /// Builds the fixture tree for one `[@Paint@]` member and returns the
     /// production catalog over it.
     fn paint_shop_catalog(layout: &str) -> PaintShopCatalog {
@@ -4953,6 +5495,387 @@ mod tests {
         );
     }
 
+    // ---------------------------------------------- Instant Action ace paint ---
+
+    /// One `ia.zrd` record carrying an ace paint, spelled the way the original
+    /// spells it: the pattern, the three colours, the three decals, the accent
+    /// id and the scenario's own fields.
+    fn ia_zrd_ace_paint(
+        pattern: &str,
+        colors: [[u8; 3]; 3],
+        decals: [u32; 3],
+        accent: u32,
+    ) -> Vec<u8> {
+        let mut children = vec![
+            zrd_text("mission_type"),
+            zrd_list(&[zrd_text("stunt_flying")]),
+            zrd_text("ace_name"),
+            zrd_list(&[zrd_text("MSG_SSCRAWFORD_NAME")]),
+            zrd_text("ace_plane"),
+            zrd_list(&[zrd_text("Peacemaker")]),
+            zrd_text(ACE_PATTERN),
+            zrd_list(&[zrd_text(pattern)]),
+        ];
+        for (slot, color) in colors.iter().enumerate() {
+            children.push(zrd_text(ACE_COLOR[slot]));
+            children.push(zrd_list(&[
+                zrd_int(u32::from(color[0])),
+                zrd_int(u32::from(color[1])),
+                zrd_int(u32::from(color[2])),
+            ]));
+        }
+        for (slot, decal) in decals.iter().enumerate() {
+            children.push(zrd_text(ACE_DECAL[slot]));
+            children.push(zrd_list(&[zrd_int(*decal)]));
+        }
+        children.push(zrd_text(ACE_ACCENT));
+        children.push(zrd_list(&[zrd_int(accent)]));
+        zrd_list(&children)
+    }
+
+    /// An `ia.zrd` record whose ace paint names a pattern and only two colours.
+    fn ia_zrd_ace_paint_partial(pattern: &str) -> Vec<u8> {
+        let mut children = vec![
+            zrd_text(ACE_PATTERN),
+            zrd_list(&[zrd_text(pattern)]),
+            zrd_text(ACE_COLOR[0]),
+            zrd_list(&[zrd_int(74), zrd_int(40), zrd_int(132)]),
+            zrd_text(ACE_COLOR[1]),
+            zrd_list(&[zrd_int(0), zrd_int(0), zrd_int(0)]),
+            zrd_text(ACE_ACCENT),
+            zrd_list(&[zrd_int(33)]),
+        ];
+        for (slot, name) in ACE_DECAL.iter().enumerate() {
+            children.push(zrd_text(name));
+            children.push(zrd_list(&[zrd_int(slot as u32)]));
+        }
+        zrd_list(&children)
+    }
+
+    /// An `ia.zrd` record whose ace paint names a pattern, three colours and two
+    /// decals.
+    fn ia_zrd_ace_paint_no_decals(pattern: &str) -> Vec<u8> {
+        let mut children = vec![
+            zrd_text(ACE_PATTERN),
+            zrd_list(&[zrd_text(pattern)]),
+            zrd_text(ACE_ACCENT),
+            zrd_list(&[zrd_int(33)]),
+        ];
+        for (slot, color) in [[74u8, 40, 132], [0, 0, 0], [237, 221, 0]]
+            .iter()
+            .enumerate()
+        {
+            children.push(zrd_text(ACE_COLOR[slot]));
+            children.push(zrd_list(&[
+                zrd_int(u32::from(color[0])),
+                zrd_int(u32::from(color[1])),
+                zrd_int(u32::from(color[2])),
+            ]));
+        }
+        children.push(zrd_text(ACE_DECAL[0]));
+        children.push(zrd_list(&[zrd_int(21)]));
+        children.push(zrd_text(ACE_DECAL[1]));
+        children.push(zrd_list(&[zrd_int(1)]));
+        zrd_list(&children)
+    }
+
+    /// An `ia.zrd` record with no ace paint at all.
+    fn ia_zrd_without_paint() -> Vec<u8> {
+        zrd_list(&[
+            zrd_text("mission_type"),
+            zrd_list(&[zrd_text("stunt_flying")]),
+            zrd_text("player_plane"),
+            zrd_list(&[zrd_text("Kestrel")]),
+        ])
+    }
+
+    /// The install-root key one chapter's Instant Action archive is addressed by.
+    fn ace_paint_key(chapter: &str) -> AssetKey {
+        AssetKey::from_spelling(
+            INSTALL_NAMESPACE,
+            &format!("ZBD/{chapter}/IA1/zrdr.zbd"),
+            "default",
+        )
+        .expect("a valid archive key")
+    }
+
+    /// Builds the fixture tree for one `ia.zrd` member and returns the
+    /// production catalog over it.
+    fn ace_paint_catalog(member: &[u8]) -> AcePaintCatalog {
+        let tree = PaletteTree::new();
+        tree.write(
+            "ZBD/C1/IA1/zrdr.zbd",
+            &palette_reader_archive(&[(ACE_PAINT_MEMBER, member)]),
+        );
+        AcePaintCatalog::discover(&install_tree_session(&tree), &ace_paint_key("C1"))
+            .expect("the fixture ace paint extracts")
+    }
+
+    /// AC: an Instant Action scenario's ace paint is read from the original
+    /// member with a span per field, and the one pattern no vehicle record
+    /// colours — BROADWAY — arrives from original data rather than as a gap.
+    #[test]
+    fn accept_f09_paintshop_extracts_the_instant_action_ace_paint() {
+        let broadway = ia_zrd_ace_paint(
+            "broadway",
+            [[74, 40, 132], [0, 0, 0], [237, 221, 0]],
+            [21, 1, 0],
+            33,
+        );
+        let catalog = ace_paint_catalog(&broadway);
+        let paint = catalog.paint();
+
+        assert_eq!(catalog.container_path(), "ZBD/C1/IA1/zrdr.zbd");
+        assert_eq!(catalog.member(), ACE_PAINT_MEMBER);
+        assert_eq!(catalog.member_sha256(), sha256(&broadway));
+        assert_eq!(paint.pattern(), "broadway");
+        assert_eq!(paint.plane(), Some("Peacemaker"));
+        assert_eq!(paint.ace_name(), Some("MSG_SSCRAWFORD_NAME"));
+        assert_eq!(paint.mission_type(), Some("stunt_flying"));
+        assert_eq!(paint.accent(), 33);
+
+        let colors: Vec<[u8; 3]> = paint.colors().iter().map(PaletteColor::rgb).collect();
+        assert_eq!(colors, vec![[74, 40, 132], [0, 0, 0], [237, 221, 0]]);
+        let decals: Vec<u32> = paint.decals().iter().map(PaletteDecal::index).collect();
+        assert_eq!(decals, vec![21, 1, 0]);
+        assert_eq!(paint.color(0).expect("slot 0").rgb(), [74, 40, 132]);
+        assert_eq!(paint.color(2).expect("slot 2").green(), 221);
+        assert_eq!(paint.decal(1).expect("slot 1").index(), 1);
+        assert_eq!(
+            paint.color(3).expect_err("slot 3"),
+            PaletteRefusal::UnknownColorSlot {
+                owner: "broadway".to_owned(),
+                slot: 3,
+                available: 3
+            }
+        );
+        assert_eq!(
+            paint.decal(3).expect_err("slot 3"),
+            PaletteRefusal::UnknownDecalSlot {
+                owner: "broadway".to_owned(),
+                slot: 3,
+                available: 3
+            }
+        );
+
+        // Provenance: every field carries a container-absolute span into the
+        // member, and the span's bytes are the encoded value.
+        assert_eq!(
+            paint.pattern_span().member_key(),
+            Some(ACE_PAINT_MEMBER),
+            "an extracted pattern keeps its member key"
+        );
+        assert_eq!(paint.pattern_span().container_path(), "ZBD/C1/IA1/zrdr.zbd");
+        assert_eq!(
+            paint.pattern_span().install_sha256(),
+            catalog.install_sha256()
+        );
+        assert!(paint.pattern_span().length() > 0);
+        assert_eq!(
+            paint.accent_span().length(),
+            16,
+            "a one-int list is a T4 tag, a count word and a T1 int"
+        );
+        assert!(paint.span().length() > paint.pattern_span().length());
+        assert_eq!(catalog.member_span().length(), broadway.len() as u64);
+        for color in paint.colors() {
+            assert_eq!(
+                color.span().length(),
+                32,
+                "a colour is a T4 of three T1 ints"
+            );
+            assert!(color.span().offset() >= paint.span().offset());
+        }
+    }
+
+    /// AC: an archive with no `ia.zrd`, a member that is not the observed `.zrd`
+    /// layout and a record that names no ace paint are each refused with their
+    /// own code, and a partial triple is refused rather than padded.
+    #[test]
+    fn accept_f09_paintshop_refuses_an_ace_paint_it_cannot_read() {
+        let tree = PaletteTree::new();
+        tree.write(
+            "ZBD/C1/IA1/zrdr.zbd",
+            &palette_reader_archive(&[("targets.zrd", &ia_zrd_without_paint())]),
+        );
+        let error = AcePaintCatalog::discover(&install_tree_session(&tree), &ace_paint_key("C1"))
+            .expect_err("an archive without the member is refused");
+        assert_eq!(error.code(), "missing_member");
+        assert!(error.to_string().contains("ia.zrd"));
+
+        let tree = PaletteTree::new();
+        tree.write(
+            "ZBD/C1/IA1/zrdr.zbd",
+            &palette_reader_archive(&[(ACE_PAINT_MEMBER, b"\x09\x00\x00\x00")]),
+        );
+        let error = AcePaintCatalog::discover(&install_tree_session(&tree), &ace_paint_key("C1"))
+            .expect_err("a member that is not the observed layout is refused");
+        assert_eq!(error.code(), "unknown_tag");
+
+        let tree = PaletteTree::new();
+        tree.write(
+            "ZBD/C1/IA1/zrdr.zbd",
+            &palette_reader_archive(&[(ACE_PAINT_MEMBER, &ia_zrd_without_paint())]),
+        );
+        let error = AcePaintCatalog::discover(&install_tree_session(&tree), &ace_paint_key("C1"))
+            .expect_err("a record that names no ace paint is refused");
+        assert_eq!(error.code(), "no_ace_paint");
+        assert!(error.to_string().contains("ace paint"));
+
+        // A pattern without a complete colour triple is refused, never padded
+        // with a zero channel.
+        let partial = ia_zrd_ace_paint_partial("broadway");
+        let tree = PaletteTree::new();
+        tree.write(
+            "ZBD/C1/IA1/zrdr.zbd",
+            &palette_reader_archive(&[(ACE_PAINT_MEMBER, &partial)]),
+        );
+        let error = AcePaintCatalog::discover(&install_tree_session(&tree), &ace_paint_key("C1"))
+            .expect_err("an incomplete colour triple is refused");
+        assert_eq!(error.code(), "shape");
+        assert!(error.to_string().contains("colour triple"));
+
+        // A pattern without a complete decal triple is refused too.
+        let partial = ia_zrd_ace_paint_no_decals("broadway");
+        let tree = PaletteTree::new();
+        tree.write(
+            "ZBD/C1/IA1/zrdr.zbd",
+            &palette_reader_archive(&[(ACE_PAINT_MEMBER, &partial)]),
+        );
+        let error = AcePaintCatalog::discover(&install_tree_session(&tree), &ace_paint_key("C1"))
+            .expect_err("an incomplete decal triple is refused");
+        assert_eq!(error.code(), "shape");
+        assert!(error.to_string().contains("decal triple"));
+    }
+
+    /// AC: the cross-check closes an ace paint against the faction palettes: a
+    /// pattern the vehicle records store agrees on every slot, a real
+    /// disagreement is a finding, a pattern nothing colours is a finding and a
+    /// decal outside the declared sheet is a finding.
+    #[test]
+    fn accept_f09_paintshop_cross_checks_the_ace_paint_against_the_palettes() {
+        // The `medusas` palette the vehicle records store.
+        let medusas = zrd_paint_record(
+            "medusas",
+            [[95, 125, 143], [41, 14, 21], [141, 137, 93]],
+            [21, 14, 14],
+        );
+        let zrd = vehicle_zrd(&[("medkestrel", &medusas)]);
+        let tree = PaletteTree::new();
+        tree.write(
+            PALETTE_CONTAINER,
+            &palette_reader_archive(&[(PALETTE_MEMBER, &zrd)]),
+        );
+        let session = install_tree_session(&tree);
+        let palette = FactionPaletteCatalog::discover(&session, &palette_key())
+            .expect("the palette extracts");
+
+        // An ace paint that names a stored pattern with the same values agrees.
+        let matching = ia_zrd_ace_paint(
+            "medusas",
+            [[95, 125, 143], [41, 14, 21], [141, 137, 93]],
+            [21, 14, 14],
+            17,
+        );
+        let tree = PaletteTree::new();
+        tree.write(
+            "ZBD/C1/IA1/zrdr.zbd",
+            &palette_reader_archive(&[(ACE_PAINT_MEMBER, &matching)]),
+        );
+        let catalog = AcePaintCatalog::discover(&install_tree_session(&tree), &ace_paint_key("C1"))
+            .expect("the fixture ace paint extracts");
+        let frames = Some(50u32);
+        assert!(
+            catalog.cross_check(&palette, frames).is_empty(),
+            "{:?}",
+            catalog
+                .cross_check(&palette, frames)
+                .iter()
+                .map(|finding| finding.detail().to_owned())
+                .collect::<Vec<_>>()
+        );
+
+        // One different channel is a finding at that slot, and the decal still
+        // agrees.
+        let different = ia_zrd_ace_paint(
+            "medusas",
+            [[95, 125, 143], [41, 14, 22], [141, 137, 93]],
+            [21, 14, 14],
+            17,
+        );
+        let tree = PaletteTree::new();
+        tree.write(
+            "ZBD/C1/IA1/zrdr.zbd",
+            &palette_reader_archive(&[(ACE_PAINT_MEMBER, &different)]),
+        );
+        let catalog = AcePaintCatalog::discover(&install_tree_session(&tree), &ace_paint_key("C1"))
+            .expect("the fixture ace paint extracts");
+        let findings = catalog.cross_check(&palette, None);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| finding.code())
+                .collect::<Vec<_>>(),
+            vec!["palette_mismatch"]
+        );
+        assert!(findings[0].detail().contains("slot 1"));
+
+        // A pattern no vehicle record colours is reported, and the cross-check
+        // stops there rather than comparing against nothing.
+        let broadway = ia_zrd_ace_paint(
+            "broadway",
+            [[74, 40, 132], [0, 0, 0], [237, 221, 0]],
+            [21, 1, 0],
+            33,
+        );
+        let tree = PaletteTree::new();
+        tree.write(
+            "ZBD/C1/IA1/zrdr.zbd",
+            &palette_reader_archive(&[(ACE_PAINT_MEMBER, &broadway)]),
+        );
+        let catalog = AcePaintCatalog::discover(&install_tree_session(&tree), &ace_paint_key("C1"))
+            .expect("the fixture ace paint extracts");
+        let findings = catalog.cross_check(&palette, None);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| finding.code())
+                .collect::<Vec<_>>(),
+            vec!["pattern_without_palette"]
+        );
+        assert!(findings[0].detail().contains("broadway"));
+
+        // A stored decal inside the declared frames is not a finding; one past
+        // them is.
+        let outside = ia_zrd_ace_paint(
+            "medusas",
+            [[95, 125, 143], [41, 14, 21], [141, 137, 93]],
+            [21, 14, 14],
+            17,
+        );
+        let tree = PaletteTree::new();
+        tree.write(
+            "ZBD/C1/IA1/zrdr.zbd",
+            &palette_reader_archive(&[(ACE_PAINT_MEMBER, &outside)]),
+        );
+        let catalog = AcePaintCatalog::discover(&install_tree_session(&tree), &ace_paint_key("C1"))
+            .expect("the fixture ace paint extracts");
+        assert!(catalog.cross_check(&palette, Some(50)).is_empty());
+        let findings = catalog.cross_check(&palette, Some(20));
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| finding.code())
+                .collect::<Vec<_>>(),
+            vec!["decal_outside_sheet"],
+            "{:?}",
+            findings
+                .iter()
+                .map(|finding| finding.detail().to_owned())
+                .collect::<Vec<_>>()
+        );
+        assert!(findings[0].detail().contains("21"));
+    }
     /// The retail option space and the four engine-internal gaps, measured
     /// through the production readers against the original installation.
     #[test]
@@ -5152,6 +6075,265 @@ mod tests {
                 .collect::<std::collections::BTreeSet<_>>()
                 .len(),
             "the shop's pattern list has one entry per paint pattern the vehicle records name"
+        );
+    }
+
+    /// The Instant Action ace paints of every chapter's scenario, read through the
+    /// production readers against the original installation: seven name a paint
+    /// pattern the vehicle records also store with the same values, and the
+    /// eighth — BROADWAY — arrives from original data.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f09_paintshop_retail_instant_action_ace_paints() {
+        let root = game_dir();
+        let found = install::discover(&root).expect("the installation is discovered");
+        let context = ResolveContext::new(install::fingerprint(&found.manifest));
+        let mut builder = SessionBuilder::new(context);
+        builder
+            .mount_installation(&root, &found.diagnosis)
+            .expect("the installation mounts");
+        let session = builder.open();
+        let palette = FactionPaletteCatalog::discover(&session, &palette_key())
+            .expect("the original faction palette extracts");
+
+        // The paint shop's decal pane declares 50 frames, which bounds every
+        // stored decal index the ace paints carry.
+        let frames = 50u32;
+
+        // `(chapter, pattern, colours, decals, accent, ace name, airframe,
+        // mission type)`. Every value is measured from the original member and
+        // pinned so an extraction change that alters one cannot pass.
+        ///
+        /// One row per chapter: the installation ships one Instant Action
+        /// scenario directory `IA1` under each of its eight chapter groups.
+        type RetailAceRow = (
+            &'static str,
+            &'static str,
+            [[u8; 3]; 3],
+            [u32; 3],
+            u32,
+            &'static str,
+            &'static str,
+            &'static str,
+        );
+
+        let measured: Vec<RetailAceRow> = vec![
+            (
+                "C1",
+                "blake",
+                [[149, 163, 195], [89, 114, 159], [233, 228, 240]],
+                [21, 3, 3],
+                24,
+                "MSG_PALBLAKE_NAME",
+                "Peacemaker",
+                "dogfight_squadron",
+            ),
+            (
+                "C1B",
+                "blckswan",
+                [[23, 23, 21], [48, 47, 39], [196, 193, 186]],
+                [21, 5, 5],
+                23,
+                "MSG_BSWAN_NAME",
+                "Fury",
+                "stunt_flying",
+            ),
+            (
+                "C1C",
+                "hollywd",
+                [[243, 194, 0], [0, 0, 0], [255, 255, 255]],
+                [21, 11, 11],
+                26,
+                "MSG_GKHAN_NAME",
+                "Firebrand",
+                "zeppelin_run",
+            ),
+            (
+                "C2",
+                "hughes",
+                [[243, 194, 0], [0, 0, 0], [255, 255, 255]],
+                [21, 11, 11],
+                25,
+                "MSG_HHUGHES_NAME",
+                "Bloodhawk",
+                "stunt_flying",
+            ),
+            (
+                "C2B",
+                "hollywd",
+                [[243, 194, 0], [0, 0, 0], [255, 255, 255]],
+                [21, 11, 11],
+                26,
+                "MSG_GKHAN_NAME",
+                "Devastator",
+                "zeppelin_run",
+            ),
+            (
+                "C3",
+                "medusas",
+                [[95, 125, 143], [41, 14, 21], [141, 137, 93]],
+                [21, 14, 14],
+                17,
+                "MSG_JPEROT_NAME",
+                "Kestrel",
+                "dogfight_squadron",
+            ),
+            (
+                "C4",
+                "hughes",
+                [[243, 194, 0], [0, 0, 0], [255, 255, 255]],
+                [21, 11, 11],
+                31,
+                "MSG_BREDMANN_NAME",
+                "Bloodhawk",
+                "stunt_flying",
+            ),
+            (
+                "C5",
+                "broadway",
+                [[74, 40, 132], [0, 0, 0], [237, 221, 0]],
+                [21, 1, 0],
+                33,
+                "MSG_SSCRAWFORD_NAME",
+                "Peacemaker",
+                "stunt_flying",
+            ),
+        ];
+        assert_eq!(measured.len(), 8, "one Instant Action scenario per chapter");
+
+        let mut without_palette = Vec::new();
+        let mut mismatched = Vec::new();
+        for (chapter, pattern, colors, decals, accent, ace_name, plane, mission_type) in &measured {
+            let catalog = AcePaintCatalog::discover(&session, &ace_paint_key(chapter))
+                .unwrap_or_else(|error| panic!("{chapter}: {error}"));
+            assert_eq!(
+                catalog.container_path(),
+                format!("ZBD/{chapter}/IA1/zrdr.zbd")
+            );
+            assert_eq!(catalog.member(), ACE_PAINT_MEMBER);
+            assert_eq!(
+                catalog.install_sha256(),
+                install::fingerprint(&found.manifest)
+            );
+            assert!(catalog.member_span().length() > 0, "{chapter}");
+            let paint = catalog.paint();
+            assert_eq!(paint.pattern(), *pattern, "{chapter}");
+            assert_eq!(paint.ace_name(), Some(*ace_name), "{chapter}");
+            assert_eq!(paint.accent(), *accent, "{chapter}");
+            assert_eq!(paint.plane(), Some(*plane), "{chapter}");
+            assert_eq!(paint.mission_type(), Some(*mission_type), "{chapter}");
+            for slot in 0..3 {
+                assert_eq!(
+                    paint.color(slot).expect("a stored colour").rgb(),
+                    colors[slot],
+                    "{chapter} colour {slot}"
+                );
+                assert_eq!(
+                    paint.decal(slot).expect("a stored decal").index(),
+                    decals[slot],
+                    "{chapter} decal {slot}"
+                );
+                assert_eq!(
+                    paint
+                        .color(slot)
+                        .expect("a stored colour")
+                        .span()
+                        .member_key(),
+                    Some(ACE_PAINT_MEMBER),
+                    "{chapter} colour {slot} keeps its member key"
+                );
+                assert!(
+                    paint.color(slot).expect("a stored colour").span().length() > 0,
+                    "{chapter}"
+                );
+            }
+
+            // Every stored decal is inside the declared sheet, and the ace
+            // paint's colours and decals either agree with the vehicle records'
+            // palette of the same pattern or name a pattern none of them stores.
+            let findings = catalog.cross_check(&palette, Some(frames));
+            match palette.palette(pattern) {
+                Ok(faction) => {
+                    if !findings.is_empty() {
+                        // A real disagreement between two original sources,
+                        // reported rather than reconciled: the Hollywood Khan
+                        // scenarios name the `hollywd` pattern and store the
+                        // `hughes` palette, at all three slots.
+                        mismatched.push((*chapter, findings.len()));
+                        assert_eq!(
+                            findings
+                                .iter()
+                                .map(|finding| finding.code())
+                                .collect::<Vec<_>>(),
+                            vec!["palette_mismatch"; 3],
+                            "{chapter}: {:?}",
+                            findings
+                                .iter()
+                                .map(|finding| finding.detail().to_owned())
+                                .collect::<Vec<_>>()
+                        );
+                        for slot in 0..3 {
+                            assert_ne!(
+                                paint.color(slot).expect("a stored colour").rgb(),
+                                faction.color(slot).expect("a stored colour").rgb(),
+                                "{chapter} slot {slot} agrees, so this scenario cannot be one of \
+                                 the measured disagreements"
+                            );
+                        }
+                        continue;
+                    }
+                    for slot in 0..3 {
+                        assert_eq!(
+                            paint.color(slot).expect("a stored colour").rgb(),
+                            faction.color(slot).expect("a stored colour").rgb(),
+                            "{chapter} slot {slot}"
+                        );
+                        assert_eq!(
+                            paint.decal(slot).expect("a stored decal").index(),
+                            faction.decal(slot).expect("a stored decal").index(),
+                            "{chapter} slot {slot}"
+                        );
+                    }
+                }
+                Err(_) => {
+                    assert_eq!(
+                        findings
+                            .iter()
+                            .map(|finding| finding.code())
+                            .collect::<Vec<_>>(),
+                        vec!["pattern_without_palette"],
+                        "{chapter}: {:?}",
+                        findings
+                            .iter()
+                            .map(|finding| finding.detail().to_owned())
+                            .collect::<Vec<_>>()
+                    );
+                    without_palette.push(*pattern);
+                }
+            }
+        }
+
+        // Six scenarios agree with the vehicle records on every slot; two name
+        // `hollywd` and store the `hughes` palette, which the cross-check
+        // reports at all three slots.
+        assert_eq!(
+            mismatched,
+            vec![("C1C", 3), ("C2B", 3)],
+            "the two zeppelin-run scenarios of the Hollywood Khan disagree with the vehicle \
+             records at every slot"
+        );
+
+        // The one pattern no vehicle record colours is BROADWAY, so its palette
+        // comes from the Instant Action ace record rather than from nowhere.
+        assert_eq!(without_palette, vec!["broadway"]);
+        assert!(
+            palette.palette("broadway").is_err(),
+            "BROADWAY must stay absent from the vehicle records, or this stage's finding about \
+             where its palette comes from is wrong"
+        );
+        assert!(
+            palette.palette("itstaxi").is_err(),
+            "ITSTAXI has no palette anywhere, so it stays a recorded gap"
         );
     }
 }
@@ -5930,6 +7112,20 @@ mod evidence {
     const PAINT_SHOP_EXPECTED_GAPS: usize = 4;
     const PAINT_SHOP_EXPECTED_DECAL_FRAMES: u32 = 50;
 
+    /// The eight chapter groups, each with the paint shop's declared decal frame
+    /// count, so the harness reads every Instant Action ace record the
+    /// installation ships.
+    const ACE_CHAPTERS: [(&str, u32); 8] = [
+        ("C1", PAINT_SHOP_EXPECTED_DECAL_FRAMES),
+        ("C1B", PAINT_SHOP_EXPECTED_DECAL_FRAMES),
+        ("C1C", PAINT_SHOP_EXPECTED_DECAL_FRAMES),
+        ("C2", PAINT_SHOP_EXPECTED_DECAL_FRAMES),
+        ("C2B", PAINT_SHOP_EXPECTED_DECAL_FRAMES),
+        ("C3", PAINT_SHOP_EXPECTED_DECAL_FRAMES),
+        ("C4", PAINT_SHOP_EXPECTED_DECAL_FRAMES),
+        ("C5", PAINT_SHOP_EXPECTED_DECAL_FRAMES),
+    ];
+
     /// Every limitation this stage records machine-readably, each naming the
     /// content it affects and what resolves it. The `unknowns` gate in
     /// `tools/validate_evidence.py` rejects a nonempty array under
@@ -5937,7 +7133,7 @@ mod evidence {
     /// what the contract forbids, so this report is validated **without**
     /// `--require-pass` and the expected rejection is documented in the
     /// committed finding.
-    const PAINT_SHOP_UNKNOWNS: [&str; 6] = [
+    const PAINT_SHOP_UNKNOWNS: [&str; 7] = [
         "swatch_palette_engine_internal: the paint shop declares 18 colour swatches per paint \
          slot (LAYOUT.CSV [@Paint@] PT_D_COLORS0..2) and no field of those ten control records \
          spells a colour, a hex value or a name, so the swatch values are produced inside the \
@@ -5969,15 +7165,24 @@ mod evidence {
          player's paint is a shop choice whose starting swatches and shades are engine-internal. \
          Affected content: the player paint on every airframe. Resolving task: #358 or #351. Gates: \
          any verified_original claim about the player's own paint.",
-        "stock_livery_without_pattern: BROADWAY and ITSTAXI have stock BM livery directories (the \
-         F09-D inventory) but are not among the paint patterns the vehicle records name, so the \
-         paint shop does not offer them and cannot recolour them; their appearance comes from the \
-         shipped BM planes themselves. Which stock livery directory corresponds to which paint \
-         pattern (the directories are BLACKHAT..STUDIO plus BROADWAY, FORTUNE and ITSTAXI, and the \
-         pattern is named `player_fortune`, not `FORTUNE`) is engine-internal and not established. \
-         Affected content: those two factions' liveries and the directory-to-pattern binding. \
-         Resolving task: #358 or #351, with F17-D for the renderer. Gates: any claim that the \
-         paint shop can produce a BROADWAY or ITSTAXI scheme.",
+        "itstaxi_palette_absent: BROADWAY's palette was resolved from original data by this \
+         stage (the `ZBD/C5/IA1/zrdr.zrd` member `ia.zrd` ace record names paint pattern \
+         `broadway` with its colours and decals), but ITSTAXI has no paint record anywhere in the \
+         installation: `itstaxi` occurs in no readable member, it is not one of the paint patterns \
+         the shop offers, and no ace record names it. It has a stock BM livery directory (the \
+         F09-D inventory), so its appearance comes from the shipped BM planes themselves. Affected \
+         content: the ITSTAXI liveries and whether the paint shop can produce an ITSTAXI scheme \
+         (it cannot: the shop's pattern list holds exactly the patterns the vehicle records name). \
+         Resolving task: #358 (an owner paint-shop capture listing every pattern it offers) or \
+         #351. Gates: any claim about an ITSTAXI paint scheme.",
+        "stock_livery_directory_binding: which stock livery directory corresponds to which paint \
+         pattern is engine-internal and not established: the directories are BLACKHAT..STUDIO plus \
+         BROADWAY, FORTUNE and ITSTAXI, while the player's paint pattern is named `player_fortune` \
+         and BROADWAY's palette lives in an Instant Action ace record rather than in the vehicle \
+         records, so the naming is not a mapping. Affected content: which BM library the engine \
+         loads for a given paint pattern on every composed livery. Resolving task: #358 or #351, \
+         with F17-D for the renderer. Gates: any claim that a paint pattern selects a specific \
+         stock BM directory.",
     ];
 
     /// Evidence-report harness for task F09-PAINTSHOP
@@ -6165,6 +7370,57 @@ mod evidence {
         let palette = FactionPaletteCatalog::discover(&session, &palette_evidence_key())
             .expect("the original faction palette extracts");
         let findings = catalog.cross_check(&palette);
+
+        // The second paint source: every chapter's Instant Action scenario ace
+        // record, read through the production reader and cross-checked against
+        // the same faction palettes.
+        let mut aces: Vec<(&str, super::AcePaintCatalog, Vec<super::AcePaintFinding>)> = Vec::new();
+        for (chapter, frame_count) in ACE_CHAPTERS {
+            let key = super::AssetKey::from_spelling(
+                cs_assets::vfs::INSTALL_NAMESPACE,
+                &format!("ZBD/{chapter}/IA1/zrdr.zbd"),
+                "default",
+            )
+            .expect("a valid archive key");
+            let ace = super::AcePaintCatalog::discover(&session, &key)
+                .unwrap_or_else(|error| panic!("{chapter}: {error}"));
+            let ace_findings = ace.cross_check(&palette, Some(frame_count));
+            aces.push((chapter, ace, ace_findings));
+        }
+        assert_eq!(
+            aces.len(),
+            ACE_CHAPTERS.len(),
+            "one Instant Action scenario per chapter group"
+        );
+        // Six scenarios agree with the vehicle records on every slot, two name
+        // `hollywd` and store the `hughes` palette (three findings each), and
+        // one names the pattern no vehicle record colours.
+        let mismatched: Vec<&str> = aces
+            .iter()
+            .filter(|(_, _, found)| !found.is_empty() && found[0].code() == "palette_mismatch")
+            .map(|(chapter, _, _)| *chapter)
+            .collect();
+        assert_eq!(
+            mismatched,
+            vec!["C1C", "C2B"],
+            "the two Hollywood Khan zeppelin-run scenarios name `hollywd` and store `hughes`"
+        );
+        let without_palette: Vec<&str> = aces
+            .iter()
+            .filter(|(_, _, found)| {
+                found.len() == 1 && found[0].code() == "pattern_without_palette"
+            })
+            .map(|(chapter, _, _)| *chapter)
+            .collect();
+        assert_eq!(
+            without_palette,
+            vec!["C5"],
+            "BROADWAY's palette comes from the C5 Instant Action ace record"
+        );
+        assert!(
+            palette.palette("itstaxi").is_err(),
+            "ITSTAXI has no paint record anywhere, so it must stay absent here"
+        );
         assert_eq!(
             findings
                 .iter()
@@ -6182,7 +7438,7 @@ mod evidence {
         let catalog_path = evidence_dir.join("paint-shop-catalog.json");
         fs::write(
             &catalog_path,
-            paint_shop_catalog_json(&candidate_tree, &catalog, &findings),
+            paint_shop_catalog_json(&candidate_tree, &catalog, &findings, &aces),
         )
         .unwrap_or_else(|error| panic!("write {}: {error}", catalog_path.display()));
         let artifacts = vec![
@@ -6286,7 +7542,8 @@ mod evidence {
             "pattern_names_engine_internal",
             "decal_index_mapping",
             "player_palette_engine_internal",
-            "stock_livery_without_pattern",
+            "itstaxi_palette_absent",
+            "stock_livery_directory_binding",
         ] {
             assert!(
                 written.contains(needle),
@@ -6749,13 +8006,15 @@ mod evidence {
 
     /// The extracted paint-shop option space as a JSON artifact: every control's
     /// record key, slot, declared entry count, line and field census; the decal
-    /// sheet's declaration; every recorded gap; and every cross-check finding.
-    /// Counts, lines and digests only — no values, no pixels, no file bytes. The
-    /// artifact itself stays in `private/`.
+    /// sheet's declaration; every recorded gap; every cross-check finding; and
+    /// every Instant Action ace paint with its pattern, colours, decals, accent
+    /// id and byte spans. Decoded values and spans only — no pixels, no original
+    /// file bytes. The artifact itself stays in `private/`.
     fn paint_shop_catalog_json(
         candidate_tree: &str,
         catalog: &super::PaintShopCatalog,
         findings: &[super::PaintShopFinding],
+        aces: &[(&str, super::AcePaintCatalog, Vec<super::AcePaintFinding>)],
     ) -> String {
         let census_json = |census: super::PaintShopFieldCensus| {
             format!(
@@ -6825,8 +8084,70 @@ mod evidence {
             })
             .collect();
 
-        // One digest over every control's key, slot, entry count and census, so
-        // the committed finding can carry a single comparable value.
+        let ace_json: Vec<String> = aces
+            .iter()
+            .map(|(chapter, ace, ace_findings)| {
+                let paint = ace.paint();
+                let colors: Vec<String> = paint
+                    .colors()
+                    .iter()
+                    .map(|color| {
+                        format!(
+                            "{{\"rgb\": [{}, {}, {}], \"offset\": {}, \"length\": {}}}",
+                            color.red(),
+                            color.green(),
+                            color.blue(),
+                            color.span().offset(),
+                            color.span().length(),
+                        )
+                    })
+                    .collect();
+                let decals: Vec<String> = paint
+                    .decals()
+                    .iter()
+                    .map(|decal| {
+                        format!(
+                            "{{\"index\": {}, \"offset\": {}, \"length\": {}}}",
+                            decal.index(),
+                            decal.span().offset(),
+                            decal.span().length(),
+                        )
+                    })
+                    .collect();
+                let found: Vec<String> = ace_findings
+                    .iter()
+                    .map(|finding| {
+                        format!(
+                            "{{\"code\": {}, \"detail\": {}}}",
+                            jstr(finding.code()),
+                            jstr(finding.detail())
+                        )
+                    })
+                    .collect();
+                format!(
+                    "{{\"chapter\": {}, \"container\": {}, \"member\": {}, \
+                      \"member_offset\": {}, \"member_length\": {}, \"member_sha256\": {}, \
+                      \"pattern\": {}, \"accent\": {}, \"accent_offset\": {}, \
+                      \"colors\": [{}], \"decals\": [{}], \"findings\": [{}]}}",
+                    jstr(chapter),
+                    jstr(ace.container_path()),
+                    jstr(ace.member()),
+                    ace.member_span().offset(),
+                    ace.member_span().length(),
+                    jstr(&ace.member_sha256().to_hex()),
+                    jstr(paint.pattern()),
+                    paint.accent(),
+                    paint.accent_span().offset(),
+                    colors.join(", "),
+                    decals.join(", "),
+                    found.join(", "),
+                )
+            })
+            .collect();
+
+        // One digest over every control's key, slot, entry count and census and
+        // every ace paint's pattern and values, so the committed finding can
+        // carry a single comparable value.
         let mut material = Vec::new();
         for control in catalog.controls() {
             material.extend_from_slice(control.key().as_bytes());
@@ -6845,6 +8166,19 @@ mod evidence {
                 material.extend_from_slice(&count.to_le_bytes());
             }
         }
+        for (_, ace, _) in aces.iter() {
+            let paint = ace.paint();
+            material.extend_from_slice(paint.pattern().as_bytes());
+            material.push(0);
+            for color in paint.colors() {
+                material.extend_from_slice(&color.rgb());
+            }
+            for decal in paint.decals() {
+                material.extend_from_slice(&decal.index().to_le_bytes());
+            }
+            material.extend_from_slice(&paint.accent().to_le_bytes());
+            material.push(0xff);
+        }
         let option_space_fingerprint = install::sha256(&material).to_hex();
         let value_fields: u32 = catalog
             .controls()
@@ -6860,8 +8194,8 @@ mod evidence {
              \x20\"reader\": \"cs_content::livery::PaintShopCatalog::discover\",\n\
              \x20\"claim\": \"implemented\",\n\
              \x20\"evidence_class\": \"observed_original_data\",\n\
-             \x20\"note\": \"declared entry counts, field censuses, record lines and digests; no \
-             paint value, no pixel, no file bytes\",\n\
+             \x20\"note\": \"declared entry counts, field censuses, record lines, decoded paint \
+             values and byte spans; no pixel, no original file bytes\",\n\
              \x20\"container\": {},\n\
              \x20\"member\": {},\n\
              \x20\"install_sha256\": {},\n\
@@ -6873,6 +8207,7 @@ mod evidence {
              \"value_fields\": {}}},\n\
              \x20\"decal_sheet\": {},\n\
              \x20\"controls\": [\n  {}\n ],\n\
+             \x20\"ace_paints\": [\n  {}\n ],\n\
              \x20\"gaps\": [\n  {}\n ],\n\
              \x20\"findings\": [\n  {}\n ]\n\
              }}\n",
@@ -6895,6 +8230,7 @@ mod evidence {
             value_fields,
             sheet,
             controls.join(",\n  "),
+            ace_json.join(",\n  "),
             gaps.join(",\n  "),
             finding_json.join(",\n  "),
         )
