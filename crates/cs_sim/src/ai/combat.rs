@@ -2486,8 +2486,12 @@ pub struct FormationUpdate {
     pub trigger: Option<RecoveryTrigger>,
     /// The declared action it applied.
     pub action: Option<RecoveryAction>,
-    /// The station every living follower is now assigned, ascending by slot.
-    /// The leader never receives one: it leads.
+    /// The station every living member is now assigned, ascending by slot.
+    ///
+    /// While the anchor is the living leader, the leader holds none: it leads.
+    /// A declared regroup anchors the *whole* formation on the survivors'
+    /// point, leader included, because there is no leader-shaped anchor left to
+    /// lead it.
     pub stations: Vec<StationAssignment>,
     /// The living members whose station was released, ascending by actor.
     pub released: Vec<ActorId>,
@@ -2529,7 +2533,15 @@ struct MemberRuntime {
 enum AnchorMode {
     /// The formation's surviving leader.
     Leader,
-    /// The regroup point last computed from the survivors.
+    /// The regroup point, computed once from the formation's surviving members
+    /// when a declared action chose it.
+    ///
+    /// It is deliberately *not* recomputed on every later tick. The station
+    /// offsets do not average to zero — every follower trails its anchor — so a
+    /// centroid recomputed from members already sitting at their stations keeps
+    /// moving by that mean offset each tick, and the formation would chase its
+    /// own centre astern forever. A point fixed at the moment of the recovery
+    /// converges instead.
     RegroupPoint(WorldPosition),
 }
 
@@ -2771,12 +2783,32 @@ impl FormationRuntime {
         Ok(())
     }
 
-    /// Forgets a latched trigger once the fact it came from recovered.
-    fn release_latches(&mut self) {
-        if self.leader().is_some() {
+    /// Forgets a latched trigger once the fact it came from stopped being true,
+    /// and once it was *replaced* by a new instance of the same fact.
+    ///
+    /// `previous_leader` and `previous_target` are what the formation believed
+    /// before this tick's report was folded in.
+    ///
+    /// A latch answers one *fact*, not one trigger: a recovery that re-fired
+    /// every tick would be a permanent state, but a latch that outlived its
+    /// fact is the same permanent state with the opposite cause. So a leader
+    /// loss is answered once per loss — a leader that was living before this
+    /// report and is not living now is a new loss, even when the slot that died
+    /// is the one the previous answer promoted — and an assigned target that is
+    /// no longer the assigned target is a new loss even if the new one is dead
+    /// too.
+    fn release_latches(
+        &mut self,
+        previous_leader: Option<ActorId>,
+        previous_target: Option<ActorId>,
+    ) {
+        if self.leader().is_some() || previous_leader.is_some() {
             self.latched.remove(&RecoveryTrigger::LeaderLost);
         }
-        if self.assigned_target.is_none() || self.assigned_target_alive {
+        if self.assigned_target.is_none()
+            || self.assigned_target_alive
+            || self.assigned_target != previous_target
+        {
             self.latched
                 .remove(&RecoveryTrigger::AssignedTargetDestroyed);
         }
@@ -2908,9 +2940,11 @@ impl FormationCoordinator {
     /// [`CombatError::RetiredFormationMember`],
     /// [`CombatError::FormationMemberNotReported`]),
     /// [`CombatError::StationNotFinite`] when a station cannot be computed as a
-    /// finite point, and [`CombatError::NoSurvivingMember`] when a declared
-    /// recovery asks for a point that no living member can supply. Every one
-    /// leaves the coordinator unchanged.
+    /// finite point. [`CombatError::NoSurvivingMember`] names the invariant the
+    /// tick enforces before any declared recovery runs — a recovery is only ever
+    /// applied while a survivor can supply its geometry — so it is unreachable
+    /// through this entry point and stays as the name of that guard. Every one
+    /// of these leaves the coordinator unchanged.
     pub fn apply(
         &mut self,
         policies: RecoveryPolicySet,
@@ -2954,7 +2988,7 @@ impl FormationCoordinator {
         next.assigned_target_alive = tick.assigned_target_alive;
         next.route_available = tick.route_available;
         next.reconcile(tick)?;
-        next.release_latches();
+        next.release_latches(previous_leader, current.assigned_target);
 
         let pending = next.pending_trigger();
         // Nothing survived: there is no shape left to recover, so the tick

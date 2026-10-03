@@ -365,6 +365,156 @@ fn accept_f32_c_leader_destroyed_mid_turn_its_followers_recover() {
     }
 }
 
+/// A recovery is answered once *per loss*, not once per formation: the promoted
+/// leader can itself be destroyed, and that second loss is a new fact, not a
+/// repeat of the first.
+///
+/// Without this the latch taken for the first loss suppresses the second one
+/// forever: the formation keeps a destroyed leader, the anchor resolves to
+/// nothing, and the one remaining follower is handed no station on any later
+/// tick — a permanently unrecovered formation, which is exactly what a latch is
+/// supposed to prevent.
+#[test]
+fn accept_f32_c_a_second_leader_loss_is_answered_not_swallowed_by_the_first() {
+    // Four members, so a station still exists after the second promotion.
+    let roster = FormationRoster::try_new(
+        FORMATION,
+        0,
+        vec![
+            FormationRosterMember {
+                slot: 0,
+                actor: synthetic_actor(SYNTHETIC_FORMATION_LEADER),
+            },
+            FormationRosterMember {
+                slot: 1,
+                actor: synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[0]),
+            },
+            FormationRosterMember {
+                slot: 2,
+                actor: synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[1]),
+            },
+            FormationRosterMember {
+                slot: 3,
+                actor: synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[1] + 1),
+            },
+        ],
+    )
+    .expect("the four-member roster is valid");
+    let mut runtime = CombatRuntime::new(
+        SYNTHETIC_SESSION,
+        &[synthetic_escort_profile()],
+        Vec::new(),
+        synthetic_difficulty_roster(),
+    )
+    .expect("the runtime is valid")
+    .with_formation(roster, synthetic_recovery_policies())
+    .expect("the formation registers");
+
+    // slot 0 leads; slots 1..3 trail it.
+    let members = |leader: bool, promoted: bool, follower: bool| {
+        vec![
+            synthetic_member_report(0, SYNTHETIC_FORMATION_LEADER, [1_000.0, 0.0, 0.0], leader),
+            synthetic_member_report(
+                1,
+                SYNTHETIC_FORMATION_WINGMEN[0],
+                [900.0, 0.0, 0.0],
+                promoted,
+            ),
+            synthetic_member_report(
+                2,
+                SYNTHETIC_FORMATION_WINGMEN[1],
+                [800.0, 0.0, 0.0],
+                follower,
+            ),
+            synthetic_member_report(
+                3,
+                SYNTHETIC_FORMATION_WINGMEN[1] + 1,
+                [700.0, 0.0, 0.0],
+                true,
+            ),
+        ]
+    };
+
+    let intact = members(true, true, true);
+    runtime
+        .update_formation(&intact_tick(START, &intact))
+        .expect("the intact tick applies");
+
+    // First loss: slot 0 is destroyed and slot 1 is promoted.
+    let first_loss = members(false, true, true);
+    let first = runtime
+        .update_formation(&intact_tick(START + 1, &first_loss))
+        .expect("the first leader loss applies");
+    assert_eq!(first.trigger, Some(RecoveryTrigger::LeaderLost));
+    assert_eq!(first.action, Some(RecoveryAction::ReassignLead));
+    assert_eq!(
+        first.leader,
+        Some(synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[0]))
+    );
+
+    // Second loss: the promoted leader is destroyed in turn. That is a new
+    // loss, so it is answered in turn.
+    let second_loss = members(false, false, true);
+    let second = runtime
+        .update_formation(&intact_tick(START + 2, &second_loss))
+        .expect("the second leader loss applies");
+    assert_eq!(
+        second.trigger,
+        Some(RecoveryTrigger::LeaderLost),
+        "a second leader loss is a second fact, not a repeat of the first"
+    );
+    assert_eq!(second.action, Some(RecoveryAction::ReassignLead));
+    assert_eq!(
+        second.previous_leader,
+        Some(synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[0])),
+        "the trace names the leader that was lost this time"
+    );
+    assert_eq!(
+        second.leader,
+        Some(synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[1])),
+        "the survivor is promoted out of the living, not out of the dead"
+    );
+    assert_eq!(second.latched, None);
+    assert_eq!(
+        second.anchor(),
+        Some(StationAnchor::Leader(synthetic_actor(
+            SYNTHETIC_FORMATION_WINGMEN[1]
+        )))
+    );
+
+    // The last follower still has a finite station, anchored on the new leader.
+    let tail = synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[1] + 1);
+    let station = second
+        .station(tail)
+        .expect("the remaining follower keeps a station");
+    assert_eq!(station.slot, 3);
+    assert_eq!(
+        station.position.to_array(),
+        [800.0 - 3.0 * FORMATION_TRAIL_SPACING_M, 0.0, 0.0]
+    );
+    assert!(
+        station
+            .position
+            .to_array()
+            .iter()
+            .all(|coordinate| coordinate.is_finite())
+    );
+
+    // And it is answered once, not on every tick: the promotion stands.
+    let third = runtime
+        .update_formation(&intact_tick(START + 3, &second_loss))
+        .expect("the settled tick applies");
+    assert_eq!(third.trigger, None);
+    assert_eq!(
+        third.leader,
+        Some(synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[1]))
+    );
+    assert_eq!(
+        third.station(tail).map(|s| s.position.to_array()),
+        Some(station.position.to_array())
+    );
+}
+
 /// A formation whose declared leader-loss path is `Regroup` closes up on the
 /// point its survivors already share — and that point is computed from the
 /// survivors alone, so a destroyed leader parked at an absurd coordinate cannot
@@ -611,6 +761,67 @@ fn accept_f32_c_a_recovery_is_answered_once_until_its_fact_recovers() {
         .expect("the recovered tick applies");
     assert_eq!(recovered.latched, None);
     assert_eq!(recovered.trigger, None);
+}
+
+/// The latch is per fact, for the assigned target as much as for the leader: a
+/// formation re-tasked onto a *different* destroyed target has a new loss to
+/// recover from, and the previous answer must not swallow it (non-negotiable 4
+/// names assigned-target destruction beside leader loss).
+#[test]
+fn accept_f32_c_a_second_assigned_target_loss_is_answered_too() {
+    let mut runtime = synthetic_combat_runtime();
+    let members = report(
+        true,
+        [1_000.0, 0.0, 0.0],
+        [[800.0, 0.0, 0.0], [700.0, 0.0, 0.0]],
+    );
+    let tick = |now: u64, target: u64| FormationTick {
+        assigned_target: Some(synthetic_actor(target)),
+        assigned_target_alive: false,
+        ..intact_tick(now, &members)
+    };
+
+    let first = runtime
+        .update_formation(&tick(START, HOSTILE))
+        .expect("the first target loss applies");
+    assert_eq!(
+        first.trigger,
+        Some(RecoveryTrigger::AssignedTargetDestroyed)
+    );
+    assert_eq!(first.action, Some(RecoveryAction::Regroup));
+
+    // The same dead target, still dead: answered once.
+    let repeated = runtime
+        .update_formation(&tick(START + 1, HOSTILE))
+        .expect("the repeated target loss applies");
+    assert_eq!(repeated.trigger, None);
+    assert_eq!(
+        repeated.latched,
+        Some(RecoveryTrigger::AssignedTargetDestroyed)
+    );
+
+    // A different target, already destroyed: a new loss, answered in turn.
+    let second = runtime
+        .update_formation(&tick(START + 2, HOSTILE + 1))
+        .expect("the second target loss applies");
+    assert_eq!(
+        second.trigger,
+        Some(RecoveryTrigger::AssignedTargetDestroyed),
+        "a different assigned target is a different fact, not a repeat"
+    );
+    assert_eq!(second.action, Some(RecoveryAction::Regroup));
+    assert_eq!(second.latched, None);
+    assert_eq!(second.anchor(), Some(StationAnchor::RegroupPoint));
+
+    // And that answer is held for as long as *that* target stays dead.
+    let settled = runtime
+        .update_formation(&tick(START + 3, HOSTILE + 1))
+        .expect("the settled tick applies");
+    assert_eq!(settled.trigger, None);
+    assert_eq!(
+        settled.latched,
+        Some(RecoveryTrigger::AssignedTargetDestroyed)
+    );
 }
 
 /// An ace variant is selected as data: the runtime runs the profile the
