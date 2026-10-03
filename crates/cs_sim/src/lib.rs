@@ -217,10 +217,14 @@
 //! `cs_content::interaction`; the lowering boundary is `cs_app::interaction`;
 //! the moving-frame runtime and consumer wiring are F36-B/C.
 //!
-//! [`mission`] is the F37-A mission session
+//! [`mission`] is the F37-A/F37-B/F37-C mission session
 //! (`specs/F37-mission-ir-and-deterministic-runtime-core.md`): it launches only
-//! a validated `cs_script::ir::MissionProgram` and drives the tick-ordered
-//! objective state; host effects are F37-C.
+//! a validated `cs_script::ir::MissionProgram`, drives the tick-ordered
+//! objective state, and applies the effects that state asks for through
+//! [`mission::HostLedger`] — the authoritative record of granted rewards, the
+//! session's one resolved outcome and the effects refused for a retry. It also
+//! moves the evaluator state and that host record together across a save.
+//! Native host bindings are F38.
 //!
 //! [`objectives`] is the F39-A objective/trigger/spawn vocabulary
 //! (`specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`,

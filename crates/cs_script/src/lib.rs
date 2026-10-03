@@ -5,9 +5,10 @@
 //!
 //! [`ir`] is the F37-A typed mission IR and its pre-launch validation;
 //! [`runtime`] is the mutable state, stable event ordering, the bounded
-//! evaluator and the deferred-work queue (F37-B). Snapshots and host effect
-//! application are F37-C. [`bindings`] is the F38-A host-binding registry
-//! that lowers an adapter's raw calls into the IR.
+//! evaluator, the deferred-work queue (F37-B) and the versioned save record
+//! with its exact pending-timer restore (F37-C). Applying the effects a mission
+//! asks for is the simulation's job (`cs_sim::mission`). [`bindings`] is the
+//! F38-A host-binding registry that lowers an adapter's raw calls into the IR.
 
 pub mod bindings;
 pub mod ir;

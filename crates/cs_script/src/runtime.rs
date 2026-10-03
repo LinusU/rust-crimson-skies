@@ -784,6 +784,16 @@ impl MissionState {
         dropped
     }
 
+    /// Ends the session as [`TerminalState::Aborted`] and drops its queued
+    /// work. Idempotent, and a session that already resolved an outcome keeps
+    /// it: the evaluator's answer is the answer.
+    pub fn abort(&mut self) -> usize {
+        if self.terminal == TerminalState::Running {
+            self.terminal = TerminalState::Aborted;
+        }
+        self.teardown()
+    }
+
     /// Resolves one tick. See the module docs for the phases and bounds.
     ///
     /// # Errors
