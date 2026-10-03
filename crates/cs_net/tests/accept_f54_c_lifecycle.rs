@@ -1,0 +1,1895 @@
+//! Acceptance scenario F54-C: the wired server/client lifecycle and bounded
+//! message processing.
+//!
+//! Spec: `specs/F54-modern-multiplayer-transport-and-authority-protocol.md`,
+//! stage `### F54-C`. Minimum scenario (spec F54 **AC03**): "Fuzz packet
+//! decoding with oversized counts, NaNs and invalid ids." Task test prefix:
+//! `accept_f54_c_`.
+//!
+//! # What is under test
+//!
+//! Every test drives production code in `cs_net::lifecycle`, `cs_net::transport`,
+//! `cs_net::codec`, `cs_net::snapshot` and `cs_net::validation` over real UDP
+//! loopback packets. Nothing is simulated in parallel: `ServerSession` and
+//! `ClientSession` wrap the same pinned `renet2`/`renet2_netcode` `=0.16.1`
+//! stack F54-B froze, and a [`Link`] is a live host/client pair.
+//!
+//! The acceptance scenario proper is
+//! [`accept_f54_c_fuzzed_packets_are_bounded_and_never_produce_a_non_finite_value`]
+//! plus [`accept_f54_c_the_client_consumer_survives_the_whole_corpus`]: a
+//! deterministic corpus of hostile buffers through the production decoder, the
+//! client's consumer and the snapshot dequantizers.
+//!
+//! A well-behaved peer is a [`ClientSession`]. A peer that needs to put bytes on
+//! the wire a correct producer would never emit (a verbatim replay, a flood of
+//! hostile buffers) is a raw [`ClientTransport`] that completed the same
+//! production handshake — see [`Link::raw_peer`] — so the injection still
+//! arrives through the real receive path.
+//!
+//! Everything here is the newly authored synthetic fixture. Loopback on one
+//! machine is `network_local` per `AGENTS.md`; `network_real` two-machine
+//! evidence is F54-D, which this stage does not claim.
+
+#[path = "support/f54_c_fuzz.rs"]
+mod fuzz;
+
+use std::net::{Ipv4Addr, SocketAddr};
+use std::time::Duration;
+
+use cs_types::Tick;
+use cs_types::content::{ContentId, ContentKind};
+use cs_types::evidence::ContentHash;
+use cs_types::input::{AxisValueError, FlightCommand};
+use cs_types::net::{ActorId, PeerId, SessionAllocator, SessionId};
+
+use cs_net::bounds::{
+    MAX_INPUT_FRAMES_PER_PACKET, MAX_MODS, MAX_PACKET_BYTES, MAX_SEEN_EVENTS, MAX_SNAPSHOT_BYTES,
+    MAX_UNACKED_PACKETS, MAX_WORK_PER_PUMP,
+};
+use cs_net::codec::{
+    ClientPacket, CodecError, ServerPacket, decode_client_packet, decode_server_packet,
+    encode_client_message, encode_client_packet,
+};
+use cs_net::compat::{Compatibility, HandshakeReject, PROTOCOL_VERSION, SessionParameters};
+use cs_net::fixture::{
+    SYNTHETIC_CONTENT_SHA256, SYNTHETIC_RULES_SHA256, SYNTHETIC_SESSION, synthetic_hello,
+    synthetic_parameters,
+};
+use cs_net::lifecycle::{
+    ClientClosure, ClientFault, ClientNotice, ClientPhase, ClientSession, INPUT_RETRY_INTERVAL,
+    PeerInput, ServerFault, ServerNotice, ServerPhase, ServerSession,
+};
+use cs_net::message::{
+    ClientPayload, DisconnectReason, FinishReason, MessageHeader, ServerMessage, ServerPayload,
+    SnapshotFrame, WireError,
+};
+use cs_net::snapshot::{SYNTHETIC_ORIGIN_EPOCH, Snapshot};
+use cs_net::transport::{CHANNEL_SEQUENCED, ClientEvent, ClientTransport, DropReason};
+use cs_net::validation::ThreatCase;
+
+/// One exchange round's duration. Loopback needs no real sleep; the updates
+/// only have to run often enough to exchange the netcode handshake's packets.
+const STEP: Duration = Duration::from_millis(16);
+
+/// How many pump rounds an end-to-end expectation gets before it fails.
+const MAX_ROUNDS: usize = 2_000;
+
+/// A live loopback pair: one bound host session and one connecting client
+/// session, plus every notice each side produced.
+struct Link {
+    host: ServerSession,
+    client: ClientSession,
+    host_notices: Vec<ServerNotice>,
+    client_notices: Vec<ClientNotice>,
+}
+
+impl Link {
+    /// Binds a host for `session`/`params` on loopback and connects a client
+    /// offering `hello`.
+    fn new(
+        session: SessionId,
+        params: SessionParameters,
+        hello: cs_net::compat::ClientHello,
+    ) -> Self {
+        let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let host = ServerSession::bind(session, params, bind, Duration::ZERO)
+            .expect("the host socket binds");
+        let addr = host.local_addr().expect("the bound host has an address");
+        let client = ClientSession::connect(hello, addr, 0xC1, Duration::ZERO)
+            .expect("the client socket binds");
+        Self {
+            host,
+            client,
+            host_notices: Vec::new(),
+            client_notices: Vec::new(),
+        }
+    }
+
+    /// A link whose handshake completed and whose client holds a grant.
+    fn joined(session: SessionId) -> Self {
+        let mut link = Self::new(session, synthetic_parameters(), synthetic_hello());
+        link.pump_until_joined();
+        assert!(
+            link.client.grant().is_some(),
+            "the handshake granted a session: {:?}",
+            link.client_notices
+        );
+        link
+    }
+
+    /// One exchange round: the client pumps (emitting its packets), then the
+    /// host pumps (receiving and answering).
+    fn round(&mut self) {
+        self.client_notices.extend(self.client.pump(STEP));
+        self.host_notices.extend(self.host.pump(STEP));
+    }
+
+    /// Pumps until the client holds a grant or was refused.
+    fn pump_until_joined(&mut self) {
+        for _ in 0..MAX_ROUNDS {
+            if self.client.grant().is_some() || self.client.phase().closure().is_some() {
+                return;
+            }
+            self.round();
+        }
+        panic!(
+            "the handshake never settled; the client saw {:?}",
+            self.client_notices
+        );
+    }
+
+    /// Pumps until the client applied the host's `Launched`.
+    fn pump_until_live(&mut self) {
+        for _ in 0..MAX_ROUNDS {
+            if matches!(self.client.phase(), ClientPhase::Live { .. }) {
+                return;
+            }
+            self.round();
+        }
+        panic!(
+            "the session never launched; the client saw {:?}",
+            self.client_notices
+        );
+    }
+
+    /// Pumps `rounds` further rounds.
+    fn pump(&mut self, rounds: usize) {
+        for _ in 0..rounds {
+            self.round();
+        }
+    }
+
+    /// Pumps until the host has at least one queued work item.
+    fn pump_until_work(&mut self) {
+        for _ in 0..MAX_ROUNDS {
+            if self.host.queued() > 0 {
+                return;
+            }
+            self.round();
+        }
+        panic!(
+            "no admitted input ever arrived; the host saw {:?}",
+            self.host_notices
+        );
+    }
+
+    /// Whether the host produced a notice matching `wanted`.
+    fn host_has(&self, wanted: impl Fn(&ServerNotice) -> bool) -> bool {
+        self.host_notices.iter().any(wanted)
+    }
+
+    /// Whether the client produced a notice matching `wanted`.
+    fn client_has(&self, wanted: impl Fn(&ClientNotice) -> bool) -> bool {
+        self.client_notices.iter().any(wanted)
+    }
+
+    /// A second peer that completed the same production handshake but has no
+    /// lifecycle owner, so a test can put verbatim bytes on the wire.
+    ///
+    /// Injection still travels the real receive path — netcode, the channel
+    /// layer, the bounded codec and the session gate — so a refusal observed
+    /// afterwards is the production refusal and not a test-side filter.
+    fn raw_peer(&self, client_id: u64) -> RawPeer {
+        let addr = self.host.local_addr().expect("the host has an address");
+        RawPeer {
+            transport: ClientTransport::connect(synthetic_hello(), addr, client_id, Duration::ZERO)
+                .expect("the raw client socket binds"),
+        }
+    }
+}
+
+/// A handshake-complete peer with no lifecycle owner.
+struct RawPeer {
+    transport: ClientTransport,
+}
+
+impl RawPeer {
+    /// Drives this peer to its grant, pumping `host` alongside it.
+    fn handshake(&mut self, host: &mut ServerSession) -> PeerId {
+        for _ in 0..MAX_ROUNDS {
+            if let Some(grant) = self.transport.grant() {
+                return grant.peer;
+            }
+            self.transport.update(STEP);
+            host.pump(STEP);
+        }
+        panic!("the raw peer never received a grant");
+    }
+
+    /// Puts `bytes` on `channel` verbatim.
+    fn inject(&mut self, channel: u8, bytes: &[u8]) {
+        self.transport.send_encoded(channel, bytes);
+    }
+
+    /// Pumps this peer once.
+    fn pump(&mut self) -> Vec<ClientEvent> {
+        self.transport.update(STEP)
+    }
+
+    /// Pumps this peer and the host together.
+    fn round(&mut self, host: &mut ServerSession) -> Vec<ServerNotice> {
+        self.transport.update(STEP);
+        host.pump(STEP)
+    }
+}
+
+/// Encodes one fire packet for `session`/`sequence`.
+fn fire_bytes(session: SessionId, tick: Tick, sequence: u32) -> Vec<u8> {
+    encode_client_message(&fuzz::fire_message(session, tick, sequence))
+        .expect("a fire packet encodes")
+}
+
+// --------------------------------------------------------------- lifecycle --
+
+#[test]
+fn accept_f54_c_the_session_runs_connect_launch_finish_and_disconnect() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("the first epoch allocates");
+    let mut link = Link::joined(session);
+
+    // connect: the handshake completed and both sides agree on the identity.
+    let grant = link
+        .client
+        .grant()
+        .expect("the handshake granted a session");
+    assert_eq!(grant.session, session);
+    assert_eq!(link.host.phase(), ServerPhase::Gathering);
+    assert_eq!(*link.client.phase(), ClientPhase::Joined);
+    assert!(
+        link.host_has(
+            |notice| matches!(notice, ServerNotice::PeerJoined { peer } if *peer == grant.peer)
+        ),
+        "the host saw the join: {:?}",
+        link.host_notices
+    );
+
+    // launch: the host publishes `Launched` and the client applies it.
+    link.host
+        .launch(Tick(100))
+        .expect("a gathering session launches");
+    assert_eq!(
+        link.host.phase(),
+        ServerPhase::Live {
+            start_tick: Tick(100)
+        }
+    );
+    link.pump_until_live();
+    assert_eq!(
+        *link.client.phase(),
+        ClientPhase::Live {
+            start_tick: Tick(100)
+        }
+    );
+
+    // in flight: the client's local samples reach the simulation as admitted
+    // input, once, with the fire request the gate authorized.
+    let peer = grant.peer;
+    let actor = ActorId { session, serial: 7 };
+    link.host
+        .gate_mut()
+        .ownership_mut()
+        .bind(peer, actor)
+        .expect("the host binds the client's aircraft");
+    link.client
+        .submit_sample(FlightCommand::Throttle, 0.75, Tick(101))
+        .expect("a finite throttle sample queues");
+    link.client
+        .submit_edge(FlightCommand::FirePrimary, Tick(102))
+        .expect("a fire edge queues");
+    assert_eq!(link.client.pending(), 2, "two frames are queued");
+    link.pump(4);
+
+    let work: Vec<PeerInput> = link.host.drain_work();
+    assert_eq!(work.len(), 1, "one admitted packet reached the consumer");
+    assert_eq!(work[0].peer, peer);
+    assert_eq!(work[0].frames.frames.len(), 2);
+    assert_eq!(
+        work[0].fires.len(),
+        1,
+        "the gate authorized exactly the one fire edge"
+    );
+    assert_eq!(work[0].fires[0].actor, actor);
+    assert_eq!(work[0].fires[0].tick, Tick(102));
+    assert!(
+        link.host.queued() <= MAX_WORK_PER_PUMP,
+        "the work queue stays inside its cap"
+    );
+
+    // The host acknowledges the input it consumed and the client retires it.
+    link.host
+        .acknowledge_input(peer, work[0].sequence)
+        .expect("the ack encodes");
+    link.pump(4);
+    assert_eq!(link.client.acked_through(), Some(work[0].sequence));
+    assert_eq!(link.client.unacked(), 0, "the acked packet was retired");
+
+    // finish: the host publishes `Finished` and the client applies it.
+    link.host
+        .finish(Tick(140), FinishReason::Completed)
+        .expect("a live session finishes");
+    assert_eq!(
+        link.host.phase(),
+        ServerPhase::Finished {
+            reason: FinishReason::Completed
+        }
+    );
+    for _ in 0..MAX_ROUNDS {
+        if matches!(link.client.phase(), ClientPhase::Finished { .. }) {
+            break;
+        }
+        link.round();
+    }
+    assert_eq!(
+        *link.client.phase(),
+        ClientPhase::Finished {
+            reason: FinishReason::Completed
+        }
+    );
+
+    // disconnect: the host tears the session down and the client observes it.
+    let hung_up = link
+        .host
+        .close(DisconnectReason::SessionEnded)
+        .expect("teardown runs");
+    assert_eq!(hung_up, 1, "the one member was hung up");
+    assert_eq!(link.host.phase(), ServerPhase::Closed);
+    assert!(link.host.members().next().is_none());
+    link.pump(16);
+    assert!(
+        matches!(
+            link.client.phase().closure(),
+            Some(ClientClosure::ServerClosed(DisconnectReason::SessionEnded))
+                | Some(ClientClosure::TransportLost(_))
+        ),
+        "the client observed the teardown: {:?}",
+        link.client_notices
+    );
+    assert!(
+        !link.client.phase().open(),
+        "a closed client session sends nothing more"
+    );
+    assert!(
+        link.client_has(|notice| matches!(notice, ClientNotice::Disconnected { .. }))
+            || link
+                .client_has(|notice| matches!(notice, ClientNotice::Phase(ClientPhase::Closed(_)))),
+        "the close is reported, not silent: {:?}",
+        link.client_notices
+    );
+}
+
+#[test]
+fn accept_f54_c_a_duplicate_packet_reaches_the_consumer_exactly_once() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut link = Link::joined(session);
+    let mut raw = link.raw_peer(0xC2);
+    let peer = raw.handshake(&mut link.host);
+    let actor = ActorId { session, serial: 1 };
+    link.host
+        .gate_mut()
+        .ownership_mut()
+        .bind(peer, actor)
+        .expect("the host binds an aircraft");
+
+    // The exact same bytes three times: the replay the contract's "reliable
+    // delivery does not replace application idempotency" exists for. They go
+    // on the sequenced channel on purpose — the reliable channel deduplicates
+    // at its own layer, which is exactly why application-level idempotency
+    // still has to exist for the direction that does not.
+    let bytes = fire_bytes(session, Tick(20), 0);
+    for _ in 0..3 {
+        raw.inject(CHANNEL_SEQUENCED, &bytes);
+    }
+    for _ in 0..200 {
+        link.host_notices.extend(raw.round(&mut link.host));
+        if link.host.queued() > 0 {
+            break;
+        }
+    }
+    link.pump(4);
+
+    let work = link.host.drain_work();
+    assert_eq!(
+        work.len(),
+        1,
+        "a replayed packet is applied once, however often it arrives"
+    );
+    assert_eq!(work[0].fires.len(), 1, "and it fires exactly once");
+    assert_eq!(work[0].fires[0].sequence, 0, "under its first sequence");
+    assert!(
+        link.host_has(|notice| matches!(
+            notice,
+            ServerNotice::Dropped {
+                reason: DropReason::Refused(violation),
+                ..
+            } if violation.label() == "replayed_request"
+        )),
+        "both replays were refused and named: {:?}",
+        link.host_notices
+    );
+    let admitted = link
+        .host_notices
+        .iter()
+        .filter(|notice| matches!(notice, ServerNotice::Admitted(_)))
+        .count();
+    assert_eq!(admitted, 1, "exactly one delivery produced work");
+}
+
+#[test]
+fn accept_f54_c_the_phase_machine_refuses_every_illegal_transition() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut host = ServerSession::bind(
+        session,
+        synthetic_parameters(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        Duration::ZERO,
+    )
+    .expect("the host socket binds");
+
+    // finish before launch is refused, and it names the phase it was in.
+    assert_eq!(
+        host.finish(Tick(1), FinishReason::Aborted),
+        Err(ServerFault::WrongPhase {
+            action: "finish",
+            phase: ServerPhase::Gathering,
+        })
+    );
+    // close is always legal, and is idempotent.
+    assert_eq!(host.close(DisconnectReason::SessionEnded), Ok(0));
+    assert_eq!(host.close(DisconnectReason::SessionEnded), Ok(0));
+    assert_eq!(host.phase(), ServerPhase::Closed);
+    // launch after teardown is refused.
+    assert_eq!(
+        host.launch(Tick(1)),
+        Err(ServerFault::WrongPhase {
+            action: "launch",
+            phase: ServerPhase::Closed,
+        })
+    );
+    // acknowledging input in a spent epoch is refused too.
+    assert_eq!(
+        host.acknowledge_input(PeerId::new(1).expect("one is nonzero"), 0),
+        Err(ServerFault::WrongPhase {
+            action: "acknowledge input",
+            phase: ServerPhase::Closed,
+        })
+    );
+
+    // A fresh epoch launches exactly once.
+    let retry = SessionAllocator::new()
+        .allocate()
+        .expect("a retry epoch allocates");
+    host.reopen(retry)
+        .expect("the session reopens on a fresh epoch");
+    assert_eq!(host.session(), retry);
+    assert_eq!(host.phase(), ServerPhase::Gathering);
+    assert!(host.launch(Tick(50)).is_ok());
+    assert!(
+        matches!(
+            host.launch(Tick(51)),
+            Err(ServerFault::WrongPhase {
+                action: "launch",
+                ..
+            })
+        ),
+        "a launched session cannot launch again, got {:?}",
+        host.phase()
+    );
+    assert!(
+        host.finish(Tick(60), FinishReason::Completed).is_ok(),
+        "and it can finish once"
+    );
+}
+
+#[test]
+fn accept_f54_c_a_retry_runs_on_a_fresh_epoch_and_the_old_one_is_stale() {
+    let mut allocator = SessionAllocator::new();
+    let first = allocator.allocate().expect("the first epoch allocates");
+    let second = allocator.allocate().expect("the second epoch allocates");
+
+    let mut link = Link::joined(first);
+    link.host
+        .launch(Tick(10))
+        .expect("the first epoch launches");
+    link.pump_until_live();
+
+    // The retry: a fresh epoch on the same address. Everything stamped with the
+    // first epoch is stale by construction afterwards.
+    link.host
+        .reopen(second)
+        .expect("the retry binds a fresh epoch");
+    assert_eq!(link.host.session(), second);
+    assert_eq!(link.host.phase(), ServerPhase::Gathering);
+    assert!(
+        link.host.members().next().is_none(),
+        "the retry starts with an empty membership"
+    );
+
+    // A new client joins the new epoch and its grant names it.
+    let mut returning = link.raw_peer(0xC3);
+    let peer = returning.handshake(&mut link.host);
+    assert!(
+        link.host.members().any(|member| member == peer),
+        "the returning client is a member of the new epoch"
+    );
+
+    // The prior connection's packet, replayed verbatim against the new epoch.
+    // The host must absorb it: the sequence is new to this epoch's window, so
+    // only the epoch check can refuse it.
+    let stale = fire_bytes(first, Tick(11), 0);
+    returning.inject(CHANNEL_SEQUENCED, &stale);
+    for _ in 0..200 {
+        link.host_notices.extend(returning.round(&mut link.host));
+        if link.host_has(|notice| matches!(notice, ServerNotice::Dropped { .. })) {
+            break;
+        }
+    }
+    assert_eq!(
+        link.host.drain_work().len(),
+        0,
+        "a packet stamped with the prior epoch applies to nothing"
+    );
+    assert!(
+        link.host_has(|notice| matches!(notice, ServerNotice::Dropped { .. })),
+        "the stale traffic was refused and named: {:?}",
+        link.host_notices
+    );
+}
+
+#[test]
+fn accept_f54_c_the_retransmit_window_is_bounded_and_resends_the_exact_bytes() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut link = Link::joined(session);
+
+    // Sample input every round while the host is never pumped: nothing is
+    // acknowledged, so the retransmit window is the only bound that holds.
+    for index in 0..(MAX_UNACKED_PACKETS * 3) as u64 {
+        link.client
+            .submit_edge(FlightCommand::FirePrimary, Tick(200 + index))
+            .expect("an edge queues");
+        link.client.pump(STEP);
+        assert!(
+            link.client.unacked() <= MAX_UNACKED_PACKETS,
+            "the retransmit window is bounded at {MAX_UNACKED_PACKETS}, saw {}",
+            link.client.unacked()
+        );
+    }
+    assert_eq!(
+        link.client.unacked(),
+        MAX_UNACKED_PACKETS,
+        "and it fills to exactly its cap rather than past it"
+    );
+    assert!(
+        link.client.acked_through().is_none(),
+        "the host acknowledged nothing"
+    );
+
+    // An acknowledgment retires the window. Twenty-four packets went out, so an
+    // acknowledgment through 24 covers every one the window still holds.
+    let peer = link.client.grant().expect("a grant exists").peer;
+    link.host
+        .acknowledge_input(peer, 24)
+        .expect("the ack encodes");
+    link.pump(2);
+    assert_eq!(link.client.acked_through(), Some(24));
+    assert_eq!(
+        link.client.unacked(),
+        0,
+        "acknowledgment retired the covered packets"
+    );
+}
+
+#[test]
+fn accept_f54_c_a_lost_input_packet_is_retransmitted_verbatim() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut link = Link::joined(session);
+    link.host
+        .gate_mut()
+        .ownership_mut()
+        .bind(
+            link.client.grant().expect("a grant exists").peer,
+            ActorId { session, serial: 1 },
+        )
+        .expect("the host binds an aircraft");
+
+    link.client
+        .submit_edge(FlightCommand::FirePrimary, Tick(300))
+        .expect("an edge queues");
+    // Pump the client alone so the host never sees the packet: it is "lost".
+    link.client.pump(STEP);
+    assert_eq!(link.client.unacked(), 1, "one packet is unacknowledged");
+    assert_eq!(link.host.queued(), 0, "the host has not applied it");
+
+    // With nothing newer to send, the client resends after the retry window.
+    let mut retried = None;
+    for _ in 0..64 {
+        let notices = link.client.pump(INPUT_RETRY_INTERVAL);
+        if let Some(sequence) = notices.iter().find_map(|notice| match notice {
+            ClientNotice::Retried { sequence } => Some(*sequence),
+            _ => None,
+        }) {
+            retried = Some(sequence);
+            break;
+        }
+    }
+    assert_eq!(retried, Some(0), "the lost packet was retransmitted");
+
+    // The host applies it once, under the sequence it was first stamped with,
+    // so a further retransmission of the same bytes is still identifiable as a
+    // replay.
+    link.pump_until_work();
+    link.pump(4);
+    let work = link.host.drain_work();
+    assert_eq!(work.len(), 1, "the retry reached the consumer");
+    assert_eq!(
+        work[0].sequence, 0,
+        "the retry kept its sequence, so a replay is still identifiable"
+    );
+    assert_eq!(
+        work[0].fires.len(),
+        1,
+        "and it authorizes its one fire edge"
+    );
+}
+
+#[test]
+fn accept_f54_c_the_work_queue_refuses_the_surplus_and_cuts_the_abusive_peer() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut link = Link::joined(session);
+    let mut raw = link.raw_peer(0xC4);
+    let peer = raw.handshake(&mut link.host);
+    link.host
+        .gate_mut()
+        .ownership_mut()
+        .bind(peer, ActorId { session, serial: 1 })
+        .expect("the host binds an aircraft");
+
+    // One packet more than the queue can hold, all delivered inside a single
+    // host pump.
+    for sequence in 0..=MAX_WORK_PER_PUMP as u32 {
+        raw.inject(
+            CHANNEL_SEQUENCED,
+            &fire_bytes(session, Tick(400 + u64::from(sequence)), sequence),
+        );
+    }
+    for _ in 0..200 {
+        link.host_notices.extend(raw.round(&mut link.host));
+        if link.host.overflowed() > 0 {
+            break;
+        }
+    }
+
+    assert_eq!(
+        link.host.queued(),
+        MAX_WORK_PER_PUMP,
+        "the queue never grows past its cap"
+    );
+    assert!(
+        link.host.overflowed() > 0,
+        "the surplus was refused, not queued"
+    );
+    assert!(
+        link.host_has(|notice| matches!(
+            notice,
+            ServerNotice::Dropped {
+                reason: DropReason::QueueOverflow { limit },
+                ..
+            } if *limit == MAX_WORK_PER_PUMP
+        )),
+        "the refusal is named: {:?}",
+        link.host_notices
+    );
+    assert!(
+        link.host_has(|notice| matches!(
+            notice,
+            ServerNotice::CutOff {
+                threat: ThreatCase::ResourceExhaustion,
+                ..
+            }
+        )),
+        "the abusive peer was cut off: {:?}",
+        link.host_notices
+    );
+    assert!(
+        link.host.members().all(|member| member != peer),
+        "the cut-off peer is no longer a member"
+    );
+    assert_eq!(
+        link.host.drain_work().len(),
+        MAX_WORK_PER_PUMP,
+        "exactly the capped number of packets were handed over"
+    );
+}
+
+// ----------------------------------------------------------- client accept --
+
+/// Builds a client that already holds a grant, without keeping the host: the
+/// consumer is a pure function of the decoded message, so the adversarial
+/// corpus can drive it directly.
+fn granted_client(session: SessionId) -> ClientSession {
+    let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let mut host = ServerSession::bind(session, synthetic_parameters(), bind, Duration::ZERO)
+        .expect("the host socket binds");
+    let addr = host.local_addr().expect("the bound host has an address");
+    let mut client = ClientSession::connect(synthetic_hello(), addr, 0xC5, Duration::ZERO)
+        .expect("the client socket binds");
+    for _ in 0..MAX_ROUNDS {
+        if client.grant().is_some() {
+            return client;
+        }
+        client.pump(STEP);
+        host.pump(STEP);
+    }
+    panic!("the grant never arrived");
+}
+
+#[test]
+fn accept_f54_c_a_replayed_reliable_event_is_applied_once() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut client = granted_client(session);
+    let peer = PeerId::new(2).expect("two is nonzero");
+    let event = fuzz::joined_event(session, peer, 0);
+
+    let first = client
+        .accept(fuzz::event_message(session, 0, event.clone()))
+        .expect("a live epoch is accepted");
+    assert!(
+        first
+            .iter()
+            .any(|notice| matches!(notice, ClientNotice::Event { .. }))
+    );
+
+    // The reliable channel can replay a request after a retry; the id is what
+    // stops it taking effect twice.
+    let replay = client
+        .accept(fuzz::event_message(session, 1, event))
+        .expect("the replay decodes");
+    assert!(
+        replay
+            .iter()
+            .any(|notice| matches!(notice, ClientNotice::Duplicate { .. })),
+        "the replay was recognized: {replay:?}"
+    );
+    assert!(
+        !replay
+            .iter()
+            .any(|notice| matches!(notice, ClientNotice::Event { .. })),
+        "the replay took no effect"
+    );
+    assert_eq!(client.remembered_events(), 1, "one id is remembered");
+
+    // A different event under the same envelope is new and is applied.
+    let other = fuzz::joined_event(session, PeerId::new(3).expect("three is nonzero"), 1);
+    let applied = client
+        .accept(fuzz::event_message(session, 2, other))
+        .expect("a distinct id is accepted");
+    assert!(
+        applied
+            .iter()
+            .any(|notice| matches!(notice, ClientNotice::Event { .. }))
+    );
+    assert_eq!(client.remembered_events(), 2);
+}
+
+#[test]
+fn accept_f54_c_the_client_phase_machine_follows_the_hosts_events() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut client = granted_client(session);
+    assert_eq!(*client.phase(), ClientPhase::Joined);
+
+    let notices = client
+        .accept(fuzz::event_message(
+            session,
+            0,
+            fuzz::launched_event(session, Tick(1000), 0),
+        ))
+        .expect("a live epoch is accepted");
+    assert!(
+        notices.iter().any(|notice| matches!(
+            notice,
+            ClientNotice::Phase(ClientPhase::Live {
+                start_tick: Tick(1000)
+            })
+        )),
+        "the launch applied: {notices:?}"
+    );
+    assert_eq!(
+        *client.phase(),
+        ClientPhase::Live {
+            start_tick: Tick(1000)
+        }
+    );
+
+    // A launch replay under a *new* envelope sequence and a new event id is a
+    // second fact the server may legitimately publish; the phase machine takes
+    // the newest one and says so.
+    let notices = client
+        .accept(fuzz::event_message(
+            session,
+            1,
+            fuzz::launched_event(session, Tick(1100), 1),
+        ))
+        .expect("a live epoch is accepted");
+    assert!(
+        notices.iter().any(|notice| matches!(
+            notice,
+            ClientNotice::Phase(ClientPhase::Live {
+                start_tick: Tick(1100)
+            })
+        )),
+        "a newer launch is applied: {notices:?}"
+    );
+
+    let notices = client
+        .accept(fuzz::event_message(
+            session,
+            2,
+            fuzz::finished_event(session, Tick(1200), FinishReason::Aborted),
+        ))
+        .expect("a live epoch is accepted");
+    assert!(
+        notices.iter().any(|notice| matches!(
+            notice,
+            ClientNotice::Phase(ClientPhase::Finished {
+                reason: FinishReason::Aborted
+            })
+        )),
+        "the finish applied: {notices:?}"
+    );
+    assert!(
+        client.phase().open(),
+        "a finished session may still say farewell"
+    );
+}
+
+#[test]
+fn accept_f54_c_the_event_memory_is_bounded_and_evicts_the_oldest() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut client = granted_client(session);
+    let cap = fuzz::EVENT_MEMORY_CAP;
+
+    for index in 0..(cap + 8) {
+        let event = fuzz::joined_event(
+            session,
+            PeerId::new(u16::try_from(index % 30 + 2).expect("small")).expect("nonzero"),
+            u32::try_from(index).expect("small"),
+        );
+        client
+            .accept(fuzz::event_message(session, 0, event))
+            .expect("a live epoch is accepted");
+        assert!(
+            client.remembered_events() <= cap,
+            "the dedup memory stays at {cap}, saw {}",
+            client.remembered_events()
+        );
+    }
+    assert_eq!(client.remembered_events(), cap);
+    assert_eq!(cap, MAX_SEEN_EVENTS, "the cap is the declared bound");
+
+    // The oldest id was evicted, so it is applied again rather than silently
+    // suppressed forever; the newest is still remembered.
+    let oldest = fuzz::joined_event(session, PeerId::new(2).expect("two is nonzero"), 0);
+    let notices = client
+        .accept(fuzz::event_message(session, 1, oldest))
+        .expect("a live epoch is accepted");
+    assert!(
+        notices
+            .iter()
+            .any(|notice| matches!(notice, ClientNotice::Event { .. })),
+        "the evicted id is no longer suppressed: {notices:?}"
+    );
+    let newest = fuzz::joined_event(
+        session,
+        PeerId::new(2).expect("two is nonzero"),
+        u32::try_from(cap + 7).expect("small"),
+    );
+    let notices = client
+        .accept(fuzz::event_message(session, 2, newest))
+        .expect("a live epoch is accepted");
+    assert!(
+        notices
+            .iter()
+            .any(|notice| matches!(notice, ClientNotice::Duplicate { .. })),
+        "the newest id is still remembered: {notices:?}"
+    );
+}
+
+#[test]
+fn accept_f54_c_only_the_newest_snapshot_survives() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut client = granted_client(session);
+
+    let newest = SnapshotFrame {
+        tick: Tick(500),
+        payload: fuzz::synthetic_snapshot(session, [10.0, 20.0, 30.0])
+            .encode(session)
+            .expect("the synthetic snapshot encodes"),
+    };
+    client
+        .accept(fuzz::snapshot_message(session, 0, newest))
+        .expect("a live epoch is accepted");
+    assert_eq!(client.snapshot_tick(), Some(Tick(500)));
+    let held = client.snapshot().expect("a snapshot is held");
+    assert_eq!(held.actors.len(), 1);
+    let position = held.actors[0]
+        .position_m()
+        .expect("the record is inside its declared range");
+    assert!(
+        position.iter().all(|value| value.is_finite()),
+        "a decoded position is finite: {position:?}"
+    );
+    assert!(
+        (position[0] - 10.0).abs() < 0.01 && (position[1] - 20.0).abs() < 0.01,
+        "and it is the snapshot that was sent: {position:?}"
+    );
+
+    // An older snapshot is sequenced-and-droppable: it must not overwrite the
+    // newer frame.
+    let older = SnapshotFrame {
+        tick: Tick(499),
+        payload: fuzz::synthetic_snapshot(session, [-1.0, -2.0, -3.0])
+            .encode(session)
+            .expect("the synthetic snapshot encodes"),
+    };
+    let notices = client
+        .accept(fuzz::snapshot_message(session, 1, older))
+        .expect("a live epoch is accepted");
+    assert!(
+        notices.iter().any(
+            |notice| matches!(notice, ClientNotice::StaleSnapshot { tick } if *tick == Tick(499))
+        ),
+        "the older snapshot was refused: {notices:?}"
+    );
+    assert_eq!(client.snapshot_tick(), Some(Tick(500)), "still the newest");
+    let held = client.snapshot().expect("a snapshot is still held");
+    assert!(
+        held.actors[0].position_m().expect("in range")[0] > 0.0,
+        "the newer frame was not overwritten"
+    );
+}
+
+#[test]
+fn accept_f54_c_a_stale_epoch_snapshot_is_refused_before_it_is_decoded() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let dead = SessionId::new(session.get() + 1).expect("nonzero");
+    let mut client = granted_client(session);
+
+    let frame = SnapshotFrame {
+        tick: Tick(600),
+        payload: fuzz::synthetic_snapshot(session, [1.0, 2.0, 3.0])
+            .encode(session)
+            .expect("the synthetic snapshot encodes"),
+    };
+    let message = ServerMessage {
+        header: MessageHeader {
+            session: dead,
+            sequence: 0,
+        },
+        payload: ServerPayload::Snapshot(frame),
+    };
+    assert!(
+        matches!(
+            client.accept(message),
+            Err(ClientFault::Wire(WireError::StaleSession { .. }))
+        ),
+        "a packet from a dead epoch is refused by epoch, not by content"
+    );
+    assert!(client.snapshot().is_none(), "and nothing was stored");
+}
+
+#[test]
+fn accept_f54_c_a_malformed_snapshot_payload_is_refused_and_names_the_field() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut client = granted_client(session);
+
+    // Bytes that are well formed at the envelope but not a snapshot schema.
+    for (label, payload) in [
+        ("random bytes", vec![0xFF; 32]),
+        ("an empty payload", Vec::new()),
+        ("a truncated valid payload", {
+            let valid = fuzz::synthetic_snapshot(session, [1.0, 2.0, 3.0])
+                .encode(session)
+                .expect("the synthetic snapshot encodes");
+            valid[..valid.len() - 8].to_vec()
+        }),
+    ] {
+        let outcome = client.accept(fuzz::snapshot_message(
+            session,
+            0,
+            SnapshotFrame {
+                tick: Tick(700),
+                payload: payload.clone(),
+            },
+        ));
+        assert!(
+            matches!(outcome, Err(ClientFault::Snapshot(ref reason)) if !reason.to_string().is_empty()),
+            "{label} must be refused with a named reason, saw {outcome:?}"
+        );
+        assert!(client.snapshot().is_none(), "{label} was not stored");
+    }
+}
+
+#[test]
+fn accept_f54_c_an_oversized_snapshot_payload_is_refused_before_it_is_decoded() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut client = granted_client(session);
+
+    // The envelope's own cap. A client cannot even be handed a payload past
+    // `MAX_SNAPSHOT_BYTES`, which is what keeps one hostile peer from making
+    // every client allocate.
+    let payload = vec![0u8; MAX_SNAPSHOT_BYTES + 1];
+    let message = ServerMessage {
+        header: MessageHeader {
+            session,
+            sequence: 0,
+        },
+        payload: ServerPayload::Snapshot(SnapshotFrame {
+            tick: Tick(800),
+            payload,
+        }),
+    };
+    assert!(
+        matches!(
+            client.accept(message),
+            Err(ClientFault::Wire(WireError::TooLarge { .. }))
+        ),
+        "an oversized snapshot payload is refused by the wire bounds"
+    );
+    assert!(client.snapshot().is_none());
+
+    // And the host refuses to publish one in the first place.
+    let mut host = ServerSession::bind(
+        session,
+        synthetic_parameters(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        Duration::ZERO,
+    )
+    .expect("the host socket binds");
+    let mut oversized = fuzz::synthetic_snapshot(session, [0.0, 0.0, 0.0]);
+    // An actor record past the population cap is the reachable way to make an
+    // unencodable snapshot.
+    let record = *oversized
+        .actors
+        .first()
+        .expect("the synthetic snapshot has one record");
+    oversized.actors = vec![record; cs_net::snapshot::MAX_ACTORS_PER_SNAPSHOT + 1];
+    assert!(
+        matches!(
+            host.publish_snapshot(Tick(801), &oversized),
+            Err(ServerFault::Encode(_))
+        ),
+        "an over-populated snapshot is refused with a named reason"
+    );
+    assert!(
+        host.launch(Tick(802)).is_ok(),
+        "and the failure did not corrupt the session"
+    );
+}
+
+#[test]
+fn accept_f54_c_a_non_acknowledging_host_does_not_grow_the_client() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut client = granted_client(session);
+
+    for index in 0..40u64 {
+        client
+            .submit_edge(FlightCommand::FirePrimary, Tick(800 + index))
+            .expect("an edge queues");
+        client.pump(STEP);
+        assert!(client.unacked() <= MAX_UNACKED_PACKETS);
+    }
+    assert_eq!(
+        client.unacked(),
+        MAX_UNACKED_PACKETS,
+        "the retransmit window is bounded no matter what the host does"
+    );
+    assert!(client.acked_through().is_none(), "nothing was acknowledged");
+
+    // The acknowledgment path retires exactly the packets it covers. Forty
+    // packets went out and the window kept the newest eight, so an
+    // acknowledgment through 40 must empty it.
+    client
+        .accept(ServerMessage {
+            header: MessageHeader {
+                session,
+                sequence: 0,
+            },
+            payload: ServerPayload::InputAck { through: 40 },
+        })
+        .expect("a live epoch is accepted");
+    assert_eq!(client.acked_through(), Some(40));
+    assert_eq!(client.unacked(), 0, "the window emptied: 40 covered all");
+
+    // An acknowledgment that does not advance is refused.
+    let notices = client
+        .accept(ServerMessage {
+            header: MessageHeader {
+                session,
+                sequence: 1,
+            },
+            payload: ServerPayload::InputAck { through: 1 },
+        })
+        .expect("a live epoch is accepted");
+    assert!(
+        notices.iter().any(|notice| matches!(
+            notice,
+            ClientNotice::StaleAck {
+                through: 1,
+                acknowledged: 40
+            }
+        )),
+        "a stale acknowledgment is refused: {notices:?}"
+    );
+    assert_eq!(
+        client.acked_through(),
+        Some(40),
+        "the window did not move back"
+    );
+}
+
+#[test]
+fn accept_f54_c_a_local_sample_that_is_not_finite_never_becomes_a_packet() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut link = Link::joined(session);
+
+    // Every non-finite f32 the corpus uses, driven straight into the producer.
+    for value in [
+        f32::NAN,
+        -f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::from_bits(0x7FA0_0000),
+        f32::from_bits(0xFFC0_0000),
+    ] {
+        let outcome = link
+            .client
+            .submit_sample(FlightCommand::Throttle, value, Tick(900));
+        assert!(
+            matches!(
+                outcome,
+                Err(ClientFault::Axis(AxisValueError::NonFinite { .. }))
+            ),
+            "a non-finite sample must be refused, got {outcome:?}"
+        );
+    }
+    // Out of the normalized range is refused too, not clamped silently.
+    assert!(matches!(
+        link.client
+            .submit_sample(FlightCommand::Throttle, 1.5, Tick(901)),
+        Err(ClientFault::Axis(AxisValueError::OutOfRange { .. }))
+    ));
+    // An edge command is not an axis.
+    assert!(matches!(
+        ClientSession::sample_axis(FlightCommand::FirePrimary, 0.0),
+        Err(ClientFault::Axis(AxisValueError::NotContinuous { .. }))
+    ));
+
+    assert_eq!(
+        link.client.pending(),
+        0,
+        "no refused sample was queued, so none can reach the wire"
+    );
+    link.pump(4);
+    assert_eq!(
+        link.host.drain_work().len(),
+        0,
+        "and nothing arrived at the host"
+    );
+
+    // A finite sample still works, so the check is not a blanket refusal.
+    link.client
+        .submit_sample(FlightCommand::Throttle, 0.5, Tick(902))
+        .expect("a finite sample queues");
+    link.pump_until_work();
+    let work = link.host.drain_work();
+    assert_eq!(work.len(), 1, "the finite sample reached the consumer");
+    let axis = work[0].frames.frames[0]
+        .axis(FlightCommand::Throttle)
+        .expect("the throttle sample crossed the wire");
+    assert!(axis.as_unit().is_finite(), "the wire value is finite");
+    assert!(
+        (axis.as_unit() - 0.5).abs() < 0.001,
+        "and it kept its value: {}",
+        axis.as_unit()
+    );
+}
+
+#[test]
+fn accept_f54_c_the_client_refuses_a_backwards_tick_and_a_full_queue() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut client = granted_client(session);
+
+    client
+        .submit_edge(FlightCommand::FirePrimary, Tick(50))
+        .expect("a first tick queues");
+    // A tick before the queued one would break the batch's strict order and
+    // fail the wire validation, so the producer refuses it.
+    assert_eq!(
+        client.submit_edge(FlightCommand::FirePrimary, Tick(49)),
+        Err(ClientFault::TickNotNewer {
+            tick: Tick(49),
+            previous: Tick(50),
+        })
+    );
+    // The same tick merges into the frame already there.
+    client
+        .submit_sample(FlightCommand::Throttle, 0.25, Tick(50))
+        .expect("the same tick extends the frame");
+    assert_eq!(client.pending(), 1, "still one frame");
+
+    // Fill the queue to its cap.
+    for index in 1..MAX_INPUT_FRAMES_PER_PACKET as u64 {
+        client
+            .submit_edge(FlightCommand::FirePrimary, Tick(50 + index))
+            .expect("a later tick queues");
+    }
+    assert_eq!(client.pending(), MAX_INPUT_FRAMES_PER_PACKET);
+    assert_eq!(
+        client.submit_edge(FlightCommand::FirePrimary, Tick(999)),
+        Err(ClientFault::InputQueueFull {
+            max: MAX_INPUT_FRAMES_PER_PACKET
+        }),
+        "the queue is capped at the packet's own bound"
+    );
+}
+
+#[test]
+fn accept_f54_c_the_client_leaves_reliably_and_the_host_departs_it() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut link = Link::joined(session);
+    let peer = link.client.grant().expect("a grant exists").peer;
+
+    link.client.leave().expect("the farewell sends");
+    assert!(matches!(
+        *link.client.phase(),
+        ClientPhase::Closed(ClientClosure::LeftVoluntarily)
+    ));
+    // A second farewell is refused, not sent twice.
+    assert!(matches!(
+        link.client.leave(),
+        Err(ClientFault::Closed { .. })
+    ));
+    // And no input is accepted after the farewell.
+    assert!(matches!(
+        link.client.submit_edge(FlightCommand::FirePrimary, Tick(1)),
+        Err(ClientFault::Closed { .. })
+    ));
+
+    for _ in 0..200 {
+        link.round();
+        if !link.host.members().any(|member| member == peer) {
+            break;
+        }
+    }
+    assert!(
+        link.host.members().next().is_none(),
+        "the host departed the peer that left: {:?}",
+        link.host_notices
+    );
+    assert!(
+        link.host_has(|notice| matches!(notice, ServerNotice::PeerLeft { .. })),
+        "the departure is reported: {:?}",
+        link.host_notices
+    );
+    assert!(
+        !link.host.gate().is_member(peer),
+        "and its replay window died with it"
+    );
+}
+
+#[test]
+fn accept_f54_c_a_refused_client_is_told_why_and_then_hung_up_on() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut hello = synthetic_hello();
+    hello.compatibility.rules_sha256 = ContentHash::from_bytes([0x00; 32]);
+    let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let mut host = ServerSession::bind(session, synthetic_parameters(), bind, Duration::ZERO)
+        .expect("the host socket binds");
+    let addr = host.local_addr().expect("the bound host has an address");
+    let mut client =
+        ClientSession::connect(hello, addr, 0xC6, Duration::ZERO).expect("the client socket binds");
+    let mut seen: Vec<ServerNotice> = Vec::new();
+
+    for _ in 0..MAX_ROUNDS {
+        if client.phase().closure().is_some() {
+            break;
+        }
+        client.pump(STEP);
+        seen.extend(host.pump(STEP));
+    }
+    assert!(
+        matches!(
+            client.phase().closure(),
+            Some(ClientClosure::Refused(
+                HandshakeReject::RulesMismatch { .. }
+            ))
+        ),
+        "the client holds the named reason: {:?}",
+        client.phase()
+    );
+    assert!(client.grant().is_none(), "and it never became a peer");
+    assert!(
+        !client.phase().open(),
+        "a refused session sends nothing more"
+    );
+
+    // The host hangs up on the refused connection: it holds no peer id, so it
+    // must not keep occupying one of the session's netcode slots.
+    for _ in 0..MAX_ROUNDS {
+        seen.extend(host.pump(STEP));
+        if seen
+            .iter()
+            .any(|notice| matches!(notice, ServerNotice::HungUp { .. }))
+        {
+            break;
+        }
+        client.pump(STEP);
+    }
+    assert!(
+        seen.iter()
+            .any(|notice| matches!(notice, ServerNotice::HungUp { .. })),
+        "the refused connection was hung up on; the host saw {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|notice| matches!(notice, ServerNotice::PeerRefused { .. })),
+        "and the refusal was reported with its reason: {seen:?}"
+    );
+    assert!(host.members().next().is_none(), "it never became a member");
+}
+
+#[test]
+fn accept_f54_c_a_handshake_answer_that_cannot_be_sent_is_reported_not_swallowed() {
+    // Two disjoint sets of maximum-length mod ids: the named rejection needs
+    // 128 catalog ids on the wire, which does not fit a packet. The refusal
+    // must surface as a reported fault and a hang-up, and the client must never
+    // become a peer.
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let params = SessionParameters {
+        compatibility: Compatibility {
+            rules_sha256: SYNTHETIC_RULES_SHA256,
+            content_sha256: SYNTHETIC_CONTENT_SHA256,
+            mods: (0..MAX_MODS).map(long_mod).collect(),
+        },
+    };
+    let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let mut host =
+        ServerSession::bind(session, params, bind, Duration::ZERO).expect("the host socket binds");
+    let addr = host.local_addr().expect("the bound host has an address");
+
+    // The client's own hello stays inside the packet cap; only the *reply*
+    // cannot.
+    let mut hello = synthetic_hello();
+    hello.compatibility.mods = (MAX_MODS..MAX_MODS * 2).map(long_mod).collect();
+    let client_bytes = encode_client_packet(&ClientPacket::Hello(hello.clone()))
+        .expect("the client's own hello fits a packet");
+    assert!(
+        client_bytes.len() <= MAX_PACKET_BYTES,
+        "the hello must be sendable, or the test proves nothing"
+    );
+
+    let mut raw = RawPeer {
+        transport: ClientTransport::connect(hello, addr, 0xC7, Duration::ZERO)
+            .expect("the client socket binds"),
+    };
+    let mut reported = false;
+    for _ in 0..MAX_ROUNDS {
+        let notices = host.pump(STEP);
+        if notices.iter().any(|notice| {
+            matches!(notice, ServerNotice::TransportFault { reason } if reason.contains("is") && reason.contains("bytes, max is"))
+        }) {
+            reported = true;
+        }
+        if notices
+            .iter()
+            .any(|notice| matches!(notice, ServerNotice::HungUp { .. }))
+        {
+            break;
+        }
+        raw.pump();
+    }
+    assert!(
+        reported,
+        "an unencodable handshake answer is reported, not swallowed; the host saw {host:?}"
+    );
+    assert!(
+        host.members().next().is_none(),
+        "and the client never became a peer"
+    );
+    assert!(
+        raw.transport.grant().is_none() && raw.transport.rejection().is_none(),
+        "the client holds neither a grant nor a reason, because neither was sent"
+    );
+}
+
+/// A catalog id whose wire form is as long as the id grammar allows, so that
+/// [`MAX_MODS`] of them are individually sendable while two lists of them are
+/// not.
+fn long_mod(index: usize) -> ContentId {
+    ContentId::from_source(
+        ContentKind::Blueprint,
+        &format!("m{index:04}{}", "x".repeat(120)),
+    )
+    .expect("the key satisfies the id grammar")
+}
+
+// ----------------------------------------------------------------- fuzzing --
+
+/// The acceptance scenario: spec F54 AC03, "Fuzz packet decoding with
+/// oversized counts, NaNs and invalid ids".
+///
+/// The corpus is deterministic (fixed seeds) and every buffer goes through the
+/// production decoder. Three properties are under test:
+///
+/// 1. **nothing panics** — the decoder and the consumer are total;
+/// 2. **every refusal is named** — the error's `Display` names the field or the
+///    cap, so an unexplained failure is distinguishable from a missing one;
+/// 3. **no decoded value is non-finite** — the wire has no float field, so a
+///    NaN bit pattern can only ever be a byte pattern; any decoded axis sample,
+///    snapshot record or dequantized coordinate must be finite.
+///
+/// Buffers past the packet cap must be refused before any parsing, which is
+/// what makes a hostile peer cheap to absorb.
+#[test]
+fn accept_f54_c_fuzzed_packets_are_bounded_and_never_produce_a_non_finite_value() {
+    let mut total = 0usize;
+    let mut decoded_client = 0usize;
+    let mut decoded_server = 0usize;
+    let mut oversized = 0usize;
+
+    for seed in fuzz::SEEDS {
+        for case in fuzz::corpus(seed) {
+            total += 1;
+            let label = format!("seed {seed:#x}, {}", case.label);
+
+            // The cap is enforced before the grammar runs, so a huge buffer
+            // costs nothing to refuse.
+            if case.bytes.len() > MAX_PACKET_BYTES {
+                oversized += 1;
+                assert!(
+                    matches!(
+                        decode_client_packet(&case.bytes),
+                        Err(CodecError::TooLarge { max, .. }) if max == MAX_PACKET_BYTES
+                    ),
+                    "{label}: a buffer past the cap must be refused"
+                );
+                assert!(
+                    matches!(
+                        decode_server_packet(&case.bytes),
+                        Err(CodecError::TooLarge { .. })
+                    ),
+                    "{label}: and in both directions"
+                );
+                continue;
+            }
+
+            match decode_client_packet(&case.bytes) {
+                Ok(packet) => {
+                    decoded_client += 1;
+                    assert_client_packet_is_sane(&packet, &label);
+                }
+                Err(reason) => assert_named(&reason.to_string(), &label, "client"),
+            }
+            match decode_server_packet(&case.bytes) {
+                Ok(packet) => {
+                    decoded_server += 1;
+                    assert_server_packet_is_sane(&packet, &label);
+                }
+                Err(reason) => assert_named(&reason.to_string(), &label, "server"),
+            }
+        }
+    }
+
+    assert!(
+        total > 500,
+        "the corpus must be substantial, ran {total} cases"
+    );
+    assert!(
+        oversized > 0,
+        "the corpus must reach the packet cap, saw {oversized}"
+    );
+    assert!(
+        decoded_server > 0 && decoded_client > 0,
+        "the corpus must decode successfully in both directions, saw \
+         {decoded_client} client and {decoded_server} server"
+    );
+}
+
+/// Runs the client's consumer over every buffer the server decoder accepted.
+///
+/// `ClientSession::accept` is the production consumer: `pump` calls it for each
+/// arrived packet, so a refusal here is the refusal a real client would apply.
+#[test]
+fn accept_f54_c_the_client_consumer_survives_the_whole_corpus() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut client = granted_client(session);
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+
+    for seed in fuzz::SEEDS {
+        for case in fuzz::corpus(seed) {
+            if case.bytes.len() > MAX_PACKET_BYTES {
+                continue;
+            }
+            // Only an in-session message reaches the consumer; a pre-session
+            // reply is the transport's business, not the lifecycle's.
+            let Ok(ServerPacket::Message(message)) = decode_server_packet(&case.bytes) else {
+                continue;
+            };
+            match client.accept(message) {
+                Ok(notices) => {
+                    accepted += 1;
+                    for notice in &notices {
+                        assert!(
+                            !notice.to_string().is_empty(),
+                            "{}: a notice names what it did",
+                            case.label
+                        );
+                    }
+                    // Whatever the client now holds must be finite, live and
+                    // bounded.
+                    if let Some(snapshot) = client.snapshot() {
+                        for record in &snapshot.actors {
+                            assert!(
+                                record
+                                    .position_m()
+                                    .expect("in range")
+                                    .iter()
+                                    .all(|v| v.is_finite()),
+                                "{}: a decoded position is finite",
+                                case.label
+                            );
+                            assert!(
+                                record
+                                    .linear_velocity_mps()
+                                    .expect("in range")
+                                    .iter()
+                                    .all(|v| v.is_finite()),
+                                "{}: a decoded velocity is finite",
+                                case.label
+                            );
+                            assert!(
+                                record
+                                    .angular_velocity_radps()
+                                    .expect("in range")
+                                    .iter()
+                                    .all(|v| v.is_finite()),
+                                "{}: a decoded angular velocity is finite",
+                                case.label
+                            );
+                            assert!(
+                                record.flight.fractions().iter().all(|v| v.is_finite()),
+                                "{}: a decoded flight channel is finite",
+                                case.label
+                            );
+                            assert_ne!(
+                                record.actor.serial, 0,
+                                "{}: a decoded actor id is never the reserved serial",
+                                case.label
+                            );
+                            assert_eq!(
+                                record.actor.session, session,
+                                "{}: a record of a dead epoch is never accepted",
+                                case.label
+                            );
+                        }
+                    }
+                }
+                Err(reason) => {
+                    refused += 1;
+                    assert!(
+                        !reason.to_string().is_empty(),
+                        "{}: a refused packet names its reason",
+                        case.label
+                    );
+                }
+            }
+            assert!(client.remembered_events() <= MAX_SEEN_EVENTS);
+            assert!(client.unacked() <= MAX_UNACKED_PACKETS);
+        }
+    }
+    assert!(
+        accepted > 0,
+        "the corpus must reach the consumer, saw {accepted}"
+    );
+    assert!(
+        refused > 0,
+        "the corpus must also be refused somewhere, saw {refused}"
+    );
+}
+
+/// Asserts that a decoded client packet holds only finite, in-bounds values.
+fn assert_client_packet_is_sane(packet: &ClientPacket, label: &str) {
+    let ClientPacket::Message(message) = packet else {
+        return; // A hello is bounded hashes and bounded text.
+    };
+    assert!(
+        message.header.session.get() > 0,
+        "{label}: a session id is never zero"
+    );
+    let ClientPayload::Input(batch) = &message.payload else {
+        return; // Leave carries nothing.
+    };
+    assert!(
+        batch.frames.len() <= MAX_INPUT_FRAMES_PER_PACKET,
+        "{label}: a decoded batch respects its cap"
+    );
+    for frame in &batch.frames {
+        for axis in frame.axes() {
+            assert!(
+                axis.as_unit().is_finite(),
+                "{label}: a decoded axis sample is finite ({})",
+                axis.as_unit()
+            );
+        }
+    }
+}
+
+/// Asserts that a decoded server packet holds only finite, in-bounds values.
+fn assert_server_packet_is_sane(packet: &ServerPacket, label: &str) {
+    let ServerPacket::Message(message) = packet else {
+        return; // A reply is hashes, ids and bounded text.
+    };
+    assert!(
+        message.header.session.get() > 0,
+        "{label}: a session id is never zero"
+    );
+    match &message.payload {
+        ServerPayload::Snapshot(frame) => {
+            assert!(
+                frame.payload.len() <= MAX_SNAPSHOT_BYTES,
+                "{label}: a decoded snapshot respects its cap"
+            );
+            // The envelope bounds the payload; the schema decides whether the
+            // bytes are a snapshot. Either outcome is acceptable, but a payload
+            // that *does* decode must be entirely finite.
+            for epoch in [SYNTHETIC_SESSION, message.header.session] {
+                if let Ok(snapshot) = Snapshot::decode(&frame.payload, epoch) {
+                    assert_eq!(
+                        snapshot.origin, SYNTHETIC_ORIGIN_EPOCH,
+                        "{label}: a decoded origin epoch is a known one"
+                    );
+                    for record in &snapshot.actors {
+                        assert!(
+                            record
+                                .position_m()
+                                .expect("in range")
+                                .iter()
+                                .all(|value| value.is_finite()),
+                            "{label}: a decoded position is finite"
+                        );
+                        assert!(
+                            record
+                                .linear_velocity_mps()
+                                .expect("in range")
+                                .iter()
+                                .all(|value| value.is_finite()),
+                            "{label}: a decoded velocity is finite"
+                        );
+                        assert!(
+                            record
+                                .angular_velocity_radps()
+                                .expect("in range")
+                                .iter()
+                                .all(|value| value.is_finite()),
+                            "{label}: a decoded angular velocity is finite"
+                        );
+                    }
+                }
+            }
+        }
+        ServerPayload::Event(event) => {
+            assert!(
+                event.id.session.get() > 0,
+                "{label}: an event id names a nonzero epoch"
+            );
+        }
+        ServerPayload::InputAck { .. } | ServerPayload::Disconnect { .. } => {}
+    }
+}
+
+/// A refusal must name what failed, so an unexplained failure is
+/// distinguishable from a missing one.
+fn assert_named(reason: &str, label: &str, direction: &str) {
+    assert!(
+        reason.len() > 8,
+        "{label}: the {direction} decoder's refusal names its reason, got {reason:?}"
+    );
+}
+
+// ------------------------------------------------------------------ the wire --
+
+#[test]
+fn accept_f54_c_a_hostile_peer_is_cut_off_without_disturbing_the_others() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut link = Link::joined(session);
+    let good_peer = link.client.grant().expect("a grant exists").peer;
+    link.host
+        .gate_mut()
+        .ownership_mut()
+        .bind(good_peer, ActorId { session, serial: 1 })
+        .expect("the host binds an aircraft");
+
+    // A second peer that handshakes and then floods the host with the
+    // malformed and oversized shapes from the corpus.
+    let mut hostile = link.raw_peer(0xC8);
+    let hostile_peer = hostile.handshake(&mut link.host);
+    assert_ne!(hostile_peer, good_peer, "the two peers are distinct");
+
+    let mut sent = 0usize;
+    for case in fuzz::corpus(fuzz::SEEDS[0]) {
+        if case.bytes.len() > 512 {
+            continue; // Small shapes keep the loopback socket honest.
+        }
+        hostile.inject(CHANNEL_SEQUENCED, &case.bytes);
+        sent += 1;
+        if sent.is_multiple_of(16) {
+            link.host_notices.extend(hostile.round(&mut link.host));
+        }
+    }
+    for _ in 0..64 {
+        link.host_notices.extend(hostile.round(&mut link.host));
+        if link.host.members().all(|member| member != hostile_peer) {
+            break;
+        }
+    }
+
+    // The abusive peer is gone; the honest one is untouched.
+    assert!(
+        link.host.members().all(|member| member != hostile_peer),
+        "the abusive peer was cut off; the host saw {:?}",
+        link.host_notices
+    );
+    assert!(
+        link.host.members().any(|member| member == good_peer),
+        "the honest peer survived; the host saw {:?}",
+        link.host_notices
+    );
+    assert!(
+        link.host_has(|notice| matches!(notice, ServerNotice::CutOff { .. })),
+        "the cut-off is declared, not silent; the host saw {:?}",
+        link.host_notices
+    );
+
+    // And the honest peer still has a working session. The flood may have left
+    // some of its own (admitted) packets queued, so the check is per peer.
+    link.host.drain_work();
+    link.client
+        .submit_edge(FlightCommand::FirePrimary, Tick(1000))
+        .expect("an edge queues");
+    link.pump_until_work();
+    let work = link.host.drain_work();
+    assert!(
+        work.iter().any(|input| input.peer == good_peer),
+        "the honest peer still reaches the consumer: {work:?}"
+    );
+}
+
+#[test]
+fn accept_f54_c_a_send_before_the_grant_is_refused() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let host = ServerSession::bind(session, synthetic_parameters(), bind, Duration::ZERO)
+        .expect("the host socket binds");
+    let addr = host.local_addr().expect("the bound host has an address");
+    let mut client = ClientSession::connect(synthetic_hello(), addr, 0xC9, Duration::ZERO)
+        .expect("the client socket binds");
+
+    // Nothing may be sent before the handshake, and the lifecycle says so.
+    assert!(matches!(client.leave(), Err(ClientFault::NotInSession)));
+    assert!(matches!(
+        client.accept(ServerMessage {
+            header: MessageHeader {
+                session,
+                sequence: 0,
+            },
+            payload: ServerPayload::InputAck { through: 0 },
+        }),
+        Err(ClientFault::NotInSession)
+    ));
+    assert!(matches!(client.phase(), ClientPhase::Connecting));
+}
+
+#[test]
+fn accept_f54_c_a_client_without_a_grant_refuses_every_server_packet() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let host = ServerSession::bind(session, synthetic_parameters(), bind, Duration::ZERO)
+        .expect("the host socket binds");
+    let addr = host.local_addr().expect("the bound host has an address");
+    let mut client = ClientSession::connect(synthetic_hello(), addr, 0xCA, Duration::ZERO)
+        .expect("the client socket binds");
+
+    // A decoded packet cannot be applied before the handshake named an epoch:
+    // there is no epoch to check it against.
+    assert!(matches!(
+        client.accept(ServerMessage {
+            header: MessageHeader {
+                session,
+                sequence: 0,
+            },
+            payload: ServerPayload::InputAck { through: 0 },
+        }),
+        Err(ClientFault::NotInSession)
+    ));
+}
+
+#[test]
+fn accept_f54_c_the_lifecycle_never_advertises_another_protocol_revision() {
+    // The protocol revision rides inside the handshake and nowhere else, so a
+    // lifecycle owner cannot negotiate one it does not speak.
+    assert_eq!(synthetic_hello().protocol, PROTOCOL_VERSION);
+    let rejected = HandshakeReject::UnsupportedProtocol {
+        offered: cs_net::compat::ProtocolVersion::new(2).expect("two is nonzero"),
+        supported: PROTOCOL_VERSION,
+    };
+    assert!(
+        rejected
+            .to_string()
+            .contains("unsupported protocol version 2")
+    );
+}

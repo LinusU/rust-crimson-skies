@@ -84,7 +84,7 @@ use crate::compat::{
     admit_hello,
 };
 use crate::message::{ClientMessage, ClientPayload, Delivery, InputBatch, ServerMessage};
-use crate::validation::{Admission, FireRequest, SessionGate, fire_requests};
+use crate::validation::{Admission, FireRequest, SessionGate, SessionViolation, fire_requests};
 
 /// The renet channel id carrying [`Delivery::Reliable`] traffic in both
 /// directions: handshake, reliable events, `Leave`, `Disconnect`.
@@ -315,6 +315,11 @@ pub enum DropReason {
         /// The queue's cap.
         limit: usize,
     },
+    /// The session gate refused an otherwise well-formed packet — a replay, a
+    /// stale epoch, or a payload outside the wire bounds. Its
+    /// [`SessionViolation::disposition`] says whether it was absorbed or
+    /// escalated.
+    Refused(SessionViolation),
 }
 
 impl fmt::Display for DropReason {
@@ -328,6 +333,7 @@ impl fmt::Display for DropReason {
             Self::QueueOverflow { limit } => {
                 write!(f, "the host work queue is full ({limit} packets)")
             }
+            Self::Refused(violation) => write!(f, "the session gate refused it: {violation}"),
         }
     }
 }
@@ -537,6 +543,31 @@ impl HostTransport {
         }
         self.server.disconnect(client);
         true
+    }
+
+    /// Restarts the session on a fresh epoch without rebinding the socket.
+    ///
+    /// This is the retry half of the lifecycle (F54-C). Everything that
+    /// belonged to the previous epoch dies here: the gate, its replay windows
+    /// and ownership table, the connected-client table, the peer allocator and
+    /// the send sequence. Every packet stamped with the old epoch is stale by
+    /// construction afterwards (contract: "Epoch mismatch rejects stale
+    /// packets"), so a returning client cannot continue the old session even
+    /// by replaying a sequence number from it.
+    ///
+    /// The socket is deliberately kept: a retry should not depend on the same
+    /// port still being free, and the connection layer's own per-connection
+    /// state dies with the disconnected clients. Returns how many connected
+    /// clients were dropped by the reset.
+    pub fn reopen(&mut self, session: SessionId) -> usize {
+        let dropped = self.clients.len();
+        self.clients.clear();
+        self.client_by_peer.clear();
+        self.peers = PeerAllocator::new();
+        self.gate = SessionGate::new(session);
+        self.session = session;
+        self.next_sequence = 0;
+        dropped
     }
 
     /// Advances the connection layers and drains every arrived packet into

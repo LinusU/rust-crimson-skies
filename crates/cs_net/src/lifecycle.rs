@@ -313,8 +313,6 @@ impl fmt::Display for ServerNotice {
 /// already gated by the time a [`PeerInput`] exists.
 pub struct ServerSession {
     transport: HostTransport,
-    bound: SocketAddr,
-    params: SessionParameters,
     phase: ServerPhase,
     members: BTreeSet<PeerId>,
     work: VecDeque<PeerInput>,
@@ -336,12 +334,9 @@ impl ServerSession {
         addr: SocketAddr,
         now: Duration,
     ) -> Result<Self, TransportError> {
-        let transport = HostTransport::bind(session, params.clone(), addr, now)?;
-        let bound = transport.local_addr()?;
+        let transport = HostTransport::bind(session, params, addr, now)?;
         Ok(Self {
             transport,
-            bound,
-            params,
             phase: ServerPhase::Gathering,
             members: BTreeSet::new(),
             work: VecDeque::new(),
@@ -486,15 +481,23 @@ impl ServerSession {
                         );
                     }
                     _ => {
-                        if let Some(violation) = admission.violation()
-                            && violation.disposition() == ThreatDisposition::Disconnect
-                        {
-                            notices.push(ServerNotice::CutOff {
+                        if let Some(violation) = admission.violation() {
+                            // Every refusal is reported, absorbed or not: a
+                            // replay that produced no work must still be
+                            // visible to the caller, or "absorbed" and
+                            // "silently lost" look identical from outside.
+                            notices.push(ServerNotice::Dropped {
                                 peer: Some(peer),
-                                threat: violation.threat(),
+                                reason: DropReason::Refused(violation.clone()),
                             });
-                            self.members.remove(&peer);
-                            self.transport.disconnect_peer(peer);
+                            if violation.disposition() == ThreatDisposition::Disconnect {
+                                notices.push(ServerNotice::CutOff {
+                                    peer: Some(peer),
+                                    threat: violation.threat(),
+                                });
+                                self.members.remove(&peer);
+                                self.transport.disconnect_peer(peer);
+                            }
                         }
                     }
                 },
@@ -515,7 +518,8 @@ impl ServerSession {
                         DropReason::NoPeer => Some(ThreatCase::UnauthenticatedPeer),
                         DropReason::Decode(_)
                         | DropReason::ExtraHello
-                        | DropReason::QueueOverflow { .. } => None,
+                        | DropReason::QueueOverflow { .. }
+                        | DropReason::Refused(_) => None,
                     };
                     if let Some(threat) = abuse {
                         notices.push(ServerNotice::CutOff { peer, threat });
@@ -708,20 +712,16 @@ impl ServerSession {
         Ok(peers.len())
     }
 
-    /// Mints a fresh epoch on the same address for a retry.
+    /// Mints a fresh epoch on the same socket for a retry.
     ///
     /// Every packet stamped with the previous epoch is stale by construction
     /// (contract: "Epoch mismatch rejects stale packets"), so a returning
     /// client cannot continue the old session even if it replays a sequence
-    /// number from it.
-    ///
-    /// # Errors
-    ///
-    /// [`ServerFault::Transport`] when the epoch's socket cannot be bound.
-    pub fn reopen(&mut self, session: SessionId, now: Duration) -> Result<(), ServerFault> {
+    /// number from it. The socket is kept, so a retry does not depend on the
+    /// same port still being free.
+    pub fn reopen(&mut self, session: SessionId) -> Result<(), ServerFault> {
         self.close(DisconnectReason::SessionEnded)?;
-        self.transport = HostTransport::bind(session, self.params.clone(), self.bound, now)
-            .map_err(|reason| ServerFault::Transport(reason.to_string()))?;
+        self.transport.reopen(session);
         self.next_event = 0;
         self.overflowed = 0;
         self.phase = ServerPhase::Gathering;
@@ -892,7 +892,8 @@ pub enum ClientFault {
         /// The last tick already queued.
         previous: Tick,
     },
-    /// The packet named a session epoch this client is not in.
+    /// The packet named a session epoch this client is not in, or violated the
+    /// wire bounds.
     Wire(WireError),
     /// The snapshot payload failed the bounded schema.
     Snapshot(SnapshotError),
@@ -1294,6 +1295,11 @@ impl ClientSession {
         message
             .expect_session(grant.session)
             .map_err(ClientFault::Wire)?;
+        // The envelope's own bounds run again here. The codec validates every
+        // decoded packet, but `accept` is a public entry point, and an
+        // oversized snapshot payload must not reach a consumer whoever built
+        // the message.
+        message.validate().map_err(ClientFault::Wire)?;
         let mut notices = Vec::new();
         match message.payload {
             ServerPayload::Event(event) => {
