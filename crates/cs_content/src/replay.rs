@@ -345,6 +345,14 @@ pub enum ReplayError {
     },
     /// The promised state envelope broke its own ordering or bounds.
     Envelope(EnvelopeError),
+    /// A record was asked for its initial state before any run measured one.
+    ///
+    /// The per-tick envelope chains from the initial state
+    /// ([`StateEnvelope::chain_digest`]), so a promise with no measured start
+    /// has nothing to hang from. F59-A's fixtures always carry a digest for
+    /// this reason; this variant exists so a runtime that skipped measuring an
+    /// initial state reports that instead of inventing a start.
+    MissingInitialState,
     /// A camera pose was not finite or a field of view was not a real angle.
     Camera(CaptureError),
     /// The record declares a schema major this build cannot read.
@@ -401,6 +409,10 @@ impl fmt::Display for ReplayError {
                 )
             }
             Self::Envelope(error) => write!(f, "state envelope: {error}"),
+            Self::MissingInitialState => write!(
+                f,
+                "no run measured an initial state, so the envelope has nothing to chain from"
+            ),
             Self::Camera(error) => write!(f, "capture camera: {error}"),
             Self::UnreadableSchema { major } => {
                 write!(
@@ -493,6 +505,18 @@ pub enum CaptureError {
         /// The rejected value.
         value: u32,
     },
+    /// A renderer setting the pinned [`RenderConfig`] has no field for.
+    ///
+    /// [`RenderConfig`] pins exactly the presentation settings a comparison
+    /// capture is defined by. A renderer configuration that also carries an
+    /// internal render resolution renders into a different framebuffer than the
+    /// record's width and height name, so lowering it into a record would write
+    /// a claim about a frame this configuration does not describe. This is the
+    /// refusal, and it is raised at the lowering boundary rather than dropped.
+    RenderSettingUnpinned {
+        /// The renderer setting that could not be pinned.
+        field: &'static str,
+    },
     /// The capture came from a build that is not the replay's build.
     BuildMismatch {
         /// The replay's build id.
@@ -528,6 +552,10 @@ impl fmt::Display for CaptureError {
             Self::RenderRange { field, value } => {
                 write!(f, "render {field} {value} is outside its designed range")
             }
+            Self::RenderSettingUnpinned { field } => write!(
+                f,
+                "renderer setting {field} has no pinned field in a capture record"
+            ),
             Self::BuildMismatch { replay, capture } => write!(
                 f,
                 "the capture was made by build {capture}, not the replay's build {replay}"

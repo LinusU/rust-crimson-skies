@@ -513,6 +513,23 @@
 //! settings persistence with a safe-defaults startup. The settings types are
 //! `cs_content::settings`.
 //!
+//! [`capture`] is the F59-B runtime half of replay, capture and acceptance
+//! evidence
+//! (`specs/F59-replays-captures-probes-and-acceptance-evidence.md`, stage
+//! `### F59-B`): [`capture::identity`] computes the engine/content/rules
+//! digests a `cs_content::replay::ReplayRecord`'s build fingerprint is built
+//! from out of the content a run actually loaded, [`capture::state`] is the
+//! only producer of per-tick state hashes in the runtime (a pose read back from
+//! Avian plus the forces the tick's own law computed — never a hash of the
+//! input), [`capture::replay`] drives the production flight world from a
+//! recorded `cs_types::input::CommandStream` and reports AC01's envelope
+//! comparison beside AC02's compatibility verdict, and [`capture::render`] is
+//! the single boundary between a capture record's exact
+//! `cs_content::replay::RenderConfig` and the renderer's `f32`
+//! [`render::capture::ComparisonSettings`]. The record schema itself is F59-A's
+//! `cs_content::replay`; the commands that drive this path and write evidence
+//! are F59-C and F59-D.
+//!
 //! [`network`] is the F57-A networked-aircraft boundary
 //! (`specs/F57-networked-aircraft-prediction-interpolation-and-projectiles.md`,
 //! stage `### F57-A`): [`network::physics`] is the client-side ingest path that
@@ -538,6 +555,7 @@ pub mod audio;
 pub mod camera;
 pub mod campaign;
 pub mod capital;
+pub mod capture;
 pub mod cinematics;
 pub mod cli;
 pub mod damage;
