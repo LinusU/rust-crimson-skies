@@ -482,29 +482,36 @@ fn review_identity() -> String {
         "implementer: bunny-alpha-1/bunny-alpha-1 (Rally #487, implement claim of \
          2026-10-03T03:30:51Z), Space Bunny Alpha. reviewer: bunny-alpha-1/bunny-alpha-1 again, \
          the same agent instance that wrote this stage, holding the review claim of \
-         2026-10-03T05:12:04Z, so this review is not independent evidence of anything and the \
-         format and identity claims still deserve a different agent instance or model; the \
+         2026-10-03T05:12:04Z and the resumed claim of 2026-10-03T06:44:27Z that the lander's \
+         rebase conflict sent back, so this review is not independent evidence of anything and \
+         the format and identity claims still deserve a different agent instance or model; the \
          reviewing session's context was fresh in the sense that it read only the branch, the \
          specs, the findings note and the recorded handover summary, and carries no memory of \
          writing the code. Checks the reviewer ran locally: cargo fmt --all -- --check; cargo \
          clippy --workspace --all-targets --all-features --locked -- -D warnings; cargo test \
          --workspace --locked; cargo test --workspace --locked -- accept_f14_d_4_ \
-         --include-ignored, which ran 11 tests including the retail one; and two mutations of \
-         the reviewed code, each killed by a test CI runs. The corrections made during the \
+         --include-ignored, which ran 11 tests including the retail one; the other F14-D retail \
+         suites with --include-ignored, because the rebase merged F14-D.6's airframe collection \
+         and its completeness check into the same file and one of those checks failed on the \
+         merge; two mutations of the reviewed code, each killed by a test CI runs; and \
+         python3 tools/validate_evidence.py with --require-pass. The corrections made during the \
          review are listed in \
          docs/findings/2026-10-03-f14-d-4-scene-and-mesh-collections.md: a node row pointed at \
          a mesh id no row holds, a parent-slot cycle produced a published name path, the \
          inventory lookup case-folded a path, a guard could silently skip the shared container, \
          the collection record named a bare file instead of the pattern its rows follow, an \
          error variant nothing could construct was documented, two defects of the rebase onto \
-         F14-D.3 survived in the module documentation, and the note's byte total was wrong. The \
-         corpus measurements are unchanged: 56 620 scene node rows and 17 139 mesh rows over \
-         nine containers, 0 unreadable containers, 0 unterminated parent chains, and a coverage \
-         denominator that did not move. No agent review awards more than checked, and nothing \
-         here is verified_original: retail is read access to the installation's own files, the \
-         original game was never run, and both collections are structural — they record what \
-         the store holds and how it is named, not what the engine does with it. No agent review \
-         replaces the owner's human approval",
+         F14-D.3 survived in the module documentation, the note's byte total was wrong, the \
+         rebase onto F14-D.6 left the inventory walk's list of derivations one short and left \
+         F14-D.6's own completeness total unable to account for the two collections this stage \
+         adds, and the same conflict left a fragment of the old paragraph orphaned under the \
+         module documentation. The corpus measurements are unchanged: 56 620 scene node rows and \
+         17 139 mesh rows over nine containers, 0 unreadable containers, 0 unterminated parent \
+         chains, and a coverage denominator that did not move. No agent review awards more than \
+         checked, and nothing here is verified_original: retail is read access to the \
+         installation's own files, the original game was never run, and both collections are \
+         structural — they record what the store holds and how it is named, not what the \
+         engine does with it. No agent review replaces the owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
