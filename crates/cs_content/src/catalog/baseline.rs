@@ -1572,9 +1572,17 @@ fn gamez_geometry_rows(
     }
 
     let unread = refused.len();
-    let read = reports.len();
-    node_status.gaps.insert("container", read);
-    node_status.gaps.insert("unreadable_container", unread);
+    // Three counts, kept apart because they answer three different questions:
+    // how many containers the walk set out to read, how many of them produced a
+    // row, and how many are named as unreadable. A container that is present but
+    // refused and one that is absent are both "unreadable", and each is named
+    // individually in the diagnostic.
+    let read = reports.iter().filter(|report| report.nodes > 0).count();
+    for status in [&mut node_status, &mut mesh_status] {
+        status.gaps.insert("container_visited", sources.len());
+        status.gaps.insert("container_read", read);
+        status.gaps.insert("unreadable_container", unread);
+    }
     node_status.gaps.insert(
         "ambiguous_name_path",
         reports.iter().map(|report| report.ambiguous).sum(),
@@ -1583,8 +1591,6 @@ fn gamez_geometry_rows(
         "unspellable_name_path",
         reports.iter().map(|report| report.unspellable).sum(),
     );
-    mesh_status.gaps.insert("container", read);
-    mesh_status.gaps.insert("unreadable_container", unread);
     mesh_status.gaps.insert(
         "named_slot_without_mesh",
         reports.iter().map(|report| report.absent_meshes).sum(),
@@ -1694,16 +1700,13 @@ fn read_geometry_container(
     let mut named = 0usize;
     let mut ambiguous_nodes = 0usize;
     let mut unspellable = 0usize;
+    let key = install_file_key(spelling);
     for path in paths.values() {
-        if ambiguous.contains(path) {
-            ambiguous_nodes += 1;
-            continue;
+        match NodeIdentity::of(&key, path, &ambiguous) {
+            NodeIdentity::Path => named += 1,
+            NodeIdentity::Ambiguous => ambiguous_nodes += 1,
+            NodeIdentity::Unspellable => unspellable += 1,
         }
-        if scene_node_key("", path).is_none() {
-            unspellable += 1;
-            continue;
-        }
-        named += 1;
     }
 
     // Distinct slots, because that is what the collection has a row for: two
@@ -1738,6 +1741,40 @@ fn read_geometry_container(
         paths,
         ambiguous,
     })
+}
+
+/// How one stored node's identity is derived, and why.
+///
+/// Stated once, because the per-container counts and the rows themselves have to
+/// agree about it: a count that classified a node one way and a row that keyed it
+/// another would make the report lie about its own collection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NodeIdentity {
+    /// The authored name path is a usable semantic key: the store spells it for
+    /// this node alone and the id grammar accepts it.
+    Path,
+    /// Another node of the same container spells the same path, so the semantic
+    /// key cannot tell them apart.
+    Ambiguous,
+    /// The path carries bytes the id grammar refuses, **or** the key the
+    /// container prefix and the path together form is longer than the grammar
+    /// allows. Both are the same fact for this purpose — the store's own naming
+    /// does not fit an identity — and neither is repaired here.
+    Unspellable,
+}
+
+impl NodeIdentity {
+    /// How one node of `paths` is classified, given the container's key and the
+    /// paths more than one node spells.
+    fn of(container_key: &str, path: &str, ambiguous: &BTreeSet<String>) -> Self {
+        if ambiguous.contains(path) {
+            return Self::Ambiguous;
+        }
+        if scene_node_key(container_key, path).is_none() {
+            return Self::Unspellable;
+        }
+        Self::Path
+    }
 }
 
 /// One `scene_node` row per stored node, in container then stored order.
@@ -1784,10 +1821,10 @@ fn geometry_node_rows(
             .map(String::as_str)
             .unwrap_or_default();
         // The path is a usable key only when it is this node's own alone and the
-        // id grammar accepts it; both facts are needed and neither is guessed.
-        let ambiguous_path = geometry.ambiguous.contains(path);
-        let spellable_path = !ambiguous_path && scene_node_key("", path).is_some();
-        let use_path = spellable_path && scene_node_key(&key, path).is_some();
+        // id grammar accepts the key it forms; both facts are needed and neither
+        // is guessed.
+        let identity = NodeIdentity::of(&key, path, &geometry.ambiguous);
+        let use_path = identity == NodeIdentity::Path;
 
         // The file that holds the bytes, then the ownership edge the record
         // itself states. A parent whose own key is refused contributes no edge
@@ -1804,10 +1841,10 @@ fn geometry_node_rows(
                 .get(&parent)
                 .map(String::as_str)
                 .unwrap_or_default();
-            let parent_ambiguous = geometry.ambiguous.contains(parent_path);
-            let parent_use_path = !parent_ambiguous
-                && scene_node_key("", parent_path).is_some()
-                && scene_node_key(&key, parent_path).is_some();
+            // The parent's own key is derived exactly as its own row derives it,
+            // so an edge can only ever point at an id that row really carries.
+            let parent_use_path =
+                NodeIdentity::of(&key, parent_path, &geometry.ambiguous) == NodeIdentity::Path;
             let address = geometry
                 .nodes
                 .get(parent)
@@ -1835,20 +1872,25 @@ fn geometry_node_rows(
         // original's world unit or angle unit, so no quantity on this row is
         // normalized and the row says so.
         let mut unsupported_reasons = vec![UnsupportedReason::NotNormalized];
-        if ambiguous_path {
-            unsupported_reasons.push(node_key_unknown(
-                CLAIM_AMBIGUOUS_NODE_PATH,
-                node.index,
-                path,
-                "the same container spells this authored name path for another node as well",
-            )?);
-        } else if !spellable_path {
-            unsupported_reasons.push(node_key_unknown(
-                CLAIM_UNSPELLABLE_NODE_PATH,
-                node.index,
-                path,
-                "this authored name path carries bytes the content-id key grammar refuses",
-            )?);
+        match identity {
+            NodeIdentity::Path => {}
+            NodeIdentity::Ambiguous => {
+                unsupported_reasons.push(node_key_unknown(
+                    CLAIM_AMBIGUOUS_NODE_PATH,
+                    node.index,
+                    path,
+                    "the same container spells this authored name path for another node as well",
+                )?);
+            }
+            NodeIdentity::Unspellable => {
+                unsupported_reasons.push(node_key_unknown(
+                    CLAIM_UNSPELLABLE_NODE_PATH,
+                    node.index,
+                    path,
+                    "the content-id key this path forms is refused: it carries bytes the key \
+                     grammar does not accept, or it is longer than the key length limit",
+                )?);
+            }
         }
         let id =
             scene_node_id(&key, path, use_path, u64::from(node.data_offset)).ok_or_else(|| {
@@ -2055,8 +2097,11 @@ fn scene_node_id(
 /// The identity F11-A's scheme gives a name path: `<container key>.<path>`.
 ///
 /// `container_key` is empty in the one caller that only asks whether a path can
-/// form a key at all; the key is then the path alone, which is the longest form
-/// the grammar can ever be asked to accept.
+/// form a key at all; the key is then the path alone, which is the shortest form
+/// the grammar can ever be asked to accept. Nothing here shortens a path that
+/// the joined key refuses: a key over [`cs_types::content::MAX_CONTENT_KEY_LEN`]
+/// is refused here exactly as a path with a byte the grammar rejects is, because
+/// both are the store's naming not fitting an identity.
 fn scene_node_key(container_key: &str, path: &str) -> Option<ContentId> {
     let key = if container_key.is_empty() {
         path.to_owned()
