@@ -1,5 +1,6 @@
-//! Trigger crossings: the gameplay consumer for the swept spawn preflight's
-//! sensor record (task #415).
+//! Trigger crossings: the gameplay stream a swept crossing decision is
+//! delivered into — the spawn preflight's sensor record (task #415) and the
+//! ordinary-flight pass over the world's sensor volumes (task #498).
 //!
 //! Spec: `specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`
 //! (F39 owns trigger semantics), stage `### F39-A` for the crossing
@@ -47,8 +48,9 @@
 //!
 //! # The crossing decision, made once
 //!
-//! The decision is not "the preflight said so". It is the same rule the
-//! ordinary-flight path must use (task #498), stated so the two cannot drift:
+//! The decision is not "the preflight said so". It is the rule the
+//! ordinary-flight path of task #498 implements
+//! ([`crate::world::sweep_volume_crossings`]), stated so the two cannot drift:
 //!
 //! * a crossing is decided from the **body's own motion over the tick** — a
 //!   segment swept against the volume, or the engine's own time of impact
@@ -86,7 +88,10 @@
 //!   [`BodyLayer`](crate::physics::BodyLayer)). Both gaps are composition
 //!   defects in F18's and F23-C's paths, recorded in the finding and filed
 //!   separately; wiring this channel into the overlay hand-off before they are
-//!   closed would be an unreachable branch.
+//!   closed would be an unreachable branch. The ordinary-flight producer of
+//!   task #498 feeds the same hand-off for the world-authored volumes it can
+//!   see ([`crate::world::sweep_volume_crossings`]); this producer still does
+//!   not, for the same reason.
 //! * **It claims nothing about the original game.** Whether the original
 //!   reported a spawn-tick crossing at all, and with what delay, is **unknown**
 //!   and is left to the calibration stage (F26). What is measured here is this
@@ -106,9 +111,8 @@ use crate::physics::{PhysicsTickLedger, SpawnPreflightLog};
 /// Which producer decided a crossing.
 ///
 /// A crossing carries its source so a consumer can tell a *swept* decision
-/// (this one) from a sampled overlap, and so a second producer can be added
-/// later — the ordinary-flight path of task #498 — without a crossing from one
-/// of them being indistinguishable from the other's.
+/// (either of these) from a sampled overlap, and so a crossing from one
+/// producer is never indistinguishable from the other's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CrossingSource {
     /// The swept spawn preflight's non-blocking sensor cast
@@ -116,12 +120,18 @@ pub enum CrossingSource {
     /// the crossing a body made inside the tick it was spawned in and is
     /// therefore invisible to collision detection.
     SpawnTickPreflight,
+    /// The ordinary-flight swept crossing pass (task #498,
+    /// [`crate::world::sweep_volume_crossings`]): the crossing a body made in
+    /// ordinary flight, decided from the tick's own segment swept against the
+    /// world's sensor volumes — the sampled-overlap hole task #401 measured.
+    OrdinaryFlightSweep,
 }
 
 impl std::fmt::Display for CrossingSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::SpawnTickPreflight => f.write_str("spawn_tick_preflight"),
+            Self::OrdinaryFlightSweep => f.write_str("ordinary_flight_sweep"),
         }
     }
 }
@@ -143,10 +153,12 @@ pub struct TriggerCrossing {
     pub kind: CrossingKind,
     /// Which producer decided it.
     pub source: CrossingSource,
-    /// How far along the spawn tick's travel the body met the volume, in
-    /// meters, measured from the position it spawned at. The same reference the
+    /// How far along the tick's own travel the body's collider met the volume,
+    /// in meters, measured from the segment's start. For a spawn-tick crossing
+    /// that start is the position it spawned at — the same reference the
     /// clamp's distance uses, so a consumer can order a crossing against a
-    /// solid stop on the same tick.
+    /// solid stop on the same tick; for an ordinary-flight crossing it is the
+    /// pose the body ended the previous tick at.
     pub distance_m: f32,
 }
 
@@ -260,7 +272,8 @@ impl TriggerCrossings {
     /// This is the **producer** seam, not a consumer's: a crossing is decided
     /// by the producer that measured the swept segment, and gameplay reads the
     /// stream with [`take`](Self::take). It is public because a second producer
-    /// — the ordinary-flight path of task #498 — has to record into the same
+    /// — the ordinary-flight path of task #498
+    /// ([`crate::world::sweep_volume_crossings`]) — records into the same
     /// per-pair ledger, or the two would each fire their own duplicate for a
     /// pair the other already reported.
     ///

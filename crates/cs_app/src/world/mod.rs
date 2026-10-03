@@ -9,6 +9,14 @@
 //!   [`contacts::WorldContacts`] log: which authored object, in which sector,
 //!   under which gameplay surface rule, an actor actually reached — read from
 //!   Avian's contact events after the fixed physics step.
+//! * [`crossings`] is the swept trigger-crossing producer (task #498): it
+//!   decides a crossing from the body's own per-tick segment swept against a
+//!   `WorldCollisionRole::Sensor` collider, keeps the per-pair inside bit, and
+//!   records each pair's entry once into the shared
+//!   [`crate::objectives::TriggerCrossings`] stream — the crossings a discrete
+//!   overlap cannot see because no sample lands inside a volume thinner than a
+//!   tick. Its entries feed the same [`overlays::OverlayTriggerRequests`]
+//!   hand-off the contact stream feeds.
 //! * [`meshes`] is the one place a mesh reference meets an upload
 //!   ([`meshes::WorldMeshes`], [`meshes::WorldMesh`]), so the geometry a
 //!   collision is built from and the geometry that is drawn are one value with
@@ -47,6 +55,11 @@
 //!   cannot end up in different places (acceptance scenario AC03). Which
 //!   overlays have been applied lives in the load record, so it survives a
 //!   sector unload and is gone with the world.
+//! * [`crossings`] is the swept half of what feeds [`overlays`] (task #498): a
+//!   body whose fixed tick completely outruns a thin volume, or lands a
+//!   mesh-derived one's deep-inside gap, still produces its `TriggerCrossing` —
+//!   decided from the body's own tick segment, once per pair, as a read that
+//!   never touches the body — and the same hand-off applies its overlay.
 //! * [`triggers`] measures the **original's** trigger volumes rather than the
 //!   fixtures': it reads every world container's node array through the
 //!   production F11-A node reader and reports one measured detection-zone
@@ -89,6 +102,7 @@
 pub mod affine;
 pub mod audit;
 pub mod contacts;
+pub mod crossings;
 pub mod fixture;
 pub mod gpu_capture;
 pub mod meshes;
@@ -108,6 +122,7 @@ pub use contacts::{
     WorldColliderInstance, WorldContact, WorldContacts, WorldObjectBinding, WorldPlugin,
     WorldVisual, record_world_contacts,
 };
+pub use crossings::{SweptBodyTracks, WorldSweptCrossingPlugin, sweep_volume_crossings};
 pub use fixture::{
     DEPOT_CRATE_HALF_M, DEPOT_CRATE_POS_M, DEPOT_DOOR_HALF_M, DEPOT_DOOR_OPEN_OFFSET_M,
     DEPOT_DOOR_POS_M, DEPOT_OBJECT_CRATE, DEPOT_OBJECT_DOOR, DEPOT_OBJECT_GROUND,

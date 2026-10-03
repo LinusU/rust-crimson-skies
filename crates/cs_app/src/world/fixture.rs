@@ -1552,6 +1552,11 @@ pub fn world_app() -> App {
         // all.
         super::contacts::WorldPlugin,
         super::overlays::WorldOverlayPlugin,
+        // The swept trigger-crossing pass (task #498) is the same kind of
+        // composition member: without it a trigger volume is reported only
+        // when a discrete sample lands inside it, which is the measured hole
+        // the pass exists to close.
+        super::crossings::WorldSweptCrossingPlugin,
         // The resting rule (#428). The world composition does not install
         // `PhysicsBodiesPlugin` — it needs the world contact log and the
         // overlay pass, not the spawn preflight — so the resting rule is added
