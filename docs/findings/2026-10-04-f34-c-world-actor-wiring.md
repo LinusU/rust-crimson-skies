@@ -77,7 +77,10 @@ Removing pieces fails the tests: no `open_passages` →
 `attach`/`release` → the cargo tests; no refusal plumbing →
 `…_refusals_are_named_and_errors_propagate` and
 `…_a_refused_completion_is_reported_every_tick`; no retry rebuild →
-`…_retry_restores_the_authored_state_and_names_the_teardown`.
+`…_retry_restores_the_authored_state_and_names_the_teardown`. The review
+below adds `…_a_collected_actor_answers_no_further_pickups` (presence-only
+gating of a collected actor) and `…_carriage_launches_whatever_the_authored_order`
+(authored-order registration); both were verified to fail on the unfixed code.
 
 ## Not done here (deliberately)
 
@@ -97,3 +100,44 @@ Removing pieces fails the tests: no `open_passages` →
 - Whether the original ever re-closes a passage — this design supports it;
   nothing asserts the original did.
 - Whether the original models cargo as sockets on carriers at all.
+
+## Review findings (bunny-alpha-1, 2026-10-04)
+
+Reviewer of `46479dfc` (a fresh agent instance with no part in the
+implementation). Three defects fixed here, all in the wiring the stage exists
+to provide:
+
+1. **A collected actor still answered pickups.** `judge_pickup` gated on
+   support-graph presence, and collection leaves presence `Intact` (the actor
+   keeps its id and a frozen pose by design). A second pickup therefore
+   latched onto a boat that had already left the world, and a collected
+   actor could keep driving an `Attach` winch from its frozen pose — every
+   tick, judging a world that no longer contained it. The session now asks
+   one question, `in_world` (intact *and* not collected), for both the
+   pickup's target and its world-actor taker. Discriminating test:
+   `…_a_collected_actor_answers_no_further_pickups`, which fails on the
+   presence-only gate.
+2. **A program could lower and then fail to launch.** Registration refuses a
+   carrier or a gate the set does not hold yet, but the session registered in
+   authored order, so a mission whose content declared cargo before its
+   carrier (or a follower before its gate) lowered cleanly and then refused
+   with `UnknownCarrier`/`UnknownGate`. `registration_order` is now a stable
+   pass over the cross-references registration actually validates — `Carried`
+   carriers and route gates — and anything a pass cannot place (a cycle, or a
+   dependency nobody declares) is appended in authored order so the runtime
+   still refuses it by name. Discriminating test:
+   `…_carriage_launches_whatever_the_authored_order`.
+3. **A dead ledger write.** The `Detach` arm removed the detached actor from
+   the collected set, which can never hold: only a `Collect` completion adds
+   an entry, and a collected actor is never `Carried`, so `detach` refuses it.
+   Removed, with the reason recorded where it was.
+
+Also added, as missing coverage rather than defects: the `cs_sim` carriage
+and scripted-gate surface had no test at that layer at all, so
+`ActorMotion::Carried`, `attach`, `detach`, `collect`, `set_gate_open` and the
+`destroy` cascade's wreck-pose resolution were only reachable through the
+`cs_app` session — and five of the refusals they raise (`ActorDestroyed`,
+`AlreadyCollected`, `AnchorOwnerMismatch`, `UnknownCarrier`, the collected-gate
+rule) were unreachable through it. Five `accept_f34_c_` runtime tests now
+cover them directly, and `…_a_scheduled_transition_on_an_unknown_gate_is_refused_once`
+covers the one refusal variant the session's own tests never reached.
