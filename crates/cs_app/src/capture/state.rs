@@ -21,6 +21,12 @@
 //! * A reading whose state is not finite is [`refused`](StateProbe::measure)
 //!   rather than hashed. `NaN` bits compare unequal to themselves in most
 //!   comparisons and a hash over them is a number that means nothing.
+//! * A reading must name the tick its forces were measured at, and
+//!   [`StateReading::after_tick`] refuses one that was measured at another
+//!   tick. A tick the law refused keeps the *previous* tick's output (that is
+//!   what [`FlightAircraft::last_output_tick`](crate::physics::FlightAircraft::last_output_tick)
+//!   exists to expose), so stamping it as this tick's measurement is precisely
+//!   the fabrication this module exists to prevent.
 //! * [`StateProbe`] keeps the run's initial state beside the envelope, because
 //!   the chain digest starts from it: without it the promise is a list of
 //!   per-tick hashes with nothing to hang from.
@@ -49,7 +55,9 @@ pub const STATE_DIGEST_DOMAIN: &[u8] = b"cs.f59.state.reading.v1";
 /// Both halves are read out of the world rather than supplied: `pose` is the
 /// authoritative Avian read-back and `output` is what the tick's own flight law
 /// computed. [`at_spawn`](Self::at_spawn) is the one reading without an output,
-/// because no tick has run yet.
+/// because no tick has run yet. A reading after a tick can only be built by
+/// [`after_tick`](Self::after_tick), which insists on knowing which tick
+/// measured the forces.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StateReading {
     /// The tick the reading describes.
@@ -72,14 +80,36 @@ impl StateReading {
         }
     }
 
-    /// The state after one driven tick.
-    #[must_use]
-    pub const fn after_tick(tick: Tick, pose: PhysicsSample, output: FlightOutput) -> Self {
-        Self {
+    /// The state after one driven tick, given the tick the law stamped `output`
+    /// with.
+    ///
+    /// `measured_at` is the world's own answer to "which tick computed these
+    /// forces", read out of
+    /// [`FlightAircraft::last_output_tick`](crate::physics::FlightAircraft::last_output_tick),
+    /// and it has to be `tick`. A tick whose law refused — a parked body, a
+    /// missing state read-back, a refused equipment record — keeps the previous
+    /// tick's output, so `measured_at` names that older tick, or nothing at all.
+    /// Accepting it would stamp a stale measurement as a fresh one, so it is
+    /// refused by name instead.
+    ///
+    /// # Errors
+    ///
+    /// [`StateProbeError::UnmeasuredTick`] when `measured_at` is not
+    /// `Some(tick)`.
+    pub fn after_tick(
+        tick: Tick,
+        measured_at: Option<Tick>,
+        pose: PhysicsSample,
+        output: FlightOutput,
+    ) -> Result<Self, StateProbeError> {
+        if measured_at != Some(tick) {
+            return Err(StateProbeError::UnmeasuredTick { tick, measured_at });
+        }
+        Ok(Self {
             tick,
             pose,
             output: Some(output),
-        }
+        })
     }
 
     /// The digest of this reading.
@@ -226,6 +256,17 @@ pub enum StateProbeError {
         /// The offending field.
         field: &'static str,
     },
+    /// The tick's forces were not computed by that tick's own law run.
+    ///
+    /// A refused or parked tick keeps the last *measured* output, so a reading
+    /// that did not check which tick produced its forces would hash the
+    /// previous tick's numbers under this tick's name.
+    UnmeasuredTick {
+        /// The tick the reading was stamped for.
+        tick: Tick,
+        /// The tick the aircraft actually stamped its last output with, if any.
+        measured_at: Option<Tick>,
+    },
     /// The reading's tick did not follow the last measured tick.
     TickOrder(EnvelopeError),
     /// The envelope is full.
@@ -246,6 +287,22 @@ impl fmt::Display for StateProbeError {
             Self::NonFinite { tick, field } => {
                 write!(f, "state read at tick {} has a non-finite {field}", tick.0)
             }
+            Self::UnmeasuredTick {
+                tick,
+                measured_at: Some(measured_at),
+            } => write!(
+                f,
+                "tick {} has no forces of its own: the aircraft's last output was measured at tick {}",
+                tick.0, measured_at.0
+            ),
+            Self::UnmeasuredTick {
+                tick,
+                measured_at: None,
+            } => write!(
+                f,
+                "tick {} has no forces of its own: the aircraft has measured no tick yet",
+                tick.0
+            ),
             Self::TickOrder(error) => write!(f, "{error}"),
             Self::TooManyEntries { max } => {
                 write!(f, "a state envelope holds at most {max} ticks")

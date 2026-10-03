@@ -30,6 +30,10 @@
 //!   pose read out of Avian and forces the tick's own law computed. A replay
 //!   whose input changed but whose aircraft did not therefore compares
 //!   *identical*, which is the truth rather than a missed divergence.
+//! * **A tick's forces are that tick's.** The aircraft stamps its last output
+//!   with the tick that measured it, and a reading is refused unless the two
+//!   agree — a refused tick keeps the previous output, and stamping that as a
+//!   fresh measurement would be the one fabrication this path must not make.
 //! * **The content digest is not a constant.** It is the digest of the content
 //!   rows the subject actually loaded ([`super::identity`]), so editing a loaded
 //!   airframe coefficient is a content change and AC02 refuses the old replay.
@@ -51,8 +55,8 @@ use std::fmt;
 use bevy::ecs::entity::Entity;
 use cs_content::replay::{
     AuthoredChoices, BuildId, CompatibilityVerdict, CrossBuildPolicy, Divergence,
-    EnvelopeComparison, OverrideLog, PlatformTag, ReplayError, ReplayRecord, ReplaySeeds,
-    ReplayVersion, StateEnvelope,
+    EnvelopeComparison, MAX_ENVELOPE_ENTRIES, OverrideLog, PlatformTag, ReplayError, ReplayRecord,
+    ReplaySeeds, ReplayVersion, StateEnvelope,
 };
 use cs_sim::control::{ControlBuffer, ControlError};
 use cs_sim::flight::{
@@ -266,6 +270,17 @@ pub enum CaptureRunError {
         /// The tick whose measurement found nothing.
         tick: Tick,
     },
+    /// The tick ran no law, so it has no forces of its own to measure.
+    ///
+    /// [`StateReading::after_tick`] is where the same check refuses a stale
+    /// measurement; this variant names the case where the aircraft has produced
+    /// no output at all.
+    UnmeasuredTick {
+        /// The tick the reading was stamped for.
+        tick: Tick,
+        /// The tick the aircraft actually stamped its last output with, if any.
+        measured_at: Option<Tick>,
+    },
 }
 
 impl fmt::Display for CaptureRunError {
@@ -296,6 +311,22 @@ impl fmt::Display for CaptureRunError {
             Self::BodyLost { tick } => {
                 write!(f, "the aircraft left the world at tick {}", tick.0)
             }
+            Self::UnmeasuredTick {
+                tick,
+                measured_at: Some(measured_at),
+            } => write!(
+                f,
+                "tick {} ran no flight law; the aircraft's last output was measured at tick {}",
+                tick.0, measured_at.0
+            ),
+            Self::UnmeasuredTick {
+                tick,
+                measured_at: None,
+            } => write!(
+                f,
+                "tick {} ran no flight law; the aircraft has measured no tick yet",
+                tick.0
+            ),
         }
     }
 }
@@ -315,6 +346,7 @@ impl std::error::Error for CaptureRunError {
             | Self::NoTicksMeasured
             | Self::StreamTickOutsideRun { .. }
             | Self::UnconsumedAction { .. }
+            | Self::UnmeasuredTick { .. }
             | Self::BodyLost { .. } => None,
         }
     }
@@ -426,8 +458,10 @@ pub fn record_run(request: &RunRequest<'_>) -> Result<RecordedRun, CaptureRunErr
 ///
 /// # Errors
 ///
-/// Every [`CaptureRunError`], plus the case the record itself names: a record
-/// whose stream cannot be flown in `ticks` fixed ticks is
+/// Every [`CaptureRunError`]. [`ReplayError`](CaptureRunError::Record) first, for
+/// a record that breaks its own rules — an inverted tick range above all, since
+/// the tick span this function flies is derived from it. A record whose stream
+/// cannot be flown in `ticks` fixed ticks is
 /// [`CaptureRunError::StreamTickOutsideRun`], and one that asks for a different
 /// rate than `subject` flies at is refused by the record's own comparison.
 pub fn replay(
@@ -436,6 +470,10 @@ pub fn replay(
     build: &BuildContext,
     policy: CrossBuildPolicy,
 ) -> Result<ReplayOutcome, CaptureRunError> {
+    // The record is a document that may have come from anywhere, so it is
+    // checked against its own rules before anything is derived from it: the
+    // tick span below is a subtraction over its declared range.
+    record.validate().map_err(CaptureRunError::Record)?;
     let ticks = record.last_tick.0 - record.first_tick.0;
     let request = RunRequest {
         subject,
@@ -482,7 +520,12 @@ fn fly(request: &RunRequest<'_>) -> Result<RecordedRun, CaptureRunError> {
 
     let mut controls = ControlBuffer::new();
     let mut probe = StateProbe::new();
-    let mut readings = Vec::with_capacity(request.ticks as usize + 1);
+    // Bounded by what an envelope can hold: a caller asking for more ticks than
+    // that is refused by the probe one tick later, and an unbounded
+    // pre-allocation would turn a large `--ticks` into an allocation failure
+    // instead of a named refusal.
+    let mut readings =
+        Vec::with_capacity(request.ticks.min(MAX_ENVELOPE_ENTRIES as u64) as usize + 1);
     let start = StateReading::at_spawn(
         session
             .pose(body)
@@ -515,12 +558,22 @@ fn fly(request: &RunRequest<'_>) -> Result<RecordedRun, CaptureRunError> {
         let pose = session
             .pose(body)
             .ok_or(CaptureRunError::BodyLost { tick })?;
-        let output = session
+        // The pose is this tick's read-back, but `last_output` is only this
+        // tick's *measurement* when the law stamped it with this tick: a
+        // refused tick keeps the previous one, so the tick it was measured at
+        // is read and handed to the reading rather than assumed.
+        let measured = session
             .world()
             .and_then(|world| world.get::<FlightAircraft>(body))
-            .and_then(FlightAircraft::last_output)
             .ok_or(CaptureRunError::BodyLost { tick })?;
-        let reading = StateReading::after_tick(tick, pose, output);
+        let measured_at = measured.last_output_tick().map(Tick);
+        let output = measured
+            .last_output()
+            .ok_or(CaptureRunError::UnmeasuredTick {
+                tick,
+                measured_at: None,
+            })?;
+        let reading = StateReading::after_tick(tick, measured_at, pose, output)?;
         probe.measure(&reading)?;
         readings.push(reading);
     }
@@ -548,6 +601,12 @@ fn fly(request: &RunRequest<'_>) -> Result<RecordedRun, CaptureRunError> {
             .initial_state(&label)
             .map_err(CaptureRunError::Record)?,
         stream: request.stream.clone(),
+        // The record's seed root is a `u64` with no "absent" spelling, so a run
+        // that declared no seed records `0`. The flight path consumes no random
+        // stream at all, so no value of the root reaches the state a replay
+        // compares; a stage that adds a consumer must use
+        // [`ReplaySeeds::derive`] with its own domain constant so the streams it
+        // consumed are named rather than re-derived.
         seeds: ReplaySeeds::new(subject.seed.unwrap_or(0), Vec::new())
             .map_err(CaptureRunError::Record)?,
         tick_rate: subject.fixed_hz,

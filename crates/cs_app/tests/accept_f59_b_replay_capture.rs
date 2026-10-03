@@ -500,7 +500,7 @@ fn accept_f59_b_a_non_finite_state_is_refused_rather_than_hashed() {
         .expect("a finite spawn state is measured");
 
     let error = probe
-        .measure(&StateReading::after_tick(Tick(1), pose, finite_output()))
+        .measure(&reading(Tick(1), pose, finite_output()))
         .expect_err("a non-finite reading is refused");
     assert_eq!(
         error,
@@ -533,18 +533,18 @@ fn accept_f59_b_a_state_hash_covers_the_tick_and_the_forces_it_computed() {
     });
 
     assert_ne!(
-        StateReading::after_tick(Tick(1), pose, neutral).digest(),
-        StateReading::after_tick(Tick(2), pose, neutral).digest(),
+        reading(Tick(1), pose, neutral).digest(),
+        reading(Tick(2), pose, neutral).digest(),
         "the measured tick is part of what the hash is about"
     );
     assert_ne!(
-        StateReading::after_tick(Tick(1), pose, neutral).digest(),
-        StateReading::after_tick(Tick(1), pose, pulled).digest(),
+        reading(Tick(1), pose, neutral).digest(),
+        reading(Tick(1), pose, pulled).digest(),
         "the tick's computed forces are part of the measured state"
     );
     assert_eq!(
-        StateReading::after_tick(Tick(1), pose, neutral).digest(),
-        StateReading::after_tick(Tick(1), pose, neutral).digest(),
+        reading(Tick(1), pose, neutral).digest(),
+        reading(Tick(1), pose, neutral).digest(),
         "the same measurement hashes the same way twice"
     );
 
@@ -554,10 +554,10 @@ fn accept_f59_b_a_state_hash_covers_the_tick_and_the_forces_it_computed() {
         .start(&StateReading::at_spawn(pose))
         .expect("a finite spawn state is measured");
     probe
-        .measure(&StateReading::after_tick(Tick(1), pose, neutral))
+        .measure(&reading(Tick(1), pose, neutral))
         .expect("tick 1 is measured");
     probe
-        .measure(&StateReading::after_tick(Tick(2), pose, pulled))
+        .measure(&reading(Tick(2), pose, pulled))
         .expect("tick 2 is measured");
     let entries = probe.envelope().entries();
     assert_eq!(entries.len(), 2);
@@ -570,13 +570,109 @@ fn accept_f59_b_a_state_hash_covers_the_tick_and_the_forces_it_computed() {
 fn accept_f59_b_a_tick_measured_before_the_run_started_is_refused() {
     let mut probe = StateProbe::new();
     let error = probe
-        .measure(&StateReading::after_tick(
-            Tick(1),
-            rest_pose(),
-            finite_output(),
-        ))
+        .measure(&reading(Tick(1), rest_pose(), finite_output()))
         .expect_err("the run has not measured its initial state");
     assert_eq!(error, StateProbeError::NotStarted);
+}
+
+/// A tick whose forces were not measured at that tick is refused, not hashed.
+///
+/// The aircraft keeps the last *measured* output when a tick is refused, so a
+/// recorder that took `last_output` without asking which tick produced it can
+/// stamp the previous tick's forces under this tick's name — and every digest in
+/// the envelope is then a statement about a tick that never happened. The
+/// reading refuses that by name, and the envelope it would have gone into stays
+/// untouched.
+#[test]
+fn accept_f59_b_a_tick_whose_forces_were_not_measured_is_refused() {
+    let pose = rest_pose();
+
+    // A law that ran an older tick: the output is real, the tick is not this one.
+    let stale = StateReading::after_tick(Tick(5), Some(Tick(4)), pose, finite_output())
+        .expect_err("a reading must name the tick that measured its forces");
+    assert_eq!(
+        stale,
+        StateProbeError::UnmeasuredTick {
+            tick: Tick(5),
+            measured_at: Some(Tick(4)),
+        }
+    );
+
+    // A law that has not run at all.
+    assert_eq!(
+        StateReading::after_tick(Tick(1), None, pose, finite_output())
+            .expect_err("no measurement at all is not this tick's measurement"),
+        StateProbeError::UnmeasuredTick {
+            tick: Tick(1),
+            measured_at: None,
+        }
+    );
+
+    // And the run itself keeps measuring: a stale reading cannot be built, so
+    // the envelope holds this run's own per-tick measurements and nothing else.
+    let mut probe = StateProbe::new();
+    probe
+        .start(&StateReading::at_spawn(pose))
+        .expect("a finite spawn state is measured");
+    probe
+        .measure(&reading(Tick(1), pose, finite_output()))
+        .expect("tick 1 is measured");
+    let after_one = probe.envelope().entries().to_vec();
+    assert_eq!(after_one.len(), 1);
+    probe
+        .measure(&reading(
+            Tick(2),
+            pose,
+            output_for(cs_sim::flight::FlightInput {
+                pitch: 0.5,
+                ..cs_sim::flight::FlightInput::NEUTRAL
+            }),
+        ))
+        .expect("tick 2 is measured");
+    let entries = probe.envelope().entries();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(after_one[0], entries[0], "earlier ticks are not rewritten");
+}
+
+/// A record that breaks its own rules is refused before anything is flown from
+/// it.
+///
+/// The tick span a replay flies is derived by subtraction over the record's
+/// declared range, so a record whose range is inverted has no span to fly. The
+/// refusal is the record's own error, not a panic from arithmetic on a document
+/// that may have come from anywhere.
+#[test]
+fn accept_f59_b_a_record_with_an_inverted_tick_range_is_refused() {
+    let mut broken = recorded();
+    broken.first_tick = Tick(RUN_TICKS + 1);
+    broken.last_tick = Tick(1);
+
+    let build = build();
+    let original = subject();
+    let error = replay(&broken, &original, &build, CrossBuildPolicy::Reject)
+        .expect_err("an inverted tick range has no span to fly");
+    assert!(
+        matches!(
+            error,
+            CaptureRunError::Record(cs_content::replay::ReplayError::InvertedTickRange { .. })
+        ),
+        "expected the record's own refusal, got {error}"
+    );
+}
+
+/// A run at a zero fixed rate is refused: there would be no fixed timestep to
+/// measure a state against.
+#[test]
+fn accept_f59_b_a_zero_fixed_rate_is_refused() {
+    let build = build();
+    let stream = fixture_stream();
+    let subject = subject().with_fixed_hz(0);
+    let error = record(&request(&subject, &build, &stream))
+        .expect_err("a zero rate declares no fixed timestep");
+    assert!(
+        matches!(error, CaptureRunError::ZeroTickRate),
+        "expected a zero-rate refusal, got {error}"
+    );
 }
 
 /// The record the runtime produces is a transportable document.
@@ -778,6 +874,17 @@ fn rest_pose() -> PhysicsSample {
         linear_velocity_m_s: [0.0; 3],
         angular_velocity_rad_s: [0.0; 3],
     }
+}
+
+/// A reading of `tick` whose forces the law measured at that same tick.
+///
+/// The production constructor insists on being told which tick produced the
+/// forces; this fixture says "this one", and the refusal for any other answer
+/// is what `accept_f59_b_a_tick_whose_forces_were_not_measured_is_refused`
+/// covers.
+fn reading(tick: Tick, pose: PhysicsSample, output: cs_sim::flight::FlightOutput) -> StateReading {
+    StateReading::after_tick(tick, Some(tick), pose, output)
+        .expect("the forces were measured at the reading's own tick")
 }
 
 /// The magnitude of a velocity vector, in m/s.
