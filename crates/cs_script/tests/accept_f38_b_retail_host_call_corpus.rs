@@ -190,6 +190,39 @@ fn accept_f38_b_retail_ui_script_host_calls_are_measured_with_provenance() {
          batch's boundary is a measurement"
     );
 
+    // The dialect's `;` marker is not established as a comment (F12-A observed
+    // only `ScriptBlocks` for `UiScript`, whose grammar is `Unknown`), so the
+    // scanner assumes no comment rule and **measures** what follows a `;`
+    // instead. The corpus does contain `;` bytes, and this pins both halves of
+    // that answer: the markers are there, and nothing the corpus spells after
+    // one is a call head, a measured site or a brace. Every count above is
+    // therefore the same whether or not `;` comments.
+    assert_eq!(
+        corpus.semicolon_bytes, 264,
+        "`;` bytes outside a string literal, across the corpus"
+    );
+    let semicolon_programs = scripts
+        .iter()
+        .filter(|(spelling, bytes)| {
+            scan_ui_program(spelling, bytes, UiScriptLimits::default())
+                .expect("every shipped UI script scans")
+                .semicolon_bytes
+                > 0
+        })
+        .count();
+    assert_eq!(
+        semicolon_programs, 34,
+        "the `;` markers are spread over 34 of the 61 programs"
+    );
+    assert_eq!(corpus.heads_after_semicolon, 0);
+    assert_eq!(corpus.sites_after_semicolon, 0);
+    assert_eq!(corpus.braces_after_semicolon, 0);
+    assert!(
+        corpus.semicolon_exposure_free(),
+        "no measured site depends on what `;` means, so the corpus answers the \
+         question on its own bytes"
+    );
+
     // Every measured family keeps its provenance: a structural decode at
     // `observed_tool`, a container-span locator at the first site, and a note
     // that states no meaning is claimed. None of them is `verified_original`.

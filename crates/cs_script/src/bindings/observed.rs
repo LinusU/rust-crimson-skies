@@ -44,6 +44,24 @@ use crate::bindings::{
     MAX_CALL_ARGS, RegistryError, Repeatability,
 };
 
+/// Longest measurement-evidence summary a row may carry, in bytes.
+///
+/// A **safety cap, not a measurement**: the corpus's evidence summaries are
+/// short by construction (a note the production reader writes from counts), and
+/// no original statement is ever carried here. The bound exists because the row
+/// crosses from an untrusted measurement into a `BindingProvenance` and from
+/// there into diagnostics, so an unbounded string must not be copied around.
+pub const MAX_EVIDENCE_BYTES: usize = 1024;
+
+/// The cap a measured `StringLiteral` argument gets.
+///
+/// A **safety cap, not a measured length**: the corpus's string arguments have
+/// not been measured for length, so this is the bound a binding may declare
+/// rather than a fact about the original. It is deliberately far below anything
+/// that would look like an original statement, so a bound that later needs to
+/// grow has to be argued from a measurement.
+pub const MAX_MEASURED_STRING_BYTES: usize = 256;
+
 /// The measured class of one argument expression of an observed host call.
 ///
 /// A mirror of the wire codes `cs_formats::script_raw::ui_host_calls::ArgShape`
@@ -210,7 +228,8 @@ pub enum RowError {
         /// The measured value.
         native_id: i64,
     },
-    /// The row carries no evidence, or an over-long summary.
+    /// The row carries no evidence, or a summary over
+    /// [`MAX_EVIDENCE_BYTES`].
     NoEvidence {
         /// The measured value.
         native_id: i64,
@@ -297,8 +316,8 @@ impl MeasuredCall {
     /// # Errors
     ///
     /// [`RowError`] for a dispatch value out of range, an argument count over
-    /// [`MAX_CALL_ARGS`], sites that disagree about arity or about a position's
-    /// shape, or a row with no evidence.
+    /// [`MAX_CALL_ARGS`], a row with an empty or over-long evidence summary,
+    /// sites that disagree about arity or about a position's shape.
     pub fn from_row(row: &MeasuredCallRow) -> Result<Self, RowError> {
         if row.native_id < 0 || row.native_id > i64::from(i32::MAX) {
             return Err(RowError::IdOutOfRange {
@@ -312,7 +331,7 @@ impl MeasuredCall {
                 limit: MAX_CALL_ARGS,
             });
         }
-        if row.evidence.trim().is_empty() {
+        if row.evidence.trim().is_empty() || row.evidence.len() > MAX_EVIDENCE_BYTES {
             return Err(RowError::NoEvidence {
                 native_id: row.native_id,
             });
@@ -355,7 +374,8 @@ impl MeasuredCall {
     ///   [`ArgDomain::IntRange`] — the corpus's integer arguments are literals
     ///   of unknown meaning, and inventing a narrower domain would be a guess;
     /// - [`MeasuredShape::StringLiteral`] becomes a [`ArgDomain::Str`] capped at
-    ///   the largest string a binding may carry;
+    ///   [`MAX_MEASURED_STRING_BYTES`], a safety bound rather than a measured
+    ///   string length;
     /// - every other shape has **no** domain, because the engine has no value
     ///   that stands for "a member reference into an original widget object".
     ///
@@ -367,7 +387,7 @@ impl MeasuredCall {
                 max: i32::MAX,
             }),
             MeasuredShape::StringLiteral => Some(ArgDomain::Str {
-                max_bytes: MAX_CALL_ARGS * 8,
+                max_bytes: MAX_MEASURED_STRING_BYTES,
             }),
             _ => None,
         }
@@ -471,11 +491,18 @@ impl ObservedCoverage {
     /// This is AC04's rule for this batch: while one measured dispatch value is
     /// unimplemented, the corpus is **not** covered and nothing downstream may
     /// call itself complete. It is `false` for the measured UI corpus today.
+    ///
+    /// A corpus that measured **nothing** is not complete either: an empty
+    /// family set has nothing unimplemented only because nothing was looked at,
+    /// and a gate that answered "complete" for it would fail open on the one
+    /// input most likely to be wrong — a measurement that never reached a
+    /// program.
     pub fn complete(&self) -> bool {
-        self.unimplemented_families == 0
+        self.families > 0 && self.unimplemented_families == 0
     }
 
-    /// The gate itself: `true` only when the corpus is fully implemented.
+    /// The gate itself: `true` only when the corpus is non-empty and every
+    /// measured family is implemented.
     pub fn campaign_ready(&self) -> bool {
         self.complete()
     }
@@ -493,6 +520,11 @@ pub enum CoverageError {
     BadRow(RowError),
     /// A family the table was asked to bind cannot be registered: the derived
     /// spelling is refused or collides.
+    ///
+    /// **Reserved for the bound path.** `classify` binds no family today, so
+    /// this variant is not constructed yet: it is the refusal a rule added to
+    /// [`classify`] must return, and it is listed here so that such a rule
+    /// cannot report a family as bound when the registry refused it.
     RegistryRefused {
         /// The registry spelling.
         spelling: String,
@@ -565,10 +597,7 @@ impl ObservedBindingTable {
         let mut seen = BTreeMap::<(MeasuredForm, i64), ()>::new();
         let mut families = Vec::with_capacity(rows.len());
         for row in rows {
-            if seen
-                .insert((row.form, row.native_id), ())
-                .is_some_and(|()| true)
-            {
+            if seen.insert((row.form, row.native_id), ()).is_some() {
                 return Err(CoverageError::DuplicateCall {
                     native_id: row.native_id,
                 });

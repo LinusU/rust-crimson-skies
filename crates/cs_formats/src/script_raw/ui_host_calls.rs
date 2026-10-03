@@ -24,7 +24,22 @@
 //! spells the integer 10558", not "this site calls behaviour 10558". The
 //! meanings live in the packed executable and are **unknown** — see the
 //! recorded unknowns in
-//! `docs/findings/2026-10-03-f38-b-observed-host-call-corpus.md`.
+//! `docs/findings/scripts/2026-10-03-f38-b-measured-host-call-families.md`.
+//!
+//! ## The `;` exposure, measured and not assumed
+//!
+//! The corpus contains `;` bytes outside string literals, and whether `;`
+//! introduces a **comment** in this dialect is **not established** (`;` is not
+//! among the `UiScript` lexical features F12-A observed, and that dialect's
+//! grammar is `Unknown`). This scanner therefore does **not** skip what follows
+//! a `;`: assuming a comment rule the language has not been measured to have
+//! would be guessing (AGENTS rule 4). Instead it **counts** the exposure —
+//! [`UiProgramScan::semicolon_bytes`], [`UiProgramScan::heads_after_semicolon`],
+//! [`UiProgramScan::sites_after_semicolon`] and
+//! [`UiProgramScan::braces_after_semicolon`] — so a reader can see exactly what
+//! would change if `;` did turn out to comment. On the shipped corpus the
+//! answer is nothing: no call head and no brace follows a `;`, so every measured
+//! site is text the dialect spells outside a literal either way.
 //!
 //! Everything is bounded and fail-closed: [`UiScriptLimits`] caps the script
 //! size, the number of sites, the argument count and every expression's byte
@@ -329,6 +344,24 @@ pub struct UiProgramScan {
     /// Call-shaped heads outside the two measured dispatch forms, in spelling
     /// order with their counts.
     pub other_call_heads: Vec<OtherCallHead>,
+    /// `;` bytes outside a string literal.
+    ///
+    /// Whether `;` introduces a comment in this dialect is **unmeasured**, so
+    /// the scanner neither skips nor trusts the text after one; it counts the
+    /// marker and counts what follows it (see the module documentation).
+    pub semicolon_bytes: u32,
+    /// Call-shaped heads spelled after a `;` on the same line, outside a
+    /// string literal. The scanner measures them like any other text, because
+    /// no comment rule has been measured; this count is what such a rule would
+    /// have removed.
+    pub heads_after_semicolon: u32,
+    /// Sites of the two measured dispatch forms spelled after a `;` on the same
+    /// line, outside a string literal.
+    pub sites_after_semicolon: u32,
+    /// `{` and `}` bytes spelled after a `;` on the same line, outside a string
+    /// literal: block structure this scan treated as real because it assumes no
+    /// comment rule, and would have to drop if one were established.
+    pub braces_after_semicolon: u32,
 }
 
 impl UiProgramScan {
@@ -342,6 +375,17 @@ impl UiProgramScan {
     /// as one.
     pub fn sites_without_native_id(&self) -> impl Iterator<Item = &HostCallSite> {
         self.sites.iter().filter(|s| s.native_id.is_none())
+    }
+
+    /// Whether this program's measurement depends on what `;` means.
+    ///
+    /// `false` means the shipped bytes answer it: no call head, no measured site
+    /// and no brace sits after a `;`, so treating `;` as a comment would remove
+    /// nothing from this program and the measurement is the same either way.
+    pub fn semicolon_exposure_free(&self) -> bool {
+        self.heads_after_semicolon == 0
+            && self.sites_after_semicolon == 0
+            && self.braces_after_semicolon == 0
     }
 }
 
@@ -373,6 +417,11 @@ pub fn scan_ui_program(
         depth: 0,
         block: String::new(),
         at: 0,
+        after_semicolon: false,
+        semicolon_bytes: 0,
+        heads_after_semicolon: 0,
+        sites_after_semicolon: 0,
+        braces_after_semicolon: 0,
     };
     scan.run()?;
     Ok(UiProgramScan {
@@ -383,6 +432,10 @@ pub fn scan_ui_program(
             .into_iter()
             .map(|(head, sites)| OtherCallHead { head, sites })
             .collect(),
+        semicolon_bytes: scan.semicolon_bytes,
+        heads_after_semicolon: scan.heads_after_semicolon,
+        sites_after_semicolon: scan.sites_after_semicolon,
+        braces_after_semicolon: scan.braces_after_semicolon,
     })
 }
 
@@ -394,6 +447,14 @@ struct Scanner<'a> {
     depth: usize,
     block: String,
     at: usize,
+    /// Whether `at` sits after a `;` on the current line, outside a string
+    /// literal. Whether that text is a comment is unmeasured, so this only
+    /// records where the exposure is.
+    after_semicolon: bool,
+    semicolon_bytes: u32,
+    heads_after_semicolon: u32,
+    sites_after_semicolon: u32,
+    braces_after_semicolon: u32,
 }
 
 impl<'a> Scanner<'a> {
@@ -421,16 +482,47 @@ impl<'a> Scanner<'a> {
                     in_string = true;
                     self.at += 1;
                 }
-                b'{' => self.open_block(),
-                b'}' => {
-                    self.depth = self.depth.saturating_sub(1);
+                // The dialect's `;` marker is unmeasured (see the module
+                // documentation), so its tail is scanned like any other text and
+                // counted: a reader must be able to see what a comment rule
+                // would have removed rather than assume nothing was there.
+                b';' => {
+                    self.semicolon_bytes += 1;
+                    self.after_semicolon = true;
                     self.at += 1;
+                }
+                b'\n' => {
+                    self.after_semicolon = false;
+                    self.at += 1;
+                }
+                b'{' | b'}' => {
+                    if self.after_semicolon {
+                        self.braces_after_semicolon += 1;
+                    }
+                    if byte == b'{' {
+                        self.open_block();
+                    } else {
+                        self.depth = self.depth.saturating_sub(1);
+                        self.at += 1;
+                    }
                 }
                 _ => {
                     if let Some(head) = self.call_head() {
+                        if self.after_semicolon {
+                            self.heads_after_semicolon += 1;
+                        }
                         match head.as_str() {
-                            "callback" => self.scan_call(DispatchForm::Callback, self.at)?,
-                            "mail" => self.scan_call(DispatchForm::Mail, self.at)?,
+                            "callback" | "mail" => {
+                                if self.after_semicolon {
+                                    self.sites_after_semicolon += 1;
+                                }
+                                let form = if head == "callback" {
+                                    DispatchForm::Callback
+                                } else {
+                                    DispatchForm::Mail
+                                };
+                                self.scan_call(form, self.at)?;
+                            }
                             _ => {
                                 *self.other_heads.entry(head).or_default() += 1;
                                 self.at += 1;
@@ -565,6 +657,13 @@ impl<'a> Scanner<'a> {
 
     /// Splits the argument list whose `(` is at `open`, returning each argument
     /// as a byte range and leaving `self.at` just past the closing `)`.
+    ///
+    /// Every argument is bounded twice — by the count in
+    /// [`UiScriptLimits::max_args`] and by its own byte length in
+    /// [`UiScriptLimits::max_expr_bytes`] — and an argument that is over either
+    /// bound refuses the program instead of being walked or classified. Both
+    /// checks run on **every** argument, the last one included: a bound that
+    /// only the commas check would let the final argument through.
     fn arguments(&mut self, open: usize) -> Result<Vec<std::ops::Range<usize>>, UiScriptError> {
         // `at` starts just past the opening parenthesis, so the `)` that closes
         // the list is met at depth 0.
@@ -598,7 +697,7 @@ impl<'a> Scanner<'a> {
                 b')' | b']' | b'}' => {
                     if byte == b')' && depth == 0 {
                         if !self.bytes[start..at].iter().all(|b| is_space(*b)) {
-                            args.push(start..at);
+                            self.push_argument(&mut args, start, at)?;
                         }
                         self.at = at + 1;
                         return Ok(args);
@@ -607,13 +706,7 @@ impl<'a> Scanner<'a> {
                     at += 1;
                 }
                 b',' if depth == 0 => {
-                    args.push(start..at);
-                    if args.len() > self.limits.max_args {
-                        return Err(UiScriptError::TooManyArguments {
-                            at: start as u64,
-                            limit: self.limits.max_args,
-                        });
-                    }
+                    self.push_argument(&mut args, start, at)?;
                     start = at + 1;
                     at += 1;
                 }
@@ -621,6 +714,35 @@ impl<'a> Scanner<'a> {
             }
         }
         Err(UiScriptError::UnterminatedCall { at: open as u64 })
+    }
+
+    /// Records one argument, refusing the program when it is over either bound:
+    /// the count in [`UiScriptLimits::max_args`] or the argument's own byte
+    /// length in [`UiScriptLimits::max_expr_bytes`].
+    ///
+    /// Every argument goes through here, the one before the closing parenthesis
+    /// included, so a bound enforced only at the commas would let the last
+    /// argument of a list through.
+    fn push_argument(
+        &self,
+        args: &mut Vec<std::ops::Range<usize>>,
+        start: usize,
+        end: usize,
+    ) -> Result<(), UiScriptError> {
+        if end - start > self.limits.max_expr_bytes {
+            return Err(UiScriptError::ExpressionTooLong {
+                at: start as u64,
+                limit: self.limits.max_expr_bytes,
+            });
+        }
+        if args.len() >= self.limits.max_args {
+            return Err(UiScriptError::TooManyArguments {
+                at: start as u64,
+                limit: self.limits.max_args,
+            });
+        }
+        args.push(start..end);
+        Ok(())
     }
 }
 
@@ -664,15 +786,11 @@ fn integer_literal(bytes: &[u8], expr: std::ops::Range<usize>) -> Option<i64> {
 ///
 /// Classification reads the bytes and keeps only the class. `Unevaluated`
 /// covers every form this slice deliberately does not evaluate, and no
-/// expression's text leaves this function.
+/// expression's text leaves this function. The caller has already refused an
+/// expression over [`UiScriptLimits::max_expr_bytes`], so nothing here has to
+/// bound its own walk.
 fn classify(bytes: &[u8], expr: &std::ops::Range<usize>) -> ArgShape {
     let raw = &bytes[expr.clone()];
-    if raw.len() > MAX_ARG_EXPR_BYTES {
-        // A call carrying an over-long expression is refused by
-        // `arguments`; a direct call cannot reach here with a short bound, and
-        // an over-long expression is never evaluated.
-        return ArgShape::Unevaluated;
-    }
     let Ok(text) = std::str::from_utf8(raw) else {
         return ArgShape::Unevaluated;
     };
@@ -816,6 +934,17 @@ pub struct HostCallCorpus {
     /// Call-shaped heads outside the two measured dispatch forms, in spelling
     /// order with their counts: the batch's measured boundary.
     pub other_call_heads: Vec<OtherCallHead>,
+    /// `;` bytes outside a string literal, summed over the members. The
+    /// dialect's `;` marker is unmeasured, so the three counts below say what a
+    /// comment rule would have removed rather than assuming nothing was there.
+    pub semicolon_bytes: u32,
+    /// Call-shaped heads spelled after a `;` on the same line.
+    pub heads_after_semicolon: u32,
+    /// Measured sites spelled after a `;` on the same line.
+    pub sites_after_semicolon: u32,
+    /// `{` and `}` bytes spelled after a `;` on the same line: the block
+    /// structure a comment rule would have had to drop.
+    pub braces_after_semicolon: u32,
 }
 
 impl HostCallCorpus {
@@ -834,6 +963,18 @@ impl HostCallCorpus {
     /// Sites of call-shaped heads outside this batch's two dispatch forms.
     pub fn other_call_sites(&self) -> u32 {
         self.other_call_heads.iter().map(|h| h.sites).sum()
+    }
+
+    /// Whether the whole corpus's measurement is independent of what `;` means.
+    ///
+    /// `false` means at least one member spells a call head, a measured site or
+    /// a brace after a `;`, so the counted sites would change if the dialect's
+    /// `;` turned out to introduce a comment. `true` means the corpus answers
+    /// the question on its own bytes and no comment rule was assumed.
+    pub fn semicolon_exposure_free(&self) -> bool {
+        self.heads_after_semicolon == 0
+            && self.sites_after_semicolon == 0
+            && self.braces_after_semicolon == 0
     }
 }
 
@@ -858,6 +999,10 @@ pub fn measure_host_call_corpus<'a>(
     let mut with_id = 0u32;
     let mut without_id = 0u32;
     let mut other_heads: BTreeMap<String, u32> = BTreeMap::new();
+    let mut semicolons = 0u32;
+    let mut heads_after_semicolon = 0u32;
+    let mut sites_after_semicolon = 0u32;
+    let mut braces_after_semicolon = 0u32;
     // (form, native_id) -> accumulator
     let mut acc: BTreeMap<(DispatchForm, i64), Accumulator> = BTreeMap::new();
 
@@ -865,6 +1010,10 @@ pub fn measure_host_call_corpus<'a>(
         let scan = scan_ui_program(member.spelling, member.bytes, limits)?;
         members_count += 1;
         sites += scan.sites.len() as u32;
+        semicolons += scan.semicolon_bytes;
+        heads_after_semicolon += scan.heads_after_semicolon;
+        sites_after_semicolon += scan.sites_after_semicolon;
+        braces_after_semicolon += scan.braces_after_semicolon;
         for head in &scan.other_call_heads {
             *other_heads.entry(head.head.clone()).or_default() += head.sites;
         }
@@ -941,6 +1090,10 @@ pub fn measure_host_call_corpus<'a>(
             .into_iter()
             .map(|(head, sites)| OtherCallHead { head, sites })
             .collect(),
+        semicolon_bytes: semicolons,
+        heads_after_semicolon,
+        sites_after_semicolon,
+        braces_after_semicolon,
     })
 }
 

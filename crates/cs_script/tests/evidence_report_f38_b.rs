@@ -141,6 +141,17 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
         measurement.sites_without_native_id > 0,
         "dispatch expressions that are not integer literals are counted, not folded into an id"
     );
+    assert_eq!(
+        measurement.semicolon_bytes, 264,
+        "`;` bytes outside a string literal, the markers the comment question is about"
+    );
+    assert!(
+        measurement.heads_after_semicolon == 0
+            && measurement.sites_after_semicolon == 0
+            && measurement.braces_after_semicolon == 0,
+        "nothing the corpus spells after a `;` is a call head, a measured site or a brace, so \
+         the counts above do not depend on whether `;` introduces a comment"
+    );
 
     let engine = Engine {
         rust: rustc_version(),
@@ -204,12 +215,15 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
         artifact_array(&artifacts),
         str_array(&unknowns),
         jstr(
-            "implementer: bunny-alpha-1 (Rally #157, implement claim of 2026-10-03, handed over \
-             from this claim). The reviewing agent is a separate Rally review claim on this branch \
-             and is expected to regenerate this report on the reviewed commit; whether that review \
-             used a fresh context and a different agent identity is recorded in the review notes \
-             on the task, not here, and no independence is claimed by this report. No agent review \
-             replaces the owner's human approval."
+            "implementer: bunny-alpha-1 (Rally #157, implement claim of 2026-10-03). This report \
+             was REGENERATED during the review claim, on the reviewed commit, from the \
+             installation -- it is a reviewer's re-derivation, not the implementer's own file. \
+             Whoever regenerates it must correct this sentence to name their own identity and \
+             say whether the review used a fresh context. As of the regeneration recorded here: \
+             reviewer bunny-alpha-1, the same agent identity as the implementer, so this review \
+             is NOT independent evidence and no independence is claimed; the review notes on the \
+             task record what was checked and changed. No agent review replaces the owner's human \
+             approval, and nothing here is verified_original."
         ),
         jstr(&format!(
             "acceptance suite run locally with the retail capability; this harness derives every \
@@ -218,7 +232,10 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
              (host-call-corpus.json), rustc and Cargo.lock. The measurement is structural: {} UI \
              script programs, {} host-call sites ({} spelling an integer dispatch value, {} not), \
              {} callback families, {} mail families, {} other call-shaped sites counted so the \
-             batch's boundary is a measurement. 0 of {} families is bound and the coverage gate \
+             batch's boundary is a measurement. {} `;` bytes outside string literals are present \
+             and nothing follows one (0 call heads, 0 measured sites, 0 braces), so no counted \
+             site depends on whether `;` introduces a comment -- the marker is unmeasured, so it \
+             was counted rather than assumed. 0 of {} families is bound and the coverage gate \
              refuses, because no original observation states what any measured dispatch value \
              does; the artifact records that as bound_families: 0 and coverage_complete: false. \
              LIMITS (all outside F38-B's measurable scope and stated in full in \
@@ -238,7 +255,10 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
              (5) cancellation semantics and the repeatability of any measured dispatch value are \
              unknown, and no measured family has one yet; (6) a dispatch value's runtime \
              behaviour needs an owner-supplied original run (Rally #358 REF-OWNER-FIRST-CAPTURE) \
-             and no original run was observed. Validated with \
+             and no original run was observed; (7) whether the dialect's `;` introduces a comment \
+             is unmeasured -- the corpus is exposure-free today, but a corpus that spelled a call \
+             head after a `;` would have to be re-measured before its counts could be used, and \
+             the scanner reports that exposure rather than hiding it. Validated with \
              tools/validate_evidence.py --require-pass.",
             measurement.programs,
             measurement.sites,
@@ -247,6 +267,7 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
             measurement.callback_families,
             measurement.mail_families,
             measurement.other_call_sites,
+            measurement.semicolon_bytes,
             measurement.callback_families + measurement.mail_families,
         )),
     );
@@ -297,6 +318,10 @@ struct Measurement {
     callback_families: usize,
     mail_families: usize,
     other_call_sites: u32,
+    semicolon_bytes: u32,
+    heads_after_semicolon: u32,
+    sites_after_semicolon: u32,
+    braces_after_semicolon: u32,
 }
 
 /// Runs the production readers and the production scanner over the installation
@@ -444,7 +469,9 @@ fn measure_corpus(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement
          \"programs\":[{}],\
          \"totals\":{{\"programs\":{},\"sites\":{},\"sites_with_native_id\":{},\
          \"sites_without_native_id\":{},\"callback_families\":{},\"mail_families\":{},\
-         \"families\":{},\"other_call_sites\":{}}},\
+         \"families\":{},\"other_call_sites\":{},\
+         \"semicolon_bytes\":{},\"heads_after_semicolon\":{},\"sites_after_semicolon\":{},\
+         \"braces_after_semicolon\":{},\"semicolon_exposure_free\":{}}},\
          \"families\":[{}],\
          \"other_call_heads\":[{}],\
          \"bound_families\":0,\"coverage_complete\":false,\
@@ -460,13 +487,21 @@ fn measure_corpus(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement
         mails,
         corpus.calls.len(),
         other_sites,
+        corpus.semicolon_bytes,
+        corpus.heads_after_semicolon,
+        corpus.sites_after_semicolon,
+        corpus.braces_after_semicolon,
+        corpus.semicolon_exposure_free(),
         families,
         heads,
         jstr(
             "A structural measurement of the two native dispatch forms the shipped UI script \
              programs contain. A `native_id` is the integer a site spells, not a behaviour; no \
              family is bound and the coverage is deliberately incomplete, because a binding that \
-             returned success would fabricate an original behaviour."
+             returned success would fabricate an original behaviour. The `semicolon_*` totals \
+             answer whether the dialect's unmeasured `;` marker could hide or invent a site: the \
+             markers are there, and no call head, measured site or brace follows one, so the \
+             counts are the same whether or not `;` introduces a comment."
         ),
     );
 
@@ -482,6 +517,10 @@ fn measure_corpus(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement
             callback_families: callbacks,
             mail_families: mails,
             other_call_sites: other_sites,
+            semicolon_bytes: corpus.semicolon_bytes,
+            heads_after_semicolon: corpus.heads_after_semicolon,
+            sites_after_semicolon: corpus.sites_after_semicolon,
+            braces_after_semicolon: corpus.braces_after_semicolon,
         },
     )
 }

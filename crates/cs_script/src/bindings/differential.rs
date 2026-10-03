@@ -10,8 +10,14 @@
 //! * the **original** trace is what a measured original program *declares* —
 //!   the dispatch values it spells, in the order the corpus measured them;
 //! * the **recreated** trace is what the recreated engine *emits* — the
-//!   [`crate::runtime::MissionEvent`]s its runtime produced for the program
-//!   lowered out of that same measurement.
+//!   [`crate::runtime::MissionEvent`]s its runtime produced for a
+//!   [`crate::ir::MissionProgram`] the caller built from that same measurement.
+//!
+//! No family of the measured corpus lowers to an engine operation yet, so no
+//! *real* lowering of a measured program exists to compare against: a caller
+//! supplies the lowering and this module reduces both sides to the same
+//! [`NormalizedStep`] vocabulary. It compares what it is given and claims
+//! nothing beyond that.
 //!
 //! Both are normalized to [`NormalizedStep`]s first: a step names a dispatch
 //! value and where it sat, with every unstable identifier (symbols, entity ids,
@@ -40,19 +46,6 @@ pub struct DeclaredStep {
     pub ordinal: u32,
     /// The site's byte offset in the original program.
     pub offset: u64,
-}
-
-/// One emitted mission event, reduced to the dispatch value it came from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EmittedStep {
-    /// The measured dispatch form whose action produced the event.
-    pub form: MeasuredForm,
-    /// The measured dispatch value whose action produced the event.
-    pub native_id: i64,
-    /// The source symbol the event is attributed to.
-    pub source: u32,
-    /// The program sequence inside that source.
-    pub sequence: u32,
 }
 
 /// A normalized trace: the comparable form of a declared or emitted sequence.
@@ -253,6 +246,11 @@ impl TraceComparison {
 
     /// Every difference, not only the first. A comparison that reports one
     /// difference is a report, not a count.
+    ///
+    /// Takes the two traces again because a [`TraceComparison`] deliberately
+    /// holds only the first divergence and the two lengths: the full report is
+    /// derived, never stored, so it cannot disagree with the traces it came
+    /// from.
     pub fn divergences(
         &self,
         original: &NormalizedTrace,

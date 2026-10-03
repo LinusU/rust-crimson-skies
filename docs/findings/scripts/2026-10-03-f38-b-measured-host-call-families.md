@@ -27,9 +27,9 @@ was used or needed. Evidence report:
   `register_measured`. The measured rows crossing into the engine, the family's
   disposition, and the coverage gate.
 - `crates/cs_script/src/bindings/differential.rs` (new): `DeclaredStep`,
-  `EmittedStep`, `TraceStepKind`, `NormalizedStep`, `NormalizedTrace`,
-  `ScenarioRef`, `TraceError`, `TraceDivergence`, `TraceComparison`,
-  `normalize_declared`, `normalize_emitted` and `compare_traces`. **AC02**.
+  `TraceStepKind`, `NormalizedStep`, `NormalizedTrace`, `ScenarioRef`,
+  `TraceError`, `TraceDivergence`, `TraceComparison`, `normalize_declared`,
+  `normalize_emitted` and `compare_traces`. **AC02**.
 - `crates/cs_script/src/bindings/mod.rs`: the two module declarations, the
   `measured` re-export with the crossing table, one doc paragraph, and
   `PartialEq` on `HostBindingRegistry` (wiring only).
@@ -91,10 +91,45 @@ ids/arities/shape-counts/spans and the head counts, and nothing else.
 
 Everything is bounded and fail-closed under `UiScriptLimits`: a program over
 `MAX_UI_SCRIPT_BYTES` (`script_too_large`), more than `MAX_HOST_CALL_SITES`
-sites (`too_many_sites`), more than `MAX_HOST_CALL_ARGS` arguments
-(`too_many_arguments`), an unterminated call (`unterminated_call`) and
+sites (`too_many_sites`), more than `MAX_HOST_CALL_ARGS` expressions in one call
+(`too_many_arguments`), an argument expression over `MAX_ARG_EXPR_BYTES`
+(`expression_too_long`), an unterminated call (`unterminated_call`) and
 unbalanced blocks (`unbalanced_blocks`) are all refused rather than truncated,
-and a refused program is never counted as a whole one.
+and a refused program is never counted as a whole one. Both per-argument bounds
+apply to **every** expression, the one before the closing parenthesis included,
+so a bound enforced only at the commas would not leak the last argument
+(reviewer correction 3 below).
+
+## The dialect's `;` marker: measured, not assumed
+
+The corpus contains `;` bytes outside string literals, and **whether `;`
+introduces a comment in this dialect is not established**: `crates/cs_formats/src/text/dialect.rs`
+records only `LexicalFeature::ScriptBlocks` for `TextDialect::UiScript`, with
+`grammar: ClaimStatus::Unknown`, and
+`docs/findings/2026-09-29-t351-keyed-list-reading-rules.md` refers to "the
+`;`-comment marker of the `.SCRIPT` and `.H` dialects" without measuring `.SCRIPT`.
+
+The scanner therefore **assumes no comment rule**: text after a `;` is scanned
+like any other text, and the exposure is **counted** instead —
+`UiProgramScan::semicolon_bytes`, `heads_after_semicolon`,
+`sites_after_semicolon` and `braces_after_semicolon`, summed by
+`HostCallCorpus` and reported by `semicolon_exposure_free()`. Measured over the
+installation:
+
+| Question | Answer |
+| --- | --- |
+| `;` bytes outside a string literal | **264**, across **34** of the 61 programs |
+| call-shaped heads after a `;` on the same line | **0** |
+| measured sites after a `;` on the same line | **0** |
+| braces after a `;` on the same line | **0** |
+| `semicolon_exposure_free()` | **true** |
+
+So every count in this finding holds under either reading: no site is hidden or
+invented by the unmeasured marker, and the block accounting is unaffected. That
+is a measured result about **this** corpus, not a claim that `;` is or is not a
+comment; a corpus that spelled a call head after a `;` would report
+`semicolon_exposure_free() == false` and its counts would have to be
+re-measured before use.
 
 `measure_host_call_corpus` aggregates over members into one `ObservedHostCall`
 per (dispatch form, dispatch value), each carrying `ScriptEvidence` at
@@ -118,10 +153,13 @@ over `GOSDATA/ASSETS/crimson.rof`, then the production scanner.
 | distinct `mail` families | **90** |
 | families total | **474** |
 | call-shaped heads outside the two forms | **3188** |
-| families **bound** to an engine operation | **0** |
+| `;` bytes outside a string literal | **264** (34 programs) |
+| measured families **bound** to an engine operation | **0** |
 | coverage `complete` / `campaign_ready` | **false** |
 
-The last row is the point of this stage, not a shortfall in it.
+The second-to-last row is the point of this stage, not a shortfall in it. Every
+number is unchanged by the reviewer corrections below: the corrected scanner
+produces byte-identical counts on this corpus.
 
 ## The family table and the coverage gate
 
@@ -151,13 +189,20 @@ reasons, both named:
 `MeasuredCall::arg_domain` is deliberately conservative and its limits are the
 point: an `IntegerLiteral` becomes an unrestricted `IntRange` (the corpus's
 integer arguments are literals of unknown meaning, and inventing a narrower
-domain would be a guess), a `StringLiteral` becomes a capped `Str`, and every
-other shape has **no** domain.
+domain would be a guess), a `StringLiteral` becomes a `Str` capped at the named
+safety bound `MAX_MEASURED_STRING_BYTES`, and every other shape has **no**
+domain. The two caps that do exist (`MAX_MEASURED_STRING_BYTES`,
+`MAX_EVIDENCE_BYTES`) are **safety bounds, not measurements**: the corpus's
+string arguments and evidence summaries have not been measured for length, and
+each constant says so where it is declared.
 
 `ObservedCoverage::campaign_ready` is AC04's rule applied to this batch: while a
 single measured family is unimplemented, the corpus is not covered and nothing
 downstream may call itself complete. With the retail measurement that is 0 of
-474.
+474. A corpus that measured **nothing** also refuses: an empty family set has
+nothing unimplemented only because nothing was looked at, and answering
+`campaign_ready` for it would fail open on the input most likely to be wrong
+(reviewer correction 1 below).
 
 ## The differential trace (AC02)
 
@@ -195,6 +240,32 @@ Three properties make it a comparison and not a report:
    reports events in `EventKey` order and that the comparison still agrees. A
    normalization that had followed declaration order would not agree, which is
    what makes the check discriminating rather than self-fulfilling.
+
+### What the AC02 test does and does not exercise
+
+Stated plainly, because the sheet asks a reviewer to inspect runtime wiring and
+shortcuts:
+
+- **Production code on both sides.** The original side is the production scanner
+  (`scan_ui_program`) over authored bytes in the measured dialect: the declared
+  dispatch values, their order and their spans are measured, not typed in. The
+  recreated side is the **real runtime** — `MissionState::new` / `::step` /
+  `MissionProgram::validate` — and the events are the ones it emitted, in its
+  own `EventKey` order.
+- **The recreated program is an authored stand-in, not a lowering.** No measured
+  family lowers to an engine operation (0 of 474), so no real lowering of a UI
+  script program exists to compare against. The test builds one `MissionProgram`
+  whose objectives each carry one `GrantReward`, one per declared step, and
+  supplies the origin mapping the emitted events back to their declared step.
+  The differential machinery is therefore exercised end to end; the *lowering*
+  is not, and nothing in the code or docs claims it is.
+- **AC02 cannot be run against the retail corpus today, and that is stated.**
+  The retail side of AC02 (scan → declared steps) is production code and is
+  measured, but the recreated side needs a binding per measured family, and no
+  family has a measured meaning. Until one does, an AC02 comparison against
+  retail would be theatre, so the retail test measures the corpus and the gate
+  refuses; the differential is exercised on authored text in the measured
+  dialect. The retail scenario is F38-C/F38-D work.
 
 ## Design decisions
 
@@ -241,7 +312,7 @@ Three properties make it a comparison and not a report:
 
 ## Test inventory (`accept_f38_b_*`)
 
-`crates/cs_script/tests/accept_f38_b_observed_bindings.rs` (11 unignored, authored
+`crates/cs_script/tests/accept_f38_b_observed_bindings.rs` (12 unignored, authored
 synthetic programs in the measured dialect) and
 `crates/cs_script/tests/accept_f38_b_retail_host_call_corpus.rs` (1 retail):
 
@@ -252,17 +323,72 @@ synthetic programs in the measured dialect) and
 | `argument_domains_cover_only_shapes_with_a_value` | `arg_domain` is total over `IntegerLiteral` and `StringLiteral` only and `None` for the other six; the string is capped; both crates agree on every wire code and label, and refuse an unknown code |
 | `a_measured_row_is_validated_or_named` | all five `RowError` variants by value, and a corpus that measures one value twice yields no table at all |
 | `the_measurement_counts_forms_and_refuses_a_broken_program` | 4 sites / 3 with an id; a `callback(...)` inside a string literal is not a site; the enclosing block label, the target reference's class and each argument's class; `initialize` counted as another head; unbalanced blocks, an unterminated call and a tight site bound all refused |
+| `every_scan_bound_is_enforced_and_the_semicolon_is_measured` | both per-argument bounds on every expression including the last (`too_many_arguments`, `expression_too_long`), the `;` marker counted and everything spelled after one counted with it (`semicolon_exposure_free()` false for a program whose tail spells a head and a brace, true for the corpus) |
 | `the_corpus_names_each_family_and_counts_the_rest` | per-family provenance (`structural_decode` / `observed_tool` / `container_span` / a note that says no meaning is claimed), the arity split between the two forms, and `sites_without_native_id` counted not dropped |
 | `disagreeing_argument_shapes_are_refused_not_resolved` | two sites of one value with different argument shapes: the counts show the disagreement, `is_uniform` is false, `dominant` ties deterministically, and the row is refused by position — while the same row with agreeing sites is valid |
 | `the_differential_trace_compares_original_and_recreated_order` | **AC02**: the normalized kinds are the measured dispatch values in source order; the recreated steps carry the runtime's own `(source, sequence)` event keys; the same program declared in reverse still agrees, and the runtime's report order is asserted to differ from its declaration order |
 | `every_divergence_is_reported_at_its_index` | `Mismatched`, `Missing` and `Unexpected` each at their own index with both calls named; `divergences()` lists two; `ScenarioMismatch` and both `NoScenario` refusals |
 | `an_unmeasured_dispatch_value_surfaces_as_an_extra_step` | an event with no measured origin becomes `Unattributed` and never compares equal to the declared step |
 | `a_measured_family_with_an_operation_registers_and_binds` | the bound path through production code: a derived spelling registers with `Observed` provenance, `lower_program` lowers the call, a wrong argument type is still refused with its span, and a family with no domain for a measured shape cannot be registered at all |
-| `retail_ui_script_host_calls_are_measured_with_provenance` | **`$CS_GAME_DIR`**: the four pinned totals, both family counts, `other_call_sites`, per-family provenance over every family, per-program spans inside the program, the wire-code agreement over every shape the corpus produced, every row either valid or refused by name (and the counts add up), and the gate refusing |
+| `retail_ui_script_host_calls_are_measured_with_provenance` | **`$CS_GAME_DIR`**: the four pinned totals, both family counts, `other_call_sites`, the `;` exposure (264 markers over 34 programs, nothing after one), per-family provenance over every family, per-program spans inside the program, the wire-code agreement over every shape the corpus produced, every row either valid or refused by name (and the counts add up), and the gate refusing |
 
 `cargo test --workspace --locked -- accept_f38_b_ --include-ignored` discovers
-and executes **12** tests (11 unignored + 1 retail), all passing; each also
+and executes **13** tests (12 unignored + 1 retail), all passing; each also
 passes when run alone with `--exact`.
+
+## Reviewer corrections (review claim of 2026-10-03, agent `bunny-alpha-1`)
+
+The review ran under the **same agent identity as the implementer**, so it is
+**not independent evidence** (see the recorded identities in the task's review
+notes). It found and fixed:
+
+1. **A fail-open coverage gate.** `ObservedCoverage::complete()` was
+   `unimplemented_families == 0`, so an *empty* corpus — one that measured
+   nothing at all — answered `campaign_ready() == true`. The gate now requires a
+   non-empty family set as well, and
+   `accept_f38_b_no_measured_family_is_bound_and_the_gate_refuses` pins it for
+   both `ObservedBindingTable::new()` and `measure(&[])`.
+2. **An argument-count bound that leaked its last argument.** `arguments()`
+   checked `args.len() > max_args` only at commas, so `mail(1, 2, 3)` passed a
+   bound of 2: the final expression was pushed at the closing parenthesis without
+   a check. Both per-argument bounds now run through one `push_argument`, so the
+   last expression is bounded like every other.
+3. **A bound that was documented but never enforced.**
+   `UiScriptLimits::max_expr_bytes` was read by nothing and
+   `UiScriptError::ExpressionTooLong` was unreachable, while the findings and the
+   type docs claimed the scanner refused an over-long expression. It now refuses,
+   and `classify`'s dead over-long branch is gone because the bound is checked
+   before classification.
+4. **An unexamined lexical risk in the corpus.** The corpus has 264 `;` bytes
+   outside string literals and the scanner walked every one of them as code. The
+   marker is not established as a comment, so skipping it would have been a
+   guess; the scanner now **counts** the marker and everything spelled after it
+   (heads, sites, braces) and reports `semicolon_exposure_free()`. Measured over
+   the installation: nothing follows a `;`, so every pinned count is unchanged
+   and is now shown to be unchanged *for a reason*.
+5. **An unbounded untrusted string crossing into provenance.**
+   `RowError::NoEvidence`'s doc promised "or an over-long summary" and no such
+   check existed. `MAX_EVIDENCE_BYTES` now enforces it, and the measured string
+   domain uses a named `MAX_MEASURED_STRING_BYTES` instead of `MAX_CALL_ARGS * 8`
+   with a justification ("the largest string a binding may carry") that no
+   constant actually supports.
+6. **Claims slightly stronger than the code.** `differential.rs` said the
+   recreated trace came "for the program lowered out of that same measurement";
+   no such lowering exists (0 of 474 families bound). The docs now say the caller
+   supplies the lowering, the test says what its stand-in is, and the section
+   "What the AC02 test does and does not exercise" states plainly that AC02
+   cannot yet be run against the retail corpus.
+7. **Small cleanups a reviewer owes the next reader.** The dead public
+   `EmittedStep` is removed (`NormalizedStep` already carries the same fields and
+   nothing used it); `CoverageError::RegistryRefused` is documented as reserved
+   for the bound path rather than looking like live behaviour; a doc link to
+   `docs/findings/2026-10-03-f38-b-observed-host-call-corpus.md`, which does not
+   exist, points at this file; and an `is_some_and(|()| true)` is an `is_some()`.
+
+The retail test's pinned numbers (61 / 1812 / 384 / 90 / 3188) and the new `;`
+numbers (264 / 34 / 0 / 0 / 0) all pass unchanged after the corrections, and the
+evidence report was regenerated on the reviewed commit with the reviewer identity
+stated in it.
 
 ## Mutation probes
 
@@ -283,6 +409,16 @@ A fifth probe — re-sorting the emitted events by `(source, sequence)` — did
 objective declared in symbol order, that sort is a no-op. The AC02 test now also
 declares the same program in reverse order, where the sort would change the
 trace, and the probe then fails the same test.
+
+### Reviewer's probes (one per correction, each applied and restored)
+
+| Mutation | Test that failed |
+| --- | --- |
+| `ObservedCoverage::complete()` back to `unimplemented_families == 0` | `no_measured_family_is_bound_and_the_gate_refuses` ("an empty measurement is never campaign-ready") |
+| the argument-count check removed from `push_argument` (comma-only, as before) | `every_scan_bound_is_enforced_and_the_semicolon_is_measured` — `mail(1, 2, 3)` scanned clean at `max_args: 2` |
+| `semicolon_bytes += 1` removed from the scan | the **retail** test, `left: 0, right: 264` |
+| the `max_expr_bytes` check removed from `push_argument` | `every_scan_bound_is_enforced_and_the_semicolon_is_measured` — an 8-byte argument scanned clean at a bound of 4 |
+| the `MAX_EVIDENCE_BYTES` check removed from `from_row` | `a_measured_row_is_validated_or_named` — a 1025-byte summary was accepted |
 
 ## Recorded unknowns (not guessed)
 
@@ -310,6 +446,11 @@ trace, and the probe then fails the same test.
   (`initialize`, `getmessage`, `script_run`, …) are named but not scanned; what
   they do is unknown. `script_run` in particular carries an apparent entry-point
   argument, which may or may not be a dispatch value.
+- **Whether `;` introduces a comment in this dialect is unmeasured.** 264 such
+  bytes exist outside string literals and the scanner counts rather than assumes
+  what follows them; on this corpus nothing does, so the measurement is the same
+  either way. The rule itself stays unknown — closing it needs the original
+  running or a code reading of the packed image, neither of which exists here.
 - **A dispatch value's runtime behaviour is unknown.** What it does, when it
   runs, what it does to the world, needs an owner-supplied original run
   (Rally #358 `REF-OWNER-FIRST-CAPTURE`). No original run was observed.

@@ -238,6 +238,20 @@ fn accept_f38_b_no_measured_family_is_bound_and_the_gate_refuses() {
             }
         }
     }
+
+    // The gate also refuses a corpus that measured nothing: an empty family set
+    // is not "nothing unimplemented", it is "nothing looked at", and answering
+    // `campaign_ready` for it would fail open on the input most likely to be
+    // wrong.
+    let empty = ObservedBindingTable::new();
+    assert_eq!(empty.coverage().families, 0);
+    assert!(
+        !empty.coverage().complete() && !empty.coverage().campaign_ready(),
+        "an empty measurement is never campaign-ready"
+    );
+    let no_rows = ObservedBindingTable::measure(&[]).expect("an empty corpus measures");
+    assert_eq!(no_rows.coverage(), empty.coverage());
+    assert!(!no_rows.coverage().campaign_ready());
 }
 
 /// The refusal is per family and names the family, and the argument domain
@@ -278,11 +292,14 @@ fn accept_f38_b_argument_domains_cover_only_shapes_with_a_value() {
         );
     }
 
-    // A string literal is bounded, not unbounded.
+    // A string literal is bounded, not unbounded, and the bound is the named
+    // safety cap rather than an invented "measured" length.
     let string = MeasuredCall::arg_domain(MeasuredShape::StringLiteral).expect("a string");
     assert!(
-        matches!(string, ArgDomain::Str { max_bytes } if max_bytes > 0 && max_bytes <= 256),
-        "a measured string is capped: {string:?}"
+        matches!(string, ArgDomain::Str { max_bytes } if max_bytes
+            == cs_script::bindings::observed::MAX_MEASURED_STRING_BYTES
+            && max_bytes > 0),
+        "a measured string carries the named cap: {string:?}"
     );
 
     // The shape wire vocabulary is total in both directions: the two crates
@@ -372,6 +389,21 @@ fn accept_f38_b_a_measured_row_is_validated_or_named() {
     assert_eq!(
         MeasuredCall::from_row(&bad),
         Err(RowError::NoEvidence { native_id: 100 })
+    );
+
+    // An over-long summary is refused: the row crosses into a provenance record
+    // and from there into diagnostics, so an unbounded string must not travel.
+    let mut bad = base.clone();
+    bad.evidence = "e".repeat(cs_script::bindings::observed::MAX_EVIDENCE_BYTES + 1);
+    assert_eq!(
+        MeasuredCall::from_row(&bad),
+        Err(RowError::NoEvidence { native_id: 100 })
+    );
+    let mut ok = base.clone();
+    ok.evidence = "e".repeat(cs_script::bindings::observed::MAX_EVIDENCE_BYTES);
+    assert!(
+        MeasuredCall::from_row(&ok).is_ok(),
+        "a summary at the cap is still evidence"
     );
 
     // A duplicate dispatch value yields no table at all.
@@ -484,6 +516,109 @@ fn accept_f38_b_the_measurement_counts_forms_and_refuses_a_broken_program() {
         scan_ui_program("synthetic.script", SCRIPT, tight).is_err(),
         "a site bound is refused, not silently truncated"
     );
+}
+
+/// Every scan bound is enforced on **every** argument, the last one included,
+/// and the dialect's unmeasured `;` marker is measured rather than assumed to be
+/// a comment.
+#[test]
+fn accept_f38_b_every_scan_bound_is_enforced_and_the_semicolon_is_measured() {
+    // The expression count of one call: `mail(1, 2, 3)` spells three, so a bound
+    // of two must refuse it — and the refusal has to see the *last* expression,
+    // which a bound checked only at the commas would let through.
+    let three = b"main\n{\nmail(1, 2, 3)\n}\n";
+    let at_two = UiScriptLimits {
+        max_args: 2,
+        ..UiScriptLimits::default()
+    };
+    let refused = scan_ui_program("synthetic/three", three, at_two).expect_err("three is over two");
+    assert_eq!(
+        refused.code(),
+        "too_many_arguments",
+        "the count bound refuses: {refused}"
+    );
+    let at_three = UiScriptLimits {
+        max_args: 3,
+        ..UiScriptLimits::default()
+    };
+    let scan = scan_ui_program("synthetic/three", three, at_three).expect("three fits three");
+    assert_eq!(
+        scan.sites[0].args.len(),
+        2,
+        "at the bound every expression is still measured; the first is the dispatch"
+    );
+
+    // The expression length: an argument over the bound refuses the program
+    // instead of being classified. The bound counts the bytes the scanner walks,
+    // so the blank before `AA_BB_CC` counts too — deliberately, because a
+    // narrower reading would make the bound depend on spelling.
+    let long = b"main\n{\nmail(1, AA_BB_CC)\n}\n";
+    let scan = scan_ui_program("synthetic/long", long, UiScriptLimits::default())
+        .expect("a short argument scans");
+    assert_eq!(scan.sites[0].args.len(), 1);
+    let tight = UiScriptLimits {
+        max_expr_bytes: 8,
+        ..UiScriptLimits::default()
+    };
+    let refused = scan_ui_program("synthetic/long", long, tight).expect_err("AA_BB_CC is 8 bytes");
+    assert_eq!(
+        refused.code(),
+        "expression_too_long",
+        "the length bound refuses: {refused}"
+    );
+    let exact = UiScriptLimits {
+        max_expr_bytes: 9,
+        ..UiScriptLimits::default()
+    };
+    let scan = scan_ui_program("synthetic/long", long, exact).expect("nine bytes at the bound");
+    assert_eq!(scan.sites[0].args.len(), 1);
+
+    // The `;` marker: the scanner does not assume it comments, so it counts the
+    // marker and counts everything spelled after it on the line, treating it as
+    // text the way it treats everything else.
+    let marked = b"main\n{\ncallback($$A$$, 7, 1) ; a note with initialize(3) and { brace\n\
+                  caption = \"; inside a literal is text\"\n\
+                  callback($$A$$, 8, 2)\n}\n}\n";
+    let scan = scan_ui_program("synthetic/marked", marked, UiScriptLimits::default())
+        .expect("the marked program scans");
+    assert_eq!(
+        scan.semicolon_bytes, 1,
+        "the `;` inside the literal is text, not a marker"
+    );
+    assert_eq!(
+        scan.heads_after_semicolon, 1,
+        "the head in the tail is counted"
+    );
+    assert_eq!(
+        scan.sites_after_semicolon, 0,
+        "the tail spells no measured dispatch form"
+    );
+    assert_eq!(
+        scan.braces_after_semicolon, 1,
+        "the brace in the tail is counted as structure"
+    );
+    assert!(
+        !scan.semicolon_exposure_free(),
+        "a program whose tail spells a head or a brace has an open exposure"
+    );
+    assert_eq!(scan.sites.len(), 2, "both real sites are still measured");
+    assert_eq!(
+        scan.other_call_heads
+            .iter()
+            .find(|h| h.head == "initialize")
+            .map(|h| h.sites),
+        Some(1),
+        "the tail's head is counted among the other heads, not dropped"
+    );
+
+    // A program whose `;` tails spell nothing callable or structural is
+    // exposure-free: a comment rule would remove nothing from it, so its
+    // measurement is the same under either reading.
+    let clean = scan_ui_program("synthetic.script", SCRIPT, UiScriptLimits::default())
+        .expect("the authored program scans");
+    assert_eq!(clean.semicolon_bytes, 0);
+    assert!(clean.semicolon_exposure_free());
+    assert!(corpus().semicolon_exposure_free());
 }
 
 /// The corpus measurement carries provenance per family and counts the sites it
