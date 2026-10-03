@@ -928,6 +928,17 @@ impl MeasuredBranchPrecedence {
         }
         counts.into_iter().collect()
     }
+
+    /// Why this record needs an ordering rule it does not have, by name, or
+    /// `None` when it raises no ordering question at all.
+    ///
+    /// The one place the verdict is stated, so a refusal or a report carries the
+    /// same words as the schema and the finding.
+    #[must_use]
+    pub fn unmeasured_order_reason(&self) -> Option<&'static str> {
+        self.needs_unmeasured_order()
+            .then_some(UNMEASURED_BLOCK_PRECEDENCE)
+    }
 }
 
 /// Why the original's per-block completion-effect order stays unmeasured, stated

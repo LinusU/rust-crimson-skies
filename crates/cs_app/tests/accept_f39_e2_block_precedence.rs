@@ -66,10 +66,11 @@ use cs_app::objectives::{
     RetailObjectiveRow, measure_block_precedence, survey_retail_objective_records,
 };
 use cs_content::objectives::{
-    BRANCH_EFFECT_KEY_VOCABULARY, BRANCH_KEY_VOCABULARY, BRANCH_ORDER_KEY, BranchEffectKind,
-    DeclaredCompletion, DeclaredObjective, DeclaredObjectiveProgram, DeclaredObjectiveState,
-    DeclaredPrecedence, DeclaredRevealRule, MeasuredBranchConflict, MeasuredBranchPrecedence,
-    MeasuredBranchSite, ProgramSymbol, UNMEASURED_BLOCK_PRECEDENCE, UNMEASURED_OBJECTIVE_SEMANTICS,
+    BRANCH_EFFECT_KEY_VOCABULARY, BRANCH_EFFECT_MULTI_TARGET_KEYS, BRANCH_KEY_VOCABULARY,
+    BRANCH_ORDER_KEY, BranchEffectKind, DeclaredCompletion, DeclaredObjective,
+    DeclaredObjectiveProgram, DeclaredObjectiveState, DeclaredPrecedence, DeclaredRevealRule,
+    MeasuredBranchConflict, MeasuredBranchPrecedence, MeasuredBranchSite, ProgramSymbol,
+    UNMEASURED_BLOCK_PRECEDENCE, UNMEASURED_OBJECTIVE_SEMANTICS,
 };
 use cs_content::stunts::{ZrdValue, decode_zrd};
 use cs_types::asset_id::SourceSpan;
@@ -199,6 +200,11 @@ fn accept_f39_e2_two_effects_naming_one_objective_are_one_measured_conflict() {
         UNMEASURED_BLOCK_PRECEDENCE
     );
     assert_eq!(
+        measured.unmeasured_order_reason(),
+        Some(UNMEASURED_BLOCK_PRECEDENCE),
+        "the verdict is stated once and by name"
+    );
+    assert_eq!(
         measured.conflicts,
         vec![MeasuredBranchConflict {
             block: "OBJECTIVE3".to_owned(),
@@ -294,6 +300,12 @@ fn accept_f39_e2_effects_on_disjoint_objectives_raise_no_ordering_question() {
         !measured.needs_unmeasured_order(),
         "the measured corpus is full of these, so a verdict that keyed on them \
          would decide nothing"
+    );
+    assert_eq!(
+        measured.unmeasured_order_reason(),
+        None,
+        "a record with no shared target states no reason, so the verdict cannot \
+         be claimed by default"
     );
     assert!(measured.conflict_combinations().is_empty());
 
@@ -409,6 +421,22 @@ fn accept_f39_e2_the_measured_effect_vocabulary_is_exactly_four_keys() {
         "the order dependency is never a completion effect"
     );
     assert_eq!(BRANCH_EFFECT_KEY_VOCABULARY, [WAKE, NAP, KILL, WAKEUP]);
+
+    // The measured value shapes: only `WAKE` and `KILL` ever hold a bare list of
+    // objective numbers, so a consumer may not expect one from `NAP` or `WAKEUP`.
+    for key in BRANCH_EFFECT_MULTI_TARGET_KEYS {
+        assert!(
+            BRANCH_EFFECT_KEY_VOCABULARY.contains(&key),
+            "{key} is not one of the measured completion effects"
+        );
+    }
+    assert_eq!(BRANCH_EFFECT_MULTI_TARGET_KEYS, [WAKE, KILL]);
+    for bare in [NAP, WAKEUP] {
+        assert!(
+            !BRANCH_EFFECT_MULTI_TARGET_KEYS.contains(&bare),
+            "{bare} is not measured as a bare target list"
+        );
+    }
 
     // Every effect round-trips through its measured spelling, and nothing else is
     // an effect: not the order key, and not a spelling the corpus never wrote.
@@ -664,6 +692,24 @@ fn accept_f39_e2_retail_objective_blocks_declare_one_unordered_completion_effect
         census.needs_unmeasured_order(),
         "no measured block declares two completion effects for one objective, so \
          this corpus has no instance of the question"
+    );
+    let carrying = census
+        .rows()
+        .iter()
+        .filter(|row| row.branch_precedence.needs_unmeasured_order())
+        .map(|row| {
+            (
+                row.mission.as_str(),
+                row.branch_precedence.unmeasured_order_reason(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(carrying.len(), 1, "{carrying:?}");
+    assert_eq!(
+        carrying[0].1,
+        Some(UNMEASURED_BLOCK_PRECEDENCE),
+        "the one mission that carries an ambiguous block states the verdict by \
+         name, so a report or refusal can quote it"
     );
     assert_eq!(
         census.conflicting_blocks(),

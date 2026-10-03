@@ -21,7 +21,8 @@ take effect?
   `BRANCH_ORDER_KEY`, `BRANCH_EFFECT_MULTI_TARGET_KEYS`, `BranchEffectKind`,
   `MeasuredBranchSite`, `MeasuredBranchConflict`, `MeasuredBranchPrecedence`,
   `UNMEASURED_BLOCK_PRECEDENCE`, `MeasuredObjectiveRecord::branch_precedence`,
-  and the `DeclaredPrecedence` / `DeclaredSupport` documentation.
+  `MeasuredBranchPrecedence::{declared_order, unmeasured_order_reason}`, and the
+  `DeclaredPrecedence` / `DeclaredSupport` documentation.
 * `crates/cs_app/src/objectives.rs`: `measure_block_precedence`,
   `is_objective_block`, `objective_block_number`, `measured_numbers`,
   `RetailBranchConflict`, `RetailObjectiveRow::{completion_effect_sites,
@@ -99,6 +100,12 @@ assumed — and the synthetic fixture in
 deliberately breaks both halves so `is_closed_over_its_record()` is a reading
 rather than a constant.
 
+*(One doc correction in passing: `RetailObjectiveRow::optional_sites` said it
+counted `BEGIN_DORMANT` too. It never did — F39-D's rule is
+`is_optional_objective_key`, which matches the `INACTIVE<n>` stages and
+`INACTIVE_COMPLETION_COUNT` only, so the 1096 `BEGIN_DORMANT` sites stay outside
+optionality. The field doc now says what the code counts.)*
+
 **`WAKE` and `WAKEUP` are two spellings in one corpus.** `c1b/m03`
 `OBJECTIVE13` carries `WAKEUP [14, 15]` beside `KILL [16]`, while `c1/m02` and
 others carry `WAKE`. The two are kept apart, and `BranchEffectKind::from_measured_key`
@@ -167,8 +174,11 @@ than choosing.**
 ## The gate, and what the engine must not do
 
 * `UNMEASURED_BLOCK_PRECEDENCE` is the named verdict, carried by
-  `MeasuredObjectiveRecord::branch_precedence`, so a refusal or a report can name
-  the isolated condition instead of only the absence of a rule.
+  `MeasuredObjectiveRecord::branch_precedence` and returned by
+  `MeasuredBranchPrecedence::unmeasured_order_reason()` (and `None` when a record
+  raises no question, so the verdict cannot be claimed by default), so a refusal
+  or a report can name the isolated condition instead of only the absence of a
+  rule.
 * `MeasuredBranchPrecedence::needs_unmeasured_order()` is the single place the
   "this record needs a rule we do not have" answer is given;
   `RetailObjectiveCensus::needs_unmeasured_order()` is its corpus-wide form.
