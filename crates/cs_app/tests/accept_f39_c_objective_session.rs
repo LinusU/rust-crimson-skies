@@ -21,7 +21,8 @@
 //! game data.
 
 use cs_app::objectives::{
-    LoweredObjectives, ObjectiveSession, ProgramLowerError, SessionRefusal, lower_program,
+    LoweredObjectives, ObjectiveSession, ProgramLowerError, SessionLaunchError, SessionRefusal,
+    lower_program,
 };
 use cs_content::objectives::{
     DeclaredObjectiveProgram, DeclaredTimeDomain, ProgramSymbol, declared_synthetic_objectives,
@@ -506,4 +507,27 @@ fn accept_f39_c_retry_after_a_settled_outcome_leaves_the_ending_behind() {
     let stepped = arm_step(&mut session, 1, &[WAVE_1], 1);
     assert_eq!(stepped.spawns.len(), 1);
     assert!(stepped.stop.is_none());
+}
+
+#[test]
+fn accept_f39_c_a_retry_cannot_rebuild_the_live_generation() {
+    let mut session = launch();
+    arm_step(&mut session, 1, &[WAVE_1], 1);
+
+    // A retry into the live generation would stamp the rebuilt session's
+    // cues, waves and events with the very generation the torn-down
+    // artifacts already carry — the confusion the stamps exist to prevent.
+    assert_eq!(
+        session.retry(GEN1).unwrap_err(),
+        SessionLaunchError::SameGeneration { session: GEN1 }
+    );
+
+    // The refusal left the session untouched: same generation, same wave,
+    // same expired timer.
+    assert_eq!(session.session(), GEN1);
+    assert_eq!(session.live_actors(), vec![ActorId(1), ActorId(2)]);
+    assert_eq!(
+        session.runtime().timer_state(WAVE_1),
+        Some(TimerState::Expired { at: Tick(1) })
+    );
 }

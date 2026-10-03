@@ -124,8 +124,16 @@
 //! * [`ObjectiveSession::retry`] is teardown/retry: it reports what the old
 //!   session still owns (live spawned actors to despawn, undrained cues, armed
 //!   deadlines, a settled outcome) and rebuilds a fresh runtime for the new
-//!   [`SessionGeneration`] from the same lowered program — so no old timer,
-//!   actor, counter, ledger key or cue survives (F39 AC03).
+//!   [`SessionGeneration`] — which must differ from the live one — from the
+//!   same lowered program, so no old timer, actor, counter, ledger key or cue
+//!   survives (F39 AC03).
+//!
+//! The `TickInput` the host hands `step` is a trusted producer surface: a
+//! signal it raises must name a mission signal — never the reserved
+//! actor-event source or a symbol the program declares — or its
+//! `SignalRaised` event would alias that declaration's own. The declared
+//! schema refuses the colliding names it can see; what the host injects is
+//! its contract to keep.
 //!
 //! Mid-mission save is **declared unsupported** for this runtime: a snapshot of
 //! `ObjectiveRuntime` would need its own format, and the contract permits
@@ -832,6 +840,14 @@ pub enum SessionLaunchError {
         /// The runtime's refusal.
         error: RuntimeError,
     },
+    /// A retry asked for the live generation. Every artifact the session
+    /// hands out carries its generation so a stale one can never be confused
+    /// with the current session's — which only holds when the generations
+    /// differ.
+    SameGeneration {
+        /// The generation passed to a session already running it.
+        session: SessionGeneration,
+    },
 }
 
 impl std::fmt::Display for SessionLaunchError {
@@ -840,6 +856,10 @@ impl std::fmt::Display for SessionLaunchError {
             Self::Declaration { declaration, error } => {
                 write!(f, "declaration {declaration:?} was refused: {error}")
             }
+            Self::SameGeneration { session } => write!(
+                f,
+                "a retry must advance the generation, not rebuild {session:?} in place"
+            ),
         }
     }
 }
@@ -1381,6 +1401,9 @@ impl ObjectiveSession {
     ///
     /// # Errors
     ///
+    /// [`SessionLaunchError::SameGeneration`] when `session` is the live
+    /// generation — the rebuilt session's cues, waves and events would carry
+    /// the very stamp the torn-down artifacts already do — and
     /// [`SessionLaunchError::Declaration`] when the same program that launched
     /// before cannot be registered again — unreachable for a program that was
     /// lowered, but reported rather than assumed.
@@ -1388,6 +1411,9 @@ impl ObjectiveSession {
         &mut self,
         session: SessionGeneration,
     ) -> Result<TeardownReport, SessionLaunchError> {
+        if session == self.runtime.session() {
+            return Err(SessionLaunchError::SameGeneration { session });
+        }
         let fresh = Self::build_runtime(&self.program, session)?;
         let report = TeardownReport {
             session: self.runtime.session(),
