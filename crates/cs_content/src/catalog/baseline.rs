@@ -77,7 +77,39 @@
 //!   A container that does not read, or that does not declare an airframe,
 //!   yields **no** row: the reason is named in [`CollectionStatus`] and in the
 //!   discovery's own findings, and no airframe is invented from a model name,
-//!   a scene node or a UI message key.
+//!   a scene node or a UI message key;
+//! * one [`ContentKind::Sound`] row per cue the **ZBD sound family** holds
+//!   (F14-D.7) — `ZBD/soundsl.zbd` and `ZBD/soundsh.zbd`, the only audio
+//!   containers this installation holds. The containers are chosen by the
+//!   producing stage's own role rule ([`cs_formats::zbd::role_for_path`] and
+//!   [`cs_formats::zbd::dispatch`]), not by a file-name list written here, and
+//!   each container is then read through its own trailer member index and the
+//!   sound reader the producing stage owns
+//!   ([`cs_formats::zbd::read_version_one_index`] +
+//!   [`cs_formats::zbd::read_sound_archive`]). A row exists only for a member
+//!   whose extent is inside the container **and** whose RIFF/WAVE header reads,
+//!   so a cue is a recording this engine has read, never a name alone. Its
+//!   identity is the container the member sits in plus the name that member's
+//!   own index declares (never a bare file name, and never a position in a
+//!   walk), its span is the member's own extent with the container path *and*
+//!   the member key, and its one static edge points at the inventory row of the
+//!   container holding those bytes.
+//!
+//!   The sound family is one bounded container family per stage, and it names
+//!   **every** member as a cue: nothing in a member's bytes or in its index
+//!   entry separates a music cue or a spoken line from any other cue, so
+//!   [`ContentKind::Music`] and [`ContentKind::Dialogue`] hold no row and say
+//!   so in their own [`CollectionStatus`] records instead of being minted from a
+//!   member-name prefix. A member the sound reader could not list, whose name is
+//!   not keyable text, or whose header does not read is a named gap, never a
+//!   dropped row; a name one container declares twice with **identical** bytes
+//!   is one cue with the repeat counted (`duplicate_member`), and a name
+//!   declared twice with **different** bytes has no identity that tells the two
+//!   apart, so neither is a row (`ambiguous_member_name`). No sound is
+//!   launchable, so the collection adds no root and cannot move the denominator,
+//!   and F41's declared bus/playback metadata stays an explicit
+//!   [`UnsupportedReason::Unknown`] on every row while no media player consumer
+//!   is claimed.
 //!
 //! Every row's [`Origin`] is [`Origin::Installation`] with a checked
 //! [`SourceSpan`] and the installation fingerprint of the bytes that were read,
@@ -108,8 +140,9 @@
 //! rows are [`crate::livery::FactionPaletteCatalog`]'s own extracted paint
 //! patterns, the paint-mask rows are the members
 //! [`crate::livery::StockLiveryCatalog`] verified in [`PAINT_MASK_CONTAINER`],
-//! and the airframe rows are F11-D2's [`discover_airframe_roster`] over the
-//! decoded loading-script container.
+//! the airframe rows are F11-D2's [`discover_airframe_roster`] over the
+//! decoded loading-script container, and the sound rows are the members the F06
+//! sound reader listed in the containers its own role rule names.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -122,6 +155,10 @@ use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
 use cs_assets::zbd::{ContainerVerdict, audit_containers};
 use cs_formats::LANG_ENGLISH_US;
 use cs_formats::interp::DecodedInterp;
+use cs_formats::zbd::{
+    ZbdFamily, ZbdProbe, ZbdRole, dispatch, read_sound_archive, read_version_one_index,
+    role_for_path,
+};
 use cs_types::asset_id::{
     AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan, SourceSpanError,
 };
@@ -184,6 +221,61 @@ const CLAIM_FACTION_PATTERN: &str = "f14.d.5.baseline.faction_pattern";
 /// the airframe library the installation holds, verified by the producing
 /// stage's own reader (F14-D.5).
 const CLAIM_PAINT_MASK_MEMBER: &str = "f14.d.5.baseline.paint_mask_member";
+
+/// The claim id behind the observation that a sound cue is one member of a ZBD
+/// sound container that its own member index names and whose RIFF/WAVE header
+/// reads (F14-D.7).
+const CLAIM_SOUND_MEMBER: &str = "f14.d.7.baseline.sound_member";
+
+/// The claim id behind the observation that the installation states **no** mix
+/// bus, level, one-shot/loop mode or runtime consumer for a sound cue, so
+/// F41-A's declared playback metadata stays unknown on every row (F14-D.7).
+const CLAIM_SOUND_PLAYBACK: &str = "f14.d.7.baseline.sound_playback";
+
+/// The installation-relative pattern the sound containers are read from: one
+/// `ZBD/sounds*.zbd` per file the producing stage's own sound role rule names.
+///
+/// This is the spelling of [`cs_formats::zbd::family`]'s observed sound
+/// archive names, quoted so the report says what was searched for instead of
+/// naming one container. Which files match is decided by
+/// [`cs_formats::zbd::role_for_path`] and [`cs_formats::zbd::dispatch`] — the
+/// producing stage's own rules — never by this pattern, which is documentation
+/// for a reader of the report (F14-D.7).
+pub const SOUND_CONTAINER_PATTERN: &str = "ZBD/sounds*.zbd";
+
+/// How many leading bytes of a candidate container [`cs_formats::zbd::dispatch`]
+/// is probed with.
+///
+/// Dispatch checks a documented header signature against these bytes, and the
+/// widest documented signature rule (F06-A's `INTERP` rule) needs two `u32`
+/// words. A container that is read in full afterwards is probed with this
+/// prefix first, so a file that is not a sound container is never read whole.
+const SOUND_PROBE_BYTES: usize = 16;
+
+/// Gap code: one member the sound reader listed, but its declared extent is not
+/// inside the container, so there are no bytes to read.
+const GAP_SOUND_EXTENT: &str = "member_out_of_bounds";
+
+/// Gap code: one member the sound reader listed whose declared name is not
+/// UTF-8 text. Identity here is the name, so a lossy replacement could merge
+/// two distinct members into one identity; such a member is reported, not keyed.
+const GAP_SOUND_NAME_NOT_TEXT: &str = "member_name_not_text";
+
+/// Gap code: one member the sound reader listed whose declared name is empty,
+/// which names nothing.
+const GAP_SOUND_NAME_EMPTY: &str = "member_name_empty";
+
+/// Gap code: one repeat of a member name a container declares more than once
+/// with **identical** stored bytes. The repeat is the same cue, so it is counted
+/// here instead of becoming a second row with the same identity (spec F14
+/// non-negotiable behavior 5).
+const GAP_SOUND_DUPLICATE_MEMBER: &str = "duplicate_member";
+
+/// Gap code: one member of a name a container declares more than once with
+/// **different** stored bytes. Neither is a row: the container's index gives no
+/// identity that tells them apart, and minting one would guess (AGENTS.md
+/// rule 4).
+const GAP_SOUND_AMBIGUOUS_MEMBER: &str = "ambiguous_member_name";
 
 /// The installation-relative spelling of the airframe library the paint-mask
 /// collection is read from.
@@ -876,6 +968,17 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
         insert(&mut catalog, element)?;
     }
     collection_status.push(airframe_status);
+
+    // The audio cues the ZBD sound family holds (F14-D.7). The `music` and
+    // `dialogue` records come with them: the sound family names every member as
+    // a cue, so those two collections report why they hold no row rather than
+    // vanishing.
+    let (sounds, sound_status) = sound_rows(install_root, install_hash, &files)?;
+    for element in sounds {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(sound_status);
+    collection_status.extend(unclassified_audio_statuses());
 
     let coverage = coverage(&catalog, &roots)?;
 
@@ -1850,6 +1953,374 @@ fn roster_issue_label(issue: &RosterDiscoveryIssue) -> &'static str {
         RosterDiscoveryIssue::RootRefRefused { .. } => "root_ref_refused",
         RosterDiscoveryIssue::NoAirframesDeclared { .. } => "no_airframes_declared",
     }
+}
+
+/// One readable member of a sound container, as the collection sees it.
+struct SoundCue {
+    /// The name the container's own member index declares, verbatim.
+    name: String,
+    /// Position in the container's declared index. This is the tie-break that
+    /// makes the occurrence chosen for a repeated name deterministic; it is not
+    /// part of the identity.
+    index: usize,
+    /// The member's declared extent, extended with the container path and the
+    /// member key so the row names its own bytes.
+    span: SourceSpan,
+    /// Digest of the member's stored bytes.
+    digest: ContentHash,
+}
+
+/// The `sound` rows the installation's ZBD sound containers hold, plus the
+/// record of what the producing stage could not turn into a row.
+///
+/// The containers are the inventoried files the producing stage's own observed
+/// role rule names as [`ZbdFamily::Sound`], re-checked through
+/// [`cs_formats::zbd::dispatch`] so a file whose bytes contradict the rule is
+/// reported instead of parsed as a sound container. Each container is then read
+/// by the readers the producing stage owns — the version-one trailer member
+/// index and [`cs_formats::zbd::read_sound_archive`] — and every listed member
+/// contributes.
+///
+/// A row is minted only for a member whose extent lies inside the container and
+/// whose RIFF/WAVE header reads: that is what makes a cue a recording this
+/// engine has read rather than a name. The identity is the **container plus the
+/// name that container's own index declares** — never a bare member name (which
+/// is declared in both sound containers with different bytes, a low-rate and a
+/// high-rate recording of one cue) and never a position in a walk — so the two
+/// are two rows with two spans and the closure can tell them apart. The span is
+/// the member's own extent carrying the container path, the member key and the
+/// member's digest, and the single static edge points at the inventory row of
+/// the container those bytes live in.
+///
+/// Everything the readers could not answer stays on the record rather than
+/// leaving the collection:
+///
+/// * a container dispatch, index or listing refuses is counted under that
+///   reader's own stable code, and the other containers still produce rows;
+/// * a member whose extent failed its bounds check is counted under its own
+///   member-error code (`member_out_of_bounds` or `extent_overflow`);
+/// * a member whose name is not keyable text or is empty is counted under
+///   [`GAP_SOUND_NAME_NOT_TEXT`] / [`GAP_SOUND_NAME_EMPTY`];
+/// * a member whose RIFF/WAVE header does not read is counted under that header
+///   reader's own code (`WaveError::code`), never dropped;
+/// * a name one container declares several times with **identical** bytes is one
+///   cue, and each repeat is counted under [`GAP_SOUND_DUPLICATE_MEMBER`];
+/// * a name declared several times with **different** bytes has no identity that
+///   tells the members apart, so neither is a row and each is counted under
+///   [`GAP_SOUND_AMBIGUOUS_MEMBER`].
+///
+/// When no container at all can be read the record carries a
+/// [`CollectionStatus::diagnostic`] instead of rows, exactly like every other
+/// source-derived collection here.
+///
+/// A sound is **not** launchable content, so this collection adds no root and
+/// cannot move the coverage denominator. The member's bytes are `parsed` (the
+/// header was decoded) but no sample is decoded and nothing is `normalized`, and
+/// F41-A's declared playback metadata — bus, level, one-shot/loop mode — is kept
+/// as an explicit [`UnsupportedReason::Unknown`] with this stage's own claim id,
+/// because the installation states none of it. No row claims a runtime consumer:
+/// no evidence yet says that any media player reads these rows.
+///
+/// # Errors
+///
+/// [`BaselineError::Read`] when an inventoried container cannot be read,
+/// [`BaselineError::Identity`] when the role rule and the dispatch disagree,
+/// [`BaselineError::Key`] when a member spelling has no valid id key and
+/// [`BaselineError::Span`] when a member's extent has no valid span.
+fn sound_rows(
+    install_root: &Path,
+    install_hash: ContentHash,
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<(Vec<CatalogElement>, CollectionStatus), BaselineError> {
+    let mut status = CollectionStatus {
+        kind: ContentKind::Sound,
+        source: SOUND_CONTAINER_PATTERN.to_owned(),
+        language: None,
+        rows: 0,
+        gaps: BTreeMap::new(),
+        boundary_id: None,
+        diagnostic: None,
+    };
+    let mut rows = Vec::new();
+    let mut containers_read = 0usize;
+
+    // `files` is keyed by the case-insensitive logical spelling, so iterating it
+    // visits the candidate containers in one canonical order and the walk does
+    // not depend on directory enumeration (spec F14 AC02).
+    for record in files.values() {
+        if !matches!(
+            role_for_path(&record.relative_spelling),
+            ZbdRole::Observed {
+                family: ZbdFamily::Sound,
+                ..
+            }
+        ) {
+            continue;
+        }
+        let spelling = record.relative_spelling.as_str();
+        let bytes =
+            std::fs::read(install_root.join(spelling)).map_err(|source| BaselineError::Read {
+                path: spelling.to_owned(),
+                source,
+            })?;
+        let probe = &bytes[..bytes.len().min(SOUND_PROBE_BYTES)];
+        let decided = match dispatch(ZbdProbe::new(spelling, &record.relative_spelling, probe)) {
+            Ok(decided) if decided.family() == ZbdFamily::Sound => decided,
+            // Unreachable while the role rule and the dispatch agree by
+            // construction; kept as a refusal rather than a silent fallthrough.
+            Ok(decided) => {
+                return Err(BaselineError::Identity {
+                    identity: spelling.to_owned(),
+                    reason: format!(
+                        "the observed sound role rule dispatched {} to the `{}` family",
+                        spelling,
+                        decided.family().as_str()
+                    ),
+                });
+            }
+            Err(error) => {
+                *status.gaps.entry(error.code()).or_default() += 1;
+                continue;
+            }
+        };
+
+        let mut context = cs_formats::ParseContext::with_defaults(spelling);
+        let index = match read_version_one_index(&mut context, decided, &bytes) {
+            Ok(index) => index,
+            Err(error) => {
+                *status.gaps.entry(error.code()).or_default() += 1;
+                continue;
+            }
+        };
+        let table = index.member_table();
+        let archive = match read_sound_archive(&mut context, &table, index.data()) {
+            Ok(archive) => archive,
+            Err(error) => {
+                *status.gaps.entry(error.code()).or_default() += 1;
+                continue;
+            }
+        };
+        containers_read += 1;
+
+        let (mut cues, gaps) = sound_cues(&archive, install_hash, spelling)?;
+        for (code, count) in gaps {
+            *status.gaps.entry(code).or_default() += count;
+        }
+        rows.append(&mut cues);
+    }
+
+    if containers_read == 0 {
+        return Ok(unpopulated(
+            status,
+            format!(
+                "no {SOUND_CONTAINER_PATTERN} container the producing stage's own sound role rule \
+                 names could be read, so the installation holds no audio cue this stage can name"
+            ),
+        ));
+    }
+    status.rows = rows.len();
+    Ok((rows, status))
+}
+
+/// The cues one sound container holds, and the member-level gap counts beside
+/// them.
+///
+/// Members are grouped by their declared name folded to ASCII lowercase, because
+/// that fold is what the id grammar does and two members of one container whose
+/// names differ only in letter case are one identity (`soundsl.zbd` declares
+/// `VO_c4-RM-m3_blacke_9.wav` twice under two spellings). Every group is
+/// resolved explicitly, never filtered: identical bytes are one cue, differing
+/// bytes are no cue at all.
+fn sound_cues(
+    archive: &cs_formats::zbd::SoundArchive<'_>,
+    install_hash: ContentHash,
+    spelling: &str,
+) -> Result<(Vec<CatalogElement>, BTreeMap<&'static str, usize>), BaselineError> {
+    let mut groups: BTreeMap<String, Vec<SoundCue>> = BTreeMap::new();
+    let mut gaps: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let file_id = ContentId::from_source(ContentKind::InstallFile, &install_file_key(spelling))
+        .map_err(|source| BaselineError::Key {
+            spelling: spelling.to_owned(),
+            source,
+        })?;
+
+    for row in archive.listing().rows() {
+        // A member whose extent failed its bounds check is in the index but has
+        // no bytes inside the container, so there is nothing to read.
+        let Some(entry) = archive.entry(row.index()) else {
+            *gaps
+                .entry(row.error().map_or(GAP_SOUND_EXTENT, |error| error.code()))
+                .or_default() += 1;
+            continue;
+        };
+        let Ok(name) = std::str::from_utf8(entry.name()) else {
+            *gaps.entry(GAP_SOUND_NAME_NOT_TEXT).or_default() += 1;
+            continue;
+        };
+        if name.is_empty() {
+            *gaps.entry(GAP_SOUND_NAME_EMPTY).or_default() += 1;
+            continue;
+        }
+        // The header is the evidence that the member is a recording: a member
+        // whose bytes are not a RIFF/WAVE file is a gap, not a guessed cue.
+        if let Err(error) = entry.wave() {
+            *gaps.entry(error.code()).or_default() += 1;
+            continue;
+        }
+        let digest = cs_assets::install::sha256(entry.content());
+        // The archive's own span is the byte range inside the container; the row's
+        // span below is that range plus the container path and the member key.
+        let member = row.span();
+        let span = SourceSpan::new(
+            install_hash,
+            spelling,
+            Some(name),
+            member.offset,
+            member.length,
+            Some(digest),
+        )
+        .map_err(|source| BaselineError::Span {
+            path: format!("{spelling}/{name}"),
+            source,
+        })?;
+        groups
+            .entry(name.to_ascii_lowercase())
+            .or_default()
+            .push(SoundCue {
+                name: name.to_owned(),
+                index: row.index(),
+                span,
+                digest,
+            });
+    }
+
+    let mut rows = Vec::with_capacity(groups.len());
+    for (_, mut cues) in groups {
+        // The declared index is the deterministic tie-break; it is not identity.
+        cues.sort_by_key(|cue| cue.index);
+        let Some(first) = cues.first() else {
+            continue;
+        };
+        if cues.iter().any(|cue| cue.digest != first.digest) {
+            // Two different recordings under one identity: neither can be keyed
+            // without guessing which member the engine would resolve.
+            *gaps.entry(GAP_SOUND_AMBIGUOUS_MEMBER).or_default() += cues.len();
+            continue;
+        }
+        if cues.len() > 1 {
+            *gaps.entry(GAP_SOUND_DUPLICATE_MEMBER).or_default() += cues.len() - 1;
+        }
+        rows.push(sound_row(first, spelling, &file_id)?);
+    }
+    Ok((rows, gaps))
+}
+
+/// One sound cue as a catalog row.
+fn sound_row(
+    cue: &SoundCue,
+    spelling: &str,
+    file_id: &ContentId,
+) -> Result<CatalogElement, BaselineError> {
+    // The identity carries the container as well as the member: the same name is
+    // declared in both sound containers with different bytes, so the name alone
+    // would merge a low-rate and a high-rate recording into one row.
+    let id = ContentId::from_source(
+        ContentKind::Sound,
+        &install_file_key(&format!("{spelling}/{}", cue.name)),
+    )
+    .map_err(|source| BaselineError::Key {
+        spelling: cue.name.clone(),
+        source,
+    })?;
+    // F41-A's declared playback metadata stays an explicit unknown: this stage
+    // read a recording, not the mix the original engine played it through.
+    let playback = UnsupportedReason::Unknown {
+        claim_id: ClaimId::new(CLAIM_SOUND_PLAYBACK).map_err(|error| {
+            BaselineError::Provenance {
+                claim: CLAIM_SOUND_PLAYBACK.to_owned(),
+                reason: error.to_string(),
+            }
+        })?,
+        reason: format!(
+            "the installation states no mix bus, level, one-shot/loop mode or runtime consumer \
+             for this cue: its container's member index names it and its RIFF/WAVE header reads, \
+             and nothing else about it is known (F41-A leaves {CLAIM_SOUND_PLAYBACK} unknown)"
+        ),
+    };
+    Ok(CatalogElement {
+        kind: ContentKind::Sound,
+        id,
+        display_name: Some(cue.name.clone()),
+        origin: Origin::Installation {
+            source: cue.span.clone(),
+        },
+        dependencies: vec![Dependency {
+            target: file_id.clone(),
+            kind: DependencyKind::Static,
+            provenance: observed(CLAIM_SOUND_MEMBER, &cue.span)?,
+        }],
+        parse_state: cs_types::install::ParseState::Parsed,
+        normalize_state: NormalizeState::NotNormalized,
+        runtime_consumers: Vec::new(),
+        readiness: Readiness::Unavailable,
+        unsupported_reasons: vec![UnsupportedReason::NotNormalized, playback],
+        fingerprint: Some(Fingerprint {
+            kind: FingerprintKind::Installation,
+            sha256: cue.digest,
+        }),
+    })
+}
+
+/// The `music` and `dialogue` collection records (F14-D.7).
+///
+/// The ZBD sound family names **every** member as a cue, and a member's bytes
+/// are a recording with no cue class in them: nothing this installation states
+/// separates a music cue or a spoken line from any other cue. Members whose
+/// *name* begins `music_` exist in the sound containers, but a name is not a
+/// class (AGENTS.md rule 4), so neither collection gets a row from a name prefix
+/// and each says so here instead of vanishing from the accounting report
+/// (`IDENTITY-CONTENT`: a collection cannot exclude the entries it could not
+/// produce).
+fn unclassified_audio_statuses() -> Vec<CollectionStatus> {
+    [
+        (
+            ContentKind::Music,
+            "no container family of this installation states a music cue as anything other than \
+             an audio cue: the ZBD sound family read here names every member as a cue and stores a \
+             recording, so a member is not a music row and the members whose name begins `music_` \
+             stay a name observation. Affected content: every music cue's bus, transition and \
+             playback metadata. Resolving task: a stage that reads a cue class out of original \
+             bytes (F41-B/F41-C radio and music routing, or an original-run capture), because \
+             this installation holds no such declaration",
+        ),
+        (
+            ContentKind::Dialogue,
+            "no container family of this installation states a spoken line as anything other than \
+             an audio cue: the ZBD sound family read here names every member as a cue and stores a \
+             recording, so neither the voice lines nor the narration recordings are dialogue rows. \
+             Affected content: every dialogue cue's speaker, text binding and radio ordering. \
+             Resolving task: F39 (dialogue cues) and F33-C (AI roles, dialogue voices and mission \
+             callbacks) once a mission program names a cue with its speaker, because the sound \
+             containers themselves declare no class",
+        ),
+    ]
+    .into_iter()
+    .map(|(kind, diagnostic)| {
+        unpopulated(
+            CollectionStatus {
+                kind,
+                source: SOUND_CONTAINER_PATTERN.to_owned(),
+                language: None,
+                rows: 0,
+                gaps: BTreeMap::new(),
+                boundary_id: None,
+                diagnostic: None,
+            },
+            diagnostic.to_owned(),
+        )
+        .1
+    })
+    .collect()
 }
 
 /// One multiplayer mode as a catalog row.
