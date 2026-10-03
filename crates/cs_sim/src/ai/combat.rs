@@ -92,16 +92,40 @@
 //! shoot past this friendly" are separate answers and a friendly in the
 //! line of fire never silently becomes a non-target.
 //!
+//! # Difficulty is measured to have three steps, and probed at every one
+//!
+//! F32-D is the retail stage. It measured the original's campaign difficulty
+//! option (see [`ORIGINAL_DIFFICULTY_STEPS`] and
+//! [`DifficultyTier::measured_step`]) and the original's **per-aircraft** AI
+//! skill tiers, and — because a claim about difficulty is only worth what its
+//! outcomes are worth — built [`CombatRuntime::probe_difficulties`]: a seeded
+//! closed-loop mission-combat probe that replays one scenario
+//! [`DifficultyProbeSpec::runs_per_tier`] times at **every** declared tier and
+//! compares the outcome distributions, so "this tier is harder" is a measured
+//! claim about decisions rather than a comment about a constant.
+//!
+//! The probe is also the mechanical check of two non-negotiables. Its geometry
+//! and clock are a function of `(root_seed, run)` alone, never of the tier, so
+//! a tier that moved the world or the tick rate would change
+//! [`DifficultyProbeRun::geometry_fingerprint`]; and its weapons snapshot is
+//! one snapshot for every tier, so a tier that handed the AI a different gun
+//! or rack would change [`DifficultyProbeRun::arsenal_fingerprint`].
+//!
 //! # Designed vocabulary, not original data
 //!
-//! The original game's AI roles, priority order, reaction times, aim error,
-//! engagement ranges, formation recovery and difficulty mapping are
-//! **unmeasured** (F32 "Research boundary"; F32-D's retail stage). Every
-//! constant, bound and fixture in this module is newly authored project
-//! design, recorded in
-//! `docs/findings/2026-10-01-f32-a-combat-roles-skill-knobs-and-decision-traces.md`
-//! and, for the maneuvers and firing solutions, in
-//! `docs/findings/2026-10-03-f32-b-maneuvers-priority-and-firing-solutions.md`.
+//! The original game's AI **role** set, target-priority order, reaction times,
+//! aim error, engagement ranges, formation recovery and the *effect* of its
+//! difficulty steps are **unmeasured** (F32 "Research boundary"). What F32-D
+//! measured is a count and a vocabulary: the option's step count, the AI skill
+//! tier labels, the shape of the ace stat vector, and the fact that no
+//! per-scenario record carries a difficulty at all. Every constant, bound,
+//! geometry and fixture in this module is newly authored project design,
+//! recorded in
+//! `docs/findings/2026-10-01-f32-a-combat-roles-skill-knobs-and-decision-traces.md`,
+//! in `docs/findings/2026-10-03-f32-b-maneuvers-priority-and-firing-solutions.md`,
+//! in `docs/findings/2026-10-03-f32-c-formation-ace-and-difficulty-runtime.md`
+//! and in
+//! `docs/findings/2026-10-03-f32-d-original-ai-roles-and-difficulty.md`.
 //!
 //! `cs_sim` may depend only on [`cs_types`] and [`cs_script`]
 //! (`docs/01-ARCHITECTURE.md`): no Bevy, no renderer, no file access.
@@ -1629,6 +1653,15 @@ impl CombatPlanner {
         self.formations.keys().copied()
     }
 
+    /// The one profile per role this planner carries, in role order.
+    ///
+    /// Exposed so a per-session runtime can rebuild itself around a different
+    /// session generation without a caller having to keep its own copy of the
+    /// roster (and drift from it).
+    pub fn profiles(&self) -> Vec<SkillProfile> {
+        self.profiles.values().copied().collect()
+    }
+
     /// The recovery paths of one formation, if it is registered.
     #[must_use]
     pub fn recovery_policies(&self, formation: FormationId) -> Option<RecoveryPolicySet> {
@@ -2037,6 +2070,21 @@ fn distance(from: WorldPosition, to: WorldPosition) -> f64 {
 
 // ------------------------------------------------- difficulty ----
 
+/// How many steps the original's **campaign difficulty option** offers.
+///
+/// **Measured** (F32-D) over the owner's installation, and deliberately
+/// **smaller** than [`DifficultyTier::ALL`]. The engine's own resource header
+/// bounds the option's name list at three ids and the shipped string image
+/// populates all three with one non-empty label each, so the option offers
+/// exactly three steps; the full measurement, its spans and the rule that
+/// produced it are in `docs/findings/2026-10-03-f32-d-original-ai-roles-and-difficulty.md`
+/// and `cs_content::ai`.
+///
+/// This constant is a mirror of `cs_content::ai::ORIGINAL_DIFFICULTY_STEPS`:
+/// `cs_sim` cannot depend on `cs_content` (AGENTS rule 7), so the two are
+/// checked against each other by `cs_content`'s F32-D test, which can see both.
+pub const ORIGINAL_DIFFICULTY_STEPS: u32 = 3;
+
 /// The runtime mirror of `cs_content::ai::DifficultyTier`.
 ///
 /// The tier is the *key* a mission's selected difficulty resolves against; it
@@ -2045,8 +2093,14 @@ fn distance(from: WorldPosition, to: WorldPosition) -> f64 {
 /// effect and cannot invent a simulation-rate difference instead
 /// (non-negotiable 1).
 ///
-/// Whether the original game offers exactly these four steps, in this order,
-/// under these names is **unmeasured** (F32-D). The ordering is project design.
+/// **Measured** (F32-D): the original's campaign difficulty option offers
+/// [`ORIGINAL_DIFFICULTY_STEPS`] steps, so this four-step ordering has one
+/// more step than the original's. [`Self::measured_step`] reports which steps
+/// correspond and [`Self::is_designed_extension`] names the one that does not,
+/// so the extra step is a declared design rather than a silent claim of parity.
+/// The original's own step *names* live in its shipped localizable string
+/// image and are not reproduced here (AGENTS rule 3); the ordering is project
+/// design.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DifficultyTier {
     /// The most forgiving declared tier.
@@ -2056,6 +2110,10 @@ pub enum DifficultyTier {
     /// A harder declared tier.
     Hard,
     /// The most demanding declared tier.
+    ///
+    /// The measured option has
+    /// [`ORIGINAL_DIFFICULTY_STEPS`] steps, so this tier is the one declared
+    /// step with **no** measured counterpart.
     Elite,
 }
 
@@ -2073,6 +2131,59 @@ impl DifficultyTier {
             Self::Hard => "hard",
             Self::Elite => "elite",
         }
+    }
+
+    /// This tier's position in [`Self::ALL`], from `0`.
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        match self {
+            Self::Relaxed => 0,
+            Self::Standard => 1,
+            Self::Hard => 2,
+            Self::Elite => 3,
+        }
+    }
+
+    /// The measured original option step this declared tier stands for, when it
+    /// stands for one.
+    ///
+    /// **Measured** ([`ORIGINAL_DIFFICULTY_STEPS`] = 3) and **positional**:
+    /// [`Self::ALL`] runs most forgiving to most demanding, so the first three
+    /// tiers correspond to the measured steps in order and any tier past them
+    /// has no measured counterpart. The mapping says nothing about the
+    /// original's *names* and nothing about what any step changes: no measured
+    /// file records either.
+    #[must_use]
+    pub const fn measured_step(self) -> Option<u32> {
+        let step = self.index();
+        if step < ORIGINAL_DIFFICULTY_STEPS {
+            Some(step)
+        } else {
+            None
+        }
+    }
+
+    /// Whether this tier is a declared extension past the measured steps.
+    #[must_use]
+    pub const fn is_designed_extension(self) -> bool {
+        self.measured_step().is_none()
+    }
+
+    /// How many declared tiers correspond to a measured step.
+    ///
+    /// Computed rather than written down, so it follows
+    /// [`ORIGINAL_DIFFICULTY_STEPS`] when a measurement is corrected.
+    #[must_use]
+    pub const fn measured_tier_count() -> usize {
+        let mut count = 0;
+        let mut index = 0;
+        while index < Self::ALL.len() {
+            if Self::ALL[index].measured_step().is_some() {
+                count += 1;
+            }
+            index += 1;
+        }
+        count
     }
 }
 
@@ -3463,6 +3574,29 @@ impl CombatRuntime {
 /// Why a combat-AI request or profile was refused.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CombatError {
+    /// A difficulty probe asked for no runs, so it would report an aggregate
+    /// over nothing — and an aggregate over nothing is a number, which is
+    /// exactly the failure mode a statistical comparison must not have.
+    ProbeWithoutRuns,
+    /// A difficulty probe asked for a zero-tick run, which replays no decision
+    /// at all.
+    ProbeWithoutTicks,
+    /// A difficulty probe asked for more runs per tier than
+    /// [`MAX_PROBE_RUNS_PER_TIER`].
+    ProbeTooManyRuns {
+        /// The requested run count.
+        runs: u32,
+        /// The bound.
+        max: u32,
+    },
+    /// A difficulty probe asked for more ticks per run than
+    /// [`MAX_PROBE_TICKS`].
+    ProbeTooManyTicks {
+        /// The requested tick count.
+        ticks: u64,
+        /// The bound.
+        max: u64,
+    },
     /// An actor identity belongs to another session generation.
     ForeignSession {
         /// The offending actor.
@@ -3754,6 +3888,19 @@ pub enum CombatError {
 impl fmt::Display for CombatError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ProbeWithoutRuns => f.write_str(
+                "a difficulty probe must replay at least one run per tier, or its aggregates \
+                 describe nothing",
+            ),
+            Self::ProbeWithoutTicks => {
+                f.write_str("a difficulty probe run must replay at least one tick")
+            }
+            Self::ProbeTooManyRuns { runs, max } => {
+                write!(f, "{runs} probe runs per tier exceeds the bound of {max}")
+            }
+            Self::ProbeTooManyTicks { ticks, max } => {
+                write!(f, "{ticks} probe ticks per run exceeds the bound of {max}")
+            }
             Self::ForeignSession { actor, session } => {
                 write!(f, "{actor} does not belong to session {session}")
             }
@@ -4351,4 +4498,1102 @@ pub fn synthetic_combat_runtime() -> CombatRuntime {
     .expect("the synthetic combat runtime is valid")
     .with_formation(synthetic_formation_roster(), synthetic_recovery_policies())
     .expect("the synthetic formation registers")
+}
+
+// -------------------------------------------- difficulty probe ----
+
+/// The domain constant of the difficulty probe's run streams: the
+/// big-endian ASCII bytes `"F32PROBE"`.
+///
+/// An arbitrary but fixed `u64` under the `docs/contracts/CLI-EVIDENCE.md`
+/// recipe — the stream seed is the SplitMix64 output of
+/// `root_seed ^ PROBE_DOMAIN` — so the probe's geometry is reproducible from a
+/// recorded root seed and never moves under another consumer's stream.
+pub const DIFFICULTY_PROBE_DOMAIN: u64 = 0x4633_3250_524F_4245;
+
+/// The largest number of probe runs a single spec may ask for per tier.
+///
+/// A designed bound, not a measured one: it keeps a malformed spec from
+/// turning a probe into an unbounded loop, exactly as
+/// [`MAX_REACTION_TICKS`] bounds a declared delay.
+pub const MAX_PROBE_RUNS_PER_TIER: u32 = 1_024;
+
+/// The largest number of ticks one probe run may replay.
+pub const MAX_PROBE_TICKS: u64 = 65_536;
+
+/// How far the probe may perturb a run's initial hostile offsets, in meters.
+///
+/// A designed bound. The perturbation is what makes two runs of the *same*
+/// tier differ, so an outcome distribution is a distribution and not one
+/// deterministic trace; it is deliberately small next to the engagement ranges
+/// so it can never move a candidate across the range gate by itself.
+pub const PROBE_LATERAL_JITTER_M: f64 = 120.0;
+
+/// The probe scenario: how many times to replay it, for how long, from which
+/// seed.
+///
+/// A spec carries **no** tier list: [`CombatRuntime::probe_difficulties`]
+/// always runs [`DifficultyTier::ALL`], so "at every discovered difficulty"
+/// cannot be narrowed by a caller who forgot one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DifficultyProbeSpec {
+    /// The session generation the probe's actors belong to.
+    pub session: u64,
+    /// The ticks each run replays.
+    pub ticks: u64,
+    /// How many runs each tier gets.
+    pub runs_per_tier: u32,
+    /// The root seed every run's stream is derived from.
+    pub root_seed: u64,
+    /// The declared recovery paths the probe's formation registers with.
+    ///
+    /// A probe spec carries them because they are *declared data* — the same
+    /// kind of decision a mission makes — and a probe that invented them would
+    /// be measuring the probe's own policy rather than the runtime's.
+    pub policies: RecoveryPolicySet,
+}
+
+impl DifficultyProbeSpec {
+    /// Assembles and bounds a probe spec.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::ProbeWithoutRuns`] for zero runs,
+    /// [`CombatError::ProbeWithoutTicks`] for a zero-tick run, and
+    /// [`CombatError::ProbeTooManyRuns`] /
+    /// [`CombatError::ProbeTooManyTicks`] past
+    /// [`MAX_PROBE_RUNS_PER_TIER`] / [`MAX_PROBE_TICKS`].
+    pub fn try_new(
+        session: u64,
+        ticks: u64,
+        runs_per_tier: u32,
+        root_seed: u64,
+        policies: RecoveryPolicySet,
+    ) -> Result<Self, CombatError> {
+        if runs_per_tier == 0 {
+            return Err(CombatError::ProbeWithoutRuns);
+        }
+        if ticks == 0 {
+            return Err(CombatError::ProbeWithoutTicks);
+        }
+        if runs_per_tier > MAX_PROBE_RUNS_PER_TIER {
+            return Err(CombatError::ProbeTooManyRuns {
+                runs: runs_per_tier,
+                max: MAX_PROBE_RUNS_PER_TIER,
+            });
+        }
+        if ticks > MAX_PROBE_TICKS {
+            return Err(CombatError::ProbeTooManyTicks {
+                ticks,
+                max: MAX_PROBE_TICKS,
+            });
+        }
+        Ok(Self {
+            session,
+            ticks,
+            runs_per_tier,
+            root_seed,
+            policies,
+        })
+    }
+
+    /// The declared recovery paths the probe's formation registers with.
+    #[must_use]
+    pub const fn policies(&self) -> RecoveryPolicySet {
+        self.policies
+    }
+
+    /// The stream one run draws its geometry from.
+    ///
+    /// A function of `root_seed` and `run` **only** — never of the tier. That
+    /// is what makes two tiers comparable: the same run index replays the same
+    /// world at every tier, so any difference in outcome is attributable to
+    /// the profile and to nothing else (non-negotiable 1).
+    #[must_use]
+    pub fn stream(&self, run: u32) -> cs_types::random::SplitMix64 {
+        cs_types::random::SplitMix64::for_domain(
+            self.root_seed ^ (u64::from(run) << 32) ^ DIFFICULTY_PROBE_DOMAIN,
+            DIFFICULTY_PROBE_DOMAIN,
+        )
+    }
+}
+
+/// One probe run's measured outcome at one tier.
+///
+/// Every field is counted from production records — [`CombatStep::trace`]'s
+/// candidate verdicts and term scores, [`FiringSolution`]'s mount states and
+/// [`FormationUpdate`]'s recovery — so a run that stopped consulting the trace
+/// could not fill this record.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DifficultyProbeRun {
+    /// The tier this run was decided under.
+    pub tier: DifficultyTier,
+    /// The run index, `0..spec.runs_per_tier`.
+    pub run: u32,
+    /// The root seed this run's stream came from.
+    pub seed: u64,
+    /// The measured original option step the tier corresponds to.
+    pub measured_step: Option<u32>,
+    /// The ticks replayed. Identical at every tier by construction.
+    pub ticks: u64,
+    /// Ticks on which the observer chose a target.
+    pub engagements: u64,
+    /// The first tick on which the observer chose a target.
+    pub first_engagement_tick: Option<u64>,
+    /// Times the chosen target changed.
+    pub target_changes: u64,
+    /// Candidate evaluations the reaction gate deferred, summed over ticks and
+    /// candidates: the authoritative attacks the profile had not noticed yet.
+    pub deferred_threats: u64,
+    /// Candidate evaluations the reaction gate found *noticed*.
+    pub noticed_threats: u64,
+    /// Ticks on which the observer answered an authoritative attack against
+    /// its protected actor — the escort behaviour AC01 is about.
+    pub protected_answers: u64,
+    /// The first tick on which it did.
+    pub first_protected_answer_tick: Option<u64>,
+    /// Candidate evaluations the range gate refused.
+    pub range_rejects: u64,
+    /// Formation recoveries the coordinator applied during the run.
+    pub recoveries: u64,
+    /// Ticks on which at least one mount fired.
+    pub firing_ticks: u64,
+    /// A digest of every position and threat stamp the run replayed.
+    ///
+    /// Tier-invariant by construction; a mismatch across tiers means a tier
+    /// moved the world, which is the simulation-rate fake non-negotiable 1
+    /// forbids.
+    pub geometry_fingerprint: u64,
+    /// A digest of the weapons snapshot the run used.
+    ///
+    /// Tier-invariant by construction; a mismatch means a tier changed what the
+    /// AI could shoot, which non-negotiable 2 forbids absent a verified
+    /// original exception.
+    pub arsenal_fingerprint: u64,
+    /// A digest of the effective profile the tier resolved to.
+    ///
+    /// Tier-*variant* by construction: two tiers with equal digests selected
+    /// the same behavior, and a difficulty that changed nothing would show up
+    /// here rather than in the outcomes.
+    pub profile_fingerprint: u64,
+}
+
+impl DifficultyProbeRun {
+    /// The mean number of engagements per tick, in `0..=1`.
+    ///
+    /// A normalized rate rather than a raw count so two runs of different
+    /// lengths stay comparable.
+    #[must_use]
+    pub fn engagement_rate(&self) -> f64 {
+        if self.ticks == 0 {
+            return 0.0;
+        }
+        self.engagements as f64 / self.ticks as f64
+    }
+}
+
+/// One tier's aggregated probe outcome.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TierProbeOutcome {
+    /// The tier these statistics are about.
+    pub tier: DifficultyTier,
+    /// The measured original option step the tier corresponds to.
+    pub measured_step: Option<u32>,
+    /// How many runs went into these statistics.
+    pub runs: u32,
+    /// The ticks each run replayed, identical at every tier.
+    pub ticks_per_run: u64,
+    /// The summed engagements of every run.
+    pub engagements: u64,
+    /// The mean engagements per run.
+    pub mean_engagements: f64,
+    /// The population variance of the per-run engagements.
+    pub variance_engagements: f64,
+    /// The summed protected-actor answers of every run.
+    pub protected_answers: u64,
+    /// The mean protected-actor answers per run.
+    pub mean_protected_answers: f64,
+    /// The population variance of the per-run protected-actor answers.
+    pub variance_protected_answers: f64,
+    /// The summed deferred candidate evaluations.
+    pub deferred_threats: u64,
+    /// The summed noticed candidate evaluations.
+    pub noticed_threats: u64,
+    /// The summed range refusals.
+    pub range_rejects: u64,
+    /// The summed formation recoveries.
+    pub recoveries: u64,
+    /// The summed ticks on which a mount fired.
+    pub firing_ticks: u64,
+    /// The per-run geometry digests, one per run.
+    pub geometry_fingerprints: Vec<u64>,
+    /// The per-run arsenal digests, one per run.
+    pub arsenal_fingerprints: Vec<u64>,
+    /// The per-run profile digests, one per run.
+    pub profile_fingerprints: Vec<u64>,
+}
+
+impl TierProbeOutcome {
+    /// The run's geometry digest by run index.
+    #[must_use]
+    pub fn geometry_fingerprint(&self, run: u32) -> Option<u64> {
+        self.geometry_fingerprints.get(run as usize).copied()
+    }
+
+    /// Whether every run of this tier resolved to one effective profile.
+    #[must_use]
+    pub fn profile_is_uniform(&self) -> bool {
+        self.profile_fingerprints
+            .windows(2)
+            .all(|pair| pair[0] == pair[1])
+            && self.profile_fingerprints.len() == self.runs as usize
+    }
+
+    /// Whether every run of this tier fired the same weapons.
+    #[must_use]
+    pub fn arsenal_is_uniform(&self) -> bool {
+        self.arsenal_fingerprints
+            .windows(2)
+            .all(|pair| pair[0] == pair[1])
+            && self.arsenal_fingerprints.len() == self.runs as usize
+    }
+}
+
+/// How one measured outcome moved between two adjacent tiers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeDifference {
+    /// The two tiers measured the same aggregate.
+    Same,
+    /// The more demanding tier measured strictly more.
+    Higher,
+    /// The more demanding tier measured strictly fewer.
+    Lower,
+}
+
+/// The measured comparison of two adjacent tiers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TierComparison {
+    /// The less demanding tier.
+    pub lower: DifficultyTier,
+    /// The more demanding tier.
+    pub higher: DifficultyTier,
+    /// How the engagement count moved.
+    pub engagements: ProbeDifference,
+    /// How the protected-actor answer count moved.
+    pub protected_answers: ProbeDifference,
+    /// How the deferred-threat count moved.
+    pub deferred_threats: ProbeDifference,
+}
+
+/// The whole probe: every run, every tier and the adjacent comparisons.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DifficultyProbeReport {
+    /// The spec the report was produced under.
+    pub spec: DifficultyProbeSpec,
+    /// Every run, tier-major in [`DifficultyTier::ALL`] order.
+    pub runs: Vec<DifficultyProbeRun>,
+    /// One aggregate per tier, in [`DifficultyTier::ALL`] order.
+    pub tiers: Vec<TierProbeOutcome>,
+    /// The comparison of every adjacent pair of [`DifficultyTier::ALL`].
+    pub comparisons: Vec<TierComparison>,
+}
+
+impl DifficultyProbeReport {
+    /// One tier's aggregate, by name.
+    #[must_use]
+    pub fn tier(&self, tier: DifficultyTier) -> Option<&TierProbeOutcome> {
+        self.tiers.iter().find(|outcome| outcome.tier == tier)
+    }
+
+    /// Whether every tier replayed the same world.
+    ///
+    /// This is the non-negotiable 1 check, and it is a *per run index*
+    /// comparison: run `n` at the most forgiving tier and run `n` at the most
+    /// demanding one replayed byte-identical geometry, or this is `false`. A
+    /// tier that moved a position, a threat stamp or the tick count would show
+    /// up here rather than as a plausible-looking outcome difference.
+    ///
+    /// `true` for an empty report is not a claim — nothing was measured, and
+    /// [`Self::runs`] says so, so a caller pairing this with
+    /// [`Self::covers_every_measured_step`] cannot mistake it for one.
+    #[must_use]
+    pub fn geometry_is_tier_invariant(&self) -> bool {
+        !self.tiers.is_empty()
+            && self.tiers.iter().all(|outcome| {
+                outcome.geometry_fingerprints.len() == self.spec.runs_per_tier as usize
+            })
+            && self
+                .tiers
+                .windows(2)
+                .all(|pair| pair[0].geometry_fingerprints == pair[1].geometry_fingerprints)
+    }
+
+    /// The tiers that stand for a measured original difficulty step, in
+    /// [`DifficultyTier::ALL`] order.
+    #[must_use]
+    pub fn measured_tiers(&self) -> Vec<DifficultyTier> {
+        self.tiers
+            .iter()
+            .filter(|outcome| outcome.measured_step.is_some())
+            .map(|outcome| outcome.tier)
+            .collect()
+    }
+
+    /// Whether every measured original difficulty step was probed.
+    ///
+    /// "At every discovered difficulty" is only satisfied when the measured
+    /// steps are `0..ORIGINAL_DIFFICULTY_STEPS` **contiguously**: a roster that
+    /// mapped two tiers onto one step, or skipped one, leaves a measured step
+    /// unprobed and this is `false`.
+    #[must_use]
+    pub fn covers_every_measured_step(&self) -> bool {
+        let mut steps: Vec<u32> = self
+            .tiers
+            .iter()
+            .filter_map(|outcome| outcome.measured_step)
+            .collect();
+        steps.sort_unstable();
+        steps == (0..ORIGINAL_DIFFICULTY_STEPS).collect::<Vec<u32>>()
+    }
+
+    /// Whether every tier fired the same weapons.
+    ///
+    /// The non-negotiable 2 check: an AI that could shoot something the player
+    /// cannot is a verified original exception, and there is none.
+    #[must_use]
+    pub fn arsenal_is_tier_invariant(&self) -> bool {
+        self.tiers
+            .iter()
+            .all(|outcome| outcome.arsenal_is_uniform())
+            && self
+                .tiers
+                .windows(2)
+                .all(|pair| pair[0].arsenal_fingerprints == pair[1].arsenal_fingerprints)
+    }
+
+    /// Whether every tier replayed the same number of ticks.
+    #[must_use]
+    pub fn clock_is_tier_invariant(&self) -> bool {
+        self.tiers
+            .windows(2)
+            .all(|pair| pair[0].ticks_per_run == pair[1].ticks_per_run)
+            && self.runs.iter().all(|run| run.ticks == self.spec.ticks)
+    }
+
+    /// How many tiers actually differed in their effective profile.
+    ///
+    /// One means difficulty selected nothing and every outcome above is one
+    /// behaviour sampled repeatedly — which is the failure the probe exists to
+    /// catch, so it is a query and not an assertion inside the report.
+    #[must_use]
+    pub fn distinct_profile_count(&self) -> usize {
+        let mut digests: BTreeSet<u64> = BTreeSet::new();
+        for outcome in &self.tiers {
+            for digest in &outcome.profile_fingerprints {
+                digests.insert(*digest);
+            }
+        }
+        digests.len()
+    }
+
+    /// Whether the protected-actor answer count rose or held at every adjacent
+    /// pair.
+    ///
+    /// The probe's discriminating claim: a more demanding tier must not answer
+    /// *fewer* authoritative attacks against the charge it protects. It is a
+    /// property of the compared reports, not of the report alone, so a caller
+    /// that built a roster whose tiers collapse says `false` and is shown why.
+    #[must_use]
+    pub fn protected_answers_never_regress(&self) -> bool {
+        self.comparisons
+            .iter()
+            .all(|comparison| !matches!(comparison.protected_answers, ProbeDifference::Lower))
+    }
+
+    /// Whether at least one adjacent pair differed.
+    ///
+    /// `false` means the tiers produced indistinguishable aggregates, so
+    /// "compare outcomes statistically" had nothing to compare.
+    #[must_use]
+    pub fn outcomes_differ(&self) -> bool {
+        self.comparisons.iter().any(|comparison| {
+            comparison.engagements != ProbeDifference::Same
+                || comparison.protected_answers != ProbeDifference::Same
+                || comparison.deferred_threats != ProbeDifference::Same
+        })
+    }
+}
+
+/// The probe's designed scenario geometry, in canonical world meters.
+///
+/// Every number is authored project design: no measured file describes where an
+/// original AI encounter happened or how long it lasted (F32-D measured no such
+/// thing). The *shape* is chosen so the reaction gate is the only thing that
+/// decides the outcome: the protected actor's attacker starts farther away than
+/// the harmless hostile, so an escort that has not noticed the attack yet scores
+/// the nearer hostile first, and the tick on which it stops doing so is the tick
+/// its reaction delay reached.
+mod probe_geometry {
+    /// The observer (an escort) starts here, flying `+x`.
+    pub const OBSERVER_START_M: [f64; 3] = [0.0, 500.0, 0.0];
+    /// The escort's ground speed in meters per tick.
+    pub const OBSERVER_SPEED_M_PER_TICK: f64 = 1.5;
+    /// The charge the escort protects.
+    pub const PROTECTED_START_M: [f64; 3] = [300.0, 500.0, -400.0];
+    /// The attacker: the hostile that hits the charge.
+    pub const ATTACKER_START_M: [f64; 3] = [1_200.0, 520.0, -400.0];
+    /// The attacker closes on the charge.
+    pub const ATTACKER_SPEED_M_PER_TICK: f64 = 0.9;
+    /// The harmless hostile: closer than the attacker, and no threat to anyone.
+    pub const HARMLESS_START_M: [f64; 3] = [700.0, 500.0, 900.0];
+    /// The harmless hostile crosses the observer's front.
+    pub const HARMLESS_VELOCITY_M_PER_TICK: [f64; 3] = [-0.6, 0.0, 1.2];
+    /// How many ticks between two authoritative attacks on the charge.
+    ///
+    /// Wider than the largest declared reaction delay
+    /// ([`super::MAX_REACTION_TICKS`]) so the gate is not saturated: the
+    /// observed ages run `0..=PROBE_THREAT_PERIOD_TICKS`, so even the slowest
+    /// tier notices for part of every period.
+    pub const PROBE_THREAT_PERIOD_TICKS: u64 = 120;
+    /// The first tick an attack is recorded on.
+    pub const PROBE_FIRST_THREAT_TICK: u64 = 1;
+    /// The tick the assigned target is reported destroyed on.
+    pub const PROBE_TARGET_LOST_TICK: u64 = 400;
+    /// The formation leader's serial: the escort itself, slot 0.
+    pub const LEADER_SERIAL: u64 = 20;
+    /// The formation follower's serials.
+    pub const FOLLOWER_SERIALS: [u64; 2] = [21, 22];
+    /// The escort's slot: it leads.
+    pub const LEADER_SLOT: u32 = 0;
+    /// The follower's slots.
+    pub const FOLLOWER_SLOTS: [u32; 2] = [1, 2];
+    /// The follower slot the probe loses mid-run.
+    pub const LOST_SLOT: u32 = 1;
+    /// The tick the probe loses a follower on.
+    pub const FOLLOWER_LOST_TICK: u64 = 250;
+    /// The escort's own actor serial, equal to [`LEADER_SERIAL`]: the probe's
+    /// deciding actor is the formation's leader, so a recovery and a decision
+    /// are reported about one actor.
+    pub const OBSERVER_SERIAL: u64 = LEADER_SERIAL;
+    /// The charge the escort protects.
+    pub const PROTECTED_SERIAL: u64 = 40;
+    /// The hostile that attacks the charge.
+    pub const ATTACKER_SERIAL: u64 = 30;
+    /// The hostile that attacks nobody.
+    pub const HARMLESS_SERIAL: u64 = 31;
+}
+
+use probe_geometry as geom;
+
+impl CombatRuntime {
+    /// Runs the mission-combat probe: every [`DifficultyTier::ALL`] tier,
+    /// [`DifficultyProbeSpec::runs_per_tier`] runs each, and the adjacent
+    /// comparisons between them.
+    ///
+    /// # The one observable failure
+    ///
+    /// A runtime that resolved the same profile for every tier would make every
+    /// aggregate equal, and "difficulty" would be a comment. This is what AC04
+    /// names, so the report is built to make that visible:
+    /// [`DifficultyProbeReport::outcomes_differ`] and
+    /// [`DifficultyProbeReport::distinct_profile_count`] are false/one for it,
+    /// and the callers in `crates/cs_sim/tests/ai/accept_f32_d_combat.rs`
+    /// assert them.
+    ///
+    /// # What is held constant
+    ///
+    /// The world. Every run's positions, threat stamps and tick count are a
+    /// function of `(spec.root_seed, run)` and of nothing else, and the weapons
+    /// snapshot is one snapshot for every tier — so the only thing that differs
+    /// between two runs with the same index is the profile
+    /// [`CombatRuntime::resolve_profile`] selected. That is what makes the
+    /// comparison statistical rather than anecdotal, and it is checked by
+    /// [`DifficultyProbeReport::geometry_is_tier_invariant`],
+    /// [`DifficultyProbeReport::arsenal_is_tier_invariant`] and
+    /// [`DifficultyProbeReport::clock_is_tier_invariant`].
+    ///
+    /// # Errors
+    ///
+    /// Every error [`CombatRuntime::step`] reports. A probe run is refused
+    /// rather than counted with a hole in it, so a report never describes a
+    /// partial tier.
+    pub fn probe_difficulties(
+        &self,
+        spec: &DifficultyProbeSpec,
+    ) -> Result<DifficultyProbeReport, CombatError> {
+        let mut runs = Vec::with_capacity(DifficultyTier::ALL.len() * spec.runs_per_tier as usize);
+        let mut tiers = Vec::with_capacity(DifficultyTier::ALL.len());
+        for tier in DifficultyTier::ALL {
+            let mut tier_runs = Vec::with_capacity(spec.runs_per_tier as usize);
+            for run in 0..spec.runs_per_tier {
+                tier_runs.push(self.probe_once(spec, *tier, run)?);
+            }
+            tiers.push(aggregate(*tier, &tier_runs, spec.ticks));
+            runs.extend(tier_runs);
+        }
+        let comparisons = compare_adjacent(&tiers);
+        Ok(DifficultyProbeReport {
+            spec: *spec,
+            runs,
+            tiers,
+            comparisons,
+        })
+    }
+
+    /// One probe run at one tier: a clone of this runtime with its own
+    /// formation coordinator, so the run's formation state cannot leak into the
+    /// next run.
+    fn probe_once(
+        &self,
+        spec: &DifficultyProbeSpec,
+        tier: DifficultyTier,
+        run: u32,
+    ) -> Result<DifficultyProbeRun, CombatError> {
+        // The observer is the escort the roster carries at every tier, so the
+        // probe measures a role that exists rather than one it invents.
+        let assignment =
+            RoleAssignment::protecting(self.observer(spec), CombatRole::Escort, self.charge(spec))?
+                .in_formation(FormationSlot {
+                    formation: PROBE_FORMATION,
+                    slot: geom::LEADER_SLOT,
+                });
+        let mut runtime = CombatRuntime::new(
+            self.session,
+            &self.planner.profiles(),
+            self.aces.values().cloned().collect(),
+            self.difficulty.clone(),
+        )?
+        .with_formation(probe_roster(spec), spec.policies())?;
+        let arsenal = synthetic_arsenal();
+        let members = probe_members();
+        let mut stream = spec.stream(run);
+        let jitter = |stream: &mut cs_types::random::SplitMix64| {
+            // Two independent lateral draws per hostile: a bounded offset, so
+            // no run can move a candidate across a gate by itself.
+            [
+                cs_types::random::unit_f64(stream.next_u64()) * 2.0 * PROBE_LATERAL_JITTER_M
+                    - PROBE_LATERAL_JITTER_M,
+                cs_types::random::unit_f64(stream.next_u64()) * 2.0 * PROBE_LATERAL_JITTER_M
+                    - PROBE_LATERAL_JITTER_M,
+            ]
+        };
+        let (attacker_jitter, harmless_jitter) = (jitter(&mut stream), jitter(&mut stream));
+        let attacker_alive_until = geom::PROBE_TARGET_LOST_TICK;
+
+        let mut geometry = Fnv1a64::new();
+        let mut engagements = 0u64;
+        let mut first_engagement: Option<u64> = None;
+        let mut previous_target: Option<ActorId> = None;
+        let mut target_changes = 0u64;
+        let mut deferred = 0u64;
+        let mut noticed = 0u64;
+        let mut protected_answers = 0u64;
+        let mut first_protected_answer: Option<u64> = None;
+        let mut range_rejects = 0u64;
+        let mut recoveries = 0u64;
+        let mut firing_ticks = 0u64;
+        let arsenal_fingerprint = arsenal_fingerprint(&arsenal);
+
+        let candidates = probe_candidates(attacker_jitter, harmless_jitter);
+        for tick in 0..spec.ticks {
+            let now = Tick(tick);
+            geometry.write_u64(tick);
+            for member in &members {
+                let moved = advance(member.start_m, member.velocity_m_per_tick, tick);
+                geometry.write_f64(moved[0]);
+                geometry.write_f64(moved[1]);
+                geometry.write_f64(moved[2]);
+            }
+            for candidate in &candidates {
+                let moved = advance(candidate.start_m, candidate.velocity_m_per_tick, tick);
+                geometry.write_f64(moved[0]);
+                geometry.write_f64(moved[1]);
+                geometry.write_f64(moved[2]);
+            }
+            // The charge's own point is part of the replayed world too, so a
+            // probe that moved the charge would change the digest.
+            for value in geom::PROTECTED_START_M {
+                geometry.write_f64(value);
+            }
+            let observer_position = probe_world(advance(
+                geom::OBSERVER_START_M,
+                [geom::OBSERVER_SPEED_M_PER_TICK, 0.0, 0.0],
+                tick,
+            ));
+
+            let reports: Vec<FormationMemberReport> = members
+                .iter()
+                .map(|member| FormationMemberReport {
+                    slot: member.slot,
+                    actor: member.actor(spec),
+                    position: probe_world(advance(
+                        member.start_m,
+                        member.velocity_m_per_tick,
+                        tick,
+                    )),
+                    // The follower's first slot is lost mid-run so the probe
+                    // exercises a real recovery, not just a steady state.
+                    alive: !(tick >= geom::FOLLOWER_LOST_TICK && member.slot == geom::LOST_SLOT),
+                })
+                .collect();
+            let attacker_alive = tick < attacker_alive_until;
+            let update = runtime.update_formation(&FormationTick {
+                formation: PROBE_FORMATION,
+                now,
+                members: &reports,
+                assigned_target: Some(candidate_actor(spec, geom::ATTACKER_SERIAL)),
+                assigned_target_alive: attacker_alive,
+                route_available: true,
+            })?;
+            if update.trigger.is_some() {
+                recoveries += 1;
+            }
+
+            let views = probe_views(spec, &candidates, tick, attacker_alive);
+            let step = runtime.step(&CombatantRequest {
+                observer: assignment.actor(),
+                now,
+                observer_position,
+                assignment: &assignment,
+                formation: Some(PROBE_FORMATION),
+                protected_alive: Some(true),
+                candidates: &views,
+                arsenal: Some(&arsenal),
+                ace: None,
+                tier,
+            })?;
+
+            for trace in &step.trace().candidates {
+                match trace.reaction {
+                    ReactionState::Deferred { .. } => deferred += 1,
+                    ReactionState::Noticed { .. } => noticed += 1,
+                    ReactionState::NotApplicable => {}
+                }
+                if matches!(
+                    trace.verdict,
+                    CandidateVerdict::Rejected(RejectReason::BeyondEngagementRange)
+                ) {
+                    range_rejects += 1;
+                }
+            }
+            if let Some(target) = step.target() {
+                engagements += 1;
+                first_engagement.get_or_insert(tick);
+                if previous_target != Some(target) {
+                    target_changes += 1;
+                    previous_target = Some(target);
+                }
+            } else {
+                previous_target = None;
+            }
+            // The escort's answer is the trace's own statement: the selected
+            // target's protected-actor term contributed, which can only happen
+            // for a candidate whose attack the reaction gate found noticed.
+            if step.target().is_some_and(|target| {
+                step.trace().candidate(target).is_some_and(|trace| {
+                    trace
+                        .term(PriorityTerm::ProtectedActorThreat)
+                        .is_some_and(|term| term.contribution > 0.0)
+                })
+            }) {
+                protected_answers += 1;
+                first_protected_answer.get_or_insert(tick);
+            }
+            if step
+                .decision
+                .trace
+                .firing
+                .as_ref()
+                .is_some_and(FiringSolution::is_firing)
+            {
+                firing_ticks += 1;
+            }
+        }
+
+        let (profile, source) = runtime.resolve_profile(&assignment, None, tier)?;
+        debug_assert_eq!(source, ProfileSource::Role { tier });
+        Ok(DifficultyProbeRun {
+            tier,
+            run,
+            seed: spec.root_seed,
+            measured_step: tier.measured_step(),
+            ticks: spec.ticks,
+            engagements,
+            first_engagement_tick: first_engagement,
+            target_changes,
+            deferred_threats: deferred,
+            noticed_threats: noticed,
+            protected_answers,
+            first_protected_answer_tick: first_protected_answer,
+            range_rejects,
+            recoveries,
+            firing_ticks,
+            geometry_fingerprint: geometry.finish(),
+            arsenal_fingerprint,
+            profile_fingerprint: profile_fingerprint(&profile),
+        })
+    }
+
+    /// The escort actor the probe decides for.
+    fn observer(&self, spec: &DifficultyProbeSpec) -> ActorId {
+        ActorId {
+            session: SessionId::new(spec.session).unwrap_or(SYNTHETIC_SESSION_ID),
+            serial: geom::OBSERVER_SERIAL,
+        }
+    }
+
+    /// The charge the probe's escort protects.
+    fn charge(&self, spec: &DifficultyProbeSpec) -> ActorId {
+        ActorId {
+            session: SessionId::new(spec.session).unwrap_or(SYNTHETIC_SESSION_ID),
+            serial: geom::PROTECTED_SERIAL,
+        }
+    }
+}
+
+/// The formation the probe's actors belong to.
+pub const PROBE_FORMATION: FormationId = FormationId(90);
+
+/// One probe candidate's authored straight-line path.
+struct ProbeCandidate {
+    serial: u64,
+    start_m: [f64; 3],
+    velocity_m_per_tick: [f64; 3],
+    objective: bool,
+}
+
+/// One probe formation member's authored straight-line path.
+struct ProbeMember {
+    slot: u32,
+    serial: u64,
+    start_m: [f64; 3],
+    velocity_m_per_tick: [f64; 3],
+}
+
+impl ProbeMember {
+    fn actor(&self, spec: &DifficultyProbeSpec) -> ActorId {
+        ActorId {
+            session: SessionId::new(spec.session).unwrap_or(SYNTHETIC_SESSION_ID),
+            serial: self.serial,
+        }
+    }
+}
+
+/// The probe's candidates, jittered by the run's stream.
+fn probe_candidates(attacker_jitter: [f64; 2], harmless_jitter: [f64; 2]) -> Vec<ProbeCandidate> {
+    vec![
+        ProbeCandidate {
+            serial: geom::ATTACKER_SERIAL,
+            start_m: [
+                geom::ATTACKER_START_M[0],
+                geom::ATTACKER_START_M[1] + attacker_jitter[0],
+                geom::ATTACKER_START_M[2] + attacker_jitter[1],
+            ],
+            velocity_m_per_tick: [-geom::ATTACKER_SPEED_M_PER_TICK, 0.0, 0.0],
+            objective: false,
+        },
+        ProbeCandidate {
+            serial: geom::HARMLESS_SERIAL,
+            start_m: [
+                geom::HARMLESS_START_M[0] + harmless_jitter[0],
+                geom::HARMLESS_START_M[1],
+                geom::HARMLESS_START_M[2] + harmless_jitter[1],
+            ],
+            velocity_m_per_tick: geom::HARMLESS_VELOCITY_M_PER_TICK,
+            objective: true,
+        },
+    ]
+}
+
+/// The probe's formation membership, jittered by the run's stream.
+fn probe_members() -> Vec<ProbeMember> {
+    let mut members = vec![ProbeMember {
+        slot: geom::LEADER_SLOT,
+        serial: geom::LEADER_SERIAL,
+        start_m: geom::OBSERVER_START_M,
+        velocity_m_per_tick: [geom::OBSERVER_SPEED_M_PER_TICK, 0.0, 0.0],
+    }];
+    for (index, serial) in geom::FOLLOWER_SERIALS.iter().enumerate() {
+        let slot = geom::FOLLOWER_SLOTS[index];
+        members.push(ProbeMember {
+            slot,
+            serial: *serial,
+            start_m: [
+                geom::OBSERVER_START_M[0] - f64::from(slot) * FORMATION_TRAIL_SPACING_M,
+                geom::OBSERVER_START_M[1],
+                geom::OBSERVER_START_M[2],
+            ],
+            velocity_m_per_tick: [geom::OBSERVER_SPEED_M_PER_TICK, 0.0, 0.0],
+        });
+    }
+    members
+}
+
+/// The probe's formation membership, as the runtime registers it.
+fn probe_roster(spec: &DifficultyProbeSpec) -> FormationRoster {
+    let members = probe_members();
+    FormationRoster::try_new(
+        PROBE_FORMATION,
+        geom::LEADER_SLOT,
+        members
+            .iter()
+            .map(|member| FormationRosterMember {
+                slot: member.slot,
+                actor: member.actor(spec),
+            })
+            .collect(),
+    )
+    .expect("the probe's own roster is valid")
+}
+
+/// One tick's candidate views: the authoritative attacks inside the threat
+/// window, and nothing else.
+///
+/// The threat schedule is a function of the tick alone, so two runs with the
+/// same index present the same attacks at every tier — which is the whole
+/// reason the per-tier comparison is attributable to the profile.
+fn probe_views(
+    spec: &DifficultyProbeSpec,
+    candidates: &[ProbeCandidate],
+    tick: u64,
+    attacker_alive: bool,
+) -> Vec<CandidateView> {
+    let session = SessionId::new(spec.session).unwrap_or(SYNTHETIC_SESSION_ID);
+    let mut views = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let actor = ActorId {
+            session,
+            serial: candidate.serial,
+        };
+        let threat = if candidate.serial == geom::ATTACKER_SERIAL && attacker_alive {
+            // One recorded attack every period from the first threat tick on.
+            let period = tick.saturating_sub(geom::PROBE_FIRST_THREAT_TICK)
+                % geom::PROBE_THREAT_PERIOD_TICKS;
+            let stamp = tick - period;
+            Some(ThreatEvidence::new(
+                actor,
+                ActorId {
+                    session,
+                    serial: geom::PROTECTED_SERIAL,
+                },
+                Tick(stamp),
+                HitEventId {
+                    session,
+                    tick: Tick(stamp),
+                    producer: PROBE_PRODUCER,
+                    sequence: u32::try_from(stamp % u64::from(u32::MAX)).unwrap_or(0),
+                },
+            ))
+        } else {
+            None
+        };
+        views.push(CandidateView {
+            actor,
+            position: probe_world(advance(
+                candidate.start_m,
+                candidate.velocity_m_per_tick,
+                tick,
+            )),
+            allegiance: Some(Allegiance::Hostile),
+            objective: candidate.objective,
+            threat,
+            friendlies_in_line_of_fire: 0,
+        });
+    }
+    views
+}
+
+/// The producer id the probe's own authoritative attacks carry, so a caller can
+/// tell a probe attack from a mission's.
+const PROBE_PRODUCER: u32 = 0xF32D;
+
+/// The probe's one observer, the escort that leads its formation.
+fn candidate_actor(spec: &DifficultyProbeSpec, serial: u64) -> ActorId {
+    ActorId {
+        session: SessionId::new(spec.session).unwrap_or(SYNTHETIC_SESSION_ID),
+        serial,
+    }
+}
+
+/// A point advanced by `tick` whole ticks of an authored straight-line path.
+fn advance(start_m: [f64; 3], velocity_m_per_tick: [f64; 3], tick: u64) -> [f64; 3] {
+    let t = tick as f64;
+    [
+        start_m[0] + velocity_m_per_tick[0] * t,
+        start_m[1] + velocity_m_per_tick[1] * t,
+        start_m[2] + velocity_m_per_tick[2] * t,
+    ]
+}
+
+/// A finite [`WorldPosition`] or a panic: the probe's own geometry is authored,
+/// so a non-finite point is a bug here rather than content.
+fn probe_world(position_m: [f64; 3]) -> WorldPosition {
+    WorldPosition::try_new(position_m).expect("the probe's authored geometry is finite")
+}
+
+/// One tier's aggregate over its runs.
+fn aggregate(tier: DifficultyTier, runs: &[DifficultyProbeRun], ticks: u64) -> TierProbeOutcome {
+    let count = runs.len().max(1) as f64;
+    let engagements: u64 = runs.iter().map(|run| run.engagements).sum();
+    let protected_answers: u64 = runs.iter().map(|run| run.protected_answers).sum();
+    TierProbeOutcome {
+        tier,
+        measured_step: tier.measured_step(),
+        runs: runs.len() as u32,
+        ticks_per_run: ticks,
+        engagements,
+        mean_engagements: engagements as f64 / count,
+        variance_engagements: variance(runs.iter().map(|run| run.engagements), engagements, count),
+        protected_answers,
+        mean_protected_answers: protected_answers as f64 / count,
+        variance_protected_answers: variance(
+            runs.iter().map(|run| run.protected_answers),
+            protected_answers,
+            count,
+        ),
+        deferred_threats: runs.iter().map(|run| run.deferred_threats).sum(),
+        noticed_threats: runs.iter().map(|run| run.noticed_threats).sum(),
+        range_rejects: runs.iter().map(|run| run.range_rejects).sum(),
+        recoveries: runs.iter().map(|run| run.recoveries).sum(),
+        firing_ticks: runs.iter().map(|run| run.firing_ticks).sum(),
+        geometry_fingerprints: runs.iter().map(|run| run.geometry_fingerprint).collect(),
+        arsenal_fingerprints: runs.iter().map(|run| run.arsenal_fingerprint).collect(),
+        profile_fingerprints: runs.iter().map(|run| run.profile_fingerprint).collect(),
+    }
+}
+
+/// The population variance of `values` given their already-summed total and the
+/// divisor `count`.
+///
+/// Written out rather than pulled from a statistics crate: `cs_sim` may depend
+/// only on `cs_types` and `cs_script`, and a two-pass sum of squares is the
+/// whole definition.
+fn variance(values: impl Iterator<Item = u64>, total: u64, count: f64) -> f64 {
+    let mean = total as f64 / count;
+    let squares: f64 = values
+        .map(|value| {
+            let centred = value as f64 - mean;
+            centred * centred
+        })
+        .sum();
+    squares / count
+}
+
+/// The comparisons of every adjacent pair, in [`DifficultyTier::ALL`] order.
+fn compare_adjacent(tiers: &[TierProbeOutcome]) -> Vec<TierComparison> {
+    tiers
+        .windows(2)
+        .map(|pair| {
+            let (lower, higher) = (&pair[0], &pair[1]);
+            debug_assert!(lower.tier < higher.tier);
+            TierComparison {
+                lower: lower.tier,
+                higher: higher.tier,
+                engagements: difference(lower.engagements, higher.engagements),
+                protected_answers: difference(lower.protected_answers, higher.protected_answers),
+                deferred_threats: difference(lower.deferred_threats, higher.deferred_threats),
+            }
+        })
+        .collect()
+}
+
+/// How `higher` moved against `lower`.
+fn difference(lower: u64, higher: u64) -> ProbeDifference {
+    match higher.cmp(&lower) {
+        std::cmp::Ordering::Greater => ProbeDifference::Higher,
+        std::cmp::Ordering::Less => ProbeDifference::Lower,
+        std::cmp::Ordering::Equal => ProbeDifference::Same,
+    }
+}
+
+/// A 64-bit FNV-1a digest over the probe's `f64` geometry.
+///
+/// The probe needs a fingerprint, not a hash with a cryptographic claim: what
+/// it must detect is that two runs replayed *the same* world, and a 64-bit
+/// non-cryptographic digest over the exact bit pattern of each coordinate is
+/// enough for that and adds no dependency. `f64::to_bits` keeps a NaN or a
+/// `-0.0` distinguishable from `0.0`, so a geometry that produced either would
+/// not silently share a digest with one that did not.
+#[derive(Debug)]
+struct Fnv1a64(u64);
+
+impl Fnv1a64 {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn new() -> Self {
+        Self(Self::OFFSET)
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        for byte in value.to_le_bytes() {
+            self.0 ^= u64::from(byte);
+            self.0 = self.0.wrapping_mul(Self::PRIME);
+        }
+    }
+
+    fn write_f64(&mut self, value: f64) {
+        self.write_u64(value.to_bits());
+    }
+
+    fn finish(self) -> u64 {
+        self.0
+    }
+}
+
+/// The tier-independent digest of one weapons snapshot.
+///
+/// Read from the production [`ArsenalSnapshot`], so a tier that changed a
+/// mount's availability would change this — which is exactly the
+/// non-negotiable 2 check.
+fn arsenal_fingerprint(arsenal: &ArsenalSnapshot) -> u64 {
+    let mut digest = Fnv1a64::new();
+    for mount in arsenal.mounts() {
+        digest.write_f64(mount.rounds as f64);
+        digest.write_u64(u64::from(mount.disabled));
+        digest.write_u64(mount.cooldown_ticks);
+        digest.write_u64(match mount.kind {
+            MountKind::Gun => 0,
+            MountKind::Ordnance => 1,
+        });
+        for byte in mount.mount.as_str().as_bytes() {
+            digest.write_u64(u64::from(*byte));
+        }
+    }
+    digest.finish()
+}
+
+/// The digest of one effective profile.
+///
+/// Deliberately reads the four [`SkillKnobs`] and the four priority weights,
+/// which is every field a tier may move: two tiers with equal digests really
+/// did select the same behavior.
+fn profile_fingerprint(profile: &SkillProfile) -> u64 {
+    let knobs = profile.knobs();
+    let priority = profile.priority();
+    let mut digest = Fnv1a64::new();
+    digest.write_u64(knobs.reaction_ticks);
+    digest.write_f64(knobs.aim_error_rad);
+    digest.write_f64(knobs.engagement_range_m);
+    digest.write_u64(knobs.fire_discipline_ticks);
+    digest.write_f64(priority.protected_actor_weight);
+    digest.write_f64(priority.objective_weight);
+    digest.write_f64(priority.self_defense_weight);
+    digest.write_f64(priority.proximity_weight);
+    digest.write_u64(priority.threat_window_ticks);
+    digest.finish()
+}
+
+/// The synthetic probe spec: the synthetic session, the F32-D probe's designed
+/// geometry and a bounded number of runs.
+#[must_use]
+pub fn synthetic_difficulty_probe_spec() -> DifficultyProbeSpec {
+    DifficultyProbeSpec::try_new(
+        SYNTHETIC_SESSION,
+        600,
+        24,
+        20_260_903,
+        synthetic_recovery_policies(),
+    )
+    .expect("the synthetic probe spec is valid")
 }

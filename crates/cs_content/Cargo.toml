@@ -20,3 +20,11 @@ cs_assets.workspace = true
 # reports are the ones `cs_net::rules::RuleField` defines, so the two crates
 # cannot drift apart. It is a test-only edge: `cs_content` does not link `cs_net`.
 cs_net.workspace = true
+# The F32-D acceptance test checks that `cs_sim::ai::combat`'s mirror of the
+# measured original difficulty-step count is the count this crate just measured
+# from the installation, so the two copies cannot drift apart. `cs_sim` holds
+# its own copy because it may not depend on `cs_content` (AGENTS rule 7); this
+# test-only edge is where the two are compared, which has to happen on the side
+# that owns the measurement. It is test-only: `cs_content` does not link
+# `cs_sim`, and `cs_sim` does not link `cs_content`.
+cs_sim.workspace = true

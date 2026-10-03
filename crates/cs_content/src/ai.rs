@@ -57,12 +57,30 @@
 //! provenance, recorded in
 //! `docs/findings/2026-10-01-f32-a-combat-roles-skill-knobs-and-decision-traces.md`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::Path;
+use std::sync::OnceLock;
 
+use cs_assets::install;
+use cs_assets::rof::mount_rof_into;
+use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
+use cs_formats::ParseContext;
+use cs_formats::script_raw::discovery::discover_container;
+use cs_formats::text::resource_header::read_resource_header;
+use cs_types::asset_id::{
+    AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan,
+};
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
-use cs_types::evidence::ClaimId;
+use cs_types::evidence::{ClaimId, ContentHash};
+use cs_types::install::{InstallManifest, RelativePath};
 use cs_types::space::{Meters, Radians};
+
+use crate::config::StringCatalog;
+use crate::stunts::{
+    SCENARIO_MEMBER, ZrdValue, decode_zrd, scenario_mission_type, scenario_non_player_aircraft,
+    zrd_field, zrd_flat_fields,
+};
 
 /// The largest reaction delay a declared role may carry, in ticks.
 ///
@@ -2772,52 +2790,554 @@ mod tests {
     }
 }
 
+// ------------------------------------------- measured surface ----
+
+/// The retail container the engine's resource header and the UI string image
+/// are read beside.
+const BASE_CONTAINER: &str = "GOSDATA/ASSETS/crimson.rof";
+
+/// The shipped English UI string image, named as the installation spells it.
+///
+/// **Measured**: it carries the option labels `IDS_DIFFICULTY` and its two
+/// successors, in language 1033.
+const STRING_IMAGE: &str = "GOSDATA/ASSETS/BINARIES/langui.dll";
+
+/// What one measured AI skill label occupies in the installation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkillLabelRow {
+    /// The label the data spells, byte for byte.
+    pub label: String,
+    /// How many declarations carry it.
+    pub count: u32,
+}
+
+/// One measured instant-action scenario descriptor's AI facts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScenarioSurface {
+    /// The reader archive the descriptor came from, as the installation
+    /// spells it in lowercase logical form.
+    pub container: String,
+    /// The declared mission type, when the descriptor names one.
+    pub mission_type: Option<String>,
+    /// The descriptor's complete root-key vocabulary.
+    pub root_keys: Vec<String>,
+    /// How many enemy groups it declares.
+    pub enemy_groups: u32,
+    /// Every skill label it declares, over its groups and its named ace.
+    pub skills: Vec<String>,
+    /// Its `ace_stats` vector, when every element is an integer.
+    pub ace_stats: Option<Vec<i64>>,
+}
+
+/// The original's AI surface, measured over one installation.
+///
+/// Everything here is re-derived from the installation on each call through
+/// `cs_assets`' ROF mount, `cs_formats`' resource-header and PE-resource
+/// readers, [`crate::config::StringCatalog`] and [`crate::stunts`]' `.zrd`
+/// decoder — so a committed constant in this module can be compared against a
+/// fresh measurement instead of being trusted.
+///
+/// **No display text leaves this type.** The string-image side reports
+/// *occupancy* — how many ids carry a non-empty string, in how many languages,
+/// over how many code units — and never the string itself, so nothing here
+/// reproduces original display content (AGENTS rule 3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginalAiSurface {
+    /// The installation digest every number below is bound to.
+    pub install_sha256: String,
+    /// The canonical-content digest of the same installation.
+    pub content_sha256: String,
+    /// The id `IDS_DIFFICULTY` declares.
+    pub difficulty_macro_id: u32,
+    /// The id of the first macro the header declares after it.
+    pub difficulty_bound_id: u32,
+    /// The bound's width: how many ids the option's name list can hold.
+    pub difficulty_steps: u32,
+    /// How many of those ids the shipped string image populates.
+    pub populated_difficulty_ids: u32,
+    /// The difficulty row's game-options title, as `(macro, id)`.
+    pub game_option_title: (String, u32),
+    /// The difficulty row's game-options description, as `(macro, id)`.
+    pub game_option_desc: (String, u32),
+    /// The instant-action difficulty label, as `(macro, id)`.
+    pub ia_difficulty_label: (String, u32),
+    /// Whether any measured scenario descriptor records a difficulty.
+    pub difficulty_recorded_per_scenario: bool,
+    /// Every reader archive the installation carries.
+    pub reader_archives: u32,
+    /// Every scenario descriptor, in installation order.
+    pub scenarios: Vec<ScenarioSurface>,
+    /// The skill label census over every descriptor, sorted by label.
+    pub skill_labels: Vec<SkillLabelRow>,
+    /// How many skill labels the descriptors declare in total.
+    pub skill_label_count: u32,
+    /// How many enemy groups the descriptors declare.
+    pub enemy_group_count: u32,
+    /// How many ids the engine's resource header declares.
+    pub declared_header_ids: u32,
+}
+
+impl OriginalAiSurface {
+    /// The distinct measured skill tiers, as the labels the data spells,
+    /// sorted.
+    #[must_use]
+    pub fn skill_tiers(&self) -> Vec<&str> {
+        self.skill_labels
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect()
+    }
+
+    /// How many instances of `label` the descriptors declare.
+    #[must_use]
+    pub fn skill_label_count_of(&self, label: &str) -> u32 {
+        self.skill_labels
+            .iter()
+            .find(|row| row.label == label)
+            .map_or(0, |row| row.count)
+    }
+
+    /// The mission types the descriptors declare, sorted and deduplicated.
+    #[must_use]
+    pub fn mission_types(&self) -> Vec<&str> {
+        let mut types: Vec<&str> = self
+            .scenarios
+            .iter()
+            .filter_map(|scenario| scenario.mission_type.as_deref())
+            .collect();
+        types.sort_unstable();
+        types.dedup();
+        types
+    }
+
+    /// The descriptor root-key vocabulary, sorted and deduplicated.
+    #[must_use]
+    pub fn scenario_key_vocabulary(&self) -> Vec<&str> {
+        let mut keys: Vec<&str> = self
+            .scenarios
+            .iter()
+            .flat_map(|scenario| scenario.root_keys.iter().map(String::as_str))
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        keys
+    }
+
+    /// Whether the measured step count matches the committed
+    /// [`ORIGINAL_DIFFICULTY_STEPS`].
+    #[must_use]
+    pub fn agrees_with_committed_steps(&self) -> bool {
+        self.difficulty_steps == ORIGINAL_DIFFICULTY_STEPS
+            && self.populated_difficulty_ids == ORIGINAL_DIFFICULTY_STEPS
+    }
+
+    /// The ids the option occupies, ascending.
+    #[must_use]
+    pub fn difficulty_ids(&self) -> Vec<u32> {
+        (self.difficulty_macro_id..self.difficulty_bound_id).collect()
+    }
+
+    /// Whether the measured skill vocabulary matches [`DeclaredSkillTier`].
+    #[must_use]
+    pub fn agrees_with_declared_skill_tiers(&self) -> bool {
+        let mut measured = self.skill_tiers();
+        measured.sort_unstable();
+        let mut declared: Vec<&str> = DeclaredSkillTier::ALL.iter().map(|t| t.label()).collect();
+        declared.sort_unstable();
+        measured == declared
+    }
+}
+
+/// Why an AI surface could not be measured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SurfaceError {
+    /// The installation could not be discovered.
+    Discovery(String),
+    /// A file could not be read.
+    Read {
+        /// The installation-relative spelling that failed.
+        spelling: String,
+        /// What failed.
+        reason: String,
+    },
+    /// The engine's resource header could not be decoded.
+    ResourceHeader(String),
+    /// A scenario descriptor could not be decoded.
+    Scenario {
+        /// The reader archive it came from.
+        container: String,
+        /// What failed.
+        reason: String,
+    },
+    /// A measured fact the measurement depends on was absent.
+    MissingFact {
+        /// Which fact.
+        what: &'static str,
+    },
+}
+
+impl fmt::Display for SurfaceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Discovery(reason) => write!(f, "the installation is not discoverable: {reason}"),
+            Self::Read { spelling, reason } => write!(f, "{spelling} is unreadable: {reason}"),
+            Self::ResourceHeader(reason) => {
+                write!(f, "the engine's resource header is unreadable: {reason}")
+            }
+            Self::Scenario { container, reason } => {
+                write!(
+                    f,
+                    "{container}'s scenario descriptor is undecodable: {reason}"
+                )
+            }
+            Self::MissingFact { what } => write!(f, "the installation declares no {what}"),
+        }
+    }
+}
+
+impl std::error::Error for SurfaceError {}
+
+/// The installation manifest, discovered once per process.
+///
+/// Production discovery hashes every file of the installation, so a per-call
+/// discovery would hash a multi-gigabyte installation once per measurement
+/// field; the digest is cached and every span is bound to *it*, which is what
+/// stops a report from one installation being reused for another's numbers.
+fn installation(root: &Path) -> Result<&'static InstallManifest, SurfaceError> {
+    static CACHE: OnceLock<Result<InstallManifest, String>> = OnceLock::new();
+    let cached = CACHE.get_or_init(|| {
+        install::discover(root)
+            .map(|found| found.manifest)
+            .map_err(|error| format!("{error:?}"))
+    });
+    match cached {
+        Ok(manifest) => Ok(manifest),
+        Err(reason) => Err(SurfaceError::Discovery(reason.clone())),
+    }
+}
+
+/// The installation digest every span of a measurement is bound to.
+fn install_sha256(root: &Path) -> Result<ContentHash, SurfaceError> {
+    Ok(install::fingerprint(installation(root)?))
+}
+
+/// Opens one retail member's bytes through the production ROF mount.
+///
+/// The mount answers *resolution* and the [`RofSource`] answers *bytes*: a ROF
+/// member lives inside its container and may be compressed, so the session's
+/// directory read reports `no backing` for it **by design** and the production
+/// member reader is the byte path. The session is still used, to prove the
+/// member resolves through the mount before a byte is read.
+fn read_member(root: &Path, spelling: &str) -> Result<Vec<u8>, SurfaceError> {
+    let install = install_sha256(root)?;
+    let id: String = format!("rof-{}", BASE_CONTAINER.to_ascii_lowercase())
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '.' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut builder = SessionBuilder::new(ResolveContext::new(install));
+    let source = mount_rof_into(
+        &mut builder,
+        MountBuilder::new(
+            MountId::new(&id).map_err(|error| SurfaceError::Read {
+                spelling: BASE_CONTAINER.to_owned(),
+                reason: error.to_string(),
+            })?,
+            MountNamespace::new(INSTALL_NAMESPACE).map_err(|error| SurfaceError::Read {
+                spelling: BASE_CONTAINER.to_owned(),
+                reason: error.to_string(),
+            })?,
+            PrecedenceClass::Shared,
+            BASE_CONTAINER,
+        )
+        .retail(),
+        &root.join(BASE_CONTAINER),
+    )
+    .map_err(|error| SurfaceError::Read {
+        spelling: BASE_CONTAINER.to_owned(),
+        reason: format!("{error:?}"),
+    })?;
+    let session = builder.open();
+    let key = AssetKey::from_spelling(INSTALL_NAMESPACE, spelling, "default").map_err(|error| {
+        SurfaceError::Read {
+            spelling: spelling.to_owned(),
+            reason: error.to_string(),
+        }
+    })?;
+    session.resolve(&key).map_err(|error| SurfaceError::Read {
+        spelling: spelling.to_owned(),
+        reason: format!("{error:?}"),
+    })?;
+    source
+        .read(&key)
+        .map(|read| read.data)
+        .map_err(|error| SurfaceError::Read {
+            spelling: spelling.to_owned(),
+            reason: format!("{error:?}"),
+        })
+}
+
+/// The engine's resource header, read out of the base retail archive.
+fn resource_header(root: &Path) -> Result<Vec<u32>, SurfaceError> {
+    let bytes = read_member(root, ORIGINAL_RESOURCE_HEADER)?;
+    let header = read_resource_header(
+        &mut ParseContext::with_defaults(ORIGINAL_RESOURCE_HEADER),
+        &bytes,
+    )
+    .map_err(|error| SurfaceError::ResourceHeader(error.to_string()))?;
+    let mut ids: Vec<u32> = header
+        .defines()
+        .filter_map(|define| define.resource_id())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
+}
+
+/// The id one macro declares in the engine's resource header.
+fn macro_id(root: &Path, name: &'static str) -> Result<u32, SurfaceError> {
+    let bytes = read_member(root, ORIGINAL_RESOURCE_HEADER)?;
+    let header = read_resource_header(
+        &mut ParseContext::with_defaults(ORIGINAL_RESOURCE_HEADER),
+        &bytes,
+    )
+    .map_err(|error| SurfaceError::ResourceHeader(error.to_string()))?;
+    header
+        .resource_id(name.as_bytes())
+        .ok_or(SurfaceError::MissingFact { what: name })
+}
+
+/// How many of the option's ids the shipped string image populates.
+///
+/// **Counts only**: a non-empty string is counted, never returned.
+fn populated_difficulty_ids(root: &Path, first: u32, bound: u32) -> Result<u32, SurfaceError> {
+    let bytes = std::fs::read(root.join(STRING_IMAGE)).map_err(|error| SurfaceError::Read {
+        spelling: STRING_IMAGE.to_owned(),
+        reason: error.to_string(),
+    })?;
+    let source = SourceSpan::new(
+        install_sha256(root)?,
+        STRING_IMAGE,
+        None,
+        0,
+        bytes.len() as u64,
+        None,
+    )
+    .map_err(|error| SurfaceError::Read {
+        spelling: STRING_IMAGE.to_owned(),
+        reason: error.to_string(),
+    })?;
+    let catalog = StringCatalog::read(
+        &mut ParseContext::with_defaults(STRING_IMAGE),
+        source,
+        &bytes,
+    )
+    .map_err(|error| SurfaceError::Read {
+        spelling: STRING_IMAGE.to_owned(),
+        reason: error.to_string(),
+    })?;
+    let mut populated = 0;
+    for id in first..bound {
+        let rows: Vec<_> = catalog.rows().iter().filter(|row| row.id == id).collect();
+        if rows
+            .iter()
+            .any(|row| row.text.as_ref().is_some_and(|text| !text.is_empty()))
+        {
+            populated += 1;
+        }
+    }
+    Ok(populated)
+}
+
+/// Every instant-action scenario descriptor the installation carries, read
+/// through the production reader-archive discovery and the production `.zrd`
+/// decoder.
+fn scenario_descriptors(root: &Path) -> Result<Vec<ScenarioSurface>, SurfaceError> {
+    let manifest = installation(root)?;
+    let mut rows = Vec::new();
+    for record in &manifest.files {
+        let key = record.relative_spelling.logical_key();
+        if !key.ends_with("zrdr.zbd") || !key.contains("/ia1/") {
+            continue;
+        }
+        let spelling = record.relative_spelling.as_str();
+        let bytes = std::fs::read(manifest.host_root.join(spelling)).map_err(|error| {
+            SurfaceError::Read {
+                spelling: spelling.to_owned(),
+                reason: error.to_string(),
+            }
+        })?;
+        let path = RelativePath::new(spelling).map_err(|error| SurfaceError::Read {
+            spelling: spelling.to_owned(),
+            reason: error.to_string(),
+        })?;
+        let discovery = discover_container(&key, &path, &bytes);
+        for program in discovery.programs() {
+            if program.locator().member() != Some(SCENARIO_MEMBER) {
+                continue;
+            }
+            let node = decode_zrd(program.bytes()).map_err(|error| SurfaceError::Scenario {
+                container: key.clone(),
+                reason: format!("{error:?}"),
+            })?;
+            rows.push(ScenarioSurface::of(&key, &node));
+        }
+    }
+    Ok(rows)
+}
+
+impl ScenarioSurface {
+    /// Reads one descriptor's measured AI facts through the production
+    /// [`crate::stunts`] parsers.
+    fn of(container: &str, node: &ZrdValue) -> Self {
+        let roster = scenario_non_player_aircraft(node);
+        let mut skills: Vec<String> = roster
+            .enemy_groups()
+            .iter()
+            .filter_map(|group| group.skill().map(str::to_owned))
+            .collect();
+        if let Some(skill) = roster.ace().skill() {
+            skills.push(skill.to_owned());
+        }
+        let ace_stats = zrd_field(node, "ace_stats").and_then(|value| {
+            let list = value.as_list()?;
+            let mut slots = Vec::with_capacity(list.len());
+            for entry in list {
+                match entry {
+                    ZrdValue::Int(value) => slots.push(i64::from(*value)),
+                    _ => return None,
+                }
+            }
+            Some(slots)
+        });
+        Self {
+            container: container.to_owned(),
+            mission_type: scenario_mission_type(node).map(str::to_owned),
+            root_keys: zrd_flat_fields(node)
+                .into_iter()
+                .map(|(key, _)| key.to_owned())
+                .collect(),
+            enemy_groups: roster.enemy_groups().len() as u32,
+            skills,
+            ace_stats,
+        }
+    }
+}
+
+/// Measures the original's AI surface over one installation.
+///
+/// The measurement is what the constants at the top of this module encode: the
+/// campaign difficulty option's **bound** (from the engine's resource header)
+/// and its **occupancy** (from the shipped string image), the per-aircraft AI
+/// skill vocabulary (from the scenario descriptors), and the shape of the
+/// declared ace stat vector.
+///
+/// # Errors
+///
+/// [`SurfaceError`] when the installation cannot be discovered, mounted or
+/// read, or when a measured fact the measurement depends on is absent. It
+/// never falls back to a synthetic fixture: a measurement that could not be
+/// taken is a failure, not a default.
+pub fn original_ai_surface(root: &Path) -> Result<OriginalAiSurface, SurfaceError> {
+    let manifest = installation(root)?;
+    let ids = resource_header(root)?;
+    let difficulty_macro_id = macro_id(root, ORIGINAL_DIFFICULTY_OPTION_MACRO)?;
+    let difficulty_bound_id = macro_id(root, ORIGINAL_DIFFICULTY_OPTION_BOUND_MACRO)?;
+    if difficulty_bound_id <= difficulty_macro_id {
+        return Err(SurfaceError::MissingFact {
+            what: ORIGINAL_DIFFICULTY_OPTION_MACRO,
+        });
+    }
+    let populated = populated_difficulty_ids(root, difficulty_macro_id, difficulty_bound_id)?;
+    let scenarios = scenario_descriptors(root)?;
+
+    let mut census: BTreeMap<String, u32> = BTreeMap::new();
+    for scenario in &scenarios {
+        for label in &scenario.skills {
+            *census.entry(label.clone()).or_default() += 1;
+        }
+    }
+    let skill_labels: Vec<SkillLabelRow> = census
+        .into_iter()
+        .map(|(label, count)| SkillLabelRow { label, count })
+        .collect();
+    let skill_label_count = skill_labels.iter().map(|row| row.count).sum();
+    let enemy_group_count = scenarios.iter().map(|scenario| scenario.enemy_groups).sum();
+    let mut reader_archives = 0u32;
+    for record in &manifest.files {
+        if record.relative_spelling.logical_key().ends_with("zrdr.zbd") {
+            reader_archives += 1;
+        }
+    }
+    let difficulty_recorded_per_scenario = scenarios.iter().any(|scenario| {
+        scenario
+            .root_keys
+            .iter()
+            .any(|key| key.to_ascii_lowercase().contains("difficul"))
+    });
+
+    Ok(OriginalAiSurface {
+        install_sha256: install::fingerprint(manifest).to_hex(),
+        content_sha256: install::content_fingerprint(manifest).to_hex(),
+        difficulty_macro_id,
+        difficulty_bound_id,
+        difficulty_steps: difficulty_bound_id - difficulty_macro_id,
+        populated_difficulty_ids: populated,
+        game_option_title: (
+            ORIGINAL_GAME_OPTION_DIFFICULTY_TITLE.0.to_owned(),
+            macro_id(root, ORIGINAL_GAME_OPTION_DIFFICULTY_TITLE.0)?,
+        ),
+        game_option_desc: (
+            ORIGINAL_GAME_OPTION_DIFFICULTY_DESC.0.to_owned(),
+            macro_id(root, ORIGINAL_GAME_OPTION_DIFFICULTY_DESC.0)?,
+        ),
+        ia_difficulty_label: (
+            ORIGINAL_IA_DIFFICULTY_LABEL.0.to_owned(),
+            macro_id(root, ORIGINAL_IA_DIFFICULTY_LABEL.0)?,
+        ),
+        difficulty_recorded_per_scenario,
+        reader_archives,
+        scenarios,
+        skill_labels,
+        skill_label_count,
+        enemy_group_count,
+        declared_header_ids: ids.len() as u32,
+    })
+}
+
 // ------------------------------------------------ f32-d evidence ----
 
-/// The F32-D retail measurement harness.
+/// The F32-D acceptance tests.
 ///
-/// It lives in this file because `crates/cs_content/tests/` is not F32-D's
-/// owner path and a `cs_sim` test cannot reach `cs_content`. Everything it
-/// calls is production code — `cs_assets`' ROF mount and installation
-/// discovery, `cs_formats`' resource-header and PE-resource readers,
-/// `cs_content::config::StringCatalog` and `cs_content::stunts`' `.zrd`
-/// decoder — so the numbers below are re-measured from the owner's
-/// installation on every run and a stale committed constant fails instead of
-/// passing.
-///
-/// **No display text leaves this module.** The measurement reads string
-/// *occupancy* (does an id carry a non-empty string, in how many languages,
-/// how many code units) and never the string itself, so nothing in this file
-/// or in any report it writes reproduces original display content
-/// (AGENTS rule 3).
+/// They live in this file because `crates/cs_content/tests/` is not F32-D's
+/// owner path and a `cs_sim` test cannot reach `cs_content`. Every assertion is
+/// about [`original_ai_surface`] — production code — so a stale committed
+/// constant fails instead of passing.
 #[cfg(test)]
 mod f32_d {
-    use std::collections::BTreeMap;
-    use std::path::{Path, PathBuf};
-    use std::sync::OnceLock;
+    use std::path::PathBuf;
 
-    use cs_assets::install::{self};
-    use cs_assets::rof::mount_rof_into;
-    use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
-    use cs_formats::text::resource_header::read_resource_header;
-    use cs_types::asset_id::{
-        AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan,
-    };
-    use cs_types::install::{InstallManifest, RelativePath};
-
-    use super::*;
-    use crate::config::StringCatalog;
-    use crate::stunts::{
-        ENEMY_SKILL_KEY, SCENARIO_ACE_SKILL_KEY, SCENARIO_MEMBER, decode_zrd,
-        scenario_mission_type, scenario_non_player_aircraft,
-    };
     use cs_types::evidence::ClaimStatus;
 
-    /// The retail container the resource header and the screens live in.
-    const BASE_CONTAINER: &str = "GOSDATA/ASSETS/crimson.rof";
+    use super::*;
+    use crate::ordnance::ORIGINAL_ROCKET_NAME_BLOCKS;
+    use crate::stunts::{
+        ENEMY_SKILL_ACE, ENEMY_SKILL_KEY, ENEMY_SKILL_NOVICE, ENEMY_SKILL_VETERAN,
+        SCENARIO_ACE_SKILL_KEY,
+    };
 
-    /// The shipped English UI string image, named as the installation spells it.
-    const STRING_IMAGE: &str = "GOSDATA/ASSETS/BINARIES/langui.dll";
+    /// The installation fingerprint the F32-D constants were measured over.
+    const RETAIL_INSTALL_SHA256: &str =
+        "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978";
+
+    /// The canonical-content digest of the same installation.
+    const RETAIL_CONTENT_SHA256: &str =
+        "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d";
 
     /// The read-only installation root, or a loud failure: a retail test must
     /// fail, not pass, when `CS_GAME_DIR` is absent.
@@ -2835,304 +3355,32 @@ mod f32_d {
         dir
     }
 
-    /// The installation manifest, discovered once: production discovery hashes
-    /// every file, so a per-test discovery would hash the whole installation
-    /// once per test.
-    fn installation(root: &Path) -> InstallManifest {
-        static CACHE: OnceLock<InstallManifest> = OnceLock::new();
-        CACHE
-            .get_or_init(|| {
-                install::discover(root)
-                    .unwrap_or_else(|error| {
-                        panic!("the installation must be discoverable: {error:?}")
-                    })
-                    .manifest
-            })
-            .clone()
-    }
-
-    /// The installation digest every span in this measurement is bound to.
-    fn install_sha256(root: &Path) -> cs_types::evidence::ContentHash {
-        install::fingerprint(&installation(root))
-    }
-
-    /// Opens one retail member's bytes through the production ROF mount.
-    fn read_member(root: &Path, spelling: &str) -> Vec<u8> {
-        let install = install_sha256(root);
-        let id: String = format!("rof-{}", BASE_CONTAINER.to_ascii_lowercase())
-            .chars()
-            .map(|character| {
-                if character.is_ascii_alphanumeric() || character == '.' {
-                    character
-                } else {
-                    '-'
-                }
-            })
-            .collect();
-        let mut builder = SessionBuilder::new(ResolveContext::new(install));
-        let source = mount_rof_into(
-            &mut builder,
-            MountBuilder::new(
-                MountId::new(&id).expect("a valid mount id"),
-                MountNamespace::new(INSTALL_NAMESPACE).expect("a valid namespace"),
-                PrecedenceClass::Shared,
-                BASE_CONTAINER,
-            )
-            .retail(),
-            &root.join(BASE_CONTAINER),
-        )
-        .expect("the base retail archive mounts");
-        let session = builder.open();
-        let key = AssetKey::from_spelling(INSTALL_NAMESPACE, spelling, "default")
-            .expect("a valid asset key");
-        session
-            .resolve(&key)
-            .unwrap_or_else(|error| panic!("{spelling}: the member must resolve: {error:?}"));
-        source
-            .read(&key)
-            .unwrap_or_else(|error| panic!("{spelling}: the member must decode: {error:?}"))
-            .data
-    }
-
-    /// The id one macro declares in the engine's resource header.
-    fn macro_id(root: &Path, name: &str) -> u32 {
-        let bytes = read_member(root, ORIGINAL_RESOURCE_HEADER);
-        let header = read_resource_header(
-            &mut cs_formats::ParseContext::with_defaults(ORIGINAL_RESOURCE_HEADER),
-            &bytes,
-        )
-        .expect("the production reader reads the engine's resource header");
-        header
-            .resource_id(name.as_bytes())
-            .unwrap_or_else(|| panic!("{name} must be declared in {ORIGINAL_RESOURCE_HEADER}"))
-    }
-
-    /// Every id the resource header declares, ascending.
-    fn declared_ids(root: &Path) -> Vec<u32> {
-        let bytes = read_member(root, ORIGINAL_RESOURCE_HEADER);
-        let header = read_resource_header(
-            &mut cs_formats::ParseContext::with_defaults(ORIGINAL_RESOURCE_HEADER),
-            &bytes,
-        )
-        .expect("the production reader reads the engine's resource header");
-        let mut ids: Vec<u32> = header
-            .defines()
-            .filter_map(|define| define.resource_id())
-            .collect();
-        ids.sort_unstable();
-        ids.dedup();
-        ids
-    }
-
-    /// The occupancy of one string id in the shipped string image: how many
-    /// languages carry it, how many of them carry a non-empty string, and the
-    /// code-unit extent of the first one.
-    ///
-    /// **Never returns the text**: only counts, so the measurement cannot
-    /// reproduce original display content.
-    fn string_occupancy(root: &Path, id: u32) -> (usize, usize, usize) {
-        let bytes = std::fs::read(root.join(STRING_IMAGE))
-            .unwrap_or_else(|error| panic!("read {STRING_IMAGE}: {error}"));
-        let source = SourceSpan::new(
-            install_sha256(root),
-            STRING_IMAGE,
-            None,
-            0,
-            bytes.len() as u64,
-            None,
-        )
-        .expect("the string image span is valid");
-        let catalog = StringCatalog::read(
-            &mut cs_formats::ParseContext::with_defaults(STRING_IMAGE),
-            source,
-            &bytes,
-        )
-        .expect("the production reader reads the string image");
-        let rows: Vec<_> = catalog.rows().iter().filter(|row| row.id == id).collect();
-        let populated = rows
-            .iter()
-            .filter(|row| row.text.as_ref().is_some_and(|text| !text.is_empty()))
-            .count();
-        let longest = rows
-            .iter()
-            .filter_map(|row| row.text.as_ref())
-            .map(|text| text.chars().count())
-            .max()
-            .unwrap_or(0);
-        (rows.len(), populated, longest)
-    }
-
-    /// Every instant-action scenario descriptor the installation carries, read
-    /// through the production reader-archive discovery and the production
-    /// `.zrd` decoder.
-    fn scenario_descriptors(root: &Path) -> Vec<(String, ScenarioCensus)> {
-        let found = installation(root);
-        let mut rows = Vec::new();
-        for record in &found.files {
-            let key = record.relative_spelling.logical_key();
-            if !key.ends_with("zrdr.zbd") || !key.contains("/ia1/") {
-                continue;
-            }
-            let spelling = record.relative_spelling.as_str();
-            let bytes = std::fs::read(found.host_root.join(spelling))
-                .unwrap_or_else(|error| panic!("read {spelling}: {error}"));
-            let path = RelativePath::new(spelling).expect("an installation-relative path");
-            let discovery =
-                cs_formats::script_raw::discovery::discover_container(&key, &path, &bytes);
-            for program in discovery.programs() {
-                if program.locator().member() != Some(SCENARIO_MEMBER) {
-                    continue;
-                }
-                let node = decode_zrd(program.bytes()).unwrap_or_else(|error| {
-                    panic!("{key}::{SCENARIO_MEMBER} must decode: {error:?}")
-                });
-                rows.push((key.clone(), ScenarioCensus::of(&node)));
-            }
-        }
-        rows
-    }
-
-    /// The measured facts one scenario descriptor carries, read through the
-    /// production `cs_content::stunts` parsers.
-    #[derive(Debug)]
-    struct ScenarioCensus {
-        mission_type: Option<String>,
-        root_keys: Vec<String>,
-        enemy_groups: usize,
-        skills: Vec<String>,
-        ace_stats: Option<Vec<i64>>,
-    }
-
-    impl ScenarioCensus {
-        fn of(node: &crate::stunts::ZrdValue) -> Self {
-            let roster = scenario_non_player_aircraft(node);
-            let mut skills: Vec<String> = roster
-                .enemy_groups()
-                .iter()
-                .filter_map(|group| group.skill().map(str::to_owned))
-                .collect();
-            if let Some(skill) = roster.ace().skill() {
-                skills.push(skill.to_owned());
-            }
-            let ace_stats = crate::stunts::zrd_field(node, "ace_stats").and_then(|value| {
-                let list = value.as_list()?;
-                let mut slots = Vec::with_capacity(list.len());
-                for entry in list {
-                    match entry {
-                        crate::stunts::ZrdValue::Int(value) => slots.push(*value as i64),
-                        _ => return None,
-                    }
-                }
-                Some(slots)
-            });
-            Self {
-                mission_type: scenario_mission_type(node).map(str::to_owned),
-                root_keys: crate::stunts::zrd_flat_fields(node)
-                    .into_iter()
-                    .map(|(key, _)| key.to_owned())
-                    .collect(),
-                enemy_groups: roster.enemy_groups().len(),
-                skills,
-                ace_stats,
-            }
-        }
-    }
-
-    /// The measurement the F32-D constants encode, taken over one installation.
-    ///
-    /// Kept as one function so the acceptance tests and the evidence harness
-    /// read the *same* installation the same way: a divergence between them
-    /// would make a report describe a state the suite never checked.
-    #[derive(Debug)]
-    struct Surface {
-        install_sha256: String,
-        content_sha256: String,
-        difficulty_macro_id: u32,
-        difficulty_bound_id: u32,
-        difficulty_ids: Vec<u32>,
-        game_option_title: (String, u32),
-        game_option_desc: (String, u32),
-        ia_difficulty_label: (String, u32),
-        difficulty_occupancy: Vec<(u32, usize, usize, usize)>,
-        scenarios: Vec<(String, ScenarioCensus)>,
-        reader_archives: usize,
-        declared_id_count: usize,
-        skill_census: BTreeMap<String, u32>,
-    }
-
-    fn surface(root: &Path) -> Surface {
-        let manifest = installation(root);
-        let mut reader_archives = 0usize;
-        for record in &manifest.files {
-            if record.relative_spelling.logical_key().ends_with("zrdr.zbd") {
-                reader_archives += 1;
-            }
-        }
-        let difficulty_macro_id = macro_id(root, ORIGINAL_DIFFICULTY_OPTION_MACRO);
-        let difficulty_bound_id = macro_id(root, ORIGINAL_DIFFICULTY_OPTION_BOUND_MACRO);
-        let mut difficulty_ids: Vec<u32> = (difficulty_macro_id..difficulty_bound_id).collect();
-        assert_eq!(
-            difficulty_ids.len() as u32,
-            ORIGINAL_DIFFICULTY_STEPS,
-            "the measured block width is the committed step count"
-        );
-        let mut skill_census: BTreeMap<String, u32> = BTreeMap::new();
-        let scenarios = scenario_descriptors(root);
-        for (_, census) in &scenarios {
-            for skill in &census.skills {
-                *skill_census.entry(skill.clone()).or_default() += 1;
-            }
-        }
-        let game_option_title = (
-            ORIGINAL_GAME_OPTION_DIFFICULTY_TITLE.0.to_owned(),
-            macro_id(root, ORIGINAL_GAME_OPTION_DIFFICULTY_TITLE.0),
-        );
-        let game_option_desc = (
-            ORIGINAL_GAME_OPTION_DIFFICULTY_DESC.0.to_owned(),
-            macro_id(root, ORIGINAL_GAME_OPTION_DIFFICULTY_DESC.0),
-        );
-        let ia_difficulty_label = (
-            ORIGINAL_IA_DIFFICULTY_LABEL.0.to_owned(),
-            macro_id(root, ORIGINAL_IA_DIFFICULTY_LABEL.0),
-        );
-        let difficulty_occupancy = difficulty_ids
-            .iter()
-            .map(|id| {
-                let (rows, populated, units) = string_occupancy(root, *id);
-                (*id, rows, populated, units)
-            })
-            .collect();
-        difficulty_ids.truncate(difficulty_ids.len()); // keep the measured order
-        Surface {
-            install_sha256: install::fingerprint(&manifest).to_hex(),
-            content_sha256: install::content_fingerprint(&manifest).to_hex(),
-            difficulty_macro_id,
-            difficulty_bound_id,
-            difficulty_ids,
-            game_option_title,
-            game_option_desc,
-            ia_difficulty_label,
-            difficulty_occupancy,
-            scenarios,
-            reader_archives,
-            declared_id_count: declared_ids(root).len(),
-            skill_census,
-        }
-    }
-
-    /// The installation fingerprint the F32-D constants were measured over.
-    const RETAIL_INSTALL_SHA256: &str =
-        "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978";
-
     /// The measured surface, bound to the fingerprint the constants record.
-    fn measured() -> Surface {
-        let root = game_dir();
-        let surface = surface(&root);
+    fn measured() -> OriginalAiSurface {
+        let surface = original_ai_surface(&game_dir())
+            .unwrap_or_else(|error| panic!("the AI surface must measure: {error}"));
         assert_eq!(
             surface.install_sha256, RETAIL_INSTALL_SHA256,
             "the installation fingerprint the F32-D constants were measured over"
         );
+        assert_eq!(surface.content_sha256, RETAIL_CONTENT_SHA256);
         surface
+    }
+
+    /// The measurement binds every number it reports to one installation: the
+    /// digest pair travels with the surface, so a report cannot describe one
+    /// installation's numbers under another one's fingerprint.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f32_d_retail_the_measurement_is_bound_to_one_installation() {
+        let surface = measured();
+        assert_eq!(surface.install_sha256, RETAIL_INSTALL_SHA256);
+        assert_eq!(surface.content_sha256, RETAIL_CONTENT_SHA256);
+        assert!(
+            surface.declared_header_ids > 100,
+            "the resource header declares the id vocabulary the option blocks are cut from"
+        );
+        assert_eq!(surface.reader_archives, 62, "every reader archive");
     }
 
     /// **AC04, retail half.** The original's campaign difficulty option is a
@@ -3140,10 +3388,6 @@ mod f32_d {
     /// [`DifficultyTier`] vocabulary is one step longer than the original's —
     /// which [`DifficultyTier::measured_step`] and
     /// [`DifficultyTier::is_designed_extension`] report instead of hiding.
-    ///
-    /// Every number is re-read from the installation: the two bounding macro
-    /// ids, the derived block width, the per-id occupancy and the vocabulary
-    /// coverage. A stale [`ORIGINAL_DIFFICULTY_STEPS`] fails here.
     #[test]
     #[ignore = "requires CS_GAME_DIR"]
     fn accept_f32_d_retail_the_original_campaign_difficulty_option_is_a_three_step_selector() {
@@ -3159,21 +3403,22 @@ mod f32_d {
         );
         assert_eq!(ORIGINAL_DIFFICULTY_STEPS, 3, "three measured steps");
         assert_eq!(
-            surface.difficulty_ids,
+            surface.difficulty_steps, ORIGINAL_DIFFICULTY_STEPS,
+            "the header's bound is the committed step count"
+        );
+        assert_eq!(
+            surface.populated_difficulty_ids, ORIGINAL_DIFFICULTY_STEPS,
+            "and the shipped string image populates all of them, so the bound is met"
+        );
+        assert!(
+            surface.agrees_with_committed_steps(),
+            "the measured surface agrees with the committed constant"
+        );
+        assert_eq!(
+            surface.difficulty_ids(),
             ORIGINAL_DIFFICULTY_OPTION_IDS.to_vec(),
             "the block is exactly the committed id run"
         );
-
-        // All three are usable steps, not reserved slots: each carries one
-        // non-empty string in the shipped image.
-        for (id, rows, populated, units) in &surface.difficulty_occupancy {
-            assert_eq!(rows, &1, "id {id} carries exactly one string");
-            assert_eq!(populated, &1, "id {id} carries a non-empty string");
-            assert!(
-                *units > 0,
-                "id {id} carries display text whose extent is measurable"
-            );
-        }
 
         // The designed vocabulary is one step longer, and says so.
         assert_eq!(DifficultyTier::ALL.len(), 4);
@@ -3198,12 +3443,103 @@ mod f32_d {
                 None => assert!(tier.is_designed_extension()),
             }
         }
+    }
 
-        // The option is one row of one screen, not a per-mission record: the
-        // title and the description are single ids, and no measured scenario
-        // descriptor carries a difficulty key.
-        let ids = declared_ids(&game_dir());
+    /// The difficulty count is the **header's bound met by the string
+    /// image**, not a block width read as a count.
+    ///
+    /// The header's next declared id after `IDS_DIFFICULTY` bounds the name
+    /// list at **three** ids — an *upper* bound, because the header is allowed
+    /// to declare an id *inside* a list. The default-view list is the case
+    /// that shows it is: `IDS_VIEWCOCKPIT` 112 and `IDS_VIEWCHASE` 113 are
+    /// both declared and both are view entries, so the gap from 112 to 113 is
+    /// one while the list holds two. Reading a gap as a count is the mistake
+    /// F27-D repaired in the ammunition blocks; here it would have been right
+    /// by luck, so the count is pinned from both sides.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f32_d_retail_the_difficulty_count_is_a_bound_the_string_image_meets() {
+        let root = game_dir();
+        let surface = measured();
+        let ids = resource_header(&root).expect("the header reads");
+
+        // The bound, from the header alone.
+        assert_eq!(
+            surface.difficulty_steps,
+            surface.difficulty_bound_id - surface.difficulty_macro_id,
+            "the header's upper bound"
+        );
+        // No id *inside* the bound is declared by the header, so all three are
+        // free for the option to use.
+        for id in surface.difficulty_macro_id + 1..surface.difficulty_bound_id {
+            assert!(
+                !ids.contains(&id),
+                "id {id} lies inside the measured bound and is declared by the header"
+            );
+        }
+        // The lower bound: the shipped image gives every id of the bound a
+        // non-empty label, so the option offers exactly that many steps.
+        assert_eq!(
+            surface.populated_difficulty_ids, surface.difficulty_steps,
+            "every id of the bound is populated"
+        );
+        // The next id at or above the bound is the next list's first entry, so
+        // the difficulty names cannot run past it.
+        let next_at_or_above = ids
+            .iter()
+            .copied()
+            .find(|id| *id >= surface.difficulty_bound_id);
+        assert_eq!(next_at_or_above, Some(surface.difficulty_bound_id));
+
+        // The counterexample: a gap is not a count.
+        let view_first = macro_id(&root, "IDS_VIEWCOCKPIT").expect("the view block exists");
+        let view_second =
+            macro_id(&root, "IDS_VIEWCHASE").expect("the view block's second entry exists");
+        assert_eq!(
+            view_second - view_first,
+            1,
+            "the gap inside the view list is one"
+        );
+        let lighting = macro_id(&root, "IDS_LIGHTINGLEVELS")
+            .expect("the lighting block exists after the view block");
+        assert_eq!(
+            populated_difficulty_ids(&root, view_first, lighting).expect("the view block occupies"),
+            2,
+            "and the view list really holds two entries"
+        );
+
+        // The same bound, re-measured on the blocks F27-D/F28-D already
+        // measured with it.
+        let rocket_first = macro_id(&root, "IDS_ROCKETLONGNAME").expect("the rocket block exists");
+        let rocket_second =
+            macro_id(&root, "IDS_ROCKETSHORTNAME").expect("the rocket block's next entry");
+        assert_eq!(
+            rocket_second - rocket_first,
+            ORIGINAL_ROCKET_NAME_BLOCKS[1].0 - ORIGINAL_ROCKET_NAME_BLOCKS[0].0,
+            "the rocket name block is fifteen ids wide"
+        );
+        let airframe_first =
+            macro_id(&root, "IDS_AIRFRAMELONGNAME").expect("the airframe block exists");
+        let airframe_second =
+            macro_id(&root, "IDS_AIRFRAMESHORTNAME").expect("the airframe block's next entry");
+        assert_eq!(
+            airframe_second - airframe_first,
+            20,
+            "the airframe name block is twenty ids wide"
+        );
+    }
+
+    /// The option is **one row of one screen**, not a per-mission record: the
+    /// title and the description are single ids, and no measured scenario
+    /// descriptor carries a difficulty key.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f32_d_retail_no_scenario_records_a_difficulty_so_only_a_selection_is_measurable() {
+        let root = game_dir();
+        let surface = measured();
+        let ids = resource_header(&root).expect("the header reads");
         let after = |id: u32| ids.iter().copied().find(|other| *other > id);
+
         assert_eq!(
             surface.game_option_title,
             (ORIGINAL_GAME_OPTION_DIFFICULTY_TITLE.0.to_owned(), 1084)
@@ -3221,98 +3557,31 @@ mod f32_d {
             "the instant-action label is a single id"
         );
         const { assert!(!ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO) };
-    }
-
-    /// The difficulty count is the **header's bound met by the string
-    /// image**, not a block width read as a count.
-    ///
-    /// The header's next declared id after `IDS_DIFFICULTY` bounds the name
-    /// list at **three** ids — an *upper* bound, because the header is allowed
-    /// to declare an id *inside* a list. The default-view list is the case
-    /// that shows it is: `IDS_VIEWCOCKPIT` 112 and `IDS_VIEWCHASE` 113 are
-    /// both declared and both are view entries, so the gap from 112 to 113 is
-    /// one while the list holds two. Reading a gap as a count is the mistake
-    /// F27-D repaired in the ammunition blocks; here it would have been right
-    /// by luck, so the count is pinned from both sides instead:
-    ///
-    /// * **at most** three, from the header's bound, and
-    /// * **at least** three, because the shipped string image populates all
-    ///   three ids of the bound with one non-empty string each.
-    ///
-    /// The rule is also re-measured against the two blocks F27-D/F28-D already
-    /// measured, so the bound this constant uses is the bound those constants
-    /// were read with.
-    #[test]
-    #[ignore = "requires CS_GAME_DIR"]
-    fn accept_f32_d_retail_the_difficulty_count_is_a_bound_the_string_image_meets() {
-        let root = game_dir();
-        let surface = measured();
-        let ids = declared_ids(&root);
-
-        // The bound, from the header alone.
-        let capacity = surface.difficulty_bound_id - surface.difficulty_macro_id;
-        assert_eq!(
-            capacity, ORIGINAL_DIFFICULTY_STEPS,
-            "the header's upper bound"
+        assert!(
+            !surface.difficulty_recorded_per_scenario,
+            "no measured scenario descriptor records a difficulty"
         );
-        // No id inside the bound is declared by the header, so all three are
-        // free for the option to use.
-        for id in surface.difficulty_macro_id + 1..surface.difficulty_bound_id {
+        let vocabulary = surface.scenario_key_vocabulary();
+        assert!(
+            !vocabulary
+                .iter()
+                .any(|key| key.to_ascii_lowercase().contains("difficul")),
+            "no measured scenario key names a difficulty: {vocabulary:?}"
+        );
+        // The two origins stay distinct: a selected step is bounded by the
+        // measurement, a designed extension is not.
+        assert_ne!(
+            DeclaredDifficultyOrigin::SelectedOptionStep { step: 0 },
+            DeclaredDifficultyOrigin::DesignedExtension
+        );
+        for step in 0..ORIGINAL_DIFFICULTY_STEPS {
             assert!(
-                !ids.contains(&id),
-                "id {id} lies inside the measured bound and is declared by the header"
+                DifficultyTier::ALL
+                    .iter()
+                    .any(|tier| tier.measured_step() == Some(step)),
+                "measured step {step} has a declared tier"
             );
         }
-        // The lower bound: the shipped image gives every id of the bound a
-        // non-empty label, so the option offers exactly that many steps.
-        assert_eq!(
-            surface.difficulty_occupancy.len() as u32,
-            capacity,
-            "every id of the bound is measured"
-        );
-        for (id, rows, populated, _) in &surface.difficulty_occupancy {
-            assert_eq!(*rows, 1, "id {id} carries exactly one string");
-            assert_eq!(*populated, 1, "id {id} carries a non-empty string");
-        }
-        // The next id above the bound is the next list's first entry, so the
-        // difficulty names cannot run past it.
-        let next_above_bound = ids
-            .iter()
-            .copied()
-            .filter(|id| *id >= surface.difficulty_bound_id)
-            .min()
-            .expect("an id at or above the bound is declared");
-        assert_eq!(next_above_bound, surface.difficulty_bound_id);
-
-        // The counterexample: a gap is not a count.
-        let view_first = macro_id(&root, "IDS_VIEWCOCKPIT");
-        let view_second = macro_id(&root, "IDS_VIEWCHASE");
-        assert_eq!(
-            view_second - view_first,
-            1,
-            "the gap inside the view list is one"
-        );
-        let view_populated = (view_first..macro_id(&root, "IDS_LIGHTINGLEVELS"))
-            .filter(|id| string_occupancy(&root, *id).1 == 1)
-            .count();
-        assert_eq!(
-            view_populated, 2,
-            "and the view list really holds two entries"
-        );
-
-        // The rule the two constants share, re-measured on the blocks that
-        // were already measured with it.
-        assert_eq!(
-            macro_id(&root, "IDS_ROCKETSHORTNAME") - macro_id(&root, "IDS_ROCKETLONGNAME"),
-            crate::ordnance::ORIGINAL_ROCKET_NAME_BLOCKS[1].0
-                - crate::ordnance::ORIGINAL_ROCKET_NAME_BLOCKS[0].0,
-            "the rocket name block is fifteen ids wide"
-        );
-        assert_eq!(
-            macro_id(&root, "IDS_AIRFRAMESHORTNAME") - macro_id(&root, "IDS_AIRFRAMELONGNAME"),
-            20,
-            "the airframe name block is twenty ids wide"
-        );
     }
 
     /// The measured per-aircraft skill vocabulary is exactly
@@ -3328,57 +3597,29 @@ mod f32_d {
             ORIGINAL_SCENARIO_DESCRIPTOR_COUNT,
             "one scenario descriptor per world group"
         );
+        assert_eq!(surface.enemy_group_count, ORIGINAL_ENEMY_GROUP_COUNT);
         assert_eq!(
-            surface.reader_archives, 62,
-            "every reader archive in the installation"
-        );
-
-        let groups: usize = surface.scenarios.iter().map(|(_, c)| c.enemy_groups).sum();
-        assert_eq!(groups as u32, ORIGINAL_ENEMY_GROUP_COUNT);
-        let labels: u32 = surface
-            .scenarios
-            .iter()
-            .map(|(_, c)| c.skills.len() as u32)
-            .sum();
-        assert_eq!(
-            labels, ORIGINAL_SKILL_LABEL_COUNT,
+            surface.skill_label_count, ORIGINAL_SKILL_LABEL_COUNT,
             "group labels plus the named aces"
         );
-
-        let mut measured_labels: Vec<&str> =
-            surface.skill_census.keys().map(String::as_str).collect();
-        measured_labels.sort_unstable();
-        let mut declared: Vec<&str> = DeclaredSkillTier::ALL.iter().map(|t| t.label()).collect();
-        declared.sort_unstable();
-        assert_eq!(
-            measured_labels, declared,
-            "the measured vocabulary is exactly three"
+        assert!(
+            surface.agrees_with_declared_skill_tiers(),
+            "the measured vocabulary is exactly the declared one: {:?}",
+            surface.skill_labels
         );
-        assert_eq!(
-            surface.skill_census.values().sum::<u32>(),
-            ORIGINAL_SKILL_LABEL_COUNT
-        );
+        assert_eq!(surface.skill_tiers().len(), 3);
+        assert!(surface.skill_label_count_of(ENEMY_SKILL_NOVICE) > 0);
+        assert!(surface.skill_label_count_of(ENEMY_SKILL_VETERAN) > 0);
+        assert!(surface.skill_label_count_of(ENEMY_SKILL_ACE) > 0);
 
         // Every label resolves; nothing is normalized into the nearest tier.
-        for (label, count) in &surface.skill_census {
+        for row in &surface.skill_labels {
             assert!(
-                DeclaredSkillTier::from_label(label).is_some(),
-                "{label} is a measured tier"
+                DeclaredSkillTier::from_label(&row.label).is_some(),
+                "{} is a measured tier",
+                row.label
             );
-            assert!(*count > 0, "{label} is actually declared");
         }
-        assert_eq!(
-            DeclaredSkillTier::from_label("novice"),
-            Some(DeclaredSkillTier::Novice)
-        );
-        assert_eq!(
-            DeclaredSkillTier::from_label("veteran"),
-            Some(DeclaredSkillTier::Veteran)
-        );
-        assert_eq!(
-            DeclaredSkillTier::from_label("ace"),
-            Some(DeclaredSkillTier::Ace)
-        );
         for unknown in ["ACE", "Ace", "ace ", "elite", "recruit", "", "hard"] {
             assert_eq!(
                 DeclaredSkillTier::from_label(unknown),
@@ -3390,7 +3631,7 @@ mod f32_d {
 
     /// The declared skill vocabulary is the one the `.zrd` reader already
     /// spells, so the two cannot drift: the same three constants in
-    /// `cs_content::stunts` are what `enemy_skill` is read with.
+    /// [`crate::stunts`] are what `enemy_skill` is read with.
     #[test]
     fn accept_f32_d_the_declared_skill_vocabulary_is_the_one_the_zrd_reader_spells() {
         assert_eq!(
@@ -3398,14 +3639,9 @@ mod f32_d {
                 .iter()
                 .map(|tier| tier.label())
                 .collect::<Vec<_>>(),
-            [
-                crate::stunts::ENEMY_SKILL_NOVICE,
-                crate::stunts::ENEMY_SKILL_VETERAN,
-                crate::stunts::ENEMY_SKILL_ACE,
-            ]
+            [ENEMY_SKILL_NOVICE, ENEMY_SKILL_VETERAN, ENEMY_SKILL_ACE]
         );
-        // The keys the scenario descriptors declare, so a reader that stops
-        // reading one of them is visible.
+        assert_eq!(DeclaredSkillTier::ALL.len(), 3);
         assert_eq!(ENEMY_SKILL_KEY, "enemy_skill");
         assert_eq!(SCENARIO_ACE_SKILL_KEY, "ace_skill");
     }
@@ -3421,131 +3657,138 @@ mod f32_d {
             surface.scenarios.len() as u32,
             ORIGINAL_SCENARIO_DESCRIPTOR_COUNT
         );
-        for (key, census) in &surface.scenarios {
-            let stats = census
+        for scenario in &surface.scenarios {
+            let stats = scenario
                 .ace_stats
                 .as_ref()
-                .unwrap_or_else(|| panic!("{key} declares no ace_stats"));
+                .unwrap_or_else(|| panic!("{} declares no ace_stats", scenario.container));
             assert_eq!(
                 stats.len(),
                 ORIGINAL_ACE_STAT_SLOTS,
-                "{key}: the ace vector has nine slots"
+                "{}: the ace vector has nine slots",
+                scenario.container
             );
             for (slot, value) in stats.iter().enumerate() {
                 assert_eq!(
                     *value, ORIGINAL_ACE_STAT_MAX,
-                    "{key}: slot {slot} is saturated at the measured maximum"
+                    "{}: slot {slot} is saturated at the measured maximum",
+                    scenario.container
                 );
             }
             assert!(
-                !census
+                !scenario
                     .root_keys
                     .iter()
                     .any(|key| key == "ace_damage" || key == "ace_health"),
-                "{key}: the measured ace record names no damage or health slot"
+                "{}: the measured ace record names no damage or health slot",
+                scenario.container
             );
         }
     }
 
-    /// No measured scenario descriptor records a difficulty, so a
-    /// [`DeclaredDifficultyProfile`]'s tier can only ever be a *selected*
-    /// option step or a designed extension.
-    ///
-    /// The complete root-key vocabulary is checked, so this fails if a
-    /// scenario ever starts carrying one.
-    #[test]
-    #[ignore = "requires CS_GAME_DIR"]
-    fn accept_f32_d_retail_no_scenario_records_a_difficulty_so_only_a_selection_is_measurable() {
-        let surface = measured();
-        let mut vocabulary: Vec<&str> = Vec::new();
-        for (_, census) in &surface.scenarios {
-            for key in &census.root_keys {
-                if !vocabulary.contains(&key.as_str()) {
-                    vocabulary.push(key.as_str());
-                }
-            }
-        }
-        assert!(
-            !vocabulary.iter().any(|key| key.contains("difficult")),
-            "no measured scenario key names a difficulty: {vocabulary:?}"
-        );
-        const { assert!(!ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO) };
-        // The two origins stay distinct: a selected step is bounded by the
-        // measurement, a designed extension is not.
-        assert_eq!(
-            DeclaredDifficultyOrigin::SelectedOptionStep { step: 0 },
-            DeclaredDifficultyOrigin::SelectedOptionStep { step: 0 }
-        );
-        assert_ne!(
-            DeclaredDifficultyOrigin::SelectedOptionStep { step: 0 },
-            DeclaredDifficultyOrigin::DesignedExtension
-        );
-        for step in 0..ORIGINAL_DIFFICULTY_STEPS {
-            assert!(
-                DifficultyTier::ALL
-                    .iter()
-                    .any(|tier| tier.measured_step() == Some(step)),
-                "measured step {step} has a declared tier"
-            );
-        }
-    }
-
-    /// The declared mission types the installation measures: three of them,
-    /// each on at least one descriptor. This is what the difficulty probe's
-    /// scenario vocabulary is checked against — no invented fourth mission
-    /// type.
+    /// The mission types the installation measures: three of them. This is the
+    /// vocabulary a difficulty probe's scenario may be built from — no invented
+    /// fourth mission type.
     #[test]
     #[ignore = "requires CS_GAME_DIR"]
     fn accept_f32_d_retail_the_scenarios_declare_exactly_three_measured_mission_types() {
         let surface = measured();
-        let mut types: Vec<&str> = Vec::new();
-        for (_, census) in &surface.scenarios {
-            let mission_type = census
-                .mission_type
-                .as_deref()
-                .expect("every measured scenario declares a mission_type");
-            if !types.contains(&mission_type) {
-                types.push(mission_type);
-            }
-        }
-        types.sort_unstable();
         assert_eq!(
-            types,
+            surface.mission_types(),
             vec!["dogfight_squadron", "stunt_flying", "zeppelin_run"]
         );
     }
 
-    /// A test that skipped itself would report a pass it never earned: every
-    /// retail measurement in this module refuses to run without the
-    /// installation.
-    /// The measurement binds every number it reports to one installation: the
-    /// digest pair and the header's declared-id count travel with the surface,
-    /// so a report cannot describe one installation's numbers under another
-    /// one's fingerprint.
+    /// The anti-drift check between the two crates' copies of the measured
+    /// step count.
+    ///
+    /// `cs_sim::ai::combat` holds its own [`ORIGINAL_DIFFICULTY_STEPS`] because
+    /// it may not depend on `cs_content` (AGENTS rule 7), so nothing else
+    /// compares the two. This test is where they are compared, and it runs on
+    /// the side that owns the measurement: it re-derives the count from the
+    /// installation through [`original_ai_surface`] and then reads the
+    /// runtime's mirror and its tier mapping.
     #[test]
     #[ignore = "requires CS_GAME_DIR"]
-    fn accept_f32_d_retail_the_measurement_is_bound_to_one_installation() {
+    fn accept_f32_d_retail_the_runtime_tier_mirror_agrees_with_the_measured_option() {
+        use cs_sim::ai::combat::DifficultyTier as RuntimeTier;
+
         let surface = measured();
-        assert_eq!(surface.install_sha256, RETAIL_INSTALL_SHA256);
         assert_eq!(
-            surface.content_sha256,
-            "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d",
-            "the canonical-content digest of the installation the numbers came from"
+            surface.difficulty_steps, ORIGINAL_DIFFICULTY_STEPS,
+            "the header's bound"
         );
+        assert_eq!(
+            surface.populated_difficulty_ids, ORIGINAL_DIFFICULTY_STEPS,
+            "and the shipped string image meets it"
+        );
+        assert_eq!(
+            cs_sim::ai::combat::ORIGINAL_DIFFICULTY_STEPS,
+            ORIGINAL_DIFFICULTY_STEPS,
+            "the runtime mirrors the measured option's step count"
+        );
+        assert_eq!(
+            RuntimeTier::measured_tier_count() as u32,
+            surface.difficulty_steps,
+            "so every measured step has a declared tier and no more"
+        );
+        let mut steps: Vec<u32> = RuntimeTier::ALL
+            .iter()
+            .filter_map(|tier| tier.measured_step())
+            .collect();
+        assert_eq!(
+            steps,
+            (0..surface.difficulty_steps).collect::<Vec<u32>>(),
+            "the measured steps are covered contiguously, in option order"
+        );
+        steps.dedup();
+        assert_eq!(steps.len(), surface.difficulty_steps as usize);
         assert!(
-            surface.declared_id_count > 100,
-            "the resource header declares the id vocabulary the option blocks are cut from"
+            !surface.difficulty_recorded_per_scenario,
+            "no measured record binds a step to a scenario, so a tier is a selection"
+        );
+
+        // The per-aircraft skill vocabulary is measured too, and it is a
+        // *different* thing from the difficulty option: nothing measured maps
+        // one onto the other, so this asserts only that both are three and
+        // never that they are the same three.
+        assert_eq!(
+            surface.skill_tiers().len(),
+            3,
+            "three measured AI skill tiers"
+        );
+        assert_eq!(
+            surface.skill_labels,
+            vec![
+                SkillLabelRow {
+                    label: ENEMY_SKILL_ACE.to_owned(),
+                    count: surface.skill_label_count_of(ENEMY_SKILL_ACE),
+                },
+                SkillLabelRow {
+                    label: ENEMY_SKILL_NOVICE.to_owned(),
+                    count: surface.skill_label_count_of(ENEMY_SKILL_NOVICE),
+                },
+                SkillLabelRow {
+                    label: ENEMY_SKILL_VETERAN.to_owned(),
+                    count: surface.skill_label_count_of(ENEMY_SKILL_VETERAN),
+                },
+            ]
+            .into_iter()
+            .filter(|row| row.count > 0)
+            .collect::<Vec<_>>(),
+            "the measured label vocabulary, sorted by label"
+        );
+        assert_eq!(surface.skill_label_count, ORIGINAL_SKILL_LABEL_COUNT);
+        assert_eq!(
+            surface.enemy_group_count as usize + surface.scenarios.len(),
+            surface.skill_label_count as usize,
+            "one label per enemy group plus one per named ace"
         );
     }
 
     /// The negative the measurement must not be able to fake: the *declared*
     /// fixture carries no measured step, so a synthetic profile can never be
     /// reported as one of the original's three.
-    ///
-    /// A retail measurement that skipped itself would report a pass it never
-    /// earned, so the harness reaches the installation only through
-    /// [`game_dir`], which panics rather than falling back. This asserts the
-    /// other half: nothing the designed fixture carries is measured.
     #[test]
     fn accept_f32_d_the_declared_fixture_stands_for_no_measured_step() {
         let rules = declared_synthetic_combat_rules();
@@ -3564,8 +3807,6 @@ mod f32_d {
                 "no fixture override claims original measurement"
             );
         }
-        // The measured ids are a count and an extent, not values any declared
-        // record may carry: nothing in the schema can hold "step 2" as data.
         assert_eq!(
             ORIGINAL_DIFFICULTY_OPTION_IDS.len() as u32,
             ORIGINAL_DIFFICULTY_STEPS
