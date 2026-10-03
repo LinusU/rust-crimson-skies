@@ -2284,7 +2284,7 @@ fn evidence_report_f11_d_writes_the_acceptance_report() {
             log_path.display()
         )
     });
-    let suite = parse_f11_d_suite(&log);
+    let suite = parse_f11_d_suite(&log, "accept_f11_d_");
     assert!(
         suite.passed > 0 && !suite.assertions.is_empty(),
         "no `accept_f11_d_` tests were recorded in {}",
@@ -2595,7 +2595,7 @@ struct F11DSuite {
     assertions: Vec<(String, &'static str)>,
 }
 
-fn parse_f11_d_suite(log: &str) -> F11DSuite {
+fn parse_f11_d_suite(log: &str, prefix: &str) -> F11DSuite {
     use std::collections::VecDeque;
     let mut suite = F11DSuite::default();
     let mut pending: VecDeque<String> = VecDeque::new();
@@ -2630,7 +2630,7 @@ fn parse_f11_d_suite(log: &str) -> F11DSuite {
             let name = after[..separator].to_owned();
             let tail = &after[separator + 5..];
             cursor = tail;
-            if !name.contains("accept_f11_d_") {
+            if !name.contains(prefix) {
                 continue;
             }
             match tail.split_whitespace().next() {
@@ -3323,7 +3323,7 @@ fn evidence_report_f11_e1_writes_the_acceptance_report() {
             log_path.display()
         )
     });
-    let suite = parse_f11_d_suite(&log);
+    let suite = parse_f11_d_suite(&log, "accept_f11_e1_");
     let assertions: Vec<(String, &'static str)> = suite
         .assertions
         .iter()
@@ -7072,7 +7072,7 @@ fn evidence_report_f11_d_2_writes_the_acceptance_report() {
             log_path.display()
         )
     });
-    let suite = parse_f11_d_suite(&log);
+    let suite = parse_f11_d_suite(&log, "accept_f11_d_");
     let assertions: Vec<(String, &'static str)> = suite
         .assertions
         .iter()
