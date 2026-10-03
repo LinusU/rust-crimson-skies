@@ -57,8 +57,9 @@
 //! * `accept_f39_e4_retail_objective_records_declare_no_disabled_or_escaped_count`
 //!   (`#[ignore]`, needs `CS_GAME_DIR`) — the measurement over the owner's
 //!   installation: the corpus-wide counts, the per-category evidence for all five
-//!   categories, and the check that `declared_by_original()` agrees with what the
-//!   corpus spells.
+//!   categories, the stages/thresholds split reconciled against F39-D's
+//!   independent optionality census, and the check that `declared_by_original()`
+//!   agrees with what the corpus spells.
 //!
 //! Every value the non-retail tests use is newly authored synthetic fixture data
 //! (the `.zrd` bytes are built here, tag by tag), never original game data. The
@@ -109,6 +110,9 @@ const MEASURED_LABELLED_TARGETS: u32 = 289;
 const MEASURED_STAGE_SITES: u32 = 1335;
 const MEASURED_THRESHOLD_SITES: u32 = 130;
 const MEASURED_THRESHOLDED_BLOCKS: u32 = 129;
+/// F39-D's optionality sites: every `is_optional_objective_key` site, which the
+/// stages and the thresholds above must partition exactly (1335 + 130).
+const MEASURED_OPTIONAL_SITES: u32 = 1465;
 const MEASURED_DESTROY_SITES: u32 = 107;
 const MEASURED_DISABLE_SITES: u32 = 13;
 const MEASURED_DISABLE_SPELLINGS: [(&str, u32); 2] = [(DISABLE, 5), (DISABLE_ENGINES, 8)];
@@ -768,6 +772,25 @@ fn accept_f39_e4_retail_objective_records_declare_no_disabled_or_escaped_count()
         "a counted condition needs a threshold, so there can never be more \
          counted blocks than thresholds"
     );
+    // Two independent walks of the same population must agree: F39-D's flat key
+    // census counts every `is_optional_objective_key` site, and F39-E4's block
+    // walk splits that same population into stages and thresholds. They are
+    // separate code over separate structures, so the split is only believable
+    // while the sum is exactly F39-D's total.
+    assert_eq!(
+        census.stage_sites() + census.threshold_sites(),
+        census.optional_sites(),
+        "the stages and the thresholds partition F39-D's optionality sites exactly"
+    );
+    assert_eq!(census.optional_sites(), MEASURED_OPTIONAL_SITES);
+    for row in census.rows() {
+        assert_eq!(
+            row.count_conditions.stage_sites + row.count_conditions.threshold_sites,
+            row.optional_sites,
+            "{}: the same split holds mission by mission",
+            row.mission
+        );
+    }
     assert_eq!(
         census.category_evidence(DeclaredCountKind::Disabled).sites,
         MEASURED_DISABLE_SITES,

@@ -76,8 +76,9 @@ fn review_method(census: &RetailObjectiveCensus) -> String {
      member decoded with the production .zrd reader, its numbered OBJECTIVE<N> blocks walked, and the archive's \
      targets.zrd decoded where it declares one; over {} mission readers the installation declares {} objective \
      blocks, {} counted-condition stages in {} thresholded blocks beside {} completion-count thresholds, {} target \
-     records of which {} carry an objective kind; {} of the mission readers declare no targets.zrd member at all \
-     ({}), so the two surfaces have different denominators and neither was widened to the other. The \
+     records of which {} carry an objective kind; {} of the mission readers declare a targets.zrd member and {} \
+     declare none at all ({}), so the two surfaces have different denominators and neither was widened to the \
+     other. The \
      per-category evidence over the whole published vocabulary: {}. The missions carrying a disable declaration: \
      {}. LIMITS OF WHAT WAS MEASURED, each recorded in \
      docs/findings/2026-10-04-f39-e4-count-category-producers.md: (1) what the corpus DECLARES is measured, and \
@@ -99,6 +100,7 @@ fn review_method(census: &RetailObjectiveCensus) -> String {
         census.target_records(),
         census.labelled_targets(),
         census.len() - census.missions_without_targets().len(),
+        census.missions_without_targets().len(),
         census.missions_without_targets().join(", "),
         DeclaredCountKind::all()
             .iter()
@@ -358,13 +360,13 @@ fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
         panic!(
             "{name} is not set: this harness only runs through the sequence in its module doc \
-             (crates/cs_app/tests/evidence_report_f39_e2.rs)"
+             (crates/cs_app/tests/evidence_report_f39_e4.rs)"
         )
     })
 }
 
 /// Cargo runs a test binary with its working directory set to the *package*
-/// root, so a path like `private/evidence/F39-E2` written relative to the
+/// root, so a path like `private/evidence/F39-E4` written relative to the
 /// workspace root in the module doc must be re-anchored here.
 fn workspace_path(as_described: &str) -> PathBuf {
     let path = PathBuf::from(as_described);
@@ -471,7 +473,7 @@ struct Suite {
     assertions: Vec<(String, &'static str)>,
 }
 
-/// Extracts the per-test results of the `accept_f39_e2_` tests from a recorded
+/// Extracts the per-test results of the `accept_f39_e4_` tests from a recorded
 /// `cargo test` output.
 ///
 /// The counts come from the **prefixed test lines**, not from the
@@ -523,7 +525,7 @@ fn parse_suite(log: &str) -> Suite {
 ///
 /// The prefix is matched on the name's **last** path segment, because libtest
 /// prints an in-module unit test under its module path
-/// (`objectives::tests::accept_f39_e2_…`). Matching the whole name instead would
+/// (`objectives::tests::accept_f39_e4_…`). Matching the whole name instead would
 /// silently drop every in-module acceptance test from `discovered`, from the
 /// assertion list and from the log.
 fn carries_prefix(name: &str) -> bool {

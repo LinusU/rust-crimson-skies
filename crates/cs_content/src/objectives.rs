@@ -624,13 +624,18 @@ pub const UNMEASURED_COUNT_CATEGORY: &str = "the mission's objective records wer
 /// Why a counter category stays **undeclared** by the original, stated once so
 /// the schema, the census and the finding say the same thing.
 ///
-/// It names the measured fact behind it: no name either of the original's
-/// objective surfaces writes — its counted conditions' part states or its
-/// targets' localized labels — spells a captured, escaped or despawned
-/// category.
-pub const UNDECLARED_COUNT_CATEGORY: &str = "the mission's objective records were measured for the actor-count categories \
-     they declare and none of their counted conditions or target labels names this one, so the original declares no such \
-     actor count and an original record must not claim it";
+/// It names the measured fact behind it, **with its bound**: no name either of
+/// the original's measured objective surfaces writes — its counted conditions'
+/// part states or its targets' localized labels — spells a captured, escaped or
+/// despawned category. The measurement covers the mission-scoped reader
+/// archives; the shared and world-group readers are outside that census
+/// (F39-D unknown #5), which is why the refusal says "no … measured declaring
+/// it" and not "the original has no such category".
+pub const UNDECLARED_COUNT_CATEGORY: &str = "no counted condition or target label in the mission-scoped objective \
+     records measured over the owner's installation names this actor-count category — the whole measured vocabulary is \
+     published by the census, and the only spellings in it that name a category are a destroy kind and two disable kinds \
+     — so no original mission record has been measured declaring it and an original record must not claim one; the \
+     shared and world-group readers are outside that census (F39-D unknown #5)";
 
 /// Why an **original** record may not carry a count condition in `kind`, or
 /// `None` when it may.

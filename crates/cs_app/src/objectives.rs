@@ -1885,6 +1885,11 @@ pub fn measure_count_conditions(document: &ZrdValue) -> MeasuredCountConditions 
 /// their own spelling: `help_label` is the objective's kind and `category_label`
 /// the kind of thing it is about, and both are measured because both are places
 /// the original spells what must happen to an actor.
+///
+/// The member's root is the list of records, exactly as
+/// [`cs_content::stunts::objective_record_count`] already reads it: a member
+/// whose root is not a list declares **no** records rather than being read as
+/// one, so the reading never invents a record the member does not carry.
 #[must_use]
 pub fn measure_target_kinds(document: &ZrdValue) -> MeasuredTargetKinds {
     let mut measured = MeasuredTargetKinds::default();
