@@ -1730,12 +1730,12 @@ pub fn step_ordnance_session(
                         },
                     );
                     tick.events.push(event);
+                    tick.guidance_blasts.push(blast);
                 }
                 Err(source) => tick
                     .routing_refused
                     .push(OrdnanceRoutingRefusal::Runtime(source)),
             }
-            tick.guidance_blasts.push(blast);
         }
         tick.guidance = Some(guidance);
     }
