@@ -1567,6 +1567,22 @@ impl ObjectiveSession {
 // branching, for optionality and for failure. F39-E2 adds a per-block reading of
 // the branching keys' *targets* below.
 //
+// **The denominator's bound (F39-E3).** The mission rows are the denominator
+// only if no reader outside mission scope declares the same vocabulary, so the
+// census measures every `zrdr.zbd` the mission-scope rule does *not* claim —
+// the shared reader (`zbd/zrdr.zbd`) and the world-group readers
+// (`zbd/<group>/zrdr.zbd`) — as [`RetailObjectiveReaderRow`]s. Every member of
+// each is decoded with the production `.zrd` reader and read through the same
+// [`cs_content::stunts::objective_state_machine`], so a member that hid an
+// `OBJECTIVE<N>` block under an unrelated name would still be counted; a
+// member that cannot be decoded **fails the census** rather than vanishing
+// from the bound. On the owner's installation every one of the 612 members
+// declares zero blocks: the mission-scoped rows are the complete denominator.
+// Exactly one member outside mission scope carries an objective-record name —
+// `zbd/c1c/zrdr.zbd`'s `targets.zrd`, 5 shared target records the C1C missions
+// can inherit — and it is published the same way (F39-E3's measured answer to
+// F39-D's unknown #5).
+//
 // **What is not measured, and why.** A census of key *names* is a vocabulary
 // measurement, not a decoded behaviour: it says which declarations the original
 // writes, never what one does, and a negative result ("no such key occurs")
@@ -1958,6 +1974,169 @@ impl RetailObjectiveRow {
     }
 }
 
+/// The member names a mission-scoped reader uses for its control records:
+/// measured over the campaign and scenario readers of the installation
+/// (F14-D.1, F13-B — the per-mission members are `map.zrd`, `aiv.zrd`,
+/// `objectives.zrd` and `egen.zrd`, instant-action readers add `ia.zrd`,
+/// networked readers `net.zrd`, and `targets.zrd` holds the objective target
+/// records). Outside mission scope a member carrying one of these names is a
+/// place a mission can inherit a declaration **by name** — measured over the
+/// owner's installation exactly one occurs (`zbd/c1c/zrdr.zbd`'s `targets.zrd`).
+const MISSION_CONTROL_MEMBER_NAMES: [&str; 7] = [
+    "aiv.zrd",
+    "egen.zrd",
+    "ia.zrd",
+    "map.zrd",
+    "net.zrd",
+    "objectives.zrd",
+    "targets.zrd",
+];
+
+/// The member that carries a mission's objective *target* records — the
+/// records [`cs_content::stunts::objective_record_count`] and
+/// [`cs_content::stunts::objective_record_keys`] measure.
+const OBJECTIVE_TARGETS_MEMBER: &str = "targets.zrd";
+
+/// One member of a non-mission-scoped reader archive, measured for objective
+/// declarations.
+///
+/// Every member of a measured reader gets a row — the member list is the
+/// searched set the negative bound covers, so nothing is summarized away.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailObjectiveMemberRow {
+    /// The member's name as the archive's index spells it.
+    pub member: String,
+    /// The absolute offset of the member's first byte inside the archive.
+    pub member_offset: u64,
+    /// The member's length in bytes.
+    pub member_len: u64,
+    /// SHA-256 of the member's own bytes.
+    pub member_sha256: String,
+    /// How many numbered `OBJECTIVE<N>` blocks the decoded member declares —
+    /// `0` for every member the owner's installation holds.
+    pub blocks: u32,
+    /// The complete key vocabulary inside those blocks (empty when there are
+    /// none, which is every member measured).
+    pub keys: Vec<(String, u32)>,
+    /// Whether the member's name is a [`MISSION_CONTROL_MEMBER_NAMES`] name —
+    /// a place a mission can inherit a declaration by name.
+    pub mission_control: bool,
+    /// When the member is a `targets.zrd` record list: how many objective
+    /// target records it declares. `None` for every other member — a member
+    /// not named `targets.zrd` is not read through the targets record shape,
+    /// because that reading is only defined for the member the original names
+    /// (a record count over an arbitrary document is a number, not a
+    /// measurement).
+    pub records: Option<u32>,
+    /// The complete key vocabulary of the target records (empty when
+    /// [`Self::records`] is `None`).
+    pub record_keys: Vec<(String, u32)>,
+}
+
+/// One non-mission-scoped reader archive, measured for the census's bound.
+///
+/// The census's denominator is mission-scoped; these rows are what proves the
+/// denominator complete: every member decoded, every `OBJECTIVE<N>` block in
+/// any member counted, every mission-control member name flagged. On the
+/// owner's installation every row reports zero blocks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailObjectiveReaderRow {
+    /// The reader's scope: `zbd` for the shared reader, `zbd/<group>` for a
+    /// world-group reader.
+    pub scope: String,
+    /// The archive's installation spelling (`ZBD/zrdr.zbd`,
+    /// `ZBD/C1C/zrdr.zbd`). Its
+    /// [`RelativePath::logical_key`](cs_types::install::RelativePath::logical_key)
+    /// is `<scope>/zrdr.zbd`.
+    pub container: String,
+    /// SHA-256 of that whole archive, from production discovery.
+    pub container_sha256: String,
+    /// Every member the archive's index declares, one row per index entry,
+    /// sorted by name — the complete measured set.
+    pub members: Vec<RetailObjectiveMemberRow>,
+    /// How many `OBJECTIVE<N>` blocks the archive's members declare in total.
+    pub blocks: u32,
+    /// The union of every member's in-block key vocabulary, sorted by key,
+    /// with the number of blocks each key occurs in.
+    pub keys: Vec<(String, u32)>,
+}
+
+/// The scope a non-mission-scoped `zrdr.zbd` archive covers, or `None` when
+/// the path is not a reader archive outside mission scope.
+///
+/// The logical key is matched against the observed layout: `zbd/zrdr.zbd` is
+/// the shared reader (scope `zbd`) and `zbd/<group>/zrdr.zbd` a world-group
+/// reader (scope `zbd/<group>`). `zbd/<group>/<mission>/zrdr.zbd` is
+/// mission-scoped — [`cs_formats::script_raw::mission_scope`] owns it — and
+/// anything else names no reader at all.
+#[must_use]
+pub fn non_mission_reader_scope(path: &RelativePath) -> Option<String> {
+    let key = path.logical_key();
+    let archive = format!("/{MISSION_READER_ARCHIVE}");
+    let scope = key.strip_suffix(archive.as_str())?;
+    if scope == "zbd" {
+        Some(scope.to_owned())
+    } else if scope.starts_with("zbd/") && !scope.ends_with('/') {
+        let segments = scope.split('/').count();
+        (segments == 2).then(|| scope.to_owned())
+    } else {
+        None
+    }
+}
+
+/// The objective-declaration surface the census measures in one decoded
+/// reader member.
+///
+/// This is the measurement the census applies to every member of every
+/// non-mission-scoped reader — extracted so the discriminating tests can
+/// exercise it on authored documents without an installation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReaderMemberMeasurement {
+    /// How many numbered `OBJECTIVE<N>` blocks the document declares.
+    pub blocks: u32,
+    /// The complete key vocabulary inside those blocks.
+    pub keys: Vec<(String, u32)>,
+    /// Whether the member's name is a measured mission-control member name.
+    pub mission_control: bool,
+    /// For a `targets.zrd` member: the declared target records.
+    pub records: Option<u32>,
+    /// The complete key vocabulary of the target records.
+    pub record_keys: Vec<(String, u32)>,
+}
+
+/// Measures the objective declarations of one decoded reader member.
+///
+/// `blocks`/`keys` come from the same
+/// [`cs_content::stunts::objective_state_machine`] the mission rows use, so the
+/// numbers are comparable: an `OBJECTIVE<N>` block counts the same in a shared
+/// reader as in a mission reader. `mission_control` is name-based — the
+/// member names a mission can inherit by. `records`/`record_keys` are read
+/// only for a `targets.zrd` member, the shape the target-record readers are
+/// defined for.
+#[must_use]
+pub fn reader_member_measurement(
+    member: &str,
+    document: &cs_content::stunts::ZrdValue,
+) -> ReaderMemberMeasurement {
+    let machine = cs_content::stunts::objective_state_machine(document);
+    let lower = member.to_ascii_lowercase();
+    let (records, record_keys) = if lower == OBJECTIVE_TARGETS_MEMBER {
+        (
+            Some(cs_content::stunts::objective_record_count(document)),
+            cs_content::stunts::objective_record_keys(document),
+        )
+    } else {
+        (None, Vec::new())
+    };
+    ReaderMemberMeasurement {
+        blocks: machine.blocks(),
+        keys: machine.keys().to_vec(),
+        mission_control: MISSION_CONTROL_MEMBER_NAMES.contains(&lower.as_str()),
+        records,
+        record_keys,
+    }
+}
+
 /// The measured objective records of every mission-scoped reader archive.
 ///
 /// `Eq` is not derived, for the same reason [`RetailObjectiveRow`] does not
@@ -1966,6 +2145,7 @@ impl RetailObjectiveRow {
 pub struct RetailObjectiveCensus {
     install_sha256: String,
     rows: Vec<RetailObjectiveRow>,
+    readers: Vec<RetailObjectiveReaderRow>,
 }
 
 impl RetailObjectiveCensus {
@@ -2075,6 +2255,67 @@ impl RetailObjectiveCensus {
     #[must_use]
     pub fn outcome_missions(&self) -> BTreeMap<&str, u32> {
         self.missions_with_sites(|row| row.failure_sites)
+    }
+
+    /// The non-mission-scoped reader archives the census measured, one row
+    /// each, sorted by scope — the shared reader and the world-group readers.
+    /// These are the bound on the mission denominator, not part of it.
+    #[must_use]
+    pub fn readers(&self) -> &[RetailObjectiveReaderRow] {
+        &self.readers
+    }
+
+    /// The row for one non-mission reader, by scope (`zbd` or `zbd/<group>`).
+    #[must_use]
+    pub fn reader(&self, scope: &str) -> Option<&RetailObjectiveReaderRow> {
+        self.readers.iter().find(|row| row.scope == scope)
+    }
+
+    /// How many member rows the non-mission readers hold in total — the size
+    /// of the searched set.
+    #[must_use]
+    pub fn reader_members(&self) -> usize {
+        self.readers.iter().map(|row| row.members.len()).sum()
+    }
+
+    /// How many `OBJECTIVE<N>` blocks every non-mission-scoped reader declares
+    /// in total — `0` on the owner's installation, which is what makes the
+    /// mission-scoped rows the complete denominator.
+    #[must_use]
+    pub fn reader_blocks(&self) -> u32 {
+        self.readers.iter().map(|row| row.blocks).sum()
+    }
+
+    /// The union of every non-mission reader's in-block key vocabulary,
+    /// sorted, with the total number of blocks each key occurs in — the same
+    /// publication the mission rows make through [`Self::vocabulary`], so the
+    /// negative bound reads against the vocabulary it was drawn from.
+    #[must_use]
+    pub fn reader_vocabulary(&self) -> Vec<(String, u32)> {
+        let mut totals: BTreeMap<String, u32> = BTreeMap::new();
+        for row in &self.readers {
+            for (key, count) in &row.keys {
+                *totals.entry(key.clone()).or_insert(0) += count;
+            }
+        }
+        totals.into_iter().collect()
+    }
+
+    /// Every member outside mission scope whose name is a mission-control
+    /// member name — the members a mission can inherit a declaration from,
+    /// each as `(reader scope, member row)`. On the owner's installation this
+    /// is exactly one member (`zbd/c1c`'s `targets.zrd`).
+    #[must_use]
+    pub fn inherited_members(&self) -> Vec<(&str, &RetailObjectiveMemberRow)> {
+        let mut found = Vec::new();
+        for row in &self.readers {
+            for member in &row.members {
+                if member.mission_control {
+                    found.push((row.scope.as_str(), member));
+                }
+            }
+        }
+        found
     }
 
     fn missions_with_sites(&self, sites: fn(&RetailObjectiveRow) -> u32) -> BTreeMap<&str, u32> {
@@ -2202,20 +2443,24 @@ impl RetailObjectiveCensus {
     }
 }
 
-/// Measures every mission-scoped objective record in `install_root`.
+/// Measures every mission-scoped objective record in `install_root`, and
+/// every `zrdr.zbd` outside mission scope as the denominator's bound (F39-E3).
 ///
 /// Read-only: the walk uses production discovery, so it never writes inside the
 /// installation. The census **fails** rather than skipping a mission whose
 /// archive cannot be read or whose record does not decode, because a mission
 /// that silently vanished from the denominator would look like a mission with
-/// no declared objectives.
+/// no declared objectives. The same rule covers the bound: a shared or
+/// world-group reader whose member index cannot be read, or a member that
+/// cannot be decoded, fails the census rather than leaving an unmeasured gap
+/// an `OBJECTIVE<N>` block could hide inside.
 ///
 /// # Errors
 ///
 /// [`ObjectiveCensusError::Discovery`] when the installation cannot be
 /// discovered, and [`ObjectiveCensusError::Read`] /
-/// [`ObjectiveCensusError::Decode`] for the first mission that cannot be
-/// measured.
+/// [`ObjectiveCensusError::Decode`] for the first mission or reader member that
+/// cannot be measured.
 pub fn survey_retail_objective_records(
     install_root: &Path,
 ) -> Result<RetailObjectiveCensus, ObjectiveCensusError> {
@@ -2224,6 +2469,7 @@ pub fn survey_retail_objective_records(
     let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
 
     let mut rows: Vec<RetailObjectiveRow> = Vec::new();
+    let mut readers: Vec<RetailObjectiveReaderRow> = Vec::new();
     for record in &found.manifest.files {
         let container_key = record.relative_spelling.logical_key();
         if !container_key.ends_with(MISSION_READER_ARCHIVE) {
@@ -2240,6 +2486,26 @@ pub fn survey_retail_objective_records(
             }
         })?;
         let Some(mission) = cs_formats::script_raw::mission_scope(&path) else {
+            let scope =
+                non_mission_reader_scope(&path).ok_or_else(|| ObjectiveCensusError::Read {
+                    container: container_key.clone(),
+                    reason: "the reader archive is neither mission-scoped nor a \
+                             measured shared or world-group reader"
+                        .to_owned(),
+                })?;
+            readers.push(measure_reader(
+                scope,
+                &spelling,
+                record.sha256.to_hex(),
+                &container_key,
+                &path,
+                &std::fs::read(found.manifest.host_root.join(&spelling)).map_err(|error| {
+                    ObjectiveCensusError::Read {
+                        container: container_key.clone(),
+                        reason: error.to_string(),
+                    }
+                })?,
+            )?);
             continue;
         };
         let container_sha256 = record.sha256.to_hex();
@@ -2311,8 +2577,83 @@ pub fn survey_retail_objective_records(
     }
 
     rows.sort_by(|left, right| left.mission.cmp(&right.mission));
+    readers.sort_by(|left, right| left.scope.cmp(&right.scope));
     Ok(RetailObjectiveCensus {
         install_sha256,
         rows,
+        readers,
+    })
+}
+
+/// Measures one non-mission-scoped reader archive for the census's bound.
+///
+/// Every member the archive's index declares becomes a
+/// [`RetailObjectiveMemberRow`]: decoded with the production `.zrd` reader and
+/// measured through [`reader_member_measurement`], so the row is the complete
+/// searched set rather than a summary. A member that cannot be decoded, or an
+/// archive whose member index cannot be read, fails the census rather than
+/// leaving a gap an `OBJECTIVE<N>` block could hide inside.
+fn measure_reader(
+    scope: String,
+    spelling: &str,
+    container_sha256: String,
+    container_key: &str,
+    path: &RelativePath,
+    bytes: &[u8],
+) -> Result<RetailObjectiveReaderRow, ObjectiveCensusError> {
+    let discovery = cs_formats::script_raw::discover_container(container_key, path, bytes);
+    if let Some(finding) = discovery.findings().first() {
+        return Err(ObjectiveCensusError::Read {
+            container: container_key.to_owned(),
+            reason: format!("the member index could not be read in full: {finding:?}"),
+        });
+    }
+    let mut members = Vec::with_capacity(discovery.len());
+    for program in discovery.programs() {
+        let locator = program.locator();
+        let member_name = locator
+            .member()
+            .ok_or_else(|| ObjectiveCensusError::Read {
+                container: container_key.to_owned(),
+                reason: "a member was located without a name".to_owned(),
+            })?
+            .to_owned();
+        let document = cs_content::stunts::decode_zrd(program.bytes()).map_err(|error| {
+            ObjectiveCensusError::Decode {
+                container: format!("{container_key}::{member_name}"),
+                code: error.code(),
+                offset: error.offset(),
+            }
+        })?;
+        let measured = reader_member_measurement(&member_name, &document);
+        let span = locator.span();
+        members.push(RetailObjectiveMemberRow {
+            member: member_name,
+            member_offset: span.offset,
+            member_len: span.len,
+            member_sha256: cs_assets::install::sha256(program.bytes()).to_hex(),
+            blocks: measured.blocks,
+            keys: measured.keys,
+            mission_control: measured.mission_control,
+            records: measured.records,
+            record_keys: measured.record_keys,
+        });
+    }
+    members.sort_by(|left, right| left.member.cmp(&right.member));
+    let mut totals: BTreeMap<String, u32> = BTreeMap::new();
+    let mut blocks = 0u32;
+    for member in &members {
+        blocks += member.blocks;
+        for (key, count) in &member.keys {
+            *totals.entry(key.clone()).or_insert(0) += count;
+        }
+    }
+    Ok(RetailObjectiveReaderRow {
+        scope,
+        container: spelling.to_owned(),
+        container_sha256,
+        members,
+        blocks,
+        keys: totals.into_iter().collect(),
     })
 }

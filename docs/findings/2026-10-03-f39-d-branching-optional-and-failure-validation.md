@@ -284,9 +284,16 @@ path was touched, and no measured value was altered.
    sees, is an **inference** from the spelling and sits beside it. This is the
    rule F39's `RevealRule` would have to recover, and it is the single biggest
    gap behind `DeclaredSupport::Original`.
-5. **The census's denominator.** Mission-scoped archives only. The shared reader
-   (`ZBD/zrdr.zbd`, 220 members) and the world-group readers are outside it, so a
-   mission may inherit objective declarations this census does not see.
+5. **The census's denominator** — *resolved by F39-E3*
+   (`docs/findings/2026-10-03-f39-e3-shared-and-world-group-reader-census.md`).
+   At this stage the census covered mission-scoped archives only, so the shared
+   reader (`ZBD/zrdr.zbd`, 220 members) and the world-group readers were outside
+   it. F39-E3 measured all nine of them through the same decode and the same
+   `objective_state_machine`: none of their 612 members declares an
+   `OBJECTIVE<N>` block, so the mission-scoped denominator is complete — with
+   exactly one measured exception: `ZBD/C1C/zrdr.zbd` carries a `targets.zrd`
+   member with 5 objective *target* records C1C missions can inherit (target
+   records, not state-machine blocks, so the block counts are unaffected).
 6. **The 8 campaign missions with no outcome site** declare neither
    `INSTANTWIN` nor `INSTANTLOSS` (the other 16 do). Whether their ending is
    declared elsewhere, or is the absence of an outcome key, is unmeasured.
