@@ -262,7 +262,9 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
         "\"install_sha256\"",
         "\"assertions\": [",
         "\"artifacts\": [",
-        "\"unknowns\": [",
+        // The array must render as an empty list, not as one empty nested list:
+        // the validator type-checks every element.
+        "\"unknowns\": []",
     ] {
         assert!(
             written.contains(needle),
@@ -299,6 +301,21 @@ struct Measurement {
 /// statement, argument value or expression text**. A measurement record is what
 /// leaves the installation.
 fn measure(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement) {
+    let (path, measurement) = measure_corpus(game_dir, evidence_dir);
+    // The artifact is machine-readable evidence, so it must parse. A harness
+    // that writes malformed JSON would let a reviewer read a report whose
+    // artifact says nothing.
+    let written = fs::read_to_string(&path).expect("the corpus artifact reads back");
+    assert!(
+        written.starts_with('{') && written.trim_end().ends_with('}'),
+        "the corpus artifact must be one JSON object"
+    );
+    (path, measurement)
+}
+
+/// Runs the production readers and the production scanner over the installation
+/// and writes the measured corpus as a JSON artifact.
+fn measure_corpus(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement) {
     let container_path = game_dir.join(CRIMSON_ROF);
     let container = fs::read(&container_path)
         .unwrap_or_else(|error| panic!("read {}: {error}", container_path.display()));
@@ -361,14 +378,15 @@ fn measure(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement) {
             .iter()
             .map(|counts| {
                 // Only the class counts, never an expression's text.
-                ArgShape::ALL
+                let counts = ArgShape::ALL
                     .into_iter()
                     .map(|shape| format!("\"{}\":{}", shape.label(), counts.count(shape)))
                     .collect::<Vec<_>>()
-                    .join(",")
+                    .join(",");
+                format!("{{{counts}}}")
             })
             .collect::<Vec<_>>()
-            .join(";");
+            .join(",");
         families.push_str(&format!(
             "{{\"form\":{},\"native_id\":{},\"sites\":{},\"scripts\":{},\"arities\":[{}],\
              \"arg_shape_counts\":[{}],\"first_spelling\":{},\"first_site\":{{\"offset\":{},\
@@ -720,7 +738,13 @@ fn artifact_array(artifacts: &[(String, String, String)]) -> String {
     items.join(", ")
 }
 
+/// A JSON array of strings. An empty slice renders as `[]`, not `[[]]`: the
+/// validator requires every element to be a string, so a nested empty array
+/// would be a wrong-typed element rather than an empty list.
 fn str_array(items: &[String]) -> String {
+    if items.is_empty() {
+        return "[]".to_owned();
+    }
     let quoted: Vec<String> = items.iter().map(|item| jstr(item)).collect();
     format!("[{}]", quoted.join(", "))
 }
