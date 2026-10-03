@@ -875,9 +875,8 @@ fn accept_f14_d_6_the_airframe_edges_resolve_and_the_counts_agree() {
             );
         }
     }
-    assert_eq!(
-        Path::new(AIRFRAME_SCRIPT_IMAGE).is_absolute(),
-        false,
+    assert!(
+        !Path::new(AIRFRAME_SCRIPT_IMAGE).is_absolute(),
         "the collection names an installation-relative spelling"
     );
 }
