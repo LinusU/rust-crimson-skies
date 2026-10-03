@@ -179,12 +179,15 @@ use cs_content::objectives::{
     DeclaredObjectiveProgram, DeclaredObjectiveState, DeclaredPrecedence, DeclaredRevealRule,
     DeclaredTerminalOutcome, DeclaredTimeDomain, DeclaredTimer, DeclaredTimerAction,
     DeclaredTimerStart, DeclaredVolume, DormantReadError, DormantReading, FAILURE_KEY_VOCABULARY,
-    MeasuredBranchConflict, MeasuredBranchPrecedence, MeasuredBranchSite, MeasuredDormantBlock,
-    ProgramActor, ProgramSymbol, UnmeasuredQuantity, is_optional_objective_key,
-    measure_dormant_declarations,
+    MeasuredBranchConflict, MeasuredBranchPrecedence, MeasuredBranchSite, MeasuredCategoryEvidence,
+    MeasuredCountConditions, MeasuredDormantBlock, MeasuredTargetKinds,
+    OBJECTIVE_INACTIVE_COUNT_KEY, ProgramActor, ProgramSymbol, UnmeasuredQuantity,
+    is_objective_inactive_stage, is_optional_objective_key, measure_dormant_declarations,
+    measured_category_evidence,
 };
 use cs_content::stunts::{
-    OBJECTIVE_BLOCK_PREFIX, SCENARIO_OBJECTIVES_MEMBER, ZrdValue, objective_record, zrd_flat_fields,
+    OBJECTIVE_BLOCK_PREFIX, SCENARIO_OBJECTIVES_MEMBER, SCENARIO_TARGETS_MEMBER,
+    TARGET_CATEGORY_KEY, TARGET_HELP_KEY, ZrdValue, objective_record, zrd_field, zrd_flat_fields,
 };
 use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
@@ -1800,6 +1803,105 @@ fn measured_numbers<T: Copy>(value: &ZrdValue, accept: fn(&ZrdValue) -> Option<T
     }
 }
 
+// ---------------------------------------------------------------------------
+// F39-E4: which counter categories the original declares
+// ---------------------------------------------------------------------------
+//
+// F39 non-negotiable behavior 2 asks counters to distinguish destroyed,
+// disabled, captured, escaped and despawned actors, and F39-A/B/C/D all recorded
+// that two of the five had no producer at all. The two walks below are F39-E4's
+// measurement of the surface where the original *could* declare one, and they
+// are deliberately two, because the objective record and the target record are
+// two members with two shapes and two jobs:
+//
+// * [`measure_count_conditions`] reads the `objectives.zrd` blocks' **counted
+//   conditions** — the `INACTIVE<n>` sites beside their completion-count
+//   threshold. This is the only counter the original's records actually write,
+//   so it is where a counted category would have to appear. It names **part
+//   states**, not actor end-states: 28 measured spellings, `healthy` (983) and
+//   `panels` (194) the largest, none of which names a category.
+// * [`measure_target_kinds`] reads the `targets.zrd` records' **localized
+//   labels** — the objective kind each target is about. This is the only place
+//   that reads as an actor end-state (`MSG_OBJ_DESTROY`, `MSG_OBJ_DISABLE`,
+//   `MSG_OBJ_DISABLEENG`), and it is a **label**: resolving one to its displayed
+//   text is F12/F51's string catalog and what it means at runtime is unmeasured.
+//
+// Both are pure functions over one decoded member, so a synthetic record is
+// measured by the same code the census runs. Neither is a rule: a name match
+// bounds the vocabulary and never produces a transition
+// (`cs_content::objectives::UNMEASURED_COUNT_CATEGORY`).
+
+/// Measures the counted conditions one decoded objective record declares.
+///
+/// Walks every numbered `OBJECTIVE<N>` block's fields and counts the
+/// [`OBJECTIVE_INACTIVE_COUNT_KEY`] thresholds and the `INACTIVE<n>` stages
+/// beside them, recording how many names each stage carries and what they are
+/// spelled. Every name a stage carries is recorded, not only its last one, so a
+/// negative reading is the strongest one this walk supports: *no name the
+/// counted conditions write names this category*.
+#[must_use]
+pub fn measure_count_conditions(document: &ZrdValue) -> MeasuredCountConditions {
+    let record = objective_record(document);
+    let mut measured = MeasuredCountConditions::default();
+    for (_, block_value) in zrd_flat_fields(record) {
+        let mut has_threshold = false;
+        let mut has_stage = false;
+        for (field, value) in zrd_flat_fields(block_value) {
+            if field == OBJECTIVE_INACTIVE_COUNT_KEY {
+                measured.threshold_sites += 1;
+                has_threshold = true;
+                continue;
+            }
+            if !is_objective_inactive_stage(field) {
+                continue;
+            }
+            measured.stage_sites += 1;
+            has_stage = true;
+            let Some(children) = value.as_list() else {
+                // A stage that is not a list of names is counted under shape
+                // `0`, so a shape this walk has never seen cannot vanish from
+                // the census.
+                *measured.shapes.entry(0).or_insert(0) += 1;
+                continue;
+            };
+            *measured
+                .shapes
+                .entry(u32::try_from(children.len()).unwrap_or(u32::MAX))
+                .or_insert(0) += 1;
+            for name in children.iter().filter_map(ZrdValue::as_text) {
+                *measured.names.entry(name.to_owned()).or_insert(0) += 1;
+            }
+        }
+        if has_threshold && has_stage {
+            measured.thresholded_blocks += 1;
+        }
+    }
+    measured
+}
+
+/// Measures the objective kinds one decoded `targets.zrd` member declares.
+///
+/// Each record is counted once, and the labels it carries are recorded under
+/// their own spelling: `help_label` is the objective's kind and `category_label`
+/// the kind of thing it is about, and both are measured because both are places
+/// the original spells what must happen to an actor.
+#[must_use]
+pub fn measure_target_kinds(document: &ZrdValue) -> MeasuredTargetKinds {
+    let mut measured = MeasuredTargetKinds::default();
+    for target in document.as_list().unwrap_or_default() {
+        measured.records += 1;
+        let help = zrd_field(target, TARGET_HELP_KEY).and_then(ZrdValue::as_text);
+        if let Some(label) = help {
+            *measured.names.entry(label.to_owned()).or_insert(0) += 1;
+            measured.labelled += 1;
+        }
+        if let Some(label) = zrd_field(target, TARGET_CATEGORY_KEY).and_then(ZrdValue::as_text) {
+            *measured.names.entry(label.to_owned()).or_insert(0) += 1;
+        }
+    }
+    measured
+}
+
 /// A conflict measured in one mission's record, named with the mission it came
 /// from.
 ///
@@ -1922,6 +2024,22 @@ pub struct RetailObjectiveRow {
     /// F39-E2's per-block reading of this record's completion effects, measured by
     /// [`measure_block_precedence`] on the same decoded member.
     pub branch_precedence: MeasuredBranchPrecedence,
+    /// F39-E4's reading of this record's **counted conditions**, measured by
+    /// [`measure_count_conditions`] on the same decoded member: the
+    /// `INACTIVE<n>` stages, their completion-count threshold and the names
+    /// they carry.
+    pub count_conditions: MeasuredCountConditions,
+    /// F39-E4's reading of this mission's **objective targets**, measured by
+    /// [`measure_target_kinds`] on the archive's `targets.zrd` member: the
+    /// localized kind each target is about.
+    ///
+    /// `None` when the archive declares **no** `targets.zrd` at all, which is a
+    /// measured absence of the surface and not a defaulted reading: measured, one
+    /// mission-scoped archive of the 53 (`c1c/m01`) carries an
+    /// `objectives.zrd` and no target record, and a survey that reported "this
+    /// mission declares no objective kind" for it would be reporting about a
+    /// member nobody read.
+    pub target_kinds: Option<MeasuredTargetKinds>,
 }
 
 impl RetailObjectiveRow {
@@ -1956,6 +2074,33 @@ impl RetailObjectiveRow {
                 conflict,
             })
             .collect()
+    }
+
+    /// What this mission's own two measured surfaces declare about one counter
+    /// category: its counted conditions' names and its targets' labels, merged.
+    ///
+    /// The mission-local form of [`RetailObjectiveCensus::category_evidence`],
+    /// so a report can name the mission that carries a declaration instead of
+    /// only the corpus-wide total. A mission with no target record contributes
+    /// only its counted conditions' names.
+    #[must_use]
+    pub fn category_evidence(&self, kind: DeclaredCountKind) -> MeasuredCategoryEvidence {
+        measured_category_evidence(&self.category_name_counts(), kind)
+    }
+
+    /// This row's measured names from both surfaces, merged: the counted
+    /// conditions' names, plus its targets' labels when the archive declares a
+    /// target record.
+    #[must_use]
+    pub fn category_name_counts(&self) -> BTreeMap<String, u32> {
+        let mut names: BTreeMap<String, u32> = BTreeMap::new();
+        let targets = self.target_kinds.iter().map(|kinds| &kinds.names);
+        for source in std::iter::once(&self.count_conditions.names).chain(targets) {
+            for (name, count) in source {
+                *names.entry(name.clone()).or_insert(0) += *count;
+            }
+        }
+        names
     }
 }
 
@@ -2201,6 +2346,123 @@ impl RetailObjectiveCensus {
             (forward + row_forward, back + row_back)
         })
     }
+
+    // ------------------------------------------------------------ F39-E4 ---
+
+    /// How many target records the measured missions declare, in all.
+    ///
+    /// Over the missions that declare a `targets.zrd` at all — see
+    /// [`Self::missions_without_targets`] for the one that does not.
+    #[must_use]
+    pub fn target_records(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter_map(|row| row.target_kinds.as_ref())
+            .map(|kinds| kinds.records)
+            .sum()
+    }
+
+    /// How many of those records carry an objective kind (`help_label`).
+    #[must_use]
+    pub fn labelled_targets(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter_map(|row| row.target_kinds.as_ref())
+            .map(|kinds| kinds.labelled)
+            .sum()
+    }
+
+    /// The missions whose archive declares **no** `targets.zrd` member, so the
+    /// F39-E4 target surface's denominator is stated rather than assumed.
+    ///
+    /// Measured over the owner's installation: `c1c/m01` carries an
+    /// `objectives.zrd` with 24012 bytes of objective blocks and no target
+    /// record, so its objective kinds are **unmeasured**, not empty.
+    #[must_use]
+    pub fn missions_without_targets(&self) -> Vec<&str> {
+        self.rows
+            .iter()
+            .filter(|row| row.target_kinds.is_none())
+            .map(|row| row.mission.as_str())
+            .collect()
+    }
+
+    /// How many counted-condition stages the installation declares, in all.
+    #[must_use]
+    pub fn stage_sites(&self) -> u32 {
+        self.rows
+            .iter()
+            .map(|row| row.count_conditions.stage_sites)
+            .sum()
+    }
+
+    /// How many completion-count thresholds the installation declares, in all.
+    #[must_use]
+    pub fn threshold_sites(&self) -> u32 {
+        self.rows
+            .iter()
+            .map(|row| row.count_conditions.threshold_sites)
+            .sum()
+    }
+
+    /// How many blocks carry both a threshold and at least one stage: the
+    /// counted conditions a consumer would have to read, in blocks.
+    #[must_use]
+    pub fn thresholded_blocks(&self) -> u32 {
+        self.rows
+            .iter()
+            .map(|row| row.count_conditions.thresholded_blocks)
+            .sum()
+    }
+
+    /// The union of the names the measured corpus writes, across **both** F39-E4
+    /// surfaces — the counted conditions' names and the targets' labels —
+    /// sorted, with the number of sites carrying each.
+    ///
+    /// Published whole, so the classification below can be read against the
+    /// vocabulary it was drawn from instead of taken on trust. The counted
+    /// conditions cover all 53 mission readers and the target labels the 52 that
+    /// declare a `targets.zrd` (see [`Self::missions_without_targets`]), so the
+    /// two surfaces have different denominators and neither is widened to the
+    /// other.
+    #[must_use]
+    pub fn category_names(&self) -> Vec<(String, u32)> {
+        let mut names: BTreeMap<String, u32> = BTreeMap::new();
+        for row in &self.rows {
+            for (name, count) in row.category_name_counts() {
+                *names.entry(name).or_insert(0) += count;
+            }
+        }
+        names.into_iter().collect()
+    }
+
+    /// What the installation's objective records declare about one counter
+    /// category: the measured sites whose spelling matches
+    /// [`DeclaredCountKind::name_stem`], with the spellings that matched.
+    ///
+    /// The corpus-wide form of [`RetailObjectiveRow::category_evidence`], and
+    /// the measurement [`DeclaredCountKind::declared_by_original`] must agree
+    /// with. An empty reading is a **bounded negative**: it says no name either
+    /// surface writes spells this category, and never that the original has no
+    /// such behaviour — the compiled program behind the records is undecoded.
+    #[must_use]
+    pub fn category_evidence(&self, kind: DeclaredCountKind) -> MeasuredCategoryEvidence {
+        let names: BTreeMap<String, u32> = self.category_names().into_iter().collect();
+        measured_category_evidence(&names, kind)
+    }
+
+    /// The missions that declare at least one site naming `kind`, with the
+    /// measured sites each carries, so a report can name them.
+    #[must_use]
+    pub fn category_missions(&self, kind: DeclaredCountKind) -> Vec<(String, u32)> {
+        self.rows
+            .iter()
+            .filter_map(|row| {
+                let evidence = row.category_evidence(kind);
+                (evidence.sites > 0).then_some((row.mission.clone(), evidence.sites))
+            })
+            .collect()
+    }
 }
 
 /// Measures every mission-scoped objective record in `install_root`.
@@ -2235,6 +2497,24 @@ pub fn survey_retail_objective_records(
                 .map(|(_, count)| count)
                 .sum()
         };
+        // F39-E4's target surface, read only where the shared walk found a
+        // `targets.zrd`. The decode error is this survey's own: a target record
+        // that does not decode fails the census instead of reading as an empty
+        // one.
+        let target_kinds = record
+            .targets_bytes
+            .as_deref()
+            .map(|bytes| {
+                let targets = cs_content::stunts::decode_zrd(bytes).map_err(|error| {
+                    ObjectiveCensusError::Decode {
+                        container: record.container.clone(),
+                        code: error.code(),
+                        offset: error.offset(),
+                    }
+                })?;
+                Ok(measure_target_kinds(&targets))
+            })
+            .transpose()?;
         rows.push(RetailObjectiveRow {
             mission: record.mission,
             container: record.container,
@@ -2251,6 +2531,8 @@ pub fn survey_retail_objective_records(
             optional_sites: sites(is_optional_objective_key),
             failure_sites: sites(|key| FAILURE_KEY_VOCABULARY.contains(&key)),
             branch_precedence: measure_block_precedence(&record.document),
+            count_conditions: measure_count_conditions(&record.document),
+            target_kinds,
         });
     }
 
@@ -2283,6 +2565,13 @@ struct MissionObjectiveRecord {
     member_len: u64,
     member_sha256: String,
     document: ZrdValue,
+    /// F39-E4's second measured member: the archive's `targets.zrd` **bytes**,
+    /// `None` when the archive declares no target record at all. Bytes and not a
+    /// decoded document, so this shared walk stays the one that decodes only the
+    /// objective record and the caller that asked for the target record decodes
+    /// it. The absence is carried, not defaulted: it is a measured absence of the
+    /// surface.
+    targets_bytes: Option<Vec<u8>>,
 }
 
 /// Locates and decodes every mission-scoped objective record in `found`, sorted
@@ -2357,6 +2646,26 @@ fn locate_mission_objective_records(
             container: container_key.clone(),
             reason: format!("the {SCENARIO_OBJECTIVES_MEMBER} member was located without a name"),
         })?;
+        // F39-E4's second measured member: the objective **targets**, which is
+        // where the original spells what must happen to an actor. Located by the
+        // same F06 two-key dispatch, beside the objective record, and carried as
+        // **bytes** rather than decoded here so a target member that fails to
+        // decode cannot fail a survey that never reads it (F39-E1's dormant walk
+        // calls this helper too). A mission whose archive declares **no** target
+        // record is left as a measured absence (`None`), because refusing the
+        // whole survey would discard F39-D's reading over one member F39-E4 added,
+        // and defaulting it to an empty reading would report "this mission
+        // declares no objective kind" about a member nobody read.
+        let targets_bytes = discovery
+            .programs()
+            .iter()
+            .find(|program| {
+                program
+                    .locator()
+                    .member()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(SCENARIO_TARGETS_MEMBER))
+            })
+            .map(|targets_member| targets_member.bytes().to_vec());
         located.push(MissionObjectiveRecord {
             mission,
             container: spelling,
@@ -2366,6 +2675,7 @@ fn locate_mission_objective_records(
             member_len: span.len,
             member_sha256: cs_assets::install::sha256(member.bytes()).to_hex(),
             document,
+            targets_bytes,
         });
     }
     located.sort_by(|left, right| left.mission.cmp(&right.mission));

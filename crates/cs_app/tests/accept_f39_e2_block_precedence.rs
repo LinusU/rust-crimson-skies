@@ -654,6 +654,11 @@ fn accept_f39_e2_a_measured_record_carries_the_per_block_reading() {
         optional_sites: 0,
         failure_sites: 0,
         branch_precedence: branch_precedence.clone(),
+        // F39-E4 added the two measured surfaces this stage does not read; the
+        // fixture states them empty rather than leaving them defaulted, so a
+        // future reader cannot mistake this row for a measured target record.
+        count_conditions: cs_content::objectives::MeasuredCountConditions::default(),
+        target_kinds: None,
     };
 
     // The reading travels with the record, so a refusal can name the condition

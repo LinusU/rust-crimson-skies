@@ -190,6 +190,39 @@
 //! number contradicts the measured shape
 //! ([`ObjectivesSchemaError::EffectArgumentShape`]) — a nap without its number,
 //! or a number on an effect that carries none.
+//!
+//! # F39-E4: which counter categories the original declares
+//!
+//! F39 non-negotiable behavior 2 asks counters to distinguish destroyed,
+//! disabled, captured, escaped and despawned actors. F39-A/B/C/D all recorded
+//! that two of the five — `Disabled` and `Escaped` — had no producer at all:
+//! nothing in the engine reported them, and F39-D's category test had to use a
+//! capture to show that a captured convoy does not satisfy a `Destroyed`
+//! condition. F39-E4 put the question to the owner's installation and the answer
+//! is **no declaration for either**:
+//!
+//! * the original's target records name two of the five as **localized
+//!   objective kinds** — `MSG_OBJ_DESTROY` on 107 records and
+//!   `MSG_OBJ_DISABLE`/`MSG_OBJ_DISABLEENG` on 13 (5 and 8) — and name no
+//!   captured, escaped or despawned kind at all;
+//! * the counted conditions the original *does* write (1335 `INACTIVE<n>` sites
+//!   in 129 thresholded blocks, beside 130 completion-count thresholds) name
+//!   **actor, part and part-state names**, 226 distinct spellings of which
+//!   `healthy` (983) and `panels` (194) are the largest, and none of the 226
+//!   names a category;
+//! * the compiled mission program that would carry a counter is undecoded
+//!   (F13-B/C, F38), so no opcode can be read either.
+//!
+//! A label is not a counted transition, so this measurement produces no
+//! producer; what it produces is the gate. [`CountCategorySupport`] states per
+//! category whether the project's own lifecycle vocabulary reports it,
+//! [`DeclaredCountKind::declared_by_original`] states what the corpus spells,
+//! [`UNMEASURED_COUNT_CATEGORY`] is the named verdict, and
+//! [`ObjectivesSchemaError::UnmeasuredCountCategory`] refuses an **original**
+//! record that counts a category the original never declares. The five-category
+//! vocabulary stays design, is labelled design here and in
+//! `cs_sim::objectives::counters`, and the finding records the measurement, so
+//! the claim is gated rather than quietly over-declared.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -406,6 +439,13 @@ pub enum DeclaredPrecedence {
 }
 
 /// Why an actor stopped counting as present, as declared.
+///
+/// The five categories are F39's required vocabulary (non-negotiable behavior 2)
+/// and are **newly authored design**: F39-E4 measured the owner's installation
+/// for a producer of each and found none for two of them, which is what
+/// [`DeclaredCountKind::declared_by_original`] and
+/// [`CountCategorySupport`] state and what
+/// [`ObjectivesSchemaError::UnmeasuredCountCategory`] refuses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DeclaredCountKind {
     /// Destroyed.
@@ -418,6 +458,328 @@ pub enum DeclaredCountKind {
     Escaped,
     /// Removed from the world without being killed.
     Despawned,
+}
+
+impl DeclaredCountKind {
+    /// Every category, in declaration order.
+    ///
+    /// The enumeration a consumer walks instead of matching on the type, so the
+    /// five-category claim and every measurement over it stay exhaustive.
+    #[must_use]
+    pub const fn all() -> [Self; 5] {
+        [
+            Self::Destroyed,
+            Self::Disabled,
+            Self::Captured,
+            Self::Escaped,
+            Self::Despawned,
+        ]
+    }
+
+    /// The stable label used in refusals, reports and evidence.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Destroyed => "destroyed",
+            Self::Disabled => "disabled",
+            Self::Captured => "captured",
+            Self::Escaped => "escaped",
+            Self::Despawned => "despawned",
+        }
+    }
+
+    /// Whether this project's own damage lifecycle vocabulary produces the
+    /// category, measured over the declared half rather than assumed.
+    ///
+    /// `Destroyed`, `Captured` and `Despawned` mirror a
+    /// [`cs_sim::damage::LifecycleKind`](https://docs.rs/cs_sim) transition;
+    /// `Disabled` and `Escaped` do not, which is why they need
+    /// [`Self::declared_by_original`] to be checked before a record may claim
+    /// them.
+    #[must_use]
+    pub const fn support(self) -> CountCategorySupport {
+        match self {
+            Self::Destroyed | Self::Captured | Self::Despawned => CountCategorySupport::Lifecycle,
+            Self::Disabled | Self::Escaped => CountCategorySupport::Unmeasured,
+        }
+    }
+
+    /// Whether the original's own objective records **declare** this category.
+    ///
+    /// F39-E4's measured answer, per category (see
+    /// `docs/findings/2026-10-04-f39-e4-count-category-producers.md`):
+    ///
+    /// | category | declaring sites | what the corpus writes |
+    /// | --- | --- | --- |
+    /// | `Destroyed` | 107 | `targets.zrd` objective kind `MSG_OBJ_DESTROY` |
+    /// | `Disabled` | 13 | `MSG_OBJ_DISABLE` (5) and `MSG_OBJ_DISABLEENG` (8) |
+    /// | `Captured` | 0 | — |
+    /// | `Escaped` | 0 | — |
+    /// | `Despawned` | 0 | — |
+    ///
+    /// Every one of those sites is a **localized label** on a target, and the
+    /// original's counted conditions — 1335 `INACTIVE<n>` sites in 129
+    /// thresholded blocks, beside 130 `INACTIVE_COMPLETION_COUNT` thresholds —
+    /// name actor, part and part-state names instead (226 distinct spellings,
+    /// `healthy` 983 and `panels` 194 the largest), none of which names a
+    /// category. So `true` here means **the records spell this category**, never
+    /// that the engine's counter has a producer: the
+    /// compiled mission program that would carry a counter is undecoded
+    /// (F13-B/C, F38). The retail test re-measures every row of the table above
+    /// and fails if this answer drifts from the corpus.
+    #[must_use]
+    pub const fn declared_by_original(self) -> bool {
+        matches!(self, Self::Destroyed | Self::Disabled)
+    }
+
+    /// The declared **name stem** a measured spelling is recognised by.
+    ///
+    /// The one rule by which a name the original's records carry is classified
+    /// into a counter category: the name, compared case-insensitively, must
+    /// *begin with* this stem. The stems are stems and not whole words because
+    /// the corpus spells two of the categories as prefixes of a longer label —
+    /// `MSG_OBJ_DISABLE` and `MSG_OBJ_DISABLEENG` — and a whole-word rule would
+    /// miss both.
+    ///
+    /// **This is a vocabulary match, not a decoded behaviour.** It bounds which
+    /// spellings exist; it never says what a declaration does, and a match on
+    /// its own is not a producer (see [`UNMEASURED_COUNT_CATEGORY`]).
+    #[must_use]
+    pub const fn name_stem(self) -> &'static str {
+        match self {
+            Self::Destroyed => "DESTROY",
+            Self::Disabled => "DISABL",
+            Self::Captured => "CAPTUR",
+            Self::Escaped => "ESCAP",
+            Self::Despawned => "DESPAWN",
+        }
+    }
+
+    /// Whether a measured spelling names this category under
+    /// [`Self::name_stem`].
+    ///
+    /// The single place the classification is applied, so a census and a report
+    /// cannot classify the same name two ways.
+    ///
+    /// The rule is **segment-based and case-insensitive**: the name is split on
+    /// `_` and a category claims it when one of its segments *begins with* the
+    /// category's stem. Measured labels are prefixed (`MSG_OBJ_DISABLE`, a
+    /// segment of its own), so a whole-string prefix rule would miss every one
+    /// of them, and the measured part-state spellings (`healthy`, `panels`,
+    /// `healthy_part`, …) contain no segment that starts with any of the five
+    /// stems.
+    #[must_use]
+    pub fn names_spelling(spelling: &str) -> Option<Self> {
+        spelling
+            .split('_')
+            .filter_map(|segment| {
+                Self::all()
+                    .into_iter()
+                    .find(|kind| segment.to_ascii_uppercase().starts_with(kind.name_stem()))
+            })
+            .next()
+    }
+}
+
+impl fmt::Display for DeclaredCountKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Where a declared count category's producer comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CountCategorySupport {
+    /// The project's own damage lifecycle vocabulary reports this category
+    /// (`cs_sim::objectives::counters::CountKind::from_lifecycle`), so an
+    /// authored session can be handed the count.
+    Lifecycle,
+    /// Nothing measured reports this category: the original declares no such
+    /// actor-count declaration and no subsystem produces one, so only a caller
+    /// that invents a report could count it.
+    Unmeasured,
+}
+
+impl CountCategorySupport {
+    /// Whether a session can be handed this category by a measured producer.
+    #[must_use]
+    pub const fn is_measured(self) -> bool {
+        matches!(self, Self::Lifecycle)
+    }
+}
+
+/// Why a counter category stays unproduced, stated once so the schema, the
+/// lowering, the census and the finding say the same thing.
+///
+/// It names the measured fact behind it: over the owner's installation the
+/// original's objective records declare no actor-count category for a disabled
+/// or escaped actor, and the compiled program that would carry the counter is
+/// not decoded, so the engine has no source for either count.
+pub const UNMEASURED_COUNT_CATEGORY: &str = "the mission's objective records were measured for the actor-count categories \
+     they declare: they name a destroy kind and a disable kind as localized target labels, and none names a captured, \
+     escaped or despawned category, while the counted conditions themselves name part states rather than actor \
+     end-states; the compiled program that would carry a counter is not decoded, so a disabled or escaped count has no \
+     measured producer and an original record must not claim one";
+
+/// Why a counter category stays **undeclared** by the original, stated once so
+/// the schema, the census and the finding say the same thing.
+///
+/// It names the measured fact behind it: no name either of the original's
+/// objective surfaces writes — its counted conditions' part states or its
+/// targets' localized labels — spells a captured, escaped or despawned
+/// category.
+pub const UNDECLARED_COUNT_CATEGORY: &str = "the mission's objective records were measured for the actor-count categories \
+     they declare and none of their counted conditions or target labels names this one, so the original declares no such \
+     actor count and an original record must not claim it";
+
+/// Why an **original** record may not carry a count condition in `kind`, or
+/// `None` when it may.
+///
+/// The single place F39-E4's gate is decided, from two separately measured
+/// facts and their two named verdicts:
+///
+/// 1. the original's own records must **spell** the category
+///    ([`DeclaredCountKind::declared_by_original`], else
+///    [`UNDECLARED_COUNT_CATEGORY`]); and
+/// 2. something must be able to **report** it
+///    ([`CountCategorySupport::is_measured`], else
+///    [`UNMEASURED_COUNT_CATEGORY`]).
+///
+/// On the owner's installation exactly one category clears both — `Destroyed` —
+/// so an original record may count destroyed actors and nothing else. A
+/// **newly authored** record is never refused here: all five categories are
+/// design, which is what its origin says it is.
+#[must_use]
+pub const fn original_count_category_refusal(kind: DeclaredCountKind) -> Option<&'static str> {
+    if !kind.declared_by_original() {
+        Some(UNDECLARED_COUNT_CATEGORY)
+    } else if !kind.support().is_measured() {
+        Some(UNMEASURED_COUNT_CATEGORY)
+    } else {
+        None
+    }
+}
+
+/// What a measured corpus declares about one counter category.
+///
+/// The **sites** a census counted that name `kind` under
+/// [`DeclaredCountKind::name_stem`], with the measured spellings that matched.
+/// An empty [`Self::names`] is the measured statement *"nothing in this surface
+/// spells this category"* — a bound on the vocabulary, never a claim about what
+/// the engine does with an actor.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MeasuredCategoryEvidence {
+    /// How many measured sites name the category, across both surfaces.
+    pub sites: u32,
+    /// The measured spellings that named it, sorted, with their site counts.
+    pub names: Vec<(String, u32)>,
+}
+
+impl MeasuredCategoryEvidence {
+    /// Whether the measured corpus names this category at all.
+    ///
+    /// The reading [`DeclaredCountKind::declared_by_original`] must agree with:
+    /// the retail test measures every category over the owner's installation and
+    /// compares, so the declared answer cannot drift from the corpus unnoticed.
+    #[must_use]
+    pub fn is_declared(&self) -> bool {
+        !self.names.is_empty()
+    }
+}
+
+/// F39-E4's reading of one record's **counted conditions**: the `INACTIVE<n>`
+/// sites an `OBJECTIVE<N>` block declares beside its
+/// [`OBJECTIVE_INACTIVE_COUNT_KEY`] threshold.
+///
+/// A census of **names and shapes**, deliberately not a rule: every number says
+/// how many measured sites a block declares and what they are spelled, never
+/// what reaching a named state means — the counted condition's *semantics* are
+/// the part F39-E1 could not recover, and the compiled program behind the record
+/// is undecoded (F13-B/C).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MeasuredCountConditions {
+    /// How many `INACTIVE<n>` sites the record declares.
+    pub stage_sites: u32,
+    /// How many [`OBJECTIVE_INACTIVE_COUNT_KEY`] thresholds the record declares.
+    pub threshold_sites: u32,
+    /// How many blocks carry both a threshold and at least one stage.
+    ///
+    /// Blocks, not sites: the threshold is the count and the stages are what it
+    /// counts, so a consumer asking "how many counted conditions are there?"
+    /// has to be answered in blocks.
+    pub thresholded_blocks: u32,
+    /// How many stage sites carry exactly `N` names, keyed by `N`.
+    ///
+    /// Measured `1 → 35`, `2 → 356`, `3 → 944`: the corpus writes one, two and
+    /// three names per site and nothing else, so a fourth shape is a discovery
+    /// rather than a variant this reading has already seen.
+    pub shapes: BTreeMap<u32, u32>,
+    /// The measured name spellings of every stage site, sorted, with the number
+    /// of sites carrying each. **Every** name a site carries is counted, not
+    /// only its last one, so "no site names a category" is the strongest
+    /// statement this reading supports.
+    pub names: BTreeMap<String, u32>,
+}
+
+impl MeasuredCountConditions {
+    /// What this record's counted conditions declare about one category: the
+    /// measured sites whose names match [`DeclaredCountKind::name_stem`].
+    #[must_use]
+    pub fn evidence(&self, kind: DeclaredCountKind) -> MeasuredCategoryEvidence {
+        measured_category_evidence(&self.names, kind)
+    }
+}
+
+/// F39-E4's reading of one mission's **objective targets**: the localized kind
+/// and category each `targets.zrd` record carries.
+///
+/// The surface that names *what must happen to an actor* — `MSG_OBJ_DESTROY`
+/// reads as "destroy this", `MSG_OBJ_DISABLE`/`MSG_OBJ_DISABLEENG` as "disable
+/// this" — and therefore the only place in the objective records where a
+/// counter category could be spelled. It is a census of **localized label
+/// names**: resolving one to its displayed text is F12/F51's string catalog, and
+/// what a label means at runtime is unmeasured.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MeasuredTargetKinds {
+    /// How many target records the member declares.
+    pub records: u32,
+    /// How many of them carry a `help_label` naming an objective kind.
+    pub labelled: u32,
+    /// Every measured label spelling — the union of the records' `help_label`
+    /// and `category_label` values — sorted, with the number of records carrying
+    /// each.
+    pub names: BTreeMap<String, u32>,
+}
+
+impl MeasuredTargetKinds {
+    /// What this mission's target records declare about one category: the
+    /// measured labels whose spelling matches [`DeclaredCountKind::name_stem`].
+    #[must_use]
+    pub fn evidence(&self, kind: DeclaredCountKind) -> MeasuredCategoryEvidence {
+        measured_category_evidence(&self.names, kind)
+    }
+}
+
+/// Classifies one measured name vocabulary into a counter category.
+///
+/// The one place a vocabulary is classified, so the census, the gate and the
+/// tests cannot classify a spelling two different ways. Public because a census
+/// spanning **both** measured surfaces (a mission's counted conditions *and* its
+/// target labels) has to merge them and classify the union.
+#[must_use]
+pub fn measured_category_evidence(
+    names: &BTreeMap<String, u32>,
+    kind: DeclaredCountKind,
+) -> MeasuredCategoryEvidence {
+    let names: Vec<(String, u32)> = names
+        .iter()
+        .filter(|(name, _)| DeclaredCountKind::names_spelling(name) == Some(kind))
+        .map(|(name, count)| ((*name).clone(), *count))
+        .collect();
+    MeasuredCategoryEvidence {
+        sites: names.iter().map(|(_, count)| *count).sum(),
+        names,
+    }
 }
 
 /// What a satisfied count condition does, as declared.
@@ -1161,9 +1523,22 @@ pub const FAILURE_KEY_VOCABULARY: [&str; 2] = ["INSTANTWIN", "INSTANTLOSS"];
 /// Whether a measured key is one of the optionality declarations.
 ///
 /// [`OBJECTIVE_INACTIVE_COUNT_KEY`] is matched exactly; a stage key is
-/// `INACTIVE` followed by the stage number. Exact matching keeps
+/// `INACTIVE` followed by the stage number (see
+/// [`is_objective_inactive_stage`]). Exact matching keeps
 /// `INACTIVE_COMPLETION_COUNT` from reading as a stage and keeps a key this
 /// stage never saw — `INACTIVATED`, `INACTIVE_A` — out of the count.
+#[must_use]
+pub fn is_optional_objective_key(key: &str) -> bool {
+    key == OBJECTIVE_INACTIVE_COUNT_KEY || is_objective_inactive_stage(key)
+}
+
+/// Whether a measured key is one **stage** of an objective block's counted
+/// condition: `INACTIVE` followed by the stage number.
+///
+/// Split out of [`is_optional_objective_key`] for F39-E4, which counts the
+/// stages and the threshold separately: they are different roles in one
+/// declaration, and a walk that could not tell them apart would report a count
+/// it cannot read.
 ///
 /// The numeric suffix is deliberately *not* capped at the measured
 /// `INACTIVE1`…`INACTIVE18`: a stage number beyond 18 is the same measured
@@ -1175,10 +1550,7 @@ pub const FAILURE_KEY_VOCABULARY: [&str; 2] = ["INSTANTWIN", "INSTANTLOSS"];
 /// asserts that nothing outside the measured range matches, so an over-match
 /// fails loudly instead of quietly inflating a count.
 #[must_use]
-pub fn is_optional_objective_key(key: &str) -> bool {
-    if key == OBJECTIVE_INACTIVE_COUNT_KEY {
-        return true;
-    }
+pub fn is_objective_inactive_stage(key: &str) -> bool {
     let Some(rest) = key.strip_prefix(OBJECTIVE_INACTIVE_STAGE_PREFIX) else {
         return false;
     };
@@ -1454,6 +1826,29 @@ pub enum ObjectivesSchemaError {
     },
     /// A measurement names no archive or member, so it measures nothing.
     EmptyMeasurement,
+    /// An original record declares a count condition in a category the original
+    /// never declares, or in one nothing measured reports.
+    ///
+    /// F39-E4 measured the owner's installation and found the two facts
+    /// separate: the objective records name a destroy and a disable category as
+    /// localized target labels and name no captured, escaped or despawned
+    /// category ([`UNDECLARED_COUNT_CATEGORY`]), while no measured transition
+    /// reports a disabled or escaped count at all
+    /// ([`UNMEASURED_COUNT_CATEGORY`]). A record that claims the original's
+    /// provenance and then counts either would be running invented semantics
+    /// under an original mission's id, so the declaration is refused here, by
+    /// name, with the category and the measured verdict. A **newly authored**
+    /// record may still use any of the five: it is design, and it says so
+    /// through its origin.
+    UnmeasuredCountCategory {
+        /// The condition carrying the category.
+        condition: ProgramSymbol,
+        /// The category the original may not be counted in.
+        kind: DeclaredCountKind,
+        /// Which measured fact refuses it, by name:
+        /// [`UNDECLARED_COUNT_CATEGORY`] or [`UNMEASURED_COUNT_CATEGORY`].
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for ObjectivesSchemaError {
@@ -1610,6 +2005,15 @@ impl fmt::Display for ObjectivesSchemaError {
                 f,
                 "a measured objective record must name the archive and member it was read from"
             ),
+            Self::UnmeasuredCountCategory {
+                condition,
+                kind,
+                reason,
+            } => write!(
+                f,
+                "count condition {condition} counts {kind} actors, which an original \
+                 record may not claim: {reason}"
+            ),
         }
     }
 }
@@ -1655,7 +2059,11 @@ impl DeclaredObjectiveProgram {
     ///
     /// # Errors
     ///
-    /// [`ObjectivesSchemaError`] naming the first invalid declaration.
+    /// [`ObjectivesSchemaError`] naming the first invalid declaration, and
+    /// [`ObjectivesSchemaError::UnmeasuredCountCategory`] when an **original**
+    /// record counts a category the original's own objective records never
+    /// declare (F39-E4). A newly authored record may use all five: it is
+    /// design and carries an authored origin.
     #[expect(clippy::too_many_arguments, reason = "one field per declared list")]
     pub fn try_new(
         subject: ContentId,
@@ -1676,8 +2084,26 @@ impl DeclaredObjectiveProgram {
             &triggers,
             &spawn_groups,
         )?;
+        let support = support_for(&origin);
+        // F39-E4's gate, decided in one place from the two measured facts: an
+        // original record may not count a category the original's own records do
+        // not spell, nor one no measured transition reports. Checked *after* the
+        // structural validation so the first invalid declaration is still named
+        // first, and against the support this origin actually earns, so a
+        // designed record is never refused for using designed categories.
+        if let DeclaredSupport::Original { .. } = &support {
+            for condition in &conditions {
+                if let Some(reason) = original_count_category_refusal(condition.kind) {
+                    return Err(ObjectivesSchemaError::UnmeasuredCountCategory {
+                        condition: condition.symbol,
+                        kind: condition.kind,
+                        reason,
+                    });
+                }
+            }
+        }
         Ok(Self {
-            support: support_for(&origin),
+            support,
             subject,
             origin,
             provenance,
