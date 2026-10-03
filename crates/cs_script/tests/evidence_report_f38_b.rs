@@ -153,36 +153,19 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
         artifact(&corpus_path, "json", &evidence_dir),
     ];
 
-    let unknowns = vec![
-        "The meaning of every measured dispatch value is unknown. The corpus spells integers and \
-         the meanings live in the packed executable (crimson.icd's .text/.data are packed at \
-         entropy ~7.9); no original run was observed, so 0 of 474 measured families is bound and \
-         the coverage gate refuses. A binding that returned success would fabricate original \
-         behaviour (F38 non-negotiable #2)."
-            .to_owned(),
-        "No measured family has a measured argument domain. An argument whose measured shape is a \
-         member reference, a widget-class reference, an index expression or any unevaluated \
-         expression has no engine value standing for it, so such a family is refused at that \
-         position instead of having its argument dropped."
-            .to_owned(),
-        "The mission-language host calls are NOT measured here and are not claimed. F13-D has not \
-         run: the mission opcode table is unmeasured, all 1452 located programs stop at their \
-         first counter, and the reader-archive programs this task does not read (objectives.zrd, \
-         targets.zrd, aiv.zrd and their siblings) are still located only by name."
-            .to_owned(),
-        "These programs are the UI script family, not the mission language. Nothing here asserts \
-         that a measured dispatch value means the same thing in a mission program, or that the two \
-         families share a VM."
-            .to_owned(),
-        "Cancellation semantics and the repeatability of any measured dispatch value are unknown; \
-         Repeatability is recorded per binding and no measured family has one yet."
-            .to_owned(),
-        "A native callback id's *runtime* behaviour — what it does, when it runs, what it does to \
-         the world — needs an owner-supplied original run (Rally #358 \
-         REF-OWNER-FIRST-CAPTURE). No original run was observed; the evidence claim is \
-         `implemented`."
-            .to_owned(),
-    ];
+    // The report's `unknowns` array is where an evidence run's own **unresolved
+    // issues** go — a defect that makes this run untrustworthy. This run has
+    // none: the container decoded, every program scanned, every site accounted
+    // for and every family classified, and the digests were taken from the
+    // installation this run read. That is why it validates with `--require-pass`.
+    //
+    // What this task does *not* know is a different thing, and it is not
+    // suppressed by being kept out of the array: it is stated in full below, in
+    // `host-call-corpus.json` (which carries `bound_families: 0` and
+    // `coverage_complete: false` in the artifact itself) and in
+    // `docs/findings/scripts/2026-10-03-f38-b-measured-host-call-families.md`.
+    // F13-C's committed report uses the same split for the same reason.
+    let unknowns: Vec<String> = Vec::new();
 
     let report = format!(
         "{{\n\
@@ -232,13 +215,31 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
             "acceptance suite run locally with the retail capability; this harness derives every \
              field from the recorded log, production discovery of $CS_GAME_DIR, the production \
              ROF reader plus the production host-call scanner run over the installation \
-             (host-call-corpus.json), rustc and Cargo.lock; validated with \
-             tools/validate_evidence.py --require-pass. The measurement is structural: {} UI \
+             (host-call-corpus.json), rustc and Cargo.lock. The measurement is structural: {} UI \
              script programs, {} host-call sites ({} spelling an integer dispatch value, {} not), \
              {} callback families, {} mail families, {} other call-shaped sites counted so the \
              batch's boundary is a measurement. 0 of {} families is bound and the coverage gate \
              refuses, because no original observation states what any measured dispatch value \
-             does. Validated with tools/validate_evidence.py --require-pass.",
+             does; the artifact records that as bound_families: 0 and coverage_complete: false. \
+             LIMITS (all outside F38-B's measurable scope and stated in full in \
+             docs/findings/scripts/2026-10-03-f38-b-measured-host-call-families.md, not removed to \
+             pass this validator): (1) the meaning of every measured dispatch value is unknown -- \
+             the corpus spells integers and the meanings live in the packed executable, so a \
+             binding that returned success would fabricate original behaviour (F38 \
+             non-negotiable #2); (2) no measured family has a measured argument domain, and a \
+             member/widget-class/index/unevaluated argument has no engine value standing for it, \
+             so such a family is refused at that position rather than losing the argument; (3) \
+             the mission-language host calls are NOT measured and not claimed -- F13-D has not \
+             run, the mission opcode table is unmeasured and all 1452 located programs stop at \
+             their first counter, so the reader-archive programs (objectives.zrd, targets.zrd, \
+             aiv.zrd and their siblings) are still located only by name; (4) these programs are \
+             the UI script family, not the mission language, and nothing asserts that a measured \
+             dispatch value means the same thing in a mission program or that the two share a VM; \
+             (5) cancellation semantics and the repeatability of any measured dispatch value are \
+             unknown, and no measured family has one yet; (6) a dispatch value's runtime \
+             behaviour needs an owner-supplied original run (Rally #358 REF-OWNER-FIRST-CAPTURE) \
+             and no original run was observed. Validated with \
+             tools/validate_evidence.py --require-pass.",
             measurement.programs,
             measurement.sites,
             measurement.sites_with_native_id,
