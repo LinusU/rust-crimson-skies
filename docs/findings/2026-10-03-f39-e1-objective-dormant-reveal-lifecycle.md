@@ -460,6 +460,14 @@ killed by `…only_objective_with_digits_is_a_numbered_block`; and returning a
 fixed block from `DormantReadError::block()` is killed by the same refusal test.
 No measured value was changed by the review, and no protected path was touched.
 
+`main` moved under this review: F39-E2 landed in the same two source files, so
+the branch was rebased onto it and both conflicts resolved by keeping this
+stage's shared `locate_mission_objective_records` helper while F39-E2's three
+row fields and its `branch_precedence` reading sit on top of it, measured on
+`record.document`. F39-D's 10 tests and F39-E2's 8 were re-run on the rebased
+tree (all green) so the resolution is checked from both sides, and the committed
+report's `candidate_tree` is the tree this review tested.
+
 ## Unknown / deferred (not guessed)
 
 1. **The unit of `BEGIN_DORMANT`'s positive argument.** Ordered in mission time
