@@ -3867,13 +3867,15 @@ mod evidence_report_f32_d {
         })
     }
 
+    /// A caller-supplied path, resolved against the workspace root so a
+    /// relative spelling means the same thing it does in the documented
+    /// command line.
     fn workspace_path(as_described: &str) -> PathBuf {
         let path = Path::new(as_described);
-        assert!(
-            path.is_absolute(),
-            "{as_described} must be an absolute path"
-        );
-        path.to_path_buf()
+        if path.is_absolute() {
+            return path.to_path_buf();
+        }
+        workspace_root().join(path)
     }
 
     fn git(args: &[&str]) -> String {
@@ -3897,17 +3899,24 @@ mod evidence_report_f32_d {
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 
+    /// The version a package is pinned at in the **committed** lock file, read
+    /// from Git rather than from the working tree so a report describes the
+    /// tree it names and not whatever is checked out beside it.
     fn locked_version(package: &str) -> String {
         let text = git(&["show", "HEAD:Cargo.lock"]);
-        text.lines()
-            .find_map(|line| {
-                let mut parts = line.split_whitespace();
-                (parts.next() == Some("name")
-                    && parts.next() == Some(&format!("\"{package}\""))
-                    && parts.next() == Some("version"))
-                .then(|| parts.next().unwrap_or_default().trim_matches('"').to_owned())
-            })
-            .unwrap_or_else(|| panic!("{package} must be in the committed Cargo.lock"))
+        let mut wanted = false;
+        for line in text.lines() {
+            if line.trim_start().starts_with("[[package]]") {
+                wanted = false;
+            } else if let Some(name) = line.trim_start().strip_prefix("name = \"") {
+                wanted = name.trim_end_matches('"') == package;
+            } else if let Some(version) = line.trim_start().strip_prefix("version = \"")
+                && wanted
+            {
+                return version.trim_end_matches('"').to_owned();
+            }
+        }
+        panic!("package {package:?} must be in the committed Cargo.lock");
     }
 
     #[derive(Debug, Default)]
@@ -4024,7 +4033,11 @@ mod evidence_report_f32_d {
     fn str_array(items: &[String]) -> String {
         format!(
             "[{}]",
-            items.iter().map(|item| jstr(item)).collect::<Vec<_>>().join(",")
+            items
+                .iter()
+                .map(|item| jstr(item))
+                .collect::<Vec<_>>()
+                .join(",")
         )
     }
 
@@ -4084,7 +4097,14 @@ mod evidence_report_f32_d {
         let mp = (5 * doy + 2) / 153;
         let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
         let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-        (if month <= 2 { year + 1 } else { year }, month, day, hour, minute, second)
+        (
+            if month <= 2 { year + 1 } else { year },
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        )
     }
 
     /// What the report's `review.method` says.
@@ -4208,7 +4228,7 @@ mod evidence_report_f32_d {
         std::fs::write(&surface_path, surface_json).expect("the surface artifact is written");
 
         // Artifact 2: a fresh production replay of the probe.
-        let probe = probe_json();
+        let (probe, probe_seed, probe_ticks) = probe_json();
         let probe_path = evidence_dir.join("difficulty-probe.json");
         std::fs::write(&probe_path, probe).expect("the probe artifact is written");
 
@@ -4226,7 +4246,12 @@ mod evidence_report_f32_d {
         );
         let command = format!(
             "{{\"argv\":{},\"cwd\":{},\"exit_code\":{exit_code}}}",
-            str_array(&argv.split_whitespace().map(str::to_owned).collect::<Vec<_>>()),
+            str_array(
+                &argv
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            ),
             jstr(&workspace_root().display().to_string())
         );
         let source = format!(
@@ -4252,8 +4277,8 @@ mod evidence_report_f32_d {
             concat!(
                 "{{\"schema_version\":1,\"task_id\":\"F32-D\",\"candidate_tree\":{tree},",
                 "\"engine\":{engine},\"created_at\":{created},\"command\":{command},",
-                "\"source\":{source},\"seed\":20260903,",
-                "\"ticks\":{{\"start\":0,\"end\":599}},\"overrides\":[],",
+                "\"source\":{source},\"seed\":{seed},",
+                "\"ticks\":{{\"start\":0,\"end\":{ticks}}},\"overrides\":[],",
                 "\"capabilities\":[\"retail\",\"synthetic\"],\"tests\":{tests},",
                 "\"assertions\":{assertions},\"artifacts\":{artifacts},\"unknowns\":[],",
                 "\"review\":{review},\"claim\":\"implemented\"}}\n"
@@ -4263,6 +4288,8 @@ mod evidence_report_f32_d {
             created = jstr(&iso_utc_now()),
             command = command,
             source = source,
+            seed = probe_seed,
+            ticks = probe_ticks.saturating_sub(1),
             tests = tests,
             assertions = assertion_array(&suite.assertions),
             artifacts = artifact_array(&artifacts),
@@ -4354,7 +4381,7 @@ mod evidence_report_f32_d {
     }
 
     /// The probe replay as JSON: aggregates and digests, no geometry.
-    fn probe_json() -> String {
+    fn probe_json() -> (String, i64, u64) {
         use cs_sim::ai::combat::{
             DifficultyTier, synthetic_combat_runtime, synthetic_difficulty_probe_spec,
         };
@@ -4408,7 +4435,7 @@ mod evidence_report_f32_d {
                 )
             })
             .collect();
-        format!(
+        let json = format!(
             "{{\"seed\":{},\"ticks\":{},\"runs_per_tier\":{},\"domain\":{},\"declared_tiers\":{},\"measured_steps\":{},\"covers_every_measured_step\":{},\"geometry_is_tier_invariant\":{},\"arsenal_is_tier_invariant\":{},\"clock_is_tier_invariant\":{},\"distinct_profile_count\":{},\"outcomes_differ\":{},\"protected_answers_never_regress\":{},\"measured_tiers\":{},\"tiers\":[{}],\"comparisons\":[{}]}}\n",
             spec.root_seed,
             spec.ticks,
@@ -4432,6 +4459,7 @@ mod evidence_report_f32_d {
             ),
             tiers.join(","),
             comparisons.join(","),
-        )
+        );
+        (json, spec.root_seed as i64, spec.ticks)
     }
 }
