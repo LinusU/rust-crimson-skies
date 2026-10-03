@@ -284,14 +284,14 @@ is the outcome the probe exists to catch: "difficulty" as a comment.
 
 | claim id | unknown | resolving task |
 | --- | --- | --- |
-| `f32.d.limit.difficulty_effects` | The option has **three** steps; **nothing in any shipped file says what a step changes.** `SkillKnob` remains a designed vocabulary and the runtime's tier profiles remain designed alternatives under non-negotiable 1. | F32-DIFFICULTY-EFFECT |
-| `f32.d.limit.skill_tier_effects` | `novice`/`veteran`/`ace` are measured labels; what a tier *does* is unmeasured, so `DeclaredSkillTier` is a vocabulary and not a mapping. | F32-SKILL-EFFECT |
-| `f32.d.limit.ace_stats` | Nine slots, maximum nine, no meaning, no order, no below-maximum behaviour, no damage or health slot. | F32-ACE-STATS |
-| `f32.d.limit.ai_roles` | The original's AI **role** set is in no measured file. `DeclaredCombatRole`'s seven roles and `cs_sim`'s mirror stay designed; only the skill labels and the group structure are measured. | F32-ROLES |
+| `f32.d.limit.difficulty_effects` | The option has **three** steps; **nothing in any shipped file says what a step changes.** `SkillKnob` remains a designed vocabulary and the runtime's tier profiles remain designed alternatives under non-negotiable 1. | #566 `F32-DIFFICULTY-EFFECT` |
+| `f32.d.limit.skill_tier_effects` | `novice`/`veteran`/`ace` are measured labels; what a tier *does* is unmeasured, so `DeclaredSkillTier` is a closed vocabulary with a refusal and **no production consumer yet**. | #567 `F32-SKILL-EFFECT` |
+| `f32.d.limit.ace_stats` | Nine slots, maximum nine, **no meaning**, no order, no below-maximum behaviour, no damage or health slot. A future named nine-field struct would be guessing the original's nine meanings. | #568 `F32-ACE-STATS` |
+| `f32.d.limit.ai_roles` | The original's AI **role** set is in no measured file. `DeclaredCombatRole`'s seven roles and `cs_sim`'s mirror stay designed vocabulary; only the skill labels and the squadron shape are measured. | #569 `F32-ROLES` |
 | `f32.d.limit.difficulty_naming` | The three step names are in the shipped localizable image and are deliberately not reproduced, so `relaxed`/`standard`/`hard`/`elite` claim nothing about the original's wording and the tier-to-step mapping is positional only. | #551 `F32-LOWERING` |
 | `f32.d.limit.per_mission_difficulty` | Measured: no record binds a step to a scenario or mission, so this engine has no way to read one from content. | #551 `F32-LOWERING` |
-| `f32.d.limit.probe_geometry` | Every number in the probe's scenario is authored project design; no measured file describes an original AI encounter. The probe measures **this** engine's per-tier decision behavior. | F32-PROBE-GEOMETRY |
-| `f32.d.limit.fire_discipline` | `fire_discipline_ticks` and `aim_error_rad` are reported and not enforced across ticks, so the probe's firing-tick counts are a control that cannot discriminate a tier, and the per-actor fire-discipline state F32-B left reported is still owned by no session. | filed with F32-C |
+| `f32.d.limit.probe_geometry` | Every number in the probe's scenario is authored project design; no measured file describes an original AI encounter. The probe measures **this** engine's per-tier decision behavior and carries no machine-readable marker saying so. | #570 `F32-PROBE-GEOMETRY` |
+| `f32.d.limit.fire_discipline` | `fire_discipline_ticks` and `aim_error_rad` are reported and not enforced across ticks, so **two tiers differing only in those two knobs measure as identical** and the probe's firing-tick count is a control that cannot discriminate. | #571 `F32-FIRE-DISCIPLINE` |
 
 Every one of these is also in the machine-readable record
 (`review.method` in `docs/findings/evidence/F32-D.json`), so no limitation is
