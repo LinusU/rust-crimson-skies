@@ -632,6 +632,7 @@ pub struct ClientTransport {
     hello: ClientHello,
     hello_sent: bool,
     was_connected: bool,
+    disconnect_reported: bool,
     grant: Option<SessionGrant>,
     rejection: Option<HandshakeReject>,
     next_sequence: u32,
@@ -670,6 +671,7 @@ impl ClientTransport {
             hello,
             hello_sent: false,
             was_connected: false,
+            disconnect_reported: false,
             grant: None,
             rejection: None,
             next_sequence: 0,
@@ -762,7 +764,12 @@ impl ClientTransport {
                 }
             }
         }
-        if let Some(reason) = self.client.disconnect_reason() {
+        // `disconnect_reason` stays `Some` for the rest of the connection's
+        // life; the event must fire on the transition, not every update.
+        if !self.disconnect_reported
+            && let Some(reason) = self.client.disconnect_reason()
+        {
+            self.disconnect_reported = true;
             events.push(ClientEvent::Disconnected { reason });
         }
         let _ = self.transport.send_packets(&mut self.client);

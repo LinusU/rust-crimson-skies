@@ -709,6 +709,28 @@ fn accept_f54_b_server_packets_reach_the_granted_client() {
 }
 
 #[test]
+fn accept_f54_b_disconnect_event_arrives_once() {
+    let (mut link, grant) = Link::admitted(SYNTHETIC_SESSION, synthetic_parameters(), 42);
+    link.client.disconnect();
+    for _ in 0..8 {
+        link.round();
+    }
+    let disconnects = link
+        .client_events
+        .iter()
+        .filter(|event| matches!(event, ClientEvent::Disconnected { .. }))
+        .count();
+    assert_eq!(
+        disconnects, 1,
+        "the disconnect reason is persistent inside renet; the event must still fire once: {:?}",
+        link.client_events
+    );
+    link.host_until(
+        |event| matches!(event, HostEvent::PeerDeparted { peer } if *peer == grant.peer),
+    );
+}
+
+#[test]
 fn accept_f54_b_a_peer_leave_departs_the_session() {
     let (mut link, grant) = Link::admitted(SYNTHETIC_SESSION, synthetic_parameters(), 42);
     link.client
