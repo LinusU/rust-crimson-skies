@@ -676,44 +676,71 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     );
     // F14-D.2 added the first of the collections this stage leaves open: the
     // multiplayer modes the installation's string image names. F14-D.3 added
-    // the world groups whose shared readers the classifier read, and F14-D.6 the
+    // the world groups whose shared readers the classifier read, F14-D.5 the
+    // faction paint patterns and the verified paint masks, and F14-D.6 the
     // airframes the loading-script container declares. None of them is
     // launchable, so the denominator asserted above is unchanged, but the row
     // count is not, and this test states the new totals instead of filtering
     // the rows out.
-    let mode_rows = catalog
-        .elements()
-        .filter(|element| element.kind == ContentKind::MultiplayerRules)
-        .count();
+    let rows_of = |kind: ContentKind| {
+        catalog
+            .elements()
+            .filter(|element| element.kind == kind)
+            .count()
+    };
+    let mode_rows = rows_of(ContentKind::MultiplayerRules);
     assert_eq!(
         mode_rows, 4,
         "the measured mode-name run of the installation's string image"
     );
-    let world_rows = catalog
-        .elements()
-        .filter(|element| element.kind == ContentKind::World)
-        .count();
+    let world_rows = rows_of(ContentKind::World);
     assert_eq!(
         world_rows, groups,
         "one world row per world group the shared reader of that group names"
     );
     // F14-D.6's own retail test pins which airframes these are, against the
-    // roster F11-D2 measured; this one only counts the rows so the total below
-    // stays a complete accounting rather than a filtered one.
-    let airframe_rows = catalog
-        .elements()
-        .filter(|element| element.kind == ContentKind::Airframe)
-        .count();
+    // roster F11-D2 measured; this one counts the rows so the total below stays
+    // a complete accounting rather than a filtered one.
+    let airframe_rows = rows_of(ContentKind::Airframe);
     assert_eq!(
         airframe_rows, 11,
         "one airframe row per declared root of the loading-script container; the identities \
          themselves are pinned by accept_f14_d_6_retail_…"
     );
+    // F14-D.5's two collections are counted by their own acceptance tests, which
+    // pin the identities; here they only have to be accounted for, so this total
+    // does not restate a number another stage owns.
+    let faction_rows = rows_of(ContentKind::Faction);
+    let paint_mask_rows = rows_of(ContentKind::PaintMask);
+    // Every row of the catalog is one of the three groups above: an inventoried
+    // file, a launchable row with its program, or a row of a collection that is
+    // not launchable. Anything else — and any collection a later stage adds
+    // without appearing in this sum — fails here instead of slipping past the
+    // completeness check.
+    let unaccounted = catalog
+        .elements()
+        .filter(|element| {
+            !matches!(
+                element.kind,
+                ContentKind::InstallFile
+                    | ContentKind::Script
+                    | ContentKind::Mission
+                    | ContentKind::IaScenario
+                    | ContentKind::MultiplayerScenario
+            )
+        })
+        .count();
+    assert_eq!(
+        unaccounted,
+        mode_rows + world_rows + airframe_rows + faction_rows + paint_mask_rows,
+        "every non-launchable row belongs to a collection this total names"
+    );
     assert_eq!(
         catalog.len(),
-        discovery.manifest.files.len() + 2 * launchable + mode_rows + world_rows + airframe_rows,
-        "files plus one program row and one launchable row per mission and scenario, plus the \
-         multiplayer rules rows, the world rows and the airframe rows"
+        discovery.manifest.files.len() + 2 * launchable + unaccounted,
+        "files plus one program row and one launchable row per mission and scenario, plus every \
+         non-launchable collection row (multiplayer rules, worlds, factions, paint masks and \
+         airframes)"
     );
 
     // Nothing authored reached the retail inventory, and every row is

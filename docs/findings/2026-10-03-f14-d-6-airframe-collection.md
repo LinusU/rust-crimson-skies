@@ -12,8 +12,9 @@ rendered or played, no original run happened, and nothing here claims
 
 ## What this stage changes about the F14-D verdict
 
-The baseline inventory now holds a seventh populated collection. Its report over
-the owner's installation reads:
+The baseline inventory now holds a tenth populated collection. Its report over
+the owner's installation reads (measured on the reviewed tree, after F14-D.5's
+faction and paint-mask collections landed on `main`; see **Review record**):
 
 | collection | rows | source |
 | --- | --- | --- |
@@ -24,12 +25,14 @@ the owner's installation reads:
 | `multiplayer_scenario` | 21 | F14-D.1's classified scenario directories |
 | `multiplayer_rules` | 4 | F14-D.2's mode table |
 | `world` | 8 | F14-D.3's world-group readers |
+| `faction` | 11 | F14-D.5's paint records |
+| `paint_mask` | 184 | F14-D.5's verified library members |
 | **`airframe`** | **11** | **`ZBD/interp.zbd`'s loading scripts** |
 
 The coverage denominator did **not** move: 53 declared roots (24 campaign
-missions plus 29 scenario directories), 159 reachable rows, 0 ready,
-0 unresolved references. An airframe is not launchable content, so the eleven
-new rows are counted as unreachable unknowns in
+missions plus 29 scenario directories), 159 reachable rows, 393 unreachable,
+0 ready, 0 unresolved references. An airframe is not launchable content, so the
+eleven new rows are counted as unreachable unknowns in
 `coverage.unreachable_by_kind.airframe` rather than entering the denominator.
 
 ## Where the installation states an airframe at all
@@ -246,12 +249,18 @@ rather than trusting the implementer's notes, and found:
    asserted `catalog.len() == files + 2*launchable + mode_rows + world_rows`.
    Eleven airframe rows are not launchable, so every other total in that test
    still held, but the row count did not: the test failed over the real
-   installation with `left: 357, right: 346`. The accounting is repaired the way
-   F14-D.2 and F14-D.3 repaired it — the airframe rows are **counted** and the
-   equality kept, with the count pinned here as well — rather than filtered out
-   or relaxed. This is the spec's own instruction for this stage ("repair
-   discovered regressions without weakening the specification"). The repair is
-   the only change to a file outside this stage's own.
+   installation with `left: 357, right: 346`. The repair does **not** filter the
+   rows out and does **not** relax the equality. It now derives the
+   non-launchable part of the catalog from the rows themselves (`unaccounted`),
+   asserts that it equals the sum of every collection this test names, and keeps
+   the total as `files + 2*launchable + unaccounted`. A collection added later
+   without appearing in that sum now fails the completeness check instead of
+   slipping past it — which matters, because the rebase onto `main` brought in
+   **F14-D.5**, whose `faction` (11) and `paint_mask` (184) rows had broken the
+   same equality on `main` itself and were counted here too. This is the spec's
+   own instruction for this stage ("repair discovered regressions without
+   weakening the specification"), and it is the only change to a file outside
+   this stage's own.
 2. **A branch no test covered (covered here).** A container that reads as the
    interp container but holds **no** declaring script takes the
    `unique_script` → `None` path: the idiom then has no script to measure its
@@ -260,6 +269,16 @@ rather than trusting the implementer's notes, and found:
    That path was untested; `a_container_without_the_declaring_script_is_named_not_invented`
    now covers it, and renaming that finding's stable gap label
    (`declaring_script_absent` → `absent_script`) is killed by it.
+3. **The rebase onto `main` resolved one file by hand.**
+   `catalog/baseline.rs` is the file every F14-D collection grows, so F14-D.5 and
+   this stage both appended to the same module doc, import list, claim-constant
+   block and collection block, and the merge conflicted in six places. Each was
+   resolved by keeping **both** sides' additions, and the result was then checked
+   mechanically rather than by eye: every item of both parents is present exactly
+   once, no item is new, and every function's own doc comment sits directly above
+   it (a concatenation that had interleaved the two doc blocks would have
+   documented `faction_rows` with the airframe text). `cargo check
+   --all-targets`, clippy and the full suite all follow.
 
 Checked and found sound, with the measurement restated here rather than assumed:
 the naming line's span really is the stored record (`InterpLine::offset()` is the
