@@ -38,6 +38,14 @@
 //! same key and the same bytes. Findings and the recorded unknowns:
 //! `docs/findings/2026-09-28-f09-b-deterministic-layered-composition.md` and
 //! `docs/findings/2026-09-29-f09-c-model-instances-and-construction-preview.md`.
+//!
+//! The **F09-PAINTSHOP** section at the end of this module is the paint shop
+//! itself: [`PaintShopCatalog`] reads the one readable member that declares the
+//! paint-shop option space — the `[@Paint@]` section of `ASSETS/LAYOUT.CSV` —
+//! and records, per dropdown, how many entries the original control displays and
+//! that **no field of it carries a value**. The swatch palette, the shade table
+//! and the pattern display names are therefore engine-internal, and
+//! [`PaintShopValue`] has no variant that could carry one.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -46,13 +54,19 @@ use std::fmt;
 
 use cs_assets::install::sha256;
 use cs_assets::rof::{RofReadError, RofSource};
-use cs_assets::vfs::ContentSession;
+use cs_assets::vfs::{ContentSession, ResolveError};
 use cs_assets::zbd::{ZbdContainer, ZbdError};
 use cs_formats::bm::{BM_COMPOSITION_VERSION, BmComposite, BmError, BmFile, BmPlane, PaintColor};
 use cs_formats::io::AllocationBudget;
 use cs_formats::{ParseContext, read_bm};
 use cs_types::asset_id::{AssetKey, SourceSpan, SourceSpanError};
 use cs_types::evidence::ContentHash;
+
+use crate::config::{
+    ConfigDocument, ConfigEntry, ConfigError, FieldSpelling, Lookup, RawValue, RecordSchema,
+    RecordView,
+};
+use cs_formats::text::RecordKind;
 
 /// The three paint colors a livery applies through a BM's mask planes, in
 /// plane order (mask 1, mask 2, mask 3).
@@ -1647,6 +1661,1217 @@ fn palette_decal(
     })
 }
 
+// ------------------------------------------------------ F09-PAINTSHOP ---
+
+/// The ROF container the paint shop's readable original data lives in.
+pub const PAINT_SHOP_CONTAINER: &str = "GOSDATA/ASSETS/crimson.rof";
+
+/// The configuration member that declares the paint-shop controls. It is the
+/// only readable member that names the paint shop's option space: the
+/// `[@Paint@]` section declares every paint-shop control, and none of those
+/// records carries a colour, a shade or a decal value.
+pub const PAINT_SHOP_LAYOUT: &str = "ASSETS/LAYOUT.CSV";
+
+/// The `LAYOUT.CSV` section the paint shop owns, named the way the production
+/// keyed-list reader reports a section header: the bytes between the brackets,
+/// verbatim, so `[@Paint@]` in the member is `@Paint@` here.
+pub const PAINT_SHOP_SECTION: &[u8] = b"@Paint@";
+
+/// The same section as the member spells it, for messages and findings.
+const PAINT_SHOP_SECTION_SPELLED: &str = "[@Paint@]";
+
+/// The pane record that declares the paint shop's decal sheet.
+pub const PAINT_SHOP_DECAL_PANE: &str = "PT_P_DECALS";
+
+/// How many paint slots (mask planes) the shop offers a dropdown for.
+pub const PAINT_SHOP_SLOTS: u32 = 3;
+
+/// Field positions inside a `D` (dropdown) `LAYOUT.CSV` record, numbered as
+/// [`RecordSchema::Dropdown`] numbers them, `0` being the record letter.
+const DROPDOWN_TOTAL_DISPLAYED: usize = 11;
+
+/// How many fields a `D` record has in the shipped data.
+const DROPDOWN_FIELDS: usize = 12;
+
+/// Field positions inside a `P` (pane) record.
+const PANE_ART: usize = 1;
+const PANE_NUM_FRAMES: usize = 5;
+
+/// How many fields a `P` record has in the shipped data.
+const PANE_FIELDS: usize = 9;
+
+/// The gap identifier of the swatch palette.
+const SWATCH_GAP: &str = "swatch_palette_engine_internal";
+/// The gap identifier of the shade table.
+const SHADE_GAP: &str = "shade_table_engine_internal";
+/// The gap identifier of the paint-pattern display names.
+const PATTERN_NAME_GAP: &str = "pattern_names_engine_internal";
+/// The gap identifier of the decal values.
+const DECAL_GAP: &str = "decal_value_engine_internal";
+
+/// Which paint-shop dropdown a control is.
+///
+/// The four roles are the original record-name stems themselves
+/// ([`PAINT_SHOP_STEMS`]); nothing here invents a classification, and a stem the
+/// original data does not spell has no role at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PaintShopRole {
+    /// The paint pattern dropdown (`PT_D_PATTERN`).
+    Pattern,
+    /// The colour dropdown of one paint slot (`PT_D_COLORS0..2`).
+    Color,
+    /// The shade dropdown of one paint slot (`PT_D_SHADES0..2`).
+    Shade,
+    /// The decal dropdown of one paint slot (`PT_D_DECALS0..2`).
+    Decal,
+}
+
+impl PaintShopRole {
+    /// Stable lowercase identifier.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Pattern => "pattern",
+            Self::Color => "color",
+            Self::Shade => "shade",
+            Self::Decal => "decal",
+        }
+    }
+
+    /// The role a `[@Paint@]` record-name stem declares, compared the way the
+    /// layout keys are compared (ASCII case-insensitively), or `None` for a
+    /// stem the paint shop does not own.
+    pub fn from_layout_stem(stem: &str) -> Option<Self> {
+        PAINT_SHOP_STEMS
+            .iter()
+            .find(|(_, name)| name.eq_ignore_ascii_case(stem))
+            .map(|(role, _)| *role)
+    }
+
+    /// How many slots this role offers a dropdown for: none for the pattern
+    /// list, `PAINT_SHOP_SLOTS` for the three per-slot lists.
+    pub fn slots(self) -> Option<u32> {
+        match self {
+            Self::Pattern => None,
+            Self::Color | Self::Shade | Self::Decal => Some(PAINT_SHOP_SLOTS),
+        }
+    }
+}
+
+/// The `[@Paint@]` record-name stem each role is declared by, as the original
+/// data spells it. A per-slot control appends its slot as the last character of
+/// the record key (`PT_D_COLORS0`), which is how [`PaintShopCatalog::control`]
+/// finds the three colour, shade and decal lists.
+pub const PAINT_SHOP_STEMS: [(PaintShopRole, &str); 4] = [
+    (PaintShopRole::Pattern, "PT_D_PATTERN"),
+    (PaintShopRole::Color, "PT_D_COLORS"),
+    (PaintShopRole::Shade, "PT_D_SHADES"),
+    (PaintShopRole::Decal, "PT_D_DECALS"),
+];
+
+/// How the fields of one paint-shop record spell themselves.
+///
+/// This is the measurable part of the engine-internal claim. A dropdown that
+/// stored its entries would spell them: a colour or a shade as an eight-hex-digit
+/// `0x…` literal, a display name as text. The shipped paint shop spells **none**
+/// of the three — its controls spell the record letter, `<NAME>` references to
+/// other records and whole numbers, which is why [`PaintShopValue`] has no
+/// variant that could carry a value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PaintShopFieldCensus {
+    /// Fields with no bytes.
+    pub empty: u32,
+    /// `<NAME>` references to another record or a global name.
+    pub placeholder: u32,
+    /// Decimal whole numbers, signed or not.
+    pub integer: u32,
+    /// `0x…` values that are not an eight-hex-digit colour.
+    pub hex: u32,
+    /// Eight-hex-digit `0x…` colour literals.
+    pub colour: u32,
+    /// Anything else, including the one-letter record kind.
+    pub text: u32,
+}
+
+impl PaintShopFieldCensus {
+    fn count(&mut self, spelling: FieldSpelling) {
+        match spelling {
+            FieldSpelling::Empty => self.empty += 1,
+            FieldSpelling::Placeholder => self.placeholder += 1,
+            FieldSpelling::Integer => self.integer += 1,
+            FieldSpelling::Hex => self.hex += 1,
+            FieldSpelling::Color => self.colour += 1,
+            FieldSpelling::Text => self.text += 1,
+        }
+    }
+
+    /// How many fields the record has.
+    pub fn total(&self) -> u32 {
+        self.empty + self.placeholder + self.integer + self.hex + self.colour + self.text
+    }
+
+    /// How many fields carry a literal value rather than a reference or a
+    /// whole number: the colour literals plus everything spelled as text. The
+    /// record kind letter is one of the text fields, so this is at least one
+    /// for every record the production reader recognizes.
+    pub fn literals(&self) -> u32 {
+        self.colour + self.text
+    }
+}
+
+/// One paint-shop dropdown as the layout declares it: which record declared it,
+/// which paint slot it belongs to, how many entries it displays, and — the point
+/// of this stage — how its fields spell themselves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaintShopControl {
+    key: String,
+    role: PaintShopRole,
+    slot: Option<u32>,
+    displayed: u32,
+    census: PaintShopFieldCensus,
+    line: u64,
+    span: SourceSpan,
+}
+
+impl PaintShopControl {
+    /// The `LAYOUT.CSV` record key, as the original spells it
+    /// (`PT_D_COLORS0`).
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Which paint-shop list this control is.
+    pub fn role(&self) -> PaintShopRole {
+        self.role
+    }
+
+    /// The paint slot, or `None` for the pattern list.
+    pub fn slot(&self) -> Option<u32> {
+        self.slot
+    }
+
+    /// How many entries the control declares it displays — the count the shop
+    /// offers, read from the record's `TotalDisplayed` field. It is a count:
+    /// the record names no entry.
+    pub fn displayed_entries(&self) -> u32 {
+        self.displayed
+    }
+
+    /// How the record's fields spell themselves. The shipped paint shop
+    /// declares `colour: 0` and one text field (the record letter) for each of
+    /// its ten controls.
+    pub fn field_census(&self) -> PaintShopFieldCensus {
+        self.census
+    }
+
+    /// The 1-based line the record sits on inside [`PAINT_SHOP_LAYOUT`].
+    pub fn line(&self) -> u64 {
+        self.line
+    }
+
+    /// The member's own container-absolute span. The layout member is stored
+    /// compressed, so a line inside it has no container-absolute byte range;
+    /// the line number and this member span are the provenance, and neither is
+    /// invented.
+    pub fn span(&self) -> &SourceSpan {
+        &self.span
+    }
+}
+
+/// The decal sheet the paint shop draws its decals from, as the layout declares
+/// it: the art member and how many frames of it the pane record holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaintShopDecalSheet {
+    key: String,
+    art: String,
+    frames: u32,
+    line: u64,
+    span: SourceSpan,
+}
+
+impl PaintShopDecalSheet {
+    /// The pane record key (`PT_P_DECALS`).
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// The art member the record names, exactly as it spells it.
+    pub fn art(&self) -> &str {
+        &self.art
+    }
+
+    /// The frame count the pane record declares.
+    pub fn frames(&self) -> u32 {
+        self.frames
+    }
+
+    /// The 1-based line the record sits on inside [`PAINT_SHOP_LAYOUT`].
+    pub fn line(&self) -> u64 {
+        self.line
+    }
+
+    /// The member's own container-absolute span.
+    pub fn span(&self) -> &SourceSpan {
+        &self.span
+    }
+}
+
+/// A paint-shop value the readable original data does not store, with the count
+/// and field census that establishes the absence and the content it affects.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaintShopGap {
+    code: &'static str,
+    quantity: &'static str,
+    displayed: u32,
+    census: PaintShopFieldCensus,
+    detail: &'static str,
+    affected: &'static str,
+}
+
+impl PaintShopGap {
+    /// Stable lowercase identifier.
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// Which quantity is missing, in the original data's own terms.
+    pub fn quantity(&self) -> &'static str {
+        self.quantity
+    }
+
+    /// How many entries the control declares, as the evidence for the count.
+    pub fn displayed_entries(&self) -> u32 {
+        self.displayed
+    }
+
+    /// How the declaring record's fields spell themselves, as the evidence that
+    /// it stores no value.
+    pub fn field_census(&self) -> PaintShopFieldCensus {
+        self.census
+    }
+
+    /// Why the value is not readable.
+    pub fn detail(&self) -> &'static str {
+        self.detail
+    }
+
+    /// The original content the gap affects.
+    pub fn affected(&self) -> &'static str {
+        self.affected
+    }
+}
+
+/// A paint-shop value, as the readable original data can describe it.
+///
+/// There is deliberately **no variant that carries a colour, a shade, a decal or
+/// a display name**: none of the members the paint shop reads stores one, so
+/// this type cannot be given such a value at all. A missing value is
+/// [`PaintShopValue::EngineInternal`], never a fabricated RGB triple and never a
+/// silent zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaintShopValue {
+    /// The control declares `displayed` entries and stores no value for any of
+    /// them, so the entries are produced inside the engine image. `code` is the
+    /// [`PaintShopGap`] this value belongs to.
+    EngineInternal {
+        /// The gap's stable identifier.
+        code: &'static str,
+        /// How many entries the control declares.
+        displayed: u32,
+        /// How the declaring record's fields spell themselves.
+        census: PaintShopFieldCensus,
+    },
+    /// The paint shop offers no such entry: the control declares `displayed`
+    /// entries and `index` is at or past them.
+    NotOffered {
+        /// How many entries the control declares.
+        displayed: u32,
+        /// The entry that was asked for.
+        index: u32,
+    },
+}
+
+/// Why a paint-shop query could not be answered at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaintShopRefusal {
+    /// The layout declares no control for this role and slot.
+    NoControl {
+        /// The role that was asked for.
+        role: PaintShopRole,
+        /// The slot that was asked for.
+        slot: Option<u32>,
+    },
+}
+
+impl fmt::Display for PaintShopRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoControl { role, slot } => write!(
+                f,
+                "the paint shop declares no {:?} control for slot {slot:?}",
+                role.code()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PaintShopRefusal {}
+
+/// Why the paint-shop option space could not be read.
+#[derive(Debug)]
+pub enum PaintShopError {
+    /// The layout member did not resolve in the session.
+    Resolve(ResolveError),
+    /// The archive could not hand the member's bytes over.
+    Archive(RofReadError),
+    /// The member is not the keyed list the dialect inventory routes it as, or
+    /// its bytes were refused.
+    Config(ConfigError),
+    /// A [`SourceSpan`] was refused.
+    Span(SourceSpanError),
+    /// The member name is not a usable asset key.
+    UnknownMember {
+        /// The member that was asked for.
+        member: String,
+    },
+    /// The session resolved the member out of a container the archive is not.
+    ForeignArchive {
+        /// The container the session resolved through.
+        resolved: String,
+        /// The archive the bytes would have come from.
+        archive: String,
+    },
+    /// The member declares no `[@Paint@]` section.
+    MissingSection,
+    /// A control's record has fewer fields than its record kind declares.
+    ShortRecord {
+        /// The record key.
+        key: String,
+        /// The line it sits on.
+        line: u64,
+        /// How many fields it has.
+        fields: usize,
+        /// How many its record kind declares.
+        expected: usize,
+    },
+    /// A control's record carries a trailing digit that is not a paint slot.
+    UnknownSlot {
+        /// The record key.
+        key: String,
+        /// The line it sits on.
+        line: u64,
+    },
+    /// A control's entry-count field is not a plain decimal whole number, so
+    /// the count is unknown rather than defaulted.
+    EntriesUnreadable {
+        /// The record key.
+        key: String,
+        /// The line it sits on.
+        line: u64,
+    },
+    /// A control's record is not of the record kind its role requires.
+    WrongKind {
+        /// The record key.
+        key: String,
+        /// The line it sits on.
+        line: u64,
+        /// The role that asked for it.
+        role: PaintShopRole,
+    },
+    /// The decal sheet's frame count is not a plain decimal whole number.
+    FramesUnreadable {
+        /// The record key.
+        key: String,
+        /// The line it sits on.
+        line: u64,
+    },
+}
+
+impl PaintShopError {
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Resolve(error) => match error {
+                ResolveError::NotFound { .. } => "not_found",
+                ResolveError::Ambiguous { .. } => "ambiguous",
+                ResolveError::UnmeasuredOrder { .. } => "unmeasured_order",
+            },
+            Self::Archive(error) => error.code(),
+            Self::Config(error) => error.code(),
+            Self::Span(_) => "invalid_span",
+            Self::UnknownMember { .. } => "unknown_member",
+            Self::ForeignArchive { .. } => "foreign_archive",
+            Self::MissingSection => "missing_section",
+            Self::ShortRecord { .. } => "short_record",
+            Self::UnknownSlot { .. } => "unknown_slot",
+            Self::EntriesUnreadable { .. } => "entries_unreadable",
+            Self::WrongKind { .. } => "wrong_kind",
+            Self::FramesUnreadable { .. } => "frames_unreadable",
+        }
+    }
+}
+
+impl fmt::Display for PaintShopError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Resolve(error) => write!(f, "{error}"),
+            Self::Archive(error) => write!(f, "{error}"),
+            Self::Config(error) => write!(f, "{error}"),
+            Self::Span(error) => write!(f, "{error}"),
+            Self::UnknownMember { member } => {
+                write!(f, "{member:?} is not a usable member key")
+            }
+            Self::ForeignArchive { resolved, archive } => write!(
+                f,
+                "the member resolves through {resolved:?} but the archive is {archive:?}"
+            ),
+            Self::MissingSection => write!(
+                f,
+                "{} declares no {} section",
+                PAINT_SHOP_LAYOUT, PAINT_SHOP_SECTION_SPELLED
+            ),
+            Self::ShortRecord {
+                key,
+                line,
+                fields,
+                expected,
+            } => write!(
+                f,
+                "`{key}` (line {line}) has {fields} fields; its record kind declares {expected}"
+            ),
+            Self::UnknownSlot { key, line } => write!(
+                f,
+                "`{key}` (line {line}) does not end in a paint slot below {PAINT_SHOP_SLOTS}"
+            ),
+            Self::EntriesUnreadable { key, line } => write!(
+                f,
+                "`{key}` (line {line}) does not spell its entry count as a whole number"
+            ),
+            Self::WrongKind { key, line, role } => write!(
+                f,
+                "`{key}` (line {line}) is not the {:?} control's record kind",
+                role.code()
+            ),
+            Self::FramesUnreadable { key, line } => write!(
+                f,
+                "`{key}` (line {line}) does not spell its frame count as a whole number"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PaintShopError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Resolve(error) => Some(error),
+            Self::Archive(error) => Some(error),
+            Self::Config(error) => Some(error),
+            Self::Span(error) => Some(error),
+            Self::UnknownMember { .. }
+            | Self::ForeignArchive { .. }
+            | Self::MissingSection
+            | Self::ShortRecord { .. }
+            | Self::UnknownSlot { .. }
+            | Self::EntriesUnreadable { .. }
+            | Self::WrongKind { .. }
+            | Self::FramesUnreadable { .. } => None,
+        }
+    }
+}
+
+impl From<ResolveError> for PaintShopError {
+    fn from(error: ResolveError) -> Self {
+        Self::Resolve(error)
+    }
+}
+
+impl From<RofReadError> for PaintShopError {
+    fn from(error: RofReadError) -> Self {
+        Self::Archive(error)
+    }
+}
+
+impl From<ConfigError> for PaintShopError {
+    fn from(error: ConfigError) -> Self {
+        Self::Config(error)
+    }
+}
+
+impl From<SourceSpanError> for PaintShopError {
+    fn from(error: SourceSpanError) -> Self {
+        Self::Span(error)
+    }
+}
+
+/// The paint shop's option space, as the original layout declares it, and every
+/// value it does not declare.
+///
+/// [`Self::discover`] reads `ASSETS/LAYOUT.CSV`'s `[@Paint@]` section through
+/// the production keyed-list reader. What it yields:
+///
+/// * [`Self::controls`]: the ten paint-shop dropdowns — one pattern list and
+///   three lists each for colours, shades and decals — with the entry count each
+///   declares and the number of colour-valued fields its record has (measured
+///   `0` for all ten);
+/// * [`Self::decal_sheet`]: the art member and frame count the decal pane
+///   declares;
+/// * [`Self::gaps`]: the values no readable member stores, each with the count
+///   and the colour-field census that establishes the absence.
+///
+/// The swatch palette, the shade table and the pattern display names are
+/// **engine-internal**: they are produced by native callbacks inside the engine
+/// image, and the section that declares the shop's controls has no field at all
+/// in which a value could be written. No colour is ever synthesised here
+/// (spec F09 non-negotiable #4).
+#[derive(Debug)]
+pub struct PaintShopCatalog {
+    install_sha256: ContentHash,
+    container_path: String,
+    member: String,
+    layout: SourceSpan,
+    decoded: SourceSpan,
+    stored_len: u64,
+    trailing_bytes: u64,
+    controls: Vec<PaintShopControl>,
+    decal_sheet: Option<PaintShopDecalSheet>,
+    gaps: Vec<PaintShopGap>,
+}
+
+impl PaintShopCatalog {
+    /// Reads the paint-shop section of `member` out of the archive `source`.
+    ///
+    /// `session` is what resolves the member, so the span the catalog carries is
+    /// the production one — installation fingerprint, container, member key,
+    /// stored extent and digest — while the bytes come from the archive reader
+    /// that owns them (a mounted archive declares its members but has no host
+    /// bytes behind it, so the session cannot serve them). A member the session
+    /// resolves out of a **different** container than `source` is refused rather
+    /// than read from the wrong archive.
+    ///
+    /// # Errors
+    ///
+    /// [`PaintShopError::Resolve`] when the member does not resolve,
+    /// [`PaintShopError::ForeignArchive`] when the resolution and the archive
+    /// name different containers, [`PaintShopError::Archive`] when the archive
+    /// cannot hand the member's bytes over, [`PaintShopError::Config`] when it
+    /// is not the keyed list the dialect inventory routes it as,
+    /// [`PaintShopError::MissingSection`] when it declares no `[@Paint@]`
+    /// section, [`PaintShopError::WrongKind`] /
+    /// [`PaintShopError::ShortRecord`] / [`PaintShopError::UnknownSlot`] /
+    /// [`PaintShopError::EntriesUnreadable`] when a paint-shop control's record
+    /// is not the shape the role requires, and [`PaintShopError::Span`] when a
+    /// span is refused.
+    pub fn discover(
+        session: &ContentSession,
+        source: &RofSource,
+        member: &str,
+    ) -> Result<Self, PaintShopError> {
+        let key = AssetKey::from_spelling(source.namespace().as_str(), member, "default").map_err(
+            |_| PaintShopError::UnknownMember {
+                member: member.to_owned(),
+            },
+        )?;
+        let asset = session.resolve(&key)?;
+        let layout = asset.resolved().span.clone();
+        if !layout
+            .container_path()
+            .eq_ignore_ascii_case(source.container())
+        {
+            return Err(PaintShopError::ForeignArchive {
+                resolved: layout.container_path().to_owned(),
+                archive: source.container().to_owned(),
+            });
+        }
+        let info = source
+            .member(&key)
+            .ok_or_else(|| PaintShopError::UnknownMember {
+                member: member.to_owned(),
+            })?
+            .clone();
+        let read = source.read(&key)?;
+        let bytes = read.data.as_slice();
+        // A compressed member's stored and decoded extents differ, and a span
+        // describes one of them. The document is therefore read against the
+        // **decoded** extent's own span, whose digest is the digest of exactly
+        // the decoded bytes, while [`Self::layout_span`] keeps the resolution's
+        // span: the member's stored extent, the bytes the container physically
+        // holds. Both are recorded; neither is derived from the other.
+        let decoded = SourceSpan::new(
+            layout.install_sha256(),
+            layout.container_path(),
+            layout.member_key(),
+            info.offset,
+            info.declared_decoded_len,
+            Some(sha256(bytes)),
+        )?;
+        let mut context = ParseContext::with_defaults(layout.container_path());
+        let mut document = ConfigDocument::read(&mut context, decoded.clone(), bytes)?;
+        if !document
+            .entries()
+            .any(|entry| entry.section.as_deref() == Some(PAINT_SHOP_SECTION))
+        {
+            return Err(PaintShopError::MissingSection);
+        }
+
+        let mut controls = Vec::new();
+        for entry in document.entries() {
+            let Some((role, stem)) = paint_shop_stem(entry) else {
+                continue;
+            };
+            controls.push(paint_shop_control(entry, role, stem, decoded.clone())?);
+        }
+        // Sorted by role then slot, so the catalog's order does not depend on
+        // how the member's lines happen to be ordered.
+        controls.sort_by(|left, right| {
+            (left.role, left.slot)
+                .cmp(&(right.role, right.slot))
+                .then_with(|| left.key.cmp(&right.key))
+        });
+
+        let decal_sheet =
+            match document.lookup(Some(PAINT_SHOP_SECTION), PAINT_SHOP_DECAL_PANE.as_bytes()) {
+                Lookup::Found(entry) => Some(paint_shop_decal_sheet(entry, decoded.clone())?),
+                Lookup::Missing | Lookup::Ambiguous(_) => None,
+            };
+
+        let gaps = paint_shop_gaps(&controls, decal_sheet.as_ref());
+
+        Ok(Self {
+            install_sha256: layout.install_sha256(),
+            container_path: layout.container_path().to_owned(),
+            member: layout.member_key().unwrap_or(PAINT_SHOP_LAYOUT).to_owned(),
+            layout,
+            decoded,
+            stored_len: read.stored_len,
+            trailing_bytes: read.trailing_len,
+            controls,
+            decal_sheet,
+            gaps,
+        })
+    }
+
+    /// The installation fingerprint every span was built with.
+    pub fn install_sha256(&self) -> ContentHash {
+        self.install_sha256
+    }
+
+    /// The container the layout member was read from.
+    pub fn container_path(&self) -> &str {
+        &self.container_path
+    }
+
+    /// The member the paint-shop section was read from.
+    pub fn member(&self) -> &str {
+        &self.member
+    }
+
+    /// The layout member's container-absolute span as the session resolved it:
+    /// the member's **stored** extent, the bytes the container physically holds,
+    /// with their digest.
+    pub fn layout_span(&self) -> &SourceSpan {
+        &self.layout
+    }
+
+    /// The container-absolute span of the member's **decoded** extent — the bytes
+    /// the keyed-list document was read from, with the digest of exactly those
+    /// bytes. It differs from [`Self::layout_span`] for a compressed member and
+    /// is equal to it for an uncompressed one.
+    pub fn decoded_span(&self) -> &SourceSpan {
+        &self.decoded
+    }
+
+    /// How many bytes of the member's stored extent the decoder did not
+    /// consume. Zero for every member of the original installation; a nonzero
+    /// count is reported, never skipped.
+    pub fn trailing_bytes(&self) -> u64 {
+        self.trailing_bytes
+    }
+
+    /// How many bytes the member's stored extent occupies in the container.
+    pub fn stored_len(&self) -> u64 {
+        self.stored_len
+    }
+
+    /// Every paint-shop control, sorted by role then slot.
+    pub fn controls(&self) -> &[PaintShopControl] {
+        &self.controls
+    }
+
+    /// The control for `role` and `slot`, or `None` when the layout declares
+    /// none. [`PaintShopRole::slots`] is the authority on which slots a role may
+    /// be asked for.
+    pub fn control(&self, role: PaintShopRole, slot: Option<u32>) -> Option<&PaintShopControl> {
+        self.controls
+            .iter()
+            .find(|control| control.role == role && control.slot == slot)
+    }
+
+    /// The decal sheet the pane record declares, or `None` when the layout
+    /// declares no such record.
+    pub fn decal_sheet(&self) -> Option<&PaintShopDecalSheet> {
+        self.decal_sheet.as_ref()
+    }
+
+    /// Every paint-shop value no readable original member stores.
+    pub fn gaps(&self) -> &[PaintShopGap] {
+        &self.gaps
+    }
+
+    /// The gap the quantity `role`/`slot` belongs to, when the gap was recorded.
+    pub fn gap(&self, code: &str) -> Option<&PaintShopGap> {
+        self.gaps.iter().find(|gap| gap.code == code)
+    }
+
+    /// The colour swatch `index` of paint slot `slot`.
+    ///
+    /// # Errors
+    ///
+    /// [`PaintShopRefusal::NoControl`] when the layout declares no colour
+    /// control for `slot`.
+    pub fn color(&self, slot: u32, index: u32) -> Result<PaintShopValue, PaintShopRefusal> {
+        self.value(PaintShopRole::Color, Some(slot), index, SWATCH_GAP)
+    }
+
+    /// The shade swatch `index` of paint slot `slot`.
+    ///
+    /// # Errors
+    ///
+    /// [`PaintShopRefusal::NoControl`] when the layout declares no shade control
+    /// for `slot`.
+    pub fn shade(&self, slot: u32, index: u32) -> Result<PaintShopValue, PaintShopRefusal> {
+        self.value(PaintShopRole::Shade, Some(slot), index, SHADE_GAP)
+    }
+
+    /// The display name of paint pattern `index`.
+    ///
+    /// # Errors
+    ///
+    /// [`PaintShopRefusal::NoControl`] when the layout declares no pattern
+    /// control at all.
+    pub fn pattern_name(&self, index: u32) -> Result<PaintShopValue, PaintShopRefusal> {
+        self.value(PaintShopRole::Pattern, None, index, PATTERN_NAME_GAP)
+    }
+
+    /// The decal `index` of paint slot `slot`.
+    ///
+    /// # Errors
+    ///
+    /// [`PaintShopRefusal::NoControl`] when the layout declares no decal control
+    /// for `slot`.
+    pub fn decal(&self, slot: u32, index: u32) -> Result<PaintShopValue, PaintShopRefusal> {
+        self.value(PaintShopRole::Decal, Some(slot), index, DECAL_GAP)
+    }
+
+    fn value(
+        &self,
+        role: PaintShopRole,
+        slot: Option<u32>,
+        index: u32,
+        gap: &'static str,
+    ) -> Result<PaintShopValue, PaintShopRefusal> {
+        let control = self
+            .control(role, slot)
+            .ok_or(PaintShopRefusal::NoControl { role, slot })?;
+        if index >= control.displayed_entries() {
+            return Ok(PaintShopValue::NotOffered {
+                displayed: control.displayed_entries(),
+                index,
+            });
+        }
+        Ok(PaintShopValue::EngineInternal {
+            code: gap,
+            displayed: control.displayed_entries(),
+            census: control.field_census(),
+        })
+    }
+
+    /// What the shop's declared option space and the vehicle records' stored
+    /// palettes say about each other.
+    ///
+    /// Every disagreement is a finding, never a repaired value: a pattern count
+    /// that does not match, a stored paint pattern the shop does not offer, a
+    /// pattern whose records store no palette, a stored decal index outside the
+    /// declared sheet, a control that does carry a value field after all, and a
+    /// paint shop that declares no decal sheet at all.
+    pub fn cross_check(&self, palette: &FactionPaletteCatalog) -> Vec<PaintShopFinding> {
+        let mut findings = Vec::new();
+
+        let stored: BTreeMap<&str, usize> = palette.records().iter().fold(
+            BTreeMap::new(),
+            |mut table: BTreeMap<&str, usize>, record| {
+                *table.entry(record.pattern()).or_default() += 1;
+                table
+            },
+        );
+        match self.control(PaintShopRole::Pattern, None) {
+            None => findings.push(PaintShopFinding::no_pattern_control()),
+            Some(control) if control.displayed_entries() as usize != stored.len() => {
+                findings.push(PaintShopFinding::pattern_count_mismatch(
+                    control.key(),
+                    control.displayed_entries(),
+                    stored.len(),
+                ));
+            }
+            Some(_) => {}
+        }
+
+        // A pattern the vehicle records name but no record colours: the player's
+        // own paint is chosen in the shop, so it stays a gap, never a palette.
+        for pattern in stored.keys() {
+            if !palette
+                .records()
+                .iter()
+                .any(|record| record.pattern() == *pattern && record.has_colors())
+            {
+                findings.push(PaintShopFinding::pattern_without_palette(pattern));
+            }
+        }
+
+        // A stored decal index outside the declared sheet cannot be drawn from
+        // the sheet the layout names.
+        let frames = self.decal_sheet.as_ref().map(PaintShopDecalSheet::frames);
+        for record in palette.records() {
+            for decal in record.decals() {
+                if let Some(frames) = frames
+                    && decal.index() >= frames
+                {
+                    findings.push(PaintShopFinding::decal_outside_sheet(
+                        record.name(),
+                        decal.index(),
+                        frames,
+                    ));
+                }
+            }
+        }
+        if self.decal_sheet.is_none() {
+            findings.push(PaintShopFinding::no_decal_sheet());
+        }
+
+        for control in &self.controls {
+            if control.field_census().colour > 0 {
+                findings.push(PaintShopFinding::control_carries_value(
+                    control.key(),
+                    control.field_census().colour,
+                ));
+            }
+        }
+
+        findings
+    }
+}
+
+/// A disagreement between the paint shop's declared option space and the vehicle
+/// records' stored palettes, kept rather than repaired.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaintShopFinding {
+    code: &'static str,
+    detail: String,
+}
+
+impl PaintShopFinding {
+    fn no_pattern_control() -> Self {
+        Self {
+            code: "no_pattern_control",
+            detail: format!(
+                "the layout declares no {} record, so no paint pattern is offered",
+                PAINT_SHOP_STEMS
+                    .iter()
+                    .find(|(role, _)| *role == PaintShopRole::Pattern)
+                    .map(|(_, stem)| *stem)
+                    .unwrap_or("the pattern control")
+            ),
+        }
+    }
+
+    fn pattern_count_mismatch(key: &str, declared: u32, stored: usize) -> Self {
+        Self {
+            code: "pattern_count_mismatch",
+            detail: format!(
+                "`{key}` declares {declared} entries and the vehicle records name {stored} paint \
+                 patterns"
+            ),
+        }
+    }
+
+    fn pattern_without_palette(pattern: &str) -> Self {
+        Self {
+            code: "pattern_without_palette",
+            detail: format!(
+                "paint pattern `{pattern}` is named by vehicle records that store no colour or \
+                 decal triple"
+            ),
+        }
+    }
+
+    fn decal_outside_sheet(record: &str, index: u32, frames: u32) -> Self {
+        Self {
+            code: "decal_outside_sheet",
+            detail: format!(
+                "vehicle record `{record}` stores decal {index}, outside the {frames} frames the \
+                 decal pane declares"
+            ),
+        }
+    }
+
+    fn no_decal_sheet() -> Self {
+        Self {
+            code: "no_decal_sheet",
+            detail: format!(
+                "the layout declares no `{PAINT_SHOP_DECAL_PANE}` record, so the decal sheet is \
+                 unknown"
+            ),
+        }
+    }
+
+    fn control_carries_value(key: &str, colour_fields: u32) -> Self {
+        Self {
+            code: "control_carries_value",
+            detail: format!(
+                "`{key}` has {colour_fields} colour-valued fields, so the shop's option space is \
+                 not engine-internal after all and the recorded gaps must be re-derived"
+            ),
+        }
+    }
+
+    /// Stable lowercase identifier.
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// Human-readable detail naming the records and counts involved.
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+/// The role and record-name stem a `[@Paint@]` entry declares, or `None` for an
+/// entry of another section or another control family.
+fn paint_shop_stem(entry: &ConfigEntry) -> Option<(PaintShopRole, &str)> {
+    if entry.section.as_deref() != Some(PAINT_SHOP_SECTION) {
+        return None;
+    }
+    let key = std::str::from_utf8(&entry.key).ok()?;
+    let stem = key.trim_end_matches(|character: char| character.is_ascii_digit());
+    let role = PaintShopRole::from_layout_stem(stem)?;
+    Some((role, stem))
+}
+
+/// The slot digit a per-slot control key ends in, or `None` when the key names
+/// the un-slot list.
+fn paint_shop_slot(key: &str) -> Option<u32> {
+    let digit = key
+        .len()
+        .checked_sub(1)
+        .and_then(|tail| key.get(tail..))
+        .and_then(|tail| tail.parse::<u32>().ok())?;
+    (digit < PAINT_SHOP_SLOTS).then_some(digit)
+}
+
+/// Reads one paint-shop dropdown record.
+fn paint_shop_control(
+    entry: &ConfigEntry,
+    role: PaintShopRole,
+    stem: &str,
+    span: SourceSpan,
+) -> Result<PaintShopControl, PaintShopError> {
+    let key = String::from_utf8_lossy(&entry.key).into_owned();
+    let fields = match &entry.value {
+        RawValue::Fields(fields) => fields,
+        RawValue::Unsplit { .. } => {
+            return Err(PaintShopError::ShortRecord {
+                key,
+                line: entry.line,
+                fields: 0,
+                expected: DROPDOWN_FIELDS,
+            });
+        }
+    };
+    if fields.len() != DROPDOWN_FIELDS {
+        return Err(PaintShopError::ShortRecord {
+            key,
+            line: entry.line,
+            fields: fields.len(),
+            expected: DROPDOWN_FIELDS,
+        });
+    }
+    let view = RecordView::for_entry(entry).ok_or_else(|| PaintShopError::WrongKind {
+        key: key.clone(),
+        line: entry.line,
+        role,
+    })?;
+    // The record must really be a `D` record, or its entry-count field is not
+    // the field this stage reads.
+    if view.schema() != RecordSchema::Layout(RecordKind::Dropdown) {
+        return Err(PaintShopError::WrongKind {
+            key,
+            line: entry.line,
+            role,
+        });
+    }
+    let displayed = whole_number(fields[DROPDOWN_TOTAL_DISPLAYED].value()).ok_or_else(|| {
+        PaintShopError::EntriesUnreadable {
+            key: key.clone(),
+            line: entry.line,
+        }
+    })?;
+    let slot = match role.slots() {
+        Some(_) => Some(
+            paint_shop_slot(key.strip_prefix(stem).unwrap_or_default()).ok_or_else(|| {
+                PaintShopError::UnknownSlot {
+                    key: key.clone(),
+                    line: entry.line,
+                }
+            })?,
+        ),
+        None => None,
+    };
+    let mut census = PaintShopFieldCensus::default();
+    for field in view.fields() {
+        census.count(field.spelling);
+    }
+    Ok(PaintShopControl {
+        key,
+        role,
+        slot,
+        displayed,
+        census,
+        line: entry.line,
+        span,
+    })
+}
+
+/// Reads the paint shop's decal pane record.
+fn paint_shop_decal_sheet(
+    entry: &ConfigEntry,
+    span: SourceSpan,
+) -> Result<PaintShopDecalSheet, PaintShopError> {
+    let key = String::from_utf8_lossy(&entry.key).into_owned();
+    let fields = match &entry.value {
+        RawValue::Fields(fields) => fields,
+        RawValue::Unsplit { .. } => {
+            return Err(PaintShopError::ShortRecord {
+                key,
+                line: entry.line,
+                fields: 0,
+                expected: PANE_FIELDS,
+            });
+        }
+    };
+    if fields.len() != PANE_FIELDS {
+        return Err(PaintShopError::ShortRecord {
+            key,
+            line: entry.line,
+            fields: fields.len(),
+            expected: PANE_FIELDS,
+        });
+    }
+    let art = std::str::from_utf8(fields[PANE_ART].value())
+        .map_err(|_| PaintShopError::ShortRecord {
+            key: key.clone(),
+            line: entry.line,
+            fields: fields.len(),
+            expected: PANE_FIELDS,
+        })?
+        .to_owned();
+    let frames = whole_number(fields[PANE_NUM_FRAMES].value()).ok_or_else(|| {
+        PaintShopError::FramesUnreadable {
+            key: key.clone(),
+            line: entry.line,
+        }
+    })?;
+    Ok(PaintShopDecalSheet {
+        key,
+        art,
+        frames,
+        line: entry.line,
+        span,
+    })
+}
+
+/// The plain decimal whole number `bytes` spells, or `None` for anything else:
+/// no sign, no `0x` prefix, no blank bytes and at least one digit. A field that
+/// does not spell a count this way is unknown, never defaulted to zero.
+fn whole_number(bytes: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// Builds the recorded gaps from what the layout actually declares: a gap is
+/// emitted for a value the layout's own controls store no value for, and a
+/// control that does carry a colour literal stops its gap (the cross-check
+/// reports that control instead).
+fn paint_shop_gaps(
+    controls: &[PaintShopControl],
+    _decal_sheet: Option<&PaintShopDecalSheet>,
+) -> Vec<PaintShopGap> {
+    let mut gaps = Vec::new();
+    let mut gap = |code, quantity, role, slot, detail: &'static str, affected: &'static str| {
+        let Some(control) = controls
+            .iter()
+            .find(|control| control.role == role && control.slot == slot)
+        else {
+            return;
+        };
+        let census = control.field_census();
+        // The record letter is the one text field every `D` record carries;
+        // anything beyond it is a value the shop would be storing.
+        if census.colour > 0 || census.text > 1 || census.hex > 0 {
+            return;
+        }
+        gaps.push(PaintShopGap {
+            code,
+            quantity,
+            displayed: control.displayed_entries(),
+            census,
+            detail,
+            affected,
+        });
+    };
+    gap(
+        SWATCH_GAP,
+        "the colour swatch palette of one paint slot",
+        PaintShopRole::Color,
+        Some(0),
+        "the layout declares how many colour swatches a control displays and no field of that \
+         record carries a colour; the swatch values are produced by a native callback inside the \
+         engine image, which no readable member stores",
+        "every colour the paint shop offers, on every paint slot",
+    );
+    gap(
+        SHADE_GAP,
+        "the shade table of one paint slot",
+        PaintShopRole::Shade,
+        Some(0),
+        "the layout declares how many shades a control displays and no field of that record \
+         carries a shade; the shaded values are produced by a native callback inside the engine \
+         image, which no readable member stores",
+        "every shaded paint variant",
+    );
+    gap(
+        PATTERN_NAME_GAP,
+        "the display name of a paint pattern",
+        PaintShopRole::Pattern,
+        None,
+        "the layout declares how many patterns a control displays and no field of that record \
+         carries a name; the pattern names are produced by a native callback inside the engine \
+         image, which no readable member stores",
+        "every faction and player paint name in the shop",
+    );
+    gap(
+        DECAL_GAP,
+        "the decal a paint slot selects",
+        PaintShopRole::Decal,
+        Some(0),
+        "the layout declares how many decals a control displays and no field of that record \
+         carries a decal id; the selected decal is produced by a native callback inside the \
+         engine image",
+        "every decal selection",
+    );
+    gaps
+}
+
 /// Acceptance stage F09-B. Every fixture is newly authored synthetic bytes
 /// built here; nothing is derived from original game data. These tests call
 /// the production [`compose_livery`] / [`source_fingerprint`] path.
@@ -3093,8 +4318,843 @@ mod tests {
             11,
         ),
     ];
-}
+    // ------------------------------------------- paint shop (F09-PAINTSHOP) ---
 
+    /// A ROF directory block: header, 24-byte records (`start`, `raw_length` =
+    /// decoded count, `raw_length_on_disk` = stored count, `flags`,
+    /// `name_length`, `id`) and the NUL-separated name table, in record order.
+    fn rof_block(records: &[[u32; 6]], names: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(records.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(names.len() as u32).to_le_bytes());
+        for record in records {
+            for word in record {
+                bytes.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(names);
+        bytes
+    }
+
+    /// The NUL-separated name table of `names`, in record order.
+    fn rof_names(names: &[&str]) -> Vec<u8> {
+        let mut table = Vec::new();
+        for name in names {
+            table.extend_from_slice(name.as_bytes());
+            table.push(0);
+        }
+        table
+    }
+
+    /// A ROF container holding `members` under the `ASSETS` directory, the shape
+    /// `GOSDATA/ASSETS/crimson.rof` has: one root directory record and one
+    /// payload per member, stored uncompressed so every member's stored extent
+    /// is its decoded extent.
+    fn paintshop_rof(members: &[(&str, &[u8])]) -> Vec<u8> {
+        let root_names = rof_names(&["ASSETS"]);
+        let root = rof_block(
+            &[[
+                (8 + 24 + root_names.len()) as u32,
+                0,
+                0,
+                1, // directory
+                "ASSETS".len() as u32 + 1,
+                1,
+            ]],
+            &root_names,
+        );
+        let member_names: Vec<&str> = members.iter().map(|(name, _)| *name).collect();
+        let sub_names = rof_names(&member_names);
+        let mut cursor = (root.len() + 8 + 24 * members.len() + sub_names.len()) as u32;
+        let mut records = Vec::new();
+        for (index, (name, bytes)) in members.iter().enumerate() {
+            let length = u32::try_from(bytes.len()).expect("a fixture payload fits");
+            records.push([
+                cursor,
+                length,
+                length,
+                0,
+                name.len() as u32 + 1,
+                10 + u32::try_from(index).expect("a fixture index fits"),
+            ]);
+            cursor += length;
+        }
+        let mut container = root;
+        container.extend_from_slice(&rof_block(&records, &sub_names));
+        for (_, bytes) in members {
+            container.extend_from_slice(bytes);
+        }
+        assert_eq!(
+            container.len(),
+            cursor as usize,
+            "every payload placed once"
+        );
+        container
+    }
+
+    /// One paint-shop dropdown record, spelled the way the original spells it:
+    /// the record letter, the two slider arrows, the two drop arrows, then `x`,
+    /// `y`, `z`, the item width, the item height and the entry count.
+    fn paint_shop_dropdown(stem: &str, slot: Option<u32>, displayed: u32) -> String {
+        let key = match slot {
+            Some(slot) => format!("{stem}{slot}"),
+            None => stem.to_owned(),
+        };
+        format!(
+            "    {key}=D,<PX_SLIDER>,<PX_UP>,<PX_DOWN>,<GN_DROPUP>,<GN_DROPDOWN>,<V2>,120,0,\
+             <PX_ITEMW>,<STDITEMH>,{displayed}\r\n"
+        )
+    }
+
+    /// The paint-shop section of a `LAYOUT.CSV` member: the decal pane (when the
+    /// caller declares one), the pattern list with `patterns` entries and the
+    /// nine per-slot lists, in the member's own order.
+    fn paint_shop_layout(decal_pane: Option<&str>, patterns: u32) -> String {
+        let mut layout = String::from(";paint shop fixture\r\n[@Paint@]\r\n");
+        if let Some(pane) = decal_pane {
+            layout.push_str(pane);
+        }
+        layout.push_str(&paint_shop_dropdown("PT_D_PATTERN", None, patterns));
+        for slot in 0..3 {
+            layout.push_str(&paint_shop_dropdown("PT_D_COLORS", Some(slot), 18));
+        }
+        for slot in 0..3 {
+            layout.push_str(&paint_shop_dropdown("PT_D_SHADES", Some(slot), 10));
+        }
+        for slot in 0..3 {
+            layout.push_str(&paint_shop_dropdown("PT_D_DECALS", Some(slot), 2));
+        }
+        layout
+    }
+
+    /// The decal pane record the original spells, with the given frame-count
+    /// field: `P`, the art member, `x`, `y`, `z`, the frames and three flags.
+    fn paint_shop_decal_pane(frames: &str) -> String {
+        format!("    PT_P_DECALS=P,PX_P_Decals.tga,0,0,0,{frames},0,2,1\r\n")
+    }
+
+    /// A session over `tree` with its `GOSDATA/ASSETS/crimson.rof` mounted
+    /// through the production ROF reader, so the layout member resolves under the
+    /// container label the dialect inventory routes it by.
+    fn paint_shop_session(tree: &PaletteTree) -> (ContentSession, RofSource) {
+        let found = install::discover(&tree.0).expect("the fixture installation is discovered");
+        let context = ResolveContext::new(install::fingerprint(&found.manifest));
+        let mut builder = SessionBuilder::new(context);
+        let directory = MountBuilder::new(
+            MountId::new("install").expect("a valid mount id"),
+            MountNamespace::new(INSTALL_NAMESPACE).expect("a valid namespace"),
+            PrecedenceClass::Shared,
+            ".",
+        )
+        .retail();
+        builder
+            .mount_directory(directory, &tree.0)
+            .expect("the fixture installation mounts");
+        let archive = MountBuilder::new(
+            MountId::new("rof-paint-shop").expect("a valid mount id"),
+            MountNamespace::new(INSTALL_NAMESPACE).expect("a valid namespace"),
+            PrecedenceClass::Shared,
+            PAINT_SHOP_CONTAINER,
+        )
+        .retail();
+        let source = mount_rof_into(&mut builder, archive, &tree.0.join(PAINT_SHOP_CONTAINER))
+            .expect("the fixture archive mounts");
+        (builder.open(), source)
+    }
+
+    /// Builds the fixture tree for one `[@Paint@]` member and returns the
+    /// production catalog over it.
+    fn paint_shop_catalog(layout: &str) -> PaintShopCatalog {
+        let tree = PaletteTree::new();
+        tree.write(
+            PAINT_SHOP_CONTAINER,
+            &paintshop_rof(&[("LAYOUT.CSV", layout.as_bytes())]),
+        );
+        let (session, source) = paint_shop_session(&tree);
+        PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect("the fixture layout extracts")
+    }
+
+    /// The census every shipped paint-shop control spells: the record letter,
+    /// eight `<NAME>` references (the slider, its two arrows, the two drop
+    /// arrows, `x`, the item width and the item height) and three whole numbers
+    /// (`y`, `z` and the entry count).
+    fn plain_control_census() -> PaintShopFieldCensus {
+        PaintShopFieldCensus {
+            empty: 0,
+            placeholder: 8,
+            integer: 3,
+            hex: 0,
+            colour: 0,
+            text: 1,
+        }
+    }
+
+    /// AC: the paint shop's declared option space is read from the layout with
+    /// provenance, every value it does not declare is refused as
+    /// engine-internal, and an entry past the declared count is refused as not
+    /// offered.
+    #[test]
+    fn accept_f09_paintshop_reads_the_declared_option_space_from_the_layout() {
+        let layout = paint_shop_layout(Some(&paint_shop_decal_pane("50")), 12);
+        let catalog = paint_shop_catalog(&layout);
+
+        assert_eq!(catalog.container_path(), PAINT_SHOP_CONTAINER);
+        assert_eq!(catalog.member(), PAINT_SHOP_LAYOUT);
+        assert_eq!(catalog.layout_span().member_key(), Some(PAINT_SHOP_LAYOUT));
+        assert_eq!(catalog.layout_span().container_path(), PAINT_SHOP_CONTAINER);
+        assert!(
+            catalog.layout_span().length() > 0,
+            "the member's stored extent is recorded"
+        );
+        // An uncompressed fixture member's stored and decoded extents are the
+        // same bytes, so the two spans agree; a compressed member's do not.
+        assert_eq!(catalog.decoded_span(), catalog.layout_span());
+        assert_eq!(catalog.stored_len(), layout.len() as u64);
+        assert_eq!(catalog.trailing_bytes(), 0);
+
+        // Ten controls: one pattern list and three lists each for colours,
+        // shades and decals, with the entry counts the original declares.
+        assert_eq!(catalog.controls().len(), 10);
+        let counts: Vec<(PaintShopRole, Option<u32>, u32)> = catalog
+            .controls()
+            .iter()
+            .map(|control| (control.role(), control.slot(), control.displayed_entries()))
+            .collect();
+        assert_eq!(
+            counts,
+            vec![
+                (PaintShopRole::Pattern, None, 12),
+                (PaintShopRole::Color, Some(0), 18),
+                (PaintShopRole::Color, Some(1), 18),
+                (PaintShopRole::Color, Some(2), 18),
+                (PaintShopRole::Shade, Some(0), 10),
+                (PaintShopRole::Shade, Some(1), 10),
+                (PaintShopRole::Shade, Some(2), 10),
+                (PaintShopRole::Decal, Some(0), 2),
+                (PaintShopRole::Decal, Some(1), 2),
+                (PaintShopRole::Decal, Some(2), 2),
+            ]
+        );
+        assert_eq!(
+            catalog
+                .control(PaintShopRole::Color, Some(1))
+                .expect("slot 1 is declared")
+                .key(),
+            "PT_D_COLORS1"
+        );
+        assert!(catalog.control(PaintShopRole::Color, Some(3)).is_none());
+
+        // Provenance: every control names its own line in the member, and the
+        // member's span is the one the session resolved.
+        let lines: Vec<&str> = layout.split("\r\n").collect();
+        for control in catalog.controls() {
+            assert!(control.line() > 1, "{} has no line", control.key());
+            assert_eq!(control.span(), catalog.decoded_span());
+            assert!(
+                lines
+                    .get((control.line() - 1) as usize)
+                    .expect("the line is inside the member")
+                    .contains(control.key()),
+                "{} does not sit on line {}",
+                control.key(),
+                control.line()
+            );
+        }
+
+        // The measurable engine-internal claim: the ten records spell the record
+        // letter, `<NAME>` references and whole numbers, and nothing else.
+        let mut census = PaintShopFieldCensus::default();
+        for control in catalog.controls() {
+            let own = control.field_census();
+            assert_eq!(own.total(), 12, "{} has 12 fields", control.key());
+            census.empty += own.empty;
+            census.placeholder += own.placeholder;
+            census.integer += own.integer;
+            census.hex += own.hex;
+            census.colour += own.colour;
+            census.text += own.text;
+        }
+        assert_eq!(
+            census,
+            PaintShopFieldCensus {
+                empty: 0,
+                placeholder: 80,
+                integer: 30,
+                hex: 0,
+                colour: 0,
+                text: 10,
+            },
+            "ten dropdown records of 12 fields: 8 references, 3 whole numbers and the record \
+             letter apiece, and no colour, hex or name value"
+        );
+
+        // The decal sheet is declared, with its art member and frame count.
+        let sheet = catalog
+            .decal_sheet()
+            .expect("the decal pane is declared")
+            .clone();
+        assert_eq!(sheet.key(), "PT_P_DECALS");
+        assert_eq!(sheet.art(), "PX_P_Decals.tga");
+        assert_eq!(sheet.frames(), 50);
+        assert_eq!(sheet.span(), catalog.decoded_span());
+        assert!(sheet.line() > 1);
+
+        // The four gaps are recorded, each with the count and the census that
+        // establishes the absence.
+        assert_eq!(
+            catalog
+                .gaps()
+                .iter()
+                .map(|gap| gap.code())
+                .collect::<Vec<_>>(),
+            vec![SWATCH_GAP, SHADE_GAP, PATTERN_NAME_GAP, DECAL_GAP]
+        );
+        for gap in catalog.gaps() {
+            assert_eq!(gap.field_census().colour, 0, "{}", gap.code());
+            assert_eq!(gap.field_census().literals(), 1, "{}", gap.code());
+            assert!(!gap.detail().is_empty());
+            assert!(!gap.affected().is_empty());
+            assert!(gap.displayed_entries() > 0, "{}", gap.code());
+        }
+        assert_eq!(
+            catalog
+                .gap(SWATCH_GAP)
+                .expect("the swatch gap")
+                .displayed_entries(),
+            18
+        );
+        assert_eq!(
+            catalog
+                .gap(SHADE_GAP)
+                .expect("the shade gap")
+                .displayed_entries(),
+            10
+        );
+        assert_eq!(
+            catalog
+                .gap(PATTERN_NAME_GAP)
+                .expect("the name gap")
+                .displayed_entries(),
+            12
+        );
+        assert_eq!(
+            catalog
+                .gap(DECAL_GAP)
+                .expect("the decal gap")
+                .displayed_entries(),
+            2
+        );
+
+        // A swatch in range is engine-internal, never a colour; past the
+        // declared count the shop offers no such entry.
+        assert_eq!(
+            catalog.color(0, 0).expect("slot 0 is declared"),
+            PaintShopValue::EngineInternal {
+                code: SWATCH_GAP,
+                displayed: 18,
+                census: plain_control_census(),
+            }
+        );
+        assert_eq!(
+            catalog.color(2, 17).expect("slot 2 is declared"),
+            PaintShopValue::EngineInternal {
+                code: SWATCH_GAP,
+                displayed: 18,
+                census: plain_control_census(),
+            }
+        );
+        assert_eq!(
+            catalog.color(0, 18).expect("slot 0 is declared"),
+            PaintShopValue::NotOffered {
+                displayed: 18,
+                index: 18
+            }
+        );
+        assert_eq!(
+            catalog.shade(1, 9).expect("slot 1 is declared"),
+            PaintShopValue::EngineInternal {
+                code: SHADE_GAP,
+                displayed: 10,
+                census: plain_control_census(),
+            }
+        );
+        assert_eq!(
+            catalog.decal(2, 1).expect("slot 2 is declared"),
+            PaintShopValue::EngineInternal {
+                code: DECAL_GAP,
+                displayed: 2,
+                census: plain_control_census(),
+            }
+        );
+        assert_eq!(
+            catalog
+                .pattern_name(11)
+                .expect("the pattern list is declared"),
+            PaintShopValue::EngineInternal {
+                code: PATTERN_NAME_GAP,
+                displayed: 12,
+                census: plain_control_census(),
+            }
+        );
+        // A control the layout does not declare is a refusal, not a zero.
+        assert_eq!(
+            catalog.color(3, 0).expect_err("slot 3 is not declared"),
+            PaintShopRefusal::NoControl {
+                role: PaintShopRole::Color,
+                slot: Some(3)
+            }
+        );
+        assert_eq!(
+            catalog
+                .pattern_name(12)
+                .expect("the pattern list is declared"),
+            PaintShopValue::NotOffered {
+                displayed: 12,
+                index: 12
+            }
+        );
+    }
+
+    /// AC: a layout without the paint-shop section, a control that is not the
+    /// record kind its role requires, a control with a truncated record, a
+    /// control whose entry count is not a whole number, a per-slot key whose
+    /// digit is not a paint slot and an unreadable decal frame count are each
+    /// refused with their own code.
+    #[test]
+    fn accept_f09_paintshop_refuses_a_layout_or_control_it_cannot_read() {
+        // No `[@Paint@]` section at all.
+        let tree = PaletteTree::new();
+        tree.write(
+            PAINT_SHOP_CONTAINER,
+            &paintshop_rof(&[("LAYOUT.CSV", b"[@Hangar@]\r\n    PT_D_COLORS0=D,x\r\n")]),
+        );
+        let (session, source) = paint_shop_session(&tree);
+        let error = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect_err("a layout without the paint-shop section is refused");
+        assert_eq!(error.code(), "missing_section");
+        assert!(error.to_string().contains("[@Paint@]"));
+
+        // A control spelled as a pane instead of a dropdown.
+        let layout = paint_shop_layout(None, 12).replace(
+            "    PT_D_PATTERN=D,",
+            "    PT_D_PATTERN=P,PX_P_Decals.tga,0,0,0,50,0,2,1,0,0,0\r\n    PT_X_PATTERN=D,",
+        );
+        assert!(
+            layout.contains("PT_X_PATTERN=D,"),
+            "the fixture replaced the record"
+        );
+        let (session, source) = paint_shop_session(&paint_shop_tree(&layout));
+        let error = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect_err("a pane under a paint-shop stem is refused");
+        assert_eq!(error.code(), "wrong_kind", "{error}");
+        assert!(error.to_string().contains("PT_D_PATTERN"));
+
+        // A control whose record is one field short.
+        let layout = paint_shop_layout(None, 12)
+            .replace(",<PX_ITEMW>,<STDITEMH>,12\r\n", ",<PX_ITEMW>,12\r\n");
+        let (session, source) = paint_shop_session(&paint_shop_tree(&layout));
+        let error = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect_err("a truncated control is refused");
+        assert_eq!(error.code(), "short_record");
+        assert!(error.to_string().contains("11 fields"));
+
+        // An entry count that is not a whole number stays unknown.
+        let layout =
+            paint_shop_layout(None, 12).replace("<STDITEMH>,12\r\n", "<STDITEMH>,<NINE>\r\n");
+        let (session, source) = paint_shop_session(&paint_shop_tree(&layout));
+        let error = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect_err("a placeholder entry count is refused");
+        assert_eq!(error.code(), "entries_unreadable");
+        assert!(error.to_string().contains("PT_D_PATTERN"));
+
+        // A per-slot key whose digit is not a paint slot.
+        let layout = paint_shop_layout(None, 12).replace("PT_D_DECALS2=", "PT_D_DECALS7=");
+        let (session, source) = paint_shop_session(&paint_shop_tree(&layout));
+        let error = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect_err("a slot digit outside the shop's slots is refused");
+        assert_eq!(error.code(), "unknown_slot");
+        assert!(error.to_string().contains("PT_D_DECALS7"));
+
+        // A decal pane whose frame count is not a whole number.
+        let layout = paint_shop_layout(Some(&paint_shop_decal_pane("<FRAMES>")), 12);
+        let (session, source) = paint_shop_session(&paint_shop_tree(&layout));
+        let error = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect_err("an unreadable frame count is refused");
+        assert_eq!(error.code(), "frames_unreadable");
+        assert!(error.to_string().contains("PT_P_DECALS"));
+    }
+
+    /// A fixture tree holding one `[@Paint@]` member with the given layout.
+    fn paint_shop_tree(layout: &str) -> PaletteTree {
+        let tree = PaletteTree::new();
+        tree.write(
+            PAINT_SHOP_CONTAINER,
+            &paintshop_rof(&[("LAYOUT.CSV", layout.as_bytes())]),
+        );
+        tree
+    }
+
+    /// AC: a control that does spell a colour literal is measured, its gap is
+    /// **not** recorded, and the cross-check reports the control instead. This is
+    /// what keeps the engine-internal claim derived from the data rather than
+    /// asserted.
+    #[test]
+    fn accept_f09_paintshop_reports_a_control_that_stores_a_value() {
+        let layout = paint_shop_layout(Some(&paint_shop_decal_pane("50")), 12).replace(
+            "    PT_D_COLORS0=D,<PX_SLIDER>,",
+            "    PT_D_COLORS0=D,0xff102030,",
+        );
+        let (session, source) = paint_shop_session(&paint_shop_tree(&layout));
+        let catalog = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect("the fixture layout extracts");
+
+        // The colour literal is measured, and the ten controls are still ten.
+        assert_eq!(catalog.controls().len(), 10);
+        let control = catalog
+            .control(PaintShopRole::Color, Some(0))
+            .expect("slot 0 is declared");
+        assert_eq!(
+            control.field_census(),
+            PaintShopFieldCensus {
+                empty: 0,
+                placeholder: 7,
+                integer: 3,
+                hex: 0,
+                colour: 1,
+                text: 1,
+            },
+            "the colour literal is measured, not assumed"
+        );
+        // The value is now readable, so the swatch gap must not be recorded: a
+        // gap that survived a control that stores its values would be a lie.
+        assert!(
+            catalog.gap(SWATCH_GAP).is_none(),
+            "a control that stores a colour literal is not engine-internal"
+        );
+        assert!(catalog.gap(SHADE_GAP).is_some());
+    }
+
+    /// AC: the cross-check closes the shop's pattern list against the vehicle
+    /// records' stored patterns, keeps the player's uncoloured pattern a
+    /// finding, and bounds every stored decal index by the declared sheet.
+    #[test]
+    fn accept_f09_paintshop_cross_check_closes_patterns_and_bounds_decals() {
+        // One faction pattern with a palette and the player's pattern without
+        // one, matching the original's shape.
+        let medusas = zrd_paint_record(
+            "medusas",
+            [[95, 125, 143], [41, 14, 21], [141, 137, 93]],
+            [21, 14, 14],
+        );
+        let player = zrd_pattern_only_record("player_fortune");
+        let zrd = vehicle_zrd(&[("medkestrel", &medusas), ("devastator", &player)]);
+        let tree = paint_shop_tree(&paint_shop_layout(Some(&paint_shop_decal_pane("50")), 2));
+        tree.write(
+            PALETTE_CONTAINER,
+            &palette_reader_archive(&[(PALETTE_MEMBER, &zrd)]),
+        );
+        let (session, source) = paint_shop_session(&tree);
+        let palette = FactionPaletteCatalog::discover(&session, &palette_key())
+            .expect("the palette extracts");
+        let catalog = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect("the shop reads");
+
+        // A pattern list with one entry per stored pattern agrees, and only the
+        // pattern no record colours is reported.
+        let findings = catalog.cross_check(&palette);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| finding.code())
+                .collect::<Vec<_>>(),
+            vec!["pattern_without_palette"],
+            "the list declares 2 entries and the records name 2 patterns, so they agree"
+        );
+        assert!(findings[0].detail().contains("player_fortune"));
+
+        // A declared list that does not match the stored pattern count is a
+        // finding, not a silently accepted agreement.
+        let layout = paint_shop_layout(Some(&paint_shop_decal_pane("50")), 3);
+        let tree = paint_shop_tree(&layout);
+        tree.write(
+            PALETTE_CONTAINER,
+            &palette_reader_archive(&[(PALETTE_MEMBER, &zrd)]),
+        );
+        let (session, source) = paint_shop_session(&tree);
+        let catalog = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect("the shop reads");
+        let findings = catalog.cross_check(&palette);
+        assert!(
+            findings.iter().any(|finding| {
+                finding.code() == "pattern_count_mismatch"
+                    && finding.detail().contains("3")
+                    && finding.detail().contains("2")
+            }),
+            "{:?}",
+            findings
+                .iter()
+                .map(|finding| (finding.code(), finding.detail().to_owned()))
+                .collect::<Vec<_>>()
+        );
+
+        // Every stored decal index is inside the declared sheet; a decal past the
+        // declared frame count is a finding.
+        let tree = paint_shop_tree(&paint_shop_layout(Some(&paint_shop_decal_pane("50")), 2));
+        tree.write(
+            PALETTE_CONTAINER,
+            &palette_reader_archive(&[(PALETTE_MEMBER, &zrd)]),
+        );
+        let (session, source) = paint_shop_session(&tree);
+        let catalog = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect("the shop reads");
+        assert!(
+            !catalog
+                .cross_check(&palette)
+                .iter()
+                .any(|finding| finding.code() == "decal_outside_sheet"),
+            "decal 21 is inside the 50 declared frames"
+        );
+        let tree = paint_shop_tree(&paint_shop_layout(Some(&paint_shop_decal_pane("20")), 12));
+        tree.write(
+            PALETTE_CONTAINER,
+            &palette_reader_archive(&[(PALETTE_MEMBER, &zrd)]),
+        );
+        let (session, source) = paint_shop_session(&tree);
+        let catalog = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect("the shop reads");
+        let findings = catalog.cross_check(&palette);
+        let outside: Vec<&str> = findings
+            .iter()
+            .filter(|finding| finding.code() == "decal_outside_sheet")
+            .map(PaintShopFinding::detail)
+            .collect();
+        assert_eq!(outside.len(), 1, "{outside:?}");
+        assert!(
+            outside[0].contains("21") && outside[0].contains("20 frames"),
+            "{outside:?}"
+        );
+
+        // A layout that declares no decal pane leaves the sheet unknown.
+        let tree = paint_shop_tree(&paint_shop_layout(None, 12));
+        tree.write(
+            PALETTE_CONTAINER,
+            &palette_reader_archive(&[(PALETTE_MEMBER, &zrd)]),
+        );
+        let (session, source) = paint_shop_session(&tree);
+        let catalog = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect("the shop reads");
+        assert!(catalog.decal_sheet().is_none());
+        assert!(
+            catalog
+                .cross_check(&palette)
+                .iter()
+                .any(|finding| finding.code() == "no_decal_sheet")
+        );
+    }
+
+    /// The retail option space and the four engine-internal gaps, measured
+    /// through the production readers against the original installation.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f09_paintshop_retail_option_space_and_recorded_gaps() {
+        let root = game_dir();
+        let found = install::discover(&root).expect("the installation is discovered");
+        let context = ResolveContext::new(install::fingerprint(&found.manifest));
+        let mut builder = SessionBuilder::new(context);
+        builder
+            .mount_installation(&root, &found.diagnosis)
+            .expect("the installation mounts");
+        let archive = MountBuilder::new(
+            MountId::new("rof-gosdata-assets-crimson-rof").expect("a valid mount id"),
+            MountNamespace::new(INSTALL_NAMESPACE).expect("a valid namespace"),
+            PrecedenceClass::Shared,
+            PAINT_SHOP_CONTAINER,
+        )
+        .retail();
+        let source = mount_rof_into(&mut builder, archive, &root.join(PAINT_SHOP_CONTAINER))
+            .expect("the airframe library mounts");
+        let session = builder.open();
+
+        let catalog = PaintShopCatalog::discover(&session, &source, PAINT_SHOP_LAYOUT)
+            .expect("the original paint shop extracts");
+        assert_eq!(catalog.container_path(), PAINT_SHOP_CONTAINER);
+        assert_eq!(catalog.member(), PAINT_SHOP_LAYOUT);
+        assert_eq!(
+            catalog.install_sha256(),
+            install::fingerprint(&found.manifest)
+        );
+        // The layout member is stored compressed, so its stored and decoded
+        // extents differ and both spans are recorded; the decoder consumed the
+        // stored extent exactly.
+        assert_eq!(catalog.stored_len(), 15_078);
+        assert_eq!(catalog.layout_span().length(), 15_078);
+        assert_eq!(catalog.decoded_span().length(), 56_148);
+        assert_ne!(
+            catalog.decoded_span().member_sha256(),
+            catalog.layout_span().member_sha256(),
+            "a stored extent and a decoded extent do not hash the same"
+        );
+        assert_eq!(catalog.trailing_bytes(), 0);
+        assert_eq!(catalog.layout_span().offset(), 37_359);
+        assert_eq!(catalog.decoded_span().offset(), 37_359);
+
+        // The ten controls and their declared entry counts, as the original
+        // layout spells them.
+        /// One retail control row: the record key, its paint slot, the entry
+        /// count it declares, the line it sits on and how many of its twelve
+        /// fields are `<NAME>` references and whole numbers.
+        type RetailControlRow = (String, Option<u32>, u32, u64, u32, u32);
+
+        // `(key, slot, displayed entries, line, placeholders, whole numbers)`
+        let counts: Vec<RetailControlRow> = catalog
+            .controls()
+            .iter()
+            .map(|control| {
+                let census = control.field_census();
+                (
+                    control.key().to_owned(),
+                    control.slot(),
+                    control.displayed_entries(),
+                    control.line(),
+                    census.placeholder,
+                    census.integer,
+                )
+            })
+            .collect();
+        assert_eq!(
+            counts,
+            vec![
+                ("PT_D_PATTERN".to_owned(), None, 12, 826, 8, 3),
+                ("PT_D_COLORS0".to_owned(), Some(0), 18, 827, 7, 4),
+                ("PT_D_COLORS1".to_owned(), Some(1), 18, 828, 7, 4),
+                ("PT_D_COLORS2".to_owned(), Some(2), 18, 829, 7, 4),
+                ("PT_D_SHADES0".to_owned(), Some(0), 10, 830, 7, 4),
+                ("PT_D_SHADES1".to_owned(), Some(1), 10, 831, 7, 4),
+                ("PT_D_SHADES2".to_owned(), Some(2), 10, 832, 7, 4),
+                ("PT_D_DECALS0".to_owned(), Some(0), 2, 833, 5, 6),
+                ("PT_D_DECALS1".to_owned(), Some(1), 2, 834, 5, 6),
+                ("PT_D_DECALS2".to_owned(), Some(2), 2, 835, 5, 6),
+            ],
+            "the paint shop's ten dropdowns, the entry counts the original declares and how \
+             each record spells its fields"
+        );
+
+        // The engine-internal claim, measured: the ten records spell the record
+        // letter, `<NAME>` references and whole numbers — no colour, no hex and
+        // no name value anywhere in the shop's option space.
+        let mut census = PaintShopFieldCensus::default();
+        for control in catalog.controls() {
+            let own = control.field_census();
+            assert_eq!(own.total(), 12, "{}", control.key());
+            census.empty += own.empty;
+            census.placeholder += own.placeholder;
+            census.integer += own.integer;
+            census.hex += own.hex;
+            census.colour += own.colour;
+            census.text += own.text;
+        }
+        assert_eq!(
+            census,
+            PaintShopFieldCensus {
+                empty: 0,
+                placeholder: 65,
+                integer: 45,
+                hex: 0,
+                colour: 0,
+                text: 10,
+            },
+            "the pattern list spells two positions as <NAME> references and the nine per-slot \
+             lists spell three or none, but no record spells a colour, a hex value or a name"
+        );
+        assert_eq!(
+            catalog
+                .gaps()
+                .iter()
+                .map(|gap| gap.code())
+                .collect::<Vec<_>>(),
+            vec![SWATCH_GAP, SHADE_GAP, PATTERN_NAME_GAP, DECAL_GAP]
+        );
+
+        // The decal sheet the layout declares.
+        let sheet = catalog.decal_sheet().expect("the decal pane is declared");
+        assert_eq!(sheet.art(), "PX_P_Decals.tga");
+        assert_eq!(sheet.frames(), 50);
+        assert_eq!(sheet.line(), 802);
+        assert_eq!(
+            sheet.span().member_key(),
+            Some(PAINT_SHOP_LAYOUT),
+            "the decal sheet's art member is provenance, not a decoded image"
+        );
+
+        // A stored decal index is inside the declared sheet, and the shop's own
+        // decal list offers two entries per slot.
+        let palette = FactionPaletteCatalog::discover(&session, &palette_key())
+            .expect("the palette extracts");
+        assert!(
+            !catalog
+                .cross_check(&palette)
+                .iter()
+                .any(|finding| finding.code() == "decal_outside_sheet"),
+            "every stored decal index (2..=21) is inside the 50 declared frames"
+        );
+        assert_eq!(
+            catalog.decal(0, 1).expect("slot 0 is declared"),
+            PaintShopValue::EngineInternal {
+                code: DECAL_GAP,
+                displayed: 2,
+                // The retail decal record spells `x`, `y`, `z` and the item
+                // geometry as whole numbers, so its census differs from the
+                // fixture's; the colour count is `0` either way.
+                census: PaintShopFieldCensus {
+                    empty: 0,
+                    placeholder: 5,
+                    integer: 6,
+                    hex: 0,
+                    colour: 0,
+                    text: 1,
+                },
+            }
+        );
+        assert_eq!(
+            catalog.decal(0, 2).expect("slot 0 is declared"),
+            PaintShopValue::NotOffered {
+                displayed: 2,
+                index: 2
+            }
+        );
+
+        // The player's own paint stays a recorded gap: the shop offers exactly
+        // as many patterns as the vehicle records name, and the pattern those
+        // records leave uncoloured is the one finding.
+        let findings = catalog.cross_check(&palette);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| finding.code())
+                .collect::<Vec<_>>(),
+            vec!["pattern_without_palette"],
+            "{:?}",
+            findings
+                .iter()
+                .map(|finding| (finding.code(), finding.detail().to_owned()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            catalog
+                .control(PaintShopRole::Pattern, None)
+                .expect("the pattern list is declared")
+                .displayed_entries() as usize,
+            palette
+                .records()
+                .iter()
+                .map(|record| record.pattern())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            "the shop's pattern list has one entry per paint pattern the vehicle records name"
+        );
+    }
+}
 /// Evidence-report harnesses for tasks F09-D and F09-PALETTE
 /// (`docs/contracts/CLI-EVIDENCE.md`, schema `schemas/evidence.schema.json`).
 ///
