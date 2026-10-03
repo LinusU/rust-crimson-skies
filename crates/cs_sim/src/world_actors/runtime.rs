@@ -221,6 +221,17 @@ pub enum WorldActorError {
     NonUnitOrientation,
     /// A zero ticks-per-second rate was requested.
     ZeroTickRate,
+    /// A [`Trajectory`] motion whose tick rate differs from the set's: its
+    /// sampled velocity is derived in the trajectory's own timebase, so a
+    /// mismatch would report a speed the set's ticks do not produce.
+    TickRateMismatch {
+        /// The actor carrying the mismatched trajectory.
+        actor: ActorId,
+        /// The set's tick rate.
+        set_ticks_per_second: u32,
+        /// The trajectory's tick rate.
+        trajectory_ticks_per_second: u32,
+    },
     /// `advance_to` was asked for a tick the set already passed; ticks are
     /// never replayed backwards.
     NonMonotonicTick {
@@ -376,7 +387,8 @@ impl WorldActorSet {
     /// [`BeyondClosedGate`](WorldActorError::BeyondClosedGate),
     /// [`StartBeyondRoute`](WorldActorError::StartBeyondRoute),
     /// [`NonFinite`](WorldActorError::NonFinite),
-    /// [`NonUnitOrientation`](WorldActorError::NonUnitOrientation) or
+    /// [`NonUnitOrientation`](WorldActorError::NonUnitOrientation),
+    /// [`TickRateMismatch`](WorldActorError::TickRateMismatch) or
     /// [`Graph`](WorldActorError::Graph).
     pub fn register(&mut self, spec: WorldActorSpec) -> Result<(), WorldActorError> {
         if self.actors.contains_key(&spec.actor) {
@@ -414,7 +426,16 @@ impl WorldActorSet {
                     angular_velocity_rad_s: [0.0; 3],
                 }))
             }
-            ActorMotion::Trajectory(t) => Ok(MotionState::Trajectory(t.clone())),
+            ActorMotion::Trajectory(t) => {
+                if t.ticks_per_second() != self.ticks_per_second {
+                    return Err(WorldActorError::TickRateMismatch {
+                        actor: spec.actor,
+                        set_ticks_per_second: self.ticks_per_second,
+                        trajectory_ticks_per_second: t.ticks_per_second(),
+                    });
+                }
+                Ok(MotionState::Trajectory(t.clone()))
+            }
             ActorMotion::Free {
                 position_m,
                 velocity_m_s,

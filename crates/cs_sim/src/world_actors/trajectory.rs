@@ -121,6 +121,14 @@ impl Trajectory {
         self.keys[self.keys.len() - 1].tick
     }
 
+    /// The tick rate the keys index and sampled velocities are derived
+    /// from: a [`Trajectory`] is only consistent with a simulation stepping
+    /// ticks at this same rate.
+    #[must_use]
+    pub const fn ticks_per_second(&self) -> u32 {
+        self.ticks_per_second
+    }
+
     /// Speed at `tick`, in m/s.
     #[must_use]
     pub fn speed_m_s(&self, tick: Tick) -> f64 {

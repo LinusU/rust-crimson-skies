@@ -22,7 +22,7 @@ use cs_sim::world_actors::route::{RouteError, RouteGate, RoutePlan};
 use cs_sim::world_actors::runtime::{
     ActorMotion, WorldActorError, WorldActorEvent, WorldActorKind, WorldActorSet, WorldActorSpec,
 };
-use cs_sim::world_actors::trajectory::synthetic_train_trajectory;
+use cs_sim::world_actors::trajectory::{Keyframe, Trajectory, synthetic_train_trajectory};
 use cs_types::Tick;
 use cs_types::content::ContentId;
 
@@ -623,4 +623,44 @@ fn accept_f34_b_spawn_on_a_shared_stop_line_holds_the_nearest_gate() {
     assert_eq!(set.step().unwrap(), Vec::new());
     assert_eq!(set.held_gate(CONVOY).unwrap(), Some(GATE));
     assert_eq!(set.pose(CONVOY).unwrap().position_m, [45.0, 0.0, 0.0]);
+}
+
+// ------------------------------------------------ trajectory tick rate ---
+
+#[test]
+fn accept_f34_b_rejects_a_trajectory_on_a_different_tick_rate() {
+    // The trajectory derives velocities in its own timebase; on a
+    // different-rate set it would report speeds its per-tick motion does
+    // not produce.
+    let mut set = WorldActorSet::new(10).unwrap();
+    let fast = Trajectory::new(
+        vec![
+            Keyframe {
+                tick: Tick(0),
+                position_m: [0.0, 0.0, 0.0],
+                orientation: Quat::IDENTITY,
+            },
+            Keyframe {
+                tick: Tick(100),
+                position_m: [100.0, 0.0, 0.0],
+                orientation: Quat::IDENTITY,
+            },
+        ],
+        20,
+    )
+    .unwrap();
+    assert_eq!(
+        set.register(WorldActorSpec {
+            actor: TRAIN,
+            kind: WorldActorKind::Rail,
+            faction: faction(),
+            objective: None,
+            motion: ActorMotion::Trajectory(fast),
+        }),
+        Err(WorldActorError::TickRateMismatch {
+            actor: TRAIN,
+            set_ticks_per_second: 10,
+            trajectory_ticks_per_second: 20,
+        })
+    );
 }
