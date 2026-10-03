@@ -1,7 +1,8 @@
-//! The pilot-roster application boundary (F33-A).
+//! The pilot-roster application boundary (F33-A, F33-B).
 //!
 //! Spec: `specs/F33-wingmates-factions-neutral-traffic-and-pilot-identity.md`,
-//! stage `### F33-A`. Shared contract: `docs/contracts/STATE-TRANSACTIONS.md`.
+//! stages `### F33-A` and `### F33-B`. Shared contract:
+//! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
 //! This module sits between the declared roster schema
 //! ([`cs_content::pilots`]) and the per-session identity store
@@ -14,6 +15,11 @@
 //!   from. Every `Resolved::Unknown` **refuses** rather than guessing: an
 //!   unmeasured pilot voice never becomes a random line (F33 non-negotiable
 //!   5) and an unmeasured survivability never becomes a silent mortal.
+//! * [`open_roster`] — the F33-B session entry: it opens an
+//!   [`AlliesRoster`] from a lowered roster and the player's [`BriefingPlan`],
+//!   committing the player faction and deriving the wingmate assignments from
+//!   the authored records every time, so a retry rebuilds rather than
+//!   carrying the failed world's state.
 //! * [`RosterBinding`] — the ECS record tying an entity to its
 //!   session-qualified [`cs_sim::damage::ActorId`] and the declared roster
 //!   subject it was spawned under, generation-stamped like
@@ -27,8 +33,8 @@
 use bevy::ecs::component::Component;
 use cs_content::pilots::{DeclaredPilot, DeclaredRoster, DeclaredSurvivability, DeclaredWingmate};
 use cs_sim::allies::{
-    FactionId, GeometryId, IdentityError, PilotId, SurvivabilityPolicy, WingmateAssignment,
-    WingmateSlot,
+    AlliesRoster, BriefingError, BriefingPlan, FactionId, GeometryId, IdentityError, PilotId,
+    SurvivabilityPolicy, WingmateAssignment, WingmateSlot,
 };
 use cs_sim::damage::ActorId;
 use cs_types::content::{ContentId, Resolved};
@@ -319,6 +325,33 @@ pub fn lower_roster(declared: &DeclaredRoster) -> Result<LoweredRoster, RosterLo
         wingmates,
         neutral_traffic,
     })
+}
+
+/// Opens a session's ally roster from a lowered mission roster and the
+/// player's briefing selection.
+///
+/// The roster is built from the **authored** lowered records every time: the
+/// player faction is committed once, and the wingmate assignments are derived
+/// from the authored assignments plus the briefing plan
+/// ([`AlliesRoster::reset_wingmates`]). A retry calls this again with a new
+/// `session` and the same lowered roster, so the session starts from the
+/// authored state and the briefing choice rather than the failed world's
+/// rearm or captures (`docs/contracts/STATE-TRANSACTIONS.md`: "Retry restores
+/// the authored initial state, not a mutated copy of the just-failed world").
+/// The briefing selection is a session input, so it is re-applied identically.
+///
+/// # Errors
+///
+/// [`BriefingError`] when the plan selects a slot the mission never assigned.
+pub fn open_roster(
+    session: u64,
+    lowered: &LoweredRoster,
+    plan: &BriefingPlan,
+) -> Result<AlliesRoster, BriefingError> {
+    let mut roster = AlliesRoster::new(session);
+    roster.set_player_faction(lowered.player_faction.clone());
+    roster.reset_wingmates(&lowered.wingmates, plan)?;
+    Ok(roster)
 }
 
 /// Component: ties an entity to one session-qualified actor and the declared

@@ -398,15 +398,18 @@
 //! fixed-tick systems decide one bounded command per aircraft and write it into
 //! the same `FlightAircraft` boundary the player input session uses.
 //!
-//! [`roster`] is the F33-A pilot-roster boundary
+//! [`roster`] is the F33-A/F33-B pilot-roster boundary
 //! (`specs/F33-wingmates-factions-neutral-traffic-and-pilot-identity.md`,
-//! stage `### F33-A`): [`roster::lower_roster`], which lowers a declared
-//! `cs_content::pilots::DeclaredRoster` into the
+//! stages `### F33-A` and `### F33-B`): [`roster::lower_roster`], which lowers
+//! a declared `cs_content::pilots::DeclaredRoster` into the
 //! [`roster::LoweredRoster`] a session registers actors and wingmate
 //! assignments from — refusing an unknown pilot voice (never a random line)
-//! and an unknown survivability (never a silent mortal) — and the
-//! generation-stamped [`roster::RosterBinding`] ECS record tying an entity to
-//! its session-qualified actor and roster subject.
+//! and an unknown survivability (never a silent mortal); [`roster::open_roster`],
+//! which opens a session's `AlliesRoster` from that lowered roster and the
+//! player's briefing plan, so a retry rebuilds the authored wingmate set
+//! rather than carrying the failed world's; and the generation-stamped
+//! [`roster::RosterBinding`] ECS record tying an entity to its
+//! session-qualified actor and roster subject.
 //!
 //! [`capital`] is the F35-A capital-ship boundary
 //! (`specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`, stage
