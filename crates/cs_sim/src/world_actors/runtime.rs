@@ -468,7 +468,14 @@ impl WorldActorSet {
                                     stop_line_m: g.stop_line_m(),
                                 });
                             }
-                            if start == g.stop_line_m() && start < plan.length_m() {
+                            // Gates ascend in `at_m`, so the first match is
+                            // the same nearest gate `classify_route_end`
+                            // reports; taking a later one would emit a
+                            // spurious resume on the first step.
+                            if held_gate.is_none()
+                                && start == g.stop_line_m()
+                                && start < plan.length_m()
+                            {
                                 held_gate = Some(g.gate);
                             }
                         }

@@ -577,3 +577,50 @@ fn accept_f34_b_catalog_kinds_and_a_water_follower_at_its_lock_gate() {
     assert_eq!(set.held_gate(BOAT).unwrap(), Some(GATE));
     assert_eq!(set.pose(BOAT).unwrap().position_m, [45.0, 0.0, 0.0]);
 }
+
+// ------------------------------------------------- shared stop line -----
+
+#[test]
+fn accept_f34_b_spawn_on_a_shared_stop_line_holds_the_nearest_gate() {
+    // Two intact gates share the 45 m stop line. A follower registered
+    // exactly on it is held by the first gate along the route — the same
+    // one the step loop reports — so the first step emits no spurious
+    // resume/hold pair.
+    let mut set = WorldActorSet::new(10).unwrap();
+    set.register(held_machine(GATE, [50.0, 0.0, 0.0])).unwrap();
+    set.register(held_machine(BRIDGE, [60.0, 0.0, 0.0]))
+        .unwrap();
+    let plan = RoutePlan::try_new(
+        vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]],
+        10.0,
+        vec![
+            RouteGate {
+                gate: GATE,
+                at_m: 50.0,
+                stop_before_m: 5.0,
+            },
+            RouteGate {
+                gate: BRIDGE,
+                at_m: 60.0,
+                stop_before_m: 15.0,
+            },
+        ],
+    )
+    .unwrap();
+    set.register(WorldActorSpec {
+        actor: CONVOY,
+        kind: WorldActorKind::Road,
+        faction: faction(),
+        objective: None,
+        motion: ActorMotion::Route {
+            plan,
+            start_progress_m: 45.0,
+        },
+    })
+    .unwrap();
+
+    assert_eq!(set.held_gate(CONVOY).unwrap(), Some(GATE));
+    assert_eq!(set.step().unwrap(), Vec::new());
+    assert_eq!(set.held_gate(CONVOY).unwrap(), Some(GATE));
+    assert_eq!(set.pose(CONVOY).unwrap().position_m, [45.0, 0.0, 0.0]);
+}
