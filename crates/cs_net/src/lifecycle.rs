@@ -187,14 +187,6 @@ pub enum ServerFault {
         /// The phase the session is in.
         phase: ServerPhase,
     },
-    /// The host's work queue was full, so the packet was refused and the peer
-    /// disconnected rather than allowed to grow it.
-    WorkQueueFull {
-        /// The peer whose packet did not fit.
-        peer: PeerId,
-        /// The queue cap.
-        limit: usize,
-    },
     /// The transport could not be built or could not send.
     Transport(String),
     /// A record the host wanted to publish could not be encoded.
@@ -207,9 +199,6 @@ impl fmt::Display for ServerFault {
             Self::WrongPhase { action, phase } => {
                 write!(f, "cannot {action} while the session is {phase}")
             }
-            Self::WorkQueueFull { peer, limit } => {
-                write!(f, "{peer} overflowed the work queue of {limit} packets")
-            }
             Self::Transport(reason) => write!(f, "transport error: {reason}"),
             Self::Encode(reason) => write!(f, "cannot encode for the wire: {reason}"),
         }
@@ -219,10 +208,14 @@ impl fmt::Display for ServerFault {
 impl std::error::Error for ServerFault {}
 
 /// What one host pump observed, in receive order.
+///
+/// A phase change is *not* a notice: only the host itself calls
+/// [`ServerSession::launch`], [`ServerSession::finish`], [`ServerSession::close`]
+/// or [`ServerSession::reopen`], and each of those returns its own result and
+/// is visible in [`ServerSession::phase`]. These variants are what arrived on
+/// the wire.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServerNotice {
-    /// The session changed phase.
-    Phase(ServerPhase),
     /// A client completed the handshake and is now a member.
     PeerJoined {
         /// The peer the host allocated.
@@ -275,7 +268,6 @@ pub enum ServerNotice {
 impl fmt::Display for ServerNotice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Phase(phase) => write!(f, "session is now {phase}"),
             Self::PeerJoined { peer } => write!(f, "{peer} joined"),
             Self::PeerLeft { peer } => write!(f, "{peer} left"),
             Self::PeerRefused { reason } => write!(f, "a client was refused: {reason}"),
@@ -511,17 +503,8 @@ impl ServerSession {
                     // traffic from a client that holds no peer id is abuse to be
                     // cut off; an extra hello or any other malformed buffer is
                     // absorbed, exactly as `ThreatCase::disposition` declares.
-                    let abuse = match &reason {
-                        DropReason::Decode(reason) if reason.is_oversized() => {
-                            Some(ThreatCase::OversizedMessage)
-                        }
-                        DropReason::NoPeer => Some(ThreatCase::UnauthenticatedPeer),
-                        DropReason::Decode(_)
-                        | DropReason::ExtraHello
-                        | DropReason::QueueOverflow { .. }
-                        | DropReason::Refused(_) => None,
-                    };
-                    if let Some(threat) = abuse {
+                    let threat = reason.threat();
+                    if threat.disposition() == ThreatDisposition::Disconnect {
                         notices.push(ServerNotice::CutOff { peer, threat });
                         self.hung_up.push(client);
                     }
@@ -576,7 +559,7 @@ impl ServerSession {
     ///
     /// # Errors
     ///
-    /// [`ServerFault::Encode`] when the record cannot be encoded.
+    /// As [`Self::announce`].
     pub fn announce_spawn(
         &mut self,
         tick: Tick,
@@ -598,7 +581,7 @@ impl ServerSession {
     ///
     /// # Errors
     ///
-    /// [`ServerFault::Encode`] when the record cannot be encoded.
+    /// As [`Self::announce`].
     pub fn announce_removal(&mut self, tick: Tick, actor: ActorId) -> Result<(), ServerFault> {
         self.announce(tick, EventBody::ActorRemoved { actor })
     }
@@ -611,9 +594,12 @@ impl ServerSession {
     ///
     /// # Errors
     ///
-    /// [`ServerFault::Encode`] when the event cannot be encoded, or
-    /// [`ServerFault::Transport`] when the transport refuses the send.
+    /// [`ServerFault::WrongPhase`] in a spent epoch, where the send would reach
+    /// nobody and silently change nothing, [`ServerFault::Encode`] when the
+    /// event cannot be encoded, or [`ServerFault::Transport`] when the
+    /// transport refuses the send.
     pub fn announce(&mut self, tick: Tick, body: EventBody) -> Result<(), ServerFault> {
+        self.require_shape("publish", ServerPhase::open)?;
         let id = EventId {
             session: self.session(),
             tick,
@@ -631,9 +617,11 @@ impl ServerSession {
     ///
     /// # Errors
     ///
+    /// [`ServerFault::WrongPhase`] in a spent epoch,
     /// [`ServerFault::Encode`] when the snapshot cannot be encoded or exceeds
     /// the packet caps.
     pub fn publish_snapshot(&mut self, tick: Tick, snapshot: &Snapshot) -> Result<(), ServerFault> {
+        self.require_shape("publish", ServerPhase::open)?;
         let payload = snapshot
             .encode(self.session())
             .map_err(|reason| ServerFault::Encode(reason.to_string()))?;
@@ -1280,18 +1268,31 @@ impl ClientSession {
     ///
     /// This is the client's consumer entry point and is exactly what
     /// [`Self::pump`] runs for every arrived packet: the epoch check first
-    /// (a stale packet can change nothing), then deduplication for reliable
+    /// (a stale packet can change nothing), then the terminal-phase check (a
+    /// session that is over stays over), then deduplication for reliable
     /// events, monotonic selection for snapshots and the acknowledgment
     /// window for input.
     ///
     /// # Errors
     ///
-    /// [`ClientFault::NotInSession`] before the handshake granted a session and
-    /// [`ClientFault::Wire`] when the packet names another epoch.
+    /// [`ClientFault::NotInSession`] before the handshake granted a session,
+    /// [`ClientFault::Closed`] once the session is over, and
+    /// [`ClientFault::Wire`] when the packet names another epoch or violates
+    /// the wire bounds.
     pub fn accept(&mut self, message: ServerMessage) -> Result<Vec<ClientNotice>, ClientFault> {
         let Some(grant) = self.transport.grant() else {
             return Err(ClientFault::NotInSession);
         };
+        if let ClientPhase::Closed(closure) = &self.phase {
+            // `Closed` is terminal. Traffic that arrives after teardown — a
+            // queued reliable event, a snapshot the host had already sent, an
+            // acknowledgment — must change nothing: applying it would move the
+            // client back to an open phase and let it produce input again for a
+            // session it left.
+            return Err(ClientFault::Closed {
+                closure: closure.clone(),
+            });
+        }
         message
             .expect_session(grant.session)
             .map_err(ClientFault::Wire)?;

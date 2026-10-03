@@ -52,16 +52,16 @@ use cs_net::codec::{
 };
 use cs_net::compat::{Compatibility, HandshakeReject, PROTOCOL_VERSION, SessionParameters};
 use cs_net::fixture::{
-    SYNTHETIC_CONTENT_SHA256, SYNTHETIC_RULES_SHA256, SYNTHETIC_SESSION, synthetic_hello,
-    synthetic_parameters,
+    SYNTHETIC_CONTENT_SHA256, SYNTHETIC_RULES_SHA256, SYNTHETIC_SESSION, synthetic_blueprint_id,
+    synthetic_hello, synthetic_parameters,
 };
 use cs_net::lifecycle::{
     ClientClosure, ClientFault, ClientNotice, ClientPhase, ClientSession, INPUT_RETRY_INTERVAL,
     PeerInput, ServerFault, ServerNotice, ServerPhase, ServerSession,
 };
 use cs_net::message::{
-    ClientPayload, DisconnectReason, FinishReason, MessageHeader, ServerMessage, ServerPayload,
-    SnapshotFrame, WireError,
+    ClientPayload, DisconnectReason, EventBody, FinishReason, MessageHeader, ServerMessage,
+    ServerPayload, SnapshotFrame, WireError,
 };
 use cs_net::snapshot::{SYNTHETIC_ORIGIN_EPOCH, Snapshot};
 use cs_net::transport::{CHANNEL_SEQUENCED, ClientEvent, ClientTransport, DropReason};
@@ -124,32 +124,39 @@ impl Link {
         self.host_notices.extend(self.host.pump(STEP));
     }
 
-    /// Pumps until the client holds a grant or was refused.
-    fn pump_until_joined(&mut self) {
+    /// Pumps until `done` holds, or fails with `what` after [`MAX_ROUNDS`].
+    ///
+    /// Every exchange here is over a real socket, so how many rounds a
+    /// delivery takes is the transport's business, not the test's: an
+    /// acknowledgment needs a netcode round trip and the connection layer may
+    /// lose and resend it. Waiting on the *condition* keeps every expectation
+    /// below exactly as strict as a fixed wait, without turning a slow round
+    /// trip into a failure.
+    fn pump_until(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
         for _ in 0..MAX_ROUNDS {
-            if self.client.grant().is_some() || self.client.phase().closure().is_some() {
+            if done(self) {
                 return;
             }
             self.round();
         }
         panic!(
-            "the handshake never settled; the client saw {:?}",
-            self.client_notices
+            "{what} within {MAX_ROUNDS} rounds; the host saw {:?} and the client saw {:?}",
+            self.host_notices, self.client_notices
         );
+    }
+
+    /// Pumps until the client holds a grant or was refused.
+    fn pump_until_joined(&mut self) {
+        self.pump_until("the handshake never settled", |link| {
+            link.client.grant().is_some() || link.client.phase().closure().is_some()
+        });
     }
 
     /// Pumps until the client applied the host's `Launched`.
     fn pump_until_live(&mut self) {
-        for _ in 0..MAX_ROUNDS {
-            if matches!(self.client.phase(), ClientPhase::Live { .. }) {
-                return;
-            }
-            self.round();
-        }
-        panic!(
-            "the session never launched; the client saw {:?}",
-            self.client_notices
-        );
+        self.pump_until("the session never launched", |link| {
+            matches!(link.client.phase(), ClientPhase::Live { .. })
+        });
     }
 
     /// Pumps `rounds` further rounds.
@@ -161,16 +168,28 @@ impl Link {
 
     /// Pumps until the host has at least one queued work item.
     fn pump_until_work(&mut self) {
-        for _ in 0..MAX_ROUNDS {
-            if self.host.queued() > 0 {
-                return;
-            }
-            self.round();
-        }
-        panic!(
-            "no admitted input ever arrived; the host saw {:?}",
-            self.host_notices
+        self.pump_until("no admitted input ever arrived", |link| {
+            link.host.queued() > 0
+        });
+    }
+
+    /// Pumps until the host acknowledges input up to `through`.
+    fn pump_until_acked(&mut self, through: u32) {
+        self.pump_until(
+            &format!("input was never acknowledged through {through}"),
+            |link| {
+                link.client
+                    .acked_through()
+                    .is_some_and(|held| held >= through)
+            },
         );
+    }
+
+    /// Pumps until the client session is no longer open.
+    fn pump_until_closed(&mut self) {
+        self.pump_until("the client never observed the teardown", |link| {
+            !link.client.phase().open()
+        });
     }
 
     /// Whether the host produced a notice matching `wanted`.
@@ -298,7 +317,7 @@ fn accept_f54_c_the_session_runs_connect_launch_finish_and_disconnect() {
         .submit_edge(FlightCommand::FirePrimary, Tick(102))
         .expect("a fire edge queues");
     assert_eq!(link.client.pending(), 2, "two frames are queued");
-    link.pump(4);
+    link.pump_until_work();
 
     let work: Vec<PeerInput> = link.host.drain_work();
     assert_eq!(work.len(), 1, "one admitted packet reached the consumer");
@@ -320,7 +339,7 @@ fn accept_f54_c_the_session_runs_connect_launch_finish_and_disconnect() {
     link.host
         .acknowledge_input(peer, work[0].sequence)
         .expect("the ack encodes");
-    link.pump(4);
+    link.pump_until_acked(work[0].sequence);
     assert_eq!(link.client.acked_through(), Some(work[0].sequence));
     assert_eq!(link.client.unacked(), 0, "the acked packet was retired");
 
@@ -334,12 +353,9 @@ fn accept_f54_c_the_session_runs_connect_launch_finish_and_disconnect() {
             reason: FinishReason::Completed
         }
     );
-    for _ in 0..MAX_ROUNDS {
-        if matches!(link.client.phase(), ClientPhase::Finished { .. }) {
-            break;
-        }
-        link.round();
-    }
+    link.pump_until("the client never applied the finish", |link| {
+        matches!(link.client.phase(), ClientPhase::Finished { .. })
+    });
     assert_eq!(
         *link.client.phase(),
         ClientPhase::Finished {
@@ -355,7 +371,7 @@ fn accept_f54_c_the_session_runs_connect_launch_finish_and_disconnect() {
     assert_eq!(hung_up, 1, "the one member was hung up");
     assert_eq!(link.host.phase(), ServerPhase::Closed);
     assert!(link.host.members().next().is_none());
-    link.pump(16);
+    link.pump_until_closed();
     assert!(
         matches!(
             link.client.phase().closure(),
@@ -558,6 +574,20 @@ fn accept_f54_c_a_retry_runs_on_a_fresh_epoch_and_the_old_one_is_stale() {
         "the stale traffic was refused and named: {:?}",
         link.host_notices
     );
+
+    // The retry hung up on the connection the first epoch was serving, so the
+    // client that was live a moment ago observes the teardown rather than
+    // waiting forever on a session nobody is serving.
+    link.pump_until_closed();
+    assert!(
+        link.client.phase().closure().is_some(),
+        "the prior client observed the retry's teardown: {:?}",
+        link.client_notices
+    );
+    assert!(
+        !link.client.transport().is_connected(),
+        "and its connection is down"
+    );
 }
 
 #[test]
@@ -596,7 +626,7 @@ fn accept_f54_c_the_retransmit_window_is_bounded_and_resends_the_exact_bytes() {
     link.host
         .acknowledge_input(peer, 24)
         .expect("the ack encodes");
-    link.pump(2);
+    link.pump_until_acked(24);
     assert_eq!(link.client.acked_through(), Some(24));
     assert_eq!(
         link.client.unacked(),
@@ -1879,17 +1909,249 @@ fn accept_f54_c_a_client_without_a_grant_refuses_every_server_packet() {
 }
 
 #[test]
-fn accept_f54_c_the_lifecycle_never_advertises_another_protocol_revision() {
-    // The protocol revision rides inside the handshake and nowhere else, so a
-    // lifecycle owner cannot negotiate one it does not speak.
-    assert_eq!(synthetic_hello().protocol, PROTOCOL_VERSION);
-    let rejected = HandshakeReject::UnsupportedProtocol {
-        offered: cs_net::compat::ProtocolVersion::new(2).expect("two is nonzero"),
-        supported: PROTOCOL_VERSION,
-    };
+fn accept_f54_c_a_wrong_protocol_revision_is_refused_through_the_lifecycle() {
+    // The revision rides inside the handshake, so the only way a lifecycle
+    // owner can meet another one is a client that offers it. This runs the real
+    // handshake with a client offering revision 2: the host must refuse it with
+    // the named reason, tell the client, and never make it a peer.
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut hello = synthetic_hello();
+    let offered = cs_net::compat::ProtocolVersion::new(2).expect("two is nonzero");
+    hello.protocol = offered;
+    let hello_offered = hello.protocol;
+    let mut link = Link::new(session, synthetic_parameters(), hello);
+
+    link.pump_until_joined();
+
     assert!(
-        rejected
-            .to_string()
-            .contains("unsupported protocol version 2")
+        matches!(
+            link.client.phase().closure(),
+            Some(ClientClosure::Refused(
+                HandshakeReject::UnsupportedProtocol { offered, supported }
+            )) if *offered == hello_offered && *supported == PROTOCOL_VERSION
+        ),
+        "the client holds the named reason: {:?}",
+        link.client.phase()
     );
+    assert!(link.client.grant().is_none(), "and it never became a peer");
+    assert!(
+        link.host.members().next().is_none(),
+        "the host has no member to run a match for"
+    );
+    assert!(
+        link.host_has(|notice| matches!(
+            notice,
+            ServerNotice::PeerRefused {
+                reason: HandshakeReject::UnsupportedProtocol { .. }
+            }
+        )),
+        "the refusal is reported with its reason: {:?}",
+        link.host_notices
+    );
+    assert!(
+        link.host.launch(Tick(1)).is_ok(),
+        "and the refusal did not corrupt the session"
+    );
+}
+
+#[test]
+fn accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer() {
+    // A refused client keeps a netcode connection but never becomes a peer, so
+    // `close` does not reach it and a retry has to: the new epoch does not know
+    // that connection, so it may neither keep a session slot for it nor let it
+    // back in. The client below stays silent between rounds, and four
+    // one-second rounds stay inside the connection layer's own five-second
+    // timeout, so the only thing that can disconnect it is a hang-up.
+    let mut allocator = SessionAllocator::new();
+    let first = allocator.allocate().expect("the first epoch allocates");
+    let second = allocator.allocate().expect("the retry epoch allocates");
+    let mut hello = synthetic_hello();
+    hello.compatibility.rules_sha256 = ContentHash::from_bytes([0x00; 32]);
+    let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let mut host =
+        ServerSession::bind(first, synthetic_parameters(), bind, Duration::ZERO).expect("binds");
+    let addr = host.local_addr().expect("the bound host has an address");
+    let mut client =
+        ClientSession::connect(hello, addr, 0xCD, Duration::ZERO).expect("the client socket binds");
+
+    let mut refused = false;
+    for _ in 0..MAX_ROUNDS {
+        if host
+            .pump(STEP)
+            .iter()
+            .any(|notice| matches!(notice, ServerNotice::PeerRefused { .. }))
+        {
+            refused = true;
+            break;
+        }
+        client.pump(STEP);
+    }
+    assert!(refused, "the handshake was refused");
+    assert!(
+        client.transport().is_connected(),
+        "the refused client still holds a connection, and the host has only recorded the hang-up"
+    );
+
+    host.reopen(second).expect("the retry binds a fresh epoch");
+
+    // The host keeps pumping while the refused client stays silent, so the
+    // client can only learn what the retry did to it: four one-second rounds
+    // stay inside the connection layer's own five-second timeout, so a
+    // disconnection here can only be a hang-up.
+    for _ in 0..4 {
+        host.pump(STEP);
+        client.pump(Duration::from_secs(1));
+        if !client.transport().is_connected() {
+            break;
+        }
+    }
+    assert!(
+        !client.transport().is_connected(),
+        "the retry hung up on the connection that held no peer id"
+    );
+}
+
+#[test]
+fn accept_f54_c_a_spent_epoch_refuses_to_publish() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut host = ServerSession::bind(
+        session,
+        synthetic_parameters(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        Duration::ZERO,
+    )
+    .expect("the host socket binds");
+    let snapshot = fuzz::synthetic_snapshot(session, [0.0, 0.0, 0.0]);
+    let actor = ActorId { session, serial: 1 };
+
+    // While the epoch is open every publisher works.
+    assert!(host.publish_snapshot(Tick(1), &snapshot).is_ok());
+    assert!(
+        host.announce_spawn(Tick(1), actor, synthetic_blueprint_id(), None)
+            .is_ok()
+    );
+    host.close(DisconnectReason::SessionEnded)
+        .expect("teardown runs");
+
+    // After teardown they are refused by name rather than sent into a session
+    // with no members left, where a silent no-op would look like success.
+    for outcome in [
+        host.publish_snapshot(Tick(2), &snapshot).err(),
+        host.announce_spawn(Tick(2), actor, synthetic_blueprint_id(), None)
+            .err(),
+        host.announce_removal(Tick(2), actor).err(),
+        host.announce(
+            Tick(2),
+            EventBody::Finished {
+                reason: FinishReason::Completed,
+            },
+        )
+        .err(),
+    ] {
+        assert_eq!(
+            outcome,
+            Some(ServerFault::WrongPhase {
+                action: "publish",
+                phase: ServerPhase::Closed,
+            }),
+            "a spent epoch refuses to publish, naming the phase"
+        );
+    }
+}
+
+#[test]
+fn accept_f54_c_a_closed_client_session_is_terminal() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut client = granted_client(session);
+
+    // The host closed the session.
+    let notices = client
+        .accept(ServerMessage {
+            header: MessageHeader {
+                session,
+                sequence: 0,
+            },
+            payload: ServerPayload::Disconnect {
+                reason: DisconnectReason::SessionEnded,
+            },
+        })
+        .expect("a live epoch is accepted");
+    assert!(
+        notices.iter().any(|notice| matches!(
+            notice,
+            ClientNotice::Phase(ClientPhase::Closed(ClientClosure::ServerClosed(
+                DisconnectReason::SessionEnded
+            )))
+        )),
+        "the close applied: {notices:?}"
+    );
+
+    // Everything that arrives afterwards changes nothing: not a reliable event
+    // the host had already queued, not a snapshot, not an acknowledgment.
+    for (label, message) in [
+        (
+            "a launch published before the close",
+            fuzz::event_message(session, 1, fuzz::launched_event(session, Tick(1000), 1)),
+        ),
+        (
+            "a finish published before the close",
+            fuzz::event_message(
+                session,
+                2,
+                fuzz::finished_event(session, Tick(1100), FinishReason::Completed),
+            ),
+        ),
+        (
+            "a snapshot published before the close",
+            fuzz::snapshot_message(
+                session,
+                3,
+                SnapshotFrame {
+                    tick: Tick(1200),
+                    payload: fuzz::synthetic_snapshot(session, [1.0, 2.0, 3.0])
+                        .encode(session)
+                        .expect("the synthetic snapshot encodes"),
+                },
+            ),
+        ),
+        (
+            "an acknowledgment published before the close",
+            ServerMessage {
+                header: MessageHeader {
+                    session,
+                    sequence: 4,
+                },
+                payload: ServerPayload::InputAck { through: 7 },
+            },
+        ),
+    ] {
+        assert!(
+            matches!(
+                client.accept(message),
+                Err(ClientFault::Closed {
+                    closure: ClientClosure::ServerClosed(DisconnectReason::SessionEnded)
+                })
+            ),
+            "{label} is refused because the session is over"
+        );
+        assert_eq!(
+            *client.phase(),
+            ClientPhase::Closed(ClientClosure::ServerClosed(DisconnectReason::SessionEnded)),
+            "{label} did not reopen the session"
+        );
+    }
+    assert!(client.snapshot().is_none(), "no late snapshot was stored");
+    assert_eq!(client.acked_through(), None, "no late ack was applied");
+    assert_eq!(
+        client.remembered_events(),
+        0,
+        "no late event was remembered"
+    );
+    assert!(!client.phase().open(), "and the session sends nothing more");
 }

@@ -42,7 +42,8 @@ rest.
 - `crates/cs_net/src/bounds.rs`. Three new caps: `MAX_WORK_PER_PUMP` (64),
   `MAX_SEEN_EVENTS` (256), `MAX_UNACKED_PACKETS` (8).
 - `crates/cs_net/tests/accept_f54_c_lifecycle.rs` (new) and
-  `crates/cs_net/tests/support/f54_c_fuzz.rs` (new): 26 tests.
+  `crates/cs_net/tests/support/f54_c_fuzz.rs` (new): 26 tests at implementation
+  time, 29 after the review pass below.
 - `crates/cs_net/tests/accept_f54_b_pinned_transport.rs`: four `PeerPacket`
   destructuring patterns gained the new `input` field, and each gained an
   assertion — `Some(AdmittedInput)` on the admitted delivery, `None` on the
@@ -153,9 +154,10 @@ Also deliberate, and recorded rather than silently chosen:
 
 ## Test sensitivity
 
-Each probe below was applied to `lifecycle.rs`, run, and reverted; the restored
-file passes 26/26. Removing the module from `lib.rs` makes the test target fail
-to compile, so the tests cannot pass without it.
+Each probe below was applied to `lifecycle.rs`, run, and reverted; at
+implementation time the restored file passed 26/26. Removing the module from
+`lib.rs` makes the test target fail to compile, so the tests cannot pass without
+it.
 
 | Implementation removed | Tests that failed |
 | --- | --- |
@@ -165,6 +167,85 @@ to compile, so the tests cannot pass without it.
 | the `MAX_UNACKED_PACKETS` cap | 2 |
 | the epoch check in `accept` | 3 |
 | the refused-client teardown | 1 (`…_a_refused_client_is_told_why_and_then_hung_up_on`) |
+
+## Review pass (bunny-alpha-1, 2026-10-03)
+
+The implementer and the reviewer of this stage are the same agent name
+(`bunny-alpha-1`); the review context was fresh (a new session that saw only the
+task, the spec and the diff). Under `AGENTS.md` that is **not** independent
+review, and nothing here is original-reference evidence either way.
+
+What the review found and fixed on the branch:
+
+1. **A flaky acceptance test.** `…_the_retransmit_window_is_bounded_and_resends_
+   the_exact_bytes` waited exactly two exchange rounds for the host's input
+   acknowledgment. Measured over repeated runs, that acknowledgment arrives in
+   2 rounds usually and 5 occasionally, so the test failed intermittently (it
+   failed on review within three runs). The wait is now `Link::pump_until`,
+   which pumps until the *condition* holds within `MAX_ROUNDS` and fails
+   otherwise. Every assertion is unchanged — only the waiting changed. The other
+   three fixed-round waits (`pump(4)` before the admitted work, before the ack,
+   `pump(16)` before the teardown, the finish loop) became the same bounded
+   wait, because the same flake would have found them.
+2. **`ClientPhase::Closed` was not terminal in `accept`.** The client's consumer
+   applied whatever arrived, so a reliable `Launched` the host had already sent
+   before its `Disconnect` moved a closed client back to `Live` — and
+   `ClientPhase::open()` then let it produce input again for a session it had
+   left. `accept` now refuses every packet with `ClientFault::Closed`, naming the
+   closure; `…_a_closed_client_session_is_terminal` covers a late launch, a late
+   finish, a late snapshot and a late acknowledgment.
+3. **Publishing into a spent epoch was a silent no-op.** `announce`,
+   `announce_spawn`, `announce_removal` and `publish_snapshot` broadcast to a
+   session whose members had all been hung up and reported `Ok`. They now
+   refuse with `ServerFault::WrongPhase`, which is what a caller needs to tell a
+   published fact from a dropped one
+   (`…_a_spent_epoch_refuses_to_publish`).
+4. **Two variants that could never be observed.** `ServerNotice::Phase` and
+   `ServerFault::WorkQueueFull` were never constructed anywhere: a host caller
+   *is* the one that calls `launch`/`finish`/`close`/`reopen` and each returns
+   its own result, and the queue-overflow refusal is already a named
+   `ServerNotice::Dropped { QueueOverflow }` plus `CutOff { ResourceExhaustion }`.
+   Both were removed rather than left as a lie in the public API. The client's
+   `ClientNotice::Phase` stays, because there the phase moves from a packet.
+5. **`HostTransport::disconnect_client` documented `false` for an already-gone
+   connection and always returned `true`.** It now returns whether the transport
+   still knew that client.
+6. **`HostTransport::reopen` left live connections behind** while its doc said
+   their state died with them: it cleared the tables but never told the
+   connection layer. A reset now hangs up every connection it held
+   (`…_a_retry_hangs_up_the_connections_that_hold_no_peer`). Honest limit: the
+   end state is the same one round later, because the refused connection's next
+   packet is refused as `NoPeer` and cut off, so this specific line is *not*
+   separately discriminating in the test table.
+7. **The lifecycle re-decided the declared threat table.** `pump` had a private
+   `match` over `DropReason` that happened to agree with
+   `ThreatCase::disposition`. The classification now lives once, in
+   `DropReason::threat`, and `pump` asks the declared table — which is what this
+   document claimed it did.
+8. **`…_the_lifecycle_never_advertises_another_protocol_revision` exercised
+   nothing but a fixture tautology** and a `Display` string. It is now
+   `…_a_wrong_protocol_revision_is_refused_through_the_lifecycle`: a real
+   handshake with a client offering revision 2, refused with the named reason on
+   both sides, with no member left behind.
+
+Probes run during the review (each applied, run and reverted): the terminal-phase
+guard in `accept`, `ServerTransport::reopen`'s hang-up, `ServerSession::close`'s
+member hang-up, and the publish guard all fail at least one test when removed.
+The restored branch passes 29/29.
+
+Also deliberate, and recorded rather than silently chosen (review addition):
+
+- **A closed client session keeps no late traffic at all.** Refusing every
+  inbound packet after teardown also means a late acknowledgment no longer
+  retires the retransmit window. That is correct — the session is over — but it
+  means `ClientSession::snapshot()`/`acked_through()` are the *last* accepted
+  values, not a live view, once closed.
+- **The client keeps only the newest snapshot.** `ClientSession::latest` is a
+  single `(Tick, Snapshot)` slot, which is enough to prove newest-wins and to
+  hand F57-B a schema-checked record set, but it is **not** enough to
+  interpolate: a real buffer needs a bounded run of frames with a delay window
+  and per-generation actor separation. F57-B owns that buffer and will have to
+  replace this slot; F54-C claims no interpolation capability.
 
 ## Not claimed here
 

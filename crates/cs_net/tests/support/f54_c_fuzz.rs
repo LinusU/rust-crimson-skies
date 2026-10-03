@@ -426,7 +426,7 @@ pub fn hostile() -> Vec<Case> {
     // Every offset of a valid server message gets each pattern, so a decoder
     // that ever let one through as a value would show up here.
     let valid = valid_server_message(SYNTHETIC_SESSION);
-    for (index, pattern) in NON_FINITE_F32.iter().enumerate() {
+    for pattern in &NON_FINITE_F32 {
         for offset in [0usize, 1, 3, 5, 9, 13, 17, 21, 29] {
             let mut bytes = valid.clone();
             if offset + 4 > bytes.len() {
@@ -437,7 +437,6 @@ pub fn hostile() -> Vec<Case> {
                 label: format!("pattern {pattern:#010x} at offset {offset}"),
                 bytes,
             });
-            let _ = index;
         }
     }
     cases

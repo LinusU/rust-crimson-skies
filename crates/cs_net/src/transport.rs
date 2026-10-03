@@ -84,7 +84,9 @@ use crate::compat::{
     admit_hello,
 };
 use crate::message::{ClientMessage, ClientPayload, Delivery, InputBatch, ServerMessage};
-use crate::validation::{Admission, FireRequest, SessionGate, SessionViolation, fire_requests};
+use crate::validation::{
+    Admission, FireRequest, SessionGate, SessionViolation, ThreatCase, fire_requests,
+};
 
 /// The renet channel id carrying [`Delivery::Reliable`] traffic in both
 /// directions: handshake, reliable events, `Leave`, `Disconnect`.
@@ -322,6 +324,26 @@ pub enum DropReason {
     Refused(SessionViolation),
 }
 
+impl DropReason {
+    /// The threat class this refusal belongs to.
+    ///
+    /// This is the only place a refused buffer is classified, so the declared
+    /// [`ThreatCase::disposition`] table — not a private rule in a session
+    /// owner — decides whether the peer is absorbed or cut off.
+    #[must_use]
+    pub fn threat(&self) -> ThreatCase {
+        match self {
+            Self::Decode(reason) if reason.is_oversized() => ThreatCase::OversizedMessage,
+            // A buffer the bounded codec refused for any other reason is
+            // malformed, not abusive.
+            Self::Decode(_) | Self::ExtraHello => ThreatCase::MalformedMessage,
+            Self::NoPeer => ThreatCase::UnauthenticatedPeer,
+            Self::QueueOverflow { .. } => ThreatCase::ResourceExhaustion,
+            Self::Refused(violation) => violation.threat(),
+        }
+    }
+}
+
 impl fmt::Display for DropReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -542,7 +564,7 @@ impl HostTransport {
             self.gate.forget_peer(peer);
         }
         self.server.disconnect(client);
-        true
+        kind.is_some()
     }
 
     /// Restarts the session on a fresh epoch without rebinding the socket.
@@ -556,11 +578,14 @@ impl HostTransport {
     /// by replaying a sequence number from it.
     ///
     /// The socket is deliberately kept: a retry should not depend on the same
-    /// port still being free, and the connection layer's own per-connection
-    /// state dies with the disconnected clients. Returns how many connected
-    /// clients were dropped by the reset.
+    /// port still being free. Every connection still open is hung up on here
+    /// — including the ones that hold no peer id, which would otherwise keep a
+    /// netcode slot and would then be told [`DropReason::NoPeer`] if they tried
+    /// to use a connection this transport no longer knows. Returns how many
+    /// connected clients were dropped by the reset.
     pub fn reopen(&mut self, session: SessionId) -> usize {
         let dropped = self.clients.len();
+        self.server.disconnect_all();
         self.clients.clear();
         self.client_by_peer.clear();
         self.peers = PeerAllocator::new();
