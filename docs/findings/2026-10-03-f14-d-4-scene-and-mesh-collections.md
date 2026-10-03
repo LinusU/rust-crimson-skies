@@ -165,14 +165,18 @@ the corpus F11-A measured; the 17 139 present mesh records match the corpus F10-
 measured ("all 17 139 present records across the nine GameZ containers store
 data").
 
-The baseline grew from 338 rows to **74 097** (228 install files, 24 missions, 53
-scripts, 8 instant-action scenarios, 21 multiplayer scenarios, 4 multiplayer rules,
-56 620 scene nodes, 17 139 meshes). `coverage` is unchanged where it matters:
-53 roots, 159 reachable, **0 unresolved references**, and the geometry rows are
-counted as unreachable unknowns that still need a classification. The JSON report
-is byte-stable for the same installation and is now ~64 MB, which is the honest
-size of a complete inventory of this corpus and is recorded here rather than
-discovered later.
+The baseline grew from the 338 rows of the six collections the first F14-D
+stages published to **74 311** in twelve (228 install files, 24 missions, 53
+scripts, 8 instant-action scenarios, 21 multiplayer scenarios, 4 multiplayer
+rules, 8 worlds, 11 factions, 184 paint masks, 11 airframes, 56 620 scene nodes,
+17 139 meshes). The nine measurements this stage is about are unchanged by the
+collections the later stages added; the counts of those collections are named
+here because a total that leaves them out is not a total. `coverage` is unchanged
+where it matters: 53 roots, 159 reachable, 74 152 unreachable, **0 unresolved
+references**, and the geometry rows are counted as unreachable unknowns that still
+need a classification. The JSON report is byte-stable for the same installation
+and is now ~64 MB, which is the honest size of a complete inventory of this corpus
+and is recorded here rather than discovered later.
 
 ## Test inventory
 
@@ -408,6 +412,51 @@ now names the reviewer, as `tools/tests/test_evidence_review_identity.py`
 requires. The reviewer ran the harness without `CS_EVIDENCE_REVIEW` and replaced
 the harness's literal with the reviewer's own text in the same commit, so the
 report and the harness that writes it cannot drift apart.
+
+### The resumed pass: the rebase the lander could not do
+
+The approved commit could not be landed — the lander reported a rebase conflict
+with main and handed the task back for a manual rebase — so the review ran a
+second time (review claim of 2026-10-03T06:44:27Z, same agent instance, same
+caveat: **not independent**). Three of the ten commits conflicted, all with the
+F14-D.6 airframe collection, because main had added its rows to the same
+`retail_baseline`, the same error enum, the same `use` block and the same module
+documentation this stage edits. Each conflict was resolved by keeping both sides,
+and the result was checked rather than assumed: the set of items the merged file
+declares is exactly main's set plus this stage's, with nothing of main's removed.
+
+That resolution carried four defects of its own, all now fixed:
+
+9. **The inventory's completeness test could no longer account for this stage's
+   rows.** F14-D.6 hardened `accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic`
+   so that every non-launchable row has to belong to a collection its total
+   names — mode rows, world rows, airframe rows, faction rows, paint-mask rows.
+   It named none of this stage's two, so the equality read 73 977 against 218 and
+   the retail check **failed**. The fix derives the `scene_node` and `mesh` counts
+   from the rows like every other collection in that total (no number is
+   restated here) and names them in the message; the test passes again. This is
+   the check that keeps a later collection honest, and it would have caught this
+   stage if it had been written to see it.
+10. **The walk's list of derivations was one short.** After the conflict
+    resolution `retail_baseline` still said it "reads the installation seven
+    ways" while the merged function reads eight — main's airframe roster
+    discovery was missing from the list. Corrected, with the airframe container
+    named.
+11. **The module documentation had two orphaned fragments.** The old duplicated
+    paragraph reappeared in a third shape (a fragment beginning "use, the file
+    inventory is …" stranded after a paragraph that had already been repaired),
+    and the error enum kept a documented variant nothing could construct. Both
+    cleaned up; the enum now holds main's two airframe variants and nothing that
+    no code path builds.
+12. **This note's own totals were stale.** It reported 74 097 rows and did not
+    mention the four collections that landed on main after the numbers were
+    taken. Re-measured on the reviewed tree and restated above (74 311 in twelve).
+
+Because the merge touched the same file as F14-D.6's completeness check, this
+pass ran the **full** four checks plus every F14-D suite with `--include-ignored`,
+not the lighter rebase set the 2026-10-01 owner directive allows: the retail
+halves of F14-D.2, D.3, D.5 and D.6 all build the whole baseline and all pass
+(5, 5, 7 and 8 tests).
 
 
 ## Sources used
