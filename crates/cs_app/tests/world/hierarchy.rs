@@ -669,19 +669,21 @@ fn accept_f18_a_retail_every_world_container_says_which_side_its_hierarchy_disag
 }
 
 /// **The adopted rule is what gets the eight world containers past the
-/// hierarchy; what still refuses them is F11-A's id scheme, reported as a typed
-/// blocker with the exact count.**
+/// hierarchy; what still refuses them is the `scene_node` id scheme, reported
+/// as a typed blocker with the exact count.**
 ///
 /// Read through `world_scene_graph_from_gamez`, every world container reconciles
 /// and then reaches `SceneGraph::build`, which refuses it — never with
-/// `InconsistentParentage`, which is the refusal the rule exists to resolve, but
-/// with the authored node names meeting F11-A's id grammar. The blocker carries
-/// both halves: the count the rule resolved and the refusal that remains, so a
-/// caller can say exactly which is which.
+/// `InconsistentParentage`, which is the refusal the rule exists to resolve.
+/// What remains is the id scheme's own verdicts, and since F11-E1 escapes a
+/// stored name the key grammar cannot spell they are the two the escape cannot
+/// answer: a name-path past the key-length bound and two records sharing one
+/// name-path. The blocker carries both halves: the count the rule resolved and
+/// the refusal that remains, so a caller can say exactly which is which.
 ///
 /// The same test reads **two** containers end to end and asserts the verdict
 /// itself, and the aircraft container is read too: its count is 0, so the rule
-/// is a no-op there and its own build refusal is unchanged.
+/// is a no-op there.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f18_a_retail_the_world_containers_convert_their_hierarchy_and_report_the_refusal_that_remains()
@@ -700,7 +702,7 @@ fn accept_f18_a_retail_the_world_containers_convert_their_hierarchy_and_report_t
             &radian_adapter(),
             &BindingMap::default(),
         )
-        .expect_err("the canonical build refuses these world node names");
+        .expect_err("the canonical build still refuses every world container");
 
         let WorldSceneError::Build { source, audit } = error else {
             panic!(
@@ -806,8 +808,8 @@ fn accept_f18_a_retail_the_world_containers_convert_their_hierarchy_and_report_t
     }
 
     // The aircraft container: the disagreement is 0, the verdict is
-    // `Consistent`, and its build refusal is the one F11-A's id scheme has
-    // always produced — untouched by this stage.
+    // `Consistent`, and since F11-E1 escapes its awkward stored name it
+    // converts — its own story is F11-E1's, not this rule's.
     let bytes = std::fs::read(retail_root().join("ZBD/planes.zbd"))
         .expect("the installation must hold zbd/planes.zbd");
     let planes = read_gamez_nodes(

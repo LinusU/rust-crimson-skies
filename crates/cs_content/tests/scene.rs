@@ -3240,6 +3240,321 @@ fn accept_f11_e1_retail_planes_node_array_builds_every_node_id() {
     );
 }
 
+/// The F11-E1 evidence harness.
+///
+/// This test is deliberately **not** named `accept_f11_e1_*`: it is not part
+/// of the acceptance suite, and it fails loudly when its inputs are missing
+/// instead of passing vacuously. Run from the workspace root, after the
+/// acceptance suite, exactly as:
+///
+/// 1. ```sh
+///    mkdir -p private/evidence/F11-E1
+///    cargo test --workspace --locked -- accept_f11_e1_ --include-ignored \
+///      2>&1 | tee private/evidence/F11-E1/cargo-test.log
+///    ```
+///    (record the pipeline's exit status; it is passed to this harness as
+///    `CS_EVIDENCE_EXIT_CODE`.)
+/// 2. ```sh
+///    CS_EVIDENCE_DIR=private/evidence/F11-E1 \
+///    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+///    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f11_e1_ --include-ignored" \
+///    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
+///      cargo test --locked -p cs_content --test scene -- evidence_report_f11_e1_ --ignored
+///    ```
+/// 3. ```sh
+///    python3 tools/validate_evidence.py private/evidence/F11-E1/acceptance.json \
+///      --artifact-root private/evidence/F11-E1 --require-pass
+///    ```
+/// 4. Commit a copy of `acceptance.json` as
+///    `docs/findings/evidence/F11-E1.json`.
+///
+/// Every field is derived here from real inputs: the recorded test log, the
+/// environment, production discovery of `$CS_GAME_DIR`, the production GameZ
+/// node-array reader and `SceneGraph::build` over the real `ZBD/planes.zbd`,
+/// `rustc --version` and `Cargo.lock`. Nothing is typed in by hand except the
+/// `review` block (which `CS_EVIDENCE_REVIEW` fills in for the reviewing
+/// agent) and the product-coverage limitations it quotes.
+///
+/// `unknowns` is `[]` and the report validates with `--require-pass`: the
+/// **task's** acceptance is complete — the real `planes.zbd` converts end to
+/// end through production code, every derived id reads back to its stored
+/// name-path, and the six escaped ids are pinned by slot, name and key.
+/// `tools/validate_evidence.py` rejects a report whose `unknowns` hold
+/// unresolved *task* issues, so the product-incompleteness state is moved,
+/// never deleted (2026-09-28 owner directive): it lives in the
+/// `escaping-verdict.json` artifact this report hashes, in `review.method`,
+/// in `docs/findings/` and in the follow-up tasks it names. A failing run
+/// produces a failing report, which the validator rejects.
+#[test]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+fn evidence_report_f11_e1_writes_the_acceptance_report() {
+    use std::path::PathBuf;
+
+    use cs_assets::install as install_api;
+    use cs_formats::gamez::read_gamez_nodes;
+    use cs_formats::io::ParseContext;
+
+    let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
+    let candidate_tree = env_var("CS_CANDIDATE_TREE");
+    let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !argv.is_empty(),
+        "CS_EVIDENCE_ARGV must hold the acceptance command (space-separated)"
+    );
+    let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
+        .parse()
+        .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+    let game_dir = PathBuf::from(env_var("CS_GAME_DIR"));
+
+    let head_tree = git(&["rev-parse", "HEAD^{tree}"]);
+    assert_eq!(
+        candidate_tree, head_tree,
+        "CS_CANDIDATE_TREE must be `git rev-parse 'HEAD^{{tree}}'` of the tested commit; old \
+         reports cannot be reused for new code"
+    );
+
+    let log_path = evidence_dir.join("cargo-test.log");
+    let log = fs::read_to_string(&log_path).unwrap_or_else(|error| {
+        panic!(
+            "cannot read the acceptance log {}: {error} (step 1 must tee its output there)",
+            log_path.display()
+        )
+    });
+    let suite = parse_f11_d_suite(&log);
+    let assertions: Vec<(String, &'static str)> = suite
+        .assertions
+        .iter()
+        .filter(|(name, _)| name.contains("accept_f11_e1_"))
+        .cloned()
+        .collect();
+    assert!(
+        !assertions.is_empty() && suite.passed > 0,
+        "no `accept_f11_e1_` tests were recorded in {}",
+        log_path.display()
+    );
+    let retail = assertions
+        .iter()
+        .find(|(name, _)| name.contains("accept_f11_e1_retail_"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the retail acceptance test did not run: F11-E1 requires capability `retail`, \
+                 run step 1 with `--include-ignored` and CS_GAME_DIR set"
+            )
+        });
+    assert_eq!(retail.1, "pass", "the retail acceptance test must pass");
+    assert!(
+        assertions
+            .iter()
+            .any(|(name, _)| !name.contains("accept_f11_e1_retail_")),
+        "synthetic task tests must be present alongside the retail one"
+    );
+
+    let found = install_api::discover(&game_dir)
+        .expect("production discovery must read the original installation for the evidence record");
+    let install_sha256 = install_api::fingerprint(&found.manifest).to_hex();
+    let content_sha256 = install_api::content_fingerprint(&found.manifest).to_hex();
+
+    // The consumer trace: the same production read and conversion the retail
+    // acceptance test runs, re-measured here so the artifact cannot be
+    // written from numbers nobody verified.
+    let bytes = std::fs::read(game_dir.join("ZBD").join("planes.zbd"))
+        .expect("the shared airframe archive must be there");
+    let records = read_gamez_nodes(&mut ParseContext::with_defaults("zbd/planes.zbd"), &bytes)
+        .expect("the retail node array reads");
+    let parsed = parsed_nodes_from_gamez(&records, &[]).expect("every record converts");
+    let container = cid(ContentKind::InstallFile, "zbd_2f_planes.zbd");
+    let graph = SceneGraph::build(
+        &container,
+        &parsed,
+        &radian_adapter(),
+        &BindingMap::default(),
+    )
+    .expect("the measured verdict is conversion under F11-E1's escaping");
+    let escaped: Vec<&cs_content::scene::SceneNode> = graph
+        .nodes()
+        .iter()
+        .filter(|node| {
+            node.id()
+                .key()
+                .strip_prefix("zbd_2f_planes.zbd.")
+                .is_some_and(|spelling| spelling.contains('-'))
+        })
+        .collect();
+    assert_eq!(
+        escaped.len(),
+        6,
+        "the measured corpus is node 640 and its five descendants"
+    );
+    let round_trips = graph
+        .nodes()
+        .iter()
+        .filter(|node| {
+            node.id()
+                .authored_names(&container)
+                .map(|names| names.join("."))
+                == Some(node.path().to_owned())
+        })
+        .count();
+    assert_eq!(
+        round_trips,
+        graph.len(),
+        "every derived id reads back to its stored name-path"
+    );
+
+    let escaped_json: Vec<String> = escaped
+        .iter()
+        .map(|node| {
+            format!(
+                "{{\"index\": {}, \"name\": {}, \"path\": {}, \"id\": {}}}",
+                node.index(),
+                jstr(node.name()),
+                jstr(node.path()),
+                jstr(node.id().as_content_id().as_str())
+            )
+        })
+        .collect();
+    let verdict_path = evidence_dir.join("escaping-verdict.json");
+    let verdict_json = format!(
+        "{{\"schema\":\"cs-scene-node-id-escaping/1\",\"retail\":true,\"install_sha256\":{},\
+         \"container\":\"zbd/planes.zbd\",\"stored_nodes\":{},\"converted_nodes\":{},\
+         \"roots\":{},\"escaped_paths\":{},\"round_trips\":{},\"nodes\":[{}]}}",
+        jstr(&install_sha256),
+        records.nodes.len(),
+        graph.len(),
+        graph.roots().len(),
+        escaped.len(),
+        round_trips,
+        escaped_json.join(",")
+    );
+    fs::write(&verdict_path, &verdict_json)
+        .unwrap_or_else(|error| panic!("write {}: {error}", verdict_path.display()));
+    for needle in [
+        "\"schema\":\"cs-scene-node-id-escaping/1\"",
+        "\"retail\":true",
+        "\"stored_nodes\":3317",
+        "\"converted_nodes\":3317",
+        "\"roots\":28",
+        "\"escaped_paths\":6",
+        "\"round_trips\":3317",
+        "brigturret2 ",
+        "brigturret2-20",
+        &format!("\"install_sha256\":\"{install_sha256}\""),
+    ] {
+        assert!(
+            verdict_json.contains(needle),
+            "the consumer report is missing {needle:?}:\n{verdict_json}"
+        );
+    }
+
+    let engine = format!(
+        "{{\"rust\": {}, \"bevy\": {}, \"avian\": {}}}",
+        jstr(&rustc_version()),
+        jstr(&locked_version("bevy")),
+        jstr(&locked_version("avian3d"))
+    );
+    let artifacts = vec![
+        artifact(&log_path, "log", &evidence_dir),
+        artifact(&verdict_path, "json", &evidence_dir),
+    ];
+
+    let review = std::env::var("CS_EVIDENCE_REVIEW").unwrap_or_else(|_| {
+        "pending: written by the implementing agent bunny-2. Rally assigns the reviewing agent, \
+         who must regenerate this report on the reviewed and rebased commit and replace this \
+         text with their own identity and method (CS_EVIDENCE_REVIEW); the reviewer should be a \
+         different agent identity from the implementer, and no agent review awards more than \
+         `checked`. Method: the acceptance suite ran locally with the retail capability over \
+         $CS_GAME_DIR, the consumer trace is the production cs_formats::gamez::read_gamez_nodes \
+         plus cs_content::scene::parsed_nodes_from_gamez and SceneGraph::build over the real \
+         ZBD/planes.zbd, and tools/validate_evidence.py --require-pass checks the report. \
+         LIMITATIONS: the escaping is a designed engine contract over measured data, not an \
+         observed original behavior — nothing ran the original executable; the eight world \
+         containers still refuse — InconsistentParentage on the strict path, and on F18-A0's \
+         reconciled path the id scheme's own remaining refusals (an over-long escaped key, or \
+         two records sharing one name-path) — each its own recorded finding, not this task's; \
+         and no binding map has evidenced a socket yet, so the converted graph maps roots but \
+         no mount or cockpit."
+            .to_owned()
+    });
+
+    let report_json = format!(
+        "{{\n\
+         \x20\"schema_version\": 1,\n\
+         \x20\"task_id\": \"F11-E1\",\n\
+         \x20\"candidate_tree\": {},\n\
+         \x20\"engine\": {},\n\
+         \x20\"created_at\": {},\n\
+         \x20\"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n\
+         \x20\"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+         \x20\"seed\": 0,\n\
+         \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
+         \x20\"overrides\": [],\n\
+         \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
+         \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \
+         \"ignored\": {}}},\n\
+         \x20\"assertions\": [{}],\n\
+         \x20\"artifacts\": [{}],\n\
+         \x20\"unknowns\": [{}],\n\
+         \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
+         \x20\"claim\": \"implemented\"\n\
+         }}\n",
+        jstr(&candidate_tree),
+        engine,
+        jstr(&iso_utc_now()),
+        str_array(&argv),
+        jstr(&git(&["rev-parse", "--show-toplevel"])),
+        exit_code,
+        jstr(&install_sha256),
+        jstr(&content_sha256),
+        suite.discovered,
+        suite.executed,
+        suite.passed,
+        suite.failed,
+        suite.ignored,
+        assertion_array(&assertions),
+        artifact_array(&artifacts),
+        "",
+        jstr(&review),
+        jstr(
+            "acceptance suite run locally with the retail capability; this harness derives every \
+             field from the recorded log, production discovery of $CS_GAME_DIR, the production \
+             cs_formats::gamez node-array reader and cs_content::scene conversion over \
+             ZBD/planes.zbd, rustc and Cargo.lock; validated with tools/validate_evidence.py \
+             --require-pass. The consumer trace is a library path: no cs-inspect subcommand \
+             wraps the conversion yet. Regenerated by the reviewing agent on the reviewed and \
+             rebased commit, as docs/contracts/CLI-EVIDENCE.md requires."
+        ),
+    );
+
+    let out = evidence_dir.join("acceptance.json");
+    fs::write(&out, &report_json)
+        .unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
+    let written = fs::read_to_string(&out).expect("the report reads back");
+    for needle in [
+        "\"schema_version\": 1",
+        "\"task_id\": \"F11-E1\"",
+        "\"claim\": \"implemented\"",
+        "\"install_sha256\"",
+        "\"assertions\": [",
+        "\"artifacts\": [",
+        "\"unknowns\": [],",
+    ] {
+        assert!(
+            written.contains(needle),
+            "the written report is missing {needle:?}:\n{written}"
+        );
+    }
+    assert!(
+        suite.failed == 0 && exit_code == 0,
+        "the acceptance run failed (exit {exit_code}, {} failed): the report was written honestly \
+         and must NOT validate; fix the tests first",
+        suite.failed
+    );
+    println!("wrote {}", out.display());
+}
+
 // ===========================================================================
 // Task #392: the GameZ node array decoded into `ParsedNode` records
 // ===========================================================================

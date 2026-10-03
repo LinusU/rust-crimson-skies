@@ -287,6 +287,14 @@ only its column entry needs the retail capability:
 - **Nothing derived from the original bytes is committed.** The numbers above are
   counts, offsets, ids and digests; no name list, no mesh, no material and no
   screenshot is in the repository.
+- **Evidence report:** `evidence_report_f11_e1_writes_the_acceptance_report` in
+  `crates/cs_content/tests/scene.rs` writes `private/evidence/F11-E1/acceptance.json`
+  (schema `schemas/evidence.schema.json`), validated with
+  `tools/validate_evidence.py --require-pass`; the committed copy is
+  `docs/findings/evidence/F11-E1.json`. Its `escaping-verdict.json` artifact
+  re-measures the conversion — the container's own counts, the six escaped
+  nodes by slot/name/path/id, and every one of the 3 317 round-trips — over
+  the production reader, never from a constant.
 
 ## Sources used
 
