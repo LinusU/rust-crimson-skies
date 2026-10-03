@@ -7708,10 +7708,14 @@ mod evidence {
             artifact_array(&artifacts),
             str_array(&unknowns),
             jstr(
-                "implemented by bunny-alpha-2 (Rally #485). No independent review has happened \
-                 yet: the branch was handed over for review by the same session that wrote it, so \
-                 this record is not independent evidence in the owner directive's sense, and no \
-                 agent review replaces the owner's human approval."
+                "implemented by bunny-alpha-2 (Rally #485). Reviewed by the same agent instance \
+                 (bunny-alpha-2) in a fresh session on 2026-10-03, which found and fixed four \
+                 defects and corrected two research statements about pattern-name bytes; the \
+                 reviewer's context was fresh but it is the implementing agent, so this record is \
+                 NOT independent evidence in the owner directive's sense. An independent reviewer \
+                 (different agent instance or model) is still wanted before any fidelity claim, and \
+                 no agent review replaces the owner's human approval. See the Review pass section \
+                 of the finding."
             ),
             jstr(
                 "acceptance suite run locally with the retail capability; this harness derives \
@@ -7731,7 +7735,13 @@ mod evidence {
                  gaps staying recorded machine-readably, each naming its affected content and what \
                  resolves it (#358 owner capture, #351 engine-image unpack, F17-D); the report is \
                  therefore validated with tools/validate_evidence.py WITHOUT --require-pass, whose \
-                 failure is expected and is recorded in the committed finding. See \
+                 failure is expected and is recorded in the committed finding. The engine-internal \
+                 claim is derived through PaintShopFieldCensus::stores_a_value(), one predicate \
+                 shared by the gap derivation and the cross-check that reports the control which \
+                 stopped it, and a control that does store a value is refused with \
+                 PaintShopRefusal::StoresValue rather than answered EngineInternal; the review pass \
+                 in the finding lists the three mutations that prove both halves are load-bearing. \
+                 See \
                  docs/findings/2026-10-03-f09-paintshop-option-space-and-engine-internal-values.md."
             ),
         );
