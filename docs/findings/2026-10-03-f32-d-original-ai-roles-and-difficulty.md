@@ -23,14 +23,16 @@ the original *behaves*; it is evidence of what its shipped files *declare*.
   `ORIGINAL_ACE_STAT_SLOTS`, `ORIGINAL_ACE_STAT_MAX`,
   `DeclaredDifficultyOrigin`, and the production reader
   `original_ai_surface` with `OriginalAiSurface` / `ScenarioSurface` /
-  `SkillLabelRow` / `SurfaceError`; `DifficultyTier::index` /
+  `SkillLabelRow` / `SurfaceError` and the recursive `zrd_key_census`;
+  `DifficultyTier::index` /
   `::measured_step` / `::is_designed_extension` / `::measured_tier_count`;
   and the `accept_f32_d_*` tests plus the evidence harness.
 - `crates/cs_sim/src/ai/combat.rs` (owner path): the **runtime** half —
   `ORIGINAL_DIFFICULTY_STEPS` and the same four `DifficultyTier` queries;
   `DIFFICULTY_PROBE_DOMAIN`, `MAX_PROBE_RUNS_PER_TIER`, `MAX_PROBE_TICKS`,
   `PROBE_LATERAL_JITTER_M`, `PROBE_FORMATION`, `DifficultyProbeSpec`,
-  `DifficultyProbeRun`, `TierProbeOutcome`, `ProbeDifference`,
+  `DifficultyProbeRun` (including `recovery_triggers`, added by the review
+  pass), `TierProbeOutcome`, `ProbeDifference`,
   `TierComparison`, `DifficultyProbeReport` with its invariance and coverage
   queries, `CombatRuntime::probe_difficulties`, the authored
   `probe_geometry` scenario, the FNV-1a geometry/arsenal/profile digests, the
@@ -39,7 +41,7 @@ the original *behaves*; it is evidence of what its shipped files *declare*.
   `synthetic_difficulty_probe_spec`.
 - `crates/cs_sim/tests/ai/accept_f32_d_combat.rs` and
   `crates/cs_sim/tests/ai/accept_f32_d_combat_failures.rs` (new, owner path):
-  the 22 `accept_f32_d_*` tests.
+  the 14 `accept_f32_d_*` tests.
 - `crates/cs_sim/tests/ai/main.rs` (owner path, wiring only): the two new
   module declarations and the target's doc comment.
 - `crates/cs_content/Cargo.toml` and the root `Cargo.lock` (wiring only): one
@@ -118,11 +120,16 @@ nothing else.
 
 So the difficulty is a **selector with a title and a help line** on the
 game-options screen, beside "default view" and "auto head turn". And the
-complete root-key vocabulary of **all eight** instant-action scenario
-descriptors contains **no** difficulty key: `ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO`
-is `false`, measured over every descriptor, not assumed. **Which step is in
-force is the player's choice at the options screen, and nothing in the measured
-data binds a step to a mission.**
+complete key vocabulary of **all eight** instant-action scenario descriptors —
+every key at **any** depth, walked recursively so a nested enemy-group record is
+covered too, not only the root keys — contains **no** difficulty key:
+`ORIGINAL_DIFFICULTY_RECORDED_PER_SCENARIO` is `false`, measured over that
+census, not assumed. The suite pins the census itself as well as the negative
+(`ace_stats` is a root key, `enemy_skill` and `ace_skill` only exist inside
+nested records, and all three are in it), because a negative measured over the
+root keys alone would have been a weaker statement than the one the finding
+makes. **Which step is in force is the player's choice at the options screen,
+and nothing in the measured data binds a step to a mission.**
 
 That negative is the load-bearing result of this stage, and it is why
 `cs_content::ai::DeclaredDifficultyOrigin` has two variants instead of one: a
@@ -217,13 +224,30 @@ follower at tick 250 and the formation's assigned target at tick 400 so a real
 recovery is applied rather than a steady state measured. Every number in it is
 authored project design (see the limitation below).
 
+**Which of those two losses recovers is measured, not assumed.** The
+coordinator raises [`RecoveryTrigger::LeaderLost`] only when the **leader** is
+gone, and the probe's lost member is slot 1 while the deciding escort holds slot
+0 — so the follower loss is a membership change that raises nothing, and the one
+recovery each run applies is the declared *assigned-target-destruction* path at
+tick 400. `DifficultyProbeRun::recovery_triggers` records the trigger and the tick
+for every applied recovery, and the acceptance suite asserts the whole run list
+equals `[(AssignedTargetDestroyed, 400)]` at every tier. (Review finding: the first
+version of this document claimed the follower loss produced the recovery. It does
+not; the finding and the test comment now say what the run actually reports.)
+
 **What is held constant, and why that is the measurement.** Run `n` replays the
 same world at every tier: the positions, the threat stamps and the tick count
 are a function of `(root_seed, run)` alone, under the documented
 `SplitMix64::for_domain(root_seed ^ DOMAIN)` recipe with
-`DIFFICULTY_PROBE_DOMAIN = 0x4633_3250_524F_4245`. A per-index 64-bit FNV-1a
-digest over every coordinate and threat stamp is compared **across** tiers, and
-one weapons snapshot digest is compared across tiers, so:
+`DIFFICULTY_PROBE_DOMAIN = 0x4633_3250_524F_4245` — the run index folded into
+the *root* seed (`root_seed ^ run << 32`) and the domain passed as the domain
+argument. (Review finding: the first version also mixed the domain into the root
+argument, which **cancels** the domain inside `for_domain`, leaving the probe
+drawing exactly the stream a domain-less consumer draws; every other test still
+passed, so `accept_f32_d_the_probe_stream_follows_the_documented_domain_recipe`
+now pins the recipe and shows the stream differs from the domain-free one.) A
+per-index 64-bit FNV-1a digest over every coordinate and threat stamp is compared
+**across** tiers, and one weapons snapshot digest is compared across tiers, so:
 
 * a tier that moved a position, a threat stamp or the clock would change the
   geometry digest — **non-negotiable 1** checked mechanically, not by review;
@@ -236,10 +260,10 @@ one weapons snapshot digest is compared across tiers, so:
 
 | tier | measured step | answered ticks / run | deferred threats / run | engagements | range refusals | recoveries | profile digest |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| relaxed | 0 | 196.83 | 184.00 | 14 400 | 3 060 | 24 | `6445903300892541448` |
-| standard | 1 | 303.00 | 97.00 | 14 400 | 3 060 | 24 | `2014782459771529981` |
-| hard | 2 | 351.00 | 49.00 | 14 400 | 3 060 | 24 | `202099323039344105` |
-| elite | — | 375.00 | 25.00 | 14 400 | 3 060 | 24 | `7305471848971676703` |
+| relaxed | 0 | 190.04 | 184.00 | 14 400 | 2 918 | 24 | `6445903300892541448` |
+| standard | 1 | 303.00 | 97.00 | 14 400 | 2 918 | 24 | `2014782459771529981` |
+| hard | 2 | 351.00 | 49.00 | 14 400 | 2 918 | 24 | `202099323039344105` |
+| elite | — | 375.00 | 25.00 | 14 400 | 2 918 | 24 | `7305471848971676703` |
 
 Every adjacent pair: `protected_answers` **Higher**, `deferred_threats`
 **Lower**, `engagements` **Same**. The engagements, the range refusals and the
@@ -247,7 +271,7 @@ applied recoveries are the **controls**: identical at every tier, which is the
 statement that the tier changed the AI's *behavior* and nothing else.
 
 **It is a distribution, not four traces.** The relaxed tier's per-run answer
-count has a population variance of **568.81** (the seeded lateral jitter moves
+count has a population variance of **380.87** (the seeded lateral jitter moves
 the attacker's geometry enough to change *when* the slow reaction gate opens),
 while the elite tier's is exactly **0** — it notices every attack the schedule
 produces. Two different reasons for the same shape of number, and the suite
@@ -275,6 +299,20 @@ is the outcome the probe exists to catch: "difficulty" as a comment.
   other.
 - **A measured extent is not a measured meaning.** `ace_stats` is nine slots
   saturated at nine; what a slot *does* stays unknown.
+- **A domain constant only separates a stream if it is applied once.**
+  `SplitMix64::for_domain` xors the domain into the root itself, so a caller that
+  mixes it into the root argument as well has cancelled it — and every other
+  assertion about the probe still passed. The recipe belongs in the domain
+  argument alone, and a test that pins it is worth more than a comment about it.
+- **A coordinator's recovery trigger is narrower than "a member died".** The
+  probe's follower loss is a membership change; only a *leader* loss or the
+  assigned target's destruction raises a trigger. An event's *count* does not
+  name its cause, so a run that counts recoveries has to report which trigger
+  answered.
+- **A negative measured over one level is only a negative about one level.**
+  "No key names a difficulty" has to walk the whole `.zrd` value tree, and the
+  census that produced it has to be pinned too, or the negative can go shallow
+  again without anything failing.
 - **A repeated probe measures behavior, and proves the world did not move.**
   The per-index geometry digest, the arsenal digest and the clock check are
   what make the per-tier comparison attributable; without them the comparison
@@ -293,17 +331,18 @@ is the outcome the probe exists to catch: "difficulty" as a comment.
 | `f32.d.limit.probe_geometry` | Every number in the probe's scenario is authored project design; no measured file describes an original AI encounter. The probe measures **this** engine's per-tier decision behavior and carries no machine-readable marker saying so. | #570 `F32-PROBE-GEOMETRY` |
 | `f32.d.limit.fire_discipline` | `fire_discipline_ticks` and `aim_error_rad` are reported and not enforced across ticks, so **two tiers differing only in those two knobs measure as identical** and the probe's firing-tick count is a control that cannot discriminate. | #571 `F32-FIRE-DISCIPLINE` |
 
-Every one of these is also in the machine-readable record
-(`review.method` in `docs/findings/evidence/F32-D.json`), so no limitation is
-removed from evidence to turn a validator green.
+Every one of these is in the machine-readable record twice over: in the
+report's `unknowns` array **and** in `review.method`
+(`docs/findings/evidence/F32-D.json`), so no limitation is dropped from evidence
+to turn a validator green, and none of them lives in prose alone.
 
 ## Sensitivity probes (run and reverted; none committed)
 
 Each probe was applied to the committed `crates/cs_sim/src/ai/combat.rs` or
 `crates/cs_content/src/ai.rs`, the `accept_f32_d_` selection was re-run, and the
 file was restored from a copy afterwards. The committed tree is the green one
-(23 `accept_f32_d_*` tests: 10 in `cs_content`'s `f32_d` module and 13 in the
-`ai` test target).
+(24 `accept_f32_d_*` tests: 10 in `cs_content`'s `f32_d` module and 14 in the
+`ai` test target; the review pass below added the fourteenth).
 
 `crates/cs_sim/src/ai/combat.rs`:
 
@@ -359,21 +398,74 @@ Both were found by running them, and neither is papered over.
    surface's `populated_difficulty_ids` as "whatever the reader measured",
    which is what its doc comment says.
 
+### The review pass (bunny-2 reviewing bunny-2's own work — not independent)
+
+The reviewer re-derived the probe's numbers from a scratch harness, drove the
+production formation coordinator tick by tick to check the recovery attribution,
+walked the `.zrd` grammar independently of the module under review, and ran four
+mutation probes of their own. All were reverted; the committed tree is green.
+
+| review probe | result |
+| --- | --- |
+| `DifficultyProbeSpec::stream` mixes `DIFFICULTY_PROBE_DOMAIN` into the root argument **and** passes it as the domain, so `for_domain` cancels it and the probe draws the domain-free stream | **1 failed** after the fix: `…the_probe_stream_follows_the_documented_domain_recipe`. Before the fix nothing failed at all — see the defect note in the probe section. |
+| the probe loses the formation **leader** instead of a follower (`LOST_SLOT = 0`), so the recovery it applies is a leader loss | **9 failed**, including `…the_probe_replays_a_mission_formation_loss_at_every_tier`, whose run-level trigger list no longer matches |
+| `zrd_key_census` walks only the root keys again (`zrd_flat_fields`) | **1 failed**: `…retail_no_scenario_records_a_difficulty_so_only_a_selection_is_measurable`, on the nested-key assertion |
+
+Three defects the review found and fixed, all in the committed tree:
+
+1. **The probe's stream was not domain-separated.** `stream` passed
+   `root_seed ^ run << 32 ^ DOMAIN` as the *root* seed and `DOMAIN` as the
+   domain; `SplitMix64::for_domain` xors the domain into the root internally, so
+   the domain cancelled and `stream(run)` was bit-for-bit
+   `for_domain(root_seed ^ run << 32, 0)` — the stream a consumer with **no**
+   domain draws. The constant, its doc comment and the contract's separation rule
+   were all describing an effect the code did not have, and every other test in
+   the suite passed. Fixed to apply the recipe once, and pinned by
+   `accept_f32_d_the_probe_stream_follows_the_documented_domain_recipe`. This
+   changed the probe's geometry, so the table above is the corrected one.
+2. **The applied recovery was attributed to the wrong event.** The first
+   version of this document, the probe's comments and the test's doc comment all
+   said the follower lost at tick 250 produced the per-run recovery. Driving the
+   production coordinator tick by tick shows the opposite: `LeaderLost` needs the
+   *leader* gone, the probe's lost member is slot 1 and the deciding escort holds
+   slot 0, so the single recovery per run is `AssignedTargetDestroyed` at tick
+   400 (declared action `Regroup`). The run now *reports* the attribution
+   (`DifficultyProbeRun::recovery_triggers`) and the test asserts the whole list,
+   so a reader is not left taking a scenario's word for it.
+3. **The load-bearing negative was measured over root keys only.** "No measured
+   record binds a difficulty to a mission" was read off
+   `zrd_flat_fields`, one level deep, so a nested record could have carried one.
+   The census is now recursive (`zrd_key_census`); over the eight descriptors it
+   finds **35** distinct keys against the root-only **27**, including
+   `enemy_skill` and `ace_skill`, which exist only inside nested records, and
+   still nothing naming a difficulty. The suite pins both a root key and a
+   nested key so the census itself cannot silently go shallow again.
+
+Also corrected while reviewing: the report's `unknowns` array was empty while all
+eight limitations lived in `review.method` prose (they are now in both); the
+claim that 13 of the 23 tests are unignored was wrong (15 of 23 were, plus one
+test added by this review); and `installation()`'s per-process manifest cache is
+documented as "the first root a process measures is the only one", which the code
+does and the comment did not say.
+
 ## Checks run
 
 - `cargo fmt --all -- --check` — clean.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` — exit 0.
-- `cargo test --workspace --locked` — exit 0 (305 suites, 0 failed).
+- `cargo test --workspace --locked` — exit 0.
 - `cargo test --workspace --locked -- accept_f32_d_ --include-ignored` — exit 0;
-  23 tests, all `accept_f32_d_*`, all passing (13 unignored so CI runs them, 10
-  `#[ignore = "requires CS_GAME_DIR"]` run locally over `$CS_GAME_DIR`).
+  24 tests, all `accept_f32_d_*`, all passing (16 unignored so CI runs them, 8
+  `#[ignore = "requires CS_GAME_DIR"]` run locally over `$CS_GAME_DIR`), each
+  also passing alone with `--exact`.
 - `python3 tools/validate_evidence.py private/evidence/F32-D/acceptance.json
-  --artifact-root private/evidence/F32-D --require-pass` — exit 0,
-  `{"structurally_valid": true, "artifact_count": 3}`.
+  --artifact-root private/evidence/F32-D --require-pass` — exit 0.
 
-The evidence report is committed as `docs/findings/evidence/F32-D.json` and was
-produced on the tree named inside it, by the harness the documented command
-runs; the reviewer regenerates it on the rebased commit and compares.
+The evidence report is committed as `docs/findings/evidence/F32-D.json` and is
+regenerated on the reviewed tree by the harness the documented command runs. The
+first committed copy named a `candidate_tree` (`204769d3`) that is not the tree of
+any commit on the branch — it was taken from a working tree that also carried
+another task's uncommitted files — so a reader could not resolve the code the
+report described; it has been replaced by a report over the reviewed tree.
 
 ## Not claimed
 
@@ -410,12 +502,15 @@ original's. The task awards at most **checked** status.
   is a control precisely because it cannot discriminate today; when the
   per-actor fire-discipline state gets a session owner, that column becomes a
   discriminator and this finding should be revisited.
-- Reviewer identity for this session: implemented **and** self-checked by
-  `bunny-2`, which is **not** independent review. The F32 sheet asks for a fresh
-  reader on format and mission semantics, and the probe's statistics in
-  particular deserve a second pair of eyes: a different agent instance should
-  re-check that the aggregate, the variance and the per-index invariance really
-  measure what the tables above claim.
+- Reviewer identity for this session: implemented **and** reviewed by `bunny-2`,
+  which is **not** independent review. The F32 sheet asks for a fresh reader on
+  format and mission semantics, and the review pass above found three real
+  defects — an uncancelled domain, a recovery attributed to the wrong event, and
+  a load-bearing negative measured one level too shallow — all of which a
+  same-agent reading of the diff had missed. A different agent instance should
+  still re-check that the aggregate, the variance and the per-index invariance
+  really measure what the tables above claim, and should read the `.zrd` key
+  census against the grammar independently.
 
 ## Sources used
 
