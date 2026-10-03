@@ -674,3 +674,82 @@ fn accept_f27_e_retail_the_measured_surface_is_bound_to_one_installation() {
         "the catalog holds every required row and nothing else"
     );
 }
+
+/// F27-D's audit, run against the four imported types and the measured
+/// surface: the ammunition-type closure now holds, and every remaining finding
+/// is one this stage names with evidence.
+///
+/// The surface is F27-D's: its twenty gun groups are the production
+/// `ORIGINAL_GUN_GROUPS`, and its counts are the ones F27-D measured from
+/// `RESOURCE.H` and the loadout screens (four types, five guns, four gun slots,
+/// eight rocket slots, two hardpoint points) and re-measures in
+/// `accept_f27_d_retail_ammo_catalogue.rs`. This test does not re-derive them;
+/// it checks what the imported catalogue does to the audit's verdict.
+#[test]
+fn accept_f27_e_the_audit_type_closure_holds_and_the_rest_is_named() {
+    use cs_content::weapons::{
+        AmmoAuditFinding, AmmunitionAudit, ORIGINAL_GUN_GROUPS, OriginalGunLoadout,
+        OriginalLoadoutCounts,
+    };
+
+    let catalogue =
+        OriginalGunAmmunitionCatalogue::import(&measured_catalog(), observed_provenance())
+            .expect("the measured catalog imports");
+    let mut audit = AmmunitionAudit::new();
+    for record in catalogue
+        .declared_ammunition(synthetic_span(), observed_provenance())
+        .expect("records of unknown values are valid declared records")
+    {
+        audit.add_ammunition(record);
+    }
+
+    let surface = OriginalGunLoadout::try_new(
+        Origin::Installation {
+            source: synthetic_span(),
+        },
+        OriginalLoadoutCounts::try_new(4, 5, 4, 8, 2).expect("F27-D's measured counts"),
+        ORIGINAL_GUN_GROUPS.to_vec(),
+        observed_provenance(),
+    )
+    .expect("the measured surface is a valid surface");
+
+    let report = audit.run(&surface);
+    assert_eq!(
+        report.declared_types(),
+        4,
+        "the four imported types are rows"
+    );
+    assert_eq!(
+        report.findings_of("undeclared_ammunition_type"),
+        Vec::<&AmmoAuditFinding>::new(),
+        "the imported types cover the surface's four: this stage closes that finding"
+    );
+
+    // What is left is named, not silently absent: the eleven gun groups the
+    // executable's per-airframe tables would place, and the per-type caliber,
+    // damage and interaction rows the copy-protected image holds.
+    let labels: Vec<&str> = report.findings().iter().map(|f| f.label()).collect();
+    for expected in [
+        "uncovered_gun_group",
+        "unmeasured_caliber",
+        "no_damage_consumer",
+        "unpaired",
+    ] {
+        assert!(
+            labels.contains(&expected),
+            "the audit must still report {expected}; it reports {labels:?}"
+        );
+    }
+    assert!(
+        !report.is_complete(),
+        "an unmeasured damage table and eleven unplaced gun groups are not complete"
+    );
+    // Every type row is reachable by id, so a caller can ask what a type is.
+    for identity in catalogue.ammunition() {
+        assert!(
+            report.row(identity.ammunition()).is_some(),
+            "{} must have an audit row",
+            identity.ammunition()
+        );
+    }
+}

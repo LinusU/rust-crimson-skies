@@ -282,3 +282,29 @@ reviewer regenerates the report on the rebased commit and compares, as
 `#547 (F27-E.1)` carries what this stage could not measure: the per-type damage
 amounts, the per-airframe gun-group assignment, and — once an owner-supplied
 capture exists — the convergence, inherited-velocity and interaction rules.
+
+## What F27-D's audit now says (added after #120 merged)
+
+`#120` (F27-D) landed on `main` while this stage was in flight, so the audit
+this task's acceptance criterion names is now available and this branch runs it:
+`accept_f27_e_the_audit_type_closure_holds_and_the_rest_is_named` feeds the four
+imported records and F27-D's measured surface (the production
+`ORIGINAL_GUN_GROUPS` and its counts) to `AmmunitionAudit::run` and reads the
+verdict.
+
+- **`undeclared_ammunition_type` is gone.** F27-D measured "observed 4,
+  declared 0"; against the same surface the imported catalogue declares **4**, so
+  the audit reports no type it cannot map. That is the one acceptance clause
+  this stage could close, and it closes because the four ids now carry the
+  original's own names, abbreviations and descriptions instead of four labels
+  over unknown values.
+- **The rest stays, named.** `uncovered_gun_group` (the eleven groups only the
+  executable's per-airframe tables can place), and per type `unmeasured_caliber`,
+  `no_damage_consumer` and `unpaired` — no gun is paired because no
+  `DeclaredGunDefinition` may be built without a measured mount.
+  `is_complete()` is therefore still false, which is the correct answer.
+- **Every type has a row**, addressable by id through `AmmunitionAuditReport::row`,
+  so an audit over the imported catalogue can answer what a type is.
+
+Nothing in F27-D's closure checks was weakened to reach that verdict: the audit
+still fails, on the gaps this stage could not measure.
