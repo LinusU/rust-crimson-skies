@@ -449,11 +449,11 @@ fn evidence_report_f14_d_5_writes_the_acceptance_report() {
 fn review_identity() -> String {
     let recorded = String::from(
         "implementer: deepseek-1/deepseek-1 (Rally #488, implement claim of \
-         2026-10-03T03:37:07Z). No review claim had run when this report was generated, so \
-         the implementer is the only identity recorded: the reviewing agent replaces this \
-         literal and names itself here in the same commit that regenerates the report. The \
-         reviewing session should record whether its context was fresh. `checked` is the \
-         ceiling for an agent review and no agent review replaces the owner's human approval",
+         2026-10-03T03:37:07Z). reviewer: deepseek-1/deepseek-1 (Rally #488, review claim of \
+         2026-10-03T04:37:06Z). The reviewer is the same named agent as the implementer but \
+         ran in a fresh context (a new session), so this review is not independent \
+         original-reference evidence. `checked` is the ceiling for an agent review and no \
+         agent review replaces the owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
