@@ -3574,12 +3574,18 @@ impl NitroLedger {
     /// tick — the held state, never an elapsed duration. The ledger decides
     /// what that means under the declared [`NitroActivationRule`]:
     ///
-    /// * a refused request — no capacity, or a burn already running —
-    ///   consumes **nothing** and reports the refusal
-    ///   (`FLIGHT-PHYSICS`, "Pressing a button while boost is unavailable
-    ///   does not consume capacity");
     /// * an accepted request consumes one tick's worth of capacity and
-    ///   reports the extra thrust and the authority multiplier.
+    ///   reports the extra thrust and the authority multiplier;
+    /// * a [`NitroRefusal::CapacityExhausted`] request consumes **nothing** and
+    ///   reports the refusal (`FLIGHT-PHYSICS`, "Pressing a button while boost
+    ///   is unavailable does not consume capacity").
+    ///
+    /// A refusal therefore does not always mean the booster is idle: a
+    /// [`NitroRefusal::BurnAlreadyRunning`] request is refused *and* still
+    /// consumes, because the burn it would have started a second time is
+    /// already the one paying for this tick. `NitroTick::is_refused` says a
+    /// second activation was refused; `NitroTick::is_active` says whether this
+    /// tick ran.
     ///
     /// A [`NitroActivationRule::FixedTicks`] burn runs for its whole
     /// declared length whatever the control does afterwards: the

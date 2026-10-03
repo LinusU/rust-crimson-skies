@@ -582,6 +582,83 @@ fn accept_f28_d_a_fully_measured_catalogue_is_complete() {
     );
 }
 
+/// A record whose **every value** is an original measurement but whose own
+/// provenance is still `designed` is **not** attributed, and is reported as
+/// unmeasured content.
+///
+/// This is the negative case for the audit's central predicate. The field tally
+/// alone cannot catch it: the synthetic fixture is caught because it leaves
+/// `verified` at zero, so a record that *borrows* measured values while
+/// declaring itself designed, which is the only way a fabricated eleventh
+/// rocket could satisfy the count check, would pass a tally-only `is_measured`
+/// and inflate `attributed_rocket_types` towards the installation's eleven. The
+/// record's own provenance is the second, independent half of the answer.
+#[test]
+fn accept_f28_d_measured_values_on_a_designed_record_are_not_attributed() {
+    let mut audit = OrdnanceAudit::with_layout(
+        ORIGINAL_ORDNANCE_ROCKET_SLOTS,
+        ORIGINAL_ORDNANCE_HARDPOINT_POINTS,
+    );
+    // Every load-bearing value measured...
+    let borrowed = measured_record(
+        "original.borrowed_rocket",
+        DeclaredOrdnanceFamily::AerialTorpedo,
+        claim("f28d.test-borrowed-measurement"),
+    );
+    // ...but the record itself declares itself designed content.
+    let designed = DeclaredOrdnance::try_new(
+        borrowed.ordnance().clone(),
+        Origin::SyntheticFixture,
+        borrowed.family(),
+        borrowed.details().clone(),
+        borrowed.scene_binding().cloned(),
+        declared_synthetic_provenance(),
+    )
+    .expect("a designed record carrying measured values is still a legal record");
+    audit.add(designed);
+
+    let report = audit.run(&original_surface());
+    let id = ContentId::from_source(ContentKind::Weapon, "original.borrowed_rocket")
+        .expect("a weapon id");
+    let row = report.row(&id).expect("the borrowed record has a row");
+    assert!(
+        row.tally().is_fully_measured(),
+        "every load-bearing value really is an original measurement: {:?}",
+        row.tally()
+    );
+    assert_eq!(
+        row.provenance().class,
+        ClaimStatus::Designed,
+        "and the record itself is still designed content"
+    );
+    assert!(
+        !row.is_measured(),
+        "so the two halves together refuse the attribution"
+    );
+    assert_eq!(
+        report.attributed_rocket_types(),
+        0,
+        "and it contributes nothing to the attribution count"
+    );
+    assert_eq!(
+        report.findings_of("unmeasured_record"),
+        vec![&OrdnanceAuditFinding::UnmeasuredRecord {
+            ordnance: id.clone(),
+            class: "designed",
+        }],
+        "the record is still reported as unmeasured content: {:?}",
+        report.findings()
+    );
+    assert_eq!(
+        report.findings_of("unattributed_rocket_type"),
+        vec![&OrdnanceAuditFinding::UnattributedRocketType {
+            observed: ORIGINAL_ROCKET_ORDNANCE_TYPES,
+            attributed: 0,
+        }],
+        "and the attribution gap against the installation stands"
+    );
+}
+
 /// Dropping the closure check against the measured surface would let a
 /// one-component catalogue pass; the audit must not.
 #[test]

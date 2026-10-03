@@ -29,7 +29,7 @@ files declare.
   `OrdnanceSession::close` described below.
 - `crates/cs_sim/src/weapons/ordnance.rs` (extend, one method):
   `OrdnanceRuntime::nitro_actors`.
-- `crates/cs_content/tests/accept_f28_d_ordnance_audit.rs` (**new**, 16 tests),
+- `crates/cs_content/tests/accept_f28_d_ordnance_audit.rs` (**new**, 17 tests),
   `crates/cs_app/tests/accept_f28_d_ordnance_catalogue.rs` (**new**, 11 tests),
   `crates/cs_content/tests/f28_d_support/mod.rs` (**new**, the shared retail
   read), `crates/cs_content/tests/accept_f28_d_retail_ordnance_catalogue.rs`
@@ -180,11 +180,19 @@ reported a fireable loadout for a session that no longer exists, and worse, the
 family-occupancy walk would have reported every designed family as *uncovered*,
 turning a teardown into a catalogue gap. `close` now clears `components`
 alongside the runtime, `registered_ids`/`registered_shooters` return nothing for
-a closed session, and `session_ordnance_audit` returns an empty report for one
-— all three pinned by `accept_f28_d_a_closed_session_audits_to_nothing`. The
-second half of that test (a closed session reporting six
-`family_without_a_component` findings) was the failure that found the hole
-*after* the repair, and is why the early return is there.
+a closed session because that map is now empty, and `session_ordnance_audit`
+returns an empty report for one — all of it pinned, in both directions, by
+`accept_f28_d_a_closed_session_audits_to_nothing`. The second half of that test
+(a closed session reporting six `family_without_a_component` findings) was the
+failure that found the hole *after* the repair, and is why the early return is
+there.
+
+Review then measured the repair and found it was **not** doing what this
+paragraph claimed: as first written the two accessors also short-circuited on
+`closed`, so three separate mechanisms each made a closed session read empty and
+removing any one of them changed nothing. Review removed the two redundant
+short-circuits, so `components.clear()` is now the single mechanism the
+accessors depend on, and the mutation is caught.
 
 ## AC04: boost changes thrust and consumption and nothing else
 
@@ -227,9 +235,9 @@ verdict.
 The second finding is that the declared **area effect's reach reaches no
 recipient**: `lower_ordnance` puts both of its values into
 `cs_sim::weapons::ordnance::AreaEffect`, and
-`ProjectileOrdnance::area_effect` has two pass-through readers —
-`LiveOrdnance::area_effect` and the `GuidanceDetonation::area_effect` F28-C.1
-added — but neither is read by a production gameplay path. F28-C applies a
+Exactly two methods read the lowered field back — the definition's own
+`ProjectileOrdnance::area_effect` and the `GuidanceDetonation::area_effect`
+F28-C.1 added — and neither is read by a production gameplay path. F28-C applies a
 triggered item's declared *status effects* to the one stable recipient its
 engagement names, and F28-C.1's guidance-loss blast routes the declared damage
 channels to that same named target and damage node rather than to every actor
@@ -286,16 +294,19 @@ F44-B (#181), which owns the shared validator.
 
 ## Test sensitivity (measured, one mutation at a time)
 
-Eleven mutations were applied to the three production files, one at a time, and
+Nineteen mutations were applied to the three production files, one at a time, and
 the F28-D test binaries re-run after each; each file was restored from a
-byte-identical backup (`shasum`) after every probe. Every mutation was caught.
-The "caught by" column is what the run reported, not an estimate.
+byte-identical backup (`shasum`) after every probe. The "caught by" column is
+what the run reported, not an estimate.
+
+**Re-measured independently in review**, which found this table overstated in
+three places; the corrections are marked "review" below.
 
 | mutation | caught by |
 | --- | --- |
 | `run` drops the `undeclared_rocket_type` closure check | `accept_f28_d_a_catalogue_that_under_counts_the_installation_is_incomplete`, `accept_f28_d_an_empty_catalogue_is_incomplete`, `accept_f28_d_the_synthetic_catalogue_is_incomplete_by_name`, `accept_f28_d_retail_the_ordnance_audit_reports_every_type_it_cannot_map` |
 | `run` drops the `unattributed_rocket_type` check | the same four, plus `accept_f28_d_a_fully_measured_catalogue_is_complete` (it attributes 11) |
-| `is_measured` counts a designed record as measured | `accept_f28_d_a_fully_measured_catalogue_is_complete` |
+| `is_measured` counts a designed record as measured | **review:** not caught as first written. The synthetic fixture leaves `verified` at zero, so the tally alone already refused it and the record's own provenance clause had no test. `accept_f28_d_measured_values_on_a_designed_record_are_not_attributed` (added in review) builds a record whose every value is `verified_original` while the record itself is `designed`, and now catches it |
 | `FieldTally::is_fully_measured` accepts `total == 0` | `accept_f28_d_an_unmeasured_field_is_reported_by_name` |
 | the walk skips `guidance.lost_target` | `accept_f28_d_a_fully_measured_catalogue_is_complete` (its row stops being fully measured) |
 | `walk_record` no longer records the unknown field names | `accept_f28_d_an_unmeasured_field_is_reported_by_name` |
@@ -305,13 +316,72 @@ The "caught by" column is what the run reported, not an estimate.
 | `run` drops the `missing_nitro_record` check | `accept_f28_d_a_missing_nitro_record_is_reported_only_when_nitro_is_named`, `accept_f28_d_an_empty_catalogue_is_incomplete` |
 | `run` stops deduping by id | `accept_f28_d_a_repeated_record_is_audited_once` |
 | `session_ordnance_audit` loses the closed-session early return | `accept_f28_d_a_closed_session_audits_to_nothing` |
-| `OrdnanceSession::close` stops clearing `components` | `accept_f28_d_a_closed_session_audits_to_nothing` |
+| `OrdnanceSession::close` stops clearing `components` | `accept_f28_d_a_closed_session_audits_to_nothing` **after the review fix.** As first written it was **not** caught: `registered_ids`, `registered_shooters` and `session_ordnance_audit` each also short-circuited on `closed`, so the clear was unobservable. Review removed the two redundant `closed` short-circuits from the accessors, which leaves `components.clear()` as the single mechanism they rely on, and pinned the accessors in both directions in the same test |
 | `session_ordnance_audit` reports `area_applied: true` | `accept_f28_d_an_unconsumed_area_effect_is_named` |
 | `session_ordnance_audit` drops the `component_delivers_nothing` finding | `accept_f28_d_a_component_that_delivers_nothing_is_named` |
 | `NitroLedger::request` converts through a caller-supplied duration | `accept_f28_d_boost_costs_the_same_at_any_render_frame_length`, `accept_f28_d_boost_costs_the_same_walked_or_jumped` |
 | the nitro order writes the shooter's velocity | `accept_f28_d_boost_changes_thrust_and_consumption_and_never_moves_or_scales_a_frame` |
-| a refused activation consumes capacity | `accept_f28_d_a_refused_boost_consumes_nothing` |
+| a refused activation consumes capacity (`consumed` computed when `refused.is_some()`) | **review: an equivalent mutant, not a coverage gap, and not catchable.** A `CapacityExhausted` refusal can only happen at capacity `<= 0`, so `min(per_tick * elapsed, capacity)` is already zero, and a `BurnAlreadyRunning` refusal has `active` true and is unaffected. The refusal contract that *is* observable is what `accept_f28_d_a_refused_boost_consumes_nothing` pins: zero thrust, zero consumption, and a tank that stays where the refusal found it |
 | `request` applies recovery while burning | `accept_f28_d_capacity_recovers_only_while_the_booster_is_idle` |
+
+### The reviewer's own probes
+
+Review re-ran seven mutations of its own against the branch as submitted, then
+against the branch with review's fixes. Results, as reported:
+
+| reviewer's mutation | as submitted | after review's fixes |
+| --- | --- | --- |
+| `run` drops the `unattributed_rocket_type` check | caught (4 tests) | unchanged |
+| `run` drops the `unconsumed_field` reporting | caught (2 tests) | unchanged |
+| `session_ordnance_audit` loses the closed-session early return | caught (1 test) | unchanged |
+| `request` charges one tick instead of one tick per elapsed tick | caught (1 test) | unchanged |
+| `OrdnanceSession::close` stops clearing `components` | **not caught** | caught |
+| `is_measured` drops the record's own provenance clause | **not caught** | caught |
+| a refused activation consumes capacity | **not caught** | not caught, and not catchable: an equivalent mutant |
+
+The two "not caught as submitted" rows are the substantive review findings; both
+are fixed by review's own commits and both are now caught by a named test. The
+third is a property of the ledger rather than of the suite and is explained in
+the table above.
+
+## Review
+
+**Implementer:** `bunny-alpha-2` (agent, model `stealth/space-bunny-alpha`).
+**Reviewer:** `bunny-alpha-2` again, a **different session with fresh context**
+but the **same agent instance and token**. This is therefore *not* an
+independent review in the sense `AGENTS.md` asks for on evidence machinery and
+fidelity claims, and the report's `review.identity` says so in as many words.
+It says nothing about the owner's approval, which no agent review can supply.
+
+What review did rather than re-derive: it re-ran the full check set, re-ran the
+nine retail tests both with and without `CS_GAME_DIR`, re-read every claimed
+measurement against the production reader's own output, and applied seven
+mutations of its own. The corrections it made:
+
+- added `accept_f28_d_measured_values_on_a_designed_record_are_not_attributed`,
+  which is the only test that exercises the record-provenance half of
+  `OrdnanceAuditRow::is_measured`;
+- removed the two redundant `closed` short-circuits from `registered_ids` and
+  `registered_shooters`, so the teardown's `components.clear()` is the one
+  mechanism they rely on and is therefore observable, and pinned both accessors
+  in both directions inside `accept_f28_d_a_closed_session_audits_to_nothing`;
+- replaced a vacuous second assertion in
+  `accept_f28_d_boost_costs_the_same_walked_or_jumped` (it re-tested the
+  previous assertion and mentioned `per_tick` without using it) with one that
+  pins that ten walked ticks really spend ten ticks' worth;
+- corrected four places that named `LiveOrdnance::area_effect` as one of the two
+  readers of the area effect. `LiveOrdnance` has no such method; the two are
+  `ProjectileOrdnance::area_effect` and `GuidanceDetonation::area_effect`. This
+  file, the `DECLARED_FIELDS_WITHOUT_CONSUMER` doc, the
+  `SessionOrdnanceRow::area_applied` doc and the evidence report's
+  `review.method` all said otherwise;
+- corrected `NitroLedger::request`'s doc, which claimed every refused request
+  consumes nothing. `NitroRefusal::BurnAlreadyRunning` is refused *and* still
+  consumes, because the burn already accepted is the one paying for that tick;
+- removed `FieldTally::is_verified`, new, public, unused and untested;
+- corrected `walk_record`'s status loop, whose comment claimed an index made two
+  same-named status fields distinguishable when the index was discarded, and
+  corrected this table's own count (it said eleven mutations over nineteen rows).
 
 ## Unknowns recorded (not guessed)
 
@@ -353,8 +423,8 @@ The "caught by" column is what the run reported, not an estimate.
 `tools/validate_evidence.py --require-pass`. What it records:
 
 - `capabilities: ["retail", "synthetic"]`, `claim: "implemented"`;
-- `tests` — the `accept_f28_d_` selection, including the nine retail tests, all
-  run with `--include-ignored`;
+- `tests` — the `accept_f28_d_` selection: 37 tests (17 declared-audit, 11
+  session, 9 retail), all run with `--include-ignored`;
 - `install_sha256` and `content_sha256`, both measured by production
   `cs_assets::install` discovery, never typed in;
 - two hashed artifacts: `cargo-test.log` (the recorded acceptance run) and
@@ -378,9 +448,16 @@ them pass. `claim` is `implemented`, never `verified_original`: what was
 verified is what the installation's **files** declare, and `retail` here is read
 access, not evidence that the original executable ran.
 
-The reviewer should regenerate the report on the rebased commit and compare it.
-The tree hash is in the report and is checked against `HEAD^{tree}` by the
-harness itself, so a report from another commit cannot be reused.
+The report must be regenerated on the reviewed commit and compared. The tree
+hash is in the report and is checked against `HEAD^{tree}` by the harness itself,
+so a report from another commit cannot be reused.
+
+**Review regenerated it.** `private/evidence/F28-D/` was rebuilt from scratch on
+the reviewed tree: a fresh `cargo-test.log` from the 37-test selection, a fresh
+`ordnance-surface.json` from a second pass of the same production reader, and a
+fresh `acceptance.json` naming the reviewer. The `install_sha256` and
+`content_sha256` are unchanged from the implementer's run, which is itself worth
+recording: both agents measured the same installation.
 
 ## Not claimed
 

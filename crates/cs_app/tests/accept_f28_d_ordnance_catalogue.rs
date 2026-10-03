@@ -363,6 +363,12 @@ fn accept_f28_d_boost_costs_the_same_at_any_render_frame_length() {
 
 /// Ten ticks walked and ten ticks jumped cost the same, so a consumer cannot
 /// buy free capacity by skipping frames.
+///
+/// Both halves spend **ten** ticks' worth, not one: a ledger that charged one
+/// tick per call would leave the jumped session richer, and one that charged
+/// nothing for the skipped ticks would leave both richer. The second assertion
+/// is what separates "the same" from "the same *and* right", so neither test
+/// can pass on a ledger that simply charges once.
 #[test]
 fn accept_f28_d_boost_costs_the_same_walked_or_jumped() {
     let mut world = World::new();
@@ -371,6 +377,10 @@ fn accept_f28_d_boost_costs_the_same_walked_or_jumped() {
     walked
         .register(actor(1), &[declared_synthetic_nitro()])
         .expect("the declared booster registers");
+    let full = session_ordnance_audit(&walked)
+        .nitro_for(&actor(1))
+        .expect("the booster is registered before anything is spent")
+        .capacity_units();
     let mut walked_damage = damage_resolver();
     let hold = || OrdnanceOrder::Nitro {
         shooter: actor(1),
@@ -404,22 +414,23 @@ fn accept_f28_d_boost_costs_the_same_walked_or_jumped() {
     );
 
     let per_tick = SYNTHETIC_NITRO_CONSUMPTION_PER_S * rate().dt_seconds();
-    let walked_capacity = session_ordnance_audit(&walked)
-        .nitro_for(&actor(1))
-        .expect("the walked booster is registered")
-        .capacity_units();
-    let jumped_capacity = session_ordnance_audit(&jumped)
-        .nitro_for(&actor(1))
-        .expect("the jumped booster is registered")
-        .capacity_units();
+    let capacity = |session: &OrdnanceSession| {
+        session_ordnance_audit(session)
+            .nitro_for(&actor(1))
+            .expect("the booster is still registered")
+            .capacity_units()
+    };
+    let walked_capacity = capacity(&walked);
+    let jumped_capacity = capacity(&jumped);
     assert!(
         (walked_capacity - jumped_capacity).abs() < 1e-12,
         "ten ticks walked and ten ticks jumped leave the same capacity: \
          {walked_capacity} vs {jumped_capacity}"
     );
     assert!(
-        (SYNTHETIC_NITRO_EXTRA_THRUST_N * 0.0 + (walked_capacity - jumped_capacity)).abs() < 1e-12,
-        "and neither is {per_tick} off a single tick's worth"
+        (full - walked_capacity - 10.0 * per_tick).abs() < 1e-12,
+        "and walking ten ticks spends ten ticks' worth, not one: {walked_capacity} against {}",
+        full - 10.0 * per_tick
     );
 }
 
@@ -811,6 +822,18 @@ fn accept_f28_d_a_closed_session_audits_to_nothing() {
         6,
         "a live session reports its loadout"
     );
+    // The teardown assertions below are only discriminating if the accessors
+    // do report a loadout *before* teardown, so both directions are pinned.
+    assert_eq!(
+        session.registered_ids(&actor(1)).len(),
+        6,
+        "a live session names its six lowered components"
+    );
+    assert_eq!(
+        session.registered_shooters(),
+        vec![actor(1)],
+        "and the one actor carrying them"
+    );
 
     session.close(&mut world);
     let after = session_ordnance_audit(&session);
@@ -828,6 +851,18 @@ fn accept_f28_d_a_closed_session_audits_to_nothing() {
     assert!(
         session.runtime().nitro_actors().next().is_none(),
         "the rebuilt runtime holds no nitro ledger"
+    );
+    assert!(
+        session.registered_ids(&actor(1)).is_empty(),
+        "and no accessor can read a fireable component out of a torn-down session"
+    );
+    assert!(
+        session.registered_shooters().is_empty(),
+        "nor name the actor that carried them"
+    );
+    assert!(
+        session.register(actor(1), &declared_catalogue()).is_err(),
+        "and the session still refuses a fresh registration"
     );
 }
 

@@ -1249,14 +1249,14 @@ impl OrdnanceSession {
 
     /// Every component registered for one actor, in ascending id order.
     ///
-    /// A closed session holds none: teardown released the lowered loadout, so
-    /// an audit or a loadout check cannot read a fireable component out of a
-    /// session that no longer exists.
+    /// A closed session holds none, and it holds none because
+    /// [`close`](Self::close) released the lowered loadout with the runtime:
+    /// teardown clears `components`, so an audit or a loadout check cannot read
+    /// a fireable component out of a session that no longer exists. The
+    /// invariant is deliberately *not* re-checked here, so the teardown has one
+    /// place that establishes it and this accessor cannot disagree with it.
     #[must_use]
     pub fn registered_ids(&self, shooter: &ActorId) -> Vec<OrdnanceId> {
-        if self.closed {
-            return Vec::new();
-        }
         self.components
             .get(shooter)
             .map(|by_actor| by_actor.keys().cloned().collect())
@@ -1264,11 +1264,11 @@ impl OrdnanceSession {
     }
 
     /// Every actor with a component registered, in ascending actor order.
+    ///
+    /// Empty for a closed session, for the same reason and by the same single
+    /// mechanism as [`registered_ids`](Self::registered_ids).
     #[must_use]
     pub fn registered_shooters(&self) -> Vec<ActorId> {
-        if self.closed {
-            return Vec::new();
-        }
         self.components.keys().copied().collect()
     }
 
@@ -2243,7 +2243,11 @@ impl SessionOrdnanceRow {
     /// item's effects go to the one stable recipient its engagement names, and
     /// F28-C.1's guidance-loss blast routes to that same named target and node
     /// rather than to everyone inside a radius, so the report says so instead
-    /// of implying a splash was applied to whoever happened to be nearby.
+    /// of implying a splash was applied to whoever happened to be nearby. Both
+    /// methods that read the lowered field back
+    /// ([`cs_sim::weapons::ordnance::ProjectileOrdnance::area_effect`] and
+    /// [`cs_sim::weapons::ordnance::GuidanceDetonation::area_effect`]) are
+    /// themselves read by no production gameplay path.
     /// Follow-up task #552 (F28-AE1) owns it.
     #[must_use]
     pub const fn area_applied(&self) -> bool {

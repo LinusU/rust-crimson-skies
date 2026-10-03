@@ -1209,12 +1209,12 @@ pub const ORIGINAL_ORDNANCE_HARDPOINT_POINTS: u32 = ORIGINAL_HARDPOINT_POINTS;
 /// silent one. Each entry is `(declared field, the lowered field it reaches)`.
 ///
 /// The area effect is the case: `cs_app::ordnance::lower_ordnance` lowers both
-/// of its values into `cs_sim::weapons::ordnance::AreaEffect`.
-/// `ProjectileOrdnance::area_effect` has two pass-through readers —
-/// `LiveOrdnance::area_effect` and `GuidanceDetonation::area_effect` — and
-/// **neither is read by a production gameplay path**: F28-C applies a
-/// triggered item's declared *status effects* to the one stable recipient its
-/// engagement names, and F28-C.1's guidance-loss blast routes the declared
+/// of its values into `cs_sim::weapons::ordnance::AreaEffect`, and exactly two
+/// methods read that field back: the definition's own
+/// `ProjectileOrdnance::area_effect` and the pass-through
+/// `GuidanceDetonation::area_effect` F28-C.1 added. **Neither is read by a
+/// production gameplay path**: F28-C applies a triggered item's declared
+/// *status effects* to the one stable recipient its engagement names, and F28-C.1's guidance-loss blast routes the declared
 /// damage channels to that same named target and damage node rather than to
 /// every actor inside a radius. The radius and the area's own bounded lifetime
 /// therefore reach no recipient at all, so non-negotiable 3's "bounded
@@ -1440,15 +1440,14 @@ impl FieldTally {
     }
 
     /// Whether every declared value is an original measurement.
+    ///
+    /// A record that declares no load-bearing value at all is **not** fully
+    /// measured: an empty tally cannot tell "nothing to measure" from
+    /// "everything measured", and the audit must not read a bare variant as an
+    /// original rocket.
     #[must_use]
     pub const fn is_fully_measured(&self) -> bool {
         self.total > 0 && self.verified == self.total
-    }
-
-    /// Whether every declared value carries `verified_original` provenance.
-    #[must_use]
-    pub const fn is_verified(&self) -> bool {
-        self.verified == self.total
     }
 }
 
@@ -1526,10 +1525,11 @@ fn walk_record(record: &DeclaredOrdnance) -> RecordWalk {
             }
             walk.value("armor_damage", &projectile.armor_damage);
             walk.value("internal_damage", &projectile.internal_damage);
-            for (index, status) in projectile.status.iter().enumerate() {
-                // The index keeps two same-named status fields distinguishable
-                // in a report; the field name stays greppable.
-                let _ = index;
+            // Two same-named status fields are counted separately but reported
+            // under the same name, so a report names the field rather than which
+            // status of a record it came from. The count is exact; the label is
+            // not, and a reader who must tell two statuses apart reads the record.
+            for status in &projectile.status {
                 walk.value("status.duration_ticks", &status.duration_ticks);
                 walk.value("status.strength", &status.strength);
             }
