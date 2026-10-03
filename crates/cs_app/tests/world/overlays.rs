@@ -447,9 +447,12 @@ fn accept_f18_c_a_load_with_no_overlay_keeps_its_door_shut() {
 ///
 /// The "still fires" half is flown at [`OVERLAY_SPEED_M_S`], whose 0.5 m tick
 /// cannot outrun the 1 m volume, because that is the question the mission layer
-/// answers. At [`SWEPT_SPEED_M_S`] no discrete sample lands inside a 1 m volume at
-/// all, so nothing is reported of it — not a property of the role, and recorded as
-/// a limitation with its measured reason in `trigger.rs`.
+/// answers. At [`SWEPT_SPEED_M_S`] no discrete sample lands inside a 1 m volume
+/// at all — a measured blindness of the sampled stream (`trigger.rs`) — so the
+/// crossing there is decided by task #498's swept pass in `world::crossings`,
+/// whose own `accept_f18_c_` tests pin the report and the overlay behind it.
+/// What this arm still pins is that the sweep never holds the body it flies
+/// with, at the speed where a hold would be several metres of one tick.
 ///
 /// Observable failure: a rigid body back on a trigger volume (the body's crossing
 /// tick short, and the door never opening in time), or the producer no longer
@@ -549,9 +552,10 @@ fn accept_f18_c_a_swept_body_crosses_a_trigger_volume_and_the_overlay_still_fire
 ///   costs a body 0.15 m of a tick on the pinned pair whether or not a trigger
 ///   volume is near it (the identical 0.350 m step appears through the harbor
 ///   world's arch, with no sensor in the flight at all);
-/// * at the tunnelling speed the overlay never fires, so the **door stays shut**
-///   and stops the body on the tick after the volume — a stop the record asked
-///   for, which this assertion must not read as a hold.
+/// * the window is the volume's own span, closed at the first lost tick,
+///   because a lost tick is the failure and the flight *after* the volume —
+///   past a door that may or may not have opened — is the consumer's question,
+///   not the sweep's.
 fn assert_the_volume_crossing_is_free(trace: &[f32], free: f32, probe_half_m: f32, speed_m_s: f64) {
     let near = DEPOT_TRIGGER_POS_M[0] as f32 - DEPOT_TRIGGER_HALF_M[0] as f32;
     let far = DEPOT_TRIGGER_POS_M[0] as f32 + DEPOT_TRIGGER_HALF_M[0] as f32;
@@ -585,10 +589,7 @@ fn assert_the_volume_crossing_is_free(trace: &[f32], free: f32, probe_half_m: f3
             step > 0.0,
             "the body stopped advancing at tick {index}, {crossing_tick} ticks into the \
              volume (x = {} to {}, free {free} m): something other than the volume's \
-             passability ended this crossing. At the tunnelling speed the overlay does \
-             not fire, so the door is still shut and stops the body — the record asked \
-             for that, and it is why the window is closed at the first lost tick \
-             instead of running to the end of the flight",
+             passability ended this crossing",
             positions[index],
             positions[index + 1]
         );

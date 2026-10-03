@@ -62,9 +62,17 @@
 //! a sector a gameplay-required object is in is held whatever the focus does, and
 //! a sector that went comes back with the condition and the applied overlay its
 //! load already held.
+//!
+//! **#498** (`accept_f18_c_` too) is the swept crossing report itself:
+//! `crossing` owns the ordinary-flight producer — a body whose tick completely
+//! outruns a thin cuboid trigger, or lands a mesh-derived volume's deep-inside
+//! gap, is still reported exactly once and the overlay behind it still fires,
+//! a body that turns away inside a volume earns nothing beyond the entry the
+//! pair was owed, and the report is a read that never touches the body.
 
 mod audit;
 mod common;
+mod crossing;
 mod hierarchy;
 mod import;
 mod overlays;
