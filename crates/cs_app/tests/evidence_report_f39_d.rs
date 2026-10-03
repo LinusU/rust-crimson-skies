@@ -24,25 +24,33 @@
 //! production run over the owner's installation, not a paraphrase of the
 //! acceptance assertions.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cs_app::objectives::survey_retail_objective_records;
+use cs_app::objectives::{RetailObjectiveCensus, survey_retail_objective_records};
 use cs_assets::install::{content_fingerprint, discover, fingerprint};
 
 /// Every acceptance test the report must see pass.
 const ACCEPTANCE_PREFIX: &str = "accept_f39_d_";
 
-const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability; this harness derives every field from \
+/// How this run was reviewed, with every measured number **derived** from the
+/// census this same run produced.
+///
+/// The prose is a template: the counts are interpolated from
+/// [`survey_retail_objective_records`] rather than written down, so a report
+/// regenerated on another installation cannot describe this one's numbers.
+fn review_method(census: &RetailObjectiveCensus) -> String {
+    format!(
+        "Acceptance suite run locally with the retail capability; this harness derives every field from \
      the recorded log, production discovery of $CS_GAME_DIR, and a second production run of \
      cs_app::objectives::survey_retail_objective_records over the installation (objective-record-census.json). \
      Claim is implemented only. MEASURED: every mission-scoped reader archive was opened, its objectives.zrd \
-     member decoded with the production .zrd reader and its numbered OBJECTIVE<N> blocks read; over 53 mission \
-     readers the installation declares 1338 objective blocks, 1091 branching declaration sites, 1465 optionality \
-     declaration sites and 24 outcome declaration sites. LIMITS OF WHAT WAS MEASURED, each outside F39-D's scope \
+     member decoded with the production .zrd reader and its numbered OBJECTIVE<N> blocks read; over {} mission \
+     readers the installation declares {} objective blocks, {} branching declaration sites, {} optionality \
+     declaration sites and {} outcome declaration sites. LIMITS OF WHAT WAS MEASURED, each outside F39-D's scope \
      and recorded in docs/findings/2026-10-03-f39-d-branching-optional-and-failure-validation.md: (1) what any \
      declaration MEANS is unmeasured - the key names and their counts are a vocabulary census, not a decoded rule, \
      and no original executable was run; (2) the compiled mission program behind each record is not decoded at all, \
@@ -52,7 +60,14 @@ const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capabi
      outcome declarations take effect, and any precedence between a wake and a kill in one block, is unmeasured; \
      (5) whether the original reveals an objective before it is pursued is unmeasured. `unknowns` is empty because \
      every unresolved item above is a limit on the claim rather than an unresolved measurement: each row in the \
-     census resolved. Validated with tools/validate_evidence.py --require-pass.";
+     census resolved. Validated with tools/validate_evidence.py --require-pass.",
+        census.len(),
+        census.blocks(),
+        census.branching_sites(),
+        census.optional_sites(),
+        census.failure_sites(),
+    )
+}
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
@@ -178,7 +193,7 @@ fn evidence_report_f39_d_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(&reviewer),
-        jstr(REVIEW_METHOD),
+        jstr(&review_method(&census)),
     );
     let out = evidence_dir.join("acceptance.json");
     fs::write(&out, &report).expect("write acceptance.json");
@@ -339,7 +354,7 @@ fn parse_suite(log: &str) -> Suite {
             let name = after[..separator].to_owned();
             let tail = after[separator + 5..].trim();
             cursor = &after[separator + 5..];
-            if !name.starts_with(ACCEPTANCE_PREFIX) {
+            if !carries_prefix(&name) {
                 continue;
             }
             match finished(tail) {
@@ -355,6 +370,20 @@ fn parse_suite(log: &str) -> Suite {
     suite.executed = suite.passed + suite.failed;
     suite.discovered = suite.passed + suite.failed + suite.ignored;
     suite
+}
+
+/// Whether a libtest name is one of this task's tests.
+///
+/// The prefix is matched on the name's **last** path segment, because libtest
+/// prints an in-module unit test under its module path
+/// (`objectives::state::tests::accept_f39_d_…`). Matching the whole name
+/// instead would silently drop every in-module acceptance test from
+/// `discovered`, from the assertion list and from the log — the incomplete test
+/// accounting task #353 exists to reject.
+fn carries_prefix(name: &str) -> bool {
+    name.rsplit("::")
+        .next()
+        .is_some_and(|segment| segment.starts_with(ACCEPTANCE_PREFIX))
 }
 
 /// The libtest result word at the head of a test's tail line.
@@ -474,30 +503,4 @@ fn jstr(value: &str) -> String {
     }
     out.push('"');
     out
-}
-
-/// The kinds a reviewer reads the census's rows by, so a diff of the artifact
-/// shows which families moved rather than only that a number moved.
-#[allow(
-    dead_code,
-    reason = "kept for the reviewer's cross-check of the census"
-)]
-fn families(census: &cs_app::objectives::RetailObjectiveCensus) -> BTreeMap<&str, u32> {
-    let mut out: BTreeMap<&str, u32> = BTreeMap::new();
-    out.insert("branching", census.branching_sites());
-    out.insert("optional", census.optional_sites());
-    out.insert("outcome", census.failure_sites());
-    out
-}
-
-#[allow(
-    dead_code,
-    reason = "kept for the reviewer's cross-check of the census"
-)]
-fn missions(census: &cs_app::objectives::RetailObjectiveCensus) -> BTreeSet<&str> {
-    census
-        .rows()
-        .iter()
-        .map(|row| row.mission.as_str())
-        .collect()
 }

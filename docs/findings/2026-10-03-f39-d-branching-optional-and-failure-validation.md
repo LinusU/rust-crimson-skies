@@ -164,7 +164,7 @@ branch check cannot be silently broadened into "no watch is ever allowed".
 
 ## Test inventory (`accept_f39_d_*`)
 
-`crates/cs_app/tests/accept_f39_d_objective_branching.rs` (8 unignored + 1
+`crates/cs_app/tests/accept_f39_d_objective_branching.rs` (9 unignored + 1
 retail) and `crates/cs_sim/src/objectives/state.rs` (1 unit):
 
 | Test | Covers |
@@ -174,6 +174,7 @@ retail) and `crates/cs_sim/src/objectives/state.rs` (1 unit):
 | `optional_failure_and_success_stay_distinct` | non-negotiable 5 |
 | `a_captured_actor_never_satisfies_a_destroyed_condition` | non-negotiable 2 |
 | `a_branch_that_can_never_fire_is_refused_by_name` | the two dead declarations |
+| `a_watch_on_an_objective_born_finished_is_refused` | the third dead watch, and the birth states that stay legal |
 | `a_mutually_watching_branch_still_fires` | the refusal is not over-broad |
 | `an_original_record_is_never_played_as_design` | the support gate |
 | `a_measured_record_is_kept_and_a_bare_one_is_refused` | measurement data and its refusal |
@@ -193,6 +194,73 @@ retail) and `crates/cs_sim/src/objectives/state.rs` (1 unit):
 * The census's family counting replaced by a constant →
   `retail_objective_records_declare_branching_outcomes_and_optionality` fails on
   the vocabulary/site-total reconciliation.
+* The `born_terminal` half of `check_watch` removed →
+  `a_watch_on_an_objective_born_finished_is_refused` fails (the reviewer probe).
+
+## Review (bunny-alpha-2, fresh context, same agent instance as the implementer)
+
+Reviewed against this sheet section, `docs/contracts/SCRIPT-MISSION.md` and
+AGENTS.md, and the four checks were re-run. The measurement reproduced
+independently: the census over `$CS_GAME_DIR` reports install
+`b4e780ab84cf31d8…`, 53 readers, 1338 blocks, 55 keys, 5477 occurrences,
+1091 branching / 1465 optionality / 24 outcome sites, 24 campaign missions,
+16 with an outcome — every figure in the tables above. The `Pending -> Succeeded`
+repair is sound on the table's own terms: `Pending` already reached `Failed` and
+`Superseded` and only `Succeeded` was missing, which is the shape of an oversight
+rather than of a rule, and the row is labelled designed everywhere it is
+described. `is_outcome_reachable` does enumerate its targets, so a deleted row
+fails the unit test. Four problems were found and fixed on the branch:
+
+1. **`DeadWatch` caught only half of what its own rule claims** (F39-D's second
+   regression). The rule is "a watch that can never fire is refused at
+   declaration", but the implementation only compared the watched state with the
+   watched objective's *birth* state. An objective born `Succeeded`, `Failed` or
+   `Superseded` has no row leaving it — verified against
+   `cs_sim::objectives::state::can_become`, where no row leaves a final state —
+   so a reveal rule or a timer start watching it for *any* other state was
+   accepted and then never armed. `check_watch` now refuses that case too, and
+   `accept_f39_d_a_watch_on_an_objective_born_finished_is_refused` pins both
+   halves: all three terminal births are refused, and the same watch is still
+   accepted from `Active`, `Optional` and `Pending`, so the refusal cannot drift
+   into "no watch is ever allowed". Those two cases exhaust the possibility,
+   because every remaining birth state reaches every remaining watchable state.
+2. **The evidence report undercounted the task-test selection**
+   (`crates/cs_app/tests/evidence_report_f39_d.rs`). `parse_suite` matched the
+   prefix against the whole libtest name, and libtest prints an in-module unit
+   test under its module path — the log line is
+   `test objectives::state::tests::accept_f39_d_the_state_machine_is_order_independent … ok`.
+   So the committed report said `discovered: 9, executed: 9` for a selection that
+   runs **10** tests, and omitted a passing assertion from the report. That is the
+   incomplete test accounting #353 exists to reject. The prefix is now matched on
+   the name's last path segment; the regenerated report discovers, executes and
+   passes 10 and lists 10 assertions.
+3. **`MeasuredObjectiveRecord::container` was documented as a value it never
+   holds.** The doc said "the logical key … as `zbd/<group>/<mission>/zrdr.zbd`",
+   but the census assigns production discovery's raw relative spelling
+   (`ZBD/C1/M02/zrdr.zbd`); the lowercase key is `RelativePath::logical_key()` of
+   it. Both field docs now say which is which, and the retail test asserts that
+   `logical_key(container) == "<mission>/zrdr.zbd"` for every row, so the two path
+   fields cannot drift apart. `RetailObjectiveRow::member` also stopped being
+   derived from `unwrap_or_default()` on a value the search had already proved
+   present; it is now the locator's own name, or a named refusal.
+4. **Two claims in prose that the data does not support, and two dead helpers.**
+   `is_optional_objective_key`'s doc said a spelling the stage never saw "cannot
+   be invented from the prefix"; the rule admits `INACTIVE` plus *any* stage
+   number, so `INACTIVE19` would be counted. That is deliberate (it is the same
+   measured family) and the doc now says so, and the retail test pins the
+   measured range: nothing outside `INACTIVE1`…`INACTIVE18` and
+   `INACTIVE_COMPLETION_COUNT` may match. The evidence harness's review-method
+   prose hardcoded 53/1338/1091/1465/24, so a report regenerated on another
+   installation would describe this one's numbers; they are now interpolated from
+   the census the same run produced. The harness's two `#[allow(dead_code)]`
+   helpers (`families`, `missions`) had no caller and no other harness in the
+   repository carries that pattern; the census artifact already publishes both,
+   so they are gone.
+
+Reviewer probes run on this branch: disabling `born_terminal` in `check_watch`
+fails exactly the new test (observed, above); the implementer's three probes were
+re-checked against the code as merged. Nothing else was changed, no protected
+path was touched, and no measured value was altered.
 
 ## Unknown / deferred (not guessed)
 

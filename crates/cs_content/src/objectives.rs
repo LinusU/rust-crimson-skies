@@ -515,8 +515,14 @@ impl DeclaredSupport {
 /// [`DeclaredSupport::Original`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MeasuredObjectiveRecord {
-    /// The logical key of the reader archive the record is a member of, as
-    /// `zbd/<group>/<mission>/zrdr.zbd`.
+    /// The reader archive the record is a member of, as the installation spells
+    /// it (`ZBD/<GROUP>/<MISSION>/zrdr.zbd`).
+    ///
+    /// This is production discovery's `RelativePath::as_str()`, the exact path
+    /// the bytes were read from and therefore the spelling to reproduce.
+    /// [`RelativePath::logical_key`](cs_types::install::RelativePath::logical_key)
+    /// of it is the lowercase canonical key (`zbd/<group>/<mission>/zrdr.zbd`)
+    /// the rest of the project indexes by.
     pub container: String,
     /// The member's name inside that archive (`objectives.zrd`).
     pub member: String,
@@ -588,6 +594,16 @@ pub const FAILURE_KEY_VOCABULARY: [&str; 2] = ["INSTANTWIN", "INSTANTLOSS"];
 /// `INACTIVE` followed by the stage number. Exact matching keeps
 /// `INACTIVE_COMPLETION_COUNT` from reading as a stage and keeps a key this
 /// stage never saw — `INACTIVATED`, `INACTIVE_A` — out of the count.
+///
+/// The numeric suffix is deliberately *not* capped at the measured
+/// `INACTIVE1`…`INACTIVE18`: a stage number beyond 18 is the same measured
+/// family, and a cap would silently drop a key the census can see. So the rule
+/// can over-match a stage number nobody has seen; what it cannot do is invent
+/// one. `RetailObjectiveCensus::vocabulary` publishes the whole measured key
+/// list beside every classification, and
+/// `accept_f39_d_retail_objective_records_declare_branching_outcomes_and_optionality`
+/// asserts that nothing outside the measured range matches, so an over-match
+/// fails loudly instead of quietly inflating a count.
 #[must_use]
 pub fn is_optional_objective_key(key: &str) -> bool {
     if key == OBJECTIVE_INACTIVE_COUNT_KEY {
@@ -772,17 +788,15 @@ pub enum ObjectivesSchemaError {
         /// The objective carrying the rule.
         objective: ProgramSymbol,
     },
-    /// A reveal rule or a timer start watches a state the named objective
-    /// already holds.
+    /// A reveal rule or a timer start watches a state the watched objective
+    /// can never reach.
     ///
-    /// The runtime fires a watch on a *state change*, and no state is
-    /// reachable from itself: from `Active` the only moves are to the three
-    /// final states, from `Pending` and `Optional` to states no row returns
-    /// from, and the reveal out of `Hidden` emits a reveal rather than a
-    /// state change. A watch on the state an objective is born in therefore
-    /// can never fire — a reveal that never reveals, or a deadline that never
-    /// arms, which is a program waiting on an event no declaration can
-    /// produce.
+    /// The runtime fires a watch on a *state change into* the watched state, so
+    /// a watch is dead in exactly two cases, both refused here: the objective
+    /// already holds the state (no state is reachable from itself), and the
+    /// objective was born terminal (no row leaves a final state at all). A
+    /// reveal that never reveals, or a deadline that never arms, is a program
+    /// waiting on an event no declaration can produce.
     DeadWatch {
         /// The declaration carrying the watch.
         by: ProgramSymbol,
@@ -1293,21 +1307,40 @@ fn check_state_target(
     }
 }
 
-/// A watch that can never fire, because the objective it watches already holds
-/// the state it waits for.
+/// A watch that can never fire, because nothing can ever move the objective it
+/// watches into the state it waits for.
 ///
-/// A watch is satisfied by a *state change*, and no state is reachable from
-/// itself: from `Active` the only moves are the three final states, and from
-/// `Pending`/`Optional` every move is to a state no row returns from. The
-/// reveal out of `Hidden` is not a state change either — it reports
-/// `ObjectiveRevealed`. So watching a state the objective is *born* in waits
-/// for an event the program can never produce.
+/// A watch is satisfied by a *state change* into the watched state, and a state
+/// is only reachable from a state a row leaves. That rules a watch out in
+/// exactly two cases, and both are refused here:
+///
+/// * the watched objective **already holds** the state — no state is reachable
+///   from itself (`Active` only moves to the three final states, every move out
+///   of `Pending`/`Optional` lands on a state no row returns from, and the
+///   reveal out of `Hidden` reports `ObjectiveRevealed` rather than a state
+///   change);
+/// * the watched objective was **born terminal** — no row leaves `Succeeded`,
+///   `Failed` or `Superseded`, so no declaration can move it anywhere at all.
+///
+/// Those two cases exhaust the possibility, because every remaining birth state
+/// reaches every remaining watchable state: `Hidden` reaches `Active`,
+/// `Optional`, `Succeeded`, `Failed` and `Superseded` (the first by a declared
+/// move, the rest from `Active`/`Optional`), and `Pending`, `Active` and
+/// `Optional` each reach the three final states. So a program that passes here
+/// has a watch that can fire, not merely one that is not obviously dead.
 fn check_watch(
     by: ProgramSymbol,
     objective: &DeclaredObjective,
     state: DeclaredObjectiveState,
 ) -> Result<(), ObjectivesSchemaError> {
-    if objective.initial == state {
+    let already_holds = objective.initial == state;
+    let born_terminal = matches!(
+        objective.initial,
+        DeclaredObjectiveState::Succeeded
+            | DeclaredObjectiveState::Failed
+            | DeclaredObjectiveState::Superseded
+    );
+    if already_holds || born_terminal {
         return Err(ObjectivesSchemaError::DeadWatch {
             by,
             objective: objective.symbol,

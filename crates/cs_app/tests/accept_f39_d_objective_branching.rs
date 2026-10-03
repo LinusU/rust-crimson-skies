@@ -33,6 +33,11 @@
 //!   reveals, and a watch (a reveal or a timer) on a state the watched
 //!   objective already holds. Each is refused by `try_new`, with the rule
 //!   named, instead of producing a mission that waits forever.
+//! * `accept_f39_d_a_watch_on_an_objective_born_finished_is_refused` — the
+//!   second way a watch is dead: an objective born in a final state has no row
+//!   leaving it, so a watch on any *other* state can never fire either, while
+//!   the same watch stays legal from every birth state that has a row leaving
+//!   it.
 //! * `accept_f39_d_a_mutually_watching_branch_still_fires` — the other side of
 //!   that check, so the refusal cannot be widened into "no watch is ever
 //!   allowed": two objectives that watch each other's `Active` are legal, and
@@ -49,7 +54,10 @@
 //!   installation: every mission-scoped reader archive is measured, and the
 //!   campaign's own records declare branching, optionality and outcome sites.
 //!   The same test asserts the gate's verdict follows: an original record stays
-//!   unplayable, because declaration sites are not rules.
+//!   unplayable, because declaration sites are not rules; that
+//!   `is_optional_objective_key` matches nothing outside the measured
+//!   `INACTIVE1`…`INACTIVE18` range; and that the census's container spelling
+//!   and mission scope name the same archive.
 //!
 //! Every value the non-retail tests use is newly authored synthetic fixture
 //! data, never original game data.
@@ -64,8 +72,9 @@ use cs_content::objectives::{
     DeclaredObjective, DeclaredObjectiveProgram, DeclaredObjectiveState, DeclaredPrecedence,
     DeclaredRevealRule, DeclaredTerminalOutcome, DeclaredTimeDomain, DeclaredTimer,
     DeclaredTimerAction, DeclaredTimerStart, DeclaredTrigger, DeclaredVolume,
-    FAILURE_KEY_VOCABULARY, MeasuredObjectiveRecord, ObjectivesSchemaError, ProgramActor,
-    ProgramSymbol, UNMEASURED_OBJECTIVE_SEMANTICS, is_optional_objective_key,
+    FAILURE_KEY_VOCABULARY, MeasuredObjectiveRecord, OBJECTIVE_INACTIVE_COUNT_KEY,
+    OBJECTIVE_INACTIVE_STAGE_PREFIX, ObjectivesSchemaError, ProgramActor, ProgramSymbol,
+    UNMEASURED_OBJECTIVE_SEMANTICS, is_optional_objective_key,
 };
 use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
@@ -93,6 +102,9 @@ const PROTECTED: ActorId = ActorId(41);
 /// An open signal name: it collides with no declaration, so the schema accepts
 /// it and the session may raise it.
 const REACHED_WRECK: u32 = 70;
+/// The highest `INACTIVE<n>` stage the F39-D census measured, which the retail
+/// test pins `is_optional_objective_key` against.
+const MEASURED_INACTIVE_STAGES: u32 = 18;
 
 fn input<'a>(tick: u64, committed: u64) -> TickInput<'a> {
     TickInput {
@@ -571,6 +583,86 @@ fn accept_f39_d_a_branch_that_can_never_fire_is_refused_by_name() {
     );
 }
 
+/// Builds a program whose only change is one objective's initial state, and
+/// returns the error `try_new` produced.
+fn born_terminal_error(initial: DeclaredObjectiveState) -> ObjectivesSchemaError {
+    let base = out_of_order_program();
+    let mut objectives = base.objectives().to_vec();
+    // The primary is the watched objective: it is the one this helper re-births.
+    objectives[0].initial = initial;
+    objectives[1].reveal = DeclaredRevealRule::OnObjectiveState {
+        objective: ProgramSymbol(PRIMARY.0),
+        state: DeclaredObjectiveState::Succeeded,
+    };
+    objectives[2].reveal = DeclaredRevealRule::Immediate;
+    DeclaredObjectiveProgram::try_new(
+        base.subject().clone(),
+        base.origin().clone(),
+        base.provenance().clone(),
+        base.precedence().clone(),
+        objectives,
+        base.conditions().to_vec(),
+        base.timers().to_vec(),
+        base.triggers().to_vec(),
+        base.spawn_groups().to_vec(),
+    )
+    .expect_err("no row leaves a final state, so the watch can never fire")
+}
+
+#[test]
+fn accept_f39_d_a_watch_on_an_objective_born_finished_is_refused() {
+    // The second way a watch is dead. The primary is born `Succeeded`, and no
+    // row leaves a final state, so nothing can ever move it to the `Succeeded`
+    // state the secondary's reveal rule waits for. Watching a state the
+    // objective does not *already* hold is therefore not enough to be live.
+    for born in [
+        DeclaredObjectiveState::Succeeded,
+        DeclaredObjectiveState::Failed,
+        DeclaredObjectiveState::Superseded,
+    ] {
+        assert_eq!(
+            born_terminal_error(born),
+            ObjectivesSchemaError::DeadWatch {
+                by: ProgramSymbol(SECONDARY.0),
+                objective: ProgramSymbol(PRIMARY.0),
+                state: DeclaredObjectiveState::Succeeded,
+            },
+            "an objective born {born:?} can never change state again"
+        );
+    }
+
+    // The refusal is not "no watch is ever allowed": born in any state that has
+    // a row leaving it, the same watch is accepted.
+    for live in [
+        DeclaredObjectiveState::Active,
+        DeclaredObjectiveState::Optional,
+        // `Pending` is born-hidden-below: an objective born `Pending` reaches
+        // `Succeeded`, so the watch can fire.
+        DeclaredObjectiveState::Pending,
+    ] {
+        let base = out_of_order_program();
+        let mut objectives = base.objectives().to_vec();
+        objectives[0].initial = live;
+        objectives[0].reveal = DeclaredRevealRule::Immediate;
+        objectives[1].reveal = DeclaredRevealRule::OnObjectiveState {
+            objective: ProgramSymbol(PRIMARY.0),
+            state: DeclaredObjectiveState::Succeeded,
+        };
+        DeclaredObjectiveProgram::try_new(
+            base.subject().clone(),
+            base.origin().clone(),
+            base.provenance().clone(),
+            base.precedence().clone(),
+            objectives,
+            base.conditions().to_vec(),
+            base.timers().to_vec(),
+            base.triggers().to_vec(),
+            base.spawn_groups().to_vec(),
+        )
+        .unwrap_or_else(|error| panic!("an objective born {live:?} can reach Succeeded: {error}"));
+    }
+}
+
 #[test]
 fn accept_f39_d_a_mutually_watching_branch_still_fires() {
     // The other side of the dead-branch check, so the refusal cannot be widened
@@ -870,6 +962,41 @@ fn accept_f39_d_retail_objective_records_declare_branching_outcomes_and_optional
             .any(|(key, _)| key == "WAKE_OBJECTIVE_WHEN_I_COMPLETE"),
         "the measured branching vocabulary is missing its largest member: {vocabulary:?}"
     );
+
+    // `is_optional_objective_key` admits `INACTIVE` plus *any* stage number, so
+    // the measured range is pinned here: a key outside `INACTIVE1`…
+    // `INACTIVE18` that matches the rule would be counted as optionality
+    // without ever having been measured, and this is where that shows up.
+    for (key, _) in &vocabulary {
+        if !is_optional_objective_key(key) {
+            continue;
+        }
+        let measured = *key == OBJECTIVE_INACTIVE_COUNT_KEY
+            || key
+                .strip_prefix(OBJECTIVE_INACTIVE_STAGE_PREFIX)
+                .and_then(|stage| stage.parse::<u32>().ok())
+                .is_some_and(|stage| (1..=MEASURED_INACTIVE_STAGES).contains(&stage));
+        assert!(
+            measured,
+            "{key} matches the optionality rule but is outside the measured \
+             {OBJECTIVE_INACTIVE_STAGE_PREFIX}1..{MEASURED_INACTIVE_STAGES} range"
+        );
+    }
+
+    // The census's two path fields describe the same archive: `container` is the
+    // installation's own spelling and `mission` its lowercase logical scope, so
+    // the two must agree component for component.
+    for row in census.rows() {
+        let logical = cs_types::install::RelativePath::new(&row.container)
+            .expect("the census spells a relative path")
+            .logical_key();
+        assert_eq!(
+            logical,
+            format!("{}/zrdr.zbd", row.mission),
+            "{}: the container and the mission scope disagree",
+            row.mission
+        );
+    }
 
     // The gate's verdict follows from the census: declarations were read, no
     // rule was recovered, so an original record still may not be played.

@@ -1572,7 +1572,10 @@ impl std::error::Error for ObjectiveCensusError {}
 pub struct RetailObjectiveRow {
     /// The mission, as `zbd/<group>/<mission>`.
     pub mission: String,
-    /// The reader archive's logical key.
+    /// The reader archive's installation spelling, as production discovery
+    /// spells it (`ZBD/<GROUP>/<MISSION>/zrdr.zbd`). Its
+    /// [`RelativePath::logical_key`](cs_types::install::RelativePath::logical_key)
+    /// is `<mission>/zrdr.zbd`.
     pub container: String,
     /// SHA-256 of that whole archive, from production discovery.
     pub container_sha256: String,
@@ -1821,6 +1824,13 @@ pub fn survey_retail_objective_records(
         let machine = cs_content::stunts::objective_state_machine(&document);
         let locator = member.locator();
         let span = locator.span();
+        // The member name the locator itself spells, so the row cannot carry an
+        // empty name: the search above only accepted a program whose locator has
+        // one.
+        let member_name = locator.member().ok_or_else(|| ObjectiveCensusError::Read {
+            container: container_key.clone(),
+            reason: format!("the {SCENARIO_OBJECTIVES_MEMBER} member was located without a name"),
+        })?;
         let sites = |family: fn(&str) -> bool| -> u32 {
             machine
                 .keys()
@@ -1833,7 +1843,7 @@ pub fn survey_retail_objective_records(
             mission,
             container: spelling,
             container_sha256,
-            member: locator.member().unwrap_or_default().to_owned(),
+            member: member_name.to_owned(),
             member_offset: span.offset,
             member_len: span.len,
             member_sha256: cs_assets::install::sha256(member.bytes()).to_hex(),
