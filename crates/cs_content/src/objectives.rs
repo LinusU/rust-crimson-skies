@@ -53,9 +53,26 @@
 //! group the same program does not declare. The runtime catches a dangling
 //! name when it is *used*; the schema catches it when it is *declared*, so a
 //! mission whose deadline or wave never existed cannot reach a session
-//! looking like one that simply never came due. Signal symbols are the one
-//! open set: a program may raise a signal this record does not declare, so
-//! `OnSignal`/`Signal` references are never validated.
+//! looking like one that simply never came due. Signal names are the one
+//! open set — a program may raise a signal nothing declares — but never an
+//! *ambiguous* name: a signal reference may not carry the reserved
+//! actor-event symbol or a symbol this program declares, because a raised
+//! signal reports under its own name and would alias that declaration's
+//! events.
+//!
+//! # The actor id space
+//!
+//! Declared [`ProgramActor`]s and the wave instances the runtime allocates
+//! share one `cs_script::ir::ActorId` space. An admitted wave takes ids from
+//! 1 upward in admission order — the earlier tick first, and within a tick
+//! the expiring timers' symbol order — and a roster or trigger naming one
+//! of those ids names the spawned instance, which is the *only* way a
+//! condition counts a spawned wave. A pre-placed actor must therefore carry
+//! an id outside the range its program's waves allocate; the fixture keeps
+//! the player at `actor(7)` and the convoy at `actor(41)`, above the six
+//! ids its three two-raider waves take. Which actor ids original missions
+//! declared and how their spawn identities worked is unmeasured (F39-D);
+//! nothing here is an original-fidelity claim.
 //!
 //! # Designed vocabulary, not original data
 //!
@@ -120,9 +137,10 @@ pub enum DeclaredObjectiveState {
 /// When a hidden objective may be shown.
 ///
 /// Mirrors `cs_sim::objectives::runtime::RevealRule` with declared-side
-/// references. `OnSignal` names a signal the program raises; every other
-/// variant names a declaration of this program and is validated by
-/// [`DeclaredObjectiveProgram::try_new`].
+/// references. `OnSignal` names a signal the program raises — an open name,
+/// checked only against ambiguity: never the reserved actor-event source or
+/// a symbol this program declares. Every other variant names a declaration
+/// of this program and is validated by [`DeclaredObjectiveProgram::try_new`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeclaredRevealRule {
     /// Shown from the first tick.
@@ -215,7 +233,8 @@ pub enum DeclaredTimerStart {
     /// Armed automatically at the first evaluated tick at or after this tick.
     AtTick(u64),
     /// Armed the first tick a named signal is raised on an earlier tick made
-    /// eligible.
+    /// eligible. An open name, checked only against ambiguity: never the
+    /// reserved actor-event source or a symbol this program declares.
     OnSignal(ProgramSymbol),
     /// Armed the first tick a declared objective reaches a declared state.
     OnObjectiveState {
@@ -257,7 +276,8 @@ pub enum DeclaredTimerAction {
         state: DeclaredObjectiveState,
     },
     /// Raise a named mission signal, eligible to arm other timers from the
-    /// next tick.
+    /// next tick. An open name, checked only against ambiguity: never the
+    /// reserved actor-event source or a symbol this program declares.
     Signal(ProgramSymbol),
     /// Ask for a declared spawn group's wave, once per idempotency `key`.
     SpawnGroup {
@@ -519,6 +539,16 @@ pub enum ObjectivesSchemaError {
         /// The dangling symbol.
         group: ProgramSymbol,
     },
+    /// A declared signal reference names the reserved actor-event source or
+    /// a symbol the same program declares. A raised signal is attributed to
+    /// its name, so under this name it could not be told apart from that
+    /// declaration's own events.
+    CollidingSignal {
+        /// The declaration carrying the reference.
+        by: ProgramSymbol,
+        /// The colliding signal name.
+        signal: ProgramSymbol,
+    },
 }
 
 impl fmt::Display for ObjectivesSchemaError {
@@ -608,6 +638,10 @@ impl fmt::Display for ObjectivesSchemaError {
                 f,
                 "{by} references spawn group {group}, which is not declared"
             ),
+            Self::CollidingSignal { by, signal } => write!(
+                f,
+                "{by} references signal {signal}, which is a declared name and would report under it"
+            ),
         }
     }
 }
@@ -620,10 +654,11 @@ impl std::error::Error for ObjectivesSchemaError {}
 ///
 /// The record is **closed**: a reveal rule, timer start, timer action or
 /// count reaction may only name a declaration of the same program (signals
-/// excepted — a program may raise a signal nothing declared). What the
-/// original game declared is unmeasured; the record carries `origin` and
-/// `provenance` so an `installation` row and a `synthetic_fixture` row are
-/// never interchangeable.
+/// excepted — a program may raise a signal nothing declares, so long as the
+/// name aliases no declaration and reserves no actor-event source). What
+/// the original game declared is unmeasured; the record carries `origin`
+/// and `provenance` so an `installation` row and a `synthetic_fixture` row
+/// are never interchangeable.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeclaredObjectiveProgram {
     subject: ContentId,
@@ -839,11 +874,23 @@ fn validate(
         }
     }
 
+    // The names this program declares: a signal reference may name the open
+    // set, but never one of these — a raised signal reports under its own
+    // name and would alias the declaration's events.
+    let declared: BTreeSet<ProgramSymbol> = objective_ids
+        .iter()
+        .chain(&condition_ids)
+        .chain(&timer_ids)
+        .chain(trigger_ids.iter().map(|(symbol, _)| symbol))
+        .chain(&group_ids)
+        .copied()
+        .collect();
+
     // Closed-world references: every name a declaration carries must name a
     // declaration of this program, so nothing waits on or acts on a row that
-    // was never declared. Signals are the open set and are never checked.
+    // was never declared.
     for objective in objectives {
-        check_reveal(objective, &condition_ids, &timer_ids, &objective_ids)?;
+        check_reveal(objective, &condition_ids, &timer_ids, &objective_ids, &declared)?;
     }
     for condition in conditions {
         if let DeclaredCountReaction::SetObjectiveState { objective, .. } = condition.reaction
@@ -856,7 +903,7 @@ fn validate(
         }
     }
     for timer in timers {
-        check_timer(timer, &objective_ids, &group_ids)?;
+        check_timer(timer, &objective_ids, &group_ids, &declared)?;
     }
     Ok(())
 }
@@ -868,11 +915,29 @@ fn check_reserved(symbol: ProgramSymbol) -> Result<(), ObjectivesSchemaError> {
     Ok(())
 }
 
+/// A declared signal reference may name the open set — signals nothing
+/// declares — but never the reserved actor-event source or a symbol this
+/// program declares: a raised signal is attributed to its name, and under a
+/// declared name it could not be told apart from that declaration's own
+/// events.
+fn check_signal(
+    by: ProgramSymbol,
+    signal: ProgramSymbol,
+    declared: &BTreeSet<ProgramSymbol>,
+) -> Result<(), ObjectivesSchemaError> {
+    check_reserved(signal)?;
+    if declared.contains(&signal) {
+        return Err(ObjectivesSchemaError::CollidingSignal { by, signal });
+    }
+    Ok(())
+}
+
 fn check_reveal(
     objective: &DeclaredObjective,
     conditions: &BTreeSet<ProgramSymbol>,
     timers: &BTreeSet<ProgramSymbol>,
     objectives: &BTreeSet<ProgramSymbol>,
+    declared: &BTreeSet<ProgramSymbol>,
 ) -> Result<(), ObjectivesSchemaError> {
     match objective.reveal {
         DeclaredRevealRule::OnCondition(condition) if !conditions.contains(&condition) => {
@@ -893,6 +958,9 @@ fn check_reveal(
             by: objective.symbol,
             objective: watched,
         }),
+        DeclaredRevealRule::OnSignal(signal) => {
+            check_signal(objective.symbol, signal, declared)
+        }
         _ => Ok(()),
     }
 }
@@ -901,6 +969,7 @@ fn check_timer(
     timer: &DeclaredTimer,
     objectives: &BTreeSet<ProgramSymbol>,
     groups: &BTreeSet<ProgramSymbol>,
+    declared: &BTreeSet<ProgramSymbol>,
 ) -> Result<(), ObjectivesSchemaError> {
     if let DeclaredTimerStart::OnObjectiveState { objective, .. } = timer.start
         && !objectives.contains(&objective)
@@ -909,6 +978,9 @@ fn check_timer(
             by: timer.symbol,
             objective,
         });
+    }
+    if let DeclaredTimerStart::OnSignal(signal) = timer.start {
+        check_signal(timer.symbol, signal, declared)?;
     }
     match &timer.action {
         DeclaredTimerAction::SetObjectiveState { objective, .. }
@@ -919,6 +991,7 @@ fn check_timer(
                 objective: *objective,
             })
         }
+        DeclaredTimerAction::Signal(signal) => check_signal(timer.symbol, *signal, declared),
         DeclaredTimerAction::SpawnGroup { key, group, count } => {
             if key.trim().is_empty() {
                 return Err(ObjectivesSchemaError::EmptyEmissionKey {
@@ -1235,6 +1308,46 @@ mod tests {
             .unwrap_err(),
             ObjectivesSchemaError::ReservedSymbol {
                 symbol: ProgramSymbol(0)
+            }
+        );
+        // A signal reference may name the open set, but never the reserved
+        // actor source or a symbol the program declares: under that name the
+        // raised signal would alias the declaration's own events.
+        assert!(matches!(
+            rebuild(&|o, _, _, _, _| {
+                o[1].reveal = DeclaredRevealRule::OnSignal(ProgramSymbol(0));
+            })
+            .unwrap_err(),
+            ObjectivesSchemaError::ReservedSymbol { .. }
+        ));
+        assert_eq!(
+            rebuild(&|o, _, _, _, _| {
+                o[1].reveal = DeclaredRevealRule::OnSignal(SYNTHETIC_PRIMARY);
+            })
+            .unwrap_err(),
+            ObjectivesSchemaError::CollidingSignal {
+                by: SYNTHETIC_SECONDARY,
+                signal: SYNTHETIC_PRIMARY
+            }
+        );
+        assert_eq!(
+            rebuild(&|_, _, t, _, _| {
+                t[0].action = DeclaredTimerAction::Signal(SYNTHETIC_RAIDERS);
+            })
+            .unwrap_err(),
+            ObjectivesSchemaError::CollidingSignal {
+                by: SYNTHETIC_WAVE_TIMERS[0],
+                signal: SYNTHETIC_RAIDERS
+            }
+        );
+        assert_eq!(
+            rebuild(&|_, _, t, _, _| {
+                t[0].start = DeclaredTimerStart::OnSignal(SYNTHETIC_WAVE_TIMERS[1]);
+            })
+            .unwrap_err(),
+            ObjectivesSchemaError::CollidingSignal {
+                by: SYNTHETIC_WAVE_TIMERS[0],
+                signal: SYNTHETIC_WAVE_TIMERS[1]
             }
         );
     }
