@@ -70,10 +70,10 @@ the routing rules.
   `EventId(session, tick, producer, sequence)` shape realized for audio.
   `cs_types::net` now carries the shared `SessionId`/`EventId`/`ActorId` types
   (F54-A), and `cs_sim::animated_object` migrated onto them in #397; migrating
-  `AudioEventId`/`AudioEmitterId` onto `EventId`/the shared `ActorId` is filed
-  as a follow-up of #397 (the damage realizations remain #442), so this module
-  still carries the four fields itself rather than guessing a shared one. A
-  foreign session generation is refused by name, never aliased.
+  `AudioEventId`/`AudioEmitterId` onto `EventId`/the shared `ActorId` was
+  filed as a follow-up of #397 (the damage realizations were #442) and done by
+  #496 (`T-IDENTITY-AUDIO`), so both names are now aliases of the shared
+  types. A foreign session generation is refused by name, never aliased.
 - **Dedup is bounded.** A producer stamps a strictly increasing `sequence` on
   its own events and the router keeps only the highest accepted sequence per
   `(session, producer)`, an `O(producers)` `BTreeMap`, not a set that grows with
