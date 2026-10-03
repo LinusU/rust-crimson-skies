@@ -64,11 +64,13 @@
 //! **task's** acceptance is complete — the total is derived from the rows, the
 //! identity it has to satisfy holds over the installation, the four tests #584
 //! adds or changes pass, and every selected test passed. The product
-//! incompleteness is a different state and is moved, never deleted: the
-//! collections that hold no row are named in `review.method`, in the hashed
-//! baseline-report artifact, in the `collection_status` of that report and in
-//! the follow-up tasks. A failing run produces a failing report, which the
-//! validator rejects.
+//! incompleteness is a different state and is moved, never deleted:
+//! `review.method` names every source-derived collection the catalog holds no
+//! row of, the hashed baseline-report artifact names the two of them the
+//! baseline builder reads and reports empty (`music`, `dialogue`) with a
+//! diagnostic, every populated collection has its producing stage's acceptance
+//! test, and every empty one has its own follow-up task. A failing run produces
+//! a failing report, which the validator rejects.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;
@@ -609,12 +611,17 @@ fn review_method(measured: &Measured) -> String {
         " PRODUCT INCOMPLETENESS, NAMED SO A VALIDATOR CANNOT PASS BY DELETING IT: the {} \
          source-derived collections above are {} of the {} the classification can hold; the {} \
          that still hold no row on this installation are {} — their content is inventoried as \
-         bytes, not understood, and each one is a separate follow-up from #389.",
+         bytes, not understood. The {} above each arrived as its own stage with its own acceptance \
+         test and evidence record; each empty one is tracked as its own follow-up task (#559 image, \
+         #561 collision_surface and #573 video among them), so this is named outstanding work \
+         rather than a collection somebody forgot. #389, the umbrella task for it, was merged \
+         after its first such slice (F14-D.2).",
         measured.populated.len(),
         measured.populated.len(),
         measured.populated.len() + measured.empty.len(),
         measured.empty.len(),
         measured.empty.join(", "),
+        measured.populated.len(),
     ));
     out.push_str(
         &UNKNOWN_LIMITATIONS
