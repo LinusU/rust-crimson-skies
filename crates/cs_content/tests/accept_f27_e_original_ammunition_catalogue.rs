@@ -24,14 +24,16 @@ use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 use cs_content::config::{StringCatalog, StringLookup};
 use cs_content::weapons::{
     AmmunitionId, DeclaredCaliber, DeclaredDamageChannel, InteractionOption,
-    ORIGINAL_AMMUNITION_ABBREVIATION_IDS, ORIGINAL_AMMUNITION_DESCRIPTION_IDS,
-    ORIGINAL_AMMUNITION_LONG_NAME_IDS, ORIGINAL_AMMUNITION_NONE_LABEL_IDS,
-    ORIGINAL_AMMUNITION_SHORT_NAME_IDS, ORIGINAL_AMMUNITION_TYPE_COUNT,
-    ORIGINAL_GUN_DESCRIPTION_IDS, ORIGINAL_GUN_LONG_NAME_IDS, ORIGINAL_GUN_SHORT_NAME_IDS,
-    ORIGINAL_NO_GUN_LONG_NAME_ID, ORIGINAL_NO_GUN_SHORT_NAME_ID, ORIGINAL_SELECTABLE_GUN_COUNT,
-    ORIGINAL_TEXT_MARKUP, OriginalAmmunitionIdentity, OriginalGunAmmunitionCatalogue,
-    OriginalImportError, OriginalMeasuredText, OriginalStringTable,
-    original_ammunition_behavior_claim, original_ammunition_caliber_claim,
+    ORIGINAL_AMMO_NAME_BLOCKS, ORIGINAL_AMMUNITION_ABBREVIATION_IDS,
+    ORIGINAL_AMMUNITION_DESCRIPTION_IDS, ORIGINAL_AMMUNITION_LONG_NAME_IDS,
+    ORIGINAL_AMMUNITION_NONE_LABEL_IDS, ORIGINAL_AMMUNITION_SHORT_NAME_IDS,
+    ORIGINAL_AMMUNITION_TYPE_COUNT, ORIGINAL_AMMUNITION_TYPES, ORIGINAL_GUN_DESCRIPTION_IDS,
+    ORIGINAL_GUN_GROUP_NAMES_LAST_ID, ORIGINAL_GUN_GROUPS, ORIGINAL_GUN_LONG_NAME_IDS,
+    ORIGINAL_GUN_SHORT_NAME_IDS, ORIGINAL_NO_GUN_LONG_NAME_ID, ORIGINAL_NO_GUN_SHORT_NAME_ID,
+    ORIGINAL_SELECTABLE_GUN_COUNT, ORIGINAL_SELECTABLE_GUNS, ORIGINAL_TEXT_MARKUP,
+    OriginalAmmunitionIdentity, OriginalGunAmmunitionCatalogue, OriginalImportError,
+    OriginalMeasuredText, OriginalStringTable, original_ammunition_behavior_claim,
+    original_ammunition_caliber_claim,
 };
 use cs_formats::ParseContext;
 use cs_types::asset_id::SourceSpan;
@@ -84,25 +86,51 @@ const MEASURED_CALIBER_ROWS: [&str; ORIGINAL_SELECTABLE_GUN_COUNT] = [
     " .70-cal.",
 ];
 
-/// A catalog shaped like the measured one: every required id carries a
-/// `[COUR9]`-prefixed row, and the rows the blocks leave empty stay empty.
+/// The markup code the shipped image prefixes its gun and engine **blurbs**
+/// with, which is not the code the name and caliber rows carry.
+const BLURB_MARKUP: &str = "[CSB9I]";
+
+/// The gun name rows, which the shipped image carries **without** any markup
+/// code.
+const MEASURED_GUN_LONG_NAMES: [&str; ORIGINAL_SELECTABLE_GUN_COUNT] =
+    ["gun one", "gun two", "gun three", "gun four", "gun five"];
+
+/// The gun blurb rows, which carry [`BLURB_MARKUP`] and not
+/// [`ORIGINAL_TEXT_MARKUP`].
+const MEASURED_BLURBS: [&str; ORIGINAL_SELECTABLE_GUN_COUNT] = [
+    "blurb one",
+    "blurb two",
+    "blurb three",
+    "blurb four",
+    "blurb five",
+];
+
+/// A catalog shaped like the measured one: every required id carries a row with
+/// the markup the installation actually puts on it, and the rows the blocks
+/// leave empty stay empty.
+///
+/// The markup is part of the measurement, so the three shapes are kept apart
+/// rather than flattened: the ammunition-name and caliber rows carry
+/// [`ORIGINAL_TEXT_MARKUP`], the gun names carry **none** and the gun blurbs
+/// carry [`BLURB_MARKUP`]. A caller therefore cannot learn the code from the id
+/// alone, which is what the retail test measures on the installation.
 fn measured_catalog() -> OriginalStringTable {
     let mut table = OriginalStringTable::new();
     let rows = ORIGINAL_AMMUNITION_LONG_NAME_IDS
         .iter()
         .zip(MEASURED_LONG_NAMES)
-        .map(|(id, text)| (*id, text))
+        .map(|(id, text)| (*id, text.to_owned()))
         .chain(
             ORIGINAL_AMMUNITION_SHORT_NAME_IDS
                 .iter()
                 .zip(MEASURED_SHORT_NAMES)
-                .map(|(id, text)| (*id, text)),
+                .map(|(id, text)| (*id, text.to_owned())),
         )
         .chain(
             ORIGINAL_AMMUNITION_ABBREVIATION_IDS
                 .iter()
                 .zip(MEASURED_ABBREVIATIONS)
-                .map(|(id, text)| (*id, text)),
+                .map(|(id, text)| (*id, text.to_owned())),
         )
         .chain(
             ORIGINAL_AMMUNITION_DESCRIPTION_IDS
@@ -113,34 +141,35 @@ fn measured_catalog() -> OriginalStringTable {
                     "armor-piercing text",
                     "explosive text",
                 ])
-                .map(|(id, text)| (*id, text)),
+                .map(|(id, text)| (*id, text.to_owned())),
         )
         .chain(
             ORIGINAL_GUN_LONG_NAME_IDS
                 .iter()
-                .zip(["gun one", "gun two", "gun three", "gun four", "gun five"])
-                .map(|(id, text)| (*id, text)),
+                .zip(MEASURED_GUN_LONG_NAMES)
+                .map(|(id, text)| (*id, text.to_owned())),
         )
         .chain(
             ORIGINAL_GUN_SHORT_NAME_IDS
                 .iter()
                 .zip(MEASURED_CALIBER_ROWS)
-                .map(|(id, text)| (*id, text)),
+                .map(|(id, text)| (*id, text.to_owned())),
         )
         .chain(
             ORIGINAL_GUN_DESCRIPTION_IDS
                 .iter()
-                .zip([
-                    "blurb one",
-                    "blurb two",
-                    "blurb three",
-                    "blurb four",
-                    "blurb five",
-                ])
-                .map(|(id, text)| (*id, text)),
+                .zip(MEASURED_BLURBS)
+                .map(|(id, text)| (*id, text.to_owned())),
         );
     for (id, text) in rows {
-        table.insert(id, format!("{ORIGINAL_TEXT_MARKUP}{text}"));
+        let markup = if ORIGINAL_GUN_LONG_NAME_IDS.contains(&id) {
+            None
+        } else if ORIGINAL_GUN_DESCRIPTION_IDS.contains(&id) {
+            Some(BLURB_MARKUP)
+        } else {
+            Some(ORIGINAL_TEXT_MARKUP)
+        };
+        table.insert(id, format!("{}{text}", markup.unwrap_or_default()));
     }
     for id in ORIGINAL_AMMUNITION_NONE_LABEL_IDS {
         table.insert(id, format!("{ORIGINAL_TEXT_MARKUP}None"));
@@ -213,6 +242,23 @@ fn accept_f27_e_the_measured_name_blocks_are_four_wide_at_the_declares() {
         assert_eq!(ORIGINAL_AMMUNITION_ABBREVIATION_IDS[index], 3365 + offset);
         assert_eq!(ORIGINAL_AMMUNITION_DESCRIPTION_IDS[index], 3370 + offset);
     }
+
+    // F27-D measured the same four blocks and the same count; this stage reads
+    // them, so the two tables must agree or one of them is stale.
+    assert_eq!(
+        ORIGINAL_AMMO_NAME_BLOCKS.map(|(base, _)| base),
+        [
+            ORIGINAL_AMMUNITION_LONG_NAME_IDS[0],
+            ORIGINAL_AMMUNITION_SHORT_NAME_IDS[0],
+            ORIGINAL_AMMUNITION_ABBREVIATION_IDS[0],
+            ORIGINAL_AMMUNITION_DESCRIPTION_IDS[0],
+        ],
+        "this stage's four name blocks must start where F27-D measured them"
+    );
+    assert_eq!(
+        ORIGINAL_AMMUNITION_TYPES as usize, ORIGINAL_AMMUNITION_TYPE_COUNT,
+        "the type count this stage imports must be F27-D's measured count"
+    );
 }
 
 /// Each gun block is a contiguous five-wide run at its declared id, and the
@@ -241,6 +287,18 @@ fn accept_f27_e_the_gun_rows_are_five_wide_runs_at_the_declares() {
         assert!(!ORIGINAL_GUN_LONG_NAME_IDS.contains(&row));
         assert!(!ORIGINAL_GUN_SHORT_NAME_IDS.contains(&row));
     }
+    // F27-D measured five selectable guns from the loadout screens; this stage
+    // imports five, so the two must be the same number.
+    assert_eq!(
+        ORIGINAL_SELECTABLE_GUNS as usize, ORIGINAL_SELECTABLE_GUN_COUNT,
+        "the gun count this stage imports must be F27-D's measured count"
+    );
+    assert_eq!(
+        ORIGINAL_GUN_LONG_NAME_IDS[0], 3310,
+        "the gun name block starts at IDS_GUNLONGNAME"
+    );
+    assert_eq!(ORIGINAL_GUN_SHORT_NAME_IDS[0], 3320);
+    assert_eq!(ORIGINAL_GUN_DESCRIPTION_IDS[0], 3330);
 }
 
 /// A catalog the importer accepts yields four named types and five named guns
@@ -277,7 +335,22 @@ fn accept_f27_e_a_measured_catalog_imports_four_types_and_five_guns() {
     for (index, gun) in catalogue.guns().iter().enumerate() {
         assert_eq!(gun.selection(), index as u32 + 1);
         assert_eq!(gun.short_name().text(), MEASURED_CALIBER_ROWS[index]);
+        assert_eq!(gun.short_name().markup(), Some(ORIGINAL_TEXT_MARKUP));
         assert_eq!(gun.long_name().id(), ORIGINAL_GUN_LONG_NAME_IDS[index]);
+        assert_eq!(gun.long_name().text(), MEASURED_GUN_LONG_NAMES[index]);
+        assert_eq!(
+            gun.long_name().markup(),
+            None,
+            "a name row the installation writes without a code must import without one"
+        );
+        assert_eq!(gun.description().id(), ORIGINAL_GUN_DESCRIPTION_IDS[index]);
+        assert_eq!(gun.description().text(), MEASURED_BLURBS[index]);
+        assert_eq!(
+            gun.description().markup(),
+            Some(BLURB_MARKUP),
+            "a blurb keeps the code the installation put on it, not the name row's"
+        );
+        assert_ne!(gun.description().markup(), Some(ORIGINAL_TEXT_MARKUP));
         assert_eq!(
             gun.caliber(),
             &Resolved::Known(Known::new(
@@ -454,7 +527,12 @@ struct Installed {
     blocks: usize,
 }
 
-fn measure_installed() -> Installed {
+/// The installed UI language image, read once through the production
+/// `StringCatalog` and pinned to the installation this file measured against.
+///
+/// Every retail measurement goes through here, so one read of the image serves
+/// all of them and the digest assertions hold for each.
+fn language_image() -> (StringCatalog, SourceSpan) {
     let dir = retail_dir();
     assert!(dir.is_dir(), "CS_GAME_DIR {} is a directory", dir.display());
     let found = discover(&dir).expect("production discovery reads the installation");
@@ -490,6 +568,25 @@ fn measure_installed() -> Installed {
     let mut context = ParseContext::with_defaults(LANGUI_DLL);
     let catalog = StringCatalog::read(&mut context, span.clone(), &bytes)
         .unwrap_or_else(|error| panic!("{LANGUI_DLL}: production catalog must read it: {error}"));
+    (catalog, span)
+}
+
+/// The text the installed image holds under one string id, as shipped.
+fn installed_text(catalog: &StringCatalog, id: u32) -> String {
+    let row = match catalog.resolve(id, Some(ENGLISH_US)) {
+        StringLookup::Found(row) => row,
+        StringLookup::Missing => panic!("{LANGUI_DLL}: string {id} must resolve at {ENGLISH_US}"),
+        StringLookup::Ambiguous(count) => {
+            panic!("{LANGUI_DLL}: string {id} resolves {count} times at {ENGLISH_US}");
+        }
+    };
+    row.text
+        .clone()
+        .unwrap_or_else(|| panic!("{LANGUI_DLL}: string {id} must decode as text"))
+}
+
+fn measure_installed() -> Installed {
+    let (catalog, span) = language_image();
 
     let mut wanted: Vec<u32> = ORIGINAL_AMMUNITION_LONG_NAME_IDS
         .iter()
@@ -509,19 +606,7 @@ fn measure_installed() -> Installed {
 
     let mut table = OriginalStringTable::new();
     for id in wanted {
-        let row = match catalog.resolve(id, Some(ENGLISH_US)) {
-            StringLookup::Found(row) => row,
-            StringLookup::Missing => {
-                panic!("{LANGUI_DLL}: string {id} must resolve at {ENGLISH_US}")
-            }
-            StringLookup::Ambiguous(count) => {
-                panic!("{LANGUI_DLL}: string {id} resolves {count} times at {ENGLISH_US}");
-            }
-        };
-        let text = row
-            .text
-            .clone()
-            .unwrap_or_else(|| panic!("{LANGUI_DLL}: string {id} must decode as text"));
+        let text = installed_text(&catalog, id);
         table.insert(id, text);
     }
     Installed {
@@ -651,6 +736,63 @@ fn accept_f27_e_retail_the_declared_ammunition_carries_no_guessed_amount() {
     }
 }
 
+/// The shipped image names the original's gun groups under their own ids: this
+/// stage's ammunition and gun names are not a special case of the catalog, and
+/// the one gap in the group table is measured rather than assumed.
+///
+/// `ORIGINAL_GUN_GROUPS`' `label` is the header macro F27-D read from
+/// `RESOURCE.H`, and the id is the string id the engine resolves the *display*
+/// name from. Reading the image at those ids measures two facts this stage's
+/// predecessor could not: the display names are in a shipped file, and the last
+/// group's row is empty there — so `f27.d.limit.gun_group_assignment` stays open
+/// because no shipped row names an airframe, not because no shipped row has a
+/// name at all.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f27_e_retail_the_shipped_image_names_nineteen_gun_groups_and_leaves_the_twentieth_empty()
+{
+    let (catalog, _) = language_image();
+    assert_eq!(
+        ORIGINAL_GUN_GROUPS.first().map(|group| group.id()),
+        Some(ORIGINAL_GUN_GROUP_NAMES_LAST_ID - 19),
+        "the twenty groups are a contiguous run ending at the declared last id"
+    );
+    let mut named = 0usize;
+    let mut empty = Vec::new();
+    for group in ORIGINAL_GUN_GROUPS.iter() {
+        let measured =
+            OriginalMeasuredText::measure(group.id(), &installed_text(&catalog, group.id()));
+        if measured.is_empty() {
+            empty.push((group.id(), group.label()));
+            continue;
+        }
+        named += 1;
+        // Every named group carries one markup code and text behind it: no
+        // group row is a bare code with nothing after it.
+        assert!(
+            measured.markup().is_some(),
+            "group {} ({}) carries display text without a markup code",
+            group.id(),
+            group.label()
+        );
+        assert!(
+            !measured.text().is_empty(),
+            "group {} ({}) carries only a markup code",
+            group.id(),
+            group.label()
+        );
+    }
+    assert_eq!(
+        named, 19,
+        "the shipped image names nineteen of the twenty groups"
+    );
+    assert_eq!(
+        empty,
+        vec![(ORIGINAL_GUN_GROUP_NAMES_LAST_ID, "NOSETURRET")],
+        "and the one empty row is the last group's own id"
+    );
+}
+
 /// The measurement is bound to one installation: a different one would not
 /// answer to these ids, these labels or these digests.
 #[test]
@@ -707,7 +849,14 @@ fn accept_f27_e_the_audit_type_closure_holds_and_the_rest_is_named() {
         Origin::Installation {
             source: synthetic_span(),
         },
-        OriginalLoadoutCounts::try_new(4, 5, 4, 8, 2).expect("F27-D's measured counts"),
+        OriginalLoadoutCounts::try_new(
+            ORIGINAL_AMMUNITION_TYPES,
+            ORIGINAL_SELECTABLE_GUNS,
+            cs_content::weapons::ORIGINAL_GUN_SLOTS,
+            cs_content::weapons::ORIGINAL_ROCKET_SLOTS,
+            cs_content::weapons::ORIGINAL_HARDPOINT_POINTS,
+        )
+        .expect("F27-D's measured counts"),
         ORIGINAL_GUN_GROUPS.to_vec(),
         observed_provenance(),
     )
@@ -716,13 +865,40 @@ fn accept_f27_e_the_audit_type_closure_holds_and_the_rest_is_named() {
     let report = audit.run(&surface);
     assert_eq!(
         report.declared_types(),
-        4,
-        "the four imported types are rows"
+        ORIGINAL_AMMUNITION_TYPE_COUNT,
+        "every imported type is a row"
     );
     assert_eq!(
         report.findings_of("undeclared_ammunition_type"),
         Vec::<&AmmoAuditFinding>::new(),
         "the imported types cover the surface's four: this stage closes that finding"
+    );
+
+    // What the closed finding does **not** say, stated as an assertion: the
+    // audit's closure check compares counts, so it would be satisfied by four
+    // records with any labels at all. Dropping one type brings the finding
+    // back, which shows the check is live and that the measured names are what
+    // make these four records the original's vocabulary rather than four
+    // placeholders — not the audit.
+    let declared = catalogue
+        .declared_ammunition(synthetic_span(), observed_provenance())
+        .expect("records of unknown values are valid declared records");
+    let mut one_short = AmmunitionAudit::new();
+    for record in declared
+        .into_iter()
+        .take(ORIGINAL_AMMUNITION_TYPE_COUNT - 1)
+    {
+        one_short.add_ammunition(record);
+    }
+    let short_report = one_short.run(&surface);
+    assert_eq!(
+        short_report.declared_types(),
+        ORIGINAL_AMMUNITION_TYPE_COUNT - 1
+    );
+    assert_eq!(
+        short_report.findings_of("undeclared_ammunition_type").len(),
+        1,
+        "one type fewer and the shortfall is reported again"
     );
 
     // What is left is named, not silently absent: the eleven gun groups the

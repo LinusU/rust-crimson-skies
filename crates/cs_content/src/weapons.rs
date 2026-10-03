@@ -1383,7 +1383,11 @@ pub const ORIGINAL_GUN_GROUP_NAMES_LAST_ID: u32 = 3080;
 ///
 /// The label says **which group the original names**, not where the group sits:
 /// assigning an inner- or outer-wing group to a side needs the per-airframe gun
-/// tables inside the executable, which no agent can read. So
+/// tables inside the executable, which no agent can read. F27-E narrowed that
+/// gap and left it open with evidence: the shipped UI language image does name
+/// nineteen of the twenty groups, and **none of the eleven uncovered groups'
+/// names says which side or which airframe** — `INNERWINGGUNS 3061` is "Inner
+/// Wing Guns", with no left or right. So
 /// [`DeclaredGunMountKind::covers_group`] covers only the groups the label
 /// itself determines and [`ORIGINAL_GUN_GROUPS`] keeps every group addressable
 /// whether it is covered or not.
@@ -1439,8 +1443,12 @@ impl fmt::Display for DeclaredGunGroup {
 /// Every gun group the original declares, in ascending id order.
 ///
 /// **Measured**: twenty contiguous ids in [`ORIGICAL_RESOURCE_HEADER`]. The
-/// names the engine *shows* for these ids live in the runtime string catalog
-/// and are readable from no file, so `label` is the header macro.
+/// names the engine *shows* for these ids live in the shipped UI language image
+/// under the ids themselves — F27-E re-measured that image and found nineteen
+/// of the twenty named there, with `3080` (`NOSETURRET`) an empty row — but no
+/// stage imports them yet, so `label` stays the header macro, an identifier the
+/// original build generated. See [`OriginalGunAmmunitionCatalogue`] for the
+/// importer that reads the same image's ammunition and gun names.
 pub const ORIGINAL_GUN_GROUPS: [DeclaredGunGroup; 20] = [
     DeclaredGunGroup::new(3061, "INNERWINGGUNS"),
     DeclaredGunGroup::new(3062, "OUTERWINGGUNS"),
@@ -1604,12 +1612,17 @@ impl OriginalLoadoutCounts {
 ///
 /// # What is deliberately absent
 ///
-/// The *names* of the ammunition types, their calibers, their damage amounts
-/// and the convergence rule are **not** here. They live in the executable's own
-/// tables, which no agent can read: the ammunition screens ask the engine for
-/// the name array (`callback($$E$$,5054,…)`) rather than naming it. A record
-/// that carried a name would be a fabrication, so the surface carries counts
-/// and identifiers only, and the audit reports the rest as unknown.
+/// The ammunition types' *names* are **not** here, but they no longer have to
+/// be unknown: F27-E found them in the shipped UI language image and imports
+/// them through [`OriginalGunAmmunitionCatalogue`]. The surface itself stays
+/// counts and identifiers, because the loadout screens ask the engine for the
+/// name array (`callback($$E$$,5054,…)`) rather than naming it and this record
+/// is what the audit measures a catalogue against. What is still unmeasured,
+/// and therefore absent by design, is each type's **caliber**, its **damage
+/// amounts**, the **convergence** rule and which **airframe mounts which group**:
+/// those live in the executable's own tables, which no agent can read. A record
+/// that carried one of them would be a fabrication, so the audit reports them
+/// as unknown.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OriginalGunLoadout {
     origin: Origin,

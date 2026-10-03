@@ -14,6 +14,20 @@ build/test. **Not** used and not claimed: any run of the original executable, so
 no statement here is evidence of how the original *behaves* — only of what its
 files declare.
 
+> **Correction, 2026-10-03 (task #545, F27-E).** The limitation
+> `f27.d.limit.ammo_names` recorded below is **wrong**: the ammunition names,
+> abbreviations, descriptions and each gun's caliber label are readable from a
+> shipped file, `GOSDATA/ASSETS/BINARIES/langui.dll`, under the very ids
+> `RESOURCE.H` declares. The same image also names nineteen of the twenty gun
+> groups at `3061..=3079` (`3080` is an empty row), which this file also records
+> as unreadable — though none of those names says which side or which airframe,
+> so `f27.d.limit.gun_group_assignment` stands. F27-E imports the ammunition and
+> gun names and leaves the per-type damage amounts and the behavioral rules open;
+> see
+> `docs/findings/2026-10-03-f27-e-original-ammunition-and-gun-names-imported.md`.
+> Nothing else below is affected, and no text has been removed: the measurements
+> themselves (four blocks, four types, five guns, twenty groups) were right.
+
 ## Files and the one observable failure (listed before editing)
 
 - `crates/cs_sim/src/weapons/guns.rs` (extend): the measured original gun

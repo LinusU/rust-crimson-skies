@@ -106,7 +106,7 @@ rockets, F28's subject, not gun ammunition.)
   `OriginalAmmunitionIdentity::declared` /
   `OriginalGunAmmunitionCatalogue::declared_ammunition`.
 - `crates/cs_content/tests/accept_f27_e_original_ammunition_catalogue.rs` (new):
-  ten fast tests over the production importer and F27-D's audit, and three
+  ten fast tests over the production importer and F27-D's audit, and four
   `#[ignore = "requires CS_GAME_DIR"]` tests that re-measure every id from the
   installation.
 - `crates/cs_content/tests/evidence_report_f27_e.rs` (new): the evidence
@@ -135,9 +135,14 @@ non-negotiable 1 names.
   `DeclaredAmmunition` has `Origin::Installation { source }` over the language
   image's own byte span, a **known** identity (four measured names) and an
   **unknown** caliber and unknown damage on both channels and all five
-  interaction options, each with its own claim id and reason. The lowering
-  boundary refuses such a record, which is the correct outcome: a session must
-  not fire ammunition whose damage nobody measured.
+  interaction options, each with its own claim id and reason. What keeps that
+  from becoming a firing round is *not* a lowering refusal:
+  `cs_app::weapons::lower_ammunition` lowers only the id and consults neither the
+  damage profile nor the caliber, so it succeeds here. What keeps it out of a
+  session is that **nothing pairs the four types with a gun** — no
+  `DeclaredGunDefinition` can be built without a measured mount (below), and no
+  `DeclaredLoadout` names them — which is exactly what the audit reports as
+  `unpaired` on every row.
 - **The caliber belongs to the gun, so the type declares none.** The original
   enumerates caliber and type as *one* vocabulary (five calibers against four
   types), so a per-type caliber would be a fabrication; the caliber this stage
@@ -147,10 +152,13 @@ non-negotiable 1 names.
   none and the blurbs carry `[CSB9I]`. `ORIGINAL_TEXT_MARKUP` documents the
   first, the tests pin all three, and no style rule is invented anywhere.
 - **A missing or empty row is refused by id, never skipped.** `import` requires
-  all 36 rows (4 types x 3 name rows + 4 descriptions + 3 empty-ammunition rows
-  + 5 guns x 3 rows + 2 empty-gun rows). A silently shorter catalogue would make
-  "four types, five guns" unfalsifiable, which is the whole failure F27-D
-  measured.
+  all **31 identity rows** (4 types x 3 name rows + 4 descriptions + 5 guns x 3
+  rows) and refuses each by id. The five *empty-slot* rows the blocks leave
+  behind (`3354`, `3364`, `3369`, `3315`, `3325`) are measured too and the
+  retail test reads all 36 rows of the installation's catalog, but `import` does
+  not require them: they are the loadout's "None"/"No Gun" placeholders, not an
+  identity. A silently shorter catalogue would make "four types, five guns"
+  unfalsifiable, which is the whole failure F27-D measured.
 - **The prose is measured but not committed.** This file and the tests name the
   type labels, the abbreviations and the caliber labels — 21 short factual
   strings, and F27 non-negotiable 1 asks for exactly that vocabulary. The four
@@ -182,27 +190,41 @@ synthetic catalog.
 
 - **Per-type damage amounts** (`f27.d.limit.ammo_names`, the damage half).
   `crimson.exe` is a **C-Dilla/SafeDisc-protected image**: its code sections are
-  `.txt` (file offset `0x400`, 59 840 bytes, Shannon entropy **7.997**),
+  `.txt` (file offset `0x400`, 59 904 raw bytes, Shannon entropy **7.997**),
   `.text` (entropy 6.630) and `.txt2` (entropy 6.297), and **145 945 of its
-  `.rsrc` section's 147 456 raw bytes are zero**. The only plaintext in the file is the C
+  `.rsrc` section's 146 944 raw bytes** (virtual size 146 552) **are zero**. The only plaintext in the file is the C
   runtime, the Win32 import names and SafeDisc's own diagnostics ("Insert
   replication gold master in CDROM drive", `SAFEDISC_ERROR_%08lx`, the Spanish
   and German CD-warning strings). `crimson.icd` (2 580 578 bytes) is a second
-  MZ image at entropy **7.811** with zero matches for
-  `caliber|ammo|armour|piercing|incend|heat|gun|rocket|shell`. The damage table is
+  MZ image at entropy **7.811** whose only case-insensitive hits for
+  `caliber|ammo|armour|piercing|incend|heat|gun|rocket|shell` are the Win32
+  import name `ShellExecuteA` and one three-byte coincidence inside encrypted
+  bytes; no word of that list appears as game content. The damage table is
   in the decrypted image, i.e. only in a running original. **Affected content:**
   every damage amount F27 simulates. **Resolving task:** an owner-supplied
   original-run reference capture (#358 `REF-OWNER-FIRST-CAPTURE`, blocked;
   protocol #357), or a task filed against a decoded image.
 - **Which gun each airframe mounts** (`f27.d.limit.gun_group_assignment`).
-  `ZBD/planes.zbd` reads: 3 317 GameZ nodes, 562 distinct names, and the
-  gun-bearing ones are `bgun0..bgun3`, `fgun`, `hgun`, `hgun2`, `rgun`,
-  `gungauge`, `balmoral_turret0..3`, `bturret0..3`, `brigturret`, `brigturret2 `
-  (with its trailing space), `brigand_turret1/2`, `fire_turret1/2`,
-  `hell_turret1/2`, `hturret`, `hturret2`, `kestrel_turret1/2`. **None of the
-  twenty `IDS_*GUNS` group names appears**, and only `rgun` carries a side, so
-  the mesh data cannot place `INNERWINGGUNS 3061` and its ten siblings on a
-  side. Unchanged from F27-D.
+  Two independent negatives, one measured by this stage:
+  - The shipped language image **does** name the groups, under the same ids
+    F27-D read from `RESOURCE.H`: `3060..=3079` carry `[TREB13B]`-marked display
+    names (`3061` "Inner Wing Guns" … `3079` "Middle Wing Guns") and **`3080`
+    (`NOSETURRET`) is an empty row**. None of the *eleven uncovered* groups'
+    names says which side or which airframe — `INNERWINGGUNS 3061` is "Inner
+    Wing Guns", with no left or right — so the display names do not close the
+    gap; they only show that the row exists and carries no side. (The test
+    `accept_f27_e_retail_the_shipped_image_names_nineteen_gun_groups_and_leaves_the_twentieth_empty`
+    pins exactly that: nineteen named, one empty, at `ORIGINAL_GUN_GROUP_NAMES_LAST_ID`.)
+  - `ZBD/planes.zbd` holds no group name either: no `IDS_*GUNS` name appears
+    anywhere in the container's bytes (a byte scan of the 6 083 868-byte file
+    finds `INNERWINGGUNS`, `OUTERWINGGUNS`, `CENTERGUNS`, `MIDDLEWINGGUNS`,
+    `NOSETURRET`, `WINGGUNS` and `GUNS` **zero** times each, while `bgun`,
+    `fgun`, `hgun`, `rgun` and `gungauge` do occur). Read through the production
+    GameZ reader the container is 3 317 nodes over 562 distinct names, of which
+    the gun-bearing ones are `bgun0..bgun3`, `fgun`, `hgun`, `hgun2`, `rgun`,
+    `gungauge` and the `*_turret*` parts; only `rgun` carries a side.
+  So the per-airframe tables in the executable remain the only place a side
+  could come from. Unchanged from F27-D, with the display names now checked too.
 - **Convergence** (`f27.d.limit.convergence`) and **the inherited-velocity
   rule** (`f27.d.limit.inheritance`) are original *behavior*; no shipped file
   declares them. `cs_sim::weapons::MountTransform::forward` still carries the
@@ -228,13 +250,22 @@ that measures the mounts. That is also why `cs_sim` and `cs_app` are untouched;
 a runtime record with a designed mount would be a guess wearing a measured
 name.
 
-`AmmunitionAudit::run` against the real surface (F27-D's audit) still reports
-`undeclared_ammunition_type` and eleven `uncovered_gun_group` findings on
-`main`: the audit is F27-D's, it is not on `main` yet, and this stage does not
-weaken its closure checks. What this stage removes is the *guess* those findings
-were standing in for: the four ammunition ids now have measured names,
-abbreviations and descriptions, so when the audit lands it compares against the
-original's own vocabulary rather than against four labels.
+With the audit available, the verdict this stage can and cannot claim is worth
+stating precisely. F27-D's `AmmunitionAudit::run` compares **counts**: it reports
+`undeclared_ammunition_type` only while `declared < observed`, so four declared
+records close that finding whatever their labels say, and the test proves the
+check is live by dropping one record and watching the finding return. What this
+stage actually changed is that those four records now **are** the original's own
+vocabulary — measured names, abbreviations and descriptions — instead of four
+labels over unknown values. The finding is gone; the reason it is *meaningful*
+is the measurement, not the audit.
+
+`AmmunitionAudit::run` against the real surface still reports
+`uncovered_gun_group` for the eleven groups only the executable's per-airframe
+tables can place, plus per type `unmeasured_caliber`, `no_damage_consumer` and
+`unpaired`, and `is_complete()` stays false. Nothing in F27-D's closure checks
+was weakened to reach that verdict: the audit still fails, on the gaps this
+stage could not measure.
 
 Not claimed: `verified_original`, `release_approved`, any gameplay behavior, any
 visual or audible result. What is claimed is **observed_tool**: a measured fact
@@ -252,8 +283,8 @@ and `content_sha256 a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262
 
 - `capabilities: ["retail", "synthetic"]`, `claim: "implemented"` — never
   `verified_original`;
-- `tests: {discovered: 13, executed: 13, passed: 13, failed: 0, ignored: 0}`
-  over the thirteen `accept_f27_e_` tests, the three retail ones run with
+- `tests: {discovered: 14, executed: 14, passed: 14, failed: 0, ignored: 0}`
+  over the fourteen `accept_f27_e_` tests, the four retail ones run with
   `--include-ignored`;
 - `install_sha256 b4e780ab…c631978` and `content_sha256 a0223506…62c12d`, both
   from production `cs_assets::install` discovery, never typed in;
@@ -262,9 +293,12 @@ and `content_sha256 a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262
   readers over the same installation, carrying `langui.dll`'s digest, length and
   `StringCatalog` accounting (101 blocks, 1616 rows, no undecodable unit, no
   duplicate id), every declared id with its **code-unit length and markup code
-  but never its text**, what the production importer made of the catalog
+  but never its text**, the twenty gun-group rows as id + header label +
+  named-or-not, what the production importer made of the catalog
   (4 types, 5 guns, 4 declared records, 0 with a declared caliber), and
-  `strings.dll`'s 20 `MSG_WEAP_*` identifiers as the corroborating vocabulary;
+  `strings.dll`'s 20 `MSG_WEAP_<cal>CAL_<type>` identifiers (counted apart from
+  the 37 `MSG_WEAP_*` names that image carries, the rest being rockets and other
+  ordnance) as the corroborating vocabulary;
 - the five `f27.d.limit.*` items this stage does **not** resolve, each with the
   content it gates and what would resolve it, inside the hashed artifact and
   inside the report's `review.method`.
@@ -297,10 +331,8 @@ verdict.
 
 - **`undeclared_ammunition_type` is gone.** F27-D measured "observed 4,
   declared 0"; against the same surface the imported catalogue declares **4**, so
-  the audit reports no type it cannot map. That is the one acceptance clause
-  this stage could close, and it closes because the four ids now carry the
-  original's own names, abbreviations and descriptions instead of four labels
-  over unknown values.
+  the audit reports no type it cannot map. The check counts records (see "Why no
+  runtime record" above for what that does and does not prove).
 - **The rest stays, named.** `uncovered_gun_group` (the eleven groups only the
   executable's per-airframe tables can place), and per type `unmeasured_caliber`,
   `no_damage_consumer` and `unpaired` — no gun is paired because no
@@ -311,3 +343,47 @@ verdict.
 
 Nothing in F27-D's closure checks was weakened to reach that verdict: the audit
 still fails, on the gaps this stage could not measure.
+
+## Documentation and measurements corrected in review
+
+Review (a fresh session, same agent identity — see the handover) re-measured this
+stage's claims from the installation and corrected the following, all of which
+were on the branch as submitted:
+
+1. **"The names are readable from no file" was false for the gun groups too.**
+   `ORIGINAL_GUN_GROUPS`' doc said the engine's *display* names for `3061..=3080`
+   "are readable from no file", and `OriginalGunLoadout`'s said the ammunition
+   names "live in the executable's own tables, which no agent can read". Both are
+   corrected: the shipped image names nineteen of the twenty groups at their own
+   ids (`3080` empty), and the ammunition names are imported here.
+2. **"`import` requires all 36 rows"** — it requires the **31** identity rows. The
+   five empty-slot rows are measured and asserted by the retail test but are not
+   identity rows and are not required.
+3. **"The lowering boundary refuses such a record"** — `cs_app::weapons::lower_ammunition`
+   checks only the id namespace and *succeeds*. What keeps the imported types out
+   of a session is that no gun and no loadout pairs them, which the audit reports
+   as `unpaired`.
+4. **The audit closure was credited to the names.** `AmmunitionAudit::run`
+   compares counts, so four records close `undeclared_ammunition_type` whatever
+   they are called; a negative case now proves the check is live.
+5. **Two executable measurements were off by a little**: `crimson.exe`'s `.txt`
+   section is 59 904 raw bytes (not 59 840) and its `.rsrc` section is 146 944 raw
+   bytes with 146 552 virtual (not 147 456 raw). The 145 945 zero bytes are right.
+   `crimson.icd` does not have "zero matches" for the word list — `ShellExecuteA`
+   (an import) and one three-byte coincidence inside encrypted bytes match; no
+   word of the list appears as game content.
+6. **The evidence artifact counted the wrong set**: `gun_ammunition_identifiers`
+   was the whole `MSG_WEAP_*` set (37 names, including rockets) while the claim
+   was the **20** `<caliber>CAL_<type>` names; the two are now counted apart, and
+   the harness asserts the count is 20.
+7. **The synthetic catalog was not shaped like the measured one.** Its doc said
+   "every required id carries a `[COUR9]`-prefixed row", but the installation
+   writes no code on the gun long names and a different code (`[CSB9I]`) on the
+   gun blurbs. The fast half now reproduces all three shapes and asserts that a
+   bare row imports without a markup and a blurb keeps its own code.
+
+Review also added, because the ids are F27-D's and nothing pinned them together:
+cross-checks that this stage's four name blocks and both counts equal F27-D's
+`ORIGINAL_AMMO_NAME_BLOCKS`, `ORIGINAL_AMMUNITION_TYPES` and
+`ORIGINAL_SELECTABLE_GUNS`, and the use of F27-D's five measured counts in the
+audit surface instead of bare literals.

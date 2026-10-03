@@ -48,9 +48,9 @@ use cs_content::weapons::{
     ORIGINAL_AMMUNITION_ABBREVIATION_IDS, ORIGINAL_AMMUNITION_DESCRIPTION_IDS,
     ORIGINAL_AMMUNITION_LONG_NAME_IDS, ORIGINAL_AMMUNITION_NONE_LABEL_IDS,
     ORIGINAL_AMMUNITION_SHORT_NAME_IDS, ORIGINAL_AMMUNITION_TYPE_COUNT,
-    ORIGINAL_GUN_DESCRIPTION_IDS, ORIGINAL_GUN_LONG_NAME_IDS, ORIGINAL_GUN_SHORT_NAME_IDS,
-    ORIGINAL_NO_GUN_LONG_NAME_ID, ORIGINAL_NO_GUN_SHORT_NAME_ID, ORIGINAL_SELECTABLE_GUN_COUNT,
-    OriginalGunAmmunitionCatalogue, OriginalMeasuredText,
+    ORIGINAL_GUN_DESCRIPTION_IDS, ORIGINAL_GUN_GROUPS, ORIGINAL_GUN_LONG_NAME_IDS,
+    ORIGINAL_GUN_SHORT_NAME_IDS, ORIGINAL_NO_GUN_LONG_NAME_ID, ORIGINAL_NO_GUN_SHORT_NAME_ID,
+    ORIGINAL_SELECTABLE_GUN_COUNT, OriginalGunAmmunitionCatalogue, OriginalMeasuredText,
 };
 use cs_formats::ParseContext;
 use cs_types::asset_id::SourceSpan;
@@ -66,15 +66,16 @@ const LANGUI_DLL: &str = "GOSDATA/ASSETS/BINARIES/langui.dll";
 /// The image whose ASCII table carries the engine's own identifier names.
 const STRINGS_DLL: &str = "strings.dll";
 
-/// The three retail tests this report's capabilities rest on: without all of
+/// The four retail tests this report's capabilities rest on: without all of
 /// them passing, the report is not an observation of the installation.
-const RETAIL_TESTS: [&str; 3] = [
+const RETAIL_TESTS: [&str; 4] = [
     "accept_f27_e_retail_the_original_names_four_ammunition_types_and_five_guns",
     "accept_f27_e_retail_the_declared_ammunition_carries_no_guessed_amount",
     "accept_f27_e_retail_the_measured_surface_is_bound_to_one_installation",
+    "accept_f27_e_retail_the_shipped_image_names_nineteen_gun_groups_and_leaves_the_twentieth_empty",
 ];
 
-const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES includes retail); this report is derived from the recorded log plus a second, independent production pass of the same readers, recorded in ammunition-vocabulary.json. MEASURED (ids, counts, digests and code-unit lengths only, no original display text): the installation and canonical-content fingerprints; GOSDATA/ASSETS/BINARIES/langui.dll as the original's UI language image - 282624 bytes, SHA-256 357e6bb05f1d2872a00e0976fdde44561cd5bb6a56d9f555d85d0ff1481faf49, 101 RT_STRING blocks and 1616 counted rows at language 1033 with no undecodable unit and no duplicate id; the seven string-id blocks ASSETS/SCRIPTS/RESOURCE.H declares, each landing on its declared first id with the shape the loadout screens index: IDS_AMMOLONGNAME 3350..=3353 and IDS_AMMOSHORTNAME 3360..=3363 and IDS_AMMOABBRNAME 3365..=3368 and IDS_AMMODESCRIPTION 3370..=3373 (four types, four wide, each followed by its None row at 3354/3364/3369), and IDS_GUNLONGNAME 3310..=3314 and IDS_GUNSHORTNAME 3320..=3324 and IDS_GUNDESCRIPTION 3330..=3334 (five guns, five wide, each name block followed by its No Gun row at 3315/3325); the four ammunition type identities with their long, short and abbreviation label code-unit lengths and their description lengths; the five guns with their caliber label rows verbatim (each carries a leading space and is kept as the original spells it, never parsed into a numeric bore); the shipped [COUR9] markup code on every ammunition-name and caliber row, its absence on the gun long names and the different code on the blurbs; and strings.dll's own ASCII identifier vocabulary, twenty MSG_WEAP_<caliber>CAL_<type> names covering five calibers against four types, which corroborates the five-by-four shape and identifies the fourth type as MAGNESIUM where the display name is Explosive - no mapping between identifier and display type is claimed, because nothing states one. CORRECTION this stage carries: F27-D recorded f27.d.limit.ammo_names and f27.d.limit.gun_set as unreachable because crimson.exe carries no RT_STRING resource and strings.dll lacks the block that would hold id 3370. Both halves are true and both were incomplete - langui.dll is a third shipped image and holds every declared block. RESOLVED by this stage: f27.d.limit.ammo_names (the four types' names, abbreviations and descriptions, and the caliber each gun declares) and f27.d.limit.gun_set (the five guns). FIDELITY LIMITATIONS (unmeasured original behavior, recorded in ammunition-vocabulary.json, in the committed finding and in the follow-up tasks; none of them is claimed by this report): claim f27.d.limit.ammo_names_damage - the original's per-type armor and internal damage amounts live in crimson.exe, a C-Dilla/SafeDisc-protected image whose code sections measure at Shannon entropy 7.997 with 145945 of its 147456 resource bytes zero, so they are only reachable from a running original (F27 non-negotiable 1 forbids an unverified multiplier table; resolving task #547 F27-E.1, needs #358 REF-OWNER-FIRST-CAPTURE); claim f27.d.limit.convergence - whether and where paired wing guns' barrels meet is original behavior and no shipped file declares it, so cs_sim::weapons::MountTransform::forward still carries the resolved direction with no convergence geometry invented (F27 non-negotiable 2; needs #358); claim f27.d.limit.inheritance - the inherited-velocity rule is unmeasured and stays a declared Resolved option (F27 non-negotiable 2; needs #358); claim f27.d.limit.gun_group_assignment - which side each of the eleven uncovered gun groups is on and which airframe uses which group stays in the executable's per-airframe tables; ZBD/planes.zbd's 3317 GameZ nodes carry 562 distinct names of which the gun-bearing ones are bgun0..bgun3, fgun, hgun, hgun2, rgun, gungauge and fourteen <prefix>_turret names, and none of the twenty IDS_*GUNS group names appears, so no DeclaredGunDefinition is built for the original's five guns (F27 non-negotiable 2; resolving task #547); claim f27.d.limit.interaction_rules - penetration, ricochet and in-flight ammo switching remain declared and read by no production path, and cs_content::weapons::InteractionRules::deferred still names F27-D as the stage that must resolve them, which this stage does not re-point at itself because it resolves none of them; every imported record carries all five options as Resolved::Unknown under f27.e.ammunition-behavior so the deferral is visible per record (F27 non-negotiable 4; needs #358). The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass.";
+const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES includes retail); this report is derived from the recorded log plus a second, independent production pass of the same readers, recorded in ammunition-vocabulary.json. MEASURED (ids, counts, digests and code-unit lengths only, no original display text): the installation and canonical-content fingerprints; GOSDATA/ASSETS/BINARIES/langui.dll as the original's UI language image - 282624 bytes, SHA-256 357e6bb05f1d2872a00e0976fdde44561cd5bb6a56d9f555d85d0ff1481faf49, 101 RT_STRING blocks and 1616 counted rows at language 1033 with no undecodable unit and no duplicate id; the seven string-id blocks ASSETS/SCRIPTS/RESOURCE.H declares, each landing on its declared first id with the shape the loadout screens index: IDS_AMMOLONGNAME 3350..=3353 and IDS_AMMOSHORTNAME 3360..=3363 and IDS_AMMOABBRNAME 3365..=3368 and IDS_AMMODESCRIPTION 3370..=3373 (four types, four wide, each followed by its None row at 3354/3364/3369), and IDS_GUNLONGNAME 3310..=3314 and IDS_GUNSHORTNAME 3320..=3324 and IDS_GUNDESCRIPTION 3330..=3334 (five guns, five wide, each name block followed by its No Gun row at 3315/3325); the four ammunition type identities with their long, short and abbreviation label code-unit lengths and their description lengths; the five guns with their caliber label rows verbatim (each carries a leading space and is kept as the original spells it, never parsed into a numeric bore); the shipped [COUR9] markup code on every ammunition-name and caliber row, its absence on the gun long names and the different code on the blurbs; the twenty gun-group rows at 3061..=3080 of which nineteen carry display text and 3080 is empty, recorded per group as id, header label and named-or-not and never as text; and strings.dll's own ASCII identifier vocabulary, twenty MSG_WEAP_<caliber>CAL_<type> names covering five calibers against four types out of 880 MSG_* identifiers in that image, which corroborates the five-by-four shape and identifies the fourth type as MAGNESIUM where the display name is Explosive - no mapping between identifier and display type is claimed, because nothing states one. CORRECTION this stage carries: F27-D recorded f27.d.limit.ammo_names and f27.d.limit.gun_set as unreachable because crimson.exe carries no RT_STRING resource and strings.dll lacks the block that would hold id 3370. Both halves are true and both were incomplete - langui.dll is a third shipped image and holds every declared block. RESOLVED by this stage: f27.d.limit.ammo_names (the four types' names, abbreviations and descriptions, and the caliber each gun declares) and f27.d.limit.gun_set (the five guns). FIDELITY LIMITATIONS (unmeasured original behavior, recorded in ammunition-vocabulary.json, in the committed finding and in the follow-up tasks; none of them is claimed by this report): claim f27.d.limit.ammo_names_damage - the original's per-type armor and internal damage amounts live in crimson.exe, a C-Dilla/SafeDisc-protected image whose code sections measure at Shannon entropy 7.997 with 145945 of its 146944 raw resource-section bytes zero, so they are only reachable from a running original (F27 non-negotiable 1 forbids an unverified multiplier table; resolving task #547 F27-E.1, needs #358 REF-OWNER-FIRST-CAPTURE); claim f27.d.limit.convergence - whether and where paired wing guns' barrels meet is original behavior and no shipped file declares it, so cs_sim::weapons::MountTransform::forward still carries the resolved direction with no convergence geometry invented (F27 non-negotiable 2; needs #358); claim f27.d.limit.inheritance - the inherited-velocity rule is unmeasured and stays a declared Resolved option (F27 non-negotiable 2; needs #358); claim f27.d.limit.gun_group_assignment - which side each of the eleven uncovered gun groups is on and which airframe uses which group stays unmeasured, and this stage narrowed that gap without closing it: the same shipped image names nineteen of the twenty groups at their own ids (3061..=3079) and none of those names says which side or which airframe - INNERWINGGUNS 3061 is Inner Wing Guns with no left or right - while 3080 (NOSETURRET) is an empty row there; separately, no IDS_*GUNS group name appears anywhere in ZBD/planes.zbd's bytes (independently re-checked by scanning the container), so the mesh data cannot place a group either and no DeclaredGunDefinition is built for the original's five guns (F27 non-negotiable 2; resolving task #547); claim f27.d.limit.interaction_rules - penetration, ricochet and in-flight ammo switching remain declared and read by no production path, and cs_content::weapons::InteractionRules::deferred still names F27-D as the stage that must resolve them, which this stage does not re-point at itself because it resolves none of them; every imported record carries all five options as Resolved::Unknown under f27.e.ammunition-behavior so the deferral is visible per record (F27 non-negotiable 4; needs #358). The claim is implemented: a code and test pass awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass.";
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
@@ -163,6 +164,12 @@ fn evidence_report_f27_e_writes_the_acceptance_report() {
             other => panic!("string {id} must resolve at {ENGLISH_US}, got {other:?}"),
         }
     };
+    let row_text = |id: u32| -> String {
+        match catalog.resolve(id, Some(ENGLISH_US)) {
+            StringLookup::Found(row) => row.text.clone().unwrap_or_default(),
+            other => panic!("string {id} must resolve at {ENGLISH_US}, got {other:?}"),
+        }
+    };
 
     let mut rows: Vec<String> = Vec::new();
     for index in 0..ORIGINAL_AMMUNITION_TYPE_COUNT {
@@ -223,6 +230,30 @@ fn evidence_report_f27_e_writes_the_acceptance_report() {
         ));
     }
 
+    // The gun groups' own display names, measured in the same image at the ids
+    // F27-D read from `RESOURCE.H`. Recorded as id, header label and whether the
+    // shipped row carries display text at all — never the text — because this
+    // stage imports none of it and the claim it bounds is only "which row is
+    // empty".
+    let mut group_rows = Vec::with_capacity(ORIGINAL_GUN_GROUPS.len());
+    let mut named_groups = 0usize;
+    for group in ORIGINAL_GUN_GROUPS.iter() {
+        let measured = OriginalMeasuredText::measure(group.id(), &row_text(group.id()));
+        if !measured.is_empty() {
+            named_groups += 1;
+        }
+        group_rows.push(format!(
+            "{{\"id\": {}, \"header_label\": {}, \"named_in_the_image\": {}}}",
+            group.id(),
+            jstr(group.label()),
+            !measured.is_empty()
+        ));
+    }
+    assert_eq!(
+        named_groups, 19,
+        "the shipped image names nineteen of the twenty groups"
+    );
+
     // The imported catalogue, driven through the production importer, so the
     // artifact records what the code produced and not only what it read.
     let imported = import_from_catalog(&catalog);
@@ -238,12 +269,27 @@ fn evidence_report_f27_e_writes_the_acceptance_report() {
     // Second, corroborating vocabulary: the engine's own ASCII identifiers.
     let strings_bytes = fs::read(game_dir.join(STRINGS_DLL)).expect("strings.dll");
     let identifiers = weapon_identifiers(&strings_bytes);
+    // The five-by-four caliber vocabulary, counted apart from the rest of the
+    // weapon identifiers (rockets and the other ordnance share the prefix), so
+    // the artifact states the twenty names this claim rests on rather than the
+    // whole `MSG_WEAP_` set.
+    let caliber_identifiers = identifiers
+        .iter()
+        .filter(|name| name.contains("CAL_"))
+        .cloned()
+        .collect::<Vec<String>>();
+    assert_eq!(
+        caliber_identifiers.len(),
+        20,
+        "five calibers against four types: {}",
+        caliber_identifiers.join(" ")
+    );
 
     let vocabulary_path = evidence_dir.join("ammunition-vocabulary.json");
     fs::write(
         &vocabulary_path,
         format!(
-            "{{\"install_sha256\": {}, \"content_sha256\": {}, \"candidate_tree\": {}, \"langui_dll\": {{\"sha256\": {}, \"len\": {}, \"blocks\": {blocks}, \"accounting\": {{\"strings\": {}, \"undecodable\": {}, \"other_leaves\": {}, \"duplicate_ids\": {}}}}}, \"declared_blocks\": {{\"ammunition_long_name\": {}, \"ammunition_short_name\": {}, \"ammunition_abbreviation\": {}, \"ammunition_description\": {}, \"gun_long_name\": {}, \"gun_short_name\": {}, \"gun_description\": {}}}, \"counts\": {{\"ammunition_types\": {ORIGINAL_AMMUNITION_TYPE_COUNT}, \"selectable_guns\": {ORIGINAL_SELECTABLE_GUN_COUNT}}}, \"rows\": [{}], \"imported\": {{\"ammunition_types\": {}, \"selectable_guns\": {}, \"declared_records\": {}, \"declared_with_a_guessed_caliber\": {guessed}}}, \"strings_dll\": {{\"sha256\": {}, \"weapon_identifiers\": {}, \"gun_ammunition_identifiers\": {}}}, \"limitations\": [{}]}}\n",
+            "{{\"install_sha256\": {}, \"content_sha256\": {}, \"candidate_tree\": {}, \"langui_dll\": {{\"sha256\": {}, \"len\": {}, \"blocks\": {blocks}, \"accounting\": {{\"strings\": {}, \"undecodable\": {}, \"other_leaves\": {}, \"duplicate_ids\": {}}}}}, \"declared_blocks\": {{\"ammunition_long_name\": {}, \"ammunition_short_name\": {}, \"ammunition_abbreviation\": {}, \"ammunition_description\": {}, \"gun_long_name\": {}, \"gun_short_name\": {}, \"gun_description\": {}, \"airframe_gun_group_names\": 3060}}, \"counts\": {{\"ammunition_types\": {ORIGINAL_AMMUNITION_TYPE_COUNT}, \"selectable_guns\": {ORIGINAL_SELECTABLE_GUN_COUNT}, \"gun_groups\": {}, \"gun_groups_named_in_the_image\": {named_groups}}}, \"rows\": [{}], \"gun_groups\": [{}], \"imported\": {{\"ammunition_types\": {}, \"selectable_guns\": {}, \"declared_records\": {}, \"declared_with_a_guessed_caliber\": {guessed}}}, \"strings_dll\": {{\"sha256\": {}, \"weapon_identifiers\": {}, \"gun_ammunition_identifiers\": {}}}, \"limitations\": [{}]}}\n",
             jstr(&install_sha256),
             jstr(&content_sha256),
             jstr(&candidate_tree),
@@ -260,16 +306,15 @@ fn evidence_report_f27_e_writes_the_acceptance_report() {
             ORIGINAL_GUN_LONG_NAME_IDS[0],
             ORIGINAL_GUN_SHORT_NAME_IDS[0],
             ORIGINAL_GUN_DESCRIPTION_IDS[0],
+            ORIGINAL_GUN_GROUPS.len(),
             rows.join(", "),
+            group_rows.join(", "),
             imported.ammunition().len(),
             imported.guns().len(),
             declared.len(),
             jstr(&sha256(&strings_bytes).to_hex()),
             identifiers.len(),
-            identifiers
-                .iter()
-                .filter(|name| name.starts_with("MSG_WEAP_"))
-                .count(),
+            caliber_identifiers.len(),
             limitations_json(),
         ),
     )
@@ -412,7 +457,7 @@ fn limitations_json() -> String {
         ),
         (
             "f27.d.limit.gun_group_assignment",
-            "which side each of the eleven uncovered gun groups is on, and which airframe uses which group",
+            "which side each of the eleven uncovered gun groups is on, and which airframe uses which group; the shipped UI language image names nineteen of the twenty groups and none of those names says which side or which airframe, and the last group id 3080 (NOSETURRET) is an empty row there",
             "F27 non-negotiable 2; no DeclaredGunDefinition is built for the original's five guns without a measured mount",
             "#547 F27-E.1; the per-airframe tables are in the executable",
         ),
