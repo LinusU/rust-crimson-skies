@@ -156,10 +156,11 @@
 //! provenance-carrying producer record is `cs_content::routes`; F31-C wires
 //! the set into the ECS and the original routes.
 //!
-//! [`allies`] is the F33-A pilot/aircraft/faction identity contract and the
-//! F33-B allegiance and wingmate assignment rules
+//! [`allies`] is the F33-A pilot/aircraft/faction identity contract, the
+//! F33-B allegiance and wingmate assignment rules, and the F33-C runtime
+//! lifecycle and mission callbacks
 //! (`specs/F33-wingmates-factions-neutral-traffic-and-pilot-identity.md`,
-//! stages `### F33-A` and `### F33-B`): the per-session
+//! stages `### F33-A`, `### F33-B` and `### F33-C`): the per-session
 //! [`allies::AlliesRoster`] whose [`allies::AllyRecord`] keeps
 //! [`allies::PilotId`], [`allies::FactionId`], [`allies::GeometryId`] and the
 //! shared [`damage::ActorId`] identity as four distinct types; the
@@ -169,9 +170,16 @@
 //! change (AC01). F33-B adds [`allies::briefed_wingmates`], the pure rule
 //! that turns a [`allies::BriefingPlan`] into assignments, and
 //! [`allies::AlliesRoster::reset_wingmates`] / `register_wingmate`, the retry
-//! reset and the player-faction commitment. The declared roster schema is
-//! `cs_content::pilots`; the conversion boundary and ECS binding are
-//! `cs_app::roster`; the mission wiring is F33-C.
+//! reset and the player-faction commitment. F33-C adds
+//! [`allies::AlliesRoster::record_lifecycle`] /
+//! [`allies::AlliesRoster::register_with_role`], which turn an authoritative
+//! F29 [`damage::LifecycleKind`] into the [`allies::AllyEvent`] mission
+//! callback — a lost wingmate, a protected-neutral loss, an ordinary ally
+//! loss, a capture or a bailout — carrying the actor's authored voice, and
+//! [`allies::AlliesRoster::may_fire`], the gate that grounds a destroyed,
+//! despawned or mission-removed actor. The declared roster schema is
+//! `cs_content::pilots`; the conversion boundary, the ECS binding and the
+//! firing/lifecycle consumer seam are `cs_app::roster`.
 //!
 //! [`world_actors`] is the F34-A world-actor contract
 //! (`specs/F34-ground-vehicles-boats-trains-and-mission-machinery.md`, stage

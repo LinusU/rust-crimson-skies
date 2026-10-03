@@ -1,8 +1,9 @@
-//! Pilot, aircraft and faction identity with capture (F33-A) and the
-//! briefing/assignment rules on top of it (F33-B).
+//! Pilot, aircraft and faction identity with capture (F33-A), the
+//! briefing/assignment rules on top of it (F33-B) and the runtime lifecycle
+//! the mission consumes (F33-C).
 //!
 //! Spec: `specs/F33-wingmates-factions-neutral-traffic-and-pilot-identity.md`,
-//! stages `### F33-A` and `### F33-B`. Shared contract:
+//! stages `### F33-A`, `### F33-B` and `### F33-C`. Shared contract:
 //! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
 //! This module is the **runtime half** of the pilot/aircraft/faction
@@ -50,6 +51,28 @@
 //! The declared half is `cs_content::pilots`; the session entry is
 //! `cs_app::roster::open_roster`.
 //!
+//! # Lifecycle, roles and mission callbacks (F33-C)
+//!
+//! [`AlliesRoster::record_lifecycle`] is where an authoritative F29
+//! [`LifecycleKind`] reaches the identity record: destruction, capture,
+//! bailout, despawn and mission removal are five distinct statuses
+//! ([`AllyStatus`]), and only destruction, despawn or mission removal end an
+//! actor's ability to act — a captured or bailed-out actor is still a
+//! physical object ([`AlliesRoster::may_fire`], [`AlliesRoster::is_acting`],
+//! `crates/cs_sim/src/targeting.rs`'s `ends_targeting` split). Every
+//! transition is once-per-kind and a despawn or mission removal closes the
+//! record, mirroring F29's ledger, so a late event of a previous generation
+//! can never resurrect a dead actor.
+//!
+//! The transition is reported as an [`AllyEvent`] — the mission callback that
+//! separates a lost wingmate, a lost protected neutral, an ordinary ally loss,
+//! a capture and a bailout. It carries the actor's authored voice
+//! ([`AllyRecord::voice`]), so a mission dialogue resolves through the catalog
+//! id the mission declared; a pilot with no authored voice produces no cue at
+//! all rather than a random substitute (non-negotiable 5). The app boundary
+//! `cs_app::roster` is what feeds the F29 lifecycle in and hands the event to
+//! the firing gate and the presentation consumer.
+//!
 //! # Designed vocabulary, not original data
 //!
 //! Which pilots, factions, aircraft, loadouts and voices the original game
@@ -66,13 +89,13 @@
 //! [`cs_script`]: cs_script
 //! [`LifecycleKind`]: crate::damage::LifecycleKind
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::net::SessionId;
 
-use crate::damage::ActorId;
+use crate::damage::{ActorId, LifecycleKind};
 
 /// Why an identity value was rejected.
 ///
@@ -427,6 +450,24 @@ pub enum AlliesError {
         /// The repeated slot.
         slot: WingmateSlot,
     },
+    /// A lifecycle transition was recorded a second time for one actor. The
+    /// transition happened once; a replayed event is reported, never
+    /// re-emitted.
+    DuplicateLifecycle {
+        /// The actor the transition belongs to.
+        actor: ActorId,
+        /// The repeated transition.
+        kind: LifecycleKind,
+    },
+    /// The actor's record is closed by a terminal transition (a despawn or a
+    /// mission removal): nothing may be recorded for it again, so a late
+    /// event of a previous generation cannot resurrect it.
+    ActorClosed {
+        /// The closed actor.
+        actor: ActorId,
+        /// The transition that closed it.
+        terminal: LifecycleKind,
+    },
 }
 
 impl fmt::Display for AlliesError {
@@ -441,6 +482,13 @@ impl fmt::Display for AlliesError {
             Self::DuplicateWingmateSlot { slot } => {
                 write!(f, "{slot} is assigned more than once")
             }
+            Self::DuplicateLifecycle { actor, kind } => {
+                write!(f, "{actor} already recorded the {kind} transition")
+            }
+            Self::ActorClosed { actor, terminal } => write!(
+                f,
+                "{actor} was already closed by {terminal}; nothing may be recorded again"
+            ),
         }
     }
 }
@@ -509,6 +557,211 @@ pub struct Capture {
     pub geometry: GeometryId,
 }
 
+/// The roster's observable status of one actor's identity within a session
+/// (F33-C).
+///
+/// The five non-`Active` variants are exactly F29's [`LifecycleKind`]s seen
+/// from the identity record: an actor that was destroyed, whose pilot bailed
+/// out, whose ownership was captured, that left the world or that left mission
+/// accounting. They are **not** interchangeable — a captured actor still
+/// exists and can act, a bailed-out airframe is still a physical object, and
+/// only a destruction, a despawn or a mission removal end the actor's ability
+/// to act (see [`AlliesRoster::may_fire`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AllyStatus {
+    /// The actor is a live member of the session and may act.
+    Active,
+    /// The actor was destroyed.
+    Destroyed,
+    /// The pilot bailed out; the airframe is still in the world.
+    BailedOut,
+    /// Ownership was captured; the actor still exists under a new faction.
+    Captured,
+    /// The actor's entities left the world.
+    Despawned,
+    /// The actor left mission accounting.
+    MissionRemoved,
+}
+
+impl AllyStatus {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Destroyed => "destroyed",
+            Self::BailedOut => "bailed_out",
+            Self::Captured => "captured",
+            Self::Despawned => "despawned",
+            Self::MissionRemoved => "mission_removed",
+        }
+    }
+
+    /// Whether the actor may still act — fire, follow a route, hold an AI
+    /// role. A capture and a bailout do not end this; only the states
+    /// [`AllyStatus::ends_action`] names do.
+    #[must_use]
+    pub const fn is_acting(self) -> bool {
+        !self.ends_action()
+    }
+
+    /// Whether the status ends the actor's ability to act.
+    #[must_use]
+    pub const fn ends_action(self) -> bool {
+        matches!(
+            self,
+            Self::Destroyed | Self::Despawned | Self::MissionRemoved
+        )
+    }
+}
+
+impl fmt::Display for AllyStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// What one identity interaction between an ally and the mission means to
+/// mission logic — the F33-C mission callback.
+///
+/// The variants keep the contract's distinctions
+/// (`docs/contracts/SCRIPT-MISSION.md`: "Conditions distinguish disabled,
+/// dead, captured, escaped, detached and despawned. An actor removed by a
+/// cinematic is not necessarily a kill."): a wingmate loss, a protected
+/// neutral's loss (a mission event, never a kill), an ordinary ally loss, a
+/// capture and a bailout are five different statements.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AllyEventKind {
+    /// A registered wingmate was destroyed.
+    WingmateLost,
+    /// A protected-neutral actor was destroyed; its loss is a mission event
+    /// and never counted as a kill.
+    ProtectedNeutralLost,
+    /// A non-wingmate, mortal ally was destroyed.
+    OtherAllyLost,
+    /// Ownership was captured rather than destroyed.
+    Captured,
+    /// The pilot bailed out.
+    BailedOut,
+    /// The actor's entities left the world.
+    Despawned,
+    /// The actor left mission accounting.
+    MissionRemoved,
+}
+
+impl AllyEventKind {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::WingmateLost => "wingmate_lost",
+            Self::ProtectedNeutralLost => "protected_neutral_lost",
+            Self::OtherAllyLost => "other_ally_lost",
+            Self::Captured => "captured",
+            Self::BailedOut => "bailed_out",
+            Self::Despawned => "despawned",
+            Self::MissionRemoved => "mission_removed",
+        }
+    }
+
+    /// Whether the event is a loss (a destruction), as opposed to a capture,
+    /// a bailout, a despawn or a mission removal.
+    #[must_use]
+    pub const fn is_loss(self) -> bool {
+        matches!(
+            self,
+            Self::WingmateLost | Self::ProtectedNeutralLost | Self::OtherAllyLost
+        )
+    }
+}
+
+impl fmt::Display for AllyEventKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// One reportable ally transition: the mission callback, the side the actor
+/// was on and the voice its pilot speaks through.
+///
+/// The voice is the pilot's authored catalog id, or `None` when the mission
+/// authored none — a missing dialogue is never replaced by a random line
+/// (F33 non-negotiable 5).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AllyEvent {
+    /// The actor that transitioned.
+    pub actor: ActorId,
+    /// What the transition means to mission logic.
+    pub kind: AllyEventKind,
+    /// The actor's faction at the moment of the transition.
+    pub faction: FactionId,
+    /// The actor's declared survival policy.
+    pub survivability: SurvivabilityPolicy,
+    /// The pilot's authored voice, or `None` when the mission authored none.
+    pub voice: Option<ContentId>,
+}
+
+/// The roster role an actor was bound to — the F33-C "AI role" the mission
+/// assigns when it spawns the actor.
+///
+/// A wingmate slot and a neutral traffic index are the two roles the F33
+/// roster authors; an actor registered directly carries no authored role. The
+/// role is *data the mission set*, never inferred from the mesh or the paint
+/// (F33 non-negotiable 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AllyRole {
+    /// The actor flies a mission-authored wingmate slot.
+    Wingmate(WingmateSlot),
+    /// The actor is a mission-authored neutral actor.
+    Neutral(u32),
+    /// The actor was registered without an authored roster role.
+    Unassigned,
+}
+
+impl AllyRole {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Wingmate(_) => "wingmate",
+            Self::Neutral(_) => "neutral",
+            Self::Unassigned => "unassigned",
+        }
+    }
+}
+
+impl fmt::Display for AllyRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Whether a lifecycle transition closes an actor's record: after a despawn
+/// or a mission removal nothing may be recorded for it again
+/// ([`LifecycleKind::is_terminal`]).
+const fn closes_record(kind: LifecycleKind) -> bool {
+    kind.is_terminal()
+}
+
+/// The mission-callback kind a transition produces for an actor.
+fn classify_event(record: &AllyRecord, role: AllyRole, kind: LifecycleKind) -> AllyEventKind {
+    match kind {
+        LifecycleKind::Destroyed => {
+            if matches!(role, AllyRole::Wingmate(_)) {
+                AllyEventKind::WingmateLost
+            } else if record.survivability == SurvivabilityPolicy::ProtectedNeutral {
+                AllyEventKind::ProtectedNeutralLost
+            } else {
+                AllyEventKind::OtherAllyLost
+            }
+        }
+        LifecycleKind::OwnershipCaptured => AllyEventKind::Captured,
+        LifecycleKind::PilotBailout => AllyEventKind::BailedOut,
+        LifecycleKind::Despawned => AllyEventKind::Despawned,
+        LifecycleKind::MissionRemoved => AllyEventKind::MissionRemoved,
+    }
+}
+
 /// The briefing rule: applies the player's briefing selection to the
 /// mission-authored wingmate assignments.
 ///
@@ -563,6 +816,9 @@ pub struct AlliesRoster {
     player_faction: Option<FactionId>,
     records: BTreeMap<ActorId, AllyRecord>,
     wingmates: BTreeMap<WingmateSlot, WingmateAssignment>,
+    roles: BTreeMap<ActorId, AllyRole>,
+    lifecycle: BTreeMap<ActorId, BTreeSet<LifecycleKind>>,
+    terminal: BTreeMap<ActorId, LifecycleKind>,
 }
 
 impl AlliesRoster {
@@ -574,6 +830,9 @@ impl AlliesRoster {
             player_faction: None,
             records: BTreeMap::new(),
             wingmates: BTreeMap::new(),
+            roles: BTreeMap::new(),
+            lifecycle: BTreeMap::new(),
+            terminal: BTreeMap::new(),
         }
     }
 
@@ -606,6 +865,31 @@ impl AlliesRoster {
         Ok(())
     }
 
+    /// Registers an identity record under the authored roster role it was
+    /// spawned with (F33-C): a wingmate slot, a neutral traffic index or no
+    /// authored role.
+    ///
+    /// The role is *data the mission authored*, never inferred from the mesh
+    /// or the paint (F33 non-negotiable 1). It is what lets
+    /// [`AlliesRoster::record_lifecycle`] classify a loss as a lost wingmate,
+    /// a lost protected neutral or an ordinary ally loss.
+    ///
+    /// # Errors
+    ///
+    /// The same refusals as [`AlliesRoster::register`].
+    pub fn register_with_role(
+        &mut self,
+        record: AllyRecord,
+        role: AllyRole,
+    ) -> Result<(), AlliesError> {
+        let actor = record.actor;
+        self.register(record)?;
+        if role != AllyRole::Unassigned {
+            self.roles.insert(actor, role);
+        }
+        Ok(())
+    }
+
     /// Whether the actor is registered.
     #[must_use]
     pub fn is_registered(&self, actor: &ActorId) -> bool {
@@ -634,6 +918,152 @@ impl AlliesRoster {
     #[must_use]
     pub fn pilot_of(&self, actor: &ActorId) -> Option<&PilotId> {
         self.records.get(actor).map(|record| &record.pilot)
+    }
+
+    /// The authored voice the actor's pilot speaks through; `None` when the
+    /// actor is unregistered or the mission authored no voice. A missing
+    /// voice is never replaced by a random line (F33 non-negotiable 5).
+    #[must_use]
+    pub fn voice_of(&self, actor: &ActorId) -> Option<&ContentId> {
+        self.records
+            .get(actor)
+            .and_then(|record| record.voice.as_ref())
+    }
+
+    /// Every registered actor, in ascending session-qualified order.
+    pub fn actors(&self) -> impl Iterator<Item = ActorId> + '_ {
+        self.records.keys().copied()
+    }
+
+    /// The roster role the actor was spawned under, or `None` when the actor
+    /// is not registered.
+    #[must_use]
+    pub fn role_of(&self, actor: &ActorId) -> Option<AllyRole> {
+        self.records.get(actor).map(|_| {
+            self.roles
+                .get(actor)
+                .copied()
+                .unwrap_or(AllyRole::Unassigned)
+        })
+    }
+
+    /// The wingmate slot the actor was registered for, when it flies one.
+    #[must_use]
+    pub fn wingmate_slot_of(&self, actor: &ActorId) -> Option<WingmateSlot> {
+        match self.roles.get(actor) {
+            Some(AllyRole::Wingmate(slot)) => Some(*slot),
+            _ => None,
+        }
+    }
+
+    /// The transition ledger recorded for the actor — the F29
+    /// [`LifecycleKind`]s, each at most once. `None` when the actor is
+    /// unregistered or nothing has happened to it yet.
+    #[must_use]
+    pub fn lifecycle(&self, actor: &ActorId) -> Option<&BTreeSet<LifecycleKind>> {
+        self.lifecycle.get(actor)
+    }
+
+    /// Whether the actor's record is closed by a terminal transition, so
+    /// nothing may be recorded for it again.
+    #[must_use]
+    pub fn is_terminal(&self, actor: &ActorId) -> bool {
+        self.terminal.contains_key(actor)
+    }
+
+    /// The actor's current identity status, or `None` when unregistered.
+    ///
+    /// A terminal transition wins over the earlier states: a despawned actor
+    /// that also recorded a destruction is `Despawned`, not `Destroyed`.
+    #[must_use]
+    pub fn status(&self, actor: &ActorId) -> Option<AllyStatus> {
+        if !self.records.contains_key(actor) {
+            return None;
+        }
+        if let Some(terminal) = self.terminal.get(actor) {
+            return Some(match terminal {
+                LifecycleKind::Despawned => AllyStatus::Despawned,
+                LifecycleKind::MissionRemoved => AllyStatus::MissionRemoved,
+                // Only a terminal kind is ever inserted here.
+                _ => AllyStatus::MissionRemoved,
+            });
+        }
+        let seen = self.lifecycle.get(actor);
+        let has = |kind: LifecycleKind| seen.is_some_and(|kinds| kinds.contains(&kind));
+        if has(LifecycleKind::Destroyed) {
+            Some(AllyStatus::Destroyed)
+        } else if has(LifecycleKind::OwnershipCaptured) {
+            Some(AllyStatus::Captured)
+        } else if has(LifecycleKind::PilotBailout) {
+            Some(AllyStatus::BailedOut)
+        } else {
+            Some(AllyStatus::Active)
+        }
+    }
+
+    /// Whether the actor may still act — fire, follow a route, hold an AI
+    /// role. False for an unregistered actor, an actor from another session
+    /// (which cannot be registered here at all) and an actor whose status
+    /// [`AllyStatus::ends_action`] names. A capture and a bailout do **not**
+    /// end this.
+    #[must_use]
+    pub fn is_acting(&self, actor: &ActorId) -> bool {
+        let Some(record_status) = self.status(actor) else {
+            return false;
+        };
+        record_status.is_acting()
+    }
+
+    /// Whether the actor may fire: the same gate as [`Self::is_acting`],
+    /// named for the firing consumer. A dead ally can never fire from a stale
+    /// actor (F33 AC03).
+    #[must_use]
+    pub fn may_fire(&self, actor: &ActorId) -> bool {
+        self.is_acting(actor)
+    }
+
+    /// Records an authoritative lifecycle transition for the actor and
+    /// returns the mission callback it produces (F33-C).
+    ///
+    /// The transition is once-per-kind and a despawn or mission removal closes
+    /// the record, mirroring F29's resolver ledger, so a replayed event is
+    /// refused rather than reported twice and a late event can never
+    /// resurrect a dead actor. A capture or a bailout is recorded but does
+    /// **not** end the actor's ability to act.
+    ///
+    /// # Errors
+    ///
+    /// [`AlliesError::ForeignSession`], [`AlliesError::UnknownActor`],
+    /// [`AlliesError::DuplicateLifecycle`] or [`AlliesError::ActorClosed`].
+    pub fn record_lifecycle(
+        &mut self,
+        actor: ActorId,
+        kind: LifecycleKind,
+    ) -> Result<AllyEvent, AlliesError> {
+        // Validate ownership first and take a copy, so the body below never
+        // holds a record borrow while it mutates the lifecycle maps.
+        let record = self.entry_mut(actor)?.clone();
+        if let Some(terminal) = self.terminal.get(&actor).copied() {
+            return Err(AlliesError::ActorClosed { actor, terminal });
+        }
+        if !self.lifecycle.entry(actor).or_default().insert(kind) {
+            return Err(AlliesError::DuplicateLifecycle { actor, kind });
+        }
+        if closes_record(kind) {
+            self.terminal.insert(actor, kind);
+        }
+        let role = self
+            .roles
+            .get(&actor)
+            .copied()
+            .unwrap_or(AllyRole::Unassigned);
+        Ok(AllyEvent {
+            actor,
+            kind: classify_event(&record, role, kind),
+            faction: record.faction,
+            survivability: record.survivability,
+            voice: record.voice,
+        })
     }
 
     /// Records an ownership/faction change — the capture transaction.
@@ -826,6 +1256,7 @@ impl AlliesRoster {
             survivability,
         };
         self.register(record.clone())?;
+        self.roles.insert(actor, AllyRole::Wingmate(slot));
         Ok(record)
     }
 
@@ -1379,5 +1810,204 @@ mod tests {
             !roster.is_registered(&actor(2)),
             "a refused registration registers nothing"
         );
+    }
+
+    /// A freshly opened session with the player faction committed, the authored
+    /// wingmates assigned and every synthetic record except the wingmate
+    /// registered directly.
+    fn lifecycle_roster() -> AlliesRoster {
+        let mut roster = AlliesRoster::new(SESSION);
+        roster.set_player_faction(synthetic_faction("synthetic.nathan"));
+        roster
+            .reset_wingmates(&synthetic_wingmates(), &BriefingPlan::new())
+            .expect("the authored set assigns");
+        for record in synthetic_ally_roster(SESSION) {
+            // Serial 2 is the wingmate slot 1 actor, registered below.
+            if record.actor.serial != 2 {
+                roster
+                    .register(record)
+                    .expect("the fixture records register");
+            }
+        }
+        roster
+            .register_wingmate(actor(2), WingmateSlot(1))
+            .expect("slot 1 is assigned and the faction is set");
+        roster
+    }
+
+    /// F33-C: an authoritative F29 lifecycle transition reaches the identity
+    /// record as its mission callback, once per kind; destruction, despawn and
+    /// mission removal end the actor's ability to act, while a capture and a
+    /// bailout do not.
+    #[test]
+    fn accept_f33_c_record_lifecycle_classifies_and_gates_action() {
+        let mut roster = lifecycle_roster();
+
+        // The wingmate: its destruction is a lost wingmate and closes the gate.
+        let wingman = actor(2);
+        assert_eq!(
+            roster.role_of(&wingman),
+            Some(AllyRole::Wingmate(WingmateSlot(1)))
+        );
+        assert_eq!(roster.wingmate_slot_of(&wingman), Some(WingmateSlot(1)));
+        assert_eq!(roster.status(&wingman), Some(AllyStatus::Active));
+        assert!(roster.may_fire(&wingman));
+
+        let lost = roster
+            .record_lifecycle(wingman, LifecycleKind::Destroyed)
+            .expect("the wingmate is registered");
+        assert_eq!(lost.kind, AllyEventKind::WingmateLost);
+        assert_eq!(lost.actor, wingman);
+        assert_eq!(lost.faction, synthetic_faction("synthetic.nathan"));
+        assert_eq!(lost.survivability, SurvivabilityPolicy::Mortal);
+        assert_eq!(
+            lost.voice,
+            Some(content(ContentKind::Voice, "synthetic.betty"))
+        );
+        assert_eq!(roster.status(&wingman), Some(AllyStatus::Destroyed));
+        assert!(!roster.is_acting(&wingman));
+        assert!(!roster.may_fire(&wingman));
+
+        // The transition happened once; a replay is refused, never re-emitted.
+        assert_eq!(
+            roster.record_lifecycle(wingman, LifecycleKind::Destroyed),
+            Err(AlliesError::DuplicateLifecycle {
+                actor: wingman,
+                kind: LifecycleKind::Destroyed,
+            })
+        );
+
+        // A protected neutral's loss is a mission event, never a wingmate kill.
+        let trader = actor(4);
+        let neutral_lost = roster
+            .record_lifecycle(trader, LifecycleKind::Destroyed)
+            .expect("the trader is registered");
+        assert_eq!(neutral_lost.kind, AllyEventKind::ProtectedNeutralLost);
+        assert_eq!(
+            neutral_lost.survivability,
+            SurvivabilityPolicy::ProtectedNeutral
+        );
+        assert!(!roster.may_fire(&trader));
+
+        // A non-wingmate mortal ally is an ordinary ally loss.
+        let raider = actor(9);
+        let other_lost = roster
+            .record_lifecycle(raider, LifecycleKind::Destroyed)
+            .expect("the raider is registered");
+        assert_eq!(other_lost.kind, AllyEventKind::OtherAllyLost);
+        assert_eq!(
+            other_lost.voice, None,
+            "a pilot with no authored voice produces no cue"
+        );
+
+        // A capture is recorded but the actor still exists and may act.
+        let player = actor(1);
+        let captured = roster
+            .record_lifecycle(player, LifecycleKind::OwnershipCaptured)
+            .expect("the player is registered");
+        assert_eq!(captured.kind, AllyEventKind::Captured);
+        assert_eq!(roster.status(&player), Some(AllyStatus::Captured));
+        assert!(roster.is_acting(&player));
+        assert!(roster.may_fire(&player));
+
+        // A bailout leaves the airframe a physical object; it may still act.
+        let bailed = actor(5);
+        roster
+            .register(ally(
+                SESSION,
+                5,
+                "synthetic.bailed",
+                "synthetic.nathan",
+                "synthetic.fury",
+                Some("synthetic.bailed"),
+                SurvivabilityPolicy::Mortal,
+            ))
+            .expect("the bailout actor registers");
+        let bailout = roster
+            .record_lifecycle(bailed, LifecycleKind::PilotBailout)
+            .expect("the bailout actor is registered");
+        assert_eq!(bailout.kind, AllyEventKind::BailedOut);
+        assert_eq!(roster.status(&bailed), Some(AllyStatus::BailedOut));
+        assert!(roster.may_fire(&bailed));
+    }
+
+    /// F33-C: a despawn or mission removal is terminal — it closes the record,
+    /// so nothing can be recorded for the actor again and a late event of a
+    /// previous generation cannot resurrect it.
+    #[test]
+    fn accept_f33_c_a_terminal_transition_closes_the_record() {
+        let mut roster = lifecycle_roster();
+        let despawned = actor(9);
+
+        let event = roster
+            .record_lifecycle(despawned, LifecycleKind::Despawned)
+            .expect("the raider is registered");
+        assert_eq!(event.kind, AllyEventKind::Despawned);
+        assert!(roster.is_terminal(&despawned));
+        assert_eq!(roster.status(&despawned), Some(AllyStatus::Despawned));
+        assert!(!roster.may_fire(&despawned));
+
+        assert_eq!(
+            roster.record_lifecycle(despawned, LifecycleKind::Destroyed),
+            Err(AlliesError::ActorClosed {
+                actor: despawned,
+                terminal: LifecycleKind::Despawned,
+            }),
+            "a closed record accepts nothing, not even a destruction"
+        );
+
+        // A mission removal is likewise terminal and classified separately.
+        let removed = actor(4);
+        let event = roster
+            .record_lifecycle(removed, LifecycleKind::MissionRemoved)
+            .expect("the trader is registered");
+        assert_eq!(event.kind, AllyEventKind::MissionRemoved);
+        assert_eq!(roster.status(&removed), Some(AllyStatus::MissionRemoved));
+        assert_eq!(
+            roster.record_lifecycle(removed, LifecycleKind::Despawned),
+            Err(AlliesError::ActorClosed {
+                actor: removed,
+                terminal: LifecycleKind::MissionRemoved,
+            })
+        );
+    }
+
+    /// F33-C: an actor registered under its authored roster role is classified
+    /// by that role, and an actor with no authored role is not.
+    #[test]
+    fn accept_f33_c_register_with_role_records_the_authored_role() {
+        let mut roster = AlliesRoster::new(SESSION);
+
+        let neutral = actor(4);
+        roster
+            .register_with_role(
+                synthetic_ally_roster(SESSION)[3].clone(),
+                AllyRole::Neutral(1),
+            )
+            .expect("the protected neutral registers");
+        assert_eq!(roster.role_of(&neutral), Some(AllyRole::Neutral(1)));
+        assert_eq!(
+            roster.wingmate_slot_of(&neutral),
+            None,
+            "a neutral does not fly a wingmate slot"
+        );
+        let event = roster
+            .record_lifecycle(neutral, LifecycleKind::Destroyed)
+            .expect("the neutral is registered");
+        assert_eq!(event.kind, AllyEventKind::ProtectedNeutralLost);
+
+        // An actor registered without an authored role stays unassigned.
+        let unassigned = actor(9);
+        roster
+            .register_with_role(
+                synthetic_ally_roster(SESSION)[2].clone(),
+                AllyRole::Unassigned,
+            )
+            .expect("the raider registers");
+        assert_eq!(roster.role_of(&unassigned), Some(AllyRole::Unassigned));
+        let event = roster
+            .record_lifecycle(unassigned, LifecycleKind::Destroyed)
+            .expect("the raider is registered");
+        assert_eq!(event.kind, AllyEventKind::OtherAllyLost);
     }
 }

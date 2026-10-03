@@ -1,7 +1,7 @@
-//! The pilot-roster application boundary (F33-A, F33-B).
+//! The pilot-roster application boundary (F33-A, F33-B, F33-C).
 //!
 //! Spec: `specs/F33-wingmates-factions-neutral-traffic-and-pilot-identity.md`,
-//! stages `### F33-A` and `### F33-B`. Shared contract:
+//! stages `### F33-A`, `### F33-B` and `### F33-C`. Shared contract:
 //! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
 //! This module sits between the declared roster schema
@@ -20,6 +20,13 @@
 //!   committing the player faction and deriving the wingmate assignments from
 //!   the authored records every time, so a retry rebuilds rather than
 //!   carrying the failed world's state.
+//! * [`apply_roster_lifecycle`] / [`apply_ally_lifecycle`] — the F33-C
+//!   consumer seam: the authoritative F29 [`cs_sim::damage::LifecycleKind`]
+//!   ledger is fed into the identity record, a mission callback
+//!   ([`cs_sim::allies::AllyEvent`]) and an authored-voice [`DialogueCue`] are
+//!   produced, and an ally that may no longer act is taken out of the weapon
+//!   firing gate ([`FireResolver`]) so a dead actor cannot later fire
+//!   (AC03). Every refusal is named in the returned [`AllyConsumerOutcome`].
 //! * [`RosterBinding`] — the ECS record tying an entity to its
 //!   session-qualified [`cs_sim::damage::ActorId`] and the declared roster
 //!   subject it was spawned under, generation-stamped like
@@ -33,10 +40,11 @@
 use bevy::ecs::component::Component;
 use cs_content::pilots::{DeclaredPilot, DeclaredRoster, DeclaredSurvivability, DeclaredWingmate};
 use cs_sim::allies::{
-    AlliesRoster, BriefingError, BriefingPlan, FactionId, GeometryId, IdentityError, PilotId,
-    SurvivabilityPolicy, WingmateAssignment, WingmateSlot,
+    AlliesError, AlliesRoster, AllyEvent, AllyEventKind, BriefingError, BriefingPlan, FactionId,
+    GeometryId, IdentityError, PilotId, SurvivabilityPolicy, WingmateAssignment, WingmateSlot,
 };
-use cs_sim::damage::ActorId;
+use cs_sim::damage::{ActorId, DamageNodeKey, DamageResolver, LifecycleKind};
+use cs_sim::weapons::FireResolver;
 use cs_types::content::{ContentId, Resolved};
 use cs_types::evidence::ClaimId;
 
@@ -352,6 +360,326 @@ pub fn open_roster(
     roster.set_player_faction(lowered.player_faction.clone());
     roster.reset_wingmates(&lowered.wingmates, plan)?;
     Ok(roster)
+}
+
+// ------------------------------------- the ally lifecycle consumer seam (F33-C) ---
+//
+// F33-C. The F29 [`DamageResolver`] is the *producer*: it owns the
+// authoritative five-way lifecycle ledger and records destruction, bailout,
+// capture, despawn and mission removal exactly once. The *consumers* this seam
+// drives are the identity record itself (the mission callback and its authored
+// dialogue voice) and the weapon firing gate, which must stop firing the
+// moment an actor may no longer act (AC03: "an ally killed during a cutscene
+// cannot later fire from a stale actor").
+//
+// The pass is **state-driven**, not event-replayed, exactly like
+// `cs_app::damage::apply_damage_state`: it reads the resolver's lifecycle set
+// and records only the kinds the roster has not seen, so running it during a
+// paused cutscene, after the scene resumes, or twice in a row is convergent
+// and a death that happened while the simulation was paused cannot be missed.
+// A capture or a bailout is recorded but does **not** close the firing gate —
+// only destruction, despawn and mission removal do, mirroring
+// `cs_sim::targeting`'s `ends_targeting` split. Every refusal is named in the
+// returned [`AllyConsumerLog`] rather than swallowed.
+
+/// One dialogue line a mission callback resolves to.
+///
+/// The voice is the pilot's authored catalog id, carried from the
+/// [`AlliesRoster`] through the [`AllyEvent`]; a pilot the mission authored no
+/// voice for produces **no** cue rather than a random substitute (F33
+/// non-negotiable 5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DialogueCue {
+    /// The actor whose transition the line answers.
+    pub actor: ActorId,
+    /// What the transition means to mission logic.
+    pub kind: AllyEventKind,
+    /// The authored voice catalog id the line resolves through.
+    pub voice: ContentId,
+}
+
+/// Why the ally lifecycle pass could not update a consumer.
+///
+/// A refusal is a returned record, not a dropped update: the pass says
+/// exactly which actor it could not reconcile and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AllyConsumerRefusal {
+    /// The actor's session is not the roster's. A restarted or swapped actor
+    /// is a new generation; nothing from the old one is recorded.
+    ForeignSession {
+        /// The roster's session generation.
+        expected: u64,
+        /// The session the named actor carried.
+        found: u64,
+    },
+    /// The actor is not registered with the roster, so it has no identity to
+    /// reconcile.
+    UnknownActor {
+        /// The unknown actor.
+        actor: ActorId,
+    },
+    /// The roster itself refused the transition; see [`AlliesError`].
+    Lifecycle(AlliesError),
+}
+
+/// One update the ally lifecycle pass applied, or one refusal.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AllyConsumerEvent {
+    /// The actor's identity recorded a lifecycle transition — the mission
+    /// callback. A wingmate loss, a protected-neutral loss, a capture and a
+    /// bailout are different events, never collapsed into one.
+    Callback(AllyEvent),
+    /// A mission callback resolved to the pilot's authored voice. Emitted
+    /// only when the mission authored a voice.
+    Dialogue(DialogueCue),
+    /// A mount was disabled because the actor may no longer act, so a stale
+    /// actor cannot fire from a wreck.
+    MountDisabled {
+        /// The actor.
+        actor: ActorId,
+        /// The disabled mount.
+        mount: DamageNodeKey,
+    },
+    /// The update could not be applied; see [`AllyConsumerRefusal`].
+    Refused(AllyConsumerRefusal),
+}
+
+/// The append-only record of what the ally lifecycle pass changed, oldest
+/// first.
+///
+/// A log entry is written only for a real transition, a real disable or a
+/// refusal — never for a consumer that already agreed with the state, so a
+/// converged pass logs nothing more.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AllyConsumerLog {
+    events: Vec<AllyConsumerEvent>,
+}
+
+impl AllyConsumerLog {
+    /// An empty log.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends one event.
+    pub fn push(&mut self, event: AllyConsumerEvent) {
+        self.events.push(event);
+    }
+
+    /// Every event, oldest first.
+    #[must_use]
+    pub fn events(&self) -> &[AllyConsumerEvent] {
+        &self.events
+    }
+
+    /// The most recent event.
+    #[must_use]
+    pub fn last(&self) -> Option<&AllyConsumerEvent> {
+        self.events.last()
+    }
+
+    /// How many events the log holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Whether the log is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    fn absorb(&mut self, other: Self) {
+        self.events.extend(other.events);
+    }
+}
+
+/// What one ally lifecycle pass changed.
+///
+/// The counters are how a caller observes convergence: the same state applied
+/// twice reports zero the second time, and a pass that only sees already-known
+/// transitions disables nothing new.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AllyConsumerReport {
+    /// Lifecycle transitions newly recorded in the identity record.
+    pub recorded: u32,
+    /// Mounts newly disabled on actors that may no longer act.
+    pub mounts_disabled: u32,
+    /// Authored-voice dialogue cues emitted.
+    pub cues: u32,
+    /// Updates that could not be applied.
+    pub refused: u32,
+}
+
+impl AllyConsumerReport {
+    /// Whether the pass changed nothing and refused nothing.
+    #[must_use]
+    pub const fn is_noop(&self) -> bool {
+        self.recorded == 0 && self.mounts_disabled == 0 && self.cues == 0 && self.refused == 0
+    }
+}
+
+/// One ally lifecycle pass's report and its log.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AllyConsumerOutcome {
+    /// What the pass changed.
+    pub report: AllyConsumerReport,
+    /// Every change and refusal, oldest first.
+    pub log: AllyConsumerLog,
+}
+
+impl AllyConsumerOutcome {
+    fn absorb(&mut self, other: Self) {
+        self.report.recorded += other.report.recorded;
+        self.report.mounts_disabled += other.report.mounts_disabled;
+        self.report.cues += other.report.cues;
+        self.report.refused += other.report.refused;
+        self.log.absorb(other.log);
+    }
+}
+
+/// Reconciles one actor's identity record with the authoritative F29 damage
+/// lifecycle and closes the firing gate when the actor may no longer act.
+///
+/// The damage resolver's lifecycle set is the producer: every transition the
+/// roster has not yet recorded becomes an [`AllyEvent`] mission callback and,
+/// when the pilot has an authored voice, a [`DialogueCue`]. Only destruction,
+/// despawn and mission removal end the actor's ability to act
+/// ([`cs_sim::allies::AllyStatus::ends_action`]); a capture or a bailout is
+/// recorded but leaves the guns alone.
+///
+/// # Errors
+///
+/// Never returns `Err`: a foreign or unknown actor and a transition the roster
+/// itself refuses are reported through [`AllyConsumerRefusal`] in the returned
+/// outcome, so a caller can keep reconciling the rest of the roster.
+#[must_use]
+pub fn apply_ally_lifecycle(
+    roster: &mut AlliesRoster,
+    actor: ActorId,
+    damage: &DamageResolver,
+    fire: &mut FireResolver,
+) -> AllyConsumerOutcome {
+    let mut outcome = AllyConsumerOutcome::default();
+
+    if actor.session.get() != roster.session() {
+        refusals::foreign_session(&mut outcome, roster.session(), actor.session.get());
+        return outcome;
+    }
+    if !roster.is_registered(&actor) {
+        refusals::unknown_actor(&mut outcome, actor);
+        return outcome;
+    }
+
+    // The mission callbacks and their dialogue come from the authoritative
+    // lifecycle ledger. Only the kinds the roster has not seen are recorded,
+    // so a replayed event is never reported twice.
+    let kinds: Vec<LifecycleKind> = damage
+        .lifecycle(&actor)
+        .map(|seen| seen.iter().copied().collect())
+        .unwrap_or_default();
+    for kind in kinds {
+        if roster
+            .lifecycle(&actor)
+            .is_some_and(|seen| seen.contains(&kind))
+        {
+            continue;
+        }
+        match roster.record_lifecycle(actor, kind) {
+            Ok(event) => {
+                outcome.report.recorded += 1;
+                outcome.log.push(AllyConsumerEvent::Callback(event.clone()));
+                if let Some(voice) = event.voice.clone() {
+                    outcome.report.cues += 1;
+                    outcome.log.push(AllyConsumerEvent::Dialogue(DialogueCue {
+                        actor,
+                        kind: event.kind,
+                        voice,
+                    }));
+                }
+            }
+            Err(error) => refusals::lifecycle(&mut outcome, error),
+        }
+    }
+
+    // The firing gate: an actor that may no longer act fires nothing. This is
+    // the AC03 link — the aircraft's guns are taken out even when the lethal
+    // hit landed on a node that is not itself a weapon mount, which the F29-C
+    // mount-to-part pass does not cover.
+    if !roster.is_acting(&actor) {
+        let mounts: Vec<DamageNodeKey> = fire
+            .definitions(&actor)
+            .iter()
+            .map(|definition| definition.mount().clone())
+            .collect();
+        for mount in mounts {
+            let Some(state) = fire.state_mut(&actor) else {
+                break;
+            };
+            if !state.is_disabled(&mount) {
+                state.disable(&mount);
+                outcome.report.mounts_disabled += 1;
+                outcome
+                    .log
+                    .push(AllyConsumerEvent::MountDisabled { actor, mount });
+            }
+        }
+    }
+
+    outcome
+}
+
+/// Reconciles every actor the roster holds against the authoritative damage
+/// lifecycle: the batch form of [`apply_ally_lifecycle`].
+///
+/// This is what a host runs after a cutscene resumes, so an ally killed while
+/// the simulation was paused is reconciled before the next tick can fire.
+/// The per-actor refusals are merged into one outcome.
+#[must_use]
+pub fn apply_roster_lifecycle(
+    roster: &mut AlliesRoster,
+    damage: &DamageResolver,
+    fire: &mut FireResolver,
+) -> AllyConsumerOutcome {
+    let actors: Vec<ActorId> = roster.actors().collect();
+    let mut total = AllyConsumerOutcome::default();
+    for actor in actors {
+        total.absorb(apply_ally_lifecycle(roster, actor, damage, fire));
+    }
+    total
+}
+
+/// The refusal constructors, so [`apply_ally_lifecycle`] stays readable.
+mod refusals {
+    use super::{AlliesError, AllyConsumerEvent, AllyConsumerOutcome, AllyConsumerRefusal};
+
+    /// The actor belongs to another session generation.
+    pub(super) fn foreign_session(outcome: &mut AllyConsumerOutcome, expected: u64, found: u64) {
+        outcome.report.refused += 1;
+        outcome.log.push(AllyConsumerEvent::Refused(
+            AllyConsumerRefusal::ForeignSession { expected, found },
+        ));
+    }
+
+    /// The actor is not registered with the roster.
+    pub(super) fn unknown_actor(outcome: &mut AllyConsumerOutcome, actor: cs_sim::damage::ActorId) {
+        outcome.report.refused += 1;
+        outcome.log.push(AllyConsumerEvent::Refused(
+            AllyConsumerRefusal::UnknownActor { actor },
+        ));
+    }
+
+    /// The roster refused the lifecycle transition.
+    pub(super) fn lifecycle(outcome: &mut AllyConsumerOutcome, error: AlliesError) {
+        outcome.report.refused += 1;
+        outcome
+            .log
+            .push(AllyConsumerEvent::Refused(AllyConsumerRefusal::Lifecycle(
+                error,
+            )));
+    }
 }
 
 /// Component: ties an entity to one session-qualified actor and the declared

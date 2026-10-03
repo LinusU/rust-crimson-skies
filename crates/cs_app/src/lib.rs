@@ -398,16 +398,21 @@
 //! fixed-tick systems decide one bounded command per aircraft and write it into
 //! the same `FlightAircraft` boundary the player input session uses.
 //!
-//! [`roster`] is the F33-A/F33-B pilot-roster boundary
+//! [`roster`] is the F33-A/F33-B/F33-C pilot-roster boundary
 //! (`specs/F33-wingmates-factions-neutral-traffic-and-pilot-identity.md`,
-//! stages `### F33-A` and `### F33-B`): [`roster::lower_roster`], which lowers
-//! a declared `cs_content::pilots::DeclaredRoster` into the
+//! stages `### F33-A`, `### F33-B` and `### F33-C`): [`roster::lower_roster`],
+//! which lowers a declared `cs_content::pilots::DeclaredRoster` into the
 //! [`roster::LoweredRoster`] a session registers actors and wingmate
 //! assignments from — refusing an unknown pilot voice (never a random line)
 //! and an unknown survivability (never a silent mortal); [`roster::open_roster`],
 //! which opens a session's `AlliesRoster` from that lowered roster and the
 //! player's briefing plan, so a retry rebuilds the authored wingmate set
-//! rather than carrying the failed world's; and the generation-stamped
+//! rather than carrying the failed world's; [`roster::apply_roster_lifecycle`]
+//! / [`roster::apply_ally_lifecycle`], which feed the authoritative F29
+//! damage lifecycle into the identity record as an
+//! [`cs_sim::allies::AllyEvent`] mission callback plus an authored-voice
+//! [`roster::DialogueCue`] and ground an ally that may no longer act in the
+//! weapon firing gate (AC03); and the generation-stamped
 //! [`roster::RosterBinding`] ECS record tying an entity to its
 //! session-qualified actor and roster subject.
 //!
