@@ -489,6 +489,57 @@ fn accept_f14_d_6_a_container_that_declares_no_airframe_is_named_not_invented() 
     assert!(!report.contains("\"airframe\":"), "{report}");
 }
 
+/// A container that reads but holds no declaring script names that absence
+/// instead of borrowing another script's bytes: the idiom's own provenance span
+/// is measured from the declaring script, so a corpus without it has none, and
+/// the discovery reports both findings rather than an empty roster.
+#[test]
+fn accept_f14_d_6_a_container_without_the_declaring_script_is_named_not_invented() {
+    let temp = campaign_tree("no-declaring-script");
+    // The container reads as the interp container the roster is declared in, and
+    // carries a script of its own, but not the declaring one.
+    let (bytes, _) = interp_container(&[(
+        b"support\\init.gw",
+        vec![line(&[b"set", b"ZBD_DIR", b"zbd"])],
+    )]);
+    temp.write(AIRFRAME_SCRIPT_IMAGE, &bytes);
+
+    let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
+    assert!(
+        baseline
+            .catalog
+            .elements()
+            .all(|element| element.kind != ContentKind::Airframe),
+        "no airframe is declared by a script that does not exist"
+    );
+    let status = airframe_status(&baseline);
+    assert_eq!(status.rows, 0);
+    assert_eq!(
+        status.gaps.get("declaring_script_absent"),
+        Some(&1),
+        "the declaring script's absence is counted under its own stable label"
+    );
+    assert_eq!(
+        status.gaps.get("no_airframes_declared"),
+        Some(&1),
+        "and the declaration that therefore declared nothing"
+    );
+    assert_eq!(
+        status.gaps.get("roster_unknown"),
+        Some(&1),
+        "forced assignments only: no row exists to be unavailable"
+    );
+    let diagnostic = status.diagnostic.as_deref().expect("a named gap");
+    assert!(diagnostic.contains(AIRFRAME_SCRIPT_IMAGE), "{diagnostic}");
+    assert!(
+        diagnostic.contains("holds no script named"),
+        "the diagnostic quotes the finding itself, not only its label: {diagnostic}"
+    );
+    // The rest of the inventory survives a collection that found nothing.
+    assert_eq!(baseline.roots, vec![cid(ContentKind::Mission, "ch1-m01")]);
+    assert_eq!(baseline.catalog.launchable_count(), 1);
+}
+
 /// A line the walk cannot read is a finding on the record, never a silently lost
 /// row: the container still yields the airframe it really declares, and the
 /// unreadable line is counted.
