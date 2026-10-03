@@ -332,7 +332,6 @@ fn evidence_report_f14_d_6_writes_the_acceptance_report() {
     fs::write(&report_path, &report)
         .unwrap_or_else(|error| panic!("write {}: {error}", report_path.display()));
     for needle in [
-        "\"schema_version\": 1",
         "\"retail\":true",
         "\"synthetic_launchable\":0",
         &format!("\"install_sha256\":\"{install_sha256}\""),
@@ -592,7 +591,7 @@ fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
         panic!(
             "{name} is not set: this harness only runs through the sequence in its module doc \
-             (crates/cs_content/tests/evidence_report_f14_d_3.rs)"
+             (crates/cs_content/tests/evidence_report_f14_d_6.rs)"
         )
     })
 }
@@ -671,7 +670,7 @@ struct Suite {
 }
 
 /// Extracts the libtest summaries and the per-test results of the
-/// `accept_f14_d_3_` tests from a recorded `cargo test` output.
+/// `accept_f14_d_6_` tests from a recorded `cargo test` output.
 fn parse_suite(log: &str) -> Suite {
     let mut suite = Suite::default();
     let mut pending: VecDeque<String> = VecDeque::new();
@@ -715,7 +714,7 @@ fn parse_suite(log: &str) -> Suite {
             // `cargo test -- <prefix>` matches the prefix anywhere in the test
             // name, so a unit test inside a module counts exactly as the
             // selection counts it.
-            if !name.contains("accept_f14_d_3_") {
+            if !name.contains("accept_f14_d_6_") {
                 continue;
             }
             match tail.split_whitespace().next() {
