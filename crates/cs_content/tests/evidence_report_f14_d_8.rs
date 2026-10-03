@@ -769,10 +769,11 @@ fn review_method() -> String {
          file manifest (it never reads classified_reader_dirs or retail_baseline) and the \
          scrapbook count re-parses the member itself. Implementer mutation probes on this \
          branch: removing the stunt_rows or scrapbook_rows call from retail_baseline, keying a \
-         stunt row by the objective's description instead of its zone label, using the stored \
-         container digest instead of the decoded member digest for a scrapbook span, and \
-         dropping the collections' explicit unknowns each fail the acceptance tests named in the \
-         finding.",
+         stunt row by the objective's description instead of its zone label, keying it by the \
+         target position, dropping the collections' explicit unknowns and clearing their gaps \
+         each fail the synthetic acceptance tests named in the finding; substituting the stored \
+         member digest for the decoded one in a scrapbook span is caught by the retail test, \
+         because a synthetic member is stored uncompressed and the two digests coincide there.",
     );
     recorded
         + &UNKNOWN_LIMITATIONS

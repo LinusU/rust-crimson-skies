@@ -257,10 +257,10 @@ the acceptance file was run, and the file was restored.
 
 | # | Mutation | Killed by |
 | --- | --- | --- |
-| 1 | the `stunt_rows` call in `retail_baseline` is replaced by an empty row set | the stunt mapping test (identity list), the non-stunt gap test and the not-launchable test (`unreachable_by_kind.stunt`) |
-| 2 | the `scrapbook_rows` call in `retail_baseline` is replaced by an empty row set | the scrapbook mapping test (identity list and record `rows`) |
-| 3 | the stunt row is keyed by the objective's description instead of its zone label | the stunt mapping test, on the identity list |
-| 4 | a scrapbook row's span uses the stored container digest instead of the decoded member digest | the scrapbook mapping test, on `span.member_sha256()` and the row fingerprint |
+| 1 | the `stunt_rows` call in `retail_baseline` is replaced by an empty row set | the stunt mapping test (identity list), the non-stunt gap test, `the_zone_label_is_the_identity_not_the_position` and the not-launchable test (`unreachable_by_kind.stunt`) |
+| 2 | the `scrapbook_rows` call in `retail_baseline` is replaced by an empty row set | the scrapbook mapping test (identity list and record `rows`) and the not-launchable test (`unreachable_by_kind.scrapbook_item`) |
+| 3 | the stunt row is keyed by the objective's description instead of its zone label | the stunt mapping test and `the_zone_label_is_the_identity_not_the_position`, on the identity lists |
+| 4 | a scrapbook row's span uses the stored member digest instead of the decoded member digest | the **retail** test, on `span.member_sha256()`. The synthetic fixture's member is stored uncompressed, so both digests coincide there and the synthetic arm does not catch it; the retail test pins the decoded digest `28b5144c…` and fails |
 | 5 | the five stunt unknowns are replaced by a single `not_normalized` | the stunt mapping tests, on `row.unsupported_codes()` and the ordered claim list |
 | 6 | the collection's `gaps` are cleared | the non-stunt scenario test (`non_stunt_fly_through_targets`) and the scrapbook test (`entry_not_a_scrapbook_item`) |
 
