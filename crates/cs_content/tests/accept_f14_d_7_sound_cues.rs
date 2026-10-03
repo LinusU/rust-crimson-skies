@@ -42,6 +42,7 @@
 //! Every member name and every byte below is authored for this file. No
 //! original content is committed.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -616,11 +617,20 @@ fn accept_f14_d_7_music_and_dialogue_hold_no_row_and_say_why() {
 }
 
 /// A member whose declared extent is not inside the container, or whose name is
-/// empty, is a named gap: it is in the index, so it must be accounted for, and
-/// it has no bytes that could back a cue.
+/// empty, or whose name the id grammar cannot key, is a named gap: it is in the
+/// index, so it must be accounted for, and it has no identity that could back a
+/// cue — and the members beside it still become rows.
 #[test]
 fn accept_f14_d_7_a_member_with_no_readable_bytes_is_a_named_gap() {
     let good = pcm_member(11_025, &[1, 2, 3], 0);
+    // A name that fills the 64-byte name field with bytes the key grammar has to
+    // escape, so `container + name` is longer than the id grammar's byte bound.
+    // Identity is that key, so such a member cannot be keyed without guessing.
+    let unkeyable = "_".repeat(64);
+    assert!(
+        install_file_key(&format!("{LOW}/{unkeyable}")).len() > 128,
+        "the fixture name really does exceed the id grammar's bound"
+    );
     let temp = tree(
         "holes",
         &[(
@@ -641,6 +651,10 @@ fn accept_f14_d_7_a_member_with_no_readable_bytes_is_a_named_gap() {
                     name: "",
                     bytes: &good,
                 },
+                FixtureMember::Bytes {
+                    name: &unkeyable,
+                    bytes: &good,
+                },
             ]),
         )],
     );
@@ -655,6 +669,12 @@ fn accept_f14_d_7_a_member_with_no_readable_bytes_is_a_named_gap() {
         "a member with no bytes inside the container cannot be a cue"
     );
     assert_eq!(status.gaps.get("member_name_empty"), Some(&1));
+    assert_eq!(
+        status.gaps.get("member_name_not_keyable"),
+        Some(&1),
+        "a member the id grammar cannot key loses its own row, never the inventory: the readable \
+         member beside it is still a row"
+    );
     assert_eq!(status.diagnostic, None);
 }
 
@@ -893,14 +913,12 @@ fn accept_f14_d_7_retail_sound_cues_are_rows() {
     assert_eq!(status.language, None);
     assert_eq!(status.rows, rows.len());
     assert_eq!(
-        status.gaps.get("duplicate_member"),
-        Some(&RETAIL_REPEATS),
-        "the byte-identical repeats the two archives declare are counted, not duplicated"
-    );
-    assert_eq!(
-        status.gaps.get("ambiguous_member_name"),
-        None,
-        "no name in either container declares two different recordings"
+        status.gaps,
+        BTreeMap::from([("duplicate_member", RETAIL_REPEATS)]),
+        "the only entries the sound family could not turn into one row each are the byte-identical \
+         repeats the two archives declare ({RETAIL_REPEATS}); every other member of both archives is \
+         a row, so a gap code appearing here means a member stopped being accounted for and this \
+         measurement has to be re-measured"
     );
     assert_eq!(status.diagnostic, None);
 

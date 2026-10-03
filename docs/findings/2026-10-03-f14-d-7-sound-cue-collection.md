@@ -6,6 +6,12 @@ follow-up of #389 (F14-D.2). Capabilities used: `retail` (read-only,
 `$CS_GAME_DIR`) plus ordinary build/test. Test prefix: `accept_f14_d_7_`.
 Evidence: `docs/findings/evidence/F14-D.7.json`.
 
+Reviewed on 2026-10-03 by bunny-alpha-2 in the **same agent instance and model**
+that implemented it, so that review is a self-review and not independent evidence
+(`AGENTS.md`, "Reviewing"). What the review changed is listed under
+"Review corrections" below; the retail measurements were re-derived from the
+installation rather than taken from the implementer's account.
+
 ## Problem
 
 `docs/contracts/IDENTITY-CONTENT.md` requires "sounds/music/dialogue/video" as
@@ -134,6 +140,56 @@ engine played for a given cue.** That stays unknown.
   coverage denominator; all 4951 rows are unreachable unknowns counted in
   `coverage.unreachable_by_kind.sound`.
 
+## The collection contract and this stage's rule pull in opposite directions
+
+`docs/contracts/IDENTITY-CONTENT.md` requires that "collections cannot exclude
+failed entries" and that "an opaque unparsed member is still an inventory row".
+This stage's own rule, quoted in the task, is the opposite for a cue: "no row
+from a file or member name alone; unreadable members stay diagnostics in
+`Baseline::collection_status`".
+
+Both readings are satisfied at once on this installation, because the two do not
+disagree about anything the installation actually holds: **all 5041 members**
+(2520 in `soundsl`, 2521 in `soundsh`) read their RIFF/WAVE header, and they are
+all accounted for as 4951 rows plus 90 counted byte-identical repeats. No entry
+is dropped. Measured independently of the Rust code: no member of either archive
+has a non-`RIFF`/`WAVE` header, no member name is non-ASCII, every name ends in
+`.wav`, and the longest composed id key is 69 bytes of the 128 the grammar
+allows.
+
+The gap taxonomy is still the honest place for a member that cannot become a row,
+because such a member has no identity at all — its name is not keyable, its bytes
+are not inside the container, or the container's index declares the same name
+twice with different recordings. Whether those entries should instead be
+inventory rows with `parse_state: failed` is the owner's call; it is recorded
+here and in the evidence report's `review.method` rather than decided here.
+
+## Review corrections
+
+The review of 2026-10-03 re-derived every retail number above straight from the
+installation (2520/2521 members, 2475/2476 case-folded names, 45+45 repeats, no
+unreadable header, 2476 shared verbatim names of which 565 differ in bytes) and
+made these changes:
+
+1. **`member_name_not_keyable` is a gap, not a failed inventory.** A member whose
+   declared name composes to a key longer than the id grammar allows propagated
+   `BaselineError::Key` out of `sound_rows`, so one over-long member name would
+   have cost the installation its whole catalog while the neighbouring cases
+   (a name that is not text, a name that is empty) were counted as named gaps.
+   It is now `member_name_not_keyable` in `CollectionStatus::gaps`, covered by
+   `accept_f14_d_7_a_member_with_no_readable_bytes_is_a_named_gap`. No retail
+   member triggers it (the longest retail key is 69 of 128 bytes), so no row
+   count moved.
+2. **The retail gap map is asserted whole.** Both
+   `accept_f14_d_7_retail_sound_cues_are_rows` and the evidence harness now
+   require the gap map to be exactly `{"duplicate_member": 90}`, so a new gap
+   code cannot appear beside it unnoticed.
+3. **The evidence report names the review.** `review.identity` carried a
+   hand-over placeholder that asked a future reviewer to replace it; it now names
+   the implementer, the reviewer, that they are the same agent instance, and that
+   the reviewer's context was not fresh.
+4. The contract tension above is recorded rather than left implicit.
+
 ## Unknowns
 
 - **Cue class.** Nothing states whether a member is a sound effect, a music cue
@@ -181,6 +237,19 @@ were applied and reverted, and each failed the named tests:
 | Drop the `sound_rows` call from `retail_baseline` | 7 of 8 |
 | Key a cue by the member name without its container | 6 of 8 |
 | Mint a row for a member whose RIFF/WAVE header does not read | `accept_f14_d_7_a_readable_member_yields_a_sound_row` |
-| Mint a `music` row from a `music_` member-name prefix | `accept_f14_d_7_music_and_dialogue_hold_no_row_and_say_why`, `accept_f14_d_7_a_repeated_name_is_one_cue_or_never_two_rows` |
+| Mint a `music` row from a `music_` member-name prefix | `accept_f14_d_7_music_and_dialogue_hold_no_row_and_say_why`, `accept_f14_d_7_a_repeated_name_is_one_cue_or_no_cue_and_never_two_rows` |
 | Drop the `duplicate_member` count for byte-identical repeats | `accept_f14_d_7_a_repeated_name_is_one_cue_or_no_cue_and_never_two_rows` |
 
+The review of 2026-10-03 added one more, which is how the first review finding was
+shown to be a real defect rather than a matter of taste: propagating the member-id
+error instead of naming it a gap (the code as it was handed over) makes
+`accept_f14_d_7_a_member_with_no_readable_bytes_is_a_named_gap` fail with
+
+```text
+the fixture installation reads: Key { spelling: "____…____",
+    source: KeyTooLong { len: 278 } }
+```
+
+The whole inventory is lost to one member name, which is exactly what the fix
+removes. One of the test names quoted above was misspelled in this table as well
+and the review corrected it, so a reader can run every probe it names.

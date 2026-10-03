@@ -32,9 +32,10 @@
 //! baseline builder's own report over that installation (the consumer trace),
 //! `rustc --version` and `Cargo.lock`. The only texts this file holds are the
 //! [`review_identity`] literal the committed
-//! `docs/findings/evidence/F14-D.7.json` carries (a reviewing agent replaces it
-//! with their own through `CS_EVIDENCE_REVIEW`) and the product-coverage
-//! limitations quoted into `review.method`; everything else is measured.
+//! `docs/findings/evidence/F14-D.7.json` carries — which now names the review of
+//! Rally #490 that actually ran, and says plainly that it was not independent —
+//! and the product-coverage limitations quoted into `review.method`; everything
+//! else is measured.
 //!
 //! `unknowns` is `[]` and the report validates with `--require-pass`: the
 //! **task's** acceptance is complete — the `sound` collection is populated from
@@ -50,7 +51,7 @@
 //! follow-up tasks. A failing run produces a failing report, which the validator
 //! rejects.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -268,8 +269,13 @@ fn evidence_report_f14_d_7_writes_the_acceptance_report() {
     assert_eq!(sound.source, SOUND_CONTAINER_PATTERN);
     assert_eq!(sound.language, None);
     assert_eq!(sound.rows, rows.len());
-    assert_eq!(sound.gaps.get("duplicate_member"), Some(&90));
-    assert_eq!(sound.gaps.get("ambiguous_member_name"), None);
+    assert_eq!(
+        sound.gaps,
+        BTreeMap::from([("duplicate_member", 90)]),
+        "every member of both archives is a row except the byte-identical repeats, so any other \
+         gap code means a member stopped being accounted for and this report's counts have to be \
+         re-measured"
+    );
     assert_eq!(sound.diagnostic, None);
     for kind in [ContentKind::Music, ContentKind::Dialogue] {
         let status = baseline
@@ -476,16 +482,23 @@ fn read_member(dir: &Path, container: &str, offset: u64, length: u64) -> Vec<u8>
 ///
 /// A reviewing agent supplies their own text through `CS_EVIDENCE_REVIEW` and
 /// replaces the literal with it in the same commit, which is how the report
-/// then names the review that actually happened.
+/// names the review that actually happened. The literal below already carries the
+/// review of Rally #490, so a later review of the same branch replaces it again
+/// rather than leaving this one standing.
 fn review_identity() -> String {
     let recorded = String::from(
         "implementer: openrouter/stealth-space-bunny-alpha (bunny-alpha-2, Rally #490, implement \
-         claim of 2026-10-03T06:16:44Z). This commit predates the review of Rally #490 and \
-         therefore names no reviewer: the reviewing agent replaces this sentence with their own \
-         identity, the Rally #490 review-claim timestamp and whether their context was fresh, and \
-         regenerates this report on the reviewed and rebased tree before calling complete_review. \
-         `checked` is the ceiling for an agent review and no agent review replaces the owner's \
-         human approval",
+         claim of 2026-10-03T06:16:44Z, branch commit 1fd3d88f). reviewer: \
+         openrouter/stealth-space-bunny-alpha (bunny-alpha-2, Rally #490, review claim of \
+         2026-10-03T07:26:53Z) — the same agent instance and model as the implementer, so this \
+         review is not independent evidence: it is a self-review and it cannot stand in for a \
+         fresh-context agent or for the owner's human approval. Its context was not fresh: this \
+         session started from the implementer's own hand-over summary and read the branch diff from \
+         there, so the summary was treated as a claim to re-check rather than as evidence; every \
+         retail count below was re-derived from the installation, and what the re-checking changed \
+         is listed under \"Review corrections\" in \
+         docs/findings/2026-10-03-f14-d-7-sound-cue-collection.md. \
+         `checked` is the ceiling for an agent review",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
@@ -535,6 +548,18 @@ fn review_method() -> String {
 /// affected content and the task that resolves it (AGENTS owner directive,
 /// 2026-09-28: a limitation must survive into machine-readable evidence).
 const UNKNOWN_LIMITATIONS: &[&str] = &[
+    "A member the sound family could not turn into a row is a named gap, not a row: IDENTITY-CONTENT \
+     requires a collection to keep failed entries (`an opaque unparsed member is still an inventory \
+     row`), while this stage's own rule is that a cue named only by a member name is not a row. On \
+     this installation the two rules cost nothing measurable — all 5041 members of both archives read \
+     their RIFF/WAVE header and are accounted for as 4951 rows plus 90 counted byte-identical repeats \
+     — but a member whose extent is out of bounds, whose name is not keyable text, whose name has no \
+     valid id key, or whose header does not read is currently counted in collection_status.gaps \
+     instead of being given an inventory row with parse_state `failed`. Affected content: any such \
+     member in another installation or another build. Resolving task: the owner rules which of the \
+     two statements wins (a reconciliation of this stage's rule with IDENTITY-CONTENT, to be taken \
+     up by the next F14-D collection follow-up); until then both readings are recorded here and in \
+     docs/findings/2026-10-03-f14-d-7-sound-cue-collection.md.",
     "Nine of the collections IDENTITY-CONTENT requires are now populated: install files, \
      campaign missions, mission programs, the instant-action and multiplayer scenario \
      directories (F14-D.1), multiplayer rules (F14-D.2), world groups (F14-D.3), factions \

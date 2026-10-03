@@ -105,8 +105,11 @@
 //!   dropped row; a name one container declares twice with **identical** bytes
 //!   is one cue with the repeat counted (`duplicate_member`), and a name
 //!   declared twice with **different** bytes has no identity that tells the two
-//!   apart, so neither is a row (`ambiguous_member_name`). No sound is
-//!   launchable, so the collection adds no root and cannot move the denominator,
+//!   apart, so neither is a row (`ambiguous_member_name`). A member name the id
+//!   grammar refuses (`member_name_not_keyable`) is one of those gaps too, so a
+//!   single over-long member name cannot cost the installation its whole
+//!   inventory. No sound is launchable, so the collection adds no root and
+//!   cannot move the denominator,
 //!   and F41's declared bus/playback metadata stays an explicit
 //!   [`UnsupportedReason::Unknown`] on every row while no media player consumer
 //!   is claimed.
@@ -264,6 +267,14 @@ const GAP_SOUND_NAME_NOT_TEXT: &str = "member_name_not_text";
 /// Gap code: one member the sound reader listed whose declared name is empty,
 /// which names nothing.
 const GAP_SOUND_NAME_EMPTY: &str = "member_name_empty";
+
+/// Gap code: one member the sound reader listed whose declared name has no valid
+/// id key: escaped into `install_file_key` and composed with the container it
+/// sits in, it exceeds the id grammar's byte bound. Identity here is that key, so
+/// such a member is reported rather than shortened into a key that could collide
+/// with another member — and rather than failing the whole inventory, which is
+/// what a single over-long member name used to do.
+const GAP_SOUND_NAME_NOT_KEYABLE: &str = "member_name_not_keyable";
 
 /// Gap code: one repeat of a member name a container declares more than once
 /// with **identical** stored bytes. The repeat is the same cue, so it is counted
@@ -1959,6 +1970,11 @@ fn roster_issue_label(issue: &RosterDiscoveryIssue) -> &'static str {
 struct SoundCue {
     /// The name the container's own member index declares, verbatim.
     name: String,
+    /// The cue's identity: the container plus the declared member name, escaped
+    /// with the install-file key grammar. It is built while the member is being
+    /// read, because a name the id grammar refuses is a named gap and not a
+    /// reason to fail the whole inventory.
+    id: ContentId,
     /// Position in the container's declared index. This is the tie-break that
     /// makes the occurrence chosen for a repeated name deterministic; it is not
     /// part of the identity.
@@ -1999,8 +2015,9 @@ struct SoundCue {
 ///   reader's own stable code, and the other containers still produce rows;
 /// * a member whose extent failed its bounds check is counted under its own
 ///   member-error code (`member_out_of_bounds` or `extent_overflow`);
-/// * a member whose name is not keyable text or is empty is counted under
-///   [`GAP_SOUND_NAME_NOT_TEXT`] / [`GAP_SOUND_NAME_EMPTY`];
+/// * a member whose name is not keyable text, is empty, or has no valid id key
+///   is counted under [`GAP_SOUND_NAME_NOT_TEXT`] / [`GAP_SOUND_NAME_EMPTY`] /
+///   [`GAP_SOUND_NAME_NOT_KEYABLE`];
 /// * a member whose RIFF/WAVE header does not read is counted under that header
 ///   reader's own code (`WaveError::code`), never dropped;
 /// * a name one container declares several times with **identical** bytes is one
@@ -2025,8 +2042,11 @@ struct SoundCue {
 ///
 /// [`BaselineError::Read`] when an inventoried container cannot be read,
 /// [`BaselineError::Identity`] when the role rule and the dispatch disagree,
-/// [`BaselineError::Key`] when a member spelling has no valid id key and
-/// [`BaselineError::Span`] when a member's extent has no valid span.
+/// [`BaselineError::Key`] when a container's own install-file spelling has no
+/// valid id key and [`BaselineError::Span`] when a member's extent has no valid
+/// span. A **member** whose name has no valid id key is the named gap
+/// [`GAP_SOUND_NAME_NOT_KEYABLE`], not an error: one member's spelling must not
+/// cost the installation its whole inventory.
 fn sound_rows(
     install_root: &Path,
     install_hash: ContentHash,
@@ -2131,6 +2151,11 @@ fn sound_rows(
 /// `VO_c4-RM-m3_blacke_9.wav` twice under two spellings). Every group is
 /// resolved explicitly, never filtered: identical bytes are one cue, differing
 /// bytes are no cue at all.
+///
+/// A member whose composed key the id grammar refuses is counted under
+/// [`GAP_SOUND_NAME_NOT_KEYABLE`] and grouped out, so the row it could have had
+/// is named instead of lost — and so one over-long member name does not fail the
+/// whole inventory the way an unkeyable key used to.
 fn sound_cues(
     archive: &cs_formats::zbd::SoundArchive<'_>,
     install_hash: ContentHash,
@@ -2161,6 +2186,14 @@ fn sound_cues(
             *gaps.entry(GAP_SOUND_NAME_EMPTY).or_default() += 1;
             continue;
         }
+        // The identity is this key, so a member the id grammar refuses is named
+        // here rather than propagated: an unkeyable member loses its own row, not
+        // the installation's inventory.
+        let key = install_file_key(&format!("{spelling}/{name}"));
+        let Ok(id) = ContentId::from_source(ContentKind::Sound, &key) else {
+            *gaps.entry(GAP_SOUND_NAME_NOT_KEYABLE).or_default() += 1;
+            continue;
+        };
         // The header is the evidence that the member is a recording: a member
         // whose bytes are not a RIFF/WAVE file is a gap, not a guessed cue.
         if let Err(error) = entry.wave() {
@@ -2188,6 +2221,7 @@ fn sound_cues(
             .or_default()
             .push(SoundCue {
                 name: name.to_owned(),
+                id,
                 index: row.index(),
                 span,
                 digest,
@@ -2210,28 +2244,18 @@ fn sound_cues(
         if cues.len() > 1 {
             *gaps.entry(GAP_SOUND_DUPLICATE_MEMBER).or_default() += cues.len() - 1;
         }
-        rows.push(sound_row(first, spelling, &file_id)?);
+        rows.push(sound_row(first, &file_id)?);
     }
     Ok((rows, gaps))
 }
 
 /// One sound cue as a catalog row.
-fn sound_row(
-    cue: &SoundCue,
-    spelling: &str,
-    file_id: &ContentId,
-) -> Result<CatalogElement, BaselineError> {
-    // The identity carries the container as well as the member: the same name is
-    // declared in both sound containers with different bytes, so the name alone
-    // would merge a low-rate and a high-rate recording into one row.
-    let id = ContentId::from_source(
-        ContentKind::Sound,
-        &install_file_key(&format!("{spelling}/{}", cue.name)),
-    )
-    .map_err(|source| BaselineError::Key {
-        spelling: cue.name.clone(),
-        source,
-    })?;
+///
+/// The cue's identity was built while its member was read, because it carries the
+/// container as well as the member: the same name is declared in both sound
+/// containers with different bytes, so the name alone would merge a low-rate and
+/// a high-rate recording into one row.
+fn sound_row(cue: &SoundCue, file_id: &ContentId) -> Result<CatalogElement, BaselineError> {
     // F41-A's declared playback metadata stays an explicit unknown: this stage
     // read a recording, not the mix the original engine played it through.
     let playback = UnsupportedReason::Unknown {
@@ -2249,7 +2273,7 @@ fn sound_row(
     };
     Ok(CatalogElement {
         kind: ContentKind::Sound,
-        id,
+        id: cue.id.clone(),
         display_name: Some(cue.name.clone()),
         origin: Origin::Installation {
             source: cue.span.clone(),
