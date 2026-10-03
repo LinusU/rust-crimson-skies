@@ -212,7 +212,8 @@ Measured, one row per chapter:
 | `C5` | `broadway` | (74,40,132) (0,0,0) (237,221,0) | 21, 1, 0 | 33 | `MSG_SSCRAWFORD_NAME` | Peacemaker | `stunt_flying` |
 
 Three things this settles, all through the cross-check against
-`FactionPaletteCatalog` rather than by assertion:
+`FactionPaletteCatalog` rather than by assertion (the private artifact carries the
+same table and each scenario's findings):
 
 * **Six scenarios agree with the vehicle records on every slot** — the same
   colours and the same decals. That is agreement between two independent
@@ -379,7 +380,10 @@ cross-check, the production `AcePaintCatalog::discover` over all eight
 `paint-shop-catalog.json` artifact (per-control counts, lines, field censuses,
 both spans, the decal sheet declaration, the four gaps, the one shop finding, the
 eight ace paints with their values and byte spans, and the
-`option_space_fingerprint`). No original bytes, text or images are committed. The report's `capabilities` are
+`option_space_fingerprint`
+`2a8cfca63fa2233f9c897e7e739a11811f1e5fb1688d5297b80c85770d6baf79` over every
+control's key, slot, entry count and census plus every ace paint's pattern,
+colours, decals and accent id. No original bytes, text or images are committed. The report's `capabilities` are
 `["retail", "synthetic"]`; `claim` is `implemented` — a merge awards `checked` at
 most and nothing here observed the original game running. The report was
 regenerated on the candidate tree its own `candidate_tree` names, which is the
