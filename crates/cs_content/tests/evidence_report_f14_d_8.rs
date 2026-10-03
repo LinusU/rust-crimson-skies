@@ -809,8 +809,9 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
      a row could only be guessed from a file name, which the task's own rule rejects. The legacy \
      custom-plane layout is a research question: the identity and the container format of a \
      legacy aircraft must be measured before any row can be built. Affected content: the whole \
-     of F64 (legacy custom aircraft and optional save import). Resolving task: the follow-up \
-     task created from #491, which must first measure the layout. \
+     of F64 (legacy custom aircraft and optional save import). Resolving task: #582 (measure the \
+     legacy custom-aircraft layout before a custom-plane catalog collection), the follow-up \
+     created from #491, which must first measure the layout. \
      docs/findings/2026-10-01-f64-a-legacy-import-inventory-and-contracts.md and \
      docs/findings/2026-10-03-f14-d-8-stunt-scrapbook-collections.md record the measurement.",
     "The nine fly-through danger-zone targets of the scenarios the original marks \

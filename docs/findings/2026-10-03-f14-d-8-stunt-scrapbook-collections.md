@@ -151,8 +151,9 @@ family with no located source, **no** `custom_plane` `CollectionStatus` either:
 a record must name the file its rows come from, and no such file has been
 measured. The refusal is proved by the acceptance test and the evidence harness
 (no row, no collection record, no `custom_plane` key in the report) and the
-layout question is carried into the evidence report's limitations and the
-follow-up task created from #491.
+layout question is carried into the evidence report's limitations and
+**#582** (measure the legacy custom-aircraft layout before a custom-plane
+catalog collection), the follow-up created from #491.
 
 ## What this stage adds
 
@@ -300,8 +301,10 @@ the fast synthetic arms carry the same checks.
   The layout is a research question: the identity and container format of a
   legacy aircraft must be *measured* before any row can exist, and a row from a
   file name is exactly what the task forbids. **Affected content:** the whole of
-  F64 (legacy custom aircraft and optional save import). **Resolving task:** the
-  follow-up task created from #491, which must first measure the layout.
+  F64 (legacy custom aircraft and optional save import). **Resolving task:**
+  #582 (measure the legacy custom-aircraft layout before a custom-plane catalog
+  collection), the follow-up created from #491, which must first measure the
+  layout.
 - **The nine `dogfight_squadron` fly-through targets are a counted gap, not
   stunts.** The same objective shape backs two mission types, and only the
   scenario's own `ia.zrd` says which; the distinction is F37/F42's to make.
