@@ -676,7 +676,8 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     );
     // F14-D.2 added the first of the collections this stage leaves open: the
     // multiplayer modes the installation's string image names. F14-D.3 added
-    // the world groups whose shared readers the classifier read. Neither is
+    // the world groups whose shared readers the classifier read, and F14-D.6 the
+    // airframes the loading-script container declares. None of them is
     // launchable, so the denominator asserted above is unchanged, but the row
     // count is not, and this test states the new totals instead of filtering
     // the rows out.
@@ -696,11 +697,23 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
         world_rows, groups,
         "one world row per world group the shared reader of that group names"
     );
+    // F14-D.6's own retail test pins which airframes these are, against the
+    // roster F11-D2 measured; this one only counts the rows so the total below
+    // stays a complete accounting rather than a filtered one.
+    let airframe_rows = catalog
+        .elements()
+        .filter(|element| element.kind == ContentKind::Airframe)
+        .count();
+    assert_eq!(
+        airframe_rows, 11,
+        "one airframe row per declared root of the loading-script container; the identities \
+         themselves are pinned by accept_f14_d_6_retail_…"
+    );
     assert_eq!(
         catalog.len(),
-        discovery.manifest.files.len() + 2 * launchable + mode_rows + world_rows,
+        discovery.manifest.files.len() + 2 * launchable + mode_rows + world_rows + airframe_rows,
         "files plus one program row and one launchable row per mission and scenario, plus the \
-         multiplayer rules rows and the world rows"
+         multiplayer rules rows, the world rows and the airframe rows"
     );
 
     // Nothing authored reached the retail inventory, and every row is
