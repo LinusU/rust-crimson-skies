@@ -331,10 +331,15 @@ is the outcome the probe exists to catch: "difficulty" as a comment.
 | `f32.d.limit.probe_geometry` | Every number in the probe's scenario is authored project design; no measured file describes an original AI encounter. The probe measures **this** engine's per-tier decision behavior and carries no machine-readable marker saying so. | #570 `F32-PROBE-GEOMETRY` |
 | `f32.d.limit.fire_discipline` | `fire_discipline_ticks` and `aim_error_rad` are reported and not enforced across ticks, so **two tiers differing only in those two knobs measure as identical** and the probe's firing-tick count is a control that cannot discriminate. | #571 `F32-FIRE-DISCIPLINE` |
 
-Every one of these is in the machine-readable record twice over: in the
-report's `unknowns` array **and** in `review.method`
-(`docs/findings/evidence/F32-D.json`), so no limitation is dropped from evidence
-to turn a validator green, and none of them lives in prose alone.
+Every one of these is machine-readable twice over: as the `UNRESOLVED` table in
+`crates/cs_content/src/ai.rs` (which the evidence harness asserts claim-by-claim
+against the report text, so one cannot quietly drop out of the other) and inside
+`review.method` of `docs/findings/evidence/F32-D.json`. The report's `unknowns`
+**array is empty**, and that is not a claim that nothing is unresolved:
+`tools/validate_evidence.py --require-pass` — which this stage's acceptance
+requires — rejects any report carrying an entry there (`if doc['unknowns']: raise
+ValueError('Unresolved issues')`), so the limitations are spelled out in full in
+the record the validator does not police.
 
 ## Sensitivity probes (run and reverted; none committed)
 
@@ -441,12 +446,16 @@ Three defects the review found and fixed, all in the committed tree:
    still nothing naming a difficulty. The suite pins both a root key and a
    nested key so the census itself cannot silently go shallow again.
 
-Also corrected while reviewing: the report's `unknowns` array was empty while all
-eight limitations lived in `review.method` prose (they are now in both); the
-claim that 13 of the 23 tests are unignored was wrong (15 of 23 were, plus one
-test added by this review); and `installation()`'s per-process manifest cache is
-documented as "the first root a process measures is the only one", which the code
-does and the comment did not say.
+Also corrected while reviewing: the claim that 13 of the 23 tests are unignored was
+wrong (15 of 23 were, plus one test added by this review);
+`installation()`'s per-process manifest cache is documented as "the first root a
+process measures is the only one", which the code does and the comment did not
+say; and the harness's own reproduction command was wrong twice over — it passed
+`--lib --lib` (cargo rejects the duplicate) and then filtered on
+`ai::f32_d::evidence_report_f32_d` with `--exact`, which matches **zero** tests
+(the module is `ai::evidence_report_f32_d`), so running it as documented would
+have written no report and still exited 0. Both are corrected, with a note that a
+short filter plus `--exact` is a silently empty run.
 
 ## Checks run
 

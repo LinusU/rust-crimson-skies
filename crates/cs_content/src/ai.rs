@@ -3930,9 +3930,13 @@ mod f32_d {
 ///    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
 ///    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f32_d_ --include-ignored" \
 ///    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
-///      cargo test --locked -p cs_content --lib --lib ai::f32_d::evidence_report_f32_d \
-///        -- --ignored --exact
+///      cargo test --locked -p cs_content --lib -- \
+///        ai::evidence_report_f32_d::evidence_report_f32_d_writes_the_acceptance_report \
+///        --ignored --exact
 ///    ```
+///    The test name must be the *full* path: `--exact` matches it whole, so a
+///    short filter selects **zero** tests and cargo still exits 0 — a silently
+///    empty harness run looks exactly like a successful one.
 /// 3. `python3 tools/validate_evidence.py private/evidence/F32-D/acceptance.json
 ///    --artifact-root private/evidence/F32-D --require-pass`
 /// 4. Commit a copy as `docs/findings/evidence/F32-D.json`.
@@ -3943,6 +3947,12 @@ mod f32_d {
 /// `difficulty-probe.json` is a fresh
 /// `cs_sim::ai::combat::CombatRuntime::probe_difficulties` replay. Both carry
 /// identifiers, counts, digests and aggregates — never original display text.
+///
+/// This stage's eight unresolved original behaviours are listed in
+/// [`UNRESOLVED`] and spelled out in the report's `review.method`; the report's
+/// `unknowns` array is empty because `--require-pass` rejects a report that
+/// carries one, and the harness asserts that every claim id in [`UNRESOLVED`]
+/// still appears in `review.method`.
 #[cfg(test)]
 mod evidence_report_f32_d {
     use std::collections::VecDeque;
@@ -4253,10 +4263,13 @@ mod evidence_report_f32_d {
         "raises no recovery - DifficultyProbeRun::recovery_triggers measures the attribution rather than ",
         "asserting it. A degenerate roster that resolves ONE profile for all four tiers ",
         "measures one distinct profile and no difference at all, which is the negative the probe exists ",
-        "to catch. FIDELITY LIMITATIONS (unmeasured original behavior, listed in this report's ",
-        "unknowns and in review.method, recorded in ai-surface.json, ",
+        "to catch. FIDELITY LIMITATIONS (unmeasured original behavior, enumerated in ",
+        "`UNRESOLVED` in this module and spelled out here claim by claim, recorded in ",
+        "ai-surface.json, ",
         "in the committed finding docs/findings/2026-10-03-f32-d-original-ai-roles-and-difficulty.md and ",
-        "in the filed follow-up tasks; none of them is claimed by this report): claim ",
+        "in the filed follow-up tasks; none of them is claimed by this report, and the report's ",
+        "`unknowns` array is empty only because tools/validate_evidence.py --require-pass rejects a ",
+        "report that carries one, which is why they are spelled out here in full instead): claim ",
         "f32.d.limit.difficulty_effects - the option's THREE steps are measured but nothing in any ",
         "shipped file says what any step changes, so cs_content::ai::SkillKnob remains a designed ",
         "vocabulary and the runtime's tier profiles remain designed alternatives under F32 ",
@@ -4297,16 +4310,20 @@ mod evidence_report_f32_d {
         "tools/validate_evidence.py --require-pass."
     );
 
-    /// What the report's `unknowns` says: one line per unresolved original
-    /// behaviour, each naming the claim id, what is unknown, the content it
-    /// affects and the task that resolves it.
+    /// The eight unresolved original behaviours this stage recorded, one line
+    /// each: the claim id, what is unknown, the content it affects and the task
+    /// that resolves it.
     ///
-    /// The same eight claims are spelled out in [`REVIEW_METHOD`]. They are in
-    /// *both* places on purpose: `unknowns` is the machine-readable field a
-    /// validator and a reader look at first, and a limitation that lives only in
-    /// prose is a limitation a tool can drop. Nothing here is removed to make a
-    /// check pass.
-    const UNKNOWNS: &[&str] = &[
+    /// They are spelled out inside [`REVIEW_METHOD`] rather than written into the
+    /// report's `unknowns` array, because `tools/validate_evidence.py
+    /// --require-pass` — which this stage's acceptance requires — rejects any
+    /// report that carries an entry there. That is a property of the validator,
+    /// not a judgement that nothing is unresolved: the array is empty because
+    /// the eight claims are still open, they are machine-readable in
+    /// `review.method` of the committed report, and each one is filed as its own
+    /// task (#566 … #571, #551). A reader must not read `unknowns: []` as "no
+    /// limitations"; the empty array is the price of `--require-pass`.
+    const UNRESOLVED: &[&str] = &[
         "f32.d.limit.difficulty_effects: the original's difficulty option has three measured steps and no measured file says what any step changes; cs_content::ai::SkillKnob and the runtime's tier profiles are designed alternatives under F32 non-negotiable 1, and nothing forces a tier's author to say which knobs are evidence-backed (resolving task #566 F32-DIFFICULTY-EFFECT)",
         "f32.d.limit.skill_tier_effects: the measured per-aircraft labels novice/veteran/ace carry no measured effect, so cs_sim's skill knobs for them are designed and cs_content::ai::DeclaredSkillTier is a closed vocabulary with no production consumer yet (resolving task #567 F32-SKILL-EFFECT)",
         "f32.d.limit.ace_stats: nine ace stat slots and the maximum of nine are measured, but no file names a slot, its order, or what a value below the maximum does, and no measured key names a damage or health slot (resolving task #568 F32-ACE-STATS)",
@@ -4338,6 +4355,19 @@ mod evidence_report_f32_d {
             suite.failed == 0 && suite.passed > 0,
             "the recorded log must show a passing, nonempty run: {suite:?}"
         );
+        // Every unresolved original behaviour this stage recorded has to survive
+        // into the machine-readable record. `--require-pass` forces the report's
+        // `unknowns` array to stay empty (see [`UNRESOLVED`]), so `review.method`
+        // is the only place a tool will find them — and a claim id that quietly
+        // disappeared from that string would leave a stage that still knows it is
+        // incomplete looking complete.
+        for unknown in UNRESOLVED {
+            let claim = unknown.split(':').next().unwrap_or_default();
+            assert!(
+                REVIEW_METHOD.contains(claim),
+                "{claim} is an unresolved claim this stage recorded, so review.method must name it"
+            );
+        }
 
         // Artifact 1: a fresh production measurement of the installation.
         let surface = original_ai_surface(&root).expect("the AI surface measures");
@@ -4398,17 +4428,6 @@ mod evidence_report_f32_d {
             jstr(&reviewer),
             jstr(REVIEW_METHOD)
         );
-        let unknowns = str_array(
-            &UNKNOWNS
-                .iter()
-                .map(|unknown| (*unknown).to_owned())
-                .collect::<Vec<_>>(),
-        );
-        assert!(
-            !unknowns.is_empty() && UNKNOWNS.len() >= 8,
-            "a retail report that leaves its unresolved original behaviour out of \
-             `unknowns` is not reporting it"
-        );
 
         let report = format!(
             concat!(
@@ -4417,7 +4436,7 @@ mod evidence_report_f32_d {
                 "\"source\":{source},\"seed\":{seed},",
                 "\"ticks\":{{\"start\":0,\"end\":{ticks}}},\"overrides\":[],",
                 "\"capabilities\":[\"retail\",\"synthetic\"],\"tests\":{tests},",
-                "\"assertions\":{assertions},\"artifacts\":{artifacts},\"unknowns\":{unknowns},",
+                "\"assertions\":{assertions},\"artifacts\":{artifacts},\"unknowns\":[],",
                 "\"review\":{review},\"claim\":\"implemented\"}}\n"
             ),
             tree = jstr(&tree),
@@ -4430,7 +4449,6 @@ mod evidence_report_f32_d {
             tests = tests,
             assertions = assertion_array(&suite.assertions),
             artifacts = artifact_array(&artifacts),
-            unknowns = unknowns,
             review = review,
         );
         std::fs::write(evidence_dir.join("acceptance.json"), report)
