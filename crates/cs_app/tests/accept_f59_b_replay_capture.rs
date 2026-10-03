@@ -865,6 +865,13 @@ fn accept_f59_b_a_tick_measured_before_the_run_started_is_refused() {
         .measure(&reading(Tick(1), rest_pose(), finite_output()))
         .expect_err("the run has not measured its initial state");
     assert_eq!(error, StateProbeError::NotStarted);
+    // And there is no initial state to record either: the chain digest starts
+    // from it, so an unstarted probe refuses to write a record rather than
+    // inventing a start.
+    assert_eq!(
+        probe.initial_state("synthetic.flight-replay@tick0"),
+        Err(cs_content::replay::ReplayError::MissingInitialState)
+    );
 }
 
 /// A tick whose forces were not measured at that tick is refused, not hashed.
@@ -964,6 +971,27 @@ fn accept_f59_b_a_zero_fixed_rate_is_refused() {
     assert!(
         matches!(error, CaptureRunError::ZeroTickRate),
         "expected a zero-rate refusal, got {error}"
+    );
+}
+
+/// A content asset the law itself refuses is refused before any world is built.
+///
+/// AC02 is about a content edit changing what a replay means. The other half is
+/// that an edited asset the engine cannot validate does not get half-flown: the
+/// tuning's own refusal names the record it would have invalidated.
+#[test]
+fn accept_f59_b_an_invalid_airframe_is_refused_before_a_world_is_built() {
+    let build = build();
+    let stream = fixture_stream();
+    let mut broken = synthetic_fixed_wing();
+    broken.mass.mass_kg = f64::NAN;
+    let subject = subject().with_tuning(broken);
+
+    let error = record(&request(&subject, &build, &stream))
+        .expect_err("an airframe with no valid mass cannot be flown");
+    assert!(
+        matches!(error, CaptureRunError::Tuning(_)),
+        "expected the tuning's own refusal, got {error}"
     );
 }
 

@@ -26,8 +26,8 @@ original game or can certify anything about it.
   `record`, `record_run`, `replay`.
 - `crates/cs_app/src/capture/render.rs` (new): `settings_for`, `render_for`,
   `tonemap_for`, `tonemap_label`.
-- `crates/cs_app/tests/accept_f59_b_replay_capture.rs` (new, 17 tests, prefix
-  `accept_f59_b_`).
+- `crates/cs_app/tests/accept_f59_b_replay_capture.rs` (new, 22 tests after
+  review, prefix `accept_f59_b_`).
 - Wiring only: `pub mod capture;` plus one module-doc paragraph in
   `crates/cs_app/src/lib.rs` (after the F57 paragraph — the crate-doc order
   guard `accept_doclib_conflict` enforces ascending feature-sheet order).
@@ -175,8 +175,82 @@ original game or can certify anything about it.
 - `replay` returning `CompatibilityVerdict::Compatible` unconditionally → 3 tests
   fail (AC02, the rules/content distinction, and the best-effort case).
 
-All 17 `accept_f59_b_` tests are fast (the whole file runs in well under a
+All 22 `accept_f59_b_` tests are fast (the whole file runs in well under a
 second) and none is ignored: the stage needs ordinary build/test only.
+
+## Review fixes (reviewing agent, 2026-10-03)
+
+Three defects were found in review and fixed on the branch; the first two are
+real behavioural bugs rather than style.
+
+1. **A tick's forces could be stamped from the wrong tick.** `fly` took
+   `FlightAircraft::last_output()` without asking which tick produced it. A
+   refused or parked tick keeps the *previous* tick's output — that is exactly
+   what `FlightAircraft::last_output_tick` exists to expose and what the
+   instrument consumer `publish_flight_instruments` checks before it publishes —
+   so one tick's forces could be hashed under the next tick's name and the
+   envelope would be a statement about a tick that never ran. `StateReading::after_tick`
+   now takes the tick the law stamped the output with and refuses any other
+   (`StateProbeError::UnmeasuredTick`; `CaptureRunError::UnmeasuredTick` names
+   the case where the aircraft produced no output at all), and the recorder
+   passes the aircraft's own answer. Covered by
+   `accept_f59_b_a_tick_whose_forces_were_not_measured_is_refused`.
+   *Limit, stated honestly:* the refusal itself is unreachable in a healthy run,
+   so it is covered at the constructor rather than by provoking a real refusal
+   inside the session; a mutation that made the recorder hard-code its own tick
+   number instead of reading `last_output_tick` would not be caught, because no
+   test run diverges the world's tick counter from the loop's.
+2. **A record that broke its own rules panicked instead of being refused.**
+   `replay` derived the tick span by `record.last_tick.0 - record.first_tick.0`
+   before checking the record, so a record with an inverted tick range — a
+   document that may arrive from a file — aborted with an arithmetic overflow.
+   `replay` now calls `ReplayRecord::validate` first and returns
+   `CaptureRunError::Record(ReplayError::InvertedTickRange)`. Covered by
+   `accept_f59_b_a_record_with_an_inverted_tick_range_is_refused`.
+3. **`settings_for` ignored the record's exposure and gamma.** It validated the
+   record and then lowered the tone curve, sample count and shadow flag while
+   handing the renderer the fixed comparison pair (`1.0`/`2.2`) for *any*
+   record. `RenderConfig`'s designed range is much wider (`exposure_milli`
+   1..=100000, `gamma_milli` 100..=10000) and `ComparisonSettings` can only be
+   built with the fixed pair, so a record pinning exposure 1.5 would have been
+   rendered at 1.0 while claiming 1.5 — the drift the `RenderConfig` ⇄
+   `ComparisonSettings` boundary exists to prevent. Both are now refused by name
+   with the new `CaptureError::RenderSettingUnsupported`, and the acceptance test
+   pins it for both fields. (`cs_app::render::capture` is F17's owner path, so
+   the fix belongs on this side of the boundary; extending the renderer to
+   carry a variable exposure is F17's decision, not this stage's.)
+
+Two smaller repairs in the same pass: the readings buffer is pre-allocated
+against the envelope's own bound instead of `ticks + 1`, so a large `--ticks`
+from the future CLI is a named refusal rather than an allocation failure; and
+the root seed a run *without* a seed records is now documented where it is
+written (`ReplaySeeds`' root is a plain `u64` with no absent spelling, so `0` is
+what a seedless run records; the flight path consumes no random stream, so no
+value of the root reaches any state a replay compares).
+
+### New tests and the gaps they closed
+
+- `accept_f59_b_every_field_the_state_digest_covers_moves_it` perturbs each of
+  the 22 fields `StateReading::digest` claims to cover, one at a time. Before it
+  existed, three mutations of the digest passed the whole file: dropping the
+  instrument state, dropping the linear velocity, and (verified again) dropping
+  the tick. The implementer's mutation pass had only exercised the pose→forces
+  direction.
+- `accept_f59_b_a_tick_whose_forces_were_not_measured_is_refused`,
+  `..._a_record_with_an_inverted_tick_range_is_refused`,
+  `..._a_zero_fixed_rate_is_refused` and
+  `..._an_invalid_airframe_is_refused_before_a_world_is_built` cover four
+  refusal paths that had no test, and the tick-measured-before-start test now
+  also pins `ReplayError::MissingInitialState`.
+- Mutations re-run by the reviewer and confirmed to fail: the
+  `measured_at != Some(tick)` refusal, `replay`'s `validate()`, the zero-rate
+  refusal, `settings_for`'s exposure/gamma refusal, and the three digest
+  mutations above.
+
+Deliberately **not** changed: `identity.rs` keeps both `put_text` and
+`put_label`. Their bodies are identical, but the two names mark two
+intentional categories (a stable label versus arbitrary text) at the call
+sites, and merging them would trade a documented distinction for a saved line.
 
 ## Open / not claimed (resolving stages)
 
@@ -196,10 +270,17 @@ second) and none is ignored: the stage needs ordinary build/test only.
   later work, and the refusal is the correct answer until then.
 - **`ReplaySeeds` carries a root and no derived streams here.** The flight path
   consumes no random stream, so `ReplaySeeds::new(seed, vec![])` is what
-  `record` writes. The synthetic body's domain-separated stream is the only one
-  a replayed flight run can name today; a consumer that adds one must use
-  `ReplaySeeds::derive` with its own documented domain constant so adding it
-  never moves another's values.
+  `record` writes; a run that declared no seed records root `0`, because the
+  schema's root is a plain `u64` with no absent spelling. The synthetic body's
+  domain-separated stream is the only one a replayed flight run can name today; a
+  consumer that adds one must use `ReplaySeeds::derive` with its own documented
+  domain constant so adding it never moves another's values.
+- **The renderer can only be configured with one exposure and gamma.** A
+  `RenderConfig` outside the fixed comparison pair is refused by
+  `settings_for` (`CaptureError::RenderSettingUnsupported`) rather than rendered
+  at the comparison pair. If a later stage needs a variable exposure or gamma,
+  `cs_app::render::capture::ComparisonSettings` has to grow one — that file is
+  F17's owner path, not this feature's.
 - **Authored choices are caller-supplied.** `ReplaySubject::choices` is whatever
   the caller pinned; the recorder does not derive an airframe or ruleset choice
   from the tuning it loaded. A stage that knows the catalog should derive them.
