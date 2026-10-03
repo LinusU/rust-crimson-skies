@@ -2239,10 +2239,12 @@ impl SessionOrdnanceRow {
     /// Whether the declared area's reach reached a recipient.
     ///
     /// Always `false`: the radius and lifetime lower into
-    /// [`cs_sim::weapons::ordnance::AreaEffect`] and no production path reads
-    /// them, so the report says so rather than implying a splash was applied
-    /// to whoever happened to be nearby. Follow-up task #552 (F28-AE1) owns
-    /// it.
+    /// [`cs_sim::weapons::ordnance::AreaEffect`] and reach nobody. A triggered
+    /// item's effects go to the one stable recipient its engagement names, and
+    /// F28-C.1's guidance-loss blast routes to that same named target and node
+    /// rather than to everyone inside a radius, so the report says so instead
+    /// of implying a splash was applied to whoever happened to be nearby.
+    /// Follow-up task #552 (F28-AE1) owns it.
     #[must_use]
     pub const fn area_applied(&self) -> bool {
         self.area_applied

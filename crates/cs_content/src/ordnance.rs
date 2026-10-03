@@ -1209,15 +1209,18 @@ pub const ORIGINAL_ORDNANCE_HARDPOINT_POINTS: u32 = ORIGINAL_HARDPOINT_POINTS;
 /// silent one. Each entry is `(declared field, the lowered field it reaches)`.
 ///
 /// The area effect is the case: `cs_app::ordnance::lower_ordnance` lowers both
-/// of its values into `cs_sim::weapons::ordnance::AreaEffect`, and the only
-/// reader of `ProjectileOrdnance::area_effect` in the workspace is that
-/// accessor. F28-C applies the record's declared *status effects* to one
-/// stable recipient, which is what the timed engine-status path consumes; the
-/// radius and the area's own bounded lifetime reach no gameplay code, so
-/// non-negotiable 3's "bounded lifetimes and stable recipient ids" is enforced
-/// for the status ledger and **not** for the area's reach. Follow-up task #552
-/// (F28-AE1) owns implementing it; this list is where it is recorded until
-/// then.
+/// of its values into `cs_sim::weapons::ordnance::AreaEffect`.
+/// `ProjectileOrdnance::area_effect` has two pass-through readers —
+/// `LiveOrdnance::area_effect` and `GuidanceDetonation::area_effect` — and
+/// **neither is read by a production gameplay path**: F28-C applies a
+/// triggered item's declared *status effects* to the one stable recipient its
+/// engagement names, and F28-C.1's guidance-loss blast routes the declared
+/// damage channels to that same named target and damage node rather than to
+/// every actor inside a radius. The radius and the area's own bounded lifetime
+/// therefore reach no recipient at all, so non-negotiable 3's "bounded
+/// lifetimes and stable recipient ids" is enforced for the status ledger and
+/// **not** for the area's reach. Follow-up task #552 (F28-AE1) owns implementing
+/// it; this list is where it is recorded until then.
 pub const DECLARED_FIELDS_WITHOUT_CONSUMER: [(&str, &str); 2] = [
     (
         "area_effect.radius_m",

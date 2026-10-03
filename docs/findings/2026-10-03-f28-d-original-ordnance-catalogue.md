@@ -224,13 +224,18 @@ catalogue is therefore reported twice over — five launched items against eleve
 observed, and **zero attributed** against eleven observed — which is the honest
 verdict.
 
-The second finding is that the declared **area effect is lowered and then read
-by nothing**: `lower_ordnance` puts both of its values into
-`cs_sim::weapons::ordnance::AreaEffect`, and the only reader of
-`ProjectileOrdnance::area_effect` in the workspace is that accessor. F28
-non-negotiable 3 requires area effects to have bounded lifetimes and stable
-recipient ids; that is enforced for the status ledger (F28-C's timed
-engine-status path) and **not** for the area's reach. This stage records the
+The second finding is that the declared **area effect's reach reaches no
+recipient**: `lower_ordnance` puts both of its values into
+`cs_sim::weapons::ordnance::AreaEffect`, and
+`ProjectileOrdnance::area_effect` has two pass-through readers —
+`LiveOrdnance::area_effect` and the `GuidanceDetonation::area_effect` F28-C.1
+added — but neither is read by a production gameplay path. F28-C applies a
+triggered item's declared *status effects* to the one stable recipient its
+engagement names, and F28-C.1's guidance-loss blast routes the declared damage
+channels to that same named target and damage node rather than to every actor
+inside a radius. F28 non-negotiable 3 requires area effects to have bounded
+lifetimes and stable recipient ids; that is enforced for the status ledger
+(F28-C's timed engine-status path) and **not** for the area's reach. This stage records the
 gap in `DECLARED_FIELDS_WITHOUT_CONSUMER` and reports it per record and per
 session row rather than implementing a splash rule, because the original's area
 behavior is unmeasured and F28's research boundary forbids inventing one. Task
