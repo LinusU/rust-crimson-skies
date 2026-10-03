@@ -5919,6 +5919,388 @@ mod evidence {
         println!("wrote {}", out.display());
     }
 
+    /// The retail acceptance test that is this task's `retail` capability. It
+    /// must be in the recorded log and must have passed.
+    const PAINT_SHOP_RETAIL_TEST: &str =
+        "accept_f09_paintshop_retail_option_space_and_recorded_gaps";
+
+    /// The measured paint-shop corpus the report asserts against the production
+    /// extraction, so a change that discovers fewer controls cannot pass.
+    const PAINT_SHOP_EXPECTED_CONTROLS: usize = 10;
+    const PAINT_SHOP_EXPECTED_GAPS: usize = 4;
+    const PAINT_SHOP_EXPECTED_DECAL_FRAMES: u32 = 50;
+
+    /// Every limitation this stage records machine-readably, each naming the
+    /// content it affects and what resolves it. The `unknowns` gate in
+    /// `tools/validate_evidence.py` rejects a nonempty array under
+    /// `--require-pass`; deleting these to turn the flag green would be exactly
+    /// what the contract forbids, so this report is validated **without**
+    /// `--require-pass` and the expected rejection is documented in the
+    /// committed finding.
+    const PAINT_SHOP_UNKNOWNS: [&str; 6] = [
+        "swatch_palette_engine_internal: the paint shop declares 18 colour swatches per paint \
+         slot (LAYOUT.CSV [@Paint@] PT_D_COLORS0..2) and no field of those ten control records \
+         spells a colour, a hex value or a name, so the swatch values are produced inside the \
+         engine image by a native callback and are not in any readable original member. Affected \
+         content: every colour the paint shop offers, on every paint slot. Resolving task: #358 \
+         REF-OWNER-FIRST-CAPTURE (an owner run of the paint shop) or #351 (an owner-authorised \
+         unpack of the engine image). Gates: any verified_original or release claim about \
+         paint-shop colours.",
+        "shade_table_engine_internal: the paint shop declares 10 shades per paint slot \
+         (PT_D_SHADES0..2) and no field of those records spells a shade, so the shaded values are \
+         produced inside the engine image by a native callback. Affected content: every shaded \
+         paint variant. Resolving task: #358 or #351, as above. Gates: any shade fidelity claim.",
+        "pattern_names_engine_internal: the paint shop declares 12 paint patterns \
+         (PT_D_PATTERN) and no field of that record spells a name, so the localized pattern \
+         names are produced inside the engine image by a native callback. Affected content: every \
+         faction and player paint name in the shop. Resolving task: #358 or #351. Gates: any \
+         claim about paint-shop labels.",
+        "decal_index_mapping: the decal pane declares a 50-frame sheet (PT_P_DECALS names \
+         PX_P_Decals.tga with 50 frames) and every stored paint_decal index (2..=21) fits inside \
+         it, but the mapping from a stored index to a frame of the sheet, and the shop's own \
+         2-entries-per-slot decal list, are not established from any readable member; PAINT.SCRIPT \
+         indexes the sheet as `selected row * 5 + decal`, which is a UI addressing rule and not a \
+         statement about the stored ids. Affected content: every decal selection on every composed \
+         livery. Resolving task: #358 (an owner paint-shop capture that shows which frame a \
+         stored decal id draws) with F17-D for the consumer. Gates: any decal fidelity claim.",
+        "player_palette_engine_internal: `player_fortune` is named by the `devastator` and \
+         `wingman` vehicle records but stores no colour or decal triple, and the shop's pattern \
+         list holds exactly one entry per paint pattern the vehicle records name (12 = 12), so the \
+         player's paint is a shop choice whose starting swatches and shades are engine-internal. \
+         Affected content: the player paint on every airframe. Resolving task: #358 or #351. Gates: \
+         any verified_original claim about the player's own paint.",
+        "stock_livery_without_pattern: BROADWAY and ITSTAXI have stock BM livery directories (the \
+         F09-D inventory) but are not among the paint patterns the vehicle records name, so the \
+         paint shop does not offer them and cannot recolour them; their appearance comes from the \
+         shipped BM planes themselves. Which stock livery directory corresponds to which paint \
+         pattern (the directories are BLACKHAT..STUDIO plus BROADWAY, FORTUNE and ITSTAXI, and the \
+         pattern is named `player_fortune`, not `FORTUNE`) is engine-internal and not established. \
+         Affected content: those two factions' liveries and the directory-to-pattern binding. \
+         Resolving task: #358 or #351, with F17-D for the renderer. Gates: any claim that the \
+         paint shop can produce a BROADWAY or ITSTAXI scheme.",
+    ];
+
+    /// Evidence-report harness for task F09-PAINTSHOP
+    /// (`docs/contracts/CLI-EVIDENCE.md`, schema `schemas/evidence.schema.json`).
+    ///
+    /// Like the F09-D and F09-PALETTE harnesses above, it is deliberately **not**
+    /// named `accept_f09_paintshop_*`: it is not part of the acceptance suite, it
+    /// fails loudly when its inputs are missing instead of passing vacuously, and
+    /// the `accept_f09_paintshop_` selection must never pick it up.
+    ///
+    /// Run from the workspace root, after the acceptance suite, exactly as:
+    ///
+    /// 1. ```sh
+    ///    cargo test --workspace --locked -- accept_f09_paintshop_ --include-ignored \
+    ///      > private/evidence/F09-PAINTSHOP/cargo-test.log 2>&1
+    ///    ```
+    ///    (record that command's exit status — it is passed to this harness as
+    ///    `CS_EVIDENCE_EXIT_CODE`.)
+    /// 2. ```sh
+    ///    CS_EVIDENCE_DIR=private/evidence/F09-PAINTSHOP \
+    ///    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+    ///    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f09_paintshop_ --include-ignored" \
+    ///    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
+    ///      cargo test --locked -p cs_content --lib evidence_report_f09_paintshop -- --ignored
+    ///    ```
+    /// 3. ```sh
+    ///    python3 tools/validate_evidence.py \
+    ///      private/evidence/F09-PAINTSHOP/acceptance.json \
+    ///      --artifact-root private/evidence/F09-PAINTSHOP
+    ///    ```
+    ///    (the `--require-pass` flag rejects a report with a nonempty `unknowns`
+    ///    array, and this task's deliverable is that the engine-internal values
+    ///    stay recorded machine-readably; see `PAINT_SHOP_UNKNOWNS` and the
+    ///    committed finding for why deleting them to turn the flag green is the
+    ///    forbidden thing.)
+    /// 4. Commit a copy of `acceptance.json` as
+    ///    `docs/findings/evidence/F09-PAINTSHOP.json`.
+    ///
+    /// Every field is derived from real inputs: the recorded test log, the
+    /// environment, `rustc --version` and `Cargo.lock`, the production
+    /// installation discovery and fingerprint of `$CS_GAME_DIR`, and the
+    /// production [`PaintShopCatalog::discover`] and
+    /// [`FactionPaletteCatalog::discover`] over the original installation.
+    #[test]
+    #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+    fn evidence_report_f09_paintshop_writes_the_acceptance_report() {
+        let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
+        let candidate_tree = env_var("CS_CANDIDATE_TREE");
+        let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        assert!(
+            !argv.is_empty(),
+            "CS_EVIDENCE_ARGV must hold the acceptance command (space-separated)"
+        );
+        let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
+            .parse()
+            .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+        let game_dir = PathBuf::from(env_var("CS_GAME_DIR"));
+
+        // The candidate tree must be the tree that was actually tested: a stale
+        // report from another commit is exactly what this check refuses.
+        let head_tree = git(&["rev-parse", "HEAD^{tree}"]);
+        assert_eq!(
+            candidate_tree, head_tree,
+            "CS_CANDIDATE_TREE must be `git rev-parse 'HEAD^{{tree}}'` of the tested commit; \
+             old reports cannot be reused for new code"
+        );
+
+        // The acceptance suite is the evidence: parse its recorded output.
+        let log_path = evidence_dir.join("cargo-test.log");
+        let log = fs::read_to_string(&log_path).unwrap_or_else(|error| {
+            panic!(
+                "cannot read the acceptance log {}: {error} (step 1 must write its output there)",
+                log_path.display()
+            )
+        });
+        let suite = parse_suite_for(&log, "accept_f09_paintshop_");
+        assert!(
+            suite.passed > 0 && !suite.assertions.is_empty(),
+            "no `accept_f09_paintshop_` tests were recorded in {}",
+            log_path.display()
+        );
+
+        // Capability coverage is checked, never assumed: `retail` is declared
+        // only because the retail acceptance test is in this log and passed.
+        let status = suite
+            .assertions
+            .iter()
+            .find(|(name, _)| name == PAINT_SHOP_RETAIL_TEST)
+            .map(|(_, status)| *status)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{PAINT_SHOP_RETAIL_TEST} did not run: F09-PAINTSHOP requires capability \
+                     `retail`, run step 1 with `--include-ignored` and CS_GAME_DIR set"
+                )
+            });
+        assert_eq!(
+            status, "pass",
+            "{PAINT_SHOP_RETAIL_TEST} must pass; got status {status}"
+        );
+        assert!(
+            suite
+                .assertions
+                .iter()
+                .any(|(name, _)| name.starts_with("accept_f09_paintshop_")
+                    && !name.contains("_retail_")),
+            "synthetic task tests must be present alongside the retail one"
+        );
+
+        // The installation and content hashes come from the **production**
+        // discovery and fingerprint code (F02), not from a hash this harness
+        // computes, so they are comparable with every earlier task's record.
+        let found = install::discover(&game_dir).expect(
+            "production discovery must read the original installation for the evidence record",
+        );
+        let install_sha256 = install::fingerprint(&found.manifest).to_hex();
+        let content_sha256 = install::content_fingerprint(&found.manifest).to_hex();
+
+        // The substantive measurement: the production paint-shop extraction and
+        // its cross-check against the production faction palette, asserted
+        // against the pinned corpus.
+        let context = ResolveContext::new(install::fingerprint(&found.manifest));
+        let mut builder = SessionBuilder::new(context);
+        builder
+            .mount_installation(&game_dir, &found.diagnosis)
+            .expect("the installation mounts");
+        let archive = MountBuilder::new(
+            MountId::new("rof-gosdata-assets-crimson-rof").expect("a valid mount id"),
+            MountNamespace::new(INSTALL_NAMESPACE).expect("a valid namespace"),
+            PrecedenceClass::Shared,
+            super::PAINT_SHOP_CONTAINER,
+        )
+        .retail();
+        let source = cs_assets::rof::mount_rof_into(
+            &mut builder,
+            archive,
+            &game_dir.join(super::PAINT_SHOP_CONTAINER),
+        )
+        .expect("the shared airframe library mounts");
+        let session = builder.open();
+
+        let catalog =
+            super::PaintShopCatalog::discover(&session, &source, super::PAINT_SHOP_LAYOUT)
+                .expect("the original paint shop extracts");
+        assert_eq!(
+            catalog.install_sha256(),
+            install::fingerprint(&found.manifest)
+        );
+        assert_eq!(catalog.container_path(), super::PAINT_SHOP_CONTAINER);
+        assert_eq!(catalog.member(), super::PAINT_SHOP_LAYOUT);
+        assert_eq!(
+            catalog.controls().len(),
+            PAINT_SHOP_EXPECTED_CONTROLS,
+            "the paint shop declares ten dropdowns"
+        );
+        assert_eq!(
+            catalog.gaps().len(),
+            PAINT_SHOP_EXPECTED_GAPS,
+            "the swatch palette, the shade table, the pattern names and the decal values are the \
+             four quantities no readable member stores"
+        );
+        assert_eq!(
+            catalog
+                .decal_sheet()
+                .expect("the decal pane is declared")
+                .frames(),
+            PAINT_SHOP_EXPECTED_DECAL_FRAMES
+        );
+        assert_eq!(catalog.trailing_bytes(), 0);
+        // The engine-internal claim, measured over the whole control set: no
+        // control record spells a colour or a hex value.
+        let value_fields: u32 = catalog
+            .controls()
+            .iter()
+            .map(|control| control.field_census().colour + control.field_census().hex)
+            .sum();
+        assert_eq!(
+            value_fields, 0,
+            "a paint-shop control that spells a colour or hex value would stop being \
+             engine-internal and must be reported by the cross-check"
+        );
+
+        let palette = FactionPaletteCatalog::discover(&session, &palette_evidence_key())
+            .expect("the original faction palette extracts");
+        let findings = catalog.cross_check(&palette);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| finding.code())
+                .collect::<Vec<_>>(),
+            vec!["pattern_without_palette"],
+            "the shop's pattern list has one entry per stored paint pattern and only the player's \
+             pattern is left uncoloured: {:?}",
+            findings
+                .iter()
+                .map(|finding| (finding.code(), finding.detail().to_owned()))
+                .collect::<Vec<_>>()
+        );
+
+        let catalog_path = evidence_dir.join("paint-shop-catalog.json");
+        fs::write(
+            &catalog_path,
+            paint_shop_catalog_json(&candidate_tree, &catalog, &findings),
+        )
+        .unwrap_or_else(|error| panic!("write {}: {error}", catalog_path.display()));
+        let artifacts = vec![
+            artifact(&log_path, "log", &evidence_dir),
+            artifact(&catalog_path, "json", &evidence_dir),
+        ];
+
+        let engine = format!(
+            "{{\"rust\": {}, \"bevy\": {}, \"avian\": {}}}",
+            jstr(&rustc_version()),
+            jstr(&locked_version("bevy")),
+            jstr(&locked_version("avian3d")),
+        );
+
+        let unknowns: Vec<String> = PAINT_SHOP_UNKNOWNS
+            .iter()
+            .map(|item| (*item).to_owned())
+            .collect();
+        let report = format!(
+            "{{\n\
+             \x20\"schema_version\": 1,\n\
+             \x20\"task_id\": \"F09-PAINTSHOP\",\n\
+             \x20\"candidate_tree\": {},\n\
+             \x20\"engine\": {},\n\
+             \x20\"created_at\": {},\n\
+             \x20\"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n\
+             \x20\"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+             \x20\"seed\": 0,\n\
+             \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
+             \x20\"overrides\": [],\n\
+             \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
+             \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
+             \x20\"assertions\": [{}],\n\
+             \x20\"artifacts\": [{}],\n\
+             \x20\"unknowns\": {},\n\
+             \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
+             \x20\"claim\": \"implemented\"\n\
+             }}\n",
+            jstr(&candidate_tree),
+            engine,
+            jstr(&iso_utc_now()),
+            str_array(&argv),
+            jstr(&git(&["rev-parse", "--show-toplevel"])),
+            exit_code,
+            jstr(&install_sha256),
+            jstr(&content_sha256),
+            suite.discovered,
+            suite.executed,
+            suite.passed,
+            suite.failed,
+            suite.ignored,
+            assertion_array(&suite.assertions),
+            artifact_array(&artifacts),
+            str_array(&unknowns),
+            jstr(
+                "implemented by bunny-alpha-2 (Rally #485). No independent review has happened \
+                 yet: the branch was handed over for review by the same session that wrote it, so \
+                 this record is not independent evidence in the owner directive's sense, and no \
+                 agent review replaces the owner's human approval."
+            ),
+            jstr(
+                "acceptance suite run locally with the retail capability; this harness derives \
+                 every field from the recorded log, production discovery and fingerprint of \
+                 $CS_GAME_DIR, the production PaintShopCatalog::discover over \
+                 GOSDATA/ASSETS/crimson.rof member ASSETS/LAYOUT.CSV (10 paint-shop dropdowns, \
+                 the declared decal sheet with 50 frames, 4 engine-internal gaps, zero colour or \
+                 hex fields over every control record) and the production \
+                 FactionPaletteCatalog::discover over ZBD/zrdr.zbd member vehicle.zrd whose \
+                 cross-check against the shop reports exactly one finding (the player's \
+                 uncoloured pattern); per-control counts, lines, spans and field censuses in \
+                 paint-shop-catalog.json, plus rustc and Cargo.lock. The claim is `implemented` \
+                 only: the option space is read from the original layout with a container-absolute \
+                 span, but the swatch palette, the shade table, the pattern display names and the \
+                 decal-index mapping are engine-internal and no original run was observed. The \
+                 `unknowns` array is populated because this task's deliverable includes those \
+                 gaps staying recorded machine-readably, each naming its affected content and what \
+                 resolves it (#358 owner capture, #351 engine-image unpack, F17-D); the report is \
+                 therefore validated with tools/validate_evidence.py WITHOUT --require-pass, whose \
+                 failure is expected and is recorded in the committed finding. See \
+                 docs/findings/2026-10-03-f09-paintshop-option-space-and-engine-internal-values.md."
+            ),
+        );
+
+        let out = evidence_dir.join("acceptance.json");
+        fs::write(&out, &report).unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
+
+        // A cheap self-check without a JSON dependency: the validator runs next,
+        // but a structurally empty/wrong write must fail here first.
+        let written = fs::read_to_string(&out).expect("the report reads back");
+        for needle in [
+            "\"schema_version\": 1",
+            "\"task_id\": \"F09-PAINTSHOP\"",
+            "\"claim\": \"implemented\"",
+            "\"install_sha256\"",
+            "\"content_sha256\"",
+            "\"assertions\": [",
+            "\"artifacts\": [",
+            "\"unknowns\": [",
+            "swatch_palette_engine_internal",
+            "shade_table_engine_internal",
+            "pattern_names_engine_internal",
+            "decal_index_mapping",
+            "player_palette_engine_internal",
+            "stock_livery_without_pattern",
+        ] {
+            assert!(
+                written.contains(needle),
+                "the written report is missing {needle:?}:\n{written}"
+            );
+        }
+        assert!(
+            suite.failed == 0 && exit_code == 0,
+            "the acceptance run failed (exit {exit_code}, {} failed): the report was written \
+             honestly and must NOT validate; fix the tests first",
+            suite.failed
+        );
+        println!("wrote {}", out.display());
+    }
     /// The install-root key the palette extraction addresses.
     fn palette_evidence_key() -> AssetKey {
         AssetKey::from_spelling(INSTALL_NAMESPACE, PALETTE_CONTAINER, "default")
@@ -6365,6 +6747,159 @@ mod evidence {
         )
     }
 
+    /// The extracted paint-shop option space as a JSON artifact: every control's
+    /// record key, slot, declared entry count, line and field census; the decal
+    /// sheet's declaration; every recorded gap; and every cross-check finding.
+    /// Counts, lines and digests only — no values, no pixels, no file bytes. The
+    /// artifact itself stays in `private/`.
+    fn paint_shop_catalog_json(
+        candidate_tree: &str,
+        catalog: &super::PaintShopCatalog,
+        findings: &[super::PaintShopFinding],
+    ) -> String {
+        let census_json = |census: super::PaintShopFieldCensus| {
+            format!(
+                "{{\"empty\": {}, \"placeholder\": {}, \"integer\": {}, \"hex\": {}, \
+                  \"colour\": {}, \"text\": {}, \"total\": {}}}",
+                census.empty,
+                census.placeholder,
+                census.integer,
+                census.hex,
+                census.colour,
+                census.text,
+                census.total()
+            )
+        };
+        let controls: Vec<String> = catalog
+            .controls()
+            .iter()
+            .map(|control| {
+                format!(
+                    "{{\"key\": {}, \"role\": {}, \"slot\": {}, \"displayed_entries\": {}, \
+                      \"line\": {}, \"field_census\": {}}}",
+                    jstr(control.key()),
+                    jstr(control.role().code()),
+                    control
+                        .slot()
+                        .map_or_else(|| "null".to_owned(), |slot| slot.to_string()),
+                    control.displayed_entries(),
+                    control.line(),
+                    census_json(control.field_census())
+                )
+            })
+            .collect();
+        let sheet = match catalog.decal_sheet() {
+            None => "null".to_owned(),
+            Some(sheet) => format!(
+                "{{\"key\": {}, \"art\": {}, \"frames\": {}, \"line\": {}}}",
+                jstr(sheet.key()),
+                jstr(sheet.art()),
+                sheet.frames(),
+                sheet.line()
+            ),
+        };
+        let gaps: Vec<String> = catalog
+            .gaps()
+            .iter()
+            .map(|gap| {
+                format!(
+                    "{{\"code\": {}, \"quantity\": {}, \"displayed_entries\": {}, \
+                      \"field_census\": {}, \"detail\": {}, \"affected\": {}}}",
+                    jstr(gap.code()),
+                    jstr(gap.quantity()),
+                    gap.displayed_entries(),
+                    census_json(gap.field_census()),
+                    jstr(gap.detail()),
+                    jstr(gap.affected())
+                )
+            })
+            .collect();
+        let finding_json: Vec<String> = findings
+            .iter()
+            .map(|finding| {
+                format!(
+                    "{{\"code\": {}, \"detail\": {}}}",
+                    jstr(finding.code()),
+                    jstr(finding.detail())
+                )
+            })
+            .collect();
+
+        // One digest over every control's key, slot, entry count and census, so
+        // the committed finding can carry a single comparable value.
+        let mut material = Vec::new();
+        for control in catalog.controls() {
+            material.extend_from_slice(control.key().as_bytes());
+            material.push(0);
+            material.extend_from_slice(&control.slot().unwrap_or(u32::MAX).to_le_bytes());
+            material.extend_from_slice(&control.displayed_entries().to_le_bytes());
+            let census = control.field_census();
+            for count in [
+                census.empty,
+                census.placeholder,
+                census.integer,
+                census.hex,
+                census.colour,
+                census.text,
+            ] {
+                material.extend_from_slice(&count.to_le_bytes());
+            }
+        }
+        let option_space_fingerprint = install::sha256(&material).to_hex();
+        let value_fields: u32 = catalog
+            .controls()
+            .iter()
+            .map(|control| control.field_census().colour + control.field_census().hex)
+            .sum();
+
+        format!(
+            "{{\n\
+             \x20\"task_id\": \"F09-PAINTSHOP\",\n\
+             \x20\"candidate_tree\": {},\n\
+             \x20\"created_at\": {},\n\
+             \x20\"reader\": \"cs_content::livery::PaintShopCatalog::discover\",\n\
+             \x20\"claim\": \"implemented\",\n\
+             \x20\"evidence_class\": \"observed_original_data\",\n\
+             \x20\"note\": \"declared entry counts, field censuses, record lines and digests; no \
+             paint value, no pixel, no file bytes\",\n\
+             \x20\"container\": {},\n\
+             \x20\"member\": {},\n\
+             \x20\"install_sha256\": {},\n\
+             \x20\"stored_span\": {{\"offset\": {}, \"length\": {}, \"sha256\": {}}},\n\
+             \x20\"decoded_span\": {{\"offset\": {}, \"length\": {}, \"sha256\": {}}},\n\
+             \x20\"trailing_bytes\": {},\n\
+             \x20\"option_space_fingerprint\": {},\n\
+             \x20\"totals\": {{\"controls\": {}, \"gaps\": {}, \"findings\": {}, \
+             \"value_fields\": {}}},\n\
+             \x20\"decal_sheet\": {},\n\
+             \x20\"controls\": [\n  {}\n ],\n\
+             \x20\"gaps\": [\n  {}\n ],\n\
+             \x20\"findings\": [\n  {}\n ]\n\
+             }}\n",
+            jstr(candidate_tree),
+            jstr(&iso_utc_now()),
+            jstr(catalog.container_path()),
+            jstr(catalog.member()),
+            jstr(&catalog.install_sha256().to_hex()),
+            catalog.layout_span().offset(),
+            catalog.layout_span().length(),
+            optional_hex(catalog.layout_span().member_sha256()),
+            catalog.decoded_span().offset(),
+            catalog.decoded_span().length(),
+            optional_hex(catalog.decoded_span().member_sha256()),
+            catalog.trailing_bytes(),
+            jstr(&option_space_fingerprint),
+            catalog.controls().len(),
+            catalog.gaps().len(),
+            findings.len(),
+            value_fields,
+            sheet,
+            controls.join(",\n  "),
+            gaps.join(",\n  "),
+            finding_json.join(",\n  "),
+        )
+    }
+
     // ------------------------------------------------------------ artifacts ---
 
     /// One referenced artifact, hashed with the **production** SHA-256. The
@@ -6418,6 +6953,12 @@ mod evidence {
     fn str_array(items: &[String]) -> String {
         let quoted: Vec<String> = items.iter().map(|item| jstr(item)).collect();
         format!("[{}]", quoted.join(", "))
+    }
+
+    /// One optional member digest as JSON: a present digest as its hex string,
+    /// an absent one as `null`.
+    fn optional_hex(digest: Option<cs_types::evidence::ContentHash>) -> String {
+        digest.map_or_else(|| "null".to_owned(), |digest| jstr(&digest.to_hex()))
     }
 
     /// A JSON string literal: quoted and escaped, so no report field can break
