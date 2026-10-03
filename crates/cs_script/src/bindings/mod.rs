@@ -13,11 +13,12 @@
 //! [`BindingError`], each with its source location, and no program exists to
 //! launch. A call is never skipped and never lowered to a no-op.
 //!
-//! The registry is **empty by default and ships no original names**: which
-//! calls exist is F13/F38-B measurement. Tests register synthetic names.
-//! Call data is untrusted, so name length, argument count and string length are
-//! capped before any lookup and no binding reaches anything but the
-//! simulation API.
+//! The registry is **empty by default and ships no original names**: F38-B adds
+//! the *measured* families in [`observed`], each with its provenance and either
+//! a real lowering or an explicit refusal, and the normalized differential
+//! traces in [`differential`]. Call data is untrusted, so name length, argument
+//! count and string length are capped before any lookup and no binding reaches
+//! anything but the simulation API.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -33,6 +34,9 @@ use crate::ir::{
 pub const MAX_CALL_NAME_BYTES: usize = 64;
 /// Most arguments one call may carry.
 pub const MAX_CALL_ARGS: usize = 8;
+
+pub mod differential;
+pub mod observed;
 
 /// The design-boundary family of a binding (contract "Host interface"). A
 /// design vocabulary, not an observed original name.
@@ -201,6 +205,41 @@ pub struct RawCall {
     pub span: Option<SourceSpan>,
 }
 
+/// F38-B: a measured original program handed to this crate as the rows
+/// [`observed::ObservedBindingTable::measure`] validates.
+///
+/// `cs_script` may depend on `cs_types` only
+/// (`docs/01-ARCHITECTURE.md`), so it cannot name
+/// `cs_formats::script_raw::ui_host_calls`' types. A consumer that reads the
+/// installation performs the crossing mechanically, field for field, and the
+/// mapping is total in both directions:
+///
+/// | `cs_formats` | `cs_script::bindings::observed` |
+/// | --- | --- |
+/// | `DispatchForm::Callback` / `::Mail` | `MeasuredForm::Callback` / `::Mail` |
+/// | `ArgShape` | `MeasuredShape`, through `ArgShape::code()` and [`MeasuredShape::from_code`] |
+/// | `HostCallCorpus::calls[].native_id` | `MeasuredCallRow::native_id` |
+/// | `…sites` / `…scripts` | `MeasuredCallRow::sites` / `::scripts` |
+/// | `…arities` | `MeasuredCallRow::arities` |
+/// | `…arg_shapes[position]` (dominant shape, `None` when sites disagree) | `MeasuredCallRow::arg_shapes[position]` |
+/// | `…evidence.note()` | `MeasuredCallRow::evidence` |
+///
+/// The shape codes are a **wire vocabulary** both crates publish, so neither
+/// needs the other's types and a code this build does not know is refused on
+/// both sides rather than read as a different shape.
+pub mod measured {
+    pub use super::observed::{MeasuredCallRow, MeasuredForm, MeasuredShape, RowError};
+
+    /// The engine-side reading of a wire shape code.
+    ///
+    /// `None` for a code this build does not know, so a caller holding a
+    /// measurement from a newer reader is refused rather than silently reading
+    /// the wrong shape.
+    pub const fn measured_shape_from_code(code: u8) -> Option<MeasuredShape> {
+        MeasuredShape::from_code(code)
+    }
+}
+
 /// One objective as the adapter decoded it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RawObjective {
@@ -331,7 +370,7 @@ impl fmt::Display for BindingError {
 impl std::error::Error for BindingError {}
 
 /// The calls a mission program may make, keyed by exact name.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct HostBindingRegistry {
     specs: BTreeMap<String, BindingSpec>,
 }

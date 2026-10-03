@@ -20,6 +20,10 @@
 //! * [`ledger`] is the checked table of reachable opcodes and the fail-closed
 //!   program walk: an opcode the ledger does not name stops the walk with the
 //!   mission and the program's source location.
+//! * [`ui_host_calls`] is the F38-B measured host-call corpus of the shipped UI
+//!   script programs: the two native dispatch forms their text contains, the
+//!   shape of every argument expression and the byte span of every site — a
+//!   measurement, never a meaning.
 //! * [`probe`] is the isolated signature probe (F13-C): a caller-supplied set
 //!   of measured instruction/native signatures, one walk per located program
 //!   whose stop is recorded as data, a retry for exactly the stops more
@@ -38,6 +42,7 @@ pub mod evidence;
 pub mod inventory;
 pub mod ledger;
 pub mod probe;
+pub mod ui_host_calls;
 
 pub use discovery::{
     ANIMATION_HEADER_BYTES, CAM_ANIM_MEMBER, ContainerDiscovery, DiscoveryFinding, LocatedProgram,
@@ -63,4 +68,10 @@ pub use ledger::{
 pub use probe::{
     ClaimError, ProbeConfig, ProbeError, ProbeReport, ProbeSession, ProgramProbe, RecordProbeError,
     RecordProbeStats, SignatureClaim, SignatureShape, SignatureTable, probe_records,
+};
+pub use ui_host_calls::{
+    ArgShape, ArgShapeCounts, CorpusMember, DispatchForm, HostCallCorpus, HostCallSite,
+    MAX_ARG_EXPR_BYTES, MAX_BLOCK_LABEL_BYTES, MAX_HOST_CALL_ARGS, MAX_HOST_CALL_SITES,
+    MAX_UI_SCRIPT_BYTES, ObservedHostCall, OtherCallHead, UiProgramScan, UiScriptError,
+    UiScriptLimits, measure_host_call_corpus, scan_ui_program,
 };
