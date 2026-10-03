@@ -178,9 +178,10 @@ use cs_content::objectives::{
     DeclaredCompletion, DeclaredCompletionEffect, DeclaredCountKind, DeclaredCountReaction,
     DeclaredObjectiveProgram, DeclaredObjectiveState, DeclaredPrecedence, DeclaredRevealRule,
     DeclaredTerminalOutcome, DeclaredTimeDomain, DeclaredTimer, DeclaredTimerAction,
-    DeclaredTimerStart, DeclaredVolume, FAILURE_KEY_VOCABULARY, MeasuredBranchConflict,
-    MeasuredBranchPrecedence, MeasuredBranchSite, ProgramActor, ProgramSymbol, UnmeasuredQuantity,
-    is_optional_objective_key,
+    DeclaredTimerStart, DeclaredVolume, DormantReadError, DormantReading, FAILURE_KEY_VOCABULARY,
+    MeasuredBranchConflict, MeasuredBranchPrecedence, MeasuredBranchSite, MeasuredDormantBlock,
+    ProgramActor, ProgramSymbol, UnmeasuredQuantity, is_optional_objective_key,
+    measure_dormant_declarations,
 };
 use cs_content::stunts::{
     OBJECTIVE_BLOCK_PREFIX, SCENARIO_OBJECTIVES_MEMBER, ZrdValue, objective_record, zrd_flat_fields,
@@ -2224,14 +2225,82 @@ pub fn survey_retail_objective_records(
     let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
 
     let mut rows: Vec<RetailObjectiveRow> = Vec::new();
+    for record in locate_mission_objective_records(&found)? {
+        let machine = cs_content::stunts::objective_state_machine(&record.document);
+        let sites = |family: fn(&str) -> bool| -> u32 {
+            machine
+                .keys()
+                .iter()
+                .filter(|(key, _)| family(key))
+                .map(|(_, count)| count)
+                .sum()
+        };
+        rows.push(RetailObjectiveRow {
+            mission: record.mission,
+            container: record.container,
+            container_sha256: record.container_sha256,
+            member: record.member,
+            member_offset: record.member_offset,
+            member_len: record.member_len,
+            member_sha256: record.member_sha256,
+            blocks: machine.blocks(),
+            keys: machine.keys().to_vec(),
+            branching_sites: sites(|key| BRANCH_KEY_VOCABULARY.contains(&key)),
+            completion_effect_sites: sites(|key| BRANCH_EFFECT_KEY_VOCABULARY.contains(&key)),
+            order_dependency_sites: sites(|key| key == BRANCH_ORDER_KEY),
+            optional_sites: sites(is_optional_objective_key),
+            failure_sites: sites(|key| FAILURE_KEY_VOCABULARY.contains(&key)),
+            branch_precedence: measure_block_precedence(&record.document),
+        });
+    }
+
+    rows.sort_by(|left, right| left.mission.cmp(&right.mission));
+    Ok(RetailObjectiveCensus {
+        install_sha256,
+        rows,
+    })
+}
+
+/// One mission-scoped objective record, located and decoded once.
+///
+/// The shared walk of F39-D's census and F39-E1's
+/// [`survey_retail_dormant_reveal`]: both need every mission's decoded
+/// `objectives.zrd`, and two walks would mean two definitions of "every
+/// mission". The document is carried here (not its bytes) because each survey
+/// walks it with its own reader and neither re-reads the archive.
+struct MissionObjectiveRecord {
+    mission: String,
+    container: String,
+    container_sha256: String,
+    member: String,
+    member_offset: u64,
+    member_len: u64,
+    member_sha256: String,
+    document: ZrdValue,
+}
+
+/// Locates and decodes every mission-scoped objective record in `found`, sorted
+/// by mission.
+///
+/// Mission scope is F13-B's own rule — exactly `zbd/<group>/<mission>`, so the
+/// shared reader and the world-group readers are not missions — and a mission
+/// archive with no objective record is a **refusal**, never a skipped row, so a
+/// mission cannot vanish from a denominator.
+///
+/// # Errors
+///
+/// [`ObjectiveCensusError::Read`] for an archive that cannot be read or carries
+/// no objective record, and [`ObjectiveCensusError::Decode`] for a record whose
+/// bytes do not decode.
+fn locate_mission_objective_records(
+    found: &cs_assets::install::Discovery,
+) -> Result<Vec<MissionObjectiveRecord>, ObjectiveCensusError> {
+    let mut located = Vec::new();
     for record in &found.manifest.files {
         let container_key = record.relative_spelling.logical_key();
         if !container_key.ends_with(MISSION_READER_ARCHIVE) {
             continue;
         }
-        // Mission scope is F13-B's own rule: exactly `zbd/<group>/<mission>`, so
-        // the shared reader and the world-group readers are not missions and
-        // never enter the denominator.
         let spelling = record.relative_spelling.as_str().to_owned();
         let path = RelativePath::new(&spelling.to_lowercase()).map_err(|error| {
             ObjectiveCensusError::Read {
@@ -2273,25 +2342,16 @@ pub fn survey_retail_objective_records(
                 offset: error.offset(),
             }
         })?;
-        let machine = cs_content::stunts::objective_state_machine(&document);
         let locator = member.locator();
         let span = locator.span();
-        // The member name the locator itself spells, so the row cannot carry an
+        // The member name the locator itself spells, so a row cannot carry an
         // empty name: the search above only accepted a program whose locator has
         // one.
         let member_name = locator.member().ok_or_else(|| ObjectiveCensusError::Read {
             container: container_key.clone(),
             reason: format!("the {SCENARIO_OBJECTIVES_MEMBER} member was located without a name"),
         })?;
-        let sites = |family: fn(&str) -> bool| -> u32 {
-            machine
-                .keys()
-                .iter()
-                .filter(|(key, _)| family(key))
-                .map(|(_, count)| count)
-                .sum()
-        };
-        rows.push(RetailObjectiveRow {
+        located.push(MissionObjectiveRecord {
             mission,
             container: spelling,
             container_sha256,
@@ -2299,20 +2359,632 @@ pub fn survey_retail_objective_records(
             member_offset: span.offset,
             member_len: span.len,
             member_sha256: cs_assets::install::sha256(member.bytes()).to_hex(),
-            blocks: machine.blocks(),
-            keys: machine.keys().to_vec(),
-            branching_sites: sites(|key| BRANCH_KEY_VOCABULARY.contains(&key)),
-            completion_effect_sites: sites(|key| BRANCH_EFFECT_KEY_VOCABULARY.contains(&key)),
-            order_dependency_sites: sites(|key| key == BRANCH_ORDER_KEY),
-            optional_sites: sites(is_optional_objective_key),
-            failure_sites: sites(|key| FAILURE_KEY_VOCABULARY.contains(&key)),
-            branch_precedence: measure_block_precedence(&document),
+            document,
         });
     }
+    located.sort_by(|left, right| left.mission.cmp(&right.mission));
+    Ok(located)
+}
 
+// ---------------------------------------------------------------------------
+// F39-E1: the dormant/reveal census
+// ---------------------------------------------------------------------------
+//
+// F39-D counted the declarations (`BEGIN_DORMANT` in 1096 of 1338 blocks, an
+// `INACTIVE<n>` stage in 1335, an `INACTIVE_COMPLETION_COUNT` in 130) and left
+// what they *do* as its unknown #4. This census is the measurement half of that
+// question: it reads every mission-scoped objective record through
+// [`measure_dormant_declarations`] and publishes the *shape* of what the
+// declarations carry, plus the two controlled conditions F39-E1 could isolate
+// from the files alone.
+//
+// **What it is not.** It produces no reveal rule. The elapsed-time unit of
+// `BEGIN_DORMANT`, what satisfying an `INACTIVE<n>` condition means, and whether
+// a satisfied condition is monotone are all unmeasured; the inference, the
+// contrary hypotheses and the verification that would settle them are in
+// `docs/findings/2026-10-03-f39-e1-objective-dormant-reveal-lifecycle.md`, and
+// `DeclaredSupport::Original` stays unplayable. No original executable was run.
+
+/// Why the retail dormant/reveal census could not be produced.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DormantCensusError {
+    /// The installation could not be discovered.
+    Discovery(String),
+    /// A mission reader archive could not be read or carries no objective
+    /// record.
+    Read {
+        /// The archive's logical key.
+        container: String,
+        /// Why it could not be read.
+        reason: String,
+    },
+    /// A record's bytes do not decode.
+    Decode {
+        /// The archive's logical key.
+        container: String,
+        /// The decoder's stable code.
+        code: &'static str,
+        /// The offset the refusal was found at.
+        offset: u64,
+    },
+    /// A block's dormant/reveal declarations are not a measured shape.
+    Declaration {
+        /// The mission the block belongs to.
+        mission: String,
+        /// The block's own key.
+        block: String,
+        /// Why it refused.
+        reason: String,
+    },
+}
+
+impl fmt::Display for DormantCensusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Discovery(reason) => {
+                write!(f, "the installation could not be discovered: {reason}")
+            }
+            Self::Read { container, reason } => {
+                write!(f, "container {container} could not be read: {reason}")
+            }
+            Self::Decode {
+                container,
+                code,
+                offset,
+            } => write!(
+                f,
+                "container {container} objective record did not decode: {code} at offset {offset}"
+            ),
+            Self::Declaration {
+                mission,
+                block,
+                reason,
+            } => write!(f, "{mission} {block}: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for DormantCensusError {}
+
+/// One mission's measured dormant/reveal declarations.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DormantRevealRow {
+    /// The mission, as `zbd/<group>/<mission>`.
+    pub mission: String,
+    /// The reader archive's relative spelling.
+    pub container: String,
+    /// SHA-256 of that whole archive, from production discovery.
+    pub container_sha256: String,
+    /// The objective member's name.
+    pub member: String,
+    /// The member's SHA-256, hex.
+    pub member_sha256: String,
+    /// Every numbered `OBJECTIVE<N>` block, in declaration order.
+    pub blocks: Vec<MeasuredDormantBlock>,
+}
+
+impl DormantRevealRow {
+    /// How many numbered blocks the mission declares.
+    #[must_use]
+    pub fn block_count(&self) -> usize {
+        self.blocks.len()
+    }
+}
+
+/// The measured dormant/reveal declarations of every mission-scoped objective
+/// record in an installation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DormantRevealCensus {
+    install_sha256: String,
+    rows: Vec<DormantRevealRow>,
+}
+
+impl DormantRevealCensus {
+    /// SHA-256 of the whole installation manifest, from production discovery.
+    #[must_use]
+    pub fn install_sha256(&self) -> &str {
+        &self.install_sha256
+    }
+
+    /// The measured rows, one per mission, sorted by mission.
+    #[must_use]
+    pub fn rows(&self) -> &[DormantRevealRow] {
+        &self.rows
+    }
+
+    /// Every measured block, in row then declaration order.
+    pub fn blocks(&self) -> impl Iterator<Item = (&str, &MeasuredDormantBlock)> {
+        self.rows.iter().flat_map(|row| {
+            row.blocks
+                .iter()
+                .map(move |block| (row.mission.as_str(), block))
+        })
+    }
+
+    /// How many mission-scoped readers were measured.
+    #[must_use]
+    pub fn readers(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// How many blocks were measured in total.
+    #[must_use]
+    pub fn block_count(&self) -> usize {
+        self.rows.iter().map(DormantRevealRow::block_count).sum()
+    }
+
+    /// Every positive `BEGIN_DORMANT` argument the installation declares,
+    /// sorted and deduplicated.
+    ///
+    /// This is the measured *domain* of the declaration: F39-E1 records it so a
+    /// later stage can check a value against what the original actually wrote
+    /// instead of against an assumed unit.
+    #[must_use]
+    pub fn dated_arguments(&self) -> Vec<f32> {
+        let mut arguments: Vec<f32> = self
+            .blocks()
+            .filter_map(|(_, block)| match block.dormant {
+                Some(DormantReading::ElapsedTime(value)) => Some(value),
+                Some(DormantReading::Sentinel) | None => None,
+            })
+            .collect();
+        arguments.sort_by(f32::total_cmp);
+        arguments.dedup_by(|left, right| left.total_cmp(right).is_eq());
+        arguments
+    }
+
+    /// How many blocks declare that they begin dormant.
+    #[must_use]
+    pub fn dormant_blocks(&self) -> usize {
+        self.blocks().filter(|(_, b)| b.begins_dormant()).count()
+    }
+
+    /// How many dormant blocks carry the measured sentinel `-1`.
+    #[must_use]
+    pub fn sentinel_blocks(&self) -> usize {
+        self.blocks()
+            .filter(|(_, b)| b.dormant.is_some_and(DormantReading::is_sentinel))
+            .count()
+    }
+
+    /// How many dormant blocks carry a positive argument.
+    #[must_use]
+    pub fn dated_blocks(&self) -> usize {
+        self.dormant_blocks() - self.sentinel_blocks()
+    }
+
+    /// How many blocks declare at least one `INACTIVE<n>` condition.
+    #[must_use]
+    pub fn condition_blocks(&self) -> usize {
+        self.blocks()
+            .filter(|(_, b)| b.condition_count() > 0)
+            .count()
+    }
+
+    /// How many `INACTIVE<n>` declarations were read in total.
+    #[must_use]
+    pub fn condition_count(&self) -> usize {
+        self.blocks().map(|(_, b)| b.condition_count()).sum()
+    }
+
+    /// How many blocks declare an `INACTIVE_COMPLETION_COUNT`.
+    #[must_use]
+    pub fn completion_count_blocks(&self) -> usize {
+        self.blocks()
+            .filter(|(_, b)| b.completion_count.is_some())
+            .count()
+    }
+
+    /// The declared `INACTIVE_COMPLETION_COUNT` values, sorted and deduplicated.
+    #[must_use]
+    pub fn completion_counts(&self) -> Vec<u32> {
+        let mut counts: Vec<u32> = self
+            .blocks()
+            .filter_map(|(_, b)| b.completion_count)
+            .collect();
+        counts.sort_unstable();
+        counts.dedup();
+        counts
+    }
+
+    /// How many blocks declare a count **equal** to their condition count.
+    #[must_use]
+    pub fn counts_matching_conditions(&self) -> usize {
+        self.blocks()
+            .filter(|(_, b)| {
+                b.completion_count
+                    .is_some_and(|count| count as usize == b.condition_count())
+            })
+            .count()
+    }
+
+    /// How many blocks declare a count **larger** than their condition count —
+    /// a threshold their own conditions cannot reach.
+    #[must_use]
+    pub fn counts_above_conditions(&self) -> usize {
+        self.blocks()
+            .filter(|(_, b)| b.count_exceeds_conditions())
+            .count()
+    }
+
+    /// How many blocks declare a count and no condition at all.
+    #[must_use]
+    pub fn counts_without_conditions(&self) -> usize {
+        self.blocks()
+            .filter(|(_, b)| b.count_without_conditions())
+            .count()
+    }
+
+    /// How many blocks carry at least one display identity.
+    #[must_use]
+    pub fn identity_blocks(&self) -> usize {
+        self.blocks()
+            .filter(|(_, b)| !b.identities.is_empty())
+            .count()
+    }
+
+    /// How many `IDENTITY` declarations were read in total.
+    ///
+    /// Measured: this is **one** more than [`Self::identity_blocks`], because one
+    /// block of the installation declares two identities and which one the
+    /// original honours is unmeasured.
+    #[must_use]
+    pub fn identity_declarations(&self) -> usize {
+        self.blocks().map(|(_, b)| b.identities.len()).sum()
+    }
+
+    /// The distinct identity roles, with the number of declarations naming each.
+    #[must_use]
+    pub fn identity_roles(&self) -> Vec<(String, usize)> {
+        let mut roles: BTreeMap<String, usize> = BTreeMap::new();
+        for (_, block) in self.blocks() {
+            for identity in &block.identities {
+                *roles.entry(identity.role.clone()).or_insert(0) += 1;
+            }
+        }
+        roles.into_iter().collect()
+    }
+
+    /// How many identity declarations name a message id.
+    #[must_use]
+    pub fn identity_messages(&self) -> usize {
+        self.blocks()
+            .flat_map(|(_, b)| b.identities.iter())
+            .filter(|identity| identity.message.is_some())
+            .count()
+    }
+
+    /// How many blocks both begin dormant **and** carry a display identity.
+    ///
+    /// F39-E1's visibility measurement: the original's display role is declared
+    /// independently of its dormancy, so a dormant block can be the one the
+    /// player is shown. Whether the original shows it *while* dormant is
+    /// unmeasured and stays so.
+    #[must_use]
+    pub fn dormant_identity_blocks(&self) -> usize {
+        self.blocks()
+            .filter(|(_, b)| b.begins_dormant() && !b.identities.is_empty())
+            .count()
+    }
+
+    /// Every subject any `INACTIVE<n>` condition names, with how many
+    /// declarations name it.
+    #[must_use]
+    pub fn condition_subjects(&self) -> Vec<(String, usize)> {
+        let mut subjects: BTreeMap<String, usize> = BTreeMap::new();
+        for (_, block) in self.blocks() {
+            for condition in &block.conditions {
+                *subjects.entry(condition.subject.clone()).or_insert(0) += 1;
+            }
+        }
+        subjects.into_iter().collect()
+    }
+
+    /// Every attribute any `INACTIVE<n>` condition names, with how many
+    /// declarations name it.
+    ///
+    /// Measured over the installation: exactly two spellings occur — `healthy`
+    /// and `panels` — which is why the reader keeps them as text and no enum.
+    #[must_use]
+    pub fn condition_attributes(&self) -> Vec<(String, usize)> {
+        let mut attributes: BTreeMap<String, usize> = BTreeMap::new();
+        for (_, block) in self.blocks() {
+            for condition in &block.conditions {
+                if let Some(attribute) = &condition.attribute {
+                    *attributes.entry(attribute.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        attributes.into_iter().collect()
+    }
+
+    /// The declared arities, with how many `INACTIVE<n>` declarations hold each.
+    #[must_use]
+    pub fn condition_arities(&self) -> Vec<(usize, usize)> {
+        let mut arities: BTreeMap<usize, usize> = BTreeMap::new();
+        for (_, block) in self.blocks() {
+            for condition in &block.conditions {
+                *arities.entry(condition.arity).or_insert(0) += 1;
+            }
+        }
+        arities.into_iter().collect()
+    }
+
+    /// Controlled condition B: the **condition ladders**.
+    ///
+    /// A ladder is two or more blocks in one mission whose `INACTIVE<n>`
+    /// declarations are *identical* subject/part/attribute tuples while their
+    /// `INACTIVE_COMPLETION_COUNT`s differ. Two blocks cannot share a condition
+    /// set by accident, so the pair is the controlled condition for
+    /// "`INACTIVE_COMPLETION_COUNT` is a threshold over *this* block's own
+    /// conditions": if the count named anything else (a mission-wide counter, a
+    /// stage index, another block's threshold) a designer would have had no
+    /// reason to write the same fourteen conditions on four blocks with four
+    /// different counts.
+    ///
+    /// This measures a *co-occurrence*, not a rule. The units the conditions
+    /// count, whether satisfying one is monotone, and whether the ladder ends in
+    /// the block that carries the display identity are all unmeasured.
+    #[must_use]
+    pub fn condition_ladders(&self) -> Vec<ConditionLadder> {
+        let mut families: BTreeMap<
+            (String, ConditionSignature),
+            Vec<(&str, &MeasuredDormantBlock)>,
+        > = BTreeMap::new();
+        for (mission, block) in self.blocks() {
+            if block.condition_count() == 0 {
+                continue;
+            }
+            families
+                .entry((mission.to_owned(), block.condition_signature()))
+                .or_default()
+                .push((mission, block));
+        }
+        families
+            .into_iter()
+            .filter(|(_, blocks)| blocks.len() >= 2)
+            .map(|((mission, signature), blocks)| ConditionLadder {
+                mission,
+                condition_count: signature.len(),
+                signature,
+                rungs: blocks
+                    .into_iter()
+                    .map(|(_, block)| LadderRung {
+                        block: block.block.clone(),
+                        completion_count: block.completion_count,
+                        begins_dormant: block.begins_dormant(),
+                        carries_identity: !block.identities.is_empty(),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Controlled condition A: the **cue-ordered dated blocks**.
+    ///
+    /// F39-E1's controlled condition for "`BEGIN_DORMANT`'s positive argument is
+    /// an elapsed-time quantity". Two blocks in one mission whose
+    /// [`OBJECTIVE_WAKEUP_SOUND_GROUP`](cs_content::objectives::OBJECTIVE_WAKEUP_SOUND_GROUP_KEY)
+    /// names differ only in a trailing number are two cues the original's own
+    /// sound library numbers in sequence; if the dormant argument ordered them
+    /// the same way, it orders those blocks the way the designers numbered them,
+    /// which a *count* of anything would not do. Only cue names with a common
+    /// prefix and a trailing number are compared, so the test never invents an
+    /// ordering for names that carry none.
+    #[must_use]
+    pub fn cue_ordered_dated_blocks(&self) -> Vec<CueOrderedFamily> {
+        let mut groups: BTreeMap<(String, String), Vec<CueOrderedEntry>> = BTreeMap::new();
+        for (mission, block) in self.blocks() {
+            let (Some(cue), Some(DormantReading::ElapsedTime(argument))) =
+                (&block.wakeup_sound_group, block.dormant)
+            else {
+                continue;
+            };
+            let Some((prefix, index)) = split_trailing_index(cue) else {
+                continue;
+            };
+            groups
+                .entry((mission.to_owned(), prefix.to_owned()))
+                .or_default()
+                .push(CueOrderedEntry {
+                    index,
+                    argument,
+                    block: block.block.clone(),
+                    cue: cue.clone(),
+                });
+        }
+        groups
+            .into_iter()
+            .filter(|(_, entries)| entries.len() >= 2)
+            .map(|((mission, prefix), mut entries)| {
+                entries.sort_by_key(|entry| entry.index);
+                let by_index: Vec<f32> = entries.iter().map(|entry| entry.argument).collect();
+                let mut by_argument = entries.clone();
+                by_argument.sort_by(|left, right| left.argument.total_cmp(&right.argument));
+                let order_agrees = by_argument
+                    .iter()
+                    .map(|entry| entry.index)
+                    .collect::<Vec<_>>()
+                    == entries.iter().map(|entry| entry.index).collect::<Vec<_>>();
+                CueOrderedFamily {
+                    mission,
+                    prefix,
+                    entries,
+                    order_agrees,
+                    by_index,
+                }
+            })
+            .collect()
+    }
+}
+
+/// The trailing number of `name`, or `None` when there is none.
+fn split_trailing_index(name: &str) -> Option<(&str, u32)> {
+    let split = name
+        .char_indices()
+        .rev()
+        .take_while(|(_, character)| character.is_ascii_digit())
+        .last()
+        .map(|(index, _)| index)?;
+    if split == 0 {
+        return None;
+    }
+    let (prefix, digits) = name.split_at(split);
+    Some((prefix, digits.parse().ok()?))
+}
+
+/// One condition's measured subject, part and attribute, as the signature of a
+/// [`ConditionLadder`].
+pub type ConditionSignature = Vec<(String, Option<String>, Option<String>)>;
+
+/// One rung of a [`ConditionLadder`]: a block that declares the ladder's shared
+/// conditions with its own threshold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LadderRung {
+    /// The block's own key.
+    pub block: String,
+    /// The threshold it declares, when it declares one.
+    pub completion_count: Option<u32>,
+    /// Whether the block declares that it begins dormant.
+    pub begins_dormant: bool,
+    /// Whether the block carries a display identity.
+    pub carries_identity: bool,
+}
+
+/// Controlled condition B's family: blocks sharing one condition set at
+/// different thresholds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConditionLadder {
+    /// The mission the family belongs to.
+    pub mission: String,
+    /// How many conditions the shared set holds.
+    pub condition_count: usize,
+    /// The shared condition set, in stage order.
+    pub signature: ConditionSignature,
+    /// The blocks declaring it, in block-name order.
+    pub rungs: Vec<LadderRung>,
+}
+
+impl ConditionLadder {
+    /// The distinct thresholds the family declares, sorted.
+    #[must_use]
+    pub fn thresholds(&self) -> Vec<u32> {
+        let mut counts: Vec<u32> = self
+            .rungs
+            .iter()
+            .filter_map(|rung| rung.completion_count)
+            .collect();
+        counts.sort_unstable();
+        counts.dedup();
+        counts
+    }
+
+    /// Whether every declared threshold is a real count over the shared set —
+    /// no rung asks for more conditions than the set holds.
+    #[must_use]
+    pub fn thresholds_are_reachable(&self) -> bool {
+        self.rungs.iter().all(|rung| {
+            rung.completion_count
+                .is_none_or(|count| count as usize <= self.condition_count)
+        })
+    }
+}
+
+/// One dated block inside a [`CueOrderedFamily`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct CueOrderedEntry {
+    /// The trailing number of the cue name.
+    pub index: u32,
+    /// The block's dormant argument.
+    pub argument: f32,
+    /// The block's own key.
+    pub block: String,
+    /// The cue name as measured.
+    pub cue: String,
+}
+
+/// Controlled condition A's family: dated blocks whose cues are numbered in the
+/// same order their arguments are.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CueOrderedFamily {
+    /// The mission the family belongs to.
+    pub mission: String,
+    /// The cue names' common prefix, without the trailing number.
+    pub prefix: String,
+    /// The blocks, ordered by their cue's trailing number.
+    pub entries: Vec<CueOrderedEntry>,
+    /// Whether that order is also the order of the dormant arguments.
+    pub order_agrees: bool,
+    /// The arguments in cue-index order, which is what the family compares.
+    pub by_index: Vec<f32>,
+}
+
+/// Measures every mission-scoped objective record's dormant/reveal
+/// declarations in `install_root`.
+///
+/// Read-only: the walk is production discovery, so nothing inside the
+/// installation is written. A mission whose archive cannot be read, whose
+/// record does not decode, or whose block declares a shape F39-E1 never
+/// measured is a **named refusal**, never a skipped row.
+///
+/// # Errors
+///
+/// [`DormantCensusError`] in every case; see each variant.
+pub fn survey_retail_dormant_reveal(
+    install_root: &Path,
+) -> Result<DormantRevealCensus, DormantCensusError> {
+    let found = cs_assets::install::discover(install_root)
+        .map_err(|error| DormantCensusError::Discovery(error.to_string()))?;
+    let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
+    let located = locate_mission_objective_records(&found).map_err(|error| match error {
+        ObjectiveCensusError::Discovery(reason) => DormantCensusError::Discovery(reason),
+        ObjectiveCensusError::Read { container, reason } => {
+            DormantCensusError::Read { container, reason }
+        }
+        ObjectiveCensusError::Decode {
+            container,
+            code,
+            offset,
+        } => DormantCensusError::Decode {
+            container,
+            code,
+            offset,
+        },
+    })?;
+
+    let mut rows: Vec<DormantRevealRow> = Vec::new();
+    for record in located {
+        let blocks =
+            measure_dormant_declarations(&record.document).map_err(|error: DormantReadError| {
+                DormantCensusError::Declaration {
+                    mission: record.mission.clone(),
+                    block: declared_block_of(&error),
+                    reason: error.to_string(),
+                }
+            })?;
+        rows.push(DormantRevealRow {
+            mission: record.mission,
+            container: record.container,
+            container_sha256: record.container_sha256,
+            member: record.member,
+            member_sha256: record.member_sha256,
+            blocks,
+        });
+    }
     rows.sort_by(|left, right| left.mission.cmp(&right.mission));
-    Ok(RetailObjectiveCensus {
+    Ok(DormantRevealCensus {
         install_sha256,
         rows,
     })
+}
+
+/// The block a [`DormantReadError`] is about, as a declared key.
+///
+/// Every refusal variant carries its own block name; this reads it back so the
+/// census's own error names the block without re-deriving it from the message.
+fn declared_block_of(error: &DormantReadError) -> String {
+    let message = error.to_string();
+    message
+        .split_once(": ")
+        .map_or_else(|| message.clone(), |(block, _)| block.to_owned())
 }

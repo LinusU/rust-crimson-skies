@@ -114,6 +114,30 @@
 //!   order-independent *completion* rule lives with the state table in
 //!   `cs_sim::objectives::state`.
 //!
+//! # F39-E1: what the dormant/reveal declarations declare, and what they do not
+//!
+//! F39-D left one question open (its unknown #4): 1096 of the installation's
+//! 1338 objective blocks carry [`OBJECTIVE_DORMANT_KEY`], 1335 carry an
+//! `INACTIVE<n>` stage and 130 an [`OBJECTIVE_INACTIVE_COUNT_KEY`], and
+//! nothing was known about what any of them *does*. The measurement half of
+//! that question is here: [`measure_dormant_declarations`] reads the three
+//! declarations plus the display [`OBJECTIVE_IDENTITY_KEY`] out of a decoded
+//! objective record and keeps every value **as measured** — the `-1`
+//! sentinel ([`DormantReading::Sentinel`]), a positive elapsed-time quantity in
+//! an *unmeasured* unit ([`DormantReading::ElapsedTime`]), the conditions as
+//! their measured subject/part/attribute spellings ([`InactiveCondition`]), and
+//! the display identity as role/ordinal/message ([`MeasuredIdentity`]).
+//!
+//! It produces **no** [`DeclaredRevealRule`]. Recovering the rule needs an
+//! observation of the original running, which no agent has; the inference, the
+//! contrary hypotheses and the verification that would settle it are recorded
+//! in
+//! `docs/findings/2026-10-03-f39-e1-objective-dormant-reveal-lifecycle.md`, and
+//! `DeclaredSupport::Original` stays unplayable for it. The reader also refuses
+//! every declaration shape this stage did not measure
+//! ([`DormantReadError`]), so an installation with a shape nobody has seen
+//! fails loudly instead of reading as a block that declares nothing.
+//!
 //! # F39-E2: precedence between completion effects in one block
 //!
 //! The original declares, inside one `OBJECTIVE<N>` block, what happens to
@@ -2503,6 +2527,628 @@ pub fn declared_synthetic_completion_effects() -> DeclaredObjectiveProgram {
         vec![],
     )
     .expect("the synthetic completion-effect program is valid")
+}
+
+// ---------------------------------------------------------------------------
+// F39-E1: the measured dormant/reveal declarations of one objective block
+// ---------------------------------------------------------------------------
+//
+// What follows is a **reader of what the original's objective records declare**
+// about when a block's objective may become active, and nothing more. It is the
+// measurement half of F39-D unknown #4
+// (`docs/findings/2026-10-03-f39-d-branching-optional-and-failure-validation.md`),
+// which left the dormant/reveal lifecycle unrecovered because no rule had been
+// isolated for any of the three declarations: `BEGIN_DORMANT` (1096 of the
+// installation's 1338 blocks), the `INACTIVE<n>` stage keys (1335) and
+// `INACTIVE_COMPLETION_COUNT` (130).
+//
+// The reader keeps every measured value **as measured** and classifies nothing
+// it did not measure:
+//
+// * [`DormantReading::Sentinel`] is the measured `-1` argument and
+//   [`DormantReading::ElapsedTime`] is a measured positive argument. The
+//   *unit* of the positive argument is **unmeasured** — F39-E1's controlled
+//   conditions order it against the original's own radio-cue numbering and
+//   nothing more — so the reader names it an elapsed-time quantity and never a
+//   number of seconds, ticks or objective indices.
+// * [`InactiveCondition`] keeps its measured arity and its subject/part/
+//   attribute spellings verbatim. `healthy`, `healthy_part`, `healthy_balloon`
+//   and `panels` are **measured spellings of a condition about an actor**, not
+//   a decoded damage rule: nothing here says what satisfying one means, or
+//   even whether a satisfied condition is monotone.
+// * [`MeasuredIdentity`] is the block's declared display identity (role,
+//   ordinal and an optional message id) — *what* the objective is labelled,
+//   never *when* the player is shown it.
+//
+// What this reader deliberately does **not** produce: a
+// [`DeclaredRevealRule`]. Recovering the rule needs an observation of the
+// original running, which no agent has; `docs/contracts/SCRIPT-MISSION.md`
+// requires the inference, the contrary hypotheses and the verification to be
+// recorded for such a case, and
+// `docs/findings/2026-10-03-f39-e1-objective-dormant-reveal-lifecycle.md`
+// records them. A reader that turned these declarations into a reveal rule
+// would be the guess the contract forbids.
+
+use crate::stunts::{OBJECTIVE_BLOCK_PREFIX, ZrdValue, objective_record, zrd_flat_fields};
+
+/// The key a block declares its objective identity with: the display role, the
+/// ordinal inside that role and, for most blocks, the message id the original
+/// shows for it. Measured in 112 blocks of the 1338 (F39-E1).
+pub const OBJECTIVE_IDENTITY_KEY: &str = "IDENTITY";
+
+/// The key a block uses to play a sound group when the objective completes.
+pub const OBJECTIVE_COMPLETED_SOUND_GROUP_KEY: &str = "COMPLETED_SOUND_GROUP";
+
+/// The key a block uses to play a sound group when the objective *activates*.
+///
+/// Measured in 123 blocks and, in 37 of them, beside a positive
+/// `BEGIN_DORMANT` argument — which is what makes it the ordering probe F39-E1
+/// used for its first controlled condition.
+pub const OBJECTIVE_WAKEUP_SOUND_GROUP_KEY: &str = "WAKEUP_SOUND_GROUP";
+
+/// The measured `BEGIN_DORMANT` argument that declares no elapsed time.
+///
+/// Measured: 992 of the 1096 `BEGIN_DORMANT` arguments are exactly this value,
+/// and no other negative argument occurs.
+pub const DORMANT_NO_ELAPSED_TIME: f32 = -1.0;
+
+/// What a block's single `BEGIN_DORMANT` argument reads as, measured.
+///
+/// The variant names only what the argument's *value* is. What the original
+/// *does* when the value elapses, and whether the elapsed time is measured in
+/// seconds, is unmeasured and stays that way; see [`InactiveCondition`] and the
+/// module section above.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DormantReading {
+    /// The measured `-1`: the block declares that it begins dormant and no
+    /// elapsed time of its own.
+    Sentinel,
+    /// A measured positive argument: an elapsed-time quantity in an
+    /// **unmeasured** unit.
+    ElapsedTime(f32),
+}
+
+impl DormantReading {
+    /// The argument as measured.
+    #[must_use]
+    pub const fn argument(self) -> f32 {
+        match self {
+            Self::Sentinel => DORMANT_NO_ELAPSED_TIME,
+            Self::ElapsedTime(value) => value,
+        }
+    }
+
+    /// Whether this argument declares no elapsed time of its own.
+    #[must_use]
+    pub const fn is_sentinel(self) -> bool {
+        matches!(self, Self::Sentinel)
+    }
+}
+
+/// One measured `INACTIVE<n>` condition: the actor it names and, when the
+/// original wrote them, a part and an attribute of that actor.
+///
+/// Measured over the installation's 1335 stage declarations: 35 name one
+/// element, 356 two and 944 three; the three-element form's third element is
+/// `healthy` (750) or `panels` (194), and the second element's 88 spellings
+/// include engine and gasbag node names (`reng11`, `gasbag3`) next to the same
+/// words used without a part (`healthy`, `healthy_part`, `healthy_balloon`).
+/// What satisfying a condition *means* — and whether the original counts the
+/// loss of the named state or its presence — is **unmeasured**; F39-E1 records
+/// the inference and its contrary hypotheses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InactiveCondition {
+    /// The `n` of the key this condition was declared under.
+    pub stage: u32,
+    /// The actor the condition is about.
+    pub subject: String,
+    /// A part of that actor, when the original wrote one.
+    pub part: Option<String>,
+    /// An attribute of the actor (or of the part), when the original wrote one.
+    pub attribute: Option<String>,
+    /// How many elements the declaration held, exactly as measured.
+    pub arity: usize,
+}
+
+/// One measured `IDENTITY` declaration: the display role, the ordinal inside
+/// it and the message id the original names.
+///
+/// Measured in 112 declarations across 111 blocks: 81 `PRIMARY`, 29 `SECONDARY`,
+/// 2 `TERTIARY`, and 79 of them carry a message id. The id is a *name*
+/// (`MSG_BRF_HWM4_OBJ2`); F39-E1 measured that the installation's two shipped
+/// generated headers define no `MSG_*` id at all, so the text behind one is
+/// **not** resolvable from the shipped files and stays unknown.
+///
+/// One block of the installation declares **two** identities, a `PRIMARY` with
+/// a message and a `SECONDARY` without. Which one the original honours is
+/// unmeasured, so a block keeps every declaration it makes
+/// ([`MeasuredDormantBlock::identities`]) rather than one of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MeasuredIdentity {
+    /// `PRIMARY`, `SECONDARY` or `TERTIARY`, verbatim.
+    pub role: String,
+    /// The ordinal the block declares inside its role.
+    pub ordinal: u32,
+    /// The message id the block names, when it names one.
+    pub message: Option<String>,
+}
+
+/// What one numbered `OBJECTIVE<N>` block declares about its own lifecycle.
+///
+/// Every field is a measurement. None of them is a rule.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredDormantBlock {
+    /// The block's own key, e.g. `OBJECTIVE42`.
+    pub block: String,
+    /// The block's [`OBJECTIVE_DORMANT_KEY`] argument, when it declares one.
+    pub dormant: Option<DormantReading>,
+    /// The block's [`OBJECTIVE_INACTIVE_COUNT_KEY`], when it declares one.
+    pub completion_count: Option<u32>,
+    /// The block's `INACTIVE<n>` conditions, in stage order.
+    pub conditions: Vec<InactiveCondition>,
+    /// Every [`OBJECTIVE_IDENTITY_KEY`] declaration the block makes, in
+    /// declaration order. Empty when it declares none; more than one when the
+    /// original wrote more than one (measured: one block of 1338).
+    pub identities: Vec<MeasuredIdentity>,
+    /// The sound group the block plays when the objective activates.
+    pub wakeup_sound_group: Option<String>,
+    /// The sound group the block plays when the objective completes.
+    pub completed_sound_group: Option<String>,
+}
+
+impl MeasuredDormantBlock {
+    /// Whether the block declares that it begins dormant.
+    #[must_use]
+    pub const fn begins_dormant(&self) -> bool {
+        self.dormant.is_some()
+    }
+
+    /// How many `INACTIVE<n>` conditions the block declares.
+    #[must_use]
+    pub fn condition_count(&self) -> usize {
+        self.conditions.len()
+    }
+
+    /// Whether the block declares a completion count that its own conditions
+    /// cannot satisfy.
+    ///
+    /// Measured over the installation: **no** block declares a count larger than
+    /// its number of conditions, and exactly one declares a count with no
+    /// condition at all. Both facts are what a lowering needs in order to
+    /// refuse such a declaration instead of running it, so the check lives in
+    /// production and is queried rather than re-derived by each consumer.
+    #[must_use]
+    pub fn count_exceeds_conditions(&self) -> bool {
+        self.completion_count
+            .is_some_and(|count| count as usize > self.conditions.len())
+    }
+
+    /// Whether the block carries a completion count and **no** condition, which
+    /// is the one measured shape where a count names nothing to count.
+    #[must_use]
+    pub fn count_without_conditions(&self) -> bool {
+        self.completion_count.is_some() && self.conditions.is_empty()
+    }
+
+    /// The block's conditions as the tuples F39-E1's controlled condition
+    /// compares: subject, part and attribute, in stage order.
+    ///
+    /// Two blocks with equal tuples declare the *same* conditions, which is
+    /// what lets a census find a ladder of blocks watching one condition set at
+    /// different thresholds without knowing what a condition means.
+    #[must_use]
+    pub fn condition_signature(&self) -> Vec<(String, Option<String>, Option<String>)> {
+        self.conditions
+            .iter()
+            .map(|condition| {
+                (
+                    condition.subject.clone(),
+                    condition.part.clone(),
+                    condition.attribute.clone(),
+                )
+            })
+            .collect()
+    }
+}
+
+/// Why a block's dormant/reveal declarations could not be measured.
+///
+/// Every variant names the *field* that refused, so a reader that cannot
+/// measure a block says which declaration is not what F39-E1 measured, rather
+/// than dropping it and letting the block look like one that declares nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DormantReadError {
+    /// `BEGIN_DORMANT` did not hold exactly one number.
+    DormantArgument {
+        /// The block that refused.
+        block: String,
+        /// How many elements the declaration held.
+        arity: usize,
+    },
+    /// `BEGIN_DORMANT` held a value that is not finite.
+    NonFiniteDormant {
+        /// The block that refused.
+        block: String,
+        /// The value as read.
+        value: f32,
+    },
+    /// `BEGIN_DORMANT` held a positive value below the measured sentinel in
+    /// magnitude, which F39-E1 never measured — kept as a refusal so an
+    /// unmeasured argument is never read as a duration.
+    UnmeasuredDormantArgument {
+        /// The block that refused.
+        block: String,
+        /// The value as read.
+        value: f32,
+    },
+    /// `INACTIVE_COMPLETION_COUNT` did not hold exactly one integer.
+    CompletionCount {
+        /// The block that refused.
+        block: String,
+        /// How many elements the declaration held.
+        arity: usize,
+    },
+    /// A stage declaration held no subject, or more elements than the
+    /// installation's 1335 stages ever held.
+    ConditionShape {
+        /// The block that refused.
+        block: String,
+        /// The stage number whose declaration refused.
+        stage: u32,
+        /// How many elements it held.
+        arity: usize,
+    },
+    /// A stage element that was not text, so no subject/part/attribute can be
+    /// named for it.
+    NonTextConditionElement {
+        /// The block that refused.
+        block: String,
+        /// The stage number whose declaration refused.
+        stage: u32,
+        /// The zero-based position of the element that refused.
+        index: usize,
+    },
+    /// The stage numbers are not `1..=N`, which every measured block is.
+    StageNumbering {
+        /// The block that refused.
+        block: String,
+        /// The stage numbers as declared, in declaration order.
+        declared: Vec<u32>,
+    },
+    /// `IDENTITY` did not hold a role and an ordinal.
+    IdentityShape {
+        /// The block that refused.
+        block: String,
+        /// How many elements the declaration held.
+        arity: usize,
+    },
+}
+
+impl fmt::Display for DormantReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DormantArgument { block, arity } => write!(
+                f,
+                "{block}: BEGIN_DORMANT held {arity} elements, the measured shape is one"
+            ),
+            Self::NonFiniteDormant { block, value } => {
+                write!(
+                    f,
+                    "{block}: BEGIN_DORMANT held the non-finite value {value}"
+                )
+            }
+            Self::UnmeasuredDormantArgument { block, value } => write!(
+                f,
+                "{block}: BEGIN_DORMANT held {value}, a value F39-E1 never measured"
+            ),
+            Self::CompletionCount { block, arity } => write!(
+                f,
+                "{block}: INACTIVE_COMPLETION_COUNT held {arity} elements, the measured shape is one"
+            ),
+            Self::ConditionShape {
+                block,
+                stage,
+                arity,
+            } => write!(
+                f,
+                "{block}: INACTIVE{stage} held {arity} elements, the measured shapes hold one, two or three"
+            ),
+            Self::NonTextConditionElement {
+                block,
+                stage,
+                index,
+            } => write!(
+                f,
+                "{block}: INACTIVE{stage} element {index} is not text and names nothing"
+            ),
+            Self::StageNumbering { block, declared } => write!(
+                f,
+                "{block}: stage numbers {declared:?} are not 1..=N as every measured block is"
+            ),
+            Self::IdentityShape { block, arity } => write!(
+                f,
+                "{block}: IDENTITY held {arity} elements, the measured shapes hold two or three"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DormantReadError {}
+
+/// The largest stage number F39-E1 measured in the installation.
+///
+/// A census pins the measured range rather than trusting this constant: a stage
+/// number outside it would be a declaration shape this stage never saw.
+pub const MEASURED_MAX_INACTIVE_STAGE: u32 = 18;
+
+/// The largest number of elements a measured `INACTIVE<n>` declaration holds.
+pub const MEASURED_MAX_CONDITION_ARITY: usize = 3;
+
+/// Measures the dormant/reveal declarations of one objective block.
+///
+/// `fields` is the block's flat `key, value` list, as
+/// [`crate::stunts::zrd_flat_fields`] reads it. Keys this stage does not
+/// measure are ignored, so the block may declare anything else; the keys it
+/// *does* measure are read strictly, and a shape F39-E1 never measured is a
+/// named [`DormantReadError`] rather than a silently dropped declaration.
+///
+/// # Errors
+///
+/// [`DormantReadError`] when a measured declaration is not a shape this stage
+/// measured. See each variant for the measured shape it compares against.
+pub fn measure_dormant_block(
+    block: &str,
+    fields: &[(&str, &ZrdValue)],
+) -> Result<MeasuredDormantBlock, DormantReadError> {
+    let mut measured = MeasuredDormantBlock {
+        block: block.to_owned(),
+        dormant: None,
+        completion_count: None,
+        conditions: Vec::new(),
+        identities: Vec::new(),
+        wakeup_sound_group: None,
+        completed_sound_group: None,
+    };
+    let mut stages: Vec<(u32, InactiveCondition)> = Vec::new();
+    let mut declared: Vec<u32> = Vec::new();
+
+    for (key, value) in fields {
+        match *key {
+            OBJECTIVE_DORMANT_KEY => {
+                measured.dormant = Some(read_dormant(block, value)?);
+            }
+            OBJECTIVE_INACTIVE_COUNT_KEY => {
+                measured.completion_count = Some(read_completion_count(block, value)?);
+            }
+            OBJECTIVE_IDENTITY_KEY => {
+                measured.identities.push(read_identity(block, value)?);
+            }
+            OBJECTIVE_WAKEUP_SOUND_GROUP_KEY => {
+                measured.wakeup_sound_group = single_text(value);
+            }
+            OBJECTIVE_COMPLETED_SOUND_GROUP_KEY => {
+                measured.completed_sound_group = single_text(value);
+            }
+            key => {
+                let Some(stage) = inactive_stage_number(key) else {
+                    continue;
+                };
+                declared.push(stage);
+                stages.push((stage, read_condition(block, stage, value)?));
+            }
+        }
+    }
+
+    // Every measured block numbers its stages `1..=N`, so a gap or a repeat is
+    // a shape this stage has not seen and is refused rather than sorted over.
+    declared.sort_unstable();
+    let expected: Vec<u32> = (1..=declared.len() as u32).collect();
+    if declared != expected {
+        return Err(DormantReadError::StageNumbering {
+            block: block.to_owned(),
+            declared,
+        });
+    }
+    stages.sort_unstable_by_key(|(stage, _)| *stage);
+    measured.conditions = stages.into_iter().map(|(_, condition)| condition).collect();
+
+    Ok(measured)
+}
+
+/// Measures every numbered `OBJECTIVE<N>` block of one decoded objective
+/// record.
+///
+/// The blocks are returned in declaration order, which is the order the
+/// original's own numbering follows (`OBJECTIVE1`, `OBJECTIVE2`, … with no gap
+/// in any measured reader).
+///
+/// # Errors
+///
+/// [`DormantReadError`] for the first block whose measured declarations are
+/// not a measured shape. Failing rather than skipping is deliberate: a block
+/// that silently vanished from the result would read as a block that declares
+/// nothing dormant at all.
+pub fn measure_dormant_declarations(
+    document: &ZrdValue,
+) -> Result<Vec<MeasuredDormantBlock>, DormantReadError> {
+    let mut measured = Vec::new();
+    for (key, value) in zrd_flat_fields(objective_record(document)) {
+        if objective_block_number(key).is_none() {
+            continue;
+        }
+        measured.push(measure_dormant_block(key, &zrd_flat_fields(value))?);
+    }
+    Ok(measured)
+}
+
+/// The block number of a numbered `OBJECTIVE<N>` key, or `None` for any other
+/// spelling.
+///
+/// Only `OBJECTIVE` followed by a non-empty run of ASCII digits is a block, which
+/// is the same rule `cs_content::stunts`' objective state machine uses. The
+/// installation's one other key with that prefix — `OBJECTIVE_DELAY`, measured in
+/// two blocks of the 1338 — is a mission-level declaration, not a block, and is
+/// read as neither.
+#[must_use]
+pub fn objective_block_number(key: &str) -> Option<u32> {
+    let digits = key.strip_prefix(OBJECTIVE_BLOCK_PREFIX)?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// The stage number of an `INACTIVE<n>` key, or `None` for any other spelling.
+///
+/// Only `INACTIVE` followed by a non-empty run of ASCII digits is a stage, so
+/// `INACTIVE_COMPLETION_COUNT` (handled by its own key) and a spelling like
+/// `INACTIVATED` or `INACTIVE_A` are never read as one. `INACTIVE0` **is**
+/// stage-shaped and is returned as `Some(0)`, which the block reader then
+/// refuses; see [`measure_dormant_block`].
+#[must_use]
+pub fn inactive_stage_number(key: &str) -> Option<u32> {
+    let rest = key.strip_prefix(OBJECTIVE_INACTIVE_STAGE_PREFIX)?;
+    if rest.is_empty() || !rest.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    // `INACTIVE0` is a stage-shaped key with an unusable number: it is returned
+    // here and refused by `measure_dormant_block`'s `1..=N` rule, never
+    // dropped, because dropping it would read a two-stage block as a
+    // one-condition ladder.
+    rest.parse::<u32>().ok()
+}
+
+/// The single text of a one-element declaration, or `None`.
+fn single_text(value: &ZrdValue) -> Option<String> {
+    match value.as_list() {
+        Some([ZrdValue::Text(text)]) => Some(text.clone()),
+        _ => None,
+    }
+}
+
+fn read_dormant(block: &str, value: &ZrdValue) -> Result<DormantReading, DormantReadError> {
+    let Some([element]) = value.as_list() else {
+        return Err(DormantReadError::DormantArgument {
+            block: block.to_owned(),
+            arity: value.as_list().map_or(0, <[ZrdValue]>::len),
+        });
+    };
+    let argument = match element {
+        ZrdValue::Int(value) => *value as f32,
+        ZrdValue::Float(value) => *value,
+        _ => {
+            return Err(DormantReadError::DormantArgument {
+                block: block.to_owned(),
+                arity: 1,
+            });
+        }
+    };
+    if !argument.is_finite() {
+        return Err(DormantReadError::NonFiniteDormant {
+            block: block.to_owned(),
+            value: argument,
+        });
+    }
+    if argument == DORMANT_NO_ELAPSED_TIME {
+        return Ok(DormantReading::Sentinel);
+    }
+    if argument > 0.0 {
+        return Ok(DormantReading::ElapsedTime(argument));
+    }
+    Err(DormantReadError::UnmeasuredDormantArgument {
+        block: block.to_owned(),
+        value: argument,
+    })
+}
+
+fn read_completion_count(block: &str, value: &ZrdValue) -> Result<u32, DormantReadError> {
+    let shape = || DormantReadError::CompletionCount {
+        block: block.to_owned(),
+        arity: value.as_list().map_or(0, <[ZrdValue]>::len),
+    };
+    match value.as_list() {
+        Some([ZrdValue::Int(count)]) => Ok(*count),
+        _ => Err(shape()),
+    }
+}
+
+fn read_condition(
+    block: &str,
+    stage: u32,
+    value: &ZrdValue,
+) -> Result<InactiveCondition, DormantReadError> {
+    let elements = value.as_list().unwrap_or_default();
+    if elements.is_empty() || elements.len() > MEASURED_MAX_CONDITION_ARITY {
+        return Err(DormantReadError::ConditionShape {
+            block: block.to_owned(),
+            stage,
+            arity: elements.len(),
+        });
+    }
+    let mut texts: Vec<String> = Vec::with_capacity(elements.len());
+    for (index, element) in elements.iter().enumerate() {
+        let ZrdValue::Text(text) = element else {
+            return Err(DormantReadError::NonTextConditionElement {
+                block: block.to_owned(),
+                stage,
+                index,
+            });
+        };
+        if text.is_empty() {
+            return Err(DormantReadError::ConditionShape {
+                block: block.to_owned(),
+                stage,
+                arity: elements.len(),
+            });
+        }
+        texts.push(text.clone());
+    }
+    let mut parts = texts.into_iter();
+    let subject = parts.next().expect("the empty shape was refused above");
+    Ok(InactiveCondition {
+        stage,
+        subject,
+        part: parts.next(),
+        attribute: parts.next(),
+        arity: elements.len(),
+    })
+}
+
+fn read_identity(block: &str, value: &ZrdValue) -> Result<MeasuredIdentity, DormantReadError> {
+    let shape = || DormantReadError::IdentityShape {
+        block: block.to_owned(),
+        arity: value.as_list().map_or(0, <[ZrdValue]>::len),
+    };
+    let elements = value.as_list().unwrap_or_default();
+    if !(2..=3).contains(&elements.len()) {
+        return Err(shape());
+    }
+    let ZrdValue::Text(role) = &elements[0] else {
+        return Err(DormantReadError::NonTextConditionElement {
+            block: block.to_owned(),
+            stage: 0,
+            index: 0,
+        });
+    };
+    let Some(ZrdValue::Int(ordinal)) = elements.get(1) else {
+        return Err(shape());
+    };
+    let message = match elements.get(2) {
+        Some(ZrdValue::Text(text)) => Some(text.clone()),
+        Some(_) => {
+            return Err(DormantReadError::NonTextConditionElement {
+                block: block.to_owned(),
+                stage: 0,
+                index: 2,
+            });
+        }
+        None => None,
+    };
+    Ok(MeasuredIdentity {
+        role: role.clone(),
+        ordinal: *ordinal,
+        message,
+    })
 }
 
 #[cfg(test)]
