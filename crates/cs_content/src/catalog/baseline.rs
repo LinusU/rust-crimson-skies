@@ -176,6 +176,7 @@ use cs_assets::rof::mount_rof_into;
 use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
 use cs_assets::zbd::{ContainerVerdict, audit_containers};
 use cs_formats::LANG_ENGLISH_US;
+use cs_formats::gamez::{GameZMeshes, GameZNodes, read_gamez_meshes, read_gamez_nodes};
 use cs_formats::interp::DecodedInterp;
 use cs_formats::zbd::{
     ZbdFamily, ZbdProbe, ZbdRole, dispatch, read_sound_archive, read_version_one_index,
@@ -184,7 +185,6 @@ use cs_formats::zbd::{
 use cs_types::asset_id::{
     AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan, SourceSpanError,
 };
-use cs_formats::gamez::{GameZMeshes, GameZNodes, read_gamez_meshes, read_gamez_nodes};
 use cs_types::content::{
     CatalogElement, ContentId, ContentIdError, ContentKind, Dependency, DependencyKind,
     NormalizeState, Origin, Provenance, Readiness, UnsupportedReason,
@@ -1050,7 +1050,7 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
     }
     collection_status.push(world_status);
 
-// The faction paint patterns, named in bytes by the shared archive's own
+    // The faction paint patterns, named in bytes by the shared archive's own
     // paint records, and the verified BM members of the airframe library.
     // Neither kind is launchable, so neither moves the denominator.
     let (factions, faction_status) = faction_rows(install_root, &discovery, &files)?;
