@@ -695,6 +695,16 @@ pub enum OrdnanceEventKind {
         /// The actor whose part took the routed damage.
         target: ActorId,
     },
+    /// A guided item lost its target and detonated, applying its declared
+    /// blast at the position the runtime last recorded.
+    GuidanceDetonated {
+        /// Who launched the item.
+        shooter: ActorId,
+        /// The item.
+        projectile: ProjectileId,
+        /// The actor whose part took the routed damage.
+        target: ActorId,
+    },
     /// An item's own lifetime ended without a trigger.
     Expired {
         /// The item.
@@ -949,6 +959,35 @@ pub struct OrdnanceDetonation {
     pub status_refused: Option<OrdnanceRuntimeError>,
 }
 
+/// One guidance-loss detonation's whole outcome.
+///
+/// The `LostTargetBehavior::Detonate` counterpart of [`OrdnanceDetonation`]: a
+/// guided item whose target is lost ends and applies its declared blast at the
+/// position the runtime last recorded, but it has no [`FuseTrigger`] — the
+/// cause is the target loss the guidance tick reported, not a fuse decision —
+/// so it is a separate record rather than a fabricated trigger.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OrdnanceGuidanceBlast {
+    /// The item that ended.
+    pub projectile: ProjectileId,
+    /// Who launched it.
+    pub shooter: ActorId,
+    /// The component it was.
+    pub ordnance: OrdnanceId,
+    /// The position the runtime last recorded for it.
+    pub position: WorldPosition,
+    /// The routed hits, one per non-zero declared channel.
+    pub hits: Vec<HitEvent>,
+    /// The damage authority's resolution, when the batch was accepted.
+    pub damage: Option<TickResolution>,
+    /// Why the damage authority refused the batch, when it did.
+    pub damage_refused: Option<DamageError>,
+    /// The status instances the blast applied.
+    pub status_applied: Vec<StatusEffectInstanceId>,
+    /// Why the status ledger refused the blast, when it did.
+    pub status_refused: Option<OrdnanceRuntimeError>,
+}
+
 /// Why a triggered item's effects could not be routed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum OrdnanceRoutingRefusal {
@@ -1011,6 +1050,9 @@ pub struct OrdnanceSessionTick {
     pub launched: Vec<ProjectileId>,
     /// The guidance tick's outcome, when an observation was supplied.
     pub guidance: Option<GuidanceTick>,
+    /// The guidance-loss detonations that applied their declared blast this
+    /// tick, with everything each routed.
+    pub guidance_blasts: Vec<OrdnanceGuidanceBlast>,
     /// The launch effects the accepted launches produced.
     pub effects: Vec<OrdnanceEffect>,
     /// The items that triggered, with everything each routed.
@@ -1409,7 +1451,10 @@ impl EngineStatus {
 /// Status expiry, then orders, then guidance, then motion, then the fuse
 /// decisions, then the mirror pass. An item launched on this tick is moved by
 /// the same step, and an item that triggers on this tick applies its effects
-/// on this tick — before the next advance retires it.
+/// on this tick — before the next advance retires it. A guided item that loses
+/// its target with `Detonate` applies its declared blast on the guidance tick,
+/// before the motion advance, at the position the runtime last recorded, so an
+/// item that ends by losing its target answers exactly like one that triggers.
 #[must_use]
 pub fn step_ordnance_session(
     world: &mut World,
@@ -1606,8 +1651,91 @@ pub fn step_ordnance_session(
 
     if let Some(observation) = step.guidance {
         let guidance = session.runtime.guidance_tick(session.session, observation);
-        for projectile in &guidance.detonated {
-            session.engagements.remove(projectile);
+        for detonation in &guidance.detonated {
+            // A `Detonate` loss removes the item from the live set, so its
+            // blast cannot go through the trigger path. It carries the
+            // declared behavior and the position the runtime last recorded;
+            // the engagement the producer named at launch names where the
+            // damage lands and who takes the status, exactly as for a trigger.
+            let projectile = detonation.projectile();
+            let Some(engagement) = session.engagements.remove(&projectile) else {
+                tick.routing_refused
+                    .push(OrdnanceRoutingRefusal::MissingEngagement { projectile });
+                continue;
+            };
+            let mut blast = OrdnanceGuidanceBlast {
+                projectile,
+                shooter: detonation.shooter(),
+                ordnance: detonation.ordnance().clone(),
+                position: detonation.position(),
+                hits: Vec::new(),
+                damage: None,
+                damage_refused: None,
+                status_applied: Vec::new(),
+                status_refused: None,
+            };
+            match session.runtime.route_detonation(
+                session.session,
+                step.at,
+                detonation,
+                engagement.damage_target,
+                engagement.node.clone(),
+            ) {
+                Ok(hits) => {
+                    blast.hits.clone_from(&hits);
+                    match damage.resolve(step.at, &hits) {
+                        Ok(resolution) => blast.damage = Some(resolution),
+                        Err(source) => blast.damage_refused = Some(source),
+                    }
+                    match session.runtime.apply_detonation_statuses(
+                        session.session,
+                        step.at,
+                        detonation,
+                        engagement.status_recipient,
+                    ) {
+                        Ok(instances) => {
+                            for instance in instances {
+                                let Some(active) = session.runtime.status().get(&instance).cloned()
+                                else {
+                                    continue;
+                                };
+                                blast.status_applied.push(active.instance);
+                                let event = push_network_event(
+                                    &mut session.events,
+                                    &mut session.next_event_sequence,
+                                    session.session_id,
+                                    step.at,
+                                    session.producer,
+                                    OrdnanceEventKind::StatusApplied {
+                                        target: active.target,
+                                        kind: active.kind,
+                                        expires_at: active.expires_at,
+                                    },
+                                );
+                                tick.events.push(event);
+                            }
+                        }
+                        Err(source) => blast.status_refused = Some(source),
+                    }
+                    let event = push_network_event(
+                        &mut session.events,
+                        &mut session.next_event_sequence,
+                        session.session_id,
+                        step.at,
+                        session.producer,
+                        OrdnanceEventKind::GuidanceDetonated {
+                            shooter: detonation.shooter(),
+                            projectile,
+                            target: engagement.damage_target,
+                        },
+                    );
+                    tick.events.push(event);
+                }
+                Err(source) => tick
+                    .routing_refused
+                    .push(OrdnanceRoutingRefusal::Runtime(source)),
+            }
+            tick.guidance_blasts.push(blast);
         }
         tick.guidance = Some(guidance);
     }

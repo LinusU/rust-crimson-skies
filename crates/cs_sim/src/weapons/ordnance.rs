@@ -3972,15 +3972,93 @@ impl OrdnanceTick {
     }
 }
 
+/// One guided item that ended by losing its target with a `Detonate`
+/// behavior, and everything a caller needs to apply its declared blast.
+///
+/// The item is removed from the live set in the same `guidance_tick` that
+/// produces this record, so it carries the declared [`ProjectileOrdnance`]
+/// the runtime held and the **last recorded position**
+/// ([`LiveOrdnance::current`]) the item had at the moment of the loss. It is
+/// the detonation counterpart of an item that triggered: the caller routes
+/// the same declared damage channels and applies the same declared status
+/// effects, but through the position the item actually reached, because the
+/// live-item trigger path no longer has the item.
+///
+/// The blast is bounded by the declared [`AreaEffect`] — carried unchanged,
+/// never a fabricated radius or falloff — and by the item's declared
+/// `lifetime_ticks`, which is what may still report a loss: an item whose
+/// lifetime has ended is removed before any guidance tick can detonate it, and
+/// an area effect may never outlive its item
+/// ([`OrdnanceDefinitionError::AreaOutlivesItem`]), so the two bounds coincide
+/// at the item's own lifetime.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GuidanceDetonation {
+    projectile: ProjectileId,
+    shooter: ActorId,
+    definition: ProjectileOrdnance,
+    position: WorldPosition,
+}
+
+impl GuidanceDetonation {
+    /// The item that ended.
+    #[must_use]
+    pub const fn projectile(&self) -> ProjectileId {
+        self.projectile
+    }
+
+    /// The actor that launched it.
+    #[must_use]
+    pub const fn shooter(&self) -> ActorId {
+        self.shooter
+    }
+
+    /// The declared component the item was.
+    #[must_use]
+    pub const fn definition(&self) -> &ProjectileOrdnance {
+        &self.definition
+    }
+
+    /// The catalog id of the component the item was.
+    #[must_use]
+    pub const fn ordnance(&self) -> &OrdnanceId {
+        self.definition.ordnance()
+    }
+
+    /// The position the runtime last recorded for the item.
+    #[must_use]
+    pub const fn position(&self) -> WorldPosition {
+        self.position
+    }
+
+    /// The declared damage channels the blast delivers.
+    #[must_use]
+    pub const fn channels(&self) -> &WeaponDamage {
+        self.definition.channels()
+    }
+
+    /// The declared status effects the blast applies.
+    #[must_use]
+    pub fn status(&self) -> &[OrdnanceStatusEffect] {
+        self.definition.status()
+    }
+
+    /// The declared bounded area the blast leaves behind, when it declares one.
+    #[must_use]
+    pub const fn area_effect(&self) -> Option<AreaEffect> {
+        self.definition.area_effect()
+    }
+}
+
 /// The outcome of one guidance tick.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GuidanceTick {
     /// Every tracker's update, in ascending item id order.
     pub updates: BTreeMap<ProjectileId, GuidanceUpdate>,
     /// The items that ended by losing their target with a `Detonate`
-    /// behavior. Their tracker and their live record are already gone; the
-    /// caller applies the blast at the last recorded position.
-    pub detonated: Vec<ProjectileId>,
+    /// behavior, each carrying the declared blast to apply at the position the
+    /// runtime last recorded. Their tracker and their live record are already
+    /// gone; the caller applies the blast.
+    pub detonated: Vec<GuidanceDetonation>,
 }
 
 impl GuidanceTick {
@@ -4305,9 +4383,10 @@ impl OrdnanceRuntime {
     /// resolved in another. A `Coast` loss leaves the item flying its last
     /// vector; a `Disarm` loss retires the item so it deals nothing; a
     /// `Detonate` loss ends the item here — it is removed from the live set
-    /// and reported in [`GuidanceTick::detonated`] so the caller applies the
-    /// blast — and its spent tracker is dropped either way. There is no
-    /// re-acquisition and no second announcement.
+    /// and reported in [`GuidanceTick::detonated`] as a [`GuidanceDetonation`]
+    /// carrying the declared blast and the position the runtime last recorded,
+    /// so the caller applies it — and its spent tracker is dropped either way.
+    /// There is no re-acquisition and no second announcement.
     pub fn guidance_tick(&mut self, session: u64, observation: TargetObservation) -> GuidanceTick {
         let updates = self.guidance.session_tick(session, observation);
         let mut detonated = Vec::new();
@@ -4316,7 +4395,16 @@ impl OrdnanceRuntime {
                 GuidanceUpdate::Lost {
                     behavior: LostTargetBehavior::Detonate,
                     ..
-                } => detonated.push(*projectile),
+                } => {
+                    if let Some(live) = self.live.get(projectile) {
+                        detonated.push(GuidanceDetonation {
+                            projectile: *projectile,
+                            shooter: live.shooter,
+                            definition: live.definition.clone(),
+                            position: live.current,
+                        });
+                    }
+                }
                 GuidanceUpdate::Disarmed => {
                     if let Some(live) = self.live.get_mut(projectile) {
                         live.state.retire();
@@ -4325,8 +4413,8 @@ impl OrdnanceRuntime {
                 _ => {}
             }
         }
-        for projectile in &detonated {
-            self.remove_internal(projectile);
+        for detonation in &detonated {
+            self.remove_internal(&detonation.projectile);
         }
         GuidanceTick { updates, detonated }
     }
@@ -4358,9 +4446,50 @@ impl OrdnanceRuntime {
         };
         let source = live.definition.ordnance().clone();
         let effects = live.definition.status().to_vec();
+        self.apply_effects(session, tick, target, &source, &effects)
+    }
+
+    /// Applies one guidance-loss detonation's declared status effects to a
+    /// recipient.
+    ///
+    /// The detonation counterpart of [`apply_statuses`](Self::apply_statuses):
+    /// the item is no longer live, so the declared effects and the source come
+    /// from the [`GuidanceDetonation`] rather than a live record. The source is
+    /// the component's own [`OrdnanceId`], so an effect still names what
+    /// applied it.
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError::Status`] when the ledger refuses the call.
+    pub fn apply_detonation_statuses(
+        &mut self,
+        session: u64,
+        tick: Tick,
+        detonation: &GuidanceDetonation,
+        target: StatusEffectTarget,
+    ) -> Result<Vec<StatusEffectInstanceId>, OrdnanceRuntimeError> {
+        let source = detonation.definition.ordnance().clone();
+        let effects = detonation.definition.status().to_vec();
+        self.apply_effects(session, tick, target, &source, &effects)
+    }
+
+    /// Applies a declared effect list to one recipient under one source.
+    ///
+    /// The shared body of [`apply_statuses`](Self::apply_statuses) and
+    /// [`apply_detonation_statuses`](Self::apply_detonation_statuses): both
+    /// bridge a component's declared list into the bounded ledger, so the
+    /// expiry rule and the source naming are stated once.
+    fn apply_effects(
+        &mut self,
+        session: u64,
+        tick: Tick,
+        target: StatusEffectTarget,
+        source: &OrdnanceId,
+        effects: &[OrdnanceStatusEffect],
+    ) -> Result<Vec<StatusEffectInstanceId>, OrdnanceRuntimeError> {
         let mut applied = Vec::with_capacity(effects.len());
-        for effect in &effects {
-            applied.push(self.status.apply(session, tick, target, &source, effect)?);
+        for effect in effects {
+            applied.push(self.status.apply(session, tick, target, source, effect)?);
         }
         Ok(applied)
     }
@@ -4429,6 +4558,69 @@ impl OrdnanceRuntime {
         };
         let attacker = live.shooter;
         let damage = *live.definition.channels();
+        let mut hits = Vec::new();
+        for channel in WEAPON_DAMAGE_CHANNELS {
+            let amount = damage.amount_on(channel);
+            if amount == 0.0 {
+                continue;
+            }
+            let id = self.next_hit_id(session_id, tick);
+            hits.push(
+                HitEvent::try_new(id, Some(attacker), target, node.clone(), channel, amount)
+                    .map_err(OrdnanceRuntimeError::Hit)?,
+            );
+        }
+        Ok(hits)
+    }
+
+    /// Routes one guidance-loss detonation's declared damage into
+    /// [`HitEvent`]s on one damage node.
+    ///
+    /// The detonation counterpart of [`route_trigger`](Self::route_trigger): a
+    /// [`LostTargetBehavior::Detonate`] loss removes the item from the live set
+    /// before the caller can route it, so the caller supplies the
+    /// [`GuidanceDetonation`] the guidance tick recorded rather than a live
+    /// item. The declared channels and the attacker come from that record; the
+    /// target and the node come from the engagement the producer named at
+    /// launch, exactly as for a trigger. Like a trigger, each item routes
+    /// **once**: the item's id is latched into the routed set, so a second call
+    /// is [`OrdnanceRuntimeError::AlreadyRouted`].
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError`] for a foreign session, an already-routed
+    /// detonation, a hit amount the damage layer refuses, or a session
+    /// generation zero that cannot stamp a hit.
+    pub fn route_detonation(
+        &mut self,
+        session: u64,
+        tick: Tick,
+        detonation: &GuidanceDetonation,
+        target: ActorId,
+        node: DamageNodeKey,
+    ) -> Result<Vec<HitEvent>, OrdnanceRuntimeError> {
+        if session != self.session {
+            return Err(OrdnanceRuntimeError::ForeignSession {
+                expected: self.session,
+                found: session,
+            });
+        }
+        if detonation.projectile.session != self.session {
+            return Err(OrdnanceRuntimeError::ForeignSession {
+                expected: self.session,
+                found: detonation.projectile.session,
+            });
+        }
+        if !self.routed.insert(detonation.projectile) {
+            return Err(OrdnanceRuntimeError::AlreadyRouted {
+                projectile: detonation.projectile,
+            });
+        }
+        let Some(session_id) = SessionId::new(self.session) else {
+            return Err(OrdnanceRuntimeError::NoSession);
+        };
+        let attacker = detonation.shooter;
+        let damage = *detonation.definition.channels();
         let mut hits = Vec::new();
         for channel in WEAPON_DAMAGE_CHANNELS {
             let amount = damage.amount_on(channel);

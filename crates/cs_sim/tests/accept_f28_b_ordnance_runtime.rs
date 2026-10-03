@@ -161,8 +161,11 @@ fn accept_f28_b_guidance_loses_a_destroyed_target_and_ends_safely() {
         "destruction is a loss with the declared behavior: {destroyed:?}"
     );
     assert_eq!(
-        destroyed.detonated,
-        vec![projectile(1)],
+        destroyed
+            .detonated
+            .first()
+            .map(cs_sim::weapons::GuidanceDetonation::projectile),
+        Some(projectile(1)),
         "a detonating item ends where it is"
     );
     assert_eq!(runtime.len(), 0, "the ended item is no longer live");
