@@ -12,6 +12,7 @@
   "every_merged_stage_has_a_review_claim": "Rally only merges a stage through complete_review or its landing queue, so every stage listed here has at least one review claim and a reviewer to name.",
   "scope": "Only the stages whose committed `review.identity` was still a hand-over placeholder when this file was written. Every other committed report is either already honest or names no reviewer at all without carrying a placeholder; the latter are filed as follow-up #484 rather than rewritten here. F14-D.7 was added to this file later, under F14-D.7-SNAPSHOT (#578): its report already named the implementer and the reviewer honestly but was written before any snapshot covered it, so the snapshot-backed rules were not enforced for it; see `entries_added_after_writing`.",
   "actor_spelling": "The check matches the recorded `actor` verbatim against the committed report's `review.identity`, so `actor` holds the spelling the report itself uses. Every entry this file's author wrote spells Rally's `<agent instance>/<session label>` actor string out in its report, so there `actor` is that whole string. F14-D.7's report spells the agent as `openrouter/stealth-space-bunny-alpha (bunny-alpha-2, ...)`, so its `actor` is the agent-instance name `bunny-alpha-2` and its `rally_actor` holds Rally's verbatim actor string. Both spellings name the same instance and the same session, and nothing else in the check reads the spelling: the equality that derives independence compares the two recorded actors, so it is unaffected.",
+  "model_spelling": "`model` is the provider-qualified model id in the spelling the rest of this repository uses (`openrouter/stealth/space-bunny-alpha`; `docs/findings/2026-10-02-f28-d-original-ordnance-catalogue.md` records the same id as `stealth/space-bunny-alpha`), not the report's: F14-D.7's `review.identity` flattens the slashes into `openrouter/stealth-space-bunny-alpha`, which is that id inside prose and not an id of its own. Nothing in the check reads this field; it records which model ran both claims, because AGENTS.md asks for a different instance *or model* for an independent review.",
   "report_written_by_meaning": "Derived from the report's own `created_at` against the claim windows in the Rally log: a `created_at` inside a review claim means the reviewer regenerated the report, one inside the implement claim means the committed copy is the implementer's. `report_regenerated_on_reviewed_commit` is `true` only when the reviewer's run wrote the copy that reached `main`.",
   "entries_added_after_writing": [
     {
@@ -221,14 +222,14 @@
       "implementer": {
         "actor": "bunny-alpha-2",
         "rally_actor": "bunny-alpha-2/bunny-alpha-2",
-        "model": "openrouter/stealth-space-bunny-alpha",
+        "model": "openrouter/stealth/space-bunny-alpha",
         "claim_started": "2026-10-03T06:16:44Z",
         "submitted": "2026-10-03T07:26:30Z"
       },
       "reviewer": {
         "actor": "bunny-alpha-2",
         "rally_actor": "bunny-alpha-2/bunny-alpha-2",
-        "model": "openrouter/stealth-space-bunny-alpha",
+        "model": "openrouter/stealth/space-bunny-alpha",
         "review_claim_started": "2026-10-03T07:26:53Z",
         "merge_event": {"type": "task.merged", "actor": "rally", "at": "2026-10-03T08:47:46Z"},
         "approval_event": {"type": "task.approved", "actor": "bunny-alpha-2/bunny-alpha-2", "at": "2026-10-03T08:41:11Z"}

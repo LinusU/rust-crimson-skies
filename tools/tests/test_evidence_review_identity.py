@@ -37,7 +37,10 @@ unconditional.
 A new stage adds a harness and a report, so the task that adds it extends the
 matching snapshot with that stage's Rally implementer and reviewer in the same
 commit.  That is an advisory, not a failure.  A new report that still says
-`reviewer: none yet` *is* a failure.
+`reviewer: none yet` *is* a failure.  An entry can also be added later, once the
+stage's merge event really exists: #578 added F14-D.7's entry to the FU4 snapshot
+after #490 had landed, because an entry written before the merge can only guess
+at the event that closes the review.
 
 Run with:
 
@@ -524,6 +527,11 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
             self.assertRegex(task['reviewer']['review_claim_started'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
             self.assertLessEqual(task['implementer']['claim_started'],
                                  task['reviewer']['review_claim_started'])
+            # The commit on main that carries the stage. Only its shape is checked
+            # here: resolving it would need the git history, which a shallow CI
+            # checkout does not have.  Every entry in all three snapshots carries the
+            # field, so the check is the same in each of them.
+            self.assertRegex(task['merged_sha'], r'^[0-9a-f]{40}\Z')
 
     def test_accept_m16_a_fu2_reports_name_the_actual_implementer_and_reviewer(self):
         problems, unrecorded = review_problems(self.snapshots, self.harnesses, self.reports)
@@ -638,7 +646,7 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
             # The commit on main that carries the stage. Only its shape is checked
             # here: resolving it would need the git history, which a shallow CI
             # checkout does not have.
-            self.assertRegex(task['merged_sha'], r'^[0-9a-f]{40}$')
+            self.assertRegex(task['merged_sha'], r'^[0-9a-f]{40}\Z')
         self.assertLessEqual(set(self.non_campaign_by_key()), set(self.reports))
 
     def test_accept_m16_a_fu4_the_reader_covers_the_whole_family(self):
@@ -868,6 +876,8 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
                                  task['reviewer']['review_claim_started'])
             self.assertIn(task['reviewer']['merge_event']['type'],
                           self.single_agent['review_event_types'])
+            # Shape only, as in the other two snapshots.
+            self.assertRegex(task['merged_sha'], r'^[0-9a-f]{40}\Z')
         self.assertLessEqual(set(self.single_agent_by_key()), set(self.reports))
 
     def test_accept_m16_a_fu5_the_three_stages_are_no_longer_advisories(self):
@@ -938,6 +948,8 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
         self.assertEqual(recorded['evidence_report'], f'docs/findings/evidence/{key}.json')
         identity = self.reports[key]['review']['identity']
         for role in ('implementer', 'reviewer'):
+            # Named at all: `assertIn` would call an empty actor a name.
+            self.assertTrue(recorded[role]['actor'], role)
             self.assertIn(recorded[role]['actor'], identity, role)
         # One instance did both, so the report has to say the review is not independent;
         # the snapshot records the spelling the report uses next to Rally's own actor
@@ -947,13 +959,23 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
         self.assertEqual(recorded['reviewer']['rally_actor'], recorded['implementer']['rally_actor'])
         self.assertIn('not independent', identity.lower())
         # A landing-queue merge is a system event; the reviewer approved it.
-        self.assertEqual(recorded['reviewer']['merge_event']['type'], 'task.merged')
-        self.assertEqual(recorded['reviewer']['merge_event']['actor'], 'rally')
-        self.assertEqual(recorded['reviewer']['approval_event']['type'], 'task.approved')
-        self.assertEqual(recorded['reviewer']['approval_event']['actor'],
-                         recorded['reviewer']['rally_actor'])
-        approval, merge = recorded['reviewer']['approval_event'], recorded['reviewer']['merge_event']
+        reviewer = recorded['reviewer']
+        approval, merge = reviewer['approval_event'], reviewer['merge_event']
+        self.assertEqual(merge['type'], 'task.merged')
+        self.assertEqual(merge['actor'], 'rally')
+        self.assertEqual(approval['type'], 'task.approved')
+        self.assertEqual(approval['actor'], reviewer['rally_actor'])
         self.assertLessEqual(approval['at'], merge['at'])
+        # `report_written_by` is read off the report's own `created_at` against these
+        # claim windows (`report_written_by_meaning` in the snapshot), so it is checked
+        # against the report it describes rather than taken on trust: a copy written
+        # inside the review claim is the reviewer's, whatever the entry claims.
+        created = self.reports[key]['created_at']
+        self.assertRegex(created, r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\Z')
+        self.assertLessEqual(reviewer['review_claim_started'], created)
+        self.assertLessEqual(created, approval['at'])
+        self.assertEqual(recorded['report_written_by'], 'reviewer')
+        self.assertIs(recorded['report_regenerated_on_reviewed_commit'], True)
 
     def test_accept_f14_d_7_detects_drift(self):
         """Dropping the entry, the reviewer's name or the independence claim must fail."""

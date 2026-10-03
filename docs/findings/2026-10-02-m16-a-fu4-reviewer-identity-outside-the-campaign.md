@@ -160,6 +160,30 @@ harnesses, 30 advisories, and `T374`'s harness and report agree. That is the
 point of not listing the harness files, so the numbers here are a reading of one
 moment and the check is not.
 
+One stage has been added to this snapshot in the other direction, after this note
+was written: **`F14-D.7` (#490)**, appended by **F14-D.7-SNAPSHOT (#578)** on
+2026-10-03. It was never in this task's scope — its report never carried a
+hand-over placeholder, because the review of #490 regenerated the report with a
+real `review.identity` naming both agents — so it sat in the advisory list with
+the three snapshot-backed rules unenforced until an entry for it existed. It is
+recorded here because those rules only bite for a stage a snapshot names, and
+because its review facts are the two shapes this file had not seen:
+
+- **One instance implemented and reviewed it** (`bunny-alpha-2/bunny-alpha-2`,
+  model `openrouter/stealth/space-bunny-alpha`), so the report has to keep saying
+  the review is not independent, and the entry's `actor` holds the agent-instance
+  spelling its report uses while `rally_actor` holds Rally's verbatim actor
+  string (see `actor_spelling` and `model_spelling` in the snapshot).
+- **The merge was a system event.** The reviewer approved #490 at 08:41:11Z and
+  Rally's landing queue rebased the branch and fast-forwarded `main` at 08:47:46Z,
+  so `merge_event` is a `task.merged` by `rally`, with the reviewer's own
+  `task.approved` recorded beside it as `approval_event`. Every entry written
+  before the landing queue existed has a reviewer actor there.
+
+The entry was added only after the merge event really existed, and
+`entries_added_after_writing` in the snapshot records who added it, when and from
+which log, because an entry written before its merge can only guess at one.
+
 ## What deliberately did *not* change
 
 - **No report was regenerated.** `docs/contracts/CLI-EVIDENCE.md` requires a
