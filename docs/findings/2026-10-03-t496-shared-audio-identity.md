@@ -37,10 +37,18 @@ its own impl — and ids now display as the shared `event …`/`actor …` forms
 ## Why the emitter is `cs_types::net::ActorId`
 
 F41-B deliberately keeps audio independent of the damage vocabulary: an actor
-is bound to an emitter explicitly. The shared `ActorId` satisfies that — it is
-neutral identity from `cs_types`, not a re-export of `cs_sim::damage` — while
-ending the duplication. `cs_sim::damage`'s own unification was #442 and was
-not touched here.
+is bound to an emitter explicitly, through `AudioEmitterBinding`, and the audio
+router/mixer never consults a damage path. The shared `ActorId` satisfies that
+— it is the neutral identity `cs_types` owns, named here directly rather than
+imported from `cs_sim::damage` — while ending the duplication.
+
+Note the consequence of #442 having already landed on `main`: because
+`cs_sim::damage::ActorId` is itself now a re-export of the same shared type,
+`AudioEmitterId` and `damage::ActorId` are *literally the same type*. That is
+the intended end state of the identity unification (one id definition, one
+comparison and hash across subsystems), not a new coupling: audio names it at
+its declaration site and the audio path stays reachable without touching
+damage. No damage code was touched here.
 
 ## What did not change
 

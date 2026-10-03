@@ -66,14 +66,18 @@ the routing rules.
   types (neither crate may see the other); `lower_bus`/`lower_mode` map field
   for field and `accept_f41_a_every_declared_bus_lowers_to_its_runtime_twin`
   asserts the two label sets agree, so they cannot drift apart silently.
-- **Identity is qualified.** `AudioEventId` is the contract's
-  `EventId(session, tick, producer, sequence)` shape realized for audio.
-  `cs_types::net` now carries the shared `SessionId`/`EventId`/`ActorId` types
-  (F54-A), and `cs_sim::animated_object` migrated onto them in #397; migrating
-  `AudioEventId`/`AudioEmitterId` onto `EventId`/the shared `ActorId` was
-  filed as a follow-up of #397 (the damage realizations were #442) and done by
-  #496 (`T-IDENTITY-AUDIO`), so both names are now aliases of the shared
-  types. A foreign session generation is refused by name, never aliased.
+- **Identity is qualified, and defined once.** `AudioEventId` is the contract's
+  `EventId(session, tick, producer, sequence)` id and `AudioEmitterId` its
+  `ActorId(session, serial)` id.
+  `cs_types::net` carries the shared `SessionId`/`EventId`/`ActorId` types
+  (F54-A); `cs_sim::animated_object` migrated onto them in #397 and
+  `cs_sim::audio_events` in #496, so both audio names are aliases of the shared
+  types rather than second definitions (`T-IDENTITY-AUDIO`;
+  `docs/findings/2026-10-03-t496-shared-audio-identity.md`). The audio emitter
+  is the neutral shared `ActorId`, not a damage-vocabulary type: F41-B binds an
+  actor to an emitter explicitly, so audio identity stays independently
+  testable. The session is the shared nonzero `SessionId` at every constructor
+  boundary, and a foreign session generation is refused by name, never aliased.
 - **Dedup is bounded.** A producer stamps a strictly increasing `sequence` on
   its own events and the router keeps only the highest accepted sequence per
   `(session, producer)`, an `O(producers)` `BTreeMap`, not a set that grows with
