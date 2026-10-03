@@ -76,10 +76,12 @@ MIT OR Apache-2.0 — same dual license as the rest of the dependency tree.
   cannot distinguish from a replay — exactly what the gate absorbs).
 - `crates/cs_types/src/net.rs`: `SessionAllocator` — the host's monotonic
   epoch minter (a lobby launch, a retry, a reconnect's fresh epoch).
-- `crates/cs_net/tests/accept_f54_b_pinned_transport.rs`: 14 tests —
+- `crates/cs_net/tests/accept_f54_b_pinned_transport.rs`: 16 tests —
   version pinning, codec round-trips and every refusal class, handshake
   admit/reject over real UDP, `NotInSession`, duplicate and out-of-order
-  input dedup end to end, server→client delivery, `Leave` departure.
+  input dedup end to end, server→client delivery, `Leave` departure,
+  disconnect-event-once and `SessionAllocator` minting a live epoch
+  (both added in review).
 - Wiring edits: `pub mod codec;`, `pub mod transport;` and a doc paragraph
   in `cs_net/src/lib.rs`.
 - Observable failure without the implementation: there was no wire path at
