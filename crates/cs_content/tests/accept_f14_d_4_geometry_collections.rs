@@ -66,6 +66,12 @@ struct FixtureNode {
     /// `-1` stores "no mesh", the value the reader maps to no binding.
     mesh_index: i32,
     parent: Option<u32>,
+    /// The child slots this node's record stores. A GameZ container's parent
+    /// slots and its child lists are two independent claims about the hierarchy
+    /// and the world containers' disagree (recorded as an unknown in
+    /// `docs/findings/2026-10-02-gamez-node-array-layout.md`), so the fixture
+    /// writes both and, for one node, makes them disagree on purpose.
+    children: Vec<u32>,
 }
 
 /// A node whose record is 144 bytes and whose fields the layout pins.
@@ -74,6 +80,27 @@ fn object(name: &str, mesh_index: i32, parent: Option<u32>) -> FixtureNode {
         name: name.to_owned(),
         mesh_index,
         parent,
+        children: Vec::new(),
+    }
+}
+
+/// Fills every node's child list from the parent slots, which is what the
+/// reference asserts a container does.
+///
+/// `unlisted` names a node whose **parent slot is stored but which no parent's
+/// child list names** — the disagreement the eight world containers carry. The
+/// baseline walks the parent slots, so that node is still a row with the parent
+/// its own record states.
+fn with_child_lists(nodes: &mut [FixtureNode], unlisted: &[u32]) {
+    let parents: Vec<Option<u32>> = nodes.iter().map(|node| node.parent).collect();
+    for (index, node) in nodes.iter_mut().enumerate() {
+        node.children = parents
+            .iter()
+            .enumerate()
+            .filter(|(_, parent)| **parent == Some(index as u32))
+            .map(|(child, _)| child as u32)
+            .filter(|child| !unlisted.contains(child))
+            .collect();
     }
 }
 
@@ -210,7 +237,7 @@ fn write_container(nodes: &[FixtureNode], mesh_slots: u32, present_meshes: u32) 
         word(&mut bytes, at + 72, 0);
         // `parent_count` is a boolean in this layout.
         bytes[at + 84..at + 86].copy_from_slice(&u16::from(node.parent.is_some()).to_le_bytes());
-        bytes[at + 86..at + 88].copy_from_slice(&0u16.to_le_bytes());
+        bytes[at + 86..at + 88].copy_from_slice(&(node.children.len() as u16).to_le_bytes());
         // `unk196` is the layout's `160` for an object record.
         word(&mut bytes, at + 196, 160);
         word(&mut bytes, at + 208, NODE_INDEX_TOP | index as u32);
@@ -231,6 +258,15 @@ fn write_container(nodes: &[FixtureNode], mesh_slots: u32, present_meshes: u32) 
         if let Some(parent) = node.parent {
             word(&mut bytes, record + OBJECT_DATA as usize, parent);
         }
+        // The child slots follow the parent word, in stored order.
+        let mut at = record + OBJECT_DATA as usize;
+        if node.parent.is_some() {
+            at += 4;
+        }
+        for child in &node.children {
+            word(&mut bytes, at, *child);
+            at += 4;
+        }
     }
     bytes
 }
@@ -238,7 +274,7 @@ fn write_container(nodes: &[FixtureNode], mesh_slots: u32, present_meshes: u32) 
 /// Bytes one node's own data slot occupies: the object record plus the 4-byte
 /// parent word the layout stores when the record declares a parent.
 fn record_length(node: &FixtureNode) -> u32 {
-    OBJECT_DATA + if node.parent.is_some() { 4 } else { 0 }
+    OBJECT_DATA + if node.parent.is_some() { 4 } else { 0 } + 4 * node.children.len() as u32
 }
 
 /// A disposable installation tree, removed on drop.
@@ -283,7 +319,7 @@ fn write_campaign(temp: &TempInstall) {
 /// the array leaves absent, and the two nodes that make a name path ambiguous
 /// and a name unspellable.
 fn fixture_nodes() -> Vec<FixtureNode> {
-    vec![
+    let mut nodes = vec![
         object("main", 0, None),
         object("wing", 1, Some(0)),
         object("hatch", -1, Some(0)),
@@ -291,7 +327,12 @@ fn fixture_nodes() -> Vec<FixtureNode> {
         object("twig", -1, Some(0)),
         object("twig", -1, Some(0)),
         object("brigturret ", -1, Some(1)),
-    ]
+        // The node whose parent slot is stored but which `main`'s own child list
+        // does not name: the world containers' disagreement, on purpose.
+        object("gun", -1, Some(0)),
+    ];
+    with_child_lists(&mut nodes, &[7]);
+    nodes
 }
 
 /// A fixture tree: the campaign mission, the shared planes container, and the
@@ -317,7 +358,7 @@ fn tree(label: &str, planes_nodes: Vec<FixtureNode>, world_nodes: Vec<FixtureNod
 /// How many containers `tree` writes a geometry container into.
 const FIXTURE_CONTAINERS: usize = 3;
 /// Stored nodes per fixture container.
-const FIXTURE_NODES: usize = 7;
+const FIXTURE_NODES: usize = 8;
 /// Present mesh slots the node array names, per fixture container.
 const FIXTURE_MESH_ROWS: usize = 2;
 
@@ -470,6 +511,27 @@ fn accept_f14_d_4_a_gamez_container_yields_one_node_row_per_node_and_one_mesh_ro
             }
         }
     }
+
+    // The hierarchy comes from the **parent slots**, not from the child lists:
+    // `gun`'s own record names `main` as its parent while `main`'s child list does
+    // not list it — the disagreement the eight world containers carry. The row is
+    // still there, its path still runs through `main`, and its parent edge still
+    // resolves.
+    let gun = row(
+        &baseline,
+        &cid(ContentKind::SceneNode, &format!("{world_key}.main.gun")),
+    );
+    assert_eq!(gun.display_name.as_deref(), Some("gun"));
+    assert!(
+        gun.dependencies
+            .iter()
+            .any(|edge| edge.target == cid(ContentKind::SceneNode, &format!("{world_key}.main"))),
+        "a node's own parent slot is what names its parent: {:?}",
+        gun.dependencies
+            .iter()
+            .map(|edge| edge.target.to_string())
+            .collect::<Vec<_>>()
+    );
 
     // The ownership edge: `wing` names `main` as its parent, so the row carries
     // an edge to the row the name path derives for `main`.
@@ -685,8 +747,11 @@ fn accept_f14_d_4_a_node_whose_name_path_is_shared_is_a_row_with_an_explicit_unk
     assert_eq!(world.nodes, FIXTURE_NODES);
     assert_eq!(world.ambiguous, 2);
     assert_eq!(world.unspellable, 1);
-    assert_eq!(world.named, 4);
-    assert_eq!(world.paths, 6, "six distinct paths for seven stored nodes");
+    assert_eq!(world.named, 5);
+    assert_eq!(
+        world.paths, 7,
+        "seven distinct paths for eight stored nodes"
+    );
     assert_eq!(
         world.absent_meshes, 1,
         "`ghost` names the slot the array leaves absent"
@@ -787,6 +852,51 @@ fn accept_f14_d_4_a_node_whose_name_carries_unspellable_bytes_is_a_row_with_an_e
         .expect("the shared container is reported");
     assert_eq!(planes.unspellable, 1);
     assert_eq!(planes.ambiguous, 2);
+}
+
+/// The two walks meet at exactly one boundary and it is the container's own
+/// header word: the mesh section ends where the node array's info array begins,
+/// and the node walk ends on the container's last byte.
+///
+/// This pins the three equalities
+/// `cs_content::catalog::baseline::read_geometry_container` cross-checks, and it
+/// pins them through the **production readers** rather than through the
+/// baseline. It is what makes that cross-check falsifiable: a check that compared
+/// the wrong two fields, or stopped comparing one of them, changes what this test
+/// measures. The cross-check itself is redundant with the two readers' own
+/// boundary checks today — neither reader will hand back a container whose
+/// boundary disagrees — so its value is that it fires and names all four numbers
+/// if a reader's own check is ever relaxed.
+#[test]
+fn accept_f14_d_4_the_two_walks_meet_at_the_headers_own_node_offset() {
+    let bytes = write_container(&fixture_nodes(), 3, 2);
+    let mut parse = cs_formats::ParseContext::with_defaults("fixture.boundary");
+    let nodes = cs_formats::gamez::read_gamez_nodes(&mut parse, &bytes).expect("the nodes read");
+    let meshes = cs_formats::gamez::read_gamez_meshes(&mut parse, "fixture.boundary", &bytes)
+        .expect("the meshes read");
+
+    let header = u64::from(meshes.header.nodes_offset);
+    assert_eq!(nodes.header, meshes.header, "both readers read one header");
+    assert_eq!(
+        meshes.data_end, header,
+        "the mesh walk ends exactly where the header declares the node array"
+    );
+    assert_eq!(
+        nodes.info_offset, header,
+        "the node info array starts exactly there"
+    );
+    assert_eq!(
+        nodes.data_end,
+        bytes.len() as u64,
+        "the node walk ends on the container's last byte"
+    );
+    // The three are the same number, and the whole node array sits between the
+    // last two: `212 · node_array_size` bytes of info records.
+    assert_eq!(
+        nodes.info_end - nodes.info_offset,
+        212 * FIXTURE_NODES as u64
+    );
+    assert_eq!(nodes.data_offset, nodes.info_end);
 }
 
 /// A mesh slot the node array names but the array leaves absent has no bytes of
@@ -982,8 +1092,8 @@ fn accept_f14_d_4_the_report_renders_both_collections_and_the_per_container_coun
     );
     assert!(
         report.contains(
-            "\"container\":\"ZBD/C1/gamez.zbd\",\"nodes\":7,\"named\":4,\"ambiguous\":2,\
-             \"unspellable\":1,\"paths\":6,\"roots\":1,\"named_meshes\":3,\"mesh_rows\":2,\
+            "\"container\":\"ZBD/C1/gamez.zbd\",\"nodes\":8,\"named\":5,\"ambiguous\":2,\
+             \"unspellable\":1,\"paths\":7,\"roots\":1,\"named_meshes\":3,\"mesh_rows\":2,\
              \"absent_meshes\":1}"
         ),
         "{report}"
