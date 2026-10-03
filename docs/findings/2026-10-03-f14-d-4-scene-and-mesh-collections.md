@@ -209,7 +209,7 @@ accept_f14_d_4_geometry_collections`, no original data):
 | report the container counts as the number of records pushed rather than the number that read | 1 |
 | give a node an edge onto a named mesh slot no present record answers (reviewer pass) | 2 |
 | drop the parent-chain termination measurement (reviewer pass) | 1 |
-| stop a parent chain one name before the array is exhausted, so a full-length chain looks like a loop (third review pass) | 1 |
+| restore the previous bound (a budget decremented on every iteration, including the one that ends the walk), so a chain holding as many names as the array holds nodes runs the budget to zero and looks like a loop (third review pass) | 1 |
 
 The last three are the reviewer's own mutations; each is recorded in a review
 section below with the correction that killed it.

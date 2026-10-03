@@ -546,9 +546,10 @@ fn review_method() -> String {
          and the fixture change that killed them. The reviewing agent's own three probes were: \
          giving a node an edge onto a named mesh slot that no present record answers (killed by \
          2 synthetic tests), dropping the parent-chain termination measurement (killed by the \
-         one test that builds a parent cycle), and stopping a parent chain one name before the \
-         node array is exhausted, which makes a terminating chain that covers every node look \
-         like a loop (killed by the one test that writes exactly that hierarchy).",
+         one test that builds a parent cycle), and restoring the previous walk bound, where a \
+         budget decremented on every iteration makes a chain holding as many names as the node \
+         array holds nodes run the budget to zero and so look like a loop (killed by the one \
+         test that writes exactly that hierarchy).",
     );
     recorded
         + &UNKNOWN_LIMITATIONS
