@@ -24,8 +24,8 @@ reasons from are F39-D's and F39-E2's, cited below.
   `Active -> Optional` rows, and
   `accept_f39_e5_a_set_aside_objective_can_still_be_completed_or_resumed`.
 * `crates/cs_sim/src/objectives/mod.rs`: the stage section in the module docs.
-* `crates/cs_content/src/objectives.rs`: `COMPLETION_EFFECT_KEY_VOCABULARY`,
-  `DeclaredCompletionEffectKind`, `UnmeasuredQuantity`, `DeclaredCompletionEffect`,
+* `crates/cs_content/src/objectives.rs`: `DeclaredCompletionEffect`,
+  `UnmeasuredQuantity`, `UNMEASURED_NAP_ARGUMENT`, `BranchEffectKind::carries_argument`,
   `DeclaredObjectiveState::is_terminal`, `DeclaredObjective::completion_effects`,
   `ObjectivesSchemaError::{AmbiguousCompletionEffect, SelfCompletionEffect,
   DeadCompletionEffect, UnfiredCompletionEffects, EffectArgumentShape}`,
@@ -37,10 +37,11 @@ reasons from are F39-D's and F39-E2's, cited below.
   prefix `accept_f39_e5_`.
 * Mechanical only, no behaviour change: `completion_effects: Vec::new()` added to
   the existing `ObjectiveSpec`/`DeclaredObjective` literals in
-  `crates/cs_sim/tests/accept_f39_b_objective_runtime.rs` (9 sites) and
-  `crates/cs_app/tests/accept_f39_d_objective_branching.rs` (6 sites). Every
-  other declaration in those suites is about a different rule, and an empty list
-  is the whole of the behaviour before this stage.
+  `crates/cs_sim/tests/accept_f39_b_objective_runtime.rs` (9 sites),
+  `crates/cs_app/tests/accept_f39_d_objective_branching.rs` (6 sites) and
+  `crates/cs_app/tests/accept_f39_e2_block_precedence.rs` (1 site, after F39-E2
+  landed). Every other declaration in those suites is about a different rule, and
+  an empty list is the whole of the behaviour before this stage.
 * Wiring only: none — every edited file is an owner path.
 
 **One observable failure.** Before this stage, 1056 measured declaration sites
@@ -61,8 +62,16 @@ so a reader can check the decisions against them:
 | `WAKE…WHEN_I_COMPLETE` 412, `NAP…` 417, `KILL…` 225, `WAKEUP…` 2 — 1056 sites in 722 of 1338 blocks | F39-D (`BRANCH_KEY_VOCABULARY`), F39-E2 |
 | every target names an objective of the **same record** (1706 targets); none names its own block | F39-E2 |
 | every `NAP` site carries exactly one extra number (42 distinct values, 0.5 … 170); no other effect site carries one | F39-E2 |
-| exactly **one** block in 1338 declares two different effects for the same objective: `zbd/c3/m05` `OBJECTIVE8`, `WAKE [9,10,11,44,30,68]` then `NAP [68, 2.0]`, shared target 68 | F39-E2 |
+| exactly **one** block in 1338 declares two different effects for the same objective: `zbd/c3/m05` `OBJECTIVE8`, `WAKE [9,10,11,44,30,68]` then `NAP [68, 2.0]`, shared target 68 | F39-E2 (`MeasuredBranchConflict`) |
 | the authored field order is not the rule: every conflicting pair is written **both** ways round (`WAKE`/`NAP` 99 vs 81, `WAKE`/`KILL` 93 vs 20, `NAP`/`KILL` 70 vs 34) | F39-E2 |
+
+F39-E2 landed on `main` while this stage was in progress, so the declared form
+writes over **its** measured vocabulary — [`BranchEffectKind`] and
+`BRANCH_EFFECT_KEY_VOCABULARY` — instead of introducing a second spelling list
+for the same four keys. What this stage adds to that vocabulary is one
+measurement-derived predicate, `BranchEffectKind::carries_argument` (only a nap
+carries the number), and the named verdict `UNMEASURED_NAP_ARGUMENT` beside
+F39-E2's `UNMEASURED_BLOCK_PRECEDENCE`.
 
 Four decisions follow, each with the alternative it rejected:
 
@@ -82,8 +91,9 @@ Four decisions follow, each with the alternative it rejected:
    carries it verbatim across the lowering boundary and never reads it: the move
    a nap performs is the same whatever the number says, which
    `accept_f39_e5_a_napped_objective_is_set_aside_whatever_the_number_says` pins
-   with `0.5` and `170`. *Rejected:* a `Duration`, which would invent the unit the
-   measurement refused.
+   with `0.5` and `170`. The verdict is named once, as
+   `UNMEASURED_NAP_ARGUMENT`. *Rejected:* a `Duration`, which would invent the
+   unit the measurement refused.
 4. **Two different effects naming one objective is refused at declaration, by
    name, in both the schema and the runtime** (`AmbiguousCompletionEffect`). This
    is the one instance F39-E2 could not resolve, and the authored order cannot
@@ -150,7 +160,7 @@ stage measured nothing new about the original to change that.
 | `an_effect_on_a_hidden_objective_is_reported_not_dropped` | reveal rules still govern visibility; the refused move is reported |
 | `two_effects_naming_one_objective_are_refused_by_name` | the refusal in the schema in both declaration orders, in the runtime in both registration orders, the message naming both kinds and the shared objective, and the agreeing pair still legal |
 | `dead_completion_effects_are_refused_by_name` | self-effect, target born terminal (all three final states), effects declared by an objective born terminal, a nap without its number, a number on a wake, and a dangling target |
-| `the_effect_vocabulary_is_the_measured_one` | the four spellings are members of `BRANCH_KEY_VOCABULARY` and round-trip, `WAKE` ≠ `WAKEUP`, an unmeasured spelling names nothing, only a nap carries a number, the four kinds survive the boundary, and none completes its target |
+| `the_effect_vocabulary_is_the_measured_one` | the declared form writes over F39-E2's measured vocabulary: the four keys are members of `BRANCH_KEY_VOCABULARY` and round-trip, `WAKE` ≠ `WAKEUP`, an unmeasured spelling names nothing, only a nap carries a number, the four kinds survive the boundary, none completes its target, and both named verdicts still state the measured conditions this stage's two rules rest on |
 | `an_original_record_with_effects_is_never_played` | the support gate |
 | `state.rs`: `a_set_aside_objective_can_still_be_completed_or_resumed` | the two new rows, and that order-independence still holds from every state that can reach `Optional` |
 

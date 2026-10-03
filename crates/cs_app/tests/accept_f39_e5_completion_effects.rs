@@ -71,10 +71,11 @@
 
 use cs_app::objectives::{ObjectiveSession, ProgramLowerError, lower_program};
 use cs_content::objectives::{
-    BRANCH_KEY_VOCABULARY, COMPLETION_EFFECT_KEY_VOCABULARY, DeclaredCompletionEffect,
-    DeclaredCompletionEffectKind, DeclaredObjective, DeclaredObjectiveProgram,
-    DeclaredObjectiveState, DeclaredRevealRule, DeclaredSupport, ObjectivesSchemaError,
-    ProgramSymbol, UNMEASURED_OBJECTIVE_SEMANTICS, declared_synthetic_completion_effects,
+    BRANCH_EFFECT_KEY_VOCABULARY, BRANCH_KEY_VOCABULARY, BranchEffectKind,
+    DeclaredCompletionEffect, DeclaredObjective, DeclaredObjectiveProgram, DeclaredObjectiveState,
+    DeclaredRevealRule, DeclaredSupport, ObjectivesSchemaError, ProgramSymbol,
+    UNMEASURED_BLOCK_PRECEDENCE, UNMEASURED_NAP_ARGUMENT, UNMEASURED_OBJECTIVE_SEMANTICS,
+    declared_synthetic_completion_effects,
 };
 use cs_script::ir::SymbolId;
 use cs_script::runtime::SessionGeneration;
@@ -156,14 +157,10 @@ fn with_nap_number(value: f64) -> DeclaredObjectiveProgram {
     let nap = completing
         .completion_effects
         .iter_mut()
-        .find(|effect| effect.kind == DeclaredCompletionEffectKind::Nap)
+        .find(|effect| effect.kind == BranchEffectKind::Nap)
         .expect("the fixture naps one objective");
-    *nap = DeclaredCompletionEffect::new(
-        DeclaredCompletionEffectKind::Nap,
-        nap.objective,
-        Some(value),
-    )
-    .expect("a finite declared number");
+    *nap = DeclaredCompletionEffect::new(BranchEffectKind::Nap, nap.objective, Some(value))
+        .expect("a finite declared number");
     DeclaredObjectiveProgram::try_new(
         base.subject().clone(),
         base.origin().clone(),
@@ -483,9 +480,8 @@ fn conflict_with(reversed: bool) -> ObjectivesSchemaError {
         .iter_mut()
         .find(|objective| !objective.completion_effects.is_empty())
         .expect("the fixture's completing objective declares effects");
-    let nap_on_woken =
-        DeclaredCompletionEffect::new(DeclaredCompletionEffectKind::Nap, woken, Some(2.0))
-            .expect("a nap with its number");
+    let nap_on_woken = DeclaredCompletionEffect::new(BranchEffectKind::Nap, woken, Some(2.0))
+        .expect("a nap with its number");
     if reversed {
         completing.completion_effects.insert(0, nap_on_woken);
     } else {
@@ -517,8 +513,8 @@ fn accept_f39_e5_two_effects_naming_one_objective_are_refused_by_name() {
         ObjectivesSchemaError::AmbiguousCompletionEffect {
             by: ProgramSymbol(1),
             objective: ProgramSymbol(2),
-            first: DeclaredCompletionEffectKind::Wake,
-            second: DeclaredCompletionEffectKind::Nap,
+            first: BranchEffectKind::Wake,
+            second: BranchEffectKind::Nap,
         }
     );
 
@@ -530,8 +526,8 @@ fn accept_f39_e5_two_effects_naming_one_objective_are_refused_by_name() {
         ObjectivesSchemaError::AmbiguousCompletionEffect {
             by: ProgramSymbol(1),
             objective: ProgramSymbol(2),
-            first: DeclaredCompletionEffectKind::Nap,
-            second: DeclaredCompletionEffectKind::Wake,
+            first: BranchEffectKind::Nap,
+            second: BranchEffectKind::Wake,
         }
     );
     let message = reversed.to_string();
@@ -597,7 +593,7 @@ fn accept_f39_e5_two_effects_naming_one_objective_are_refused_by_name() {
     let base = declared_synthetic_completion_effects();
     let mut objectives = base.objectives().to_vec();
     objectives[2].completion_effects = vec![
-        DeclaredCompletionEffect::new(DeclaredCompletionEffectKind::Kill, ProgramSymbol(5), None)
+        DeclaredCompletionEffect::new(BranchEffectKind::Kill, ProgramSymbol(5), None)
             .expect("a kill"),
     ];
     assert!(
@@ -642,11 +638,7 @@ fn accept_f39_e5_dead_completion_effects_are_refused_by_name() {
     // objective holds `Succeeded`, and nothing moves a target out of a final
     // state.
     let mut objectives = base.objectives().to_vec();
-    objectives[0].completion_effects = vec![effect(
-        DeclaredCompletionEffectKind::Wake,
-        ProgramSymbol(1),
-        None,
-    )];
+    objectives[0].completion_effects = vec![effect(BranchEffectKind::Wake, ProgramSymbol(1), None)];
     assert_eq!(
         rebuild(objectives),
         ObjectivesSchemaError::SelfCompletionEffect {
@@ -662,11 +654,8 @@ fn accept_f39_e5_dead_completion_effects_are_refused_by_name() {
     ] {
         let mut objectives = base.objectives().to_vec();
         objectives[2].initial = born;
-        objectives[0].completion_effects = vec![effect(
-            DeclaredCompletionEffectKind::Wake,
-            ProgramSymbol(3),
-            None,
-        )];
+        objectives[0].completion_effects =
+            vec![effect(BranchEffectKind::Wake, ProgramSymbol(3), None)];
         assert_eq!(
             rebuild(objectives),
             ObjectivesSchemaError::DeadCompletionEffect {
@@ -683,11 +672,7 @@ fn accept_f39_e5_dead_completion_effects_are_refused_by_name() {
     let mut objectives = base.objectives().to_vec();
     objectives[0].completion_effects = Vec::new();
     objectives[4].initial = DeclaredObjectiveState::Succeeded;
-    objectives[4].completion_effects = vec![effect(
-        DeclaredCompletionEffectKind::Wake,
-        ProgramSymbol(2),
-        None,
-    )];
+    objectives[4].completion_effects = vec![effect(BranchEffectKind::Wake, ProgramSymbol(2), None)];
     assert_eq!(
         rebuild(objectives),
         ObjectivesSchemaError::UnfiredCompletionEffects {
@@ -699,31 +684,24 @@ fn accept_f39_e5_dead_completion_effects_are_refused_by_name() {
     // A nap without the number every measured nap carries, and a number on an
     // effect that never had one.
     let mut objectives = base.objectives().to_vec();
-    objectives[0].completion_effects = vec![effect(
-        DeclaredCompletionEffectKind::Nap,
-        ProgramSymbol(3),
-        None,
-    )];
+    objectives[0].completion_effects = vec![effect(BranchEffectKind::Nap, ProgramSymbol(3), None)];
     assert_eq!(
         rebuild(objectives.clone()),
         ObjectivesSchemaError::EffectArgumentShape {
             by: ProgramSymbol(1),
             objective: ProgramSymbol(3),
-            kind: DeclaredCompletionEffectKind::Nap,
+            kind: BranchEffectKind::Nap,
         }
     );
     let mut with_number = objectives;
-    with_number[0].completion_effects = vec![effect(
-        DeclaredCompletionEffectKind::Wake,
-        ProgramSymbol(3),
-        Some(2.0),
-    )];
+    with_number[0].completion_effects =
+        vec![effect(BranchEffectKind::Wake, ProgramSymbol(3), Some(2.0))];
     assert_eq!(
         rebuild(with_number),
         ObjectivesSchemaError::EffectArgumentShape {
             by: ProgramSymbol(1),
             objective: ProgramSymbol(3),
-            kind: DeclaredCompletionEffectKind::Wake,
+            kind: BranchEffectKind::Wake,
         }
     );
 
@@ -732,11 +710,8 @@ fn accept_f39_e5_dead_completion_effects_are_refused_by_name() {
     // every retail target names an objective of the same record, so there is no
     // cross-record name to resolve here either.
     let mut objectives = base.objectives().to_vec();
-    objectives[0].completion_effects = vec![effect(
-        DeclaredCompletionEffectKind::Wake,
-        ProgramSymbol(99),
-        None,
-    )];
+    objectives[0].completion_effects =
+        vec![effect(BranchEffectKind::Wake, ProgramSymbol(99), None)];
     assert_eq!(
         rebuild(objectives),
         ObjectivesSchemaError::UnknownObjective {
@@ -767,16 +742,17 @@ fn accept_f39_e5_dead_completion_effects_are_refused_by_name() {
 
 #[test]
 fn accept_f39_e5_the_effect_vocabulary_is_the_measured_one() {
-    // The four spellings are measured (F39-D's census), and each is a member of
-    // the branching vocabulary F39-D published.
-    assert_eq!(COMPLETION_EFFECT_KEY_VOCABULARY.len(), 4);
-    for key in COMPLETION_EFFECT_KEY_VOCABULARY {
+    // The declared form is written over F39-E2's measured vocabulary, so this
+    // stage declares no second spelling list: the four keys are the measured
+    // ones, each a member of F39-D's branching vocabulary, and they round-trip.
+    assert_eq!(BRANCH_EFFECT_KEY_VOCABULARY.len(), 4);
+    for key in BRANCH_EFFECT_KEY_VOCABULARY {
         assert!(
             BRANCH_KEY_VOCABULARY.contains(&key),
             "{key} is a measured branching key"
         );
         assert_eq!(
-            DeclaredCompletionEffectKind::from_measured_key(key)
+            BranchEffectKind::from_measured_key(key)
                 .expect("a measured key names an effect")
                 .measured_key(),
             key,
@@ -786,8 +762,8 @@ fn accept_f39_e5_the_effect_vocabulary_is_the_measured_one() {
     // `WAKE` and `WAKEUP` are two spellings in one corpus and nothing measured
     // says they are the same effect, so they never collapse into each other.
     assert_ne!(
-        DeclaredCompletionEffectKind::from_measured_key("WAKE_OBJECTIVE_WHEN_I_COMPLETE"),
-        DeclaredCompletionEffectKind::from_measured_key("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE")
+        BranchEffectKind::from_measured_key("WAKE_OBJECTIVE_WHEN_I_COMPLETE"),
+        BranchEffectKind::from_measured_key("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE")
     );
     // A spelling nobody measured names nothing, rather than reading as the
     // closest effect it shares a prefix with.
@@ -799,20 +775,37 @@ fn accept_f39_e5_the_effect_vocabulary_is_the_measured_one() {
         "",
     ] {
         assert_eq!(
-            DeclaredCompletionEffectKind::from_measured_key(unknown),
+            BranchEffectKind::from_measured_key(unknown),
             None,
             "{unknown} is not a measured completion effect"
         );
     }
     // Only a nap carries the measured number.
-    assert!(DeclaredCompletionEffectKind::Nap.carries_argument());
+    assert!(BranchEffectKind::Nap.carries_argument());
     for kind in [
-        DeclaredCompletionEffectKind::Wake,
-        DeclaredCompletionEffectKind::Kill,
-        DeclaredCompletionEffectKind::Wakeup,
+        BranchEffectKind::Wake,
+        BranchEffectKind::Kill,
+        BranchEffectKind::Wakeup,
     ] {
         assert!(!kind.carries_argument());
     }
+
+    // The two named verdicts this stage leans on still state the measured
+    // conditions behind the two rules it enforces: the isolated block it refuses
+    // to order, and the number it refuses to interpret. A verdict that stopped
+    // naming its condition would leave the rules asserting an absence, so both are
+    // pinned here.
+    assert!(
+        UNMEASURED_BLOCK_PRECEDENCE.contains("exactly one of its blocks")
+            && UNMEASURED_BLOCK_PRECEDENCE.contains("must not apply an authored field order"),
+        "the precedence verdict still names the isolated condition and the rule it forbids: {UNMEASURED_BLOCK_PRECEDENCE}"
+    );
+    assert!(
+        UNMEASURED_NAP_ARGUMENT.contains("no other completion-effect site carries one")
+            && UNMEASURED_NAP_ARGUMENT
+                .contains("nothing may schedule, compare or weigh anything on it"),
+        "the nap verdict still names the measured shape and the use it forbids: {UNMEASURED_NAP_ARGUMENT}"
+    );
 
     // The lowering keeps the four kinds apart, and no kind moves its target to
     // `Succeeded` — the structural reason an applied effect can never queue

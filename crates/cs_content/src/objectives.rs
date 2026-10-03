@@ -2408,12 +2408,8 @@ pub fn declared_synthetic_completion_effects() -> DeclaredObjectiveProgram {
         DeclaredCompletionEffect::new(kind, objective, None).expect("a finite declared effect")
     };
     let nap = || {
-        DeclaredCompletionEffect::new(
-            BranchEffectKind::Nap,
-            SYNTHETIC_E5_NAPPED,
-            Some(2.0),
-        )
-        .expect("a nap with its measured number")
+        DeclaredCompletionEffect::new(BranchEffectKind::Nap, SYNTHETIC_E5_NAPPED, Some(2.0))
+            .expect("a nap with its measured number")
     };
 
     DeclaredObjectiveProgram::try_new(

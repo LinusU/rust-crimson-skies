@@ -731,6 +731,7 @@ fn original_program() -> DeclaredObjectiveProgram {
             initial: DeclaredObjectiveState::Active,
             reveal: DeclaredRevealRule::Immediate,
             on_complete: DeclaredCompletion::Continue,
+            completion_effects: Vec::new(),
         }],
         Vec::new(),
         Vec::new(),
