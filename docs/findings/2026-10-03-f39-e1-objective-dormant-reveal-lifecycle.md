@@ -37,8 +37,11 @@ the files alone and pinned them in production code and tests:
    declare an *identical* `INACTIVE<n>` condition set at *different* thresholds;
    the archetype is `ZBD/C2B/M04`, where objectives 7, 8, 9 and 10 all watch the
    same fourteen Gemini-zeppelin engine conditions (`geminizep` × engine node ×
-   `healthy`) at counts 1, 4, 7 and 14, and where the count never exceeds the
-   condition list anywhere in the corpus.
+   `healthy`) at counts 1, 4, 7 and 14, and where no block declares a count
+   larger than its own condition list (16 of the 130 counted blocks equal it,
+   113 are below it, and the single exception is the one counted block that
+   declares no condition at all — `ZBD/C4/M03 OBJECTIVE52`, count 2 over zero
+   conditions).
 
 What remains **unmeasured**, and therefore not implemented:
 
@@ -467,6 +470,67 @@ row fields and its `branch_precedence` reading sit on top of it, measured on
 `record.document`. F39-D's 10 tests and F39-E2's 8 were re-run on the rebased
 tree (all green) so the resolution is checked from both sides, and the committed
 report's `candidate_tree` is the tree this review tested.
+
+### Second pass: the landing queue's rebase conflict
+
+Rally's lander could not rebase the approved commit onto the newer `main`, so
+the task came back for review. `main` had meanwhile landed **F39-E5** (completion
+effects) into the same two source files, so this stage's code was rebased again
+by hand — onto `b25cb642`, with F39-E5 also touching `Cargo.lock` and
+`crates/cs_script/Cargo.toml`, which rules out the lighter post-rebase check set:
+all four checks were re-run.
+
+* `cs_content/src/objectives.rs` conflicted because both stages inserted a
+  section at the same point. The resolution is a **pure addition** to F39-E5's
+  file: 648 lines added, zero removed, the stage's dormant/reveal section
+  verbatim and F39-E5's fixture block intact (checked by diffing the resolved
+  file against both sides of the conflict). One extra brace had to be restored:
+  git's marker had already eaten the `}` that closes `read_identity`, so a
+  conflict resolved by hand can compile-fail with "unexpected closing
+  delimiter" rather than by an obvious marker.
+* `cs_app/src/objectives.rs` conflicted in the `cs_content::objectives` import
+  list. The resolution is the union of both sides, so `UnmeasuredQuantity` (used
+  by F39-E5's nap lowering) and the stage's `DormantReading` /
+  `MeasuredDormantBlock` / `measure_dormant_declarations` are all imported.
+  `cargo fmt` leaves the list alone after this, which is the check that the
+  merge kept every name both sides need.
+
+This stage's own code is byte-identical to the previously approved commit: the
+diff between them touches no `Dormant`, `InactiveCondition`, `MeasuredIdentity`
+or census symbol except that import list. Every measured figure above
+reproduced on the new tree (install `b4e780ab…`, 53 readers, 1338 blocks, 1096
+dormant = 992 sentinel + 104 dated, 271 staged blocks over 1335 conditions, 130
+counts, 111 identity blocks over 112 declarations, 86 both, 41 distinct dated
+arguments, 123/585/37 cue declarations, 88 condition parts, 53 condition families
+of which 35 declare more than one threshold, 2 cue-ordered families at
+`77/156/210/257/300` and `2/20`), the 20 acceptance tests pass, and each of the
+20 also passes alone with `--exact`.
+
+### Second-pass fix: a measured claim that contradicted its own census
+
+1. **`count_exceeds_conditions`' doc claimed the corpus never declares an
+   unreachable count.** The doc read "**no** block declares a count larger than
+   its number of conditions, and exactly one declares a count with no condition
+   at all" — but the census measures `counts_above_conditions() == 1`, and that
+   one block **is** the condition-free block (`zbd/c4/m03 OBJECTIVE52`, count 2
+   over zero conditions): of the 130 counted blocks, 16 equal their condition
+   count and 113 are below it, so the two sentences contradict each other in
+   the same paragraph. The doc now states the measured partition and says the
+   two facts are the *same* block. The finding had it right all along (its
+   "never larger — the one exception is the one block that has a count and no
+   condition" bullet), and the fast reader test already asserted both facts
+   hold at once; only the production doc, one retail test's doc and that test's
+   name were wrong. The retail test
+   `…a_completion_count_never_exceeds_its_own_conditions` asserted `== 1`, i.e.
+   the opposite of its own name, and is now
+   `…retail_only_the_condition_free_block_declares_an_unreachable_count`. No
+   behaviour changed, and no measured number moved.
+
+This pass changed no production logic, and `cargo fmt`, `cargo clippy
+--workspace --all-targets --all-features --locked -- -D warnings`, `cargo test
+--workspace --locked` and the full `accept_f39_e1_` selection with
+`--include-ignored` were all re-run on the final tree, with the committed
+report's `candidate_tree` naming it.
 
 ## Unknown / deferred (not guessed)
 
