@@ -278,13 +278,15 @@ pub enum HostFault {
         settled: TerminalState,
         offered: TerminalState,
     },
-    /// The result carries an execution key from another session generation, so
-    /// it is not this session's result: a stale replay of an earlier run of the
-    /// same mission, or a crossed record. Refused whole — its effects and its
-    /// outcome claim together — because the ledger cannot tell which part of it
-    /// belongs to this session. Applying it would grant a reward this session
-    /// never earned and write a foreign key into the record, which is a record
-    /// nothing can ever restore.
+    /// The result is another session generation's — either its own
+    /// [`TickResult::session`] stamp or an event's execution key names a
+    /// session that is not this ledger's. A stale replay of an earlier run of
+    /// the same mission, or a crossed record. Refused whole — its effects and
+    /// its outcome claim together — because the ledger cannot tell which part
+    /// of it belongs to this session. Applying it would grant a reward this
+    /// session never earned, settle this session on a stale outcome claim, or
+    /// write a foreign key into the record, which is a record nothing can ever
+    /// restore.
     ForeignSession { session: SessionGeneration },
 }
 
@@ -444,10 +446,21 @@ impl HostLedger {
     /// `ObjectiveCompleted` is a mission-state observation rather than a host
     /// effect and is skipped too.
     ///
-    /// A result carrying another session's execution key is refused whole, before
-    /// any of it is applied: see [`HostFault::ForeignSession`].
+    /// A result that is not this session's — its [`TickResult::session`] stamp
+    /// or an event's execution key names another generation — is refused whole,
+    /// before any of it is applied: see [`HostFault::ForeignSession`]. The
+    /// stamp is checked first, so a result with no events still carries its
+    /// provenance and cannot settle this session.
     pub fn apply(&mut self, result: &TickResult) -> HostReport {
         let mut report = HostReport::new(result.tick);
+        if result.session != self.session {
+            report.record(HostOutcome::SessionRefused {
+                fault: HostFault::ForeignSession {
+                    session: result.session,
+                },
+            });
+            return report;
+        }
         if let Some(session) = result
             .events
             .iter()
@@ -1234,6 +1247,7 @@ mod tests {
         // A request for the outcome that already settled is still a request the
         // host records; it changes nothing.
         let agreeing = TickResult {
+            session: SESSION,
             tick: Tick(2),
             events: vec![MissionEvent {
                 key: cs_script::runtime::EventKey {
@@ -1252,6 +1266,7 @@ mod tests {
         // A request for the other outcome is refused: success cannot coexist
         // with failure.
         let conflicting = TickResult {
+            session: SESSION,
             tick: Tick(3),
             events: vec![MissionEvent {
                 // A fresh execution key: the request above already spent
@@ -1278,6 +1293,7 @@ mod tests {
 
         // And so is a tick that asserts the other outcome outright.
         let contradiction = TickResult {
+            session: SESSION,
             tick: Tick(4),
             events: Vec::new(),
             terminal: TerminalState::Failed,
@@ -1727,8 +1743,10 @@ mod tests {
         assert_eq!(s.host().granted_rewards(), 1);
 
         // The previous run's session generation, replaying a result this run
-        // never produced.
+        // never produced. Its stamp claims this session — the per-event check
+        // is what still catches it.
         let stale = TickResult {
+            session: SESSION,
             tick: Tick(1),
             events: vec![
                 MissionEvent {
@@ -1776,6 +1794,149 @@ mod tests {
         let later = restored.advance(&facts(), Tick(LATER_TICK)).unwrap();
         assert_eq!(applied_rewards(&later.host), vec![stale_reward]);
         assert_eq!(restored.host().granted_rewards(), 2);
+    }
+
+    /// F37-D-FU1: the result's own stamp is checked before anything else, so an
+    /// event-less result from another session cannot settle this ledger — the
+    /// hole the per-event check could not see.
+    #[test]
+    fn accept_f37_d_fu1_eventless_foreign_result_cannot_settle_the_ledger() {
+        let foreign = SessionGeneration(SESSION.0 - 1);
+        let mut s = session(
+            vec![objective(
+                1,
+                Condition::Const(true),
+                vec![Action::Finish(Outcome::Succeeded)],
+            )],
+            vec![],
+        );
+
+        // The previous run's terminal claim, replayed by a caller that
+        // hand-builds results — the only path that can produce one, since
+        // `MissionSession::advance` applies its own. No event carries the stale
+        // session, so only the stamp can.
+        let stale = TickResult {
+            session: foreign,
+            tick: Tick(1),
+            events: Vec::new(),
+            terminal: TerminalState::Succeeded,
+            stop: None,
+        };
+        let report = s.host_mut().apply(&stale);
+        assert_eq!(
+            report.outcomes,
+            [HostOutcome::SessionRefused {
+                fault: HostFault::ForeignSession { session: foreign }
+            }],
+            "an event-less foreign result must be refused whole"
+        );
+        assert_eq!(
+            s.host().settled(),
+            None,
+            "the foreign claim must not settle this session"
+        );
+        assert!(s.host().torn_down().is_none());
+
+        // The refusal touched nothing: this session's own tick still settles
+        // it, and the wired path's stamp is accepted.
+        let tick = s.advance(&facts(), Tick(1)).unwrap();
+        assert_eq!(tick.terminal, TerminalState::Succeeded);
+        assert_eq!(
+            s.host().settled(),
+            Some((Tick(1), TerminalState::Succeeded))
+        );
+    }
+
+    /// F37-D-FU1: provenance is checked before the outcome is compared, so a
+    /// foreign event-less result cannot re-settle the ledger either — not even
+    /// with the outcome it already holds.
+    #[test]
+    fn accept_f37_d_fu1_eventless_foreign_result_cannot_resettle_the_ledger() {
+        let foreign = SessionGeneration(SESSION.0 - 1);
+        let mut s = session(
+            vec![objective(
+                1,
+                Condition::Const(true),
+                vec![Action::Finish(Outcome::Succeeded)],
+            )],
+            vec![],
+        );
+        // Settled through the real step/apply path, without the teardown
+        // `advance` would have run, so the record still answers applies.
+        let result = s.step(&facts(), Tick(1)).unwrap();
+        s.host_mut().apply(&result);
+        assert_eq!(
+            s.host().settled(),
+            Some((Tick(1), TerminalState::Succeeded))
+        );
+
+        for offered in [TerminalState::Failed, TerminalState::Succeeded] {
+            let stale = TickResult {
+                session: foreign,
+                tick: Tick(2),
+                events: Vec::new(),
+                terminal: offered,
+                stop: None,
+            };
+            let report = s.host_mut().apply(&stale);
+            assert_eq!(
+                report.faults,
+                [HostFault::ForeignSession { session: foreign }],
+                "a foreign {offered:?} claim must name its session, not reach the outcome check"
+            );
+            assert_eq!(
+                s.host().settled(),
+                Some((Tick(1), TerminalState::Succeeded)),
+                "a foreign result changed the settled record"
+            );
+        }
+    }
+
+    /// F37-D-FU1: `MissionState::step` stamps its own generation, and the stamp
+    /// is checked before the per-event scan — a result foreign on both levels
+    /// is refused by the stamp it carries, which names that session.
+    #[test]
+    fn accept_f37_d_fu1_step_stamps_and_the_stamp_is_checked_first() {
+        let live_reward = cid(ContentKind::Blueprint, "r-live");
+        let mut s = session(
+            vec![objective(1, Condition::Const(true), vec![reward("r-live")])],
+            vec![live_reward.clone()],
+        );
+        let live = s.step(&facts(), Tick(1)).unwrap();
+        assert_eq!(live.session, SESSION, "step must stamp its own session");
+        assert!(s.host_mut().apply(&live).faults.is_empty());
+        assert_eq!(s.host().granted_rewards(), 1);
+
+        // Foreign stamp and foreign event keys: the stamp's refusal comes
+        // first, so the report names the result's session, not an event's.
+        let crossed = TickResult {
+            session: SessionGeneration(SESSION.0 + 1),
+            tick: Tick(2),
+            events: vec![MissionEvent {
+                key: EventKey {
+                    session: SessionGeneration(SESSION.0 - 1),
+                    tick: Tick(2),
+                    source: SymbolId(1),
+                    sequence: 7,
+                },
+                kind: EventKind::RewardGranted(live_reward),
+            }],
+            terminal: TerminalState::Running,
+            stop: None,
+        };
+        let report = s.host_mut().apply(&crossed);
+        assert_eq!(
+            report.faults,
+            [HostFault::ForeignSession {
+                session: SessionGeneration(SESSION.0 + 1)
+            }],
+            "the refusal must name the session the result carries"
+        );
+        assert_eq!(
+            s.host().granted_rewards(),
+            1,
+            "a crossed result must not apply even its own-session-looking parts"
+        );
     }
 
     /// The host record is data from outside the process: one that claims the

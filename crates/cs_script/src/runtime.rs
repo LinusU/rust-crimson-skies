@@ -221,6 +221,11 @@ pub struct MissionEvent {
 /// Result of one tick.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TickResult {
+    /// The session generation that produced this result, stamped by
+    /// [`MissionState::step`]. The host refuses a result whose session is not
+    /// its own before touching any of it, so a result with no events still
+    /// carries its provenance.
+    pub session: SessionGeneration,
     pub tick: Tick,
     /// Sorted by [`EventKey`].
     pub events: Vec<MissionEvent>,
@@ -980,6 +985,7 @@ impl MissionState {
         }
         self.last_tick = Some(tick);
         let mut result = TickResult {
+            session: self.session,
             tick,
             events: Vec::new(),
             terminal: self.terminal,
