@@ -92,9 +92,9 @@ fn register_damage_actor(resolver: &mut DamageResolver, actor: ActorId) {
         .expect("the actor registers");
 }
 
-/// A firing gate armed with the fixture gun through the production
-/// declared → lowered boundary.
-fn armed(actor: ActorId) -> FireResolver {
+/// Registers the fixture gun for `actor` on an existing firing gate through
+/// the production declared → lowered boundary.
+fn arm(resolver: &mut FireResolver, actor: ActorId) {
     let gun = lower_gun(&declared_synthetic_gun()).expect("the fixture gun lowers");
     let mount = gun.mount().clone();
     let state = WeaponState::try_new(
@@ -103,10 +103,16 @@ fn armed(actor: ActorId) -> FireResolver {
         SYNTHETIC_STARTING_ROUNDS,
     )
     .expect("a valid weapon state");
-    let mut resolver = FireResolver::new(SESSION, Tick(0));
     resolver
         .register(actor, vec![gun], state)
         .expect("the fixture gun registers");
+}
+
+/// A firing gate armed with the fixture gun through the production
+/// declared → lowered boundary.
+fn armed(actor: ActorId) -> FireResolver {
+    let mut resolver = FireResolver::new(SESSION, Tick(0));
+    arm(&mut resolver, actor);
     resolver
 }
 
@@ -282,7 +288,12 @@ fn accept_f33_c_a_capture_or_bailout_does_not_ground_the_ally() {
     let mut damage = DamageResolver::new(session(SESSION), PRODUCER);
     register_damage_actor(&mut damage, trader);
     register_damage_actor(&mut damage, raider);
+    // Both actors carry real guns, so a capture or bailout that wrongly closed
+    // the gate would really disable a mount rather than being invisible on an
+    // empty gate.
     let mut fire = FireResolver::new(SESSION, Tick(0));
+    arm(&mut fire, trader);
+    arm(&mut fire, raider);
 
     // A capture is a mission callback all its own, and the neutral still acts.
     damage
@@ -296,6 +307,10 @@ fn accept_f33_c_a_capture_or_bailout_does_not_ground_the_ally() {
     assert_eq!(roster.status(&trader), Some(AllyStatus::Captured));
     assert!(roster.may_fire(&trader));
     assert_eq!(capture.report.mounts_disabled, 0);
+    assert!(
+        !fire.state(&trader).expect("armed").is_disabled(&mount()),
+        "a capture does not ground the captured aircraft"
+    );
 
     // A bailout leaves the airframe a physical object that may still act.
     damage
@@ -309,6 +324,10 @@ fn accept_f33_c_a_capture_or_bailout_does_not_ground_the_ally() {
     assert_eq!(roster.status(&raider), Some(AllyStatus::BailedOut));
     assert!(roster.may_fire(&raider));
     assert_eq!(bailout.report.mounts_disabled, 0);
+    assert!(
+        !fire.state(&raider).expect("armed").is_disabled(&mount()),
+        "a bailout does not ground the abandoned airframe"
+    );
 
     // A protected neutral that is later destroyed is a protected-neutral loss,
     // not a kill, and only then is it grounded.
