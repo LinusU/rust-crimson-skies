@@ -677,10 +677,11 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     );
     // F14-D.2 added the first of the collections this stage leaves open: the
     // multiplayer modes the installation's string image names. F14-D.3 added
-    // the world groups whose shared readers the classifier read, F14-D.5 the
-    // faction paint patterns and the verified paint masks, and F14-D.6 the
-    // airframes the loading-script container declares. None of them is
-    // launchable, so the denominator asserted above is unchanged, but the row
+    // the world groups whose shared readers the classifier read, F14-D.4 the
+    // scene nodes and mesh slots of every GameZ container the diagnosis names,
+    // F14-D.5 the faction paint patterns and the verified paint masks, and
+    // F14-D.6 the airframes the loading-script container declares. None of them
+    // is launchable, so the denominator asserted above is unchanged, but the row
     // count is not, and this test states the new totals instead of filtering
     // the rows out.
     let rows_of = |kind: ContentKind| {
@@ -713,6 +714,12 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     // does not restate a number another stage owns.
     let faction_rows = rows_of(ContentKind::Faction);
     let paint_mask_rows = rows_of(ContentKind::PaintMask);
+    // F14-D.4's two collections are counted by their own acceptance tests, which
+    // pin every identity, the per-container totals and the exact record each row
+    // is located by; here they only have to be accounted for, so this total does
+    // not restate a number another stage owns.
+    let scene_node_rows = rows_of(ContentKind::SceneNode);
+    let mesh_rows = rows_of(ContentKind::Mesh);
     // Every row of the catalog is one of the three groups above: an inventoried
     // file, a launchable row with its program, or a row of a collection that is
     // not launchable. Anything else — and any collection a later stage adds
@@ -733,15 +740,21 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
         .count();
     assert_eq!(
         unaccounted,
-        mode_rows + world_rows + airframe_rows + faction_rows + paint_mask_rows,
+        mode_rows
+            + world_rows
+            + airframe_rows
+            + faction_rows
+            + paint_mask_rows
+            + scene_node_rows
+            + mesh_rows,
         "every non-launchable row belongs to a collection this total names"
     );
     assert_eq!(
         catalog.len(),
         discovery.manifest.files.len() + 2 * launchable + unaccounted,
         "files plus one program row and one launchable row per mission and scenario, plus every \
-         non-launchable collection row (multiplayer rules, worlds, factions, paint masks and \
-         airframes)"
+         non-launchable collection row (multiplayer rules, worlds, scene nodes, meshes, factions, \
+         paint masks and airframes)"
     );
 
     // Nothing authored reached the retail inventory, and every row is
