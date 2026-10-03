@@ -664,3 +664,38 @@ fn accept_f34_b_rejects_a_trajectory_on_a_different_tick_rate() {
         })
     );
 }
+
+// ------------------------------------------------ release input guards ---
+
+#[test]
+fn accept_f34_b_release_rejects_a_non_finite_payload() {
+    let mut set = WorldActorSet::new(10).unwrap();
+    set.register(held_machine(CARRIER, [0.0, 0.0, 0.0]))
+        .unwrap();
+    let anchor = anchor_sample(Tick(0), &set.pose(CARRIER).unwrap(), &CARRIER_SOCKET);
+    let spec = |eject_m_s| PayloadSpec {
+        actor: BOAT,
+        faction: faction(),
+        objective: None,
+        eject_m_s,
+    };
+
+    assert_eq!(
+        set.release(&anchor, spec([f64::NAN, 0.0, 0.0]), WorldActorKind::Water),
+        Err(WorldActorError::NonFinite { field: "eject_m_s" })
+    );
+    // A non-finite caller-supplied anchor cannot register a NaN actor.
+    let mut bad_anchor = anchor;
+    bad_anchor.position_m[0] = f64::INFINITY;
+    assert_eq!(
+        set.release(&bad_anchor, spec([0.0; 3]), WorldActorKind::Water),
+        Err(WorldActorError::NonFinite {
+            field: "position_m"
+        })
+    );
+    // Both refused releases left nothing behind.
+    assert!(matches!(
+        set.pose(BOAT),
+        Err(WorldActorError::UnknownActor(BOAT))
+    ));
+}

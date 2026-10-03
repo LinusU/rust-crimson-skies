@@ -672,8 +672,10 @@ impl WorldActorSet {
     ///
     /// # Errors
     ///
-    /// [`WorldActorError::DuplicateActor`] when `spec.actor` is taken or
-    /// [`WorldActorError::Graph`] on the registry edit.
+    /// [`WorldActorError::DuplicateActor`] when `spec.actor` is taken,
+    /// [`NonFinite`](WorldActorError::NonFinite) on a non-finite ejection,
+    /// anchor or resulting drift, or [`WorldActorError::Graph`] on the
+    /// registry edit.
     pub fn release(
         &mut self,
         anchor: &AnchorSample,
@@ -683,7 +685,12 @@ impl WorldActorSet {
         if self.actors.contains_key(&spec.actor) {
             return Err(WorldActorError::DuplicateActor(spec.actor));
         }
+        check_finite("eject_m_s", &spec.eject_m_s)?;
         let payload = release_payload(anchor, spec.clone());
+        // The anchor is caller-supplied: a non-finite sample must not put a
+        // NaN actor into the set either.
+        check_finite("position_m", &payload.position_m)?;
+        check_finite("velocity_m_s", &payload.velocity_m_s)?;
         self.graph.add_actor(spec.actor)?;
         self.actors.insert(
             spec.actor,

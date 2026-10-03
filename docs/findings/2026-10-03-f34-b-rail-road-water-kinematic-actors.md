@@ -47,6 +47,12 @@ tests.
 - **Release** (non-negotiable 4). `release` wraps `release_payload`: the new
   actor spawns as `Free` at the anchor with anchor velocity + authored ejection,
   the spec's faction and its objective identity.
+- **Input validation.** `register` refuses a `Trajectory` whose tick rate
+  differs from the set's — its sampled velocity is derived in the
+  trajectory's own timebase and would misreport (non-negotiable 1). `release`
+  refuses a non-finite ejection or anchor before the registry changes. A
+  follower spawned exactly on a stop line shared by several intact gates is
+  held by the first gate along the route, the same one `step` reports.
 - **Offscreen motion** (non-negotiable 5). `step` has no visibility, residency or
   presentation parameter; a never-sampled actor and a per-tick-sampled one end
   identical. `pickup_eligible_pose` (anchor.rs) judges eligibility on the same
