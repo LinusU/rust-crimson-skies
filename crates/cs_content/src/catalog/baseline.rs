@@ -832,7 +832,7 @@ impl Baseline {
 
 /// Builds the complete private baseline inventory of `install_root`.
 ///
-/// The walk reads the installation eight ways and nothing else: the F02
+/// The walk reads the installation ten ways and nothing else: the F02
 /// inventory (`cs_assets::install::discover`) for every regular file, the
 /// shared campaign layout ([`crate::campaign_bindings::campaign_layout`]) for
 /// the mission directories, each mission's reader archive for its span and
@@ -841,11 +841,12 @@ impl Baseline {
 /// [`classify`] lists for the world collection, the faction palette archive
 /// ([`crate::livery::PALETTE_MEMBER`]) and the airframe library's BM members
 /// ([`PAINT_MASK_CONTAINER`]), the loading-script container F11-D2's
-/// [`discover_airframe_roster`] declares its airframes in, and each geometry
+/// [`discover_airframe_roster`] declares its airframes in, each geometry
 /// container `cs_assets::install::Diagnosis` names for its node array and mesh
-/// section. Rows are inserted in a fixed order and every report array is
-/// rendered from canonical id order, so the same installation yields the same
-/// bytes (spec F14 AC02).
+/// section, and the sound containers [`cs_formats::zbd::role_for_path`] names
+/// for its cue members. Rows are inserted in a fixed order and every report
+/// array is rendered from canonical id order, so the same installation yields
+/// the same bytes (spec F14 AC02).
 ///
 /// # Errors
 ///

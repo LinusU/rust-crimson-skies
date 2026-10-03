@@ -187,6 +187,7 @@ and is recorded here rather than discovered later.
 | `a_node_whose_name_carries_unspellable_bytes_is_a_row_with_an_explicit_unknown` | a stored name ending in a space keeps its display name verbatim, is keyed by its record address with a `node_path_unspellable` unknown quoting `main.wing.brigturret `, appears nowhere as a trimmed identity, and still carries a resolving parent edge | the name is trimmed into an identity, transliterated, dropped, or the row loses its parent edge |
 | `a_named_mesh_slot_without_a_present_mesh_is_counted_not_rowed` | a slot named by a node but absent from the mesh array gets no row and is counted as `named_slot_without_mesh`; the node that names it carries `node_mesh_slot_absent` and **no** mesh edge | the absent slot is given a row, the count is not reported, or the naming node grows an edge onto the id nothing holds |
 | `a_node_whose_parent_chain_never_ends_is_a_row_with_an_explicit_unknown` | two nodes that are each other's parent: no loop is spelled as a name path, each is keyed by its record address with `node_path_unterminated`, a node whose chain terminates is still a semantic path, and `unterminated` plus the four-way count identity hold per container and in the collection's gaps | a loop is published as a name path, the loop nodes are merged, or the counts and the rows disagree |
+| `a_chain_as_long_as_the_node_array_is_not_a_cycle` | a hierarchy that is one chain covering every stored node: the deepest node's authored name path, its resolving parent edge, and `unterminated == 0` in every container of the tree (third review pass) | a terminating chain as long as the array is reported as a loop, so its deepest node loses its name path |
 | `a_container_the_readers_refuse_is_a_named_diagnostic_and_no_row` | a container that stops being a GameZ container yields no row, is named in the diagnostic, is counted in `unreadable_container`, and leaves the other two containers' rows and the F14-D inventory intact | a refused container is silently skipped, is guessed at, or takes the rest of the inventory with it |
 | `the_geometry_collections_do_not_move_the_coverage_denominator` | neither kind is launchable, no geometry row is a root, `launchable_count == roots.len()`, only the mission is an unsupported launchable, both kinds appear in `unreachable_by_kind`, zero orphan references | a geometry row becomes a root, or the denominator moves |
 | `the_report_renders_both_collections_and_the_per_container_counts` | the `collections` map and both `collection_status` records agree with the catalog, `geometry_containers` renders the per-container counts, no synthetic origin appears, and the report is byte-stable for the same installation | a count is missing, the two renderings disagree, or the report is not deterministic |
@@ -208,9 +209,10 @@ accept_f14_d_4_geometry_collections`, no original data):
 | report the container counts as the number of records pushed rather than the number that read | 1 |
 | give a node an edge onto a named mesh slot no present record answers (reviewer pass) | 2 |
 | drop the parent-chain termination measurement (reviewer pass) | 1 |
+| stop a parent chain one name before the array is exhausted, so a full-length chain looks like a loop (third review pass) | 1 |
 
-The last two are the reviewer's own mutations; both are recorded in the review
-section below with the corrections that killed them.
+The last three are the reviewer's own mutations; each is recorded in a review
+section below with the correction that killed it.
 
 The last two exist because the first pass of this suite let both mutations
 through, and that is worth recording rather than hiding: the fixture originally
@@ -457,6 +459,61 @@ pass ran the **full** four checks plus every F14-D suite with `--include-ignored
 not the lighter rebase set the 2026-10-01 owner directive allows: the retail
 halves of F14-D.2, D.3, D.5 and D.6 all build the whole baseline and all pass
 (5, 5, 7 and 8 tests).
+
+### The third pass: the lander could not rebase this one either
+
+The second approved commit failed to land for the same reason (review claim of
+2026-10-03T08:54:34Z, same agent instance, same caveat: **not independent**).
+Main had meanwhile landed F14-D.7's sound-cue collection, which adds its rows
+inside the same `retail_baseline`, the same `use` block, the same module
+documentation and the same test file. Two of the fifteen commits conflicted,
+both in `baseline.rs`; each was resolved by keeping both sides, and the result
+was checked the same way as before (the declared-item set of the merged file is
+exactly main's set plus this stage's). Three defects were found and fixed:
+
+13. **A chain as long as the node array was reported as a cycle.** The walk that
+    derives a node's authored name path bounded a parent chain by the record
+    count **plus one** and reported "unterminated" when that budget ran out. A
+    cycle-free chain visits each stored node at most once, so it can hold
+    exactly as many names as the array holds nodes: a hierarchy that is one chain
+    covering every node spent the whole budget on its way to a root and was
+    called a loop. Such a row lost its authored name path, was keyed by its
+    record address instead, and carried a `node_path_unterminated` unknown that
+    was **false about the container** — the one claim in this stage that
+    contradicts the store. The bound now counts the names a chain has consumed
+    and stops when a chain would need one more than the array holds, which is
+    what a cycle looks like. `accept_f14_d_4_a_chain_as_long_as_the_node_array_is_not_a_cycle`
+    writes such a container (three nodes, one chain, the deepest chain three
+    names long) and pins the deepest node's path, its parent edge and
+    `unterminated == 0`; it fails against the previous bound and passes against
+    this one. The corpus is unaffected: the retail test still measures 0
+    unterminated chains in all nine containers, because no chain there is as long
+    as its array.
+14. **The inventory's completeness test could not account for the sound rows.**
+    The same merge exposed the identical failure the previous pass fixed for this
+    stage's own two collections, one stage later: F14-D.7 inserted 4 951
+    `ContentKind::Sound` rows without naming that collection in
+    `accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic`, so
+    the equality read 78 928 against 73 977 and the retail check **failed**.
+    **This is a pre-existing defect on `main`, not a regression of this stage**:
+    on `main` the same equality reads 5 169 against 218 (the sound rows minus
+    this stage's rows are the difference). The accounting now names the sound
+    collection the same way it names every other non-launchable one — a count
+    derived from the rows, no number restated — and the test passes. The root
+    cause belongs to F14-D.7 and is filed as its own task; a shared completeness
+    total that every new collection must remember to update is what both passes
+    tripped over.
+15. **The list of derivations lost the sound family.** After the merge
+    `retail_baseline` still claimed "reads the installation eight ways" and did
+    not mention the sound containers at all, so the function's own account of
+    itself was wrong in both the count and the list. Corrected to ten ways with
+    the sound family named.
+
+Because the merge touched the same file as F14-D.7's collection and its
+completeness check, this pass also ran the **full** four checks plus every F14-D
+suite with `--include-ignored`, including F14-D.7's own retail suite. The corpus
+measurements are unchanged: 56 620 scene node rows, 17 139 mesh rows, nine
+containers read, 0 refused, 0 unterminated chains.
 
 
 ## Sources used

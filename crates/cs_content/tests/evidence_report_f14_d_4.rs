@@ -481,31 +481,32 @@ fn review_identity() -> String {
     let recorded = String::from(
         "implementer: bunny-alpha-1/bunny-alpha-1 (Rally #487, implement claim of \
          2026-10-03T03:30:51Z), Space Bunny Alpha. reviewer: bunny-alpha-1/bunny-alpha-1 again, \
-         the same agent instance that wrote this stage, holding the review claim of \
-         2026-10-03T05:12:04Z and the resumed claim of 2026-10-03T06:44:27Z that the lander's \
-         rebase conflict sent back, so this review is not independent evidence of anything and \
-         the format and identity claims still deserve a different agent instance or model; the \
-         reviewing session's context was fresh in the sense that it read only the branch, the \
-         specs, the findings note and the recorded handover summary, and carries no memory of \
-         writing the code. Checks the reviewer ran locally: cargo fmt --all -- --check; cargo \
-         clippy --workspace --all-targets --all-features --locked -- -D warnings; cargo test \
-         --workspace --locked; cargo test --workspace --locked -- accept_f14_d_4_ \
-         --include-ignored, which ran 11 tests including the retail one; the other F14-D retail \
-         suites with --include-ignored, because the rebase merged F14-D.6's airframe collection \
-         and its completeness check into the same file and one of those checks failed on the \
-         merge; two mutations of the reviewed code, each killed by a test CI runs; and \
-         python3 tools/validate_evidence.py with --require-pass. The corrections made during the \
-         review are listed in \
+         the same agent instance that wrote this stage, holding three review claims — \
+         2026-10-03T05:12:04Z, the resumed claim of 2026-10-03T06:44:27Z and the resumed claim \
+         of 2026-10-03T08:54:34Z, each sent back because the lander could not rebase the \
+         approved commit onto a main that had moved — so this review is not independent evidence \
+         of anything and the format and identity claims still deserve a different agent instance \
+         or model; the reviewing session's context was fresh in the sense that it read only the \
+         branch, the specs, the findings note and the recorded handover summary, and carries no \
+         memory of writing the code. Checks the reviewer ran locally: cargo fmt --all -- --check; \
+         cargo clippy --workspace --all-targets --all-features --locked -- -D warnings; cargo \
+         test --workspace --locked; cargo test --workspace --locked -- accept_f14_d_4_ \
+         --include-ignored, which ran 12 tests including the retail one; every other F14-D retail \
+         suite with --include-ignored, because each rebase merged another stage's collection into \
+         the same file and each of those merges broke a check; three mutations of the reviewed \
+         code, each killed by a test CI runs; and python3 tools/validate_evidence.py with \
+         --require-pass. The corrections made during the review are listed in \
          docs/findings/2026-10-03-f14-d-4-scene-and-mesh-collections.md: a node row pointed at \
-         a mesh id no row holds, a parent-slot cycle produced a published name path, the \
-         inventory lookup case-folded a path, a guard could silently skip the shared container, \
-         the collection record named a bare file instead of the pattern its rows follow, an \
-         error variant nothing could construct was documented, two defects of the rebase onto \
-         F14-D.3 survived in the module documentation, the note's byte total was wrong, the \
-         rebase onto F14-D.6 left the inventory walk's list of derivations one short and left \
-         F14-D.6's own completeness total unable to account for the two collections this stage \
-         adds, and the same conflict left a fragment of the old paragraph orphaned under the \
-         module documentation. The corpus measurements are unchanged: 56 620 scene node rows and \
+         a mesh id no row holds, a parent-slot cycle produced a published name path, a parent \
+         chain as long as the node array was itself reported as a cycle, the inventory lookup \
+         case-folded a path, a guard could silently skip the shared container, the collection \
+         record named a bare file instead of the pattern its rows follow, an error variant \
+         nothing could construct was documented, two defects of the rebase onto F14-D.3 survived \
+         in the module documentation, the note's byte total was wrong, and each of the two \
+         later rebases left the inventory walk's list of derivations short and left the shared \
+         completeness total unable to account for the collections the merged stage had added — \
+         for F14-D.4's two and then for F14-D.7's 4 951 sound rows, the latter of which fails \
+         on main as well. The corpus measurements are unchanged: 56 620 scene node rows and \
          17 139 mesh rows over nine containers, 0 unreadable containers, 0 unterminated parent \
          chains, and a coverage denominator that did not move. No agent review awards more than \
          checked, and nothing here is verified_original: retail is read access to the \
@@ -542,10 +543,12 @@ fn review_method() -> String {
          pair of fields in the two-walk cross-check, and reporting the container counts as \
          the number of records pushed. Each of the seven is killed by at least one test CI \
          runs; the findings note lists which, and records the two that survived a first pass \
-         and the fixture change that killed them. The reviewing agent's own two probes were: \
+         and the fixture change that killed them. The reviewing agent's own three probes were: \
          giving a node an edge onto a named mesh slot that no present record answers (killed by \
-         2 synthetic tests), and dropping the parent-chain termination measurement (killed by the \
-         one test that builds a parent cycle).",
+         2 synthetic tests), dropping the parent-chain termination measurement (killed by the \
+         one test that builds a parent cycle), and stopping a parent chain one name before the \
+         node array is exhausted, which makes a terminating chain that covers every node look \
+         like a loop (killed by the one test that writes exactly that hierarchy).",
     );
     recorded
         + &UNKNOWN_LIMITATIONS
@@ -558,17 +561,18 @@ fn review_method() -> String {
 /// affected content and the task that resolves it (AGENTS owner directive,
 /// 2026-09-28: a limitation must survive into machine-readable evidence).
 const UNKNOWN_LIMITATIONS: &[&str] = &[
-    "Seven of the collections IDENTITY-CONTENT requires are now populated: install files, \
-     campaign missions, mission programs, the instant-action and multiplayer scenario directories \
-     (F14-D.1), multiplayer rules (F14-D.2), scene nodes and render meshes (this stage). \
-     Affected content: render materials and images, collision surfaces, airframes and \
-     exceptional control laws, engines/armor/guns/ammo/hardpoint equipment, blueprints and \
-     faction paint masks, pilots/voices/factions, scripts/instructions/native bindings, \
-     animation and camera tracks, objectives/triggers/routes, sounds/music/dialogue/video, UI \
-     fonts and strings, stunts and scrapbook items. Resolving tasks: one follow-up per \
-     collection, created from #487, each adding at most the rows its producing stage's parser can \
-     honestly produce; the report's collections and collection_status objects state what exists \
-     today.",
+    "Thirteen of the collections IDENTITY-CONTENT requires are populated on this installation: \
+     install files, campaign missions, mission programs, the instant-action and multiplayer \
+     scenario directories (F14-D.1), multiplayer rules (F14-D.2), world groups (F14-D.3), scene \
+     nodes and render meshes (this stage), factions and paint masks (F14-D.5), airframes \
+     (F14-D.6) and sound cues (F14-D.7); the report's collections and collection_status objects \
+     state exactly what exists today. Affected content: render materials and images, collision \
+     surfaces, flight equipment and exceptional control laws, blueprints and pilot/voice rows, \
+     scripts, instructions and native bindings, animation and camera tracks, objectives, \
+     triggers and routes, music, dialogue and video, UI fonts and strings, and stunts and \
+     scrapbook items. Resolving tasks: one follow-up per remaining collection, created from \
+     #389 and #487, each adding at most the rows its producing stage's parser can honestly \
+     produce.",
     "A scene node row is unavailable and carries no normalized quantity, because the stored \
      translation, euler angles, LOD bounds and zone id are all in source units and nothing in this \
      workspace has established the original's world-vertex or angle unit. Affected content: all \

@@ -679,11 +679,11 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     // multiplayer modes the installation's string image names. F14-D.3 added
     // the world groups whose shared readers the classifier read, F14-D.4 the
     // scene nodes and mesh slots of every GameZ container the diagnosis names,
-    // F14-D.5 the faction paint patterns and the verified paint masks, and
-    // F14-D.6 the airframes the loading-script container declares. None of them
-    // is launchable, so the denominator asserted above is unchanged, but the row
-    // count is not, and this test states the new totals instead of filtering
-    // the rows out.
+    // F14-D.5 the faction paint patterns and the verified paint masks, F14-D.6
+    // the airframes the loading-script container declares, and F14-D.7 the audio
+    // cues the sound family holds. None of them is launchable, so the denominator
+    // asserted above is unchanged, but the row count is not, and this test states
+    // the new totals instead of filtering the rows out.
     let rows_of = |kind: ContentKind| {
         catalog
             .elements()
@@ -720,6 +720,13 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     // not restate a number another stage owns.
     let scene_node_rows = rows_of(ContentKind::SceneNode);
     let mesh_rows = rows_of(ContentKind::Mesh);
+    // F14-D.7's sound collection is accounted for in the same way. It is named
+    // here because a collection that inserts rows without appearing in this sum
+    // fails the equality below — which is what happened when F14-D.7 landed: the
+    // sound rows were in the catalog and in no total, and this test failed on
+    // `main`. Only the accounting belongs here; F14-D.7's own retail test pins
+    // which cues these are.
+    let sound_rows = rows_of(ContentKind::Sound);
     // Every row of the catalog is one of the three groups above: an inventoried
     // file, a launchable row with its program, or a row of a collection that is
     // not launchable. Anything else — and any collection a later stage adds
@@ -746,7 +753,8 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
             + faction_rows
             + paint_mask_rows
             + scene_node_rows
-            + mesh_rows,
+            + mesh_rows
+            + sound_rows,
         "every non-launchable row belongs to a collection this total names"
     );
     assert_eq!(
@@ -754,7 +762,7 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
         discovery.manifest.files.len() + 2 * launchable + unaccounted,
         "files plus one program row and one launchable row per mission and scenario, plus every \
          non-launchable collection row (multiplayer rules, worlds, scene nodes, meshes, factions, \
-         paint masks and airframes)"
+         paint masks, airframes and sound cues)"
     );
 
     // Nothing authored reached the retail inventory, and every row is
