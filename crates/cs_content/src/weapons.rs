@@ -2829,26 +2829,32 @@ pub fn bind_gun_mount(
             record: record.gun().clone(),
         });
     }
-    if let Some((field, cause)) = measured.unmeasured().into_iter().next() {
+    let missing = measured.unmeasured();
+    let (Some(mount), Some(kind), Some(_binding)) = (
+        measured_value(&measured.mount),
+        measured_value(&measured.mount_kind),
+        measured_value(&measured.scene_binding),
+    ) else {
+        // `MeasuredGunMount::unmeasured` asks the same question field by field,
+        // so at least one of the three is missing; the first in
+        // `GunMountField::ALL` order is the one the refusal names.
+        let (field, cause) = missing.first().cloned().unwrap_or((
+            GunMountField::Mount,
+            UnmeasuredCause::Unknown {
+                reason: "the measurement's own report and its fields disagree".to_owned(),
+            },
+        ));
         return Err(GunMountRefusal::Unmeasured {
             gun: record.gun().clone(),
             field,
             cause,
         });
-    }
-    let mount = match measured.mount() {
-        Resolved::Known(known) => known.value.clone(),
-        Resolved::Unknown { .. } => unreachable!("a missing field is refused above"),
-    };
-    let mount_kind = match measured.mount_kind() {
-        Resolved::Known(known) => known.value,
-        Resolved::Unknown { .. } => unreachable!("a missing field is refused above"),
     };
     DeclaredGunDefinition::try_new(
         record.gun().clone(),
         record.origin().clone(),
-        mount,
-        mount_kind,
+        mount.clone(),
+        *kind,
         Some(measured.scene_binding().clone()),
         record.caliber().clone(),
         record.ammunition().clone(),
@@ -2864,6 +2870,16 @@ pub fn bind_gun_mount(
         record.provenance().clone(),
     )
     .map_err(|source| GunMountRefusal::Assembly { source })
+}
+
+/// The value of a [`Resolved`] when it is a usable measurement, and [`None`]
+/// when it is not. The same predicate as [`unmeasured_of`], in the shape the two
+/// binding functions need.
+fn measured_value<T>(value: &Resolved<T>) -> Option<&T> {
+    match value {
+        Resolved::Known(known) if unmeasured_of(value).is_none() => Some(&known.value),
+        Resolved::Known(_) | Resolved::Unknown { .. } => None,
+    }
 }
 
 /// One measured damage profile for one ammunition type.
