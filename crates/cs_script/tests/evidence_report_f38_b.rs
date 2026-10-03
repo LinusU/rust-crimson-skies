@@ -181,9 +181,9 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
          \x20\"overrides\": [],\n\
          \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
          \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
-         \x20\"assertions\": [{}],\n\
-         \x20\"artifacts\": [{}],\n\
-         \x20\"unknowns\": [{}],\n\
+         \x20\"assertions\": {},\n\
+         \x20\"artifacts\": {},\n\
+         \x20\"unknowns\": {},\n\
          \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
          \x20\"claim\": \"implemented\"\n\
          }}\n",
@@ -712,6 +712,8 @@ fn engine_json(engine: &Engine) -> String {
     )
 }
 
+/// A JSON array of objects; an empty slice renders as `[]`, like
+/// [`str_array`], because the validator type-checks every element.
 fn assertion_array(assertions: &[(String, &'static str)]) -> String {
     let items: Vec<String> = assertions
         .iter()
@@ -722,9 +724,13 @@ fn assertion_array(assertions: &[(String, &'static str)]) -> String {
             )
         })
         .collect();
-    items.join(", ")
+    if items.is_empty() {
+        return "[]".to_owned();
+    }
+    format!("[{}]", items.join(", "))
 }
 
+/// A JSON array of objects; an empty slice renders as `[]`.
 fn artifact_array(artifacts: &[(String, String, String)]) -> String {
     let items: Vec<String> = artifacts
         .iter()
