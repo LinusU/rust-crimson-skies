@@ -35,6 +35,18 @@ use cs_types::space::Radians;
 
 const PREFIX: &str = "accept_f27_d_";
 
+/// The first string-id block the resource header declares **after** the
+/// ammunition blocks, with the macro that declares it.
+///
+/// **Measured** (the retail test re-reads both out of the installation's own
+/// resource header): the four ammunition bases `3350`, `3360`, `3365` and `3370`
+/// are gaps of `10`, `5` and `5` apart, *not* four ids wide each, which is why
+/// the type count is measured from the screens instead.
+pub const MEASURED_NEXT_AMMO_BLOCK_MACRO: &str = "IDS_ROCKETLONGNAME";
+
+/// The identifier [`MEASURED_NEXT_AMMO_BLOCK_MACRO`] declares.
+pub const MEASURED_NEXT_AMMO_BLOCK_BASE: u32 = 3380;
+
 fn claim() -> ClaimId {
     ClaimId::new("f27d.ammo-audit-test").expect("a valid claim id")
 }
@@ -787,9 +799,6 @@ fn accept_f27_d_an_empty_catalogue_is_incomplete() {
 /// A contradictory measured surface is refused rather than audited: a zero
 /// count, an out-of-range group or a duplicated group all mean the surface was
 /// misread, and auditing a misread surface would produce a wrong verdict.
-/// A contradictory measured surface is refused rather than audited: a zero
-/// count, an out-of-range group or a duplicated group all mean the surface was
-/// misread, and auditing a misread surface would produce a wrong verdict.
 #[test]
 fn accept_f27_d_a_contradictory_measured_surface_is_refused() {
     let group = DeclaredGunGroup::new(3071, "NOSEGUNS");
@@ -851,12 +860,12 @@ fn accept_f27_d_a_contradictory_measured_surface_is_refused() {
     assert_eq!(none, OriginalLoadoutError::NoGunGroups);
 }
 
-/// The measured constants the audit closes against are the ones the original's
-/// own resource header declares, and the retail test re-measures each of them.
-/// This pins their internal consistency, so a typo in one constant cannot pass
-/// silently.
+/// The measured ammunition-block **bases** are fixed, and they are not four ids
+/// wide each: the header's own allocation makes the blocks 10, 5 and 5 apart, and
+/// the retail test re-measures the next block after them out of the same header.
+/// The type count is therefore measured from the screens, not from these gaps.
 #[test]
-fn accept_f27_d_the_measured_ammunition_blocks_are_four_ids_wide() {
+fn accept_f27_d_the_measured_ammunition_blocks_are_not_four_ids_wide_each() {
     assert_eq!(ORIGINAL_AMMO_NAME_BLOCKS.len(), 4, "four name blocks");
     let bases: Vec<u32> = ORIGINAL_AMMO_NAME_BLOCKS
         .iter()
@@ -875,15 +884,37 @@ fn accept_f27_d_the_measured_ammunition_blocks_are_four_ids_wide() {
         3373,
         "the last description id is 3373"
     );
+    // Every block must lie inside the header's own ammunition run and stop before
+    // the next block the header declares (`IDS_ROCKETLONGNAME 3380`). The block
+    // widths are therefore *unequal*, which is the property that makes reading a
+    // type count off the bases wrong.
+    let run_start = ORIGINAL_AMMO_NAME_BLOCKS[0].0;
+    let run_end = description.0 + ORIGINAL_AMMUNITION_TYPES;
+    assert_eq!(run_start, 3350);
+    assert!(
+        run_end <= MEASURED_NEXT_AMMO_BLOCK_BASE,
+        "the ammunition blocks end at {run_end}, before the header's next block \
+         {} at {MEASURED_NEXT_AMMO_BLOCK_BASE}",
+        MEASURED_NEXT_AMMO_BLOCK_MACRO
+    );
     for (base, label) in ORIGINAL_AMMO_NAME_BLOCKS {
         assert!(
-            (base..base + ORIGINAL_AMMUNITION_TYPES).all(|id| (3370..3374).contains(&id)
-                || (3350..3354).contains(&id)
-                || (3360..3364).contains(&id)
-                || (3365..3369).contains(&id)),
-            "block {label} at {base} must stay inside its own four-id run"
+            base >= run_start && base + ORIGINAL_AMMUNITION_TYPES <= run_end,
+            "block {label} at {base} must lie inside {run_start}..={run_end} and not \
+             spill into the next block"
         );
     }
+    // The gaps are the header's allocation, and none of them is the type count, so
+    // an implementation that derived the count from a gap would read 10 or 5.
+    let gaps: Vec<u32> = ORIGINAL_AMMO_NAME_BLOCKS
+        .windows(2)
+        .map(|pair| pair[1].0 - pair[0].0)
+        .collect();
+    assert_eq!(
+        gaps,
+        vec![10, 5, 5],
+        "the measured block gaps; the type count is not among them"
+    );
 }
 
 /// The prefix is a namespace, not a decoration: every test in this file is
@@ -908,7 +939,7 @@ fn accept_f27_d_the_catalogue_suite_declares_only_the_task_test_prefix() {
         "accept_f27_d_every_uncovered_gun_group_is_reported_once_by_name",
         "accept_f27_d_an_empty_catalogue_is_incomplete",
         "accept_f27_d_a_contradictory_measured_surface_is_refused",
-        "accept_f27_d_the_measured_ammunition_blocks_are_four_ids_wide",
+        "accept_f27_d_the_measured_ammunition_blocks_are_not_four_ids_wide_each",
         "accept_f27_d_the_catalogue_suite_declares_only_the_task_test_prefix",
     ] {
         assert!(name.starts_with(PREFIX), "{name} is outside the prefix");

@@ -60,12 +60,14 @@ use cs_types::install::InstallManifest;
 pub const BASE_CONTAINER: &str = "GOSDATA/ASSETS/crimson.rof";
 
 /// The members this stage reads, spelled as the installation spells them.
-pub const MEMBERS: [&str; 6] = [
+pub const MEMBERS: [&str; 8] = [
     ORIGINAL_RESOURCE_HEADER,
     "ASSETS/SCRIPTS/MULTIPLAYER_AMMOG.SCRIPT",
     "ASSETS/SCRIPTS/ORDINANCELAYOUT.SCRIPT",
     "ASSETS/SCRIPTS/GUNS.SCRIPT",
     "ASSETS/SCRIPTS/HARDPOINTS.SCRIPT",
+    "ASSETS/SCRIPTS/MULTIPLAYER_OUTLAWGUN.SCRIPT",
+    "ASSETS/SCRIPTS/MULTIPLAYER_OUTLAWAMM.SCRIPT",
     "ASSETS/LAYOUT.CSV",
 ];
 
@@ -105,6 +107,15 @@ pub const MEASURED_AMMO_BLOCK_MACROS: [(&str, u32); 4] = [
     ("IDS_AMMOABBRNAME", 3365),
     ("IDS_AMMODESCRIPTION", 3370),
 ];
+
+/// The first string-id block the resource header declares **after** the four
+/// ammunition blocks, with the macro that declares it.
+///
+/// **Measured**: this is what bounds the ammunition run, and it is why the four
+/// blocks are *not* four ids wide each — the bases `3350`, `3360`, `3365` and
+/// `3370` are gaps of `10`, `5` and `5` apart, and the description block's own
+/// indexing (`3370 + selection - 1`) is what establishes the type count.
+pub const MEASURED_NEXT_AMMO_BLOCK_MACRO: (&str, u32) = ("IDS_ROCKETLONGNAME", 3380);
 
 /// The engine's own names for the loadout identifiers this stage's audit uses.
 /// Their presence in `DEBUGINFO.TXT` is what lets the audit speak the original's
@@ -309,7 +320,7 @@ pub struct Observation {
 
 /// The literals the counts are read from, each with the member it lives in and
 /// what its presence proves.
-pub const COUNT_BOUNDS: [(&str, &str, &str); 12] = [
+pub const COUNT_BOUNDS: [(&str, &str, &str); 15] = [
     (
         "ASSETS/SCRIPTS/MULTIPLAYER_AMMOG.SCRIPT",
         "for (LHA=0; LHA < 4; LHA++)",
@@ -354,6 +365,21 @@ pub const COUNT_BOUNDS: [(&str, &str, &str); 12] = [
         "ASSETS/SCRIPTS/HARDPOINTS.SCRIPT",
         "for (int R=0; R < 2; R++)",
         "two hardpoint points",
+    ),
+    (
+        "ASSETS/SCRIPTS/MULTIPLAYER_OUTLAWGUN.SCRIPT",
+        "object ZAA[5]",
+        "five selectable gun entries in the outlaw gun screen",
+    ),
+    (
+        "ASSETS/SCRIPTS/MULTIPLAYER_OUTLAWGUN.SCRIPT",
+        "for(int R=0; R < 5; R++)",
+        "and the loop that builds them",
+    ),
+    (
+        "ASSETS/SCRIPTS/MULTIPLAYER_OUTLAWAMM.SCRIPT",
+        "object ZAA[4]",
+        "four selectable ammunition entries in the outlaw ammunition screen",
     ),
     (
         "ASSETS/LAYOUT.CSV",

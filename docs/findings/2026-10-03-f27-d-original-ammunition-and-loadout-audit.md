@@ -78,29 +78,36 @@ the gun and ammunition identity blocks live.
 | what | measurement |
 | --- | --- |
 | gun groups (hardpoints) | twenty contiguous string ids, `3061..=3080` (`IDS_INNERWINGGUNS` … `IDS_NOSETURRET`); `3060` is `IDS_AIRFRAMEGUNGROUPNAMES`, the table's header, and names no group |
-| ammunition name blocks | four: `IDS_AMMOLONGNAME 3350`, `IDS_AMMOSHORTNAME 3360`, `IDS_AMMOABBRNAME 3365`, `IDS_AMMODESCRIPTION 3370` |
-| ammunition types | four — the description block is indexed `3370 + selection - 1` for `selection` in `1..=4`, so `3370..=3373`, and the same four-wide run applies to each of the other three blocks |
+| ammunition name blocks | four: `IDS_AMMOLONGNAME 3350`, `IDS_AMMOSHORTNAME 3360`, `IDS_AMMOABBRNAME 3365`, `IDS_AMMODESCRIPTION 3370`. They are **not** equally wide: the next block the header declares after them is `IDS_ROCKETLONGNAME 3380`, so the gaps between the four bases are `10`, `5` and `5` |
+| ammunition types | four — the multiplayer ammunition screen iterates `selection` over `1..=4` and indexes the description block as `3370 + selection - 1`, so the descriptions occupy `3370..=3373`. The count is **not** read from the block gaps, which would give 10 or 5 |
 | guns | five — `IDS_NUMGUNS 506` names the string, not the count; the count is five (below) |
-| gun identity blocks | `IDS_GUNLONGNAME 3310`, `IDS_GUNSHORTNAME 3320`, `IDS_GUNDESCRIPTION 3330`, then `IDS_ROCKETLONGNAME 3380` |
+| gun identity blocks | `IDS_GUNLONGNAME 3310`, `IDS_GUNSHORTNAME 3320`, `IDS_GUNDESCRIPTION 3330`. Their spacing does **not** encode the gun count, so the count of five comes from the screens below, not from here |
 
 ### The loadout screens — the counts, read a second independent way
 
 - `ASSETS/SCRIPTS/MULTIPLAYER_AMMOG.SCRIPT` iterates four gun slots
   (`for (LHA=0; LHA < 4; LHA++)`), builds five dropdown rows per hardpoint
-  (`for(OHA = 0; OHA < 4 + 1; OHA++)` — index 0 is the "all ammo out" header,
-  1..=4 are the types), and asks the engine for `string VHA[4]` (the four
-  ammunition names) and `string UHA[5]` (the five gun names).
+  (`for(OHA = 0; OHA < 4 + 1; OHA++)` — index 0 is a header row whose label is
+  supplied by `callback($$NB$$,10139,THA)` and is therefore not readable from any
+  file, and 1..=4 are the four types), and asks the engine for `string VHA[4]`
+  (the four ammunition names) and `string UHA[5]` (the five gun names).
 - `ASSETS/SCRIPTS/ORDINANCELAYOUT.SCRIPT` builds `object PKA[4]` /
   `object QKA[4]` (four guns, four gun-ammunition dropdowns) and
   `object RKA[8]` (eight rocket-ammunition dropdowns) — so **four gun slots and
   eight rocket slots** on one airframe.
 - `ASSETS/SCRIPTS/GUNS.SCRIPT` offers four gun slots in plane construction;
   `ASSETS/SCRIPTS/HARDPOINTS.SCRIPT` offers **two hardpoint points**.
-- `ASSETS/LAYOUT.CSV` states `V6=GUNS,5` and declares `OL_D_AMMO0..OL_D_AMMO3`.
+- `ASSETS/LAYOUT.CSV` declares `OL_D_AMMO0..OL_D_AMMO3` and a group
+  `V6=GUNS,5`. The group is five entries wide, but the file does not say what
+  the group holds, so it is **not** the decisive evidence for the gun count; the
+  two five-element gun-name arrays above are.
 
 So **four ammunition types, five selectable guns, four gun slots, eight rocket
 slots, two hardpoint points** — each confirmed by at least two independent
-places.
+places, and the five-guns count by two five-element gun-name arrays
+(`string UHA[5]` in the multiplayer screen and `object ZAA[5]` /
+`for(int R=0; R < 5; R++)` in the outlaw gun screen) that ask the engine for
+gun names rather than inferring one.
 
 ### `ASSETS/SCRIPTS/DEBUGINFO.TXT` — the engine's variable dictionary
 

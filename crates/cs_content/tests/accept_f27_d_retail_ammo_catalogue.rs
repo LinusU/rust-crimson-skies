@@ -123,10 +123,36 @@ fn accept_f27_d_retail_the_resource_header_declares_four_ammunition_name_blocks(
         assert!(!label.is_empty(), "block {index} is named in the report");
     }
 
+    // The blocks are **not** equally wide. The first block the header declares
+    // after them bounds the ammunition run, so the gaps between the four bases
+    // are the header's allocation — 10, 5 and 5 — and reading the type count off
+    // a gap would give 10 or 5. The count is four because of the *description*
+    // block's indexing, checked next.
+    let (next_macro, next_base) = MEASURED_NEXT_AMMO_BLOCK_MACRO;
+    let next = define_value(&line_of(&header, next_macro), next_macro);
+    assert_eq!(
+        next, next_base,
+        "{next_macro} declares {next}, not {next_base}: the ammunition block bounds are stale"
+    );
+    let gaps: Vec<u32> = ORIGINAL_AMMO_NAME_BLOCKS
+        .windows(2)
+        .map(|pair| pair[1].0 - pair[0].0)
+        .collect();
+    assert_eq!(
+        gaps,
+        vec![10, 5, 5],
+        "the measured gaps between the ammunition block bases"
+    );
+    let (description_base, _) = ORIGINAL_AMMO_NAME_BLOCKS[3];
+    assert!(
+        description_base + ORIGINAL_AMMUNITION_TYPES <= next,
+        "the four ammunition descriptions end at {} before the next block at {next}",
+        description_base + ORIGINAL_AMMUNITION_TYPES - 1
+    );
+
     // The description block is the one the ammunition screen indexes as
     // `3370 + selection - 1`, so the last description id is 3373 and the count
     // is four. This is the count the audit closes a declared catalogue against.
-    let (description_base, _) = ORIGINAL_AMMO_NAME_BLOCKS[3];
     assert_eq!(description_base, 3370);
     assert_eq!(
         description_base + ORIGINAL_AMMUNITION_TYPES - 1,
@@ -152,7 +178,8 @@ fn accept_f27_d_retail_the_loadout_screens_state_four_ammunition_types() {
     }
     assert_eq!(
         ORIGINAL_SELECTABLE_GUNS, 5,
-        "the GUNS group holds five entries"
+        "two independent five-element gun-name arrays: `string UHA[5]` in the \
+         multiplayer screen and `object ZAA[5]` in the outlaw gun screen"
     );
     assert_eq!(ORIGINAL_GUN_SLOTS, 4, "four gun slots");
     assert_eq!(ORIGINAL_ROCKET_SLOTS, 8, "eight rocket slots");

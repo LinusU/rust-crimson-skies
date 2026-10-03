@@ -3540,13 +3540,16 @@ pub const ORIGINAL_GUN_GROUPS: [GunGroupName; 20] = [
     GunGroupName::new(3080, "NOSETURRET"),
 ];
 
-/// The string-id blocks the original allocates to one ammunition type each.
+/// The string-id blocks the original allocates to its ammunition identity
+/// vocabulary.
 ///
 /// **Measured**: four blocks in [`ORIGINAL_RESOURCE_HEADER`], declared at
-/// `3350`, `3360`, `3365` and `3370`. Each block holds
-/// [`ORIGINAL_AMMUNITION_TYPES`] consecutive ids — the ammunition scripts index
-/// the description block as `3370 + selection - 1` for `selection` in
-/// `1..=4`, which is the same count read a second, independent way.
+/// `3350`, `3360`, `3365` and `3370`. They are **not** equally wide: the next
+/// block the header declares after them is `IDS_ROCKETLONGNAME 3380`, so the
+/// gaps between the four bases are `10`, `5` and `5` ids. Reading a block width
+/// off the bases would give 10 or 5, not
+/// [`ORIGINAL_AMMUNITION_TYPES`] — which is why the type count is measured from
+/// the screens instead (see that constant).
 pub const ORIGINAL_AMMO_NAME_BLOCKS: [(u32, &str); 4] = [
     (3350, "ammo_long_name"),
     (3360, "ammo_short_name"),
@@ -3556,18 +3559,27 @@ pub const ORIGINAL_AMMO_NAME_BLOCKS: [(u32, &str); 4] = [
 
 /// The number of gun ammunition types the original declares.
 ///
-/// **Measured** three independent ways, all in agreement: the four name blocks
-/// above are four ids wide, the multiplayer ammunition screen builds one
-/// dropdown row per hardpoint ammunition entry with a leading header row (five
-/// rows, four types), and the outlaw ammunition screen holds four selectable
-/// entries.
+/// **Measured** from the ammunition screens, three independent ways, all in
+/// agreement: the multiplayer ammunition screen builds one dropdown row per
+/// hardpoint ammunition entry behind a leading header row (five rows, four
+/// types), it iterates `selection` over `1..=4` and indexes the description
+/// block as `3370 + selection - 1`, so the descriptions occupy `3370..=3373`,
+/// and the outlaw ammunition screen holds four selectable entries.
+///
+/// It is deliberately **not** read from the gaps between
+/// [`ORIGINAL_AMMO_NAME_BLOCKS`], which are `10`, `5` and `5`: those measure the
+/// header's block allocation, not the number of types.
 pub const ORIGINAL_AMMUNITION_TYPES: u32 = 4;
 
 /// The number of distinct guns the original lets one loadout choose from.
 ///
-/// **Measured**: the layout file's `GUNS` group holds five entries, the
-/// multiplayer gun screen asks for a five-element gun-name array, and the
-/// outlaw gun screen holds five selectable entries.
+/// **Measured** from two independent places, both of which ask the engine for
+/// gun *names* rather than infer a count: the multiplayer ammunition screen
+/// declares `string UHA[5]` and fills it from the engine's gun-name callback,
+/// and the outlaw gun screen declares `object ZAA[5]` with
+/// `for(int R=0; R < 5; R++)`. The layout file's `GUNS` group is also five
+/// entries wide, but that file does not say what the group holds, so it
+/// corroborates rather than decides.
 pub const ORIGINAL_SELECTABLE_GUNS: u32 = 5;
 
 /// The number of gun slots one airframe's loadout offers.
