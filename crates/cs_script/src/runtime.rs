@@ -220,7 +220,8 @@ pub enum TickError {
 const SEQS_PER_ITEM: u32 = MAX_ACTIONS_PER_OBJECTIVE as u32 + 1;
 
 fn item_sequence(ordinal: u32, action_index: usize) -> Option<u32> {
-    (ordinal + 1)
+    ordinal
+        .checked_add(1)?
         .checked_mul(SEQS_PER_ITEM)?
         .checked_add(action_index as u32 + 1)
 }
@@ -613,8 +614,9 @@ impl MissionState {
     /// work the tick already spent, and dropping one would lose program
     /// instructions.
     fn defer(&mut self, tick: Tick, run: &mut TickRun, source: SymbolId, actions: Vec<Action>) {
-        // `alloc_ordinal` failing is a pathological session; a shared
-        // fallback ordinal only ever degrades event keys, never work.
+        // `alloc_ordinal` failing is a pathological session; the fallback
+        // ordinal overflows `item_sequence`, so the item stops its tick with
+        // `SequenceExhausted` instead of emitting under a colliding key.
         let ordinal = self.alloc_ordinal().unwrap_or(u32::MAX);
         run.ready.push_back(PendingWork {
             source,

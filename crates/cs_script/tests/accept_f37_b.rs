@@ -218,6 +218,53 @@ fn accept_f37_b_budget_stop_resumes_mid_item_without_skip_or_repeat() {
     assert_eq!(s.queued_items(), 0);
 }
 
+/// Resume must not restart an item at action 0: an already-executed
+/// `Schedule` would enqueue a *second* copy of its work item — a duplicate
+/// the event-key dedupe cannot mask, since the copy gets a fresh ordinal.
+#[test]
+fn accept_f37_b_resumed_item_does_not_rerun_completed_schedule() {
+    let p = program(vec![objective(
+        1,
+        vec![Action::Schedule {
+            delay_ticks: 0,
+            actions: vec![
+                Action::Schedule {
+                    delay_ticks: 2,
+                    actions: vec![reward("r-inner")],
+                },
+                reward("r-outer"),
+            ],
+        }],
+    )]);
+    // fire 1 + schedule 1 + dequeue 1 + inner schedule 1 = 4: stops before
+    // the item's second action, with the inner item already stored.
+    let mut s = state(&p, 4, MAX_PENDING_ITEMS);
+    let t1 = s.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
+    assert!(matches!(
+        t1.stop,
+        Some(StopReason::WorkBudget { spent: 4, .. })
+    ));
+    assert_eq!(s.queued_items(), 2, "inner item plus the remainder");
+    let t2 = s.step(&p, &MissionFacts::default(), Tick(2)).unwrap();
+    assert_eq!(
+        reward_events(&t2),
+        [&cid(ContentKind::Blueprint, "r-outer")],
+        "the remainder resumes at action 1, it does not re-schedule"
+    );
+    assert_eq!(s.queued_items(), 1);
+    let t3 = s.step(&p, &MissionFacts::default(), Tick(3)).unwrap();
+    assert_eq!(
+        reward_events(&t3),
+        [&cid(ContentKind::Blueprint, "r-inner")]
+    );
+    let t4 = s.step(&p, &MissionFacts::default(), Tick(4)).unwrap();
+    assert!(
+        reward_events(&t4).is_empty(),
+        "a re-run `Schedule` would have queued a second r-inner for tick 4"
+    );
+    assert_eq!(s.queued_items(), 0);
+}
+
 /// The pending cap is a memory bound: a schedule that cannot enqueue stops
 /// the tick with `PendingLimit`, is retried once space frees and is never
 /// silently dropped.
