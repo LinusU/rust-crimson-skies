@@ -1,10 +1,12 @@
-//! Mutable mission state, stable event ordering, the bounded evaluator and
-//! the pending-work queue (F37-A, F37-B).
+//! Mutable mission state, stable event ordering, the bounded evaluator, the
+//! pending-work queue and the save record (F37-A, F37-B, F37-C).
 //!
 //! Program data is [`crate::ir`]; this module holds the *execution* state and
 //! the pure per-tick resolution that the simulation host drives. The bounded
-//! work budget and the deferred work queue are F37-B; snapshot/restore and
-//! host effect application are F37-C.
+//! work budget and the deferred work queue are F37-B; the versioned
+//! [`MissionStateSnapshot`] that preserves a pending timer's exact remaining
+//! ticks across save/restore is F37-C. Host effect application is the
+//! simulation side (`cs_sim::mission`).
 //!
 //! Phases of one tick (`docs/contracts/SCRIPT-MISSION.md`, "Objective event
 //! ordering"; "actions do not directly recurse into callbacks"):
@@ -36,6 +38,7 @@
 //! is skipped and nothing is repeated.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt;
 
 use cs_types::Tick;
 use cs_types::content::ContentId;
@@ -43,7 +46,7 @@ use cs_types::random::SplitMix64;
 
 use crate::ir::{
     Action, ActorId, ActorState, CompareOp, Condition, MAX_ACTIONS_PER_OBJECTIVE, Outcome,
-    ProgramLocator, SymbolId, ValidatedProgram, Value,
+    ProgramLocator, SymbolId, ValidatedProgram, Value, ValueType,
 };
 
 /// SplitMix64 domain separating the mission evaluator's stream from every
@@ -58,6 +61,20 @@ pub const MAX_WORK_PER_TICK: u64 = 4096;
 /// Default cap on stored scheduled items (contract: "cap memory/time").
 /// A design bound, not a measured original limit.
 pub const MAX_PENDING_ITEMS: usize = 4096;
+
+/// Version of the [`MissionStateSnapshot`] record this crate writes. It is
+/// separate from [`crate::ir::IR_VERSION`] because a save outlives the program
+/// it was taken from: an older record must be refused, never reinterpreted.
+pub const SNAPSHOT_VERSION: u32 = 1;
+
+/// Most `Draw`s a restore will replay to rewind the mission's RNG stream.
+///
+/// `SplitMix64` exposes no state getter (`cs_types::random` is outside this
+/// stage's owner paths), so [`MissionStateSnapshot`] stores how many draws the
+/// session took and a restore re-seeds the same domain-separated stream and
+/// replays them. A design bound on restore work — contract: "cap memory/time"
+/// — and not a measured original limit.
+pub const MAX_RNG_REPLAY_DRAWS: u64 = 1 << 22;
 
 /// The per-tick and queue bounds the evaluator runs under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,6 +230,243 @@ pub enum TickError {
     NotAdvancing { last: Tick, given: Tick },
 }
 
+/// One scheduled work item as the save record sees it.
+///
+/// The record keeps the item's action list, not a reference into the program:
+/// a budget stop defers the *unexecuted suffix* of an action list, so the
+/// resume point cannot be re-derived from program data alone. Program data is
+/// immutable and shared, so carrying the deferred text in the record costs
+/// space and never a second source of truth.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScheduledWork {
+    /// The program symbol the item's events and diagnostics attribute to.
+    pub source: SymbolId,
+    /// Session-unique ordinal that keeps this item's event keys distinct.
+    pub ordinal: u32,
+    /// First tick the item is eligible on.
+    pub due: Tick,
+    /// First action not yet executed.
+    pub next: usize,
+    pub actions: Vec<Action>,
+}
+
+/// One queued item as an observer sees it: when it fires and how much of it is
+/// left. The same view is available on live state
+/// ([`MissionState::pending_timers`]) and on a save record
+/// ([`MissionStateSnapshot::pending_timers`]), so a caller can compare what was
+/// pending before and after a restore.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingTimer {
+    /// The program symbol the item's events attribute to.
+    pub source: SymbolId,
+    /// The tick the item becomes eligible on.
+    pub due: Tick,
+    /// Ticks from the session's last evaluated tick to [`PendingTimer::due`];
+    /// `0` means "eligible on the tick evaluated last", which is what a
+    /// work-budget stop leaves behind.
+    pub remaining: u64,
+    /// First action not yet executed.
+    pub next: usize,
+    /// How many actions the item holds in total.
+    pub actions_total: usize,
+}
+
+impl PendingTimer {
+    /// Actions still to run: a resumed item's tail.
+    pub fn actions_remaining(&self) -> usize {
+        self.actions_total - self.next
+    }
+}
+
+/// Builds one [`PendingTimer`] view from a queue entry and the session's last
+/// evaluated tick.
+fn pending_timer(
+    source: SymbolId,
+    due: Tick,
+    next: usize,
+    actions_total: usize,
+    last_tick: Option<Tick>,
+) -> PendingTimer {
+    let remaining = last_tick.map_or(due.0, |last| due.0.saturating_sub(last.0));
+    PendingTimer {
+        source,
+        due,
+        remaining,
+        next,
+        actions_total,
+    }
+}
+
+/// The gameplay-relevant execution state of one mission session, as one
+/// versioned record (contract, "IR requirements": "state snapshot/restore
+/// must preserve all gameplay-relevant pieces or declare mid-mission save
+/// unsupported").
+///
+/// It carries every piece that can change a later observation: variable
+/// values, the latched objectives, the consumed execution keys, the terminal
+/// state, the last evaluated tick, the whole pending queue in drain order with
+/// its eligibility ticks, the item-ordinal counter and the RNG draw count.
+/// Mid-mission save is therefore supported; nothing is declared unsupported.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MissionStateSnapshot {
+    pub version: u32,
+    /// The mission this state belongs to; a record may only be restored into
+    /// the program that produced it.
+    pub mission: ContentId,
+    pub session: SessionGeneration,
+    /// In `SymbolId` order, which is the live map's own order.
+    pub variables: Vec<(SymbolId, Value)>,
+    /// Latched objectives in `SymbolId` order.
+    pub completed: Vec<SymbolId>,
+    /// Every execution key already emitted, in key order.
+    pub consumed: Vec<ExecutionKey>,
+    pub terminal: TerminalState,
+    /// The last evaluated tick; a restored session still refuses to re-evaluate
+    /// it ([`TickError::NotAdvancing`]).
+    pub last_tick: Option<Tick>,
+    pub policy: PrecedencePolicy,
+    /// The whole pending queue in `(due, enqueue)` order — the exact order a
+    /// drain would rebuild it in.
+    pub pending: Vec<ScheduledWork>,
+    /// Ordinal the next scheduled item will take.
+    pub next_item_ordinal: u32,
+    pub limits: WorkLimits,
+    /// Draws taken from the session's RNG stream.
+    pub rng_draws: u64,
+}
+
+impl MissionStateSnapshot {
+    /// The pending queue as [`PendingTimer`]s, in the same `(due, enqueue)`
+    /// order and relative to the record's own `last_tick`.
+    pub fn pending_timers(&self) -> Vec<PendingTimer> {
+        self.pending
+            .iter()
+            .map(|item| {
+                pending_timer(
+                    item.source,
+                    item.due,
+                    item.next,
+                    item.actions.len(),
+                    self.last_tick,
+                )
+            })
+            .collect()
+    }
+}
+
+/// An internal inconsistency in a save record. The record is data from outside
+/// the process, so every field is checked instead of trusted: restoring a
+/// record that broke these invariants would silently change which events
+/// fire, which is the one thing an execution key exists to prevent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestoreDefect {
+    /// Two queued items share one ordinal, so their event keys can collide and
+    /// the exactly-once guard would swallow one item's events.
+    DuplicateOrdinal { ordinal: u32 },
+    /// An item's ordinal is at or above `next_item_ordinal`, so this session
+    /// never allocated it.
+    OrdinalNotAllocated { ordinal: u32 },
+    /// An item's resume cursor points outside its action list.
+    ActionCursor { next: usize, actions: usize },
+    /// The queue is not in `(due, enqueue)` order, so draining it would not
+    /// reproduce the order the record claims.
+    PendingOrder { previous: Tick, given: Tick },
+    /// A consumed execution key belongs to another session.
+    ForeignExecutionKey { session: SessionGeneration },
+}
+
+/// Why a save record could not be restored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RestoreError {
+    /// The record was written by another snapshot version.
+    SnapshotVersion { found: u32 },
+    /// The record belongs to another mission.
+    MissionMismatch {
+        expected: ContentId,
+        found: ContentId,
+    },
+    /// A variable in the record is not declared by the program.
+    UnknownVariable { symbol: SymbolId },
+    /// A latched objective in the record is not declared by the program.
+    UnknownObjective { symbol: SymbolId },
+    /// A record value's type differs from the program's declaration, so the
+    /// restore would install a value no condition can compare.
+    TypeMismatch {
+        symbol: SymbolId,
+        expected: ValueType,
+        found: ValueType,
+    },
+    /// The record is internally inconsistent.
+    Corrupt { defect: RestoreDefect },
+    /// The session took more draws than [`MAX_RNG_REPLAY_DRAWS`], so rewinding
+    /// its RNG stream would exceed the restore work bound.
+    RngReplayTooLong { draws: u64 },
+}
+
+impl fmt::Display for RestoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SnapshotVersion { found } => {
+                write!(
+                    f,
+                    "snapshot version {found} unsupported (expected {SNAPSHOT_VERSION})"
+                )
+            }
+            Self::MissionMismatch { expected, found } => {
+                write!(f, "snapshot is for {found}, not {expected}")
+            }
+            Self::UnknownVariable { symbol } => {
+                write!(
+                    f,
+                    "snapshot variable #{} is not declared by the program",
+                    symbol.0
+                )
+            }
+            Self::UnknownObjective { symbol } => {
+                write!(
+                    f,
+                    "snapshot objective #{} is not declared by the program",
+                    symbol.0
+                )
+            }
+            Self::TypeMismatch {
+                symbol,
+                expected,
+                found,
+            } => write!(
+                f,
+                "snapshot variable #{} holds {found:?}, program declares {expected:?}",
+                symbol.0
+            ),
+            Self::Corrupt { defect } => match defect {
+                RestoreDefect::DuplicateOrdinal { ordinal } => {
+                    write!(f, "two pending items share ordinal {ordinal}")
+                }
+                RestoreDefect::OrdinalNotAllocated { ordinal } => {
+                    write!(f, "pending item ordinal {ordinal} was never allocated")
+                }
+                RestoreDefect::ActionCursor { next, actions } => {
+                    write!(f, "pending item resumes at action {next} of {actions}")
+                }
+                RestoreDefect::PendingOrder { previous, given } => write!(
+                    f,
+                    "pending queue is not due-ordered: tick {} follows tick {}",
+                    given.0, previous.0
+                ),
+                RestoreDefect::ForeignExecutionKey { session } => {
+                    write!(f, "execution key belongs to session {}", session.0)
+                }
+            },
+            Self::RngReplayTooLong { draws } => write!(
+                f,
+                "{draws} RNG draws exceed the restore replay bound {MAX_RNG_REPLAY_DRAWS}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RestoreError {}
+
 /// Event-key sequence space one pending work item owns. An objective's own
 /// events use `0..=MAX_ACTIONS_PER_OBJECTIVE`; an item's events live above
 /// that, packed by the item's session-unique ordinal, so two items from one
@@ -272,6 +526,9 @@ pub struct MissionState {
     /// The mission's explicit RNG stream, seeded from the session so a replay
     /// of one session reproduces every draw bit-for-bit.
     rng: SplitMix64,
+    /// Draws taken from `rng`; a restore replays them (see
+    /// [`MAX_RNG_REPLAY_DRAWS`]).
+    rng_draws: u64,
 }
 
 impl MissionState {
@@ -295,6 +552,7 @@ impl MissionState {
             next_item_ordinal: 0,
             limits: WorkLimits::default(),
             rng: SplitMix64::for_domain(session.0 as u64, MISSION_EVALUATOR_DOMAIN),
+            rng_draws: 0,
         }
     }
 
@@ -318,6 +576,212 @@ impl MissionState {
 
     pub fn is_completed(&self, objective: SymbolId) -> bool {
         self.completed.contains(&objective)
+    }
+
+    /// The last evaluated tick, or `None` before the session's first step.
+    pub fn last_tick(&self) -> Option<Tick> {
+        self.last_tick
+    }
+
+    /// The pending queue as [`PendingTimer`]s, in `(due, enqueue)` order.
+    /// Each carries the exact remaining ticks of one scheduled item.
+    pub fn pending_timers(&self) -> Vec<PendingTimer> {
+        self.pending
+            .values()
+            .flatten()
+            .map(|item| {
+                pending_timer(
+                    item.source,
+                    item.due,
+                    item.next,
+                    item.actions.len(),
+                    self.last_tick,
+                )
+            })
+            .collect()
+    }
+
+    /// The versioned save record of this state (F37-C). Everything that can
+    /// change a later observation is in it, so
+    /// [`MissionState::restore`] reproduces the session exactly.
+    pub fn snapshot(&self, program: &ValidatedProgram) -> MissionStateSnapshot {
+        let pending = self
+            .pending
+            .values()
+            .flatten()
+            .map(|item| ScheduledWork {
+                source: item.source,
+                ordinal: item.ordinal,
+                due: item.due,
+                next: item.next,
+                actions: item.actions.clone(),
+            })
+            .collect();
+        MissionStateSnapshot {
+            version: SNAPSHOT_VERSION,
+            mission: program.program().mission.clone(),
+            session: self.session,
+            variables: self
+                .variables
+                .iter()
+                .map(|(k, v)| (*k, v.clone()))
+                .collect(),
+            completed: self.completed.iter().copied().collect(),
+            consumed: self.consumed.iter().copied().collect(),
+            terminal: self.terminal,
+            last_tick: self.last_tick,
+            policy: self.policy,
+            pending,
+            next_item_ordinal: self.next_item_ordinal,
+            limits: self.limits,
+            rng_draws: self.rng_draws,
+        }
+    }
+
+    /// Rebuilds execution state from a [`MissionStateSnapshot`].
+    ///
+    /// # Errors
+    ///
+    /// [`RestoreError`]: a foreign, older or internally inconsistent record is
+    /// refused with the precise defect, never partially applied.
+    pub fn restore(
+        program: &ValidatedProgram,
+        snapshot: MissionStateSnapshot,
+    ) -> Result<Self, RestoreError> {
+        if snapshot.version != SNAPSHOT_VERSION {
+            return Err(RestoreError::SnapshotVersion {
+                found: snapshot.version,
+            });
+        }
+        let expected = &program.program().mission;
+        if &snapshot.mission != expected {
+            return Err(RestoreError::MissionMismatch {
+                expected: expected.clone(),
+                found: snapshot.mission.clone(),
+            });
+        }
+        let declared = |symbol: SymbolId| {
+            program
+                .program()
+                .variables
+                .iter()
+                .find(|v| v.id == symbol)
+                .map(|v| v.initial.value_type())
+        };
+        let mut variables = BTreeMap::new();
+        for (symbol, value) in &snapshot.variables {
+            let Some(ty) = declared(*symbol) else {
+                return Err(RestoreError::UnknownVariable { symbol: *symbol });
+            };
+            if value.value_type() != ty {
+                return Err(RestoreError::TypeMismatch {
+                    symbol: *symbol,
+                    expected: ty,
+                    found: value.value_type(),
+                });
+            }
+            variables.insert(*symbol, value.clone());
+        }
+        for symbol in &snapshot.completed {
+            if !program.program().objectives.iter().any(|o| o.id == *symbol) {
+                return Err(RestoreError::UnknownObjective { symbol: *symbol });
+            }
+        }
+        for key in &snapshot.consumed {
+            if key.session != snapshot.session {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::ForeignExecutionKey {
+                        session: key.session,
+                    },
+                });
+            }
+        }
+        if snapshot.rng_draws > MAX_RNG_REPLAY_DRAWS {
+            return Err(RestoreError::RngReplayTooLong {
+                draws: snapshot.rng_draws,
+            });
+        }
+        let mut pending = BTreeMap::new();
+        let mut pending_len = 0usize;
+        let mut seen_ordinals = BTreeSet::new();
+        let mut previous = None;
+        for item in &snapshot.pending {
+            if item.next > item.actions.len() {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::ActionCursor {
+                        next: item.next,
+                        actions: item.actions.len(),
+                    },
+                });
+            }
+            if !seen_ordinals.insert(item.ordinal) {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::DuplicateOrdinal {
+                        ordinal: item.ordinal,
+                    },
+                });
+            }
+            if item.ordinal >= snapshot.next_item_ordinal {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::OrdinalNotAllocated {
+                        ordinal: item.ordinal,
+                    },
+                });
+            }
+            if let Some(before) = previous
+                && before > item.due
+            {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::PendingOrder {
+                        previous: before,
+                        given: item.due,
+                    },
+                });
+            }
+            previous = Some(item.due);
+            pending
+                .entry(item.due)
+                .or_insert_with(VecDeque::new)
+                .push_back(PendingWork {
+                    source: item.source,
+                    ordinal: item.ordinal,
+                    due: item.due,
+                    next: item.next,
+                    actions: item.actions.clone(),
+                });
+            pending_len += 1;
+        }
+        let mut rng = SplitMix64::for_domain(snapshot.session.0 as u64, MISSION_EVALUATOR_DOMAIN);
+        for _ in 0..snapshot.rng_draws {
+            rng.next_u64();
+        }
+        Ok(Self {
+            session: snapshot.session,
+            variables,
+            completed: snapshot.completed.iter().copied().collect(),
+            consumed: snapshot.consumed.iter().copied().collect(),
+            terminal: snapshot.terminal,
+            last_tick: snapshot.last_tick,
+            policy: snapshot.policy,
+            pending,
+            pending_len,
+            next_item_ordinal: snapshot.next_item_ordinal,
+            limits: snapshot.limits,
+            rng,
+            rng_draws: snapshot.rng_draws,
+        })
+    }
+
+    /// Drops every queued work item and returns how many were dropped.
+    ///
+    /// Teardown: once the mission is over, deferred program work must not fire
+    /// on a later tick, and leaving it queued would keep it alive in memory and
+    /// in the save record. Returns the count so a caller can report it.
+    pub fn teardown(&mut self) -> usize {
+        let dropped = self.pending_len;
+        self.pending.clear();
+        self.pending_len = 0;
+        dropped
     }
 
     /// Resolves one tick. See the module docs for the phases and bounds.
@@ -662,6 +1126,7 @@ impl MissionState {
                 // the drawn value is in `[min, max]`, hence in `i32`.
                 let span = (*max as i64 - *min as i64 + 1) as u64;
                 let drawn = (*min as i64 + (self.rng.next_u64() % span) as i64) as i32;
+                self.rng_draws += 1;
                 run.writes.push((*variable, Value::Int(drawn)));
             }
             Action::Finish(outcome) => {
