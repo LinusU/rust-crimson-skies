@@ -22,11 +22,16 @@ use super::math::{add, norm, sub};
 
 /// One passage on a route that a destroyable actor controls.
 ///
-/// While `gate` is [`super::graph::Presence::Intact`] the passage is closed:
-/// a follower may advance only as far as `at_m - stop_before_m`. Destroying
-/// the gate opens the passage permanently — presence is monotonic
-/// (intact to destroyed), so a passage never re-closes and a follower that
-/// legitimately crossed is never pulled back.
+/// While `gate` is [`super::graph::Presence::Intact`] and closed, the
+/// passage is shut: a follower may advance only as far as
+/// `at_m - stop_before_m`. Destroying the gate opens the passage
+/// permanently — presence is monotonic (intact to destroyed), so a passage
+/// never re-closes through destruction and a follower that legitimately
+/// crossed is never pulled back. A scripted
+/// [`super::runtime::WorldActorSet::set_gate_open`] transition may open and
+/// re-close a passage without destroying the gate (F34-C); a close lands
+/// behind a follower that already crossed, capping its further progress
+/// without dragging it back.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RouteGate {
     /// The actor whose presence controls this passage.

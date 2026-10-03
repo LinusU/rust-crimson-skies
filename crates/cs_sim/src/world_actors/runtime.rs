@@ -40,13 +40,13 @@
 //! designed engine contract
 //! (`docs/findings/2026-10-01-f34-a-world-actor-motion-and-dependency.md`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cs_script::ir::{ActorId, SymbolId};
 use cs_types::Tick;
 use cs_types::content::ContentId;
 
-use super::anchor::AnchorSample;
+use super::anchor::{AnchorSample, AnchorSocket, anchor_sample};
 use super::graph::{GraphError, Presence, SupportGraph};
 use super::math::{Quat, add, sub};
 use super::release::{PayloadSpec, ReleasedPayload, release_payload};
@@ -122,6 +122,18 @@ pub enum ActorMotion {
         velocity_m_s: [f64; 3],
         /// World orientation.
         orientation: Quat,
+    },
+    /// Cargo riding a carrier's anchor socket (F34-C): the actor's world
+    /// pose and velocity are the socket's, recomputed from the carrier's
+    /// canonical pose every read, so a carried boat moves exactly with the
+    /// deck that carries it. `socket` must name the carrier
+    /// (`socket.actor == carrier`); a declared socket that cannot is
+    /// refused at registration.
+    Carried {
+        /// The actor whose pose drives this one.
+        carrier: ActorId,
+        /// The carrier's attachment point.
+        socket: AnchorSocket,
     },
 }
 
@@ -244,6 +256,47 @@ pub enum WorldActorError {
     TickOverflow,
     /// The support graph refused an edit.
     Graph(GraphError),
+    /// A `Carried` motion or [`WorldActorSet::attach`] named a carrier the
+    /// set does not have.
+    UnknownCarrier {
+        /// The actor that would be carried.
+        actor: ActorId,
+        /// The unregistered carrier.
+        carrier: ActorId,
+    },
+    /// A `Carried` socket's `actor` field names someone other than the
+    /// carrier — the socket must be the carrier's own attachment point.
+    AnchorOwnerMismatch {
+        /// The actor that would be carried.
+        actor: ActorId,
+        /// The carrier the socket should belong to.
+        carrier: ActorId,
+        /// The actor the socket actually names.
+        socket_owner: ActorId,
+    },
+    /// Attaching `actor` under `carrier` would make the carrier carried by
+    /// its own cargo — the carriage chain must stay acyclic.
+    CarriageCycle {
+        /// The actor that would be carried.
+        actor: ActorId,
+        /// The carrier it would ride.
+        carrier: ActorId,
+    },
+    /// An operation required an intact actor and named a destroyed one.
+    ActorDestroyed {
+        /// The destroyed actor.
+        actor: ActorId,
+    },
+    /// [`WorldActorSet::detach`] named an actor that is not carried.
+    NotCarried {
+        /// The actor that is not cargo.
+        actor: ActorId,
+    },
+    /// An operation named an actor already collected by an external taker.
+    AlreadyCollected {
+        /// The collected actor.
+        actor: ActorId,
+    },
 }
 
 impl From<GraphError> for WorldActorError {
@@ -291,6 +344,17 @@ enum MotionState {
         velocity_m_s: [f64; 3],
         orientation: Quat,
     },
+    /// Riding a carrier's anchor socket; its pose is resolved from the
+    /// carrier's canonical pose on every read, never stepped on its own.
+    Carried {
+        carrier: ActorId,
+        socket: AnchorSocket,
+    },
+    /// Taken aboard by an external taker: the actor keeps its registry id
+    /// and last resolved pose but no longer moves under this set's control.
+    /// The taker owns its presentation from the latch on; the frozen pose
+    /// is where it left the world.
+    Collected(Pose),
 }
 
 /// One registered actor.
@@ -306,10 +370,12 @@ struct WorldActor {
 }
 
 impl WorldActor {
-    /// The live (non-wreck) pose at `tick`.
+    /// The live (non-wreck) pose at `tick` for every motion that owns its
+    /// own state. A `Carried` actor has no pose of its own — it is resolved
+    /// from the carrier by [`WorldActorSet::resolved_live_pose`].
     fn live_pose(&self, tick: Tick) -> Pose {
         match &self.motion {
-            MotionState::Held(pose) => *pose,
+            MotionState::Held(pose) | MotionState::Collected(pose) => *pose,
             MotionState::Trajectory(t) => t.sample(tick),
             MotionState::Route { state, .. } => state.pose,
             MotionState::Free {
@@ -322,6 +388,9 @@ impl WorldActor {
                 velocity_m_s: *velocity_m_s,
                 angular_velocity_rad_s: [0.0; 3],
             },
+            MotionState::Carried { .. } => {
+                unreachable!("a carried pose resolves through the carrier")
+            }
         }
     }
 }
@@ -339,6 +408,11 @@ pub struct WorldActorSet {
     tick: Tick,
     graph: SupportGraph,
     actors: BTreeMap<ActorId, WorldActor>,
+    /// Actors whose declared gate passages are scripted open (F34-C): a
+    /// scripted transition, not destruction, lifts the hold — and a later
+    /// scripted close re-imposes it. Presence stays monotonic: a destroyed
+    /// gate's flag is dead state, its passage open permanently.
+    open_passages: BTreeSet<ActorId>,
 }
 
 impl WorldActorSet {
@@ -357,6 +431,7 @@ impl WorldActorSet {
             tick: Tick(0),
             graph: SupportGraph::default(),
             actors: BTreeMap::new(),
+            open_passages: BTreeSet::new(),
         })
     }
 
@@ -450,6 +525,29 @@ impl WorldActorSet {
                     orientation: *orientation,
                 })
             }
+            ActorMotion::Carried { carrier, socket } => {
+                if socket.actor != *carrier {
+                    return Err(WorldActorError::AnchorOwnerMismatch {
+                        actor: spec.actor,
+                        carrier: *carrier,
+                        socket_owner: socket.actor,
+                    });
+                }
+                if !self.actors.contains_key(carrier) {
+                    return Err(WorldActorError::UnknownCarrier {
+                        actor: spec.actor,
+                        carrier: *carrier,
+                    });
+                }
+                check_finite("offset_m", &socket.offset_m)?;
+                // A cycle is impossible here: the actor being registered is
+                // new, so nothing is carried by it yet. Registering cargo on
+                // a wreck is allowed — it rides the wreck's frozen pose.
+                Ok(MotionState::Carried {
+                    carrier: *carrier,
+                    socket: *socket,
+                })
+            }
             ActorMotion::Route {
                 plan,
                 start_progress_m,
@@ -471,36 +569,34 @@ impl WorldActorSet {
                     if g.gate == spec.actor {
                         return Err(WorldActorError::SelfGate { actor: spec.actor });
                     }
-                    match self.graph.presence(g.gate) {
-                        None => {
-                            return Err(WorldActorError::UnknownGate {
+                    if self.graph.presence(g.gate).is_none() {
+                        return Err(WorldActorError::UnknownGate {
+                            actor: spec.actor,
+                            gate: g.gate,
+                        });
+                    }
+                    // Only a *closed* gate constrains the spawn: a destroyed,
+                    // scripted-open or collected gate never blocks, so a
+                    // fresh spawn may legitimately sit past its stop line.
+                    if self.passage_closed(g.gate) {
+                        if start > g.stop_line_m() {
+                            return Err(WorldActorError::BeyondClosedGate {
                                 actor: spec.actor,
                                 gate: g.gate,
+                                progress_m: start,
+                                stop_line_m: g.stop_line_m(),
                             });
                         }
-                        // An already-destroyed gate never blocks; an intact
-                        // one a fresh spawn may touch but never start past.
-                        Some(Presence::Intact) => {
-                            if start > g.stop_line_m() {
-                                return Err(WorldActorError::BeyondClosedGate {
-                                    actor: spec.actor,
-                                    gate: g.gate,
-                                    progress_m: start,
-                                    stop_line_m: g.stop_line_m(),
-                                });
-                            }
-                            // Gates ascend in `at_m`, so the first match is
-                            // the same nearest gate `classify_route_end`
-                            // reports; taking a later one would emit a
-                            // spurious resume on the first step.
-                            if held_gate.is_none()
-                                && start == g.stop_line_m()
-                                && start < plan.length_m()
-                            {
-                                held_gate = Some(g.gate);
-                            }
+                        // Gates ascend in `at_m`, so the first match is
+                        // the same nearest gate `classify_route_end`
+                        // reports; taking a later one would emit a
+                        // spurious resume on the first step.
+                        if held_gate.is_none()
+                            && start == g.stop_line_m()
+                            && start < plan.length_m()
+                        {
+                            held_gate = Some(g.gate);
                         }
-                        Some(Presence::Destroyed) => {}
                     }
                 }
                 let completed = start >= plan.length_m();
@@ -553,9 +649,67 @@ impl WorldActorSet {
         self.graph.presence(actor)
     }
 
+    /// Whether `gate` currently blocks its declared passages: intact, not
+    /// scripted open and not collected out of the world. A destroyed
+    /// gate's passage is open permanently; a scripted-open one until it
+    /// re-closes; a collected one's owner took it out of the world, so it
+    /// can never hold a follower again.
+    fn passage_closed(&self, gate: ActorId) -> bool {
+        self.graph.presence(gate) == Some(Presence::Intact)
+            && !self.open_passages.contains(&gate)
+            && !matches!(
+                self.actors.get(&gate).map(|a| &a.motion),
+                Some(MotionState::Collected(_))
+            )
+    }
+
+    /// The live pose of `actor` with carriage resolved: walks the
+    /// carried-by chain up to the first actor that owns its pose, then
+    /// folds each socket's [`anchor_sample`] back down the chain. Chains
+    /// are acyclic by construction — registration and [`Self::attach`]
+    /// refuse them — and actors are never removed, so every hop names a
+    /// registered actor. Each link reads the carrier's *current* pose, so
+    /// cargo on a wreck rides the wreck.
+    fn resolved_pose(&self, actor: ActorId) -> Pose {
+        let mut owner = actor;
+        let mut sockets = Vec::new();
+        for _ in 0..self.actors.len() {
+            let record = self
+                .actors
+                .get(&owner)
+                .expect("carriage chains only name registered actors");
+            let MotionState::Carried { carrier, socket } = &record.motion else {
+                break;
+            };
+            sockets.push(*socket);
+            owner = *carrier;
+        }
+        let base = self
+            .actors
+            .get(&owner)
+            .expect("carriage chains only name registered actors");
+        let mut pose = base
+            .destroyed_pose
+            .unwrap_or_else(|| base.live_pose(self.tick));
+        for socket in sockets.iter().rev() {
+            let anchor = anchor_sample(self.tick, &pose, socket);
+            pose = Pose {
+                position_m: anchor.position_m,
+                orientation: anchor.orientation,
+                velocity_m_s: anchor.velocity_m_s,
+                // The socket turns with the carrier, so the carried actor's
+                // angular velocity is the carrier's, re-derived each read.
+                angular_velocity_rad_s: pose.angular_velocity_rad_s,
+            };
+        }
+        pose
+    }
+
     /// The canonical pose of `actor` at the set's current tick — the same
     /// value `anchor_sample` turns into the pose the renderer and pickup
-    /// eligibility share.
+    /// eligibility share. For a carried actor this is the socket anchor on
+    /// the carrier's canonical pose, resolved the same way the renderer
+    /// resolves it.
     ///
     /// # Errors
     ///
@@ -565,7 +719,8 @@ impl WorldActorSet {
             .actors
             .get(&actor)
             .ok_or(WorldActorError::UnknownActor(actor))?;
-        Ok(a.destroyed_pose.unwrap_or_else(|| a.live_pose(self.tick)))
+        Ok(a.destroyed_pose
+            .unwrap_or_else(|| self.resolved_pose(actor)))
     }
 
     /// The catalog kind of `actor`.
@@ -647,16 +802,26 @@ impl WorldActorSet {
     /// pose; each intact gate it removes unblocks every follower it held on
     /// the next step. Returns the cascade in the graph's breadth order.
     ///
+    /// Every wreck pose is resolved against the still-live set first, so a
+    /// carried actor freezes at the socket of its carrier's pre-destruction
+    /// pose even when the carrier falls in the same cascade.
+    ///
     /// # Errors
     ///
     /// [`WorldActorError::Graph`] wrapping [`GraphError::UnknownActor`].
     pub fn destroy(&mut self, actor: ActorId) -> Result<Vec<ActorId>, WorldActorError> {
         let lost = self.graph.destroy(actor)?;
-        for &a in &lost {
-            if let Some(record) = self.actors.get_mut(&a) {
-                let mut wreck = record.live_pose(self.tick);
+        let wrecks: Vec<(ActorId, Pose)> = lost
+            .iter()
+            .map(|&a| {
+                let mut wreck = self.resolved_pose(a);
                 wreck.velocity_m_s = [0.0; 3];
                 wreck.angular_velocity_rad_s = [0.0; 3];
+                (a, wreck)
+            })
+            .collect();
+        for (a, wreck) in wrecks {
+            if let Some(record) = self.actors.get_mut(&a) {
                 record.destroyed_pose = Some(wreck);
                 if let MotionState::Route { state, .. } = &mut record.motion {
                     state.held_gate = None;
@@ -709,6 +874,226 @@ impl WorldActorSet {
         Ok(payload)
     }
 
+    /// Latches `actor` onto `carrier`'s anchor socket: from this call its
+    /// canonical pose and velocity are the socket's, recomputed against the
+    /// carrier each read — the pickup half of the F34-C cargo wiring.
+    /// Re-latching to a different carrier or socket moves the binding.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldActorError::UnknownActor`] / [`UnknownCarrier`](WorldActorError::UnknownCarrier)
+    /// for unregistered ids, [`ActorDestroyed`](WorldActorError::ActorDestroyed)
+    /// when either side is a wreck, [`AlreadyCollected`](WorldActorError::AlreadyCollected)
+    /// when `actor` already left the world,
+    /// [`AnchorOwnerMismatch`](WorldActorError::AnchorOwnerMismatch) when the
+    /// socket does not belong to `carrier`,
+    /// [`CarriageCycle`](WorldActorError::CarriageCycle) when `carrier` is
+    /// transitively carried by `actor`, or
+    /// [`NonFinite`](WorldActorError::NonFinite) on a non-finite offset.
+    /// Returns the socket's anchor sample at the latch tick.
+    pub fn attach(
+        &mut self,
+        actor: ActorId,
+        carrier: ActorId,
+        socket: AnchorSocket,
+    ) -> Result<AnchorSample, WorldActorError> {
+        let record = self
+            .actors
+            .get(&actor)
+            .ok_or(WorldActorError::UnknownActor(actor))?;
+        if record.destroyed_pose.is_some() {
+            return Err(WorldActorError::ActorDestroyed { actor });
+        }
+        if matches!(record.motion, MotionState::Collected(_)) {
+            return Err(WorldActorError::AlreadyCollected { actor });
+        }
+        if socket.actor != carrier {
+            return Err(WorldActorError::AnchorOwnerMismatch {
+                actor,
+                carrier,
+                socket_owner: socket.actor,
+            });
+        }
+        let carrier_record = self
+            .actors
+            .get(&carrier)
+            .ok_or(WorldActorError::UnknownCarrier { actor, carrier })?;
+        if carrier_record.destroyed_pose.is_some() {
+            return Err(WorldActorError::ActorDestroyed { actor: carrier });
+        }
+        if matches!(carrier_record.motion, MotionState::Collected(_)) {
+            return Err(WorldActorError::AlreadyCollected { actor: carrier });
+        }
+        check_finite("offset_m", &socket.offset_m)?;
+        // The carriage chain must stay acyclic: refuse when the carrier is
+        // transitively carried by the actor — `attach` would make cargo
+        // carry its own carrier.
+        let mut link = carrier;
+        for _ in 0..self.actors.len() {
+            if link == actor {
+                return Err(WorldActorError::CarriageCycle { actor, carrier });
+            }
+            let MotionState::Carried { carrier: next, .. } = &self
+                .actors
+                .get(&link)
+                .expect("carriage chains only name registered actors")
+                .motion
+            else {
+                break;
+            };
+            link = *next;
+        }
+        self.actors.get_mut(&actor).expect("checked above").motion =
+            MotionState::Carried { carrier, socket };
+        let carrier_pose = self.resolved_pose(carrier);
+        Ok(anchor_sample(self.tick, &carrier_pose, &socket))
+    }
+
+    /// Lets a carried actor go: `actor` leaves its carrier's socket and
+    /// drifts on the socket's velocity plus the authored ejection, keeping
+    /// the faction and objective it was registered with — the boat a
+    /// carrier releases, AC03. Returns the release kinematics.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldActorError::UnknownActor`], [`ActorDestroyed`](WorldActorError::ActorDestroyed),
+    /// [`NotCarried`](WorldActorError::NotCarried) when `actor` does not ride
+    /// a socket, or [`NonFinite`](WorldActorError::NonFinite) on a
+    /// non-finite ejection.
+    pub fn detach(
+        &mut self,
+        actor: ActorId,
+        eject_m_s: [f64; 3],
+    ) -> Result<ReleasedPayload, WorldActorError> {
+        let record = self
+            .actors
+            .get(&actor)
+            .ok_or(WorldActorError::UnknownActor(actor))?;
+        if record.destroyed_pose.is_some() {
+            return Err(WorldActorError::ActorDestroyed { actor });
+        }
+        let MotionState::Carried { carrier, socket } = &record.motion else {
+            return Err(WorldActorError::NotCarried { actor });
+        };
+        let (carrier, socket) = (*carrier, *socket);
+        check_finite("eject_m_s", &eject_m_s)?;
+        let carrier_pose = self.resolved_pose(carrier);
+        let anchor = anchor_sample(self.tick, &carrier_pose, &socket);
+        let record = self.actors.get_mut(&actor).expect("checked above");
+        let payload = release_payload(
+            &anchor,
+            PayloadSpec {
+                actor,
+                faction: record.faction.clone(),
+                objective: record.objective,
+                eject_m_s,
+            },
+        );
+        check_finite("position_m", &payload.position_m)?;
+        check_finite("velocity_m_s", &payload.velocity_m_s)?;
+        record.motion = MotionState::Free {
+            position_m: payload.position_m,
+            velocity_m_s: payload.velocity_m_s,
+            orientation: anchor.orientation,
+        };
+        Ok(payload)
+    }
+
+    /// Marks `actor` collected by an external taker — the pickup completion
+    /// for a cargo or passenger item the player's own craft takes aboard.
+    /// The actor keeps its registry id (ids are never reused) and freezes
+    /// at the pose it left the world at; the taker owns it from there.
+    /// A collected gate can never hold a follower again.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldActorError::UnknownActor`], [`ActorDestroyed`](WorldActorError::ActorDestroyed)
+    /// or [`AlreadyCollected`](WorldActorError::AlreadyCollected). Returns
+    /// the pose it left the world at.
+    pub fn collect(&mut self, actor: ActorId) -> Result<Pose, WorldActorError> {
+        let record = self
+            .actors
+            .get(&actor)
+            .ok_or(WorldActorError::UnknownActor(actor))?;
+        if record.destroyed_pose.is_some() {
+            return Err(WorldActorError::ActorDestroyed { actor });
+        }
+        if matches!(record.motion, MotionState::Collected(_)) {
+            return Err(WorldActorError::AlreadyCollected { actor });
+        }
+        let pose = self.resolved_pose(actor);
+        self.actors.get_mut(&actor).expect("checked above").motion = MotionState::Collected(pose);
+        Ok(pose)
+    }
+
+    /// The scripted gate transition (F34-C): `open` lifts the hold `gate`'s
+    /// declared passages impose without destroying it, and a later close
+    /// re-imposes it on followers that have not yet crossed — never on one
+    /// that legitimately passed while open. The flag is dead state on a
+    /// destroyed gate: presence is monotonic, so that passage stays open.
+    /// Returns whether the open state actually changed.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldActorError::UnknownActor`].
+    pub fn set_gate_open(&mut self, gate: ActorId, open: bool) -> Result<bool, WorldActorError> {
+        if !self.actors.contains_key(&gate) {
+            return Err(WorldActorError::UnknownActor(gate));
+        }
+        Ok(if open {
+            self.open_passages.insert(gate)
+        } else {
+            self.open_passages.remove(&gate)
+        })
+    }
+
+    /// The carrier and socket `actor` rides, when it is carried.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldActorError::UnknownActor`].
+    pub fn carried_by(
+        &self,
+        actor: ActorId,
+    ) -> Result<Option<(ActorId, AnchorSocket)>, WorldActorError> {
+        match &self
+            .actors
+            .get(&actor)
+            .ok_or(WorldActorError::UnknownActor(actor))?
+            .motion
+        {
+            MotionState::Carried { carrier, socket } => Ok(Some((*carrier, *socket))),
+            _ => Ok(None),
+        }
+    }
+
+    /// Whether `actor` was collected by an external taker.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldActorError::UnknownActor`].
+    pub fn is_collected(&self, actor: ActorId) -> Result<bool, WorldActorError> {
+        Ok(matches!(
+            self.actors
+                .get(&actor)
+                .ok_or(WorldActorError::UnknownActor(actor))?
+                .motion,
+            MotionState::Collected(_)
+        ))
+    }
+
+    /// Whether `gate`'s declared passages are scripted open.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldActorError::UnknownActor`].
+    pub fn gate_open(&self, gate: ActorId) -> Result<bool, WorldActorError> {
+        if !self.actors.contains_key(&gate) {
+            return Err(WorldActorError::UnknownActor(gate));
+        }
+        Ok(self.open_passages.contains(&gate))
+    }
+
     /// Advances the set exactly one tick and returns the transitions that
     /// tick produced, in actor-id order.
     ///
@@ -723,6 +1108,19 @@ impl WorldActorSet {
             .ok_or(WorldActorError::TickOverflow)?;
         self.tick = Tick(next);
         let dt = self.dt_seconds();
+        // Which gates block this tick: presence, scripted opens and
+        // collections are all caller-invoked, so the snapshot one step
+        // takes cannot change while it runs.
+        let closed_gates: BTreeSet<ActorId> = self
+            .actors
+            .values()
+            .filter_map(|a| match &a.motion {
+                MotionState::Route { plan, .. } => Some(plan.gates().iter().map(|g| g.gate)),
+                _ => None,
+            })
+            .flatten()
+            .filter(|&g| self.passage_closed(g))
+            .collect();
         let mut events = Vec::new();
         let ids: Vec<ActorId> = self.actors.keys().copied().collect();
         for id in ids {
@@ -734,7 +1132,10 @@ impl WorldActorSet {
                 .get_mut(&id)
                 .expect("registry and graph cannot disagree");
             match &mut actor.motion {
-                MotionState::Held(_) | MotionState::Trajectory(_) => {}
+                MotionState::Held(_)
+                | MotionState::Trajectory(_)
+                | MotionState::Carried { .. }
+                | MotionState::Collected(_) => {}
                 MotionState::Free {
                     position_m,
                     velocity_m_s,
@@ -744,15 +1145,24 @@ impl WorldActorSet {
                 }
                 MotionState::Route { plan, state } => {
                     let old_pose = state.pose;
+                    // Only a closed stop line at or ahead of the follower
+                    // constrains it. A scripted close may land behind a
+                    // follower that legitimately crossed while the passage
+                    // was open: that gate's line no longer applies — the
+                    // follower is neither pulled back nor pinned where it
+                    // crossed.
                     let limit = plan
                         .gates()
                         .iter()
-                        .filter(|g| self.graph.presence(g.gate) == Some(Presence::Intact))
+                        .filter(|g| closed_gates.contains(&g.gate))
                         .map(super::route::RouteGate::stop_line_m)
+                        .filter(|stop_line_m| *stop_line_m >= state.progress_m)
                         .fold(f64::INFINITY, f64::min);
                     let new_progress = (state.progress_m + plan.speed_m_s() * dt)
                         .min(limit)
-                        .min(plan.length_m());
+                        .min(plan.length_m())
+                        // Progress never regresses, whatever the clamps say.
+                        .max(state.progress_m);
                     state.progress_m = new_progress;
                     let position_m = plan.position_at(new_progress);
                     let orientation =
@@ -772,7 +1182,7 @@ impl WorldActorSet {
                     };
                     Self::classify_route_end(
                         &mut events,
-                        &self.graph,
+                        &closed_gates,
                         id,
                         self.tick,
                         plan,
@@ -790,7 +1200,7 @@ impl WorldActorSet {
     /// re-emitted while it continues.
     fn classify_route_end(
         events: &mut Vec<WorldActorEvent>,
-        graph: &SupportGraph,
+        closed_gates: &BTreeSet<ActorId>,
         actor: ActorId,
         at: Tick,
         plan: &RoutePlan,
@@ -808,11 +1218,11 @@ impl WorldActorSet {
             }
             return;
         }
-        // Held exactly when progress sits on an intact gate's stop line.
+        // Held exactly when progress sits on a closed gate's stop line.
         let held = if limit.is_finite() && new_progress == limit {
             plan.gates()
                 .iter()
-                .filter(|g| graph.presence(g.gate) == Some(Presence::Intact))
+                .filter(|g| closed_gates.contains(&g.gate))
                 .filter(|g| g.stop_line_m() == limit)
                 .min_by(|a, b| {
                     a.at_m

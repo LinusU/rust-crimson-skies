@@ -28,6 +28,13 @@
 //!   as zero-velocity wrecks and registers released payloads as free
 //!   drifting actors. Its `step` takes no visibility input: offscreen
 //!   motion, destruction and timers cannot stop because nobody looks.
+//!   F34-C adds the mission-facing transitions the same registry owns:
+//!   [`runtime::WorldActorSet::set_gate_open`] for scripted gate
+//!   open/close (which may re-close, unlike destruction),
+//!   [`runtime::WorldActorSet::attach`] / [`runtime::WorldActorSet::detach`]
+//!   for cargo riding a carrier's anchor socket, and
+//!   [`runtime::WorldActorSet::collect`] for a pickup target an external
+//!   taker takes out of the world.
 
 pub mod anchor;
 pub mod graph;
