@@ -43,6 +43,20 @@
 //!   ([`MeshPresentationUnknown`]). The payload borrows nothing, so a catalog
 //!   and its session can be dropped while it is in flight.
 //!
+//! * **the node side of the same container.** A scene node's stored
+//!   `mesh_index` is the only address a mesh has, and the mesh index is
+//!   **non-sequential**, so the slot a node names is not its position in a
+//!   compact list of the meshes that are there. [`MeshContainer::node_bindings`]
+//!   pairs a caller-supplied [`GameZNodes`] with this container's mesh array and
+//!   reports every node whose index names no present mesh, distinguishing a slot
+//!   **inside** the array holding an all-zero stub from an index **past** it.
+//!   The node array is an argument rather than a field because
+//!   [`MeshContainer::open`] reads the mesh and material sections — F10-B's and
+//!   F10-C.02's — while the node section is F11's. A caller that holds the nodes
+//!   pairs them here, at the seam that owns the mesh array, and
+//!   [`MeshContainer::blocked`] joins the two halves into one list, so node and
+//!   mesh problems are read together rather than fetched from two readers.
+//!
 //! # Splitting
 //!
 //! One [`RenderVertex`] exists per distinct
@@ -201,8 +215,8 @@ use cs_assets::zbd::{ZbdContainer, ZbdError};
 use cs_formats::ParseContext;
 use cs_formats::gamez::materials::{GameZMaterialError, GameZMaterials, MaterialKind, RawMaterial};
 use cs_formats::gamez::{
-    FaceStatus, GameZError, GameZHeader, GameZMeshes, MeshTopology, RawMaterialGroup, RawMesh,
-    RawPolygon, read_gamez_materials, read_gamez_meshes,
+    FaceStatus, GameZError, GameZHeader, GameZMeshes, GameZNodes, MeshTopology, NodeMeshBindings,
+    RawMaterialGroup, RawMesh, RawPolygon, read_gamez_materials, read_gamez_meshes,
 };
 use cs_formats::zbd::ZbdFamily;
 use cs_types::asset_id::{AssetKey, AssetVariant, MountId, SourceSpan};
@@ -2981,6 +2995,45 @@ impl MeshContainer {
         &self.audit
     }
 
+    /// Which of this container's mesh-array slots the given node array names,
+    /// and every node whose `mesh_index` names no present mesh.
+    ///
+    /// The node array is an argument because the node reader is a **separate**
+    /// reader that does not hold this mesh section, and this container does not
+    /// read the node section: the mesh rows and the material audit are built
+    /// from the two sections F10-B and F10-C.02 own, while the hierarchy is
+    /// F11's. So a caller holding the nodes — F11's own import, or a survey —
+    /// pairs them here, at the seam that holds the mesh array, and the check
+    /// itself is [`NodeMeshBindings::of`] in `cs_formats::gamez`.
+    ///
+    /// An **absent** slot and an **out-of-range** one are different facts about
+    /// the container and are reported as different codes.
+    #[must_use]
+    pub fn node_bindings(&self, nodes: &GameZNodes) -> NodeMeshBindings {
+        self.meshes.node_bindings(nodes)
+    }
+
+    /// Every problem this container's own bytes report: the audit's blocked
+    /// material rows followed by the node-array findings from `bindings`, in
+    /// stored node order.
+    ///
+    /// One list, so a caller sees node and mesh problems together instead of
+    /// having to remember which of the two readers each one came from. Both are
+    /// **reports**, not refusals: a container that produced a render mesh is not
+    /// failed by anything in here, and a caller that needs the codes rather
+    /// than the prose reads [`Self::node_bindings`] and [`Self::audit`].
+    #[must_use]
+    pub fn blocked(&self, bindings: &NodeMeshBindings) -> Vec<String> {
+        let mut lines = self.audit.blocked.clone();
+        lines.extend(
+            bindings
+                .findings
+                .iter()
+                .map(|finding| format!("node {}: {finding}", finding.node)),
+        );
+        lines
+    }
+
     /// The identity of the mesh at array position `index`, whether or not that
     /// slot is present. The identity is a property of the container and the
     /// position, not of the render mesh, so a failed slot still has one.
@@ -4456,7 +4509,8 @@ mod tests {
     use cs_formats::gamez::reader::{MeshIndex, RawMaterialGroup, RawMeshInfo};
     use cs_formats::gamez::{
         CORNER_COUNT_MASK, FLAG_NORMALS, FLAG_SHIFT, FLAG_TRIANGLE_STRIP, GameZHeader, GameZMesh,
-        GameZMeshes, NG_MATERIAL_SLOTS, RawMeshMaterialInfo,
+        GameZMeshes, GameZNodes, MeshSlotIssue, NG_MATERIAL_SLOTS, NODE_INDEX_TOP, NODE_SLOT_BYTES,
+        OBJECT3D_DATA_BYTES, OBJECT3D_FLAGS_IDENTITY, RawMeshMaterialInfo,
     };
     use cs_formats::texture::zbd::{
         FLAG_BYTES_PER_PIXEL2, FLAG_NO_ALPHA, ZBD_TEXTURE_HEADER_BYTES,
@@ -5931,6 +5985,251 @@ mod tests {
 
     fn textures_offset() -> u32 {
         cs_formats::gamez::GAMEZ_HEADER_BYTES as u32
+    }
+
+    // -------------------------------------- the node array, for F10-C.05 ---
+
+    /// One scene node to append to a fixture container: a name and the
+    /// `mesh_index` it stores. The record is an **object** node holding the
+    /// identity transform, which is what the measured corpus stores for a
+    /// geometry node.
+    struct StoredNode {
+        name: &'static str,
+        mesh_index: i32,
+    }
+
+    impl StoredNode {
+        const fn named(name: &'static str, mesh_index: i32) -> Self {
+            Self { name, mesh_index }
+        }
+    }
+
+    /// [`gamez_container_with`]'s bytes plus the node array F10-C.05's
+    /// cross-section check needs, laid out where the layout puts it: the
+    /// header's `nodes_offset` is exactly where the mesh data ends, so the node
+    /// info array starts there and its data section runs to the container's end.
+    ///
+    /// The header's `node_array_size` word is rewritten, because
+    /// [`gamez_container_with`] leaves it zero for the F10-C.03 fixtures and the
+    /// node reader refuses an empty array outright.
+    ///
+    /// The material table is one record naming texture `sky`, which the world's
+    /// own texture archive stores, so the audit these fixtures pair with has
+    /// nothing to say and every line of the joined list is a node finding.
+    fn gamez_container_with_nodes(
+        meshes: &[Result<StoredMesh, ()>],
+        nodes: &[StoredNode],
+    ) -> Vec<u8> {
+        assert!(!nodes.is_empty(), "an empty node array is refused outright");
+        let mut bytes = gamez_container(&["sky"], 1, meshes);
+        let nodes_offset = u32::try_from(bytes.len()).expect("a fixture this large is not one");
+        bytes[28..32].copy_from_slice(
+            &u32::try_from(nodes.len())
+                .expect("the fixture array fits")
+                .to_le_bytes(),
+        );
+
+        let slot_bytes = NODE_SLOT_BYTES as usize;
+        let mut data_offset = nodes_offset as usize + slot_bytes * nodes.len();
+        let mut data_offsets = Vec::with_capacity(nodes.len());
+        for _ in nodes {
+            data_offsets.push(data_offset as u32);
+            data_offset += OBJECT3D_DATA_BYTES as usize;
+        }
+        bytes.resize(data_offset, 0);
+
+        // Field offsets are the ones the reader reads them at, so nothing here
+        // depends on a hand-computed layout.
+        let word = |bytes: &mut Vec<u8>, at: usize, value: u32| {
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        };
+        let half = |bytes: &mut Vec<u8>, at: usize, value: u16| {
+            bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
+        };
+        let float = |bytes: &mut Vec<u8>, at: usize, value: f32| {
+            bytes[at..at + 4].copy_from_slice(&value.to_bits().to_le_bytes());
+        };
+        for (index, node) in nodes.iter().enumerate() {
+            let at = nodes_offset as usize + slot_bytes * index;
+            let name = node.name.as_bytes();
+            assert!(
+                name.len() < 36,
+                "the fixture's names fit their 36-byte field"
+            );
+            bytes[at..at + name.len()].copy_from_slice(name);
+            word(&mut bytes, at + 44, 1); // unk044
+            word(&mut bytes, at + 52, 5); // node_type: Object3d
+            word(&mut bytes, at + 56, data_offsets[index]);
+            word(&mut bytes, at + 60, node.mesh_index as u32);
+            word(&mut bytes, at + 68, 1); // action_priority
+            half(&mut bytes, at + 84, 0); // parent_count
+            half(&mut bytes, at + 86, 0); // children_count
+            word(&mut bytes, at + 196, 160); // unk196
+            word(&mut bytes, at + 208, NODE_INDEX_TOP | index as u32);
+
+            // The object record: the identity transform the reference asserts
+            // for `flags == 40`, with the matrix that identity derives.
+            let record = data_offsets[index] as usize;
+            word(&mut bytes, record, OBJECT3D_FLAGS_IDENTITY);
+            for axis in 0..3 {
+                float(&mut bytes, record + 24 + 4 * axis, 0.0); // rotation
+                float(&mut bytes, record + 36 + 4 * axis, 1.0); // scale
+                float(&mut bytes, record + 48 + 16 * axis, 1.0); // matrix diagonal
+                float(&mut bytes, record + 84 + 4 * axis, 0.0); // translation
+            }
+        }
+        bytes
+    }
+
+    /// Reads a fixture container's node array with the production node reader.
+    fn read_nodes(bytes: &[u8]) -> GameZNodes {
+        cs_formats::gamez::read_gamez_nodes(
+            &mut cs_formats::ParseContext::with_defaults("ZBD/c1/gamez.zbd"),
+            bytes,
+        )
+        .expect("the fixture's node array reads")
+    }
+
+    /// The one list a caller sees node and mesh problems in: the container's own
+    /// `blocked` over the bindings its mesh array gives.
+    ///
+    /// The container here stores two present meshes and one absent stub, and its
+    /// node array names slot 0 (present), slot 2 (the all-zero stub) and an
+    /// index past the four-slot array. The material side is untouched, so every
+    /// line is a node finding and the list is exactly them.
+    ///
+    /// A caller that had to remember that one list came from the mesh section
+    /// and the other from the node reader would be doing bookkeeping this
+    /// replaces, and the codes are on
+    /// [`MeshContainer::node_bindings`] for anyone who needs them rather than
+    /// the prose.
+    #[test]
+    fn accept_f10_c_05_the_container_reports_node_and_mesh_problems_in_one_list() {
+        let tree = Tree::world(&["sky"], &[]);
+        let bytes = gamez_container_with_nodes(
+            &[
+                Ok(seam_mesh()),
+                Ok(seam_mesh()),
+                Err(()),
+                Ok(StoredMesh::new(block(0.0, 1), Vec::new(), vec![])),
+            ],
+            &[
+                StoredNode::named("present", 0),
+                StoredNode::named("stub", 2),
+                StoredNode::named("past_the_array", 9),
+            ],
+        );
+        tree.write("ZBD/c1/gamez.zbd", &bytes);
+
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        let archive = texture_key();
+        let catalog = MeshCatalog::open(
+            &session,
+            &[gamez_key()],
+            &seam_dependencies(&textures, &archive),
+        );
+        assert_eq!(
+            catalog.failures().count(),
+            0,
+            "the fixture container opens: {:?}",
+            catalog
+                .failures()
+                .map(|(k, e)| (k.clone(), e.code().to_owned(), e.to_string()))
+                .collect::<Vec<_>>()
+        );
+        let container = catalog.containers().next().expect("one container");
+
+        let nodes = read_nodes(&bytes);
+        assert_eq!(nodes.nodes.len(), 3);
+        let bindings = container.node_bindings(&nodes);
+        assert_eq!(bindings.slots, 4, "the container's four mesh-array slots");
+        assert_eq!(bindings.bound, 3, "three of the nodes store an index");
+        assert_eq!(bindings.resolved, 1, "only slot 0 stores a mesh");
+        assert_eq!(bindings.findings.len(), 2);
+        assert_eq!(bindings.findings[0].node, 1);
+        assert_eq!(
+            bindings.findings[0].issue,
+            MeshSlotIssue::Absent { slot: 2 }
+        );
+        assert_eq!(bindings.findings[1].node, 2);
+        assert_eq!(
+            bindings.findings[1].issue,
+            MeshSlotIssue::OutOfRange { slot: 9, slots: 4 }
+        );
+
+        // One list, both causes, in stored node order, each naming its node.
+        let blocked = container.blocked(&bindings);
+        assert_eq!(
+            blocked.len(),
+            2,
+            "node and mesh problems together: {blocked:?}"
+        );
+        assert!(blocked[0].contains("node 1"), "{blocked:?}");
+        assert!(blocked[0].contains("mesh_slot_absent"), "{blocked:?}");
+        assert!(blocked[1].contains("node 2"), "{blocked:?}");
+        assert!(blocked[1].contains("mesh_slot_out_of_range"), "{blocked:?}");
+
+        // The check is a **report**: the container still opened, its meshes are
+        // still rows, and nothing here failed a catalog row.
+        assert_eq!(catalog.records().len(), 3, "three present meshes are rows");
+        assert_eq!(container.meshes().present_count(), 3);
+        assert!(
+            container.audit().blocked.is_empty(),
+            "the material half has nothing to say: {:?}",
+            container.audit().blocked
+        );
+    }
+
+    /// The container that reports node findings is the same container whose
+    /// material audit reports its own, and a caller that has **no** node array
+    /// still gets the material half: the two lists are joined, not interlocked.
+    ///
+    /// This is the case that keeps the seam honest. `MeshContainer::open` reads
+    /// the mesh and material sections — F10-C.02's and F10-B's — and not the
+    /// node section, which is F11's; so a catalog built without nodes must be
+    /// exactly as it was, and `blocked` must be reachable with no nodes at all
+    /// by passing the empty verdict.
+    #[test]
+    fn accept_f10_c_05_the_node_half_is_additive_to_the_material_audit() {
+        let tree = Tree::world(&["sky"], &[]);
+        tree.write("ZBD/c1/gamez.zbd", &seam_container());
+
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        let archive = texture_key();
+        let catalog = MeshCatalog::open(
+            &session,
+            &[gamez_key()],
+            &seam_dependencies(&textures, &archive),
+        );
+        let container = catalog.containers().next().expect("one container");
+
+        // The fixture's material 1 names `Sky1.tif`, which the world's archive
+        // does not store, so the audit has a blocked row of its own.
+        let audit_lines = container.audit().blocked.clone();
+        assert!(
+            audit_lines.iter().any(|line| line.contains("Sky1.tif")),
+            "the material half is unchanged: {audit_lines:?}"
+        );
+
+        // With no node array, there is no node half, and the joined list is
+        // exactly the material half it always was.
+        let empty = NodeMeshBindings::default();
+        assert_eq!(container.blocked(&empty), audit_lines);
+        assert!(
+            container
+                .node_bindings(&GameZNodes {
+                    header: container.meshes().header,
+                    nodes: Vec::new(),
+                    info_offset: 0,
+                    info_end: 0,
+                    data_offset: 0,
+                    data_end: 0,
+                    findings: Vec::new(),
+                })
+                .is_complete()
+        );
     }
 
     /// `count` distinct `Vec3`s from one **named block**, so the positions and

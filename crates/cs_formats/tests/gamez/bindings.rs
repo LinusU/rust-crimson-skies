@@ -16,8 +16,8 @@
 use cs_formats::ParseContext;
 use cs_formats::gamez::reader::Fixup;
 use cs_formats::gamez::{
-    GameZMeshes, GameZNodeError, GameZNodes, MeshSlotIssue, NodeMeshBindings, NodeMeshFinding,
-    NODE_INDEX_TOP, NODE_SLOT_BYTES, OBJECT3D_DATA_BYTES, OBJECT3D_FLAGS_IDENTITY, UNK08_PLANES,
+    GameZMeshes, GameZNodeError, GameZNodes, MeshSlotIssue, NODE_INDEX_TOP, NODE_SLOT_BYTES,
+    NodeMeshBindings, NodeMeshFinding, OBJECT3D_DATA_BYTES, OBJECT3D_FLAGS_IDENTITY, UNK08_PLANES,
     read_gamez_meshes, read_gamez_nodes,
 };
 
@@ -51,8 +51,8 @@ impl NodeSpec {
     }
 }
 
-/// The bytes of one container's node section — `node_array_size` × (a 212-byte
-/// info slot) followed by the data section — **not** including the mesh bytes
+/// The bytes of one container's node section, which is `node_array_size` times a
+/// 212-byte info slot followed by the data section. It excludes the mesh bytes
 /// that precede it, so it can be appended to a container laid out by
 /// [`authored_container`].
 ///
@@ -61,10 +61,10 @@ impl NodeSpec {
 /// the way out.
 ///
 /// Field offsets are the ones the reader reads them at, so nothing here depends
-/// on a hand-computed layout: a name up to its `NUL` terminator, `flags` at
-/// slot + 36, the kind tag at slot + 52, `data_ptr` at + 56 and `mesh_index` at
-/// + 60, the counts at + 84 and + 86, `unk196` at + 196 and the trailing
-/// `node_index` word at + 208.
+/// on a hand-computed layout: a name up to its `NUL` terminator, `flags` at slot
+/// offset 36, the kind tag at 52, `data_ptr` at 56, `mesh_index` at 60, the two
+/// counts at 84 and 86, `unk196` at 196, and the trailing `node_index` word at
+/// 208.
 fn node_section(nodes_offset: u32, nodes: &[NodeSpec]) -> Vec<u8> {
     assert!(!nodes.is_empty(), "an empty node array is refused outright");
     let info_bytes = NODE_SLOT_BYTES as usize * nodes.len();
@@ -112,11 +112,7 @@ fn node_section(nodes_offset: u32, nodes: &[NodeSpec]) -> Vec<u8> {
         for axis in 0..3 {
             float(&mut out, record + 24 + 4 * axis, 0.0); // rotation
             float(&mut out, record + 36 + 4 * axis, 1.0); // scale
-            float(
-                &mut out,
-                record + 48 + 4 * (3 * axis + axis),
-                1.0,
-            ); // matrix diagonal
+            float(&mut out, record + 48 + 4 * (3 * axis + axis), 1.0); // matrix diagonal
             float(&mut out, record + 84 + 4 * axis, 0.0); // translation
         }
     }
@@ -152,7 +148,11 @@ fn container(unk08: u32, meshes: &[MeshSpec], present: &[u32], nodes: &[NodeSpec
     // node array starts: the two sections are back to back, and both readers
     // are gated by that one word.
     let nodes_offset = u64::from(bytes[36..40].read_le_u32());
-    assert_eq!(nodes_offset, bytes.len() as u64, "mesh data ends at nodes_offset");
+    assert_eq!(
+        nodes_offset,
+        bytes.len() as u64,
+        "mesh data ends at nodes_offset"
+    );
     bytes.extend_from_slice(&node_section(u32::try_from(nodes_offset).expect(""), nodes));
     bytes
 }
@@ -200,18 +200,22 @@ fn accept_f10_c_05_a_node_naming_a_slot_outside_the_mesh_array_is_named_with_its
         NodeSpec::named("unbound", -1),
         NodeSpec::named("past_the_array", 7),
     ];
-    let (nodes, section) = read_container(&container(
-        1_234_567_890,
-        &meshes,
-        &[0, 1, 2, 3],
-        &nodes,
-    ));
+    let (nodes, section) =
+        read_container(&container(1_234_567_890, &meshes, &[0, 1, 2, 3], &nodes));
     assert_eq!(section.slot_count(), 4, "four array slots");
     assert_eq!(section.present_count(), 4);
 
     // The node reader carries the index raw and checks nothing about it.
-    assert!(nodes.findings.is_empty(), "no node-level finding: {:#?}", nodes.findings);
-    assert_eq!(nodes.mesh_index_bounds().bound, 2, "two nodes store an index");
+    assert!(
+        nodes.findings.is_empty(),
+        "no node-level finding: {:#?}",
+        nodes.findings
+    );
+    assert_eq!(
+        nodes.mesh_index_bounds().bound,
+        2,
+        "two nodes store an index"
+    );
     assert_eq!(nodes.get(2).expect("node 2").mesh_index(), 7, "carried raw");
 
     let bindings = section.node_bindings(&nodes);
@@ -231,10 +235,7 @@ fn accept_f10_c_05_a_node_naming_a_slot_outside_the_mesh_array_is_named_with_its
         NodeMeshFinding {
             node: 2,
             mesh_index: 7,
-            issue: MeshSlotIssue::OutOfRange {
-                slot: 7,
-                slots: 4
-            },
+            issue: MeshSlotIssue::OutOfRange { slot: 7, slots: 4 },
         }
     );
     assert_eq!(finding.code(), "mesh_slot_out_of_range");
@@ -249,7 +250,10 @@ fn accept_f10_c_05_a_node_naming_a_slot_outside_the_mesh_array_is_named_with_its
     // because a caller gets this line and nothing else.
     let line = finding.to_string();
     for expected in ["mesh_slot_out_of_range", "node 2", "mesh_index 7", "4-slot"] {
-        assert!(line.contains(expected), "{line:?} does not name {expected:?}");
+        assert!(
+            line.contains(expected),
+            "{line:?} does not name {expected:?}"
+        );
     }
 }
 
@@ -274,19 +278,22 @@ fn accept_f10_c_05_a_node_naming_an_all_zero_stub_is_absent_not_out_of_range() {
         NodeSpec::named("slot_two", 2),
         NodeSpec::named("slot_three", 3),
     ];
-    let (nodes, section) = read_container(&container(
-        1_234_567_890,
-        &meshes,
-        &[1, 3],
-        &nodes,
-    ));
+    let (nodes, section) = read_container(&container(1_234_567_890, &meshes, &[1, 3], &nodes));
     assert_eq!(section.slot_count(), 4);
-    assert_eq!(section.present_count(), 2, "two of the four slots stored a mesh");
+    assert_eq!(
+        section.present_count(),
+        2,
+        "two of the four slots stored a mesh"
+    );
     assert!(section.get(0).is_none(), "slot 0 is the all-zero stub");
     assert!(section.get(2).is_none(), "slot 2 is the all-zero stub");
 
     // The node reader sees four stored indices and objects to none of them.
-    assert!(nodes.findings.is_empty(), "no node-level finding: {:#?}", nodes.findings);
+    assert!(
+        nodes.findings.is_empty(),
+        "no node-level finding: {:#?}",
+        nodes.findings
+    );
     assert_eq!(nodes.mesh_index_bounds().bound, 4);
 
     let bindings = NodeMeshBindings::of(&nodes, &section);
@@ -316,15 +323,14 @@ fn accept_f10_c_05_a_node_naming_an_all_zero_stub_is_absent_not_out_of_range() {
             "mesh_slot_out_of_range",
             "an absent slot is not an out-of-range index"
         );
-        assert!(
-            finding.to_string().contains("all-zero stub"),
-            "{}",
-            finding
-        );
+        assert!(finding.to_string().contains("all-zero stub"), "{}", finding);
     }
     assert!(bindings.finding(0).is_some());
     assert!(bindings.finding(2).is_some());
-    assert!(bindings.finding(1).is_none(), "a present slot is not a finding");
+    assert!(
+        bindings.finding(1).is_none(),
+        "a present slot is not a finding"
+    );
     assert!(bindings.finding(3).is_none());
 }
 
@@ -355,7 +361,11 @@ fn accept_f10_c_05_the_slot_is_looked_up_where_it_is_stored_not_in_a_compact_lis
     // `UNK08_PLANES` selects the measured remap table, so this container is the
     // shape a compact enumeration gets wrong.
     let (nodes, section) = read_container(&container(UNK08_PLANES, &meshes, &[3], &nodes));
-    assert_eq!(section.fixup, Fixup::Planes, "the fixture is a remapped archive");
+    assert_eq!(
+        section.fixup,
+        Fixup::Planes,
+        "the fixture is a remapped archive"
+    );
     assert_eq!(section.slot_count(), 5);
     assert_eq!(section.present_count(), 1);
     assert!(section.get(3).is_some(), "slot 3 is the present one");
@@ -385,7 +395,10 @@ fn accept_f10_c_05_the_slot_is_looked_up_where_it_is_stored_not_in_a_compact_lis
         "every stub slot is reported as absent, and none as out of range: \
          a compact enumeration would have resolved slot 0 and refused 3"
     );
-    assert!(bindings.finding(0).is_none(), "the node that stored 3 is fine");
+    assert!(
+        bindings.finding(0).is_none(),
+        "the node that stored 3 is fine"
+    );
 }
 
 /// Every stored index in one container that is inside its bounds resolves, and
@@ -405,16 +418,14 @@ fn accept_f10_c_05_a_container_whose_every_index_resolves_is_complete() {
         NodeSpec::named("c", -1),
         NodeSpec::named("d", 1),
     ];
-    let (nodes, section) = read_container(&container(
-        1_234_567_890,
-        &meshes,
-        &[0, 1, 2],
-        &nodes,
-    ));
+    let (nodes, section) = read_container(&container(1_234_567_890, &meshes, &[0, 1, 2], &nodes));
     assert!(nodes.findings.is_empty(), "{:#?}", nodes.findings);
     let bounds = nodes.mesh_index_bounds();
     let bindings = section.node_bindings(&nodes);
-    assert_eq!(bindings.bound as usize, bounds.bound, "the two readers agree");
+    assert_eq!(
+        bindings.bound as usize, bounds.bound,
+        "the two readers agree"
+    );
     assert_eq!(bounds.min, Some(0));
     assert_eq!(bounds.max, Some(2));
     assert_eq!(bindings.slots as usize, section.meshes.len());
@@ -440,14 +451,13 @@ fn accept_f10_c_05_a_negative_index_names_no_slot_and_is_not_a_finding_here() {
         NodeSpec::named("below_sentinel", -5),
         NodeSpec::named("present", 1),
     ];
-    let (nodes, section) = read_container(&container(
-        1_234_567_890,
-        &meshes,
-        &[0, 1],
-        &nodes,
-    ));
+    let (nodes, section) = read_container(&container(1_234_567_890, &meshes, &[0, 1], &nodes));
     let codes: Vec<String> = nodes.findings.iter().map(|f| f.to_string()).collect();
-    assert_eq!(codes.len(), 1, "the node reader reports the bad sentinel: {codes:?}");
+    assert_eq!(
+        codes.len(),
+        1,
+        "the node reader reports the bad sentinel: {codes:?}"
+    );
     assert!(
         codes[0].contains("mesh_index stores -5"),
         "the node reader's own finding: {}",
@@ -476,7 +486,11 @@ fn accept_f10_c_05_a_broken_node_array_is_refused_before_the_check_runs() {
     let mut bytes = container(1_234_567_890, &meshes, &[0, 1], &nodes);
     let read = |bytes: &[u8]| read_container(bytes);
     let (nodes, section) = read(&bytes);
-    assert_eq!(nodes.data_end, bytes.len() as u64, "the walk ends on the last byte");
+    assert_eq!(
+        nodes.data_end,
+        bytes.len() as u64,
+        "the walk ends on the last byte"
+    );
     assert_eq!(section.present_count(), 2);
 
     // Eight bytes the data walk does not account for: the node array claims the
@@ -498,7 +512,11 @@ fn accept_f10_c_05_a_broken_node_array_is_refused_before_the_check_runs() {
         &bytes,
     )
     .expect("the mesh section is unaffected");
-    assert_eq!(section.present_count(), 2, "the mesh section reads on its own");
+    assert_eq!(
+        section.present_count(),
+        2,
+        "the mesh section reads on its own"
+    );
 }
 
 // ---------------------------------------------------------- retail corpus ---
@@ -582,15 +600,18 @@ impl Corpus {
 
         let parsed = read_gamez_nodes(&mut ParseContext::with_defaults(label.clone()), &bytes)
             .unwrap_or_else(|error| panic!("{label}: the node array must read, got {error}"));
-        let section = read_gamez_meshes(&mut ParseContext::with_defaults(label.clone()), &label, &bytes)
-            .unwrap_or_else(|error| panic!("{label}: the mesh section must read, got {error}"));
+        let section = read_gamez_meshes(
+            &mut ParseContext::with_defaults(label.clone()),
+            &label,
+            &bytes,
+        )
+        .unwrap_or_else(|error| panic!("{label}: the mesh section must read, got {error}"));
 
         // Both archives really are the remapped ones the check has to get right:
         // a compact enumeration of the present meshes would answer for a
         // different slot than the nodes stored, for exactly these two.
         assert_eq!(
-            section.fixup,
-            self.fixup,
+            section.fixup, self.fixup,
             "{label}: the remap table its `unk08` selects"
         );
         assert_eq!(
@@ -599,14 +620,36 @@ impl Corpus {
             "{label}: node records"
         );
         let bounds = parsed.mesh_index_bounds();
-        assert_eq!(bounds.bound, self.bound as usize, "{label}: nodes storing an index");
-        assert_eq!(bounds.min, Some(self.min), "{label}: the node reader's low bound");
-        assert_eq!(bounds.max, Some(self.max), "{label}: the node reader's high bound");
-        assert_eq!(section.slot_count(), self.slots, "{label}: mesh array slots");
-        assert_eq!(section.present_count(), self.present, "{label}: present meshes");
+        assert_eq!(
+            bounds.bound, self.bound as usize,
+            "{label}: nodes storing an index"
+        );
+        assert_eq!(
+            bounds.min,
+            Some(self.min),
+            "{label}: the node reader's low bound"
+        );
+        assert_eq!(
+            bounds.max,
+            Some(self.max),
+            "{label}: the node reader's high bound"
+        );
+        assert_eq!(
+            section.slot_count(),
+            self.slots,
+            "{label}: mesh array slots"
+        );
+        assert_eq!(
+            section.present_count(),
+            self.present,
+            "{label}: present meshes"
+        );
 
         let bindings = section.node_bindings(&parsed);
-        assert_eq!(bindings.nodes, self.records, "{label}: every node reaches the check");
+        assert_eq!(
+            bindings.nodes, self.records,
+            "{label}: every node reaches the check"
+        );
         assert_eq!(
             bindings.bound, self.bound,
             "{label}: the check and the node reader agree on `bound`"
@@ -618,11 +661,7 @@ impl Corpus {
             "{label}: every stored index names a present mesh"
         );
         assert_eq!(bindings.unresolved(), 0, "{label}");
-        assert!(
-            bindings.is_complete(),
-            "{label}: {:?}",
-            bindings.findings
-        );
+        assert!(bindings.is_complete(), "{label}: {:?}", bindings.findings);
     }
 }
 
@@ -635,5 +674,3 @@ fn game_dir() -> String {
     );
     dir
 }
-
-

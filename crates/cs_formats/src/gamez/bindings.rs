@@ -216,7 +216,10 @@ impl NodeMeshBindings {
             let issue = if slot < slots {
                 MeshSlotIssue::Absent { slot }
             } else {
-                MeshSlotIssue::OutOfRange { slot: mesh_index, slots }
+                MeshSlotIssue::OutOfRange {
+                    slot: mesh_index,
+                    slots,
+                }
             };
             bindings.findings.push(NodeMeshFinding {
                 node: node.index,
