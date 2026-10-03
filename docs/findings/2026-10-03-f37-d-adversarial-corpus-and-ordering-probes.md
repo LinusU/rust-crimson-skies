@@ -11,7 +11,7 @@ unknowns F37-A deferred to this stage, and both remain unknown.
 
 ## The corpus
 
-Six programs, each valid, each built to make the bounded evaluator's job
+Seven programs, each valid, each built to make the bounded evaluator's job
 harder than a plain latch (`crates/cs_script/tests/accept_f37_d.rs`):
 
 1. objectives declared out of symbol order (`9, 3, 7, 1, 5`), each with its own
@@ -23,7 +23,9 @@ harder than a plain latch (`crates/cs_script/tests/accept_f37_d.rs`):
    point is a save/restore boundary;
 5. zero-delay work interleaved with a phase latch and later objectives;
 6. conflicting terminal outcomes, a pending reward that is too late to be
-   granted, and an explicit RNG draw.
+   granted, and an explicit RNG draw;
+7. two explicit RNG draws that land on ticks *after* every save, so a record
+   that forgot how far the stream had advanced would replay it from its start.
 
 Each program is run three ways — straight through, with a snapshot and restore
 at *every* tick boundary, and with one save in mid-run — and the three traces
@@ -74,11 +76,22 @@ Neither is a claim about the original game.
 ### The bounds are part of a session's determinism
 
 A tighter budget defers an objective's actions instead of running them on their
-own tick, and the deferred queue drains after the later tick's objectives, so
-the same program under a different budget **draws the same values in a
-different order** and reports its events on different ticks. The reward *set* is
-invariant; the order is not. This is why `WorkLimits` travels in the save
-record: a restore that dropped it would reproduce a session that never existed.
+own tick, and a deferred tail drains *behind* the objectives of the later tick
+it lands on. So the same program under a different budget reports the same
+rewards in a different **order** — `r-1, r-1-late, r-2, r-2-late, r-3, r-3-late`
+with room to work, `r-1, r-2, r-3, r-1-late, r-2-late, r-3-late` at the work
+floor — and on different ticks. The reward *set* is invariant; the sequence is
+not. This is why `WorkLimits` travels in the save record: a restore that dropped
+it would reproduce a session that never existed.
+
+### The RNG stream continues across a save
+
+Corpus member 7 draws on two ticks a save can fall between. The replay equality
+above is therefore only meaningful if the draws differ, and the test asserts
+that they do: with the draw count dropped from the record the corpus replay test
+fails (`corpus program 6 diverged when saved and restored at every tick`).
+F37-C's own stream test covers the same property for one session; this is the
+corpus's version of it.
 
 ## Defects the corpus found, and their repairs
 
@@ -104,13 +117,16 @@ mutation-checked: reverting the fix alone makes the matching
    the same direction: a record may tighten the engine's bounds, never to a
    session that cannot progress.
 
-3. **A save record could claim an item-ordinal counter past the sequence
-   space.** Every later `Schedule` would stop with `SequenceExhausted` and no
-   deferred work would ever run again, so the restore would silently disarm the
-   program. `RestoreError::SequenceSpaceExhausted { ordinal }` refuses it. The
+3. **A save record could claim an item-ordinal counter no live session ever
+   holds.** `RestoreError::SequenceSpaceExhausted { ordinal }` refuses a counter
+   past `FIRST_EXHAUSTED_ITEM_ORDINAL` — the ordinal at which `item_sequence`
+   stops fitting, and where `alloc_ordinal` refuses to hand anything out. The
    live path's `alloc_ordinal` also stopped using `ordinal + 1` (an overflow in
    debug builds once the counter reached `u32::MAX`) and now shares the
-   `ordinal_allocatable` check with the restore.
+   `ordinal_allocatable` check with the restore. The counter itself is *not*
+   refused at the marker: `alloc_ordinal` stops **at** it and never counts past
+   it, so that value is the state an exhausted session is in and it has to stay
+   saveable (see the review pass below).
 
 4. **The host ledger applied another session's events.** `HostLedger::apply`
    inserted any execution key it was handed with no session check, so a replay
@@ -168,9 +184,10 @@ mutation-checked: reverting the fix alone makes the matching
 - **Whether an original aborted or torn-down mission still delivers rewards it
   had already earned is unmeasured** (F37-C finding, unchanged).
 - **The evaluator's RNG is still seeded from the session generation** rather
-  than the run root seed (`F37-C-FU1`, #581, still open). The corpus confirmed
-  the consequence that matters: the stream continues across a save/restore,
-  because the record carries the draw count.
+  than the run root seed (`F37-C-FU1`, #581, still open). The corpus pins the
+  consequence that matters: the stream continues across a save/restore, because
+  the record carries the draw count (corpus member 7; dropping the count fails
+  the replay test).
 
 ## Evidence class
 
@@ -194,6 +211,43 @@ recreated.
   F38-D's campaign-reachable instruction evidence plus an owner-supplied
   original-run capture.
 
+## Review pass (Rally #140, bunny-alpha-1)
+
+The reviewer re-ran every mutation recorded above rather than trusting them:
+all six original repairs fail their matching `accept_f37_d_*` test when reverted
+alone (the `set_limits` floor, the two restore refusals, the foreign-session
+refusal, the key-order sort in `HostLedger::apply`, `SettledWhileRunning`).
+Two problems the implementer's own evidence did not cover were found and fixed
+here.
+
+1. **The corpus could not see a record that forgot the RNG draw count, while
+   this document claimed it could.** Corpus member 6 drew both of its values on
+   tick 1, before any save, so dropping `rng_draws` from the snapshot changed
+   nothing the replay equality compares: the mutation passed all ten
+   `cs_script` tests. Member 7 now draws on two ticks a save falls between, the
+   test asserts those draws differ, and the same mutation fails with `corpus
+   program 6 diverged when saved and restored at every tick`. The claim in
+   "Unknowns" below is now backed by the corpus.
+
+2. **A live session could write a save record its own restore refused.**
+   `alloc_ordinal` stops *at* `FIRST_EXHAUSTED_ITEM_ORDINAL` and never counts
+   past it, so an exhausted session's record carries exactly that value — and
+   the restore refused it, leaving a session that had run out of item ordinals
+   permanently unsaveable. This finding's repair 3 asserted the opposite ("the
+   live path only counts up to the last allocatable ordinal, so no such record
+   is written"). `MissionState::restore` now refuses a counter *past* the
+   marker and accepts the marker itself; a restored exhausted session reports
+   `StopReason::SequenceExhausted` per tick instead of failing to load.
+
+Also corrected, with no behaviour change: the determinism probe's comment and
+this document claimed the tighter budget "draws the same values in a different
+order", which the committed fixture did not show (it shifted the draws onto
+later ticks but kept their order). The claim is true in general and is now
+pinned by an explicit interleaving assertion — `r-1, r-2, r-3` then the three
+deferred tails at the floor — and the doc states the sequence it observed.
+`MissionState::set_limits` also gained the missing sentence about lowering a
+queue cap above `MAX_PENDING_ITEMS`, a clamp it has always applied.
+
 ## Acceptance
 
 `accept_f37_d_*` (14 tests: 10 in `crates/cs_script/tests/accept_f37_d.rs`, 4 in
@@ -202,7 +256,9 @@ list, a list nested two `Schedule` levels deep and a save record's deferred work
 — each refuses the whole launch, so the rewards declared before it are
 unreachable, and `MissionSession::launch` returns `TerminalState::Unsupported`
 without a session to run), the reference ordering probes above, the corpus
-replay equality, the work-floor stall and its repair, budget-split plus
-save-in-the-same-tick resumption, the bounds at their exact edges (16 nesting
-levels legal and 17 refused, 64 actions legal and 65 refused, for both an
-objective's list and a scheduled one), and the four host-ledger repairs.
+replay equality (including the draw count the record must carry), the work-floor
+stall and its repair, budget-split plus save-in-the-same-tick resumption, the
+bounds at their exact edges (16 nesting levels legal and 17 refused, 64 actions
+legal and 65 refused, for both an objective's list and a scheduled one, and the
+item-ordinal counter refused one step past the marker its live allocator stops
+at), and the four host-ledger repairs.

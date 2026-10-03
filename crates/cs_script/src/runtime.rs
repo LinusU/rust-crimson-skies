@@ -441,10 +441,13 @@ pub enum RestoreError {
     /// request is made and the deferred queue only grows. A record may tighten
     /// the engine's bounds, but not to a session that cannot progress.
     WorkBudgetTooSmall { found: u64 },
-    /// The record's item-ordinal counter is past the sequence space, so every
-    /// later `Schedule` would stop with [`StopReason::SequenceExhausted`] and
-    /// no deferred work would ever run again. The live path only counts up to
-    /// the last allocatable ordinal, so no such record is written.
+    /// The record's item-ordinal counter is past the sequence space, further
+    /// than [`FIRST_EXHAUSTED_ITEM_ORDINAL`] — the value the live allocator
+    /// stops *at*. No live session writes such a counter, so it is record data
+    /// from nowhere; every later `Schedule` would stop with
+    /// [`StopReason::SequenceExhausted`] and no deferred work would ever run
+    /// again. The exhausted marker itself restores: that is the state a session
+    /// is in once its space runs out, and it must stay saveable.
     SequenceSpaceExhausted { ordinal: u32 },
     /// A queued item's action list is one this program would refuse: an
     /// undecodable instruction, an empty `Draw` range or a write to a variable
@@ -558,15 +561,18 @@ fn item_sequence(ordinal: u32, action_index: usize) -> Option<u32> {
         .checked_add(action_index as u32 + 1)
 }
 
+/// The first item ordinal the sequence space cannot address: the largest action
+/// index an item may carry no longer fits beside it in a `u32`. It is where
+/// [`MissionState::alloc_ordinal`] stops — it refuses to hand this ordinal out
+/// and never counts past it — so it is both the largest counter a live save
+/// record can carry and the smallest one that means "exhausted".
+pub const FIRST_EXHAUSTED_ITEM_ORDINAL: u32 = (u32::MAX - (SEQS_PER_ITEM - 1)) / SEQS_PER_ITEM;
+
 /// Can this session still hand out `ordinal` to a scheduled item? The largest
 /// action index an item may carry must still fit in its sequence space, which
 /// is what keeps two items from one source addressable.
 fn ordinal_allocatable(ordinal: u32) -> bool {
-    ordinal
-        .checked_add(1)
-        .and_then(|items| items.checked_mul(SEQS_PER_ITEM))
-        .and_then(|base| base.checked_add(SEQS_PER_ITEM - 1))
-        .is_some()
+    ordinal < FIRST_EXHAUSTED_ITEM_ORDINAL
 }
 
 /// One queued work item: a validated action list eligible from `due`,
@@ -653,7 +659,9 @@ impl MissionState {
     ///
     /// A work budget below [`MIN_WORK_PER_TICK`] is raised to it: such a budget
     /// could admit work items without ever executing one of their actions, which
-    /// stalls the mission instead of bounding it.
+    /// stalls the mission instead of bounding it. A queue cap above
+    /// [`MAX_PENDING_ITEMS`] is lowered to it, the same way a save record's
+    /// bounds are: the caller tightens the engine's bounds, never lifts them.
     pub fn set_limits(&mut self, limits: WorkLimits) {
         self.limits = WorkLimits {
             max_work_per_tick: limits
@@ -829,10 +837,13 @@ impl MissionState {
                 found: snapshot.limits.max_work_per_tick,
             });
         }
-        if !ordinal_allocatable(snapshot.next_item_ordinal) {
-            // No deferred work could ever be queued again in this session, so a
-            // restore would silently disarm every `Schedule` the program still
-            // has left. The live path only ever counts up to here.
+        if snapshot.next_item_ordinal > FIRST_EXHAUSTED_ITEM_ORDINAL {
+            // `alloc_ordinal` stops *at* the exhausted marker — it refuses to
+            // hand it out and never counts past it — so that value is the
+            // largest a live record can carry and it restores. A counter past
+            // it can only come from a record no live session wrote, and it
+            // would leave every `Schedule` the program still has permanently
+            // stopped with `SequenceExhausted`.
             return Err(RestoreError::SequenceSpaceExhausted {
                 ordinal: snapshot.next_item_ordinal,
             });
@@ -1224,9 +1235,11 @@ impl MissionState {
         None
     }
 
-    /// The session-unique ordinal for the next scheduled item. `None` once
-    /// the sequence space is exhausted (~66 million items): the check
-    /// guarantees every action index still fits in [`item_sequence`].
+    /// The session-unique ordinal for the next scheduled item. `None` from
+    /// [`FIRST_EXHAUSTED_ITEM_ORDINAL`] on (~66 million items), where the check
+    /// guarantees every action index still fits in [`item_sequence`]. The
+    /// counter stops there and never advances past it, which is what makes that
+    /// value the largest a save record may carry.
     fn alloc_ordinal(&mut self) -> Option<u32> {
         let ordinal = self.next_item_ordinal;
         if !ordinal_allocatable(ordinal) {

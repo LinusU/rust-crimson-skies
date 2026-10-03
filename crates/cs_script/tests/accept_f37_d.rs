@@ -398,8 +398,10 @@ fn accept_f37_d_emitted_order_is_the_reference_key_order_and_independent_of_decl
 /// A run is a function of the program, the session *and the bounds*: a tighter
 /// budget defers an objective's actions instead of running them on their own
 /// tick, and the deferred queue drains after the objectives of the later tick.
-/// So the two runs draw the same values in a different order — while the
-/// rewards, which no condition gates, are granted exactly once either way.
+/// So the same program under a tighter budget reports the same rewards in a
+/// different order — the deferred tail of an early objective drains behind the
+/// later objectives — while the reward *set*, which no condition gates, is
+/// granted exactly once either way.
 ///
 /// This is why the bounds travel in the save record: without them a restore
 /// would reproduce a session that never existed.
@@ -475,6 +477,51 @@ fn accept_f37_d_the_work_budget_is_part_of_the_sessions_determinism() {
         .step(&p, &MissionFacts::default(), Tick(1))
         .unwrap();
     assert_eq!(tightened.snapshot(&p).limits.max_work_per_tick, 3);
+
+    // The order itself, not only the ticks: at the floor the tail of the first
+    // objective is deferred, so the second and third objectives report before
+    // it does. Same six rewards, different sequence.
+    let interleaved = program(
+        vec![],
+        [1u32, 2, 3]
+            .into_iter()
+            .map(|id| {
+                objective(
+                    id,
+                    Condition::Const(true),
+                    vec![reward(&format!("r-{id}")), reward(&format!("r-{id}-late"))],
+                )
+            })
+            .collect(),
+    )
+    .validate()
+    .unwrap();
+    let roomy_order = rewards_of(&run_traced(&interleaved, 8));
+    let mut floor = state(&interleaved);
+    floor.set_limits(WorkLimits {
+        max_work_per_tick: MIN_WORK_PER_TICK,
+        ..WorkLimits::default()
+    });
+    let deferred_order = rewards_of(&run_traced_state(&interleaved, &mut floor, 8));
+    let key = |reward: &ContentId| reward.key().to_owned();
+    assert_eq!(
+        roomy_order.iter().map(key).collect::<Vec<_>>(),
+        vec!["r-1", "r-1-late", "r-2", "r-2-late", "r-3", "r-3-late"],
+        "with room to work, an objective's whole list runs before the next one"
+    );
+    assert_eq!(
+        deferred_order.iter().map(key).collect::<Vec<_>>(),
+        vec!["r-1", "r-2", "r-3", "r-1-late", "r-2-late", "r-3-late"],
+        "at the floor the deferred tails drain behind the later objectives"
+    );
+    let mut sorted_roomy = roomy_order.clone();
+    sorted_roomy.sort();
+    let mut sorted_deferred = deferred_order.clone();
+    sorted_deferred.sort();
+    assert_eq!(
+        sorted_roomy, sorted_deferred,
+        "the reward set must not change"
+    );
 }
 
 /// The reference ordering probe across ticks and phases: an objective's own
@@ -620,8 +667,13 @@ fn record_tick(program: &ValidatedProgram, state: &mut MissionState, tick: u64) 
 
 fn run_traced(program: &ValidatedProgram, ticks: u64) -> RunTrace {
     let mut state = state(program);
+    run_traced_state(program, &mut state, ticks)
+}
+
+/// [`record_tick`] over `ticks` ticks of a session the caller already bounded.
+fn run_traced_state(program: &ValidatedProgram, state: &mut MissionState, ticks: u64) -> RunTrace {
     (1..=ticks)
-        .map(|tick| record_tick(program, &mut state, tick))
+        .map(|tick| record_tick(program, state, tick))
         .collect()
 }
 
@@ -801,6 +853,42 @@ fn corpus_programs() -> Vec<MissionProgram> {
         ],
     );
 
+    // 7. Explicit RNG draws that land on ticks *after* every save, so a record
+    //    that forgot how far the stream had advanced would replay it from its
+    //    start. The replay test below asserts the draws came back different.
+    let late_draw = program(
+        vec![variable(100, 0)],
+        vec![
+            objective(
+                1,
+                Condition::Const(true),
+                vec![
+                    reward("r-early"),
+                    schedule(
+                        2,
+                        vec![Action::Draw {
+                            variable: SymbolId(100),
+                            min: -1_000_000,
+                            max: 1_000_000,
+                        }],
+                    ),
+                ],
+            ),
+            objective(
+                2,
+                Condition::Const(true),
+                vec![schedule(
+                    3,
+                    vec![Action::Draw {
+                        variable: SymbolId(100),
+                        min: -1_000_000,
+                        max: 1_000_000,
+                    }],
+                )],
+            ),
+        ],
+    );
+
     vec![
         scrambled,
         colliding_writes,
@@ -808,6 +896,7 @@ fn corpus_programs() -> Vec<MissionProgram> {
         long_list,
         phased,
         conflicting,
+        late_draw,
     ]
 }
 
@@ -835,6 +924,30 @@ fn reschedules(program: &MissionProgram) -> bool {
         })
     }
     program.objectives.iter().any(|o| in_actions(&o.actions))
+}
+
+/// Does this program draw from the explicit RNG stream?
+fn draws(program: &MissionProgram) -> bool {
+    fn in_actions(actions: &[Action]) -> bool {
+        actions.iter().any(|action| match action {
+            Action::Draw { .. } => true,
+            Action::Schedule { actions, .. } => in_actions(actions),
+            _ => false,
+        })
+    }
+    program.objectives.iter().any(|o| in_actions(&o.actions))
+}
+
+/// The distinct values a run left in a variable, in the order it wrote them:
+/// collapsing consecutive repeats leaves the sequence of writes.
+fn writes_of(trace: &RunTrace, symbol: u32) -> Vec<Value> {
+    let mut values: Vec<Value> = trace
+        .iter()
+        .flat_map(|tick| tick.variables.iter().filter(|(id, _)| *id == symbol))
+        .map(|(_, value)| value.clone())
+        .collect();
+    values.dedup();
+    values
 }
 
 /// Execution order and observation order are different orders, and the corpus
@@ -899,10 +1012,17 @@ fn accept_f37_d_simultaneous_writes_follow_execution_order_events_follow_key_ord
 /// The corpus is replayable: two independent save strategies produce the same
 /// trace for every program, so the record carries every piece of state a later
 /// observation depends on.
+///
+/// The programs that draw are checked to draw *more than once*: a record that
+/// forgot the draw count would replay the stream from its start, both save
+/// strategies would agree with each other and both would be wrong.
 #[test]
 fn accept_f37_d_adversarial_corpus_replays_identically_across_saves_at_every_boundary() {
     let corpus = corpus_programs();
-    assert_eq!(corpus.len(), 6, "the corpus is part of this test");
+    assert_eq!(corpus.len(), 7, "the corpus is part of this test");
+    // How many members can tell a continued stream from a replayed one, i.e.
+    // draw on more than one tick.
+    let mut separated_draws = 0usize;
     for (index, program) in corpus.iter().enumerate() {
         let p = program
             .clone()
@@ -924,7 +1044,24 @@ fn accept_f37_d_adversarial_corpus_replays_identically_across_saves_at_every_bou
             !straight.iter().all(|tick| tick.events.is_empty()),
             "corpus program {index} never emitted an event"
         );
+        // The draws must be distinguishable, or a replayed stream would be
+        // indistinguishable from a continued one.
+        if draws(program) {
+            let written = writes_of(&straight, 100);
+            assert!(
+                written.windows(2).all(|w| w[0] != w[1]),
+                "corpus program {index} wrote the same value twice in a row: {written:?}"
+            );
+            if written.len() > 1 {
+                separated_draws += 1;
+            }
+        }
     }
+    assert!(
+        separated_draws >= 1,
+        "no corpus member draws on more than one tick, so a record that forgot \
+         the draw count would be undetectable here"
+    );
 }
 
 /// The corpus under the smallest work budget that can still make progress.
@@ -1126,6 +1263,50 @@ fn accept_f37_d_restore_refuses_a_record_that_could_never_execute_anything() {
         MissionState::restore(&p, exhausted),
         Err(RestoreError::SequenceSpaceExhausted { ordinal: u32::MAX }),
         "a record cannot hand this session an item-ordinal space that ran out"
+    );
+
+    // The counter the live allocator stops *at* is the opposite case and must
+    // restore: it is the state a session is in once its sequence space really
+    // has run out, and a session that cannot save itself has lost its progress.
+    // Its later `Schedule`s stop with `SequenceExhausted`, which is reported.
+    let scheduling = program(
+        vec![],
+        vec![objective(
+            1,
+            Condition::Const(true),
+            vec![schedule(2, vec![schedule(1, vec![reward("r-late")])])],
+        )],
+    )
+    .validate()
+    .unwrap();
+    let mut running = state(&scheduling);
+    running
+        .step(&scheduling, &MissionFacts::default(), Tick(1))
+        .unwrap();
+    let mut spent = running.snapshot(&scheduling);
+    spent.next_item_ordinal = FIRST_EXHAUSTED_ITEM_ORDINAL;
+    let mut at_the_end = MissionState::restore(&scheduling, spent).unwrap();
+    let stopped = at_the_end
+        .step(&scheduling, &MissionFacts::default(), Tick(3))
+        .unwrap();
+    assert!(
+        matches!(stopped.stop, Some(StopReason::SequenceExhausted { .. })),
+        "an exhausted sequence space must be reported, not hidden: {:?}",
+        stopped.stop
+    );
+    assert!(
+        at_the_end.pending_timers().len() == 1,
+        "the item that could not enqueue must still be pending, not dropped"
+    );
+    // One step past the marker no live allocator ever produces.
+    let mut past = running.snapshot(&scheduling);
+    past.next_item_ordinal = FIRST_EXHAUSTED_ITEM_ORDINAL + 1;
+    assert_eq!(
+        MissionState::restore(&scheduling, past),
+        Err(RestoreError::SequenceSpaceExhausted {
+            ordinal: FIRST_EXHAUSTED_ITEM_ORDINAL + 1,
+        }),
+        "no live session counts past the exhausted marker"
     );
 
     // The intact record still restores, runs the deferred item exactly once and
