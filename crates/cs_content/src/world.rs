@@ -91,14 +91,16 @@
 //! `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md` and
 //! `docs/findings/2026-09-30-f18-c-mission-overlays-and-visibility-streaming.md`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_assets::install::sha256;
+use cs_formats::gamez::{GameZNodes, NODE_TYPE_WORLD};
 use cs_types::content::{ContentId, ContentIdError, ContentKind, Origin, Provenance, Resolved};
 use cs_types::evidence::ContentHash;
 
-use crate::scene::CanonicalTransform;
+use crate::coordinates::SourceAdapter;
+use crate::scene::{CanonicalTransform, GameZSceneError, MeshSlot, ParsedNode, SceneGraph};
 
 /// The longest subordinate world key this module accepts, in bytes.
 pub const MAX_WORLD_KEY_LEN: usize = 128;
@@ -3856,6 +3858,491 @@ impl RetailTriggerVolumeSurvey {
             }
         })
     }
+}
+
+// ------------------------------------------- the stored world hierarchy ---
+
+// The measured facts this section rests on are in
+// `docs/findings/2026-10-03-f18-world-hierarchy-authority.md`; the code
+// comments below say what each refusal is for rather than repeating them.
+
+use crate::scene::{BindingMap, SceneError, parsed_nodes_from_gamez};
+
+/// The claim a world container's hierarchy conversion is recorded under when
+/// the stored parent slot and the stored child list disagree.
+///
+/// The claim is deliberately narrow: it says **which side this conversion
+/// trusts**, not that the original engine agrees. No original run has measured
+/// the engine's behaviour, so the claim names the rule and the reason the
+/// corpus supports it, and the unresolved question stays open in the finding.
+pub const HIERARCHY_PARENT_SLOT_AUTHORITATIVE: &str =
+    "f18-world.hierarchy-parent-slot-authoritative";
+
+/// What a container's two stored hierarchy statements say about each other.
+///
+/// A GameZ node record carries its hierarchy twice: a `parent` slot in its own
+/// record and a `children_count`-length list that follows the record. This
+/// verdict is the **measurement** of how those two agree, over every stored
+/// record of one container, and it is what the conversion below is allowed to
+/// act on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HierarchyVerdict {
+    /// Both sides agree on every link: each child names the node that lists it,
+    /// each listed child names the node that lists it, and no node is listed
+    /// twice.
+    Consistent {
+        /// How many child slots the container's lists hold in total.
+        child_slots: usize,
+    },
+    /// The child lists are a **partial index**: `omitted` records name a parent
+    /// that does not list them, spread over `parents` distinct parents, and no
+    /// link disagrees the other way. The parent slot is the only complete
+    /// statement of ownership in the container, so it is the one this
+    /// conversion follows.
+    PartialChildIndex {
+        /// Records that name a parent which does not list them.
+        omitted: usize,
+        /// How many distinct parents those records name.
+        parents: usize,
+        /// How many child slots the container's lists hold in total.
+        child_slots: usize,
+    },
+    /// The two sides contradict each other in the direction the partial-index
+    /// reading does not cover: `listed_but_not_naming` records are listed by a
+    /// node they do not name as their parent, or `listed_twice` records are
+    /// listed by two parents at once. The corpus has never shown either, and a
+    /// container that does is evidence the adopted rule does not hold there, so
+    /// it is blocked rather than converted under a rule it contradicts.
+    Contradictory {
+        /// Records listed by a node they do not name as their parent.
+        listed_but_not_naming: usize,
+        /// Records listed by two different parents.
+        listed_twice: usize,
+        /// How many child slots the container's lists hold in total.
+        child_slots: usize,
+    },
+}
+
+impl HierarchyVerdict {
+    /// How many child slots the container's stored child lists hold in total.
+    #[must_use]
+    pub const fn child_slots(&self) -> usize {
+        match self {
+            Self::Consistent { child_slots }
+            | Self::PartialChildIndex { child_slots, .. }
+            | Self::Contradictory { child_slots, .. } => *child_slots,
+        }
+    }
+}
+
+/// One container's stored hierarchy, measured.
+///
+/// Every field is a **count** or a **slot** read out of the decoded records;
+/// nothing here interprets a name, a transform or a kind. The audit is the
+/// instrument the conversion below is driven by and the evidence a caller
+/// reports when a world container does not convert, which is why it is a record
+/// of its own rather than a side effect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredHierarchyAudit {
+    nodes: usize,
+    child_slots: usize,
+    named_but_unlisted: usize,
+    listed_but_not_naming: usize,
+    listed_twice: usize,
+    partial_parents: usize,
+    roots: usize,
+    unreachable: usize,
+    verdict: HierarchyVerdict,
+}
+
+impl StoredHierarchyAudit {
+    /// How many stored node records the container holds.
+    #[must_use]
+    pub const fn nodes(&self) -> usize {
+        self.nodes
+    }
+
+    /// How many child slots the container's stored child lists hold in total.
+    #[must_use]
+    pub const fn child_slots(&self) -> usize {
+        self.child_slots
+    }
+
+    /// How many records name a parent that does not list them.
+    ///
+    /// This is the count the finding is about: it is 0 in the aircraft
+    /// container and between 155 and 471 in each world container, and every one
+    /// of those records names the same parent — the world node.
+    #[must_use]
+    pub const fn named_but_unlisted(&self) -> usize {
+        self.named_but_unlisted
+    }
+
+    /// How many records are listed by a node they do not name as their parent.
+    #[must_use]
+    pub const fn listed_but_not_naming(&self) -> usize {
+        self.listed_but_not_naming
+    }
+
+    /// How many records two different parents list at once.
+    #[must_use]
+    pub const fn listed_twice(&self) -> usize {
+        self.listed_twice
+    }
+
+    /// How many distinct parents hold a child list that omits records naming
+    /// it.
+    #[must_use]
+    pub const fn partial_parents(&self) -> usize {
+        self.partial_parents
+    }
+
+    /// How many records have an empty parent slot under the adopted rule.
+    #[must_use]
+    pub const fn roots(&self) -> usize {
+        self.roots
+    }
+
+    /// How many records no root reaches when children are derived from the
+    /// parent slots.
+    ///
+    /// A record nothing reaches has a parent chain that can only loop, so this
+    /// is the count [`SceneGraph::build`] would refuse with
+    /// [`SceneError::Cycle`] on. It is measured here so a caller learns it
+    /// before the build, not after.
+    #[must_use]
+    pub const fn unreachable(&self) -> usize {
+        self.unreachable
+    }
+
+    /// How the container's two stored hierarchy statements compare.
+    #[must_use]
+    pub const fn verdict(&self) -> &HierarchyVerdict {
+        &self.verdict
+    }
+
+    /// Whether the adopted rule applies to this container unchanged.
+    #[must_use]
+    pub const fn is_convertible(&self) -> bool {
+        !matches!(self.verdict, HierarchyVerdict::Contradictory { .. })
+    }
+}
+
+/// Measures how one decoded container's stored parent slots and child lists
+/// compare, in both directions.
+///
+/// The measurement is total and never refuses: a container whose two sides
+/// contradict each other gets a [`HierarchyVerdict::Contradictory`] verdict
+/// with the exact counts, because "these containers do not agree" is a result,
+/// not an absence of one. What the counts mean is in the finding; what the
+/// conversion does with them is [`world_hierarchy_from_gamez`].
+#[must_use]
+pub fn audit_stored_hierarchy(records: &GameZNodes) -> StoredHierarchyAudit {
+    let mut child_slots = 0usize;
+    let mut named_but_unlisted = 0usize;
+    let mut listed_but_not_naming = 0usize;
+    let mut partial_parents: BTreeSet<u32> = BTreeSet::new();
+    // Every `(parent, child)` slot the container stores. A child that appears
+    // under two parents is counted once, not once per extra listing.
+    let mut slots: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+    for node in &records.nodes {
+        child_slots += node.children.len();
+        for &child in &node.children {
+            *slots.entry((node.index, child)).or_insert(0) += 1;
+        }
+        if let Some(parent) = node.parent
+            && let Some(parent_node) = records.get(parent)
+            && !parent_node.children.contains(&node.index)
+        {
+            named_but_unlisted += 1;
+            partial_parents.insert(parent);
+        }
+        for &child in &node.children {
+            if let Some(child_node) = records.get(child)
+                && child_node.parent != Some(node.index)
+            {
+                listed_but_not_naming += 1;
+            }
+        }
+    }
+    let mut listed_by: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+    for &(parent, child) in slots.keys() {
+        listed_by.entry(child).or_default().insert(parent);
+    }
+    let listed_twice = listed_by
+        .values()
+        .filter(|parents| parents.len() > 1)
+        .count();
+
+    // Reachability when children are derived from the parent slots, which is
+    // the only hierarchy this conversion accepts.
+    let roots: Vec<u32> = records.roots().map(|node| node.index).collect();
+    let mut derived: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for node in &records.nodes {
+        if let Some(parent) = node.parent {
+            derived.entry(parent).or_default().push(node.index);
+        }
+    }
+    let mut reached: BTreeSet<u32> = BTreeSet::new();
+    let mut stack: Vec<u32> = roots.clone();
+    while let Some(index) = stack.pop() {
+        if !reached.insert(index) {
+            continue;
+        }
+        if let Some(children) = derived.get(&index) {
+            stack.extend(children.iter().copied());
+        }
+    }
+    let unreachable = records.nodes.len() - reached.len();
+
+    let verdict = if listed_but_not_naming > 0 || listed_twice > 0 {
+        HierarchyVerdict::Contradictory {
+            listed_but_not_naming,
+            listed_twice,
+            child_slots,
+        }
+    } else if named_but_unlisted > 0 {
+        HierarchyVerdict::PartialChildIndex {
+            omitted: named_but_unlisted,
+            parents: partial_parents.len(),
+            child_slots,
+        }
+    } else {
+        HierarchyVerdict::Consistent { child_slots }
+    };
+    StoredHierarchyAudit {
+        nodes: records.nodes.len(),
+        child_slots,
+        named_but_unlisted,
+        listed_but_not_naming,
+        listed_twice,
+        partial_parents: partial_parents.len(),
+        roots: roots.len(),
+        unreachable,
+        verdict,
+    }
+}
+
+// ------------------------------------------------------------------ the rule ---
+
+/// Why a world container's stored hierarchy could not be converted.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorldHierarchyError {
+    /// The container's two hierarchy statements contradict each other, so the
+    /// adopted rule does not apply to it. The counts are the measurement, and
+    /// the container is blocked rather than converted under a rule its own
+    /// bytes contradict.
+    Contradictory {
+        /// The container's verdict.
+        verdict: Box<HierarchyVerdict>,
+    },
+    /// The container's node records did not convert into [`ParsedNode`]s.
+    Records(GameZSceneError),
+}
+
+impl fmt::Display for WorldHierarchyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Contradictory { verdict } => write!(
+                f,
+                "the stored parent slots and child lists contradict each other ({verdict:?}), so \
+                 neither side can be followed"
+            ),
+            Self::Records(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for WorldHierarchyError {}
+
+/// One world container's hierarchy under the adopted rule: the reconciled
+/// [`ParsedNode`] records plus the measurement they were reconciled under.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldHierarchy {
+    nodes: Vec<ParsedNode>,
+    audit: StoredHierarchyAudit,
+}
+
+impl WorldHierarchy {
+    /// The reconciled records, in stored order.
+    ///
+    /// Their `children` lists are **derived from the parent slots**, so
+    /// `SceneGraph::build` sees a hierarchy that agrees with itself and can
+    /// judge it on its own terms. The stored lists stay in the caller's
+    /// [`GameZNodes`], which is the only place they survive this conversion.
+    #[must_use]
+    pub fn nodes(&self) -> &[ParsedNode] {
+        &self.nodes
+    }
+
+    /// The measurement the reconciliation was made under.
+    #[must_use]
+    pub const fn audit(&self) -> &StoredHierarchyAudit {
+        &self.audit
+    }
+}
+
+/// Converts a decoded world container's node array into reconciled
+/// [`ParsedNode`] records under the adopted rule.
+///
+/// **The rule: the parent slot is the authoritative statement of ownership and
+/// the child list is an index that cannot veto it.** The children of every
+/// record are therefore derived from the parent slots, in stored order.
+///
+/// Two properties make this the conservative reading rather than a convenient
+/// one. Every derived link comes from a parent slot the record itself stores, so
+/// the conversion can add links the store states but can never remove one: a
+/// record's own ownership survives untouched. And the strict check in
+/// [`SceneGraph::build`] is not relaxed to let this pass — the reconciled
+/// records satisfy it, and the build still refuses a container whose records
+/// contradict each other for any other reason.
+///
+/// What the rule cannot decide is also refused, not resolved: a container whose
+/// child lists contradict the parent slots (a record listed by a node it does
+/// not name, or by two parents at once) gets
+/// [`WorldHierarchyError::Contradictory`] with the exact counts, because such a
+/// container is evidence the rule does not hold there. The measured corpus has
+/// none.
+///
+/// # Errors
+///
+/// [`WorldHierarchyError::Contradictory`] for a container the rule does not
+/// apply to, and [`WorldHierarchyError::Records`] carrying
+/// [`GameZSceneError`] verbatim when the records themselves do not convert.
+pub fn world_hierarchy_from_gamez(
+    records: &GameZNodes,
+    meshes: &[MeshSlot],
+) -> Result<WorldHierarchy, WorldHierarchyError> {
+    let audit = audit_stored_hierarchy(records);
+    if !audit.is_convertible() {
+        return Err(WorldHierarchyError::Contradictory {
+            verdict: Box::new(audit.verdict().clone()),
+        });
+    }
+    let mut nodes =
+        parsed_nodes_from_gamez(records, meshes).map_err(WorldHierarchyError::Records)?;
+    // The derivation is the whole rule: a record's children are the records
+    // that name it, in stored order, whatever its own list holds.
+    let mut derived: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for node in &nodes {
+        if let Some(parent) = node.parent {
+            derived.entry(parent).or_default().push(node.index);
+        }
+    }
+    for node in &mut nodes {
+        node.children = derived.remove(&node.index).unwrap_or_default();
+    }
+    Ok(WorldHierarchy { nodes, audit })
+}
+
+/// One world container converted into a [`SceneGraph`], with the measurement the
+/// conversion was made under.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldSceneGraph {
+    graph: SceneGraph,
+    audit: StoredHierarchyAudit,
+}
+
+impl WorldSceneGraph {
+    /// The canonical graph.
+    #[must_use]
+    pub const fn graph(&self) -> &SceneGraph {
+        &self.graph
+    }
+
+    /// The measurement of the container's two stored hierarchy statements.
+    #[must_use]
+    pub const fn audit(&self) -> &StoredHierarchyAudit {
+        &self.audit
+    }
+}
+
+/// Why one world container did not become a [`SceneGraph`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorldSceneError {
+    /// The stored hierarchy could not be reconciled under the adopted rule.
+    Hierarchy(WorldHierarchyError),
+    /// The hierarchy reconciled and the canonical build refused it.
+    ///
+    /// The build's own typed refusal is carried **verbatim** — nothing here
+    /// translates, retries or weakens it — and the measurement travels with it,
+    /// so a caller reporting "this world container is blocked" can name both the
+    /// disagreement the adopted rule resolved and the refusal that remains.
+    Build {
+        /// [`SceneGraph::build`]'s own refusal.
+        source: SceneError,
+        /// How the container's two stored hierarchy statements compare.
+        audit: Box<StoredHierarchyAudit>,
+    },
+}
+
+impl fmt::Display for WorldSceneError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Hierarchy(error) => write!(f, "{error}"),
+            Self::Build { source, audit } => write!(
+                f,
+                "{source} (the hierarchy itself reconciles: {} of {} records name a parent that \
+                 does not list them, over {} parent(s); verdict {:?})",
+                audit.named_but_unlisted(),
+                audit.nodes(),
+                audit.partial_parents(),
+                audit.verdict()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WorldSceneError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Hierarchy(error) => Some(error),
+            Self::Build { source, .. } => Some(source),
+        }
+    }
+}
+
+/// Decodes a world container's node array and converts it into a canonical
+/// [`SceneGraph`] under the adopted hierarchy rule.
+///
+/// This is the whole world-container path: [`world_hierarchy_from_gamez`]
+/// reconciles the two stored statements, [`SceneGraph::build`] judges the
+/// reconciled hierarchy, and the two verdicts stay separate so a container whose
+/// records read and reconcile but whose canonical build refuses is reported as
+/// exactly that.
+pub fn world_scene_graph_from_gamez(
+    container: &ContentId,
+    records: &GameZNodes,
+    meshes: &[MeshSlot],
+    adapter: &SourceAdapter,
+    bindings: &BindingMap,
+) -> Result<WorldSceneGraph, WorldSceneError> {
+    let hierarchy =
+        world_hierarchy_from_gamez(records, meshes).map_err(WorldSceneError::Hierarchy)?;
+    let audit = hierarchy.audit().clone();
+    let graph =
+        SceneGraph::build(container, hierarchy.nodes(), adapter, bindings).map_err(|source| {
+            WorldSceneError::Build {
+                source,
+                audit: Box::new(audit.clone()),
+            }
+        })?;
+    Ok(WorldSceneGraph { graph, audit })
+}
+
+/// The stored slot of the container's world node, if it has one.
+///
+/// The measured disagreement is entirely about this one record: in all eight
+/// world containers the child list that omits records belongs to the world node
+/// and to no other. A caller that needs to report *which* record a partial list
+/// belongs to reads it here rather than re-deriving it.
+#[must_use]
+pub fn world_node_slot(records: &GameZNodes) -> Option<u32> {
+    records
+        .nodes
+        .iter()
+        .find(|node| node.kind.tag() == NODE_TYPE_WORLD)
+        .map(|node| node.index)
 }
 
 // ------------------------------------------------------------------- tests ---

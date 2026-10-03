@@ -65,6 +65,7 @@
 
 mod audit;
 mod common;
+mod hierarchy;
 mod import;
 mod overlays;
 mod records;
