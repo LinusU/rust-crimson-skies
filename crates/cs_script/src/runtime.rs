@@ -1,12 +1,14 @@
 //! Mutable mission state, stable event ordering, the bounded evaluator, the
-//! pending-work queue and the save record (F37-A, F37-B, F37-C).
+//! pending-work queue and the save record (F37-A, F37-B, F37-C, F37-D).
 //!
 //! Program data is [`crate::ir`]; this module holds the *execution* state and
 //! the pure per-tick resolution that the simulation host drives. The bounded
 //! work budget and the deferred work queue are F37-B; the versioned
 //! [`MissionStateSnapshot`] that preserves a pending timer's exact remaining
-//! ticks across save/restore is F37-C. Host effect application is the
-//! simulation side (`cs_sim::mission`).
+//! ticks across save/restore is F37-C. F37-D ran the adversarial corpus and the
+//! reference ordering probes: the work budget's floor ([`MIN_WORK_PER_TICK`])
+//! and two more save-record refusals come from it. Host effect application is
+//! the simulation side (`cs_sim::mission`).
 //!
 //! Phases of one tick (`docs/contracts/SCRIPT-MISSION.md`, "Objective event
 //! ordering"; "actions do not directly recurse into callbacks"):
@@ -26,7 +28,9 @@
 //! Bounds (contract: "each tick has an instruction/action budget and
 //! recursion/stack limits"):
 //! - every objective firing, pending dequeue and action execution spends one
-//!   unit of the per-tick [`WorkLimits::max_work_per_tick`] budget;
+//!   unit of the per-tick [`WorkLimits::max_work_per_tick`] budget, which is
+//!   bounded below by [`MIN_WORK_PER_TICK`] so a tick can always execute the
+//!   first action of the item it admits;
 //! - the pending queue holds at most
 //!   [`WorkLimits::max_pending_items`] scheduled items (memory cap);
 //! - `Schedule` nesting is bounded at validation ([`crate::ir::MAX_ACTION_NESTING`]).
@@ -58,6 +62,18 @@ const MISSION_EVALUATOR_DOMAIN: u64 = 0x4D53_4E5F_4556_414C;
 /// action". The value is a design bound, not a measured original limit.
 pub const MAX_WORK_PER_TICK: u64 = 4096;
 
+/// Smallest work budget that can still make progress.
+///
+/// Admitting a work item costs one unit — an objective firing or a pending
+/// dequeue — and every action it runs costs another. A budget of one therefore
+/// admits items and never executes any of their actions: the mission latches
+/// its objectives, reports `StopReason::WorkBudget` on every tick forever and
+/// never grants, never finishes and never clears its queue. That is a silent
+/// stall, not a bound, so two units is the floor:
+/// [`MissionState::set_limits`] raises a smaller budget to it, and a save record
+/// claiming less is refused ([`RestoreError::WorkBudgetTooSmall`]).
+pub const MIN_WORK_PER_TICK: u64 = 2;
+
 /// Default cap on stored scheduled items (contract: "cap memory/time").
 /// A design bound, not a measured original limit.
 pub const MAX_PENDING_ITEMS: usize = 4096;
@@ -79,7 +95,9 @@ pub const MAX_RNG_REPLAY_DRAWS: u64 = 1 << 22;
 /// The per-tick and queue bounds the evaluator runs under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorkLimits {
-    /// Most work units one tick may spend.
+    /// Most work units one tick may spend. A caller may ask for anything in
+    /// `[MIN_WORK_PER_TICK, MAX_WORK_PER_TICK]`; a smaller budget is raised to
+    /// the floor rather than stalling the mission.
     pub max_work_per_tick: u64,
     /// Most scheduled items the pending queue may hold.
     pub max_pending_items: usize,
@@ -411,6 +429,17 @@ pub enum RestoreError {
     /// The session took more draws than [`MAX_RNG_REPLAY_DRAWS`], so rewinding
     /// its RNG stream would exceed the restore work bound.
     RngReplayTooLong { draws: u64 },
+    /// The record's per-tick work budget is below [`MIN_WORK_PER_TICK`], so the
+    /// restored session could never execute an action: every tick would admit
+    /// work items and run none of them, so no reward is granted, no terminal
+    /// request is made and the deferred queue only grows. A record may tighten
+    /// the engine's bounds, but not to a session that cannot progress.
+    WorkBudgetTooSmall { found: u64 },
+    /// The record's item-ordinal counter is past the sequence space, so every
+    /// later `Schedule` would stop with [`StopReason::SequenceExhausted`] and
+    /// no deferred work would ever run again. The live path only counts up to
+    /// the last allocatable ordinal, so no such record is written.
+    SequenceSpaceExhausted { ordinal: u32 },
     /// A queued item's action list is one this program would refuse: an
     /// undecodable instruction, an empty `Draw` range or a write to a variable
     /// the program does not declare. Restoring it would hand the evaluator an
@@ -489,6 +518,14 @@ impl fmt::Display for RestoreError {
                     "snapshot carries {count} pending items, more than the queue's {allowed}"
                 ),
             },
+            Self::WorkBudgetTooSmall { found } => write!(
+                f,
+                "snapshot spends {found} work per tick, below the floor {MIN_WORK_PER_TICK}"
+            ),
+            Self::SequenceSpaceExhausted { ordinal } => write!(
+                f,
+                "snapshot item ordinal {ordinal} is past the allocatable sequence space"
+            ),
             Self::RngReplayTooLong { draws } => write!(
                 f,
                 "{draws} RNG draws exceed the restore replay bound {MAX_RNG_REPLAY_DRAWS}"
@@ -513,6 +550,17 @@ fn item_sequence(ordinal: u32, action_index: usize) -> Option<u32> {
         .checked_add(1)?
         .checked_mul(SEQS_PER_ITEM)?
         .checked_add(action_index as u32 + 1)
+}
+
+/// Can this session still hand out `ordinal` to a scheduled item? The largest
+/// action index an item may carry must still fit in its sequence space, which
+/// is what keeps two items from one source addressable.
+fn ordinal_allocatable(ordinal: u32) -> bool {
+    ordinal
+        .checked_add(1)
+        .and_then(|items| items.checked_mul(SEQS_PER_ITEM))
+        .and_then(|base| base.checked_add(SEQS_PER_ITEM - 1))
+        .is_some()
 }
 
 /// One queued work item: a validated action list eligible from `due`,
@@ -596,8 +644,17 @@ impl MissionState {
     }
 
     /// Overrides the work/queue bounds; the default is [`WorkLimits::default`].
+    ///
+    /// A work budget below [`MIN_WORK_PER_TICK`] is raised to it: such a budget
+    /// could admit work items without ever executing one of their actions, which
+    /// stalls the mission instead of bounding it.
     pub fn set_limits(&mut self, limits: WorkLimits) {
-        self.limits = limits;
+        self.limits = WorkLimits {
+            max_work_per_tick: limits
+                .max_work_per_tick
+                .clamp(MIN_WORK_PER_TICK, MAX_WORK_PER_TICK),
+            max_pending_items: limits.max_pending_items.min(MAX_PENDING_ITEMS),
+        };
     }
 
     /// Scheduled items still waiting for their eligibility tick.
@@ -757,6 +814,23 @@ impl MissionState {
             max_work_per_tick: snapshot.limits.max_work_per_tick.min(MAX_WORK_PER_TICK),
             max_pending_items: snapshot.limits.max_pending_items.min(MAX_PENDING_ITEMS),
         };
+        if snapshot.limits.max_work_per_tick < MIN_WORK_PER_TICK {
+            // A budget this small cannot execute an action at all: every tick
+            // would admit work items and run none of them. It is a tighter bound
+            // than the clamp above allows, because it is tighter than a session
+            // that progresses at all.
+            return Err(RestoreError::WorkBudgetTooSmall {
+                found: snapshot.limits.max_work_per_tick,
+            });
+        }
+        if !ordinal_allocatable(snapshot.next_item_ordinal) {
+            // No deferred work could ever be queued again in this session, so a
+            // restore would silently disarm every `Schedule` the program still
+            // has left. The live path only ever counts up to here.
+            return Err(RestoreError::SequenceSpaceExhausted {
+                ordinal: snapshot.next_item_ordinal,
+            });
+        }
         if snapshot.pending.len() > limits.max_pending_items {
             return Err(RestoreError::Corrupt {
                 defect: RestoreDefect::PendingQueueTooLong {
@@ -1149,9 +1223,9 @@ impl MissionState {
     /// guarantees every action index still fits in [`item_sequence`].
     fn alloc_ordinal(&mut self) -> Option<u32> {
         let ordinal = self.next_item_ordinal;
-        (ordinal + 1)
-            .checked_mul(SEQS_PER_ITEM)
-            .and_then(|base| base.checked_add(SEQS_PER_ITEM - 1))?;
+        if !ordinal_allocatable(ordinal) {
+            return None;
+        }
         self.next_item_ordinal += 1;
         Some(ordinal)
     }
