@@ -42,7 +42,7 @@ never invents one that the store does not.
   ([`world_scene_graph_from_gamez`], `WorldSceneGraph`, `WorldSceneError`),
   [`world_node_slot`] and the claim id
   `HIERARCHY_PARENT_SLOT_AUTHORITATIVE`.
-- `crates/cs_app/tests/world/hierarchy.rs` (new, an F18 owner path): the seven
+- `crates/cs_app/tests/world/hierarchy.rs` (new, an F18 owner path): the eight
   `accept_f18_a_` tests and the two retail ones.
 - `crates/cs_app/tests/world/main.rs` (wiring only): `mod hierarchy;`.
 - `docs/findings/2026-10-03-f18-world-hierarchy-authority.md` (this file).
@@ -100,18 +100,43 @@ Three things this table says that the corpus did not say before:
    ownership. The grid's remaining 8 bytes per value and the cell geometry are
    **unmeasured** and are F18's world-record subject, not this task's.
 
+   The set equality is measured two ways. The **count** is pinned by
+   `accept_f18_a_retail_every_world_container_says_which_side_its_hierarchy_disagrees_on`
+   from the production reader alone: the grid holds exactly `omitted` values
+   (346, 155, 293, 258, 290, 439, 350, 471), which is also exactly the number
+   of records the stored list omits. The **slots** were compared by a byte-level
+   walk of the grid (`data_offset + 208`, 58 bytes + a `u16` count + 28 bytes of
+   cell, then `count` 12-byte values per cell) that no committed test performs,
+   because interpreting the grid is F18's world-record work; it found the same
+   slot set, every value in range, disjoint from the stored list.
+
 Under the adopted rule, every record of every archive is reachable from a root,
 so no container is refused for a cycle or a dangling link. `planes.zbd` is
-unaffected: 0 disagreements, and its derived children are identical to its
-stored ones.
+unaffected: 0 disagreements, so nothing is appended and every record converts
+to the parsed record it already was.
+
+**The stored child order is the store's own, not the order of the child
+records.** Measured over the corpus, a stored child list is *not* the list of
+its children in record order: 56 of `planes.zbd`'s 3 317 records and 135 to 219
+records of each world container store a different order from the record order.
+That is why the rule extends a stored list instead of rebuilding it (see the
+first design decision), and it is pinned by the retail test, which checks over
+every record of two containers that the stored list is a **prefix** of the
+reconciled one and that the world node is the only record whose list grows.
 
 ## Design decisions
 
-- **The rule is a derivation, not a repair.** The children of a record are the
-  records that name it, in stored order. Every derived link comes from a parent
-  slot the record itself stores, so the conversion can add links the store
-  states but can never remove one, and the stored lists stay untouched in the
-  caller's `GameZNodes`. This is why it is conservative rather than convenient.
+- **The rule is a derivation, not a repair, and it is add-only in content and
+  in order.** A record's children are the records that name it; a record's own
+  stored list is kept exactly as stored and the links only a parent slot states
+  are appended to it. Every added link comes from a parent slot the record
+  itself stores, so the conversion can add links the store states but can never
+  remove one, and it never reorders a stored link either — which matters
+  because the stored order is not the child-record order (measured: 56 records
+  of `planes.zbd`, 135 to 219 per world container). The stored lists stay
+  untouched in the caller's `GameZNodes`. This is why it is conservative rather
+  than convenient, and why a container the two sides already agree on converts
+  field for field as it did before this stage.
 - **The audit measures; the rule converts.** `audit_stored_hierarchy` never
   refuses and never interprets: a container whose two sides contradict each
   other gets a `HierarchyVerdict::Contradictory` with the exact counts, because
@@ -123,10 +148,13 @@ stored ones.
   carries the verdict so the report can name the counts. Silently converting it
   under a rule its own bytes contradict is exactly the guess this task was told
   not to make.
-- **A consistent container is a no-op, and the test says so.** For
-  `planes.zbd`'s shape the derived children equal the stored ones, which is what
-  keeps this a second reading of the *disagreeing* containers rather than a
-  second reading of every hierarchy.
+- **A consistent container is a no-op, and the tests say so.** For
+  `planes.zbd`'s shape the reconciled records are the parsed records, field for
+  field and child order included, which is what keeps this a second reading of
+  the *disagreeing* containers rather than a second reading of every hierarchy.
+  Both halves are asserted: over every record of two world containers that the
+  stored list is a prefix of the reconciled one, and over all of `planes.zbd`
+  that the reconciled vector equals `parsed_nodes_from_gamez` outright.
 - **Reachability is measured before the build refuses it.** `Cycle` stays
   `SceneGraph::build`'s refusal; the audit reports the same count up front so a
   caller learns it without running the build.
@@ -150,24 +178,34 @@ refusal verbatim and the audit beside it — so a caller reporting "this world
 container is blocked" can name which refusal remains and the exact count the
 rule resolved. Neither half is translated, retried or softened.
 
+The two ranges above (72 to 376 unusable names, 32 to 2 015 shared name-paths)
+come from a scratch walk of the eight containers that re-derived the ids outside
+the build. **No committed test reproduces them**, because pinning them needs the
+id grammar relaxed, which is exactly what must not be done here; the retail test
+asserts only what the production path reports, which is the build's own refusal
+for the first offending record of each container. They are the reason to file
+the id-grammar blocker, not a claim the code depends on.
+
 ## Test inventory
 
 | `accept_f18_a_` test | Covers | Fails when |
 | --- | --- | --- |
-| `a_world_child_list_that_omits_records_is_a_partial_index_not_a_refusal` | the partial-index verdict and its four counts; the derived child list in stored order; an agreeing list unchanged; the whole path producing a graph whose root has all three children; and — by calling `scene_graph_from_gamez` on the same records — that the disagreement is real and the rule is what resolves it | the derivation stops, the verdict changes shape, or the rule is replaced by the strict build alone |
+| `a_world_child_list_that_omits_records_is_a_partial_index_not_a_refusal` | the partial-index verdict and its four counts; the stored child list kept and the parent-slot-only links appended; an agreeing list unchanged; the whole path producing a graph whose root has all three children; and — by calling `scene_graph_from_gamez` on the same records — that the disagreement is real and the rule is what resolves it | the derivation stops, the verdict changes shape, or the rule is replaced by the strict build alone |
 | `a_child_list_that_names_the_wrong_parent_blocks_the_container_with_its_counts` | a `Contradictory` verdict for a wrong-parent listing, the partial-index count reported alongside it, `Contradictory` carrying the verdict, and the container path reporting `WorldSceneError::Hierarchy` | the audit stops seeing the wrong-parent direction, or the blocker is resolved into a conversion |
 | `a_record_two_parents_list_blocks_the_container` | the `listed_twice` count and the blocker it produces | two parents claiming one record is accepted |
-| `a_consistent_container_needs_no_rule_and_the_derivation_is_a_no_op` | `Consistent` for an agreeing container, `world_node_slot`, and every derived child list equal to its stored one | the rule changes an already-consistent hierarchy |
+| `the_rule_appends_to_a_stored_list_and_never_reorders_it` | a stored list whose order is *not* the child-record order, reconciled to the stored order with the omitted link appended, the stored links a prefix, and the appended count equal to the omitted count | the rule rebuilds a stored list instead of extending it |
+| `a_consistent_container_needs_no_rule_and_the_derivation_is_a_no_op` | `Consistent` for an agreeing container, `world_node_slot`, and every reconciled child list equal to its stored one | the rule changes an already-consistent hierarchy |
 | `an_unreachable_parent_chain_is_measured_before_the_build_sees_it` | a detached cycle that is `Consistent` as a statement yet `unreachable == 2`, and `Build { source: Cycle, audit }` carrying the count | reachability is not measured, or the count is lost from the blocker |
-| `retail_every_world_container_says_which_side_its_hierarchy_disagrees_on` (retail) | all eight containers: the verdict with its measured counts, B and the twice-count at 0, one partial parent, no unreachable record, and the world node's own list being shorter than the records naming it by exactly the omitted count | any count moves, or the partial list belongs to a record other than the world node |
-| `retail_the_world_containers_convert_their_hierarchy_and_report_the_refusal_that_remains` (retail) | all eight reconcile and reach the build; the remaining refusal is never `InconsistentParentage`; the blocker carries the omitted count; two containers end to end with the derived list a strict superset of the stored one and every derived child a record that names the world node; and `planes.zbd` at 0 disagreements with its own refusal unchanged | the rule stops resolving a container, a build refusal is misreported as a hierarchy one, or the aircraft container changes |
+| `retail_every_world_container_says_which_side_its_hierarchy_disagrees_on` (retail) | all eight containers: the verdict with its measured counts, B and the twice-count at 0, one partial parent, no unreachable record, the world node's own list being shorter than the records naming it by exactly the omitted count, and the world record's partition grid holding exactly that many values | any count moves, or the partial list belongs to a record other than the world node |
+| `retail_the_world_containers_convert_their_hierarchy_and_report_the_refusal_that_remains` (retail) | all eight reconcile and reach the build; the remaining refusal is never `InconsistentParentage`; the blocker carries the omitted count; two containers end to end with the reconciled list a strict superset of the stored one, every stored list a prefix of its reconciled list and the world node the only record that grows; and `planes.zbd` at 0 disagreements with its reconciled records equal to `parsed_nodes_from_gamez` | the rule stops resolving a container, a build refusal is misreported as a hierarchy one, a stored link is reordered or dropped, or the aircraft container changes |
 
-**Sensitivity check.** Four mutations applied and reverted, each killed by a
+**Sensitivity check.** Five mutations applied and reverted, each killed by a
 test **CI can run** (the two retail tests are `#[ignore]`d and are not):
 
 | mutation | killed by |
 | --- | --- |
-| the derivation replaced by "keep the stored children" (the rule removed) | the synthetic partial-index test, the retail conversion test |
+| the derivation removed entirely (keep the stored children) | the synthetic partial-index test, the retail conversion test |
+| the derivation **replaces** a stored list instead of extending it | the append-in-order test, the retail conversion test |
 | the audit's wrong-parent count forced to 0 | both contradiction tests |
 | the partial-index count halved | the synthetic partial-index test, the retail verdict test |
 | reachability counted with the stored lists instead of the derived ones | the synthetic partial-index test, the retail verdict test |

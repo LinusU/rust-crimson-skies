@@ -31,7 +31,9 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use cs_content::scene::{BindingMap, GameZSceneError, SceneError, scene_graph_from_gamez};
+use cs_content::scene::{
+    BindingMap, GameZSceneError, SceneError, parsed_nodes_from_gamez, scene_graph_from_gamez,
+};
 use cs_content::world::{
     HierarchyVerdict, StoredHierarchyAudit, WorldHierarchyError, WorldSceneError,
     audit_stored_hierarchy, world_hierarchy_from_gamez, world_node_slot,
@@ -39,8 +41,8 @@ use cs_content::world::{
 };
 use cs_formats::gamez::reader::GAMEZ_HEADER_BYTES;
 use cs_formats::gamez::{
-    GameZHeader, GameZNodes, NODE_TYPE_OBJECT3D, NODE_TYPE_WORLD, OBJECT3D_FLAGS_IDENTITY, RawNode,
-    RawNodeInfo, RawObject3dData, RawWorldData, read_gamez_nodes,
+    GameZHeader, GameZNodes, NODE_TYPE_OBJECT3D, NODE_TYPE_WORLD, NodeKind,
+    OBJECT3D_FLAGS_IDENTITY, RawNode, RawNodeInfo, RawObject3dData, RawWorldData, read_gamez_nodes,
 };
 use cs_formats::io::ParseContext;
 use cs_formats::zbd::{GAMEZ_SIGNATURE, GAMEZ_VERSION};
@@ -218,7 +220,7 @@ fn accept_f18_a_a_world_child_list_that_omits_records_is_a_partial_index_not_a_r
     assert_eq!(
         nodes[0].children,
         vec![1, 2, 3],
-        "the world node's children are derived from the parent slots, in stored order"
+        "the world node's stored children come first, then the ones only a parent slot states"
     );
     assert_eq!(
         nodes[1].children,
@@ -277,6 +279,58 @@ fn accept_f18_a_a_world_child_list_that_omits_records_is_a_partial_index_not_a_r
         (node, parent),
         (2, 0),
         "the first omitted record, and the parent it names"
+    );
+}
+
+/// **The rule adds links; it never reorders or drops a stored one.**
+///
+/// The store's child order is not the order of the child records — measured
+/// over the installation, a stored child list is a subsequence of the
+/// child-record order for most records and not for hundreds of others — so
+/// replacing a list with the derived one would silently discard the order the
+/// store itself provides. The reconciliation therefore extends each stored
+/// list. This container stores the world node's children as `[3, 1]` while the
+/// records name it in the order `1, 2, 3`, and record 2 is omitted entirely:
+/// the reconciled list is `[3, 1, 2]`, the stored order untouched and the two
+/// added links appended.
+#[test]
+fn accept_f18_a_the_rule_appends_to_a_stored_list_and_never_reorders_it() {
+    let records = container(vec![
+        stored_node(0, "world1", None, &[3, 1]),
+        stored_node(1, "a", Some(0), &[]),
+        stored_node(2, "omitted", Some(0), &[]),
+        stored_node(3, "b", Some(0), &[]),
+    ]);
+
+    let audit = audit_stored_hierarchy(&records);
+    assert_eq!(
+        audit.verdict(),
+        &HierarchyVerdict::PartialChildIndex {
+            omitted: 1,
+            parents: 1,
+            child_slots: 2
+        },
+        "one omitted record over one partial parent"
+    );
+
+    let hierarchy = world_hierarchy_from_gamez(&records, &[])
+        .expect("the partial child list is reconciled, not refused");
+    assert_eq!(
+        hierarchy.nodes()[0].children,
+        vec![3, 1, 2],
+        "the stored order survives and the parent-slot-only links are appended"
+    );
+    let stored: Vec<u32> = records.nodes[0].children.clone();
+    let reconciled = &hierarchy.nodes()[0].children;
+    assert_eq!(
+        &reconciled[..stored.len()],
+        stored.as_slice(),
+        "the stored links are a prefix: the rule cannot have reordered them"
+    );
+    assert_eq!(
+        hierarchy.nodes()[0].children.len() - stored.len(),
+        hierarchy.audit().named_but_unlisted(),
+        "and exactly the omitted count was appended"
     );
 }
 
@@ -596,6 +650,21 @@ fn accept_f18_a_retail_every_world_container_says_which_side_its_hierarchy_disag
             omitted,
             "{label}: and the difference is exactly the omitted count"
         );
+
+        // The world record's own partition index holds exactly the omitted
+        // records: its grid holds one value per record, `partition_values` of
+        // them, and that count is the omitted count in every container. That
+        // is what makes the world node's list an index the writer filled in
+        // partially rather than a competing statement of ownership, and it is
+        // read here from the production reader's own count rather than from a
+        // second reading of the bytes.
+        let NodeKind::World(world_data) = world_record.kind else {
+            panic!("{label}: the world node's record is a world record");
+        };
+        assert_eq!(
+            world_data.partition_values, omitted as u64,
+            "{label}: the partition grid holds one value per omitted record"
+        );
     }
 }
 
@@ -704,6 +773,36 @@ fn accept_f18_a_retail_the_world_containers_convert_their_hierarchy_and_report_t
             "{label}: and the stored list is a subset of the derived one, so the rule removed \
              nothing either"
         );
+
+        // Add-only **in order**, over every record of the container: the stored
+        // list of each record is a prefix of its reconciled list, and the only
+        // record whose list grows at all is the world node. The store's child
+        // order is not the child-record order — measured, hundreds of records
+        // per container store it the other way round — so a rule that rebuilt
+        // the lists instead of extending them would reorder links the store
+        // states, and this is what holds it to extending them.
+        let mut grown: Vec<u32> = Vec::new();
+        for node in &records.nodes {
+            let stored_list = &node.children;
+            let reconciled = &hierarchy.nodes()[node.index as usize].children;
+            assert!(
+                reconciled.len() >= stored_list.len()
+                    && reconciled[..stored_list.len()] == *stored_list,
+                "{label}: record {} keeps its stored child list as a prefix ({} stored, {} \
+                 reconciled)",
+                node.index,
+                stored_list.len(),
+                reconciled.len()
+            );
+            if reconciled.len() != stored_list.len() {
+                grown.push(node.index);
+            }
+        }
+        assert_eq!(
+            grown,
+            vec![world],
+            "{label}: the world node is the only record whose child list the rule extends"
+        );
     }
 
     // The aircraft container: the disagreement is 0, the verdict is
@@ -725,4 +824,16 @@ fn accept_f18_a_retail_the_world_containers_convert_their_hierarchy_and_report_t
     assert_eq!(audit.nodes(), 3_317);
     assert_eq!(audit.roots(), 28);
     assert_eq!(audit.unreachable(), 0);
+
+    // On a container whose two sides already agree the rule changes **nothing**:
+    // the reconciled records are the parsed records, field for field, child
+    // order included. That is what makes this a second reading of the
+    // *disagreeing* containers rather than a second reading of every hierarchy.
+    let reconciled = world_hierarchy_from_gamez(&planes, &[])
+        .expect("the aircraft container needs no rule, so none is applied");
+    assert_eq!(
+        reconciled.nodes(),
+        parsed_nodes_from_gamez(&planes, &[]).expect("the records themselves convert"),
+        "every reconciled record is the parsed record: no link, no order and no field changed"
+    );
 }

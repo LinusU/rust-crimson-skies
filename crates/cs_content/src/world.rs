@@ -100,7 +100,10 @@ use cs_types::content::{ContentId, ContentIdError, ContentKind, Origin, Provenan
 use cs_types::evidence::ContentHash;
 
 use crate::coordinates::SourceAdapter;
-use crate::scene::{CanonicalTransform, GameZSceneError, MeshSlot, ParsedNode, SceneGraph};
+use crate::scene::{
+    BindingMap, CanonicalTransform, GameZSceneError, MeshSlot, ParsedNode, SceneError, SceneGraph,
+    parsed_nodes_from_gamez,
+};
 
 /// The longest subordinate world key this module accepts, in bytes.
 pub const MAX_WORLD_KEY_LEN: usize = 128;
@@ -3866,8 +3869,6 @@ impl RetailTriggerVolumeSurvey {
 // `docs/findings/2026-10-03-f18-world-hierarchy-authority.md`; the code
 // comments below say what each refusal is for rather than repeating them.
 
-use crate::scene::{BindingMap, SceneError, parsed_nodes_from_gamez};
-
 /// The claim a world container's hierarchy conversion is recorded under when
 /// the stored parent slot and the stored child list disagree.
 ///
@@ -3973,6 +3974,12 @@ impl StoredHierarchyAudit {
     /// This is the count the finding is about: it is 0 in the aircraft
     /// container and between 155 and 471 in each world container, and every one
     /// of those records names the same parent — the world node.
+    ///
+    /// A record naming a parent slot that is out of range is **not** counted
+    /// here: it disagrees with nothing, because no such record exists to list
+    /// it. [`SceneGraph::build`] refuses that as
+    /// [`SceneError::DanglingParent`] instead, so the two statements stay
+    /// separate — this count is about agreement, not about link validity.
     #[must_use]
     pub const fn named_but_unlisted(&self) -> usize {
         self.named_but_unlisted
@@ -4166,10 +4173,12 @@ pub struct WorldHierarchy {
 impl WorldHierarchy {
     /// The reconciled records, in stored order.
     ///
-    /// Their `children` lists are **derived from the parent slots**, so
-    /// `SceneGraph::build` sees a hierarchy that agrees with itself and can
-    /// judge it on its own terms. The stored lists stay in the caller's
-    /// [`GameZNodes`], which is the only place they survive this conversion.
+    /// Their `children` lists are each record's own stored list **extended** with
+    /// the records that name it and that list omits, so `SceneGraph::build` sees
+    /// a hierarchy that agrees with itself and can judge it on its own terms
+    /// while the stored order survives. The stored lists themselves stay in the
+    /// caller's [`GameZNodes`], which is the only place they survive this
+    /// conversion.
     #[must_use]
     pub fn nodes(&self) -> &[ParsedNode] {
         &self.nodes
@@ -4186,13 +4195,20 @@ impl WorldHierarchy {
 /// [`ParsedNode`] records under the adopted rule.
 ///
 /// **The rule: the parent slot is the authoritative statement of ownership and
-/// the child list is an index that cannot veto it.** The children of every
-/// record are therefore derived from the parent slots, in stored order.
+/// the child list is an index that cannot veto it.** Every record that names
+/// this one is therefore one of its children, whatever its own list holds.
 ///
-/// Two properties make this the conservative reading rather than a convenient
-/// one. Every derived link comes from a parent slot the record itself stores, so
-/// the conversion can add links the store states but can never remove one: a
-/// record's own ownership survives untouched. And the strict check in
+/// The reconciliation is **add-only in content and in order**: a record's stored
+/// child list is kept exactly as stored and the links only a parent slot states
+/// are appended to it, in the order the child records are stored. Three
+/// properties make this the conservative reading rather than a convenient one.
+/// Every added link comes from a parent slot the record itself stores, so the
+/// conversion can add links the store states but never removes one: a record's
+/// own ownership survives untouched. The stored order is never rewritten, so a
+/// container the two sides already agree on converts **bit for bit** as it did
+/// before this rule — measured over `planes.zbd`, whose stored order is not the
+/// child-record order, replacing the lists instead of extending them would have
+/// reordered 56 records for no reason the data supports. And the strict check in
 /// [`SceneGraph::build`] is not relaxed to let this pass — the reconciled
 /// records satisfy it, and the build still refuses a container whose records
 /// contradict each other for any other reason.
@@ -4222,7 +4238,7 @@ pub fn world_hierarchy_from_gamez(
     let mut nodes =
         parsed_nodes_from_gamez(records, meshes).map_err(WorldHierarchyError::Records)?;
     // The derivation is the whole rule: a record's children are the records
-    // that name it, in stored order, whatever its own list holds.
+    // that name it, whatever its own list holds.
     let mut derived: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
     for node in &nodes {
         if let Some(parent) = node.parent {
@@ -4230,7 +4246,23 @@ pub fn world_hierarchy_from_gamez(
         }
     }
     for node in &mut nodes {
-        node.children = derived.remove(&node.index).unwrap_or_default();
+        let Some(naming) = derived.remove(&node.index) else {
+            // No record names this one, so it has no derived child. Its own
+            // list is empty for the same reason: a listed child always names
+            // the node that lists it, or the container was refused above.
+            continue;
+        };
+        // Appended, never substituted: the stored links keep the store's own
+        // order and only the links a parent slot states on its own are added.
+        // Reordering a stored list would discard information the store does
+        // provide — in the measured corpus the stored order of a child list is
+        // not the order of the child records, so it is the store's statement
+        // and not an artifact to tidy.
+        for child in naming {
+            if !node.children.contains(&child) {
+                node.children.push(child);
+            }
+        }
     }
     Ok(WorldHierarchy { nodes, audit })
 }
