@@ -85,7 +85,7 @@ fn evidence_report_f39_d_writes_the_acceptance_report() {
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", log_path.display()));
     let suite = parse_suite(&log);
     assert!(
-        suite.passed > 0 && suite.assertions.len() as u64 >= suite.passed,
+        suite.passed > 0 && !suite.assertions.is_empty(),
         "the acceptance log was not understood: {suite:?}"
     );
 
@@ -309,35 +309,26 @@ struct Suite {
     assertions: Vec<(String, &'static str)>,
 }
 
-/// Extracts the libtest summaries and the per-test results of the
-/// `accept_f39_d_` tests from a recorded `cargo test` output.
+/// Extracts the per-test results of the `accept_f39_d_` tests from a recorded
+/// `cargo test` output.
+///
+/// The counts come from the **prefixed test lines**, not from the
+/// `test result:` summaries: a summary aggregates every test binary cargo ran,
+/// so reading it would report hundreds of unrelated tests as this task's
+/// acceptance selection. A prefixed test that was skipped is recorded with the
+/// schema's `unknown` status rather than counted as a pass, so a report can
+/// never claim an assertion it did not run.
 fn parse_suite(log: &str) -> Suite {
     let mut suite = Suite::default();
     let mut pending: VecDeque<String> = VecDeque::new();
     for line in log.lines() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("test result:") {
-            for (count, kind) in summary_fields(trimmed) {
-                match kind {
-                    "passed" => suite.passed += count,
-                    "failed" => suite.failed += count,
-                    "ignored" => suite.ignored += count,
-                    _ => {}
-                }
-            }
+        if pending.front().is_some()
+            && let Some(status) = finished(trimmed)
+        {
+            let name = pending.pop_front().expect("pending test");
+            record(&mut suite, name, status);
             continue;
-        }
-        if pending.front().is_some() {
-            if trimmed == "ok" {
-                let name = pending.pop_front().expect("pending test");
-                record(&mut suite, name, "pass");
-                continue;
-            }
-            if trimmed == "FAILED" {
-                let name = pending.pop_front().expect("pending test");
-                record(&mut suite, name, "fail");
-                continue;
-            }
         }
         let mut cursor = trimmed;
         while let Some(position) = cursor.find("test ") {
@@ -346,39 +337,42 @@ fn parse_suite(log: &str) -> Suite {
                 break;
             };
             let name = after[..separator].to_owned();
-            let tail = &after[separator + 5..];
-            cursor = tail;
+            let tail = after[separator + 5..].trim();
+            cursor = &after[separator + 5..];
             if !name.starts_with(ACCEPTANCE_PREFIX) {
                 continue;
             }
-            match tail.split_whitespace().next() {
-                Some("ok") => record(&mut suite, name, "pass"),
-                Some("FAILED") => record(&mut suite, name, "fail"),
-                _ => pending.push_back(name),
+            match finished(tail) {
+                Some(status) => record(&mut suite, name, status),
+                None => pending.push_back(name),
             }
         }
     }
     suite.assertions.dedup_by(|left, right| left.0 == right.0);
+    suite.passed = count(&suite, "pass");
+    suite.failed = count(&suite, "fail");
+    suite.ignored = count(&suite, "unknown");
     suite.executed = suite.passed + suite.failed;
     suite.discovered = suite.passed + suite.failed + suite.ignored;
     suite
 }
 
-/// `(count, kind)` pairs of one `test result:` summary line.
-fn summary_fields(line: &str) -> Vec<(u64, &str)> {
-    let mut fields = Vec::new();
-    for segment in line["test result:".len()..].split(';') {
-        let words: Vec<&str> = segment.split_whitespace().collect();
-        for pair in words.windows(2) {
-            if let Ok(count) = pair[0].parse::<u64>()
-                && matches!(pair[1], "passed" | "failed" | "ignored")
-            {
-                fields.push((count, pair[1]));
-                break;
-            }
-        }
+/// The libtest result word at the head of a test's tail line.
+fn finished(tail: &str) -> Option<&'static str> {
+    match tail.split_whitespace().next() {
+        Some("ok") => Some("pass"),
+        Some("FAILED") => Some("fail"),
+        Some("ignored") => Some("unknown"),
+        _ => None,
     }
-    fields
+}
+
+fn count(suite: &Suite, status: &str) -> u64 {
+    suite
+        .assertions
+        .iter()
+        .filter(|(_, seen)| *seen == status)
+        .count() as u64
 }
 
 fn record(suite: &mut Suite, name: String, status: &'static str) {
