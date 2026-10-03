@@ -249,8 +249,8 @@ and `content_sha256 a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262
 
 - `capabilities: ["retail", "synthetic"]`, `claim: "implemented"` — never
   `verified_original`;
-- `tests: {discovered: 12, executed: 12, passed: 12, failed: 0, ignored: 0}`
-  over the twelve `accept_f27_e_` tests, the three retail ones run with
+- `tests: {discovered: 13, executed: 13, passed: 13, failed: 0, ignored: 0}`
+  over the thirteen `accept_f27_e_` tests, the three retail ones run with
   `--include-ignored`;
 - `install_sha256 b4e780ab…c631978` and `content_sha256 a0223506…62c12d`, both
   from production `cs_assets::install` discovery, never typed in;
