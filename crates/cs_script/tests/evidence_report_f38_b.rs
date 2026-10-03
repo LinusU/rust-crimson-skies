@@ -255,6 +255,12 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
     fs::write(&out, &report).unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
 
     let written = fs::read_to_string(&out).expect("the report reads back");
+    // The harness checks its own output is well-formed JSON before anyone is
+    // asked to trust it: a `needle` search alone passed while the report was
+    // malformed, which is exactly the kind of unverified evidence this contract
+    // forbids. The structural check is deliberately independent of
+    // `tools/validate_evidence.py`, which is the next gate and not this one.
+    assert_brackets_balanced(&written);
     for needle in [
         "\"schema_version\": 1",
         "\"task_id\": \"F38-B\"",
@@ -310,6 +316,7 @@ fn measure(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement) {
         written.starts_with('{') && written.trim_end().ends_with('}'),
         "the corpus artifact must be one JSON object"
     );
+    assert_brackets_balanced(&written);
     (path, measurement)
 }
 
@@ -477,6 +484,42 @@ fn measure_corpus(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement
             other_call_sites: other_sites,
         },
     )
+}
+
+/// Whether every bracket and brace outside a string literal is closed, in order.
+///
+/// A deliberately small structural check, not a JSON parser: it catches the
+/// failure this harness actually made twice (a missing array wrapper and an
+/// unquoted key), and `tools/validate_evidence.py` is the real gate right
+/// after it.
+fn assert_brackets_balanced(text: &str) {
+    let mut stack: Vec<char> = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    for character in text.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            '{' | '[' => stack.push(character),
+            '}' => assert_eq!(stack.pop(), Some('{'), "unmatched `}}` in the report"),
+            ']' => assert_eq!(stack.pop(), Some('['), "unmatched `]` in the report"),
+            _ => {}
+        }
+    }
+    assert!(!in_string, "an unterminated string in the report");
+    assert!(
+        stack.is_empty(),
+        "the report has unclosed delimiters: {stack:?}"
+    );
 }
 
 // ---------------------------------------------------------------- inputs ---
@@ -741,7 +784,10 @@ fn artifact_array(artifacts: &[(String, String, String)]) -> String {
             )
         })
         .collect();
-    items.join(", ")
+    if items.is_empty() {
+        return "[]".to_owned();
+    }
+    format!("[{}]", items.join(", "))
 }
 
 /// A JSON array of strings. An empty slice renders as `[]`, not `[[]]`: the
