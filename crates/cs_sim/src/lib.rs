@@ -181,14 +181,23 @@
 //! `cs_content::pilots`; the conversion boundary, the ECS binding and the
 //! firing/lifecycle consumer seam are `cs_app::roster`.
 //!
-//! [`world_actors`] is the F34-A world-actor contract
-//! (`specs/F34-ground-vehicles-boats-trains-and-mission-machinery.md`, stage
-//! `### F34-A`): tick-indexed [`world_actors::trajectory::Trajectory`] whose
-//! position and velocity share one function, the single
+//! [`world_actors`] is the F34-A/F34-B world-actor contract and runtime
+//! (`specs/F34-ground-vehicles-boats-trains-and-mission-machinery.md`, stages
+//! `### F34-A` and `### F34-B`): tick-indexed
+//! [`world_actors::trajectory::Trajectory`] whose position and velocity
+//! share one function, the single
 //! [`world_actors::anchor::anchor_sample`] renderer and pickup both read,
 //! relative-velocity pickup eligibility, the explicit
-//! [`world_actors::graph::SupportGraph`] and detached-payload release. The
-//! runtime is F34-B and the wiring is F34-C.
+//! [`world_actors::graph::SupportGraph`] and detached-payload release. F34-B
+//! adds the production path: the gate-aware
+//! [`world_actors::route::RoutePlan`] and the per-session
+//! [`world_actors::runtime::WorldActorSet`], which steps catalog-typed rail,
+//! road, water and kinematic actors one tick at a time, holds a ground
+//! route at a closed gate until the gate is destroyed (the AC02 order
+//! pair), freezes destroyed actors as zero-velocity wrecks through the
+//! support graph's combined geometry+collision state, and registers
+//! released payloads with their carrier's faction and motion. The pickup,
+//! gate and cargo wiring into the mission host is F34-C.
 //!
 //! [`capital`] is the F35-A capital-ship contract
 //! (`specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`, stage
