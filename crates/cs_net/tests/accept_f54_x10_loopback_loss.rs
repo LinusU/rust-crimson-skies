@@ -43,6 +43,7 @@
 //! | `F54X10_RCVBUF` | 0 | `SO_RCVBUF` on fresh receive sockets; 0 = system default |
 //! | `F54X10_FRESH` | `both` | which endpoint rebinds per pair: `both`, `recv`, `send`, `none` |
 //! | `F54X10_BIND` | `loopback` | raw mode bind shape: `loopback` (both 127.0.0.1) or `client` (sender 0.0.0.0 like `ClientTransport`, receiver 127.0.0.1 like `HostTransport`) |
+//! | `F54X10_BIND_DELAY_MS` | 0 | transport mode: wall-clock sleep between the host bind and the client bind in a pair |
 //! | `F54X10_BOTH_DIRS` | 1 | nonzero = both endpoints send per send round |
 //! | `F54X10_DRAIN_QUIET_MS` | 10 | per-pair drain ends after this much silence |
 //! | `F54X10_DRAIN_CAP_MS` | 500 | hard cap on the per-pair drain |
@@ -53,6 +54,10 @@
 //! | `F54X10_PROCS` | 1 | fleet only: worker child processes to spawn |
 //! | `F54X10_SPINNERS` | 0 | fleet only: busy-loop children for CPU load |
 //! | `F54X10_OUT_DIR` | `private/f54x10` | fleet only: where worker/fleet JSON lands, resolved against the workspace root |
+//!
+//! `F54X10_SPIN_PARENT` and `F54X10_SPIN_TTL_S` are set by `f54x10_fleet` on
+//! the spinner children it spawns (the parent pid to watch, and the
+//! self-terminating TTL); they are not user knobs.
 //!
 //! What one probe datagram carries (little-endian): a magic u32, this
 //! process's nonce u64, the worker u16, the pair u32, the sequence u16 and a
@@ -1003,6 +1008,10 @@ fn run_probe(cfg: &ProbeConfig) -> WorkerTotals {
             totals
         }
         Mode::Transport => {
+            assert!(
+                cfg.workers <= 0x400 && cfg.pairs <= 0x3FFF,
+                "transport_client_id packs the worker in 10 bits and pair+1 in 14 bits"
+            );
             let handles: Vec<_> = (0..cfg.workers)
                 .map(|worker| {
                     let cfg = cfg.clone();
@@ -1356,7 +1365,14 @@ fn f54x10_fleet() {
             .unwrap_or_else(|_| panic!("worker {index} report at {path:?}"));
         workers_json.push(text.trim().to_string());
         for key in [
-            "sent", "received", "lost", "stray", "foreign", "send_err", "recv_err",
+            "sent",
+            "received",
+            "lost",
+            "stray",
+            "foreign",
+            "send_err",
+            "recv_err",
+            "late_cross_pair",
         ] {
             let value = json_total(&text, key).unwrap_or(0);
             match key {
@@ -1367,11 +1383,15 @@ fn f54x10_fleet() {
                 "foreign" => totals.foreign += value,
                 "send_err" => totals.send_err += value,
                 "recv_err" => totals.recv_err += value,
+                "late_cross_pair" => totals.late_cross_pair += value,
                 _ => {}
             }
         }
         totals.pairs += json_total(&text, "pairs").unwrap_or(0) as usize;
         totals.pairs_with_loss += json_total(&text, "pairs_with_loss").unwrap_or(0) as usize;
+        totals.rebound_pairs += json_total(&text, "rebound_pairs").unwrap_or(0) as usize;
+        totals.rebound_pairs_with_loss +=
+            json_total(&text, "rebound_pairs_with_loss").unwrap_or(0) as usize;
         totals.settled += json_total(&text, "settled").unwrap_or(0) as usize;
         totals.unsettled += json_total(&text, "unsettled").unwrap_or(0) as usize;
         totals.rejected += json_total(&text, "rejected").unwrap_or(0) as usize;
@@ -1725,6 +1745,12 @@ fn drain_count(sock: &UdpSocket, buf: &mut [u8]) -> u64 {
 #[ignore = "a load generator the fleet spawns; not a measurement"]
 fn f54x10_spinner() {
     let parent = env_u64("F54X10_SPIN_PARENT", 0) as libc::pid_t;
+    if parent == 0 {
+        // No owning fleet: `kill(0, 0)` below would probe this process's own
+        // group and always succeed, so a bare `--include-ignored` run would
+        // spin until the TTL instead of missing its parent.
+        return;
+    }
     let ttl = Duration::from_secs(env_u64("F54X10_SPIN_TTL_S", 3_600));
     let started = Instant::now();
     let mut spins = 0u64;
