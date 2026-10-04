@@ -41,6 +41,12 @@
 //! names resolve to. It lives here rather than in a new test binary because
 //! every run that added one at this crate's tests root died on the CI runner's
 //! disk (task #637); `F20`'s own owner path already covers this file.
+//!
+//! **Task #650 (`M01-LC-ANIM-RECORDS`, prefix `accept_m01_lc_anim_records_`)
+//! follows in the same file**: the walk over the animation records behind that
+//! payload header (`AnimationPayload::records`), and the join of the
+//! `startanims.zrd` identities to record names across the mission and camera
+//! carriers.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -3279,6 +3285,50 @@ const M01LC_OPEN_STATE: &str = "OPEN, and not this task's blocker: (1) the anima
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
 fn evidence_report_m01_lc_anim_carriers_writes_the_acceptance_report() {
+    m01lc_write_report(&M01LC_CARRIERS_REPORT);
+}
+
+/// The review identity the #633 report carries.
+const M01LC_REVIEW: &str = "implementer: bunny-alpha-1/bunny-alpha-1 (Rally task #633, session of \
+         2026-10-04); reviewer: bunny-alpha-1/bunny-alpha-1 again, in a fresh session with no \
+         memory of the implementation — a second pass over the code and an independent re-derivation \
+         of every measured number, but the SAME agent identity, so it is not an independent \
+         reviewer and not independent original-reference evidence (a follow-up task asks for one). \
+         The review fixed a fail-open empty first-record name, an Unvalidated-header arm that read \
+         the index anyway, the row anomalies the binding had dropped, and three measured-claim \
+         slips in this repository's docs; the claim stays at level `implemented`, and no agent \
+         review replaces the owner's human approval";
+
+/// Everything that differs between the task reports this binary can write.
+struct M01lcReport {
+    task_id: &'static str,
+    prefix: &'static str,
+    capability_tests: &'static [&'static str],
+    synthetic_tests: &'static [&'static str],
+    census_artifact: &'static str,
+    census: fn(&cs_app::animation::AnimationBindingSurvey) -> String,
+    open_state: &'static str,
+    review: &'static str,
+    open_needles: &'static [&'static str],
+}
+
+const M01LC_CARRIERS_REPORT: M01lcReport = M01lcReport {
+    task_id: "M01-LC-ANIM-CARRIERS",
+    prefix: M01LC_PREFIX,
+    capability_tests: M01LC_CAPABILITY_TESTS,
+    synthetic_tests: M01LC_SYNTHETIC_TESTS,
+    census_artifact: M01LC_CENSUS_ARTIFACT,
+    census: m01lc_census_json,
+    open_state: M01LC_OPEN_STATE,
+    review: M01LC_REVIEW,
+    open_needles: &[
+        "animation records behind each carrier",
+        "195 startanims.zrd identities",
+        "SAME agent identity",
+    ],
+};
+
+fn m01lc_write_report(spec: &M01lcReport) {
     let evidence_dir = m01lc_workspace_path(&m01lc_env("CS_EVIDENCE_DIR"));
     let candidate_tree = m01lc_env("CS_CANDIDATE_TREE");
     let argv: Vec<String> = m01lc_env("CS_EVIDENCE_ARGV")
@@ -3309,15 +3359,16 @@ fn evidence_report_m01_lc_anim_carriers_writes_the_acceptance_report() {
             log_path.display()
         )
     });
-    let suite = m01lc_parse_suite(&log);
+    let suite = m01lc_parse_suite(&log, spec.prefix);
     assert!(
         suite.passed > 0 && !suite.assertions.is_empty(),
-        "no `{M01LC_PREFIX}` tests were recorded in {}",
+        "no `{}` tests were recorded in {}",
+        spec.prefix,
         log_path.display()
     );
 
     // Capability coverage is checked, never assumed.
-    for required in M01LC_CAPABILITY_TESTS.iter().chain(M01LC_SYNTHETIC_TESTS) {
+    for required in spec.capability_tests.iter().chain(spec.synthetic_tests) {
         let status = suite
             .assertions
             .iter()
@@ -3342,8 +3393,8 @@ fn evidence_report_m01_lc_anim_carriers_writes_the_acceptance_report() {
     // The survey itself, re-run: the census artifact's numbers are this run's,
     // not a transcription of a test message.
     let survey = survey_animation_bindings(&game_dir).expect("the binding survey runs");
-    let census_path = evidence_dir.join(M01LC_CENSUS_ARTIFACT);
-    std::fs::write(&census_path, m01lc_census_json(&survey))
+    let census_path = evidence_dir.join(spec.census_artifact);
+    std::fs::write(&census_path, (spec.census)(&survey))
         .unwrap_or_else(|error| panic!("write {}: {error}", census_path.display()));
 
     let artifacts = vec![
@@ -3353,29 +3404,21 @@ fn evidence_report_m01_lc_anim_carriers_writes_the_acceptance_report() {
 
     let method = format!(
         "acceptance suite run locally with the `retail` capability: `cargo test --workspace \
-         --locked -- {M01LC_PREFIX} --include-ignored`, every task test passing (the \
+         --locked -- {} --include-ignored`, every task test passing (the \
          implementer's run is in the recorded log); this harness derives every field from that \
          log, from production discovery of $CS_GAME_DIR, and from the production binding survey \
          re-run over that installation (cs_app::animation::survey_animation_bindings over \
          cs_formats::zbd::anim::read_animation_index), validated with \
          tools/validate_evidence.py --require-pass. gpu and audio were available and UNUSED: \
          nothing was rendered or played. {}",
-        M01LC_OPEN_STATE
+        spec.prefix, spec.open_state
     );
-    let review = "implementer: bunny-alpha-1/bunny-alpha-1 (Rally task #633, session of \
-         2026-10-04); reviewer: bunny-alpha-1/bunny-alpha-1 again, in a fresh session with no \
-         memory of the implementation — a second pass over the code and an independent re-derivation \
-         of every measured number, but the SAME agent identity, so it is not an independent \
-         reviewer and not independent original-reference evidence (a follow-up task asks for one). \
-         The review fixed a fail-open empty first-record name, an Unvalidated-header arm that read \
-         the index anyway, the row anomalies the binding had dropped, and three measured-claim \
-         slips in this repository's docs; the claim stays at level `implemented`, and no agent \
-         review replaces the owner's human approval";
+    let review = spec.review;
 
     let document = format!(
         "{{\n\
          \x20\"schema_version\": 1,\n\
-         \x20\"task_id\": \"M01-LC-ANIM-CARRIERS\",\n\
+         \x20\"task_id\": {},\n\
          \x20\"candidate_tree\": {},\n\
          \x20\"engine\": {{\"rust\": {}, \"bevy\": {}, \"avian\": {}}},\n\
          \x20\"created_at\": {},\n\
@@ -3393,6 +3436,7 @@ fn evidence_report_m01_lc_anim_carriers_writes_the_acceptance_report() {
          \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
          \x20\"claim\": \"implemented\"\n\
          }}\n",
+        m01lc_json(spec.task_id),
         m01lc_json(&candidate_tree),
         m01lc_json(&m01lc_rustc_version()),
         m01lc_json(&m01lc_locked_version("bevy")),
@@ -3419,22 +3463,18 @@ fn evidence_report_m01_lc_anim_carriers_writes_the_acceptance_report() {
         .unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
     let written = std::fs::read_to_string(&out).expect("the report reads back");
     for needle in [
-        "\"schema_version\": 1",
-        "\"task_id\": \"M01-LC-ANIM-CARRIERS\"",
-        "\"capabilities\": [\"retail\", \"synthetic\"]",
-        "\"claim\": \"implemented\"",
-        "\"install_sha256\"",
+        "\"schema_version\": 1".to_owned(),
+        format!("\"task_id\": {}", m01lc_json(spec.task_id)),
+        "\"capabilities\": [\"retail\", \"synthetic\"]".to_owned(),
+        "\"claim\": \"implemented\"".to_owned(),
+        "\"install_sha256\"".to_owned(),
     ] {
         assert!(
-            written.contains(needle),
+            written.contains(&needle),
             "the written report is missing {needle:?}:\n{written}"
         );
     }
-    for open in [
-        "animation records behind each carrier",
-        "195 startanims.zrd identities",
-        "SAME agent identity",
-    ] {
+    for open in spec.open_needles {
         assert!(
             written.contains(open),
             "the report must carry the open product state ({open:?}) in its own words"
@@ -3447,6 +3487,141 @@ fn evidence_report_m01_lc_anim_carriers_writes_the_acceptance_report() {
         suite.failed
     );
     println!("wrote {}", out.display());
+}
+
+// ------------------- task #650: its evidence report ---------------------------
+//
+// The same harness, with the record walk's own constants. Run exactly as for
+// #633 above, with `accept_m01_lc_anim_records_` as the prefix,
+// `evidence_report_m01_lc_anim_records_writes_the_acceptance_report` as the
+// test, `private/evidence/M01-LC-ANIM-RECORDS` as the directory, and the copy
+// committed as `docs/findings/evidence/M01-LC-ANIM-RECORDS.json`.
+
+/// The retail half of #650's suite.
+const M01LCR_CAPABILITY_TESTS: &[&str] = &[
+    "accept_m01_lc_anim_records_retail_walk_pins_counts_and_startup_census",
+    "accept_m01_lc_anim_records_retail_fields_hold_over_every_record",
+];
+
+/// The synthetic half of #650's suite.
+const M01LCR_SYNTHETIC_TESTS: &[&str] = &[
+    "accept_m01_lc_anim_records_a_records_length_is_derived_from_its_own_counts_and_event_sizes",
+    "accept_m01_lc_anim_records_a_record_that_does_not_fit_is_a_named_refusal",
+    "accept_m01_lc_anim_records_the_region_after_the_last_record_is_reported_not_walked",
+    "accept_m01_lc_anim_records_pointer_words_are_reported_raw_and_unresolved",
+    "accept_m01_lc_anim_records_a_startup_identity_binds_only_to_exactly_one_record",
+];
+
+/// What the report states is still open after this task.
+const M01LCR_OPEN_STATE: &str = "OPEN, and not this task's blocker: (1) the EVENT STREAMS of the reset, damage and ordinary \
+     sequence blocks are kept as raw bytes and NOT decoded — no Crimson Skies event grammar is \
+     measured, so VS-M01-RUNTIME (#359), F20-D family validation and M01-B can name which \
+     animation records a carrier holds but cannot yet play one; (2) the region after the last \
+     record is NOT walked in 31 of the 61 carriers (29 690 .. 1 361 762 bytes; M01's mission \
+     carrier 543 041); (3) the record-local pointer words are unresolved heap addresses \
+     (0x01fadcf8 .. 0x04f7fe60, beyond every 2 MB container) and are never used as offsets; \
+     (4) the meaning of the flag word, the unknowns and index-word tables, the small id words \
+     and the object-entry bodies is unmeasured; (5) 10 of 195 startanims.zrd identities match no \
+     record of their scope's mission or camera carrier (pure_panic x4, deactivate_bmhookup_node \
+     x3, fueltrlight1, black_chimneysmoke, dtzep_engines_start; three exist in another scope's \
+     carrier) and how the original resolved them is UNMEASURED, since no original executable was \
+     run; the 185 that bind are a description of the retail files, not of the engine. Affected \
+     content: those 10 identities in c1/ia1, c1/m04, c1/mp1, c3/m01, c4/m01..m04, c5/m04, and \
+     every mission-facing animation claim until an event grammar exists.";
+
+const M01LCR_REVIEW: &str = "implementer: sonnet-1 (Claude Sonnet 5.5, Rally task #650, session of 2026-10-05); reviewer: \
+     none yet — the reviewer's identity and whether their context was fresh are recorded in \
+     the complete_review notes, and the record walk and the startup-identity rule are \
+     format/mission semantics that want a reviewer other than the implementer. The \
+     implementer re-derived the layout on every retail container before writing the reader, \
+     but that is not independent review and not independent original-reference evidence; the \
+     claim stays at level `implemented`, and no agent review replaces the owner's human \
+     approval";
+
+const M01LCR_CENSUS_ARTIFACT: &str = "anim-records.json";
+
+const M01LCR_REPORT: M01lcReport = M01lcReport {
+    task_id: "M01-LC-ANIM-RECORDS",
+    prefix: "accept_m01_lc_anim_records_",
+    capability_tests: M01LCR_CAPABILITY_TESTS,
+    synthetic_tests: M01LCR_SYNTHETIC_TESTS,
+    census_artifact: M01LCR_CENSUS_ARTIFACT,
+    census: m01lcr_census_json,
+    open_state: M01LCR_OPEN_STATE,
+    review: M01LCR_REVIEW,
+    open_needles: &[
+        "EVENT STREAMS",
+        "10 of 195 startanims.zrd identities",
+        "reviewer: none yet",
+    ],
+};
+
+#[test]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+fn evidence_report_m01_lc_anim_records_writes_the_acceptance_report() {
+    m01lc_write_report(&M01LCR_REPORT);
+}
+
+/// The derived record census: per carrier the declared and walked counts, the
+/// region after the last record, and the startup identities' dispositions.
+/// Counts, offsets and identity spellings only — never record bytes.
+fn m01lcr_census_json(survey: &cs_app::animation::AnimationBindingSurvey) -> String {
+    let carriers = survey
+        .carriers
+        .iter()
+        .map(|carrier| {
+            let payload = carrier.payload.as_ref().expect("payload read");
+            let records = payload.records.as_ref().expect("records walked");
+            format!(
+                "{{\"key\":{},\"kind\":{},\"declared_records\":{},\"walked_records\":{},\
+                  \"trailing_offset\":{},\"trailing_bytes\":{},\"record_0\":{}}}",
+                m01lc_json(&carrier.container_key),
+                m01lc_json(carrier.kind.label()),
+                payload.declared_record_count,
+                records.count,
+                records.trailing_offset,
+                records.trailing_bytes,
+                m01lc_bytes(&records.anim_names[0]),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n  ");
+    let startup = survey
+        .startup_bindings()
+        .iter()
+        .map(|scope| {
+            let rows = scope
+                .bindings
+                .iter()
+                .map(|row| {
+                    let outcome = match &row.outcome {
+                        StartupOutcome::Bound { carrier, record } => format!(
+                            "{{\"bound\":{},\"record\":{record}}}",
+                            m01lc_json(carrier.label())
+                        ),
+                        StartupOutcome::Unbound { reason, matches } => format!(
+                            "{{\"unbound\":{},\"matches\":{}}}",
+                            m01lc_json(reason),
+                            matches.len()
+                        ),
+                    };
+                    format!(
+                        "{{\"key\":{},\"identity\":{},\"outcome\":{outcome}}}",
+                        m01lc_json(&row.key),
+                        m01lc_json(&row.identity)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{{\"mission\":{},\"camera\":{},\"identities\":[{rows}]}}",
+                m01lc_json(&scope.mission_key),
+                m01lc_json(&scope.camera_key)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n  ");
+    format!("{{\n \"carriers\": [\n  {carriers}\n ],\n \"startup\": [\n  {startup}\n ]\n}}\n")
 }
 
 /// The derived census of every carrier the installation declares: keys, member
@@ -3717,7 +3892,7 @@ struct M01lcSuite {
 /// Extracts the per-test results of the task's tests from a recorded
 /// `cargo test` output. Only tests whose name carries the task prefix count, so
 /// the rest of this binary's suite is never counted as this task's evidence.
-fn m01lc_parse_suite(log: &str) -> M01lcSuite {
+fn m01lc_parse_suite(log: &str, prefix: &str) -> M01lcSuite {
     let mut suite = M01lcSuite::default();
     let mut pending: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     for line in log.lines() {
@@ -3754,7 +3929,7 @@ fn m01lc_parse_suite(log: &str) -> M01lcSuite {
             let full = &after[..separator];
             let tail = &after[separator + 5..];
             cursor = tail;
-            if !full.contains(M01LC_PREFIX) || full.contains("evidence_report") {
+            if !full.contains(prefix) || full.contains("evidence_report") {
                 continue;
             }
             let name = full.rsplit("::").next().expect("a name").to_owned();
