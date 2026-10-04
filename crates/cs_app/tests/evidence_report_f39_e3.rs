@@ -182,7 +182,7 @@ fn evidence_report_f39_e3_writes_the_acceptance_report() {
                 "{{\"scope\": {}, \"role\": {}, \"container\": {}, \"container_sha256\": {}, \
                  \"evidence\": [{}], \"declared_members\": {}, \"distinct_members\": {}, \
                  \"decoded_members\": {}, \"objective_blocks\": {}, \"target_records\": {}, \
-                 \"objective_spellings\": [{}], \"keys\": [{}], \"member_names\": [{}]}}",
+                 \"objective_spellings\": [{}], \"keys\": [{}], \"member_names\": {}}}",
                 jstr(&row.scope),
                 jstr(row.role.label()),
                 jstr(&row.container),

@@ -271,12 +271,13 @@ fast path; the retail assertions depend on the same three rules.
    wants.
 5. **The rest of the 612 members' key vocabulary** is published whole by
    `RetailScopeObjectiveCensus::keys()` and recorded in the evidence artifact
-   (`scope-objective-census.json`), and the objective-relevant part of it is the
-   five-key target vocabulary above plus the dialog vocabulary beside it. The
-   remaining ~2350 keys are animation, AI-manoeuvre, weather, terrain-template
-   and dialog-layout field names that name no objective; they are listed in the
-   artifact rather than transcribed here, because the census's objective claim is
-   bounded by the *spelling* inventory, not by the key inventory.
+   (`scope-objective-census.json`): **2362 distinct keys** (2059 of them in the
+   install-wide reader alone). The objective-relevant part is the five-key target
+   vocabulary above plus the dialog vocabulary beside it; the remaining keys are
+   animation, AI-manoeuvre, weather, terrain-template and dialog-layout field
+   names that name no objective. They are listed in the artifact rather than
+   transcribed here, because this stage's objective claim is bounded by the
+   *spelling* inventory, not by the key inventory.
 6. **The compiled program behind any of this** is still undecoded (F13-B/C,
    F38). No opcode was read.
 
