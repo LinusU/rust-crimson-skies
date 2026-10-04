@@ -54,13 +54,14 @@ because the file was not on disk. Consequences an agent can rely on:
   | `cargo test --workspace --locked --bin cs-inspect` | `Compiling cs_inspect` … `Finished in 0.35s`, then green |
 
   So the disappearance lands **after** the build phase, while cargo is
-  executing harnesses. For this workspace that is not a microsecond window:
-  a few hundred harness executables sit in `target/debug/deps` (432 at the time
+  executing harnesses. For this workspace that is not a microsecond window: a
+  few hundred harness executables sit in `target/debug/deps` (432 at the time
   of the baseline run below; the count moves as configurations come and go),
   cargo runs several at a time, and the execution phase of a full workspace run
-  on this machine lasts minutes. Anything that removes one of those files during that window
-  produces this error, in whatever crate happens to be pending next — which is
-  exactly the reported pattern (three different crates, one per run).
+  on this machine lasts minutes. Anything that removes one of those files
+  during that window produces this error, in whatever crate happens to be
+  pending next — which is exactly the reported pattern (three different crates,
+  one per run).
 
 ## What removes a harness executable here
 
