@@ -110,7 +110,7 @@ const RESEND_TIME: Duration = Duration::from_millis(300);
 /// stack's own value; it is only the token's lifetime, never the window below.
 const CONNECT_TOKEN_EXPIRE_SECONDS: u64 = 300;
 
-/// The application key an [`UnsecureWindow`] connect token is sealed with.
+/// The application key a [`ConnectWindow`] connect token is sealed with.
 ///
 /// `renetcode2` seals a token generated for [`ClientAuthentication::Unsecure`]
 /// with an all-zero key, and its server side uses that same key whenever
@@ -130,11 +130,14 @@ const UNSECURE_CONNECT_KEY: [u8; NETCODE_KEY_BYTES] = [0; NETCODE_KEY_BYTES];
 /// window in real time, so the window and the pump cadence have to be chosen
 /// together (docs/findings/2026-10-04-f54-x2-loopback-pump-and-socket-determinism.md).
 ///
-/// The production value is the pinned stack's own default ([`DEFAULT`]); it is
-/// what every shipped session runs with. A harness that drives the transport in
-/// a tight loop on a machine shared with other builds can ask for a wider one
-/// through [`HostTransport::bind_with_window`] and
-/// [`ClientTransport::connect_with_window`] without changing any default.
+/// The production value is the pinned stack's own default
+/// ([`DEFAULT_CONNECT_WINDOW`]); it is what every shipped session runs with. A
+/// harness that drives the transport in a tight loop on a machine shared with
+/// other builds can ask for a wider one through
+/// [`ClientTransport::connect_with_window`] without changing any default. There
+/// is deliberately no host-side counterpart: under unsecure authentication the
+/// host has no window of its own, and it adopts the one the client's token
+/// carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ConnectWindow(i32);
 
@@ -179,7 +182,11 @@ impl ConnectWindow {
 ///
 /// A shipped session never exceeds it — see [`ConnectWindow`] for why a
 /// harness may.
-pub const DEFAULT_CONNECT_WINDOW: ConnectWindow = ConnectWindow(15);
+///
+/// Written through [`ConnectWindow::new`] so that a non-positive default is a
+/// compile-time const-evaluation error rather than a silently installed "no
+/// timeout at all".
+pub const DEFAULT_CONNECT_WINDOW: ConnectWindow = ConnectWindow::new(15);
 
 /// The authentication a [`ConnectWindow`] client offers: the same unsecure
 /// token the pinned layer builds for [`ClientAuthentication::Unsecure`], with

@@ -96,12 +96,14 @@ const LOOPBACK_WINDOW: ConnectWindow = ConnectWindow::new(120);
 
 /// How many pump rounds an end-to-end expectation gets before it fails.
 ///
-/// Derived from [`LOOPBACK_WINDOW`] so the two cannot drift: the round budget
-/// is the window expressed in [`STEP`]s, plus a margin, which means a wait may
-/// always outlast the connection layer's own patience instead of reporting a
-/// timeout the layer had already declared. It is still a bound on rounds, not
-/// a sleep — no test waits on the wall clock.
-const MAX_ROUNDS: usize = (LOOPBACK_WINDOW.const_seconds() as usize * 1_000 / 16) + 64;
+/// Derived from [`LOOPBACK_WINDOW`] and [`STEP`] together, so neither can
+/// drift out from under the other: the round budget is the window expressed in
+/// [`STEP`]s, plus a margin, which means a wait may always outlast the
+/// connection layer's own patience instead of reporting a timeout the layer had
+/// already declared. It is still a bound on rounds, not a sleep — no test waits
+/// on the wall clock.
+const MAX_ROUNDS: usize =
+    (LOOPBACK_WINDOW.const_seconds() as usize * 1_000 / STEP.as_millis() as usize) + 64;
 
 /// Serializes the tests in this file that open a real loopback socket.
 ///
@@ -2258,7 +2260,7 @@ fn accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer() {
     let second = allocator.allocate().expect("the retry epoch allocates");
     let mut hello = synthetic_hello();
     hello.compatibility.rules_sha256 = ContentHash::from_bytes([0x00; 32]);
-let mut link = Link::new(first, synthetic_parameters(), hello);
+    let mut link = Link::new(first, synthetic_parameters(), hello);
 
     // Both sides are driven by the same [`STEP`], which is the clock every pump
     // here takes: the pinned connection layer times its own 250 ms keep-alive
@@ -2280,7 +2282,7 @@ let mut link = Link::new(first, synthetic_parameters(), hello);
         link.host_notices
     );
 
-    // The client still has to read the verdict, and only its own rounds may run
+// The client still has to read the verdict, and only its own rounds may run
     // to do it: the host hangs up on a refused client one round later, on
     // purpose, so that renet can flush the refusal first — and the retry below
     // is what has to hang this connection up, so it has to start from one the

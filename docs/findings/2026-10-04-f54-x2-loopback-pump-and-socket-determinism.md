@@ -224,6 +224,65 @@ average ~106:
   (before: 11 of 50, with 24 spinners at load 25-40).
 * 30 tests, 0 failed, whole binary in 0.02 s — serializing costs nothing.
 
+## Independent reproduction (review, `bunny-alpha-2` reviewing its own branch)
+
+The reviewer re-ran the acceptance measurement from scratch rather than taking
+the numbers above on trust. Same machine (11 cores), its own 24 spinners
+confirmed alive with `kill -0` (24/24), load average 85-99:
+
+* **50 of 50 runs of `accept_f54_c_lifecycle` at `--test-threads=16` passed.**
+* 30 passed, 0 ignored, 0 measured, 0.02 s per run — the same shape as above.
+* The one configuration in the new acceptance test that is *not* generous —
+  the `ConnectWindow::new(1)` client, whose handshake has only ~62 rounds of
+  pump time and four `NETCODE_SEND_RATE` retransmits
+  (`renetcode2-0.16.1/src/lib.rs:61`, 250 ms) to work with — was run **200
+  times on its own at `--test-threads=1` under the same load: 200 passed, 0
+  failed.** That sub-case was the reviewer's main worry — a one-second window is
+  the one configuration in the file with no margin — and it is not a flake
+  waiting to happen.
+
+Two probes, to check that each half of the fix is load-bearing:
+
+* **`connect_with_window` ignores its argument** (uses the default instead):
+  `accept_f54_c_the_connect_window_is_a_fixture_parameter_over_the_default`
+  fails, as it must —
+  `after 256 silent rounds (ConnectWindow(1) window) the connection layer's
+  verdict is the window's: left: true, right: false`.
+* **The window stays widened but `loopback()` hands every caller its own
+  private mutex**, i.e. the serialization alone is removed and nothing else
+  changes: **1 failure in 30 runs** at the same load, and the single failure is
+  `accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer` — the
+  assertion **#600 (F54-X1) owns**. So the mutex is carrying this file, and the
+  only residue left without it belongs to the other task, which is exactly the
+  interaction recorded under "Limits".
+
+### Reviewer corrections to this branch
+
+* Two new rustdoc warnings, both broken intra-doc links introduced by this
+  branch: `ConnectWindow`'s docs pointed at a non-existent `[`DEFAULT`]`
+  (the item is `DEFAULT_CONNECT_WINDOW`) and at a non-existent
+  `HostTransport::bind_with_window` — a host-side method that deliberately does
+  not exist, as this finding says two sections below. Both links now name what
+  actually exists, and the doc states plainly that there is no host-side
+  counterpart and why. A third, stale `[`UnsecureWindow`]` link on the private
+  `UNSECURE_CONNECT_KEY` named a type that never existed; rustdoc does not
+  resolve links on private items, so it was silent, and it is fixed too.
+* `MAX_ROUNDS` derived the round budget as `window * 1_000 / 16 + 64`, with
+  `16` hardcoded. `STEP` is the thing that number means, so if `STEP` ever
+  changed the derivation would silently stop describing the window — the exact
+  drift the derivation exists to prevent. It is now
+  `window * 1_000 / STEP.as_millis() + 64`.
+* `DEFAULT_CONNECT_WINDOW` was built with the tuple constructor
+  `ConnectWindow(15)`, bypassing `ConnectWindow::new`'s validation. It is now
+  `ConnectWindow::new(15)`, so a non-positive default is a compile-time
+  const-evaluation error rather than a silently installed "no timeout at all".
+* `accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer` justified
+  its assertion with "four one-second rounds stay inside the connection layer's
+  own five-second timeout". That number was already wrong on `origin/main` (the
+  pinned default is fifteen) and this branch widens the window again, so the
+  comment now names the window the client actually asked for. The assertion and
+  the test's logic are untouched — that test belongs to #600.
+
 ## Sensitivity
 
 `accept_f54_c_the_connect_window_is_a_fixture_parameter_over_the_default`
