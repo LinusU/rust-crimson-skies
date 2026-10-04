@@ -129,6 +129,45 @@ pub enum CampaignError {
         /// The attempted grant.
         delta: u64,
     },
+    /// The selected node is an interlude with no `Victory` edge, so it has no
+    /// way onward — the declared graph cannot be walked past it.
+    ///
+    /// A **refusal**, never a silent stop: a beat the runtime cannot leave is a
+    /// dead end in the *declared* campaign, and reporting it is what lets F43-D
+    /// tell a bad import from a rule this stage has not implemented.
+    InterludeDeadEnd {
+        /// The interlude with no onward victory edge.
+        node: CampaignNodeKey,
+    },
+    /// The draft was written against an older profile revision than the state
+    /// holds (contract: "Conflicting revisions fail and refresh the view").
+    ///
+    /// The state is **untouched**: a stale draft must never overwrite unrelated
+    /// progression, which is exactly what an unguarded write would do.
+    StaleRevision {
+        /// The revision the draft expected.
+        expected: u64,
+        /// The revision the state actually holds.
+        actual: u64,
+    },
+    /// The item is not open in this run — no roster gate the run has completed
+    /// declares it available.
+    ItemUnavailable {
+        /// The requested item.
+        item: ContentId,
+    },
+    /// The profile already owns the item, so buying it again would charge twice.
+    AlreadyOwned {
+        /// The item already owned.
+        item: ContentId,
+    },
+    /// The balance cannot cover the price.
+    InsufficientFunds {
+        /// The price in minor units.
+        price: u64,
+        /// The balance in minor units.
+        balance: u64,
+    },
 }
 
 impl fmt::Display for CampaignError {
@@ -152,6 +191,29 @@ impl fmt::Display for CampaignError {
             Self::CurrencyOverflow { before, delta } => {
                 write!(f, "grant of {delta} would overflow the balance {before}")
             }
+            Self::InterludeDeadEnd { node } => write!(
+                f,
+                "interlude {node} has no victory edge, so the declared campaign \
+                 cannot be walked past it"
+            ),
+            Self::StaleRevision { expected, actual } => write!(
+                f,
+                "the draft was written against revision {expected} but the profile \
+                 is at {actual}: refresh the view and retry"
+            ),
+            Self::ItemUnavailable { item } => {
+                write!(f, "item {item} is not available in this run")
+            }
+            Self::AlreadyOwned { item } => {
+                write!(
+                    f,
+                    "item {item} is already owned; buying it again would charge twice"
+                )
+            }
+            Self::InsufficientFunds { price, balance } => write!(
+                f,
+                "price {price} exceeds the balance {balance} in minor units"
+            ),
         }
     }
 }
@@ -371,4 +433,182 @@ impl CampaignState {
             revision: self.revision,
         })
     }
+
+    /// Walks the selected node forward across declared **interludes** and stops
+    /// on the first node that can report an outcome of its own (spec F43 stage B,
+    /// "progression transactions").
+    ///
+    /// An interlude has no outcome: the vocabulary carries it
+    /// ([`RuntimeNodeKind::Interlude`]) and the declared schema declares its
+    /// edges, but no mission ever produces one. F43-A therefore left `current`
+    /// parked on an interlude with nothing able to move it — a dead end in any
+    /// campaign whose path crosses a briefing or a cutscene. This is the one
+    /// production path that crosses it, and it is deliberately **not** folded
+    /// into [`Self::apply_outcome`]: an interlude edge can carry its own grant,
+    /// and paying it inside the mission's transaction would merge two revisions
+    /// into one and hide the beat from the run's own record.
+    ///
+    /// The walk is idempotent by construction: it moves `current` off each beat,
+    /// so a second call starts on a node that is not an interlude, traverses
+    /// nothing, pays nothing and does **not** bump the revision (spec F43
+    /// behavior 2 — rewards and unlocks are idempotent).
+    ///
+    /// # Errors
+    ///
+    /// [`CampaignError::InterludeDeadEnd`] when the selected interlude declares no
+    /// `Victory` edge, and [`CampaignError::CurrencyOverflow`] when a beat's grant
+    /// would overflow the balance. Either way the state is untouched.
+    pub fn advance_interludes(
+        &mut self,
+        graph: &CampaignGraph,
+    ) -> Result<InterludeAdvance, CampaignError> {
+        let mut traversed: Vec<CampaignNodeKey> = Vec::new();
+        let mut currency_delta: i64 = 0;
+        let mut unlocks: Vec<ContentId> = Vec::new();
+        // Compute the whole walk before touching anything: a beat with no onward
+        // edge must leave the run exactly where it was, not half-way down a chain
+        // it cannot finish.
+        let mut landed: Option<CampaignNodeKey> = None;
+        let mut cursor = self.current.clone();
+        while graph
+            .node(&cursor)
+            .is_some_and(|node| node.kind == RuntimeNodeKind::Interlude)
+        {
+            let Some(edge) = graph.transition(&cursor, Outcome::Succeeded) else {
+                return Err(CampaignError::InterludeDeadEnd { node: cursor });
+            };
+            traversed.push(cursor.clone());
+            currency_delta += edge.grant.currency as i64;
+            unlocks.extend(edge.grant.unlocks.iter().cloned());
+            cursor = edge.to.clone();
+            landed = Some(cursor.clone());
+        }
+        if traversed.is_empty() {
+            return Ok(InterludeAdvance::default());
+        }
+        let new_currency = self.currency.checked_add(currency_delta as u64).ok_or(
+            CampaignError::CurrencyOverflow {
+                before: self.currency,
+                delta: currency_delta as u64,
+            },
+        )?;
+
+        // Commit — one revision for the whole chain.
+        if let Some(to) = landed {
+            self.current = to;
+        }
+        self.currency = new_currency;
+        self.unlocks.extend(unlocks.iter().cloned());
+        self.revision += 1;
+        Ok(InterludeAdvance {
+            traversed,
+            currency_delta,
+            unlocks,
+        })
+    }
+
+    /// Buys one item for the run: the contract's purchase draft
+    /// ("Validate current availability, money and weight before writing.
+    /// Conflicting revisions fail and refresh the view; they do not overwrite
+    /// unrelated progression.").
+    ///
+    /// Order of checks — availability, then ownership, then money, then the
+    /// expected revision last, so a stale draft is *always* reported as stale and
+    /// never as "you cannot afford it": the view the caller refreshes on a
+    /// conflict must describe the same reason the conflict had. Every refusal
+    /// leaves the state bit-identical.
+    ///
+    /// Idempotent by the same argument as the interlude walk: the item joins
+    /// [`Self::unlocks`], so a repeated draft is refused with
+    /// [`CampaignError::AlreadyOwned`] instead of charging twice (spec F43
+    /// behavior 2).
+    ///
+    /// # Errors
+    ///
+    /// [`CampaignError`].
+    pub fn purchase(
+        &mut self,
+        graph: &CampaignGraph,
+        draft: &PurchaseDraft,
+    ) -> Result<PurchaseReceipt, CampaignError> {
+        if !graph.available_items(self).any(|item| *item == draft.item) {
+            return Err(CampaignError::ItemUnavailable {
+                item: draft.item.clone(),
+            });
+        }
+        if self.unlocks.contains(&draft.item) {
+            return Err(CampaignError::AlreadyOwned {
+                item: draft.item.clone(),
+            });
+        }
+        if self.currency < draft.price {
+            return Err(CampaignError::InsufficientFunds {
+                price: draft.price,
+                balance: self.currency,
+            });
+        }
+        if draft.expected_revision != self.revision {
+            return Err(CampaignError::StaleRevision {
+                expected: draft.expected_revision,
+                actual: self.revision,
+            });
+        }
+
+        // Commit — the single mutation point.
+        self.currency -= draft.price;
+        self.unlocks.insert(draft.item.clone());
+        self.revision += 1;
+        Ok(PurchaseReceipt {
+            item: draft.item.clone(),
+            paid: draft.price,
+            revision: self.revision,
+        })
+    }
+}
+
+/// What one interlude walk traversed and granted.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InterludeAdvance {
+    /// The beats walked, in order. Empty when the selected node was not an
+    /// interlude — which is also the case that leaves the revision untouched.
+    pub traversed: Vec<CampaignNodeKey>,
+    /// Currency the beats granted, in minor units.
+    pub currency_delta: i64,
+    /// Content the beats unlocked.
+    pub unlocks: Vec<ContentId>,
+}
+
+impl InterludeAdvance {
+    /// Whether the walk moved the run at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.traversed.is_empty()
+    }
+}
+
+/// A request to buy one item, written against the revision the view was built
+/// from.
+///
+/// The draft is the contract's optimistic-concurrency token: it names the
+/// revision the caller believed it was buying against, so a save written by
+/// anything else in between is detected instead of silently overwritten.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PurchaseDraft {
+    /// The item to buy.
+    pub item: ContentId,
+    /// The price in minor units.
+    pub price: u64,
+    /// The profile revision the view was built from.
+    pub expected_revision: u64,
+}
+
+/// What one accepted purchase did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PurchaseReceipt {
+    /// The item bought.
+    pub item: ContentId,
+    /// What was charged, in minor units.
+    pub paid: u64,
+    /// The profile revision after the purchase.
+    pub revision: u64,
 }
