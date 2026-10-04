@@ -65,12 +65,23 @@ harnesses at all, so there is no binary to lose: the `test` build plan for
 
 ## Root cause
 
-Three mechanisms, all from a second cargo writing the same target dir:
+> **Correction (task #620).** This finding originally attributed mechanism 1
+> solely to a second cargo. Task #617
+> (`2026-10-04-t617-cargo-test-enoent-is-external.md`, measurement in #613/#617)
+> captured the owner's `prune-stale-bins.sh --delete …/target/debug/deps`
+> unlinking harness executables with no second cargo present. Both writers
+> produce the same `os error 2`, and this task's reproductions only exercise
+> the cargo one. `test = false` removes the two empty harnesses from the plan;
+> it does not stop the pruner and does not prevent the flake for crates that
+> have real unit tests.
+
+Three mechanisms; mechanisms 2 and 3 come from a second cargo writing the same
+target dir, mechanism 1 from either that or the external prune above:
 
 1. **Empty harness binaries.** `src/lib.rs` and `src/main.rs` carry zero
    `#[test]`s, yet cargo still builds and execs a unit-test harness for each
-   in the default `cargo test` plan. A concurrent rebuild replaces
-   `target/debug/deps/cs_xtask-<hash>` between the first run's discovery and
+   in the default `cargo test` plan. A concurrent rebuild (or a prune of old
+   executables) replaces or removes `target/debug/deps/cs_xtask-<hash>` between the first run's discovery and
    exec — the reported `os error 2`.
 2. **Transient `NotFound` reads.** Every gate read a file once
    (`fs::read_to_string` on manifests, `fs::read`/`fs::read_dir` on dep-info
