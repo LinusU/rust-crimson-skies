@@ -77,15 +77,15 @@ const MAX_ROUNDS: usize = 2_000;
 /// How many rounds a retry's hang-up gets to reach the peer-less client.
 ///
 /// The refused client only ever learns of the retry through the connection
-/// layer's own hang-up packet: `HostTransport::reopen` marks the reliable
-/// connection closed, the pinned layer turns that into one `Packet::Disconnect`
-/// on the host's next update, and the client honors it on its next one. With
-/// both sides at [`STEP`] that is two rounds, and the packet is never
+/// layer's own hang-up packet: `HostTransport::reopen` runs the pinned
+/// layer's `disconnect_all`, which sends one `Packet::Disconnect` to every
+/// connection it still holds, and the client honors it on its next update.
+/// With both sides at [`STEP`] that is two rounds, and the packet is never
 /// retransmitted, so a lost one fails this test rather than being retried.
 ///
 /// [`STEP`] is 16 ms, so this budget is about a second of connection-layer time
-/// while the client's own five-second disconnect window — the pinned unsecure
-/// token's `timeout_seconds` — is still some 310 rounds away. A connection that
+/// while the client's own disconnect window — the pinned unsecure token's
+/// fifteen-second `timeout_seconds` — is still far away. A connection that
 /// dies inside this budget died by hang-up, and the reason assertion below names
 /// which party sent it.
 const HANGUP_ROUNDS: usize = 64;
@@ -2094,6 +2094,123 @@ fn accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer() {
         !link.host_has(|notice| matches!(notice, ServerNotice::HungUp { .. })),
         "the retry hung up on that connection as one decision, so the fresh epoch does not report \
          it again as a per-connection hang-up of the spent epoch: {:?}",
+        link.host_notices
+    );
+}
+
+#[test]
+fn accept_f54_c_a_retry_tells_a_returning_client_its_verdict() {
+    // The pinned connection layer keeps its own client table alongside the
+    // session's bookkeeping. Before the retry released that table itself, a
+    // client reconnecting with the same connection id inside the window
+    // where the spent epoch's slot still stood was denied without an answer:
+    // the pinned layer silently refuses a request whose client_id occupies a
+    // slot and ignores a response that names one, so the returning client
+    // could never be told the new epoch's verdict. The retry now hangs those
+    // slots up itself, and this test drives the real loopback through it.
+    let mut allocator = SessionAllocator::new();
+    let first = allocator.allocate().expect("the first epoch allocates");
+    let second = allocator.allocate().expect("the retry epoch allocates");
+    let mut link = Link::joined(first);
+    let mut second_member = link.raw_peer(0xC2);
+    second_member.handshake(&mut link.host);
+    assert_eq!(
+        link.host.members().count(),
+        2,
+        "two members held connection-layer slots in the spent epoch"
+    );
+
+    // `close` condemns the members at the reliable layer, but only the retry
+    // releases the slots they still occupy at the connection layer — so its
+    // count is every connection it hung up there, not just the peer-less
+    // connections the session's own bookkeeping still knew about.
+    assert_eq!(
+        link.host
+            .reopen(second)
+            .expect("the retry binds a fresh epoch"),
+        2,
+        "the retry hung up both connections the spent epoch still held"
+    );
+    assert_eq!(link.host.session(), second);
+    assert_eq!(
+        link.host.connected_clients(),
+        0,
+        "no spent-era slot survives at the connection layer"
+    );
+
+    // The same connection-layer id returns on a fresh socket and is told the
+    // new epoch's grant — the stale slot that would have denied it is gone.
+    let mut returning = link.raw_peer(0xC1);
+    let peer = returning.handshake(&mut link.host);
+    assert_eq!(
+        returning
+            .transport
+            .grant()
+            .expect("the returning client is told its grant")
+            .session,
+        second,
+        "the grant is the new epoch's"
+    );
+    assert!(
+        link.host.members().any(|member| member == peer),
+        "and the returning client is a member of it"
+    );
+
+    // The same id with a hello the admission gate refuses is told the named
+    // reason rather than left waiting for an answer that cannot come.
+    let mut refused_hello = synthetic_hello();
+    refused_hello.compatibility.rules_sha256 = ContentHash::from_bytes([0x00; 32]);
+    let addr = link.host.local_addr().expect("the host has an address");
+    let mut refused = RawPeer {
+        transport: ClientTransport::connect(refused_hello, addr, 0xC2, Duration::ZERO)
+            .expect("the refused client socket binds"),
+    };
+    let mut told = false;
+    for _ in 0..MAX_ROUNDS {
+        if refused.transport.rejection().is_some() {
+            told = true;
+            break;
+        }
+        link.host_notices.extend(refused.round(&mut link.host));
+    }
+    assert!(
+        told,
+        "the refused client was never told its reason; the host saw {:?}",
+        link.host_notices
+    );
+    assert!(
+        matches!(
+            refused.transport.rejection(),
+            Some(HandshakeReject::RulesMismatch { .. })
+        ),
+        "the refused client holds the named reason: {:?}",
+        refused.transport.rejection()
+    );
+
+    // The spent epoch stays stale: the returning client's packet stamped
+    // with the first epoch is still refused by the gate.
+    let stale = fire_bytes(first, Tick(11), 0);
+    returning.inject(CHANNEL_SEQUENCED, &stale);
+    for _ in 0..200 {
+        link.host_notices.extend(returning.round(&mut link.host));
+        if link.host_has(|notice| matches!(notice, ServerNotice::Dropped { .. })) {
+            break;
+        }
+    }
+    assert_eq!(
+        link.host.drain_work().len(),
+        0,
+        "a packet stamped with the prior epoch applies to nothing"
+    );
+    assert!(
+        link.host_has(|notice| matches!(
+            notice,
+            ServerNotice::Dropped {
+                reason: DropReason::Refused(violation),
+                ..
+            } if violation.label() == "stale_session"
+        )),
+        "the stale traffic was refused and named: {:?}",
         link.host_notices
     );
 }
