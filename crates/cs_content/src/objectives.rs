@@ -3860,6 +3860,365 @@ fn read_identity(block: &str, value: &ZrdValue) -> Result<MeasuredIdentity, Dorm
     })
 }
 
+// ---------------------------------------------------------------------------
+// F39-E7: is a detached actor a counted category?
+// ---------------------------------------------------------------------------
+//
+// `docs/contracts/SCRIPT-MISSION.md` ("Objective event ordering") requires
+// conditions to tell **six** things apart — "disabled, dead, captured, escaped,
+// detached and despawned" — while the F39 sheet's own non-negotiable 2 and the
+// engine's counter vocabulary name **five** (`DeclaredCountKind`). The missing
+// one is `detached`, and nothing in this project had asked the original what it
+// means. F39-E4 measured which of the five the original's records declare; it
+// deliberately invented no sixth. This section is the question for the sixth:
+//
+// **does any objective declaration in the installation spell a detached
+// category at all?**
+//
+// The answer is measured over three surfaces that are deliberately kept apart,
+// because a name found on one of them is not evidence about the others:
+//
+// 1. [`DetachedVocabularySurface::CountedCondition`] — the `INACTIVE<n>`
+//    conditions of a block that **also** declares an
+//    `INACTIVE_COMPLETION_COUNT`. This is the only counter the original's
+//    records actually write, so a category declared here is a category a
+//    condition can be satisfied by.
+// 2. [`DetachedVocabularySurface::ObjectiveKind`] — the `help_label`,
+//    `category_label` and `description` of a `targets.zrd` record: a localized
+//    label saying what must happen to a named actor. A label is *not* a counted
+//    transition, which is exactly why F39-E4 refused to make one a producer.
+// 3. [`DetachedVocabularySurface::BlockDeclaration`] — every text element of
+//    every `OBJECTIVE<n>` block: the vocabulary the objective *triggers* are
+//    written in (`WAKE_ANIM`, `COMPLETED_SOUND_GROUP`, ...). This is where a
+//    scripted detach shows up, if anywhere.
+//
+// A name matches a family when one of its `_`-separated **segments** begins
+// with that family's stem, case-insensitively — the same segment rule F39-E4
+// used for its five categories, kept here as its own declared rule rather than
+// borrowed, because the family list below is this stage's. Segment-prefix
+// rather than whole-string, because the measured labels carry a `MSG_OBJ_`
+// prefix; segment rather than substring, because a stem that matched anywhere
+// would claim `healthy` for a `THREAT`-shaped spelling.
+//
+// **What a negative here does and does not mean.** A zero over these three
+// surfaces is a measured absence *of the spelling*, over a published stem list,
+// in the declarations this reader can see. It is not a proof that the original
+// has no notion of a detached actor: the compiled program behind each record is
+// undecoded (F13-B/C, F38 own the instruction table), and no original
+// executable has been run. What the surfaces do show is *where* the original
+// writes a detach, which is the question F39-E7 had to answer.
+
+use crate::stunts::{
+    SCENARIO_TARGETS_MEMBER, TARGET_CATEGORY_KEY, TARGET_DESCRIPTION_KEY, TARGET_HELP_KEY,
+    zrd_field,
+};
+
+/// The contract's own word for the sixth distinction, as a spelling stem.
+///
+/// Measured: the token `detach` appears in **no** file of the owner's
+/// installation except two third-party Windows/DirectX export names
+/// (`DLL_PROCESS_DETACH` in `dsetup32.dll`, `CImmDevice::detach_effects` in
+/// `ifc21.dll`). It is still the contract's word, so it leads the family.
+pub const DETACH_STEM: &str = "DETACH";
+
+/// Every spelling family a detached objective category could be declared under.
+///
+/// A published list, not a proof: a name spelled outside these twelve stems
+/// would not be found, which is why the finding records the rule and the list
+/// rather than only the count. The list is the contract's own word plus the
+/// release/drop/ejection vocabulary the installation is measured to use for
+/// scripted detaches (`release_hook`, `drop_paratroopers`, `dropit`,
+/// `drop_smokescreen_canister`), read at segment level so `MSG_OBJ_RELEASE`
+/// matches `RELEASE`.
+pub const DETACHED_SPELLING_STEMS: &[&str] = &[
+    DETACH_STEM,
+    "RELEASE",
+    "DROP",
+    "EJECT",
+    "JETTISON",
+    "LAUNCH",
+    "LOOSE",
+    "FREE",
+    "UNDOCK",
+    "UNCOUPLE",
+    "DISCONNECT",
+    "CASTOFF",
+];
+
+/// Which surface of an objective record a name was read from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DetachedVocabularySurface {
+    /// The `INACTIVE<n>` conditions of a block that also declares an
+    /// `INACTIVE_COMPLETION_COUNT`.
+    CountedCondition,
+    /// A `targets.zrd` record's `help_label`, `category_label` or `description`.
+    ObjectiveKind,
+    /// Any text element of any `OBJECTIVE<n>` block.
+    BlockDeclaration,
+}
+
+impl DetachedVocabularySurface {
+    /// The stable lowercase label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::CountedCondition => "counted_condition",
+            Self::ObjectiveKind => "objective_kind",
+            Self::BlockDeclaration => "block_declaration",
+        }
+    }
+
+    /// Every surface, in the order the reader reads them.
+    pub const ALL: &'static [Self] = &[
+        Self::CountedCondition,
+        Self::ObjectiveKind,
+        Self::BlockDeclaration,
+    ];
+}
+
+/// The family a name belongs to, or `None` when no segment of it begins with
+/// one of [`DETACHED_SPELLING_STEMS`].
+///
+/// The rule is **one**: split on `_`, and a family claims the name when one
+/// segment starts with that family's stem, compared case-insensitively. The
+/// first family in [`DETACHED_SPELLING_STEMS`] wins, so the answer does not
+/// depend on iteration order.
+#[must_use]
+pub fn detached_spelling_family(name: &str) -> Option<&'static str> {
+    for segment in name.split('_').filter(|segment| !segment.is_empty()) {
+        let upper = segment.to_ascii_uppercase();
+        if let Some(stem) = DETACHED_SPELLING_STEMS
+            .iter()
+            .copied()
+            .find(|stem| upper.starts_with(stem))
+        {
+            return Some(stem);
+        }
+    }
+    None
+}
+
+/// One measured name, with the surface and block it was read from.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DetachedSpellingSite {
+    /// The surface the name was read from.
+    pub surface: DetachedVocabularySurface,
+    /// The `OBJECTIVE<n>` block, or `None` for a `targets.zrd` label.
+    pub block: Option<String>,
+    /// The name exactly as the record spells it.
+    pub name: String,
+    /// The family the name matched, or `None` when it matched none.
+    pub family: Option<&'static str>,
+}
+
+/// What one objective record's declarations spell, per surface.
+///
+/// Every number is a count of **names read**, kept as read: the reader never
+/// drops a name and never merges the surfaces, so a caller can compare them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MeasuredDetachedVocabulary {
+    /// Every name read, in surface order then record order.
+    pub names: Vec<DetachedSpellingSite>,
+}
+
+impl MeasuredDetachedVocabulary {
+    /// How many names one surface contributed.
+    #[must_use]
+    pub fn surface_sites(&self, surface: DetachedVocabularySurface) -> usize {
+        self.names
+            .iter()
+            .filter(|site| site.surface == surface)
+            .count()
+    }
+
+    /// How many **distinct** names one surface spelled.
+    #[must_use]
+    pub fn surface_names(&self, surface: DetachedVocabularySurface) -> usize {
+        self.distinct(surface).len()
+    }
+
+    /// How many sites on one surface matched one family.
+    #[must_use]
+    pub fn family_sites(&self, surface: DetachedVocabularySurface, family: &str) -> usize {
+        self.names
+            .iter()
+            .filter(|site| site.surface == surface && site.family == Some(family))
+            .count()
+    }
+
+    /// How many sites on **any** surface matched one family.
+    #[must_use]
+    pub fn sites_in_family(&self, family: &str) -> usize {
+        self.names
+            .iter()
+            .filter(|site| site.family == Some(family))
+            .count()
+    }
+
+    /// Every site that matched one family, in surface order.
+    #[must_use]
+    pub fn sites_of_family(&self, family: &str) -> Vec<&DetachedSpellingSite> {
+        self.names
+            .iter()
+            .filter(|site| site.family == Some(family))
+            .collect()
+    }
+
+    /// How many sites on one surface matched no family at all.
+    #[must_use]
+    pub fn unclaimed_sites(&self, surface: DetachedVocabularySurface) -> usize {
+        self.names
+            .iter()
+            .filter(|site| site.surface == surface && site.family.is_none())
+            .count()
+    }
+
+    /// Every distinct name one surface spelled, sorted.
+    #[must_use]
+    pub fn distinct(&self, surface: DetachedVocabularySurface) -> Vec<&str> {
+        let names: BTreeSet<&str> = self
+            .names
+            .iter()
+            .filter(|site| site.surface == surface)
+            .map(|site| site.name.as_str())
+            .collect();
+        names.into_iter().collect()
+    }
+
+    /// How many distinct names each surface spelled, per surface, in
+    /// [`DetachedVocabularySurface::ALL`] order.
+    #[must_use]
+    pub fn distinct_names(&self) -> Vec<(DetachedVocabularySurface, usize)> {
+        DetachedVocabularySurface::ALL
+            .iter()
+            .map(|surface| (*surface, self.surface_names(*surface)))
+            .collect()
+    }
+
+    /// How many sites each family matched on each surface, in
+    /// [`DETACHED_SPELLING_STEMS`] order.
+    #[must_use]
+    pub fn family_counts(&self) -> Vec<(&'static str, BTreeMap<DetachedVocabularySurface, usize>)> {
+        DETACHED_SPELLING_STEMS
+            .iter()
+            .map(|stem| {
+                let per_surface = DetachedVocabularySurface::ALL
+                    .iter()
+                    .map(|surface| (*surface, self.family_sites(*surface, stem)))
+                    .collect();
+                (*stem, per_surface)
+            })
+            .collect()
+    }
+
+    fn push(&mut self, surface: DetachedVocabularySurface, block: Option<&str>, name: &str) {
+        self.names.push(DetachedSpellingSite {
+            surface,
+            block: block.map(str::to_owned),
+            name: name.to_owned(),
+            family: detached_spelling_family(name),
+        });
+    }
+}
+
+/// Measures what one objective record spells about a detached category.
+///
+/// `objectives` is a decoded `objectives.zrd` member and `targets` an optional
+/// decoded `targets.zrd` member from the **same** reader archive; `None` is a
+/// measured absence of the member (F39-E4 measured exactly one mission reader
+/// with no `targets.zrd`) and contributes no objective-kind name, so a caller
+/// can tell "this reader declares no objective kind" from "this reader was
+/// never read".
+///
+/// Never fails and never refuses: a name is kept exactly as spelled, on the
+/// surface it was read from. A record that declares nothing yields an empty
+/// measurement, which is a measurement.
+#[must_use]
+pub fn measure_detached_vocabulary(
+    objectives: &ZrdValue,
+    targets: Option<&ZrdValue>,
+) -> MeasuredDetachedVocabulary {
+    let mut measured = MeasuredDetachedVocabulary::default();
+    for (key, value) in zrd_flat_fields(objective_record(objectives)) {
+        let Some(block) = key.strip_prefix(OBJECTIVE_BLOCK_PREFIX) else {
+            continue;
+        };
+        if block.is_empty() || !block.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let block = format!("{OBJECTIVE_BLOCK_PREFIX}{block}");
+        let fields = zrd_flat_fields(value);
+        // Surface 1: the only counter the records write is a threshold over a
+        // block's own stages, so a stage beside no threshold is not a counted
+        // condition and is read as a plain declaration instead.
+        let counted = fields
+            .iter()
+            .any(|(key, _)| *key == OBJECTIVE_INACTIVE_COUNT_KEY);
+        for (key, value) in &fields {
+            if inactive_stage_number(key).is_some() {
+                for element in value.as_list().unwrap_or_default() {
+                    if let ZrdValue::Text(text) = element {
+                        measured.push(
+                            if counted {
+                                DetachedVocabularySurface::CountedCondition
+                            } else {
+                                DetachedVocabularySurface::BlockDeclaration
+                            },
+                            Some(&block),
+                            text,
+                        );
+                    }
+                }
+            }
+        }
+        // Surface 3: every other text element of the block, in declaration
+        // order. Keys are skipped: a key is the original's own vocabulary
+        // (`BEGIN_DORMANT`, `WAKE_ANIM`, ...), not a name it declares about an
+        // actor, and `INACTIVE` stages were already read above.
+        for (key, value) in &fields {
+            if inactive_stage_number(key).is_some() || *key == OBJECTIVE_INACTIVE_COUNT_KEY {
+                continue;
+            }
+            read_declaration_text(value, &mut |text| {
+                measured.push(
+                    DetachedVocabularySurface::BlockDeclaration,
+                    Some(&block),
+                    text,
+                );
+            });
+        }
+    }
+
+    // Surface 2: the localized objective kinds.
+    if let Some(targets) = targets {
+        for record in targets.as_list().unwrap_or_default() {
+            for key in [TARGET_HELP_KEY, TARGET_CATEGORY_KEY, TARGET_DESCRIPTION_KEY] {
+                if let Some(text) = zrd_field(record, key).and_then(ZrdValue::as_text) {
+                    measured.push(DetachedVocabularySurface::ObjectiveKind, None, text);
+                }
+            }
+        }
+    }
+    measured
+}
+
+/// Every text element inside `value`, depth first, in declaration order.
+fn read_declaration_text(value: &ZrdValue, each: &mut impl FnMut(&str)) {
+    match value {
+        ZrdValue::Text(text) => each(text),
+        ZrdValue::List(children) => {
+            for child in children {
+                read_declaration_text(child, each);
+            }
+        }
+        ZrdValue::Int(_) | ZrdValue::Float(_) => {}
+    }
+}
+
+/// The `targets.zrd` member this section reads, named so a caller does not
+/// repeat the spelling.
+pub const DETACHED_TARGETS_MEMBER: &str = SCENARIO_TARGETS_MEMBER;
+
 #[cfg(test)]
 mod tests {
     use super::*;

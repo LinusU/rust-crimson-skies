@@ -38,6 +38,15 @@ use crate::damage::LifecycleKind;
 ///
 /// `Disabled` and `Escaped` are designed categories with no measured producer
 /// (F39-E4): see the module docs and [`Self::needs_declared_reporter`].
+///
+/// These are **five** of the six distinctions `docs/contracts/SCRIPT-MISSION.md`
+/// requires conditions to keep apart; the sixth, `detached`, is deliberately
+/// absent. F39-E7 measured that no reader archive in the original declares a
+/// counted condition or an objective kind spelling a detached category, and
+/// that the original writes a detach as an *event* instead, so a `Detached`
+/// category here would have no producer and nothing measured behind it. The
+/// reconciliation of all six against the engine is queried through
+/// `cs_app::objectives::contract_condition_distinctions`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CountKind {
     Destroyed,
@@ -94,9 +103,38 @@ impl CountKind {
     /// objective records never declare and whose transitions no subsystem
     /// reports. `Disabled` is *not* gone — it still exists in the world, which
     /// is why a session's teardown keeps it — but nothing produces the report.
+    ///
+    /// [`Self::producer`] is the same fact for **every** category rather than
+    /// these two, and names the transition when there is one.
     #[must_use]
     pub const fn needs_declared_reporter(self) -> bool {
         matches!(self, Self::Disabled | Self::Escaped)
+    }
+
+    /// The lifecycle transition that reports this category, or `None` when no
+    /// transition does.
+    ///
+    /// This is [`Self::from_lifecycle`] asked in the other direction, and it is
+    /// derived rather than written out so the two cannot drift. It is the whole
+    /// producer question, in one query: the runtime's only producer for a
+    /// category is the `TickInput::lifecycles` transition [`Self::from_lifecycle`]
+    /// maps to it (`cs_sim::objectives::runtime`), so a `None` here says no
+    /// transition can count this category and only a caller that names the
+    /// category itself can record it — the same fact
+    /// [`Self::needs_declared_reporter`] states for the two categories F39-E4
+    /// measured, generalised so a table of the shared contract's six condition
+    /// distinctions can ask it of every category instead of two.
+    ///
+    /// A `Detached` category has no entry at all: no [`LifecycleKind`]
+    /// transition removes an actor from its parent, and F39-E7 measured that no
+    /// mission declares a detached count
+    /// (`docs/findings/2026-10-04-f39-e7-detached-condition-vocabulary.md`).
+    #[must_use]
+    pub fn producer(self) -> Option<LifecycleKind> {
+        LifecycleKind::ALL
+            .iter()
+            .copied()
+            .find(|lifecycle| Self::from_lifecycle(*lifecycle) == Some(self))
     }
 }
 

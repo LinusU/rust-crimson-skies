@@ -3832,3 +3832,693 @@ pub fn survey_retail_dormant_reveal(
         rows,
     })
 }
+
+// ---------------------------------------------------------------------------
+// F39-E7: the contract's six condition distinctions
+// ---------------------------------------------------------------------------
+//
+// `docs/contracts/SCRIPT-MISSION.md` ("Objective event ordering") requires
+// conditions to distinguish **six** things: "disabled, dead, captured, escaped,
+// detached and despawned". The engine's counter vocabulary declares **five**
+// ([`CountKind`], [`DeclaredCountKind`]) — `dead` is spelled `destroyed`, and
+// `detached` has no entry at all. Nothing in this project had said where the
+// sixth lives, which left the five-category vocabulary readable as if it
+// satisfied the contract's six.
+//
+// This section answers that as a **query**, not a table:
+// [`contract_condition_distinctions`] resolves each of the six against the
+// engine and reports, for one, the vocabulary entry a `Condition::ActorIs` uses,
+// the counter category it counts as, the lifecycle transition that produces that
+// category, and — where there is no producer — a **named** reason from this
+// module. Nothing is inferred: every field is read out of the enum it names,
+// which is why the answer cannot go stale without a compile error in the table.
+//
+// # The two verdicts, and what they are not
+//
+// [`NO_LIFECYCLE_TRANSITION_REPORTS_THIS_CATEGORY`] is the structural fact for
+// `disabled` and `escaped`: the runtime's only producer for a [`CountKind`] is
+// the `TickInput::lifecycles` transition [`CountKind::from_lifecycle`] maps to
+// it, and none maps to those two.
+//
+// [`DETACHED_IS_AN_EVENT_NOT_A_COUNTED_CATEGORY`] is F39-E7's measured verdict,
+// and it is a claim about the **original's declarations**, not about the game:
+// [`survey_retail_detached_declarations`] measures every reader archive in the
+// installation — the 53 mission-scoped ones and the 9 shared/world-group ones
+// F39-D's census excluded — and finds no counted condition and no objective kind
+// spelling a detached category, while the original *does* write detaches in its
+// block-declaration vocabulary (`WAKE_ANIM drop_paratroopers`). A detached actor
+// is therefore represented by the release/attach path, which keeps objective
+// identity rather than ending the actor's life:
+// [`cs_sim::world_actors::release::release_payload`] carries
+// `objective: Option<SymbolId>` across the release (F34 non-negotiable 4), and
+// the authored detach op is [`cs_content::animation::AttachmentOp::Detach`]
+// (F20-C `AC03`). The lifecycle transition that removes an actor from mission
+// accounting without counting it is
+// [`cs_sim::damage::LifecycleKind::MissionRemoved`], which
+// [`CountKind::from_lifecycle`] answers `None` for.
+//
+// **Not decided here.** Whether an original *record* may declare one of the five
+// counted categories at all is decided in one place —
+// `cs_content::objectives::original_count_category_refusal` (F39-E4) — from its
+// own corpus census. This section does not restate that census and does not
+// widen it; it only adds the sixth distinction the corpus was never asked about.
+
+use cs_content::objectives::{
+    DetachedVocabularySurface, MeasuredDetachedVocabulary, measure_detached_vocabulary,
+};
+use cs_script::ir::ActorState;
+use cs_sim::damage::LifecycleKind;
+
+/// No `LifecycleKind` transition reports the category, so nothing in the
+/// runtime can count it.
+///
+/// This is [`CountKind::producer`] answering `None`, and it is the whole
+/// structural reason: `disabled` and `escaped` are reachable only from a caller
+/// that names the category itself. Which categories the original's records
+/// *declare* is a separate, measured question that F39-E4 answers in
+/// `cs_content::objectives`; this constant says nothing about it.
+pub const NO_LIFECYCLE_TRANSITION_REPORTS_THIS_CATEGORY: &str =
+    "no_lifecycle_transition_reports_this_category";
+
+/// F39-E7's measured verdict: the original writes a detach as an **event**,
+/// never as a counted category.
+///
+/// Measured over every reader archive in the owner's installation (53
+/// mission-scoped plus the 9 shared/world-group readers F39-D's census
+/// excluded), across the three surfaces
+/// [`cs_content::objectives::DetachedVocabularySurface`]: no counted condition
+/// (`INACTIVE<n>` beside an `INACTIVE_COMPLETION_COUNT`) and no `targets.zrd`
+/// objective kind spells a detached category, over the published stem list
+/// [`cs_content::objectives::DETACHED_SPELLING_STEMS`]. The corpus *does* write
+/// the detach in its block-declaration vocabulary — `zbd/c2/m05 OBJECTIVE23`
+/// carries `WAKE_ANIM drop_paratroopers`, with no stage and no threshold beside
+/// it — and that block **completes** on the drop rather than counting detached
+/// actors.
+///
+/// A negative over these surfaces is a measured absence of the *spelling*, not a
+/// proof the original has no such notion: the compiled program behind each record
+/// is undecoded (F13-B/C, F38 own the instruction table) and no original
+/// executable has been run. Evidence, contrary hypotheses and the limits are in
+/// `docs/findings/2026-10-04-f39-e7-detached-condition-vocabulary.md`.
+pub const DETACHED_IS_AN_EVENT_NOT_A_COUNTED_CATEGORY: &str =
+    "detached_is_an_event_not_a_counted_category";
+
+/// One of the six distinctions `docs/contracts/SCRIPT-MISSION.md` requires
+/// conditions to keep apart, in the contract's own order and spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ContractDistinction {
+    /// The contract's `disabled`.
+    Disabled,
+    /// The contract's `dead`, which the counter vocabulary spells `destroyed`.
+    Dead,
+    /// The contract's `captured`.
+    Captured,
+    /// The contract's `escaped`.
+    Escaped,
+    /// The contract's `detached`: the sixth, with no counter category.
+    Detached,
+    /// The contract's `despawned`.
+    Despawned,
+}
+
+impl ContractDistinction {
+    /// All six, in the contract's order.
+    pub const ALL: &'static [Self] = &[
+        Self::Disabled,
+        Self::Dead,
+        Self::Captured,
+        Self::Escaped,
+        Self::Detached,
+        Self::Despawned,
+    ];
+
+    /// The contract's own lowercase word.
+    #[must_use]
+    pub const fn contract_spelling(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Dead => "dead",
+            Self::Captured => "captured",
+            Self::Escaped => "escaped",
+            Self::Detached => "detached",
+            Self::Despawned => "despawned",
+        }
+    }
+
+    /// The `cs_script::ir::ActorState` a `Condition::ActorIs` compares against,
+    /// which is the vocabulary the contract's sentence is written about.
+    #[must_use]
+    pub const fn condition_state(self) -> ActorState {
+        match self {
+            Self::Disabled => ActorState::Disabled,
+            Self::Dead => ActorState::Dead,
+            Self::Captured => ActorState::Captured,
+            Self::Escaped => ActorState::Escaped,
+            Self::Detached => ActorState::Detached,
+            Self::Despawned => ActorState::Despawned,
+        }
+    }
+
+    /// The counter category this distinction counts as, when the declared
+    /// vocabulary has one.
+    ///
+    /// [`Self::Detached`] returns `None`: the declared vocabulary declares five
+    /// categories and none of them is a detach, which is what
+    /// [`DETACHED_IS_AN_EVENT_NOT_A_COUNTED_CATEGORY`] measured.
+    #[must_use]
+    pub const fn declared_kind(self) -> Option<DeclaredCountKind> {
+        match self {
+            Self::Disabled => Some(DeclaredCountKind::Disabled),
+            Self::Dead => Some(DeclaredCountKind::Destroyed),
+            Self::Captured => Some(DeclaredCountKind::Captured),
+            Self::Escaped => Some(DeclaredCountKind::Escaped),
+            Self::Detached => None,
+            Self::Despawned => Some(DeclaredCountKind::Despawned),
+        }
+    }
+
+    /// The counted category this distinction counts as, or `None` when the
+    /// counter vocabulary has none.
+    ///
+    /// Read through the production lowering, so this cannot claim a category
+    /// the session could not actually count.
+    #[must_use]
+    pub fn counted_kind(self) -> Option<CountKind> {
+        self.declared_kind().map(lower_kind)
+    }
+
+    /// The lifecycle transition that produces this distinction's counted
+    /// category, or `None` when nothing does.
+    ///
+    /// Derived from [`CountKind::producer`], the only producer question the
+    /// engine has.
+    #[must_use]
+    pub fn producer(self) -> Option<LifecycleKind> {
+        self.counted_kind().and_then(CountKind::producer)
+    }
+
+    /// The **named** reason this distinction has no producer, or `None` when it
+    /// has one.
+    ///
+    /// A `None` here is never a silent gap: it is either
+    /// [`NO_LIFECYCLE_TRANSITION_REPORTS_THIS_CATEGORY`] or
+    /// [`DETACHED_IS_AN_EVENT_NOT_A_COUNTED_CATEGORY`], and a caller that needs
+    /// to print *why* prints the constant rather than the absence.
+    #[must_use]
+    pub const fn unproduced_reason(self) -> Option<&'static str> {
+        match self {
+            Self::Disabled | Self::Escaped => Some(NO_LIFECYCLE_TRANSITION_REPORTS_THIS_CATEGORY),
+            Self::Detached => Some(DETACHED_IS_AN_EVENT_NOT_A_COUNTED_CATEGORY),
+            Self::Dead | Self::Captured | Self::Despawned => None,
+        }
+    }
+
+    /// Whether the engine has both a vocabulary entry and a producer for this
+    /// distinction today.
+    #[must_use]
+    pub const fn is_counted_with_a_producer(self) -> bool {
+        matches!(self.unproduced_reason(), None)
+    }
+}
+
+/// One of the six, resolved against the engine. Every field is read out of the
+/// enum it names; none of them is a restatement of another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContractDistinctionReading {
+    /// Which of the six this is.
+    pub distinction: ContractDistinction,
+    /// The contract's own word.
+    pub contract_spelling: &'static str,
+    /// The `ActorState` a `Condition::ActorIs` compares against.
+    pub condition_state: ActorState,
+    /// The declared counter category, when there is one.
+    pub declared: Option<DeclaredCountKind>,
+    /// The lowered counter category the session would count, when there is one.
+    pub counted: Option<CountKind>,
+    /// The lifecycle transition that produces it, when one does.
+    pub producer: Option<LifecycleKind>,
+    /// The named reason there is no producer, or `None`.
+    pub unproduced_reason: Option<&'static str>,
+}
+
+/// The contract's six distinctions, each with a vocabulary entry and a producer
+/// or a named reason it has none.
+///
+/// The single queryable answer to "does the engine implement the contract's six
+/// distinctions?". [`ContractDistinction::ALL`] is exhaustive by construction:
+/// the table is built from it, so a seventh distinction added to the enum cannot
+/// be missing from here without the length check below failing to compile.
+#[must_use]
+pub fn contract_condition_distinctions() -> Vec<ContractDistinctionReading> {
+    let readings: Vec<ContractDistinctionReading> = ContractDistinction::ALL
+        .iter()
+        .map(|distinction| {
+            let declared = distinction.declared_kind();
+            let counted = declared.map(lower_kind);
+            ContractDistinctionReading {
+                distinction: *distinction,
+                contract_spelling: distinction.contract_spelling(),
+                condition_state: distinction.condition_state(),
+                declared,
+                counted,
+                producer: counted.and_then(CountKind::producer),
+                unproduced_reason: distinction.unproduced_reason(),
+            }
+        })
+        .collect();
+    assert_eq!(
+        readings.len(),
+        ContractDistinction::ALL.len(),
+        "every distinction the contract names must resolve to one reading"
+    );
+    readings
+}
+
+// ---------------------------------------------------------------------------
+// F39-E7: the measured vocabulary census
+// ---------------------------------------------------------------------------
+
+/// Why the detached-vocabulary census could not be produced.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DetachedCensusError {
+    /// The installation could not be discovered.
+    Discovery(String),
+    /// A reader archive could not be read or does not decode.
+    Read {
+        /// The archive's logical key.
+        archive: String,
+        /// Why it refused.
+        reason: String,
+    },
+    /// A member's bytes do not decode.
+    Decode {
+        /// The archive's logical key.
+        archive: String,
+        /// The member that refused.
+        member: String,
+        /// The decoder's code.
+        code: String,
+        /// The byte offset it refused at.
+        offset: u64,
+    },
+}
+
+impl std::fmt::Display for DetachedCensusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Discovery(reason) => write!(f, "installation discovery failed: {reason}"),
+            Self::Read { archive, reason } => write!(f, "{archive}: {reason}"),
+            Self::Decode {
+                archive,
+                member,
+                code,
+                offset,
+            } => write!(
+                f,
+                "{archive}/{member}: does not decode ({code} at byte {offset})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DetachedCensusError {}
+
+/// Whether a reader archive holds one mission's records or the shared ones.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReaderScope {
+    /// Exactly `zbd/<group>/<mission>` (F13-B's rule): this archive is one
+    /// mission's.
+    Mission(String),
+    /// The shared reader (`zbd/zrdr.zbd`) or a world-group reader
+    /// (`zbd/<group>/zrdr.zbd`). F39-D's census excluded both, so they are
+    /// counted and reported separately rather than folded into the mission
+    /// denominator.
+    Shared(String),
+}
+
+impl ReaderScope {
+    /// The archive's logical key.
+    #[must_use]
+    pub fn archive(&self) -> &str {
+        match self {
+            Self::Mission(mission) => mission,
+            Self::Shared(archive) => archive,
+        }
+    }
+}
+
+/// One reader archive's measured vocabulary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DetachedVocabularyRow {
+    /// Which scope this archive is.
+    pub scope: ReaderScope,
+    /// The archive's spelling as inventoried.
+    pub container: String,
+    /// The archive's SHA-256, as production discovery measured it.
+    pub container_sha256: String,
+    /// The archive's decoded `objectives.zrd` member SHA-256, or `None` when
+    /// the archive declares **no** objective record at all — a measured
+    /// absence for a shared/world-group reader, never a defaulted empty
+    /// reading. A *mission* reader in that state is a refusal, not a row.
+    pub objectives_sha256: Option<String>,
+    /// The decoded `targets.zrd` member SHA-256, or `None` when the archive
+    /// declares none — a measured absence, named by
+    /// [`DetachedVocabularyCensus::archives_without_targets`].
+    pub targets_sha256: Option<String>,
+    /// What the archive's declarations spell.
+    pub vocabulary: MeasuredDetachedVocabulary,
+}
+
+/// The installation's measured detached vocabulary, over every reader archive.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DetachedVocabularyCensus {
+    install_sha256: String,
+    rows: Vec<DetachedVocabularyRow>,
+}
+
+impl DetachedVocabularyCensus {
+    /// The installation fingerprint the walk measured.
+    #[must_use]
+    pub fn install_sha256(&self) -> &str {
+        &self.install_sha256
+    }
+
+    /// Every reader archive the walk read, sorted by scope then archive.
+    #[must_use]
+    pub fn rows(&self) -> &[DetachedVocabularyRow] {
+        &self.rows
+    }
+
+    /// How many reader archives were read.
+    #[must_use]
+    pub fn readers(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// How many **mission-scoped** archives were read.
+    #[must_use]
+    pub fn mission_readers(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| matches!(row.scope, ReaderScope::Mission(_)))
+            .count()
+    }
+
+    /// How many shared/world-group archives were read — the denominator F39-D's
+    /// census did not have.
+    #[must_use]
+    pub fn shared_readers(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| matches!(row.scope, ReaderScope::Shared(_)))
+            .count()
+    }
+
+    /// The archives that declare no `targets.zrd`, named.
+    #[must_use]
+    pub fn archives_without_targets(&self) -> Vec<&str> {
+        self.rows
+            .iter()
+            .filter(|row| row.targets_sha256.is_none())
+            .map(|row| row.scope.archive())
+            .collect()
+    }
+
+    /// The archives that declare no `objectives.zrd` at all, named.
+    ///
+    /// Every one of these is a shared or world-group reader: the shared reader
+    /// and the world-group readers hold animation, sound and motion records, so
+    /// a mission-scoped archive with no objective record is a refusal instead
+    /// (F39-D's rule, kept below).
+    #[must_use]
+    pub fn archives_without_objectives(&self) -> Vec<&str> {
+        self.rows
+            .iter()
+            .filter(|row| row.objectives_sha256.is_none())
+            .map(|row| row.scope.archive())
+            .collect()
+    }
+
+    /// Every name every archive declared, across all of them.
+    fn names(&self) -> impl Iterator<Item = &cs_content::objectives::DetachedSpellingSite> {
+        self.rows.iter().flat_map(|row| row.vocabulary.names.iter())
+    }
+
+    /// How many **distinct** names one surface spelled over the whole
+    /// installation.
+    #[must_use]
+    pub fn distinct_names(&self, surface: DetachedVocabularySurface) -> usize {
+        let names: std::collections::BTreeSet<&str> = self
+            .names()
+            .filter(|site| site.surface == surface)
+            .map(|site| site.name.as_str())
+            .collect();
+        names.len()
+    }
+
+    /// How many sites one surface contributed over the whole installation.
+    #[must_use]
+    pub fn sites(&self, surface: DetachedVocabularySurface) -> usize {
+        self.names().filter(|site| site.surface == surface).count()
+    }
+
+    /// How many sites on one surface matched one family.
+    #[must_use]
+    pub fn family_sites(&self, surface: DetachedVocabularySurface, family: &str) -> usize {
+        self.names()
+            .filter(|site| site.surface == surface && site.family == Some(family))
+            .count()
+    }
+
+    /// How many sites on **any** surface matched one family.
+    #[must_use]
+    pub fn sites_in_family(&self, family: &str) -> usize {
+        self.names()
+            .filter(|site| site.family == Some(family))
+            .count()
+    }
+
+    /// Every site that matched one family, as `(archive, surface, block, name)`.
+    ///
+    /// The measured sites, so "no mission declares a detached count" and "the
+    /// release family does appear, here" are both answerable from the census.
+    #[must_use]
+    pub fn sites_of_family(
+        &self,
+        family: &str,
+    ) -> Vec<(String, DetachedVocabularySurface, Option<String>, String)> {
+        let mut sites: Vec<(String, DetachedVocabularySurface, Option<String>, String)> = self
+            .rows
+            .iter()
+            .flat_map(|row| {
+                row.vocabulary
+                    .names
+                    .iter()
+                    .filter(move |site| site.family == Some(family))
+                    .map(move |site| {
+                        (
+                            row.scope.archive().to_owned(),
+                            site.surface,
+                            site.block.clone(),
+                            site.name.clone(),
+                        )
+                    })
+            })
+            .collect();
+        sites.sort();
+        sites
+    }
+
+    /// How many counted conditions the whole installation declares.
+    #[must_use]
+    pub fn counted_conditions(&self) -> usize {
+        self.sites(DetachedVocabularySurface::CountedCondition)
+    }
+
+    /// How many objective kinds the whole installation declares.
+    #[must_use]
+    pub fn objective_kinds(&self) -> usize {
+        self.sites(DetachedVocabularySurface::ObjectiveKind)
+    }
+
+    /// How many sites on the two surfaces that could **declare a category** spell
+    /// the contract's own `detach` stem.
+    ///
+    /// The measured absence F39-E7 turns on: it counts the counted-condition and
+    /// objective-kind surfaces only, never the block-declaration surface, because
+    /// a declaration in the objective's own trigger vocabulary is evidence of the
+    /// *event*, not of a category.
+    #[must_use]
+    pub fn detached_category_sites(&self) -> usize {
+        DetachedVocabularySurface::ALL
+            .iter()
+            .filter(|surface| **surface != DetachedVocabularySurface::BlockDeclaration)
+            .map(|surface| self.family_sites(*surface, DETACH_CONTRACT_STEM))
+            .sum()
+    }
+
+    /// How many block declarations spell one of the release/drop families — the
+    /// measured non-zero that keeps the absence above from being vacuous.
+    #[must_use]
+    pub fn release_family_declaration_sites(&self) -> usize {
+        self.names()
+            .filter(|site| {
+                site.surface == DetachedVocabularySurface::BlockDeclaration
+                    && site
+                        .family
+                        .is_some_and(|family| family != DETACH_CONTRACT_STEM)
+            })
+            .count()
+    }
+
+    /// Every distinct family stem that matched at least one site, with its
+    /// per-surface counts.
+    #[must_use]
+    pub fn family_counts(&self) -> Vec<(&'static str, Vec<(DetachedVocabularySurface, usize)>)> {
+        cs_content::objectives::DETACHED_SPELLING_STEMS
+            .iter()
+            .copied()
+            .map(|stem| {
+                let per_surface = DetachedVocabularySurface::ALL
+                    .iter()
+                    .map(|surface| (*surface, self.family_sites(*surface, stem)))
+                    .collect();
+                (stem, per_surface)
+            })
+            .collect()
+    }
+}
+
+/// The contract's own spelling stem, re-exported here so a census reader does
+/// not have to import two modules to ask the question.
+pub const DETACH_CONTRACT_STEM: &str = cs_content::objectives::DETACH_STEM;
+
+/// Measures what every reader archive in `install_root` spells about a detached
+/// category.
+///
+/// **Every** reader archive is read, not only the mission-scoped ones: F39-D's
+/// census (and F39-E4's) covered exactly `zbd/<group>/<mission>` and left the
+/// shared reader (`zbd/zrdr.zbd`, 220 members) and the nine world-group readers
+/// outside its denominator (F39-D unknown #5). This walk counts them, keeps them
+/// in their own [`ReaderScope::Shared`] rows and reports the two denominators
+/// separately, so "no mission declares a detached count" is a statement about 53
+/// archives and "no reader in the installation declares one" is a statement about
+/// 62.
+///
+/// A reader archive with no `targets.zrd` is a **measured absence**, kept as a
+/// row with `targets_sha256: None`: `archives_without_targets` names it, so
+/// "this archive declares no objective kind" is never reported about a member
+/// nobody read.
+///
+/// # Errors
+///
+/// [`DetachedCensusError::Discovery`] when the installation cannot be
+/// discovered, [`DetachedCensusError::Read`] when a reader archive cannot be
+/// read, and [`DetachedCensusError::Decode`] when a member does not decode. A
+/// reader that refuses is an error, never a skipped row, so an archive cannot
+/// vanish from a denominator.
+pub fn survey_retail_detached_declarations(
+    install_root: &Path,
+) -> Result<DetachedVocabularyCensus, DetachedCensusError> {
+    let found = cs_assets::install::discover(install_root)
+        .map_err(|error| DetachedCensusError::Discovery(error.to_string()))?;
+    let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
+
+    let mut rows: Vec<DetachedVocabularyRow> = Vec::new();
+    for record in &found.manifest.files {
+        let container_key = record.relative_spelling.logical_key();
+        if !container_key.ends_with(MISSION_READER_ARCHIVE) {
+            continue;
+        }
+        let spelling = record.relative_spelling.as_str().to_owned();
+        let path = RelativePath::new(&spelling.to_lowercase()).map_err(|error| {
+            DetachedCensusError::Read {
+                archive: container_key.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        let bytes = std::fs::read(found.manifest.host_root.join(&spelling)).map_err(|error| {
+            DetachedCensusError::Read {
+                archive: container_key.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        let discovery = cs_formats::script_raw::discover_container(&container_key, &path, &bytes);
+        let member = |wanted: &str| {
+            discovery.programs().iter().find(|program| {
+                program
+                    .locator()
+                    .member()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(wanted))
+            })
+        };
+        let scope = match cs_formats::script_raw::mission_scope(&path) {
+            Some(mission) => ReaderScope::Mission(mission),
+            None => ReaderScope::Shared(container_key.clone()),
+        };
+        let decode = |member: &str, bytes: &[u8]| {
+            cs_content::stunts::decode_zrd(bytes).map_err(|error| DetachedCensusError::Decode {
+                archive: container_key.clone(),
+                member: member.to_owned(),
+                code: error.code().to_owned(),
+                offset: error.offset(),
+            })
+        };
+        // A mission reader with no objective record is a **refusal** (F39-D's
+        // rule: a mission cannot vanish from a denominator). A shared or
+        // world-group reader without one declares no objective record at all —
+        // they hold animation, sound and motion records — so it is a measured
+        // absence and the row says so.
+        let objectives = match member(SCENARIO_OBJECTIVES_MEMBER) {
+            Some(objectives) => Some((
+                cs_assets::install::sha256(objectives.bytes()).to_hex(),
+                decode(SCENARIO_OBJECTIVES_MEMBER, objectives.bytes())?,
+            )),
+            None if matches!(scope, ReaderScope::Mission(_)) => {
+                return Err(DetachedCensusError::Read {
+                    archive: container_key.clone(),
+                    reason: format!(
+                        "the mission archive declares no {} objective record",
+                        SCENARIO_OBJECTIVES_MEMBER
+                    ),
+                });
+            }
+            None => None,
+        };
+        let (objectives_sha256, objectives_document) = match objectives {
+            Some((digest, document)) => (Some(digest), Some(document)),
+            None => (None, None),
+        };
+        // A missing `targets.zrd` is a measured absence in either scope: the row
+        // keeps `None` and `archives_without_targets` names it.
+        let (targets_sha256, targets_document) = match member(SCENARIO_TARGETS_MEMBER) {
+            Some(targets) => (
+                Some(cs_assets::install::sha256(targets.bytes()).to_hex()),
+                Some(decode(SCENARIO_TARGETS_MEMBER, targets.bytes())?),
+            ),
+            None => (None, None),
+        };
+        // An archive that declares no objective record measures nothing: its row
+        // exists so the archive is in the denominator, and
+        // `archives_without_objectives` names it, so the empty reading is a
+        // measured absence and not a silent skip.
+        let vocabulary = match &objectives_document {
+            Some(document) => measure_detached_vocabulary(document, targets_document.as_ref()),
+            None => cs_content::objectives::MeasuredDetachedVocabulary::default(),
+        };
+        rows.push(DetachedVocabularyRow {
+            scope,
+            container: spelling,
+            container_sha256: record.sha256.to_hex(),
+            objectives_sha256,
+            targets_sha256,
+            vocabulary,
+        });
+    }
+
+    rows.sort_by(|left, right| left.scope.archive().cmp(right.scope.archive()));
+    Ok(DetachedVocabularyCensus {
+        install_sha256,
+        rows,
+    })
+}
