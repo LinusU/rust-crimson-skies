@@ -341,6 +341,13 @@ After the fix: 20 consecutive runs of the binary at `--test-threads=16`, each
 hard-capped at 60 s so a hang would surface as a timeout: **20 passed, 0
 failed, 0 hung**, 30 tests in 0.01 s.
 
+The load measurement was then repeated on the **final rebased commit**, because
+the criterion has to hold for the commit that actually lands and not only for
+the pre-rebase one: 24 spinners confirmed alive on 11 cores, load average ~84,
+**50 of 50 runs passed** at `--test-threads=16`, each hard-capped at 120 s
+(0 failures, 0 hangs). The deadlock fix does not depend on load, but re-running
+the criterion on the final tree is the only claim worth making.
+
 This is the outcome Probe B predicted one commit earlier: without this
 branch's mutex the only failing test was #600's, and with #600 landed that test
 is now driven from one clock. #600 and this branch are complementary and touch
