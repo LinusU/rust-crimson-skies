@@ -143,6 +143,7 @@ fn base_parts() -> DeclaredCapitalParts {
             key: key("turret_1"),
             weapon: unknown("f35a.test.turret"),
             traverse_deg: designed(180.0),
+            boresight: [0.0, 1.0, 0.0],
         }],
         docking_anchors: vec![DeclaredDockingAnchor {
             key: key("docking_anchor_1"),

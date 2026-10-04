@@ -1,8 +1,9 @@
 //! The declared capital-ship schema: provenance-carrying ship, subsystem
-//! and bay records (F35-A).
+//! and bay records (F35-A; F35-B adds the turret boresight the runtime's
+//! traverse cone centers on).
 //!
 //! Spec: `specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`,
-//! stage `### F35-A`. Shared contract:
+//! stages `### F35-A` and `### F35-B`. Shared contract:
 //! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
 //! This module is the **content half** of the capital-ship contract — the
@@ -336,6 +337,9 @@ pub struct DeclaredTurret {
     pub weapon: Resolved<ContentId>,
     /// The traverse arc in degrees, or an unknown.
     pub traverse_deg: Resolved<f64>,
+    /// The body-frame direction the mount bears on uncommanded (F35-B: the
+    /// runtime traverse cone centers on it).
+    pub boresight: [f64; 3],
 }
 
 /// A declared docking anchor.
@@ -437,6 +441,20 @@ pub enum CapitalSchemaError {
         /// The offending subsystem.
         key: CapitalSubsystemKey,
     },
+    /// A turret's boresight direction was the zero vector: a mount cannot
+    /// bear on nowhere.
+    ZeroBoresight {
+        /// The offending subsystem.
+        key: CapitalSubsystemKey,
+    },
+    /// A turret's known traverse arc was outside `[0, 360]` degrees: a
+    /// mount cannot sweep more than the whole circle.
+    TraverseOutOfRange {
+        /// The offending subsystem.
+        key: CapitalSubsystemKey,
+        /// The refused arc.
+        value: f64,
+    },
     /// A known capacity was zero.
     ZeroCapacity {
         /// The offending subsystem.
@@ -480,6 +498,15 @@ impl fmt::Display for CapitalSchemaError {
                 write!(f, "{key} has a negative {field} ({value})")
             }
             Self::ZeroAxis { key } => write!(f, "engine {key} has a zero axis"),
+            Self::ZeroBoresight { key } => {
+                write!(f, "turret {key} has a zero boresight")
+            }
+            Self::TraverseOutOfRange { key, value } => {
+                write!(
+                    f,
+                    "turret {key} traverses {value} degrees, outside [0, 360]"
+                )
+            }
             Self::ZeroCapacity { key } => write!(f, "launch bay {key} has zero capacity"),
             Self::Exposure { key, source } => {
                 write!(
@@ -817,6 +844,29 @@ pub fn validate(parts: &DeclaredCapitalParts) -> Result<(), CapitalSchemaError> 
             &format!("turret {}", turret.key),
             "traverse_deg",
         )?;
+        if let Resolved::Known(known) = &turret.traverse_deg
+            && known.value > 360.0
+        {
+            return Err(CapitalSchemaError::TraverseOutOfRange {
+                key: turret.key.clone(),
+                value: known.value,
+            });
+        }
+        if !turret.boresight.iter().all(|value| value.is_finite()) {
+            return Err(CapitalSchemaError::NonFinite {
+                key: format!("turret {}", turret.key),
+                field: "boresight",
+            });
+        }
+        let norm = (turret.boresight[0] * turret.boresight[0]
+            + turret.boresight[1] * turret.boresight[1]
+            + turret.boresight[2] * turret.boresight[2])
+            .sqrt();
+        if norm <= f64::EPSILON {
+            return Err(CapitalSchemaError::ZeroBoresight {
+                key: turret.key.clone(),
+            });
+        }
     }
 
     for anchor in &parts.docking_anchors {
@@ -1004,6 +1054,7 @@ pub fn declared_synthetic_capital_ship() -> DeclaredCapitalShip {
                 reason: "turret weapon binding unmeasured".to_owned(),
             },
             traverse_deg: designed(180.0),
+            boresight: [0.0, 1.0, 0.0],
         }],
         docking_anchors: vec![DeclaredDockingAnchor {
             key: key("docking_anchor_1"),

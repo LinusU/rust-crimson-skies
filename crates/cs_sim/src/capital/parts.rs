@@ -1,13 +1,14 @@
-//! Capital-ship mounts and anchors: the per-kind detail records the ship
-//! definition carries beside the shared subsystem identity (F35-A).
+//! Capital-ship mounts, anchors and section pools: the per-kind detail
+//! records the ship definition carries beside the shared subsystem identity.
 //!
 //! Spec: `specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`,
-//! stage `### F35-A`. These are the runtime forms of the declared turret,
-//! docking-anchor and cargo data — a turret's weapon binding and traverse,
-//! an anchor's body-frame offset, the ship's cargo capacity. They are
-//! carried, not yet consumed: turret behaviour is F35-B and docking/cargo
-//! wiring is F35-C. Every value is a [`Resolved`], so an unmeasured binding
-//! stays unknown instead of defaulting.
+//! stages `### F35-A` and `### F35-B`. These are the runtime forms of the
+//! declared turret, docking-anchor, section and cargo data — a turret's
+//! weapon binding, traverse arc and boresight, an anchor's body-frame
+//! offset, a section's damage pool, the ship's cargo capacity. Turret aim
+//! and fire gating consume the mount in F35-B and section pools absorb hits;
+//! docking/cargo wiring is F35-C. Every measured value is a [`Resolved`], so
+//! an unmeasured binding stays unknown instead of defaulting.
 
 use cs_types::content::{ContentId, Resolved};
 
@@ -22,6 +23,12 @@ pub struct TurretMount {
     pub weapon: Resolved<ContentId>,
     /// The traverse arc in degrees, or an explicit unknown.
     pub traverse_deg: Resolved<f64>,
+    /// The body-frame direction the mount bears on uncommanded. It is
+    /// normalized when the ship is constructed, so a consuming system can
+    /// treat it as a unit vector. Original mounts measured only weapon and
+    /// traverse; the boresight is authored synthetic data (F35-B designed
+    /// aim model).
+    pub boresight: [f64; 3],
 }
 
 /// A docking anchor and its body-frame offset.
@@ -31,4 +38,19 @@ pub struct DockingAnchor {
     pub key: SubsystemKey,
     /// The anchor offset in the ship body frame, or an explicit unknown.
     pub offset_m: Resolved<[f64; 3]>,
+}
+
+/// A gas cell or structural section's declared damage pool: how much section
+/// damage the part absorbs before it is destroyed.
+///
+/// Only `SubsystemKind::GasCell` and `SubsystemKind::StructuralSection` parts
+/// carry one, mirroring the schema's `DeclaredSection`. The integrity stays a
+/// `Resolved` value: an unmeasured section never invents a pool, and a hit on
+/// it is blocked by claim rather than absorbed silently.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IntegrityPool {
+    /// The section subsystem this pool is.
+    pub key: SubsystemKey,
+    /// The declared integrity the pool starts with, or an explicit unknown.
+    pub integrity: Resolved<f64>,
 }

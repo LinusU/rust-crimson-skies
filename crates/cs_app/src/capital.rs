@@ -1,7 +1,8 @@
-//! The capital-ship lowering boundary (F35-A).
+//! The capital-ship lowering boundary (F35-A; F35-B lowers the turret
+//! boresight and the section integrity pools).
 //!
 //! Spec: `specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`,
-//! stage `### F35-A`. Shared contract:
+//! stages `### F35-A` and `### F35-B`. Shared contract:
 //! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
 //! This module sits between the declared capital-ship schema
@@ -12,15 +13,17 @@
 //! * [`lower_capital_ship`] — the conversion boundary: a validated
 //!   [`cs_content::capital::DeclaredCapitalShip`] becomes a
 //!   [`cs_sim::capital::CapitalShip`] with every subsystem, engine, bay,
-//!   turret, anchor, the cargo pool and the authored trajectory mapped
-//!   field-wise. An unmeasured value (a turret's weapon binding, an engine's
-//!   thrust) lowers as [`Resolved::Unknown`] and stays unknown. Three
-//!   declared fields have no F35-A runtime counterpart and stay parked on the
-//!   declared record: a launch bay's `socket_offset_m` and `capacity`, and a
-//!   gas/structural section's `integrity` pool. The boundary does not invent
-//!   runtime state for them; their consumption is F35-C (launch/cargo wiring)
-//!   and F35-B (damage/weakpoint resolution). See
-//!   `docs/findings/2026-10-01-f35-a-capital-subsystems-and-bays.md`.
+//!   turret (weapon, traverse and boresight), anchor, the section
+//!   integrity pools, the cargo pool and the authored trajectory mapped
+//!   field-wise. An unmeasured value (a turret's weapon binding, an
+//!   engine's thrust, a section's integrity) lowers as
+//!   [`Resolved::Unknown`] and stays unknown. Two declared fields have no
+//!   F35-B runtime counterpart and stay parked on the declared record: a
+//!   launch bay's `socket_offset_m` and `capacity`. The boundary does not
+//!   invent runtime state for them; their consumption is F35-C
+//!   (launch/cargo wiring). See
+//!   `docs/findings/2026-10-01-f35-a-capital-subsystems-and-bays.md` and
+//!   `docs/findings/2026-10-04-f35-b-movement-weakpoints-and-turrets.md`.
 //! * [`CapitalLowerError::UnknownOwnership`] — the one mandatory value: a
 //!   ship whose owner is unresolved cannot have its guns, targeting and
 //!   docking eligibility switched coherently, so the boundary refuses
@@ -43,8 +46,9 @@ use cs_content::capital::{
 use cs_script::ir::ActorId;
 use cs_sim::capital::{
     Bay, BayKind, CapitalError, CapitalParts, CapitalShip, DockingAnchor, EngineSpec,
-    ExposureError, ExposureWindow, Ownership, PropulsionError, Subsystem, SubsystemEffect,
-    SubsystemGraph, SubsystemGraphError, SubsystemKey, SubsystemKeyError, TurretMount,
+    ExposureError, ExposureWindow, IntegrityPool, Ownership, PropulsionError, Subsystem,
+    SubsystemEffect, SubsystemGraph, SubsystemGraphError, SubsystemKey, SubsystemKeyError,
+    TurretMount,
 };
 use cs_sim::world_actors::Quat;
 use cs_sim::world_actors::trajectory::{Keyframe, Trajectory, TrajectoryError};
@@ -191,6 +195,7 @@ pub fn lower_capital_ship(
                 key: lower_key(&turret.key)?,
                 weapon: turret.weapon.clone(),
                 traverse_deg: turret.traverse_deg.clone(),
+                boresight: turret.boresight,
             })
         })
         .collect::<Result<Vec<_>, CapitalLowerError>>()?;
@@ -202,6 +207,19 @@ pub fn lower_capital_ship(
             Ok(DockingAnchor {
                 key: lower_key(&anchor.key)?,
                 offset_m: anchor.offset_m.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, CapitalLowerError>>()?;
+
+    // F35-B: the section integrity pools lower verbatim — an unmeasured
+    // pool stays unknown and blocks hits by claim at runtime.
+    let sections = declared
+        .sections()
+        .iter()
+        .map(|section| {
+            Ok(IntegrityPool {
+                key: lower_key(&section.key)?,
+                integrity: section.integrity.clone(),
             })
         })
         .collect::<Result<Vec<_>, CapitalLowerError>>()?;
@@ -230,6 +248,7 @@ pub fn lower_capital_ship(
             bays,
             turrets,
             docking_anchors,
+            sections,
             cargo: declared.cargo().clone(),
             ownership,
             trajectory,

@@ -14,7 +14,7 @@ use super::bay::{Bay, BayKind, ExposureWindow};
 use super::capture::Ownership;
 use super::launch::LaunchSocket;
 use super::motion::EngineSpec;
-use super::parts::{DockingAnchor, TurretMount};
+use super::parts::{DockingAnchor, IntegrityPool, TurretMount};
 use super::ship::{CapitalParts, CapitalShip, synthetic_capital_trajectory};
 use super::subsystem::{Subsystem, SubsystemEffect, SubsystemGraph, SubsystemKey, SubsystemKind};
 
@@ -42,6 +42,14 @@ pub const SYNTHETIC_KEEL: &str = "keel";
 pub const SYNTHETIC_ENGINE_THRUST_N: f64 = 400_000.0;
 /// The synthetic ship's mass, in kilograms.
 pub const SYNTHETIC_MASS_KG: f64 = 200_000.0;
+/// The gas cell's declared integrity pool.
+pub const SYNTHETIC_GAS_CELL_INTEGRITY: f64 = 120.0;
+/// The keel's declared integrity pool.
+pub const SYNTHETIC_KEEL_INTEGRITY: f64 = 200.0;
+/// The turret mount's traverse arc, in degrees.
+pub const SYNTHETIC_TURRET_TRAVERSE_DEG: f64 = 180.0;
+/// The dorsal turret's boresight: up (+Y) in the ship body frame.
+pub const SYNTHETIC_TURRET_BORESIGHT: [f64; 3] = [0.0, 1.0, 0.0];
 
 fn key(name: &str) -> SubsystemKey {
     SubsystemKey::new(name).expect("fixture subsystem keys are valid")
@@ -135,7 +143,8 @@ fn designed_vec(value: [f64; 3]) -> Resolved<[f64; 3]> {
 }
 
 /// The synthetic ship's turret mounts. The weapon binding is an explicit
-/// unknown: no original turret record is measured.
+/// unknown: no original turret record is measured. The dorsal mount bears
+/// up in the body frame and sweeps a 180-degree cone — designed values.
 #[must_use]
 pub fn synthetic_capital_turrets() -> Vec<TurretMount> {
     vec![TurretMount {
@@ -145,8 +154,24 @@ pub fn synthetic_capital_turrets() -> Vec<TurretMount> {
                 .expect("fixture claim id is valid"),
             reason: "turret weapon binding unmeasured".to_owned(),
         },
-        traverse_deg: designed(180.0),
+        traverse_deg: designed(SYNTHETIC_TURRET_TRAVERSE_DEG),
+        boresight: SYNTHETIC_TURRET_BORESIGHT,
     }]
+}
+
+/// The synthetic ship's gas-cell and structural-section damage pools.
+#[must_use]
+pub fn synthetic_capital_sections() -> Vec<IntegrityPool> {
+    vec![
+        IntegrityPool {
+            key: key(SYNTHETIC_GAS_CELL),
+            integrity: designed(SYNTHETIC_GAS_CELL_INTEGRITY),
+        },
+        IntegrityPool {
+            key: key(SYNTHETIC_KEEL),
+            integrity: designed(SYNTHETIC_KEEL_INTEGRITY),
+        },
+    ]
 }
 
 /// The synthetic ship's docking anchors.
@@ -181,6 +206,7 @@ pub fn synthetic_capital_ship() -> CapitalShip {
             bays: synthetic_capital_bays(),
             turrets: synthetic_capital_turrets(),
             docking_anchors: synthetic_capital_docking_anchors(),
+            sections: synthetic_capital_sections(),
             cargo: designed(5_000.0),
             ownership: synthetic_capital_ownership(),
             trajectory: Some(synthetic_capital_trajectory()),

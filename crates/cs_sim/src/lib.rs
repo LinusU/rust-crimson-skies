@@ -199,19 +199,24 @@
 //! released payloads with their carrier's faction and motion. The pickup,
 //! gate and cargo wiring into the mission host is F34-C.
 //!
-//! [`capital`] is the F35-A capital-ship contract
-//! (`specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`, stage
-//! `### F35-A`): the [`capital::SubsystemGraph`] of engines, bays, turrets,
-//! docking anchors, gas cells and structural sections whose
-//! [`capital::SubsystemGraph::disable`] applies the destroyed part's
-//! behavior; the [`capital::EngineSpec`] thrust sum a disabled engine
-//! removes (the minimum scenario); the explicit tick-indexed
-//! [`capital::ExposureWindow`] that makes a bay a weakpoint only while open;
-//! the once-only [`capital::LaunchLedger`] and [`capital::LaunchSocket`]
-//! release; and the staged [`capital::CaptureTransaction`] ownership
-//! contract. The declared schema is `cs_content::capital` and the lowering
-//! boundary is `cs_app::capital`; the movement, weakpoint and turret runtime
-//! is F35-B and the launch/capture wiring is F35-C.
+//! [`capital`] is the F35-A capital-ship contract plus the F35-B runtime
+//! (`specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`,
+//! stages `### F35-A` and `### F35-B`): the [`capital::SubsystemGraph`] of
+//! engines, bays, turrets, docking anchors, gas cells and structural
+//! sections whose [`capital::SubsystemGraph::disable`] applies the
+//! destroyed part's behavior; the [`capital::EngineSpec`] thrust sum a
+//! disabled engine removes; the explicit tick-indexed
+//! [`capital::ExposureWindow`] that makes a bay a weakpoint only while
+//! open; the once-only [`capital::LaunchLedger`] and
+//! [`capital::LaunchSocket`] release; the staged
+//! [`capital::CaptureTransaction`] ownership contract; and the
+//! [`capital::CapitalShipSet`] session runtime whose steps move ships at
+//! their surviving propulsion fraction, whose [`capital::CapitalShip::apply_hit`]
+//! gates weakpoint damage behind the exposure window and section pools, and
+//! whose [`capital::CapitalShip::aim_turret`]/[`capital::CapitalShip::may_fire`]
+//! gate turret aim and fire. The declared schema is `cs_content::capital`
+//! and the lowering boundary is `cs_app::capital`; the launch/capture
+//! wiring is F35-C.
 //!
 //! [`interaction`] is the F36-A docking/pickup/boarding/plane-swap contract
 //! (`specs/F36-docking-passenger-pickups-boarding-and-plane-swaps.md`, stage

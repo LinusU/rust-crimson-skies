@@ -19,8 +19,8 @@ use cs_sim::capital::{
     Ownership, PropulsionError, Subsystem, SubsystemEffect, SubsystemGraph, SubsystemGraphError,
     SubsystemKey, SubsystemKeyError, SubsystemKind, SubsystemState, synthetic_capital_bays,
     synthetic_capital_docking_anchors, synthetic_capital_engines, synthetic_capital_graph,
-    synthetic_capital_ownership, synthetic_capital_ship, synthetic_capital_trajectory,
-    synthetic_capital_turrets, synthetic_launch_socket,
+    synthetic_capital_ownership, synthetic_capital_sections, synthetic_capital_ship,
+    synthetic_capital_trajectory, synthetic_capital_turrets, synthetic_launch_socket,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
@@ -64,6 +64,7 @@ fn ship_with(
             bays,
             turrets: synthetic_capital_turrets(),
             docking_anchors: synthetic_capital_docking_anchors(),
+            sections: synthetic_capital_sections(),
             cargo,
             ownership: synthetic_capital_ownership(),
             trajectory: Some(synthetic_capital_trajectory()),
