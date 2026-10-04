@@ -126,6 +126,34 @@ verification rather than the loopback path: the first `cargo test --workspace
 F54-X8); the identical command rerun once was green. Both runs are reported, in
 that order. Nothing in this branch touches `cs_inspect`.
 
+### A correction to the cleanup verification above, including this review's own
+
+The section above says `unload.sh` "stopped all 24 and re-verified 0 alive".
+The reviewer hit a defect in exactly that verification method and cannot
+confirm the original claim, so it should not be relied on as stated.
+
+What happened: the review's own unload script counted the spinners still alive
+by looping over the pid files *its own kill step had just emptied*, so once
+every file was gone the count was trivially `0` and the script reported success
+— **while all 24 spinners kept running** for the next ~50 minutes, across the
+whole of the 50-round acceptance measurement. Two further traps sit in the same
+spot: a pid file is not proof of a live spinner, because a reused pid answers
+`kill -0` just as well; and the report cannot be trusted from a glob the same
+loop emptied. The authoritative check is `ps` on the spinner's own command line,
+which is what the corrected script now does.
+
+What this does and does not change:
+
+* **The measurements in the tables stand.** The load averages prove the spinners
+  were running during both of them: the 1-minute load was ~116 immediately after
+  the unload script claimed success, and load only decays once the CPU work
+  stops. So both the 30-round before column and the 50-round after column were
+  taken with at least the 24 spinners alive on 11 cores, as stated.
+* **The claim that they were stopped at the end does need re-checking** by
+  whatever runs next, with `ps` and not with a pid-file count.
+* A reviewer reading "re-verified 0 alive" in this or any sibling finding should
+  assume it may be a vacuous zero until it has been reproduced with `ps`.
+
 ## What justifies the change without a before/after contrast
 
 The defect the old budget contained is provable by inspection and by a
