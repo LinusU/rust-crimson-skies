@@ -49,7 +49,7 @@ free_kb() { df -k /System/Volumes/Data 2>/dev/null | awk 'NR==2{print $4}'; }
   echo "rustc=$(rustc -V)"
   echo "cargo_target_dir=${CARGO_TARGET_DIR:-unset}"
   echo "df_data_avail_kb=$(free_kb)"
-  echo "loadavg=$(sysctl -n vm.loadnet 2>/dev/null || sysctl -n vm.loadavg)"
+  echo "loadavg=$(sysctl -n vm.loadavg 2>/dev/null)"
   echo "execs_before=$(count_execs)"
   echo "deps_entries_before=$(ls target/debug/deps | wc -l | tr -d ' ')"
 } > "$out/$label.env"
