@@ -17,6 +17,8 @@
 
 use std::path::PathBuf;
 
+use crate::playtest::smoke::MIN_SMOKE_SECONDS;
+use crate::playtest::{DEFAULT_CAPTURE_DIR, PlaytestRequest, SmokeRequest};
 use crate::run::SyntheticRequest;
 
 /// Exit code for invalid input or unsupported content (CLI-EVIDENCE contract).
@@ -39,6 +41,10 @@ pub enum CliRequest {
     /// ticks, optionally recording a trace and optionally starting from a
     /// root seed.
     Synthetic(SyntheticRequest),
+    /// `--playtest [--smoke-seconds <n> [--capture-dir <dir>]]`: open the
+    /// windowed development playtest (task #647), or run its finite
+    /// deterministic smoke.
+    Playtest(PlaytestRequest),
     /// No arguments at all: invalid input, reported on stderr and exit 2.
     MissingInput,
     /// Arguments that name no supported run mode: reported on stderr and
@@ -80,6 +86,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut ticks: Option<u64> = None;
     let mut trace: Option<PathBuf> = None;
     let mut seed: Option<u64> = None;
+    let mut playtest = false;
+    let mut smoke_seconds: Option<u32> = None;
+    let mut capture_dir: Option<PathBuf> = None;
     let mut unknown = false;
 
     let mut index = 0;
@@ -89,6 +98,30 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
         match arg.as_str() {
             "--synthetic" => synthetic = true,
             "--headless" => headless = true,
+            "--playtest" => playtest = true,
+            "--smoke-seconds" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    return CliRequest::Unsupported { args };
+                };
+                match value.parse::<u32>() {
+                    Ok(parsed) => smoke_seconds = Some(parsed),
+                    Err(_) => {
+                        return CliRequest::Invalid {
+                            reason: format!(
+                                "--smoke-seconds expects a whole number of seconds, found {value:?}"
+                            ),
+                        };
+                    }
+                }
+                values = 1;
+            }
+            "--capture-dir" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    return CliRequest::Unsupported { args };
+                };
+                capture_dir = Some(PathBuf::from(value));
+                values = 1;
+            }
             "--ticks" => {
                 let Some(value) = args.get(index + 1).cloned() else {
                     // The flag is the last thing typed: no request can be
@@ -139,6 +172,43 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
 
     if unknown {
         return CliRequest::Unsupported { args };
+    }
+    if playtest {
+        if synthetic || headless || ticks.is_some() || trace.is_some() || seed.is_some() {
+            return CliRequest::Invalid {
+                reason: "--playtest is the windowed development playtest; it does not \
+ combine with --synthetic, --headless, --ticks, --trace or --seed"
+                    .to_string(),
+            };
+        }
+        if smoke_seconds.is_none() && capture_dir.is_some() {
+            return CliRequest::Invalid {
+                reason: "--capture-dir is where --playtest --smoke-seconds <n> writes its \
+ artifacts; the interactive playtest writes none"
+                    .to_string(),
+            };
+        }
+        let smoke = match smoke_seconds {
+            Some(seconds) if seconds < MIN_SMOKE_SECONDS => {
+                return CliRequest::Invalid {
+                    reason: format!(
+                        "--smoke-seconds must be at least {MIN_SMOKE_SECONDS}: the scripted \
+ sequence needs that long to pitch, roll, yaw, pause, reset and reach the obstacle"
+                    ),
+                };
+            }
+            Some(seconds) => Some(SmokeRequest {
+                seconds,
+                capture_dir: capture_dir.unwrap_or_else(|| PathBuf::from(DEFAULT_CAPTURE_DIR)),
+            }),
+            None => None,
+        };
+        return CliRequest::Playtest(PlaytestRequest { smoke });
+    }
+    if smoke_seconds.is_some() || capture_dir.is_some() {
+        return CliRequest::Invalid {
+            reason: "--smoke-seconds and --capture-dir belong to --playtest".to_string(),
+        };
     }
     if seed.is_some() && !synthetic {
         return CliRequest::Invalid {
@@ -218,6 +288,19 @@ SYNTHETIC SMOKE
         every other property of the fixture stays as documented. Omitting it
         keeps the canonical fixture. The trace header records the seed, and
         --seed without --synthetic is rejected
+
+WINDOWED PLAYTEST (development, not original)
+    --playtest
+        Open a real window with the DEVELOPMENT PLAYTEST / SYNTHETIC SCENE /
+        UNCALIBRATED FLIGHT scene and fly the production flight model with the
+        keyboard: W/S pitch, Q/E roll, A/D yaw, Left Shift / F throttle,
+        R reset, Esc pause/resume, F10 quit. Needs no installation and no GPU
+        capture; it is never original M01. See docs/PLAYTEST.md
+    --playtest --smoke-seconds <n> [--capture-dir <dir>]
+        Run the scripted, deterministic smoke (n >= 20 simulated seconds) in
+        the same window path: it injects keys through the real input path,
+        saves framebuffer PNGs, a trace and report.json to <dir> (default
+        private/playtest), exits, and fails if a check fails
 
 `--help` and `--version` read no environment variable, open no installation
 and start no asset discovery: they succeed without a GPU and without a retail

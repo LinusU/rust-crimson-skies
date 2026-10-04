@@ -11,6 +11,7 @@
 use std::process::ExitCode;
 
 use cs_app::cli::{self, CliRequest};
+use cs_app::playtest;
 use cs_app::run;
 
 fn main() -> ExitCode {
@@ -31,6 +32,13 @@ fn main() -> ExitCode {
             Err(error) => {
                 eprintln!("cs: {error}");
                 ExitCode::from(error.exit_code())
+            }
+        },
+        CliRequest::Playtest(request) => match playtest::run_playtest(&request) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("cs: {error}");
+                ExitCode::from(cli::EXIT_RUNTIME_FAILURE)
             }
         },
         CliRequest::MissingInput => {
