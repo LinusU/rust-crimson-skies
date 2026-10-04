@@ -378,35 +378,29 @@ The named answer, and each part is production code today:
 | `accept_f39_e7_the_reader_keeps_the_three_surfaces_apart` | a hand-built record: a stage beside a threshold is counted, one beside no threshold is a declaration, a sound group and a `WAKE_ANIM` are declarations, only the three labels are objective kinds, the surfaces are disjoint, the family is attributed per surface, and an absent `targets.zrd` is a measured absence |
 | `accept_f39_e7_the_installation_spell_no_detached_category_on_either_counting_surface` (retail) | the whole table above over `$CS_GAME_DIR`: the fingerprint, both denominators, the three surfaces' counts, zero `DETACH` sites on every surface, the single `MSG_OBJ_RELEASE` objective kind by name, and the seven `DROP` block declarations including `zbd/c2/m05 OBJECTIVE23 drop_paratroopers` |
 
-## Measured sensitivity (mutation probes, all observed)
+## Measured sensitivity (mutation probes, all observed on this branch)
 
-* `ContractDistinction::Detached` given a `declared_kind()` →
-  `each_distinction_names_a_vocabulary_entry_and_a_producer_or_a_named_reason`
-  fails (it asserts `declared == None` and the exact producer list).
-* `ContractDistinction::unproduced_reason` returning `None` for `Detached` →
-  the same test fails, on the named reason.
-* A row removed from `contract_condition_distinctions` → the length assertion
-  and `reading()`'s panic both fire.
-* `CountKind::producer` hardcoded to the inverse (a written-out match instead of
-  the derived search) → the third test still passes, which is the point: it is
-  the agreement with `from_lifecycle` that is pinned, not the implementation.
-* `CountKind::from_lifecycle` given a `Disabled` or `Escaped` arm →
-  `the_producer_column_is_the_inverse_of_the_only_counting_path` fails on the
-  `unreported` list, and the table's producer column changes with it.
-* `release_payload` dropping `objective` → the release test fails.
-* `detached_spelling_family` matching anywhere in the name instead of at a
-  segment's start → the spelling test fails on `redetached`/`undroppable`.
-* The stem list emptied → the spelling test fails on `MSG_OBJ_RELEASE` and on
-  every stem's self-match.
-* The reader reading a stage as counted regardless of the threshold →
-  `the_reader_keeps_the_three_surfaces_apart` fails (`sprucegoose` moves
-  surfaces) and the counted-condition count stops being 4.
-* The reader merging the surfaces → the disjointness assertion and the
-  `(4, 3, 3)` denominators fail.
-* The reader reading `nodes` as an objective kind → the same test fails on
-  `wing1`.
-* `archives_without_targets` defaulted to `[]` → the retail test fails
-  (`zbd/c1c/m01` is named).
+Each probe was applied, `cargo test -p cs_app --test
+accept_f39_e7_detached_condition_vocabulary -- --include-ignored` was run, and the
+file was restored. "Fails" names the tests that reported `FAILED`.
+
+| probe | fails |
+| --- | --- |
+| `ContractDistinction::declared_kind` gives `Detached` a declared category | `each_distinction_names_a_vocabulary_entry_and_a_producer_or_a_named_reason` |
+| `ContractDistinction::unproduced_reason` returns `None` for `Detached` | `each_distinction_names_a_vocabulary_entry_and_a_producer_or_a_named_reason` |
+| `contract_condition_distinctions` drops the `Detached` row | `six_distinctions_resolve_in_the_contract_s_own_order`, `each_distinction_names_a_vocabulary_entry_and_a_producer_or_a_named_reason` |
+| `CountKind::from_lifecycle` maps `MissionRemoved` to `Disabled` | `the_producer_column_is_the_inverse_of_the_only_counting_path`, `each_distinction_names_a_vocabulary_entry_and_a_producer_or_a_named_reason`, `a_detached_actor_is_represented_by_a_release_that_keeps_its_objective` |
+| `release_payload` drops `objective` | `a_detached_actor_is_represented_by_a_release_that_keeps_its_objective` |
+| `detached_spelling_family` matches anywhere in the name instead of at a segment's start | `the_spelling_rule_is_a_segment_match_over_a_published_stem_list`, and the retail census's per-stem counts |
+| the reader counts a stage that stands beside no threshold | `the_reader_keeps_the_three_surfaces_apart`, and the retail census's counted-condition total |
+| the reader reads `nodes` as an objective kind | `the_reader_keeps_the_three_surfaces_apart`, and the retail census's objective-kind total |
+| `CountKind::producer` hardcoded as a written-out match instead of the derived search | **nothing** — and that is the point: what is pinned is its agreement with `from_lifecycle`, not its implementation, so a refactor that keeps the agreement is not a regression |
+
+The last row is stated because a reviewer should know it: the six distinctions
+are pinned through derived queries, so the tests would not catch a rewrite that
+computes the same answer. They do catch every change to the *answer*, which is
+what the six-item reconciliation claims.
+
 
 ## Public-API changes worth naming
 

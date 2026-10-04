@@ -4044,7 +4044,7 @@ impl ContractDistinction {
     /// distinction today.
     #[must_use]
     pub const fn is_counted_with_a_producer(self) -> bool {
-        matches!(self.unproduced_reason(), None)
+        self.unproduced_reason().is_none()
     }
 }
 

@@ -235,11 +235,9 @@ fn evidence_report_f39_e7_writes_the_acceptance_report() {
         census.readers(),
         census.mission_readers(),
         census.shared_readers(),
-        counted(&census.archives_without_targets(), |archive| {
-            format!("{}", jstr(archive))
-        }),
+        counted(&census.archives_without_targets(), |archive| jstr(archive)),
         counted(&census.archives_without_objectives(), |archive| {
-            format!("{}", jstr(archive))
+            jstr(archive)
         }),
         census.sites(DetachedVocabularySurface::CountedCondition),
         census.distinct_names(DetachedVocabularySurface::CountedCondition),
