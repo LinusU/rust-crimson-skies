@@ -3865,10 +3865,17 @@ pub fn survey_retail_dormant_reveal(
 // [`survey_retail_detached_declarations`] measures every reader archive in the
 // installation — the 53 mission-scoped ones and the 9 shared/world-group ones
 // F39-D's census excluded — and finds no counted condition and no objective kind
-// spelling a detached category, while the original *does* write detaches in its
-// block-declaration vocabulary (`WAKE_ANIM drop_paratroopers`). A detached actor
-// is therefore represented by the release/attach path, which keeps objective
-// identity rather than ending the actor's life:
+// spelling a detached category. It also measures that **all nine** shared and
+// world-group readers declare no `objectives.zrd` member, so they contribute no
+// counted condition and no block declaration — the measured answer to the wider
+// denominator F39-D left open (unknown #5) for this question. The original *does*
+// write detaches, in the vocabulary of an objective block's own triggers:
+// `zbd/c2/m05 OBJECTIVE23` carries `WAKE_ANIM drop_paratroopers` with no stage
+// and no threshold beside it, so the drop **completes** that objective rather
+// than counting detached actors.
+//
+// A detached actor is therefore represented by the release/attach path, which
+// keeps objective identity rather than ending the actor's life:
 // [`cs_sim::world_actors::release::release_payload`] carries
 // `objective: Option<SymbolId>` across the release (F34 non-negotiable 4), and
 // the authored detach op is [`cs_content::animation::AttachmentOp::Detach`]
@@ -4226,6 +4233,11 @@ impl DetachedVocabularyCensus {
 
     /// How many shared/world-group archives were read — the denominator F39-D's
     /// census did not have.
+    ///
+    /// **Measured: none of them declares an `objectives.zrd` member**, so they
+    /// contribute no counted condition and no block declaration. One of them
+    /// (`zbd/c1c/zrdr.zbd`) does declare a `targets.zrd`, so the objective-kind
+    /// surface is not mission-scoped.
     #[must_use]
     pub fn shared_readers(&self) -> usize {
         self.rows
@@ -4246,10 +4258,16 @@ impl DetachedVocabularyCensus {
 
     /// The archives that declare no `objectives.zrd` at all, named.
     ///
-    /// Every one of these is a shared or world-group reader: the shared reader
-    /// and the world-group readers hold animation, sound and motion records, so
-    /// a mission-scoped archive with no objective record is a refusal instead
-    /// (F39-D's rule, kept below).
+    /// **Measured: every shared and world-group reader.** The shared reader and
+    /// the nine world-group readers hold animation, sound and motion records and
+    /// none declares an objective record, so they contribute **no** counted
+    /// condition and **no** block declaration. That is the measured answer to
+    /// F39-D's unknown #5 *for this question* — the objective-declaration
+    /// vocabulary is a mission-scoped one — and it is why
+    /// [`Self::shared_readers`] is reported beside [`Self::mission_readers`]
+    /// instead of being folded into one number. One shared reader does declare a
+    /// `targets.zrd`, so the objective-kind surface is not mission-scoped. A
+    /// *mission* reader with no objective record is a refusal, never a row.
     #[must_use]
     pub fn archives_without_objectives(&self) -> Vec<&str> {
         self.rows
@@ -4399,16 +4417,20 @@ pub const DETACH_CONTRACT_STEM: &str = cs_content::objectives::DETACH_STEM;
 /// **Every** reader archive is read, not only the mission-scoped ones: F39-D's
 /// census (and F39-E4's) covered exactly `zbd/<group>/<mission>` and left the
 /// shared reader (`zbd/zrdr.zbd`, 220 members) and the nine world-group readers
-/// outside its denominator (F39-D unknown #5). This walk counts them, keeps them
-/// in their own [`ReaderScope::Shared`] rows and reports the two denominators
-/// separately, so "no mission declares a detached count" is a statement about 53
-/// archives and "no reader in the installation declares one" is a statement about
-/// 62.
+/// outside its denominator (F39-D unknown #5). This walk reads them too and
+/// keeps them in their own [`ReaderScope::Shared`] rows, because a detach is
+/// exactly the kind of thing a shared reader would spell. **Measured: none of
+/// them declares an `objectives.zrd` member**, so they contribute no counted
+/// condition and no block declaration; one of them declares a `targets.zrd` and
+/// does contribute objective kinds. That is itself the answer to the wider
+/// denominator for this question, and the reason the two scopes are reported
+/// side by side rather than as one number.
 ///
 /// A reader archive with no `targets.zrd` is a **measured absence**, kept as a
 /// row with `targets_sha256: None`: `archives_without_targets` names it, so
 /// "this archive declares no objective kind" is never reported about a member
-/// nobody read.
+/// nobody read. A **mission** archive with no `objectives.zrd` is a refusal
+/// instead, so a mission cannot vanish from a denominator.
 ///
 /// # Errors
 ///

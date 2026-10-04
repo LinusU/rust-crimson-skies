@@ -669,14 +669,37 @@ fn accept_f39_e7_the_installation_spell_no_detached_category_on_either_counting_
             .any(|row| row.scope.archive() == "zbd/zrdr.zbd"),
         "the shared reader must be in the denominator"
     );
-    // A mission reader with no objective record is a refusal, so every one of the
-    // archives that declares none is a shared or world-group reader, and a
-    // missing `targets.zrd` is named rather than defaulted.
-    assert!(
+    // A mission reader with no objective record is a refusal, so every archive
+    // that declares none is a shared or world-group reader — and **measured**,
+    // all nine of them are. That is the wider denominator F39-D left open,
+    // answered: the objective-declaration vocabulary is mission-scoped. The
+    // objective-kind surface is not, because one shared reader does declare
+    // targets — F39-E4's unknown #3 seen from this side.
+    assert_eq!(census.archives_without_objectives().len(), 9);
+    assert_eq!(
+        census.archives_without_objectives(),
         census
-            .archives_without_objectives()
+            .rows()
             .iter()
-            .all(|archive| !archive.starts_with("zbd/c1c/m01") && archive.contains("zrdr.zbd"))
+            .filter(|row| matches!(row.scope, ReaderScope::Shared(_)))
+            .map(|row| row.scope.archive())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(census.archives_without_targets().len(), 9);
+    assert!(
+        !census
+            .archives_without_targets()
+            .contains(&"zbd/c1c/zrdr.zbd"),
+        "the shared c1c reader declares a targets.zrd, so it contributes objective kinds"
+    );
+    assert_eq!(
+        census
+            .rows()
+            .iter()
+            .filter(|row| row.targets_sha256.is_some())
+            .count(),
+        53,
+        "52 mission readers plus the shared c1c reader"
     );
     assert!(
         census.archives_without_targets().contains(&"zbd/c1c/m01"),
