@@ -51,8 +51,9 @@ const ACCEPTANCE_PREFIX: &str = "accept_m01_lc_";
 /// regenerated on another installation cannot describe this one's numbers. The
 /// limits of the claim are interpolated from the census's own lowering accounting,
 /// so a report can never claim more than this run measured.
-fn review_method(census: &RetailControlCensus) -> String {
+fn review_method(census: &RetailControlCensus, own_tests: usize, shared_plus_own: usize) -> String {
     let absent = census.archives_without_control_program();
+    let shared = shared_plus_own.saturating_sub(own_tests);
     let unmet: Vec<String> = census
         .unmet_by_requirement()
         .iter()
@@ -95,6 +96,11 @@ fn review_method(census: &RetailControlCensus) -> String {
          any reader declares a directive with no measured effect. `unknowns` is empty because \
          every unresolved item above is a limit on the claim rather than an unresolved measurement: \
          every row in the census resolved, every archive either measured or named as absent. \
+         TEST-SELECTION NOTE: the prefix accept_m01_lc_ is shared with the already-merged task \
+         M01-LC-WORLD-SCENE-IDS, so this run's {shared_plus_own} discovered assertions cover both \
+         tasks: the {own_tests} belonging to THIS task are exactly the accept_m01_lc_ tests in \
+         crates/cs_app/tests/accept_m01_lc_mission_program.rs, and the {shared} scene_ids tests \
+         belong to that other task and appear here only because the selection is prefix-based. \
          Validated with tools/validate_evidence.py --require-pass.",
         census.measured_len(),
         census.len(),
@@ -204,7 +210,11 @@ fn evidence_report_m01_lc_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(&reviewer),
-        jstr(&review_method(&census)),
+        jstr(&review_method(
+            &census,
+            own_tests(&log),
+            suite.discovered as usize,
+        )),
     );
     let out = evidence_dir.join("acceptance.json");
     fs::write(&out, &report).expect("write acceptance.json");
@@ -626,6 +636,23 @@ fn record(suite: &mut Suite, name: String, status: &'static str) {
 }
 
 // ------------------------------------------------------------- artifacts ---
+
+/// How many of the discovered prefixed assertions belong to **this** task.
+///
+/// The prefix `accept_m01_lc_` is shared with the already-merged task
+/// M01-LC-WORLD-SCENE-IDS, whose four `scene_ids` tests also match it, so a
+/// prefix-based selection reports both. Counting only the un-namespaced ones —
+/// libtest prints a test from an integration-test *file* with no module path and
+/// an in-module unit test under its module path — is what separates the two sets,
+/// and it is counted from the recorded log rather than from a list the harness
+/// maintains.
+fn own_tests(log: &str) -> usize {
+    parse_suite(log)
+        .assertions
+        .iter()
+        .filter(|(name, _)| !name.contains("::"))
+        .count()
+}
 
 /// One referenced artifact: hashed here with the production SHA-256 the task
 /// implements (the validator re-hashes it with `hashlib` independently).
