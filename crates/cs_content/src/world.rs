@@ -4788,11 +4788,16 @@ impl WorldPartitionGrid {
         let mut offset = grid_start;
         let count = u64::from(data.partition_x_count) * u64::from(data.partition_y_count);
         for cell in 0..count {
-            let at = |within: u64| usize::try_from(offset + within).unwrap_or(usize::MAX);
+            // Every read below is inside the cell or inside its own values, and
+            // both are bounds-checked against the container before they are
+            // taken, so the offset conversion is the only place a value that
+            // cannot be addressed on this host can surface. It is reported as
+            // the truncation it would be, never as an index.
+            let base_at = usize::try_from(offset)
+                .map_err(|_| WorldImportError::GridTruncated { offset, len })?;
             if offset + WORLD_PARTITION_BYTES > len {
                 return Err(WorldImportError::GridTruncated { offset, len });
             }
-            let base_at = at(0);
             let mut header_floats = [0.0f32; 6];
             for (word, float) in header_floats.iter_mut().enumerate() {
                 let start = base_at + 8 + word * 4;
@@ -4812,11 +4817,11 @@ impl WorldPartitionGrid {
             if offset + WORLD_PARTITION_BYTES + value_bytes > len {
                 return Err(WorldImportError::GridTruncated { offset, len });
             }
-            let mut slots = Vec::with_capacity(usize::try_from(values).unwrap_or(0));
+            let mut slots = Vec::new();
             for value in 0..values {
                 let start = base_at
-                    + usize::try_from(WORLD_PARTITION_BYTES).unwrap_or(usize::MAX)
-                    + usize::try_from(value * WORLD_PARTITION_VALUE_BYTES).unwrap_or(usize::MAX);
+                    + WORLD_PARTITION_BYTES as usize
+                    + (value * WORLD_PARTITION_VALUE_BYTES) as usize;
                 let slot = u32::from_le_bytes([
                     container[start],
                     container[start + 1],

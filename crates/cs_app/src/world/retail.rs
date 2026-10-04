@@ -414,9 +414,12 @@ impl RetailWorldContainer {
 
     /// The mesh-array index a definition-side mesh reference names.
     ///
-    /// `None` when the reference is not one of this container's own slot names,
-    /// which is the honest answer for a catalog-backed reference: this container
-    /// holds no geometry for an id it did not mint.
+    /// `Err` when the reference is not one of this container's own slot names.
+    /// That cannot happen for a definition [`Self::definition`] produced, so it
+    /// is a refusal about the *caller* rather than a silent skip: a definition
+    /// built from somewhere else names meshes this source does not hold, and
+    /// quietly registering nothing for them would leave a world whose objects
+    /// report a `MeshUnavailable` gap for a reason the report never names.
     fn mesh_index_of(&self, mesh: &ContentId) -> Result<Option<u32>, RetailWorldError> {
         let prefix = format!("{}.mesh-", self.group.to_ascii_lowercase());
         let Some(suffix) = mesh.key().strip_prefix(&prefix) else {
