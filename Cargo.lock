@@ -2575,6 +2575,7 @@ version = "0.0.0"
 dependencies = [
  "cs_types",
  "libc",
+ "log",
  "renet2",
  "renet2_netcode",
  "renetcode2",

@@ -21,3 +21,6 @@ renetcode2 = { version = "=0.16.1" }
 
 [dev-dependencies]
 libc = "=0.2.189"
+# The pinned transports log through the `log` facade; the F54-X10 probe
+# installs a counting logger to see which handshake stages complete.
+log = "=0.4.34"
