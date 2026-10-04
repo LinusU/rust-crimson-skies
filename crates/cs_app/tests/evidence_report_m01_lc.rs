@@ -72,7 +72,12 @@ fn review_method(census: &RetailControlCensus, own_tests: usize, shared_plus_own
             };
             row.members
                 .iter()
-                .filter(|member| !member.is_control && member.len > control_len && control_len > 0)
+                .filter(|member| {
+                    !member.is_control
+                        && member.len > control_len
+                        && control_len > 0
+                        && member.objective_blocks == 0
+                })
                 .max_by_key(|member| member.len)
                 .map(|member| {
                     (
@@ -115,8 +120,8 @@ fn review_method(census: &RetailControlCensus, own_tests: usize, shared_plus_own
          sites and {} distinct directive keys. The rule is measured to disagree with the name \
          reading the task started from: in {} the longest member of the reader is {}x the length \
          of that reader's control member ({} bytes beside {}) and declares no objective block at \
-         all, so a size-or-name heuristic would have selected an animation definition as the \
-         mission program. \
+         all, so a size-or-name heuristic would have selected a member with no objective program \
+         in it as the mission program. \
          The declared argument shape of every directive site was measured, keeping nested lists \
          nested and counting the sites whose shape disagrees across a key's own sites; no shape is \
          flattened into a positional list and no majority shape is resolved. Exactly two directive \
