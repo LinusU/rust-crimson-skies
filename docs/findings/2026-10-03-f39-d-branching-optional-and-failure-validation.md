@@ -287,6 +287,15 @@ path was touched, and no measured value was altered.
 5. **The census's denominator.** Mission-scoped archives only. The shared reader
    (`ZBD/zrdr.zbd`, 220 members) and the world-group readers are outside it, so a
    mission may inherit objective declarations this census does not see.
+   **Superseded 2026-10-04 by F39-E3**
+   (`docs/findings/2026-10-04-f39-e3-installation-scope-objective-declarations.md`),
+   which read all nine installation-scope archives: 612 declared members, every
+   one decoded, **zero** numbered `OBJECTIVE<N>` blocks among them, so this
+   census's denominator is *complete* for the objective-block surface and 1338 is
+   the whole installation's count. The same measurement found five objective
+   **target** records in the `c1c` world-group reader, which does bound the
+   F39-E4 target surface below. Whether a mission resolves a scope reader's member
+   at all remains reader-archive precedence (F04/F06), unmeasured.
 6. **The 8 campaign missions with no outcome site** declare neither
    `INSTANTWIN` nor `INSTANTLOSS` (the other 16 do). Whether their ending is
    declared elsewhere, or is the absence of an outcome key, is unmeasured.
