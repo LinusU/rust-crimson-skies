@@ -81,8 +81,8 @@ target dir, mechanism 1 from either that or the external prune above:
 1. **Empty harness binaries.** `src/lib.rs` and `src/main.rs` carry zero
    `#[test]`s, yet cargo still builds and execs a unit-test harness for each
    in the default `cargo test` plan. A concurrent rebuild (or a prune of old
-   executables) replaces or removes `target/debug/deps/cs_xtask-<hash>` between the first run's discovery and
-   exec — the reported `os error 2`.
+   executables) replaces or removes `target/debug/deps/cs_xtask-<hash>`
+   between the first run's discovery and exec — the reported `os error 2`.
 2. **Transient `NotFound` reads.** Every gate read a file once
    (`fs::read_to_string` on manifests, `fs::read`/`fs::read_dir` on dep-info
    under `target/`, `Path::is_file`/`is_dir`). A writer that replaces a file
