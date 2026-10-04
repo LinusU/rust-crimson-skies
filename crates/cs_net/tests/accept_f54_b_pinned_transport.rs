@@ -15,6 +15,7 @@
 //! `network_local` per `AGENTS.md`; `network_real` verification is F54-D.
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use cs_net::bounds::{MAX_INPUT_FRAMES_PER_PACKET, MAX_MODS, MAX_PACKET_BYTES};
@@ -32,8 +33,8 @@ use cs_net::message::{
     SnapshotFrame,
 };
 use cs_net::transport::{
-    CHANNEL_SEQUENCED, ClientEvent, ClientTransport, DropReason, HostEvent, HostTransport,
-    SendOutcome, TransportError,
+    CHANNEL_SEQUENCED, ClientEvent, ClientTransport, ConnectWindow, DEFAULT_CONNECT_WINDOW,
+    DropReason, HostEvent, HostTransport, SendOutcome, TransportError,
 };
 use cs_net::validation::{Admission, SessionViolation, synthetic_fire_message};
 use cs_types::Tick;
@@ -47,7 +48,69 @@ const STEP: Duration = Duration::from_millis(16);
 
 /// How many pump rounds an end-to-end expectation gets before it fails.
 /// Each round is a client update plus a host update.
-const MAX_ROUNDS: usize = 2_000;
+///
+/// Derived from [`LOOPBACK_WINDOW`] and [`STEP`] together, so neither can drift
+/// out from under the other: the budget is the connection layer's own silence
+/// window expressed in [`STEP`]s, plus a margin. A bare constant cannot hold
+/// that relation — the `2_000` this replaced was 32 seconds of accumulated pump
+/// time against a 15-second window, more than twice the patience it was trying
+/// to outlast, so the test could be waiting on something the connection layer
+/// had already given up on. It is still a bound on rounds, not a sleep: no test
+/// here waits on the wall clock.
+const MAX_ROUNDS: usize =
+    (LOOPBACK_WINDOW.const_seconds() as usize * 1_000 / STEP.as_millis() as usize) + 64;
+
+/// The connection-layer window these acceptance tests ask for.
+///
+/// The pinned layer's own default is fifteen seconds
+/// ([`DEFAULT_CONNECT_WINDOW`]), and it accumulates that window entirely from
+/// the `elapsed` a caller hands to `update`. A test that pumps at [`STEP`]
+/// therefore gives itself fifteen seconds of *pump* time in about four
+/// milliseconds of wall clock, and a single dropped loopback datagram on a
+/// machine that is oversubscribed cannot be retransmitted inside that window:
+/// the client disconnects, and the pinned state machine has no way back. See
+/// `docs/findings/2026-10-04-f54-x2-loopback-pump-and-socket-determinism.md`
+/// for the measurement.
+///
+/// This is a fixture parameter only. A shipped session runs with the default
+/// window, which no code path here changes; widening it is also what
+/// `accept_f54_b_the_connect_window_is_a_fixture_parameter_over_the_default`
+/// pins.
+const LOOPBACK_WINDOW: ConnectWindow = ConnectWindow::new(120);
+
+/// Serializes the tests in this file that open a real loopback socket.
+///
+/// Measured on an 11-core machine deliberately oversubscribed more than
+/// twofold: with many short-lived socket pairs churning at once, 380 of 1500
+/// loopback pairs lost one or two of 59 datagrams each, while a single pair at
+/// the same load settled 600 of 600 (same finding, sections 4 and 6). The loss
+/// is in the machine's loopback UDP path, not in anything a test asserts, so
+/// this file runs one live loopback pair at a time instead of racing for it.
+/// Each test here is a few milliseconds of socket work, so serializing costs
+/// nothing measurable and takes the machine's load out of the result.
+///
+/// `cargo test` runs this binary concurrently with
+/// `accept_f54_c_lifecycle`, so that file's own lock cannot serialize against
+/// this one; each file holds its own, and together they cover this crate's
+/// loopback acceptance tests.
+static LOOPBACK: Mutex<()> = Mutex::new(());
+
+/// Takes the loopback socket lock. Held for as long as the sockets it guards.
+fn loopback() -> MutexGuard<'static, ()> {
+    LOOPBACK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// How many silent rounds a client is given before its verdict is read.
+///
+/// Comfortably past [`DEFAULT_CONNECT_WINDOW`] expressed in [`STEP`]s, so a
+/// client that asked for the default window must be gone by then, and far
+/// short of [`LOOPBACK_WINDOW`]'s, so a client that asked for this file's
+/// window must still be there. Derived the same way [`MAX_ROUNDS`] is, with the
+/// same margin, so neither number is a bare constant.
+const SILENT_ROUNDS: usize =
+    (DEFAULT_CONNECT_WINDOW.const_seconds() as usize * 1_000 / STEP.as_millis() as usize) + 64;
 
 /// A live loopback pair: one bound host and one connecting client, with the
 /// events each side observed so far.
@@ -56,6 +119,9 @@ struct Link {
     client: ClientTransport,
     host_events: Vec<HostEvent>,
     client_events: Vec<ClientEvent>,
+    /// Held for as long as the two sockets above are open, so this file never
+    /// has two live loopback pairs at once. See [`loopback`].
+    _loopback: MutexGuard<'static, ()>,
 }
 
 impl Link {
@@ -67,17 +133,25 @@ impl Link {
         hello: cs_net::compat::ClientHello,
         client_id: u64,
     ) -> Self {
+        let loopback = loopback();
         let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
         let host = HostTransport::bind(session, params, bind, Duration::ZERO)
             .expect("the host socket binds");
         let addr = host.local_addr().expect("the bound host has an address");
-        let client = ClientTransport::connect(hello, addr, client_id, Duration::ZERO)
-            .expect("the client socket binds");
+        let client = ClientTransport::connect_with_window(
+            hello,
+            addr,
+            client_id,
+            Duration::ZERO,
+            LOOPBACK_WINDOW,
+        )
+        .expect("the client socket binds");
         Self {
             host,
             client,
             host_events: Vec::new(),
             client_events: Vec::new(),
+            _loopback: loopback,
         }
     }
 
@@ -443,6 +517,105 @@ fn accept_f54_b_wire_validation_still_runs_after_decode() {
 }
 
 #[test]
+fn accept_f54_b_the_connect_window_is_a_fixture_parameter_over_the_default() {
+    // This test holds the loopback lock itself and binds its own sockets
+    // directly rather than going through `Link`, which takes that same lock: a
+    // test that did both would wait on a lock it already holds.
+    let _loopback = loopback();
+
+    // The pinned layer's own unsecure token carries a fifteen-second window;
+    // that is what `DEFAULT_CONNECT_WINDOW` is and what every shipped session
+    // runs with, so the fixture parameter below only ever *widens* what a
+    // caller already had.
+    assert_eq!(
+        DEFAULT_CONNECT_WINDOW.const_seconds(),
+        15,
+        "the default is the pinned stack's own value, not a number this crate chose"
+    );
+    assert!(
+        LOOPBACK_WINDOW.const_seconds() > DEFAULT_CONNECT_WINDOW.const_seconds(),
+        "the fixture window must widen the default, never narrow it"
+    );
+
+    // The round budget is the window expressed in STEPs plus a margin. The
+    // derivation is spelled out here rather than repeated from the expression
+    // `MAX_ROUNDS` is defined by, so this fails if the budget is ever replaced
+    // by a bare constant again — which is what it was before this file asked
+    // for a window of its own.
+    assert_eq!(
+        MAX_ROUNDS,
+        LOOPBACK_WINDOW.const_seconds() as usize * 1_000 / STEP.as_millis() as usize + 64,
+        "the round budget is the connection layer's window in STEPs, plus a margin"
+    );
+    let window_ms = LOOPBACK_WINDOW.const_seconds() as usize * 1_000;
+    let budget_ms = MAX_ROUNDS * STEP.as_millis() as usize;
+    assert!(
+        budget_ms >= window_ms,
+        "the budget must outlast the window it waits through ({budget_ms} ms against \
+         {window_ms} ms), or a handshake still inside the connection layer's \
+         patience can be reported as a failure"
+    );
+    assert!(
+        budget_ms < window_ms * 2,
+        "the budget must track the window closely, not run far past it \
+         ({budget_ms} ms against {window_ms} ms): a budget that outlasts the \
+         window by much more than its own margin is one that can wait on a \
+         connection the layer has already given up on"
+    );
+
+    // The window is the connection layer's own, measured in the `elapsed` a
+    // caller pumps with: a client that asked for the default window is dropped
+    // after about that much silence, while a client that asked for this file's
+    // window is still there. Nothing in `cs_net` decides this — the pinned layer
+    // reads it straight out of the connect token it decodes, so the two halves
+    // of the fix are observable from the production API.
+    for (window, still_connected) in [(DEFAULT_CONNECT_WINDOW, false), (LOOPBACK_WINDOW, true)] {
+        let mut host = HostTransport::bind(
+            SYNTHETIC_SESSION,
+            synthetic_parameters(),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Duration::ZERO,
+        )
+        .expect("the host socket binds");
+        let addr = host.local_addr().expect("the bound host has an address");
+        let mut speaker = ClientTransport::connect_with_window(
+            synthetic_hello(),
+            addr,
+            0xB0,
+            Duration::ZERO,
+            window,
+        )
+        .expect("the client socket binds");
+
+        // Whichever window it asked for, the handshake itself is unchanged: a
+        // widened client gets the same grant a default client gets.
+        let mut granted = None;
+        for _ in 0..MAX_ROUNDS {
+            speaker.update(STEP);
+            host.update(STEP);
+            if let Some(grant) = speaker.grant() {
+                granted = Some(grant);
+                break;
+            }
+        }
+        let grant = granted.unwrap_or_else(|| panic!("the {window:?} handshake completed"));
+        assert_eq!(grant.session, SYNTHETIC_SESSION);
+
+        // The host goes quiet: it is never pumped again, so it stops sending
+        // and the connection layer's own silence window is what runs.
+        for _ in 0..SILENT_ROUNDS {
+            speaker.update(STEP);
+        }
+        assert_eq!(
+            speaker.is_connected(),
+            still_connected,
+            "after {SILENT_ROUNDS} silent rounds ({window:?} window) the connection \
+             layer's verdict is the window's"
+        );
+    }
+}
+
+#[test]
 fn accept_f54_b_handshake_admits_and_returns_a_grant_over_udp() {
     let (mut link, grant) = Link::admitted(SYNTHETIC_SESSION, synthetic_parameters(), 42);
     assert_eq!(grant.session, SYNTHETIC_SESSION);
@@ -457,10 +630,19 @@ fn accept_f54_b_handshake_admits_and_returns_a_grant_over_udp() {
     );
 
     // A second client on the same host takes the next peer id; the grant is
-    // the client's own.
+    // the client's own. It lives inside the first link's loopback guard, so
+    // this is still one live pair of sockets at a time as far as this file's
+    // lock is concerned, but it asks for the same window as every other client
+    // here rather than the default one.
     let addr = link.host.local_addr().expect("the host has an address");
-    let mut second = ClientTransport::connect(synthetic_hello(), addr, 43, Duration::ZERO)
-        .expect("the second client socket binds");
+    let mut second = ClientTransport::connect_with_window(
+        synthetic_hello(),
+        addr,
+        43,
+        Duration::ZERO,
+        LOOPBACK_WINDOW,
+    )
+    .expect("the second client socket binds");
     let mut second_events = Vec::new();
     for _ in 0..MAX_ROUNDS {
         if second_events
