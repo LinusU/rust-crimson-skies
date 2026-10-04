@@ -156,6 +156,13 @@
 //! `cs_sim`. No sky is rendered and no file is opened here; F19-B builds the
 //! sky/fog/light and weather effects from these records.
 //!
+//! [`weather`] is the mission `weather.zrd` reader and its binding to an
+//! [`environment::EnvironmentDefinition`] (task #636): a strict typed reader
+//! of the decoded `.zrd` tree that keeps the file's own number spellings, and
+//! a binder that makes only the precipitation kind known and names every
+//! other field it leaves unbound, because the original's world-unit scale and
+//! angle conventions are unmeasured.
+//!
 //! [`animation`] is the F20-A declared animation IR
 //! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
 //! `### F20-A`): the provenance-carrying [`animation::AnimationClip`] record
@@ -548,5 +555,6 @@ pub mod target_rules;
 pub mod textures;
 pub mod ui_layout;
 pub mod weapons;
+pub mod weather;
 pub mod world;
 pub mod world_actors;
