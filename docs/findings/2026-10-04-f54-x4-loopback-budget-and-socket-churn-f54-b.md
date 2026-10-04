@@ -89,6 +89,43 @@ as the best available explanation for a null result. It was **not** tested by
 reverting F54-C's mutex to raise the churn, and it should not be read as
 settled.
 
+### Reviewer follow-up: the hypothesis was then tested, and still did not reproduce
+
+The review of #607 ran that missing experiment. `origin/main`'s versions of
+*both* acceptance files were built as separate harness binaries — that is the
+highest-churn configuration this pair can reach, `F54-B`'s ~9 unserialized
+loopback tests plus `F54-C`'s unserialized ones, the state F54-X2 measured at
+11 of 50 failing — and both binaries were then run **concurrently** at
+`--test-threads=16`, 30 rounds, each round hard-capped at 120 s, with 24/24
+spinners confirmed alive on 11 cores:
+
+| configuration | rounds | result |
+| --- | --- | --- |
+| pre-fix F54-B + pre-fix F54-C, both unserialized, concurrent | 30 | **30 pass, 0 fail, 0 hung** (load 95-114) |
+| this branch's F54-B + F54-C, concurrent | 50 | **50 pass, 0 fail, 0 hung** (load 116-129) |
+
+So the churn hypothesis, which would have said "raise the churn and the pre-fix
+file flakes again", **does not reproduce even when the churn is maximised**.
+Either the threshold moved for another reason, or something else about the
+earlier session differed, or the loss needs more than these tests alone
+generate. The implementer's characterisation above stands unchanged and is now
+supported from two directions: the after column is not evidence the pre-fix file
+was flaky *here*, and neither is the before column evidence that raising churn
+brings it back. Treat the mutex as a defensible reduction in concurrent socket
+pressure justified by F54-X2's measurement, not as a fix for a failure anyone
+can currently reproduce. The reviewer ran the second row of the table as the
+acceptance check for criterion 1 independently; harness scripts and binaries are
+in gitignored `private/f54x4-review/`.
+
+One reviewer-side observation belongs here because it is about this task's own
+verification rather than the loopback path: the first `cargo test --workspace
+--locked` on the review machine exited 101 with
+`could not execute process …/cs_inspect-e4bc649912dd2984 (never executed)` /
+`No such file or directory (os error 2)`. That is the case `AGENTS.md` names as
+*not* a test failure (the host's external pruner of old harness binaries, task
+F54-X8); the identical command rerun once was green. Both runs are reported, in
+that order. Nothing in this branch touches `cs_inspect`.
+
 ## What justifies the change without a before/after contrast
 
 The defect the old budget contained is provable by inspection and by a
@@ -132,7 +169,10 @@ default window's verdict waiting for an event that can never arrive.
   written (50/50 under >2x deliberate oversubscription), but this branch's
   value on this hardware today rests on the mechanism and the deterministic
   budget argument above, not on a before/after contrast. A reviewer should not
-  read the after column as evidence the pre-fix file was flaky *here*.
+  read the after column as evidence the pre-fix file was flaky *here*. The
+  reviewer's follow-up above repeats the before column at the highest churn
+  this pair can reach and still sees no failure, so neither direction
+  reproduces.
 * **The kernel reason for the datagram loss is still not established.** It is
   reproducible with plain `UdpSocket` pairs at the same churn rate, is not
   reported to either endpoint, and is not sender-side queue overflow
@@ -149,10 +189,10 @@ default window's verdict waiting for an event that can never arrive.
   cannot express without a library or a file lock; that is a design question
   for the crate, not this task.
 * **`accept_f54_b_handshake_admits_and_returns_a_grant_over_udp` deliberately
-  holds two client sockets at once** — the first `Link` and a second client
-  connecting to the same host to take the next peer id. It is one live loopback
-  *pair of endpoints* under this file's lock, and the scenario needs the second
-  peer, so it was not serialized further.
+  holds three sockets at once** — the first `Link`'s host, its client, and a
+  second client connecting to the same host to take the next peer id. So the
+  lock guarantees one `Link` at a time, not one socket at a time, and the
+  scenario needs the second peer, so it was not serialized further.
 * **`CS_CAPABILITIES` on this machine is `retail,gpu,audio`.** Nothing in this
   task needed retail data; every measurement is loopback-only, which is
   `network_local` per `AGENTS.md`. Nothing here is `network_real` evidence.

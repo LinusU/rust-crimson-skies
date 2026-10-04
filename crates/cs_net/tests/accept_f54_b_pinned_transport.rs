@@ -85,9 +85,13 @@ const LOOPBACK_WINDOW: ConnectWindow = ConnectWindow::new(120);
 /// loopback pairs lost one or two of 59 datagrams each, while a single pair at
 /// the same load settled 600 of 600 (same finding, sections 4 and 6). The loss
 /// is in the machine's loopback UDP path, not in anything a test asserts, so
-/// this file runs one live loopback pair at a time instead of racing for it.
-/// Each test here is a few milliseconds of socket work, so serializing costs
-/// nothing measurable and takes the machine's load out of the result.
+/// this file keeps at most one [`Link`] — one bound host and its client — alive
+/// at a time instead of racing for the loopback path. Each test here is a few
+/// milliseconds of socket work, so serializing costs nothing measurable and
+/// takes the machine's load out of the result. The one place that opens a
+/// further socket on purpose is
+/// `accept_f54_b_handshake_admits_and_returns_a_grant_over_udp`, which needs a
+/// second peer id on the host it already holds.
 ///
 /// `cargo test` runs this binary concurrently with
 /// `accept_f54_c_lifecycle`, so that file's own lock cannot serialize against
@@ -120,7 +124,13 @@ struct Link {
     host_events: Vec<HostEvent>,
     client_events: Vec<ClientEvent>,
     /// Held for as long as the two sockets above are open, so this file never
-    /// has two live loopback pairs at once. See [`loopback`].
+    /// has two `Link`s alive at once. See [`loopback`].
+    ///
+    /// A further socket on a host this one already owns is still possible by
+    /// design — see
+    /// `accept_f54_b_handshake_admits_and_returns_a_grant_over_udp` — so what
+    /// this field guarantees is "one `Link` at a time", not "one socket at a
+    /// time".
     _loopback: MutexGuard<'static, ()>,
 }
 
@@ -631,9 +641,10 @@ fn accept_f54_b_handshake_admits_and_returns_a_grant_over_udp() {
 
     // A second client on the same host takes the next peer id; the grant is
     // the client's own. It lives inside the first link's loopback guard, so
-    // this is still one live pair of sockets at a time as far as this file's
-    // lock is concerned, but it asks for the same window as every other client
-    // here rather than the default one.
+    // this is the one place the file has three sockets open at once — the
+    // first link's host, its client and this one — and the scenario needs the
+    // second peer, so it is not serialized further. What it does do is ask for
+    // the same window as every other client here rather than the default one.
     let addr = link.host.local_addr().expect("the host has an address");
     let mut second = ClientTransport::connect_with_window(
         synthetic_hello(),
