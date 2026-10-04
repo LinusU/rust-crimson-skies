@@ -4647,6 +4647,19 @@ pub struct MeasuredScopeMember {
     /// times each key occurs. Published whole beside the objective surface so the
     /// classification can be read against the vocabulary it was drawn from.
     pub keys: Vec<(String, u32)>,
+    /// How many text nodes the walks stopped short of, because the document nested
+    /// deeper than [`SCOPE_WALK_DEPTH`].
+    ///
+    /// **Zero for every document the production `.zrd` decoder produced**, which is
+    /// what makes both inventories above complete. It is reported rather than
+    /// assumed because these inventories are the *search list* a negative result is
+    /// drawn from: a walk that stopped early would leave the stopped-at subtree
+    /// unread while still reporting "no spelling names an objective", which is the
+    /// one failure mode a bounded walk must never have. The census refuses a member
+    /// that reports a non-zero count (see
+    /// [`ScopeObjectiveCensusError::WalkTruncated`]) instead of publishing a
+    /// partial inventory as a complete one.
+    pub truncated_nodes: u32,
 }
 
 /// The spelling that makes a text node part of the objective search list: any
@@ -4678,30 +4691,38 @@ pub fn measure_scope_member(document: &ZrdValue, member: &str) -> MeasuredScopeM
     let is_target_member = member.eq_ignore_ascii_case(SCENARIO_TARGETS_MEMBER);
     let target_records = is_target_member.then(|| measure_target_kinds(document));
     let mut spellings: BTreeMap<String, u32> = BTreeMap::new();
-    collect_objective_spellings(document, 0, &mut spellings);
+    let mut truncated = 0u32;
+    collect_objective_spellings(document, 0, &mut spellings, &mut truncated);
+    let keys = scope_member_keys(document, is_target_member, &mut truncated);
     MeasuredScopeMember {
         objective_blocks,
         target_records,
         objective_spellings: spellings.into_iter().collect(),
-        keys: scope_member_keys(document, is_target_member),
+        keys,
+        truncated_nodes: truncated,
     }
 }
 
-/// Adds every text node naming an objective anywhere under `node`.
+/// The deepest the whole-tree walks descend, one step past the production `.zrd`
+/// decoder's own `MAX_ZRD_DEPTH`.
 ///
-/// The depth bound is a refusal-free walk guard, not a measurement: it is far
-/// deeper than any `.zrd` record the production decoder produces (the deepest
-/// measured installation document nests about six levels), so it cannot truncate a
-/// real declaration, and a node that deep would be reported as an unread record
-/// rather than as an absence.
-const SCOPE_WALK_DEPTH: usize = 64;
+/// The decoder **refuses** a member nested deeper than that bound, so a decoded
+/// document cannot reach this one: the guard here is a stack-safety backstop for a
+/// caller that hands [`measure_scope_member`] a hand-built tree, and
+/// [`MeasuredScopeMember::truncated_nodes`] is what makes "the walks saw
+/// everything" a measured fact rather than an assumption. The census refuses a
+/// non-zero count, so a truncated walk can never publish a partial inventory as a
+/// complete one — which is the whole basis of the negative result.
+const SCOPE_WALK_DEPTH: usize = 65;
 
 fn collect_objective_spellings(
     node: &ZrdValue,
     depth: usize,
     spellings: &mut BTreeMap<String, u32>,
+    truncated: &mut u32,
 ) {
     if depth >= SCOPE_WALK_DEPTH {
+        *truncated = truncated.saturating_add(1);
         return;
     }
     match node {
@@ -4715,7 +4736,7 @@ fn collect_objective_spellings(
         }
         ZrdValue::List(children) => {
             for child in children {
-                collect_objective_spellings(child, depth + 1, spellings);
+                collect_objective_spellings(child, depth + 1, spellings, truncated);
             }
         }
         ZrdValue::Int(_) | ZrdValue::Float(_) => {}
@@ -4744,9 +4765,13 @@ fn collect_objective_spellings(
 /// is shape-agnostic precisely so such a member cannot hide.
 ///
 /// It is an inventory of **field names**, never a reading of what a field means.
-fn scope_member_keys(document: &ZrdValue, is_target_member: bool) -> Vec<(String, u32)> {
+fn scope_member_keys(
+    document: &ZrdValue,
+    is_target_member: bool,
+    truncated: &mut u32,
+) -> Vec<(String, u32)> {
     let mut keys: BTreeMap<String, u32> = BTreeMap::new();
-    collect_scope_keys(objective_record(document), 0, &mut keys);
+    collect_scope_keys(objective_record(document), 0, &mut keys, truncated);
     if is_target_member {
         for (key, count) in cs_content::stunts::objective_record_keys(document) {
             *keys.entry(key).or_insert(0) += count;
@@ -4755,15 +4780,19 @@ fn scope_member_keys(document: &ZrdValue, is_target_member: bool) -> Vec<(String
     keys.into_iter().collect()
 }
 
-const SCOPE_KEY_DEPTH: usize = 64;
-
-fn collect_scope_keys(node: &ZrdValue, depth: usize, keys: &mut BTreeMap<String, u32>) {
-    if depth >= SCOPE_KEY_DEPTH {
+fn collect_scope_keys(
+    node: &ZrdValue,
+    depth: usize,
+    keys: &mut BTreeMap<String, u32>,
+    truncated: &mut u32,
+) {
+    if depth >= SCOPE_WALK_DEPTH {
+        *truncated = truncated.saturating_add(1);
         return;
     }
     for (key, value) in zrd_flat_fields(node) {
         *keys.entry(key.to_owned()).or_insert(0) += 1;
-        collect_scope_keys(value, depth + 1, keys);
+        collect_scope_keys(value, depth + 1, keys, truncated);
     }
 }
 
@@ -4803,6 +4832,22 @@ pub enum ScopeObjectiveCensusError {
         /// Why the members did not decide a role.
         reason: String,
     },
+    /// A member nested deeper than the whole-tree walks descend, so its spelling
+    /// and key inventories are partial.
+    ///
+    /// A **refusal** rather than a published row: the inventories are the search
+    /// list the "no installation-scope reader declares an objective block" result
+    /// is drawn from, and a walk that stopped early would report "nothing names an
+    /// objective" about a subtree it never read. The production `.zrd` decoder
+    /// refuses a member this deep, so nothing measured here can produce one.
+    WalkTruncated {
+        /// The archive's logical key.
+        container: String,
+        /// The member's name, as the archive declares it.
+        member: String,
+        /// How many text nodes the walks stopped short of.
+        nodes: u32,
+    },
 }
 
 impl fmt::Display for ScopeObjectiveCensusError {
@@ -4830,6 +4875,17 @@ impl fmt::Display for ScopeObjectiveCensusError {
                 write!(
                     f,
                     "scope reader archive {container} is unclassified: {reason}"
+                )
+            }
+            Self::WalkTruncated {
+                container,
+                member,
+                nodes,
+            } => {
+                write!(
+                    f,
+                    "{container}'s {member} member nests deeper than the census walks descend, \
+                     leaving {nodes} text nodes unread: its inventories are partial, not empty"
                 )
             }
         }
@@ -5245,6 +5301,13 @@ pub fn survey_retail_scope_objective_records(
             })?;
             row.decoded_members += 1;
             let measured = measure_scope_member(&document, member);
+            if measured.truncated_nodes > 0 {
+                return Err(ScopeObjectiveCensusError::WalkTruncated {
+                    container: container_key.clone(),
+                    member: member.to_owned(),
+                    nodes: measured.truncated_nodes,
+                });
+            }
             row.objective_blocks += measured.objective_blocks;
             for (spelling, count) in measured.objective_spellings {
                 *spellings.entry(spelling).or_insert(0) += count;

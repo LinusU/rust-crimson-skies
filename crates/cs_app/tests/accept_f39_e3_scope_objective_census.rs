@@ -216,6 +216,69 @@ fn accept_f39_e3_a_scope_member_measures_blocks_targets_and_every_spelling() {
     assert!(keys.contains(&"nodes"));
 }
 
+/// The census's inventories are the **search list** the negative result is drawn
+/// from, so a walk that stopped early must be a refusal, never a published row.
+///
+/// Both walks are depth-bounded. The production `.zrd` decoder refuses a member
+/// deeper than its own `MAX_ZRD_DEPTH`, so no decoded member can reach the bound —
+/// but a bounded walk that silently returned would report "nothing names an
+/// objective" about a subtree it never read, which is the one failure this census
+/// cannot survive. So the bound is **measured** ([`truncated_nodes`]) and the
+/// census turns a non-zero count into [`ScopeObjectiveCensusError::WalkTruncated`].
+#[test]
+fn accept_f39_e3_a_walk_that_stops_early_is_refused_not_published_as_empty() {
+    // Nest an objective spelling below the walk's bound. The spelling is deep
+    // enough that the walks must stop before reaching it.
+    let mut deep = text("MSG_OBJ_DEEP");
+    for _ in 0..80 {
+        deep = ZrdValue::List(vec![deep]);
+    }
+    let measured = measure_scope_member(&deep, "escape.zrd");
+    assert!(
+        measured.truncated_nodes > 0,
+        "an 80-level document was walked whole: the depth guard does not fire"
+    );
+    // The partial inventory is *partial*, and says so: the deep spelling is absent
+    // precisely because the walk did not reach it, which is why the census refuses
+    // the member instead of publishing this as "no objective spelling here".
+    assert!(
+        !measured
+            .objective_spellings
+            .iter()
+            .any(|(spelling, _)| spelling == "MSG_OBJ_DEEP"),
+        "the walk claims to have read past its own bound"
+    );
+
+    // A document inside the bound is walked whole and reports nothing truncated —
+    // which is what makes "no installation-scope reader declares an objective
+    // block" a measurement over all 612 members.
+    let shallow = ZrdValue::List(vec![record(vec![(
+        "DIALOG",
+        ZrdValue::List(vec![record(vec![(
+            "PRIMITIVES",
+            ZrdValue::List(vec![text("OBJECTIVESLIST")]),
+        )])]),
+    )])]);
+    let measured = measure_scope_member(&shallow, "escape.zrd");
+    assert_eq!(
+        measured.truncated_nodes, 0,
+        "a shallow document was reported as truncated"
+    );
+    assert_eq!(
+        measured.objective_spellings,
+        vec![("OBJECTIVESLIST".to_owned(), 1)],
+        "a document inside the bound loses a spelling"
+    );
+
+    // The member name selects the target-record surface, not the walk: a
+    // `targets.zrd` member past the bound is truncated too, so the refusal cannot
+    // be dodged by naming the member differently.
+    assert!(
+        measure_scope_member(&deep, "targets.zrd").truncated_nodes > 0,
+        "the target-record member name bypassed the walk's truncation report"
+    );
+}
+
 #[test]
 fn accept_f39_e3_a_reader_carrying_an_objective_record_is_never_a_scope_reader() {
     use cs_content::catalog::reader_dirs::{ReaderDirRole, classify_installation_scope};
