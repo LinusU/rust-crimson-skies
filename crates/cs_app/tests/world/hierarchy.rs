@@ -55,14 +55,14 @@ use cs_types::content::{ContentId, ContentKind};
 /// conversion routes the triple through the declared adapter's angle unit, so a
 /// degrees adapter would make these assertions about the adapter rather than
 /// about the hierarchy.
-fn radian_adapter() -> cs_content::coordinates::SourceAdapter {
+pub fn radian_adapter() -> cs_content::coordinates::SourceAdapter {
     cs_content::coordinates::SourceAdapter::declared()
         .into_iter()
         .find(|adapter| adapter.source().label() == "canonical")
         .expect("the F16-A registry declares the canonical source")
 }
 
-fn cid(kind: ContentKind, key: &str) -> ContentId {
+pub fn cid(kind: ContentKind, key: &str) -> ContentId {
     ContentId::from_source(kind, key).expect("test id is valid")
 }
 
@@ -540,7 +540,7 @@ fn retail_root() -> PathBuf {
 }
 
 /// One world container of the installation, decoded by the production reader.
-fn retail_container(group: &str) -> (String, GameZNodes) {
+pub fn retail_container(group: &str) -> (String, GameZNodes) {
     let bytes = std::fs::read(retail_root().join(format!("ZBD/{group}/gamez.zbd"))).unwrap_or_else(
         |error| panic!("zbd/{group}/gamez.zbd: the installation must hold it: {error}"),
     );
@@ -669,30 +669,25 @@ fn accept_f18_a_retail_every_world_container_says_which_side_its_hierarchy_disag
 }
 
 /// **The adopted rule is what gets the eight world containers past the
-/// hierarchy; what still refuses them is the `scene_node` id scheme, reported
-/// as a typed blocker with the exact count.**
+/// hierarchy, and since #628 the `scene_node` id scheme builds them too.**
 ///
 /// Read through `world_scene_graph_from_gamez`, every world container reconciles
-/// and then reaches `SceneGraph::build`, which refuses it — never with
-/// `InconsistentParentage`, which is the refusal the rule exists to resolve.
-/// What remains is the id scheme's own verdicts, and since F11-E1 escapes a
-/// stored name the key grammar cannot spell they are the two the escape cannot
-/// answer: a name-path past the key-length bound and two records sharing one
-/// name-path. The blocker carries both halves: the count the rule resolved and
-/// the refusal that remains, so a caller can say exactly which is which.
+/// and then converts: the two refusals the id scheme still held after F11-E1's
+/// escaping (two siblings sharing a name, and a name-path past the key bound)
+/// are answered by the rule in `docs/findings/2026-10-04-m01-lc-world-scene-ids.md`.
+/// The conversion carries the measurement of the disagreement the hierarchy rule
+/// resolved, so a caller can still say how many records it reconciled.
 ///
 /// The same test reads **two** containers end to end and asserts the verdict
 /// itself, and the aircraft container is read too: its count is 0, so the rule
 /// is a no-op there.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_f18_a_retail_the_world_containers_convert_their_hierarchy_and_report_the_refusal_that_remains()
- {
-    let mut reconciled = 0usize;
-    let mut blocked = 0usize;
+fn accept_f18_a_retail_the_world_containers_convert_their_hierarchy_and_build() {
+    let mut converted = 0usize;
     for (group, nodes, _, _, _, omitted) in RETAIL_WORLD_HIERARCHY {
         let (label, records) = retail_container(group);
-        let error = world_scene_graph_from_gamez(
+        let world = world_scene_graph_from_gamez(
             &cid(
                 ContentKind::SceneNode,
                 &format!("container.zbd.{}", group.to_lowercase()),
@@ -702,37 +697,26 @@ fn accept_f18_a_retail_the_world_containers_convert_their_hierarchy_and_report_t
             &radian_adapter(),
             &BindingMap::default(),
         )
-        .expect_err("the canonical build still refuses every world container");
-
-        let WorldSceneError::Build { source, audit } = error else {
-            panic!(
-                "{label}: the hierarchy must reconcile before anything else can refuse it, got \
-                 {error}"
-            );
-        };
-        assert!(
-            !matches!(source, SceneError::InconsistentParentage { .. }),
-            "{label}: the refusal the adopted rule resolves must not be the one that remains: {source}"
-        );
+        .unwrap_or_else(|error| panic!("{label}: the canonical build converts it: {error}"));
         assert_eq!(
-            audit.named_but_unlisted(),
+            world.audit().named_but_unlisted(),
             omitted,
-            "{label}: the blocker carries the exact count the rule resolved"
+            "{label}: the conversion carries the exact count the rule resolved"
         );
         assert_eq!(
-            audit.nodes(),
+            world.audit().nodes(),
             nodes as usize,
             "{label}: and the record count it measured"
         );
-        reconciled += 1;
-        blocked += 1;
-        println!("{label}: hierarchy reconciles, then {source}");
+        assert_eq!(
+            world.graph().len(),
+            nodes as usize,
+            "{label}: every record is a node"
+        );
+        converted += 1;
+        println!("{label}: hierarchy reconciles and builds");
     }
-    assert_eq!(
-        (reconciled, blocked),
-        (8, 8),
-        "all eight world containers were read"
-    );
+    assert_eq!(converted, 8, "all eight world containers were read");
 
     // Two containers end to end, asserted individually: this is the pair the
     // task's acceptance criterion names, and the numbers are the measurement

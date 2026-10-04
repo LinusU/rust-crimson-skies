@@ -78,6 +78,7 @@ mod import;
 mod overlays;
 mod records;
 mod residency;
+mod scene_ids;
 mod shared_asset;
 mod shear;
 mod spawn;
