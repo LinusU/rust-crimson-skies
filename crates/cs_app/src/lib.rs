@@ -319,6 +319,19 @@
 //! collider, so Avian never becomes a second contact authority. The design
 //! record is `docs/findings/2026-10-02-f27-c-weapon-session-wiring.md`.
 //!
+//! [`mission_control`] is the measured mission control program (task
+//! `M01-LC-MISSION-PROGRAM`, #630):
+//! [`mission_control::survey_mission_control_programs`], which reads every
+//! mission-scoped reader archive of the installation, finds each mission's
+//! control member by the *rule* that the member is the one whose decoded record
+//! declares numbered `OBJECTIVE<N>` blocks — decoding every member so the rule has
+//! candidates to choose between — and measures the directive vocabulary that
+//! member spells. It reports which directives the engine can honour and names
+//! every one it cannot, and it keeps the campaign gate closed
+//! ([`mission_control::RetailControlCensus::campaign_ready`]) while a single
+//! mission declares a directive with no measured effect. Nothing here claims what
+//! any original spelling *does*: no original executable has been run.
+//!
 //! [`ordnance`] is the F28-A ordnance boundary
 //! (`specs/F28-rockets-special-ordnance-counter-effects-and-nitro.md`, stage
 //! `### F28-A`): [`ordnance::lower_ordnance`], which lowers a declared
@@ -579,6 +592,7 @@ pub mod input;
 pub mod interaction;
 pub mod livery;
 pub mod loading;
+pub mod mission_control;
 pub mod network;
 pub mod objectives;
 pub mod ordnance;

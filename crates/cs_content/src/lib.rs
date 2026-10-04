@@ -105,6 +105,21 @@
 //! mission directory, so the coverage denominator comes from the
 //! installation instead of a filtered list of supported rows.
 //!
+//! [`mission_control`] is the measured mission control program (task
+//! `M01-LC-MISSION-PROGRAM`, #630): which reader-archive member carries a
+//! mission's control program — decided by
+//! [`mission_control::control_member`], the rule that the member is the one whose
+//! decoded record declares numbered `OBJECTIVE<N>` blocks, not the one with the
+//! longest or the most suggestive name — every directive key its blocks spell
+//! with that key's measured argument shape, and a
+//! [`mission_control::DirectiveDisposition`] per key that either names the one
+//! mission-IR action the key can reach or refuses it with a named
+//! [`mission_control::UnmeasuredReason`]. [`mission_control::ControlLowering`]
+//! then accounts, requirement by requirement, for what
+//! `cs_script::bindings::lower_program` would still need before any of it could
+//! become a `MissionProgram`. What any spelling *does* stays unmeasured: no
+//! original executable has been run.
+//!
 //! [`coordinates`] holds source coordinate conventions and their adapters
 //! into canonical space (`specs/F16-coordinates-units-origin-management-and-
 //! clocks.md`, stage F16-A): one validated declaration per source, and every
@@ -516,6 +531,7 @@ pub mod livery;
 pub mod loading;
 pub mod localization;
 pub mod mesh;
+pub mod mission_control;
 pub mod mods;
 pub mod multiplayer;
 pub mod objectives;
