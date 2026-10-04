@@ -16,7 +16,8 @@
 //! The registry is **empty by default and ships no original names**: F38-B adds
 //! the *measured* families in [`observed`], each with its provenance and either
 //! a real lowering or an explicit refusal, and the normalized differential
-//! traces in [`differential`]. Call data is untrusted, so name length, argument
+//! traces in [`differential`]. F38-C adds [`located`]: source-located
+//! diagnostics and the per-site coverage audit. Call data is untrusted, so name length, argument
 //! count and string length are capped before any lookup and no binding reaches
 //! anything but the simulation API.
 
@@ -36,6 +37,7 @@ pub const MAX_CALL_NAME_BYTES: usize = 64;
 pub const MAX_CALL_ARGS: usize = 8;
 
 pub mod differential;
+pub mod located;
 pub mod observed;
 
 /// The design-boundary family of a binding (contract "Host interface"). A
