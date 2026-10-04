@@ -223,6 +223,32 @@
 //! vocabulary stays design, is labelled design here and in
 //! `cs_sim::objectives::counters`, and the finding records the measurement, so
 //! the claim is gated rather than quietly over-declared.
+//!
+//! # F39-E6: a repeated completion-effect key is its own unmeasured shape
+//!
+//! F39-E2 measured precedence between two *different* effects in one block and
+//! had to set one reading aside: a block that spells the **same**
+//! completion-effect key twice. F39-E6 measured it over the whole readable
+//! corpus — every mission-scoped `objectives.zrd` block, the shared reader
+//! `zbd/zrdr.zbd` and the eight world-group readers that census excludes, and
+//! every `targets.zrd` record — and found it **nowhere**, in 612 excluded
+//! members and 332 target records alike. So the corpus holds no instance to
+//! infer from, and its silence is not a rule: "the corpus never writes it" is
+//! not evidence that the original does not support it. The shape therefore gets
+//! its own named unknown, [`UNMEASURED_REPEATED_EFFECT_KEY`], carried by
+//! [`MeasuredBranchPrecedence::repeated_effects`] beside — never folded into —
+//! the conflict reading: a repeat asks what the *second site of one key* does
+//! (replace the first, be ignored, apply beside it), a different question from
+//! which of two different effects applies.
+//!
+//! The declared vocabulary refuses the residue by name with it: one objective
+//! declaring the same effect on the same objective twice
+//! ([`ObjectivesSchemaError::RepeatedCompletionEffect`]) is the declared form
+//! of a repeated site and is refused rather than deduplicated into a count the
+//! record never authorized. Two entries naming the same objective with the
+//! same kind from *different* objectives stay legal — they agree on what
+//! happens — and one kind naming two different objectives stays legal too:
+//! that is one multi-target site, not a repetition.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -1354,6 +1380,43 @@ impl MeasuredBranchConflict {
     }
 }
 
+/// One measured **repeated effect key**: an `OBJECTIVE<N>` block that spells
+/// the same completion-effect key two or more times (F39-E6).
+///
+/// A different unmeasured shape from [`MeasuredBranchConflict`], and kept
+/// deliberately separate: a conflict asks which of two *different* effects the
+/// original applies to one target, while a repeat asks what the **second site
+/// of one key** does — replace the first site, be ignored, or apply beside it.
+/// The measured corpus holds the conflict once and the repeat nowhere, so the
+/// repeat is its own named unknown ([`UNMEASURED_REPEATED_EFFECT_KEY`]) and is
+/// never folded into the conflict reading or silently deduplicated into "two
+/// sites, one effect".
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredRepeatedEffect {
+    /// The `OBJECTIVE<N>` block the repeat was measured in, as the record
+    /// spells it.
+    pub block: String,
+    /// The one kind the block spells more than once.
+    pub kind: BranchEffectKind,
+    /// Every site of `kind` in the block, in authored field order — each with
+    /// its own target list and argument list, so a repeat whose sites spell
+    /// different targets or different numbers keeps both spellings.
+    pub sites: Vec<MeasuredBranchSite>,
+}
+
+impl MeasuredRepeatedEffect {
+    /// `"OBJECTIVE_8: WAKE x2"` — display label for diagnostics.
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!(
+            "{}: {} x{}",
+            self.block,
+            self.kind.label(),
+            self.sites.len()
+        )
+    }
+}
+
 /// What F39-E2 measured of one record's per-block completion-effect precedence.
 ///
 /// A census of **declaration sites and their targets**, deliberately not a rule.
@@ -1402,6 +1465,15 @@ pub struct MeasuredBranchPrecedence {
     /// The blocks where two effects *do* name a common objective, with the
     /// shared objective and the authored order of the sites.
     pub conflicts: Vec<MeasuredBranchConflict>,
+    /// The blocks where one completion-effect key is spelled **two or more
+    /// times**, with the kind and every one of its sites in authored order.
+    ///
+    /// Measured nowhere in the corpus (F39-E6): a different unmeasured shape
+    /// from [`Self::conflicts`], so it is carried as its own named verdict
+    /// ([`UNMEASURED_REPEATED_EFFECT_KEY`]) and never counted as a conflict —
+    /// a repeat is not "two effects for one objective", it is the same effect
+    /// declared twice.
+    pub repeated_effects: Vec<MeasuredRepeatedEffect>,
 }
 
 impl MeasuredBranchPrecedence {
@@ -1492,6 +1564,46 @@ impl MeasuredBranchPrecedence {
         self.needs_unmeasured_order()
             .then_some(UNMEASURED_BLOCK_PRECEDENCE)
     }
+
+    /// Whether any block of the record spells one completion-effect key two or
+    /// more times — a different unmeasured shape from
+    /// [`Self::needs_unmeasured_order`].
+    ///
+    /// The single place that answer is given, so no consumer reads a repeat as
+    /// "one effect, two sites" and deduplicates what the record never
+    /// authorized deduplicating.
+    #[must_use]
+    pub fn needs_unmeasured_repeated_effect(&self) -> bool {
+        !self.repeated_effects.is_empty()
+    }
+
+    /// How many **blocks** of this record carry at least one repeated effect
+    /// key.
+    ///
+    /// Blocks, not [`Self::repeated_effects`]: one block can spell two
+    /// different keys twice each, so a count of repeats is not a count of
+    /// blocks, and a consumer asking "how many blocks must I handle?" has to be
+    /// answered in blocks.
+    #[must_use]
+    pub fn repeated_effect_blocks(&self) -> u32 {
+        self.repeated_effects
+            .iter()
+            .map(|repeated| repeated.block.as_str())
+            .collect::<BTreeSet<_>>()
+            .len() as u32
+    }
+
+    /// Why a record spelling one completion-effect key twice is unresolved, by
+    /// name, or `None` when no block does.
+    ///
+    /// A separate verdict from [`Self::unmeasured_order_reason`]: the question
+    /// is what the second site of *one* key does, not which of two different
+    /// effects applies, and a record can carry both shapes in different blocks.
+    #[must_use]
+    pub fn unmeasured_repeated_effect_reason(&self) -> Option<&'static str> {
+        self.needs_unmeasured_repeated_effect()
+            .then_some(UNMEASURED_REPEATED_EFFECT_KEY)
+    }
 }
 
 /// Why the original's per-block completion-effect order stays unmeasured, stated
@@ -1504,6 +1616,23 @@ pub const UNMEASURED_BLOCK_PRECEDENCE: &str = "the record's completion-effect si
      the order the block spells them in, and the corpus declares two effects for one objective in exactly one of its \
      blocks; which of them the original applies, and in which order, is unmeasured because the compiled program behind \
      the record is not decoded, so a session must not apply an authored field order as if it were a rule";
+
+/// Why a block spelling one completion-effect key twice stays unmeasured,
+/// stated once so the census, the record and the finding say the same thing
+/// (F39-E6).
+///
+/// It names the measured fact behind it: the shape was counted over the whole
+/// readable corpus — 1338 mission `OBJECTIVE<N>` blocks, 612 members of the
+/// shared and world-group readers, 332 `targets.zrd` records — and occurs
+/// **nowhere**, so there is no instance to infer from and the corpus's silence
+/// is not evidence the original refuses it. A second site of one key may
+/// replace the first, be ignored, or apply beside it; which is unmeasured, so
+/// an importer must not collapse the repeat into a deduplicated count.
+pub const UNMEASURED_REPEATED_EFFECT_KEY: &str = "a block spelling the same completion-effect key twice was measured over \
+     the whole readable corpus and occurs nowhere: 1338 mission blocks, the shared and world-group reader archives \
+     and every targets.zrd record spell it zero times; what a second site of one key does — replace the first, be \
+     ignored, or apply beside it — is unmeasured because the compiled program behind the record is not decoded and \
+     the corpus's silence is not a rule, so a repeated key must not be deduplicated into one effect";
 
 /// Why the number a nap site carries stays unmeasured, stated once so the
 /// declared record, the runtime and a report say the same thing.
@@ -1783,6 +1912,33 @@ pub enum ObjectivesSchemaError {
         /// The effect the schema met second, on the same terms as `first`.
         second: BranchEffectKind,
     },
+    /// One objective declares the same completion effect on the same
+    /// objective **twice**.
+    ///
+    /// This is the declared form of the repeated-key shape F39-E6 measured:
+    /// an `OBJECTIVE<N>` block spelling one completion-effect key twice. The
+    /// shape occurs nowhere in the readable corpus, so what the second site
+    /// does — replace the first, be ignored, or apply beside it — is
+    /// unmeasured and the declaration is refused by name
+    /// ([`UNMEASURED_REPEATED_EFFECT_KEY`]) rather than deduplicated into a
+    /// count the record never authorized.
+    ///
+    /// Deliberately narrower than "one objective spelling one kind twice":
+    /// `WAKE` naming objectives 2 and 3 in two declared entries is the residue
+    /// of **one** multi-target site as much as of a repeated key, so it stays
+    /// legal. The refusal is per (kind, objective) pair of one declaring
+    /// objective — the shape that can only have come from a repeated site.
+    /// Two *different* objectives declaring the same `(kind, objective)` pair
+    /// also stay legal: they agree on what happens, so there is no repeat to
+    /// resolve.
+    RepeatedCompletionEffect {
+        /// The objective whose declaration carries the repeated effect.
+        by: ProgramSymbol,
+        /// The objective both sites name.
+        objective: ProgramSymbol,
+        /// The effect kind declared twice.
+        kind: BranchEffectKind,
+    },
     /// An objective declares a completion effect on itself.
     ///
     /// The effect fires *because* the objective completed, so by the time it
@@ -1976,6 +2132,14 @@ impl fmt::Display for ObjectivesSchemaError {
             } => write!(
                 f,
                 "{by} declares a {second:?} completion effect on {objective}, which a {first:?} effect already names, and no measured rule says which applies"
+            ),
+            Self::RepeatedCompletionEffect {
+                by,
+                objective,
+                kind,
+            } => write!(
+                f,
+                "{by} declares a {kind:?} completion effect on {objective} twice, and no measured rule says what the second site does"
             ),
             Self::SelfCompletionEffect { objective } => write!(
                 f,
@@ -2432,6 +2596,15 @@ fn check_signal(
 ///   resolve, and the declaration's own field order is refuted as a rule by the
 ///   same corpus. Two objectives naming the *same* effect kind for one objective
 ///   are accepted — they agree on what happens, so there is no order to decide.
+/// * **one objective declaring the same effect on the same objective twice is
+///   refused, not deduplicated** (F39-E6): that is the declared form of a block
+///   spelling one completion-effect key twice, a shape the whole readable
+///   corpus spells nowhere — so what the second site does is unmeasured
+///   ([`UNMEASURED_REPEATED_EFFECT_KEY`]) and the repeat is refused by name
+///   instead of collapsing into a count the record never authorized. The check
+///   is per (kind, objective) pair of one declaring objective, not per kind:
+///   one kind naming two *different* objectives is one multi-target site's
+///   residue and stays legal.
 fn check_completion_effects(
     objectives: &[DeclaredObjective],
     objective_ids: &BTreeSet<ProgramSymbol>,
@@ -2448,6 +2621,11 @@ fn check_completion_effects(
                 state: source.initial,
             });
         }
+        // Which (kind, objective) pairs *this* objective has already declared.
+        // A pair the same source declares twice can only come from a block
+        // spelling the key twice — the measured corpus's never-written shape —
+        // so it is refused by name rather than silently kept once.
+        let mut declared: BTreeSet<(BranchEffectKind, ProgramSymbol)> = BTreeSet::new();
         for effect in &source.completion_effects {
             if effect.kind.carries_argument() != effect.argument.is_some() {
                 return Err(ObjectivesSchemaError::EffectArgumentShape {
@@ -2490,6 +2668,13 @@ fn check_completion_effects(
                 None => {
                     named.insert(effect.objective, effect.kind);
                 }
+            }
+            if !declared.insert((effect.kind, effect.objective)) {
+                return Err(ObjectivesSchemaError::RepeatedCompletionEffect {
+                    by: source.symbol,
+                    objective: effect.objective,
+                    kind: effect.kind,
+                });
             }
         }
     }

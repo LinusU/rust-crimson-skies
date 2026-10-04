@@ -70,7 +70,7 @@ use cs_content::objectives::{
     BRANCH_ORDER_KEY, BranchEffectKind, DeclaredCompletion, DeclaredObjective,
     DeclaredObjectiveProgram, DeclaredObjectiveState, DeclaredPrecedence, DeclaredRevealRule,
     MeasuredBranchConflict, MeasuredBranchPrecedence, MeasuredBranchSite, ProgramSymbol,
-    UNMEASURED_BLOCK_PRECEDENCE, UNMEASURED_OBJECTIVE_SEMANTICS,
+    UNMEASURED_BLOCK_PRECEDENCE, UNMEASURED_OBJECTIVE_SEMANTICS, UNMEASURED_REPEATED_EFFECT_KEY,
 };
 use cs_content::stunts::{ZrdValue, decode_zrd};
 use cs_types::asset_id::SourceSpan;
@@ -461,6 +461,29 @@ fn accept_f39_e2_two_sites_of_one_effect_are_not_a_precedence_question() {
         1,
         "one block carries the condition"
     );
+    // And the repeated key is not silently counted as "two sites, one effect":
+    // F39-E6 measures it as its own unresolved shape beside the conflict.
+    assert_eq!(
+        measured.repeated_effects.len(),
+        1,
+        "OBJECTIVE1's two WAKE sites are one repeat, not a precedence question"
+    );
+    assert_eq!(measured.repeated_effects[0].block, "OBJECTIVE1");
+    assert_eq!(measured.repeated_effects[0].kind, BranchEffectKind::Wake);
+    assert_eq!(measured.repeated_effects[0].sites.len(), 2);
+    assert_eq!(
+        measured.repeated_effect_blocks(),
+        1,
+        "one block carries the repeat"
+    );
+    assert!(
+        measured.needs_unmeasured_repeated_effect(),
+        "the repeat raises its own named unknown, beside the conflict's"
+    );
+    assert_eq!(
+        measured.unmeasured_repeated_effect_reason(),
+        Some(UNMEASURED_REPEATED_EFFECT_KEY)
+    );
 }
 
 #[test]
@@ -633,6 +656,7 @@ fn accept_f39_e2_a_measured_record_carries_the_per_block_reading() {
                 },
             ],
         }],
+        repeated_effects: Vec::new(),
     };
     let row = RetailObjectiveRow {
         mission: "synthetic/f39e2.block-precedence".to_owned(),

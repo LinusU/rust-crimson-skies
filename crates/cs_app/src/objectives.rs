@@ -180,14 +180,15 @@ use cs_content::objectives::{
     DeclaredTerminalOutcome, DeclaredTimeDomain, DeclaredTimer, DeclaredTimerAction,
     DeclaredTimerStart, DeclaredVolume, DormantReadError, DormantReading, FAILURE_KEY_VOCABULARY,
     MeasuredBranchConflict, MeasuredBranchPrecedence, MeasuredBranchSite, MeasuredCategoryEvidence,
-    MeasuredCountConditions, MeasuredDormantBlock, MeasuredTargetKinds,
+    MeasuredCountConditions, MeasuredDormantBlock, MeasuredRepeatedEffect, MeasuredTargetKinds,
     OBJECTIVE_INACTIVE_COUNT_KEY, ProgramActor, ProgramSymbol, UnmeasuredQuantity,
     is_objective_inactive_stage, is_optional_objective_key, measure_dormant_declarations,
     measured_category_evidence,
 };
 use cs_content::stunts::{
     OBJECTIVE_BLOCK_PREFIX, SCENARIO_OBJECTIVES_MEMBER, SCENARIO_TARGETS_MEMBER,
-    TARGET_CATEGORY_KEY, TARGET_HELP_KEY, ZrdValue, objective_record, zrd_field, zrd_flat_fields,
+    TARGET_CATEGORY_KEY, TARGET_HELP_KEY, ZrdValue, objective_record, objective_record_count,
+    objective_record_keys, zrd_field, zrd_flat_fields,
 };
 use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
@@ -1692,17 +1693,37 @@ pub fn measure_block_precedence(document: &ZrdValue) -> MeasuredBranchPrecedence
         if sites.len() < 2 {
             continue;
         }
+        // A block that spells **one** effect key twice is a different
+        // unmeasured shape from a conflict — not "which of two effects wins"
+        // but "what does the second site of *one* key do" — so it is recorded
+        // per (block, kind) with every site in authored order, and gets its own
+        // named verdict
+        // ([`cs_content::objectives::UNMEASURED_REPEATED_EFFECT_KEY`]). It is
+        // never folded into the multi-effect/conflict counting below, which is
+        // over pairs of *different* effects. Measured zero over the whole
+        // readable corpus (F39-E6): the 1338 mission blocks and every member of
+        // the excluded reader archives spell it nowhere — so a repeat must be
+        // told to an importer as an unresolved shape, not silently reported as
+        // "two sites, one effect".
+        for kind in BranchEffectKind::all() {
+            let repeated: Vec<MeasuredBranchSite> = sites
+                .iter()
+                .filter(|site| site.kind == kind)
+                .cloned()
+                .collect();
+            if repeated.len() >= 2 {
+                measured.repeated_effects.push(MeasuredRepeatedEffect {
+                    block: block.to_owned(),
+                    kind,
+                    sites: repeated,
+                });
+            }
+        }
         // A **multi-effect** block declares two or more *different* effects, and
         // the whole question is which of two effects wins, so the counting below
-        // is over pairs of different effects. A record that spelled the same key
-        // twice in one block declares the same effect twice, which is a different
-        // (and separately unmeasured) shape and is never counted as an ordering
-        // question. Measured: no block in the installation spells an effect key
-        // twice, so this distinction changes no measured number — it is here so
-        // the counter keeps meaning what
-        // [`MeasuredBranchPrecedence::multi_effect_blocks`] says it means, and
-        // what the repeated-key shape would mean is filed as **F39-E6** rather
-        // than decided here.
+        // is over pairs of different effects. The repeated-key reading above is
+        // recorded beside it: a block that both repeats a key and declares
+        // another effect keeps both questions, each under its own verdict.
         let kinds: BTreeSet<BranchEffectKind> = sites.iter().map(|site| site.kind).collect();
         if kinds.len() < 2 {
             continue;
@@ -1930,6 +1951,29 @@ impl RetailBranchConflict {
     }
 }
 
+/// A repeated completion-effect key measured in one mission's record, named
+/// with the mission it came from (F39-E6).
+///
+/// Kept beside [`RetailBranchConflict`] and deliberately not folded into it: a
+/// repeat is one *kind* spelled twice in one block, a different unmeasured
+/// shape from two different kinds sharing a target.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetailRepeatedEffect {
+    /// The mission, as `zbd/<group>/<mission>`.
+    pub mission: String,
+    /// The condition measured inside that mission's record.
+    pub repeated: MeasuredRepeatedEffect,
+}
+
+impl RetailRepeatedEffect {
+    /// The mission's `zbd/<group>/<mission>` label with the block and kind,
+    /// as one locatable string (`zbd/c3/m05 OBJECTIVE8: WAKE x2`).
+    #[must_use]
+    pub fn label(&self) -> String {
+        format!("{} {}", self.mission, self.repeated.label())
+    }
+}
+
 /// Why the retail objective-record census could not be produced.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ObjectiveCensusError {
@@ -2106,6 +2150,21 @@ impl RetailObjectiveRow {
             }
         }
         names
+    }
+
+    /// This row's measured repeated completion-effect keys, named with the
+    /// mission (F39-E6).
+    #[must_use]
+    pub fn repeated_effects(&self) -> Vec<RetailRepeatedEffect> {
+        self.branch_precedence
+            .repeated_effects
+            .iter()
+            .cloned()
+            .map(|repeated| RetailRepeatedEffect {
+                mission: self.mission.clone(),
+                repeated,
+            })
+            .collect()
     }
 }
 
@@ -2468,6 +2527,67 @@ impl RetailObjectiveCensus {
             })
             .collect()
     }
+
+    // ------------------------------------------------------------ F39-E6 ---
+
+    /// Every measured repeated completion-effect key corpus-wide, named with
+    /// the mission and the block it sits in, sorted by mission, block and
+    /// kind.
+    ///
+    /// A different unmeasured shape from [`Self::conflicts`]: a repeat is one
+    /// key spelled twice in one block, not two different effects sharing a
+    /// target.
+    #[must_use]
+    pub fn repeated_effects(&self) -> Vec<RetailRepeatedEffect> {
+        let mut repeated: Vec<RetailRepeatedEffect> = self
+            .rows
+            .iter()
+            .flat_map(RetailObjectiveRow::repeated_effects)
+            .collect();
+        repeated.sort_by(|left, right| {
+            left.mission
+                .cmp(&right.mission)
+                .then_with(|| left.repeated.block.cmp(&right.repeated.block))
+                .then_with(|| left.repeated.kind.cmp(&right.repeated.kind))
+        });
+        repeated
+    }
+
+    /// How many **blocks** corpus-wide spell one completion-effect key two or
+    /// more times.
+    ///
+    /// Blocks, not repeats: one block can spell two different keys twice each,
+    /// so counting repeats instead would over-report the blocks an importer
+    /// has to handle.
+    #[must_use]
+    pub fn repeated_effect_blocks(&self) -> u32 {
+        self.rows
+            .iter()
+            .map(|row| row.branch_precedence.repeated_effect_blocks())
+            .sum()
+    }
+
+    /// Whether the installation's objective records declare the repeated-key
+    /// shape anywhere: one block spelling one completion-effect key twice.
+    ///
+    /// The corpus-wide form of
+    /// [`MeasuredBranchPrecedence::needs_unmeasured_repeated_effect`]. Measured
+    /// `false` over the owner's installation — the corpus never writes the
+    /// shape, which bounds the corpus but is not evidence the original refuses
+    /// it, so the verdict below stays a named unknown rather than becoming a
+    /// "supported" reading.
+    #[must_use]
+    pub fn needs_unmeasured_repeated_effect(&self) -> bool {
+        self.repeated_effect_blocks() > 0
+    }
+
+    /// Why a repeated completion-effect key is unresolved corpus-wide, by
+    /// name, or `None` when no block spells one.
+    #[must_use]
+    pub fn unmeasured_repeated_effect_reason(&self) -> Option<&'static str> {
+        self.needs_unmeasured_repeated_effect()
+            .then_some(cs_content::objectives::UNMEASURED_REPEATED_EFFECT_KEY)
+    }
 }
 
 /// Measures every mission-scoped objective record in `install_root`.
@@ -2685,6 +2805,352 @@ fn locate_mission_objective_records(
     }
     located.sort_by(|left, right| left.mission.cmp(&right.mission));
     Ok(located)
+}
+
+// ---------------------------------------------------------------------------
+// F39-E6: the objective records outside the mission census
+// ---------------------------------------------------------------------------
+//
+// F39-D's census is scoped by `mission_scope` — exactly
+// `zbd/<group>/<mission>/zrdr.zbd` — so the shared reader `zbd/zrdr.zbd` and
+// the eight world-group readers `zbd/<group>/zrdr.zbd` were never opened, and
+// no `targets.zrd` member of any archive was either: the walk reads
+// `objectives.zrd` only. F39-E6's question is whether the *repeated
+// completion-effect key* shape hides in that excluded corpus, so this survey
+// walks it with the same production readers the census uses:
+//
+// * every member of every `zrdr.zbd` archive `mission_scope` does not name is
+//   decoded and measured — 9 archives and 612 members on the owner's
+//   installation;
+// * every `targets.zrd` member of every reader archive is decoded and its
+//   objective records counted — 53 members and 332 records, including the
+//   world-group `zbd/c1c/zrdr.zbd` one.
+//
+// Per member two measurements are taken: the key *spellings* anywhere in the
+// decoded tree (a member does not have to be record-shaped to carry the
+// shape), and the per-block [`measure_block_precedence`] reading for members
+// that do declare `OBJECTIVE<N>` blocks. A member that cannot be located or
+// decoded is an error, never a skipped row — a member vanishing from the
+// denominator would look like a member that spells nothing.
+
+/// Why a member is part of the excluded-corpus survey.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ExcludedObjectiveScope {
+    /// A member of a reader archive `mission_scope` does not name: the shared
+    /// reader `zbd/zrdr.zbd` or a world-group reader `zbd/<group>/zrdr.zbd`.
+    OutsideMissionScope,
+    /// A `targets.zrd` member of any reader archive — the objective record
+    /// the `objectives.zrd` walk never opens, in whichever archive holds it.
+    TargetsRecord,
+}
+
+/// The `targets.zrd` reading of one member: how many objective records it
+/// declares and the complete key vocabulary those records use.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExcludedTargetsReading {
+    /// How many objective records the member declares
+    /// (`objective_record_count`).
+    pub records: u32,
+    /// The complete key inventory of those records, sorted by key, with the
+    /// number of records each appears in (`objective_record_keys`).
+    pub keys: Vec<(String, u32)>,
+}
+
+/// One `.zrd` member of the corpus outside the mission-scoped
+/// `objectives.zrd` census, measured for completion-effect spellings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExcludedObjectiveRow {
+    /// The archive's installation spelling (`ZBD/zrdr.zbd`,
+    /// `ZBD/C1C/zrdr.zbd`, `ZBD/C1/M02/zrdr.zbd`, …).
+    pub container: String,
+    /// SHA-256 of the whole archive, from production discovery.
+    pub container_sha256: String,
+    /// The member's name as the archive spells it.
+    pub member: String,
+    /// The absolute offset of the member's first byte inside the archive.
+    pub member_offset: u64,
+    /// The member's length in bytes.
+    pub member_len: u64,
+    /// SHA-256 of the member's own bytes.
+    pub member_sha256: String,
+    /// Why this member is in the census — a world-group `targets.zrd` member
+    /// carries both scopes.
+    pub scopes: BTreeSet<ExcludedObjectiveScope>,
+    /// Completion-effect key spellings anywhere in the member's decoded tree
+    /// ([`cs_content::objectives::BRANCH_EFFECT_KEY_VOCABULARY`]).
+    ///
+    /// Counted over *every* text node of the tree, not only flat-field
+    /// position: a `0` here is a measurement that the member does not even
+    /// spell a completion-effect key anywhere, not the narrower "no block
+    /// carries one".
+    pub effect_key_sites: u32,
+    /// `TICK_DEPENDS_ON_OBJ` spellings anywhere in the member's decoded tree,
+    /// on the same terms as [`Self::effect_key_sites`].
+    pub order_key_sites: u32,
+    /// The member's per-block completion-effect reading over the `OBJECTIVE<N>`
+    /// blocks it declares — zero blocks for a member that is not an objectives
+    /// record.
+    pub precedence: MeasuredBranchPrecedence,
+    /// The `targets.zrd` reading, present exactly when
+    /// [`ExcludedObjectiveScope::TargetsRecord`] is in `scopes`.
+    pub targets: Option<ExcludedTargetsReading>,
+}
+
+/// The measured `.zrd` members of the corpus outside the mission-scoped
+/// `objectives.zrd` census (F39-E6).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExcludedObjectiveCensus {
+    install_sha256: String,
+    /// The reader archives the survey measured that `mission_scope` does not
+    /// name, as installation spellings — the shared reader and the
+    /// world-group readers.
+    archives_outside_mission_scope: Vec<String>,
+    rows: Vec<ExcludedObjectiveRow>,
+}
+
+impl ExcludedObjectiveCensus {
+    /// SHA-256 of the whole installation manifest, from production discovery.
+    #[must_use]
+    pub fn install_sha256(&self) -> &str {
+        &self.install_sha256
+    }
+
+    /// The reader archives measured that `mission_scope` does not name, as
+    /// installation spellings, sorted.
+    #[must_use]
+    pub fn archives_outside_mission_scope(&self) -> &[String] {
+        &self.archives_outside_mission_scope
+    }
+
+    /// The measured member rows, sorted by container and member.
+    #[must_use]
+    pub fn rows(&self) -> &[ExcludedObjectiveRow] {
+        &self.rows
+    }
+
+    /// How many members the survey measured.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether the survey measured nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// How many measured members carry `scope`.
+    #[must_use]
+    pub fn members_in_scope(&self, scope: ExcludedObjectiveScope) -> u32 {
+        self.rows
+            .iter()
+            .filter(|row| row.scopes.contains(&scope))
+            .count() as u32
+    }
+
+    /// Total completion-effect key spellings anywhere in every measured
+    /// member's tree.
+    #[must_use]
+    pub fn effect_key_sites(&self) -> u32 {
+        self.rows.iter().map(|row| row.effect_key_sites).sum()
+    }
+
+    /// Total `TICK_DEPENDS_ON_OBJ` spellings anywhere in every measured
+    /// member's tree.
+    #[must_use]
+    pub fn order_key_sites(&self) -> u32 {
+        self.rows.iter().map(|row| row.order_key_sites).sum()
+    }
+
+    /// How many `OBJECTIVE<N>` blocks the measured members declare in all.
+    #[must_use]
+    pub fn objective_blocks(&self) -> u32 {
+        self.rows.iter().map(|row| row.precedence.blocks).sum()
+    }
+
+    /// How many measured members declare at least one `OBJECTIVE<N>` block.
+    #[must_use]
+    pub fn members_with_objective_blocks(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter(|row| row.precedence.blocks > 0)
+            .count() as u32
+    }
+
+    /// How many blocks in the excluded corpus spell one completion-effect key
+    /// two or more times.
+    #[must_use]
+    pub fn repeated_effect_blocks(&self) -> u32 {
+        self.rows
+            .iter()
+            .map(|row| row.precedence.repeated_effect_blocks())
+            .sum()
+    }
+
+    /// Whether the excluded corpus declares the repeated-key shape anywhere.
+    ///
+    /// Measured `false` over the owner's installation — see
+    /// [`RetailObjectiveCensus::needs_unmeasured_repeated_effect`] for why the
+    /// `false` bounds the corpus rather than settling the rule.
+    #[must_use]
+    pub fn needs_unmeasured_repeated_effect(&self) -> bool {
+        self.repeated_effect_blocks() > 0
+    }
+
+    /// Why a repeated completion-effect key in this corpus is unresolved, by
+    /// name, or `None` when no member spells one.
+    #[must_use]
+    pub fn unmeasured_repeated_effect_reason(&self) -> Option<&'static str> {
+        self.needs_unmeasured_repeated_effect()
+            .then_some(cs_content::objectives::UNMEASURED_REPEATED_EFFECT_KEY)
+    }
+
+    /// How many objective records the measured `targets.zrd` members declare
+    /// in all.
+    #[must_use]
+    pub fn targets_records(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter_map(|row| row.targets.as_ref().map(|targets| targets.records))
+            .sum()
+    }
+}
+
+/// Measures the `.zrd` members outside the mission-scoped `objectives.zrd`
+/// census: every member of the reader archives `mission_scope` does not name,
+/// and every `targets.zrd` member of every reader archive.
+///
+/// Read-only, the same rule as [`survey_retail_objective_records`], and the
+/// census **fails** rather than skipping a member that cannot be read or
+/// decoded, for the same reason: a member silently absent from the denominator
+/// would look like a member that spells nothing.
+///
+/// # Errors
+///
+/// [`ObjectiveCensusError::Discovery`] when the installation cannot be
+/// discovered, [`ObjectiveCensusError::Read`] when an archive cannot be read
+/// or one of its members could not be located, and
+/// [`ObjectiveCensusError::Decode`] for the first member whose bytes do not
+/// decode as `.zrd`.
+pub fn survey_excluded_objective_records(
+    install_root: &Path,
+) -> Result<ExcludedObjectiveCensus, ObjectiveCensusError> {
+    let found = cs_assets::install::discover(install_root)
+        .map_err(|error| ObjectiveCensusError::Discovery(error.to_string()))?;
+    let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
+
+    let mut archives_outside_mission_scope = Vec::new();
+    let mut rows = Vec::new();
+    for record in &found.manifest.files {
+        let container_key = record.relative_spelling.logical_key();
+        if !container_key.ends_with(MISSION_READER_ARCHIVE) {
+            continue;
+        }
+        let spelling = record.relative_spelling.as_str().to_owned();
+        let path = RelativePath::new(&spelling.to_lowercase()).map_err(|error| {
+            ObjectiveCensusError::Read {
+                container: container_key.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        let outside_mission_scope = cs_formats::script_raw::mission_scope(&path).is_none();
+        let bytes = std::fs::read(found.manifest.host_root.join(&spelling)).map_err(|error| {
+            ObjectiveCensusError::Read {
+                container: container_key.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        let discovery = cs_formats::script_raw::discover_container(&container_key, &path, &bytes);
+        if let Some(finding) = discovery.findings().first() {
+            return Err(ObjectiveCensusError::Read {
+                container: container_key.clone(),
+                reason: format!("a member could not be located: {finding}"),
+            });
+        }
+        for program in discovery.programs() {
+            let locator = program.locator();
+            let member = locator.member().ok_or_else(|| ObjectiveCensusError::Read {
+                container: container_key.clone(),
+                reason: "a member was located without a name".to_owned(),
+            })?;
+            let mut scopes = BTreeSet::new();
+            if outside_mission_scope {
+                scopes.insert(ExcludedObjectiveScope::OutsideMissionScope);
+            }
+            if member.eq_ignore_ascii_case(SCENARIO_TARGETS_MEMBER) {
+                scopes.insert(ExcludedObjectiveScope::TargetsRecord);
+            }
+            if scopes.is_empty() {
+                continue;
+            }
+            let document = cs_content::stunts::decode_zrd(program.bytes()).map_err(|error| {
+                ObjectiveCensusError::Decode {
+                    container: container_key.clone(),
+                    code: error.code(),
+                    offset: error.offset(),
+                }
+            })?;
+            let (effect_key_sites, order_key_sites) = branching_spellings(&document);
+            let targets = scopes
+                .contains(&ExcludedObjectiveScope::TargetsRecord)
+                .then(|| ExcludedTargetsReading {
+                    records: objective_record_count(&document),
+                    keys: objective_record_keys(&document),
+                });
+            rows.push(ExcludedObjectiveRow {
+                container: spelling.clone(),
+                container_sha256: record.sha256.to_hex(),
+                member: member.to_owned(),
+                member_offset: locator.span().offset,
+                member_len: locator.span().len,
+                member_sha256: cs_assets::install::sha256(program.bytes()).to_hex(),
+                scopes,
+                effect_key_sites,
+                order_key_sites,
+                precedence: measure_block_precedence(&document),
+                targets,
+            });
+        }
+        if outside_mission_scope {
+            archives_outside_mission_scope.push(spelling);
+        }
+    }
+    archives_outside_mission_scope.sort();
+    rows.sort_by(|left, right| {
+        left.container
+            .cmp(&right.container)
+            .then_with(|| left.member.cmp(&right.member))
+    });
+    Ok(ExcludedObjectiveCensus {
+        install_sha256,
+        archives_outside_mission_scope,
+        rows,
+    })
+}
+
+/// How often a decoded member spells a measured branching key **anywhere** in
+/// its tree: `(completion-effect sites, order-dependency sites)`.
+///
+/// The walk counts every text node, wherever it sits — a member need not be
+/// record-shaped to be measured, so a zero here means the member does not even
+/// spell the key, not merely that no `OBJECTIVE<N>` block carries it.
+fn branching_spellings(document: &ZrdValue) -> (u32, u32) {
+    let mut pending = vec![document];
+    let (mut effects, mut orders) = (0u32, 0u32);
+    while let Some(node) = pending.pop() {
+        match node {
+            ZrdValue::List(children) => pending.extend(children.iter()),
+            ZrdValue::Text(text) if BRANCH_EFFECT_KEY_VOCABULARY.contains(&text.as_str()) => {
+                effects += 1;
+            }
+            ZrdValue::Text(text) if text == BRANCH_ORDER_KEY => {
+                orders += 1;
+            }
+            _ => {}
+        }
+    }
+    (effects, orders)
 }
 
 // ---------------------------------------------------------------------------
