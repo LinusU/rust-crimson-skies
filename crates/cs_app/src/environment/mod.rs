@@ -52,6 +52,10 @@
 //!   consumers — the wind flight and projectiles read, the sight range AI
 //!   reads, and the mission AI stream the weather seed never touches.
 //!
+//! * [`retail`] reads one mission's `weather.zrd` from the installation and
+//!   binds it through `cs_content::weather` into an [`EnvironmentSession`]
+//!   input (task #636).
+//!
 //! Every module here is deliberately free of Bevy, ECS and asset types so the
 //! environment can be exercised headless. F19-C wires these records into
 //! their real producer and consumer; F19-D audits retail environments and
@@ -72,6 +76,7 @@ pub mod cosmetic;
 pub mod effects;
 pub mod fixture;
 pub mod frame;
+pub mod retail;
 pub mod session;
 
 pub use air::{
@@ -92,4 +97,5 @@ pub use fixture::{
     WIND_SHIFT_TICK, clear_sky_environment, storm_environment,
 };
 pub use frame::{SKY_CENTERING_TOLERANCE_M, SkyFrame, SkyFrameError};
+pub use retail::{RetailWeather, RetailWeatherError, read_mission_weather};
 pub use session::{EnvironmentSession, RunSeeds, VisibilityUnavailable};
