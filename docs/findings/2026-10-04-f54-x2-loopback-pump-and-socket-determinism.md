@@ -268,20 +268,83 @@ Two probes, to check that each half of the fix is load-bearing:
   `UNSECURE_CONNECT_KEY` named a type that never existed; rustdoc does not
   resolve links on private items, so it was silent, and it is fixed too.
 * `MAX_ROUNDS` derived the round budget as `window * 1_000 / 16 + 64`, with
-  `16` hardcoded. `STEP` is the thing that number means, so if `STEP` ever
-  changed the derivation would silently stop describing the window — the exact
-  drift the derivation exists to prevent. It is now
-  `window * 1_000 / STEP.as_millis() + 64`.
+  `16` hardcoded. `STEP` is the thing that number means, so a change to `STEP`
+  would have silently broken the one guarantee the derivation exists to give.
+  It is now `window * 1_000 / STEP.as_millis() + 64`.
 * `DEFAULT_CONNECT_WINDOW` was built with the tuple constructor
-  `ConnectWindow(15)`, bypassing `ConnectWindow::new`'s validation. It is now
-  `ConnectWindow::new(15)`, so a non-positive default is a compile-time
-  const-evaluation error rather than a silently installed "no timeout at all".
-* `accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer` justified
-  its assertion with "four one-second rounds stay inside the connection layer's
-  own five-second timeout". That number was already wrong on `origin/main` (the
-  pinned default is fifteen) and this branch widens the window again, so the
-  comment now names the window the client actually asked for. The assertion and
-  the test's logic are untouched — that test belongs to #600.
+  `ConnectWindow(15)`, bypassing `ConnectWindow::new`'s validation, so a
+  non-positive default would have installed a silent "no timeout at all". It is
+  now `ConnectWindow::new(15)`, which is a compile-time const-evaluation error.
+* One comment in
+  `accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer` claimed four
+  one-second rounds stay inside "the connection layer's own five-second
+  timeout". Five was already wrong on `origin/main` (the pinned default is
+  fifteen) and this branch widens the window again. **This correction was
+  written, then dropped as obsolete** when #600 landed and replaced that prose
+  with an accurate version — see the rebase note below.
+
+### Reviewer note: rebasing onto #600 (F54-X1), which landed mid-review
+
+#600 merged into `main` while this review was running, touching all three of
+this branch's files, so the rebase needed resolving and the owner directive's
+lighter-check exemption did not apply (condition (b) fails: the brought-in
+commits touch this branch's files). The full four checks were re-run.
+
+Both conflicts were in the one test #600 owns,
+`accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer`, and both
+resolved the same way: **#600's version wins.** It rebuilt that test around the
+`Link` helper and a single [`STEP`] clock for both sides, and `Link::new`
+already connects through `connect_with_window` with `LOOPBACK_WINDOW` and
+holds the loopback mutex — so #600's structure already has everything this
+branch adds, and the direct `ServerSession::bind` / `connect_with_window` code
+this branch had introduced there was the older shape #600 deliberately
+replaced. Nothing of #600's logic or assertions was dropped.
+
+The reviewer's planned comment correction in that test became **obsolete and
+was dropped**: #600 rewrote the surrounding prose with an accurate version of
+its own, so there was no stale "five-second timeout" left to fix. The other
+corrections (the intra-doc links, the `MAX_ROUNDS` derivation, the
+const-validated default) applied cleanly and are unaffected.
+
+### The rebase shipped a deadlock, and the full check set is the only thing that caught it
+
+The first resolution kept **both** sides of that conflict: this branch's
+`let _loopback = loopback();` at the top of the test *and* #600's
+`Link::new(...)`, which takes the same mutex itself. `std::sync::Mutex` is not
+reentrant, so that one test blocked on a lock it already held and **every other
+loopback test in the binary queued behind it forever** — 13 tests reported
+"running for over 60 seconds" and `cargo test -p cs_net` never finished. The
+test file compiled, `fmt` was clean and `clippy` was silent: a self-deadlock on
+a held `Mutex` is invisible to all three. Only running the suite found it.
+
+Fixed by dropping the redundant `let _loopback` from that test, since
+`Link::new` holds the guard in `self._loopback` for the life of the link. The
+whole file was then audited for the same shape — a function that takes
+`loopback()` directly *and* calls something that takes it again (`Link::new` or
+`granted_client`) — and that is the only instance.
+
+Two things are worth carrying forward:
+
+* **The owner directive's lighter-check exemption would have merged this.** It
+  applies when the rebase brings in commits that touch none of the branch's
+  files; here the brought-in commits rewrote all three, so the exemption's
+  condition (b) fails and the full four checks are mandatory. This is exactly
+  the case the condition exists to exclude, and it is worth re-running the
+  *whole* suite — not just the task prefix — after any rebase that touches the
+  same test file as the change.
+* **`link()`'s poison recovery is not a deadlock guard.** `loopback()` uses
+  `unwrap_or_else(PoisonError::into_inner)`, which recovers from a panic
+  poisoning the lock. It cannot recover from a thread that holds the lock and
+  waits for it again, which is the failure that actually happened.
+
+After the fix: 20 consecutive runs of the binary at `--test-threads=16`, each
+hard-capped at 60 s so a hang would surface as a timeout: **20 passed, 0
+failed, 0 hung**, 30 tests in 0.01 s.
+
+This is the outcome Probe B predicted one commit earlier: without this
+branch's mutex the only failing test was #600's, and with #600 landed that test
+is now driven from one clock. #600 and this branch are complementary and touch
+no common logic.
 
 ## Sensitivity
 

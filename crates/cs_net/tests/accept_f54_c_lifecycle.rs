@@ -2249,8 +2249,6 @@ fn accept_f54_c_a_wrong_protocol_revision_is_refused_through_the_lifecycle() {
 
 #[test]
 fn accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer() {
-    let _loopback = loopback();
-
     // A refused client keeps a netcode connection but never becomes a peer, so
     // `close` does not reach it and a retry has to: the new epoch does not know
     // that connection, so it may neither keep a session slot for it nor let it
@@ -2282,7 +2280,7 @@ fn accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer() {
         link.host_notices
     );
 
-// The client still has to read the verdict, and only its own rounds may run
+    // The client still has to read the verdict, and only its own rounds may run
     // to do it: the host hangs up on a refused client one round later, on
     // purpose, so that renet can flush the refusal first — and the retry below
     // is what has to hang this connection up, so it has to start from one the
