@@ -103,6 +103,22 @@
 //!   [`survey::CarrierBlocker`]s — a row is never dropped. The container
 //!   payloads stay **undecoded**: the survey validates and fingerprints
 //!   them, it does not interpret them;
+//!
+//! Task #632 (`M01-LC-WORLD-ACTORS`) adds [`programs`], the **member→actor
+//! binding** the validation stage above could only validate around: the reader
+//! archives' `.zrd` members all decoded as documents and none had a consumer.
+//! [`programs::read_startup_animations`] reads a mission's `startanims.zrd`
+//! startup event table, [`programs::read_animation_definition_member`] reads an
+//! `ANIMATION_DEFINITIONS` member's definitions, and
+//! [`programs::WorldActorProgramBinding`] joins the two across a mission's own
+//! archive, its world group and the shared root — the archive, the member, the
+//! byte span and the object selectors a startup animation resolves to, with
+//! [`programs::WorldNodeNames`] resolving those names against a GameZ
+//! container's records. It resolves the **binding** and names every field family
+//! it did not interpret in [`programs::UnmeasuredFieldFamily`]; it does not
+//! produce a `cs_content::world_actors::DeclaredWorldActorProgram`, because the
+//! records state no motion, socket, pickup or tick-rate field.
+//!
 //! * [`capture`] — [`capture::capture_animated_pose`] draws a production
 //!   [`RenderMesh`](cs_content::mesh::RenderMesh) at an evaluated
 //!   [`PoseSample`](cs_sim::animated_object::PoseSample) on the real GPU and
@@ -134,6 +150,7 @@ pub mod carrier;
 pub mod lower;
 pub mod playback;
 pub mod presentation;
+pub mod programs;
 pub mod schedule;
 pub mod survey;
 pub mod visibility;
@@ -161,6 +178,20 @@ pub use playback::{
     AnimationLog, AnimationPlayError, AnimationPlayback, AnimationRefusal, BlockedTrack,
     InstanceKey, NodeAnimatedAttachment, NodeAnimatedMaterial, NodeAnimatedPose, TrackKind,
     advance_animation, play_animation, stop_animation,
+};
+pub use programs::{
+    ACTIVATION_FIELD, ACTIVATION_PREREQUISITE_FIELD, ACTIVATION_VOCABULARY_CLAIM,
+    ANIMATION_DEFINITION_FIELD, ANIMATION_DEFINITION_FILE_FIELD, ANIMATION_DEFINITIONS_RECORD,
+    ANIMATION_LIST_FIELD, ANIMATION_NAME_FIELD, Activation, ActivationPrerequisite,
+    AnimationDefinitionMember, AnimationDefinitionSite, AnimationProgramError, AnimationSequence,
+    BindingResolution, DeclaredAnimationDefinition, DefinitionObjects, LOAD_GAME_START,
+    MINIMUM_TO_SATISFY, MeasuredActivation, NAME_ALTERNATE_FIELD, NAME_FIELD, NEW_GAME_START,
+    NODE_PATH_SEPARATOR, OBJECT_SELECTOR_CLAIM, OPTIONS_PREREQUISITE, ObjectSelector,
+    PrerequisiteCondition, REQUIRED_PREREQUISITE, SEQUENCE_FIELD, SEQUENCE_KINDS_CLAIM,
+    SEQUENCE_NAME_FIELD, STARTUP_MEMBER, SelectorMatch, SelectorSegment, StartupAnimationBinding,
+    StartupAnimationTable, StartupEvent, StateBinding, UnmeasuredFieldFamily, WILDCARD_CHAR,
+    WorldActorProgramBinding, WorldNodeNames, read_animation_definition_member,
+    read_startup_animations,
 };
 pub use schedule::{
     AnimationPlugin, AnimationSchedulePlugin, CommittedSessionTick,
