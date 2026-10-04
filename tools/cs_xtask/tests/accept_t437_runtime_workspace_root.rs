@@ -38,13 +38,19 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cs_xtask::target_dir;
+use cs_xtask::transient;
 
 /// Root every fixture tree is created under (inside the gitignored `target/`, so
-/// nothing lands in Git and `cargo clean` reaps it).
+/// nothing lands in Git and `cargo clean` reaps it). The per-process
+/// subdirectory keeps a second `cargo test` on this target dir from
+/// deleting the tree this run is mid-write on (task #610).
 fn fixtures_root() -> PathBuf {
     target_dir::running_workspace_root()
         .expect("the checkout this test runs in must have a workspace manifest")
-        .join("target/t437-runtime-workspace-root")
+        .join(format!(
+            "target/t437-runtime-workspace-root/{}",
+            std::process::id()
+        ))
 }
 
 /// Root for the fixtures that must have **no** workspace manifest above them.
@@ -185,18 +191,19 @@ fn accept_t437_a_binary_compiled_elsewhere_names_the_checkout_it_runs_in() {
     let root = checkout(&fixtures_root().join("foreign"), &["tools/probe"]);
     let binary = std::env::current_exe().expect("the test binary has a path");
 
-    let output = Command::new(&binary)
-        .current_dir(&root)
-        .args([
-            "--exact",
-            "accept_t437_the_running_root_follows_the_working_directory",
-            "--nocapture",
-            "--test-threads",
-            "1",
-        ])
-        .env(RUNNING_ROOT_EXPECTED, &root)
-        .output()
-        .expect("the test binary must re-execute");
+    let output = transient::command_output(
+        Command::new(&binary)
+            .current_dir(&root)
+            .args([
+                "--exact",
+                "accept_t437_the_running_root_follows_the_working_directory",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(RUNNING_ROOT_EXPECTED, &root),
+    )
+    .expect("the test binary must re-execute");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -401,12 +408,13 @@ fn accept_t437_verify_target_dir_agrees_with_the_derived_root() {
     let root = checkout(&fixtures_root().join("cli"), &["tools/probe"]);
     let private = root.join("target");
 
-    let output = Command::new(bin)
-        .args(["verify-target-dir", "--workspace-root"])
-        .arg(&root)
-        .env("CARGO_TARGET_DIR", &private)
-        .output()
-        .expect("the cs_xtask binary must run");
+    let output = transient::command_output(
+        Command::new(bin)
+            .args(["verify-target-dir", "--workspace-root"])
+            .arg(&root)
+            .env("CARGO_TARGET_DIR", &private),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -430,12 +438,13 @@ fn accept_t437_verify_target_dir_agrees_with_the_derived_root() {
     // runs inside `cargo test --workspace` must mean the same thing by "this
     // worktree", or a green command and a green test are judging different
     // trees.
-    let cwd_run = Command::new(bin)
-        .arg("verify-target-dir")
-        .current_dir(&root)
-        .env("CARGO_TARGET_DIR", &private)
-        .output()
-        .expect("the cs_xtask binary must run");
+    let cwd_run = transient::command_output(
+        Command::new(bin)
+            .arg("verify-target-dir")
+            .current_dir(&root)
+            .env("CARGO_TARGET_DIR", &private),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         cwd_run.status.code(),
         Some(0),
