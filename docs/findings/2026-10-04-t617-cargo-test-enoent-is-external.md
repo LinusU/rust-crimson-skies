@@ -68,8 +68,8 @@ prune pass is not a daemon, it exists only while it deletes.
 
 ## Reproduction: spontaneous, on an unmodified tree
 
-Three occurrences, all from `cargo test --workspace --locked` on
-`origin/main` (`2676355d`), branch `rally/617-…`, with this checkout's own
+Four occurrences, all from `cargo test --workspace --locked` on
+`origin/main` (`2676355d`) and on this branch, with this checkout's own
 `CARGO_TARGET_DIR` and no other cargo in that directory.
 
 **Occurrence 1** — run started 2026-10-04T06:21:42Z, died at t=83.75 s:
@@ -98,15 +98,34 @@ the victim is the crate this task is about:
       No such file or directory (os error 2)
 ```
 
-**Occurrence 3** — this task's own required `cargo test --workspace --locked`
-check, 553 tests into the run, died on
-`accept_f48_d_crash_recovery_matrix-be042b1c8f1a3c3e`: the same binary
-occurrence 2's burst had already deleted once, and it took two more bursts to
-come back. Its build phase finished in **1.88 s**, i.e. cargo rebuilt nothing
-and accepted every harness as fresh — so the deletion landed inside the
-execution phase, exactly as the mechanism requires. The rerun of the identical
-command was green (349 `test result: ok`, 3391 passed, 0 failed), and this
-task's handover reports both runs in that order.
+**Occurrences 3 and 4** — this task's own required `cargo test --workspace
+--locked` checks, both on this branch. Each died on a harness after hundreds of
+tests had already passed, and each was green on the immediate rerun of the
+identical command:
+
+| # | Victim | Tests passed before dying | Rerun |
+| --- | --- | --- | --- |
+| 3 | `accept_f48_d_crash_recovery_matrix-be042b1c8f1a3c3e` | 553 | exit 0, 349 groups, 3391 passed |
+| 4 | `accept_doclib_conflict-d84789a84d5b4f8d` | 2018 | exit 0, 352 groups, 3412 passed |
+
+Both victims are binaries a prune burst had already deleted once earlier in
+this session, and both died with a 1.88 s / no-op build phase — cargo rebuilt
+nothing and accepted every harness as fresh, so the deletion landed inside the
+execution phase, exactly as the mechanism requires. Both runs are reported in
+the Rally handover in order, the failed one first.
+
+Occurrence 4 is worth one extra note: it died on
+`accept_doclib_conflict-d84789a84d5b4f8d`, which occurrence 1's burst had also
+deleted. That test target currently exists in the directory as **four**
+hashes (`-3bad038241d20373`, `-5f1a24873210ff70`, `-9d2bc9e4b069a8ca`,
+`-d84789a84d5b4f8d`) — and a green run of the current plan schedules **all
+four**, so these are not stale leftovers of an older commit: one test target is
+genuinely built into four configurations, and all four are live in every run.
+Which configurations produce them (feature sets, profiles, doctest variants)
+was not determined and is not this finding's subject. It is recorded because
+it means the exposure is *larger* than a one-harness-per-target count
+suggests: a single target can put four separate binaries in front of the
+prune.
 
 `cs_inspect` carries 92 `#[test]`s in `src/` (11 modules, `campaign.rs` 2,
 `catalog.rs` 12, `config.rs` 18, `handling.rs` 3, `interp.rs` 14, `resolve.rs`
@@ -301,8 +320,9 @@ suites and the `cs_inspect --lib` harness. The #610 fix removes
 `cs_xtask`'s two empty harnesses from the plan, which makes `cs_xtask` immune
 to being *named* — it left `cs_inspect --lib` named here. The number of
 harnesses in the plan is not the exposure; the directory is. A prune that
-deletes every executable it finds in `target/debug/deps` will find ~360 of them
-whatever the plan contains.
+deletes every executable it finds in `target/debug/deps` will find ~370 of them
+whatever the plan contains — measured after the last run of this task, against
+a 342-unit plan.
 
 The one thing `test = false` genuinely bought was fewer *victims*, which is a
 real effect — but a smaller number of dice, not a different game.
@@ -311,7 +331,8 @@ real effect — but a smaller number of dice, not a different game.
 
 Counting the `Running` lines of one green `cargo test --workspace --locked`
 run gives the exact population the prune is drawing from. That run scheduled
-**339 test units**, of which **11 were `--lib`/`--bin` unit-test harnesses**:
+**342 test units** on the rebased tree, of which **11 were `--lib`/`--bin`
+unit-test harnesses** — the same 11 before the rebase, on 339 units:
 
 | Harness | `#[test]`s in that crate's `src/` |
 | --- | --- |
@@ -350,24 +371,25 @@ exposed.
 | Cargo itself deleted them | Ruled out three ways. (a) Cargo's own churn is unlink-then-rewrite: the F54-X7 measurement saw 46 harnesses unlinked during a build phase and all 46 present afterwards, and the one cargo relink observed here (`target/debug/cs`, t=957.178) was back 1.3 s later. (b) Zero of the 25 files removed across the observed bursts came back over six further minutes of watching. (c) The `deps/` bursts at t=65.404 and t=1074.073 fall in the two seconds in which `prune-stale-bins.sh --delete` was running. Cargo does not delete an artifact it is about to execute. |
 | A test in the suite runs `cargo clean` | `cargo clean` appears in the repository only inside error *message* strings asserted on by `accept_t433_` and `accept_t440_` (`"cargo clean --target-dir"` as the remediation the stale-dir gate tells a human to run). No source file invokes it, and no clean of any kind is invoked from any Rust or Python source. |
 | Disk pressure caused it | `/System/Volumes/Data` was at 97 % capacity with 34 GiB free throughout. Low free space is a real constraint on this host, but it cannot produce `ENOENT` on a path that existed a moment earlier: the unlink is observed directly, and the file is absent afterwards. |
-| The failures are a real test failure being misread | No `test result: FAILED` line appears in any occurrence's log — occurrence 3 reached 553 passing tests before dying. `test_select::classify_missing_harness` requires exactly this (a cargo failure, zero reported test failures, cargo's own message) before it will call it a vanished harness, and it did not fire here because these runs were not routed through `test-select`. |
+| The failures are a real test failure being misread | No `test result: FAILED` line appears in any occurrence's log — occurrences 3 and 4 reached 553 and 2018 passing tests respectively before dying. `test_select::classify_missing_harness` requires exactly this (a cargo failure, zero reported test failures, cargo's own message) before it will call it a vanished harness, and it did not fire here because these runs were not routed through `test-select`. |
 | `test = false` on the empty harnesses would have prevented it | Directly contradicted by the `run-2` burst: six of six victims were in the plan, and `cs_xtask` was not among them. |
 
 ## Rate
 
-Two campaigns plus this task's own check runs, 24 instrumented
+Two campaigns plus this task's own check runs, 26 instrumented
 `cargo test --workspace --locked` runs in total, all on unmodified
-`origin/main` (`2676355d`), all with this checkout's own `CARGO_TARGET_DIR`,
+`origin/main` (`2676355d`) or on this branch (which changes only
+`docs/findings/`), all with this checkout's own `CARGO_TARGET_DIR`,
 `loadavg` 80-111, `/System/Volumes/Data` at 97 % with 34 GiB free:
 
 | Campaign | Runs | Failures |
 | --- | --- | --- |
 | first (per-run watchers only) | 8 | **2** |
 | attributed (0.4 s process sampler + target-dir watcher) | 14 | 0 |
-| this task's own required checks | 1 (+1 rerun) | **1** |
-| total | **24** | **3** |
+| this task's own required checks | 2 (+2 reruns) | **2** |
+| total | **26** | **4** |
 
-The three failures are the three occurrences quoted above. The 14-run campaign
+The four failures are the four occurrences quoted above. The 14-run campaign
 had a prune burst land *inside* a run (`t617-8`) and survived it, because that
 run had already executed the doomed files — see the controlled comparison
 above. So the rate is better read per burst than per run:
@@ -422,6 +444,18 @@ the class is gone.
   rebuilt nothing, and the file's mtime is from the *green rerun*, hours after
   it was linked. The narrow-window observation above stands; a rule inferred
   from it does not.
+
+* **Why four hashes of one test target coexist and are all live.**
+  `accept_doclib_conflict` is present as `-3bad038241d20373`,
+  `-5f1a24873210ff70`, `-9d2bc9e4b069a8ca` and `-d84789a84d5b4f8d`, and a
+  green run of the current plan schedules all four. Cargo derives that hash
+  from the unit's metadata, so these are four build configurations of one
+  target — feature sets, profiles, or something else. Which, was not
+  determined. Recorded because it means a single test target can put several
+  distinct binaries in front of the prune, so the exposed population is larger
+  than a one-harness-per-target count suggests; and because it means
+  occurrence 4's victim was not an abandoned artifact but a binary the run was
+  going to execute.
 * **Whether the prune intends to be safe here.** The F54-X7 finding quotes its
   own log line failing on a file that had just been replaced underneath it, so
   the job already races live builds. Whether it is *supposed* to skip live
