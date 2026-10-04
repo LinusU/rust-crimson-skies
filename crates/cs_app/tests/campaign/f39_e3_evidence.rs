@@ -9,7 +9,7 @@
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
 //!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f39_e3_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
-//!      cargo test --locked -p cs_app --test evidence_report_f39_e3 -- --ignored
+//!      cargo test --locked --test campaign evidence_report_f39_e3 -- --ignored
 //!    ```
 //! 3. `python3 tools/validate_evidence.py private/evidence/F39-E3/acceptance.json
 //!    --artifact-root private/evidence/F39-E3 --require-pass`

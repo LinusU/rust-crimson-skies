@@ -39,11 +39,23 @@
 //! independently of the code under test, because those two rules were otherwise
 //! proved only on authored values. See
 //! `docs/findings/2026-10-03-f50-e4-row-geometry-and-title-exactness.md`.
+//!
+//! `f39_e3.rs` is the same kind of member: work order `F39-E3` binds no mission,
+//! but its `accept_f39_e3_*` tests are retail — they read `$CS_GAME_DIR` to
+//! measure the installation-scope reader archives (the install-wide and
+//! world-group `zrdr.zbd`s) and bound the mission-scoped objective census's
+//! denominator. `f39_e3_evidence.rs` is its evidence-report harness, selected by
+//! test name like `evidence.rs`'s (`--test campaign evidence_report_f39_e3`), so
+//! it keeps out of the `accept_f39_e3_` acceptance selection. Both live here so
+//! the task adds no test binary of its own: CI's runner disk cannot afford one
+//! more link per task (`docs/findings/2026-09-30-t430-rust-lld-sigbus-in-ci.md`).
 
 mod closure;
 mod common;
 mod coverage;
 mod evidence;
+mod f39_e3;
+mod f39_e3_evidence;
 mod f50_e4;
 mod identity;
 mod inventory;
