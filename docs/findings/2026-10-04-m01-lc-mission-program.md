@@ -311,6 +311,19 @@ The mirrored failure — a walk that skips a directive it cannot classify — is
 | `every_mission_is_measured_and_none_is_campaign_ready` *(retail)* | both populations, per-row reconciliation, the gate closed, the absent readers named and all IA/MP |
 | `the_measured_vocabulary_is_wide_and_only_outcomes_are_implemented` *(retail)* | corpus vocabulary, site totals reconcile, implemented set is exactly the two outcome keys, mission labels are `zbd/<group>/<mission>` |
 
+### The test prefix is shared with two other M01-LC tasks
+
+`accept_m01_lc_` is not this task's alone. On the current `main` the selection
+`cargo test --workspace --locked -- accept_m01_lc_ --include-ignored` discovers
+**32** assertions: this task's **19** (top level, from
+`crates/cs_app/tests/accept_m01_lc_mission_program.rs`), **4** under `scene_ids::`
+(the merged world-scene-ids task) and **9** under `import_retail::` (the world
+import). All 32 pass; a prefix selection reports the neighbours beside this task's
+19, and the evidence report derives the split from the recorded log rather than
+asserting it, so it cannot go stale when another M01-LC task lands. The
+implementer's handover note named only the scene-ids task, which was true when it
+was written and stopped being true when the world-import task landed.
+
 Every test calls production code. The retail tests re-derive every figure from
 `$CS_GAME_DIR` on each run, so a stale constant fails rather than passes. All
 synthetic `.zrd` bytes are authored here tag by tag; no original game data is

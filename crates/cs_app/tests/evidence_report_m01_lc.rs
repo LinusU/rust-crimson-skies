@@ -28,7 +28,7 @@
 //! paraphrase of the acceptance assertions, and it carries no original bytes: ids,
 //! digests, byte extents, shapes and dispositions only.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -51,9 +51,23 @@ const ACCEPTANCE_PREFIX: &str = "accept_m01_lc_";
 /// regenerated on another installation cannot describe this one's numbers. The
 /// limits of the claim are interpolated from the census's own lowering accounting,
 /// so a report can never claim more than this run measured.
-fn review_method(census: &RetailControlCensus, own_tests: usize, shared_plus_own: usize) -> String {
+fn review_method(
+    census: &RetailControlCensus,
+    own_tests: usize,
+    shared_plus_own: usize,
+    other_modules: &[(String, usize)],
+) -> String {
     let absent = census.archives_without_control_program();
     let shared = shared_plus_own.saturating_sub(own_tests);
+    let other_modules = if other_modules.is_empty() {
+        "none".to_owned()
+    } else {
+        other_modules
+            .iter()
+            .map(|(module, count)| format!("{count} in {module}::"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let unmet: Vec<String> = census
         .unmet_by_requirement()
         .iter()
@@ -142,11 +156,13 @@ fn review_method(census: &RetailControlCensus, own_tests: usize, shared_plus_own
          any reader declares a directive with no measured effect. `unknowns` is empty because \
          every unresolved item above is a limit on the claim rather than an unresolved measurement: \
          every row in the census resolved, every archive either measured or named as absent. \
-         TEST-SELECTION NOTE: the prefix accept_m01_lc_ is shared with the already-merged task \
-         M01-LC-WORLD-SCENE-IDS, so this run's {shared_plus_own} discovered assertions cover both \
-         tasks: the {own_tests} belonging to THIS task are exactly the accept_m01_lc_ tests in \
-         crates/cs_app/tests/accept_m01_lc_mission_program.rs, and the {shared} scene_ids tests \
-         belong to that other task and appear here only because the selection is prefix-based. \
+         TEST-SELECTION NOTE: the prefix accept_m01_lc_ is shared, so this run's \
+         {shared_plus_own} discovered assertions cover more than this task: the {own_tests} \
+         belonging to THIS task are exactly the accept_m01_lc_ tests in \
+         crates/cs_app/tests/accept_m01_lc_mission_program.rs (libtest prints an integration-test \
+         file's tests with no module path), and the other {shared} arrive under another task's \
+         module path ({other_modules}) and appear here only because the selection is \
+         prefix-based. \
          Validated with tools/validate_evidence.py --require-pass.",
         census.measured_len(),
         census.len(),
@@ -264,6 +280,7 @@ fn evidence_report_m01_lc_writes_the_acceptance_report() {
             &census,
             own_tests(&log),
             suite.discovered as usize,
+            &other_task_modules(&log),
         )),
     );
     let out = evidence_dir.join("acceptance.json");
@@ -689,19 +706,34 @@ fn record(suite: &mut Suite, name: String, status: &'static str) {
 
 /// How many of the discovered prefixed assertions belong to **this** task.
 ///
-/// The prefix `accept_m01_lc_` is shared with the already-merged task
-/// M01-LC-WORLD-SCENE-IDS, whose four `scene_ids` tests also match it, so a
-/// prefix-based selection reports both. Counting only the un-namespaced ones —
-/// libtest prints a test from an integration-test *file* with no module path and
-/// an in-module unit test under its module path — is what separates the two sets,
-/// and it is counted from the recorded log rather than from a list the harness
-/// maintains.
+/// The prefix `accept_m01_lc_` is shared: besides this task's file, M01-LC's world
+/// scene ids (`scene_ids::`) and the world import (`import_retail::`) publish
+/// assertions under it, so a prefix-based selection reports all of them. Counting
+/// only the un-namespaced ones — libtest prints a test from an integration-test
+/// *file* with no module path and an in-module test under its module path — is
+/// what separates this task's set, and it is counted from the recorded log rather
+/// than from a list the harness maintains.
 fn own_tests(log: &str) -> usize {
     parse_suite(log)
         .assertions
         .iter()
         .filter(|(name, _)| !name.contains("::"))
         .count()
+}
+
+/// The module paths the other tasks' prefixed assertions arrive under, with how
+/// many each carries, so the report names its neighbours instead of counting them
+/// anonymously. Derived from the recorded log, not from a list kept here.
+fn other_task_modules(log: &str) -> Vec<(String, usize)> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for (name, _) in &parse_suite(log).assertions {
+        if !name.contains("::") {
+            continue;
+        }
+        let module = name.rsplit("::").nth(1).unwrap_or_default().to_owned();
+        *counts.entry(module).or_insert(0) += 1;
+    }
+    counts.into_iter().collect()
 }
 
 /// One referenced artifact: hashed here with the production SHA-256 the task
