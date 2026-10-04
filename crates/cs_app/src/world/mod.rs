@@ -142,7 +142,7 @@ pub use fixture::{
     depot_meshes, depot_mission, depot_population, depot_world, door_overlay, fixture_provenance,
     harbor_meshes, harbor_world, mesh_reference, object_set, probe_layers, spawn_discrete_probe,
     spawn_swept_probe, static_world_layers, twin_harbor_meshes, twin_harbor_world, world_app,
-    world_instance,
+    world_app_with_spawn_preflight, world_instance,
 };
 pub use gpu_capture::{
     CAPTURE_HEIGHT, CAPTURE_WIDTH, CaptureRequest, FRAMING_DISTANCE_FACTOR, GpuCapture,

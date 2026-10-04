@@ -1542,6 +1542,30 @@ pub fn object_set(keys: &[&str]) -> BTreeSet<WorldObjectId> {
 /// read — cannot be built on a world that lacks it while the cuboid path works
 /// fine.
 pub fn world_app() -> App {
+    world_app_composed(false)
+}
+
+/// [`world_app`] plus the F23 bodies runtime's **spawn preflight** and its
+/// gameplay consumer, [`SpawnTickTriggerPlugin`]: the two systems that decide
+/// what a body's *first* tick sweeps against and deliver a trigger crossing the
+/// discrete narrow phase cannot see.
+///
+/// **This is a measurement composition, not the production one.** The mission
+/// world bootstrap still installs neither, which task #415 recorded as its
+/// second composition gap and filed against **#416**; this stage measures the
+/// classification a world-authored sensor volume gets *once* the preflight runs
+/// (task #499), and does not decide whether a mission world runs the preflight
+/// at all. `PhysicsBodiesPlugin` is not used here because it would add
+/// `RestingBodiesPlugin` a second time — which `world_app` already installs and
+/// Bevy refuses as a duplicate plugin — so the two systems the measurement needs
+/// are installed on their own, through the same `preflight::install` the plugin
+/// calls.
+pub fn world_app_with_spawn_preflight() -> App {
+    world_app_composed(true)
+}
+
+/// The one body of [`world_app`], with the spawn preflight added when asked.
+fn world_app_composed(spawn_preflight: bool) -> App {
     let frame = Duration::from_secs_f64(1.0 / crate::physics::BASELINE_FIXED_HZ as f64);
 
     let mut app = crate::asset_stack::headless_app();
@@ -1567,6 +1591,14 @@ pub fn world_app() -> App {
         crate::physics::RestingBodiesPlugin,
         crate::physics::PhysicsAdapterPlugin::new(crate::physics::BASELINE_FIXED_HZ),
     ));
+    if spawn_preflight {
+        // The same two systems `PhysicsBodiesPlugin` installs for the preflight,
+        // taken one at a time: the plugin itself would add the resting rule a
+        // second time, and Bevy refuses a duplicate plugin. See
+        // [`world_app_with_spawn_preflight`].
+        crate::physics::preflight::install(&mut app);
+        app.add_plugins(crate::objectives::SpawnTickTriggerPlugin);
+    }
     app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
     app.insert_resource(SubstepCount(1));
     app.insert_resource(Gravity::ZERO);
@@ -1618,6 +1650,7 @@ pub struct WorldFixtureBuilder {
     meshes: WorldMeshes,
     probe: Option<ProbeSpec>,
     discrete_probe: bool,
+    spawn_preflight: bool,
 }
 
 impl WorldFixtureBuilder {
@@ -1629,6 +1662,7 @@ impl WorldFixtureBuilder {
             meshes: WorldMeshes::new(),
             probe: None,
             discrete_probe: false,
+            spawn_preflight: false,
         }
     }
 
@@ -1662,6 +1696,22 @@ impl WorldFixtureBuilder {
         self
     }
 
+    /// Runs the world's bodies on [`world_app_with_spawn_preflight`]: the F23
+    /// spawn preflight and its gameplay consumer, beside the composition every
+    /// world fixture already has.
+    ///
+    /// Off by default, and the default is the production composition: whether a
+    /// mission world runs the spawn preflight at all is task #416's question
+    /// (recorded as the second composition gap in
+    /// `docs/findings/2026-10-02-t415-spawn-tick-trigger-crossing.md`), not this
+    /// stage's. Ask for it when the measurement is about what a body's *first*
+    /// tick sweeps against.
+    #[must_use]
+    pub const fn spawn_preflight(mut self) -> Self {
+        self.spawn_preflight = true;
+        self
+    }
+
     /// Builds the fixture: the real pinned Bevy/Avian plugin group, the real
     /// F23-A fixed-rate adapter, gravity zero, and the definition spawned
     /// through [`super::spawn_world`].
@@ -1671,7 +1721,11 @@ impl WorldFixtureBuilder {
     /// [`WorldFixtureError`] when the definition cannot be spawned or the
     /// probe's spec is invalid.
     pub fn build(self) -> Result<WorldFixture, WorldFixtureError> {
-        let mut app = world_app();
+        let mut app = if self.spawn_preflight {
+            world_app_with_spawn_preflight()
+        } else {
+            world_app()
+        };
 
         let spawned = super::spawn_world(&mut app, &self.definition, &self.meshes)?;
         let probe = match self.probe {

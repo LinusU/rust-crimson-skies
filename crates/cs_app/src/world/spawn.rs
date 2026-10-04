@@ -81,6 +81,22 @@
 //! `docs/findings/2026-10-02-t401-trigger-volume-and-swept-ccd.md` and
 //! `accept_f18_b_a_swept_body_crosses_a_world_trigger_volume_untouched`.
 //!
+//! **Every collider this module spawns also declares its collision layer**, as
+//! the [`BodyLayer`] the F23 machinery classifies hits by — including a
+//! trigger volume, and that is what makes a trigger volume work for the F23-C
+//! spawn preflight rather than only for the discrete narrow phase (task #499).
+//! The declared layer is [`static_world_layer`], the very layer the membership
+//! mask already carries, so a collider has **one** layer answer and the role is
+//! a separate fact: a `Sensor` object is a trigger because of the [`Sensor`]
+//! marker and `classify_contact`'s shape class, never because it moved to
+//! another layer. Before this, no world collider declared a layer at all, and
+//! the preflight's solid cast treats an unclassifiable hit as solid — so a
+//! spawn whose first tick swept a trigger volume was clamped against it and had
+//! its into-volume velocity removed, while the preflight's second,
+//! non-blocking sensor cast recorded nothing. The measurement, the rejected
+//! alternatives and the choice are in
+//! `docs/findings/2026-10-04-t499-world-sensor-volume-collision-layer.md`.
+//!
 //! The one place this module is deliberately *not* the single conversion is the
 //! mesh path's entity layout, which is spawned here rather than through
 //! [`crate::asset_stack::spawn_static_mesh_collider_on_body`] — for two reasons
@@ -136,6 +152,7 @@ use cs_types::evidence::ContentHash;
 use super::affine::{AffinePlacement, AffinePlacementError};
 use super::contacts::{WorldColliderInstance, WorldObjectBinding, WorldVisual};
 use super::meshes::WorldMeshes;
+use crate::physics::BodyLayer;
 
 /// How far the decomposed runtime transform may drift from the authored
 /// canonical matrix and still be called the same transform.
@@ -735,7 +752,48 @@ pub fn avian_layers(membership: CollisionLayers) -> AvianCollisionLayers {
 /// hand-built or derived from a mesh.
 #[must_use]
 pub fn static_world_membership() -> CollisionLayers {
-    CollisionLayers::from(CollisionLayer::StaticWorld)
+    CollisionLayers::from(static_world_layer())
+}
+
+/// The one layer [`static_world_membership`] names — and therefore the
+/// **declared layer** every world collider carries as its [`BodyLayer`], whatever
+/// its role (task #499).
+///
+/// One answer per collider, on purpose. The world spawn has always put exactly
+/// this layer in the engine's membership mask; making it the declared layer too
+/// means a consumer never has to ask which of two layer components is the real
+/// one. The **role** is a separate fact and stays separate: it is carried by the
+/// [`Sensor`] marker, which is what `classify_contact` reads for the shape
+/// class, so a trigger volume is a sensor by its record's role and not by
+/// living on another layer.
+///
+/// **What it buys, measured.** `cs_app::physics::preflight` classifies a cast
+/// hit by reading the hit entity's [`BodyLayer`] and its [`Sensor`] marker, and
+/// had no way to classify a world collider, because none carried one. The
+/// preflight's solid cast treats an unclassifiable hit as solid
+/// (`is_none_or(|kind| kind == ContactKind::SolidContact)`), so a spawn whose
+/// first tick swept a world trigger volume was **clamped against it and had its
+/// into-volume velocity removed** — F23-C's
+/// `accept_f23_c_preflight_never_stops_on_a_sensor` violated for exactly the
+/// volumes a mission cares about — and the preflight's second, non-blocking
+/// sensor cast accepts only `Some(ContactKind::SensorOverlap)`, so the crossing
+/// was never recorded and the gameplay consumer never saw it. Measured on the
+/// arch world's `trigger.sensor` with a 10 cm swept projectile at 120 Hz:
+///
+/// | fired | travel/tick | clamped | into-volume velocity | `passed` | end position |
+/// | --- | --- | --- | --- | --- | --- |
+/// | 60 m/s | 0.50 m | **yes**, at 0.200 m | **removed**, `vz` 60 → 0 | `None` | held at the volume's near face |
+/// | 600 m/s | 5.00 m | **yes**, at 2.000 m | **removed**, `vz` 600 → 0 | `None` | held at the volume's near face |
+///
+/// Solid world geometry clamped at 0.200 m in the same geometry, so the defect
+/// was specific to the layer-less volume being taken as solid by absence.
+/// [`accept_t499_a_world_sensor_volume_never_clamps_or_stops_a_spawn`] and
+/// [`accept_t499_a_spawn_tick_crossing_of_a_world_volume_reaches_the_consumer`]
+/// hold the repaired side; the decision and its rejected alternatives are in
+/// `docs/findings/2026-10-04-t499-world-sensor-volume-collision-layer.md`.
+#[must_use]
+pub fn static_world_layer() -> CollisionLayer {
+    CollisionLayer::StaticWorld
 }
 
 /// One instance's resolved mesh: the record's own reference and the upload that
@@ -1090,8 +1148,9 @@ fn spawn_mesh_presentation(
 /// (the collider-on-body rule, [`crate::asset_stack`]); a `Sensor` cuboid is a
 /// trigger volume, so it gets **no** rigid body at all and Avian's swept CCD
 /// cannot reach it — see [`trigger_volume_layout`] and the module docs. The
-/// event opt-in and the [`Sensor`] marker are on the collider's own entity,
-/// which is where Avian reads both from.
+/// event opt-in, the [`Sensor`] marker and the declared [`BodyLayer`] are on the
+/// collider's own entity, which is where Avian reads the first two from and
+/// where the F23 preflight reads the third from.
 fn spawn_cuboid_collider(
     app: &mut App,
     geometry: SharedShape,
@@ -1108,6 +1167,10 @@ fn spawn_cuboid_collider(
         Rotation(instance.rotation),
         Collider::from(geometry),
         avian_layers(static_world_membership()),
+        // The declared layer, one answer for both roles: see
+        // `static_world_layer`. Without it a swept spawn cannot classify this
+        // collider at all, and an unclassifiable hit is taken as solid.
+        BodyLayer(static_world_layer()),
         CollisionEventsEnabled,
     ));
     if is_trigger_volume(role) {
@@ -1223,6 +1286,7 @@ fn spawn_mesh_body(
             Mesh3d(handle),
             ColliderConstructor::TrimeshFromMesh,
             avian_layers(membership),
+            BodyLayer(static_world_layer()),
             transform,
             Position(transform.translation),
             Rotation(transform.rotation),
@@ -1231,11 +1295,11 @@ fn spawn_mesh_body(
 }
 
 /// Spawns a mesh-derived **trigger volume**: presentation, binding, layers,
-/// event opt-in and [`Sensor`] marker on one entity that carries **no**
-/// [`RigidBody`].
+/// declared layer, event opt-in and [`Sensor`] marker on one entity that carries
+/// **no** [`RigidBody`].
 ///
-/// This is [`spawn_mesh_body`] minus the rigid body, and the difference is the
-/// whole decision (task #401): with a
+/// This is [`spawn_mesh_body`] minus the rigid body and plus the sensor's own
+/// marker, and the difference is the whole decision (task #401): with a
 /// body on the entity, Avian's `ColliderHierarchyPlugin` binds the derived
 /// collider to it through `ColliderOf`, `solve_swept_ccd` resolves that body
 /// through `SweptCcdBodyQuery`, and a swept body is stopped at the volume's
@@ -1246,6 +1310,11 @@ fn spawn_mesh_body(
 /// because that helper is the collider-on-body layout and this is its opposite;
 /// `accept_f18_b_the_trigger_and_solid_mesh_paths_differ_only_in_the_body` is
 /// what holds the two to each other.
+///
+/// The declared [`BodyLayer`] is **not** one of the differences (task #499):
+/// both layouts declare [`static_world_layer`], and the sensor/solid split
+/// reaches the classification through the [`Sensor`] marker and
+/// `classify_contact`'s shape class.
 fn spawn_mesh_trigger_volume(
     app: &mut App,
     handle: Handle<Mesh>,
@@ -1265,6 +1334,7 @@ fn spawn_mesh_trigger_volume(
             Mesh3d(handle),
             ColliderConstructor::TrimeshFromMesh,
             avian_layers(membership),
+            BodyLayer(static_world_layer()),
             Sensor,
             CollisionEventsEnabled,
             transform,
