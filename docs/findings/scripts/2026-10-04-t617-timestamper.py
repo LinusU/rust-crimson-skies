@@ -7,6 +7,9 @@ usage: timestamper.py <out-path>   (reads stdin, writes stdout + out-path)
 import sys
 import time
 
+if len(sys.argv) != 2:
+    sys.exit(__doc__)
+
 path = sys.argv[1]
 start = time.time()
 with open(path, "w", encoding="utf-8") as out:

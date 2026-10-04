@@ -324,30 +324,53 @@ exposed.
 
 | Hypothesis | How it was ruled out |
 | --- | --- |
-| A second cargo writing this target dir | No second cargo exists in it. `lsof` over the whole tree during both occurrences returned nothing, and the only `cargo` processes on the host had their cwd in `bunny-2` and `swe2-max-1`, whose `CARGO_TARGET_DIR` is their own checkout. Every agent's `.env` sets its own target dir. |
-| A test in this suite deletes an artifact of the real target dir | Every `remove_file` / `remove_dir_all` under `crates/**` and `tools/**` was read. Each is scoped to a fixture root, a `TempDir`, or a scratch directory the same test created, and since #610 each fixture root carries a `std::process::id()` component so two suite processes cannot delete each other's trees. None names `target/debug/deps` or anything above it. |
-| Cargo itself deleted them | Cargo's own churn is unlink-then-rewrite: the F54-X7 measurement saw 46 harnesses unlinked during a build phase and all 46 present afterwards. Here, zero of the 15 removed files across the two bursts came back over six further minutes of watching. Cargo does not delete an artifact it is about to execute. |
-| A test in the suite runs `cargo clean` | No `cargo clean`, and no clean of any kind, is invoked from any Rust or Python source in the repository. |
+| A second cargo writing this target dir | No second cargo exists in it. `lsof` over the whole tree returned only this task's own watcher and its own test run, and the only other `cargo` processes on the host had their cwd in `bunny-2` and `swe2-max-1`, whose `.env` sets `CARGO_TARGET_DIR` to their own checkout (checked for `bunny-2`, `swe2-max-1` and `bunny-alpha-1`: all three differ from this one). The attributed burst makes it moot anyway: the deleting command is not cargo. |
+| Cargo's own relinking is being mistaken for the prune | It is distinguishable, and both were observed in the same log. A cargo relink has `age_ctime_s ≈ 0` against an old `age_mtime_s` — that is the `target/debug/cs` unlink at t=957.178 (`age_mtime_s: 2533.7`, `age_ctime_s: 130.5`), and the file was back 1.3 s later. Every prune victim has `age_mtime_s == age_ctime_s` and never came back. The t=1074.073 burst is nine files, all `age_mtime_s == age_ctime_s`, all absent afterwards. |
+| A test in this suite deletes an artifact of the real target dir | Every `remove_file` / `remove_dir_all` under `crates/**` and `tools/**` was enumerated: 104 in `tests/`, 59 in `src/`. None of the 163 names a target directory — grepping all of them for `target`, `debug`, `deps` or `CARGO_TARGET_DIR` returns nothing. Each is scoped to a fixture root, a `TempDir`, or a scratch directory the same test created, and since #610 each fixture root carries a `std::process::id()` component so two suite processes cannot delete each other's trees. |
+| Cargo itself deleted them | Ruled out three ways. (a) Cargo's own churn is unlink-then-rewrite: the F54-X7 measurement saw 46 harnesses unlinked during a build phase and all 46 present afterwards, and the one cargo relink observed here (`target/debug/cs`, t=957.178) was back 1.3 s later. (b) Zero of the 24 files removed across the four bursts came back over six further minutes of watching. (c) The `deps/` bursts at t=65.404 and t=1074.073 are the two seconds in which `prune-stale-bins.sh --delete` was running. Cargo does not delete an artifact it is about to execute. |
+| A test in the suite runs `cargo clean` | `cargo clean` appears in the repository only inside error *message* strings asserted on by `accept_t433_` and `accept_t440_` (`"cargo clean --target-dir"` as the remediation the stale-dir gate tells a human to run). No source file invokes it, and no clean of any kind is invoked from any Rust or Python source. |
 | Disk pressure caused it | `/System/Volumes/Data` was at 97 % capacity with 34 GiB free throughout. Low free space is a real constraint on this host, but it cannot produce `ENOENT` on a path that existed a moment earlier: the unlink is observed directly, and the file is absent afterwards. |
 | The failures are a real test failure being misread | No `test result: FAILED` line appears in either occurrence's log, and `test_select::classify_missing_harness` requires exactly that — a cargo failure, zero reported test failures, and cargo's own message — before it will call it a vanished harness. |
 | `test = false` on the empty harnesses would have prevented it | Directly contradicted by the `run-2` burst: six of six victims were in the plan, and `cs_xtask` was not among them. |
 
 ## Rate
 
-Measured over eight instrumented `cargo test --workspace --locked` runs on an
-unmodified `origin/main` checkout, all in the same two-hour window, with
-`loadavg` 80-111:
+Two campaigns, 23 instrumented `cargo test --workspace --locked` runs in total,
+all on unmodified `origin/main` (`2676355d`), all with this checkout's own
+`CARGO_TARGET_DIR`, `loadavg` 80-111, `/System/Volumes/Data` at 97 % with
+34 GiB free:
 
-| Runs | Occurrences | Rate |
+| Campaign | Runs | Failures |
 | --- | --- | --- |
-| 8 | 2 | 2 in 8 (25 %) |
+| first (per-run watchers only) | 8 | **2** |
+| attributed (0.4 s process sampler + target-dir watcher) | 14 | 0 |
+| total | **23** | **2** |
 
-The rate is not a property of the code; it is the product of two host
-quantities — how long the execution phase lasts, and where in that phase the
-prune's next burst lands. On this machine the execution phase of a warm full
-workspace run is roughly 60-150 s and the prune fires every 1200 s, so a run
-that overlaps a prune burst has a substantial chance of dying on the victim it
-has not reached yet. That is the number the owner needs in order to decide.
+The two failures are the two occurrences quoted above. The 14-run campaign had
+a prune burst land *inside* a run (`t617-8`) and survived it, because that run
+had already executed the doomed files — see the controlled comparison above.
+So the rate is better read per burst than per run:
+
+| Prune burst | A run in flight? | Outcome |
+| --- | --- | --- |
+| 06:22:47Z | yes | **exit 101**, died on a victim it had not reached |
+| 06:42:50Z | yes | **exit 101**, died on a victim it had not reached |
+| 07:02:50Z | no | nothing to kill |
+| 07:22:51Z | yes (`t617-8`) | **exit 0**, 349 `test result: ok` — it had passed them |
+
+**Three bursts had a run in flight; two of those runs died.** The
+execution phase of a warm full workspace run on this machine is **117-149 s
+(median 122 s)** — measured from the first `Running` line to the last
+`test result: ok` across the 14 green runs. A prune fires every 1200 s and
+takes ~0.5 s to sweep five checkouts' `deps/` directories.
+
+The rate is therefore not a property of the code at all. It is the product of
+two host quantities — a 122 s window in which a run can be killed, and a sweep
+every 1200 s — and the position of the sweep within that window. A run that
+starts just after a sweep has a 122 s window to finish before the next one; a
+run that starts just before has almost none. That is exactly why this looks
+random from the inside, and it is why a single green run is not evidence that
+the class is gone.
 
 ## What was *not* established
 
@@ -402,23 +425,38 @@ sh docs/findings/scripts/2026-10-04-t617-run-workspace-test.sh mylabel
 sh docs/findings/scripts/2026-10-04-t617-decisive.sh 1 14 0.4 0.4
 ```
 
-The scripts write their output to `$TMPDIR/t617/`, which is outside the
-repository. They were run from this checkout with `CARGO_TARGET_DIR` pointing
-at its `target/`.
+The scripts write their output to `$TMPDIR/t617/` (override with `OUT=`), which
+is outside the repository. They were run from this checkout with
+`CARGO_TARGET_DIR` pointing at its `target/`, on macOS: they use `ps`, `lsof`,
+`pgrep`, `df -k /System/Volumes/Data` and `sysctl -n vm.loadavg`, none of
+which exist on Linux.
+
+All five were smoke-tested after being written: `timestamper.py` prefixes a
+line correctly, `sample-procs.py` wrote 848 records in 2 s at a 0.2 s
+interval, and both watchers emit their `{"event": "start", …}` record against a
+fixture directory containing one executable.
 
 ### Reading the sampler's output
 
-`sample_procs.py` writes one JSON object per line: `{"event": "new", …}` for a
+`sample-procs.py` writes one JSON object per line: `{"event": "new", …}` for a
 pid seen for the first time, and `{"event": "table", …}` with the full process
-list every 30 s. To find the prune passes:
+list every 30 s. To find the prune passes, filter for the long-lived
+`disk-prune-loop` shells' children:
 
 ```sh
 python3 - <<'PY'
 import json
-parents = {66027, 87266}          # the long-lived disk-prune-loop shells
 for line in open("/tmp/t617/t617.procs.jsonl"):
     event = json.loads(line)
-    if event["event"] == "new" and event["ppid"] in parents:
+    if event["event"] == "new" and "prune-stale-bins" in event["args"]:
         print(event["t"], event["pid"], event["ppid"], event["args"])
 PY
 ```
+
+That filter is what produced the `prune-stale-bins.sh --delete` line quoted
+above. `watch-tree.py`'s log lines carry the `path`, `inode`, `nlink` and the
+mtime/ctime/atime ages, which is what distinguishes a prune reaping a file
+(ages equal, untouched since link) from cargo replacing one (`age_ctime_s`
+near zero while `age_mtime_s` is old — the `target/debug/cs` unlink at
+t=957.178 in the same log is that second case, cargo's own relink, not the
+prune).
