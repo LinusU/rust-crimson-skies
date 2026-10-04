@@ -885,6 +885,155 @@ fn accept_m01_lc_world_actors_a_wildcard_selects_a_prefix_and_a_path_is_left_unm
     );
 }
 
+/// **A wildcard spelling that carries a narrowing character after its `*` keeps
+/// that text and is reported unmeasured instead of counted from its prefix; a
+/// repeated `**` is the same prefix rule and is counted.**
+///
+/// Measured over the installation: 39 spellings carry a character after their
+/// first `*`, in 187 selectors. Thirty-two of those spellings end in `**` — the
+/// original's own spelling for the same family, as `aagun**` over the numbered
+/// `aagun` family shows — and narrow nothing. The remaining **seven** carry a
+/// character that may: `lbroad*1`, `lbroad*2`, `rbroad*1`, `rbroad*2` in
+/// `ZBD/zrdr.zbd::beowulf_broadsides.zrd` and `docksteam*#`, `sstack*#`,
+/// `torch*#` in `ZBD/C5/zrdr.zbd::steam.zrd`, 31 selectors in all. For those,
+/// counting the prefix alone would be a silent over-selection reported as a
+/// measurement, so no count is reported at all.
+#[test]
+fn accept_m01_lc_world_actors_a_wildcard_suffix_is_kept_and_reported_unmeasured() {
+    let world = synthetic_world(&[
+        "aagun01", "aagun02", "aagun10", "lbroad1", "lbroad2", "steam1",
+    ]);
+    let names = WorldNodeNames::from_gamez("zbd/c1c/gamez.zbd", &world);
+
+    let narrow = ObjectSelector::parse("lbroad*1").expect("a suffix wildcard parses");
+    assert_eq!(
+        narrow.wildcard_suffix(),
+        Some("1"),
+        "the narrowing text after the '*' is kept, not dropped"
+    );
+    assert_eq!(
+        narrow.segment(),
+        &SelectorSegment::PrefixWildcard("lbroad".to_owned()),
+        "and the segment is the prefix the corpus matches, up to the first '*'"
+    );
+    assert!(
+        narrow.has_wildcard(),
+        "a spelling with a suffix is still a wildcard"
+    );
+    let counted = names.resolve(&narrow);
+    assert_eq!(
+        counted.occurrences(),
+        None,
+        "the prefix count would be a guess, so no count is reported: {counted:?}"
+    );
+    assert!(
+        counted.is_unmeasured(),
+        "and the spelling is reported unmeasured, like a node path"
+    );
+    assert_eq!(
+        counted,
+        SelectorMatch::UnmeasuredSuffix {
+            stored: "lbroad*1".to_owned(),
+            prefix: "lbroad".to_owned(),
+            suffix: "1".to_owned(),
+        },
+        "the report carries the stored spelling, so a caller can see what it could not answer"
+    );
+
+    let hashed = ObjectSelector::parse("docksteam*#").expect("a '*#' spelling parses");
+    assert_eq!(hashed.wildcard_suffix(), Some("#"));
+    assert!(
+        names.resolve(&hashed).is_unmeasured(),
+        "a second wildcard character is no more measurable than a numbered suffix"
+    );
+
+    // The repeated wildcard narrows nothing, so it stays on the measured path and
+    // is counted like any other prefix.
+    let repeated = ObjectSelector::parse("aagun**").expect("a '**' spelling parses");
+    assert_eq!(
+        repeated.wildcard_suffix(),
+        None,
+        "a trailing '*' is the wildcard itself, not a narrowing suffix"
+    );
+    assert_eq!(
+        names.resolve(&repeated).occurrences(),
+        Some(3),
+        "so aagun** is counted by its prefix exactly as aagun* would be"
+    );
+    assert_eq!(
+        names.resolve(&repeated),
+        names.resolve(&ObjectSelector::parse("aagun*").expect("parses")),
+        "and '**' selects precisely what '*' selects"
+    );
+    assert_eq!(
+        ObjectSelector::parse("aagun01")
+            .expect("a bare name parses")
+            .wildcard_suffix(),
+        None,
+        "a bare name carries no wildcard text at all"
+    );
+    assert_eq!(
+        UnmeasuredFieldFamily::SelectorWildcardSuffix.claim_id(),
+        "f20-anim.object-selector-wildcard-suffix-unmeasured",
+        "the suffix has its own claim, so it is never read as the prefix rule"
+    );
+    assert!(
+        UnmeasuredFieldFamily::SelectorWildcardSuffix
+            .reason()
+            .contains("lbroad*1"),
+        "and its reason names a measured spelling"
+    );
+}
+
+/// **A definition carrying both object fields names the one it did not read
+/// instead of dropping it.**
+///
+/// Measured: no definition of the installation carries both `NAME` and `NAME1`,
+/// so the reader has no measured precedence between them. A record that did
+/// would still lose one of the two shapes — and a field that is read into no
+/// field *and* named in no list is exactly the silent drop this module promises
+/// never happens. The shadowed field is therefore named as uninterpreted, and
+/// the shape the reader kept is the last one in stored order, reported as
+/// measured.
+#[test]
+fn accept_m01_lc_world_actors_a_shadowed_object_field_is_named_not_dropped() {
+    let bytes = animation_definitions_document(vec![(
+        "ANIMATION_LIST",
+        animation_list(vec![zrd_definition(vec![
+            (NAME_FIELD, zrd_list(vec![zrd_name("lbroad1")])),
+            (ANIMATION_NAME_FIELD, zrd_name("broadside_one")),
+            (
+                NAME_ALTERNATE_FIELD,
+                zrd_list(vec![
+                    zrd_text("state_broadside_one"),
+                    zrd_list(vec![zrd_text("beowulfzep"), zrd_text("lbroad1")]),
+                ]),
+            ),
+        ])]),
+    )]);
+    let member =
+        read_animation_definition_member("both_fields.zrd", &bytes).expect("the member reads");
+    let definition = &member.definitions()[0];
+
+    assert_eq!(
+        definition.objects().field(),
+        Some(NAME_ALTERNATE_FIELD),
+        "the last object field in stored order is the shape the reader keeps"
+    );
+    assert_eq!(
+        definition.objects().node_names().count(),
+        1,
+        "and it contributes its terminal node name"
+    );
+    assert_eq!(
+        definition.uninterpreted_fields(),
+        [NAME_FIELD],
+        "the shadowed object field is named, never dropped: a field this record does not use is \
+         indistinguishable from one that was silently discarded"
+    );
+    assert_eq!(definition.animation_name(), Some("broadside_one"));
+}
+
 // ---------------------------------------------------------------------------
 // The field families that stop this becoming a world-actor program.
 // ---------------------------------------------------------------------------
@@ -901,7 +1050,7 @@ fn accept_m01_lc_world_actors_a_wildcard_selects_a_prefix_and_a_path_is_left_unm
 fn accept_m01_lc_world_actors_every_unmeasured_field_family_is_named_and_never_measured() {
     assert_eq!(
         UnmeasuredFieldFamily::ALL.len(),
-        15,
+        17,
         "the family list is closed and this is its size"
     );
     let mut labels = std::collections::BTreeSet::new();
@@ -949,7 +1098,7 @@ fn accept_m01_lc_world_actors_every_unmeasured_field_family_is_named_and_never_m
             family.label()
         );
     }
-    assert_eq!(labels.len(), 15);
+    assert_eq!(labels.len(), 17);
     assert!(
         claims.contains("f20-anim.sequence-entry-kinds-measured-not-interpreted"),
         "the statement family is one of the named claims"
@@ -965,6 +1114,129 @@ fn accept_m01_lc_world_actors_every_unmeasured_field_family_is_named_and_never_m
     assert!(
         claims.contains("f34-world.placement-records-unmeasured"),
         "the placement family is filed under the world-actor contract"
+    );
+    assert!(
+        claims.contains("f20-anim.object-selector-wildcard-suffix-unmeasured"),
+        "and a wildcard suffix is its own claim, not the prefix rule's"
+    );
+    assert!(
+        claims.contains("f20-anim.animation-root-name-unmeasured"),
+        "and the animation root name has a family of its own"
+    );
+}
+
+/// **Every field the installation's definitions store without this reader
+/// interpreting it is claimed by a named family, and no field is claimed twice.**
+///
+/// The task's second acceptance branch is only worth something if it is complete:
+/// "each unmeasurable field family is named" fails silently when one family is
+/// forgotten, and a prose reason is not checkable. This pins the seventeen
+/// distinct field names the retail census measured over 1 533 definitions against
+/// the families' own [`UnmeasuredFieldFamily::field_names`] lists, so a family
+/// that stops claiming one of them fails here without the installation.
+/// `ANIMATION_ROOT_NAME` (208 definitions), `AUTO_RESET_NODE_STATES` (96) and the
+/// single bare `EXECUTION` are the three a first reading of this task left
+/// unnamed.
+#[test]
+fn accept_m01_lc_world_actors_every_uninterpreted_field_name_is_claimed_by_a_family() {
+    const UNINTERPRETED: [&str; 17] = [
+        "ANIMATION_ROOT_NAME",
+        "AUTO_ADD_TO_WORLD",
+        "AUTO_RESET_NODE_STATES",
+        "COPY_NODE_DATA",
+        "DAMAGE_SEQUENCE",
+        "EXECUTION",
+        "EXECUTION_BY_RANGE",
+        "EXECUTION_BY_RENDER",
+        "EXECUTION_PRIORITY",
+        "HEALTH",
+        "LOCAL_NODES_ONLY",
+        "NETWORK_LOG",
+        "PERSIST_LOG",
+        "PROXIMITY_DAMAGE",
+        "RESET_STATE",
+        "RESET_TIME",
+        "SAVE_LOG",
+    ];
+    let mut claimed: std::collections::BTreeMap<&str, Vec<&'static str>> = Default::default();
+    for family in UnmeasuredFieldFamily::ALL {
+        for name in family.field_names() {
+            claimed.entry(name).or_default().push(family.label());
+        }
+    }
+
+    // A field the reader stores without interpreting it must be claimed. Two
+    // families may claim the same field when they are two separate unmeasured
+    // readings of it (`NAME` and `NAME1` carry both wildcard families, and
+    // `NAME1` also carries the node-path one), but never zero.
+    for name in UNINTERPRETED {
+        assert!(
+            claimed.contains_key(name),
+            "{name} is stored and not interpreted, and a family must claim it; claimed: {:?}",
+            claimed.keys().collect::<Vec<_>>()
+        );
+    }
+    // And a field the reader reads in full is nobody's gap: naming it would
+    // report a missing measurement where the reader already measures it.
+    for name in [
+        ANIMATION_NAME_FIELD,
+        SEQUENCE_FIELD,
+        ACTIVATION_FIELD,
+        NAME_FIELD,
+        NAME_ALTERNATE_FIELD,
+    ] {
+        assert!(
+            !UNINTERPRETED.contains(&name),
+            "{name} is read by the reader, so it is not part of the uninterpreted vocabulary"
+        );
+    }
+    // A family that covers a stored field says which one; four families cover a
+    // family rather than a field and claim nothing.
+    for family in [
+        UnmeasuredFieldFamily::StatementSemantics,
+        UnmeasuredFieldFamily::PlacementRecords,
+        UnmeasuredFieldFamily::StoredUnit,
+        UnmeasuredFieldFamily::TickRate,
+    ] {
+        assert!(
+            family.field_names().is_empty(),
+            "{} covers a family, not a stored field",
+            family.label()
+        );
+    }
+    for family in UnmeasuredFieldFamily::ALL {
+        assert!(
+            family.reason().len() > 40,
+            "{} explains what it blocks in more than a label",
+            family.label()
+        );
+    }
+    // The wildcard readings are the one place two families claim the same field,
+    // and both say why: the object names and the text after their `*`.
+    assert_eq!(
+        claimed.get(NAME_FIELD).map(Vec::as_slice),
+        Some(
+            [
+                UnmeasuredFieldFamily::SelectorWildcardSemantics.label(),
+                UnmeasuredFieldFamily::SelectorWildcardSuffix.label()
+            ]
+            .as_slice()
+        ),
+        "the flat object-name field is claimed by the two wildcard readings and nothing else"
+    );
+    assert_eq!(
+        claimed.get(NAME_ALTERNATE_FIELD).map(Vec::as_slice),
+        Some(
+            [
+                UnmeasuredFieldFamily::SelectorWildcardSemantics.label(),
+                UnmeasuredFieldFamily::SelectorWildcardSuffix.label(),
+                UnmeasuredFieldFamily::NodePathResolution.label(),
+                UnmeasuredFieldFamily::StateBindingResolution.label(),
+            ]
+            .as_slice()
+        ),
+        "the paired object field carries four separate readings: both wildcard ones, the node path \
+         and the state binding"
     );
 }
 
@@ -1466,11 +1738,28 @@ fn accept_m01_lc_world_actors_retail_the_startup_and_activation_vocabulary_is_me
     let mut events = std::collections::BTreeSet::new();
     let mut names = std::collections::BTreeSet::new();
     let mut activation = std::collections::BTreeSet::new();
+    let mut activation_counts: std::collections::BTreeMap<String, usize> = Default::default();
     let mut kinds = std::collections::BTreeSet::new();
     let mut wildcard_definitions = 0usize;
     let mut definition_files = 0usize;
     let mut definitions = 0usize;
     let mut definition_members = 0usize;
+    // The design decisions this module documents, made checkable: how many
+    // definitions declare one animation name (ambiguity is real, not
+    // hypothetical), which object shape a definition uses (the two are
+    // exclusive, so the reader loses neither), and which fields a definition
+    // stores without this reader interpreting them (each one needs a family).
+    let mut declared_by: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut flat_objects = 0usize;
+    let mut state_bound_objects = 0usize;
+    let mut object_less = 0usize;
+    let mut uninterpreted: std::collections::BTreeSet<String> = Default::default();
+    let mut min_sequences = usize::MAX;
+    let mut max_sequences = 0usize;
+    let mut narrowing_selectors = 0usize;
+    let mut narrowing_spellings: std::collections::BTreeSet<String> = Default::default();
+    let mut repeated_selectors = 0usize;
+    let mut repeated_spellings: std::collections::BTreeSet<String> = Default::default();
 
     for record in &found.manifest.files {
         let spelling = record.relative_spelling.as_str().to_owned();
@@ -1539,11 +1828,50 @@ fn accept_m01_lc_world_actors_retail_the_startup_and_activation_vocabulary_is_me
             definition_files += read.definition_files().len();
             for definition in read.definitions() {
                 definitions += 1;
-                if let Some(value) = definition.activation() {
-                    activation.insert(value.stored().to_owned());
+                match definition.activation() {
+                    Some(value) => {
+                        activation.insert(value.stored().to_owned());
+                        *activation_counts
+                            .entry(value.stored().to_owned())
+                            .or_default() += 1;
+                    }
+                    None => *activation_counts.entry("<absent>".to_owned()).or_default() += 1,
                 }
                 kinds.extend(definition.sequence_kinds().into_iter().map(str::to_owned));
                 wildcard_definitions += usize::from(definition.objects().has_wildcard());
+                match definition.objects() {
+                    DefinitionObjects::Names(_) => flat_objects += 1,
+                    DefinitionObjects::StateBindings(_) => state_bound_objects += 1,
+                    DefinitionObjects::Absent => object_less += 1,
+                }
+                if let Some(animation) = definition.animation_name() {
+                    *declared_by.entry(animation.to_owned()).or_default() += 1;
+                }
+                uninterpreted.extend(
+                    definition
+                        .uninterpreted_fields()
+                        .iter()
+                        .map(|field| (*field).to_owned()),
+                );
+                min_sequences = min_sequences.min(definition.sequences().len());
+                max_sequences = max_sequences.max(definition.sequences().len());
+                for selector in definition.objects().selectors() {
+                    if !selector.has_wildcard() {
+                        continue;
+                    }
+                    if let Some(suffix) = selector.wildcard_suffix() {
+                        narrowing_selectors += 1;
+                        narrowing_spellings.insert(selector.stored().to_owned());
+                        assert_eq!(
+                            suffix.chars().count(),
+                            1,
+                            "the measured narrowing suffixes are one character each: {selector}"
+                        );
+                    } else if selector.stored().ends_with("**") {
+                        repeated_selectors += 1;
+                        repeated_spellings.insert(selector.stored().to_owned());
+                    }
+                }
             }
         }
     }
@@ -1585,13 +1913,39 @@ fn accept_m01_lc_world_actors_retail_the_startup_and_activation_vocabulary_is_me
          possibility of more"
     );
     assert_eq!(
+        activation_counts.get("ON_CALL"),
+        Some(&1_215),
+        "1 215 definitions activate on call"
+    );
+    assert_eq!(
+        activation_counts.get("ON_STARTUP"),
+        Some(&132),
+        "132 activate at startup, which is what makes a definition a placement statement"
+    );
+    assert_eq!(
+        activation_counts.get("WEAPON_OR_COLLIDE_HIT"),
+        Some(&3),
+        "and three on a hit event"
+    );
+    assert_eq!(
+        activation_counts.get("<absent>"),
+        Some(&183),
+        "183 state no activation at all, which the reader reports as none rather than as ON_CALL"
+    );
+    assert_eq!(
+        activation_counts.values().sum::<usize>(),
+        1_533,
+        "every definition lands in exactly one activation bucket"
+    );
+    assert_eq!(
         kinds.len(),
         38,
         "38 distinct statement keys appear in the installation's sequences"
     );
     // One sequence in the installation ends in four bare authored words
-    // (`generic`, `crash`, `is`, `used`), which the flat pair walk reads as two
-    // entries. The reader keeps them, so a consumer sees them instead of a
+    // (`generic`, `crash`, `is`, `used`), and a second sequence of the same member
+    // ends in a third prose tail, which the flat pair walk reads as two entries
+    // each. The reader keeps them, so a consumer sees them instead of a
     // silently shorter statement list — and this assertion is why the statement
     // vocabulary is filed as measured-but-not-interpreted.
     for prose in ["generic", "is", "instead"] {
@@ -1620,10 +1974,123 @@ fn accept_m01_lc_world_actors_retail_the_startup_and_activation_vocabulary_is_me
         definition_files, 828,
         "plus 828 references to the original's authoring paths"
     );
-    assert!(
-        wildcard_definitions > 0,
-        "{} definitions name an object family with '*'",
-        wildcard_definitions
+    assert_eq!(
+        wildcard_definitions, 428,
+        "428 definitions name an object family with '*'"
+    );
+
+    // The resolver's central design decision, measured rather than asserted in
+    // prose: an animation name really is declared more than once in this
+    // installation, so reporting ambiguity instead of taking the first hit is
+    // what the data requires.
+    assert_eq!(
+        declared_by.len(),
+        918,
+        "the definitions declare 918 distinct animation names"
+    );
+    let ambiguous_names: Vec<&String> = declared_by
+        .iter()
+        .filter(|(_, count)| **count > 1)
+        .map(|(animation, _)| animation)
+        .collect();
+    assert_eq!(
+        ambiguous_names.len(),
+        49,
+        "49 of them are declared by more than one definition: {ambiguous_names:?}"
+    );
+    assert_eq!(
+        declared_by.get("speed_cue"),
+        Some(&7),
+        "speed_cue is declared once per world group, so a first-hit resolver would pick a group \
+         at random"
+    );
+
+    // The two object shapes are exclusive, so the reader's choice of one over the
+    // other loses nothing; a definition stating both would have the shadowed field
+    // named in `uninterpreted_fields`.
+    assert_eq!(flat_objects, 1_104, "1 104 definitions name node names");
+    assert_eq!(state_bound_objects, 429, "429 name state/path pairs");
+    assert_eq!(object_less, 0, "and none names no object at all");
+    assert_eq!(
+        flat_objects + state_bound_objects + object_less,
+        definitions,
+        "every definition uses exactly one of the two shapes"
+    );
+    assert_eq!(
+        (min_sequences, max_sequences),
+        (1, 42),
+        "SEQUENCE_DEFINITION is repeatable, from one to forty-two sequences per definition"
+    );
+
+    // Every field the reader stores without interpreting it is claimed by a named
+    // family, so "each unmeasurable field family is named" is checkable instead
+    // of a promise.
+    assert_eq!(
+        uninterpreted.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec![
+            "ANIMATION_ROOT_NAME",
+            "AUTO_ADD_TO_WORLD",
+            "AUTO_RESET_NODE_STATES",
+            "COPY_NODE_DATA",
+            "DAMAGE_SEQUENCE",
+            "EXECUTION",
+            "EXECUTION_BY_RANGE",
+            "EXECUTION_BY_RENDER",
+            "EXECUTION_PRIORITY",
+            "HEALTH",
+            "LOCAL_NODES_ONLY",
+            "NETWORK_LOG",
+            "PERSIST_LOG",
+            "PROXIMITY_DAMAGE",
+            "RESET_STATE",
+            "RESET_TIME",
+            "SAVE_LOG",
+        ],
+        "the installation's uninterpreted field vocabulary is exactly these seventeen names"
+    );
+    for field in &uninterpreted {
+        assert!(
+            UnmeasuredFieldFamily::ALL
+                .iter()
+                .any(|family| family.field_names().contains(&field.as_str())),
+            "{field} is stored and not interpreted, and a family must claim it"
+        );
+    }
+
+    // 39 spellings carry a character after their `*`. Thirty-two end in `**`, which
+    // narrows nothing and stays on the measured prefix rule; seven carry a
+    // narrowing character, and those are reported unmeasured rather than counted
+    // from their prefix.
+    assert_eq!(
+        narrowing_spellings
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            "docksteam*#",
+            "lbroad*1",
+            "lbroad*2",
+            "rbroad*1",
+            "rbroad*2",
+            "sstack*#",
+            "torch*#",
+        ],
+        "seven stored spellings carry a narrowing character after their '*'"
+    );
+    assert_eq!(
+        narrowing_selectors, 31,
+        "and they are stated 31 times across the installation's definitions"
+    );
+    assert_eq!(
+        repeated_spellings.len(),
+        32,
+        "32 more spellings end in a repeated '**', which is the wildcard twice: {:?}",
+        repeated_spellings
+    );
+    assert_eq!(
+        repeated_selectors, 156,
+        "and they are stated 156 times, so the two shapes together are 39 spellings in 187 \
+         selectors"
     );
 
     // A value outside the measured three is retained, never refused.
