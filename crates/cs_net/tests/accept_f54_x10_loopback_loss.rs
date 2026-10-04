@@ -42,15 +42,17 @@
 //! | `F54X10_DGRAM_BYTES` | 300 | datagram payload size incl. the 24-byte tag |
 //! | `F54X10_RCVBUF` | 0 | `SO_RCVBUF` on fresh receive sockets; 0 = system default |
 //! | `F54X10_FRESH` | `both` | which endpoint rebinds per pair: `both`, `recv`, `send`, `none` |
+//! | `F54X10_BIND` | `loopback` | raw mode bind shape: `loopback` (both 127.0.0.1) or `client` (sender 0.0.0.0 like `ClientTransport`, receiver 127.0.0.1 like `HostTransport`) |
 //! | `F54X10_BOTH_DIRS` | 1 | nonzero = both endpoints send per send round |
 //! | `F54X10_DRAIN_QUIET_MS` | 10 | per-pair drain ends after this much silence |
 //! | `F54X10_DRAIN_CAP_MS` | 500 | hard cap on the per-pair drain |
 //! | `F54X10_SETTLE_ROUNDS` | derived | transport mode round budget (default: the 120 s window in `STEP`s) |
+//! | `F54X10_WINDOW_S` | 120 | transport mode connect window in seconds; `15` reproduces the shipped default |
 //! | `F54X10_NONCE` | per-run | run tag stamped in every datagram |
 //! | `F54X10_OUT_JSON` | unset | write the per-process JSON report to this path |
 //! | `F54X10_PROCS` | 1 | fleet only: worker child processes to spawn |
 //! | `F54X10_SPINNERS` | 0 | fleet only: busy-loop children for CPU load |
-//! | `F54X10_OUT_DIR` | `private/f54x10` | fleet only: where worker/fleet JSON lands |
+//! | `F54X10_OUT_DIR` | `private/f54x10` | fleet only: where worker/fleet JSON lands, resolved against the workspace root |
 //!
 //! What one probe datagram carries (little-endian): a magic u32, this
 //! process's nonce u64, the worker u16, the pair u32, the sequence u16 and a
@@ -75,9 +77,12 @@ use cs_net::transport::{ClientEvent, ClientTransport, ConnectWindow, HostTranspo
 /// the acceptance files use.
 const STEP: Duration = Duration::from_millis(16);
 
-/// The window transport pairs ask the connection layer for, the same fixture
-/// value `accept_f54_b`/`accept_f54_c` use so a transient loss cannot outlast
-/// the measurement's own patience.
+/// The window transport pairs ask the connection layer for by default, the
+/// same fixture value `accept_f54_b`/`accept_f54_c` use so a transient loss
+/// cannot outlast the measurement's own patience. `F54X10_WINDOW_S` overrides
+/// it — `15` re-creates the production window a shipped session runs with, so
+/// the probe can re-measure the original failure shape: a stalled handshake
+/// the connection layer gives up on.
 const PROBE_WINDOW: ConnectWindow = ConnectWindow::new(120);
 
 /// The derived transport settle budget: the window expressed in `STEP`s plus
@@ -133,6 +138,114 @@ enum Mode {
     Transport,
 }
 
+/// Instrumentation fed by the pinned crates' `log` records: `renetcode2`
+/// traces `"Connection request from Client {id}"` when a host's socket
+/// layer sees a request, `"Confirmed connection for Client {id}"` when the
+/// netcode exchange completes server-side, and `"Received packet from
+/// server"` on every packet a client receives. Counting them splits an
+/// unsettled pair into "the request never reached the host", "the reply
+/// never reached the client" and "packets flowed but the session grant was
+/// what died" — the direction of loss `UdpSocket` counters cannot name.
+static SERVER_REQUESTS: std::sync::OnceLock<std::sync::Mutex<HashSet<u64>>> =
+    std::sync::OnceLock::new();
+static SERVER_CONFIRMED: std::sync::OnceLock<std::sync::Mutex<HashSet<u64>>> =
+    std::sync::OnceLock::new();
+static SERVER_DENIED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CLIENT_RX_PACKETS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Packets that arrived at a socket but failed the pinned layer's own
+/// decode/process (`"Failed to process packet"` host-side, `"Failed to decode
+/// packet"` client-side): the difference between "nothing arrived" and
+/// "arrived and was discarded".
+static NETCODE_REJECTED_PACKETS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Connection requests this process's host sockets logged for client ids
+/// carrying a *different* process tag — a request that arrived at a socket
+/// it was never addressed to, which is the demux-theft signature.
+static FOREIGN_REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// This process's tag bits inside every transport `client_id`.
+static MY_ID_TAG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The `client_id` a transport pair runs under. The low 40 bits identify the
+/// pair (worker + index); bits 24..40 carry the process tag so a request
+/// that lands on another process's host is attributable as foreign traffic.
+fn transport_client_id(cfg: &ProbeConfig, worker: u16, pair: u32) -> u64 {
+    let tag = (cfg.nonce() >> 8) & 0xFFFF;
+    (0xF54u64 << 40) | (tag << 24) | ((worker as u64 & 0x3FF) << 14) | ((pair as u64 + 1) & 0x3FFF)
+}
+
+fn id_tag(client_id: u64) -> u64 {
+    (client_id >> 24) & 0xFFFF
+}
+
+fn server_requests() -> &'static std::sync::Mutex<HashSet<u64>> {
+    SERVER_REQUESTS.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+}
+
+fn server_confirmed() -> &'static std::sync::Mutex<HashSet<u64>> {
+    SERVER_CONFIRMED.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+}
+
+struct ProbeLogger;
+
+impl log::Log for ProbeLogger {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        let message = record.args().to_string();
+        if let Some(rest) = message.strip_prefix("Connection request from Client ") {
+            if let Ok(client_id) = rest.trim().parse::<u64>() {
+                server_requests().lock().expect("log set").insert(client_id);
+                if (client_id >> 40) == 0xF54
+                    && id_tag(client_id) != MY_ID_TAG.load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    FOREIGN_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        } else if let Some(rest) = message.strip_prefix("Confirmed connection for Client ") {
+            if let Ok(client_id) = rest.trim().parse::<u64>() {
+                server_confirmed()
+                    .lock()
+                    .expect("log set")
+                    .insert(client_id);
+            }
+        } else if message.contains("denied") {
+            SERVER_DENIED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else if message.starts_with("Failed to process packet")
+            || message.starts_with("Failed to decode packet")
+        {
+            NETCODE_REJECTED_PACKETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else if message.starts_with("Received packet from server") {
+            CLIENT_RX_PACKETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static PROBE_LOGGER: ProbeLogger = ProbeLogger;
+
+/// Installs the counting logger once for the process. Only `f54x10_probe`
+/// calls it — the serialized acceptance test and the fleet driver neither
+/// need nor want a global `log` sink.
+fn install_logger() {
+    let _ = log::set_logger(&PROBE_LOGGER);
+    log::set_max_level(log::LevelFilter::Trace);
+}
+
+/// The local-address shape a pair's sockets bind. `ClientShape` mirrors the
+/// transport stack exactly: the sender gets `0.0.0.0` (what
+/// `ClientTransport` does) and the receiver `127.0.0.1` (what
+/// `HostTransport::bind` gets).
+#[derive(Clone, Copy)]
+enum BindShape {
+    /// Both endpoints bind 127.0.0.1.
+    Loopback,
+    /// Sender `0.0.0.0`, receiver `127.0.0.1`.
+    ClientShape,
+}
+
 /// One probe run's parameters, read from the `F54X10_*` environment.
 #[derive(Clone)]
 struct ProbeConfig {
@@ -144,10 +257,16 @@ struct ProbeConfig {
     dgram_bytes: usize,
     rcvbuf: usize,
     fresh: Fresh,
+    bind: BindShape,
+    /// Wall-clock delay between the host bind and the client bind in a
+    /// transport pair: tests whether the failure is a post-bind visibility
+    /// window in the kernel demux.
+    bind_delay: Duration,
     both_dirs: bool,
     drain_quiet: Duration,
     drain_cap: Duration,
     settle_rounds: usize,
+    window: ConnectWindow,
     nonce: u64,
     out_json: Option<PathBuf>,
 }
@@ -166,6 +285,11 @@ impl ProbeConfig {
             "none" => Fresh::Neither,
             other => panic!("F54X10_FRESH must be both|recv|send|none, got {other}"),
         };
+        let bind = match env_string("F54X10_BIND", "loopback").as_str() {
+            "loopback" => BindShape::Loopback,
+            "client" => BindShape::ClientShape,
+            other => panic!("F54X10_BIND must be loopback|client, got {other}"),
+        };
         let rounds = env_u64("F54X10_ROUNDS", 64) as usize;
         let send_every = env_u64("F54X10_SEND_EVERY", 1).max(1) as usize;
         assert!(
@@ -181,10 +305,16 @@ impl ProbeConfig {
             dgram_bytes: env_u64("F54X10_DGRAM_BYTES", 300) as usize,
             rcvbuf: env_u64("F54X10_RCVBUF", 0) as usize,
             fresh,
+            bind,
+            bind_delay: Duration::from_millis(env_u64("F54X10_BIND_DELAY_MS", 0)),
             both_dirs: env_u64("F54X10_BOTH_DIRS", 1) != 0,
             drain_quiet: Duration::from_millis(env_u64("F54X10_DRAIN_QUIET_MS", 10)),
             drain_cap: Duration::from_millis(env_u64("F54X10_DRAIN_CAP_MS", 500)),
             settle_rounds: env_u64("F54X10_SETTLE_ROUNDS", DEFAULT_SETTLE_ROUNDS as u64) as usize,
+            window: ConnectWindow::new(env_u64(
+                "F54X10_WINDOW_S",
+                PROBE_WINDOW.const_seconds() as u64,
+            ) as i32),
             nonce: env_u64("F54X10_NONCE", 0),
             out_json: std::env::var("F54X10_OUT_JSON").ok().map(PathBuf::from),
         }
@@ -212,6 +342,13 @@ impl ProbeConfig {
             Fresh::Recv => "recv",
             Fresh::Send => "send",
             Fresh::Neither => "none",
+        }
+    }
+
+    fn bind_name(&self) -> &'static str {
+        match self.bind {
+            BindShape::Loopback => "loopback",
+            BindShape::ClientShape => "client",
         }
     }
 }
@@ -357,8 +494,13 @@ fn apply_rcvbuf(sock: &UdpSocket, want: usize) {
 }
 
 fn bind_probe_socket(rcvbuf: usize) -> UdpSocket {
-    let sock =
-        UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).expect("a probe socket binds");
+    bind_at(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), rcvbuf)
+}
+
+/// Binds a probe socket to `addr` (`F54X10_BIND` chooses the address family
+/// shape; `F54X10_RCVBUF` its receive queue).
+fn bind_at(addr: SocketAddr, rcvbuf: usize) -> UdpSocket {
+    let sock = UdpSocket::bind(addr).expect("a probe socket binds");
     sock.set_nonblocking(true).expect("nonblocking");
     apply_rcvbuf(&sock, rcvbuf);
     sock
@@ -413,7 +555,13 @@ fn run_raw_pair(
     buf: &mut [u8],
 ) {
     let recv_addr = recv_sock.local_addr().expect("receiver address");
-    let send_addr = send_sock.local_addr().expect("sender address");
+    // A wildcard-bound sender's `local_addr()` is 0.0.0.0:P, which is not a
+    // usable destination — on loopback its datagrams actually carry
+    // 127.0.0.1:P as their source, which is what a real peer replies to.
+    let send_addr = SocketAddr::from((
+        Ipv4Addr::LOCALHOST,
+        send_sock.local_addr().expect("sender address").port(),
+    ));
     let mut stat = PairStat {
         recv_port: recv_addr.port(),
         send_port: send_addr.port(),
@@ -470,6 +618,15 @@ fn run_raw_pair(
     acc.pairs.push(stat);
 }
 
+/// The address a pair's sender binds: `0.0.0.0` under
+/// `BindShape::ClientShape` — the address `ClientTransport` uses.
+fn send_bind_addr(cfg: &ProbeConfig) -> SocketAddr {
+    match cfg.bind {
+        BindShape::Loopback => SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        BindShape::ClientShape => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+    }
+}
+
 /// One raw-mode worker: `pairs` pair lifecycles in a row.
 fn run_raw_worker(cfg: &ProbeConfig, worker: u16) -> WorkerAcc {
     let mut acc = WorkerAcc::new(cfg.nonce(), worker);
@@ -485,7 +642,7 @@ fn run_raw_worker(cfg: &ProbeConfig, worker: u16) -> WorkerAcc {
             stable_recv = Some(bind_probe_socket(cfg.rcvbuf));
         }
         if keep_send && stable_send.is_none() {
-            stable_send = Some(bind_probe_socket(0));
+            stable_send = Some(bind_at(send_bind_addr(cfg), 0));
         }
         let fresh_recv;
         let fresh_send;
@@ -498,7 +655,7 @@ fn run_raw_worker(cfg: &ProbeConfig, worker: u16) -> WorkerAcc {
         let send_sock = if keep_send {
             stable_send.as_ref().expect("stable sender")
         } else {
-            fresh_send = bind_probe_socket(0);
+            fresh_send = bind_at(send_bind_addr(cfg), 0);
             &fresh_send
         };
         let recv_port = recv_sock.local_addr().expect("port").port();
@@ -557,6 +714,42 @@ struct WorkerTotals {
     settled: usize,
     unsettled: usize,
     rejected: usize,
+    /// Unsettled pairs by how they ended: the connection layer disconnected
+    /// the client inside its window, the round cap ran out while transport
+    /// faults were being reported, or the cap ran out with none.
+    /// `unsettled_connected` counts unsettled pairs whose four-packet netcode
+    /// exchange completed (`ClientEvent::Connected` fired) — the remaining
+    /// unsettled pairs never got that far.
+    unsettled_connected: usize,
+    unsettled_disconnected: usize,
+    unsettled_faulted: usize,
+    unsettled_exhausted: usize,
+    /// Unsettled pairs split by what the pinned crates logged: whether the
+    /// host layer ever saw this pair's connection request
+    /// (`unsettled_host_saw`), whether it reached "Confirmed connection"
+    /// (`unsettled_host_confirmed`), and whether the client socket received
+    /// at least one server packet during the pair (`unsettled_client_rx`).
+    /// A pair with no host sighting and no client receive died before its
+    /// first round-trip — the request path; one the host confirmed but the
+    /// client never heard of died on the reply path.
+    unsettled_host_saw: usize,
+    unsettled_host_confirmed: usize,
+    unsettled_client_rx: usize,
+    /// Total server-side "Connection request denied" log lines, total
+    /// packets clients received, and total packets the pinned layer itself
+    /// rejected after arrival, across all outcomes.
+    server_denied: u64,
+    client_rx_packets: u64,
+    netcode_rejected: u64,
+    /// Connection requests a host socket here logged for another process's
+    /// client id — requests delivered to the wrong socket, the demux-theft
+    /// signature the port allocator race predicts.
+    foreign_requests: u64,
+    /// Unsettled pairs whose host socket provably took a raw datagram *after*
+    /// the client timed out (demux had healed) versus pairs whose host still
+    /// saw nothing — the orphan-persistence split.
+    postmortem_delivered: usize,
+    postmortem_orphaned: usize,
     settle_rounds_sum: u64,
     settle_rounds_max: usize,
     wall_ms: u64,
@@ -604,16 +797,46 @@ impl WorkerTotals {
         self.recv_err += acc.recv_err;
     }
 
-    fn add_transport(&mut self, settled: bool, rejected: bool, rounds: usize) {
+    fn add_transport(&mut self, outcome: TransportOutcome, rounds: usize, ev: TransportEvidence) {
         self.pairs += 1;
-        if settled {
-            self.settled += 1;
-            self.settle_rounds_sum += rounds as u64;
-            self.settle_rounds_max = self.settle_rounds_max.max(rounds);
-        } else if rejected {
-            self.rejected += 1;
-        } else {
-            self.unsettled += 1;
+        match outcome {
+            TransportOutcome::Settled => {
+                self.settled += 1;
+                self.settle_rounds_sum += rounds as u64;
+                self.settle_rounds_max = self.settle_rounds_max.max(rounds);
+            }
+            TransportOutcome::Rejected => self.rejected += 1,
+            TransportOutcome::Disconnected => {
+                self.unsettled += 1;
+                self.unsettled_disconnected += 1;
+            }
+            TransportOutcome::Faulted => {
+                self.unsettled += 1;
+                self.unsettled_faulted += 1;
+            }
+            TransportOutcome::Exhausted => {
+                self.unsettled += 1;
+                self.unsettled_exhausted += 1;
+            }
+        }
+        if outcome != TransportOutcome::Settled && outcome != TransportOutcome::Rejected {
+            if ev.connected {
+                self.unsettled_connected += 1;
+            }
+            if ev.host_saw {
+                self.unsettled_host_saw += 1;
+            }
+            if ev.host_confirmed {
+                self.unsettled_host_confirmed += 1;
+            }
+            if ev.client_rx {
+                self.unsettled_client_rx += 1;
+            }
+            match ev.postmortem {
+                Some(true) => self.postmortem_delivered += 1,
+                Some(false) => self.postmortem_orphaned += 1,
+                None => {}
+            }
         }
     }
 
@@ -622,14 +845,65 @@ impl WorkerTotals {
         self.settled += other.settled;
         self.unsettled += other.unsettled;
         self.rejected += other.rejected;
+        self.unsettled_connected += other.unsettled_connected;
+        self.unsettled_disconnected += other.unsettled_disconnected;
+        self.unsettled_faulted += other.unsettled_faulted;
+        self.unsettled_exhausted += other.unsettled_exhausted;
+        self.unsettled_host_saw += other.unsettled_host_saw;
+        self.unsettled_host_confirmed += other.unsettled_host_confirmed;
+        self.unsettled_client_rx += other.unsettled_client_rx;
+        self.server_denied += other.server_denied;
+        self.client_rx_packets += other.client_rx_packets;
+        self.netcode_rejected += other.netcode_rejected;
+        self.foreign_requests += other.foreign_requests;
+        self.postmortem_delivered += other.postmortem_delivered;
+        self.postmortem_orphaned += other.postmortem_orphaned;
         self.settle_rounds_sum += other.settle_rounds_sum;
         self.settle_rounds_max = self.settle_rounds_max.max(other.settle_rounds_max);
     }
 }
 
+/// What the per-pair instrumentation saw besides the terminal outcome.
+struct TransportEvidence {
+    /// `ClientEvent::Connected` fired — the netcode exchange completed.
+    connected: bool,
+    /// The client logged at least one server packet during the pair.
+    client_rx: bool,
+    /// Postmortem reachability of the dead pair's host socket.
+    postmortem: Option<bool>,
+    /// The host logged the pair's connection request.
+    host_saw: bool,
+    /// The host logged confirming that request.
+    host_confirmed: bool,
+}
+
+/// How one transport pair ended.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TransportOutcome {
+    /// The grant arrived.
+    Settled,
+    /// The host refused.
+    Rejected,
+    /// The connection layer dropped the client inside its window.
+    Disconnected,
+    /// The round cap ran out while `ClientEvent::TransportFault` was seen.
+    Faulted,
+    /// The round cap ran out with no terminal event at all.
+    Exhausted,
+}
+
 /// One transport-mode pair: a real `HostTransport`/`ClientTransport` loopback
-/// handshake, pumped until it settles, is refused or runs out of rounds.
-fn run_transport_pair(cfg: &ProbeConfig, client_id: u64) -> (bool, bool, usize) {
+/// handshake, pumped until it settles, is refused, the connection layer drops
+/// the client inside its window, or the round cap runs out. The fourth return
+/// value is the postmortem probe: on an unsettled pair a raw datagram is sent
+/// to the still-live host port and the pair pumps a few more rounds; `Some(true)`
+/// when the host's netcode layer visibly took it (a decode rejection still
+/// proves delivery), `Some(false)` when the socket saw nothing — the socket
+/// outlived its demux invisibility or is still orphaned.
+fn run_transport_pair(
+    cfg: &ProbeConfig,
+    client_id: u64,
+) -> (TransportOutcome, usize, bool, Option<bool>) {
     let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
     let mut host = HostTransport::bind(
         SYNTHETIC_SESSION,
@@ -639,36 +913,75 @@ fn run_transport_pair(cfg: &ProbeConfig, client_id: u64) -> (bool, bool, usize) 
     )
     .expect("the probe host binds");
     let addr = host.local_addr().expect("the probe host has an address");
+    if !cfg.bind_delay.is_zero() {
+        std::thread::sleep(cfg.bind_delay);
+    }
     let mut client = ClientTransport::connect_with_window(
         synthetic_hello(),
         addr,
         client_id,
         Duration::ZERO,
-        PROBE_WINDOW,
+        cfg.window,
     )
     .expect("the probe client binds");
+    let mut faulted = false;
+    let mut connected = false;
+    let mut outcome = TransportOutcome::Exhausted;
+    let mut rounds = cfg.settle_rounds;
     for round in 0..cfg.settle_rounds {
         let events = client.update(STEP);
         let _ = host.update(STEP);
-        if events
-            .iter()
-            .any(|event| matches!(event, ClientEvent::Granted { .. }))
-        {
-            return (true, false, round + 1);
+        for event in &events {
+            match event {
+                ClientEvent::Connected => connected = true,
+                ClientEvent::Granted { .. } => {
+                    return (TransportOutcome::Settled, round + 1, true, None);
+                }
+                ClientEvent::Rejected { .. } => {
+                    return (TransportOutcome::Rejected, round + 1, connected, None);
+                }
+                ClientEvent::Disconnected { .. } => {
+                    outcome = TransportOutcome::Disconnected;
+                    rounds = round + 1;
+                    break;
+                }
+                ClientEvent::TransportFault { .. } => faulted = true,
+                _ => {}
+            }
         }
-        if events.iter().any(|event| {
-            matches!(
-                event,
-                ClientEvent::Rejected { .. } | ClientEvent::Disconnected { .. }
-            )
-        }) {
-            let rejected = events
-                .iter()
-                .any(|event| matches!(event, ClientEvent::Rejected { .. }));
-            return (false, rejected, round + 1);
+        if outcome == TransportOutcome::Disconnected {
+            break;
         }
     }
-    (false, false, cfg.settle_rounds)
+    if matches!(outcome, TransportOutcome::Exhausted) && faulted {
+        outcome = TransportOutcome::Faulted;
+    }
+    drop(client);
+
+    // Postmortem: with the client gone, is the host socket still a demux
+    // orphan? One raw datagram to its port; three more pump rounds; the
+    // pinned layer's own rejection log is the arrival witness.
+    let before = NETCODE_REJECTED_PACKETS.load(std::sync::atomic::Ordering::Relaxed);
+    if let Ok(tap) = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))) {
+        let dgram = encode_tag(
+            Tag {
+                nonce: cfg.nonce(),
+                worker: 0,
+                pair: 0,
+                seq: 0,
+                dir: 0,
+            },
+            TAG_BYTES,
+        );
+        for _ in 0..3 {
+            let _ = tap.send_to(&dgram, addr);
+        }
+    }
+    for _ in 0..4 {
+        let _ = host.update(STEP);
+    }
+    let postmortem = NETCODE_REJECTED_PACKETS.load(std::sync::atomic::Ordering::Relaxed) > before;
+    (outcome, rounds, connected, Some(postmortem))
 }
 
 /// Runs `cfg.workers` workers (threads) of the configured mode and merges
@@ -696,10 +1009,35 @@ fn run_probe(cfg: &ProbeConfig) -> WorkerTotals {
                     std::thread::spawn(move || {
                         let mut totals = WorkerTotals::default();
                         for pair in 0..cfg.pairs {
-                            let client_id =
-                                (0xF54u64 << 40) | ((worker as u64) << 20) | (pair as u64 + 1);
-                            let (settled, rejected, rounds) = run_transport_pair(&cfg, client_id);
-                            totals.add_transport(settled, rejected, rounds);
+                            let client_id = transport_client_id(&cfg, worker as u16, pair as u32);
+                            let rx_before =
+                                CLIENT_RX_PACKETS.load(std::sync::atomic::Ordering::Relaxed);
+                            let (outcome, rounds, connected, postmortem) =
+                                run_transport_pair(&cfg, client_id);
+                            let rx_delta = CLIENT_RX_PACKETS
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                                - rx_before;
+                            // With more than one worker thread a pair's
+                            // `rx_delta` can include another pair's packets;
+                            // fleet runs keep one worker per process so the
+                            // per-pair attribution stays exact.
+                            totals.add_transport(
+                                outcome,
+                                rounds,
+                                TransportEvidence {
+                                    connected,
+                                    client_rx: rx_delta > 0,
+                                    postmortem,
+                                    host_saw: server_requests()
+                                        .lock()
+                                        .expect("log set")
+                                        .contains(&client_id),
+                                    host_confirmed: server_confirmed()
+                                        .lock()
+                                        .expect("log set")
+                                        .contains(&client_id),
+                                },
+                            );
                         }
                         totals
                     })
@@ -786,8 +1124,10 @@ fn machine_json() -> String {
 fn config_json(cfg: &ProbeConfig) -> String {
     format!(
         "{{\"mode\":\"{}\",\"workers\":{},\"pairs\":{},\"rounds\":{},\"send_every\":{},\
-         \"dgram_bytes\":{},\"rcvbuf\":{},\"fresh\":\"{}\",\"both_dirs\":{},\
-         \"drain_quiet_ms\":{},\"drain_cap_ms\":{},\"settle_rounds\":{},\"nonce\":{}}}",
+         \"dgram_bytes\":{},\"rcvbuf\":{},\"fresh\":\"{}\",\"bind\":\"{}\",\"both_dirs\":{},\
+         \"bind_delay_ms\":{},\
+         \"drain_quiet_ms\":{},\"drain_cap_ms\":{},\"settle_rounds\":{},\"window_s\":{},\
+         \"nonce\":{}}}",
         cfg.mode_name(),
         cfg.workers,
         cfg.pairs,
@@ -796,10 +1136,13 @@ fn config_json(cfg: &ProbeConfig) -> String {
         cfg.dgram_bytes,
         cfg.rcvbuf,
         cfg.fresh_name(),
+        cfg.bind_name(),
         cfg.both_dirs as u8,
+        cfg.bind_delay.as_millis(),
         cfg.drain_quiet.as_millis(),
         cfg.drain_cap.as_millis(),
         cfg.settle_rounds,
+        cfg.window.const_seconds(),
         cfg.nonce(),
     )
 }
@@ -814,7 +1157,13 @@ fn totals_json(totals: &WorkerTotals) -> String {
         "{{\"pairs\":{},\"pairs_with_loss\":{},\"sent\":{},\"received\":{},\"lost\":{},\
          \"stray\":{},\"foreign\":{},\"late_cross_pair\":{},\"send_err\":{},\"recv_err\":{},\
          \"rebound_pairs\":{},\"rebound_pairs_with_loss\":{},\"distinct_ports\":{},\
-         \"settled\":{},\"unsettled\":{},\"rejected\":{},\"settle_rounds_mean\":{},\
+         \"settled\":{},\"unsettled\":{},\"rejected\":{},\"unsettled_connected\":{},\
+         \"unsettled_disconnected\":{},\"unsettled_faulted\":{},\"unsettled_exhausted\":{},\
+         \"unsettled_host_saw\":{},\"unsettled_host_confirmed\":{},\
+         \"unsettled_client_rx\":{},\"server_denied\":{},\"client_rx_packets\":{},\
+         \"netcode_rejected\":{},\"foreign_requests\":{},\
+         \"postmortem_delivered\":{},\"postmortem_orphaned\":{},\
+         \"settle_rounds_mean\":{},\
          \"settle_rounds_max\":{},\"lost_positions\":{{{}}},\"wall_ms\":{}}}",
         totals.pairs,
         totals.pairs_with_loss,
@@ -832,6 +1181,19 @@ fn totals_json(totals: &WorkerTotals) -> String {
         totals.settled,
         totals.unsettled,
         totals.rejected,
+        totals.unsettled_connected,
+        totals.unsettled_disconnected,
+        totals.unsettled_faulted,
+        totals.unsettled_exhausted,
+        totals.unsettled_host_saw,
+        totals.unsettled_host_confirmed,
+        totals.unsettled_client_rx,
+        totals.server_denied,
+        totals.client_rx_packets,
+        totals.netcode_rejected,
+        totals.foreign_requests,
+        totals.postmortem_delivered,
+        totals.postmortem_orphaned,
         if totals.settled == 0 {
             0
         } else {
@@ -890,8 +1252,17 @@ fn json_total(text: &str, key: &str) -> Option<u64> {
 #[test]
 #[ignore = "measurement entry point; run explicitly, it churns sockets"]
 fn f54x10_probe() {
+    install_logger();
     let cfg = ProbeConfig::from_env();
-    let totals = run_probe(&cfg);
+    MY_ID_TAG.store(
+        (cfg.nonce() >> 8) & 0xFFFF,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let mut totals = run_probe(&cfg);
+    totals.server_denied = SERVER_DENIED.load(std::sync::atomic::Ordering::Relaxed);
+    totals.client_rx_packets = CLIENT_RX_PACKETS.load(std::sync::atomic::Ordering::Relaxed);
+    totals.netcode_rejected = NETCODE_REJECTED_PACKETS.load(std::sync::atomic::Ordering::Relaxed);
+    totals.foreign_requests = FOREIGN_REQUESTS.load(std::sync::atomic::Ordering::Relaxed);
     let json = format!(
         "{{\"role\":\"probe\",\"pid\":{},\"machine\":{},\"config\":{},\"totals\":{}}}",
         std::process::id(),
@@ -917,7 +1288,13 @@ fn f54x10_fleet() {
     let procs = env_u64("F54X10_PROCS", 1) as usize;
     let spinners = env_u64("F54X10_SPINNERS", 0) as usize;
     let nonce = cfg.nonce();
-    let out_dir = PathBuf::from(env_string("F54X10_OUT_DIR", "private/f54x10"));
+    // Reports land in the workspace's gitignored `private/` (tests run with
+    // the crate dir as cwd, so a bare relative path would land in
+    // `crates/cs_net/private/`, which the root-anchored `/private/` ignore
+    // does not cover).
+    let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(env_string("F54X10_OUT_DIR", "private/f54x10"));
     std::fs::create_dir_all(&out_dir).expect("the output dir is creatable");
     let exe = std::env::current_exe().expect("the test binary's own path");
 
@@ -998,6 +1375,26 @@ fn f54x10_fleet() {
         totals.settled += json_total(&text, "settled").unwrap_or(0) as usize;
         totals.unsettled += json_total(&text, "unsettled").unwrap_or(0) as usize;
         totals.rejected += json_total(&text, "rejected").unwrap_or(0) as usize;
+        totals.unsettled_connected +=
+            json_total(&text, "unsettled_connected").unwrap_or(0) as usize;
+        totals.unsettled_disconnected +=
+            json_total(&text, "unsettled_disconnected").unwrap_or(0) as usize;
+        totals.unsettled_faulted += json_total(&text, "unsettled_faulted").unwrap_or(0) as usize;
+        totals.unsettled_exhausted +=
+            json_total(&text, "unsettled_exhausted").unwrap_or(0) as usize;
+        totals.unsettled_host_saw += json_total(&text, "unsettled_host_saw").unwrap_or(0) as usize;
+        totals.unsettled_host_confirmed +=
+            json_total(&text, "unsettled_host_confirmed").unwrap_or(0) as usize;
+        totals.unsettled_client_rx +=
+            json_total(&text, "unsettled_client_rx").unwrap_or(0) as usize;
+        totals.server_denied += json_total(&text, "server_denied").unwrap_or(0);
+        totals.client_rx_packets += json_total(&text, "client_rx_packets").unwrap_or(0);
+        totals.netcode_rejected += json_total(&text, "netcode_rejected").unwrap_or(0);
+        totals.foreign_requests += json_total(&text, "foreign_requests").unwrap_or(0);
+        totals.postmortem_delivered +=
+            json_total(&text, "postmortem_delivered").unwrap_or(0) as usize;
+        totals.postmortem_orphaned +=
+            json_total(&text, "postmortem_orphaned").unwrap_or(0) as usize;
     }
     totals.wall_ms = wall_ms;
 
@@ -1041,8 +1438,11 @@ fn f54x10_fleet() {
     println!("fleet report: {}", fleet_path.display());
     println!(
         "pairs={} pairs_with_loss={} sent={} received={} lost={} stray={} foreign={} \
-         send_err={} settled={} unsettled={} rejected={} wall_ms={} exits={:?} \
-         spinners={}->{}->{}",
+         send_err={} settled={} unsettled={} rejected={} unsettled_conn={} \
+         unsettled_disc={} unsettled_fault={} unsettled_cap={} \
+         unst_host_saw={} unst_host_conf={} unst_client_rx={} server_denied={} \
+         netcode_rejected={} foreign_requests={} postmortem_ok={} postmortem_orphan={} \
+         wall_ms={} exits={:?} spinners={}->{}->{}",
         totals.pairs,
         totals.pairs_with_loss,
         totals.sent,
@@ -1054,6 +1454,18 @@ fn f54x10_fleet() {
         totals.settled,
         totals.unsettled,
         totals.rejected,
+        totals.unsettled_connected,
+        totals.unsettled_disconnected,
+        totals.unsettled_faulted,
+        totals.unsettled_exhausted,
+        totals.unsettled_host_saw,
+        totals.unsettled_host_confirmed,
+        totals.unsettled_client_rx,
+        totals.server_denied,
+        totals.netcode_rejected,
+        totals.foreign_requests,
+        totals.postmortem_delivered,
+        totals.postmortem_orphaned,
         wall_ms,
         exits,
         spinners_live_before,
@@ -1065,6 +1477,245 @@ fn f54x10_fleet() {
         counter_delta(&counters_before, &counters_after)
     );
     assert_eq!(spinners_live_done, 0, "every spinner must be stopped");
+}
+
+/// Direct measurement of the wildcard/specific demux collision this task's
+/// transport-mode result points at: `ClientTransport` binds `0.0.0.0:0` while
+/// `HostTransport` binds `127.0.0.1:0`, so under churn the kernel may hand a
+/// host the same port a live wildcard client holds — and datagrams addressed
+/// to `127.0.0.1:<port>` then demux to the specific socket, starving the
+/// wildcard one. This probe binds both shapes on one port and counts who
+/// receives.
+#[test]
+#[ignore = "measurement; run explicitly, it churns sockets"]
+fn f54x10_wildcard_probe() {
+    let iters = env_u64("F54X10_PAIRS", 500);
+    let dgrams = env_u64("F54X10_ROUNDS", 8);
+    let mut collision_ok = 0u64;
+    let mut collision_refused = 0u64;
+    let mut wild_pre = 0u64;
+    let mut wild_during = 0u64;
+    let mut thief_got = 0u64;
+    let mut kernel_got = 0u64; // datagrams neither saw
+    // Reverse direction: a specific-bound socket exists first (the churning
+    // host case); can the kernel still hand a wildcard bind its port, and if
+    // so who gets the traffic? `born_starved` counts pairs where the wildcard
+    // socket heard nothing while the earlier-bound specific socket kept
+    // receiving.
+    let mut wild2_ok = 0u64;
+    let mut wild2_refused = 0u64;
+    let mut born_starved = 0u64;
+    let mut wild2_got = 0u64;
+    let mut spec_got = 0u64;
+    let mut buf = vec![0u8; TAG_BYTES + 64];
+    for iter in 0..iters {
+        let wild = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+            .expect("a wildcard probe socket binds");
+        wild.set_nonblocking(true).expect("nonblocking");
+        let port = wild.local_addr().expect("port").port();
+        let witness = bind_probe_socket(0);
+        let target = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        for seq in 0..dgrams as u16 {
+            let dgram = encode_tag(
+                Tag {
+                    nonce: 1,
+                    worker: 0,
+                    pair: iter as u32,
+                    seq,
+                    dir: 0,
+                },
+                TAG_BYTES,
+            );
+            let _ = witness.send_to(&dgram, target);
+        }
+        std::thread::yield_now();
+        wild_pre += drain_count(&wild, &mut buf);
+
+        // The thief: a second socket binding the same port on the specific
+        // loopback address — exactly what a churning `HostTransport` does.
+        if let Ok(thief) = UdpSocket::bind(target) {
+            collision_ok += 1;
+            thief.set_nonblocking(true).expect("nonblocking");
+            // Catch phase-1 stragglers so phase 2 counts only post-theft sends.
+            wild_pre += drain_count(&wild, &mut buf);
+            for seq in 0..dgrams as u16 {
+                let dgram = encode_tag(
+                    Tag {
+                        nonce: 2,
+                        worker: 0,
+                        pair: iter as u32,
+                        seq,
+                        dir: 0,
+                    },
+                    TAG_BYTES,
+                );
+                let _ = witness.send_to(&dgram, target);
+            }
+            std::thread::yield_now();
+            let got_wild = drain_count(&wild, &mut buf);
+            let got_thief = drain_count(&thief, &mut buf);
+            wild_during += got_wild;
+            thief_got += got_thief;
+            kernel_got += dgrams.saturating_sub(got_wild + got_thief);
+        } else {
+            collision_refused += 1;
+        }
+        drop(wild);
+
+        // Phase B — the order the fleet actually produces: a churning host
+        // socket holds 127.0.0.1:P first, then a client tries an explicit
+        // wildcard bind of the same port. If allowed, datagrams addressed to
+        // 127.0.0.1:P demux to the specific socket and the wildcard client is
+        // born starved.
+        let spec = bind_probe_socket(0);
+        let port2 = spec.local_addr().expect("port").port();
+        match UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port2))) {
+            Err(_) => wild2_refused += 1,
+            Ok(wild2) => {
+                wild2_ok += 1;
+                wild2.set_nonblocking(true).expect("nonblocking");
+                let target2 = SocketAddr::from((Ipv4Addr::LOCALHOST, port2));
+                for seq in 0..dgrams as u16 {
+                    let dgram = encode_tag(
+                        Tag {
+                            nonce: 3,
+                            worker: 0,
+                            pair: iter as u32,
+                            seq,
+                            dir: 0,
+                        },
+                        TAG_BYTES,
+                    );
+                    let _ = witness.send_to(&dgram, target2);
+                }
+                std::thread::yield_now();
+                let g2 = drain_count(&wild2, &mut buf);
+                let gs = drain_count(&spec, &mut buf);
+                wild2_got += g2;
+                spec_got += gs;
+                if g2 == 0 && gs == dgrams {
+                    born_starved += 1;
+                }
+            }
+        }
+    }
+    // Phase C — the allocator check. Hold a block of live 127.0.0.1 sockets,
+    // then take wildcard ephemeral binds and count how many land on a port a
+    // held socket occupies. If the ephemeral allocator respects the held
+    // inpcbs the intersection is empty; any hit is a live port double
+    // assignment — the client-side shape the fleet produces at scale.
+    let held: usize = (iters.min(200)) as usize;
+    let mut specs = Vec::with_capacity(held);
+    let mut spec_ports = HashSet::new();
+    while specs.len() < held {
+        let s = bind_probe_socket(0);
+        spec_ports.insert(s.local_addr().expect("port").port());
+        specs.push(s);
+    }
+    let mut alloc_hits = 0u64;
+    let mut wildcards = Vec::with_capacity(held);
+    for _ in 0..held {
+        let w = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+            .expect("a wildcard probe socket binds");
+        if spec_ports.contains(&w.local_addr().expect("port").port()) {
+            alloc_hits += 1;
+        }
+        wildcards.push(w);
+    }
+    println!(
+        "{{\"role\":\"wildcard_probe\",\"iters\":{iters},\"dgrams_per_phase\":{dgrams},\
+         \"collision_ok\":{collision_ok},\"collision_refused\":{collision_refused},\
+         \"wild_pre\":{wild_pre},\"wild_during\":{wild_during},\"thief_got\":{thief_got},\
+         \"unseen\":{kernel_got},\
+         \"wild2_ok\":{wild2_ok},\"wild2_refused\":{wild2_refused},\
+         \"wild2_got\":{wild2_got},\"spec_got\":{spec_got},\"born_starved\":{born_starved},\
+         \"alloc_held\":{held},\"alloc_wild_on_held_port\":{alloc_hits},\"machine\":{}}}",
+        machine_json(),
+    );
+}
+
+/// Whether the kernel's ephemeral-port allocator can hand the same port to
+/// two live sockets when binds race. Every thread in a storm alternates the
+/// two shapes the transport stack actually uses (`0.0.0.0` like
+/// `ClientTransport`, `127.0.0.1` like `HostTransport`) and keeps every
+/// socket open until the storm ends; afterwards any port held by more than
+/// one live socket is a double assignment the sequential probes cannot see.
+#[test]
+#[ignore = "measurement; run explicitly, it churns sockets"]
+fn f54x10_alloc_probe() {
+    let storms = env_u64("F54X10_PAIRS", 200);
+    let threads = env_u64("F54X10_WORKERS", 16).max(1) as usize;
+    let binds_per_thread = env_u64("F54X10_ROUNDS", 8).max(1) as usize;
+    let mut sockets_bound = 0u64;
+    let mut same_shape_shares = 0u64;
+    let mut cross_shape_shares = 0u64;
+    let mut bind_errors = 0u64;
+    for _ in 0..storms {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(threads));
+        let handles: Vec<_> = (0..threads)
+            .map(|t| {
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let mut mine = Vec::with_capacity(binds_per_thread);
+                    let mut errs = 0u64;
+                    barrier.wait();
+                    for i in 0..binds_per_thread {
+                        // Alternate shapes across threads and binds so
+                        // wild/spec and same-shape races are both exercised.
+                        let addr = if (t + i) % 2 == 0 {
+                            SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))
+                        } else {
+                            SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
+                        };
+                        match UdpSocket::bind(addr) {
+                            Ok(sock) => mine.push((addr.ip().is_unspecified(), sock)),
+                            Err(_) => errs += 1,
+                        }
+                    }
+                    (mine, errs)
+                })
+            })
+            .collect();
+        // Port -> which bind shapes hold a live socket on it this storm.
+        let mut by_port: HashMap<u16, [u32; 2]> = HashMap::new();
+        for handle in handles {
+            let (mine, errs) = handle.join().expect("a bind thread panics");
+            bind_errors += errs;
+            for (wild, sock) in mine {
+                sockets_bound += 1;
+                by_port
+                    .entry(sock.local_addr().expect("port").port())
+                    .or_default()[usize::from(wild)] += 1;
+            }
+        }
+        for counts in by_port.values() {
+            if counts[0] > 1 || counts[1] > 1 {
+                same_shape_shares += 1;
+            }
+            if counts[0] > 0 && counts[1] > 0 {
+                cross_shape_shares += 1;
+            }
+        }
+    }
+    println!(
+        "{{\"role\":\"alloc_probe\",\"storms\":{storms},\"threads\":{threads},\
+         \"binds_per_thread\":{binds_per_thread},\"sockets_bound\":{sockets_bound},\
+         \"bind_errors\":{bind_errors},\"same_shape_shares\":{same_shape_shares},\
+         \"cross_shape_shares\":{cross_shape_shares},\"machine\":{}}}",
+        machine_json(),
+    );
+}
+
+/// Counts whatever a socket has queued, discarding contents.
+fn drain_count(sock: &UdpSocket, buf: &mut [u8]) -> u64 {
+    let mut n = 0;
+    loop {
+        match sock.recv_from(buf) {
+            Ok(_) => n += 1,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return n,
+            Err(_) => return n,
+        }
+    }
 }
 
 /// The load generator: busy-loops until the parent pid is gone or the TTL
@@ -1104,10 +1755,13 @@ fn accept_f54_x10_serialized_transport_pairs_settle() {
         dgram_bytes: TAG_BYTES,
         rcvbuf: 0,
         fresh: Fresh::Both,
+        bind: BindShape::Loopback,
+        bind_delay: Duration::ZERO,
         both_dirs: false,
         drain_quiet: Duration::ZERO,
         drain_cap: Duration::ZERO,
         settle_rounds: DEFAULT_SETTLE_ROUNDS,
+        window: PROBE_WINDOW,
         nonce: 0,
         out_json: None,
     };
