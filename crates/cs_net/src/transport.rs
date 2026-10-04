@@ -462,6 +462,17 @@ impl HostTransport {
         self.client_by_peer.get(&peer).copied()
     }
 
+    /// How many connections this transport still holds, peers or not.
+    ///
+    /// A client that was refused, or whose answer could not be encoded, holds
+    /// one of these slots without ever being a peer, so this count — not
+    /// [`Self::peer_of`] — is what says whether a refused client still occupies
+    /// one of the [`crate::bounds::MAX_SESSION_PEERS`] netcode slots.
+    #[must_use]
+    pub fn connected_clients(&self) -> usize {
+        self.clients.len()
+    }
+
     /// Sends one server packet to one peer on the channel its [`Delivery`]
     /// class requires. The header's session and sequence are stamped here —
     /// the host's epoch and its own monotonic send sequence — so what the
@@ -863,6 +874,19 @@ impl ClientTransport {
     #[must_use]
     pub fn is_connected(&self) -> bool {
         self.client.is_connected()
+    }
+
+    /// Why the connection went down, once it has, or `None` while it is up.
+    ///
+    /// The reason is the pinned connection layer's own, so a caller can tell a
+    /// hang-up the host sent ([`renetcode2::DisconnectReason::DisconnectedByServer`])
+    /// from a window the client missed by itself
+    /// ([`renetcode2::DisconnectReason::ConnectionTimedOut`]). The two look the
+    /// same from [`Self::is_connected`] alone, and only the first is the host
+    /// acting.
+    #[must_use]
+    pub fn disconnect_reason(&self) -> Option<renetcode2::DisconnectReason> {
+        self.transport.disconnect_reason()
     }
 
     /// Sends one in-session packet on the channel its [`Delivery`] class

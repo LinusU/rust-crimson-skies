@@ -375,6 +375,17 @@ impl ServerSession {
         self.members.iter().copied()
     }
 
+    /// How many netcode connections this session still holds, peers or not.
+    ///
+    /// A client that was refused holds one of them without ever being a
+    /// [`Self::members`] entry, so this is the count that says whether such a
+    /// client still occupies one of the
+    /// [`crate::bounds::MAX_SESSION_PEERS`] netcode slots.
+    #[must_use]
+    pub fn connected_clients(&self) -> usize {
+        self.transport.connected_clients()
+    }
+
     /// How many peer input packets are waiting for the simulation.
     #[must_use]
     pub fn queued(&self) -> usize {
@@ -707,13 +718,20 @@ impl ServerSession {
     /// client cannot continue the old session even if it replays a sequence
     /// number from it. The socket is kept, so a retry does not depend on the
     /// same port still being free.
-    pub fn reopen(&mut self, session: SessionId) -> Result<(), ServerFault> {
+    ///
+    /// The retry hangs up on every connection the spent epoch held — the peers
+    /// [`Self::close`] reached and the connections that hold no peer id, which
+    /// nothing else reaches — and returns how many it hung up. A hang-up an
+    /// earlier pump condemned is subsumed by that reset and is dropped here
+    /// rather than reported again inside the new epoch.
+    pub fn reopen(&mut self, session: SessionId) -> Result<usize, ServerFault> {
         self.close(DisconnectReason::SessionEnded)?;
-        self.transport.reopen(session);
+        let hung_up = self.transport.reopen(session);
+        self.hung_up.clear();
         self.next_event = 0;
         self.overflowed = 0;
         self.phase = ServerPhase::Gathering;
-        Ok(())
+        Ok(hung_up)
     }
 
     /// Sends one payload to one peer, stamped by the transport.
