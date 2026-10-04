@@ -5339,21 +5339,26 @@ pub fn survey_retail_scope_objective_records(
     })
 }
 
-/// The scope label of an installation-scope reader archive: `zbd/<world group>`
-/// for a world group's reader, `zbd` for the install-wide one.
+/// The scope label of an installation-scope reader archive: `<root>/<world group>`
+/// for a world group's reader, `<root>` for the install-wide one.
 ///
 /// Splitting the archive's own logical key is F14-D.1's path shape rather than a
-/// second naming rule: a reader archive that is not mission-scoped is at
-/// `zbd/<archive>` or `zbd/<world group>/<archive>`, and which of the two it is
-/// follows from the key's own depth.
+/// second naming rule: which of the two a non-mission-scoped reader archive is
+/// follows from the key's own depth, and the label is **derived from the key**,
+/// not written down. A `zrdr.zbd` under some other root (`sounds/x/zrdr.zbd`) is
+/// labelled with that root rather than with `zbd`, so a row cannot claim a
+/// directory it is not in; F13-B's [`mission_scope`] rule, which only ever names a
+/// `zbd` root, is what makes `zbd` the root of every row measured on the owner's
+/// installation — a fact the census reads back through its own rows, not an
+/// assumption made here.
 fn scope_label(container_key: &str) -> String {
     let mut components = container_key.split('/');
-    components.next();
+    let root = components.next().unwrap_or_default();
     match components.next() {
-        // `zbd/<archive>` is the install-wide reader: there is no world-group
+        // `<root>/<archive>` is the install-wide reader: there is no world-group
         // component at all, which is what separates it from a group's reader.
-        Some(_) if components.next().is_none() => "zbd".to_owned(),
-        Some(group) => format!("zbd/{group}"),
-        None => "zbd".to_owned(),
+        Some(_) if components.next().is_none() => root.to_owned(),
+        Some(group) => format!("{root}/{group}"),
+        None => root.to_owned(),
     }
 }
