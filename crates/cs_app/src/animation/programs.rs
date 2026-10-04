@@ -1377,6 +1377,16 @@ impl WorldNodeNames {
         self.names.is_empty()
     }
 
+    /// Every stored record name, in stored order.
+    ///
+    /// The names are the records' stored display names, verbatim: no case
+    /// folding, no escaping and no de-duplication, so two records that share a
+    /// name are both here and a count over them is the count the container
+    /// holds. This is the table [`Self::resolve`] searches.
+    pub fn node_names(&self) -> impl Iterator<Item = &str> {
+        self.names.iter().map(String::as_str)
+    }
+
     /// Resolves one object name against this container's records.
     ///
     /// A literal name and a prefix wildcard are counted against the stored names,

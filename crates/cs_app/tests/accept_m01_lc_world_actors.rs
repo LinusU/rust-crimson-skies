@@ -266,6 +266,14 @@ fn two_definition_member() -> AnimationDefinitionMember {
                     ]),
                 ),
             ]),
+            // A definition whose `ACTIVATION` holds no name at all: the reader
+            // must report no activation rather than invent one from the field's
+            // presence.
+            zrd_definition(vec![
+                (NAME_FIELD, zrd_list(vec![zrd_name("docks")])),
+                (ANIMATION_NAME_FIELD, zrd_name("dock_open")),
+                (ACTIVATION_FIELD, zrd_list(vec![zrd_int(0)])),
+            ]),
             zrd_definition(vec![
                 (
                     NAME_ALTERNATE_FIELD,
@@ -376,7 +384,7 @@ fn accept_m01_lc_world_actors_a_definition_member_reads_objects_activation_and_s
         "the record body's own fields are listed: {:?}",
         member.fields()
     );
-    assert_eq!(member.definitions().len(), 2, "both definitions read");
+    assert_eq!(member.definitions().len(), 3, "all three definitions read");
     assert!(
         member.definition_files().is_empty(),
         "a member with no ANIMATION_DEFINITION_FILE entry declares none"
@@ -426,8 +434,27 @@ fn accept_m01_lc_world_actors_a_definition_member_reads_objects_activation_and_s
         "a field the reader does not interpret is named, never dropped"
     );
 
-    let second = &member.definitions()[1];
-    assert_eq!(second.index(), 1);
+    // A definition whose `ACTIVATION` holds no name at all: the reader must
+    // report no activation rather than invent one from the field's presence.
+    let nameless = &member.definitions()[1];
+    assert_eq!(nameless.animation_name(), Some("dock_open"));
+    assert_eq!(
+        nameless
+            .objects()
+            .node_names()
+            .next()
+            .map(ObjectSelector::stored),
+        Some("docks")
+    );
+    assert_eq!(
+        nameless.activation(),
+        None,
+        "an ACTIVATION that holds no name reads as no activation, not as a default"
+    );
+    assert!(!nameless.activation().is_some_and(Activation::is_startup));
+
+    let second = &member.definitions()[2];
+    assert_eq!(second.index(), 2);
     let DefinitionObjects::StateBindings(bindings) = second.objects() else {
         panic!("NAME1 is the state-binding shape: {:?}", second.objects());
     };
@@ -1393,6 +1420,26 @@ fn accept_m01_lc_world_actors_retail_a_wildcard_resolves_only_where_its_family_i
         Some(1),
         "the rule is prefix matching and nothing else"
     );
+
+    // The measurement the rule rests on: no stored scene-node name of any
+    // measured GameZ container carries the wildcard character, so `*` can only
+    // be the original's own wildcard and never part of a name.
+    for relative in [
+        "ZBD/C1C/gamez.zbd",
+        "ZBD/C2/gamez.zbd",
+        "ZBD/C5/gamez.zbd",
+        "ZBD/planes.zbd",
+    ] {
+        let label = relative.to_lowercase();
+        let bytes = std::fs::read(retail_root().join(relative)).expect("container reads");
+        let records = read_gamez_nodes(&mut ParseContext::with_defaults(label.clone()), &bytes)
+            .expect("the container's node array reads");
+        let names = WorldNodeNames::from_gamez(label.clone(), &records);
+        assert!(
+            names.node_names().all(|name| !name.contains('*')),
+            "{label}: no stored node name carries a wildcard"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1415,7 +1462,9 @@ fn accept_m01_lc_world_actors_retail_the_startup_and_activation_vocabulary_is_me
     let mut mission_scopes = 0usize;
     let mut reader_archives = 0usize;
     let mut with_startup = 0usize;
+    let mut startup_entries = 0usize;
     let mut events = std::collections::BTreeSet::new();
+    let mut names = std::collections::BTreeSet::new();
     let mut activation = std::collections::BTreeSet::new();
     let mut kinds = std::collections::BTreeSet::new();
     let mut wildcard_definitions = 0usize;
@@ -1442,6 +1491,7 @@ fn accept_m01_lc_world_actors_retail_the_startup_and_activation_vocabulary_is_me
         let key = path.logical_key().to_owned();
         let bytes = std::fs::read(found.manifest.host_root.join(&spelling)).expect("reads");
         let discovery = discover_container(&key, &path, &bytes);
+        let mut startup_table: Option<StartupAnimationTable> = None;
         let startup = discovery.programs().iter().find(|program| {
             program
                 .locator()
@@ -1457,10 +1507,15 @@ fn accept_m01_lc_world_actors_retail_the_startup_and_activation_vocabulary_is_me
             if let Some(startup) = startup {
                 let table =
                     read_startup_animations(startup.bytes()).expect("the startup member reads");
+                startup_entries += table.animation_names().count();
                 for entry in table.events() {
                     events.insert(entry.event().to_owned());
                 }
+                startup_table = Some(table);
             }
+        }
+        if let Some(table) = &startup_table {
+            names.extend(table.animation_names().map(str::to_owned));
         }
 
         for program in discovery.programs() {
@@ -1506,6 +1561,15 @@ fn accept_m01_lc_world_actors_retail_the_startup_and_activation_vocabulary_is_me
         "every one of the 53 mission archives carries a startup member"
     );
     assert_eq!(
+        startup_entries, 195,
+        "and together they fire 195 animation names"
+    );
+    assert_eq!(
+        names.len(),
+        71,
+        "71 distinct animation names, so the campaign shares most of its startup surface"
+    );
+    assert_eq!(
         events.into_iter().collect::<Vec<_>>(),
         vec!["LOAD_GAME_START".to_owned(), "NEW_GAME_START".to_owned()],
         "the startup vocabulary is exactly these two keys"
@@ -1520,11 +1584,22 @@ fn accept_m01_lc_world_actors_retail_the_startup_and_activation_vocabulary_is_me
         "the activation vocabulary is exactly these three values, and the family names the \
          possibility of more"
     );
-    assert!(
-        kinds.len() >= 30,
-        "at least thirty statement kinds are in use: {} measured",
-        kinds.len()
+    assert_eq!(
+        kinds.len(),
+        38,
+        "38 distinct statement keys appear in the installation's sequences"
     );
+    // One sequence in the installation ends in four bare authored words
+    // (`generic`, `crash`, `is`, `used`), which the flat pair walk reads as two
+    // entries. The reader keeps them, so a consumer sees them instead of a
+    // silently shorter statement list — and this assertion is why the statement
+    // vocabulary is filed as measured-but-not-interpreted.
+    for prose in ["generic", "is", "instead"] {
+        assert!(
+            kinds.contains(prose),
+            "the authored prose tail {prose:?} is retained as an entry, not dropped"
+        );
+    }
     assert!(
         kinds.contains("OBJECT_MOTION_FROM_TO"),
         "the motion statement that would carry a route is in use"
