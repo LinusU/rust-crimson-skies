@@ -593,6 +593,7 @@ pub mod interaction;
 pub mod livery;
 pub mod loading;
 pub mod mission_control;
+pub mod mission_start;
 pub mod network;
 pub mod objectives;
 pub mod ordnance;
