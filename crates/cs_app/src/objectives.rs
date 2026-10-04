@@ -5362,3 +5362,275 @@ fn scope_label(container_key: &str) -> String {
         None => root.to_owned(),
     }
 }
+
+/// Which measured family a declared objective-record field belongs to.
+///
+/// A family is a *spelling* class, not a meaning: it says which F39 measurement
+/// saw the key, so a refusal can point at the finding that left it unresolved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RecordFieldFamily {
+    /// `WAKE`/`NAP`/`KILL`/`WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` (F39-E2/E5/E6).
+    CompletionEffect,
+    /// `TICK_DEPENDS_ON_OBJ` (F39-E2).
+    OrderDependency,
+    /// `INSTANTWIN`/`INSTANTLOSS` (F39-D).
+    Outcome,
+    /// `BEGIN_DORMANT` (F39-E1).
+    Dormancy,
+    /// An `INACTIVE<n>` stage condition (F39-E1/E7).
+    InactiveStage,
+    /// `INACTIVE_COMPLETION_COUNT` (F39-E1).
+    CompletionCount,
+    /// The display `IDENTITY` (F39-E1).
+    Identity,
+    /// `WAKEUP_SOUND_GROUP`/`COMPLETED_SOUND_GROUP` (F39-E1).
+    SoundCue,
+    /// An optionality key (F39-D).
+    Optionality,
+    /// A key no F39 stage measured.
+    Unmeasured,
+}
+
+impl RecordFieldFamily {
+    /// The family a measured key spelling belongs to.
+    #[must_use]
+    pub fn of_key(key: &str) -> Self {
+        if BRANCH_EFFECT_KEY_VOCABULARY.contains(&key) {
+            Self::CompletionEffect
+        } else if key == BRANCH_ORDER_KEY {
+            Self::OrderDependency
+        } else if FAILURE_KEY_VOCABULARY.contains(&key) {
+            Self::Outcome
+        } else if key == cs_content::objectives::OBJECTIVE_DORMANT_KEY {
+            Self::Dormancy
+        } else if key == OBJECTIVE_INACTIVE_COUNT_KEY {
+            Self::CompletionCount
+        } else if is_objective_inactive_stage(key) {
+            Self::InactiveStage
+        } else if key == cs_content::objectives::OBJECTIVE_IDENTITY_KEY {
+            Self::Identity
+        } else if key == cs_content::objectives::OBJECTIVE_WAKEUP_SOUND_GROUP_KEY
+            || key == cs_content::objectives::OBJECTIVE_COMPLETED_SOUND_GROUP_KEY
+        {
+            Self::SoundCue
+        } else if is_optional_objective_key(key) {
+            Self::Optionality
+        } else {
+            Self::Unmeasured
+        }
+    }
+
+    /// Why a field of this family cannot be recovered into a declared program,
+    /// by name.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::CompletionEffect => {
+                "the spelling is measured but what the effect does is an inference, and precedence between effects is unmeasured (F39-E2, E5, E6)"
+            }
+            Self::OrderDependency => {
+                "the objective it sequences behind is named but the ordering rule is undecoded (F39-E2)"
+            }
+            Self::Outcome => "the terminal precedence between win and loss is unmeasured (F39-D)",
+            Self::Dormancy => {
+                "the unit of the argument and the reveal rule are unmeasured (F39-E1)"
+            }
+            Self::InactiveStage => {
+                "what satisfying the named actor/part/attribute condition means is unmeasured (F39-E1, E7)"
+            }
+            Self::CompletionCount => {
+                "the threshold's reachability and monotonicity are unmeasured (F39-E1)"
+            }
+            Self::Identity => {
+                "the message ids are not resolvable to text and the reveal timing is unmeasured (F39-E1)"
+            }
+            Self::SoundCue => "when the cue is emitted is unmeasured (F39-E1)",
+            Self::Optionality => "what an optional declaration changes is unmeasured (F39-D)",
+            Self::Unmeasured => {
+                "no F39 stage measured this key; the mission-language instruction table is undecoded (F13-B/C, F38)"
+            }
+        }
+    }
+}
+
+/// One field of an original objective record that was read and could **not** be
+/// recovered into a [`DeclaredObjectiveProgram`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnrecoveredField {
+    /// The `OBJECTIVE<N>` block number, or `None` for a field declared at the
+    /// record's top level.
+    pub block: Option<u32>,
+    /// The key as the original wrote it.
+    pub key: String,
+    /// The measured family of the key.
+    pub family: RecordFieldFamily,
+}
+
+impl UnrecoveredField {
+    /// Why this field is unrecovered.
+    #[must_use]
+    pub const fn reason(&self) -> &'static str {
+        self.family.reason()
+    }
+}
+
+/// What reading one mission's `objectives.zrd` recovered, and everything it
+/// could not.
+///
+/// The producer walks **every** field of every `OBJECTIVE<N>` block and of the
+/// record's top level, so nothing is silently dropped:
+/// `fields_read() == fields_recovered() + unrecovered().len()` by construction.
+/// Today no field is recoverable — the mission-language table and the objective
+/// semantics are unmeasured, and AGENTS.md rule 4 forbids guessing them — so
+/// [`program`](Self::program) is the refusal naming each gap, never a program
+/// built from guessed semantics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectiveRecovery {
+    mission: String,
+    blocks: Vec<u32>,
+    fields_read: usize,
+    unrecovered: Vec<UnrecoveredField>,
+}
+
+impl ObjectiveRecovery {
+    /// Walks a decoded `objectives.zrd` document.
+    #[must_use]
+    pub fn read(mission: &str, document: &ZrdValue) -> Self {
+        let mut blocks = Vec::new();
+        let mut fields_read = 0;
+        let mut unrecovered = Vec::new();
+        for (key, value) in zrd_flat_fields(objective_record(document)) {
+            if let Some(number) = cs_content::objectives::objective_block_number(key) {
+                blocks.push(number);
+                for (field, _) in zrd_flat_fields(value) {
+                    fields_read += 1;
+                    unrecovered.push(UnrecoveredField {
+                        block: Some(number),
+                        key: field.to_owned(),
+                        family: RecordFieldFamily::of_key(field),
+                    });
+                }
+            } else {
+                fields_read += 1;
+                unrecovered.push(UnrecoveredField {
+                    block: None,
+                    key: key.to_owned(),
+                    family: RecordFieldFamily::of_key(key),
+                });
+            }
+        }
+        Self {
+            mission: mission.to_owned(),
+            blocks,
+            fields_read,
+            unrecovered,
+        }
+    }
+
+    /// The mission this record belongs to.
+    #[must_use]
+    pub fn mission(&self) -> &str {
+        &self.mission
+    }
+
+    /// The declared `OBJECTIVE<N>` block numbers, in record order.
+    #[must_use]
+    pub fn blocks(&self) -> &[u32] {
+        &self.blocks
+    }
+
+    /// How many fields were read, blocks and top level together.
+    #[must_use]
+    pub const fn fields_read(&self) -> usize {
+        self.fields_read
+    }
+
+    /// How many fields were recovered into a declared program.
+    #[must_use]
+    pub const fn fields_recovered(&self) -> usize {
+        self.fields_read - self.unrecovered.len()
+    }
+
+    /// Every field that could not be recovered.
+    #[must_use]
+    pub fn unrecovered(&self) -> &[UnrecoveredField] {
+        &self.unrecovered
+    }
+
+    /// The unrecovered field counts per family.
+    #[must_use]
+    pub fn unrecovered_by_family(&self) -> BTreeMap<RecordFieldFamily, usize> {
+        let mut counts = BTreeMap::new();
+        for field in &self.unrecovered {
+            *counts.entry(field.family).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    /// The declared program, or the refusal naming what cannot be recovered.
+    ///
+    /// # Errors
+    ///
+    /// [`ObjectiveRecoveryRefusal`], always today: no field family has a measured
+    /// recovery, so a program would be built from guessed semantics.
+    pub fn program(&self) -> Result<DeclaredObjectiveProgram, ObjectiveRecoveryRefusal> {
+        Err(ObjectiveRecoveryRefusal {
+            mission: self.mission.clone(),
+            families: self.unrecovered_by_family(),
+        })
+    }
+}
+
+/// The named reason a mission's objective record yields no declared program.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectiveRecoveryRefusal {
+    mission: String,
+    families: BTreeMap<RecordFieldFamily, usize>,
+}
+
+impl ObjectiveRecoveryRefusal {
+    /// The unrecovered field counts per family.
+    #[must_use]
+    pub const fn families(&self) -> &BTreeMap<RecordFieldFamily, usize> {
+        &self.families
+    }
+}
+
+impl fmt::Display for ObjectiveRecoveryRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}: no declared objective program can be recovered; unrecovered",
+            self.mission
+        )?;
+        for (family, count) in &self.families {
+            write!(formatter, " {family:?} x{count} ({})", family.reason())?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ObjectiveRecoveryRefusal {}
+
+/// Reads one installed mission's `objectives.zrd` and reports what is and is not
+/// recoverable.
+///
+/// # Errors
+///
+/// [`ObjectiveCensusError`] when the installation cannot be walked, the mission
+/// is not among its readers, or its record does not decode.
+pub fn recover_retail_objectives(
+    install_root: &Path,
+    mission: &str,
+) -> Result<ObjectiveRecovery, ObjectiveCensusError> {
+    let found = cs_assets::install::discover(install_root)
+        .map_err(|error| ObjectiveCensusError::Discovery(error.to_string()))?;
+    let record = locate_mission_objective_records(&found)?
+        .into_iter()
+        .find(|record| record.mission.eq_ignore_ascii_case(mission))
+        .ok_or_else(|| ObjectiveCensusError::Read {
+            container: mission.to_owned(),
+            reason: "the installation has no such mission reader".to_owned(),
+        })?;
+    Ok(ObjectiveRecovery::read(&record.mission, &record.document))
+}
