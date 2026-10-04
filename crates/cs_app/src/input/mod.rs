@@ -30,7 +30,11 @@
 //! field and a cinematic can never disagree with the simulation about which
 //! devices are producing actions right now (non-negotiable behavior 5).
 //!
-//! The module is deliberately asset- and ECS-free: it is plain typed state so
+//! [`platform::BevyInputPlugin`] (F22-F) is the one Bevy-facing module: it
+//! produces the device events from the engine's input state and pumps the
+//! session once per frame, owning no policy.
+//!
+//! The rest of the module is deliberately asset- and ECS-free: it is plain typed state so
 //! a headless test can drive it exactly like the render loop, and so no game
 //! state hides in UI code (`docs/01-ARCHITECTURE.md`).
 
@@ -38,6 +42,7 @@ use cs_types::Tick;
 use cs_types::input::{Action, ActionMap, BindingSource, DeviceId, InputContext, InputFrame};
 
 pub mod devices;
+pub mod platform;
 pub mod session;
 
 pub use devices::{
