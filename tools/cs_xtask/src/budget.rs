@@ -39,8 +39,9 @@
 //! `docs/findings/2026-09-30-t430-rust-lld-sigbus-in-ci.md`.
 
 use std::fmt;
-use std::fs;
 use std::path::Path;
+
+use crate::transient;
 
 /// Workspace manifest, relative to the workspace root.
 pub const MANIFEST_PATH: &str = "Cargo.toml";
@@ -195,8 +196,9 @@ pub fn verify_manifest(file: &str, manifest: &str) -> Result<(), BudgetError> {
 /// Verifies `<workspace_root>/Cargo.toml`.
 pub fn verify_workspace(workspace_root: &Path) -> Result<(), BudgetError> {
     let path = workspace_root.join(MANIFEST_PATH);
-    let text = fs::read_to_string(&path).map_err(|_| BudgetError::Io {
-        path: path.display().to_string(),
-    })?;
+    let text =
+        transient::read_to_string(&path, transient::PATIENT).map_err(|_| BudgetError::Io {
+            path: path.display().to_string(),
+        })?;
     verify_manifest(&path.display().to_string(), &text)
 }

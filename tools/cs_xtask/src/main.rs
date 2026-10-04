@@ -43,6 +43,7 @@ use cs_xtask::corpus;
 use cs_xtask::package;
 use cs_xtask::target_dir;
 use cs_xtask::test_select;
+use cs_xtask::transient;
 
 /// The gate ran and passed.
 const EXIT_OK: u8 = 0;
@@ -206,7 +207,7 @@ fn parse_options(
 
 /// Reports an unusable workspace root without letting cargo fail obscure it.
 fn require_workspace(root: &Path) -> Result<(), String> {
-    if root.join("Cargo.toml").is_file() {
+    if transient::is_file(&root.join("Cargo.toml"), transient::PATIENT) {
         Ok(())
     } else {
         Err(format!(

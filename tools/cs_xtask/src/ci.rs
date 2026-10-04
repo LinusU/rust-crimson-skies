@@ -14,8 +14,9 @@
 //! agents (`docs/contracts/CLI-EVIDENCE.md`).
 
 use std::fmt;
-use std::fs;
 use std::path::Path;
+
+use crate::transient;
 
 /// Workflow file the workspace gates live in, relative to the workspace root.
 pub const WORKFLOW_PATH: &str = ".github/workflows/ci.yml";
@@ -73,7 +74,7 @@ impl std::error::Error for CiError {}
 
 /// Reads the workflow at `path` and verifies every required gate.
 pub fn verify_workflow_file(path: &Path) -> Result<(), CiError> {
-    let text = fs::read_to_string(path).map_err(|_| CiError::Io {
+    let text = transient::read_to_string(path, transient::PATIENT).map_err(|_| CiError::Io {
         path: path.display().to_string(),
     })?;
     verify_workflow(&path.display().to_string(), &text)

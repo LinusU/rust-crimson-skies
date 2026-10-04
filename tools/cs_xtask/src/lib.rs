@@ -28,6 +28,9 @@
 //!   synthetic/private/regression separation, the per-container truncation
 //!   oracle and the known-container manifest — and audits that no private
 //!   bytes are tracked in the repo.
+//! * [`transient`] retries a read or spawn that loses its file for the
+//!   moment a writer is replacing it — the `NotFound` a concurrent cargo on
+//!   the same target directory can put under a check (task #610).
 //!
 //! The `cs_xtask` binary exposes `test-select`, `verify-ci`,
 //! `verify-bootstrap`, `verify-ci-budget`, `verify-target-dir`,
@@ -42,3 +45,4 @@ pub mod package;
 pub mod pins;
 pub mod target_dir;
 pub mod test_select;
+pub mod transient;
