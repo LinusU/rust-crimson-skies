@@ -90,10 +90,13 @@ pub use adpcm::{
 pub use anim::{
     ANIM_COUNTS_OFFSET, ANIM_ENTRYPOINT, ANIM_EXTERNAL_PATH_BYTES, ANIM_EXTERNAL_ROW_BYTES,
     ANIM_FLAG_WORD_OFFSET, ANIM_GRAVITY_OFFSET, ANIM_MEMBER_PATH_BYTES, ANIM_MEMBER_ROW_BYTES,
-    ANIM_ONE_WORD_OFFSET, ANIM_PAYLOAD_HEADER_BYTES, ANIM_RECORD_COUNT_OFFSET, ANIM_ROW_BYTES,
-    AnimationIndex, AnimationIndexError, AnimationPayload, AnimationPayloadHeader, AnimationRow,
-    AnimationRowAnomaly, RECORDS_NOT_DECODED_REASON, indexed_by_animation_header,
-    read_animation_index, stamp_evidence,
+    ANIM_ONE_WORD_OFFSET, ANIM_PAYLOAD_HEADER_BYTES, ANIM_RECORD_AREA_OFFSET,
+    ANIM_RECORD_COUNT_OFFSET, ANIM_RECORD_FIXED_BYTES, ANIM_ROW_BYTES, ANIM_SEQUENCE_INFO_BYTES,
+    AnimationIndex, AnimationIndexError, AnimationPayload, AnimationPayloadHeader, AnimationRecord,
+    AnimationRecordCounts, AnimationRecordError, AnimationRecordPointers, AnimationRecordSequence,
+    AnimationRecordSequenceKind, AnimationRecordTable, AnimationRecordTableKind, AnimationRecords,
+    AnimationRow, AnimationRowAnomaly, POINTERS_UNRESOLVED_REASON, RECORDS_NOT_DECODED_REASON,
+    indexed_by_animation_header, read_animation_index, stamp_evidence,
 };
 pub use archive::{
     ArchiveListing, CONTAINER_ENTRYPOINT, ContainerError, ContainerStatus, FamilyMismatch,

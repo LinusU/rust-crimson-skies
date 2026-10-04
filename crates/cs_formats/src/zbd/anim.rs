@@ -83,12 +83,26 @@
 //! ([`AnimationPayload::first_record_name`]). Fewer than
 //! [`ANIM_FIRST_RECORD_NAME_OFFSET`] + 32 bytes after the index is a named
 //! refusal ([`AnimationIndexError::FirstRecordNameTruncated`]) rather than an
-//! empty name. Everything from there to the end of the file is the **animation
-//! records**, which this stage does **not** decode: the record header layout,
-//! the sizes of the inline sub-tables and the meaning of the record-local
-//! pointers are all unmeasured, and a guessed walk would produce names no
-//! measured rule supports. That gap is the finding, not a silent omission —
-//! see [`RECORDS_NOT_DECODED_REASON`].
+//! empty name.
+//!
+//! # The records (task #650)
+//!
+//! [`AnimationPayload::records`] walks the animation records: the declared
+//! count says how many there are, and **each record's length is derived from
+//! fields inside it** — a 272-byte fixed part, `count x entry-size` tables, and
+//! 64-byte sequence blocks that state their own event length (see
+//! [`AnimationRecord`] for the arithmetic). Record *n* starts where record
+//! *n - 1* ended, record 0 at payload `+108`. The recurrence reproduces all
+//! 15 024 records of the 61 retail containers and never reads past a payload;
+//! 30 containers end exactly at their last record, the other 31 carry 29 690 ..
+//! 1 361 762 bytes after it ([`AnimationRecords::trailing`]), which are **not
+//! walked**. What is *inside* a record beyond its names, counts and tables is
+//! not decoded — see [`RECORDS_NOT_DECODED_REASON`] and
+//! `docs/findings/2026-10-05-m01-lc-anim-records.md`.
+//!
+//! The record-local pointer words are **not** used: all are values between
+//! `0x01fadcf8` and `0x04f7fe60`, beyond the largest 2 MB container, so none
+//! can be an offset, and the walk needs none ([`POINTERS_UNRESOLVED_REASON`]).
 //!
 //! # Fail-closed
 //!
@@ -160,12 +174,31 @@ pub const ANIM_ONE_WORD_OFFSET: u64 = 60;
 /// Bytes one parsed [`AnimationRow`] occupies, charged per declared row.
 pub const ANIM_ROW_BYTES: u64 = size_of::<AnimationRow<'static>>() as u64;
 
-/// Why the animation records that follow the payload header are not decoded.
-pub const RECORDS_NOT_DECODED_REASON: &str = "the animation-record layout behind this header is \
-     unmeasured: no source documents it, the record-local pointers this repository can see are far \
-     outside every container's length, and the inline sub-table sizes that would fix each record's \
-     length have not been derived. The names this stage reports are the payload's first record only, \
-     and nothing here indexes a record by position";
+/// Bytes of an animation record's fixed part.
+///
+/// Measured: record 0 (`reserved_anim_0`) is exactly this long, and so is every
+/// retail record that carries no table, no sequence and no reset state.
+pub const ANIM_RECORD_FIXED_BYTES: u64 = 272;
+
+/// Offset of record 0 inside the payload: the 68-byte header, 40 measured zero
+/// bytes, and then record 0's own first field (its 32-byte `anim_name`).
+pub const ANIM_RECORD_AREA_OFFSET: u64 = ANIM_FIRST_RECORD_NAME_OFFSET;
+
+/// Bytes of a sequence, reset or damage info block that precedes its events.
+pub const ANIM_SEQUENCE_INFO_BYTES: u64 = 64;
+
+/// What is still not decoded after the record walk.
+///
+/// The walk itself is derived and checked (see [`AnimationPayload::records`]);
+/// what stays open is the content *inside* it.
+pub const RECORDS_NOT_DECODED_REASON: &str = "the record walk is measured, but what lies inside a \
+     record is not decoded: the event streams of the reset, damage and ordinary sequences are \
+     kept as raw bytes (no event layout is measured for this family), the record-local pointer \
+     words are 0x03/0x04-prefixed values far outside every container's length and no rule maps \
+     one back to a record or a member row, the meaning of the small id words inside table \
+     entries is unmeasured, the table entries of the unknowns, lights, puffers, sounds and \
+     prerequisites are read as raw fixed-size entries, and the region after the last record \
+     (30 of 61 retail carriers have none, the other 31 carry 29 690 .. 1 361 762 bytes) is not walked";
 
 /// What the `stamp` word of a row is: a build timestamp by measurement, with
 /// no stated meaning.
@@ -387,6 +420,7 @@ impl AnimationPayloadHeader {
 /// The animation payload: the fixed header, and the records that follow it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnimationPayload<'a> {
+    container: &'a str,
     span: SourceSpan,
     header: AnimationPayloadHeader,
     record_table_offset: u64,
@@ -426,9 +460,30 @@ impl<'a> AnimationPayload<'a> {
         self.first_record_name
     }
 
-    /// Why the records after the first are not decoded.
+    /// What inside the records is still not decoded.
     pub const fn records_not_decoded_reason(&self) -> &'static str {
         RECORDS_NOT_DECODED_REASON
+    }
+
+    /// Walks the animation records: record *n* by index, and the region after
+    /// the last one.
+    ///
+    /// The header's declared record count (`+10`) says how many records there
+    /// are, and each record's own length is derived from fields inside it, so
+    /// the walk reads no byte it was not told to read. See [`AnimationRecord`]
+    /// for the derivation.
+    ///
+    /// # Errors
+    ///
+    /// [`AnimationRecordError`], naming the record and what it lacked, when a
+    /// record does not fit in the payload or declares a table this reader has
+    /// no measured size for.
+    pub fn records(&self) -> Result<AnimationRecords<'a>, AnimationRecordError> {
+        walk_records(
+            self.container,
+            self.bytes,
+            self.header.declared_record_count,
+        )
     }
 }
 
@@ -575,6 +630,7 @@ impl<'a> AnimationIndex<'a> {
             .position(|&byte| byte == 0)
             .unwrap_or(first_record_name.len());
         Ok(AnimationPayload {
+            container: self.dispatch.container(),
             span: SourceSpan {
                 offset: self.payload_offset,
                 length: payload.len() as u64,
@@ -949,5 +1005,751 @@ fn read_payload_header(
         word_56: word(56),
         one_word: word(ANIM_ONE_WORD_OFFSET),
         word_64: word(64),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The animation records
+// ---------------------------------------------------------------------------
+
+/// Why the record-local pointer words are not resolved.
+pub const POINTERS_UNRESOLVED_REASON: &str = "record-local pointer words (seq_defs, reset, damage, \
+     objects, nodes, ...) are values around 0x03xxxxxx..0x04xxxxxx, i.e. addresses in the original \
+     engine's heap rather than offsets into the container; no rule in this tree maps one back to \
+     a record or a table, so none is ever used as an offset (the walk below derives every length \
+     from counts and sizes instead)";
+
+/// The kinds of fixed-size table that follow a record's fixed part.
+///
+/// They appear in this order, each one only when its count is nonzero. Entry
+/// sizes are measured: they are exactly what lets 15 024 records of 61
+/// containers tile their payloads (see [`AnimationRecord`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnimationRecordTableKind {
+    /// 36-byte entries counted by the u32 at record `+36`: a name field and a
+    /// word. What they are for is not measured.
+    Unknowns,
+    /// 92-byte object references (count byte at `+217`).
+    Objects,
+    /// 44-byte node references (count byte at `+218`).
+    Nodes,
+    /// 44-byte light references (count byte at `+219`).
+    Lights,
+    /// 44-byte puffer references (count byte at `+220`).
+    Puffers,
+    /// 44-byte dynamic-sound references (count byte at `+221`).
+    DynamicSounds,
+    /// 40-byte static-sound references (count byte at `+222`).
+    StaticSounds,
+    /// 48-byte activation prerequisites: an 8-byte header and a 40-byte
+    /// entry (count byte at `+224`).
+    ActivationPrerequisites,
+    /// 72-byte animation references: a 64-byte name and two words (count byte
+    /// at `+226`).
+    AnimationRefs,
+    /// 4-byte index words (count byte at `+227`): `0, 1, 2, ...` in the one
+    /// record measured by hand, meaning not measured.
+    IndexWords,
+}
+
+impl AnimationRecordTableKind {
+    /// Every kind, in on-disk order.
+    pub const ALL: [Self; 10] = [
+        Self::Unknowns,
+        Self::Objects,
+        Self::Nodes,
+        Self::Lights,
+        Self::Puffers,
+        Self::DynamicSounds,
+        Self::StaticSounds,
+        Self::ActivationPrerequisites,
+        Self::AnimationRefs,
+        Self::IndexWords,
+    ];
+
+    /// Bytes of one entry.
+    pub const fn entry_bytes(self) -> usize {
+        match self {
+            Self::Unknowns => 36,
+            Self::Objects => 92,
+            Self::Nodes | Self::Lights | Self::Puffers | Self::DynamicSounds => 44,
+            Self::StaticSounds => 40,
+            Self::ActivationPrerequisites => 48,
+            Self::AnimationRefs => 72,
+            Self::IndexWords => 4,
+        }
+    }
+
+    /// Where an entry's name field starts and how wide it is, when the entry
+    /// has exactly one at a fixed place. Prerequisites do not: their name sits
+    /// at a position that depends on the prerequisite's type word.
+    pub const fn name_field(self) -> Option<(usize, usize)> {
+        match self {
+            Self::Unknowns
+            | Self::Objects
+            | Self::Lights
+            | Self::Puffers
+            | Self::DynamicSounds
+            | Self::StaticSounds => Some((0, 32)),
+            Self::Nodes => Some((4, 32)),
+            Self::AnimationRefs => Some((0, 64)),
+            Self::ActivationPrerequisites | Self::IndexWords => None,
+        }
+    }
+
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Unknowns => "unknowns",
+            Self::Objects => "objects",
+            Self::Nodes => "nodes",
+            Self::Lights => "lights",
+            Self::Puffers => "puffers",
+            Self::DynamicSounds => "dynamic_sounds",
+            Self::StaticSounds => "static_sounds",
+            Self::ActivationPrerequisites => "activation_prerequisites",
+            Self::AnimationRefs => "animation_refs",
+            Self::IndexWords => "index_words",
+        }
+    }
+}
+
+/// One fixed-size table of a record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnimationRecordTable<'a> {
+    kind: AnimationRecordTableKind,
+    offset: u64,
+    count: usize,
+    bytes: &'a [u8],
+}
+
+impl<'a> AnimationRecordTable<'a> {
+    /// Which table this is.
+    pub const fn kind(&self) -> AnimationRecordTableKind {
+        self.kind
+    }
+
+    /// Where the table starts, counted from the start of the payload.
+    pub const fn payload_offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// Number of entries, exactly as the record's count says.
+    pub const fn count(&self) -> usize {
+        self.count
+    }
+
+    /// The table's bytes, entry after entry.
+    pub const fn bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    /// Entry `index`, verbatim.
+    pub fn entry(&self, index: usize) -> Option<&'a [u8]> {
+        let size = self.kind.entry_bytes();
+        (index < self.count).then(|| &self.bytes[index * size..(index + 1) * size])
+    }
+
+    /// The text before the first NUL of entry `index`'s name field, verbatim,
+    /// for kinds that have one fixed name field. Bytes after the NUL are
+    /// left-over memory (`ode_name`, ...) and are never read as a name.
+    pub fn name(&self, index: usize) -> Option<&'a [u8]> {
+        let (offset, width) = self.kind.name_field()?;
+        let entry = self.entry(index)?;
+        Some(nul_prefix(&entry[offset..offset + width]))
+    }
+}
+
+/// The kind of a sequence info block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnimationRecordSequenceKind {
+    /// The reset state: present when the record's reset pointer (`+208`) is
+    /// nonzero, named `RESET_SEQUENCE` in every retail instance.
+    Reset,
+    /// The damage sequence: present when the record's pointer at `+212` is
+    /// nonzero, named `DAMAGE_SEQUENCE` in every retail instance. The pinned
+    /// source calls that pointer `unknown_seq_ptr` and asserts it null; this
+    /// family does not.
+    Damage,
+    /// An ordinary sequence (`count` of them, from the byte at `+216`).
+    Sequence,
+}
+
+/// One sequence info block and its raw event bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnimationRecordSequence<'a> {
+    kind: AnimationRecordSequenceKind,
+    record_offset: u64,
+    info: &'a [u8],
+    events: &'a [u8],
+}
+
+impl<'a> AnimationRecordSequence<'a> {
+    /// Reset, damage or ordinary.
+    pub const fn kind(&self) -> AnimationRecordSequenceKind {
+        self.kind
+    }
+
+    /// Where the info block starts, counted from the start of its record.
+    pub const fn record_offset(&self) -> u64 {
+        self.record_offset
+    }
+
+    /// The 64-byte info block, verbatim.
+    pub const fn info(&self) -> &'a [u8] {
+        self.info
+    }
+
+    /// The sequence's name: the text before the first NUL of the first 32
+    /// bytes. Empty for some ordinary sequences.
+    pub fn name(&self) -> &'a [u8] {
+        nul_prefix(&self.info[..32])
+    }
+
+    /// The u32 at info `+32`: `0` or `0x303` in all 56 994 retail blocks.
+    pub fn flags(&self) -> u32 {
+        word_at(self.info, 32)
+    }
+
+    /// The pointer word at info `+56`, **unresolved** (see
+    /// [`POINTERS_UNRESOLVED_REASON`]).
+    pub fn pointer(&self) -> u32 {
+        word_at(self.info, 56)
+    }
+
+    /// The event stream: `size` bytes (the u32 at info `+60`), **not decoded**.
+    pub const fn events(&self) -> &'a [u8] {
+        self.events
+    }
+}
+
+/// The count fields of a record's fixed part.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnimationRecordCounts {
+    /// u32 at `+36`.
+    pub unknowns: u32,
+    /// Byte at `+216`: ordinary sequences.
+    pub sequences: u8,
+    /// Byte at `+217`.
+    pub objects: u8,
+    /// Byte at `+218`.
+    pub nodes: u8,
+    /// Byte at `+219`.
+    pub lights: u8,
+    /// Byte at `+220`.
+    pub puffers: u8,
+    /// Byte at `+221`.
+    pub dynamic_sounds: u8,
+    /// Byte at `+222`.
+    pub static_sounds: u8,
+    /// Byte at `+223`: zero in all 15 024 retail records; a record that sets
+    /// it is refused ([`AnimationRecordError::UnmeasuredEffectTable`]).
+    pub effects: u8,
+    /// Byte at `+224`.
+    pub activation_prerequisites: u8,
+    /// Byte at `+225`: how many prerequisites must hold. Not a table size.
+    pub prerequisites_min_to_satisfy: u8,
+    /// Byte at `+226`.
+    pub animation_refs: u8,
+    /// Byte at `+227`.
+    pub index_words: u8,
+}
+
+impl AnimationRecordCounts {
+    /// The entry count of `kind`.
+    pub const fn of(&self, kind: AnimationRecordTableKind) -> u64 {
+        match kind {
+            AnimationRecordTableKind::Unknowns => self.unknowns as u64,
+            AnimationRecordTableKind::Objects => self.objects as u64,
+            AnimationRecordTableKind::Nodes => self.nodes as u64,
+            AnimationRecordTableKind::Lights => self.lights as u64,
+            AnimationRecordTableKind::Puffers => self.puffers as u64,
+            AnimationRecordTableKind::DynamicSounds => self.dynamic_sounds as u64,
+            AnimationRecordTableKind::StaticSounds => self.static_sounds as u64,
+            AnimationRecordTableKind::ActivationPrerequisites => {
+                self.activation_prerequisites as u64
+            }
+            AnimationRecordTableKind::AnimationRefs => self.animation_refs as u64,
+            AnimationRecordTableKind::IndexWords => self.index_words as u64,
+        }
+    }
+}
+
+/// The pointer words of a record's fixed part, **all unresolved**
+/// ([`POINTERS_UNRESOLVED_REASON`]): raw values, never offsets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnimationRecordPointers {
+    /// `+32`.
+    pub unknowns: u32,
+    /// `+72`: small ids, equal to `anim_root` (`+108`) in 12 051 of 14 963
+    /// retail records.
+    pub anim: u32,
+    /// `+108`.
+    pub anim_root: u32,
+    /// `+204`.
+    pub seq_defs: u32,
+    /// `+208`: nonzero exactly when a reset block follows the tables.
+    pub reset_state: u32,
+    /// `+212`: nonzero exactly when a damage block follows the tables.
+    pub damage_sequence: u32,
+    /// `+228`.
+    pub objects: u32,
+    /// `+232`.
+    pub nodes: u32,
+    /// `+236`.
+    pub lights: u32,
+    /// `+240`.
+    pub puffers: u32,
+    /// `+244`.
+    pub dynamic_sounds: u32,
+    /// `+248`.
+    pub static_sounds: u32,
+    /// `+252`.
+    pub effects: u32,
+    /// `+256`.
+    pub activation_prerequisites: u32,
+    /// `+260`.
+    pub animation_refs: u32,
+}
+
+/// One animation record.
+///
+/// # The derived length
+///
+/// A record is `272` fixed bytes (`ANIM_RECORD_FIXED_BYTES`) followed by, in
+/// this order and each only when present:
+///
+/// 1. the [`AnimationRecordTableKind`] tables, `count × entry size` bytes each
+///    (the unknowns count is the u32 at `+36`, the rest are the bytes
+///    `+217..+227`);
+/// 2. the reset block when the u32 at `+208` is nonzero: a 64-byte info block
+///    whose u32 at `+60` is the byte length of the events that follow it;
+/// 3. the damage block when the u32 at `+212` is nonzero, in the same shape;
+/// 4. `+216` ordinary sequence blocks, each in that shape.
+///
+/// So `len = 272 + Σ count × entry + Σ (64 + events)`, and record *n + 1*
+/// starts at `start(n) + len(n)`. Record 0 starts at payload `+108`. This
+/// recurrence reproduces every record start of all 61 retail containers
+/// (15 024 records) and ends each container's record area inside its payload
+/// (exactly at its end in 30 of the 61), which is the check; no pointer word
+/// takes part in it.
+///
+/// The fixed-part offsets coincide with the Pirate's Moon `AnimDefC` of the
+/// upstream mech3ax project's later source (not the pinned v0.6.0 one, which
+/// documents only the MechWarrior 3 layout): this repository **measured**
+/// them in the retail files, so they are [`ClaimStatus::ObservedTool`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimationRecord<'a> {
+    index: usize,
+    offset: u64,
+    bytes: &'a [u8],
+    counts: AnimationRecordCounts,
+    tables: Vec<AnimationRecordTable<'a>>,
+    sequences: Vec<AnimationRecordSequence<'a>>,
+}
+
+impl<'a> AnimationRecord<'a> {
+    /// Position of the record in the payload's record list.
+    pub const fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Where the record starts, counted from the start of the payload.
+    pub const fn payload_offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// The record's derived length in bytes.
+    pub const fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// A record is never empty: its fixed part alone is
+    /// [`ANIM_RECORD_FIXED_BYTES`] bytes.
+    pub const fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// The record's bytes.
+    pub const fn bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    /// The evidence class of every fixed-part field below.
+    pub const fn field_evidence(&self) -> ClaimStatus {
+        ClaimStatus::ObservedTool
+    }
+
+    /// The animation's identity: the text before the first NUL of the first
+    /// 32 bytes (`+0`). This is the name `startanims.zrd` and the `.zrd`
+    /// `CALL_ANIMATION` events use.
+    pub fn anim_name(&self) -> &'a [u8] {
+        nul_prefix(&self.bytes[..32])
+    }
+
+    /// The object the animation moves: `+40`, 32 bytes.
+    pub fn object_name(&self) -> &'a [u8] {
+        nul_prefix(&self.bytes[40..72])
+    }
+
+    /// The root object of the animation: `+76`, 32 bytes.
+    pub fn root_name(&self) -> &'a [u8] {
+        nul_prefix(&self.bytes[76..108])
+    }
+
+    /// The flag word at `+156`, meaning not measured bit by bit.
+    pub fn flags(&self) -> u32 {
+        word_at(self.bytes, 156)
+    }
+
+    /// The byte at `+160`: `0` in all 14 963 non-zero retail records.
+    pub fn status(&self) -> u8 {
+        self.bytes[160]
+    }
+
+    /// The byte at `+161`: `0`, `2`, `3` or `4` in retail.
+    pub fn activation(&self) -> u8 {
+        self.bytes[161]
+    }
+
+    /// The byte at `+162`: `1`, `4`, `5` or `6` in retail (the pinned source's
+    /// MechWarrior records are all `4`).
+    pub fn execution_priority(&self) -> u8 {
+        self.bytes[162]
+    }
+
+    /// The byte at `+163`: `2` in all 14 963 non-zero retail records.
+    pub fn two_word(&self) -> u8 {
+        self.bytes[163]
+    }
+
+    /// The f32 at `+172`, `-1.0` unless the flag word says otherwise.
+    pub fn reset_time(&self) -> f32 {
+        f32::from_bits(word_at(self.bytes, 172))
+    }
+
+    /// The f32 at `+180`.
+    pub fn max_health(&self) -> f32 {
+        f32::from_bits(word_at(self.bytes, 180))
+    }
+
+    /// The count fields.
+    pub const fn counts(&self) -> &AnimationRecordCounts {
+        &self.counts
+    }
+
+    /// The raw pointer words, **unresolved**.
+    pub fn pointers(&self) -> AnimationRecordPointers {
+        let b = self.bytes;
+        AnimationRecordPointers {
+            unknowns: word_at(b, 32),
+            anim: word_at(b, 72),
+            anim_root: word_at(b, 108),
+            seq_defs: word_at(b, 204),
+            reset_state: word_at(b, 208),
+            damage_sequence: word_at(b, 212),
+            objects: word_at(b, 228),
+            nodes: word_at(b, 232),
+            lights: word_at(b, 236),
+            puffers: word_at(b, 240),
+            dynamic_sounds: word_at(b, 244),
+            static_sounds: word_at(b, 248),
+            effects: word_at(b, 252),
+            activation_prerequisites: word_at(b, 256),
+            animation_refs: word_at(b, 260),
+        }
+    }
+
+    /// Why the pointer words are not resolved.
+    pub const fn pointers_unresolved_reason(&self) -> &'static str {
+        POINTERS_UNRESOLVED_REASON
+    }
+
+    /// The tables that are present (count nonzero), in on-disk order.
+    pub fn tables(&self) -> &[AnimationRecordTable<'a>] {
+        &self.tables
+    }
+
+    /// The table of `kind`, when the record has one.
+    pub fn table(&self, kind: AnimationRecordTableKind) -> Option<&AnimationRecordTable<'a>> {
+        self.tables.iter().find(|table| table.kind == kind)
+    }
+
+    /// The sequence blocks in on-disk order: reset, damage, then ordinary.
+    pub fn sequences(&self) -> &[AnimationRecordSequence<'a>] {
+        &self.sequences
+    }
+}
+
+/// The records of a payload, and what follows the last one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimationRecords<'a> {
+    records: Vec<AnimationRecord<'a>>,
+    trailing_offset: u64,
+    trailing: &'a [u8],
+}
+
+impl<'a> AnimationRecords<'a> {
+    /// Number of records walked: the header's declared count.
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    /// Whether the walk produced no record.
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// Record `index`, or `None` when out of range.
+    pub fn get(&self, index: usize) -> Option<&AnimationRecord<'a>> {
+        self.records.get(index)
+    }
+
+    /// Every record in order.
+    pub fn iter(&self) -> std::slice::Iter<'_, AnimationRecord<'a>> {
+        self.records.iter()
+    }
+
+    /// The records whose `anim_name` equals `name` byte for byte, in order.
+    ///
+    /// A name may repeat (c1c's camera carrier has 5 repeated names in 307
+    /// records), so a caller that needs one record must check the count.
+    pub fn by_anim_name<'s>(
+        &'s self,
+        name: &'s [u8],
+    ) -> impl Iterator<Item = &'s AnimationRecord<'a>> + 's {
+        self.records
+            .iter()
+            .filter(move |record| record.anim_name() == name)
+    }
+
+    /// Where the region after the last record starts, counted from the start
+    /// of the payload.
+    pub const fn trailing_offset(&self) -> u64 {
+        self.trailing_offset
+    }
+
+    /// The bytes after the last record: **not walked**. Empty in 30 of the 61
+    /// retail carriers; 29 690 .. 1 361 762 bytes in the other 31.
+    pub const fn trailing(&self) -> &'a [u8] {
+        self.trailing
+    }
+}
+
+/// Why the record walk stopped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AnimationRecordError {
+    /// A record, or one of its parts, does not fit in the payload.
+    Truncated {
+        /// The container's provenance label.
+        container: String,
+        /// The record that did not fit.
+        record: usize,
+        /// Which part of the record, named.
+        part: &'static str,
+        /// Where the part starts, counted from the start of the payload.
+        payload_offset: u64,
+        /// Bytes the part needs.
+        needed: u64,
+        /// Bytes the payload has from there.
+        available: u64,
+    },
+    /// A record sets the effect-table count, for which no entry size is
+    /// measured (it is zero in all 15 024 retail records).
+    UnmeasuredEffectTable {
+        /// The container's provenance label.
+        container: String,
+        /// The record.
+        record: usize,
+        /// The count the record declares.
+        count: u8,
+    },
+}
+
+impl AnimationRecordError {
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Truncated { .. } => "record_truncated",
+            Self::UnmeasuredEffectTable { .. } => "unmeasured_effect_table",
+        }
+    }
+}
+
+impl fmt::Display for AnimationRecordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Truncated {
+                container,
+                record,
+                part,
+                payload_offset,
+                needed,
+                available,
+            } => write!(
+                f,
+                "{container}: record {record}'s {part} at payload offset {payload_offset} needs \
+                 {needed} bytes, the payload has {available}"
+            ),
+            Self::UnmeasuredEffectTable {
+                container,
+                record,
+                count,
+            } => write!(
+                f,
+                "{container}: record {record} declares {count} effect entries, and no entry size \
+                 is measured for them"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AnimationRecordError {}
+
+fn nul_prefix(field: &[u8]) -> &[u8] {
+    let end = field
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(field.len());
+    &field[..end]
+}
+
+fn word_at(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes of a word"))
+}
+
+fn walk_records<'a>(
+    container: &str,
+    payload: &'a [u8],
+    declared: u16,
+) -> Result<AnimationRecords<'a>, AnimationRecordError> {
+    let truncated = |record: usize, part: &'static str, at: usize, needed: u64| {
+        AnimationRecordError::Truncated {
+            container: container.to_owned(),
+            record,
+            part,
+            payload_offset: at as u64,
+            needed,
+            available: payload.len().saturating_sub(at) as u64,
+        }
+    };
+    // A record is never shorter than its fixed part, so the declared count
+    // cannot reserve more than the payload could hold.
+    let room = payload.len() / ANIM_RECORD_FIXED_BYTES as usize;
+    let mut records = Vec::with_capacity(usize::from(declared).min(room));
+    let mut position = ANIM_RECORD_AREA_OFFSET as usize;
+    for index in 0..usize::from(declared) {
+        let fixed_end = position + ANIM_RECORD_FIXED_BYTES as usize;
+        if fixed_end > payload.len() {
+            return Err(truncated(
+                index,
+                "fixed part",
+                position,
+                ANIM_RECORD_FIXED_BYTES,
+            ));
+        }
+        let fixed = &payload[position..fixed_end];
+        let counts = AnimationRecordCounts {
+            unknowns: word_at(fixed, 36),
+            sequences: fixed[216],
+            objects: fixed[217],
+            nodes: fixed[218],
+            lights: fixed[219],
+            puffers: fixed[220],
+            dynamic_sounds: fixed[221],
+            static_sounds: fixed[222],
+            effects: fixed[223],
+            activation_prerequisites: fixed[224],
+            prerequisites_min_to_satisfy: fixed[225],
+            animation_refs: fixed[226],
+            index_words: fixed[227],
+        };
+        if counts.effects != 0 {
+            return Err(AnimationRecordError::UnmeasuredEffectTable {
+                container: container.to_owned(),
+                record: index,
+                count: counts.effects,
+            });
+        }
+
+        let mut cursor = fixed_end;
+        let mut tables = Vec::new();
+        for kind in AnimationRecordTableKind::ALL {
+            let count = counts.of(kind);
+            if count == 0 {
+                continue;
+            }
+            // `count` is at most `u32::MAX` and an entry at most 92 bytes.
+            let size = count * kind.entry_bytes() as u64;
+            let available = (payload.len() - cursor) as u64;
+            if size > available {
+                return Err(truncated(index, kind.code(), cursor, size));
+            }
+            let end = cursor + size as usize;
+            tables.push(AnimationRecordTable {
+                kind,
+                offset: cursor as u64,
+                count: count as usize,
+                bytes: &payload[cursor..end],
+            });
+            cursor = end;
+        }
+
+        let reset = word_at(fixed, 208) != 0;
+        let damage = word_at(fixed, 212) != 0;
+        let mut sequences = Vec::new();
+        let plan = [
+            (reset, AnimationRecordSequenceKind::Reset, 1),
+            (damage, AnimationRecordSequenceKind::Damage, 1),
+            (
+                counts.sequences != 0,
+                AnimationRecordSequenceKind::Sequence,
+                usize::from(counts.sequences),
+            ),
+        ];
+        for (present, kind, count) in plan {
+            if !present {
+                continue;
+            }
+            for _ in 0..count {
+                let info_end = cursor + ANIM_SEQUENCE_INFO_BYTES as usize;
+                if info_end > payload.len() {
+                    return Err(truncated(
+                        index,
+                        "sequence info",
+                        cursor,
+                        ANIM_SEQUENCE_INFO_BYTES,
+                    ));
+                }
+                let info = &payload[cursor..info_end];
+                let size = u64::from(word_at(info, 60));
+                if size > (payload.len() - info_end) as u64 {
+                    return Err(truncated(index, "sequence events", info_end, size));
+                }
+                let events_end = info_end + size as usize;
+                sequences.push(AnimationRecordSequence {
+                    kind,
+                    record_offset: (cursor - position) as u64,
+                    info,
+                    events: &payload[info_end..events_end],
+                });
+                cursor = events_end;
+            }
+        }
+
+        records.push(AnimationRecord {
+            index,
+            offset: position as u64,
+            bytes: &payload[position..cursor],
+            counts,
+            tables,
+            sequences,
+        });
+        position = cursor;
+    }
+    Ok(AnimationRecords {
+        records,
+        trailing_offset: position as u64,
+        trailing: &payload[position..],
     })
 }
