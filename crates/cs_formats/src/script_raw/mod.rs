@@ -24,6 +24,8 @@
 //!   script programs: the two native dispatch forms their text contains, the
 //!   shape of every argument expression and the byte span of every site — a
 //!   measurement, never a meaning.
+//! * [`source_map`] (F38-C) gives every measured site its member, byte offset,
+//!   line and column, read from the program's own bytes and never retained.
 //! * [`probe`] is the isolated signature probe (F13-C): a caller-supplied set
 //!   of measured instruction/native signatures, one walk per located program
 //!   whose stop is recorded as data, a retry for exactly the stops more
@@ -42,6 +44,7 @@ pub mod evidence;
 pub mod inventory;
 pub mod ledger;
 pub mod probe;
+pub mod source_map;
 pub mod ui_host_calls;
 
 pub use discovery::{
