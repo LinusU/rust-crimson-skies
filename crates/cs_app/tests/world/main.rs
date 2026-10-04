@@ -78,6 +78,14 @@
 //! gap, is still reported exactly once and the overlay behind it still fires,
 //! a body that turns away inside a volume earns nothing beyond the entry the
 //! pair was owed, and the report is a read that never touches the body.
+//!
+//! **#499** (`accept_t499_`) is the spawn-tick half of that report:
+//! `sensor_layer` owns the collision layer a world-authored sensor volume
+//! declares — a spawn whose first tick sweeps a trigger volume is neither
+//! clamped by it nor stopped at it, and the crossing reaches
+//! `TriggerCrossings` from `deliver_spawn_tick_crossings`, once per pair, with
+//! both producers installed against the same volume. It is a module here
+//! rather than a separate test binary so the suite links one Bevy image fewer.
 
 mod audit;
 mod common;
@@ -89,6 +97,7 @@ mod overlays;
 mod records;
 mod residency;
 mod scene_ids;
+mod sensor_layer;
 mod shared_asset;
 mod shear;
 mod spawn;
