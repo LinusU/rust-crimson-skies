@@ -51,10 +51,11 @@ use cs_types::content::ContentId;
 /// The five categories the engine declares, spelled out so a test can assert the
 /// table covers all of them and not merely the ones it happens to name.
 ///
-/// A list, not a `CountKind::ALL`: F39-E4's branch adds that constant, and a
-/// test that depended on it would stop compiling for a reason unrelated to what
-/// it measures. What this list *does* pin is that these five — and only these —
-/// are the categories the six distinctions resolve to.
+/// A list, not `CountKind::ALL`/`DeclaredCountKind::all()`, because what this
+/// pins is the **pairing**: which contract word means which declared category
+/// and which counted one, and the fact that the five resolve to exactly the
+/// categories those vocabularies declare (asserted below against both `ALL`
+/// lists). The list itself would say nothing that the pairing does not.
 const DECLARED_CATEGORIES: &[(ContractDistinction, DeclaredCountKind, CountKind)] = &[
     (
         ContractDistinction::Disabled,
@@ -129,6 +130,25 @@ fn accept_f39_e7_the_six_distinctions_resolve_in_the_contract_s_own_order() {
     let distinctions: Vec<ContractDistinction> =
         readings.iter().map(|reading| reading.distinction).collect();
     assert_eq!(distinctions, ContractDistinction::ALL.to_vec());
+    // The enum's own list is the contract's six, and the table has one row per
+    // entry of it: no seventh row can appear and none of the six can go missing.
+    assert_eq!(ContractDistinction::ALL.len(), 6);
+    // Each contract word resolves to its own condition state, so the six are six
+    // distinctions and not one word twice.
+    let states: Vec<ActorState> = readings
+        .iter()
+        .map(|reading| reading.condition_state)
+        .collect();
+    let distinct: std::collections::BTreeSet<ActorState> = states.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        states.len(),
+        "two contract words resolving to one condition state would not be six distinctions"
+    );
+    assert!(
+        !states.contains(&ActorState::Alive),
+        "the contract's six are states an actor is not alive in"
+    );
     for spelling in &spellings {
         assert!(
             ContractDistinction::ALL
@@ -229,6 +249,38 @@ fn accept_f39_e7_each_distinction_names_a_vocabulary_entry_and_a_producer_or_a_n
             "{distinction:?}: the named producer must be the transition that reports its category"
         );
     }
+
+    // The five named categories are exactly the categories the two vocabularies
+    // declare, so a sixth `CountKind`/`DeclaredCountKind` could not appear
+    // without this failing, and the sixth distinction resolves to none of them.
+    // Compared as sets: `DECLARED_CATEGORIES` is in the contract's order and the
+    // `ALL` lists in each enum's declaration order, which are different orders.
+    let mut declared: Vec<DeclaredCountKind> = DECLARED_CATEGORIES
+        .iter()
+        .map(|(_, declared, _)| *declared)
+        .collect();
+    declared.sort_unstable();
+    assert_eq!(declared, DeclaredCountKind::all());
+    let mut counted: Vec<CountKind> = DECLARED_CATEGORIES
+        .iter()
+        .map(|(_, _, counted)| *counted)
+        .collect();
+    counted.sort_unstable();
+    assert_eq!(counted, CountKind::ALL);
+    let mut resolved: Vec<CountKind> = contract_condition_distinctions()
+        .into_iter()
+        .filter_map(|row| row.counted)
+        .collect();
+    resolved.sort_unstable();
+    assert_eq!(resolved, counted);
+    assert_eq!(
+        contract_condition_distinctions()
+            .iter()
+            .filter(|row| row.counted.is_none())
+            .count(),
+        1,
+        "exactly one of the six resolves to no counted category: detached"
+    );
 }
 
 #[test]
@@ -237,13 +289,7 @@ fn accept_f39_e7_the_producer_column_is_the_inverse_of_the_only_counting_path() 
     // `from_lifecycle` maps to it, so the two directions must agree for every
     // category and every transition. Adding a transition that reports a category
     // — or removing one — breaks this test rather than quietly widening the table.
-    for counted in [
-        CountKind::Destroyed,
-        CountKind::Disabled,
-        CountKind::Captured,
-        CountKind::Escaped,
-        CountKind::Despawned,
-    ] {
+    for counted in CountKind::ALL.iter().copied() {
         let reported: Vec<LifecycleKind> = LifecycleKind::ALL
             .iter()
             .copied()
@@ -262,29 +308,31 @@ fn accept_f39_e7_the_producer_column_is_the_inverse_of_the_only_counting_path() 
     // The two categories no transition reports are exactly the two the table
     // names as unproduced, and the two transitions that count toward no category
     // at all are named here so a new one cannot be added silently.
-    let unreported: Vec<CountKind> = [
-        CountKind::Destroyed,
-        CountKind::Disabled,
-        CountKind::Captured,
-        CountKind::Escaped,
-        CountKind::Despawned,
-    ]
-    .into_iter()
-    .filter(|counted| counted.producer().is_none())
-    .collect();
+    let unreported: Vec<CountKind> = CountKind::ALL
+        .iter()
+        .copied()
+        .filter(|counted| counted.producer().is_none())
+        .collect();
     assert_eq!(unreported, vec![CountKind::Disabled, CountKind::Escaped]);
+    // One assertion per transition, not one per category: `from_lifecycle` takes
+    // only the lifecycle, so pairing it with a category would assert the same
+    // fact once per category and read as if it checked a pairing.
     for lifecycle in [LifecycleKind::PilotBailout, LifecycleKind::MissionRemoved] {
-        for counted in [
-            CountKind::Destroyed,
-            CountKind::Disabled,
-            CountKind::Captured,
-            CountKind::Escaped,
-            CountKind::Despawned,
-        ] {
+        assert_eq!(
+            CountKind::from_lifecycle(lifecycle),
+            None,
+            "{lifecycle:?} must count toward no category"
+        );
+    }
+    // Every transition that reports a category must be that category's producer,
+    // so the forward map and the derived reverse cannot drift in either
+    // direction.
+    for lifecycle in LifecycleKind::ALL.iter().copied() {
+        if let Some(counted) = CountKind::from_lifecycle(lifecycle) {
             assert_eq!(
-                CountKind::from_lifecycle(lifecycle),
-                None,
-                "{lifecycle:?} must count toward no category ({counted:?})"
+                counted.producer(),
+                Some(lifecycle),
+                "{lifecycle:?} reports {counted:?}, so that category's producer is this transition"
             );
         }
     }
@@ -770,7 +818,7 @@ fn accept_f39_e7_the_installation_spell_no_detached_category_on_either_counting_
     // does write detaches, in the block-declaration vocabulary, where they are
     // events. `zbd/c2/m05 OBJECTIVE23` is the clearest: a paratrooper drop that
     // completes an objective rather than counting detached actors.
-    assert!(census.release_family_declaration_sites() >= 24);
+    assert_eq!(census.detach_family_declaration_sites(), 24);
     let drop_sites = census.sites_of_family("DROP");
     assert_eq!(drop_sites.len(), 7);
     assert!(
@@ -795,4 +843,83 @@ fn accept_f39_e7_the_installation_spell_no_detached_category_on_either_counting_
             "{stem} must claim no counted condition"
         );
     }
+    // ...and the finding's per-stem table, so the prose cannot drift from the
+    // census: `DROP` 7 and `LAUNCH` 16 and `FREE` 1 are block declarations, the
+    // one `RELEASE` site is an objective kind, and the other eight stems claim
+    // nothing at all. (A hand-written table in a finding is not a measurement;
+    // this is.)
+    let block_declarations: Vec<(&str, usize)> = census
+        .family_counts()
+        .iter()
+        .map(|(stem, per_surface)| {
+            let count = per_surface
+                .iter()
+                .find(|(surface, _)| *surface == DetachedVocabularySurface::BlockDeclaration)
+                .map_or(0, |(_, count)| *count);
+            (*stem, count)
+        })
+        .collect();
+    assert_eq!(
+        block_declarations,
+        vec![
+            ("DETACH", 0),
+            ("RELEASE", 0),
+            ("DROP", 7),
+            ("EJECT", 0),
+            ("JETTISON", 0),
+            ("LAUNCH", 16),
+            ("LOOSE", 0),
+            ("FREE", 1),
+            ("UNDOCK", 0),
+            ("UNCOUPLE", 0),
+            ("DISCONNECT", 0),
+            ("CASTOFF", 0),
+        ]
+    );
+    assert_eq!(
+        block_declarations
+            .iter()
+            .map(|(_, count)| count)
+            .sum::<usize>(),
+        census.detach_family_declaration_sites(),
+        "the per-stem table and the family total must be the same sites"
+    );
+    // The `LAUNCH` sites the finding names, counted rather than asserted about:
+    // spawn-group names in one archive, `launch_warhawk` seven times,
+    // `launch_brigand` six and `launch_autogyro` three.
+    let launch = census.sites_of_family("LAUNCH");
+    assert!(launch.iter().all(|site| site.0 == "zbd/c4/m04"));
+    let mut launch_names: Vec<&str> = launch.iter().map(|site| site.3.as_str()).collect();
+    launch_names.sort_unstable();
+    assert_eq!(
+        launch_names,
+        vec![
+            "launch_autogyro",
+            "launch_autogyro",
+            "launch_autogyro",
+            "launch_brigand",
+            "launch_brigand",
+            "launch_brigand",
+            "launch_brigand",
+            "launch_brigand",
+            "launch_brigand",
+            "launch_warhawk",
+            "launch_warhawk",
+            "launch_warhawk",
+            "launch_warhawk",
+            "launch_warhawk",
+            "launch_warhawk",
+            "launch_warhawk",
+        ]
+    );
+    // The one `FREE` site, named.
+    assert_eq!(
+        census.sites_of_family("FREE"),
+        vec![(
+            "zbd/c5/m03".to_owned(),
+            DetachedVocabularySurface::BlockDeclaration,
+            Some("OBJECTIVE37".to_owned()),
+            "free_the_goose".to_owned(),
+        )]
+    );
 }

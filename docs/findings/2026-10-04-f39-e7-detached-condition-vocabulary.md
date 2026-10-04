@@ -32,6 +32,17 @@ F39 sheet's own non-negotiable 2 names the same five as the counters. Left
 alone, the five-category vocabulary reads as though it satisfied the contract's
 six.
 
+**Measured while reviewing: the six condition states are declared but none of
+them is written.** `Condition::ActorIs` compares against
+`cs_script::runtime::MissionFacts::actors`, a map the *simulation's caller*
+supplies; every caller in this repository passes `MissionFacts::default()`, which
+is empty, so no `Condition::ActorIs` can be satisfied for any of the six today —
+`ActorState::Detached` included. That is a limit on the whole condition
+vocabulary, not a property of the sixth, and it belongs to the stage that
+populates `MissionFacts` (F37's mission runtime, F38's adapters), which is why
+the `producer` column below is about the **counted category** and the named
+reasons are about counted categories too.
+
 ## The answer, in one line
 
 **A detached actor is an event in the original, not a counted category, and in
@@ -177,8 +188,8 @@ finding already rules is not a counted transition, and one site is not a
 vocabulary.
 
 The non-zero that keeps this absence from being vacuous: **24** block
-declarations spell the release family, and all seven `DROP` sites are block
-declarations of a numbered `OBJECTIVE<n>`:
+declarations spell the detach family (`DROP` 7, `LAUNCH` 16, `FREE` 1), and all
+seven `DROP` sites are block declarations of a numbered `OBJECTIVE<n>`:
 
 | archive | block | name |
 | --- | --- | --- |
@@ -190,12 +201,15 @@ declarations of a numbered `OBJECTIVE<n>`:
 | `zbd/c3/m01` | `OBJECTIVE22` | `disable_dropoff` |
 | `zbd/c4/m03` | `OBJECTIVE2` | `dropped_blacke` |
 
-The `LAUNCH` sites are spawn-group names (`launch_warhawk` ×9, `launch_brigand`
+The `LAUNCH` sites are spawn-group names (`launch_warhawk` ×7, `launch_brigand`
 ×6, `launch_autogyro` ×3, all in `zbd/c4/m04` — F34-C's own machinery), and the
 one `FREE` site is `free_the_goose` on `zbd/c5/m03 OBJECTIVE37`, the Spruce
 Goose. They are counted because they are in the family and they are on a
 declared surface; naming them is what stops the family from being quietly
-narrowed to make the answer come out zero.
+narrowed to make the answer come out zero. The acceptance suite asserts this
+table per stem (`DROP` 7, `LAUNCH` 16, `FREE` 1, the other nine 0) and the
+`LAUNCH` and `FREE` sites by name, so the numbers above are measured rather than
+transcribed.
 
 The release/drop vocabulary that lives in the **shared** readers — `release_hook`
 and its `snd_release_hook` sound group, the `warlaunchhook` animation,
@@ -272,9 +286,14 @@ resolves each of the six to:
 Every cell is read out of the enum it names — `declared_kind()` maps the
 distinction, `lower_kind` is the production lowering, `producer` is
 `CountKind::producer` — so the table cannot go stale without a compile error.
-`ContractDistinction::ALL` is exhaustive by construction and the function
-asserts the table's length against it, so a seventh distinction cannot go
-missing from the answer.
+Exhaustiveness is a **compile-time** property of the four per-distinction
+queries (`contract_spelling`, `condition_state`, `declared_kind`,
+`unproduced_reason`), each a `match` over `ContractDistinction` with no
+catch-all arm: a seventh variant cannot be added without deciding its contract
+word, its condition state, its declared category and its reason.
+`ContractDistinction::ALL` is the order the table is built in, and the acceptance
+suite pins its length to the contract's six and its contents to the six words the
+contract's sentence spells.
 
 The `producer` column is one derived function rather than five written-out arms:
 `CountKind::producer` is `CountKind::from_lifecycle` asked the other way over
@@ -328,6 +347,10 @@ The named answer, and each part is production code today:
   distinctions, the engine keeps six *condition* states, and the sixth
   distinction's counted-category half is answered by name instead of by
   invention.
+* **No producer was invented for `ActorState::Detached`.** The state exists, so
+  a `Condition::ActorIs { state: Detached }` compiles today; nothing writes it,
+  and that is recorded above as a limit on the whole vocabulary rather than
+  papered over with a writer this stage cannot measure.
 
 ## The contrary hypotheses, and what would settle each
 
@@ -377,13 +400,13 @@ The named answer, and each part is production code today:
 
 | Test | Covers |
 | --- | --- |
-| `accept_f39_e7_the_six_distinctions_resolve_in_the_contract_s_own_order` | six rows, the contract's six spellings in its order, exhaustiveness against `ContractDistinction::ALL` |
-| `accept_f39_e7_each_distinction_names_a_vocabulary_entry_and_a_producer_or_a_named_reason` | the table above: five categories reached through the production lowering, exactly three producers, the three named reasons, and each producer round-tripping through `from_lifecycle` |
-| `accept_f39_e7_the_producer_column_is_the_inverse_of_the_only_counting_path` | `producer()` against `from_lifecycle` for all five categories and all five transitions; exactly two categories unreported; `PilotBailout`/`MissionRemoved` count toward none |
+| `accept_f39_e7_the_six_distinctions_resolve_in_the_contract_s_own_order` | six rows, the contract's six spellings in its order, exhaustiveness against `ContractDistinction::ALL`, `ALL`'s own length of six, six distinct condition states and none of them `Alive` |
+| `accept_f39_e7_each_distinction_names_a_vocabulary_entry_and_a_producer_or_a_named_reason` | the table above: five categories reached through the production lowering, exactly three producers, the three named reasons, each producer round-tripping through `from_lifecycle`, and the five resolving to exactly `DeclaredCountKind::all()` and `CountKind::ALL` with one `None` |
+| `accept_f39_e7_the_producer_column_is_the_inverse_of_the_only_counting_path` | `producer()` against `from_lifecycle` for every category in `CountKind::ALL` and every transition in `LifecycleKind::ALL`, both directions; exactly two categories unreported; `PilotBailout`/`MissionRemoved` count toward none |
 | `accept_f39_e7_a_detached_actor_is_represented_by_a_release_that_keeps_its_objective` | the named location, as behaviour: `anchor_sample` → `release_payload` keeps the objective, inherits the carrier's velocity plus the ejection, and `MissionRemoved` is terminal and counts toward nothing |
 | `accept_f39_e7_the_spelling_rule_is_a_segment_match_over_a_published_stem_list` | every stem finds itself and is distinct and case-insensitive; `MSG_OBJ_RELEASE`/`DETACHMENT`/`drop_paratroopers`/`activate_dropoff_node`/`free_the_goose` match; `redetached`, `undroppable`, empty and the ten measured part-state spellings do not |
 | `accept_f39_e7_the_reader_keeps_the_three_surfaces_apart` | a hand-built record: a stage beside a threshold is counted, one beside no threshold is a declaration, a sound group and a `WAKE_ANIM` are declarations, only the three labels are objective kinds, the surfaces are disjoint, the family is attributed per surface, and an absent `targets.zrd` is a measured absence |
-| `accept_f39_e7_the_installation_spell_no_detached_category_on_either_counting_surface` (retail) | the whole table above over `$CS_GAME_DIR`: the fingerprint, both denominators, the three surfaces' counts, zero `DETACH` sites on every surface, the single `MSG_OBJ_RELEASE` objective kind by name, and the seven `DROP` block declarations including `zbd/c2/m05 OBJECTIVE23 drop_paratroopers` |
+| `accept_f39_e7_the_installation_spell_no_detached_category_on_either_counting_surface` (retail) | the whole table above over `$CS_GAME_DIR`: the fingerprint, both denominators, the three surfaces' counts, zero `DETACH` sites on every surface, the single `MSG_OBJ_RELEASE` objective kind by name, the per-stem block-declaration table (`DROP` 7, `LAUNCH` 16, `FREE` 1, the other nine 0) summing to the family total, the 16 `LAUNCH` and 1 `FREE` sites by name, and the seven `DROP` block declarations including `zbd/c2/m05 OBJECTIVE23 drop_paratroopers` |
 
 ## Measured sensitivity (mutation probes, all observed on this branch)
 
@@ -419,6 +442,17 @@ what the six-item reconciliation claims.
 untouched, so F39-D's, F39-E1's and F39-E5's committed measurements stay exactly
 as published.
 
+Two names changed in the review pass, both inside this stage's own additions and
+neither used by an earlier stage:
+`DetachedVocabularyCensus::release_family_declaration_sites` became
+`detach_family_declaration_sites`, because it counts block declarations in the
+whole detach family (`DROP`, `LAUNCH`, `FREE`) and not the `RELEASE` stem the old
+name promised; and the evidence harness now derives each assertion's `evidence`
+list from the report's own artifacts instead of writing the names out, because the
+written-out name was `dormant-reveal-census.json` — F39-E1's artifact, which this
+report does not produce and which `tools/validate_evidence.py` does not check
+against the artifact list. The report was regenerated on the fixed tree.
+
 ## Unknown / deferred (not guessed)
 
 1. **What a counted condition means.** Unchanged and still carried by F39-E1:
@@ -442,6 +476,15 @@ as published.
    evidence of how the original behaves, only of what its files declare.
 6. **The byte-level `detach` grep is corroboration, not a measurement**, and it
    is byte-level: a name spelled in a non-ASCII encoding would not be found.
+7. **No engine path writes an `ActorState`, `Detached` included** (measured while
+   reviewing, and recorded in `ContractDistinction::condition_state`'s docs):
+   `Condition::ActorIs` reads `MissionFacts::actors`, which the simulation's
+   caller supplies, and every caller passes an empty map. The sixth's *condition*
+   half is therefore expressible but not yet observable, for all six alike.
+   Resolving stage: F37's mission runtime / F38's source adapters, which own
+   populating `MissionFacts` from the simulation's authoritative actor state.
+   Nothing in this stage's verdict depends on it: the verdict is about what the
+   original's records declare and about which categories the counters have.
 
 ## Commands
 

@@ -3974,6 +3974,17 @@ impl ContractDistinction {
 
     /// The `cs_script::ir::ActorState` a `Condition::ActorIs` compares against,
     /// which is the vocabulary the contract's sentence is written about.
+    ///
+    /// All six distinctions resolve here, including [`Self::Detached`]: the
+    /// script IR declares all six states. **Nothing in the engine writes one
+    /// yet**, `detached` included — the states arrive as a
+    /// `cs_script::runtime::MissionFacts` the simulation's caller supplies, and
+    /// every caller in this repository passes an empty map, so a
+    /// `Condition::ActorIs` cannot be satisfied for any of the six today. That
+    /// is one limit on the whole vocabulary (populating `MissionFacts` is
+    /// F37/F38's remaining mission-runtime work), not a property of the sixth,
+    /// and it is why [`Self::unproduced_reason`] is about the **counted
+    /// category** rather than about this state.
     #[must_use]
     pub const fn condition_state(self) -> ActorState {
         match self {
@@ -4072,16 +4083,27 @@ pub struct ContractDistinctionReading {
 /// or a named reason it has none.
 ///
 /// The single queryable answer to "does the engine implement the contract's six
-/// distinctions?". [`ContractDistinction::ALL`] is exhaustive by construction:
-/// the table is built from it, so a seventh distinction added to the enum cannot
-/// be missing from here without the length check below failing to compile.
+/// distinctions?".
+///
+/// Exhaustiveness is a **compile-time** property, and it comes from the
+/// per-distinction queries rather than from anything here:
+/// [`ContractDistinction::contract_spelling`],
+/// [`ContractDistinction::condition_state`],
+/// [`ContractDistinction::declared_kind`] and
+/// [`ContractDistinction::unproduced_reason`] are `match`es over the enum with
+/// no catch-all arm, so a seventh variant cannot be added without deciding its
+/// contract word, its condition state, its declared category and its reason —
+/// and every cell of the returned table is read out of one of those queries, so
+/// a cell cannot go stale either. [`ContractDistinction::ALL`] is the order the
+/// table is built in, and its length is the contract's six; the acceptance
+/// suite pins that against the six words the contract's sentence spells.
 #[must_use]
 pub fn contract_condition_distinctions() -> Vec<ContractDistinctionReading> {
-    let readings: Vec<ContractDistinctionReading> = ContractDistinction::ALL
+    ContractDistinction::ALL
         .iter()
         .map(|distinction| {
             let declared = distinction.declared_kind();
-            let counted = declared.map(lower_kind);
+            let counted = distinction.counted_kind();
             ContractDistinctionReading {
                 distinction: *distinction,
                 contract_spelling: distinction.contract_spelling(),
@@ -4092,13 +4114,7 @@ pub fn contract_condition_distinctions() -> Vec<ContractDistinctionReading> {
                 unproduced_reason: distinction.unproduced_reason(),
             }
         })
-        .collect();
-    assert_eq!(
-        readings.len(),
-        ContractDistinction::ALL.len(),
-        "every distinction the contract names must resolve to one reading"
-    );
-    readings
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -4375,16 +4391,19 @@ impl DetachedVocabularyCensus {
             .sum()
     }
 
-    /// How many block declarations spell one of the release/drop families — the
-    /// measured non-zero that keeps the absence above from being vacuous.
+    /// How many **block declarations** spell the detach family, that is any stem
+    /// of [`cs_content::objectives::DETACHED_SPELLING_STEMS`] — the measured
+    /// non-zero that keeps the absence above from being vacuous.
+    ///
+    /// Named for the family, not for one stem: over the owner's installation the
+    /// measured sites are `DROP` (7), `LAUNCH` (16) and `FREE` (1), and the
+    /// contract's own `DETACH` stem contributes none. `sites_of_family` answers
+    /// the same question per stem and names every site.
     #[must_use]
-    pub fn release_family_declaration_sites(&self) -> usize {
+    pub fn detach_family_declaration_sites(&self) -> usize {
         self.names()
             .filter(|site| {
-                site.surface == DetachedVocabularySurface::BlockDeclaration
-                    && site
-                        .family
-                        .is_some_and(|family| family != DETACH_CONTRACT_STEM)
+                site.surface == DetachedVocabularySurface::BlockDeclaration && site.family.is_some()
             })
             .count()
     }

@@ -76,9 +76,13 @@ fn review_method(census: &DetachedVocabularyCensus) -> String {
      of how the original behaves, only of what its files declare; (5) whether an original RECORD may \
      declare one of the five counted categories is decided in one place, \
      cs_content::objectives::original_count_category_refusal (F39-E4), and this task neither restates \
-     nor widens that census. `unknowns` is empty because every unresolved item above is a limit on \
-     the claim rather than an unresolved measurement: every row of the census resolved. Validated with \
-     tools/validate_evidence.py --require-pass.",
+     nor widens that census; (6) no engine path writes an ActorState, ActorState::Detached \
+     included: Condition::ActorIs reads MissionFacts::actors, which the simulation's caller \
+     supplies and which every caller in this repository passes empty, so the sixth's condition \
+     half is expressible but not yet observable, for all six alike, and F37's mission runtime with \
+     F38's adapters own populating it. `unknowns` is empty because every unresolved item above \
+     is a limit on the claim rather than an unresolved measurement: every row of the census \
+     resolved. Validated with tools/validate_evidence.py --require-pass.",
         census.readers(),
         census.mission_readers(),
         census.shared_readers(),
@@ -94,7 +98,7 @@ fn review_method(census: &DetachedVocabularyCensus) -> String {
             cs_content::objectives::DETACH_STEM,
         ) + census.family_sites(DetachedVocabularySurface::ObjectiveKind, "DETACH"),
         release.len(),
-        census.release_family_declaration_sites(),
+        census.detach_family_declaration_sites(),
         drop.len(),
     )
 }
@@ -228,7 +232,7 @@ fn evidence_report_f39_e7_writes_the_acceptance_report() {
          \"shared_readers\": {}, \"archives_without_targets\": [{}], \"archives_without_objectives\": [{}], \
          \"counted_conditions\": {}, \"counted_condition_names\": {}, \"objective_kinds\": {}, \
          \"objective_kind_names\": {}, \"block_declarations\": {}, \"block_declaration_names\": {}, \
-         \"detached_category_sites\": {}, \"release_family_declaration_sites\": {}, \
+         \"detached_category_sites\": {}, \"detach_family_declaration_sites\": {}, \
          \"spelling_stems\": [{}], \"family_counts\": [{}], \"family_sites\": [{}], \"rows\": [{}]}}\n",
         jstr(&install_sha256),
         jstr(&candidate_tree),
@@ -246,7 +250,7 @@ fn evidence_report_f39_e7_writes_the_acceptance_report() {
         census.sites(DetachedVocabularySurface::BlockDeclaration),
         census.distinct_names(DetachedVocabularySurface::BlockDeclaration),
         census.detached_category_sites(),
-        census.release_family_declaration_sites(),
+        census.detach_family_declaration_sites(),
         counted(DETACHED_SPELLING_STEMS, |stem| jstr(stem)),
         families.join(", "),
         sites.join(", "),
@@ -282,7 +286,7 @@ fn evidence_report_f39_e7_writes_the_acceptance_report() {
         suite.passed,
         suite.failed,
         suite.ignored,
-        assertion_array(&suite.assertions),
+        assertion_array(&suite.assertions, &artifacts),
         artifact_array(&artifacts),
         jstr(&reviewer),
         jstr(&review_method(&census)),
@@ -620,13 +624,28 @@ fn engine_json(engine: &Engine) -> String {
     )
 }
 
-fn assertion_array(assertions: &[(String, &'static str)]) -> String {
+/// One entry per assertion, each naming **this report's own** artifacts.
+///
+/// The names are taken from `artifacts` rather than written down, so an
+/// assertion can never cite a file this report does not produce — the mistake a
+/// hand-written name makes, and one `tools/validate_evidence.py` does not catch
+/// (it checks that `evidence` is a non-empty list of strings, never that the
+/// names are artifacts). Every assertion is evidence from the same two
+/// observations: the recorded acceptance run and the census this run produced.
+fn assertion_array(
+    assertions: &[(String, &'static str)],
+    artifacts: &[(String, String, String)],
+) -> String {
+    let names: String = artifacts
+        .iter()
+        .map(|(name, _, _)| jstr(name))
+        .collect::<Vec<_>>()
+        .join(", ");
     let items: Vec<String> = assertions
         .iter()
         .map(|(name, status)| {
             format!(
-                "{{\"id\": {}, \"status\": {status:?}, \"evidence\": [\"cargo-test.log\", \
-                 \"dormant-reveal-census.json\"]}}",
+                "{{\"id\": {}, \"status\": {status:?}, \"evidence\": [{names}]}}",
                 jstr(name)
             )
         })
