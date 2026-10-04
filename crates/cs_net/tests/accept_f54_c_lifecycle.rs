@@ -135,10 +135,10 @@ fn loopback() -> MutexGuard<'static, ()> {
 /// retransmitted, so a lost one fails this test rather than being retried.
 ///
 /// [`STEP`] is 16 ms, so this budget is about a second of connection-layer time
-/// while the client's own disconnect window — the pinned unsecure token's
-/// fifteen-second `timeout_seconds` — is still far away. A connection that
-/// dies inside this budget died by hang-up, and the reason assertion below names
-/// which party sent it.
+/// while the client's own disconnect window — [`LOOPBACK_WINDOW`] seconds of
+/// `timeout_seconds` — is still far away. A connection that dies inside this
+/// budget died by hang-up, and the reason assertion below names which party
+/// sent it.
 const HANGUP_ROUNDS: usize = 64;
 
 /// A live loopback pair: one bound host session and one connecting client
@@ -2262,9 +2262,9 @@ fn accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer() {
 
     // Both sides are driven by the same [`STEP`], which is the clock every pump
     // here takes: the pinned connection layer times its own 250 ms keep-alive
-    // and its five-second disconnect window off the duration each pump is
-    // handed, so a round that advances one side by a second races that window
-    // instead of the handshake.
+    // and its [`LOOPBACK_WINDOW`] disconnect window off the duration each pump
+    // is handed, so a round that advances one side by a second races that
+    // window instead of the handshake.
     let mut refused = false;
     for _ in 0..MAX_ROUNDS {
         link.host_notices.extend(link.host.pump(STEP));
@@ -2427,8 +2427,14 @@ fn accept_f54_c_a_retry_tells_a_returning_client_its_verdict() {
     refused_hello.compatibility.rules_sha256 = ContentHash::from_bytes([0x00; 32]);
     let addr = link.host.local_addr().expect("the host has an address");
     let mut refused = RawPeer {
-        transport: ClientTransport::connect(refused_hello, addr, 0xC2, Duration::ZERO)
-            .expect("the refused client socket binds"),
+        transport: ClientTransport::connect_with_window(
+            refused_hello,
+            addr,
+            0xC2,
+            Duration::ZERO,
+            LOOPBACK_WINDOW,
+        )
+        .expect("the refused client socket binds"),
     };
     let mut told = false;
     for _ in 0..MAX_ROUNDS {

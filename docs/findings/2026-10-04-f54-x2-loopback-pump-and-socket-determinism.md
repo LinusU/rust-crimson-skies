@@ -353,6 +353,46 @@ branch's mutex the only failing test was #600's, and with #600 landed that test
 is now driven from one clock. #600 and this branch are complementary and touch
 no common logic.
 
+## Second review, genuinely independent (`swe2-max-1`, fresh context)
+
+The reproduction section above was written by the implementer reviewing its own
+branch, so it was honest but not independent evidence. This section is a second
+review by a different agent (`Devin SWE-2/swe2-max-1`) with a fresh context.
+
+Checked against the pinned sources rather than taken from the text:
+
+* `renetcode2-0.16.1/src/client.rs:103-112` — `ClientAuthentication::Unsecure`
+  generates its token with `expire_seconds = 300`, `timeout_seconds = 15` and
+  the all-zero key, exactly as `unsecure_authentication` does with the caller's
+  window. `client.rs:303-304` — `timeout_seconds <= 0` disables the check, which
+  is why `ConnectWindow::new` refuses it.
+* `renetcode2-0.16.1/src/server.rs:177-182` — `ServerAuthentication::Unsecure`
+  uses that same zero key and only skips the host-list check; `server.rs:455`
+  has the host adopt the decoded token's `timeout_seconds`.
+* `ConnectToken::generate`'s parameter order (`token.rs:91-101`) matches the
+  call; `NETCODE_SEND_RATE` is 250 ms (`lib.rs:61`).
+
+Found and fixed in this pass:
+
+* `accept_f54_c_a_retry_tells_a_returning_client_its_verdict` still built its
+  refused `RawPeer` with `ClientTransport::connect` — the fifteen-second
+  default — so one socket in the file was still running the window this branch
+  exists to get away from. It now uses `connect_with_window` with
+  `LOOPBACK_WINDOW` like every other site.
+* Two comments still named the old numbers: `HANGUP_ROUNDS`'s doc said the
+  client's disconnect window was the pinned fifteen seconds and the retry
+  hang-up test said "five-second disconnect window". Under this branch the
+  link's client runs [`LOOPBACK_WINDOW`] (120 s); both comments now say so.
+
+Verification on the final tree (this branch plus these fixes): `cargo fmt
+--all -- --check`, `cargo clippy --workspace --all-targets --all-features
+--locked -- -D warnings`, `cargo test --workspace --locked` (all green) and the
+`accept_f54_c_` selection with `--include-ignored` (31 tests, all run, all
+pass). Criterion 2 re-measured on this commit: 24 spinners confirmed alive on
+11 cores, load average ~80-85, **50 of 50 runs of `accept_f54_c_lifecycle` at
+`--test-threads=16` passed**, and the full `cargo test --workspace --locked`
+run above ran with the same load still applied.
+
 ## Sensitivity
 
 `accept_f54_c_the_connect_window_is_a_fixture_parameter_over_the_default`
