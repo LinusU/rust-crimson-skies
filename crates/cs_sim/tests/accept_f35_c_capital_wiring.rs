@@ -1324,4 +1324,51 @@ fn accept_f35_c_commands_refuse_unknown_actors_and_ids_by_name() {
             .count(),
         1
     );
+
+    // A carrier at the top of the actor id space leaves the session nothing to
+    // hand out. The tick refuses rather than resolving a launch it could not
+    // give an aircraft, and nothing is lost: the launch is still waiting.
+    let mut exhausted = CapitalShipSet::new(10).expect("valid");
+    let top = ActorId(u32::MAX);
+    exhausted
+        .register(
+            rigged_ship(
+                top,
+                Some(known_rig([0.0, -5.0, 0.0], 4)),
+                designed(0.0),
+                Some(synthetic_capital_trajectory()),
+            ),
+            None,
+        )
+        .expect("registers");
+    let stranded = exhausted
+        .schedule_launch(
+            top,
+            &key("launch_bay_1"),
+            fighter(),
+            Tick(35),
+            SYNTHETIC_LAUNCH_EJECT_M_S,
+        )
+        .expect("schedules");
+    assert_eq!(
+        exhausted.advance_to(Tick(35)),
+        Err(CapitalRuntimeError::Launch(LaunchRefusal::ActorIdExhausted)),
+        "the pass refuses instead of releasing an id it cannot name"
+    );
+    assert_eq!(
+        exhausted.pending_launches(top).expect("known"),
+        vec![cs_sim::capital::PendingLaunch {
+            id: stranded.clone(),
+            aircraft: fighter(),
+            ready_tick: Tick(35),
+        }],
+        "the refused tick resolved nothing: the launch still waits"
+    );
+    assert!(
+        matches!(
+            exhausted.launch_status(top, &stranded).expect("known"),
+            Some(LaunchStatus::Pending { .. })
+        ),
+        "a refused pass never produces a half-released launch"
+    );
 }

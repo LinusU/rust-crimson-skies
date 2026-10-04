@@ -1,10 +1,10 @@
 //! The capital-ship runtime aggregate: subsystems, propulsion, bays,
-//! turrets, anchors, cargo, ownership and trajectory (F35-A), plus the
-//! F35-B ship-level behavior — section damage pools, the weakpoint hit
-//! resolver and turret aim/fire gating.
+//! turrets, anchors, cargo, ownership and trajectory (F35-A), the F35-B
+//! ship-level behavior — section damage pools, the weakpoint hit resolver and
+//! turret aim/fire gating — and the F35-C accessors the wiring consumes.
 //!
 //! Spec: `specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`,
-//! stages `### F35-A` and `### F35-B`. Shared contract:
+//! stages `### F35-A`, `### F35-B` and `### F35-C`. Shared contract:
 //! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
 //! [`CapitalShip`] ties the F35-A contracts to one actor. F35-B adds the
@@ -28,6 +28,12 @@
 //!   boresight, a destroyed turret (or a destroyed ship) refuses, and an
 //!   unresolved weapon binding refuses to fire by claim rather than
 //!   inventing a gun.
+//!
+//! F35-C adds the three accessors the wiring consumes:
+//! [`CapitalShip::launch_rig`] (the release socket and capacity a launch bay
+//! carries), [`CapitalShip::docking_open`] (the docking eligibility a capture
+//! latches through) and [`CapitalShip::adopt_ownership`] (the one place a
+//! ship's owner changes).
 //!
 //! Runtime behavior is *designed*; no original coefficient is measured.
 

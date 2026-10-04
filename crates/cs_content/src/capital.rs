@@ -1,9 +1,10 @@
 //! The declared capital-ship schema: provenance-carrying ship, subsystem
 //! and bay records (F35-A; F35-B adds the turret boresight the runtime's
-//! traverse cone centers on).
+//! traverse cone centers on; F35-C consumes the launch bay's socket and
+//! capacity through the lowering boundary).
 //!
 //! Spec: `specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`,
-//! stages `### F35-A` and `### F35-B`. Shared contract:
+//! stages `### F35-A`, `### F35-B` and `### F35-C`. Shared contract:
 //! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
 //! This module is the **content half** of the capital-ship contract — the

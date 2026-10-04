@@ -406,10 +406,11 @@ pub struct CapitalShipSet {
     ships: BTreeMap<ActorId, ShipState>,
     /// How long a destroyed ship stays in the world before it despawns.
     despawn: DespawnPolicy,
-    /// The next actor id handed to a released aircraft. It starts above every
-    /// registered capital id and only ever increases: an id is never reused
-    /// within a session, not even after a teardown.
-    next_aircraft: u32,
+    /// The next actor id handed to a released aircraft, as a `u64` so a ship
+    /// registered at the top of the `u32` id space pushes the allocator past
+    /// it instead of colliding with it. It only ever increases: an id is never
+    /// reused within a session, not even after a teardown.
+    next_aircraft: u64,
 }
 
 impl CapitalShipSet {
@@ -531,7 +532,7 @@ impl CapitalShipSet {
         let wreck = ship.is_destroyed().then(|| zeroed(pose));
         // A registered ship's id must never collide with one the set later
         // hands to a released aircraft, so the allocator starts above it.
-        let next = ship.actor().0.saturating_add(1);
+        let next = u64::from(ship.actor().0) + 1;
         self.next_aircraft = self.next_aircraft.max(next);
         let despawn = self.despawn;
         let mut wiring = ShipWiring::new(
@@ -630,8 +631,9 @@ impl CapitalShipSet {
     /// [`CapitalRuntimeError::Propulsion`] or, when the session has no actor
     /// ids left for the aircraft this tick would release,
     /// [`CapitalRuntimeError::Launch`] with
-    /// [`LaunchRefusal::ActorIdExhausted`]. The id space is reserved before
-    /// anything is committed, so that refusal leaves the tick unapplied.
+    /// [`LaunchRefusal::ActorIdExhausted`]. That last refusal commits the
+    /// tick's motion — the pass runs last — but spends no id and resolves no
+    /// launch, so a later tick still finds the launches waiting.
     pub fn step(&mut self) -> Result<Vec<CapitalShipEvent>, CapitalRuntimeError> {
         let next = self
             .tick
@@ -758,14 +760,29 @@ impl CapitalShipSet {
     /// Commits one tick's resolved launches: every planned release becomes
     /// exactly one aircraft carrying a freshly allocated session id.
     fn run_launch_pass(&mut self) -> Result<Vec<CapitalShipEvent>, CapitalRuntimeError> {
+        // Refuse before anything is resolved when the session cannot supply an
+        // id for every launch that could run: resolving a launch and then
+        // failing for an id would leave the id resolved with no aircraft behind
+        // it. The count is an upper bound, so the reservation below cannot fail
+        // once this has passed.
+        let waiting: usize = self
+            .ships
+            .values()
+            .map(|state| state.wiring.ledger.pending().count())
+            .sum();
+        self.ensure_aircraft_capacity(waiting)?;
         let plans = self.resolve_launch_pass();
         let releases = plans
             .iter()
             .filter(|plan| matches!(plan, LaunchPlan::Release { .. }))
             .count();
-        // Reserve the whole block of ids before committing anything, so an
-        // exhausted id space refuses the tick instead of releasing half of it.
-        let base = self.reserve_aircraft(releases)?;
+        // The block is reserved in one go, so an exhausted space cannot release
+        // half the launches. A tick with nothing to release needs no id.
+        let base = if releases > 0 {
+            self.reserve_aircraft(releases)?
+        } else {
+            0
+        };
         let at = self.tick;
         let mut next = base;
         let mut events = Vec::new();
@@ -821,14 +838,37 @@ impl CapitalShipSet {
         Ok(events)
     }
 
-    /// Reserves `count` session-fresh actor ids and returns the first.
-    fn reserve_aircraft(&mut self, count: usize) -> Result<u32, CapitalRuntimeError> {
-        let count = u32::try_from(count).map_err(|_| LaunchRefusal::ActorIdExhausted)?;
-        let base = self.next_aircraft;
-        self.next_aircraft = self
+    /// Whether the session could supply `count` ids right now.
+    ///
+    /// A session whose ships have consumed the `u32` actor id space cannot
+    /// release anything: it refuses instead of wrapping onto an id that already
+    /// names something. Because the check is an upper bound on the tick's
+    /// releases, such a session refuses every tick while a launch waits — a
+    /// loud refusal naming the cause, never a launch resolved with no aircraft
+    /// behind it.
+    fn ensure_aircraft_capacity(&self, count: usize) -> Result<(), CapitalRuntimeError> {
+        let count = u64::try_from(count).map_err(|_| LaunchRefusal::ActorIdExhausted)?;
+        let end = self
             .next_aircraft
             .checked_add(count)
             .ok_or(LaunchRefusal::ActorIdExhausted)?;
+        u32::try_from(end).map_err(|_| LaunchRefusal::ActorIdExhausted)?;
+        Ok(())
+    }
+
+    /// Reserves `count` session-fresh actor ids and returns the first. The
+    /// block must fit in the `u32` actor id space; nothing is reserved on
+    /// failure.
+    fn reserve_aircraft(&mut self, count: usize) -> Result<u32, CapitalRuntimeError> {
+        let count = u64::try_from(count).map_err(|_| LaunchRefusal::ActorIdExhausted)?;
+        let end = self
+            .next_aircraft
+            .checked_add(count)
+            .ok_or(LaunchRefusal::ActorIdExhausted)?;
+        let base =
+            u32::try_from(self.next_aircraft).map_err(|_| LaunchRefusal::ActorIdExhausted)?;
+        u32::try_from(end).map_err(|_| LaunchRefusal::ActorIdExhausted)?;
+        self.next_aircraft = end;
         Ok(base)
     }
 
@@ -1477,7 +1517,10 @@ impl CapitalShipSet {
             .get_mut(&carrier)
             .ok_or(CapitalRuntimeError::UnknownShip(carrier))?;
         let progress = current_capture(state, ticket)?;
-        let stage = progress.transaction.abort().map_err(CapitalRuntimeError::from)?;
+        let stage = progress
+            .transaction
+            .abort()
+            .map_err(CapitalRuntimeError::from)?;
         state.wiring.capture = None;
         Ok(stage)
     }

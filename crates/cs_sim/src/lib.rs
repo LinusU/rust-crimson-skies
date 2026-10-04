@@ -199,24 +199,31 @@
 //! released payloads with their carrier's faction and motion. The pickup,
 //! gate and cargo wiring into the mission host is F34-C.
 //!
-//! [`capital`] is the F35-A capital-ship contract plus the F35-B runtime
-//! (`specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`,
-//! stages `### F35-A` and `### F35-B`): the [`capital::SubsystemGraph`] of
-//! engines, bays, turrets, docking anchors, gas cells and structural
-//! sections whose [`capital::SubsystemGraph::disable`] applies the
-//! destroyed part's behavior; the [`capital::EngineSpec`] thrust sum a
-//! disabled engine removes; the explicit tick-indexed
-//! [`capital::ExposureWindow`] that makes a bay a weakpoint only while
-//! open; the once-only [`capital::LaunchLedger`] and
-//! [`capital::LaunchSocket`] release; the staged
-//! [`capital::CaptureTransaction`] ownership contract; and the
-//! [`capital::CapitalShipSet`] session runtime whose steps move ships at
-//! their surviving propulsion fraction, whose [`capital::CapitalShip::apply_hit`]
-//! gates weakpoint damage behind the exposure window and section pools, and
-//! whose [`capital::CapitalShip::aim_turret`]/[`capital::CapitalShip::may_fire`]
+//! [`capital`] is the F35-A capital-ship contract, the F35-B runtime and the
+//! F35-C wiring (`specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`,
+//! stages `### F35-A`, `### F35-B` and `### F35-C`): the
+//! [`capital::SubsystemGraph`] of engines, bays, turrets, docking anchors,
+//! gas cells and structural sections whose
+//! [`capital::SubsystemGraph::disable`] applies the destroyed part's behavior;
+//! the [`capital::EngineSpec`] thrust sum a disabled engine removes; the
+//! explicit tick-indexed [`capital::ExposureWindow`] that makes a bay a
+//! weakpoint only while open; the once-only [`capital::LaunchLedger`],
+//! [`capital::LaunchSocket`] and [`capital::LaunchBayRig`] release driven by
+//! the [`capital::CapitalShipSet`] tick pass, which releases each launch id
+//! exactly once and cancels what a destroyed bay or a dying carrier can no
+//! longer run; the staged [`capital::CaptureTransaction`] ownership contract
+//! whose completion switches ownership, guns, control and the docking gate in
+//! one step under a [`capital::CaptureTicket`]; the
+//! [`capital::CargoLedger`] bounded by the ship's declared capacity; and the
+//! [`capital::DestructionState`] staged-destruction phase that keeps
+//! destruction and despawn separate. The [`capital::CapitalShipSet`] session
+//! runtime's steps move ships at their surviving propulsion fraction, its
+//! [`capital::CapitalShip::apply_hit`] gates weakpoint damage behind the
+//! exposure window and section pools, and its
+//! [`capital::CapitalShip::aim_turret`]/[`capital::CapitalShip::may_fire`]
 //! gate turret aim and fire. The declared schema is `cs_content::capital`
-//! and the lowering boundary is `cs_app::capital`; the launch/capture
-//! wiring is F35-C.
+//! and the lowering boundary is `cs_app::capital`; original mission
+//! validation is F35-D.
 //!
 //! [`interaction`] is the F36-A docking/pickup/boarding/plane-swap contract
 //! (`specs/F36-docking-passenger-pickups-boarding-and-plane-swaps.md`, stage
