@@ -54,7 +54,7 @@
 //! interpolation delay or remote-aircraft presentation has been measured, and
 //! none is asserted here.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
 use cs_net::message::{EventBody, ReliableEvent};
@@ -854,5 +854,725 @@ fn refusal_for(error: MirrorError) -> IngestRefusal {
         MirrorError::Rotation => IngestRefusal::UnusableRotation,
         MirrorError::Origin(_) => IngestRefusal::UnusablePosition,
         MirrorError::UnreadableField { field } => IngestRefusal::UnreadableField { field },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F57-B: bounded interpolation of remote aircraft and bounded local prediction.
+//
+// Spec: `specs/F57-*.md`, stage `### F57-B`. Everything below is newly authored
+// engine design (the sheet: "a designed responsiveness layer"); no original
+// interpolation delay, extrapolation rule or correction behavior has been
+// measured, and none is asserted. The defaults are therefore explicit config,
+// not constants buried in the algorithm.
+// ---------------------------------------------------------------------------
+
+/// Why an interpolation or prediction operation refused its input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BufferRefusal {
+    /// The sample names an older generation than the one the buffer holds (or
+    /// than one that already ended): a late packet, never a new actor.
+    StaleGeneration {
+        /// The generation the sample names.
+        sample: u16,
+        /// The generation the buffer holds or has ended.
+        held: u16,
+    },
+    /// The sample's tick is not newer than the newest buffered sample.
+    NotNewer {
+        /// The sample's tick.
+        sample: u64,
+        /// The newest buffered tick.
+        newest: u64,
+    },
+    /// The sample belongs to another actor than the predictor's.
+    WrongActor,
+    /// A non-finite or otherwise unusable value reached the boundary.
+    Unusable,
+}
+
+impl fmt::Display for BufferRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StaleGeneration { sample, held } => write!(
+                f,
+                "sample generation {sample} is older than generation {held}"
+            ),
+            Self::NotNewer { sample, newest } => {
+                write!(f, "sample tick {sample} is not newer than tick {newest}")
+            }
+            Self::WrongActor => f.write_str("sample belongs to another actor"),
+            Self::Unusable => f.write_str("sample holds a non-finite value"),
+        }
+    }
+}
+
+impl std::error::Error for BufferRefusal {}
+
+/// Declared bounds of the remote-aircraft jitter buffer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InterpolationConfig {
+    /// Simulation ticks per second, to turn a velocity into a per-tick step.
+    pub ticks_per_second: u32,
+    /// How many ticks behind the estimated server tick remote aircraft render.
+    pub delay_ticks: u64,
+    /// The most samples one actor's buffer holds; the oldest is dropped first.
+    pub capacity: usize,
+    /// The longest span extrapolated past the newest sample before the pose is
+    /// held.
+    pub max_extrapolation_ticks: u64,
+    /// Two samples further apart than this are not interpolated across: the
+    /// older one is held until the newer one's tick.
+    pub max_gap_ticks: u64,
+    /// A displacement between consecutive samples above this is a teleport or
+    /// spawn, not motion, and is never interpolated across.
+    pub teleport_distance_m: f64,
+}
+
+impl Default for InterpolationConfig {
+    fn default() -> Self {
+        Self {
+            ticks_per_second: 60,
+            delay_ticks: 6,
+            capacity: 16,
+            max_extrapolation_ticks: 6,
+            max_gap_ticks: 30,
+            teleport_distance_m: 1000.0,
+        }
+    }
+}
+
+/// How a sampled pose was produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SampleMode {
+    /// Blended between two buffered snapshots.
+    Interpolated,
+    /// An exact buffered snapshot, or one held across a gap/teleport.
+    Held,
+    /// Projected forward from the newest snapshot along its velocity.
+    Extrapolated,
+    /// Held at the extrapolation limit: no newer snapshot has arrived within the
+    /// bound, so the pose stops rather than drifting on guesswork.
+    ExtrapolationExhausted,
+}
+
+/// One remote aircraft as presented at a render tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InterpolatedAircraft {
+    /// The tick that was rendered (`now - delay`).
+    pub render_tick: Tick,
+    /// How the pose was produced.
+    pub mode: SampleMode,
+    /// The authoritative record at or before the render tick, with only the pose
+    /// fields (`position`, `orientation`, `linear_velocity_mps`) replaced by the
+    /// presented ones. Discrete fields (rounds, boost capacity, integrity) are the
+    /// server's last word, never blended.
+    pub state: RemoteAircraft,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BufferedSample {
+    aircraft: RemoteAircraft,
+    /// The step from the previous sample is a teleport/spawn: do not blend.
+    discontinuity: bool,
+}
+
+#[derive(Clone, Debug)]
+struct Track {
+    generation: u16,
+    samples: VecDeque<BufferedSample>,
+}
+
+/// Bounded jitter buffers for every remote actor, keyed on actor and generation.
+///
+/// One generation per actor at a time: a sample naming a newer generation
+/// replaces the whole track, so no history of one generation is ever blended
+/// into another (F57 AC04).
+#[derive(Clone, Debug)]
+pub struct RemoteInterpolator {
+    config: InterpolationConfig,
+    tracks: BTreeMap<ActorId, Track>,
+    /// The highest generation that ended for each actor.
+    ended: BTreeMap<ActorId, u16>,
+}
+
+fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+fn quat_array(q: Quaternion) -> [f64; 4] {
+    q.components()
+}
+
+fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+    [
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ]
+}
+
+fn quat_conj(q: [f64; 4]) -> [f64; 4] {
+    [-q[0], -q[1], -q[2], q[3]]
+}
+
+fn quat_normalize(q: [f64; 4]) -> [f64; 4] {
+    let length = q.iter().map(|c| c * c).sum::<f64>().sqrt();
+    if length == 0.0 {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    [q[0] / length, q[1] / length, q[2] / length, q[3] / length]
+}
+
+/// Shortest-path normalized lerp from `a` to `b` at `t` in `[0, 1]`.
+fn quat_nlerp(a: [f64; 4], b: [f64; 4], t: f64) -> [f64; 4] {
+    let dot: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let sign = if dot < 0.0 { -1.0 } else { 1.0 };
+    quat_normalize([
+        a[0] + (sign * b[0] - a[0]) * t,
+        a[1] + (sign * b[1] - a[1]) * t,
+        a[2] + (sign * b[2] - a[2]) * t,
+        a[3] + (sign * b[3] - a[3]) * t,
+    ])
+}
+
+fn quat_angle(q: [f64; 4]) -> f64 {
+    2.0 * q[3].abs().min(1.0).acos()
+}
+
+fn to_quaternion(q: [f64; 4]) -> Result<Quaternion, BufferRefusal> {
+    Quaternion::try_new(quat_normalize(q)).map_err(|_| BufferRefusal::Unusable)
+}
+
+impl RemoteInterpolator {
+    /// An empty interpolator with `config`'s bounds.
+    #[must_use]
+    pub const fn new(config: InterpolationConfig) -> Self {
+        Self {
+            config,
+            tracks: BTreeMap::new(),
+            ended: BTreeMap::new(),
+        }
+    }
+
+    /// The declared bounds.
+    #[must_use]
+    pub const fn config(&self) -> &InterpolationConfig {
+        &self.config
+    }
+
+    /// How many actors currently have a buffer.
+    #[must_use]
+    pub fn track_count(&self) -> usize {
+        self.tracks.len()
+    }
+
+    /// How many samples `actor`'s buffer holds.
+    #[must_use]
+    pub fn sample_count(&self, actor: ActorId) -> usize {
+        self.tracks.get(&actor).map_or(0, |t| t.samples.len())
+    }
+
+    /// Buffers one mirrored authoritative record.
+    ///
+    /// # Errors
+    ///
+    /// [`BufferRefusal::StaleGeneration`] for an older (or ended) generation,
+    /// [`BufferRefusal::NotNewer`] for a tick not newer than the newest sample of
+    /// the same generation.
+    pub fn push(&mut self, aircraft: &RemoteAircraft) -> Result<(), BufferRefusal> {
+        let held = self
+            .tracks
+            .get(&aircraft.actor)
+            .map(|t| t.generation)
+            .max(self.ended.get(&aircraft.actor).copied());
+        let existing = self.tracks.get(&aircraft.actor).map(|t| t.generation);
+        if let Some(held) = held
+            && (aircraft.generation < held
+                || (Some(aircraft.generation) == self.ended.get(&aircraft.actor).copied()
+                    && existing != Some(aircraft.generation)))
+        {
+            return Err(BufferRefusal::StaleGeneration {
+                sample: aircraft.generation,
+                held,
+            });
+        }
+        if existing.is_some_and(|g| g != aircraft.generation) {
+            // A newer generation: nothing of the old history survives.
+            self.tracks.remove(&aircraft.actor);
+        }
+        let capacity = self.config.capacity.max(2);
+        let teleport = self.config.teleport_distance_m;
+        let track = self.tracks.entry(aircraft.actor).or_insert_with(|| Track {
+            generation: aircraft.generation,
+            samples: VecDeque::new(),
+        });
+        let mut discontinuity = false;
+        if let Some(newest) = track.samples.back() {
+            if aircraft.tick <= newest.aircraft.tick {
+                return Err(BufferRefusal::NotNewer {
+                    sample: aircraft.tick.0,
+                    newest: newest.aircraft.tick.0,
+                });
+            }
+            discontinuity = distance(
+                newest.aircraft.position.to_array(),
+                aircraft.position.to_array(),
+            ) > teleport;
+        }
+        track.samples.push_back(BufferedSample {
+            aircraft: *aircraft,
+            discontinuity,
+        });
+        while track.samples.len() > capacity {
+            track.samples.pop_front();
+        }
+        Ok(())
+    }
+
+    /// Ends `actor`'s buffer: its generation never accepts another sample.
+    pub fn retire(&mut self, actor: ActorId) {
+        if let Some(track) = self.tracks.remove(&actor) {
+            self.ended.insert(actor, track.generation);
+        }
+    }
+
+    /// Drops everything remembered about `actor`, including ended generations.
+    pub fn forget(&mut self, actor: ActorId) {
+        self.tracks.remove(&actor);
+        self.ended.remove(&actor);
+    }
+
+    /// Feeds the effect of one ingested snapshot into the buffers: applied and
+    /// replaced records are buffered from `mirror`, destroyed and despawned
+    /// actors are retired at the generation the snapshot named.
+    ///
+    /// Returns the per-actor refusals; an empty list means every record was
+    /// buffered or retired.
+    pub fn observe(
+        &mut self,
+        report: &IngestReport,
+        snapshot: &Snapshot,
+        mirror: &RemoteMirror,
+    ) -> Vec<(ActorId, BufferRefusal)> {
+        let mut refusals = Vec::new();
+        for actor in report.spawned.iter().chain(&report.updated) {
+            if let Some(aircraft) = mirror.aircraft(*actor)
+                && let Err(refusal) = self.push(aircraft)
+            {
+                refusals.push((*actor, refusal));
+            }
+        }
+        for actor in report.destroyed.iter().chain(&report.despawned) {
+            let generation = snapshot
+                .actors
+                .iter()
+                .find(|r| r.actor == *actor)
+                .map(|r| r.generation);
+            self.tracks.remove(actor);
+            if let Some(generation) = generation {
+                let entry = self.ended.entry(*actor).or_insert(generation);
+                *entry = (*entry).max(generation);
+            }
+        }
+        refusals
+    }
+
+    /// The pose to present for `actor` when the estimated server tick is `now`.
+    ///
+    /// Returns `None` for an actor with no buffered sample (never spawned,
+    /// retired, or forgotten): a despawned aircraft leaves nothing to draw.
+    ///
+    /// # Errors
+    ///
+    /// [`BufferRefusal::Unusable`] when the blended pose is not representable.
+    pub fn sample(
+        &self,
+        actor: ActorId,
+        now: Tick,
+    ) -> Result<Option<InterpolatedAircraft>, BufferRefusal> {
+        let Some(track) = self.tracks.get(&actor) else {
+            return Ok(None);
+        };
+        let (Some(first), Some(last)) = (track.samples.front(), track.samples.back()) else {
+            return Ok(None);
+        };
+        let render = Tick(now.0.saturating_sub(self.config.delay_ticks));
+        let held = |sample: &BufferedSample, mode| InterpolatedAircraft {
+            render_tick: render,
+            mode,
+            state: sample.aircraft,
+        };
+        if render <= first.aircraft.tick {
+            return Ok(Some(held(first, SampleMode::Held)));
+        }
+        if render >= last.aircraft.tick {
+            let ahead = render.0 - last.aircraft.tick.0;
+            let used = ahead.min(self.config.max_extrapolation_ticks);
+            let seconds = used as f64 / f64::from(self.config.ticks_per_second.max(1));
+            let mut out = *last;
+            let v = out.aircraft.linear_velocity_mps;
+            let p = out.aircraft.position.to_array();
+            out.aircraft.position = WorldPosition::try_new([
+                p[0] + v[0] * seconds,
+                p[1] + v[1] * seconds,
+                p[2] + v[2] * seconds,
+            ])
+            .map_err(|_| BufferRefusal::Unusable)?;
+            let mode = if ahead == 0 {
+                SampleMode::Held
+            } else if ahead > used {
+                SampleMode::ExtrapolationExhausted
+            } else {
+                SampleMode::Extrapolated
+            };
+            return Ok(Some(InterpolatedAircraft {
+                render_tick: render,
+                mode,
+                state: out.aircraft,
+            }));
+        }
+        let (a, b) = track
+            .samples
+            .iter()
+            .zip(track.samples.iter().skip(1))
+            .find(|(a, b)| a.aircraft.tick <= render && render < b.aircraft.tick)
+            .ok_or(BufferRefusal::Unusable)?;
+        let span = b.aircraft.tick.0 - a.aircraft.tick.0;
+        if b.discontinuity || span > self.config.max_gap_ticks {
+            return Ok(Some(held(a, SampleMode::Held)));
+        }
+        let t = (render.0 - a.aircraft.tick.0) as f64 / span as f64;
+        let lerp = |x: [f64; 3], y: [f64; 3]| {
+            [
+                x[0] + (y[0] - x[0]) * t,
+                x[1] + (y[1] - x[1]) * t,
+                x[2] + (y[2] - x[2]) * t,
+            ]
+        };
+        let mut state = a.aircraft;
+        state.position = WorldPosition::try_new(lerp(
+            a.aircraft.position.to_array(),
+            b.aircraft.position.to_array(),
+        ))
+        .map_err(|_| BufferRefusal::Unusable)?;
+        state.orientation = to_quaternion(quat_nlerp(
+            quat_array(a.aircraft.orientation),
+            quat_array(b.aircraft.orientation),
+            t,
+        ))?;
+        state.linear_velocity_mps = lerp(
+            a.aircraft.linear_velocity_mps,
+            b.aircraft.linear_velocity_mps,
+        );
+        Ok(Some(InterpolatedAircraft {
+            render_tick: render,
+            mode: SampleMode::Interpolated,
+            state,
+        }))
+    }
+}
+
+/// Declared bounds of local prediction and its correction.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PredictionConfig {
+    /// Predicted poses kept for comparison with late authoritative records.
+    pub history_ticks: usize,
+    /// Position error above which the pose snaps instead of smoothing.
+    pub snap_distance_m: f64,
+    /// Orientation error above which the pose snaps instead of smoothing.
+    pub snap_angle_rad: f64,
+    /// Ticks over which a smoothed error is removed.
+    pub correction_ticks: u32,
+}
+
+impl Default for PredictionConfig {
+    fn default() -> Self {
+        Self {
+            history_ticks: 64,
+            snap_distance_m: 5.0,
+            snap_angle_rad: 0.35,
+            correction_ticks: 6,
+        }
+    }
+}
+
+/// The local body's pose as the one pose owner reports it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PredictedPose {
+    /// Canonical world position.
+    pub position: WorldPosition,
+    /// Body-to-world orientation.
+    pub orientation: Quaternion,
+}
+
+/// The server's last word on the local aircraft's consumable and damage state.
+///
+/// Only [`LocalPredictor::reconcile`] writes this, from a mirrored server
+/// record; prediction has no way to spend ammunition or boost capacity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AuthoritativeLoadout {
+    /// The snapshot tick it came from.
+    pub tick: Tick,
+    /// Throttle, engine spool and boost capacity fractions.
+    pub flight: [f64; 3],
+    /// Rounds per bank, primary first.
+    pub rounds: [u16; 2],
+    /// Which bank the trigger is on.
+    pub selected_bank: u8,
+    /// Remaining integrity fraction.
+    pub integrity: f64,
+}
+
+/// How one authoritative record related to the prediction.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ReconcileKind {
+    /// Within a negligible error, nothing to correct.
+    Agreed,
+    /// Removed gradually over the configured ticks.
+    Smoothed,
+    /// Too large to smooth, or no prediction to compare with: corrected at once.
+    Snapped,
+}
+
+/// The result of reconciling one authoritative record.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reconciliation {
+    /// What was decided.
+    pub kind: ReconcileKind,
+    /// Position error in meters (server minus predicted at the record's tick).
+    pub error_m: f64,
+    /// Orientation error in radians.
+    pub error_rad: f64,
+}
+
+/// One tick's correction to apply to the local body (the one pose owner).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PoseCorrection {
+    /// World-space translation to add.
+    pub translation_m: [f64; 3],
+    /// World-space rotation to pre-multiply onto the orientation.
+    pub rotation: Quaternion,
+}
+
+/// Bounded local prediction and state correction for the local aircraft.
+///
+/// Not an exact rollback: Avian state is not rewound. The body keeps simulating
+/// from its own inputs; this compares the pose it had at a record's tick with the
+/// server's and hands back bounded per-tick corrections for the body to apply.
+/// Limitation: velocity is not corrected here, so a large persistent error ends
+/// in a snap rather than a re-simulation.
+#[derive(Clone, Debug)]
+pub struct LocalPredictor {
+    actor: ActorId,
+    generation: u16,
+    config: PredictionConfig,
+    history: VecDeque<(Tick, PredictedPose)>,
+    pending_translation: [f64; 3],
+    pending_rotation: [f64; 4],
+    remaining_ticks: u32,
+    boosting: bool,
+    authoritative: Option<AuthoritativeLoadout>,
+}
+
+impl LocalPredictor {
+    /// A predictor for the local aircraft `actor` at `generation`.
+    #[must_use]
+    pub const fn new(actor: ActorId, generation: u16, config: PredictionConfig) -> Self {
+        Self {
+            actor,
+            generation,
+            config,
+            history: VecDeque::new(),
+            pending_translation: [0.0; 3],
+            pending_rotation: [0.0, 0.0, 0.0, 1.0],
+            remaining_ticks: 0,
+            boosting: false,
+            authoritative: None,
+        }
+    }
+
+    /// Records the pose the local body had at `tick`, and whether the player is
+    /// holding boost. The boost flag is cosmetic: it drives presentation only.
+    ///
+    /// # Errors
+    ///
+    /// [`BufferRefusal::NotNewer`] for a tick not after the previous one.
+    pub fn record_predicted(
+        &mut self,
+        tick: Tick,
+        pose: PredictedPose,
+        boosting: bool,
+    ) -> Result<(), BufferRefusal> {
+        if let Some((newest, _)) = self.history.back()
+            && tick <= *newest
+        {
+            return Err(BufferRefusal::NotNewer {
+                sample: tick.0,
+                newest: newest.0,
+            });
+        }
+        self.history.push_back((tick, pose));
+        while self.history.len() > self.config.history_ticks.max(1) {
+            self.history.pop_front();
+        }
+        self.boosting = boosting;
+        Ok(())
+    }
+
+    /// Whether a local boost is being *shown*. Never a capacity.
+    #[must_use]
+    pub const fn boost_shown(&self) -> bool {
+        self.boosting
+    }
+
+    /// The server's last word on ammunition, boost capacity and integrity.
+    #[must_use]
+    pub const fn authoritative(&self) -> Option<&AuthoritativeLoadout> {
+        self.authoritative.as_ref()
+    }
+
+    /// Whether a smoothed correction is still being applied.
+    #[must_use]
+    pub const fn correcting(&self) -> bool {
+        self.remaining_ticks > 0
+    }
+
+    /// Reconciles one mirrored authoritative record of the local aircraft.
+    ///
+    /// The loadout is taken from the record unconditionally (authority); the pose
+    /// is compared with the predicted pose at the record's tick.
+    ///
+    /// # Errors
+    ///
+    /// [`BufferRefusal::WrongActor`], [`BufferRefusal::StaleGeneration`] for an
+    /// older generation, or [`BufferRefusal::NotNewer`] for a record older than the
+    /// one already reconciled. A refused record changes nothing.
+    pub fn reconcile(&mut self, record: &RemoteAircraft) -> Result<Reconciliation, BufferRefusal> {
+        if record.actor != self.actor {
+            return Err(BufferRefusal::WrongActor);
+        }
+        if record.generation != self.generation {
+            return Err(BufferRefusal::StaleGeneration {
+                sample: record.generation,
+                held: self.generation,
+            });
+        }
+        if let Some(current) = &self.authoritative
+            && record.tick <= current.tick
+        {
+            return Err(BufferRefusal::NotNewer {
+                sample: record.tick.0,
+                newest: current.tick.0,
+            });
+        }
+        self.authoritative = Some(AuthoritativeLoadout {
+            tick: record.tick,
+            flight: record.flight,
+            rounds: record.rounds,
+            selected_bank: record.selected_bank,
+            integrity: record.integrity,
+        });
+        // Records older than anything compared are history we can never match.
+        while self.history.front().is_some_and(|(t, _)| *t < record.tick) {
+            self.history.pop_front();
+        }
+        let Some((_, predicted)) = self.history.front().filter(|(t, _)| *t == record.tick) else {
+            // No predicted pose at that tick: nothing to compare, so trust the
+            // server and correct at once.
+            self.history.clear();
+            return Ok(self.begin_correction(None, record));
+        };
+        let predicted = *predicted;
+        Ok(self.begin_correction(Some(predicted), record))
+    }
+
+    fn begin_correction(
+        &mut self,
+        predicted: Option<PredictedPose>,
+        record: &RemoteAircraft,
+    ) -> Reconciliation {
+        let Some(predicted) = predicted else {
+            // Without a predicted pose the caller must adopt the record's pose;
+            // report it as an unbounded-size snap with no pending correction.
+            self.pending_translation = [0.0; 3];
+            self.pending_rotation = [0.0, 0.0, 0.0, 1.0];
+            self.remaining_ticks = 0;
+            return Reconciliation {
+                kind: ReconcileKind::Snapped,
+                error_m: f64::INFINITY,
+                error_rad: f64::INFINITY,
+            };
+        };
+        let p = predicted.position.to_array();
+        let s = record.position.to_array();
+        let translation = [s[0] - p[0], s[1] - p[1], s[2] - p[2]];
+        let error_m = distance(s, p);
+        let rotation = quat_normalize(quat_mul(
+            quat_array(record.orientation),
+            quat_conj(quat_array(predicted.orientation)),
+        ));
+        let error_rad = quat_angle(rotation);
+        let kind =
+            if error_m > self.config.snap_distance_m || error_rad > self.config.snap_angle_rad {
+                ReconcileKind::Snapped
+            } else if error_m < 1e-6 && error_rad < 1e-6 {
+                ReconcileKind::Agreed
+            } else {
+                ReconcileKind::Smoothed
+            };
+        self.pending_translation = translation;
+        self.pending_rotation = rotation;
+        self.remaining_ticks = match kind {
+            ReconcileKind::Smoothed => self.config.correction_ticks.max(1),
+            ReconcileKind::Snapped => 1,
+            ReconcileKind::Agreed => 0,
+        };
+        Reconciliation {
+            kind,
+            error_m,
+            error_rad,
+        }
+    }
+
+    /// The correction to apply to the local body this tick: the identity when no
+    /// correction is pending. Each call removes `1/remaining` of the error, and the
+    /// predicted history moves with it so later comparisons stay consistent.
+    pub fn next_correction(&mut self) -> PoseCorrection {
+        let identity = [0.0, 0.0, 0.0, 1.0];
+        if self.remaining_ticks == 0 {
+            return PoseCorrection {
+                translation_m: [0.0; 3],
+                rotation: Quaternion::IDENTITY,
+            };
+        }
+        let fraction = 1.0 / f64::from(self.remaining_ticks);
+        let translation = self.pending_translation.map(|c| c * fraction);
+        let step = quat_nlerp(identity, self.pending_rotation, fraction);
+        self.pending_translation = self.pending_translation.map(|c| c - c * fraction);
+        self.pending_rotation = quat_normalize(quat_mul(quat_conj(step), self.pending_rotation));
+        self.remaining_ticks -= 1;
+        if self.remaining_ticks == 0 {
+            self.pending_translation = [0.0; 3];
+            self.pending_rotation = identity;
+        }
+        for (_, pose) in &mut self.history {
+            let p = pose.position.to_array();
+            if let Ok(position) = WorldPosition::try_new([
+                p[0] + translation[0],
+                p[1] + translation[1],
+                p[2] + translation[2],
+            ]) {
+                pose.position = position;
+            }
+            if let Ok(orientation) = to_quaternion(quat_mul(step, quat_array(pose.orientation))) {
+                pose.orientation = orientation;
+            }
+        }
+        PoseCorrection {
+            translation_m: translation,
+            rotation: to_quaternion(step).unwrap_or(Quaternion::IDENTITY),
+        }
     }
 }
