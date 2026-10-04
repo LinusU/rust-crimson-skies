@@ -555,13 +555,14 @@ fn accept_f61_a_an_absurd_declared_size_is_scanned_not_fatal() {
 fn accept_f61_a_the_verify_package_command_fails_a_release_it_may_not_ship() {
     let root = workspace_root();
     let bin = env!("CARGO_BIN_EXE_cs_xtask");
-    let fixtures = root.join("target/f61-a-package-fixtures");
+    let fixtures = root.join(format!(
+        "target/f61-a-package-fixtures/{}",
+        std::process::id()
+    ));
     fs::create_dir_all(&fixtures).expect("the scratch fixture directory must be creatable");
 
     let run = |args: &[&std::ffi::OsStr]| {
-        Command::new(bin)
-            .args(args)
-            .output()
+        cs_xtask::transient::command_output(Command::new(bin).args(args))
             .expect("the cs_xtask binary must run")
     };
     fn as_os(text: &str) -> &std::ffi::OsStr {

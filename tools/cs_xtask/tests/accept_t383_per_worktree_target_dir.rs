@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cs_xtask::target_dir::{self, TargetDirError};
+use cs_xtask::transient;
 
 /// The workspace root of the checkout this test process is *running* in, found
 /// at run time from the working directory rather than baked in at compile time.
@@ -45,9 +46,14 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Root every fixture worktree is created under (inside the gitignored
-/// `target/`, so nothing lands in Git and `cargo clean` reaps it).
+/// `target/`, so nothing lands in Git and `cargo clean` reaps it). The
+/// per-process subdirectory keeps a second `cargo test` on this target dir
+/// from deleting the tree this run is mid-write on (task #610).
 fn fixtures_root() -> PathBuf {
-    workspace_root().join("target/t383-target-dir-fixtures")
+    workspace_root().join(format!(
+        "target/t383-target-dir-fixtures/{}",
+        std::process::id()
+    ))
 }
 
 /// A minimal cargo package detached from this checkout's workspace whose
@@ -356,12 +362,13 @@ fn accept_t383_verify_target_dir_command_reports_and_fails_loudly() {
 
     // With CARGO_TARGET_DIR removed the fixture resolves its own target/:
     // exit 0, and the command says which directory it verified.
-    let passing = Command::new(bin)
-        .args(["verify-target-dir", "--workspace-root"])
-        .arg(&fixture)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("the cs_xtask binary must run");
+    let passing = transient::command_output(
+        Command::new(bin)
+            .args(["verify-target-dir", "--workspace-root"])
+            .arg(&fixture)
+            .env_remove("CARGO_TARGET_DIR"),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         passing.status.code(),
         Some(0),
@@ -380,12 +387,13 @@ fn accept_t383_verify_target_dir_command_reports_and_fails_loudly() {
         .parent()
         .expect("the fixture has a parent")
         .join("cli-shared-target");
-    let failing = Command::new(bin)
-        .args(["verify-target-dir", "--workspace-root"])
-        .arg(&fixture)
-        .env("CARGO_TARGET_DIR", &shared)
-        .output()
-        .expect("the cs_xtask binary must run");
+    let failing = transient::command_output(
+        Command::new(bin)
+            .args(["verify-target-dir", "--workspace-root"])
+            .arg(&fixture)
+            .env("CARGO_TARGET_DIR", &shared),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         failing.status.code(),
         Some(1),
@@ -397,21 +405,21 @@ fn accept_t383_verify_target_dir_command_reports_and_fails_loudly() {
         "the failure must name the variable and the worktree, got: {stderr:?}"
     );
 
-    let unusable = Command::new(bin)
-        .args(["verify-target-dir", "--workspace-root"])
-        .arg(fixture.join("target/not-a-workspace"))
-        .output()
-        .expect("the cs_xtask binary must run");
+    let unusable = transient::command_output(
+        Command::new(bin)
+            .args(["verify-target-dir", "--workspace-root"])
+            .arg(fixture.join("target/not-a-workspace")),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         unusable.status.code(),
         Some(1),
         "an unusable workspace root must fail the gate"
     );
 
-    let bad_option = Command::new(bin)
-        .args(["verify-target-dir", "--bogus"])
-        .output()
-        .expect("the cs_xtask binary must run");
+    let bad_option =
+        transient::command_output(Command::new(bin).args(["verify-target-dir", "--bogus"]))
+            .expect("the cs_xtask binary must run");
     assert_eq!(
         bad_option.status.code(),
         Some(2),

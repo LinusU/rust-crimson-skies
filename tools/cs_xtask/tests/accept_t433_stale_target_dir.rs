@@ -47,6 +47,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use cs_xtask::target_dir::{self, TargetDirError};
+use cs_xtask::transient;
 
 /// The checkout under test, named at run time from the working directory.
 ///
@@ -67,9 +68,14 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Root every fixture is created under (inside the gitignored `target/`, so
-/// nothing lands in Git and `cargo clean` reaps it).
+/// nothing lands in Git and `cargo clean` reaps it). The per-process
+/// subdirectory keeps a second `cargo test` on this target dir from
+/// deleting the tree this run is mid-write on (task #610).
 fn fixtures_root() -> PathBuf {
-    workspace_root().join("target/t433-target-dir-fixtures")
+    workspace_root().join(format!(
+        "target/t433-target-dir-fixtures/{}",
+        std::process::id()
+    ))
 }
 
 /// The fixture package. Both checkouts below are made from this one source of
@@ -361,12 +367,13 @@ fn accept_t433_verify_target_dir_command_fails_on_a_stale_directory() {
     let bin = env!("CARGO_BIN_EXE_cs_xtask");
     let (removed, survivor, shared) = stale_pair("cli");
 
-    let failing = Command::new(bin)
-        .args(["verify-target-dir", "--workspace-root"])
-        .arg(&survivor)
-        .env("CARGO_TARGET_DIR", &shared)
-        .output()
-        .expect("the cs_xtask binary must run");
+    let failing = transient::command_output(
+        Command::new(bin)
+            .args(["verify-target-dir", "--workspace-root"])
+            .arg(&survivor)
+            .env("CARGO_TARGET_DIR", &shared),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         failing.status.code(),
         Some(1),
@@ -390,12 +397,13 @@ the fix, got: {stderr:?}"
         "the survivor must rebuild into a clean target dir: {}",
         String::from_utf8_lossy(&built.stderr)
     );
-    let passing = Command::new(bin)
-        .args(["verify-target-dir", "--workspace-root"])
-        .arg(&survivor)
-        .env("CARGO_TARGET_DIR", survivor.join("target"))
-        .output()
-        .expect("the cs_xtask binary must run");
+    let passing = transient::command_output(
+        Command::new(bin)
+            .args(["verify-target-dir", "--workspace-root"])
+            .arg(&survivor)
+            .env("CARGO_TARGET_DIR", survivor.join("target")),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         passing.status.code(),
         Some(0),

@@ -21,15 +21,21 @@ use std::process::Command;
 use cs_xtask::test_select::{
     self, ParsedLog, SelectError, classify_exact, classify_selection, parse_run_log,
 };
+use cs_xtask::transient;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 /// Root every fixture workspace is created under (inside the gitignored
-/// `target/`, so nothing lands in Git and `cargo clean` reaps it).
+/// `target/`, so nothing lands in Git and `cargo clean` reaps it). The
+/// per-process subdirectory keeps a second `cargo test` on this target dir
+/// from deleting the tree this run is mid-write on (task #610).
 fn fixtures_root() -> PathBuf {
-    workspace_root().join("target/f00-c-test-select-fixtures")
+    workspace_root().join(format!(
+        "target/f00-c-test-select-fixtures/{}",
+        std::process::id()
+    ))
 }
 
 /// Two tests the gate can discover, run and re-run alone.
@@ -308,16 +314,17 @@ fn accept_f00_c_test_select_command_runs_the_gate() {
     let fixture_root = fixture("test-select-command", PASSING_TESTS);
     let bin = env!("CARGO_BIN_EXE_cs_xtask");
 
-    let output = Command::new(bin)
-        .args([
-            "test-select",
-            "--prefix",
-            "accept_fixture_",
-            "--workspace-root",
-        ])
-        .arg(&fixture_root)
-        .output()
-        .expect("the cs_xtask binary must run");
+    let output = transient::command_output(
+        Command::new(bin)
+            .args([
+                "test-select",
+                "--prefix",
+                "accept_fixture_",
+                "--workspace-root",
+            ])
+            .arg(&fixture_root),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -334,9 +341,7 @@ fn accept_f00_c_test_select_command_runs_the_gate() {
         "the command must report the --exact re-runs, got: {stdout:?}"
     );
 
-    let unknown_command = Command::new(bin)
-        .arg("no-such-command")
-        .output()
+    let unknown_command = transient::command_output(Command::new(bin).arg("no-such-command"))
         .expect("the cs_xtask binary must run");
     assert_eq!(
         unknown_command.status.code(),
@@ -348,9 +353,7 @@ fn accept_f00_c_test_select_command_runs_the_gate() {
         "the usage error must name the command"
     );
 
-    let missing_prefix = Command::new(bin)
-        .arg("test-select")
-        .output()
+    let missing_prefix = transient::command_output(Command::new(bin).arg("test-select"))
         .expect("the cs_xtask binary must run");
     assert_eq!(
         missing_prefix.status.code(),
@@ -362,11 +365,12 @@ fn accept_f00_c_test_select_command_runs_the_gate() {
         "the usage error must name the missing option"
     );
 
-    let bad_root = Command::new(bin)
-        .args(["verify-ci", "--workspace-root"])
-        .arg(root.join("target/not-a-workspace"))
-        .output()
-        .expect("the cs_xtask binary must run");
+    let bad_root = transient::command_output(
+        Command::new(bin)
+            .args(["verify-ci", "--workspace-root"])
+            .arg(root.join("target/not-a-workspace")),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         bad_root.status.code(),
         Some(1),
@@ -378,11 +382,12 @@ fn accept_f00_c_test_select_command_runs_the_gate() {
         String::from_utf8_lossy(&bad_root.stderr)
     );
 
-    let verify_ci = Command::new(bin)
-        .args(["verify-ci", "--workspace-root"])
-        .arg(&root)
-        .output()
-        .expect("the cs_xtask binary must run");
+    let verify_ci = transient::command_output(
+        Command::new(bin)
+            .args(["verify-ci", "--workspace-root"])
+            .arg(&root),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         verify_ci.status.code(),
         Some(0),
@@ -394,9 +399,7 @@ fn accept_f00_c_test_select_command_runs_the_gate() {
         "verify-ci must say what it checked"
     );
 
-    let help = Command::new(bin)
-        .arg("--help")
-        .output()
+    let help = transient::command_output(Command::new(bin).arg("--help"))
         .expect("the cs_xtask binary must run");
     assert_eq!(help.status.code(), Some(0), "--help must exit zero");
     assert!(

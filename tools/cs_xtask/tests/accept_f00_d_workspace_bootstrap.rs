@@ -21,15 +21,21 @@ use std::process::Command;
 use cs_xtask::bootstrap::{self, BootstrapError, REQUIRED_MEMBERS};
 use cs_xtask::ci::{self, CiError, WORKFLOW_PATH};
 use cs_xtask::pins::{self, PinError};
+use cs_xtask::transient;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 /// Root every synthetic fixture workspace is created under (inside the
-/// gitignored `target/`, so nothing lands in Git and `cargo clean` reaps it).
+/// gitignored `target/`, so nothing lands in Git and `cargo clean` reaps
+/// it). The per-process subdirectory keeps a second `cargo test` on this
+/// target dir from deleting the tree this run is mid-write on (task #610).
 fn fixtures_root() -> PathBuf {
-    workspace_root().join("target/f00-d-bootstrap-fixtures")
+    workspace_root().join(format!(
+        "target/f00-d-bootstrap-fixtures/{}",
+        std::process::id()
+    ))
 }
 
 /// A `[package]` manifest for one fixture member.
@@ -335,11 +341,12 @@ fn accept_f00_d_verify_bootstrap_command_reports_and_fails_loudly() {
     let bin = env!("CARGO_BIN_EXE_cs_xtask");
     let root = workspace_root();
 
-    let passing = Command::new(bin)
-        .args(["verify-bootstrap", "--workspace-root"])
-        .arg(&root)
-        .output()
-        .expect("the cs_xtask binary must run");
+    let passing = transient::command_output(
+        Command::new(bin)
+            .args(["verify-bootstrap", "--workspace-root"])
+            .arg(&root),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         passing.status.code(),
         Some(0),
@@ -362,11 +369,12 @@ fn accept_f00_d_verify_bootstrap_command_reports_and_fails_loudly() {
 
     let broken = fixture("cli-member-removed");
     write_members(&broken, members_except("tools/cs_inspect"));
-    let failing = Command::new(bin)
-        .args(["verify-bootstrap", "--workspace-root"])
-        .arg(&broken)
-        .output()
-        .expect("the cs_xtask binary must run");
+    let failing = transient::command_output(
+        Command::new(bin)
+            .args(["verify-bootstrap", "--workspace-root"])
+            .arg(&broken),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         failing.status.code(),
         Some(1),
@@ -378,11 +386,12 @@ fn accept_f00_d_verify_bootstrap_command_reports_and_fails_loudly() {
         "the failure must name the dropped member, got: {stderr:?}"
     );
 
-    let unusable = Command::new(bin)
-        .args(["verify-bootstrap", "--workspace-root"])
-        .arg(root.join("target/not-a-workspace"))
-        .output()
-        .expect("the cs_xtask binary must run");
+    let unusable = transient::command_output(
+        Command::new(bin)
+            .args(["verify-bootstrap", "--workspace-root"])
+            .arg(root.join("target/not-a-workspace")),
+    )
+    .expect("the cs_xtask binary must run");
     assert_eq!(
         unusable.status.code(),
         Some(1),
@@ -394,10 +403,9 @@ fn accept_f00_d_verify_bootstrap_command_reports_and_fails_loudly() {
         String::from_utf8_lossy(&unusable.stderr)
     );
 
-    let bad_option = Command::new(bin)
-        .args(["verify-bootstrap", "--bogus"])
-        .output()
-        .expect("the cs_xtask binary must run");
+    let bad_option =
+        transient::command_output(Command::new(bin).args(["verify-bootstrap", "--bogus"]))
+            .expect("the cs_xtask binary must run");
     assert_eq!(
         bad_option.status.code(),
         Some(2),

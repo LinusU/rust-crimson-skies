@@ -23,6 +23,7 @@
 use std::path::{Path, PathBuf};
 
 use cs_xtask::budget::{self, BudgetError};
+use cs_xtask::transient;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -204,13 +205,14 @@ fn cs_xtask_t430_panic_helper() {
 /// without line tables prints `0x...` per frame instead, and this fails.
 #[test]
 fn accept_t430_a_panic_backtrace_names_the_file_and_line() {
-    let child = std::process::Command::new(
-        std::env::current_exe().expect("this test binary must have a path to re-run"),
+    let child = transient::command_output(
+        std::process::Command::new(
+            std::env::current_exe().expect("this test binary must have a path to re-run"),
+        )
+        .args(["--exact", PANIC_HELPER, "--nocapture"])
+        .env(PANIC_HELPER_ENV, "1")
+        .env("RUST_BACKTRACE", "1"),
     )
-    .args(["--exact", PANIC_HELPER, "--nocapture"])
-    .env(PANIC_HELPER_ENV, "1")
-    .env("RUST_BACKTRACE", "1")
-    .output()
     .expect("the panic helper must be runnable");
     let output = format!(
         "{}{}",
