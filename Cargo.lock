@@ -2574,6 +2574,7 @@ name = "cs_net"
 version = "0.0.0"
 dependencies = [
  "cs_types",
+ "libc",
  "renet2",
  "renet2_netcode",
  "renetcode2",

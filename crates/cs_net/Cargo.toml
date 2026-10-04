@@ -18,3 +18,6 @@ renet2_netcode = { version = "=0.16.1", default-features = false, features = [
 # Pinned transitively as well: renet2_netcode ^0.16.1 would otherwise float to
 # a newer patch; the whole transport wave stays at the 2026-09-18 release.
 renetcode2 = { version = "=0.16.1" }
+
+[dev-dependencies]
+libc = "=0.2.189"
