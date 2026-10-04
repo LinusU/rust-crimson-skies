@@ -14,7 +14,7 @@ use super::bay::{Bay, BayKind, ExposureWindow};
 use super::capture::Ownership;
 use super::launch::LaunchSocket;
 use super::motion::EngineSpec;
-use super::parts::{DockingAnchor, IntegrityPool, TurretMount};
+use super::parts::{DockingAnchor, IntegrityPool, LaunchBayRig, TurretMount};
 use super::ship::{CapitalParts, CapitalShip, synthetic_capital_trajectory};
 use super::subsystem::{Subsystem, SubsystemEffect, SubsystemGraph, SubsystemKey, SubsystemKind};
 
@@ -50,6 +50,13 @@ pub const SYNTHETIC_KEEL_INTEGRITY: f64 = 200.0;
 pub const SYNTHETIC_TURRET_TRAVERSE_DEG: f64 = 180.0;
 /// The dorsal turret's boresight: up (+Y) in the ship body frame.
 pub const SYNTHETIC_TURRET_BORESIGHT: [f64; 3] = [0.0, 1.0, 0.0];
+
+/// The launch bay's declared release socket offset, in the ship body frame.
+pub const SYNTHETIC_LAUNCH_BAY_SOCKET_M: [f64; 3] = [0.0, -5.0, 0.0];
+/// The launch bay's declared aircraft capacity: four may wait aboard it.
+pub const SYNTHETIC_LAUNCH_BAY_CAPACITY: u32 = 4;
+/// The designed ejection a scheduled aircraft leaves the launch socket with.
+pub const SYNTHETIC_LAUNCH_EJECT_M_S: [f64; 3] = [0.0, 0.0, 2.0];
 
 fn key(name: &str) -> SubsystemKey {
     SubsystemKey::new(name).expect("fixture subsystem keys are valid")
@@ -106,7 +113,9 @@ pub fn synthetic_capital_engines() -> Vec<EngineSpec> {
         .collect()
 }
 
-/// The synthetic ship's bays, each with its authored exposure cycle.
+/// The synthetic ship's bays, each with its authored exposure cycle. The
+/// launch bay carries its F35-C release wiring: the designed socket it
+/// releases at and a capacity of four waiting aircraft.
 #[must_use]
 pub fn synthetic_capital_bays() -> Vec<Bay> {
     vec![
@@ -119,7 +128,16 @@ pub fn synthetic_capital_bays() -> Vec<Bay> {
             key(SYNTHETIC_LAUNCH_BAY),
             BayKind::Launch,
             ExposureWindow::try_new(30, 5, 45, 5).expect("the launch bay window is valid"),
-        ),
+        )
+        .with_launch_rig(LaunchBayRig {
+            offset_m: designed_vec(SYNTHETIC_LAUNCH_BAY_SOCKET_M),
+            capacity: Resolved::Known(Known::new(
+                SYNTHETIC_LAUNCH_BAY_CAPACITY,
+                Provenance::designed(
+                    ClaimId::new("f35a.synthetic-leviathan").expect("fixture claim id is valid"),
+                ),
+            )),
+        }),
     ]
 }
 
@@ -189,7 +207,7 @@ pub fn synthetic_launch_socket() -> LaunchSocket {
     LaunchSocket {
         actor: ActorId(1),
         socket: 0,
-        offset_m: [0.0, -5.0, 0.0],
+        offset_m: SYNTHETIC_LAUNCH_BAY_SOCKET_M,
     }
 }
 

@@ -16,13 +16,15 @@
 //! * [`LaunchLedger`] issues every scheduled launch at most once: a released
 //!   id is never released again, and destroying a bay cancels its pending
 //!   launches instead of leaving them to spawn later. This is the data half
-//!   of AC03; the script-driven runtime is F35-C.
+//!   of AC03; F35-C drives it from the session set, which is what actually
+//!   releases the aircraft and what makes AC03 observable end to end.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use cs_script::ir::ActorId;
 use cs_types::Tick;
 use cs_types::content::ContentId;
+use cs_types::evidence::ClaimId;
 
 use super::bay::BayState;
 use super::subsystem::SubsystemKey;
@@ -120,7 +122,7 @@ pub struct LaunchTick {
 }
 
 /// Why an aircraft could not be released.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LaunchRefusal {
     /// The bay is not a launch bay of this ship.
     UnknownBay,
@@ -128,6 +130,8 @@ pub enum LaunchRefusal {
     BayDestroyed,
     /// The launch has already been released once.
     AlreadyReleased,
+    /// The launch was cancelled and can never be released.
+    Cancelled,
     /// The launch's ready tick has not arrived.
     NotReady {
         /// The tick the launch becomes ready.
@@ -135,7 +139,88 @@ pub enum LaunchRefusal {
     },
     /// The bay is concealed or moving; it is not open.
     NotOpen,
+    /// The bay already holds as many waiting aircraft as its declared
+    /// capacity. Only launches still aboard count; a released aircraft has
+    /// left the bay and freed its slot.
+    BayFull {
+        /// The bay's declared capacity.
+        capacity: u32,
+        /// How many launches are waiting aboard it.
+        pending: u32,
+    },
+    /// The bay's capacity is unresolved: an unbounded hangar is never
+    /// assumed, so nothing is scheduled into it.
+    CapacityUnknown {
+        /// The claim the unknown capacity is recorded under.
+        claim_id: ClaimId,
+        /// Why the capacity is unknown.
+        reason: String,
+    },
+    /// The bay's release socket is unresolved: an aircraft is never spawned at
+    /// an invented transform.
+    SocketUnknown {
+        /// The claim the unknown socket is recorded under.
+        claim_id: ClaimId,
+        /// Why the socket is unknown.
+        reason: String,
+    },
+    /// The ejection velocity was NaN or infinite.
+    NonFiniteEjection,
+    /// The session's actor ids are exhausted; no id is reused.
+    ActorIdExhausted,
+    /// The carrier is destroyed: a dying ship launches nothing, and its
+    /// waiting launches are cancelled instead.
+    ShipDestroyed {
+        /// The wreck.
+        carrier: ActorId,
+    },
+    /// The carrier despawned and its record is closed.
+    ShipDespawned {
+        /// The despawned carrier.
+        carrier: ActorId,
+    },
 }
+
+impl std::fmt::Display for LaunchRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownBay => write!(f, "the bay is not a launch bay of this ship"),
+            Self::BayDestroyed => write!(f, "the launch bay is destroyed"),
+            Self::AlreadyReleased => write!(f, "the launch was already released once"),
+            Self::Cancelled => write!(f, "the launch was cancelled"),
+            Self::NotReady { ready_tick } => {
+                write!(f, "the launch is not ready until tick {ready_tick:?}")
+            }
+            Self::NotOpen => write!(f, "the launch bay is not open"),
+            Self::BayFull { capacity, pending } => {
+                write!(
+                    f,
+                    "the launch bay holds {pending} of {capacity} waiting aircraft"
+                )
+            }
+            Self::CapacityUnknown { claim_id, reason } => write!(
+                f,
+                "the launch bay capacity is unknown ({}: {reason})",
+                claim_id.as_str()
+            ),
+            Self::SocketUnknown { claim_id, reason } => write!(
+                f,
+                "the launch bay socket is unknown ({}: {reason})",
+                claim_id.as_str()
+            ),
+            Self::NonFiniteEjection => write!(f, "the ejection velocity is not finite"),
+            Self::ActorIdExhausted => write!(f, "the session's actor ids are exhausted"),
+            Self::ShipDestroyed { carrier } => {
+                write!(f, "carrier {carrier:?} is destroyed and launches nothing")
+            }
+            Self::ShipDespawned { carrier } => {
+                write!(f, "carrier {carrier:?} despawned and launches nothing")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LaunchRefusal {}
 
 /// Tracks scheduled launches and guarantees each is released at most once.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -224,6 +309,36 @@ impl LaunchLedger {
             }
         }
         out
+    }
+
+    /// Releases exactly `id` now, leaving every other launch alone.
+    ///
+    /// The gate is [`Self::check`]'s — the bay must be open, the ready tick
+    /// must have arrived and the id must still be pending — and the once-only
+    /// guarantee is the same: a successful call records the id as released and
+    /// removes it from `pending`, so no later pass can produce a second
+    /// aircraft for it. This is the F35-C retry door a caller uses instead of
+    /// waiting for the tick pass.
+    ///
+    /// # Errors
+    ///
+    /// [`LaunchRefusal`] naming why not. A refused call resolves nothing: the
+    /// launch stays pending and the tick pass still owns its teardown.
+    pub fn release_one(
+        &mut self,
+        id: &LaunchId,
+        tick: Tick,
+        bay_state: impl FnOnce(&SubsystemKey) -> BayState,
+    ) -> Result<PendingLaunch, LaunchRefusal> {
+        self.check(id, tick, bay_state)?;
+        let Some(launch) = self.pending.remove(id) else {
+            // Unreachable while `check` and `release` share one map, kept so a
+            // future divergence surfaces as a refusal instead of a silent
+            // spawn.
+            return Err(LaunchRefusal::UnknownBay);
+        };
+        self.released.insert(id.clone());
+        Ok(launch)
     }
 
     /// Checks whether `id` could be released right now, without releasing

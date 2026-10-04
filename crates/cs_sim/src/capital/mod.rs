@@ -62,15 +62,18 @@ pub mod runtime;
 pub mod ship;
 pub mod subsystem;
 pub mod synthetic;
+pub mod wiring;
 
 pub use bay::{Bay, BayKind, BayState, ExposureError, ExposureWindow};
-pub use capture::{CaptureRefusal, CaptureStage, CaptureTransaction, Ownership};
+pub use capture::{
+    CaptureRefusal, CaptureStage, CaptureTicket, CaptureTransaction, Ownership, ShipControl,
+};
 pub use launch::{
     LaunchId, LaunchLedger, LaunchRefusal, LaunchSocket, LaunchTick, PendingLaunch,
     ReleasedAircraft, release_aircraft,
 };
 pub use motion::{EngineSpec, PropulsionError, acceleration_m_s2, validated_axis};
-pub use parts::{DockingAnchor, IntegrityPool, TurretMount};
+pub use parts::{DockingAnchor, IntegrityPool, LaunchBayRig, TurretMount};
 pub use runtime::{CapitalHit, CapitalRuntimeError, CapitalShipEvent, CapitalShipSet};
 pub use ship::{
     CapitalError, CapitalParts, CapitalShip, HitError, HitOutcome, TurretAim, TurretRefusal,
@@ -83,9 +86,14 @@ pub use subsystem::{
 pub use synthetic::{
     SYNTHETIC_CAPITAL_KEY, SYNTHETIC_DOCKING_ANCHOR, SYNTHETIC_ENGINE_1, SYNTHETIC_ENGINE_2,
     SYNTHETIC_ENGINE_THRUST_N, SYNTHETIC_GAS_CELL, SYNTHETIC_GAS_CELL_INTEGRITY, SYNTHETIC_KEEL,
-    SYNTHETIC_KEEL_INTEGRITY, SYNTHETIC_LAUNCH_BAY, SYNTHETIC_MASS_KG, SYNTHETIC_TURRET,
+    SYNTHETIC_KEEL_INTEGRITY, SYNTHETIC_LAUNCH_BAY, SYNTHETIC_LAUNCH_BAY_CAPACITY,
+    SYNTHETIC_LAUNCH_BAY_SOCKET_M, SYNTHETIC_LAUNCH_EJECT_M_S, SYNTHETIC_MASS_KG, SYNTHETIC_TURRET,
     SYNTHETIC_TURRET_BORESIGHT, SYNTHETIC_TURRET_TRAVERSE_DEG, SYNTHETIC_WEAPON_BAY,
     synthetic_capital_bays, synthetic_capital_docking_anchors, synthetic_capital_engines,
     synthetic_capital_graph, synthetic_capital_ownership, synthetic_capital_sections,
     synthetic_capital_ship, synthetic_capital_turrets, synthetic_launch_socket,
+};
+pub use wiring::{
+    CaptureProgress, CargoLedger, CargoRefusal, DespawnPolicy, DestructionState,
+    LaunchCancelReason, LaunchCancellation, LaunchStatus, ShipWiring,
 };

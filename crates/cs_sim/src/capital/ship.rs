@@ -38,10 +38,10 @@ use cs_types::Tick;
 use cs_types::content::{ContentId, Resolved};
 use cs_types::evidence::ClaimId;
 
-use super::bay::{Bay, BayState};
+use super::bay::{Bay, BayKind, BayState};
 use super::capture::Ownership;
 use super::motion::{EngineSpec, PropulsionError, acceleration_m_s2};
-use super::parts::{DockingAnchor, IntegrityPool, TurretMount};
+use super::parts::{DockingAnchor, IntegrityPool, LaunchBayRig, TurretMount};
 use super::subsystem::{
     DisableOutcome, SubsystemGraph, SubsystemGraphError, SubsystemKey, SubsystemKind,
     SubsystemState,
@@ -117,6 +117,17 @@ pub enum CapitalError {
         /// The refused value.
         value: f64,
     },
+    /// A launch rig was attached to a bay that is not a launch bay: a weapon
+    /// bay has no hangar to release aircraft from.
+    LaunchRigOnWeaponBay {
+        /// The offending bay.
+        key: SubsystemKey,
+    },
+    /// A launch rig's socket offset was not finite.
+    NonFiniteSocket {
+        /// The offending bay.
+        key: SubsystemKey,
+    },
 }
 
 impl std::fmt::Display for CapitalError {
@@ -155,6 +166,12 @@ impl std::fmt::Display for CapitalError {
             }
             Self::NegativeIntegrity { key, value } => {
                 write!(f, "section {key} has negative integrity {value}")
+            }
+            Self::LaunchRigOnWeaponBay { key } => {
+                write!(f, "bay {key} carries a launch rig but is not a launch bay")
+            }
+            Self::NonFiniteSocket { key } => {
+                write!(f, "launch bay {key} has a non-finite socket offset")
             }
         }
     }
@@ -253,6 +270,22 @@ impl CapitalShip {
         for bay in parts.bays {
             let kind = bay.kind.subsystem_kind();
             check_part(kind, bay.key.clone(), &parts.graph)?;
+            // F35-C: a release rig is hangar wiring, so it may only sit on a
+            // launch bay, and a known socket offset must be a real transform.
+            if let Some(rig) = &bay.rig {
+                if bay.kind != BayKind::Launch {
+                    return Err(CapitalError::LaunchRigOnWeaponBay {
+                        key: bay.key.clone(),
+                    });
+                }
+                if let Resolved::Known(known) = &rig.offset_m
+                    && !known.value.iter().all(|value| value.is_finite())
+                {
+                    return Err(CapitalError::NonFiniteSocket {
+                        key: bay.key.clone(),
+                    });
+                }
+            }
             let key = bay.key.clone();
             if bays.insert(key.clone(), bay).is_some() {
                 return Err(CapitalError::DuplicatePart { kind, key });
@@ -380,6 +413,52 @@ impl CapitalShip {
     #[must_use]
     pub fn ownership(&self) -> &Ownership {
         &self.ownership
+    }
+
+    /// Takes `ownership` as the ship's (F35-C).
+    ///
+    /// This is the one place a ship's owner changes: the capture transaction
+    /// produces the record and the session set applies it here, in the same
+    /// step as the control switch, so no consumer can read a new owner beside
+    /// the previous owner's guns. The transaction decides *whether* ownership
+    /// moves; it does not move it itself.
+    pub fn adopt_ownership(&mut self, ownership: Ownership) {
+        self.ownership = ownership;
+    }
+
+    /// A launch bay's release wiring, or `None` for a weapon bay, a bay that
+    /// declared none, or a key that names no bay.
+    #[must_use]
+    pub fn launch_rig(&self, key: &SubsystemKey) -> Option<&LaunchBayRig> {
+        self.bays.get(key)?.launch_rig()
+    }
+
+    /// The launch bays, in key order: the bays that can carry a rig.
+    pub fn launch_bays(&self) -> impl Iterator<Item = &Bay> {
+        self.bays.values().filter(|bay| bay.kind == BayKind::Launch)
+    }
+
+    /// How many launch bays carry release wiring. The count is a diagnostic for
+    /// a lowered ship: a declared launch bay that lowered no rig would have
+    /// nowhere to release aircraft from.
+    #[must_use]
+    pub fn launch_rigs(&self) -> usize {
+        self.bays
+            .values()
+            .filter(|bay| bay.kind == BayKind::Launch && bay.rig.is_some())
+            .count()
+    }
+
+    /// Whether the ship's docking anchors are all intact: the docking
+    /// eligibility a capture latches through (F35-C). A ship with no declared
+    /// anchor cannot be boarded.
+    #[must_use]
+    pub fn docking_open(&self) -> bool {
+        !self.docking_anchors.is_empty()
+            && self
+                .docking_anchors
+                .keys()
+                .all(|key| self.graph.state(key) == Some(SubsystemState::Intact))
     }
 
     /// The cargo capacity, or an explicit unknown.

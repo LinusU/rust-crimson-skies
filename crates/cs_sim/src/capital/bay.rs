@@ -2,7 +2,8 @@
 //! (F35-A).
 //!
 //! Spec: `specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`,
-//! stage `### F35-A`. Shared contract: `docs/contracts/STATE-TRANSACTIONS.md`.
+//! stages `### F35-A` and `### F35-C`. Shared contract:
+//! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
 //! Non-negotiable behavior 2: a broadside or weapon bay opening is an
 //! explicit, tick-indexed weakpoint state, and a *closed* bay is not an
@@ -12,13 +13,16 @@
 //! key. Whether a hit lands is the F35-B weakpoint resolver's job; it must
 //! consult [`ExposureWindow::is_weakpoint`] rather than assume a bay is
 //! always open. Destruction is separate from exposure: a destroyed bay is
-//! [`BayState::Destroyed`] at every tick.
+//! [`BayState::Destroyed`] at every tick. F35-C hangs the launch wiring —
+//! the release socket and the bay's capacity — off the launch-bay record so
+//! the release path reads the same bay the weakpoint resolver does.
 //!
 //! The cycle shape and every duration are newly authored design, not a
 //! measured original rule.
 
 use cs_types::Tick;
 
+use super::parts::LaunchBayRig;
 use super::subsystem::{SubsystemKey, SubsystemKind};
 
 /// Which kind of bay a record describes.
@@ -151,8 +155,9 @@ impl ExposureWindow {
     }
 }
 
-/// One bay: its subsystem key, its kind and its exposure cycle.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One bay: its subsystem key, its kind and its exposure cycle, plus the
+/// launch wiring a launch bay carries (F35-C).
+#[derive(Clone, Debug, PartialEq)]
 pub struct Bay {
     /// The subsystem this bay is.
     pub key: SubsystemKey,
@@ -160,6 +165,9 @@ pub struct Bay {
     pub kind: BayKind,
     /// The authored open/close cycle.
     pub exposure: ExposureWindow,
+    /// The launch socket and capacity, present only on a launch bay that
+    /// declared them. `None` on every weapon bay.
+    pub rig: Option<LaunchBayRig>,
 }
 
 impl Bay {
@@ -170,6 +178,22 @@ impl Bay {
             key,
             kind,
             exposure,
+            rig: None,
         }
+    }
+
+    /// Attaches the bay's launch wiring. A weapon bay has no launch socket, so
+    /// [`CapitalShip::try_new`](crate::capital::CapitalShip::try_new) refuses
+    /// a rig on one instead of letting a weapon bay spawn aircraft.
+    #[must_use]
+    pub fn with_launch_rig(mut self, rig: LaunchBayRig) -> Self {
+        self.rig = Some(rig);
+        self
+    }
+
+    /// The bay's launch wiring, when it carries any.
+    #[must_use]
+    pub const fn launch_rig(&self) -> Option<&LaunchBayRig> {
+        self.rig.as_ref()
     }
 }

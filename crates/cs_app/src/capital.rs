@@ -1,8 +1,9 @@
 //! The capital-ship lowering boundary (F35-A; F35-B lowers the turret
-//! boresight and the section integrity pools).
+//! boresight and the section integrity pools; F35-C lowers the launch bay's
+//! socket and capacity).
 //!
 //! Spec: `specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`,
-//! stages `### F35-A` and `### F35-B`. Shared contract:
+//! stages `### F35-A`, `### F35-B` and `### F35-C`. Shared contract:
 //! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
 //! This module sits between the declared capital-ship schema
@@ -14,16 +15,16 @@
 //!   [`cs_content::capital::DeclaredCapitalShip`] becomes a
 //!   [`cs_sim::capital::CapitalShip`] with every subsystem, engine, bay,
 //!   turret (weapon, traverse and boresight), anchor, the section
-//!   integrity pools, the cargo pool and the authored trajectory mapped
-//!   field-wise. An unmeasured value (a turret's weapon binding, an
-//!   engine's thrust, a section's integrity) lowers as
-//!   [`Resolved::Unknown`] and stays unknown. Two declared fields have no
-//!   F35-B runtime counterpart and stay parked on the declared record: a
-//!   launch bay's `socket_offset_m` and `capacity`. The boundary does not
-//!   invent runtime state for them; their consumption is F35-C
-//!   (launch/cargo wiring). See
-//!   `docs/findings/2026-10-01-f35-a-capital-subsystems-and-bays.md` and
-//!   `docs/findings/2026-10-04-f35-b-movement-weakpoints-and-turrets.md`.
+//!   integrity pools, each launch bay's [`LaunchBayRig`], the cargo pool and
+//!   the authored trajectory mapped field-wise. An unmeasured value (a
+//!   turret's weapon binding, an engine's thrust, a section's integrity, a
+//!   launch socket, a launch capacity) lowers as [`Resolved::Unknown`] and
+//!   stays unknown. Only the initial **owner** must be known; every other
+//!   unknown is carried through so the runtime can refuse by claim instead of
+//!   guessing. See
+//!   `docs/findings/2026-10-01-f35-a-capital-subsystems-and-bays.md`,
+//!   `docs/findings/2026-10-04-f35-b-movement-weakpoints-and-turrets.md` and
+//!   `docs/findings/2026-10-04-f35-c-launch-capture-cargo-destruction.md`.
 //! * [`CapitalLowerError::UnknownOwnership`] — the one mandatory value: a
 //!   ship whose owner is unresolved cannot have its guns, targeting and
 //!   docking eligibility switched coherently, so the boundary refuses
@@ -35,8 +36,9 @@
 //!   stale binding looking live.
 //!
 //! Nothing here owns runtime behavior: the subsystem state machine,
-//! propulsion and bay cycles are `cs_sim::capital`'s; these are the
-//! conversion and binding records the ECS wiring consumes (F35-B/C).
+//! propulsion, bay cycles, launch, capture, cargo and destruction are
+//! `cs_sim::capital`'s; these are the conversion and binding records the ECS
+//! wiring consumes.
 
 use bevy::ecs::component::Component;
 use cs_content::capital::{
@@ -46,9 +48,9 @@ use cs_content::capital::{
 use cs_script::ir::ActorId;
 use cs_sim::capital::{
     Bay, BayKind, CapitalError, CapitalParts, CapitalShip, DockingAnchor, EngineSpec,
-    ExposureError, ExposureWindow, IntegrityPool, Ownership, PropulsionError, Subsystem,
-    SubsystemEffect, SubsystemGraph, SubsystemGraphError, SubsystemKey, SubsystemKeyError,
-    TurretMount,
+    ExposureError, ExposureWindow, IntegrityPool, LaunchBayRig, Ownership, PropulsionError,
+    Subsystem, SubsystemEffect, SubsystemGraph, SubsystemGraphError, SubsystemKey,
+    SubsystemKeyError, TurretMount,
 };
 use cs_sim::world_actors::Quat;
 use cs_sim::world_actors::trajectory::{Keyframe, Trajectory, TrajectoryError};
@@ -134,9 +136,9 @@ impl std::error::Error for CapitalLowerError {}
 /// Lowers a declared capital ship into the runtime aggregate the ECS binds.
 ///
 /// Subsystem identity maps by text, kinds, effects and lethality field-wise,
-/// engines, bays, turrets, anchors and cargo lower with every
-/// [`Resolved::Unknown`] carried through verbatim, and an unknown owner is
-/// refused by claim.
+/// engines, bays (each launch bay with its [`LaunchBayRig`]), turrets, anchors
+/// and cargo lower with every [`Resolved::Unknown`] carried through verbatim,
+/// and an unknown owner is refused by claim.
 ///
 /// # Errors
 ///
@@ -180,11 +182,22 @@ pub fn lower_capital_ship(
         ));
     }
     for bay in declared.launch_bays() {
-        bays.push(Bay::new(
-            lower_key(&bay.key)?,
-            BayKind::Launch,
-            lower_exposure(&bay.key, bay.exposure)?,
-        ));
+        // F35-C lowers the two fields F35-A parked: the release socket and the
+        // bay's capacity are the launch wiring the session runtime consumes.
+        // Both carry their `Unknown` through verbatim, so the runtime refuses
+        // to spawn from or schedule into an unmeasured bay by claim.
+        let rig = LaunchBayRig {
+            offset_m: bay.socket_offset_m.clone(),
+            capacity: bay.capacity.clone(),
+        };
+        bays.push(
+            Bay::new(
+                lower_key(&bay.key)?,
+                BayKind::Launch,
+                lower_exposure(&bay.key, bay.exposure)?,
+            )
+            .with_launch_rig(rig),
+        );
     }
 
     let turrets = declared
