@@ -21,6 +21,11 @@ No original assets, executables, extracted scripts, manuals or decompiled code a
 | [schemas/](schemas/README.md), [tools/](tools/) | Evidence and binding schemas, evidence validator, synthetic fixture generator. |
 | [fixtures/synthetic/](fixtures/synthetic/README.md) | Tiny newly authored test files, not original data. |
 
+## Try it
+
+A flyable development playtest (synthetic scene, not original data):
+`cargo run --locked -p cs_app --bin cs -- --playtest`. See [docs/PLAYTEST.md](docs/PLAYTEST.md).
+
 ## Running agents
 
 Each agent works in its own checkout with the Rally MCP server configured and these environment variables:
