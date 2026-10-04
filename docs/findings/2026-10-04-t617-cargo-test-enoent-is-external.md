@@ -103,16 +103,20 @@ the victim is the crate this task is about:
 tests had already passed, and each was green on the immediate rerun of the
 identical command:
 
-| # | Victim | Tests passed before dying | Rerun |
-| --- | --- | --- | --- |
-| 3 | `accept_f48_d_crash_recovery_matrix-be042b1c8f1a3c3e` | 553 | exit 0, 349 groups, 3391 passed |
-| 4 | `accept_doclib_conflict-d84789a84d5b4f8d` | 2018 | exit 0, 352 groups, 3412 passed |
+| # | Victim | Build phase | Tests passed before dying | Rerun |
+| --- | --- | --- | --- | --- |
+| 3 | `accept_f48_d_crash_recovery_matrix-be042b1c8f1a3c3e` | 1.88 s | 553 | exit 0, 349 groups, 3391 passed |
+| 4 | `accept_doclib_conflict-d84789a84d5b4f8d` | 3 m 13 s | 2018 | exit 0, 352 groups, 3412 passed |
 
 Both victims are binaries a prune burst had already deleted once earlier in
-this session, and both died with a 1.88 s / no-op build phase — cargo rebuilt
-nothing and accepted every harness as fresh, so the deletion landed inside the
-execution phase, exactly as the mechanism requires. Both runs are reported in
-the Rally handover in order, the failed one first.
+this session — occurrence 3's is in `run-2`'s burst, occurrence 4's in
+`baseline`'s — and both died during the execution phase, after the build phase
+had already accepted every harness as fresh. Occurrence 3's build phase took
+**1.88 s** (cargo rebuilt nothing at all); occurrence 4's took **3 m 13 s**,
+because the rebase brought in main's newer `capital` work. That difference is
+immaterial: in both cases the deletion fell after the freshness check, which is
+the only thing the mechanism requires. Both runs are reported in the Rally
+handover in order, the failed one first.
 
 Occurrence 4 is worth one extra note: it died on
 `accept_doclib_conflict-d84789a84d5b4f8d`, which occurrence 1's burst had also
@@ -443,7 +447,9 @@ the class is gone.
   discriminator. That reading was wrong — a 1.88 s build phase means cargo
   rebuilt nothing, and the file's mtime is from the *green rerun*, hours after
   it was linked. The narrow-window observation above stands; a rule inferred
-  from it does not.
+  from it does not. (Occurrence 4 does not rescue the claim either: its build
+  phase was 3 m 13 s and its victim was still one the prune had taken hours
+  earlier.)
 
 * **Why four hashes of one test target coexist and are all live.**
   `accept_doclib_conflict` is present as `-3bad038241d20373`,
