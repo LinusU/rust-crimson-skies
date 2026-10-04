@@ -188,7 +188,7 @@ pub use programs::{
     MINIMUM_TO_SATISFY, MeasuredActivation, NAME_ALTERNATE_FIELD, NAME_FIELD, NEW_GAME_START,
     NODE_PATH_SEPARATOR, OBJECT_SELECTOR_CLAIM, OPTIONS_PREREQUISITE, ObjectSelector,
     PrerequisiteCondition, REQUIRED_PREREQUISITE, SEQUENCE_FIELD, SEQUENCE_KINDS_CLAIM,
-    SEQUENCE_NAME_FIELD, STARTUP_MEMBER, SelectorMatch, SelectorSegment, StartupAnimationBinding,
+    SEQUENCE_NAME_FIELD, SelectorMatch, SelectorSegment, StartupAnimationBinding,
     StartupAnimationTable, StartupEvent, StateBinding, UnmeasuredFieldFamily, WILDCARD_CHAR,
     WorldActorProgramBinding, WorldNodeNames, read_animation_definition_member,
     read_startup_animations,

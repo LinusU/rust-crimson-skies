@@ -95,7 +95,11 @@ use cs_types::evidence::ClaimId;
 
 /// The reader-archive member every mission scope declares for its startup
 /// animations (measured: all 53 mission scopes that declare a reader archive).
-pub const STARTUP_MEMBER: &str = "startanims.zrd";
+///
+/// One definition of the measured spelling, shared with the carrier survey that
+/// found the same member in the same archives: two constants with one value
+/// would be two facts to keep in step.
+pub use super::carrier::STARTUP_MEMBER;
 
 /// The record name an animation-definition member declares.
 pub const ANIMATION_DEFINITIONS_RECORD: &str = "ANIMATION_DEFINITIONS";

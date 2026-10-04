@@ -17,7 +17,9 @@ rendered or played, and no original run happened, so nothing here is
   `.zrd` record readers, the object-selector vocabulary, the binding resolver,
   `WorldNodeNames` and `UnmeasuredFieldFamily`.
 - `crates/cs_app/src/animation/mod.rs` (wiring only): `pub mod programs;`, its
-  re-exports and the module-documentation paragraph.
+  re-exports and the module-documentation paragraph. The review also dropped the
+  duplicate `STARTUP_MEMBER` re-export here and made `programs` reuse
+  `carrier::STARTUP_MEMBER`, which the rebase onto `main` made a compile error.
 - `crates/cs_app/tests/accept_m01_lc_world_actors.rs` (new, an F20 owner path):
   the eleven `accept_m01_lc_world_actors_` tests, seven synthetic and four
   retail.
@@ -416,6 +418,14 @@ reader refusal weakened):
    `zep_dock.zrd`, not one; the wildcard table named a single declaring member
    for spellings several members declare; and the uninterpreted-field and
    activation numbers are now in tables above.
+7. **A duplicate constant, found by the rebase.** `main` now carries
+   `cs_app::animation::carrier` (the animation-carrier survey), which defines the
+   same measured member name this module defined for itself, so the two
+   `pub use` lists in `animation/mod.rs` collided and the crate did not compile
+   after the rebase. `programs` now re-exports `carrier::STARTUP_MEMBER` instead
+   of defining a second constant with the same value — one measured fact, one
+   definition — and the duplicate re-export is gone. Nothing in this task's
+   measurements changed.
 
 The review also **added pins** for measurements this document recorded but no test
 checked: 918/49 names and their ambiguity, `speed_cue` declared seven times, the
