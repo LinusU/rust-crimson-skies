@@ -325,8 +325,9 @@ carries those **bytes** on `MissionObjectiveRecord` and decodes them in
 target record that fails to decode fails the objectives census and cannot fail
 F39-E1's dormant walk, and the measured absence (`targets_bytes: None`) is still
 carried rather than defaulted. No measured number in this document changed: the
-census re-measured on the rebased tree is field-for-field the pre-rebase census,
-apart from the `candidate_tree` it records.
+census re-measured on the rebased tree differs from the pre-rebase one only in
+its `candidate_tree` and in the three `original_record_refusal` strings this
+review reworded — every count, spelling, shape and mission list is identical.
 
 What the review session did independently:
 
