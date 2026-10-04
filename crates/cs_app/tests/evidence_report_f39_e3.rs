@@ -40,60 +40,243 @@ use cs_assets::install::{content_fingerprint, discover, fingerprint};
 /// Every acceptance test the report must see pass.
 const ACCEPTANCE_PREFIX: &str = "accept_f39_e3_";
 
+/// The measured values the report's `review.method` prose states.
+///
+/// Taken out of the census by [`MethodFacts::measured`] so that the rendering is a
+/// pure function of plain numbers, which is what lets a synthetic census pin it
+/// (see `…_method_prose_carries_each_measured_number_in_its_own_clause`). Nothing
+/// here is computed: each field is one production reader's own figure.
+struct MethodFacts {
+    mission_archives: usize,
+    scope_archives: usize,
+    declared_members: usize,
+    distinct_names: usize,
+    decoded_members: usize,
+    scope_blocks: u32,
+    mission_blocks: u32,
+    scope_target_records: u32,
+    /// The scopes whose archive declares objective target records.
+    target_scopes: Vec<String>,
+    /// `(label, occurrences)` over the whole scope layer.
+    target_labels: Vec<(String, u32)>,
+    /// `(spelling, occurrences)` over the whole scope layer.
+    spellings: Vec<(String, u32)>,
+}
+
+impl MethodFacts {
+    /// The facts this report's prose states, read from the two censuses the harness
+    /// has just run over the installation.
+    fn measured(scope: &RetailScopeObjectiveCensus, missions: usize, blocks: u32) -> Self {
+        Self {
+            mission_archives: missions,
+            scope_archives: scope.len(),
+            declared_members: scope.declared_members(),
+            distinct_names: scope.distinct_member_names(),
+            decoded_members: scope.decoded_members(),
+            scope_blocks: scope.objective_blocks(),
+            mission_blocks: blocks,
+            scope_target_records: scope.target_records(),
+            target_scopes: scope
+                .objective_target_scopes()
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            target_labels: scope.target_names().into_iter().collect(),
+            spellings: scope.objective_spellings(),
+        }
+    }
+}
+
 /// How this run was reviewed, with every measured number **derived** from the two
 /// censuses this same run produced.
 ///
 /// The prose is a template: the counts are interpolated rather than written down,
 /// so a report regenerated on another installation cannot describe this one's
 /// numbers.
-fn review_method(scope: &RetailScopeObjectiveCensus, missions: usize, blocks: u32) -> String {
-    let spellings: Vec<String> = scope
-        .objective_spellings()
+///
+/// Every interpolated value is a **named** argument. A positional `{}` list of
+/// twelve values for a template this long compiles happily and silently
+/// transposes them — the first version of this function did exactly that, and
+/// published a report whose `review.method` read "the 612 scope archives declare
+/// 381 members (612 distinct names)", put the **target-label** list where the
+/// objective-**spelling** inventory belongs and left the spelling list in an
+/// unrelated clause
+/// (`docs/findings/2026-10-04-f39-e3-installation-scope-objective-declarations.md`,
+/// "Review 2026-10-04"). Every number came from the right call and was attached to
+/// the wrong claim, and no schema check can see that. A named argument cannot be
+/// transposed: it binds to the placeholder that names it, and the compiler rejects
+/// both a name the template never uses and a placeholder the template never
+/// supplies.
+fn review_method(facts: &MethodFacts) -> String {
+    let spellings = facts
+        .spellings
         .iter()
         .map(|(spelling, count)| format!("{spelling} {count}"))
-        .collect();
-    let names: Vec<String> = scope
-        .target_names()
+        .collect::<Vec<_>>()
+        .join("; ");
+    // Bracketed, because one measured label is a single space: an unbracketed
+    // rendering would put a blank where a name belongs and read as a missing one.
+    let labels = facts
+        .target_labels
         .iter()
-        .map(|(name, count)| format!("{name} {count}"))
-        .collect();
+        .map(|(name, count)| format!("[{name}] x{count}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let target_scopes = facts.target_scopes.join(", ");
     format!(
         "Acceptance suite run locally with the retail capability; this harness derives every field from \
      the recorded log, production discovery of $CS_GAME_DIR, and two production runs of the \
      cs_app::objectives censuses over the installation (scope-objective-census.json). Claim is implemented \
      only. MEASURED: every reader archive the installation holds was split by F13-B's mission_scope rule \
-     into the {missions} mission-scoped archives F39-D's census measures and the {} \
-     installation-scope archives this task adds; the {} scope archives declare {} members ({ } distinct \
-     names), every member decoded, and they declare {} numbered OBJECTIVE<N> blocks, so the mission-scoped \
-     denominator of {blocks} blocks is COMPLETE for that surface rather than a share of it. The objective \
-     TARGET surface is the opposite: {} target records in {} of the scope archives ({}), all of them in \
-     one world-group reader whose objective labels are {}. So a mission-scoped archive carries objective \
-     blocks only, while the objective targets a mission may inherit sit outside the mission-scoped \
-     denominator. The complete objective-named spelling inventory over all scope members, which is the \
-     search list the negative result is drawn from: {}. LIMITS OF WHAT WAS MEASURED, each recorded in \
+     into the {mission_archives} mission-scoped archives F39-D's census measures and the \
+     {scope_archives} installation-scope archives this task adds; those {scope_archives} archives declare \
+     {declared_members} members ({distinct_names} distinct names) and {decoded_members} of them decoded, \
+     and they declare {scope_blocks} numbered OBJECTIVE<N> blocks, so the mission-scoped denominator of \
+     {mission_blocks} blocks is COMPLETE for that surface rather than a share of it. The objective TARGET \
+     surface is the opposite: {scope_target_records} objective target records, in {target_scope_count} of \
+     the {scope_archives} scope archives ({target_scopes}), labelled {target_labels} — so the objective \
+     targets a mission may inherit sit outside the mission-scoped denominator, while a mission-scoped \
+     archive carries objective blocks only. The complete objective-named spelling inventory over all \
+     scope members, which is the search list the negative result is drawn from: {spellings}. LIMITS OF \
+     WHAT WAS MEASURED, each recorded in \
      docs/findings/2026-10-04-f39-e3-installation-scope-objective-declarations.md: (1) whether a mission \
      RESOLVES a member of its world group's or the install-wide reader is reader-archive precedence \
      (F04/F06) and was not measured - the three dialog spellings sit in install-wide members that no \
      mission-scoped reader carries, so they are inherited rather than duplicated in the files, and what \
      the original does with them is unknown; (2) a spelling is a spelling - no declaration's meaning is \
      recovered, the mission-language instruction table is unmeasured (F13-B/C, F38) and no original \
-     executable was run, so nothing here is evidence of behaviour; (3) the {}-sided reading: an original \
-     record stays refused as UNMEASURED_OBJECTIVE_SEMANTICS and no original mission is played. \
-     `unknowns` is empty because every unresolved item above is a limit on the claim rather than an \
-     unresolved measurement: every row in both censuses resolved and every scope archive classified. \
-     Validated with tools/validate_evidence.py --require-pass.",
-        scope.len(),
-        scope.declared_members(),
-        scope.distinct_member_names(),
-        scope.decoded_members(),
-        scope.objective_blocks(),
-        missions,
-        scope.target_records(),
-        scope.objective_target_scopes().len(),
-        scope.objective_target_scopes().join(", "),
-        names.join(", "),
-        spellings.join(", "),
+     executable was run, so nothing here is evidence of behaviour; (3) an original record stays refused \
+     as UNMEASURED_OBJECTIVE_SEMANTICS and no original mission is played. `unknowns` is empty because \
+     every unresolved item above is a limit on the claim rather than an unresolved measurement: every \
+     row in both censuses resolved and every scope archive classified. Validated with \
+     tools/validate_evidence.py --require-pass.",
+        mission_archives = facts.mission_archives,
+        scope_archives = facts.scope_archives,
+        declared_members = facts.declared_members,
+        distinct_names = facts.distinct_names,
+        decoded_members = facts.decoded_members,
+        scope_blocks = facts.scope_blocks,
+        mission_blocks = facts.mission_blocks,
+        scope_target_records = facts.scope_target_records,
+        target_scope_count = facts.target_scopes.len(),
+        target_scopes = target_scopes,
+        target_labels = labels,
+        spellings = spellings,
     )
+}
+
+/// The report's own prose must carry the numbers the censuses measured, in the
+/// place each one belongs.
+///
+/// This exists because the first version of [`review_method`] passed its twelve
+/// values **positionally** to a template that long, and `rustc` accepted the
+/// transposition silently: the committed report's `review.method` said "the 612
+/// scope archives declare 381 members (612 distinct names)", "53 target records
+/// in 5 of the scope archives", rendered the **target-label** list where the
+/// objective-**spelling** inventory belongs, and put the spelling list inside the
+/// unrelated "the {}-sided reading" clause. Every number in it came from the right
+/// call; every number was attached to the wrong claim. A validation tool cannot
+/// catch that — the JSON was well-formed and the schema passed — so the reading is
+/// pinned here instead: each measured value must appear next to the words that
+/// describe what it counts.
+///
+/// Synthetic census, so this runs in CI without `CS_GAME_DIR`: the values are
+/// chosen to be mutually distinguishable (9 archives, 612 declared, 381 distinct,
+/// 612 decoded, 0 blocks, 1338 mission blocks, 5 target records in 1 scope), which
+/// is exactly the property a transposition destroys.
+#[test]
+fn evidence_report_f39_e3_method_prose_carries_each_measured_number_in_its_own_clause() {
+    // Values chosen to be mutually distinguishable (53 / 9 / 612 / 381 / 0 / 1338
+    // / 5 / 1), which is exactly the property a transposition destroys: with equal
+    // or near-equal numbers a wrong attachment is invisible in the prose.
+    let facts = MethodFacts {
+        mission_archives: 53,
+        scope_archives: 9,
+        declared_members: 612,
+        distinct_names: 381,
+        decoded_members: 612,
+        scope_blocks: 0,
+        mission_blocks: 1338,
+        scope_target_records: 5,
+        target_scopes: vec!["zbd/c1c".to_owned()],
+        target_labels: vec![
+            ("MSG_OBJ_DOCK".to_owned(), 2),
+            ("MSG_OBJ_ZEPPELIN".to_owned(), 3),
+        ],
+        spellings: vec![
+            ("MSG_BRF_DLG_OBJECTIVES".to_owned(), 4),
+            ("OBJECTIVESLIST".to_owned(), 553),
+        ],
+    };
+    let method = review_method(&facts);
+
+    // Each count, next to the words that say what it counts.
+    for clause in [
+        "into the 53 mission-scoped archives",
+        "the 9 installation-scope archives",
+        "declare 612 members",
+        "(381 distinct names)",
+        "they declare 0 numbered OBJECTIVE<N> blocks",
+        "denominator of 1338 blocks is COMPLETE",
+        "surface is the opposite: 5 objective target records",
+        "in 1 of the 9 scope archives (zbd/c1c)",
+    ] {
+        assert!(
+            method.contains(clause),
+            "review.method does not carry {clause:?}: {method}"
+        );
+    }
+    // The spelling inventory and the target labels are different lists; the
+    // transposition put each where the other belonged, so each must appear in its
+    // own clause and *not* in the other's.
+    let spellings_clause = method
+        .split_once("negative result is drawn from: ")
+        .and_then(|(_, tail)| tail.split_once(". LIMITS"))
+        .map(|(head, _)| head)
+        .unwrap_or_else(|| panic!("no spelling clause in {method}"));
+    assert_eq!(
+        spellings_clause, "MSG_BRF_DLG_OBJECTIVES 4; OBJECTIVESLIST 553",
+        "the spelling clause is not the objective-named spelling inventory: {method}"
+    );
+    assert!(
+        method.contains("labelled [MSG_OBJ_DOCK] x2; [MSG_OBJ_ZEPPELIN] x3"),
+        "the target labels are not reported next to the target records: {method}"
+    );
+    // No clause may be left holding an unrelated value: the old template's
+    // "(3) the {}-sided reading" clause took the spelling list, which is what made
+    // the defect visible in the first place.
+    assert!(
+        !method.contains("-sided reading") && !method.contains("{}"),
+        "an unlabelled clause is still receiving an interpolated value: {method}"
+    );
+}
+
+/// A label that is a single space must render as a name, not as a blank.
+///
+/// Measured: one of `zbd/c1c`'s five objective target records spells its
+/// `help_label` as `" "`. Rendered unbracketed into a `; `-joined list it
+/// disappears, and the report would state four labels for five records without
+/// saying why.
+#[test]
+fn evidence_report_f39_e3_a_blank_target_label_still_renders_as_a_label() {
+    let facts = MethodFacts {
+        mission_archives: 53,
+        scope_archives: 9,
+        declared_members: 612,
+        distinct_names: 381,
+        decoded_members: 612,
+        scope_blocks: 0,
+        mission_blocks: 1338,
+        scope_target_records: 5,
+        target_scopes: vec!["zbd/c1c".to_owned()],
+        target_labels: vec![(" ".to_owned(), 1)],
+        spellings: vec![("OBJECTIVESLIST".to_owned(), 553)],
+    };
+    let method = review_method(&facts);
+    assert!(
+        method.contains("labelled [ ] x1"),
+        "a blank target label was rendered as nothing at all: {method}"
+    );
 }
 
 #[test]
@@ -289,7 +472,11 @@ fn evidence_report_f39_e3_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(&reviewer),
-        jstr(&review_method(&scope, missions.len(), missions.blocks())),
+        jstr(&review_method(&MethodFacts::measured(
+            &scope,
+            missions.len(),
+            missions.blocks(),
+        ))),
     );
     let out = evidence_dir.join("acceptance.json");
     fs::write(&out, &report).expect("write acceptance.json");
