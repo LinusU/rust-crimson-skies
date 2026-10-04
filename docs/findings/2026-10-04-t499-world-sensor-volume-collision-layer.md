@@ -234,6 +234,27 @@ and clamps now**, the difference being that it clamps by
 the repair, so "it passed before" is what a regression arm is supposed to say;
 the four arms that fail are the ones the classification is for.
 
+## The CI run, and one numeric bound worth naming
+
+CI on the rebased tip was **red in `cargo test`, and not on a test**: the link step
+of one doctest binary died with `ld terminated with signal 7 [Bus error]`
+(`crates/cs_app/src/livery.rs` line 49, F09-C's path, untouched here). Every
+ordinary test target in that run is green, **including all five `accept_t499_*`
+tests on x86_64**, and `fmt` and `clippy -D warnings` are green in the same run.
+Filed as task #637 rather than worked around, because the only path that could
+change it is `.github/workflows/ci.yml` and because a green run must stay green
+for the right reason.
+
+One bound in the first commit was tightened for a reason that turned out not to be
+the cause, and is worth recording because the measurement behind it is real and
+reusable: the solid-leg assertion bounded the solver's residual with an absolute
+`1e-3 m/s` while the residual measures **-0.000826 m/s** in this geometry and
+**-0.0019 m/s** in task #415's — 83% of the bound, and 1.9× it. An assertion that
+sits inside the spread of a value it does not control is a coin flip between
+architectures, so it is now a thousandth of the fired speed, which still excludes
+"not stopped" (60 m/s) by a factor of a thousand. The same reasoning moved the
+no-delay tolerances from absolute to speed-relative.
+
 ## Designed values, not original data
 
 Every number above is a measurement of **this** project on the pinned pair, with
