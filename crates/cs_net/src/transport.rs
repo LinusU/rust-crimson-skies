@@ -468,9 +468,15 @@ impl HostTransport {
     /// one of these slots without ever being a peer, so this count — not
     /// [`Self::peer_of`] — is what says whether a refused client still occupies
     /// one of the [`crate::bounds::MAX_SESSION_PEERS`] netcode slots.
+    ///
+    /// The count is the pinned connection layer's own table, not this crate's
+    /// bookkeeping: a client the host has already condemned at the reliable
+    /// layer ([`Self::disconnect_client`], [`Self::disconnect_peer`]) keeps its
+    /// netcode slot until the next [`Self::update`] sweeps it, and it still
+    /// counts here — it is still occupying the slot this answers about.
     #[must_use]
     pub fn connected_clients(&self) -> usize {
-        self.clients.len()
+        self.transport.connected_clients()
     }
 
     /// Sends one server packet to one peer on the channel its [`Delivery`]
@@ -592,11 +598,25 @@ impl HostTransport {
     /// port still being free. Every connection still open is hung up on here
     /// — including the ones that hold no peer id, which would otherwise keep a
     /// netcode slot and would then be told [`DropReason::NoPeer`] if they tried
-    /// to use a connection this transport no longer knows. Returns how many
-    /// connected clients were dropped by the reset.
+    /// to use a connection this transport no longer knows.
+    ///
+    /// The hang-up runs through the pinned connection layer's own
+    /// `disconnect_all`, which sends each held client its `Packet::Disconnect`
+    /// and frees its slot in the `NetcodeServer`'s client table *now*.
+    /// `RenetServer::disconnect_all` cannot do that: it only marks the
+    /// reliable connections disconnected and leaves the netcode slots for the
+    /// next [`Self::update`]'s sweep to release. Inside that window a client
+    /// reconnecting with the same `client_id` collided with the spent epoch's
+    /// still-occupied slot — the pinned layer silently denies its connection
+    /// request and ignores a connection response whose id is already slotted —
+    /// so the returning client could never be told the new epoch's verdict.
+    ///
+    /// Returns how many connection-layer clients the reset hung up —
+    /// including connections a caller had already condemned at the reliable
+    /// layer but whose netcode slots only this reset could release.
     pub fn reopen(&mut self, session: SessionId) -> usize {
-        let dropped = self.clients.len();
-        self.server.disconnect_all();
+        let dropped = self.transport.connected_clients();
+        self.transport.disconnect_all(&mut self.server);
         self.clients.clear();
         self.client_by_peer.clear();
         self.peers = PeerAllocator::new();

@@ -719,12 +719,15 @@ impl ServerSession {
     /// number from it. The socket is kept, so a retry does not depend on the
     /// same port still being free.
     ///
-    /// The retry hangs up on every connection the spent epoch still holds once
-    /// [`Self::close`] returned — `close` already removed the peers from the
-    /// transport, so what is left is the connections that hold no peer id,
-    /// which nothing else reaches — and returns how many it hung up. That count
-    /// is how a caller learns whether a refused or unusable client was still
-    /// occupying one of the [`crate::bounds::MAX_SESSION_PEERS`] netcode slots.
+    /// The retry hangs up on every connection the spent epoch still holds at
+    /// the connection layer once [`Self::close`] returned — `close` removed the
+    /// peers from the session's bookkeeping but could only condemn their
+    /// netcode slots, so the retry is also what finally releases those — and
+    /// returns how many it hung up. That count is how a caller learns whether
+    /// a refused or unusable client was still occupying one of the
+    /// [`crate::bounds::MAX_SESSION_PEERS`] netcode slots — and how a caller
+    /// learns the members' slots are really gone, because a same-id client
+    /// that reconnects before the slot dies is denied by the pinned layer.
     ///
     /// A hang-up an earlier pump condemned is subsumed by that reset and is
     /// dropped rather than reported again inside the new epoch: it names a
