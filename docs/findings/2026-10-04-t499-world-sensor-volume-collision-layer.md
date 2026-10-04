@@ -74,7 +74,7 @@ a report because it forced the body onto the surface" — reproduced here on the
 spawn tick. **One contact report named the volume, and the body never entered
 it.**
 
-The solid arm of the same geometry, for contrast: a `Projectile` fired at
+The solid arm in the same world, for contrast: a `Projectile` fired at
 `arch.leg_right` from the same 0.4-tick offset clamped at 0.200 m and stopped,
 ending at `x = -0.549` against the leg's near face at `x = -0.500`. World
 geometry already stopped spawns — but **by absence**, because an unclassifiable
@@ -125,7 +125,7 @@ inserts added:
 | fired | travel/tick | structural cell | `clamped` | `vz` after 3 ticks | `passed` | `passed_distance_m` | crossings |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 60 m/s | 0.50 m | ends **inside** the volume | false | 60.000 | `Some(volume)` | 0.200 m | 1, tick 1, `Entry` |
-| 192 m/s | 1.60 m | ends **exactly at** the far face | false | 192.000 | `Some(volume)` | 0.640 m | 1, tick 1, `Entry` |
+| 192 m/s | 1.60 m | one whole tick **inside** (centre `z = -3.840`, 0.59 m short of the far face) | false | 192.000 | `Some(volume)` | 0.640 m | 1, tick 1, `Entry` |
 | 600 m/s | 5.00 m | **passes through entirely** | false | 600.000 | `Some(volume)` | 2.000 m | 1, tick 1, `Entry` |
 
 The solid arm is unchanged to the last digit: `clamped: true`, `stopped: true`,
@@ -161,13 +161,32 @@ fires at the frame rate.
 The fixture also carries **both** producers, because `world_app()` installs
 `WorldSweptCrossingPlugin` and the measurement adds the preflight on top of it.
 So the single delivery is measured with #498's ordinary-flight pass running
-against the same pair. It contributes no second entry: `sweep_volume_crossings`
-first sees the body on the tick it spawned, already inside the volume, and its
-first-sight branch registers that state and casts nothing — a body that
-materialized inside a volume is an exit or a dwell, not an entry, which is
-#498's stated rule. The pair therefore crosses the ledger once from either
-producer, which is the "the two must be consistent rather than each inventing a
-way to name a volume" requirement measured rather than asserted.
+against the same pair. It contributes no second entry, and **why is per cell, not
+one rule** (measured from `SweptBodyTracks`' own counters after each tick):
+
+| cell | first sight | later ticks | `entries` |
+| --- | --- | --- | --- |
+| 60 m/s, ends inside | registered on tick 1 with **0 casts**, `inside` = the volume | 2 casts, 2 touches, the body never leaves | **0** |
+| 192 m/s, one tick inside | registered on tick 1 with **0 casts**, `inside` = the volume | 1 cast, 1 touch, and the exit half on tick 2 records nothing by rule | **0** |
+| 600 m/s, passes through | registered on tick 1 with **0 casts**, `inside` = **empty** — the body is already 1.45 m *past* the far face | 2 casts, **0 touches**: its segments no longer reach the volume | **0** |
+
+So in the first two cells the first-sight branch registers a body that
+materialized *inside* a volume and casts nothing — an exit or a dwell, not an
+entry, which is #498's stated rule — while in the pass-through cell it registers
+a body already *past* the volume, and the segments it casts on ticks 2 and 3
+start beyond the volume and therefore touch nothing. Either way the pair crosses
+the ledger once, from the preflight alone. That is the "the two must be
+consistent rather than each inventing a way to name a volume" requirement
+measured rather than asserted.
+
+`exits` reads **2** for the single 192 m/s exit transition, on a tick whose cast
+reported 1 touch: the volume is both `inside` at the segment's start and
+`touched` along it, and `sweep_volume_crossings`'s `involved` list is chained
+from those sets rather than deduplicated, so one transition is walked twice. The
+ledger is unaffected — the `(inside, ends inside) = (true, false)` branch is the
+exit half and records nothing — but the counter's value is not the number of
+transitions its doc comment says. That is #498's pass rather than this task's
+repair, so it is filed as **#643** instead of being folded in here.
 
 ## Why `classify_hit` is untouched
 
@@ -220,6 +239,14 @@ The two producers now agree on the pair, which is the part this task had to fix
 for #498's and #415's rules to be the same rule: one
 `TriggerCrossings` ledger, one `(actor, volume)` key, and a `CrossingSource` so a
 consumer can tell which producer decided a crossing.
+
+**One paragraph outside this task's owner paths is now stale, and is left for its
+owner.** The module docs of `crates/cs_app/src/objectives.rs` (written by **#415**)
+say the world-authored volumes are not yet visible to the preflight's cast, and
+give the reason as their carrying no `BodyLayer`. That reason is false after
+this task — they carry one — while the claim itself stays true for the other
+reason above. That file is #415's, not this task's, so the correction is filed as
+**#644** rather than made here; nothing in this branch depends on it.
 
 ## Mutation / removal checks
 

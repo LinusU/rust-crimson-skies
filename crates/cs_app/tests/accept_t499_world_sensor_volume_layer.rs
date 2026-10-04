@@ -62,8 +62,14 @@ const PROJECTILE_HALF_M: f32 = 0.05;
 /// is not blind to this crossing.
 const DWELL_SPEED_M_S: f32 = 60.0;
 
-/// The boundary cell: one tick of travel exactly spans the volume's thickness
-/// plus the projectile, so the body leaves the volume on the tick it entered it.
+/// The boundary cell: one tick of travel is exactly the volume's thickness plus
+/// the projectile (1.5 m + 2 × 10 cm), so the body is still inside the volume
+/// when its crossing tick ends and is out of it by the end of the next one — it
+/// dwells for one whole tick. Measured here: the swept record is on tick 1, the
+/// end of tick 1 is `z = -3.840` against the volume's `[-4.750, -3.250]`, and
+/// the end of tick 2 is `z = -2.240`. This is the boundary between a dwell
+/// longer than a tick and the pass-through cell below, which never has a sample
+/// inside at all.
 const BOUNDARY_SPEED_M_S: f32 = 192.0;
 
 /// The **pass-through** cell: one tick of travel is three times the volume's

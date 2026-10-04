@@ -785,7 +785,7 @@ pub fn static_world_membership() -> CollisionLayers {
 /// | 60 m/s | 0.50 m | **yes**, at 0.200 m | **removed**, `vz` 60 → 0 | `None` | held at the volume's near face |
 /// | 600 m/s | 5.00 m | **yes**, at 2.000 m | **removed**, `vz` 600 → 0 | `None` | held at the volume's near face |
 ///
-/// Solid world geometry clamped at 0.200 m in the same geometry, so the defect
+/// Solid world geometry clamped at 0.200 m in the same world, so the defect
 /// was specific to the layer-less volume being taken as solid by absence.
 /// `accept_t499_a_world_sensor_volume_never_clamps_stops_or_delays_a_spawn` and
 /// `accept_t499_a_spawn_tick_crossing_of_a_world_volume_reaches_the_consumer`
