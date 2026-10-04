@@ -10,11 +10,13 @@ application bug.** On this machine (Darwin 25.6.0 / 25G83, 11 cores), a
 demultiplexer never routes to: every datagram addressed to its port is
 dropped, and the kernel counts the drops as `dropped due to no socket`
 while the socket is bound, live, owned by this process and actively
-drained. The socket stays unreachable for its whole life. The trigger is
-**aggregate concurrent socket churn** — many processes binding, using and
-dropping short-lived UDP sockets at once. Serialized pairs were clean at
-every load tried; concurrent pairs die at rates from ~5% to ~70%
-depending on churn and ambient load.
+drained. Once a socket goes silent it never recovers (postmortem-verified
+for ~100% of dead pairs), and the `WINDOW_S=120` run shows visibility can
+also be lost mid-life, after a socket has already routed traffic. The
+trigger is **aggregate concurrent socket churn** — many processes
+binding, using and dropping short-lived UDP sockets at once. Serialized
+pairs were clean at every load tried; concurrent pairs die at rates from
+~1% to ~70% depending on churn and ambient load.
 
 The same churn also produces a transient per-datagram drop layer that
 retransmission absorbs (the widened connect window healed ~84% of
@@ -67,7 +69,7 @@ real test):
   worker JSON into one fleet report under `private/f54x10/`.
 - `f54x10_wildcard_probe` — explicit socket-collision probe
   (wildcard/specific bind orders, allocator check).
-- `f54x10_alloc_storm` — concurrent `bind(127.0.0.1:0)`/`bind(0.0.0.0:0)`
+- `f54x10_alloc_probe` — concurrent `bind(127.0.0.1:0)`/`bind(0.0.0.0:0)`
   storm across 24 threads, counts ports held by two live sockets.
 
 Raw pairs are tagged per worker/pair/round/direction so the report
@@ -107,7 +109,7 @@ fleet binary directly:
 | `PROCS=24 PAIRS=800 ROUNDS=8` (max churn) | 19200 | 307k | **0** | 0 | 0 | 0 |
 | exact F54-X2 shape: `PROCS=11 PAIRS=1500 ROUNDS=1024 SEND_EVERY=16` | 16500 | 2.1M | **0** | 0 | 0 | 0 |
 | `FRESH=recv`, `FRESH=send`, `FRESH=none` at `PROCS=11` | 3300 each | 422k each | **0** | 0 | 0 | 0 |
-| `BIND=client` (sender on `0.0.0.0:0`, the transport shape) | 4400 | 1.13M | **0** | 0 | 0 | 0 |
+| `BIND=client` (sender on `0.0.0.0:0`, the transport shape), two runs | 8800 each | 1.13M each | **0** | 0 | 0 | 0 |
 
 A fleet's own raw churn — up to ~16k bind+close events/s — is not enough
 alone. Port rebinding happened constantly (`rebound_pairs=1737/19200` in
@@ -142,15 +144,20 @@ inside the shipped 15 s connect window.
 | churning processes | pairs | unsettled | rate |
 | --- | --- | --- | --- |
 | serialized (`PROCS=1 WORKERS=1 PAIRS=400`) | 400 | **0** | 0% |
-| 4 × 600 | 2400 | 0 | 0% |
+| 4 × 600 | 2400 | 0 (two runs) | 0% |
 | 4 × 1500 | 6000 | 2003 | 33% |
-| 8 × 600 | 4800 | 274 | 5.7% |
-| 11 × 600 | 6600 | 1575 / 3277 / 3657 across runs | 24-55% |
+| 8 × 600 | 4800 | 274 / 545 | 5.7-11% |
+| 11 × 600 | 6600 | 63 / 1093 / 1575 / 3277 / 3330 / 3657 across runs | 1-55% |
 | 11 × 900 | 9900 | 4745 / 4922 / 5137 / 6795 | 48-69% |
 | 16 × 400 (`BIND_DELAY_MS=5`) | 6400 | 1719 | 27% |
 
 The threshold is a **churn rate**, not a proc count: the same 4 procs
-gave 0% and 33% under different ambient load, and 11 procs ranged 24-69%.
+gave 0% and 33% under different ambient load, and 11 procs ranged 1-69%.
+Tellingly, the three lowest 11×600 outcomes (63, 1093, 1575) are the runs
+with `SPINNERS=24`: oversubscribing the 11 cores starves the probe
+processes themselves, which slows their bind rate — the churn-rate
+dependence working in the direction it predicts.
+
 `unsettled_connected` stayed tiny (0-20/run): ~99% of dead pairs never
 finish the 4-packet netcode exchange — they die *before* `Connected`.
 
@@ -159,9 +166,15 @@ finish the 4-packet netcode exchange — they die *before* `Connected`.
 Instrumented runs tag every netcode `log` record and the fleet diffs
 kernel UDP counters. Consistent across every unsettled-heavy run:
 
-- `unsettled_host_saw` ≈ 1-6% of unsettled (e.g. 163/4745, 352/3277):
-  the victim's host socket never logged `Connection request` — the
-  client's requests never arrived.
+- `unsettled_host_saw` is a small minority of unsettled at
+  `WINDOW_S=15` — 0.06-11% across runs (e.g. 163/4745, 352/3277,
+  13/2003): those pairs' host sockets never logged `Connection request`,
+  so the clients' requests never arrived. Under `WINDOW_S=120` the share
+  jumps to 431/597 (72%) — the wider window lets the transient layer's
+  retries land — yet every one of those pairs still ended
+  postmortem-orphaned: those host sockets routed a request and *later*
+  became unreachable, so demux visibility can be lost mid-life, not only
+  at bind.
 - `foreign_requests = 0` always: no request was ever mis-delivered to
   another process's host socket (client ids carry a per-process tag).
 - `netcode_rejected` ≈ 0-140 per run vs ~200k dropped packets: the few
@@ -181,8 +194,10 @@ So the dominant mechanism is: **bind() returns a socket whose entry in
 the kernel's PCB table is never reachable by the loopback demux — an
 orphan socket.** When a pair's two binds both land inside a bad
 interval, the whole pair dies together (hence exactly 128/128 lost).
-When only the client's bind orphans, its ~60 request retries all drop as
-"no socket" and the connect window times out.
+When a transport pair's host bind orphans, the client's ~60 request
+retries all drop as "no socket" at the host port and the connect window
+times out. (A client-side orphan instead leaves the host sighting
+intact and drops the replies — the `unsettled_host_saw` minority.)
 
 ### The transient layer and the window
 
@@ -200,7 +215,7 @@ a socket demux never routes to.
   a port held by a specific socket, refused **2000/2000** each; a
   wildcard ephemeral bind never landed on a held specific port (0/200).
   Sequential collision is impossible.
-- **Allocator race** — `f54x10_alloc_storm` (300 storms × 24 threads ×
+- **Allocator race** — `f54x10_alloc_probe` (300 storms × 24 threads ×
   8 binds, 57600 live sockets): `bind_errors=0`, but **19 same-shape +
   16 cross-shape duplicate live port assignments**. The kernel *can*
   double-assign a port under racing binds — real, but at ~0.06% per bind
@@ -222,7 +237,7 @@ a socket demux never routes to.
 ## 5. Parameters varied
 
 `PROCS` 1-24, `WORKERS` 1-16, `PAIRS` 150-1500/proc, `ROUNDS` 8-1024,
-`SEND_EVERY` 1/16, `DGRAM_BYTES` 300-1400, `RCVBUF` 0/8192, `FRESH`
+`SEND_EVERY` 1/16, `DGRAM_BYTES` 300-1400, `RCVBUF` 0/8192/2097152, `FRESH`
 both/recv/send/none, `BIND` loopback/client, `BIND_DELAY_MS` 0/5/25,
 `BOTH_DIRS` 0/1, `WINDOW_S` 15/120, `SETTLE_ROUNDS` 2000-9000,
 `SPINNERS` 0-24, `MODE` raw/transport. The knobs that moved the number:
@@ -265,7 +280,7 @@ for this phenomenon.**
   ranges, not constants. The exact F54-X2-era signature (1-2 of 59
   datagrams per pair) was not reproduced today — today's machine
   produces the cleaner whole-socket orphan signature instead.
-- `f54x10_alloc_storm` proves duplicate live port assignments happen
+- `f54x10_alloc_probe` proves duplicate live port assignments happen
   (~0.06%/bind under storm) but its measured rate does not by itself
   account for the observed orphan rates; the two are symptoms of the
   same table contention, not one proven causal chain.
