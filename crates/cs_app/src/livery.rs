@@ -46,50 +46,9 @@
 //! color-space conversion, no decal interpretation and no per-instance
 //! mutation of a shared image.
 //!
-//! ```
-//! use cs_app::livery::{
-//!     LiveryRuntime, LiverySession, ModelInstanceId, PaintChoice,
-//! };
-//! use cs_content::livery::LiveryPaint;
-//! use cs_formats::bm::PaintColor;
-//! use cs_formats::io::AllocationBudget;
-//! use cs_formats::{ParseContext, read_bm};
-//! use cs_types::content::{ContentId, ContentKind};
-//!
-//! // A 1x1 BM: header is height, then width; base, three masks, overlay.
-//! let mut bytes = Vec::new();
-//! bytes.extend_from_slice(&1u16.to_le_bytes()); // height
-//! bytes.extend_from_slice(&1u16.to_le_bytes()); // width
-//! bytes.extend_from_slice(&[10, 20, 30]); // base
-//! bytes.extend_from_slice(&[255, 255, 255]); // masks 1..3
-//! bytes.extend_from_slice(&[0, 0, 0, 0]); // overlay
-//! let mut context = ParseContext::with_defaults("synthetic/f09-c.bm");
-//! let file = read_bm(&mut context, &bytes).expect("the image is valid");
-//!
-//! let mut runtime = LiveryRuntime::new(LiverySession(1));
-//! let faction = ContentId::from_source(ContentKind::Faction, "red").expect("valid id");
-//! let red = LiveryPaint::new([
-//!     PaintColor::new(255, 0, 0),
-//!     PaintColor::WHITE,
-//!     PaintColor::WHITE,
-//! ]);
-//! let mut budget = AllocationBudget::with_defaults("synthetic/f09-c.bm");
-//! let bound = runtime
-//!     .bind(
-//!         LiverySession(1),
-//!         ModelInstanceId(1),
-//!         &file,
-//!         PaintChoice::faction(faction, red),
-//!         &mut budget,
-//!     )
-//!     .expect("the paint fits")
-//!     .clone();
-//! let image = runtime
-//!     .image(ModelInstanceId(1))
-//!     .expect("the instance is bound");
-//! assert_eq!(image.rgb().len(), 3);
-//! assert_eq!(bound.key().colors()[0], PaintColor::new(255, 0, 0));
-//! ```
+//! A worked bind-and-read example is the unit test `module_doc_example_binds_and_reads_an_image`
+//! in this file. It is a unit test, not a doctest, because a doctest links its
+//! own binary against the whole Bevy rlib set, which dies with an lld bus error on CI.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -560,6 +519,47 @@ mod tests {
     use cs_types::content::ContentKind;
 
     use super::*;
+
+    /// The bind-and-read example from the module docs, kept as a unit test.
+    #[test]
+    fn module_doc_example_binds_and_reads_an_image() {
+        use cs_formats::io::AllocationBudget;
+        use cs_types::content::{ContentId, ContentKind};
+
+        // A 1x1 BM: header is height, then width; base, three masks, overlay.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // height
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // width
+        bytes.extend_from_slice(&[10, 20, 30]); // base
+        bytes.extend_from_slice(&[255, 255, 255]); // masks 1..3
+        bytes.extend_from_slice(&[0, 0, 0, 0]); // overlay
+        let mut context = ParseContext::with_defaults("synthetic/f09-c.bm");
+        let file = read_bm(&mut context, &bytes).expect("the image is valid");
+
+        let mut runtime = LiveryRuntime::new(LiverySession(1));
+        let faction = ContentId::from_source(ContentKind::Faction, "red").expect("valid id");
+        let red = LiveryPaint::new([
+            PaintColor::new(255, 0, 0),
+            PaintColor::WHITE,
+            PaintColor::WHITE,
+        ]);
+        let mut budget = AllocationBudget::with_defaults("synthetic/f09-c.bm");
+        let bound = runtime
+            .bind(
+                LiverySession(1),
+                ModelInstanceId(1),
+                &file,
+                PaintChoice::faction(faction, red),
+                &mut budget,
+            )
+            .expect("the paint fits")
+            .clone();
+        let image = runtime
+            .image(ModelInstanceId(1))
+            .expect("the instance is bound");
+        assert_eq!(image.rgb().len(), 3);
+        assert_eq!(bound.key().colors()[0], PaintColor::new(255, 0, 0));
+    }
 
     const RED: PaintColor = PaintColor::new(255, 0, 0);
     const BLUE: PaintColor = PaintColor::new(0, 0, 255);
