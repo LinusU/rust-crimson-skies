@@ -95,9 +95,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_assets::install::sha256;
-use cs_formats::gamez::{GameZNodes, NODE_TYPE_WORLD};
-use cs_types::content::{ContentId, ContentIdError, ContentKind, Origin, Provenance, Resolved};
-use cs_types::evidence::ContentHash;
+use cs_formats::gamez::{
+    GameZNodes, NODE_TYPE_OBJECT3D, NODE_TYPE_WORLD, NodeKind as StoredNodeKind, RawNode,
+    RawObject3dData, WORLD_DATA_BYTES, WORLD_PARTITION_BYTES, WORLD_PARTITION_VALUE_BYTES,
+};
+use cs_types::content::{
+    ContentId, ContentIdError, ContentKind, Known, Origin, Provenance, Resolved,
+};
+use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
+use cs_types::space::SpaceError;
 
 use crate::coordinates::SourceAdapter;
 use crate::scene::{
@@ -4375,6 +4381,1074 @@ pub fn world_node_slot(records: &GameZNodes) -> Option<u32> {
         .iter()
         .find(|node| node.kind.tag() == NODE_TYPE_WORLD)
         .map(|node| node.index)
+}
+
+// -------------------------------------------- the world-container import ---
+
+// The measured facts this section rests on are in
+// `docs/findings/2026-10-04-m01-lc-world-import.md`; the code comments below say
+// what each refusal is for rather than repeating them.
+//
+// The conversion is two steps that are deliberately separate: `partition_grid`
+// reads the world record's own spatial index out of the container bytes, and
+// `import_world_container` turns that index plus the records it names into a
+// `WorldDefinition`. Nothing in between invents a sector, an object or a role:
+// every value the original did not state arrives as `Resolved::Unknown` with the
+// claim id that says which measurement is missing.
+
+/// Wraps one of this module's own claim id literals.
+///
+/// The literals are compile-time constants of this module, so a rejection here
+/// would be a typo in the source rather than untrusted input; `expect` says
+/// exactly that instead of turning a typo into a panic at run time.
+fn claim(id: &str) -> ClaimId {
+    ClaimId::new(id).expect("a claim id this module declares")
+}
+
+/// The world record's partition grid **is** the world's sector index.
+///
+/// Measured over all eight world containers of the original installation: the
+/// grid is an `x × y` array of cells, every cell names records by their stored
+/// node slot, and the set of distinct slots it names is **exactly** the set of
+/// records the world node's own child list omits — the same set the hierarchy
+/// rule already showed the list omits, reached by a second route. The claim is
+/// about what the container's bytes say; no original run measured how the 2000
+/// engine streamed on them.
+pub const PARTITION_GRID_IS_THE_SECTOR_INDEX: &str = "f18-world.partition-grid-is-the-sector-index";
+
+/// A record the world's partition grid names **is** the world's static spatial
+/// geometry.
+///
+/// **Designed rule over a measured fact.** The container stores no per-record
+/// collision field at all: what it stores is membership in the world's own
+/// spatial index together with a stored world-space bounding box
+/// (`unk140`). Measured: every indexed record in every container is an object
+/// record, every one is distinct, and the ones that carry geometry are exactly
+/// the ones whose stored box is non-zero. This conversion therefore treats an
+/// indexed record as the world's static geometry (`Solid`, `FromMesh`) and
+/// names every record the index does not name as role-unknown. It is a claim
+/// about **this** conversion, not about how the 2000 engine collided.
+pub const INDEXED_RECORD_IS_STATIC: &str = "f18-world.indexed-record-is-static";
+
+/// The original's world-vertex unit, coordinate handedness and axis order.
+///
+/// Unmeasured: nothing in the container states a length in a unit anyone has
+/// tied to a known size, and no original run happened. The import takes its
+/// conversion from the caller's [`SourceAdapter`] and reports the factor it
+/// used, so a consumer always knows which number turned stored units into
+/// numbers.
+pub const WORLD_UNIT_UNMEASURED: &str = "f18-world.unit-unmeasured";
+
+/// The original's world floor, ceiling and lateral rules.
+///
+/// Unmeasured. The world record stores no rule this stage can read, so the
+/// imported definition carries an explicit unknown rather than an invisible
+/// wall.
+pub const WORLD_BOUNDARY_UNMEASURED: &str = "f18-world.boundary-unmeasured";
+
+/// The original's gameplay surface classes.
+///
+/// Unmeasured: the container states no per-record surface, so **every** imported
+/// object's surface is an explicit unknown with this claim id. A contact whose
+/// rule was never named is a question for the damage stage, not a guess here.
+pub const WORLD_SURFACE_UNMEASURED: &str = "f18-world.surface-unmeasured";
+
+/// A record outside the world's partition grid has no measured collision role.
+///
+/// Unmeasured: the container indexes only the world's spatial geometry and
+/// states nothing about the rest of its mesh-binding records — the effect
+/// hierarchies, the fog volumes, the aircraft. Those records become world
+/// objects (they are the world node's own children) with this claim id on their
+/// collision role, so a consumer sees "the container did not say" instead of a
+/// world in which every effect blocks a plane.
+pub const UNINDEXED_ROLE_UNMEASURED: &str = "f18-world.unindexed-collision-role-unmeasured";
+
+/// The identity of an imported world object is its container's own node slot.
+///
+/// **Designed identity.** The container's records carry display names, but those
+/// names are not unique (one container's world node lists thirty-four records
+/// with the same name) and F11-A's `scene_node` id grammar refuses many of them
+/// outright. The stored node slot is the one address the store gives every
+/// record, it is stable across reads of the same container, and it is what the
+/// partition grid itself names. It is **not** a claim that the original
+/// identified a world object by slot.
+pub const OBJECT_ID_IS_THE_NODE_SLOT: &str = "f18-world.object-id-is-the-node-slot";
+
+/// Why a world container could not be imported.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorldImportError {
+    /// The container holds no world record, so there is no world to import.
+    NoWorldNode,
+    /// The world record's own grid ran past the end of the container bytes.
+    ///
+    /// The node reader already walked the grid successfully to size it, so this
+    /// is the importer refusing bytes that no longer match what the reader saw.
+    GridTruncated {
+        /// Absolute container offset the walk reached.
+        offset: u64,
+        /// Bytes the container holds.
+        len: u64,
+    },
+    /// The grid walk did not end exactly where the node reader said it ends.
+    GridEndMismatch {
+        /// Where the importer's walk ended.
+        walked: u64,
+        /// Where the reader said the block ends.
+        expected: u64,
+    },
+    /// A grid value named a node slot the container does not hold.
+    PartitionSlotOutOfRange {
+        /// The cell the value was in.
+        cell: u32,
+        /// The stored slot it named.
+        slot: u32,
+        /// How many records the container holds.
+        nodes: usize,
+    },
+    /// Two grid values named the same record, in one cell or across cells.
+    ///
+    /// A spatial index that lists a record twice is evidence the index is not
+    /// the one-address-per-record index this conversion reads, so the container
+    /// is blocked rather than imported under a rule its own bytes contradict.
+    PartitionSlotRepeated {
+        /// The stored slot two values named.
+        slot: u32,
+    },
+    /// A grid value named a record that is not an object record.
+    PartitionSlotNotAnObject {
+        /// The cell the value was in.
+        cell: u32,
+        /// The stored slot it named.
+        slot: u32,
+        /// The kind that record actually declares.
+        kind: &'static str,
+    },
+    /// A record the world node owns is not an object record.
+    ///
+    /// Measured: every world-owned record in all eight containers is an object
+    /// record. One that is not would be content this conversion does not know
+    /// how to place, so it is refused by name instead of dropped.
+    WorldOwnedNotAnObject {
+        /// The stored slot.
+        slot: u32,
+        /// The kind that record actually declares.
+        kind: &'static str,
+    },
+    /// The world node's ownership statements disagreed with each other.
+    ///
+    /// The hierarchy rule (`world_hierarchy_from_gamez`) makes the parent slot
+    /// authoritative, and the partition grid is measured to name exactly the
+    /// records the world node's child list omits. Those three statements have to
+    /// agree for "the records the world owns" to be one set; the counts are
+    /// carried so a report can name which side disagreed.
+    OwnershipDisagreement {
+        /// Distinct records the grid named.
+        grid: usize,
+        /// Records the world node's stored child list named.
+        child_list: usize,
+        /// Records that named the world node as their parent.
+        naming: usize,
+    },
+    /// A stored coordinate was NaN or infinite.
+    Space(SpaceError),
+    /// A stored box was not a box.
+    Volume(TriggerVolumeError),
+    /// The converted sector extent was not a box in canonical metres.
+    Bounds(AabbError),
+    /// An object record was rejected by its own constructor.
+    Object(ObjectInstanceError),
+    /// The finished definition was rejected by its own validation.
+    Definition(WorldError),
+    /// An object identity or a sector identity broke the world key grammar.
+    Key(WorldKeyError),
+    /// The caller's mesh slot table named no element for a mesh index.
+    MeshSlotMissing {
+        /// The record's stored `mesh_index`.
+        index: u32,
+        /// How many slots the table has.
+        slots: usize,
+    },
+}
+
+impl fmt::Display for WorldImportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoWorldNode => write!(f, "the container holds no world record"),
+            Self::GridTruncated { offset, len } => write!(
+                f,
+                "the world record's partition grid ran past the container at offset {offset} \
+                 of {len} bytes"
+            ),
+            Self::GridEndMismatch { walked, expected } => write!(
+                f,
+                "the partition grid walk ended at {walked}, the node reader said {expected}"
+            ),
+            Self::PartitionSlotOutOfRange { cell, slot, nodes } => write!(
+                f,
+                "partition cell {cell} names node slot {slot}, but the container holds {nodes} \
+                 records"
+            ),
+            Self::PartitionSlotRepeated { slot } => {
+                write!(f, "two partition values name node slot {slot}")
+            }
+            Self::PartitionSlotNotAnObject { cell, slot, kind } => write!(
+                f,
+                "partition cell {cell} names node slot {slot}, which is a {kind} record"
+            ),
+            Self::WorldOwnedNotAnObject { slot, kind } => write!(
+                f,
+                "the world node owns node slot {slot}, which is a {kind} record"
+            ),
+            Self::OwnershipDisagreement {
+                grid,
+                child_list,
+                naming,
+            } => write!(
+                f,
+                "the world node's ownership statements disagree: {grid} grid record(s), \
+                 {child_list} stored child record(s), {naming} record(s) naming it"
+            ),
+            Self::Space(error) => write!(f, "{error}"),
+            Self::Volume(error) => write!(f, "{error}"),
+            Self::Bounds(error) => write!(f, "{error}"),
+            Self::Object(error) => write!(f, "{error}"),
+            Self::Definition(error) => write!(f, "{error}"),
+            Self::Key(error) => write!(f, "{error}"),
+            Self::MeshSlotMissing { index, slots } => write!(
+                f,
+                "a record names mesh index {index}, but the caller's table holds {slots} slot(s)"
+            ),
+        }
+    }
+}
+
+impl From<SpaceError> for WorldImportError {
+    fn from(error: SpaceError) -> Self {
+        Self::Space(error)
+    }
+}
+
+impl From<TriggerVolumeError> for WorldImportError {
+    fn from(error: TriggerVolumeError) -> Self {
+        Self::Volume(error)
+    }
+}
+
+impl From<AabbError> for WorldImportError {
+    fn from(error: AabbError) -> Self {
+        Self::Bounds(error)
+    }
+}
+
+impl From<ObjectInstanceError> for WorldImportError {
+    fn from(error: ObjectInstanceError) -> Self {
+        Self::Object(error)
+    }
+}
+
+impl From<WorldError> for WorldImportError {
+    fn from(error: WorldError) -> Self {
+        Self::Definition(error)
+    }
+}
+
+impl From<WorldKeyError> for WorldImportError {
+    fn from(error: WorldKeyError) -> Self {
+        Self::Key(error)
+    }
+}
+
+impl std::error::Error for WorldImportError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Space(error) => Some(error),
+            Self::Volume(error) => Some(error),
+            Self::Bounds(error) => Some(error),
+            Self::Object(error) => Some(error),
+            Self::Definition(error) => Some(error),
+            Self::Key(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// One cell of the world record's partition grid, decoded.
+///
+/// A cell is a **stored** record: its two grid coordinates, the node slots its
+/// values name, and the six `f32` its own 24 bytes hold. The six floats are
+/// carried because they are bytes the container stores and this stage does not
+/// drop, but they are **not** interpreted — see
+/// [`Self::header_floats_are_interpreted`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldPartitionCell {
+    index: u32,
+    grid_x: u32,
+    grid_y: u32,
+    slots: Vec<u32>,
+    header_floats: [f32; 6],
+}
+
+impl WorldPartitionCell {
+    /// The cell's position in the grid, in stored order.
+    #[must_use]
+    pub const fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// The cell's coordinate along the grid's first stored axis.
+    #[must_use]
+    pub const fn grid_x(&self) -> u32 {
+        self.grid_x
+    }
+
+    /// The cell's coordinate along the grid's second stored axis.
+    #[must_use]
+    pub const fn grid_y(&self) -> u32 {
+        self.grid_y
+    }
+
+    /// The node slots the cell's values name, in stored value order.
+    #[must_use]
+    pub fn slots(&self) -> &[u32] {
+        &self.slots
+    }
+
+    /// The six `f32` the cell's own header stores, unchanged.
+    ///
+    /// Measured to be **not** a reliable cell extent: across the eight world
+    /// containers the reading "these are the cell's low and high bounds on the
+    /// two horizontal axes" holds for every cell of two containers and for
+    /// between 73% and 91% of the cells of the other six, and the misses are
+    /// cells whose members' stored boxes disagree with it. The sector extents
+    /// this conversion publishes therefore come from the members' stored
+    /// bounding boxes, which the store states per record, and these six floats
+    /// stay unread.
+    #[must_use]
+    pub const fn header_floats(&self) -> [f32; 6] {
+        self.header_floats
+    }
+
+    /// Whether this stage interprets a cell's own header floats.
+    ///
+    /// It does not, and the record says so rather than a consumer having to
+    /// remember. The grid's *coordinates* and *membership* are measured; the
+    /// header's field meanings are not.
+    #[must_use]
+    pub const fn header_floats_are_interpreted() -> bool {
+        false
+    }
+}
+
+/// The world record's partition grid: the container's own spatial index.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldPartitionGrid {
+    world_node: u32,
+    x_count: u32,
+    y_count: u32,
+    cells: Vec<WorldPartitionCell>,
+}
+
+impl WorldPartitionGrid {
+    /// Reads the grid out of the container bytes the node reader already walked.
+    ///
+    /// The walk is the one `read_gamez_nodes` performed to size the block, run
+    /// again here for its **content**: the node reader keeps the two grid counts
+    /// and the block's length because they are what make the block knowable, and
+    /// the bytes themselves stay addressable through
+    /// [`RawNode::data_offset`](cs_formats::gamez::RawNode::data_offset). This
+    /// is that re-derivation, and it ends exactly where the reader said the
+    /// block ends.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldImportError::NoWorldNode`] when the container holds no world
+    /// record, [`WorldImportError::GridTruncated`] /
+    /// [`WorldImportError::GridEndMismatch`] when the bytes no longer match what
+    /// the reader saw, and the four slot refusals
+    /// ([`WorldImportError::PartitionSlotOutOfRange`],
+    /// [`WorldImportError::PartitionSlotRepeated`],
+    /// [`WorldImportError::PartitionSlotNotAnObject`]) when a value names
+    /// nothing usable.
+    pub fn read(records: &GameZNodes, container: &[u8]) -> Result<Self, WorldImportError> {
+        let world = records
+            .nodes
+            .iter()
+            .find(|node| node.kind.tag() == NODE_TYPE_WORLD)
+            .ok_or(WorldImportError::NoWorldNode)?;
+        let StoredNodeKind::World(data) = world.kind else {
+            return Err(WorldImportError::NoWorldNode);
+        };
+        let base = u64::from(world.data_offset);
+        let block = base + WORLD_DATA_BYTES + 4 + data.partition_bytes;
+        let grid_start = base + WORLD_DATA_BYTES + 4;
+        let len = container.len() as u64;
+
+        let mut cells: Vec<WorldPartitionCell> = Vec::new();
+        let mut named: BTreeSet<u32> = BTreeSet::new();
+        let mut offset = grid_start;
+        let count = u64::from(data.partition_x_count) * u64::from(data.partition_y_count);
+        for cell in 0..count {
+            let at = |within: u64| usize::try_from(offset + within).unwrap_or(usize::MAX);
+            if offset + WORLD_PARTITION_BYTES > len {
+                return Err(WorldImportError::GridTruncated { offset, len });
+            }
+            let base_at = at(0);
+            let mut header_floats = [0.0f32; 6];
+            for (word, float) in header_floats.iter_mut().enumerate() {
+                let start = base_at + 8 + word * 4;
+                *float = f32::from_le_bytes([
+                    container[start],
+                    container[start + 1],
+                    container[start + 2],
+                    container[start + 3],
+                ]);
+            }
+            let count_at = base_at + 58;
+            let values = u64::from(u16::from_le_bytes([
+                container[count_at],
+                container[count_at + 1],
+            ]));
+            let value_bytes = values * WORLD_PARTITION_VALUE_BYTES;
+            if offset + WORLD_PARTITION_BYTES + value_bytes > len {
+                return Err(WorldImportError::GridTruncated { offset, len });
+            }
+            let mut slots = Vec::with_capacity(usize::try_from(values).unwrap_or(0));
+            for value in 0..values {
+                let start = base_at
+                    + usize::try_from(WORLD_PARTITION_BYTES).unwrap_or(usize::MAX)
+                    + usize::try_from(value * WORLD_PARTITION_VALUE_BYTES).unwrap_or(usize::MAX);
+                let slot = u32::from_le_bytes([
+                    container[start],
+                    container[start + 1],
+                    container[start + 2],
+                    container[start + 3],
+                ]);
+                let record = records.get(slot).ok_or({
+                    WorldImportError::PartitionSlotOutOfRange {
+                        cell: u32::try_from(cell).unwrap_or(u32::MAX),
+                        slot,
+                        nodes: records.nodes.len(),
+                    }
+                })?;
+                if record.kind.tag() != NODE_TYPE_OBJECT3D {
+                    return Err(WorldImportError::PartitionSlotNotAnObject {
+                        cell: u32::try_from(cell).unwrap_or(u32::MAX),
+                        slot,
+                        kind: record.kind.label(),
+                    });
+                }
+                if !named.insert(slot) {
+                    return Err(WorldImportError::PartitionSlotRepeated { slot });
+                }
+                slots.push(slot);
+            }
+            offset += WORLD_PARTITION_BYTES + value_bytes;
+            cells.push(WorldPartitionCell {
+                index: u32::try_from(cell).unwrap_or(u32::MAX),
+                grid_x: u32::try_from(cell % u64::from(data.partition_x_count)).unwrap_or(0),
+                grid_y: u32::try_from(cell / u64::from(data.partition_x_count)).unwrap_or(0),
+                slots,
+                header_floats,
+            });
+        }
+        if offset != block {
+            return Err(WorldImportError::GridEndMismatch {
+                walked: offset,
+                expected: block,
+            });
+        }
+        Ok(Self {
+            world_node: world.index,
+            x_count: data.partition_x_count,
+            y_count: data.partition_y_count,
+            cells,
+        })
+    }
+
+    /// The world record the grid was read from.
+    #[must_use]
+    pub const fn world_node(&self) -> u32 {
+        self.world_node
+    }
+
+    /// Cells along the grid's first stored axis.
+    #[must_use]
+    pub const fn x_count(&self) -> u32 {
+        self.x_count
+    }
+
+    /// Cells along the grid's second stored axis.
+    #[must_use]
+    pub const fn y_count(&self) -> u32 {
+        self.y_count
+    }
+
+    /// Every cell, in stored order.
+    #[must_use]
+    pub fn cells(&self) -> &[WorldPartitionCell] {
+        &self.cells
+    }
+
+    /// One cell by its stored index.
+    #[must_use]
+    pub fn cell(&self, index: u32) -> Option<&WorldPartitionCell> {
+        self.cells.iter().find(|cell| cell.index == index)
+    }
+
+    /// Every node slot the grid names, distinct, in stored order.
+    #[must_use]
+    pub fn indexed_slots(&self) -> Vec<u32> {
+        let mut seen = BTreeSet::new();
+        self.cells
+            .iter()
+            .flat_map(|cell| cell.slots.iter().copied())
+            .filter(|slot| seen.insert(*slot))
+            .collect()
+    }
+
+    /// How many values the grid holds in total.
+    #[must_use]
+    pub fn value_count(&self) -> usize {
+        self.cells.iter().map(|cell| cell.slots.len()).sum()
+    }
+
+    /// The cells that name no record.
+    #[must_use]
+    pub fn empty_cells(&self) -> Vec<u32> {
+        self.cells
+            .iter()
+            .filter(|cell| cell.slots.is_empty())
+            .map(|cell| cell.index)
+            .collect()
+    }
+}
+
+/// What one world container's import measured and what it could not resolve.
+///
+/// Every field is a **count** or a **factor**. The counts are read out of the
+/// container through the production readers, so a rerun over a different
+/// installation reports different numbers instead of the same ones; the claim
+/// status is the caller's coordinate conversion, carried so a reader of an
+/// imported definition always knows which factor turned stored units into
+/// numbers and how strong that factor's own evidence is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldImportReport {
+    world_node: u32,
+    stored_child_list: usize,
+    partition_cells: usize,
+    partition_records: usize,
+    partition_records_with_mesh: usize,
+    empty_cells: usize,
+    objects: usize,
+    objects_with_mesh: usize,
+    objects_in_a_sector: usize,
+    objects_resident: usize,
+    objects_solid: usize,
+    sectors: usize,
+    sectors_without_extent: usize,
+    mesh_binding_records_elsewhere: usize,
+    matrix_disagreements: usize,
+    meters_per_unit: f64,
+    unit_class: ClaimStatus,
+}
+
+impl WorldImportReport {
+    /// The world record's stored slot.
+    #[must_use]
+    pub const fn world_node(&self) -> u32 {
+        self.world_node
+    }
+
+    /// How many records the world node's own stored child list named.
+    ///
+    /// Measured to be the world's **non-spatial** content: over the eight
+    /// containers these are the horizon, the volumetric fog volumes, vegetation
+    /// instances and zeppelins, and none of them appears in the partition grid.
+    #[must_use]
+    pub const fn stored_child_list(&self) -> usize {
+        self.stored_child_list
+    }
+
+    /// How many cells the partition grid holds.
+    #[must_use]
+    pub const fn partition_cells(&self) -> usize {
+        self.partition_cells
+    }
+
+    /// How many records the grid names, distinct.
+    #[must_use]
+    pub const fn partition_records(&self) -> usize {
+        self.partition_records
+    }
+
+    /// How many of the grid's records bind a mesh.
+    ///
+    /// Measured: in every container the grid records that bind **no** mesh are
+    /// exactly the ones whose stored bounding box is all zero, so the two
+    /// statements are the same set and neither is a reading this conversion had
+    /// to invent.
+    #[must_use]
+    pub const fn partition_records_with_mesh(&self) -> usize {
+        self.partition_records_with_mesh
+    }
+
+    /// How many cells name no record.
+    #[must_use]
+    pub const fn empty_cells(&self) -> usize {
+        self.empty_cells
+    }
+
+    /// How many world objects the import produced.
+    #[must_use]
+    pub const fn objects(&self) -> usize {
+        self.objects
+    }
+
+    /// How many of them resolved a mesh reference.
+    #[must_use]
+    pub const fn objects_with_mesh(&self) -> usize {
+        self.objects_with_mesh
+    }
+
+    /// How many of them belong to at least one sector.
+    #[must_use]
+    pub const fn objects_in_a_sector(&self) -> usize {
+        self.objects_in_a_sector
+    }
+
+    /// How many belong to no sector and are therefore always resident.
+    #[must_use]
+    pub const fn objects_resident(&self) -> usize {
+        self.objects_resident
+    }
+
+    /// How many carry a resolved `Solid` collision role.
+    ///
+    /// Equal to [`Self::partition_records`]: the role follows the spatial index
+    /// (see [`INDEXED_RECORD_IS_STATIC`]), so a consumer can tell a world's
+    /// static geometry from its unindexed content with one number.
+    #[must_use]
+    pub const fn objects_solid(&self) -> usize {
+        self.objects_solid
+    }
+
+    /// How many sectors the definition declares.
+    ///
+    /// Equal to the cell count minus [`Self::sectors_without_extent`]: a cell
+    /// whose members store no extent cannot be given a box, and its records stay
+    /// resident rather than being attached to a sector with a made-up extent.
+    #[must_use]
+    pub const fn sectors(&self) -> usize {
+        self.sectors
+    }
+
+    /// How many cells could not be given an extent.
+    #[must_use]
+    pub const fn sectors_without_extent(&self) -> usize {
+        self.sectors_without_extent
+    }
+
+    /// How many mesh-binding records the container holds that the world node
+    /// does not own.
+    ///
+    /// These are the effect hierarchies, the aircraft and the rest of the
+    /// container's content: they bind meshes and have nothing to do with this
+    /// world, so they are counted here rather than imported as world objects.
+    #[must_use]
+    pub const fn mesh_binding_records_elsewhere(&self) -> usize {
+        self.mesh_binding_records_elsewhere
+    }
+
+    /// How many imported records store a matrix their own euler triple
+    /// disagrees with.
+    ///
+    /// The disagreement is the store's, not this conversion's; the count is
+    /// reported because the import follows the stored matrix (the format
+    /// reader's own precedence rule) and a reader deserves to know how often
+    /// that choice was a choice.
+    #[must_use]
+    pub const fn matrix_disagreements(&self) -> usize {
+        self.matrix_disagreements
+    }
+
+    /// The stored-unit-to-metre factor the import used, from the caller's
+    /// adapter.
+    #[must_use]
+    pub const fn meters_per_unit(&self) -> f64 {
+        self.meters_per_unit
+    }
+
+    /// How strong the evidence behind that factor is.
+    ///
+    /// `Unknown` for every conversion this workspace has declared so far,
+    /// including the one the original's geometry needs: the original's
+    /// world-vertex unit is unmeasured ([`WORLD_UNIT_UNMEASURED`]).
+    #[must_use]
+    pub const fn unit_class(&self) -> ClaimStatus {
+        self.unit_class
+    }
+}
+
+/// One world container imported: the definition the runtime consumes and the
+/// measurement the import was made under.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportedWorld {
+    definition: WorldDefinition,
+    report: WorldImportReport,
+}
+
+impl ImportedWorld {
+    /// The imported definition.
+    #[must_use]
+    pub const fn definition(&self) -> &WorldDefinition {
+        &self.definition
+    }
+
+    /// The measurement.
+    #[must_use]
+    pub const fn report(&self) -> &WorldImportReport {
+        &self.report
+    }
+
+    /// The two halves, for a caller that wants to keep them apart.
+    #[must_use]
+    pub fn into_parts(self) -> (WorldDefinition, WorldImportReport) {
+        (self.definition, self.report)
+    }
+}
+
+/// The stable identity of one imported world object: its container's node slot.
+///
+/// The slot is what the store addresses the record by, what the partition grid
+/// names it by, and the one value the key grammar always accepts. See
+/// [`OBJECT_ID_IS_THE_NODE_SLOT`] for why the record's display name is not used.
+fn object_key(slot: u32) -> String {
+    format!("node-{slot}")
+}
+
+/// The stable identity of one imported sector: its cell's grid coordinates.
+fn sector_key(cell: &WorldPartitionCell) -> String {
+    format!("partition-{:02}-{:02}", cell.grid_x(), cell.grid_y())
+}
+
+/// The record's stored world-space bounding box (`unk140`), in stored units.
+///
+/// The box is `None` when the record stores an all-zero one, which is the
+/// store's own statement that the record has no extent — measured to hold for
+/// exactly the records that bind no mesh.
+fn stored_extent(record: &RawNode) -> Result<Option<StoredVolume>, WorldImportError> {
+    let min = record.info.unk140[0].map(f64::from);
+    let max = record.info.unk140[1].map(f64::from);
+    let volume = StoredVolume::new(min, max)?;
+    Ok(if volume.is_empty() {
+        None
+    } else {
+        Some(volume)
+    })
+}
+
+/// Converts a stored box into canonical metres through `adapter`.
+fn canonical_bounds(
+    volume: &StoredVolume,
+    adapter: &SourceAdapter,
+) -> Result<Aabb, WorldImportError> {
+    let low = adapter.position_to_canonical(volume.min())?.to_array();
+    let high = adapter.position_to_canonical(volume.max())?.to_array();
+    // The axis map is a signed permutation and the scale is positive, so the two
+    // corners can swap: a min is taken after the conversion, never before it.
+    let mut min = [0.0f64; 3];
+    let mut max = [0.0f64; 3];
+    for axis in 0..3 {
+        min[axis] = low[axis].min(high[axis]);
+        max[axis] = low[axis].max(high[axis]);
+    }
+    Aabb::try_new(min, max).map_err(WorldImportError::Bounds)
+}
+
+/// Converts one object record's authored transform into canonical metres.
+///
+/// The stored 3×3 wins over the record's own euler triple, which is the format
+/// reader's precedence rule
+/// ([`RawObject3dData::matrix`](cs_formats::gamez::RawObject3dData::matrix));
+/// the per-axis scale multiplies the matrix's columns; the whole linear map is
+/// then conjugated through the adapter's signed permutation and the translation
+/// scaled by its length factor. A record that stores the identity is the store
+/// saying so, not a default this conversion chose.
+fn canonical_transform(
+    object: &RawObject3dData,
+    adapter: &SourceAdapter,
+) -> Result<CanonicalTransform, WorldImportError> {
+    if object.stores_identity() {
+        return Ok(CanonicalTransform::IDENTITY);
+    }
+    let mut source = object.matrix.map(|row| row.map(f64::from));
+    for (column, scale) in object.scale.iter().enumerate() {
+        for row in &mut source {
+            row[column] *= f64::from(*scale);
+        }
+    }
+    let axes = adapter.source().convention().axes();
+    let mut linear = [[0.0f64; 3]; 3];
+    for (canonical_row, row) in axes.iter().enumerate() {
+        for (canonical_column, column) in axes.iter().enumerate() {
+            linear[canonical_row][canonical_column] = row.sign.factor()
+                * column.sign.factor()
+                * source[row.axis.index()][column.axis.index()];
+        }
+    }
+    let translation = adapter
+        .position_to_canonical(object.translation.map(f64::from))?
+        .to_array();
+    CanonicalTransform::try_new(linear, translation).map_err(WorldImportError::Space)
+}
+
+/// Imports one world container's node array and its own partition grid into a
+/// [`WorldDefinition`].
+///
+/// **What this reads.** The world record's partition grid, through
+/// [`WorldPartitionGrid::read`]; every record that record owns — measured to be
+/// exactly the grid's slots plus the world node's own stored child list, and
+/// exactly the records that name the world node as their parent, with the three
+/// statements cross-checked against each other rather than one assumed; each
+/// owned record's stored mesh index, transform and world-space bounding box.
+///
+/// **What this refuses to guess.** Everything the container does not state:
+///
+/// * the world's boundary, floor and ceiling ([`WORLD_BOUNDARY_UNMEASURED`]);
+/// * every object's gameplay surface ([`WORLD_SURFACE_UNMEASURED`]);
+/// * the collision role of every record the spatial index does not name
+///   ([`UNINDEXED_ROLE_UNMEASURED`]);
+/// * the length unit, which the caller's [`SourceAdapter`] supplies and the
+///   report names ([`WORLD_UNIT_UNMEASURED`]).
+///
+/// An object the grid names becomes the world's static geometry
+/// ([`INDEXED_RECORD_IS_STATIC`]) — a **designed** rule over a measured fact,
+/// not a measurement of how the 2000 engine collided. Its id is its node slot
+/// ([`OBJECT_ID_IS_THE_NODE_SLOT`]).
+///
+/// `meshes` is the caller's mesh-slot table, exactly as
+/// [`world_hierarchy_from_gamez`] takes it: which catalog element a stored
+/// mesh-array slot stands for is discovery's answer, not this function's.
+///
+/// # Errors
+///
+/// Every [`WorldImportError`]: the grid refusals, the world-ownership
+/// cross-check ([`WorldImportError::OwnershipDisagreement`]), a stored
+/// coordinate or box that is not one
+/// ([`WorldImportError::Space`], [`WorldImportError::Volume`],
+/// [`WorldImportError::Bounds`]), a mesh index the caller's table does not hold
+/// ([`WorldImportError::MeshSlotMissing`]), and whatever the definition's own
+/// validation refuses
+/// ([`WorldImportError::Definition`]).
+pub fn import_world_container(
+    id: WorldId,
+    origin: Origin,
+    records: &GameZNodes,
+    container: &[u8],
+    meshes: &[MeshSlot],
+    adapter: &SourceAdapter,
+    provenance: Provenance,
+) -> Result<ImportedWorld, WorldImportError> {
+    let grid = WorldPartitionGrid::read(records, container)?;
+    let world_slot = grid.world_node();
+    let stored = records
+        .get(world_slot)
+        .ok_or(WorldImportError::NoWorldNode)?;
+    let indexed: BTreeSet<u32> = grid.indexed_slots().into_iter().collect();
+    let child_list: BTreeSet<u32> = stored.children.iter().copied().collect();
+    let naming: BTreeSet<u32> = records
+        .nodes
+        .iter()
+        .filter(|node| node.parent == Some(world_slot))
+        .map(|node| node.index)
+        .collect();
+    let union: BTreeSet<u32> = indexed.union(&child_list).copied().collect();
+    if union != naming {
+        return Err(WorldImportError::OwnershipDisagreement {
+            grid: indexed.len(),
+            child_list: child_list.len(),
+            naming: naming.len(),
+        });
+    }
+
+    // Sectors: one per cell that can be given an extent, which is the union of
+    // the stored boxes its members state. A cell whose members all store a zero
+    // box gets no sector, and its records stay resident.
+    let mut sectors: Vec<Sector> = Vec::with_capacity(grid.cells().len());
+    let mut sector_of_cell: BTreeMap<u32, SectorId> = BTreeMap::new();
+    let mut sectors_without_extent = 0usize;
+    for cell in grid.cells() {
+        let mut bounds: Option<Aabb> = None;
+        for slot in cell.slots() {
+            let Some(record) = records.get(*slot) else {
+                continue;
+            };
+            let Some(extent) = stored_extent(record)? else {
+                continue;
+            };
+            let converted = canonical_bounds(&extent, adapter)?;
+            bounds = Some(match bounds {
+                None => converted,
+                Some(previous) => {
+                    let min = [
+                        previous.min()[0].min(converted.min()[0]),
+                        previous.min()[1].min(converted.min()[1]),
+                        previous.min()[2].min(converted.min()[2]),
+                    ];
+                    let max = [
+                        previous.max()[0].max(converted.max()[0]),
+                        previous.max()[1].max(converted.max()[1]),
+                        previous.max()[2].max(converted.max()[2]),
+                    ];
+                    Aabb::try_new(min, max)?
+                }
+            });
+        }
+        let Some(bounds) = bounds else {
+            sectors_without_extent += 1;
+            continue;
+        };
+        let id = SectorId::new(&sector_key(cell))?;
+        sector_of_cell.insert(cell.index(), id.clone());
+        sectors.push(Sector::new(id, bounds));
+    }
+
+    // Objects: every record the world node owns, in stored order.
+    let mut objects: Vec<WorldObjectInstance> = Vec::with_capacity(union.len());
+    let mut objects_with_mesh = 0usize;
+    let mut objects_in_a_sector = 0usize;
+    let mut objects_resident = 0usize;
+    let mut objects_solid = 0usize;
+    let mut matrix_disagreements = 0usize;
+    let mut partition_records_with_mesh = 0usize;
+    for record in records
+        .nodes
+        .iter()
+        .filter(|node| union.contains(&node.index))
+    {
+        let StoredNodeKind::Object3d(object) = record.kind else {
+            return Err(WorldImportError::WorldOwnedNotAnObject {
+                slot: record.index,
+                kind: record.kind.label(),
+            });
+        };
+        let indexed_record = indexed.contains(&record.index);
+        if indexed_record && object.matrix_disagrees() {
+            matrix_disagreements += 1;
+        }
+        let mesh = if record.mesh_index() < 0 {
+            Resolved::Unknown {
+                claim_id: claim(OBJECT_ID_IS_THE_NODE_SLOT),
+                reason: format!(
+                    "node slot {} stores no mesh index, so this record draws geometry of its \
+                     own nowhere in the container",
+                    record.index
+                ),
+            }
+        } else {
+            let index = u32::try_from(record.mesh_index()).unwrap_or(u32::MAX);
+            let slot = meshes
+                .get(index as usize)
+                .ok_or(WorldImportError::MeshSlotMissing {
+                    index,
+                    slots: meshes.len(),
+                })?;
+            if indexed_record {
+                partition_records_with_mesh += 1;
+            }
+            objects_with_mesh += 1;
+            Resolved::Known(Known::new(slot.id().clone(), provenance.clone()))
+        };
+        let (collision, shape) = if indexed_record {
+            objects_solid += 1;
+            (
+                Resolved::Known(Known::new(WorldCollisionRole::Solid, provenance.clone())),
+                Resolved::Known(Known::new(
+                    WorldCollisionShape::FromMesh,
+                    provenance.clone(),
+                )),
+            )
+        } else {
+            let reason = format!(
+                "node slot {} is not named by the world record's partition grid and the \
+                 container states no collision role for it",
+                record.index
+            );
+            (
+                Resolved::Unknown {
+                    claim_id: claim(UNINDEXED_ROLE_UNMEASURED),
+                    reason: reason.clone(),
+                },
+                Resolved::Unknown {
+                    claim_id: claim(UNINDEXED_ROLE_UNMEASURED),
+                    reason,
+                },
+            )
+        };
+        let surface = Resolved::Unknown {
+            claim_id: claim(WORLD_SURFACE_UNMEASURED),
+            reason: format!(
+                "node slot {} stores no gameplay surface class",
+                record.index
+            ),
+        };
+        let mut sectors_of: Vec<SectorId> = Vec::new();
+        for cell in grid.cells() {
+            if cell.slots().contains(&record.index)
+                && let Some(id) = sector_of_cell.get(&cell.index())
+                && !sectors_of.contains(id)
+            {
+                sectors_of.push(id.clone());
+            }
+        }
+        if sectors_of.is_empty() {
+            objects_resident += 1;
+        } else {
+            objects_in_a_sector += 1;
+        }
+        objects.push(WorldObjectInstance::try_new(
+            WorldObjectId::new(&object_key(record.index))?,
+            mesh,
+            canonical_transform(&object, adapter)?,
+            collision,
+            shape,
+            surface,
+            sectors_of.into_iter().collect(),
+            provenance.clone(),
+        )?);
+    }
+
+    let boundary = Resolved::Unknown {
+        claim_id: claim(WORLD_BOUNDARY_UNMEASURED),
+        reason: "the world record stores no floor, ceiling or lateral rule this stage can read"
+            .to_owned(),
+    };
+    let definition = WorldDefinition::try_new(id, origin, boundary, sectors, objects, provenance)?;
+    let mesh_binding_records_elsewhere = records
+        .nodes
+        .iter()
+        .filter(|node| !union.contains(&node.index) && node.mesh_index() >= 0)
+        .count();
+    let report = WorldImportReport {
+        world_node: world_slot,
+        stored_child_list: child_list.len(),
+        partition_cells: grid.cells().len(),
+        partition_records: indexed.len(),
+        partition_records_with_mesh,
+        empty_cells: grid.empty_cells().len(),
+        objects: definition.objects().len(),
+        objects_with_mesh,
+        objects_in_a_sector,
+        objects_resident,
+        objects_solid,
+        sectors: definition.sectors().len(),
+        sectors_without_extent,
+        mesh_binding_records_elsewhere,
+        matrix_disagreements,
+        meters_per_unit: adapter.source().convention().meters_per_unit(),
+        unit_class: adapter.source().calibration().claim_status(),
+    };
+    Ok(ImportedWorld { definition, report })
 }
 
 // ------------------------------------------------------------------- tests ---

@@ -63,6 +63,15 @@
 //! a sector that went comes back with the condition and the applied overlay its
 //! load already held.
 //!
+//! **#629** (`accept_m01_lc_world_import_`) is the first-mission path's missing
+//! hop: it turns an **original** `gamez.zbd` into the `WorldDefinition`
+//! `spawn_world` consumes, through the world record's own partition grid.
+//! `import_retail` owns it — the sector index an object's membership comes from,
+//! the collision role that follows the index, every other role named as an
+//! explicit unknown, the refusals a grid that contradicts itself triggers, the
+//! spawn over the imported record, and (retail) the measured counts of
+//! `ZBD/C1C/gamez.zbd` with the real container's geometry uploaded.
+//!
 //! **#498** (`accept_f18_c_` too) is the swept crossing report itself:
 //! `crossing` owns the ordinary-flight producer — a body whose tick completely
 //! outruns a thin cuboid trigger, or lands a mesh-derived volume's deep-inside
@@ -75,6 +84,7 @@ mod common;
 mod crossing;
 mod hierarchy;
 mod import;
+mod import_retail;
 mod overlays;
 mod records;
 mod residency;
