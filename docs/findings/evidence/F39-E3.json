@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F39-E3",
+ "candidate_tree": "989432a6533dc740e439e6fe9a8d372c8336ce12",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-04T01:13:37Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f39_e3_", "--include-ignored"], "cwd": "/Users/jakob/coding/rust-crimson-skies/devin-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 4, "executed": 4, "passed": 4, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f39_e3_a_targets_member_is_measured_as_objective_target_records", "status": "pass", "evidence": ["cargo-test.log", "reader-bound-census.json"]}, {"id": "accept_f39_e3_member_measurement_counts_objective_blocks_like_the_mission_rows", "status": "pass", "evidence": ["cargo-test.log", "reader-bound-census.json"]}, {"id": "accept_f39_e3_the_non_mission_scope_rule_names_shared_and_world_group_readers", "status": "pass", "evidence": ["cargo-test.log", "reader-bound-census.json"]}, {"id": "accept_f39_e3_retail_shared_and_world_group_readers_bound_the_denominator", "status": "pass", "evidence": ["cargo-test.log", "reader-bound-census.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "9a207f87eb70754642ef64af8324fe745ce92b4cd73decfcade8d504d638bd49", "kind": "log"}, {"path": "reader-bound-census.json", "sha256": "2291e9fd83f11806fa52d6a5cf645acae01e0776c11c6ebc01d66692fcabc4a9", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "devin-1 (SWE-2 High) — implementer, fresh context", "method": "Acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run of cs_app::objectives::survey_retail_objective_records over the installation (reader-bound-census.json). Claim is implemented only. MEASURED: every non-mission-scoped reader archive the installation holds — 9 readers (the shared reader plus the world-group readers), 612 member index entries — was opened, every member decoded with the production .zrd reader and read through the same objective_state_machine the mission rows use: 0 OBJECTIVE<N> blocks declared in total, so the mission-scoped denominator of 53 readers / 1338 objective blocks is measured-complete, not assumed. 1 member outside mission scope carries a mission-control member name: zbd/c1c's targets.zrd, 5 shared objective target records published with their complete key vocabulary. LIMITS OF WHAT WAS MEASURED, recorded in docs/findings/2026-10-03-f39-e3-shared-and-world-group-reader-census.md: (1) what any declaration MEANS is unmeasured — names and counts are a vocabulary census, not a decoded rule, and no original executable was run; (2) whether a C1C mission's objectives actually consume the shared target records is unmeasured; (3) the bound covers the objective vocabulary only — declaration families the census does not name cannot be caught by it. `unknowns` is empty because every member row resolved. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
