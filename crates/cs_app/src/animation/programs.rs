@@ -211,6 +211,14 @@ impl fmt::Display for AnimationProgramError {
 
 impl std::error::Error for AnimationProgramError {}
 
+/// Whether a character is the wildcard character.
+///
+/// A trailing run of them (`**`) is the original's own spelling for the same
+/// prefix rule and narrows nothing; see [`ObjectSelector::wildcard_suffix`].
+const fn is_wildcard(character: char) -> bool {
+    character == WILDCARD_CHAR
+}
+
 /// One stored node name, read as a selector over a container's records.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SelectorSegment {
@@ -236,6 +244,12 @@ impl SelectorSegment {
     }
 
     /// Whether `name` is selected by this segment.
+    ///
+    /// **The prefix rule only.** A stored spelling may carry text *after* its
+    /// `*` (see [`ObjectSelector::wildcard_suffix`]); this ignores it, because
+    /// the corpus establishes the prefix reading only for an empty suffix. Use
+    /// [`WorldNodeNames::resolve`], which reports such a spelling as unmeasured
+    /// instead of counting a guess.
     #[must_use]
     pub fn matches(&self, name: &str) -> bool {
         match self {
@@ -332,6 +346,34 @@ impl ObjectSelector {
     pub fn wildcard_evidence(&self) -> Option<(String, &'static str)> {
         self.has_wildcard()
             .then(|| (self.stored.clone(), OBJECT_SELECTOR_CLAIM))
+    }
+
+    /// The **narrowing** text a stored wildcard spelling carries after its first
+    /// `*`.
+    ///
+    /// Measured over the installation: 39 spellings carry a character after their
+    /// first `*`, in 187 selectors. Of those, 32 spellings end in `**` — a
+    /// repeated wildcard, which narrows nothing, so they are read by the same
+    /// prefix rule as a single `*` (`aagun**` over the numbered `aagun` family is
+    /// the corpus's own example) — and the remaining **seven** carry a character
+    /// that may narrow: `lbroad*1`, `lbroad*2`, `rbroad*1`, `rbroad*2` in
+    /// `ZBD/zrdr.zbd::beowulf_broadsides.zrd` and `docksteam*#`, `sstack*#`,
+    /// `torch*#` in `ZBD/C5/zrdr.zbd::steam.zrd`, 31 selectors in all.
+    ///
+    /// [`ObjectSelector::parse`] reads a wildcard up to its first `*` and keeps
+    /// the rest here rather than dropping it. What a narrowing suffix **does** is
+    /// unmeasured: a trailing `1` may pick one numbered sibling (`lbroad1`,
+    /// `lbroad2` and `lbroad3` all exist) and a trailing `#` may be the original's
+    /// own second wildcard, and neither is established, so
+    /// [`WorldNodeNames::resolve`] reports such a selector as unmeasured instead
+    /// of counting the prefix alone. See
+    /// [`UnmeasuredFieldFamily::SelectorWildcardSuffix`].
+    #[must_use]
+    pub fn wildcard_suffix(&self) -> Option<&str> {
+        self.stored
+            .split_once(WILDCARD_CHAR)
+            .map(|(_, suffix)| suffix)
+            .filter(|suffix| !suffix.is_empty() && !suffix.chars().all(is_wildcard))
     }
 }
 
@@ -664,6 +706,12 @@ impl AnimationSequence {
 
 /// How a definition names the objects it drives, in one of the two measured
 /// shapes.
+///
+/// Measured: no definition of the installation carries both fields, so the
+/// shapes are exclusive here and [`Self::field`] names which one a definition
+/// used. A definition that did carry both would keep the last one in stored
+/// order and have the shadowed field named in
+/// [`DeclaredAnimationDefinition::uninterpreted_fields`], never dropped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DefinitionObjects {
     /// `NAME`: a flat list of node names.
@@ -1320,8 +1368,13 @@ impl WorldActorProgramBinding {
             .filter(|binding| binding.resolution().is_unresolved())
     }
 
-    /// The node names a resolved startup animation drives, in binding order,
+    /// Every node name a resolved startup animation drives, in binding order,
     /// each with the site that declared it.
+    ///
+    /// **Every** name of every resolved definition is yielded, not the first: a
+    /// caller counting the actors a startup animation drives must not lose the
+    /// ones behind the first, and a definition that names two nodes names two
+    /// actors.
     ///
     /// A definition naming its objects through [`DefinitionObjects::StateBindings`]
     /// contributes each path's terminal step, because that is the node the state
@@ -1330,10 +1383,14 @@ impl WorldActorProgramBinding {
     pub fn selected_objects(
         &self,
     ) -> impl Iterator<Item = (&AnimationDefinitionSite, &ObjectSelector)> {
-        self.startup.iter().filter_map(|binding| {
-            let site = binding.resolution().single()?;
-            Some((site, site.objects().node_names().next()?))
-        })
+        self.startup
+            .iter()
+            .filter_map(|binding| binding.resolution().single())
+            .flat_map(|site| {
+                site.objects()
+                    .node_names()
+                    .map(move |selector| (site, selector))
+            })
     }
 }
 
@@ -1342,7 +1399,8 @@ impl WorldActorProgramBinding {
 /// Only the **stored display name** of each record is used. A
 /// [`NodePathSelector`] needs the container's parent/child hierarchy, and this
 /// table deliberately does not carry one: [`SelectorMatch::Path`] is reported
-/// instead of a guess.
+/// instead of a guess — and so is a wildcard spelling carrying a suffix, which
+/// would need a matching rule the corpus does not establish.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorldNodeNames {
     container: String,
@@ -1393,6 +1451,11 @@ impl WorldNodeNames {
     /// which is the measurement: how many records of this container the name
     /// selects. A **zero** is a measurement too — the container holds no such
     /// record, which is exactly what says a family is not placed in this world.
+    ///
+    /// A wildcard spelling that carries text after its `*` is **not** counted:
+    /// the prefix rule is measured only for an empty suffix, so the count would
+    /// be a guess, and it is reported as [`SelectorMatch::UnmeasuredSuffix`]
+    /// instead. That is the one case where a wildcard name answers nothing.
     #[must_use]
     pub fn resolve(&self, selector: &ObjectSelector) -> SelectorMatch {
         match selector.segment() {
@@ -1400,13 +1463,20 @@ impl WorldNodeNames {
                 name: name.clone(),
                 occurrences: self.names.iter().filter(|stored| *stored == name).count(),
             },
-            SelectorSegment::PrefixWildcard(prefix) => SelectorMatch::Family {
-                prefix: prefix.clone(),
-                occurrences: self
-                    .names
-                    .iter()
-                    .filter(|stored| stored.starts_with(prefix))
-                    .count(),
+            SelectorSegment::PrefixWildcard(prefix) => match selector.wildcard_suffix() {
+                Some(suffix) => SelectorMatch::UnmeasuredSuffix {
+                    stored: selector.stored().to_owned(),
+                    prefix: prefix.clone(),
+                    suffix: suffix.to_owned(),
+                },
+                None => SelectorMatch::Family {
+                    prefix: prefix.clone(),
+                    occurrences: self
+                        .names
+                        .iter()
+                        .filter(|stored| stored.starts_with(prefix))
+                        .count(),
+                },
             },
         }
     }
@@ -1451,6 +1521,21 @@ pub enum SelectorMatch {
         /// The stored path.
         path: String,
     },
+    /// The selector is a wildcard spelling carrying a **narrowing** character
+    /// after its `*`.
+    ///
+    /// The prefix rule is measured only for a suffix of wildcard characters
+    /// (`*`, `**`), so counting this selector would be a guess: a trailing `1`
+    /// may pick one numbered sibling and a trailing `#` may be a second wildcard
+    /// character the corpus never explains.
+    UnmeasuredSuffix {
+        /// The spelling exactly as the member stored it.
+        stored: String,
+        /// The text before the first `*`.
+        prefix: String,
+        /// The text after the first `*`.
+        suffix: String,
+    },
 }
 
 impl SelectorMatch {
@@ -1459,19 +1544,20 @@ impl SelectorMatch {
     /// **`Some(0)` is a measurement**, not a gap: the container was searched and
     /// holds no record with that name or prefix, which is exactly what says the
     /// family is not placed in this world. `None` means this table could not
-    /// answer at all, which only a node path does.
+    /// answer at all, which a node path and a wildcard spelling with a suffix
+    /// both do.
     #[must_use]
     pub const fn occurrences(&self) -> Option<usize> {
         match self {
             Self::Node { occurrences, .. } | Self::Family { occurrences, .. } => Some(*occurrences),
-            Self::Path { .. } => None,
+            Self::Path { .. } | Self::UnmeasuredSuffix { .. } => None,
         }
     }
 
     /// Whether this table could not answer.
     #[must_use]
     pub const fn is_unmeasured(&self) -> bool {
-        matches!(self, Self::Path { .. })
+        matches!(self, Self::Path { .. } | Self::UnmeasuredSuffix { .. })
     }
 }
 
@@ -1491,14 +1577,20 @@ pub enum UnmeasuredFieldFamily {
     /// Whether `*` really is a prefix wildcard, and whether other wildcards
     /// exist.
     SelectorWildcardSemantics,
+    /// The text a wildcard spelling carries **after** its `*`.
+    SelectorWildcardSuffix,
     /// A `NAME1` path or a prerequisite's path: which node under which parent.
     NodePathResolution,
     /// Whether the engine resolves a `NAME1` state binding at load time or by a
     /// build-time reference, and whether the state name is itself addressable.
     StateBindingResolution,
-    /// `RESET_TIME` and `RESET_STATE`: what they reset and after how long.
+    /// `ANIMATION_ROOT_NAME`: the root an animation applies to.
+    AnimationRootName,
+    /// `RESET_TIME`, `RESET_STATE` and `AUTO_RESET_NODE_STATES`: what resets, and
+    /// when.
     ResetFields,
-    /// `EXECUTION_PRIORITY`, `EXECUTION_BY_RENDER`, `EXECUTION_BY_RANGE`.
+    /// `EXECUTION_PRIORITY`, `EXECUTION_BY_RENDER`, `EXECUTION_BY_RANGE` and the
+    /// single bare `EXECUTION`.
     ExecutionOrder,
     /// `AUTO_ADD_TO_WORLD` and `LOCAL_NODES_ONLY`: what is added, and when.
     WorldMembership,
@@ -1523,12 +1615,14 @@ pub enum UnmeasuredFieldFamily {
 
 impl UnmeasuredFieldFamily {
     /// Every family, in a stable report order.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 17] = [
         Self::StatementSemantics,
         Self::ActivationVocabulary,
         Self::SelectorWildcardSemantics,
+        Self::SelectorWildcardSuffix,
         Self::NodePathResolution,
         Self::StateBindingResolution,
+        Self::AnimationRootName,
         Self::ResetFields,
         Self::ExecutionOrder,
         Self::WorldMembership,
@@ -1548,8 +1642,10 @@ impl UnmeasuredFieldFamily {
             Self::StatementSemantics => "statement_semantics",
             Self::ActivationVocabulary => "activation_vocabulary",
             Self::SelectorWildcardSemantics => "selector_wildcard_semantics",
+            Self::SelectorWildcardSuffix => "selector_wildcard_suffix",
             Self::NodePathResolution => "node_path_resolution",
             Self::StateBindingResolution => "state_binding_resolution",
+            Self::AnimationRootName => "animation_root_name",
             Self::ResetFields => "reset_fields",
             Self::ExecutionOrder => "execution_order",
             Self::WorldMembership => "world_membership",
@@ -1570,8 +1666,10 @@ impl UnmeasuredFieldFamily {
             Self::StatementSemantics => SEQUENCE_KINDS_CLAIM,
             Self::ActivationVocabulary => ACTIVATION_VOCABULARY_CLAIM,
             Self::SelectorWildcardSemantics => OBJECT_SELECTOR_CLAIM,
+            Self::SelectorWildcardSuffix => "f20-anim.object-selector-wildcard-suffix-unmeasured",
             Self::NodePathResolution => "f20-anim.node-path-resolution-unmeasured",
             Self::StateBindingResolution => "f20-anim.name1-state-binding-resolution-unmeasured",
+            Self::AnimationRootName => "f20-anim.animation-root-name-unmeasured",
             Self::ResetFields => "f20-anim.reset-fields-unmeasured",
             Self::ExecutionOrder => "f20-anim.execution-order-fields-unmeasured",
             Self::WorldMembership => "f20-anim.world-membership-fields-unmeasured",
@@ -1582,6 +1680,55 @@ impl UnmeasuredFieldFamily {
             Self::PlacementRecords => "f34-world.placement-records-unmeasured",
             Self::StoredUnit => "f18-world.stored-vertex-unit-unmeasured",
             Self::TickRate => "f20-anim.tick-rate-unmeasured",
+        }
+    }
+
+    /// The **stored field names** of the `ANIMATION_DEFINITION` records this
+    /// family concerns, exactly as the installation spells them.
+    ///
+    /// This is the machine-checkable half of "every field family is named": a
+    /// field the reader stores and does not interpret must be claimed by at least
+    /// one family, and the acceptance tests assert both that every name in the
+    /// installation's uninterpreted-field vocabulary is claimed and that no name
+    /// the reader fully interprets is claimed at all. A name may be claimed by
+    /// more than one family where two readings of the same field are separately
+    /// unmeasured — `NAME` and `NAME1` carry both the wildcard families and, for
+    /// `NAME1`, the node-path one. Empty for the four families that cover
+    /// something other than a definition field (the statement bodies, the
+    /// placement members, the stored unit and the tick rate).
+    #[must_use]
+    pub const fn field_names(self) -> &'static [&'static str] {
+        match self {
+            Self::StatementSemantics => &[],
+            Self::ActivationVocabulary => &["ACTIVATION"],
+            // Two families concern the object fields, each claiming the field it
+            // is about: the wildcard reading is about the names `NAME` and `NAME1`
+            // both store, and a node path only ever arrives through `NAME1` or a
+            // prerequisite's payload. A field is therefore not owned by exactly
+            // one family, and the acceptance test checks that every *stored,
+            // uninterpreted* name is claimed at least once instead.
+            Self::SelectorWildcardSemantics => &["NAME", "NAME1"],
+            Self::SelectorWildcardSuffix => &["NAME", "NAME1"],
+            Self::NodePathResolution | Self::StateBindingResolution => &["NAME1"],
+            Self::AnimationRootName => &["ANIMATION_ROOT_NAME"],
+            Self::ResetFields => &["RESET_TIME", "RESET_STATE", "AUTO_RESET_NODE_STATES"],
+            Self::ExecutionOrder => &[
+                "EXECUTION_PRIORITY",
+                "EXECUTION_BY_RENDER",
+                "EXECUTION_BY_RANGE",
+                "EXECUTION",
+            ],
+            Self::WorldMembership => &["AUTO_ADD_TO_WORLD", "LOCAL_NODES_ONLY"],
+            Self::DefinitionFilePaths => &["ANIMATION_DEFINITION_FILE"],
+            Self::DamageCoupling => &[
+                "HEALTH",
+                "DAMAGE_SEQUENCE",
+                "PROXIMITY_DAMAGE",
+                "COPY_NODE_DATA",
+            ],
+            Self::PersistenceFlags => &["SAVE_LOG", "NETWORK_LOG", "PERSIST_LOG"],
+            Self::PrerequisiteEvaluation => &["ACTIVATION_PREREQUISITE"],
+            Self::PlacementRecords | Self::StoredUnit | Self::TickRate => &[],
         }
     }
 
@@ -1616,6 +1763,13 @@ impl UnmeasuredFieldFamily {
                  '*' as a node-name prefix is this project's rule, corroborated by the corpus \
                  (g_engine* over g_engine1..8) rather than read from the bytes"
             }
+            Self::SelectorWildcardSuffix => {
+                "of the 39 stored spellings carrying a character after their '*', 32 end in '**' \
+                 (a repeated wildcard, which narrows nothing) and seven carry a character that may \
+                 (lbroad*1, lbroad*2, rbroad*1, rbroad*2, docksteam*#, sstack*#, torch*#); the \
+                 prefix rule is not measured for those seven, so each is reported unmeasured rather \
+                 than counted from its prefix"
+            }
             Self::NodePathResolution => {
                 "a NAME1 pair and a prerequisite both use '/'-separated node paths \
                  (workersvoyagezep/hookup_lights); a node-name table carries no hierarchy, so such \
@@ -1626,14 +1780,22 @@ impl UnmeasuredFieldFamily {
                  records make about which object an animation moves; whether the engine resolved \
                  that binding by name at load time or by a build-time reference is unmeasured"
             }
+            Self::AnimationRootName => {
+                "ANIMATION_ROOT_NAME is stored by 208 definitions as the root an animation applies \
+                 to; whether it is a node name, a node path or a state, and how it relates to the \
+                 NAME/NAME1 object fields it travels with, is unmeasured, so no root node is \
+                 resolved from it"
+            }
             Self::ResetFields => {
-                "RESET_TIME and RESET_STATE are stored (eleven and twenty distinct shapes \
-                 respectively) and neither the unit, the two-word meaning nor the reset target is \
-                 measured"
+                "RESET_TIME, RESET_STATE and AUTO_RESET_NODE_STATES are stored (1509, 648 and 96 \
+                 definitions) and neither the unit, the two-word meaning, the reset target nor \
+                 what resets automatically is measured"
             }
             Self::ExecutionOrder => {
                 "EXECUTION_PRIORITY, EXECUTION_BY_RENDER and EXECUTION_BY_RANGE are stored with \
-                 values and no measured meaning; ordering two definitions cannot be recovered"
+                 values, and one definition stores a bare EXECUTION whose spelling no other \
+                 definition uses; no measured meaning, so ordering two definitions cannot be \
+                 recovered"
             }
             Self::WorldMembership => {
                 "AUTO_ADD_TO_WORLD states only OFF in this installation and LOCAL_NODES_ONLY states \
@@ -1845,6 +2007,7 @@ fn read_definition(
     let fields = zrd_flat_fields(value);
     let mut animation_name = None;
     let mut objects = DefinitionObjects::Absent;
+    let mut object_field: Option<&str> = None;
     let mut activation = None;
     let mut prerequisite = None;
     let mut sequences = Vec::new();
@@ -1855,13 +2018,22 @@ fn read_definition(
                 interpreted.insert(ANIMATION_NAME_FIELD);
                 animation_name = texts(field).into_iter().next();
             }
-            NAME_FIELD => {
-                interpreted.insert(NAME_FIELD);
-                objects = DefinitionObjects::Names(read_selectors(field)?);
-            }
-            NAME_ALTERNATE_FIELD => {
-                interpreted.insert(NAME_ALTERNATE_FIELD);
-                objects = DefinitionObjects::StateBindings(read_state_bindings(field)?);
+            NAME_FIELD | NAME_ALTERNATE_FIELD => {
+                // Measured: no definition of the installation carries both object
+                // fields, so the reader has no measured precedence between them.
+                // If one ever does, the shadowed field is named as uninterpreted
+                // rather than dropped, which keeps "every field is read or named"
+                // true in the case the corpus does not contain.
+                if let Some(shadowed) = object_field {
+                    interpreted.remove(shadowed);
+                }
+                object_field = Some(name);
+                interpreted.insert(name);
+                objects = if *name == NAME_FIELD {
+                    DefinitionObjects::Names(read_selectors(field)?)
+                } else {
+                    DefinitionObjects::StateBindings(read_state_bindings(field)?)
+                };
             }
             ACTIVATION_FIELD => {
                 interpreted.insert(ACTIVATION_FIELD);
@@ -1872,7 +2044,7 @@ fn read_definition(
             }
             ACTIVATION_PREREQUISITE_FIELD => {
                 interpreted.insert(ACTIVATION_PREREQUISITE_FIELD);
-                prerequisite = read_prerequisite(field)?;
+                prerequisite = Some(read_prerequisite(field)?);
             }
             SEQUENCE_FIELD => {
                 interpreted.insert(SEQUENCE_FIELD);
@@ -1941,9 +2113,7 @@ fn read_state_bindings(value: &ZrdValue) -> Result<Vec<StateBinding>, AnimationP
 /// `[CONDITION, …]` and an `OPTIONS` body leads with `MINIMUM_TO_SATISFY` and its
 /// count. The condition's payload is a list of animation names for
 /// `ANIMATION_LIST` and a list of node paths for the two object lists.
-fn read_prerequisite(
-    value: &ZrdValue,
-) -> Result<Option<ActivationPrerequisite>, AnimationProgramError> {
+fn read_prerequisite(value: &ZrdValue) -> Result<ActivationPrerequisite, AnimationProgramError> {
     let root = children(value);
     let requirement = single_text(root.first().ok_or_else(|| AnimationProgramError::Shape {
         expected: "an activation prerequisite",
@@ -1996,13 +2166,13 @@ fn read_prerequisite(
     } else {
         (payload.iter().map(single_text).collect(), Vec::new())
     };
-    Ok(Some(ActivationPrerequisite {
+    Ok(ActivationPrerequisite {
         requirement,
         minimum_to_satisfy,
         condition,
         animation_names,
         paths,
-    }))
+    })
 }
 
 /// One `SEQUENCE_DEFINITION`, read as its statement kinds and field names.
