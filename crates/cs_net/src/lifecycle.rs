@@ -1091,6 +1091,46 @@ impl ClientSession {
         })
     }
 
+    /// Connects offering `hello` and asks the pinned connection layer to
+    /// tolerate `window` seconds of silence from the host before it drops this
+    /// client.
+    ///
+    /// [`Self::connect`] is this with the pinned layer's own default window,
+    /// which is what a shipped session runs with. See
+    /// [`crate::transport::ConnectWindow`] for what that window is measured in
+    /// and why a harness may ask for a different one: it changes no protocol
+    /// behaviour, only how long the connection layer waits before it decides a
+    /// peer is gone.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Io`] when the socket cannot bind,
+    /// [`TransportError::Netcode`] when the client transport cannot be built.
+    pub fn connect_with_window(
+        hello: crate::compat::ClientHello,
+        server_addr: SocketAddr,
+        client_id: u64,
+        now: Duration,
+        window: crate::transport::ConnectWindow,
+    ) -> Result<Self, TransportError> {
+        Ok(Self {
+            transport: ClientTransport::connect_with_window(
+                hello,
+                server_addr,
+                client_id,
+                now,
+                window,
+            )?,
+            phase: ClientPhase::Connecting,
+            pending: Vec::new(),
+            unacked: VecDeque::new(),
+            acked_through: None,
+            seen: BTreeSet::new(),
+            latest: None,
+            since_retry: Duration::ZERO,
+        })
+    }
+
     /// The session's current phase.
     #[must_use]
     pub const fn phase(&self) -> &ClientPhase {

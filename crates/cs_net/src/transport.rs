@@ -69,8 +69,9 @@ use renet2::{
     ChannelConfig, ClientId, ConnectionConfig, RenetClient, RenetServer, SendType, ServerEvent,
 };
 use renet2_netcode::{
-    ClientAuthentication, NativeSocket, NetcodeClientTransport, NetcodeError,
-    NetcodeServerTransport, NetcodeTransportError, ServerAuthentication, ServerSetupConfig,
+    ClientAuthentication, ConnectToken, NETCODE_KEY_BYTES, NativeSocket, NetcodeClientTransport,
+    NetcodeError, NetcodeServerTransport, NetcodeTransportError, ServerAuthentication,
+    ServerSetupConfig,
 };
 
 use cs_types::net::{PeerId, SessionId};
@@ -104,6 +105,112 @@ pub const NETCODE_PROTOCOL_ID: u64 = 0x4353_4E45_5400_0001;
 /// How long a reliable channel waits before resending an unacknowledged
 /// message. Renet's own default cadence.
 const RESEND_TIME: Duration = Duration::from_millis(300);
+
+/// How long the netcode connect token stays valid, in seconds. The pinned
+/// stack's own value; it is only the token's lifetime, never the window below.
+const CONNECT_TOKEN_EXPIRE_SECONDS: u64 = 300;
+
+/// The application key an [`UnsecureWindow`] connect token is sealed with.
+///
+/// `renetcode2` seals a token generated for [`ClientAuthentication::Unsecure`]
+/// with an all-zero key, and its server side uses that same key whenever
+/// [`ServerAuthentication::Unsecure`] is configured. A fixture that needs its
+/// own window therefore seals the token with the identical key — the host is
+/// left in `Unsecure` authentication, so nothing about the handshake's
+/// security changes.
+const UNSECURE_CONNECT_KEY: [u8; NETCODE_KEY_BYTES] = [0; NETCODE_KEY_BYTES];
+
+/// How long the connection layer tolerates silence before it disconnects a
+/// peer, in whole seconds.
+///
+/// This is a **fixture parameter**, not a game setting: it is the netcode
+/// client's and server's `timeout_seconds`, which the pinned layer accumulates
+/// purely from the `elapsed` a caller hands to `update`. A caller that pumps a
+/// session with a coarse `elapsed` gives the layer a proportionally longer
+/// window in real time, so the window and the pump cadence have to be chosen
+/// together (docs/findings/2026-10-04-f54-x2-loopback-pump-and-socket-determinism.md).
+///
+/// The production value is the pinned stack's own default ([`DEFAULT`]); it is
+/// what every shipped session runs with. A harness that drives the transport in
+/// a tight loop on a machine shared with other builds can ask for a wider one
+/// through [`HostTransport::bind_with_window`] and
+/// [`ClientTransport::connect_with_window`] without changing any default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ConnectWindow(i32);
+
+impl ConnectWindow {
+    /// A window of `seconds`.
+    ///
+    /// # Panics
+    ///
+    /// If `seconds` is zero or negative. The pinned layer reads those values as
+    /// "no timeout at all" — a development-only setting no caller should be
+    /// able to ask for by passing an unvalidated number.
+    #[must_use]
+    pub const fn new(seconds: i32) -> Self {
+        assert!(
+            seconds > 0,
+            "a connection window must be at least one second"
+        );
+        Self(seconds)
+    }
+
+    /// A window of `seconds`, or `None` when `seconds` is zero or negative:
+    /// the pinned layer reads those as "no timeout at all" (a development-only
+    /// setting), which is not a value a caller can ask for by accident.
+    #[must_use]
+    pub const fn from_seconds(seconds: i32) -> Option<Self> {
+        if seconds <= 0 {
+            None
+        } else {
+            Some(Self(seconds))
+        }
+    }
+
+    /// The window in seconds, as the pinned layer records it.
+    #[must_use]
+    pub const fn const_seconds(self) -> i32 {
+        self.0
+    }
+}
+
+/// The production window: the value `renetcode2` uses when a client connects
+/// with [`ClientAuthentication::Unsecure`], fifteen seconds.
+///
+/// A shipped session never exceeds it — see [`ConnectWindow`] for why a
+/// harness may.
+pub const DEFAULT_CONNECT_WINDOW: ConnectWindow = ConnectWindow(15);
+
+/// The authentication a [`ConnectWindow`] client offers: the same unsecure
+/// token the pinned layer builds for [`ClientAuthentication::Unsecure`], with
+/// this window instead of the default one.
+///
+/// `renetcode2` seals its unsecure token with an all-zero key and configures
+/// [`ServerAuthentication::Unsecure`] on the host with that identical key, so a
+/// host in unsecure authentication accepts a token sealed the same way — and,
+/// because it reads `timeout_seconds` out of the token it decodes, it adopts
+/// the window this token carries. The handshake's security is unchanged: the
+/// host stays in unsecure authentication and never learns a key.
+fn unsecure_authentication(
+    protocol_id: u64,
+    client_id: u64,
+    server_addr: SocketAddr,
+    now: Duration,
+    window: ConnectWindow,
+) -> Result<ClientAuthentication, NetcodeError> {
+    let connect_token = ConnectToken::generate(
+        now,
+        protocol_id,
+        CONNECT_TOKEN_EXPIRE_SECONDS,
+        client_id,
+        window.0,
+        0,
+        vec![server_addr],
+        None,
+        &UNSECURE_CONNECT_KEY,
+    )?;
+    Ok(ClientAuthentication::Secure { connect_token })
+}
 
 /// The per-channel send/receive buffer budget. Sixty-four maximum-size
 /// packets is far beyond what the bounded protocol can legitimately queue on
@@ -855,14 +962,31 @@ impl ClientTransport {
         client_id: u64,
         now: Duration,
     ) -> Result<Self, TransportError> {
+        Self::connect_with_window(hello, server_addr, client_id, now, DEFAULT_CONNECT_WINDOW)
+    }
+
+    /// Connects to `server_addr` as `client_id`, offering `hello` and asking
+    /// the connection layer to tolerate `window` seconds of silence from the
+    /// host before it disconnects this client.
+    ///
+    /// [`Self::connect`] is this with [`DEFAULT_CONNECT_WINDOW`], which is what
+    /// a shipped session runs with; see [`ConnectWindow`] for when a caller
+    /// wants a different one and what it does not change.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Io`] when the socket cannot bind,
+    /// [`TransportError::Netcode`] when the client transport cannot be built.
+    pub fn connect_with_window(
+        hello: ClientHello,
+        server_addr: SocketAddr,
+        client_id: u64,
+        now: Duration,
+        window: ConnectWindow,
+    ) -> Result<Self, TransportError> {
         let socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0)))?;
-        let authentication = ClientAuthentication::Unsecure {
-            protocol_id: NETCODE_PROTOCOL_ID,
-            client_id,
-            socket_id: 0,
-            server_addr,
-            user_data: None,
-        };
+        let authentication =
+            unsecure_authentication(NETCODE_PROTOCOL_ID, client_id, server_addr, now, window)?;
         let transport =
             NetcodeClientTransport::new(now, authentication, NativeSocket::new(socket)?)?;
         Ok(Self {

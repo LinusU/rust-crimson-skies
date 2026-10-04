@@ -34,6 +34,7 @@
 mod fuzz;
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use cs_types::Tick;
@@ -50,7 +51,9 @@ use cs_net::codec::{
     ClientPacket, CodecError, ServerPacket, decode_client_packet, decode_server_packet,
     encode_client_message, encode_client_packet,
 };
-use cs_net::compat::{Compatibility, HandshakeReject, PROTOCOL_VERSION, SessionParameters};
+use cs_net::compat::{
+    Compatibility, HandshakeReject, PROTOCOL_VERSION, ProtocolVersion, SessionParameters,
+};
 use cs_net::fixture::{
     SYNTHETIC_CONTENT_SHA256, SYNTHETIC_RULES_SHA256, SYNTHETIC_SESSION, synthetic_blueprint_id,
     synthetic_hello, synthetic_parameters,
@@ -64,15 +67,61 @@ use cs_net::message::{
     ServerPayload, SnapshotFrame, WireError,
 };
 use cs_net::snapshot::{SYNTHETIC_ORIGIN_EPOCH, Snapshot};
-use cs_net::transport::{CHANNEL_SEQUENCED, ClientEvent, ClientTransport, DropReason};
+use cs_net::transport::{
+    CHANNEL_SEQUENCED, ClientEvent, ClientTransport, ConnectWindow, DEFAULT_CONNECT_WINDOW,
+    DropReason,
+};
 use cs_net::validation::ThreatCase;
 
 /// One exchange round's duration. Loopback needs no real sleep; the updates
 /// only have to run often enough to exchange the netcode handshake's packets.
 const STEP: Duration = Duration::from_millis(16);
 
+/// The connection-layer window these acceptance tests ask for.
+///
+/// The pinned layer's own default is fifteen seconds
+/// ([`cs_net::transport::DEFAULT_CONNECT_WINDOW`]), and it accumulates that
+/// window entirely from the `elapsed` a caller hands to `update`. A test that
+/// pumps at [`STEP`] therefore gives itself fifteen seconds of *pump* time in
+/// about four milliseconds of wall clock, and a single dropped loopback
+/// datagram on a machine that is oversubscribed cannot be retransmitted inside
+/// that window: the client disconnects, and the pinned state machine has no
+/// way back. See
+/// `docs/findings/2026-10-04-f54-x2-loopback-pump-and-socket-determinism.md`
+/// for the measurement.
+///
+/// This is a fixture parameter only. A shipped session runs with the default
+/// window, which no code path here changes.
+const LOOPBACK_WINDOW: ConnectWindow = ConnectWindow::new(120);
+
 /// How many pump rounds an end-to-end expectation gets before it fails.
-const MAX_ROUNDS: usize = 2_000;
+///
+/// Derived from [`LOOPBACK_WINDOW`] so the two cannot drift: the round budget
+/// is the window expressed in [`STEP`]s, plus a margin, which means a wait may
+/// always outlast the connection layer's own patience instead of reporting a
+/// timeout the layer had already declared. It is still a bound on rounds, not
+/// a sleep — no test waits on the wall clock.
+const MAX_ROUNDS: usize = (LOOPBACK_WINDOW.const_seconds() as usize * 1_000 / 16) + 64;
+
+/// Serializes the tests in this file that open a real loopback socket.
+///
+/// Measured on an 11-core machine deliberately oversubscribed more than
+/// twofold: eleven loopback handshakes at once left 435 of 1500 unable to
+/// finish inside the connection layer's own window, while a single handshake
+/// loop at the same load settled 600 of 600 (same finding, "Concurrency"). The
+/// loss is in the machine's loopback UDP path, not in anything a test asserts,
+/// so the file runs one live loopback pair at a time instead of racing for it.
+/// Each of these tests is a few milliseconds of socket work, so serializing
+/// them costs nothing measurable and removes the machine's load from the
+/// result.
+static LOOPBACK: Mutex<()> = Mutex::new(());
+
+/// Takes the loopback socket lock. Held for as long as the sockets it guards.
+fn loopback() -> MutexGuard<'static, ()> {
+    LOOPBACK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// How many rounds a retry's hang-up gets to reach the peer-less client.
 ///
@@ -97,6 +146,9 @@ struct Link {
     client: ClientSession,
     host_notices: Vec<ServerNotice>,
     client_notices: Vec<ClientNotice>,
+    /// Held for as long as the two sockets above are open, so this file never
+    /// has two loopback pairs live at once. See [`loopback`].
+    _loopback: MutexGuard<'static, ()>,
 }
 
 impl Link {
@@ -107,17 +159,20 @@ impl Link {
         params: SessionParameters,
         hello: cs_net::compat::ClientHello,
     ) -> Self {
+        let loopback = loopback();
         let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
         let host = ServerSession::bind(session, params, bind, Duration::ZERO)
             .expect("the host socket binds");
         let addr = host.local_addr().expect("the bound host has an address");
-        let client = ClientSession::connect(hello, addr, 0xC1, Duration::ZERO)
-            .expect("the client socket binds");
+        let client =
+            ClientSession::connect_with_window(hello, addr, 0xC1, Duration::ZERO, LOOPBACK_WINDOW)
+                .expect("the client socket binds");
         Self {
             host,
             client,
             host_notices: Vec::new(),
             client_notices: Vec::new(),
+            _loopback: loopback,
         }
     }
 
@@ -237,8 +292,14 @@ impl Link {
     fn raw_peer(&self, client_id: u64) -> RawPeer {
         let addr = self.host.local_addr().expect("the host has an address");
         RawPeer {
-            transport: ClientTransport::connect(synthetic_hello(), addr, client_id, Duration::ZERO)
-                .expect("the raw client socket binds"),
+            transport: ClientTransport::connect_with_window(
+                synthetic_hello(),
+                addr,
+                client_id,
+                Duration::ZERO,
+                LOOPBACK_WINDOW,
+            )
+            .expect("the raw client socket binds"),
         }
     }
 }
@@ -285,6 +346,172 @@ fn fire_bytes(session: SessionId, tick: Tick, sequence: u32) -> Vec<u8> {
 }
 
 // --------------------------------------------------------------- lifecycle --
+
+#[test]
+fn accept_f54_c_the_connect_window_is_a_fixture_parameter_over_the_default() {
+    let _loopback = loopback();
+    // The pinned layer's own unsecure token carries a fifteen-second window;
+    // that is what `DEFAULT_CONNECT_WINDOW` is and what every shipped session
+    // runs with, so the fixture parameter only ever *widens* what a caller
+    // already had.
+    assert_eq!(
+        DEFAULT_CONNECT_WINDOW.const_seconds(),
+        15,
+        "the default is the pinned stack's own value, not a number this crate chose"
+    );
+    assert_eq!(
+        ConnectWindow::from_seconds(0),
+        None,
+        "zero is the pinned stack's 'no timeout at all' development setting and is refused"
+    );
+    assert_eq!(
+        ConnectWindow::from_seconds(-1),
+        None,
+        "and so is a negative window"
+    );
+    assert_eq!(ConnectWindow::new(120).const_seconds(), 120);
+
+    // Widening it must not change what the handshake *is*. This is the path the
+    // fixture uses, so it runs a real loopback handshake through it: the host
+    // still admits the same offer with the same grant...
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("the first epoch allocates");
+    let mut host = ServerSession::bind(
+        session,
+        synthetic_parameters(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        Duration::ZERO,
+    )
+    .expect("the host socket binds");
+    let addr = host.local_addr().expect("the bound host has an address");
+    let mut client = ClientSession::connect_with_window(
+        synthetic_hello(),
+        addr,
+        0xCE,
+        Duration::ZERO,
+        ConnectWindow::new(120),
+    )
+    .expect("the client socket binds");
+
+    let mut joined = false;
+    for _ in 0..MAX_ROUNDS {
+        client.pump(STEP);
+        host.pump(STEP);
+        if client.grant().is_some() {
+            joined = true;
+            break;
+        }
+    }
+    assert!(joined, "a widened window still completes the handshake");
+    let grant = client.grant().expect("the handshake granted a session");
+    assert_eq!(
+        grant.session, session,
+        "and it is the same epoch a default client gets"
+    );
+    assert_eq!(host.phase(), ServerPhase::Gathering);
+
+    // ...and still refuses the same offers the same way. The window is a
+    // timeout, not a way around the compatibility gate.
+    let mut refused = ServerSession::bind(
+        session,
+        synthetic_parameters(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        Duration::ZERO,
+    )
+    .expect("a second host binds");
+    let refused_addr = refused
+        .local_addr()
+        .expect("the second host has an address");
+    let mut wrong = synthetic_hello();
+    wrong.protocol = ProtocolVersion::new(9).expect("nine is nonzero");
+    let mut second = ClientSession::connect_with_window(
+        wrong,
+        refused_addr,
+        0xCF,
+        Duration::ZERO,
+        ConnectWindow::new(120),
+    )
+    .expect("the second client socket binds");
+    let mut reason = None;
+    for _ in 0..MAX_ROUNDS {
+        second.pump(STEP);
+        if let Some(rejected) = refused
+            .pump(STEP)
+            .into_iter()
+            .find_map(|notice| match notice {
+                ServerNotice::PeerRefused { reason } => Some(reason),
+                _ => None,
+            })
+        {
+            reason = Some(rejected);
+            break;
+        }
+    }
+    assert!(
+        matches!(
+            reason,
+            Some(HandshakeReject::UnsupportedProtocol {
+                offered,
+                supported,
+            }) if offered.get() == 9 && supported == PROTOCOL_VERSION
+        ),
+        "the widened window changed nothing about admission: {reason:?}"
+    );
+
+    // And the window is the connection layer's own, measured in the `elapsed`
+    // a caller pumps with: a client that asked for one second is dropped by the
+    // pinned layer after about a second of pump time, while a client that asked
+    // for two minutes is still there. Nothing in `cs_net` decides this — it is
+    // read straight out of the connect token the pinned stack decodes.
+    for (window, rounds, still_connected) in [
+        (ConnectWindow::new(1), 256usize, false),
+        (LOOPBACK_WINDOW, 256, true),
+    ] {
+        let epoch = SessionAllocator::new()
+            .allocate()
+            .expect("an epoch allocates");
+        let mut quiet = ServerSession::bind(
+            epoch,
+            synthetic_parameters(),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Duration::ZERO,
+        )
+        .expect("the host socket binds");
+        let quiet_addr = quiet.local_addr().expect("the bound host has an address");
+        let mut speaker = ClientSession::connect_with_window(
+            synthetic_hello(),
+            quiet_addr,
+            0xD0,
+            Duration::ZERO,
+            window,
+        )
+        .expect("the client socket binds");
+
+        let mut established = false;
+        for _ in 0..MAX_ROUNDS {
+            speaker.pump(STEP);
+            quiet.pump(STEP);
+            if speaker.grant().is_some() {
+                established = true;
+                break;
+            }
+        }
+        assert!(established, "the {window:?} handshake completed");
+
+        // The host goes quiet: it is never pumped again, so it stops sending
+        // and the connection layer's own silence window is what runs.
+        for _ in 0..rounds {
+            speaker.pump(STEP);
+        }
+        assert_eq!(
+            speaker.transport().is_connected(),
+            still_connected,
+            "after {rounds} silent rounds ({:?} window) the connection layer's verdict is the window's",
+            window
+        );
+    }
+}
 
 #[test]
 fn accept_f54_c_the_session_runs_connect_launch_finish_and_disconnect() {
@@ -481,6 +708,8 @@ fn accept_f54_c_a_duplicate_packet_reaches_the_consumer_exactly_once() {
 
 #[test]
 fn accept_f54_c_the_phase_machine_refuses_every_illegal_transition() {
+    let _loopback = loopback();
+
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
@@ -792,16 +1021,23 @@ fn accept_f54_c_the_work_queue_refuses_the_surplus_and_cuts_the_abusive_peer() {
 /// Builds a client that already holds a grant, without keeping the host: the
 /// consumer is a pure function of the decoded message, so the adversarial
 /// corpus can drive it directly.
-fn granted_client(session: SessionId) -> ClientSession {
+fn granted_client(session: SessionId) -> (ClientSession, MutexGuard<'static, ()>) {
+    let loopback = loopback();
     let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
     let mut host = ServerSession::bind(session, synthetic_parameters(), bind, Duration::ZERO)
         .expect("the host socket binds");
     let addr = host.local_addr().expect("the bound host has an address");
-    let mut client = ClientSession::connect(synthetic_hello(), addr, 0xC5, Duration::ZERO)
-        .expect("the client socket binds");
+    let mut client = ClientSession::connect_with_window(
+        synthetic_hello(),
+        addr,
+        0xC5,
+        Duration::ZERO,
+        LOOPBACK_WINDOW,
+    )
+    .expect("the client socket binds");
     for _ in 0..MAX_ROUNDS {
         if client.grant().is_some() {
-            return client;
+            return (client, loopback);
         }
         client.pump(STEP);
         host.pump(STEP);
@@ -814,7 +1050,7 @@ fn accept_f54_c_a_replayed_reliable_event_is_applied_once() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut client = granted_client(session);
+    let (mut client, _loopback) = granted_client(session);
     let peer = PeerId::new(2).expect("two is nonzero");
     let event = fuzz::joined_event(session, peer, 0);
 
@@ -864,7 +1100,7 @@ fn accept_f54_c_the_client_phase_machine_follows_the_hosts_events() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut client = granted_client(session);
+    let (mut client, _loopback) = granted_client(session);
     assert_eq!(*client.phase(), ClientPhase::Joined);
 
     let notices = client
@@ -937,7 +1173,7 @@ fn accept_f54_c_the_event_memory_is_bounded_and_evicts_the_oldest() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut client = granted_client(session);
+    let (mut client, _loopback) = granted_client(session);
     let cap = fuzz::EVENT_MEMORY_CAP;
 
     for index in 0..(cap + 8) {
@@ -991,7 +1227,7 @@ fn accept_f54_c_only_the_newest_snapshot_survives() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut client = granted_client(session);
+    let (mut client, _loopback) = granted_client(session);
 
     let newest = SnapshotFrame {
         tick: Tick(500),
@@ -1048,7 +1284,7 @@ fn accept_f54_c_a_stale_epoch_snapshot_is_refused_before_it_is_decoded() {
         .allocate()
         .expect("an epoch allocates");
     let dead = SessionId::new(session.get() + 1).expect("nonzero");
-    let mut client = granted_client(session);
+    let (mut client, _loopback) = granted_client(session);
 
     let frame = SnapshotFrame {
         tick: Tick(600),
@@ -1078,7 +1314,7 @@ fn accept_f54_c_a_malformed_snapshot_payload_is_refused_and_names_the_field() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut client = granted_client(session);
+    let (mut client, _loopback) = granted_client(session);
 
     // Bytes that are well formed at the envelope but not a snapshot schema.
     for (label, payload) in [
@@ -1112,7 +1348,7 @@ fn accept_f54_c_an_oversized_snapshot_payload_is_refused_before_it_is_decoded() 
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut client = granted_client(session);
+    let (mut client, _loopback) = granted_client(session);
 
     // The envelope's own cap. A client cannot even be handed a payload past
     // `MAX_SNAPSHOT_BYTES`, which is what keeps one hostile peer from making
@@ -1171,7 +1407,7 @@ fn accept_f54_c_a_non_acknowledging_host_does_not_grow_the_client() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut client = granted_client(session);
+    let (mut client, _loopback) = granted_client(session);
 
     for index in 0..40u64 {
         client
@@ -1303,7 +1539,7 @@ fn accept_f54_c_the_client_refuses_a_backwards_tick_and_a_full_queue() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut client = granted_client(session);
+    let (mut client, _loopback) = granted_client(session);
 
     client
         .submit_edge(FlightCommand::FirePrimary, Tick(50))
@@ -1387,6 +1623,8 @@ fn accept_f54_c_the_client_leaves_reliably_and_the_host_departs_it() {
 
 #[test]
 fn accept_f54_c_a_refused_client_is_told_why_and_then_hung_up_on() {
+    let _loopback = loopback();
+
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
@@ -1397,7 +1635,8 @@ fn accept_f54_c_a_refused_client_is_told_why_and_then_hung_up_on() {
         .expect("the host socket binds");
     let addr = host.local_addr().expect("the bound host has an address");
     let mut client =
-        ClientSession::connect(hello, addr, 0xC6, Duration::ZERO).expect("the client socket binds");
+        ClientSession::connect_with_window(hello, addr, 0xC6, Duration::ZERO, LOOPBACK_WINDOW)
+            .expect("the client socket binds");
     let mut seen: Vec<ServerNotice> = Vec::new();
 
     for _ in 0..MAX_ROUNDS {
@@ -1450,6 +1689,8 @@ fn accept_f54_c_a_refused_client_is_told_why_and_then_hung_up_on() {
 
 #[test]
 fn accept_f54_c_a_handshake_answer_that_cannot_be_sent_is_reported_not_swallowed() {
+    let _loopback = loopback();
+
     // Two disjoint sets of maximum-length mod ids: the named rejection needs
     // 128 catalog ids on the wire, which does not fit a packet. The refusal
     // must surface as a reported fault and a hang-up, and the client must never
@@ -1481,8 +1722,14 @@ fn accept_f54_c_a_handshake_answer_that_cannot_be_sent_is_reported_not_swallowed
     );
 
     let mut raw = RawPeer {
-        transport: ClientTransport::connect(hello, addr, 0xC7, Duration::ZERO)
-            .expect("the client socket binds"),
+        transport: ClientTransport::connect_with_window(
+            hello,
+            addr,
+            0xC7,
+            Duration::ZERO,
+            LOOPBACK_WINDOW,
+        )
+        .expect("the client socket binds"),
     };
     let mut reported = false;
     for _ in 0..MAX_ROUNDS {
@@ -1616,7 +1863,7 @@ fn accept_f54_c_the_client_consumer_survives_the_whole_corpus() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut client = granted_client(session);
+    let (mut client, _loopback) = granted_client(session);
     let mut accepted = 0usize;
     let mut refused = 0usize;
 
@@ -1883,6 +2130,8 @@ fn accept_f54_c_a_hostile_peer_is_cut_off_without_disturbing_the_others() {
 
 #[test]
 fn accept_f54_c_a_send_before_the_grant_is_refused() {
+    let _loopback = loopback();
+
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
@@ -1890,8 +2139,14 @@ fn accept_f54_c_a_send_before_the_grant_is_refused() {
     let host = ServerSession::bind(session, synthetic_parameters(), bind, Duration::ZERO)
         .expect("the host socket binds");
     let addr = host.local_addr().expect("the bound host has an address");
-    let mut client = ClientSession::connect(synthetic_hello(), addr, 0xC9, Duration::ZERO)
-        .expect("the client socket binds");
+    let mut client = ClientSession::connect_with_window(
+        synthetic_hello(),
+        addr,
+        0xC9,
+        Duration::ZERO,
+        LOOPBACK_WINDOW,
+    )
+    .expect("the client socket binds");
 
     // Nothing may be sent before the handshake, and the lifecycle says so.
     assert!(matches!(client.leave(), Err(ClientFault::NotInSession)));
@@ -1910,6 +2165,8 @@ fn accept_f54_c_a_send_before_the_grant_is_refused() {
 
 #[test]
 fn accept_f54_c_a_client_without_a_grant_refuses_every_server_packet() {
+    let _loopback = loopback();
+
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
@@ -1917,8 +2174,14 @@ fn accept_f54_c_a_client_without_a_grant_refuses_every_server_packet() {
     let host = ServerSession::bind(session, synthetic_parameters(), bind, Duration::ZERO)
         .expect("the host socket binds");
     let addr = host.local_addr().expect("the bound host has an address");
-    let mut client = ClientSession::connect(synthetic_hello(), addr, 0xCA, Duration::ZERO)
-        .expect("the client socket binds");
+    let mut client = ClientSession::connect_with_window(
+        synthetic_hello(),
+        addr,
+        0xCA,
+        Duration::ZERO,
+        LOOPBACK_WINDOW,
+    )
+    .expect("the client socket binds");
 
     // A decoded packet cannot be applied before the handshake named an epoch:
     // there is no epoch to check it against.
@@ -1984,6 +2247,8 @@ fn accept_f54_c_a_wrong_protocol_revision_is_refused_through_the_lifecycle() {
 
 #[test]
 fn accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer() {
+    let _loopback = loopback();
+
     // A refused client keeps a netcode connection but never becomes a peer, so
     // `close` does not reach it and a retry has to: the new epoch does not know
     // that connection, so it may neither keep a session slot for it nor let it
@@ -1993,7 +2258,7 @@ fn accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer() {
     let second = allocator.allocate().expect("the retry epoch allocates");
     let mut hello = synthetic_hello();
     hello.compatibility.rules_sha256 = ContentHash::from_bytes([0x00; 32]);
-    let mut link = Link::new(first, synthetic_parameters(), hello);
+let mut link = Link::new(first, synthetic_parameters(), hello);
 
     // Both sides are driven by the same [`STEP`], which is the clock every pump
     // here takes: the pinned connection layer times its own 250 ms keep-alive
@@ -2217,6 +2482,8 @@ fn accept_f54_c_a_retry_tells_a_returning_client_its_verdict() {
 
 #[test]
 fn accept_f54_c_a_spent_epoch_refuses_to_publish() {
+    let _loopback = loopback();
+
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
@@ -2270,7 +2537,7 @@ fn accept_f54_c_a_closed_client_session_is_terminal() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut client = granted_client(session);
+    let (mut client, _loopback) = granted_client(session);
 
     // The host closed the session.
     let notices = client
