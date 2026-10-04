@@ -6,4 +6,22 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# Neither src/ file carries a #[test], yet `cargo test` still builds a
+# harness binary for each and execs it out of target/. A second cargo
+# writing the same target directory replaces that file while the first run
+# executes it — the intermittent `error: test failed, to rerun pass
+# 'cs_xtask --lib'` + `No such file or directory (os error 2)` of task #610
+# (the file being exec'd vanishes between cargo's check and the exec; on
+# macOS the already-running binary is SIGKILLed instead). `test = false`
+# stops producing the two empty binaries, so there is nothing left for a
+# concurrent cargo to pull out from under the run. The integration suites
+# in tests/ are unaffected, and accept_t610_ pins the no-unit-tests
+# invariant this relies on.
+[lib]
+test = false
+
+[[bin]]
+name = "cs_xtask"
+test = false
+
 [dependencies]
