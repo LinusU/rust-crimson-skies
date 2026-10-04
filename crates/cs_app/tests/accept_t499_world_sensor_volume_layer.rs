@@ -30,9 +30,7 @@
 //! and speed below is synthetic fixture content, and nothing here claims what the
 //! 2000 PC original did with a trigger volume.
 
-use avian3d::prelude::{
-    CollisionLayers as AvianCollisionLayers, LinearVelocity, Position, Sensor,
-};
+use avian3d::prelude::{CollisionLayers as AvianCollisionLayers, LinearVelocity, Position, Sensor};
 use bevy::prelude::Entity;
 use cs_app::objectives::{CrossingSource, TriggerCrossings};
 use cs_app::physics::{
@@ -379,9 +377,11 @@ fn accept_t499_a_world_sensor_volume_never_clamps_stops_or_delays_a_spawn() {
             event.stopped
         );
         assert!(
-            (event.distance_m.expect("an unstopped cast measures a distance")
+            (event
+                .distance_m
+                .expect("an unstopped cast measures a distance")
                 - travel_m(speed))
-                .abs()
+            .abs()
                 < 1e-4,
             "and the solid cast must have run the whole tick's travel: a shorter \
              distance means it found something solid on the way, at {speed} m/s: {:?}",
@@ -506,7 +506,7 @@ fn accept_t499_a_spawn_tick_crossing_of_a_world_volume_reaches_the_consumer() {
          crossing against a solid stop on the same tick"
     );
     assert_eq!(
-        crossings(&fixture).duplicates() as u64,
+        crossings(&fixture).duplicates(),
         TICKS - 1,
         "the record is re-read on every later tick of the frame and the pair ledger is \
          what refuses the repeats, so {TICKS} ticks of flight must produce one \
@@ -535,11 +535,11 @@ fn accept_t499_the_crossing_distance_is_the_spawn_hole_offset_at_every_speed() {
             .passed_distance_m
             .unwrap_or_else(|| panic!("the spawn tick recorded no crossing at {speed} m/s"));
         assert!(
-        (crossed_at / travel_m(speed) - SPAWN_IN_HOLE_TICKS).abs() < 1e-4,
-        "at {speed} m/s the crossing must land {SPAWN_IN_HOLE_TICKS} of a tick's \
+            (crossed_at / travel_m(speed) - SPAWN_IN_HOLE_TICKS).abs() < 1e-4,
+            "at {speed} m/s the crossing must land {SPAWN_IN_HOLE_TICKS} of a tick's \
          travel in, and it landed {crossed_at} m of {} m",
-        travel_m(speed)
-    );
+            travel_m(speed)
+        );
         assert!(
             crossed_at < travel_m(speed),
             "and strictly inside the tick's travel, or the body had not reached the \
@@ -574,7 +574,7 @@ fn accept_t499_solid_world_geometry_still_clamps_a_spawn() {
     assert!(
         (event.distance_m.expect("a clamp measures a distance")
             - SPAWN_IN_HOLE_TICKS * travel_m(DWELL_SPEED_M_S))
-            .abs()
+        .abs()
             < 1e-4,
         "at the cast's own time of impact, {SPAWN_IN_HOLE_TICKS} ticks of travel in: {:?}",
         event.distance_m
