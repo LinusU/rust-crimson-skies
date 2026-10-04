@@ -68,9 +68,11 @@ not in the other.
   `OBJECTIVE_SPELLING_NEEDLE` search rule, and the two bounded doc comments on
   `RetailObjectiveRow::target_kinds` /
   `RetailObjectiveCensus::missions_without_targets` below.
-* `crates/cs_app/tests/accept_f39_e3_scope_objective_census.rs` (new): 5 tests,
-  prefix `accept_f39_e3_` (3 unit + 2 retail).
-* `crates/cs_app/tests/evidence_report_f39_e3.rs` (new): the evidence harness.
+* `crates/cs_app/tests/accept_f39_e3_scope_objective_census.rs` (new): 6 tests,
+  prefix `accept_f39_e3_` (4 unit + 2 retail).
+* `crates/cs_app/tests/evidence_report_f39_e3.rs` (new): the evidence harness,
+  plus two synthetic tests that pin the report's measured numbers in their own
+  clauses.
 * `docs/findings/2026-10-03-f39-d-branching-optional-and-failure-validation.md`:
   unknown #5 gains a supersession pointer (one paragraph).
 * Wiring only: none — every edited file is an owner path.
@@ -227,7 +229,7 @@ for `c1c` minus `other_target`, which that record does not carry.
 
 ## Test inventory (`accept_f39_e3_*`)
 
-`crates/cs_app/tests/accept_f39_e3_scope_objective_census.rs` (3 unit + 2 retail)
+`crates/cs_app/tests/accept_f39_e3_scope_objective_census.rs` (4 unit + 2 retail)
 and `crates/cs_content/src/catalog/reader_dirs.rs` (2 unit):
 
 | Test | Covers |
@@ -235,6 +237,7 @@ and `crates/cs_content/src/catalog/reader_dirs.rs` (2 unit):
 | `accept_f39_e3_an_installation_scope_reader_is_decided_by_its_own_members` | the one scope predicate: both roles, the per-mission-member exclusion, `mis_anim.zbd`, undecided sets |
 | `accept_f39_e3_the_scope_predicate_is_the_one_the_campaign_walk_uses` | the campaign walk and a direct caller reach the same role |
 | `accept_f39_e3_a_scope_member_measures_blocks_targets_and_every_spelling` | `measure_scope_member` on hand-built documents: blocks by F39-D's reader, target records by member name only, spelling inventory whole (nested, values included), key inventory a field-name inventory |
+| `accept_f39_e3_a_walk_that_stops_early_is_refused_not_published_as_empty` | a document nested past the walk bound reports `truncated_nodes` instead of a partial inventory read as complete — the precondition of the census's `WalkTruncated` refusal |
 | `accept_f39_e3_a_reader_carrying_an_objective_record_is_never_a_scope_reader` | the rule that keeps the two denominators disjoint, and that neither scope role is launchable |
 | `accept_f39_e3_the_census_refuses_an_installation_it_cannot_read` | the census fails instead of reporting an empty denominator |
 | `accept_f39_e3_installation_scope_readers_declare_no_objective_blocks` (retail) | the whole measurement: 9 archives, 612/381 members, 0 blocks, the complete 4-spelling inventory and its 895-occurrence reconciliation, the c1c target records and labels, the dialog members' absence from mission readers, 53 + 9 = 62 |
@@ -304,6 +307,47 @@ fast path; the retail assertions depend on the same three rules.
    *spelling* inventory, not by the key inventory.
 6. **The compiled program behind any of this** is still undecoded (F13-B/C,
    F38). No opcode was read.
+
+## Review 2026-10-04
+
+The submitted tree measured everything it claims, but review found the
+**committed evidence report** misstating the measurement in its `review.method`
+prose, and two census completeness guards worth hardening. All three fixes are
+code and report only: **no measured number changed** — the defect was in the
+rendering of the numbers, never in the reading of them.
+
+* **`review.method` attached every right number to the wrong claim.**
+  `review_method` interpolated its twelve values **positionally** into a long
+  template, and `rustc` accepted the transposition silently: the committed
+  report read "the 612 scope archives declare 381 members (612 distinct
+  names)", "53 target records in 5 of the scope archives (1)", put the
+  **target-label** list where the objective-**spelling** inventory belongs and
+  the spelling list inside an unrelated clause. Every number came from the
+  right call, and the schema passed anyway — no validator can see that failure.
+  The renderer now reads the numbers into `MethodFacts` and binds every one as
+  a **named** argument, and two synthetic tests pin each count inside the
+  clause that says what it counts
+  (`evidence_report_f39_e3_method_prose_carries_each_measured_number_in_its_own_clause`,
+  `evidence_report_f39_e3_a_blank_target_label_still_renders_as_a_label` —
+  `zbd/c1c` record 3's `help_label` is a single space, which an unbracketed
+  join rendered as nothing at all). `docs/findings/evidence/F39-E3.json` was
+  regenerated on the fixed tree.
+* **The walk bound is now measured, not assumed.** Both inventories were
+  already depth-bounded — as a stack backstop — but a walk that stopped early
+  would have published a partial inventory as a complete search list, the one
+  failure this census cannot survive. `MeasuredScopeMember` now reports
+  `truncated_nodes`, the bound moved to 65 (one step past the decoder's own
+  `MAX_ZRD_DEPTH`, so no decoded document can reach it), and the census turns a
+  non-zero count into `ScopeObjectiveCensusError::WalkTruncated`.
+  `accept_f39_e3_a_walk_that_stops_early_is_refused_not_published_as_empty`
+  pins the mechanism the refusal reads.
+* **The scope label is derived, not written down.** `scope_label` returned
+  `"zbd"` for every archive; it now takes the root from the archive's own key,
+  so a `zrdr.zbd` under another root can never borrow the shared reader's
+  name.
+
+The acceptance selection now discovers **8** `accept_f39_e3_` tests; the two
+prose-pinning tests are synthetic, unprefixed, and run in CI.
 
 ## Commands
 
