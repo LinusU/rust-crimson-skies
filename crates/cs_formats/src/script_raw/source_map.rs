@@ -142,7 +142,12 @@ pub fn map_sites(scan: &UiProgramScan, bytes: &[u8]) -> Result<Vec<MappedSite>, 
         if site.span.end() > bytes.len() as u64 {
             return Err(outside);
         }
-        let (line, column) = line_column(bytes, site.span.offset).ok_or(outside)?;
+        // The span is inside the program now, so `line_column` can only fail
+        // because a line or column number no longer fits a `u32`. That is the
+        // program being too large to address, not a span outside it, and the
+        // diagnostic says which of the two happened.
+        let (line, column) = line_column(bytes, site.span.offset)
+            .ok_or(SourceMapError::ProgramTooLarge { len: bytes.len() })?;
         out.push(MappedSite {
             site: site.clone(),
             origin: SiteOrigin {

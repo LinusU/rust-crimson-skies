@@ -42,10 +42,13 @@ indexing out of range.
   `BindingError` paired with the origin a `SourceMap` holds for its
   `(objective, call)`. A call with no mapped origin is reported **without** one,
   never with an invented one. The map is bounded and refuses a key mapped twice.
-- **Consumer, coverage.** `audit_sites(table, rows)` judges **every site**:
-  `bound`, `refused` (family measured, meaning not), `no_native_id`, `no_family`,
-  `arity_mismatch`, `shape_mismatch`, `unknown_shape_code`. `campaign_ready` is
-  true only for a non-empty audit with every site bound (AC04, per site).
+- **Consumer, coverage.** `audit_sites(table, rows, unjudged_heads)` judges
+  **every site**: `bound`, `refused` (family measured, meaning not),
+  `no_native_id`, `no_family`, `arity_mismatch`, `shape_mismatch`,
+  `unknown_shape_code`, and it carries the call-shaped heads it cannot judge, so
+  the report covers the whole corpus instead of the measured part of it.
+  `campaign_ready` is true only for a non-empty audit with every site bound and
+  nothing unjudged (AC04, per site).
 - `cs_script` still depends on `cs_types` only; the producer's types cross as
   primitives (`SiteOrigin`, `SiteRow` with `ArgShape::code()` shape codes), as in
   F38-B. Nothing was added to `cs_content`, for the reason F38-B recorded.
@@ -63,16 +66,19 @@ Through production readers over `GOSDATA/ASSETS/crimson.rof`:
 | sites in a family whose own sites disagree, refused by name (`no_family`) | **994** |
 | `shape_mismatch` / `arity_mismatch` against a valid family | **0 / 0** |
 | sites **bound** | **0** |
+| call-shaped heads outside the two forms, counted as **unjudged** | **3188** |
 | `campaign_ready` | **false** |
 
 Every origin is inside its member, in source order, and starts with the form's
-head (`callback` or `mail`).
+head (`callback` or `mail`). The audit therefore accounts for the whole corpus:
+1812 judged sites plus 3188 unjudged heads, nothing silently absent.
 
 ## What this does not establish (unresolved, not removed)
 
 1. **No site is bound.** No original observation states what any dispatch value
    does, so nothing lowers and `SiteVerdict::Bound` is exercised by no retail
-   site. Resolving task: F38-D / a measured meaning.
+   site. `campaign_ready` is therefore never observable `true` today, in either
+   direction. Resolving task: F38-D / a measured meaning.
 2. **No runtime event can be traced yet**, because no measured program lowers.
    The source map is exercised through `lower_program_located` on authored
    programs; tracing a *runtime* event to its origin needs a lowering and is
@@ -80,13 +86,20 @@ head (`callback` or `mail`).
 3. **These are UI script programs, not the mission language.** Mission programs
    are not decoded (F13-D), so no mission instruction or native call is located
    or covered here. "Instruction coverage" in this stage is coverage of the two
-   measured dispatch forms; the 3188 other call-shaped heads remain counted only
-   (F38-B).
+   measured dispatch forms plus the counted, unjudged remainder (3188, F38-B);
+   the remainder is *reported* as unjudged, never folded into a covered verdict.
 4. The 994 `no_family` sites are real disagreements inside the corpus (arity or
    argument shape); this stage makes them *located*, it does not resolve them.
 5. The crossing from scan to `SiteRow` is written out in the tests and harness,
    as F38-B's crossing was, because no crate may depend on both producer and
    consumer; a production home for it is outside this task's owner paths.
+6. The stage text asks for "teardown/retry". Neither applies to this slice and
+   neither is claimed: a source map and an audit hold no resource, hold no
+   handle on the installation and are pure functions of their arguments, so a
+   retry is a repeated call with the same result and a teardown is a drop. The
+   error propagation the stage does ask for is exercised: `map_sites` and
+   `audit_sites` return errors instead of partial results, and
+   `lower_program_located` returns every refusal rather than the first.
 
 ## Tests (`accept_f38_c_*`)
 
@@ -94,6 +107,42 @@ Synthetic (authored text in the measured dialect): source map names member,
 offset, line and column; a scan that disagrees with its bytes is refused; bad
 argument types and ranges report the origin (**AC03**); a call without a mapped
 origin gets none; the map is bounded; the audit judges every site and refuses
-`campaign_ready`; an empty audit and an unbound table are never ready; an
-unknown shape code and an oversized audit are refused. Retail: all 1812 sites
-located and audited with the counts above.
+`campaign_ready`; an empty audit, an unbound table and an audit with unjudged
+heads are never ready; an unknown shape code and an oversized audit are refused.
+Retail: all 1812 sites located and audited with the counts above, 3188 unjudged
+heads reported.
+
+## Review (bunny-alpha-2, Rally #158, fresh context, independent of the
+implementer)
+
+Findings fixed in the branch rather than handed back:
+
+1. **The coverage report was a silent subset.** `audit_sites` judged the two
+   measured dispatch forms and nothing said that 3188 measured call-shaped heads
+   were outside it, so `campaign_ready` could in principle have gone true over a
+   corpus it never read. `audit_sites` now *takes* the unjudged-head count (the
+   corpus's `other_call_sites`), `SiteAudit` reports it and `campaign_ready`
+   refuses while it is non-zero. The count is pinned in the retail test and in
+   the evidence artifact's `totals`, so the limitation is machine-readable
+   instead of prose-only.
+2. **`map_sites` reported the wrong cause.** A program whose line or column
+   number no longer fits a `u32` was reported as `span_outside_program`, which
+   blames the scan/bytes disagreement it cannot have. It is now
+   `program_too_large`.
+3. **`SourceMap` did not say what its key means.** `(objective symbol, call
+   index)` is program-scoped (`SymbolId` identifies a variable or objective
+   *inside one program*), so one map reused across two programs would report
+   another program's text. The type now says so, because nothing can detect it.
+4. **`LocatedError` had no `code()`** while every other error type in this
+   crate family does; added and asserted in the tests.
+5. **The evidence harness carried two stale F38-B references**: a comment
+   describing `host-call-corpus.json` with `bound_families` /
+   `coverage_complete` (this harness writes `source-map-audit.json` with `bound`
+   / `campaign_ready`) and a panic message pointing at
+   `evidence_report_f38_b.rs`. Both corrected.
+
+Verified by six mutation probes (each fails at least one `accept_f38_c_` test):
+`SourceMap::origin_of` returning `None`, `judge` skipping the shape comparison,
+`judge` skipping the arity comparison, `map_sites` dropping its span bound,
+`line_column` reporting line 1, and `audit_sites` dropping one site (the retail
+test catches that one, 1811 vs 1812).

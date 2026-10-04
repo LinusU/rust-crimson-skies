@@ -15,10 +15,12 @@
 //! * [`audit_sites`] judges **every measured site** — not every family — against
 //!   an [`ObservedBindingTable`]: bound, refused for a named reason, or a
 //!   located disagreement with its own family (arity, argument shape, an
-//!   unknown shape code, a dispatch expression that names no id). The
-//!   [`SiteAudit`] is the instruction-coverage report: `campaign_ready` only
-//!   when the audit is non-empty and every site is bound, so one unimplemented
-//!   or malformed site refuses it (AC04's rule, per site).
+//!   unknown shape code, a dispatch expression that names no id). It also
+//!   carries the call-shaped heads the corpus measured that it cannot judge, so
+//!   the [`SiteAudit`] is a whole-corpus report and not a silent subset. The
+//!   audit is the instruction-coverage report: `campaign_ready` only when the
+//!   audit is non-empty, every site is bound and nothing is left unjudged, so
+//!   one unimplemented or malformed site refuses it (AC04's rule, per site).
 //!
 //! `cs_script` may depend on `cs_types` only, so the producer's types
 //! (`cs_formats::script_raw::source_map`) cross as primitives: [`SiteOrigin`]
@@ -74,6 +76,17 @@ pub enum LocatedError {
     DuplicateKey { objective: SymbolId, call: usize },
 }
 
+impl LocatedError {
+    /// Stable short code for reports.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::TooMany { .. } => "too_many",
+            Self::MemberTooLong { .. } => "member_too_long",
+            Self::DuplicateKey { .. } => "duplicate_key",
+        }
+    }
+}
+
 impl fmt::Display for LocatedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -94,6 +107,14 @@ impl fmt::Display for LocatedError {
 impl std::error::Error for LocatedError {}
 
 /// Maps a lowered call to its origin.
+///
+/// One map belongs to **exactly one program**: its key is
+/// `(objective symbol, call index)` and a [`SymbolId`] identifies a variable or
+/// objective *inside one program*
+/// ([`crate::ir::SymbolId`]), so two programs may both spell `objective#2 call
+/// 0`. A caller lowering several programs builds a map per program; reusing one
+/// would report another program's text as the origin, which is the one mistake
+/// this type cannot detect.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SourceMap {
     origins: BTreeMap<(SymbolId, usize), SiteOrigin>,
@@ -290,9 +311,17 @@ impl fmt::Display for LocatedSite {
 }
 
 /// The per-site instruction-coverage report.
+///
+/// `sites` is every measured dispatch site and `unjudged_heads` is every
+/// call-shaped head the producer measured that this report does **not** judge, so
+/// the two together account for the whole corpus instead of the part of it that
+/// happens to be measured.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SiteAudit {
     pub sites: Vec<LocatedSite>,
+    /// Call-shaped heads outside the two measured dispatch forms: measured,
+    /// counted and **not judged**, because no family describes them.
+    pub unjudged_heads: u32,
 }
 
 impl SiteAudit {
@@ -314,10 +343,17 @@ impl SiteAudit {
         self.sites.iter().filter(move |s| s.verdict.code() == code)
     }
 
-    /// Whether every audited site is bound. An audit of nothing refuses: it
-    /// would be ready only because nothing was looked at.
+    /// Whether the whole corpus is covered: a non-empty audit whose every site
+    /// is bound and which has nothing left unjudged.
+    ///
+    /// All three refusals are load-bearing. An audit of nothing refuses: it
+    /// would be ready only because nothing was looked at. A single unbound or
+    /// malformed site refuses (AC04's rule, per site). A single unjudged
+    /// call-shaped head refuses: the corpus contains a call this report says
+    /// nothing about, so calling it covered would claim coverage of text that
+    /// was never read.
     pub fn campaign_ready(&self) -> bool {
-        !self.sites.is_empty() && self.bound() == self.sites.len()
+        !self.sites.is_empty() && self.bound() == self.sites.len() && self.unjudged_heads == 0
     }
 
     fn count(&self, f: impl Fn(&SiteVerdict) -> bool) -> usize {
@@ -327,6 +363,11 @@ impl SiteAudit {
 
 /// Judges every site against `table`.
 ///
+/// `unjudged_heads` is the number of call-shaped heads the producer measured
+/// outside the two dispatch forms (the corpus's `other_call_sites`). It is a
+/// required argument rather than an optional fact so that no caller can report
+/// coverage without stating what it left out.
+///
 /// # Errors
 ///
 /// [`LocatedError::TooMany`] / [`LocatedError::MemberTooLong`] for input over a
@@ -335,6 +376,7 @@ impl SiteAudit {
 pub fn audit_sites(
     table: &ObservedBindingTable,
     rows: &[SiteRow],
+    unjudged_heads: u32,
 ) -> Result<SiteAudit, LocatedError> {
     if rows.len() > MAX_AUDIT_SITES {
         return Err(LocatedError::TooMany {
@@ -354,7 +396,10 @@ pub fn audit_sites(
             verdict: judge(table, row),
         });
     }
-    Ok(SiteAudit { sites })
+    Ok(SiteAudit {
+        sites,
+        unjudged_heads,
+    })
 }
 
 fn judge(table: &ObservedBindingTable, row: &SiteRow) -> SiteVerdict {

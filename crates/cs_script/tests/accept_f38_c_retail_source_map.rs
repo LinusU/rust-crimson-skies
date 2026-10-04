@@ -8,8 +8,10 @@
 //! (`cs_formats::rof::read_tree` / `read_member` over
 //! `GOSDATA/ASSETS/crimson.rof`), scans and maps every program with the
 //! production scanner and source map, crosses the rows into `cs_script` and
-//! audits every site. Without `CS_GAME_DIR` it **fails loudly**; it is
-//! `#[ignore = "requires CS_GAME_DIR"]` so CI skips it.
+//! audits every site — including the count of call-shaped heads the corpus
+//! spells outside the two measured dispatch forms, which no family judges and
+//! which therefore keep the gate closed. Without `CS_GAME_DIR` it **fails
+//! loudly**; it is `#[ignore = "requires CS_GAME_DIR"]` so CI skips it.
 //!
 //! Nothing from the installation is written to the repository: only counts,
 //! offsets, lines and columns are asserted.
@@ -190,8 +192,12 @@ fn accept_f38_c_retail_every_site_is_located_and_audited() {
         "every measured site is audited"
     );
 
-    let audit = audit_sites(&table, &rows).expect("the audit is within its bounds");
+    let audit = audit_sites(&table, &rows, corpus.other_call_sites()).expect("within its bounds");
     assert_eq!(audit.sites.len(), rows.len());
+    // The report accounts for the whole corpus: every measured site is judged and
+    // every call-shaped head outside the two forms is counted as unjudged, so
+    // nothing is silently absent from the coverage report.
+    assert_eq!(audit.unjudged_heads, 3188, "the corpus's other call heads");
     assert_eq!(audit.bound(), 0, "no family has a measured meaning");
     assert_eq!(
         audit.bound() + audit.refused() + audit.malformed(),

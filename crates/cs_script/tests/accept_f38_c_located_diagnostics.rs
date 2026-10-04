@@ -280,21 +280,26 @@ fn accept_f38_c_the_source_map_is_bounded_and_refuses_a_key_mapped_twice() {
     };
     let mut map = SourceMap::new();
     map.insert(SymbolId(1), 0, origin.clone()).unwrap();
+    let error = map
+        .insert(SymbolId(1), 0, origin.clone())
+        .expect_err("a key mapped twice");
     assert_eq!(
-        map.insert(SymbolId(1), 0, origin.clone()),
-        Err(LocatedError::DuplicateKey {
+        error,
+        LocatedError::DuplicateKey {
             objective: SymbolId(1),
             call: 0
-        })
+        }
     );
+    assert_eq!(error.code(), "duplicate_key");
     let long = SiteOrigin {
         member: "x".repeat(10_000),
         ..origin
     };
-    assert!(matches!(
-        map.insert(SymbolId(1), 1, long),
-        Err(LocatedError::MemberTooLong { .. })
-    ));
+    let error = map
+        .insert(SymbolId(1), 1, long)
+        .expect_err("over the member bound");
+    assert!(matches!(error, LocatedError::MemberTooLong { .. }));
+    assert_eq!(error.code(), "member_too_long");
     assert_eq!(map.len(), 1);
 }
 
@@ -305,7 +310,10 @@ fn accept_f38_c_the_audit_judges_every_site_and_refuses_campaign_ready() {
     let table = table_of(MEASURED);
     let rows = site_rows("A.SCRIPT", AUDITED);
     assert_eq!(rows.len(), 6);
-    let audit = audit_sites(&table, &rows).expect("audits");
+    // The synthetic program spells no other call-shaped head, so nothing is
+    // left unjudged here.
+    let audit = audit_sites(&table, &rows, 0).expect("audits");
+    assert_eq!(audit.unjudged_heads, 0);
     let codes: Vec<&str> = audit.sites.iter().map(|s| s.verdict.code()).collect();
     assert_eq!(
         codes,
@@ -347,12 +355,18 @@ fn accept_f38_c_an_empty_audit_and_an_unbound_table_are_never_ready() {
     // (`SiteVerdict::Bound` is reachable only through a family `classify` binds;
     // none is, until a meaning is measured. The finding says so.)
     assert!(table.registry().is_empty());
-    let audit = audit_sites(&table, &site_rows("B.SCRIPT", bytes)).unwrap();
+    let audit = audit_sites(&table, &site_rows("B.SCRIPT", bytes), 0).unwrap();
     assert_eq!((audit.bound(), audit.refused()), (0, 1));
     assert!(!audit.campaign_ready());
     // An empty audit is not ready: it would be ready only because nothing was
     // looked at.
-    assert!(!audit_sites(&table, &[]).unwrap().campaign_ready());
+    assert!(!audit_sites(&table, &[], 0).unwrap().campaign_ready());
+    // A call-shaped head the audit cannot judge is reported and keeps the gate
+    // closed, so a corpus that spells a call nothing judged is never "covered".
+    let with_unjudged = audit_sites(&table, &site_rows("B.SCRIPT", bytes), 3).unwrap();
+    assert_eq!(with_unjudged.unjudged_heads, 3);
+    assert_eq!(with_unjudged.sites.len(), audit.sites.len());
+    assert!(!with_unjudged.campaign_ready());
 }
 
 #[test]
@@ -360,7 +374,7 @@ fn accept_f38_c_an_unknown_shape_code_and_an_oversized_audit_are_refused_not_pan
     let table = table_of(MEASURED);
     let mut rows = site_rows("A.SCRIPT", b"main\n{\ncallback($$A$$, 100, 1, 2)\n}\n");
     rows[0].arg_shape_codes[1] = 250;
-    let audit = audit_sites(&table, &rows).unwrap();
+    let audit = audit_sites(&table, &rows, 0).unwrap();
     assert_eq!(
         audit.sites[0].verdict,
         SiteVerdict::UnknownShapeCode {
@@ -372,14 +386,12 @@ fn accept_f38_c_an_unknown_shape_code_and_an_oversized_audit_are_refused_not_pan
 
     let one = rows.remove(0);
     let many = vec![one.clone(); cs_script::bindings::located::MAX_AUDIT_SITES + 1];
-    assert!(matches!(
-        audit_sites(&table, &many),
-        Err(LocatedError::TooMany { .. })
-    ));
+    let error = audit_sites(&table, &many, 0).expect_err("over the bound");
+    assert!(matches!(error, LocatedError::TooMany { .. }));
+    assert_eq!(error.code(), "too_many");
     let mut long = one;
     long.origin.member = "m".repeat(cs_script::bindings::located::MAX_MEMBER_BYTES + 1);
-    assert!(matches!(
-        audit_sites(&table, &[long]),
-        Err(LocatedError::MemberTooLong { .. })
-    ));
+    let error = audit_sites(&table, &[long], 0).expect_err("over the member bound");
+    assert!(matches!(error, LocatedError::MemberTooLong { .. }));
+    assert_eq!(error.code(), "member_too_long");
 }
