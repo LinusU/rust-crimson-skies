@@ -124,7 +124,9 @@ pub enum CampaignError {
     },
     /// The grant would overflow the currency counter.
     CurrencyOverflow {
-        /// The currency before.
+        /// The currency the refused grant would have been added to — the
+        /// running balance for a grant refused part-way through a chain of
+        /// beats, not the balance that chain started from.
         before: u64,
         /// The attempted grant.
         delta: u64,
@@ -515,9 +517,15 @@ impl CampaignState {
             // `i64::MAX` minor units, and a signed accumulator would overflow
             // there — a panic in a debug build, a wrapped (wrong) sum in a
             // release one — instead of either paying exactly or refusing.
+            //
+            // `before` is the **running** balance, not the one the walk started
+            // from: the refused grant may be the second or later beat's, and
+            // "grant of N would overflow the balance M" has to be true of the
+            // grant that actually failed. Reporting the walk's starting balance
+            // instead would blame a grant that fits perfectly well.
             currency = currency.checked_add(edge.grant.currency).ok_or(
                 CampaignError::CurrencyOverflow {
-                    before: self.currency,
+                    before: currency,
                     delta: edge.grant.currency,
                 },
             )?;

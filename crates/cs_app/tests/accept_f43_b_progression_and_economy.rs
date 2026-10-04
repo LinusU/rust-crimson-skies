@@ -29,7 +29,8 @@
 //!   grant chain that would carry the balance past the currency type are all
 //!   declarations the schema accepts and the walk must not obey: nothing upstream
 //!   rejects them, and each one would otherwise hang the walk, crash it, or write
-//!   a wrong balance.
+//!   a wrong balance. A refusal must also *name what tripped it*: the balance a
+//!   chain had reached, not the one it started from.
 //! * **The economy draft.** The contract's purchase rule — validate
 //!   availability, money and the expected profile revision before writing, and
 //!   fail a conflicting revision without overwriting unrelated progression.
@@ -778,6 +779,97 @@ fn accept_f43_b_a_beat_grant_that_would_overflow_the_balance_is_refused() {
     );
     assert_eq!(state.currency(), u64::MAX, "the refusal moved the balance");
     assert_eq!(state.current(), &key("beat"), "the refusal moved the run");
+    assert_eq!(state.revision(), revision, "the refusal wrote a revision");
+}
+
+/// …and the refusal names the balance the grant **actually** met. In a chain the
+/// refused grant can be the second beat's or later, so reporting the balance the
+/// walk started from would blame a grant that fits perfectly well: a chain that
+/// leaves `5` minor units and whose second beat grants `10` reports "grant of 10
+/// would overflow the balance 0", which is false and leaves the importer no way
+/// to see what tripped it.
+#[test]
+fn accept_f43_b_an_overflowing_later_beat_names_the_running_balance_not_the_walks() {
+    // `m01 --Victory--> beat_a --Victory--> beat_b --Victory--> m02`, with
+    // `beat_a` granting all but 5 minor units and `beat_b` granting 10.
+    let mut draft = empty_draft(node("m01"));
+    draft.nodes.push(CampaignNode {
+        id: node("m01"),
+        kind: NodeKind::Mission {
+            mission: known(mission_content("m01")),
+        },
+        edges: vec![CampaignEdge {
+            on: EdgeCondition::Victory,
+            to: node("beat_a"),
+            grant: None,
+            provenance: designed(),
+        }],
+        provenance: designed(),
+    });
+    for (id, to, grant) in [("beat_a", "beat_b", u64::MAX - 5), ("beat_b", "m02", 10)] {
+        draft.nodes.push(CampaignNode {
+            id: node(id),
+            kind: NodeKind::Interlude {
+                asset: unknown_asset("unsurveyed"),
+            },
+            edges: vec![CampaignEdge {
+                on: EdgeCondition::Victory,
+                to: node(to),
+                grant: Some(RewardSpec {
+                    currency: known(grant),
+                    unlocks: Vec::new(),
+                }),
+                provenance: designed(),
+            }],
+            provenance: designed(),
+        });
+    }
+    draft.nodes.push(CampaignNode {
+        id: node("m02"),
+        kind: NodeKind::Mission {
+            mission: known(mission_content("m02")),
+        },
+        edges: vec![CampaignEdge {
+            on: EdgeCondition::Victory,
+            to: node("ending"),
+            grant: None,
+            provenance: designed(),
+        }],
+        provenance: designed(),
+    });
+    draft.nodes.push(CampaignNode {
+        id: node("ending"),
+        kind: NodeKind::Ending,
+        edges: Vec::new(),
+        provenance: designed(),
+    });
+
+    let graph = lower_campaign(&CampaignDefinition::try_new(draft).expect("a valid chain"))
+        .expect("it lowers");
+    let mut state = CampaignState::begin(
+        profile(),
+        CampaignRunId::new(RUN).expect("valid run id"),
+        DifficultyId::new("standard").expect("valid difficulty"),
+        &graph,
+    );
+    state
+        .apply_outcome(&graph, &outcome(1, 10, 1, "m01", Outcome::Succeeded, 100))
+        .expect("m01 applies");
+    assert_eq!(state.current(), &key("beat_a"));
+    let revision = state.revision();
+
+    // `before` is the balance `beat_b`'s grant would have been added to — what
+    // `beat_a`'s grant left behind — not the 0 the walk started from.
+    assert_eq!(
+        state.advance_interludes(&graph),
+        Err(CampaignError::CurrencyOverflow {
+            before: u64::MAX - 5,
+            delta: 10,
+        }),
+        "the refusal named a balance the refused grant would have fitted into"
+    );
+    assert_eq!(state.currency(), 0, "the refusal paid the first beat");
+    assert_eq!(state.current(), &key("beat_a"), "the refusal moved the run");
     assert_eq!(state.revision(), revision, "the refusal wrote a revision");
 }
 

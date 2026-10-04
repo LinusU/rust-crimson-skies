@@ -93,6 +93,25 @@ Two ordering decisions are load-bearing and are pinned by tests:
 adds the item to the owned set, so a draft replayed after a crash is refused
 with `AlreadyOwned` instead of charging twice (spec F43 behavior 2).
 
+Two limits of this transaction are design consequences, not measured rules, and
+neither is checked anywhere in the engine:
+
+* **The price is whatever the draft says.** The declared schema has no price
+  field — `RosterEntry` is `{ item, available_from, provenance }` — so the
+  price a draft names is the only price the engine ever sees. `purchase`
+  validates that the balance covers the price it was *given*, never that the
+  price is what the item costs; a caller that passes `1` for anything it can
+  afford buys it. Closing this needs a declared price (a content-schema change,
+  and `cs_sim` may not depend on `cs_content` anyway — `docs/01-ARCHITECTURE.md`
+  allows `cs_types` and `cs_script` only), so it is a later stage's decision,
+  not a check this one could add.
+* **A granted item and a bought item are the same thing afterwards.** Both write
+  `CampaignState::unlocks`, so a reward-granted item reads as `AlreadyOwned` and
+  cannot be bought, and a bought item is indistinguishable from a granted one
+  (no ledger of what was paid — see the sell follow-up #621). That single
+  ownership set is what makes a replayed draft refuse itself without a second
+  ledger, so it is deliberate; it is still a modelling choice of this stage.
+
 ## The minimum scenario (AC02)
 
 `accept_f43_b_a_worse_replay_keeps_best_and_records_latest`. The declared fixture
@@ -117,7 +136,7 @@ F43-A AC01 behavior this stage must not regress.
 
 ## Test inventory (`accept_f43_b_*`)
 
-All thirteen are in
+All fourteen are in
 `crates/cs_app/tests/accept_f43_b_progression_and_economy.rs` and all run in CI
 (no `retail` needed, no `#[ignore]`):
 
@@ -131,6 +150,7 @@ All thirteen are in
 | `accept_f43_b_a_declared_beat_cycle_is_refused_not_walked_forever` | `InterludeLoop` for a self-looped beat and for a two-beat cycle (review fix 1) |
 | `accept_f43_b_a_beat_chain_granting_more_than_i64_max_pays_exactly` | the currency accumulator's width (review fix 2) |
 | `accept_f43_b_a_beat_grant_that_would_overflow_the_balance_is_refused` | `CurrencyOverflow` from a beat grant, and nothing written |
+| `accept_f43_b_an_overflowing_later_beat_names_the_running_balance_not_the_walks` | the refusal names the balance the failing grant actually met (review fix 4) |
 | `accept_f43_b_a_purchase_is_validated_then_written_once` | the purchase rule and its idempotence |
 | `accept_f43_b_every_purchase_refusal_leaves_the_profile_untouched` | `ItemUnavailable` / `InsufficientFunds` / `StaleRevision` and the bit-identical invariant |
 | `accept_f43_b_purchase_refusals_report_the_structural_faults_before_staleness` | the refusal ordering the contract's "fail and refresh the view" depends on |
@@ -208,6 +228,31 @@ transactions, every refusal leaving the profile bit-identical, and the AC02 test
 being the only one that catches a lowered `best_score`. `advance_interludes`
 being unwired is unchanged and is still F43-C's job; nothing on this branch
 depends on the walk happening implicitly.
+
+**4. A multi-beat chain's overflow refusal named the wrong balance (defect,
+fixed, second review pass).** `advance_interludes` reported
+`CurrencyOverflow { before: self.currency }` — the balance the *walk* started
+from — so the refused grant was blamed against a balance it might have fitted
+into easily. Measured on a chain `m01 -> beat_a -> beat_b -> m02` where
+`beat_a` grants `u64::MAX - 5` and `beat_b` grants `10`: the refusal read
+`before: 0, delta: 10`, i.e. "grant of 10 would overflow the balance 0", which
+is false and tells an importer nothing about what tripped the walk. The field
+now carries the **running** balance, the one the refused grant would have been
+added to, which also matches the variant's own doc ("the currency before").
+Measured after the fix: the same chain reports `before: u64::MAX - 5,
+delta: 10`, nothing is written, and the run stays on `beat_a`.
+
+**Second review pass, and its limits.** That pass re-read the whole diff, the
+sheet, the contract and the neighbouring modules with fresh context, and
+confirmed the CI failure independently rather than taking the first pass's word
+for it (same `ld` SIGBUS on the `Doc-tests cs_app` link, every earlier suite
+green, main green at the same time). It found nothing further in the code. It
+did confirm two things about the surrounding design, recorded above and in the
+follow-ups rather than changed here: `cs_sim` may depend only on `cs_types` and
+`cs_script` (`docs/01-ARCHITECTURE.md`), so the campaign economy's bare `u64`
+minor units cannot become `cs_content::construction::MoneyMinor` without a
+layering decision, and the sell follow-up (#621) and weight follow-up (#622)
+both need #175 on `main` before they can start.
 
 ## Recorded unknowns (not guessed — spec F43 behavior 4)
 
