@@ -3983,6 +3983,13 @@ impl DetachedVocabularySurface {
 /// segment starts with that family's stem, compared case-insensitively. The
 /// first family in [`DETACHED_SPELLING_STEMS`] wins, so the answer does not
 /// depend on iteration order.
+///
+/// Deliberately **not** [`DeclaredCountKind::names_spelling`]: that is F39-E4's
+/// rule over the five categories the original's records can declare, and it
+/// answers "which of the five does this name spell". This is the same rule shape
+/// over a different list — the family a *detached* category could be declared
+/// under — so the two cannot disagree about a name and neither can silently grow
+/// into the other's list.
 #[must_use]
 pub fn detached_spelling_family(name: &str) -> Option<&'static str> {
     for segment in name.split('_').filter(|segment| !segment.is_empty()) {

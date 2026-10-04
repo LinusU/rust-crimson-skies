@@ -151,6 +151,13 @@ actor spellings (`healthy`, `healthy_part`, `healthy_balloon`, `panels`,
 `reng11`, `gasbag3`, `piratezep`, `cargozep2`, `balmoral_1`, `sprucegoose`)
 match nothing.
 
+This is deliberately **not** `DeclaredCountKind::names_spelling`, which landed
+with F39-E4 and is the same rule shape over a different list: E4's answers
+"which of the **five** declared categories does this name spell", this one
+answers "which family could a **detached** category be declared under". Keeping
+them apart means neither can silently grow into the other's vocabulary, and a
+name cannot be classified two ways.
+
 ### The five categories, for the sixth's sake
 
 | family stem | counted conditions | objective kinds | block declarations |
