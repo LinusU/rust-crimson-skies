@@ -599,6 +599,7 @@ pub mod objectives;
 pub mod ordnance;
 pub mod origin;
 pub mod physics;
+pub mod playtest;
 pub mod profile;
 pub mod render;
 pub mod roster;
