@@ -1860,9 +1860,9 @@ fn accept_m01_lc_anim_carriers_retail_c1c_lists_binds_and_reports_every_member()
     let m01 = survey
         .carrier("zbd/c1c/m01/mis_anim.zbd")
         .expect("the c1c M01 carrier has a row");
-    for (carrier, members, references, bound) in [
-        (camera, 134_usize, 2_usize, 2_usize),
-        (m01, 91, 22, 21),
+    for (carrier, members, references, bound, unreferenced) in [
+        (camera, 134_usize, 2_usize, 2_usize, 132_usize),
+        (m01, 91, 22, 21, 70),
         (
             survey
                 .carrier("zbd/c1c/ia1/mis_anim.zbd")
@@ -1870,12 +1870,14 @@ fn accept_m01_lc_anim_carriers_retail_c1c_lists_binds_and_reports_every_member()
             9,
             8,
             8,
+            1,
         ),
         (
             survey
                 .carrier("zbd/c1c/mp1/mis_anim.zbd")
                 .expect("the c1c MP1 carrier has a row"),
             2,
+            1,
             1,
             1,
         ),
@@ -1886,6 +1888,7 @@ fn accept_m01_lc_anim_carriers_retail_c1c_lists_binds_and_reports_every_member()
             14,
             13,
             13,
+            1,
         ),
     ] {
         assert_eq!(carrier.members.len(), members, "{}", carrier.container_key);
@@ -1908,9 +1911,9 @@ fn accept_m01_lc_anim_carriers_retail_c1c_lists_binds_and_reports_every_member()
             carrier.container_key
         );
         assert_eq!(
-            carrier.members.len() - carrier.referenced_member_count(),
             carrier.unreferenced_member_count(),
-            "{}: every member row is accounted for",
+            unreferenced,
+            "{}: member rows no reference names are counted, not dropped",
             carrier.container_key
         );
         let payload = carrier.payload.as_ref().expect("the payload header read");
@@ -2017,6 +2020,25 @@ fn accept_m01_lc_anim_carriers_retail_c1c_lists_binds_and_reports_every_member()
         "every definition file every paired record names"
     );
     assert_eq!(bound, 731, "references that reached a member row");
+    let unreferenced: usize = survey
+        .carriers
+        .iter()
+        .map(|row| row.unreferenced_member_count())
+        .sum();
+    assert_eq!(unreferenced, 1865, "member rows no definition file names");
+    let c1c: Vec<&CarrierBinding> = survey
+        .carriers
+        .iter()
+        .filter(|row| row.container_key.starts_with(C1C))
+        .collect();
+    assert_eq!(c1c.len(), 5, "the c1c group and its four scopes");
+    assert_eq!(c1c.iter().map(|row| row.members.len()).sum::<usize>(), 250);
+    assert_eq!(
+        c1c.iter()
+            .map(|row| row.unreferenced_member_count())
+            .sum::<usize>(),
+        205
+    );
     let unresolved: Vec<(&str, &str)> = survey
         .unresolved_references()
         .map(|(key, entry)| (key, entry.raw.as_str()))
@@ -2047,4 +2069,684 @@ fn accept_m01_lc_anim_carriers_retail_c1c_lists_binds_and_reports_every_member()
         C1C.starts_with("zbd/"),
         "the group key is an installation-relative spelling"
     );
+}
+
+// ------------------- task #633: the evidence-report harness ------------------
+//
+// Not part of the acceptance suite: its name does not carry the task's prefix,
+// it fails loudly when its inputs are missing rather than passing vacuously,
+// and the task's selection must never pick it up. Run from the workspace root
+// after the acceptance suite, exactly as:
+//
+// 1. ```sh
+//    cargo test --workspace --locked -- accept_m01_lc_anim_carriers_ --include-ignored \
+//      2>&1 | tee private/evidence/M01-LC-ANIM-CARRIERS/cargo-test.log
+//    ```
+//    (record the pipeline's exit status — it is passed here as
+//    `CS_EVIDENCE_EXIT_CODE`.)
+// 2. ```sh
+//    CS_EVIDENCE_DIR=private/evidence/M01-LC-ANIM-CARRIERS \
+//    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+//    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_m01_lc_anim_carriers_ --include-ignored" \
+//    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
+//    CS_GAME_DIR=<original installation> \
+//      cargo test --locked -p cs_app --test accept_f20_d_validation -- \
+//        --ignored --exact evidence_report_m01_lc_anim_carriers_writes_the_acceptance_report
+//    ```
+// 3. ```sh
+//    python3 tools/validate_evidence.py \
+//      private/evidence/M01-LC-ANIM-CARRIERS/acceptance.json \
+//      --artifact-root private/evidence/M01-LC-ANIM-CARRIERS --require-pass
+//    ```
+// 4. Commit a copy of `acceptance.json` as
+//    `docs/findings/evidence/M01-LC-ANIM-CARRIERS.json`.
+//
+// `unknowns` holds *this task's* blockers, which is empty because the
+// acceptance run passed. The **product** state this task leaves open — the
+// animation records behind the payload header are not decoded, so the
+// `startanims.zrd` identities are unbound, and the payload header's own
+// unmeasured words are unmeasured — is written into `review.method` below, so it
+// travels in the machine-readable record and cannot be dropped to make a
+// validator green. The same state is in
+// `docs/findings/2026-10-04-m01-lc-anim-carriers.md`.
+
+/// The acceptance tests whose `retail` capability this report declares.
+const M01LC_CAPABILITY_TESTS: &[&str] =
+    &["accept_m01_lc_anim_carriers_retail_c1c_lists_binds_and_reports_every_member"];
+
+/// The synthetic half of the suite, which must be present beside the retail
+/// one.
+const M01LC_SYNTHETIC_TESTS: &[&str] = &[
+    "accept_m01_lc_anim_carriers_an_animation_container_is_not_a_reader_archive",
+    "accept_m01_lc_anim_carriers_the_index_lists_every_row_and_the_payload_header",
+    "accept_m01_lc_anim_carriers_a_nonzero_byte_after_a_path_is_reported_not_decoded",
+    "accept_m01_lc_anim_carriers_a_definition_file_binds_to_its_member_row",
+    "accept_m01_lc_anim_carriers_a_joined_animation_path_offers_every_root_in_order",
+    "accept_m01_lc_anim_carriers_a_reference_no_member_answers_is_reported_not_matched",
+    "accept_m01_lc_anim_carriers_startup_identities_are_listed_and_carry_their_open_reason",
+    "accept_m01_lc_anim_carriers_every_unreadable_input_is_a_named_refusal",
+];
+
+/// The task-test prefix this report is about.
+const M01LC_PREFIX: &str = "accept_m01_lc_anim_carriers_";
+
+/// The derived member/join census written beside the report and referenced by
+/// digest: keys, member paths, stamps, spans, payload header words, references
+/// and dispositions — never original content.
+const M01LC_CENSUS_ARTIFACT: &str = "anim-carriers.json";
+
+/// The product state this task leaves open, as it travels in this report.
+const M01LC_OPEN_STATE: &str = "OPEN, and not this task's blocker: (1) the animation records behind \
+     each carrier's payload header are NOT decoded (cs_formats::zbd::anim \
+     RECORDS_NOT_DECODED_REASON) — no source documents their layout, their inline sub-table sizes \
+     are underived, and their record-local pointers do not resolve inside the container, so a \
+     bound member is a definition file and not its animation records; (2) the 195 startanims.zrd \
+     identities over the 53 mission scopes are therefore read but unbound, and which carrier \
+     (mission or camera) an identity lives in is unmeasured; (3) the payload header's +12 +14 \
+     +16 +20 +32 +34 +40 words are measured values with no measured meaning, and the +10 word is \
+     an inference (a declared record count nothing can index by); (4) 8 of 739 definition-file \
+     references name no member, and whether the original resolved them — in particular M01's \
+     ..\\data\\common\\zrdr\\zeps\\wv_tailhook.zrd against the carrier's mission-rooted spelling — \
+     is UNMEASURED, since no original executable was run. Affected content: every mission-facing \
+     animation claim (VS-M01-RUNTIME #359, F20-D's family validation, M01-B).";
+
+#[test]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+fn evidence_report_m01_lc_anim_carriers_writes_the_acceptance_report() {
+    let evidence_dir = m01lc_workspace_path(&m01lc_env("CS_EVIDENCE_DIR"));
+    let candidate_tree = m01lc_env("CS_CANDIDATE_TREE");
+    let argv: Vec<String> = m01lc_env("CS_EVIDENCE_ARGV")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !argv.is_empty(),
+        "CS_EVIDENCE_ARGV must hold the acceptance command (space-separated)"
+    );
+    let exit_code: i32 = m01lc_env("CS_EVIDENCE_EXIT_CODE")
+        .parse()
+        .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+    let game_dir = PathBuf::from(m01lc_env("CS_GAME_DIR"));
+
+    let head_tree = m01lc_git(&["rev-parse", "HEAD^{tree}"]);
+    assert_eq!(
+        candidate_tree, head_tree,
+        "CS_CANDIDATE_TREE must be `git rev-parse 'HEAD^{{tree}}'` of the tested commit; old \
+         reports cannot be reused for new code"
+    );
+
+    // The acceptance suite is the evidence: parse its recorded output.
+    let log_path = evidence_dir.join("cargo-test.log");
+    let log = std::fs::read_to_string(&log_path).unwrap_or_else(|error| {
+        panic!(
+            "cannot read the acceptance log {}: {error} (step 1 must tee its output there)",
+            log_path.display()
+        )
+    });
+    let suite = m01lc_parse_suite(&log);
+    assert!(
+        suite.passed > 0 && !suite.assertions.is_empty(),
+        "no `{M01LC_PREFIX}` tests were recorded in {}",
+        log_path.display()
+    );
+
+    // Capability coverage is checked, never assumed.
+    for required in M01LC_CAPABILITY_TESTS.iter().chain(M01LC_SYNTHETIC_TESTS) {
+        let status = suite
+            .assertions
+            .iter()
+            .find(|(name, _)| name == required)
+            .map(|(_, status)| *status)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{required} did not run: this task needs `retail`, so step 1 must use \
+                     --include-ignored with CS_GAME_DIR set"
+                )
+            });
+        assert_eq!(status, "pass", "{required} must pass; got status {status}");
+    }
+
+    // The hashes describe the real installation, measured by production
+    // discovery — the very pass this task's survey is built on.
+    let found = cs_assets::install::discover(&game_dir)
+        .expect("production discovery must read the original installation");
+    let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
+    let content_sha256 = cs_assets::install::content_fingerprint(&found.manifest).to_hex();
+
+    // The survey itself, re-run: the census artifact's numbers are this run's,
+    // not a transcription of a test message.
+    let survey = survey_animation_bindings(&game_dir).expect("the binding survey runs");
+    let census_path = evidence_dir.join(M01LC_CENSUS_ARTIFACT);
+    std::fs::write(&census_path, m01lc_census_json(&survey))
+        .unwrap_or_else(|error| panic!("write {}: {error}", census_path.display()));
+
+    let artifacts = vec![
+        m01lc_artifact(&log_path, "log"),
+        m01lc_artifact(&census_path, "json"),
+    ];
+
+    let method = format!(
+        "acceptance suite run locally with the `retail` capability: `cargo test --workspace \
+         --locked -- {M01LC_PREFIX} --include-ignored`, every task test passing (the \
+         implementer's run is in the recorded log); this harness derives every field from that \
+         log, from production discovery of $CS_GAME_DIR, and from the production binding survey \
+         re-run over that installation (cs_app::animation::survey_animation_bindings over \
+         cs_formats::zbd::anim::read_animation_index), validated with \
+         tools/validate_evidence.py --require-pass. gpu and audio were available and UNUSED: \
+         nothing was rendered or played. {}",
+        M01LC_OPEN_STATE
+    );
+    let review = "implementer: bunny-alpha-1/bunny-alpha-1 (Rally task #633, session of \
+         2026-10-04); reviewer: not yet assigned — this report is the implementer's own claim at \
+         level `implemented`, and no agent review replaces the owner's human approval";
+
+    let document = format!(
+        "{{\n\
+         \x20\"schema_version\": 1,\n\
+         \x20\"task_id\": \"M01-LC-ANIM-CARRIERS\",\n\
+         \x20\"candidate_tree\": {},\n\
+         \x20\"engine\": {{\"rust\": {}, \"bevy\": {}, \"avian\": {}}},\n\
+         \x20\"created_at\": {},\n\
+         \x20\"command\": {{\"argv\": [{}], \"cwd\": {}, \"exit_code\": {}}},\n\
+         \x20\"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+         \x20\"seed\": 0,\n\
+         \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
+         \x20\"overrides\": [],\n\
+         \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
+         \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \
+         \"ignored\": {}}},\n\
+         \x20\"assertions\": [{}],\n\
+         \x20\"artifacts\": [{}],\n\
+         \x20\"unknowns\": [],\n\
+         \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
+         \x20\"claim\": \"implemented\"\n\
+         }}\n",
+        m01lc_json(&candidate_tree),
+        m01lc_json(&m01lc_rustc_version()),
+        m01lc_json(&m01lc_locked_version("bevy")),
+        m01lc_json(&m01lc_locked_version("avian3d")),
+        m01lc_json(&m01lc_iso_utc_now()),
+        m01lc_str_array(&argv),
+        m01lc_json(&m01lc_git(&["rev-parse", "--show-toplevel"])),
+        exit_code,
+        m01lc_json(&install_sha256),
+        m01lc_json(&content_sha256),
+        suite.discovered,
+        suite.executed,
+        suite.passed,
+        suite.failed,
+        suite.ignored,
+        m01lc_assertion_array(&suite),
+        m01lc_artifact_array(&artifacts),
+        m01lc_json(review),
+        m01lc_json(&method),
+    );
+
+    let out = evidence_dir.join("acceptance.json");
+    std::fs::write(&out, &document)
+        .unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
+    let written = std::fs::read_to_string(&out).expect("the report reads back");
+    for needle in [
+        "\"schema_version\": 1",
+        "\"task_id\": \"M01-LC-ANIM-CARRIERS\"",
+        "\"capabilities\": [\"retail\", \"synthetic\"]",
+        "\"claim\": \"implemented\"",
+        "\"install_sha256\"",
+    ] {
+        assert!(
+            written.contains(needle),
+            "the written report is missing {needle:?}:\n{written}"
+        );
+    }
+    for open in [
+        "animation records behind each carrier",
+        "195 startanims.zrd identities",
+    ] {
+        assert!(
+            written.contains(open),
+            "the report must carry the open product state ({open:?}) in its own words"
+        );
+    }
+    assert!(
+        suite.failed == 0 && exit_code == 0,
+        "the acceptance run failed (exit {exit_code}, {} failed): the report was written honestly \
+         and must NOT validate; fix the tests first",
+        suite.failed
+    );
+    println!("wrote {}", out.display());
+}
+
+/// The derived census of every carrier the installation declares: keys, member
+/// rows with their stamps and spans, the payload header's measured words, the
+/// document's references and their dispositions, and the startup identities.
+fn m01lc_census_json(survey: &cs_app::animation::AnimationBindingSurvey) -> String {
+    let rows = survey
+        .carriers
+        .iter()
+        .map(|carrier| {
+            let members = carrier
+                .members
+                .iter()
+                .map(|row| {
+                    format!(
+                        "{{\"index\":{},\"path\":{},\"stamp\":{},\"offset\":{},\"length\":{},\
+                          \"referenced_by\":[{}]}}",
+                        row.index,
+                        m01lc_json(&row.path),
+                        row.stamp,
+                        row.span.offset,
+                        row.span.length,
+                        row.references
+                            .iter()
+                            .map(usize::to_string)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let externals = carrier
+                .externals
+                .iter()
+                .map(|row| format!("{{\"path\":{},\"stamp\":{}}}", m01lc_json(&row.path), row.stamp))
+                .collect::<Vec<_>>()
+                .join(",");
+            let references = carrier
+                .references
+                .iter()
+                .enumerate()
+                .map(|(ordinal, entry)| {
+                    format!(
+                        "{{\"ordinal\":{ordinal},\"raw\":{},\"member\":{}}}",
+                        m01lc_json(&entry.raw),
+                        entry
+                            .member
+                            .map_or_else(|| "null".to_owned(), |member| member.to_string())
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let unresolved = carrier
+                .unresolved
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{{\"raw\":{},\"candidates\":[{}]}}",
+                        m01lc_json(&entry.raw),
+                        entry
+                            .candidates
+                            .iter()
+                            .map(|candidate| m01lc_json(candidate))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let payload = match &carrier.payload {
+                Some(payload) => format!(
+                    "{{\"offset\":{},\"length\":{},\"declared_record_count\":{},\"gravity\":{},\
+                      \"record_table_offset\":{},\"first_record_name\":{},\
+                      \"records_decoded\":false}}",
+                    payload.span.offset,
+                    payload.span.length,
+                    payload.declared_record_count,
+                    payload.gravity,
+                    payload.record_table_offset,
+                    m01lc_bytes(&payload.first_record_name),
+                ),
+                None => "null".to_owned(),
+            };
+            let startup = carrier
+                .startup
+                .as_ref()
+                .map(|startup| {
+                    let groups = startup
+                        .groups
+                        .iter()
+                        .map(|group| {
+                            format!(
+                                "{{\"key\":{},\"identities\":[{}]}}",
+                                m01lc_json(&group.key),
+                                group
+                                    .identities
+                                    .iter()
+                                    .map(|identity| m01lc_json(identity))
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    format!("{{\"member\":{},\"groups\":[{groups}]}}", m01lc_json(&startup.member))
+                })
+                .unwrap_or_else(|| "null".to_owned());
+            let blockers = carrier
+                .blockers
+                .iter()
+                .map(|blocker| format!("{{\"label\":{}}}", m01lc_json(blocker.label())))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{{\"container\":{},\"kind\":{},\"version\":{},\"size_bytes\":{},\"bound\":{},\
+                  \"externals\":[{externals}],\"members\":[{members}],\"payload\":{payload},\
+                  \"references\":[{references}],\"unresolved\":[{unresolved}],\"startup\":{startup},\
+                  \"blockers\":[{blockers}]}}",
+                m01lc_json(&carrier.container_key),
+                m01lc_json(carrier.kind.label()),
+                carrier.version,
+                carrier.size_bytes,
+                carrier.is_bound(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"schema\":\"cs-m01-lc-anim-carriers-census/1\",\"carriers\":{},\"complete\":{},\
+          \"members\":{},\"references\":{},\"bound\":{},\"unresolved\":{},\"carrier_rows\":[{}]}}",
+        survey.carriers.len(),
+        survey.is_complete(),
+        survey
+            .carriers
+            .iter()
+            .map(|carrier| carrier.members.len())
+            .sum::<usize>(),
+        survey
+            .carriers
+            .iter()
+            .map(|row| row.references.len())
+            .sum::<usize>(),
+        survey
+            .carriers
+            .iter()
+            .map(|row| row.bound_reference_count())
+            .sum::<usize>(),
+        survey
+            .carriers
+            .iter()
+            .map(|row| row.unresolved.len())
+            .sum::<usize>(),
+        rows,
+    )
+}
+
+// ----------------------------------------------------------------- inputs ---
+
+fn m01lc_env(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| {
+        panic!(
+            "{name} is not set: this harness only runs through the sequence in its section header \
+             (crates/cs_app/tests/accept_f20_d_validation.rs)"
+        )
+    })
+}
+
+/// Cargo runs a test binary with its working directory at the *package* root,
+/// so a workspace-relative evidence path is re-anchored here.
+fn m01lc_workspace_path(as_described: &str) -> PathBuf {
+    let path = PathBuf::from(as_described);
+    if path.is_absolute() {
+        return path;
+    }
+    Path::new(&m01lc_git(&["rev-parse", "--show-toplevel"])).join(path)
+}
+
+fn m01lc_git(args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .output()
+        .expect("git runs");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn m01lc_rustc_version() -> String {
+    let output = std::process::Command::new("rustc")
+        .arg("--version")
+        .output()
+        .expect("rustc runs");
+    assert!(output.status.success(), "rustc --version failed");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// The locked version of one `Cargo.lock` package: read, never asserted from
+/// memory.
+fn m01lc_locked_version(package: &str) -> String {
+    let lock_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/")
+        .parent()
+        .expect("workspace root")
+        .join("Cargo.lock");
+    let lock = std::fs::read_to_string(&lock_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", lock_path.display()));
+    let mut wanted = false;
+    for line in lock.lines() {
+        let line = line.trim();
+        if line == "[[package]]" {
+            wanted = false;
+        } else if let Some(name) = line.strip_prefix("name = \"") {
+            wanted = name.trim_end_matches('"') == package;
+        } else if let Some(version) = line.strip_prefix("version = \"")
+            && wanted
+        {
+            return version.trim_end_matches('"').to_owned();
+        }
+    }
+    panic!("package {package:?} is not in {}", lock_path.display());
+}
+
+fn m01lc_iso_utc_now() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after the epoch")
+        .as_secs();
+    // Days since the epoch to a civil date (Howard Hinnant's algorithm), then
+    // the time of day.
+    let days = (now / 86_400) as i64;
+    let seconds = now % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        seconds / 3_600,
+        (seconds % 3_600) / 60,
+        seconds % 60
+    )
+}
+
+// ------------------------------------------------------------- log parsing ---
+
+/// What the recorded `cargo test` output says actually happened.
+#[derive(Debug, Default)]
+struct M01lcSuite {
+    discovered: u64,
+    executed: u64,
+    passed: u64,
+    failed: u64,
+    ignored: u64,
+    /// `(test name, "pass" | "fail")`, in log order, deduplicated.
+    assertions: Vec<(String, &'static str)>,
+}
+
+/// Extracts the per-test results of the task's tests from a recorded
+/// `cargo test` output. Only tests whose name carries the task prefix count, so
+/// the rest of this binary's suite is never counted as this task's evidence.
+fn m01lc_parse_suite(log: &str) -> M01lcSuite {
+    let mut suite = M01lcSuite::default();
+    let mut pending: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    for line in log.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("test result:") {
+            for (count, kind) in m01lc_summary_fields(trimmed) {
+                match kind {
+                    "passed" => suite.passed += count,
+                    "failed" => suite.failed += count,
+                    "ignored" => suite.ignored += count,
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        if pending.front().is_some() {
+            if trimmed == "ok" {
+                let name = pending.pop_front().expect("pending test");
+                m01lc_record(&mut suite, name, "pass");
+                continue;
+            }
+            if trimmed == "FAILED" {
+                let name = pending.pop_front().expect("pending test");
+                m01lc_record(&mut suite, name, "fail");
+                continue;
+            }
+        }
+        let mut cursor = trimmed;
+        while let Some(position) = cursor.find("test ") {
+            let after = &cursor[position + 5..];
+            let Some(separator) = after.find(" ... ") else {
+                break;
+            };
+            let full = &after[..separator];
+            let tail = &after[separator + 5..];
+            cursor = tail;
+            if !full.contains(M01LC_PREFIX) || full.contains("evidence_report") {
+                continue;
+            }
+            let name = full.rsplit("::").next().expect("a name").to_owned();
+            match tail.split_whitespace().next() {
+                Some("ok") => m01lc_record(&mut suite, name, "pass"),
+                Some("FAILED") => m01lc_record(&mut suite, name, "fail"),
+                _ => pending.push_back(name),
+            }
+        }
+    }
+    suite.assertions.dedup_by(|left, right| left.0 == right.0);
+    suite.executed = suite.passed + suite.failed;
+    suite.discovered = suite.passed + suite.failed + suite.ignored;
+    suite
+}
+
+/// `(count, kind)` pairs of one `test result:` summary line.
+fn m01lc_summary_fields(line: &str) -> Vec<(u64, &str)> {
+    let mut fields = Vec::new();
+    for segment in line["test result:".len()..].split(';') {
+        let words: Vec<&str> = segment.split_whitespace().collect();
+        for pair in words.windows(2) {
+            if let Ok(count) = pair[0].parse::<u64>()
+                && matches!(pair[1], "passed" | "failed" | "ignored")
+            {
+                fields.push((count, pair[1]));
+                break;
+            }
+        }
+    }
+    fields
+}
+
+fn m01lc_record(suite: &mut M01lcSuite, name: String, status: &'static str) {
+    if suite.assertions.iter().any(|(seen, _)| *seen == name) {
+        return;
+    }
+    suite.assertions.push((name, status));
+}
+
+// ------------------------------------------------------------------ json ---
+
+/// One JSON string, escaped for a report that no other tool rewrites.
+fn m01lc_json(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other if (other as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", other as u32)),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn m01lc_str_array(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| m01lc_json(value))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// One byte string as a JSON array of numbers, so a name is never re-encoded.
+fn m01lc_bytes(bytes: &[u8]) -> String {
+    format!(
+        "[{}]",
+        bytes
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn m01lc_assertion_array(suite: &M01lcSuite) -> String {
+    suite
+        .assertions
+        .iter()
+        .map(|(id, status)| {
+            format!(
+                "{{\"id\":{},\"status\":{},\"evidence\":[\"cargo-test.log\"]}}",
+                m01lc_json(id),
+                m01lc_json(status)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+// ------------------------------------------------------------- artifacts ---
+
+/// One referenced artifact: hashed here with the production SHA-256 of this
+/// workspace (the validator re-hashes it independently).
+fn m01lc_artifact(source: &Path, kind: &str) -> (String, String, String) {
+    let name = source
+        .file_name()
+        .expect("artifact has a file name")
+        .to_string_lossy()
+        .into_owned();
+    let bytes = std::fs::read(source).expect("an artifact is readable");
+    (
+        name,
+        cs_assets::install::sha256(&bytes).to_hex(),
+        kind.to_owned(),
+    )
+}
+
+fn m01lc_artifact_array(artifacts: &[(String, String, String)]) -> String {
+    artifacts
+        .iter()
+        .map(|(path, sha256, kind)| {
+            format!(
+                "{{\"path\":{},\"sha256\":{},\"kind\":{}}}",
+                m01lc_json(path),
+                m01lc_json(sha256),
+                m01lc_json(kind)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
