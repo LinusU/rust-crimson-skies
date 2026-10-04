@@ -40,8 +40,9 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::transient;
 
 // ---------------------------------------------------------------------------
 // Release contents
@@ -656,9 +657,10 @@ pub fn parse_manifest(file: &str, text: &str) -> Result<CandidatePackage, Manife
 
 /// Reads and parses a candidate manifest file.
 pub fn read_manifest(path: &Path) -> Result<CandidatePackage, ManifestError> {
-    let text = fs::read_to_string(path).map_err(|_| ManifestError::Io {
-        path: path.display().to_string(),
-    })?;
+    let text =
+        transient::read_to_string(path, transient::PATIENT).map_err(|_| ManifestError::Io {
+            path: path.display().to_string(),
+        })?;
     parse_manifest(&path.display().to_string(), &text)
 }
 

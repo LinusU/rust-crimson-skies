@@ -33,11 +33,11 @@
 //! read from disk.
 
 use std::fmt;
-use std::fs;
 use std::path::Path;
 
 use crate::ci::{self, CiError};
 use crate::pins::{INTENDED_BASELINE, PinError, Pins};
+use crate::transient;
 
 /// The members `specs/F00-workspace-toolchain-and-first-executable.md`
 /// requires the workspace to have, in manifest order.
@@ -182,8 +182,10 @@ pub fn workspace_members(manifest: &str) -> Result<Vec<String>, BootstrapError> 
 /// checks really ran against the files on disk.
 pub fn verify_workspace(workspace_root: &Path) -> Result<BootstrapReport, BootstrapError> {
     let manifest_path = workspace_root.join("Cargo.toml");
-    let manifest = fs::read_to_string(&manifest_path).map_err(|_| BootstrapError::Io {
-        path: manifest_path.display().to_string(),
+    let manifest = transient::read_to_string(&manifest_path, transient::PATIENT).map_err(|_| {
+        BootstrapError::Io {
+            path: manifest_path.display().to_string(),
+        }
     })?;
     let members = workspace_members(&manifest)?;
 
@@ -198,13 +200,13 @@ pub fn verify_workspace(workspace_root: &Path) -> Result<BootstrapReport, Bootst
     for required in REQUIRED_MEMBERS {
         let member_manifest = workspace_root.join(required).join("Cargo.toml");
         let path = member_manifest.display().to_string();
-        if !member_manifest.is_file() {
+        if !transient::is_file(&member_manifest, transient::PATIENT) {
             return Err(BootstrapError::MissingManifest {
                 member: required.to_string(),
                 path,
             });
         }
-        let text = fs::read_to_string(&member_manifest)
+        let text = transient::read_to_string(&member_manifest, transient::PATIENT)
             .map_err(|_| BootstrapError::Io { path: path.clone() })?;
         if !text.lines().any(|line| line.trim() == "[package]") {
             return Err(BootstrapError::NotAPackage {

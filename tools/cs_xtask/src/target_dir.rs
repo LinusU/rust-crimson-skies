@@ -82,6 +82,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::transient;
+
 /// Why the effective target directory cannot be trusted for this worktree.
 #[derive(Debug)]
 pub enum TargetDirError {
@@ -320,11 +322,13 @@ pub fn workspace_root_from(start: &Path) -> Option<PathBuf> {
     start
         .ancestors()
         .find(|dir| {
-            fs::read_to_string(dir.join("Cargo.toml")).is_ok_and(|manifest| {
-                manifest
-                    .lines()
-                    .any(|line| line.trim_start().starts_with(WORKSPACE_TABLE))
-            })
+            transient::read_to_string(&dir.join("Cargo.toml"), transient::SCAN).is_ok_and(
+                |manifest| {
+                    manifest
+                        .lines()
+                        .any(|line| line.trim_start().starts_with(WORKSPACE_TABLE))
+                },
+            )
         })
         .map(Path::to_path_buf)
 }
@@ -478,7 +482,7 @@ pub fn foreign_manifest_dirs_with_home(
     let home = cargo_home.map(canonicalize_lenient);
     recorded_manifest_dirs(target_dir)
         .into_iter()
-        .filter(|dir| dir.is_dir())
+        .filter(|dir| transient::is_dir(dir, transient::SCAN))
         .filter(|dir| {
             let candidate = canonicalize_lenient(dir);
             if candidate.starts_with(&root) {
@@ -509,7 +513,7 @@ pub const MANIFEST_DIR_VAR: &str = "CARGO_MANIFEST_DIR";
 pub fn recorded_manifest_dirs(target_dir: &Path) -> BTreeSet<PathBuf> {
     let mut recorded = BTreeSet::new();
     for dep_info in dep_info_files(target_dir) {
-        let Ok(bytes) = fs::read(&dep_info) else {
+        let Ok(bytes) = transient::read(&dep_info, transient::SCAN) else {
             continue;
         };
         if let Some(value) = env_dep_value(&String::from_utf8_lossy(&bytes), MANIFEST_DIR_VAR) {
@@ -529,7 +533,7 @@ pub fn recorded_manifest_dirs(target_dir: &Path) -> BTreeSet<PathBuf> {
 pub fn removed_manifest_dirs(target_dir: &Path) -> BTreeSet<PathBuf> {
     recorded_manifest_dirs(target_dir)
         .into_iter()
-        .filter(|dir| !dir.is_dir())
+        .filter(|dir| !transient::is_dir(dir, transient::SCAN))
         .collect()
 }
 
@@ -551,7 +555,7 @@ pub fn env_dep_value<'a>(dep_info: &'a str, name: &str) -> Option<&'a str> {
 /// next to the final artifacts. A target directory that does not exist yet,
 /// or one whose layout this cargo version does not use, simply has none.
 fn dep_info_files(target_dir: &Path) -> Vec<PathBuf> {
-    let Ok(profiles) = fs::read_dir(target_dir) else {
+    let Ok(profiles) = transient::read_dir(target_dir, transient::SCAN) else {
         return Vec::new();
     };
     let mut files = Vec::new();
@@ -561,7 +565,7 @@ fn dep_info_files(target_dir: &Path) -> Vec<PathBuf> {
         }
         let profile_path = profile.path();
         for directory in [profile_path.join("deps"), profile_path] {
-            let Ok(entries) = fs::read_dir(&directory) else {
+            let Ok(entries) = transient::read_dir(&directory, transient::SCAN) else {
                 continue;
             };
             for entry in entries.flatten() {

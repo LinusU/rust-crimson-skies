@@ -9,8 +9,9 @@
 //! later `cargo update` silently change the pair.
 
 use std::fmt;
-use std::fs;
 use std::path::Path;
+
+use crate::transient;
 
 /// The baseline the workspace promises to hold (major.minor of the pair, the
 /// declared MSRV of the workspace).
@@ -133,7 +134,7 @@ impl Pins {
 }
 
 fn read_file(path: &Path) -> Result<String, PinError> {
-    fs::read_to_string(path).map_err(|_| PinError::Io {
+    transient::read_to_string(path, transient::PATIENT).map_err(|_| PinError::Io {
         path: path.display().to_string(),
     })
 }
