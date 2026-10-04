@@ -166,7 +166,7 @@ pub use spawn::{
     INSTANCE_TRANSFORM_TOLERANCE, InstanceTransform, MeshReference, SkipReason, SkippedInstance,
     SpawnedCollider, SpawnedObject, SpawnedWorld, WorldMeshAssets, WorldSpawnError, avian_layers,
     canonical_matrix, instance_placement, instance_placements, spawn_object, spawn_world,
-    static_world_membership,
+    static_world_layer, static_world_membership,
 };
 pub use triggers::{
     TriggerVolumeSurveyError, ZONE_PREFIX, survey_retail_trigger_volumes, zone_box_field,

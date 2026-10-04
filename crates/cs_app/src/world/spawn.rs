@@ -1280,6 +1280,18 @@ fn spawn_mesh_body(
     // `ColliderConstructorHierarchy::with_default_layers`, which the hierarchy
     // form has and this one does not: the derived `Collider` lands here, so the
     // `CollisionLayers` component beside it is the membership Avian reads.
+    // The declared layer below is that *same* layer, and the two are bound here
+    // rather than left to agree: this function takes the membership as a
+    // parameter (it mirrors `asset_stack`'s collider-on-body helper), so a caller
+    // that ever passed a different one would otherwise leave the engine and the
+    // preflight quietly disagreeing about what this collider is — the F23
+    // preflight reads the `BodyLayer`, `#498`'s sweep reads the membership bit,
+    // and only one of them would be right.
+    debug_assert_eq!(
+        membership,
+        static_world_membership(),
+        "a world collider declares the layer its own membership names (task #499)"
+    );
     app.world_mut()
         .spawn((
             RigidBody::Static,
@@ -1326,6 +1338,14 @@ fn spawn_mesh_trigger_volume(
     // *same* entity, and the constructor resolves no body, so the collider lands
     // here as a standalone one. Every stored triangle is kept, exactly as on
     // the solid path: this changes where the collider sits, never what it is.
+    //
+    // The declared layer and the membership are bound together for the reason
+    // [`spawn_mesh_body`] states.
+    debug_assert_eq!(
+        membership,
+        static_world_membership(),
+        "a world collider declares the layer its own membership names (task #499)"
+    );
     app.world_mut()
         .spawn((
             WorldVisual,

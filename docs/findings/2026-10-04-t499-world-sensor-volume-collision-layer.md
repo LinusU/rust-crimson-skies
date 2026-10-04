@@ -52,11 +52,18 @@ first-tick hole), `SubstepCount(1)` as the world composition installs it:
 | 600 m/s | 5.00 m | `Some(volume)` | **true**, at 2.000 m | **true** | 600 → **0** | `None` | **0** |
 
 The body did not merely lose a tick: it **never crossed the volume at all**. It
-ended the spawn tick at `z = -4.799` — the volume's near face — and stayed there
-for ticks 2 and 3, its free-flight position at tick 3 being `z = -1.800`. So
-F23-C's `accept_f23_c_preflight_never_stops_on_a_sensor` was violated for the
+ended the spawn tick at `z = -4.799` — the volume's near face at `z = -4.750`
+plus the preflight's `SPAWN_CONTACT_OVERLAP_M` of 1 mm — and stayed there for
+ticks 2 and 3, while its free-flight position at tick 3 would have been
+`z = -3.500`: the projectile is spawned at `z = -5.000`
+(`-4.750 - 0.4 × 0.500 - 0.050`, `arch_projectile`'s own arithmetic) and 60 m/s
+at 120 Hz is 0.5 m of travel a tick, so `-5.000 + 3 × 0.500`. F23-C's
+`accept_f23_c_preflight_never_stops_on_a_sensor` was therefore violated for the
 world's own volumes, and #415's spawn-tick crossing record was empty for exactly
-the "mission-overlay triggers F18-C binds" that its affected content names.
+the "mission-overlay triggers F18-C binds" that its affected content names. (That
+free position is 0.250 m *inside* the volume. It is arithmetic from the fixture's
+own constants rather than a second measurement, and the measured pose above is
+what pins the spawn at `-5.000`: `-5.000 + 0.200 + 0.001 = -4.799`.)
 
 **One further observation, which matters for reading the contact numbers.** In
 both cells the world's own contact log *did* name the volume, once, with the
@@ -222,10 +229,11 @@ reverted. "Failing" counts the five `accept_t499_*` tests.
 | Mutation | Failing | What it shows |
 | --- | --- | --- |
 | all three `BodyLayer(static_world_layer())` inserts removed | **4 of 5** | the layer is the whole repair; the survivor is named below |
-| only the two **sensor** bundles' inserts removed (the solids keep theirs) | **4 of 5** | the trigger-specific arms fail on their own, so the pass-through and clamp assertions are not carried by the solid path's coverage |
+| the two **sensor-capable** bundles' inserts removed (`spawn_cuboid_collider`, which carries either role, and `spawn_mesh_trigger_volume`); only the mesh solid keeps its declared layer | **4 of 5** | the same four arms, so the pass-through and clamp assertions are not carried by the solid path's coverage |
+| only `spawn_mesh_trigger_volume`'s insert removed | **1 of 5** | which test carries the *import* path, stated plainly below |
 | (nothing — the shipped tree) | 0 of 5 | — |
 
-The surviving test under both mutations is
+The surviving test under the first two mutations is
 `accept_t499_solid_world_geometry_still_clamps_a_spawn`, and its survival is the
 finding rather than a gap in it: **solid world geometry clamped before this task
 and clamps now**, the difference being that it clamps by
@@ -233,6 +241,29 @@ and clamps now**, the difference being that it clamps by
 `is_none_or(…)` fallback on a missing layer. That test is the regression arm for
 the repair, so "it passed before" is what a regression arm is supposed to say;
 the four arms that fail are the ones the classification is for.
+
+**Which bundle carries which arm, measured rather than assumed.** The three
+behavioural arms (no clamp/stop/delay, the crossing reaching the consumer, the
+distance ratio) are measured on the arch world, whose volume is a **hand-built
+cuboid**, so they exercise `spawn_cuboid_collider` alone. That is also why
+removing the mesh trigger volume's insert alone fails only the first row of the
+table: `accept_t499_a_world_collider_declares_the_layer_the_sweep_classifies_it_by`
+is the only test that looks at a mesh-derived collider, and it holds the import
+path's declared layer directly — it reads the `BodyLayer` off the settled mesh
+entity, asserts it is the entity's own membership bit, and computes the
+classification `classify_hit` would reach from the two components it reads.
+Sweeping a projectile through a **mesh-derived** volume under the spawn preflight
+is therefore measured for nothing in this tree, and is not claimed. The
+classification is a function of exactly the two components `classify_hit` reads,
+so a layout that declares the same layer and carries the same `Sensor` marker
+reaches the same classification — but "a swept **spawn preflight** through a
+mesh-derived volume behaves as it does through the cuboid one" is a measurement
+nobody has made yet. It is a narrow claim: the ordinary swept-CCD path through a
+mesh trigger volume *is* measured, by
+`accept_f18_b_a_mesh_trigger_volume_reports_a_swept_body_where_a_sample_lands`
+(#401), and #401's own deep-inside gap applies to that discrete stream rather than
+to a swept cast. Which retail volumes are mesh-derived and how thick they are is
+#427; the missing measurement belongs to whichever task closes that.
 
 ## The CI run, and one numeric bound worth naming
 
