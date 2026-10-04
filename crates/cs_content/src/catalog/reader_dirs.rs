@@ -103,6 +103,65 @@ pub struct ClassifiedReaderDir {
 /// The members a per-mission reader lists and a shared reader does not.
 const MISSION_MEMBERS: [&str; 3] = ["map.zrd", "aiv.zrd", "objectives.zrd"];
 
+/// The members a world-group reader lists and the shared reader does not,
+/// sorted, as [`ClassifiedReaderDir::evidence`] publishes them.
+const WORLD_GROUP_MEMBERS: [&str; 2] = ["cam_anim.zrd", "templates.zrd"];
+
+/// The members the install-wide reader lists and a world-group reader does not.
+const SHARED_READER_MEMBERS: [&str; 2] = ["instantaction.zrd", "multiplayer_setup.zrd"];
+
+/// Classifies an **installation-scope** reader archive — the install-wide
+/// `ZBD/zrdr.zbd` or a world group's `ZBD/<world group>/zrdr.zbd` — from the
+/// lowercase member names its own index lists, and returns the members that
+/// decided it, or `None` when the evidence does not decide.
+///
+/// This is the one definition of the two scope rules: [`classify`] calls it, so a
+/// caller that already knows which archive it holds (F39-E3's installation-scope
+/// census walks the non-mission-scoped `zrdr.zbd` archives itself) and the
+/// campaign walk that holds no such assumption cannot classify the same archive
+/// two different ways.
+///
+/// The rules are the two the module doc records, measured on the owner's
+/// installation: a world-group reader lists the shared world members and none of
+/// the per-mission ones, and the install-wide reader lists the install-wide
+/// definitions and none of the per-mission ones; neither has a `mis_anim.zbd`
+/// beside it. A reader that lists a per-mission member is **not** an
+/// installation-scope reader — that is the rule that keeps an objective record
+/// out of a scope row (F39-E3's measurement), so the two roles are separated by
+/// the members themselves and not by the archive's path.
+///
+/// `has_mis_anim` is whether a `mis_anim.zbd` sits beside the archive; the
+/// campaign walk measures it from the inventory and a direct caller measures it
+/// the same way. It is a parameter, not an assumption: a `mis_anim.zbd` beside an
+/// archive is F14-D.1's own signal that the directory is a scenario, so one
+/// sitting next to a scope archive stops the classification instead of being
+/// ignored.
+#[must_use]
+pub fn classify_installation_scope(
+    members: &BTreeSet<String>,
+    has_mis_anim: bool,
+) -> Option<(ReaderDirRole, Vec<&'static str>)> {
+    if has_mis_anim || MISSION_MEMBERS.iter().any(|name| members.contains(*name)) {
+        return None;
+    }
+    if WORLD_GROUP_MEMBERS
+        .iter()
+        .all(|name| members.contains(*name))
+    {
+        return Some((
+            ReaderDirRole::WorldGroupReader,
+            WORLD_GROUP_MEMBERS.to_vec(),
+        ));
+    }
+    if SHARED_READER_MEMBERS
+        .iter()
+        .all(|name| members.contains(*name))
+    {
+        return Some((ReaderDirRole::SharedReader, SHARED_READER_MEMBERS.to_vec()));
+    }
+    None
+}
+
 /// Classifies one directory, or returns `None` when the evidence does not
 /// decide.
 ///
@@ -126,7 +185,6 @@ pub(super) fn classify(
     let segments: Vec<&str> = path.split(['/', '\\']).collect();
     let has = |name: &str| members.contains(name);
     let per_mission = MISSION_MEMBERS.iter().all(|name| has(name));
-    let no_per_mission = MISSION_MEMBERS.iter().all(|name| !has(name));
 
     match segments.as_slice() {
         [zbd, group, leaf]
@@ -149,30 +207,17 @@ pub(super) fn classify(
                 None
             }
         }
+        // The two installation-scope rules, in the one place they are defined
+        // ([`classify_installation_scope`]); here the archive's path shape and
+        // its world group's declaration are checked as well.
         [zbd, group]
             if zbd.eq_ignore_ascii_case("zbd")
-                && world_groups.contains(&group.to_ascii_lowercase())
-                && !has_mis_anim
-                && no_per_mission
-                && has("templates.zrd")
-                && has("cam_anim.zrd") =>
+                && world_groups.contains(&group.to_ascii_lowercase()) =>
         {
-            Some((
-                ReaderDirRole::WorldGroupReader,
-                vec!["cam_anim.zrd", "templates.zrd"],
-            ))
+            classify_installation_scope(members, has_mis_anim)
         }
-        [zbd]
-            if zbd.eq_ignore_ascii_case("zbd")
-                && !has_mis_anim
-                && no_per_mission
-                && has("instantaction.zrd")
-                && has("multiplayer_setup.zrd") =>
-        {
-            Some((
-                ReaderDirRole::SharedReader,
-                vec!["instantaction.zrd", "multiplayer_setup.zrd"],
-            ))
+        [zbd] if zbd.eq_ignore_ascii_case("zbd") => {
+            classify_installation_scope(members, has_mis_anim)
         }
         _ => None,
     }
@@ -265,5 +310,62 @@ mod tests {
         assert!(classify("ZBD", &members(&["ai.zrd"]), false, &groups()).is_none());
         assert!(ReaderDirRole::InstantActionScenario.is_launchable());
         assert!(ReaderDirRole::MultiplayerScenario.is_launchable());
+    }
+
+    /// The scope predicate is the **one** definition of the two installation-scope
+    /// rules, and it is decided by the members themselves: a reader that carries
+    /// an objective record is never an installation-scope reader, and a
+    /// `mis_anim.zbd` beside the archive stops the classification.
+    #[test]
+    fn accept_f39_e3_an_installation_scope_reader_is_decided_by_its_own_members() {
+        let world = members(&[
+            "templates.zrd",
+            "cam_anim.zrd",
+            "landings.zrd",
+            "ne000011.zrd",
+        ]);
+        let (role, evidence) = classify_installation_scope(&world, false).expect("world group");
+        assert_eq!(role, ReaderDirRole::WorldGroupReader);
+        assert_eq!(evidence, vec!["cam_anim.zrd", "templates.zrd"]);
+        assert!(!role.is_launchable());
+
+        let shared = members(&["instantaction.zrd", "multiplayer_setup.zrd", "player.zrd"]);
+        let (role, evidence) = classify_installation_scope(&shared, false).expect("shared");
+        assert_eq!(role, ReaderDirRole::SharedReader);
+        assert_eq!(evidence, vec!["instantaction.zrd", "multiplayer_setup.zrd"]);
+
+        // The measured fact F39-E3 rests on: a reader carrying an objective
+        // record is not an installation-scope reader, whatever else it lists.
+        assert!(
+            classify_installation_scope(&with(&["templates.zrd", "cam_anim.zrd"]), false).is_none()
+        );
+        assert!(classify_installation_scope(&with(&["targets.zrd"]), false).is_none());
+        // A `mis_anim.zbd` beside the archive, a half-matching member set and an
+        // empty one all stay undecided instead of guessing a role.
+        assert!(classify_installation_scope(&world, true).is_none());
+        assert!(classify_installation_scope(&members(&["cam_anim.zrd"]), false).is_none());
+        assert!(classify_installation_scope(&members(&["multiplayer_setup.zrd"]), false).is_none());
+        assert!(classify_installation_scope(&members(&[]), false).is_none());
+    }
+
+    /// The campaign walk and a caller that already holds the archive reach the
+    /// same role through the same rule, so the census cannot classify one reader
+    /// two ways.
+    #[test]
+    fn accept_f39_e3_the_scope_predicate_is_the_one_the_campaign_walk_uses() {
+        let world = members(&["templates.zrd", "cam_anim.zrd", "landings.zrd"]);
+        let shared = members(&["instantaction.zrd", "multiplayer_setup.zrd", "ai.zrd"]);
+        for (path, set) in [("ZBD/C1C", &world), ("ZBD", &shared)] {
+            let (role, evidence) = classify(path, set, false, &groups()).expect("classified");
+            let (direct_role, direct_evidence) =
+                classify_installation_scope(set, false).expect("classified directly");
+            assert_eq!(role, direct_role);
+            assert_eq!(evidence, direct_evidence);
+        }
+        // A reader the campaign walk refuses on the path or the world-group rule
+        // is refused the same way when a caller holds its members: the scope
+        // predicate adds no classification of its own.
+        assert!(classify("ZBD/C9", &world, false, &groups()).is_none());
+        assert!(classify_installation_scope(&world, false).is_some());
     }
 }

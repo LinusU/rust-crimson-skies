@@ -2088,6 +2088,15 @@ pub struct RetailObjectiveRow {
     /// `objectives.zrd` and no target record, and a survey that reported "this
     /// mission declares no objective kind" for it would be reporting about a
     /// member nobody read.
+    ///
+    /// **What this is not.** It is the mission archive's own reading, not the
+    /// mission's: F39-E3 measured the **installation-scope** readers
+    /// ([`RetailScopeObjectiveCensus`]) and found the `c1c` **world-group**
+    /// reader declaring five objective target records of its own — in the very
+    /// world group of this one mission. Whether the mission resolves its group's
+    /// or the install-wide reader is reader-archive precedence (F04/F06) and is
+    /// unmeasured, so this `None` stays a measured absence in the mission archive
+    /// and must not be read as "this mission has no objective targets".
     pub target_kinds: Option<MeasuredTargetKinds>,
 }
 
@@ -2436,12 +2445,21 @@ impl RetailObjectiveCensus {
             .sum()
     }
 
-    /// The missions whose archive declares **no** `targets.zrd` member, so the
+    /// The missions whose **own archive** declares no `targets.zrd` member, so the
     /// F39-E4 target surface's denominator is stated rather than assumed.
     ///
     /// Measured over the owner's installation: `c1c/m01` carries an
     /// `objectives.zrd` with 24012 bytes of objective blocks and no target
-    /// record, so its objective kinds are **unmeasured**, not empty.
+    /// record, so **its own archive's** objective kinds are **unmeasured**, not
+    /// empty.
+    ///
+    /// F39-E3 bounded this row from outside: the `c1c` world-group reader
+    /// declares five objective target records of its own
+    /// ([`RetailScopeObjectiveCensus::objective_target_scopes`]), and `c1c/m01`
+    /// is a mission of that world group. So this list is the mission-scoped
+    /// absence only; whether the mission inherits its group's record is
+    /// reader-archive precedence (F04/F06), unmeasured, and it must not be read
+    /// as "the mission has no objective targets".
     #[must_use]
     pub fn missions_without_targets(&self) -> Vec<&str> {
         self.rows
@@ -4562,4 +4580,718 @@ pub fn survey_retail_detached_declarations(
         install_sha256,
         rows,
     })
+}
+
+
+// ---------------------------------------------------------------------------
+// F39-E3: the installation-scope objective census
+// ---------------------------------------------------------------------------
+//
+// F39-D's census walks **mission-scoped** reader archives only
+// (`zbd/<group>/<mission>/zrdr.zbd`, F13-B's `mission_scope` rule) and left its
+// own denominator open as unknown #5: the install-wide reader `ZBD/zrdr.zbd` and
+// the world-group readers `ZBD/<group>/zrdr.zbd` are outside it, so a mission may
+// inherit objective declarations the census does not see. This section is that
+// measurement.
+//
+// **What is measured.** Every reader archive the installation holds that is *not*
+// mission-scoped — the same production walk, the same `mission_scope` rule — is
+// opened with the F06 two-key dispatch, classified by F14-D.1's own member rules
+// ([`cs_content::catalog::reader_dirs::classify_installation_scope`]), and every
+// member it declares is decoded with the production `.zrd` reader. Each member is
+// then read for three surfaces:
+//
+// * **numbered objective blocks**, through
+//   [`cs_content::stunts::objective_state_machine`] — the same reader F39-D
+//   measured mission records with, so "0 here" and "1338 there" are one
+//   measurement of one surface over two denominators;
+// * **objective target records**, through the F39-E4 surface
+//   ([`measure_target_kinds`]) for a member the archive names `targets.zrd`, the
+//   name F39-E4's census located by;
+// * **every objective-named spelling anywhere in the member**, through
+//   [`measure_scope_member`]'s complete text inventory — the search list that
+//   bounds the negative result. It searches keys *and* values, so a declaration
+//   that names an objective in either position is counted.
+//
+// **What is not measured, and why.** Nothing here decodes a rule: a spelling is a
+// spelling. Whether the install-wide reader's `OBJECTIVESLIST` dialog primitive
+// and `MSG_BRF_DLG_OBJECTIVES` message id are ever resolved for a mission, and
+// whether a mission without its own `targets.zrd` sees its world group's, are
+// reader-archive **precedence** questions — F04/F06 own the resolution order and
+// nothing measured here observes it. No original executable was run.
+
+/// The measured objective surface of one decoded installation-scope member.
+///
+/// Three surfaces, each measured whole: the numbered `OBJECTIVE<N>` blocks, the
+/// objective target records (for a member the archive names `targets.zrd`), and
+/// the **complete** set of spellings that name an objective anywhere in the
+/// member — keys and values alike.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MeasuredScopeMember {
+    /// How many numbered `OBJECTIVE<N>` blocks the member declares, read with
+    /// the same reader F39-D's mission rows use.
+    pub objective_blocks: u32,
+    /// How many objective target records the member declares, or `None` when the
+    /// member is not named `targets.zrd` — a measured **absence of the named
+    /// surface**, never a default of zero records. The name is the selector
+    /// because it is the name F39-E4's census located mission target records by,
+    /// and because reading any member's root as a record list would count a
+    /// member's ordinary fields as records (`ZBD/C2`'s `game_targets.zrd` holds
+    /// animation definitions, not objectives).
+    pub target_records: Option<MeasuredTargetKinds>,
+    /// Every spelling in the member that names an objective, sorted, with the
+    /// number of times it occurs. The **complete** inventory for this surface:
+    /// this is the list a negative result is drawn from, so a spelling this walk
+    /// never saw cannot be argued away.
+    pub objective_spellings: Vec<(String, u32)>,
+    /// The member's complete key vocabulary, sorted by key, with the number of
+    /// times each key occurs. Published whole beside the objective surface so the
+    /// classification can be read against the vocabulary it was drawn from.
+    pub keys: Vec<(String, u32)>,
+}
+
+/// The spelling that makes a text node part of the objective search list: any
+/// spelling containing `objective`, case-insensitively.
+///
+/// Measured over the installation's whole reader layer this matches the mission
+/// objective blocks' own family (`OBJECTIVE<n>`, `WAKE_OBJECTIVE_WHEN_I_COMPLETE`,
+/// `REMOVE_OBJECTIVE_TARGET`, …), the mission readers' `objective` /
+/// `objective_numbers` / `OBJECTIVE_DELAY` keys, and the install-wide reader's
+/// `OBJECTIVESLIST` / `Objective` / `MSG_BRF_DLG_OBJECTIVES` dialog spellings. It
+/// is a **substring** rule on purpose: a tighter rule could miss a spelling the
+/// original uses, and the point of this census is to bound what a mission may
+/// inherit, not to classify what it means.
+const OBJECTIVE_SPELLING_NEEDLE: &str = "objective";
+
+/// Measures one decoded installation-scope member's objective surface.
+///
+/// `member` is the member's name as the archive declares it; it selects the
+/// objective target records and is never interpreted beyond that selection.
+///
+/// The spelling inventory is a **whole-tree** text walk rather than a walk of the
+/// record's fields only: an objective declaration may name an objective in a
+/// value (`"MSG_OBJ_DEFEND"`, a node name) as easily as in a key, and a walk that
+/// read keys alone would report "nothing names an objective" about a member whose
+/// value does.
+#[must_use]
+pub fn measure_scope_member(document: &ZrdValue, member: &str) -> MeasuredScopeMember {
+    let objective_blocks = cs_content::stunts::objective_state_machine(document).blocks();
+    let is_target_member = member.eq_ignore_ascii_case(SCENARIO_TARGETS_MEMBER);
+    let target_records = is_target_member.then(|| measure_target_kinds(document));
+    let mut spellings: BTreeMap<String, u32> = BTreeMap::new();
+    collect_objective_spellings(document, 0, &mut spellings);
+    MeasuredScopeMember {
+        objective_blocks,
+        target_records,
+        objective_spellings: spellings.into_iter().collect(),
+        keys: scope_member_keys(document, is_target_member),
+    }
+}
+
+/// Adds every text node naming an objective anywhere under `node`.
+///
+/// The depth bound is a refusal-free walk guard, not a measurement: it is far
+/// deeper than any `.zrd` record the production decoder produces (the deepest
+/// measured installation document nests about six levels), so it cannot truncate a
+/// real declaration, and a node that deep would be reported as an unread record
+/// rather than as an absence.
+const SCOPE_WALK_DEPTH: usize = 64;
+
+fn collect_objective_spellings(
+    node: &ZrdValue,
+    depth: usize,
+    spellings: &mut BTreeMap<String, u32>,
+) {
+    if depth >= SCOPE_WALK_DEPTH {
+        return;
+    }
+    match node {
+        ZrdValue::Text(text) => {
+            if text
+                .to_ascii_lowercase()
+                .contains(OBJECTIVE_SPELLING_NEEDLE)
+            {
+                *spellings.entry(text.clone()).or_insert(0) += 1;
+            }
+        }
+        ZrdValue::List(children) => {
+            for child in children {
+                collect_objective_spellings(child, depth + 1, spellings);
+            }
+        }
+        ZrdValue::Int(_) | ZrdValue::Float(_) => {}
+    }
+}
+
+/// One member's complete key vocabulary: the fields of the member's own record
+/// and of every nested record under it.
+///
+/// Each member is read with the shape its name selects, which is the discipline
+/// `#463` measured and this repository's own readers follow:
+///
+/// * every member is read as a **flat alternating record** ([`zrd_flat_fields`])
+///   below its unwrapped record ([`objective_record`]), which is the shape
+///   `objectives.zrd`, `escape.zrd` and every dialog record uses;
+/// * a `targets.zrd` member is **additionally** read as a list of `[key, value]`
+///   pairs ([`cs_content::stunts::objective_record_keys`]), which is the shape
+///   every objective target record uses.
+///
+/// The second reading is deliberately restricted to the member name that carries
+/// it. A shape-agnostic walk would read any two-element list whose first element
+/// is text as a field and invent keys out of the data — `["fuel_truck01",
+/// "tank"]` would become two keys — which is the failure the pair reader's own
+/// doc forbids. A member in some third shape would show up as an **empty**
+/// inventory here rather than as invented keys, and the spelling inventory above
+/// is shape-agnostic precisely so such a member cannot hide.
+///
+/// It is an inventory of **field names**, never a reading of what a field means.
+fn scope_member_keys(document: &ZrdValue, is_target_member: bool) -> Vec<(String, u32)> {
+    let mut keys: BTreeMap<String, u32> = BTreeMap::new();
+    collect_scope_keys(objective_record(document), 0, &mut keys);
+    if is_target_member {
+        for (key, count) in cs_content::stunts::objective_record_keys(document) {
+            *keys.entry(key).or_insert(0) += count;
+        }
+    }
+    keys.into_iter().collect()
+}
+
+const SCOPE_KEY_DEPTH: usize = 64;
+
+fn collect_scope_keys(node: &ZrdValue, depth: usize, keys: &mut BTreeMap<String, u32>) {
+    if depth >= SCOPE_KEY_DEPTH {
+        return;
+    }
+    for (key, value) in zrd_flat_fields(node) {
+        *keys.entry(key.to_owned()).or_insert(0) += 1;
+        collect_scope_keys(value, depth + 1, keys);
+    }
+}
+
+/// Why the installation-scope objective census could not be produced.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScopeObjectiveCensusError {
+    /// The installation could not be discovered, or its campaign layout could not
+    /// be walked (the world-group set F14-D.1's classification needs).
+    Discovery(String),
+    /// A scope reader archive could not be read from disk.
+    Read {
+        /// The archive's logical key.
+        container: String,
+        /// Why the read failed.
+        reason: String,
+    },
+    /// A member's bytes did not decode as `.zrd`.
+    Decode {
+        /// The archive's logical key.
+        container: String,
+        /// The member's name, as the archive declares it.
+        member: String,
+        /// The decoder's refusal code.
+        code: &'static str,
+        /// Offset of the refusal inside the member.
+        offset: u64,
+    },
+    /// A reader archive that is not mission-scoped fits neither installation-scope
+    /// rule.
+    ///
+    /// A **refusal**, never a skipped row: a scope archive this census cannot
+    /// classify is an archive whose contents it has not measured, and dropping it
+    /// would turn "we did not look" into "there was nothing there".
+    Unclassified {
+        /// The archive's logical key.
+        container: String,
+        /// Why the members did not decide a role.
+        reason: String,
+    },
+}
+
+impl fmt::Display for ScopeObjectiveCensusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Discovery(reason) => {
+                write!(f, "the installation could not be discovered: {reason}")
+            }
+            Self::Read { container, reason } => {
+                write!(
+                    f,
+                    "scope reader archive {container} could not be read: {reason}"
+                )
+            }
+            Self::Decode {
+                container,
+                member,
+                code,
+                offset,
+            } => write!(
+                f,
+                "{container}'s {member} member did not decode: {code} at offset {offset}"
+            ),
+            Self::Unclassified { container, reason } => {
+                write!(
+                    f,
+                    "scope reader archive {container} is unclassified: {reason}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ScopeObjectiveCensusError {}
+
+/// One installation-scope reader archive's measured objective surface.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetailScopeObjectiveRow {
+    /// The scope the archive is, as the directory that holds it: `zbd` for the
+    /// install-wide reader, `zbd/<world group>` for a world group's.
+    pub scope: String,
+    /// What F14-D.1's own member rules decide the archive is.
+    pub role: cs_content::catalog::reader_dirs::ReaderDirRole,
+    /// The reader archive's installation spelling, as production discovery spells
+    /// it (`ZBD/zrdr.zbd`, `ZBD/C1C/zrdr.zbd`).
+    pub container: String,
+    /// SHA-256 of that whole archive, from production discovery.
+    pub container_sha256: String,
+    /// The member names that corroborated the role, as
+    /// [`ClassifiedReaderDir::evidence`](cs_content::catalog::reader_dirs::ClassifiedReaderDir)
+    /// publishes them.
+    pub evidence: Vec<&'static str>,
+    /// How many members the archive's own index declares, counting a name listed
+    /// twice twice: the owner's `ZBD/zrdr.zbd` declares 221 and lists
+    /// `player.zrd` twice, so it is 220 [`Self::distinct_members`] and this.
+    pub declared_members: usize,
+    /// How many **distinct** lowercase member names the archive lists.
+    pub distinct_members: usize,
+    /// How many of those members decoded as `.zrd`. Every measured member does;
+    /// a member that does not decode is a refusal, never a skipped row.
+    pub decoded_members: usize,
+    /// How many numbered `OBJECTIVE<N>` blocks the whole archive declares.
+    pub objective_blocks: u32,
+    /// How many objective target records the archive declares across its
+    /// `targets.zrd` members, or `None` when it declares no such member — a
+    /// measured absence of the named surface.
+    pub target_records: Option<MeasuredTargetKinds>,
+    /// Every objective-named spelling the archive carries, sorted, with the number
+    /// of occurrences.
+    pub objective_spellings: Vec<(String, u32)>,
+    /// The archive's complete member key vocabulary, sorted by key.
+    pub keys: Vec<(String, u32)>,
+    /// Every member name the archive lists, lowercased, sorted and deduplicated.
+    ///
+    /// Member names are not field names, so they are carried beside
+    /// [`Self::keys`] rather than inside it: the key vocabulary is what the
+    /// members' *records* say, and this is what the archive *lists*.
+    pub member_names: Vec<String>,
+}
+
+impl RetailScopeObjectiveRow {
+    /// Whether this row's archive declares any numbered objective block.
+    ///
+    /// A measurement of declarations, never of rules: see
+    /// [`RetailObjectiveCensus::declares_branching`] for the same distinction on
+    /// the mission-scoped side.
+    #[must_use]
+    pub const fn declares_objective_blocks(&self) -> bool {
+        self.objective_blocks > 0
+    }
+}
+
+/// The measured objective surface of every installation-scope reader archive.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetailScopeObjectiveCensus {
+    install_sha256: String,
+    rows: Vec<RetailScopeObjectiveRow>,
+}
+
+impl RetailScopeObjectiveCensus {
+    /// SHA-256 of the whole installation manifest, from production discovery.
+    #[must_use]
+    pub fn install_sha256(&self) -> &str {
+        &self.install_sha256
+    }
+
+    /// The measured rows, one per installation-scope reader archive, sorted by
+    /// scope.
+    #[must_use]
+    pub fn rows(&self) -> &[RetailScopeObjectiveRow] {
+        &self.rows
+    }
+
+    /// How many installation-scope reader archives the census measured.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether the census measured nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The row for one scope, by its `zbd` / `zbd/<group>` label.
+    #[must_use]
+    pub fn row(&self, scope: &str) -> Option<&RetailScopeObjectiveRow> {
+        self.rows.iter().find(|row| row.scope == scope)
+    }
+
+    /// How many members the measured archives declare in all, duplicates counted.
+    #[must_use]
+    pub fn declared_members(&self) -> usize {
+        self.rows.iter().map(|row| row.declared_members).sum()
+    }
+
+    /// How many members decoded across the measured archives.
+    #[must_use]
+    pub fn decoded_members(&self) -> usize {
+        self.rows.iter().map(|row| row.decoded_members).sum()
+    }
+
+    /// How many **distinct** lowercase member names the measured archives carry in
+    /// all: the union, not the sum, so a shared member name in two world groups
+    /// is one name.
+    #[must_use]
+    pub fn distinct_member_names(&self) -> usize {
+        let mut names: BTreeSet<String> = BTreeSet::new();
+        for row in &self.rows {
+            for name in &row.member_names {
+                names.insert(name.clone());
+            }
+        }
+        names.len()
+    }
+
+    /// How many numbered `OBJECTIVE<N>` blocks the installation declares outside
+    /// its mission-scoped readers.
+    #[must_use]
+    pub fn objective_blocks(&self) -> u32 {
+        self.rows.iter().map(|row| row.objective_blocks).sum()
+    }
+
+    /// Whether any installation-scope reader declares a numbered objective block.
+    ///
+    /// A measurement of declarations: `false` says no scope reader carries one,
+    /// never that the original has no shared objectives. The inheritance
+    /// **precedence** question — whether a mission resolves a member of its world
+    /// group's or the install-wide reader at all — is not measured here.
+    #[must_use]
+    pub fn declares_objective_blocks(&self) -> bool {
+        self.objective_blocks() > 0
+    }
+
+    /// How many objective target records the installation declares outside its
+    /// mission-scoped readers.
+    #[must_use]
+    pub fn target_records(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter_map(|row| row.target_records.as_ref())
+            .map(|kinds| kinds.records)
+            .sum()
+    }
+
+    /// How many of those records carry an objective kind.
+    #[must_use]
+    pub fn labelled_targets(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter_map(|row| row.target_records.as_ref())
+            .map(|kinds| kinds.labelled)
+            .sum()
+    }
+
+    /// The scopes whose archive declares an objective target record, sorted.
+    #[must_use]
+    pub fn objective_target_scopes(&self) -> Vec<&str> {
+        self.rows
+            .iter()
+            .filter(|row| {
+                row.target_records
+                    .as_ref()
+                    .is_some_and(|kinds| kinds.records > 0)
+            })
+            .map(|row| row.scope.as_str())
+            .collect()
+    }
+
+    /// The union of the objective target labels the measured archives declare,
+    /// sorted, with the number of records carrying each.
+    #[must_use]
+    pub fn target_names(&self) -> BTreeMap<String, u32> {
+        let mut names: BTreeMap<String, u32> = BTreeMap::new();
+        for kinds in self
+            .rows
+            .iter()
+            .filter_map(|row| row.target_records.as_ref())
+        {
+            for (name, count) in &kinds.names {
+                *names.entry(name.clone()).or_insert(0) += count;
+            }
+        }
+        names
+    }
+
+    /// The union of every objective-named spelling the measured archives carry,
+    /// sorted, with the number of occurrences. The complete search list the
+    /// negative result above is drawn from.
+    #[must_use]
+    pub fn objective_spellings(&self) -> Vec<(String, u32)> {
+        let mut totals: BTreeMap<String, u32> = BTreeMap::new();
+        for row in &self.rows {
+            for (spelling, count) in &row.objective_spellings {
+                *totals.entry(spelling.clone()).or_insert(0) += count;
+            }
+        }
+        totals.into_iter().collect()
+    }
+
+    /// The union of every key the measured archives' members use, sorted, with the
+    /// number of occurrences. Published whole, as F39-D published the mission
+    /// vocabulary: a reader can check the whole inventory instead of trusting the
+    /// objective classification drawn from it.
+    #[must_use]
+    pub fn keys(&self) -> Vec<(String, u32)> {
+        let mut totals: BTreeMap<String, u32> = BTreeMap::new();
+        for row in &self.rows {
+            for (key, count) in &row.keys {
+                *totals.entry(key.clone()).or_insert(0) += count;
+            }
+        }
+        totals.into_iter().collect()
+    }
+
+    /// The install-wide reader's row, when the census measured one.
+    #[must_use]
+    pub fn shared_reader(&self) -> Option<&RetailScopeObjectiveRow> {
+        self.rows
+            .iter()
+            .find(|row| row.role == cs_content::catalog::reader_dirs::ReaderDirRole::SharedReader)
+    }
+
+    /// The world-group readers' rows, sorted by scope.
+    #[must_use]
+    pub fn world_group_readers(&self) -> Vec<&RetailScopeObjectiveRow> {
+        self.rows
+            .iter()
+            .filter(|row| {
+                row.role == cs_content::catalog::reader_dirs::ReaderDirRole::WorldGroupReader
+            })
+            .collect()
+    }
+}
+
+impl RetailScopeObjectiveRow {
+    /// The member names this row's archive lists, sorted and deduplicated.
+    ///
+    /// The union census-wide is [`RetailScopeObjectiveCensus::distinct_member_names`],
+    /// which counts distinct names across archives rather than summing rows, so a
+    /// shared name is one name.
+    #[must_use]
+    pub fn members(&self) -> &[String] {
+        &self.member_names
+    }
+}
+
+/// Measures every installation-scope objective declaration in `install_root`.
+///
+/// Read-only: the walk is production discovery plus production reader-archive
+/// dispatch, so nothing inside the installation is written. It **fails** rather
+/// than skipping an archive it cannot read, decode or classify, for the reason
+/// [`survey_retail_objective_records`] gives: an archive that silently vanished
+/// from the denominator would read as an archive with no objective declarations.
+///
+/// The denominator is stated rather than assumed: the *non-mission-scoped*
+/// `zrdr.zbd` archives, which is the complement of F39-D's mission-scoped walk
+/// under the same [`mission_scope`](cs_formats::script_raw::mission_scope) rule.
+/// Together the two walks cover every reader archive the installation holds.
+///
+/// # Errors
+///
+/// [`ScopeObjectiveCensusError::Discovery`] when the installation or its
+/// campaign layout cannot be read, [`ScopeObjectiveCensusError::Read`] /
+/// [`ScopeObjectiveCensusError::Decode`] for the first archive or member that
+/// cannot be measured, and [`ScopeObjectiveCensusError::Unclassified`] for a
+/// non-mission-scoped archive that fits neither installation-scope rule.
+pub fn survey_retail_scope_objective_records(
+    install_root: &Path,
+) -> Result<RetailScopeObjectiveCensus, ScopeObjectiveCensusError> {
+    let found = cs_assets::install::discover(install_root)
+        .map_err(|error| ScopeObjectiveCensusError::Discovery(error.to_string()))?;
+    let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
+    // F14-D.1's classification only decides a `ZBD/<group>/zrdr.zbd` archive when
+    // the campaign layout declares that world group, so the census needs the same
+    // world-group set the campaign walk derives.
+    let world_groups: BTreeSet<String> =
+        cs_content::campaign_bindings::campaign_layout(install_root)
+            .map_err(|error| ScopeObjectiveCensusError::Discovery(error.to_string()))?
+            .into_iter()
+            .map(|entry| entry.mission.world_group.to_ascii_lowercase())
+            .collect();
+    if world_groups.is_empty() {
+        return Err(ScopeObjectiveCensusError::Discovery(
+            "the campaign layout declares no world group".to_owned(),
+        ));
+    }
+    let present: BTreeSet<String> = found
+        .manifest
+        .files
+        .iter()
+        .map(|record| record.relative_spelling.logical_key())
+        .collect();
+
+    let mut rows: Vec<RetailScopeObjectiveRow> = Vec::new();
+    for record in &found.manifest.files {
+        let container_key = record.relative_spelling.logical_key();
+        if !container_key.ends_with(MISSION_READER_ARCHIVE) {
+            continue;
+        }
+        let spelling = record.relative_spelling.as_str().to_owned();
+        let path = RelativePath::new(&spelling.to_lowercase()).map_err(|error| {
+            ScopeObjectiveCensusError::Read {
+                container: container_key.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        // F13-B's own rule, used the same way F39-D uses it: a mission-scoped
+        // archive belongs to the mission census, and everything left over is an
+        // installation-scope reader.
+        if cs_formats::script_raw::mission_scope(&path).is_some() {
+            continue;
+        }
+        let scope = scope_label(&container_key);
+        let bytes = std::fs::read(found.manifest.host_root.join(&spelling)).map_err(|error| {
+            ScopeObjectiveCensusError::Read {
+                container: container_key.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        let discovery = cs_formats::script_raw::discover_container(&container_key, &path, &bytes);
+        let names: BTreeSet<String> = discovery
+            .programs()
+            .iter()
+            .filter_map(|program| program.locator().member())
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
+        let directory = match container_key.rsplit_once('/') {
+            Some((directory, _)) => directory.to_owned(),
+            None => String::new(),
+        };
+        let mis_anim = format!("{directory}/mis_anim.zbd").to_ascii_lowercase();
+        let (role, evidence) = cs_content::catalog::reader_dirs::classify_installation_scope(
+            &names,
+            present.contains(&mis_anim),
+        )
+        .ok_or_else(|| ScopeObjectiveCensusError::Unclassified {
+            container: container_key.clone(),
+            reason: format!(
+                "{} member names and no mis_anim.zbd fit neither the world-group nor the \
+                 install-wide rule",
+                names.len()
+            ),
+        })?;
+        // F14-D.1 decides a `ZBD/<group>/zrdr.zbd` archive only when the campaign layout
+        // declares that world group, so a group-named scope the layout does not
+        // claim is a refusal rather than a measured row. The install-wide reader
+        // has no group component and is not subject to the check.
+        let components: Vec<&str> = container_key.split('/').collect();
+        if components.len() == 3
+            && let Some(group) = components.get(1)
+            && !group.is_empty()
+            && !world_groups.contains(&group.to_ascii_lowercase())
+        {
+            return Err(ScopeObjectiveCensusError::Unclassified {
+                container: container_key.clone(),
+                reason: format!(
+                    "the campaign layout declares no world group named {group:?}, so F14-D.1's \
+                     rule does not decide this archive's scope"
+                ),
+            });
+        }
+
+        let mut row = RetailScopeObjectiveRow {
+            scope,
+            role,
+            container: spelling.clone(),
+            container_sha256: record.sha256.to_hex(),
+            evidence,
+            declared_members: discovery.programs().len(),
+            distinct_members: names.len(),
+            decoded_members: 0,
+            objective_blocks: 0,
+            target_records: None,
+            objective_spellings: Vec::new(),
+            keys: Vec::new(),
+            member_names: Vec::new(),
+        };
+        let mut spellings: BTreeMap<String, u32> = BTreeMap::new();
+        let mut keys: BTreeMap<String, u32> = BTreeMap::new();
+        let mut member_names: BTreeSet<String> = BTreeSet::new();
+        for program in discovery.programs() {
+            let member =
+                program
+                    .locator()
+                    .member()
+                    .ok_or_else(|| ScopeObjectiveCensusError::Read {
+                        container: container_key.clone(),
+                        reason: "the archive indexes a member without a name".to_owned(),
+                    })?;
+            member_names.insert(member.to_ascii_lowercase());
+            let document = cs_content::stunts::decode_zrd(program.bytes()).map_err(|error| {
+                ScopeObjectiveCensusError::Decode {
+                    container: container_key.clone(),
+                    member: member.to_owned(),
+                    code: error.code(),
+                    offset: error.offset(),
+                }
+            })?;
+            row.decoded_members += 1;
+            let measured = measure_scope_member(&document, member);
+            row.objective_blocks += measured.objective_blocks;
+            for (spelling, count) in measured.objective_spellings {
+                *spellings.entry(spelling).or_insert(0) += count;
+            }
+            for (key, count) in measured.keys {
+                *keys.entry(key).or_insert(0) += count;
+            }
+            if let Some(kinds) = measured.target_records {
+                let entry = row
+                    .target_records
+                    .get_or_insert_with(MeasuredTargetKinds::default);
+                entry.records += kinds.records;
+                entry.labelled += kinds.labelled;
+                for (name, count) in kinds.names {
+                    *entry.names.entry(name).or_insert(0) += count;
+                }
+            }
+        }
+        row.objective_spellings = spellings.into_iter().collect();
+        row.keys = keys.into_iter().collect();
+        row.member_names = member_names.into_iter().collect();
+        rows.push(row);
+    }
+
+    rows.sort_by(|left, right| left.scope.cmp(&right.scope));
+    Ok(RetailScopeObjectiveCensus {
+        install_sha256,
+        rows,
+    })
+}
+
+/// The scope label of an installation-scope reader archive: `zbd/<world group>`
+/// for a world group's reader, `zbd` for the install-wide one.
+///
+/// Splitting the archive's own logical key is F14-D.1's path shape rather than a
+/// second naming rule: a reader archive that is not mission-scoped is at
+/// `zbd/<archive>` or `zbd/<world group>/<archive>`, and which of the two it is
+/// follows from the key's own depth.
+fn scope_label(container_key: &str) -> String {
+    let mut components = container_key.split('/');
+    components.next();
+    match components.next() {
+        // `zbd/<archive>` is the install-wide reader: there is no world-group
+        // component at all, which is what separates it from a group's reader.
+        Some(_) if components.next().is_none() => "zbd".to_owned(),
+        Some(group) => format!("zbd/{group}"),
+        None => "zbd".to_owned(),
+    }
 }
