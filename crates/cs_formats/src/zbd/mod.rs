@@ -31,6 +31,12 @@
 //!   RIFF/WAVE header declares (task #344).
 //! * [`trailer`] reads the version-one member index at the end of a sound or
 //!   reader archive into the member extents those readers list (task #343).
+//! * [`anim`] is the animation family's **own** front index (task #633):
+//!   `cam_anim.zbd`/`mis_anim.zbd` carry no trailer, so their two declared
+//!   tables — the sibling containers the data refers to and the
+//!   animation-definition sources their payload carries — are read here, and
+//!   the fixed block at the front of the payload with them. The animation
+//!   records themselves stay undecoded, for the reason the module states.
 //! * [`wave`] reads the RIFF/WAVE header of one sound member into the
 //!   descriptor [`sound_archive`] reports (task #344).
 //! * [`adpcm`] reads the `fmt ` extension the two ADPCM tags carry and decodes
@@ -62,6 +68,7 @@
 //! data.
 
 pub mod adpcm;
+pub mod anim;
 pub mod archive;
 pub mod dispatch;
 pub mod family;
@@ -79,6 +86,14 @@ pub use adpcm::{
     MS_BLOCK_HEADER_BYTES_PER_CHANNEL, MS_COEFFICIENT_BYTES, MS_COEFFICIENT_PAIRS,
     MS_EXTENSION_BYTES, MsAdpcmCoefficient, MsAdpcmCoefficients, STEP_TABLE, STEP_TABLE_ENTRIES,
     read_adpcm_extension,
+};
+pub use anim::{
+    ANIM_COUNTS_OFFSET, ANIM_ENTRYPOINT, ANIM_EXTERNAL_PATH_BYTES, ANIM_EXTERNAL_ROW_BYTES,
+    ANIM_FLAG_WORD_OFFSET, ANIM_GRAVITY_OFFSET, ANIM_MEMBER_PATH_BYTES, ANIM_MEMBER_ROW_BYTES,
+    ANIM_ONE_WORD_OFFSET, ANIM_PAYLOAD_HEADER_BYTES, ANIM_RECORD_COUNT_OFFSET, ANIM_ROW_BYTES,
+    AnimationIndex, AnimationIndexError, AnimationPayload, AnimationPayloadHeader, AnimationRow,
+    AnimationRowAnomaly, RECORDS_NOT_DECODED_REASON, indexed_by_animation_header,
+    read_animation_index, stamp_evidence,
 };
 pub use archive::{
     ArchiveListing, CONTAINER_ENTRYPOINT, ContainerError, ContainerStatus, FamilyMismatch,

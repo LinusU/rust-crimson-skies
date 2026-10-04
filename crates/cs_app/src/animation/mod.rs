@@ -108,6 +108,17 @@
 //!   [`PoseSample`](cs_sim::animated_object::PoseSample) on the real GPU and
 //!   writes a measured PNG, which is the `gpu` half of the stage: the
 //!   evidence that an animation output actually reaches a rendered frame.
+//!
+//! Task #633 (`M01-LC-ANIM-CARRIERS`) adds [`carrier`], the half of the same
+//! question that is about **contents**: [`carrier::survey_animation_bindings`]
+//! reads each carrier's own front index through
+//! [`cs_formats::zbd::anim::read_animation_index`] — the family has no trailer
+//! — reads the scope's paired `mis_anim.zrd`/`cam_anim.zrd` and its
+//! `startanims.zrd` through the production `.zrd` reader, and joins the
+//! `ANIMATION_DEFINITION_FILE` references to the carrier's member rows by exact
+//! path. Every member and every reference gets a disposition; the animation
+//! records inside the payload stay undecoded, and the startup identities that
+//! would need them are listed as the open input they are.
 
 use std::fmt;
 
@@ -119,6 +130,7 @@ use crate::scene::SceneGeneration;
 pub mod attachment;
 pub mod binding;
 pub mod capture;
+pub mod carrier;
 pub mod lower;
 pub mod playback;
 pub mod presentation;
@@ -135,6 +147,15 @@ pub use binding::{AnimatedNodeBindError, bind_animated_node};
 pub use capture::{
     POSE_CAPTURE_HEIGHT, POSE_CAPTURE_WIDTH, PoseCapture, PoseCaptureError, PoseCaptureRequest,
     capture_animated_pose,
+};
+pub use carrier::{
+    ANIMATION_DEFINITION_FILE_KEY, ANIMATION_DEFINITIONS_KEY, ANIMATION_LIST_KEY,
+    ANIMATION_PATH_KEY, AnimationBindingError, AnimationBindingSurvey, AnimationDocument,
+    AnimationReference, BindingBlocker, CarrierBinding, CarrierMember, GRAVITY_KEY,
+    PATH_COMPONENT_SEPARATOR, PATH_ROOT_SEPARATOR, PayloadFacts, STARTUP_MEMBER, SiblingReader,
+    StartupGroup, StartupIdentities, UNRESOLVED_REASON_NO_MEMBER,
+    UNRESOLVED_REASON_NO_RECORD_NAMES, bind_animation_carrier, bind_installation, carrier_name,
+    document_member, survey_animation_bindings,
 };
 pub use playback::{
     AnimationLog, AnimationPlayError, AnimationPlayback, AnimationRefusal, BlockedTrack,

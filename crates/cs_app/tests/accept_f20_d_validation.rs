@@ -30,6 +30,17 @@
 //!
 //! The retail/GPU tests **fail loudly** when their capability is absent —
 //! nothing in this file passes vacuously.
+//!
+//! **Task #633 (`M01-LC-ANIM-CARRIERS`, prefix `accept_m01_lc_anim_carriers_`)
+//! is in this file too**, in its own section at the end: the survey above
+//! counts carriers and digests their sibling reader members, and #633 is the
+//! half that reads *contents* — the carrier's own front index (the animation
+//! family has no trailer, so `cs_formats::zbd::anim` reads it), the payload
+//! header in front of its records, and the join from the scope's paired
+//! `mis_anim.zrd`/`cam_anim.zrd` definition files to the member rows those
+//! names resolve to. It lives here rather than in a new test binary because
+//! every run that added one at this crate's tests root died on the CI runner's
+//! disk (task #637); `F20`'s own owner path already covers this file.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -1104,5 +1115,936 @@ fn accept_f20_d_retail_geometry_driven_by_a_playing_clip_draws_two_distinct_fram
         group.world(),
         closed.covered_pixels,
         open.covered_pixels
+    );
+}
+
+// ==================== task #633: the carrier's own members ==================
+//
+// `M01-LC-ANIM-CARRIERS`: `zbd/<group>/<mission>/mis_anim.zbd` and
+// `zbd/<group>/cam_anim.zbd` dispatch as `ZbdFamily::Animation`, and the
+// section above validated and fingerprinted all 61 of them without reading a
+// payload byte. This section drives the production code that does:
+//
+//   * `cs_formats::zbd::anim::read_animation_index` — the family's **own** front
+//     index (two declared tables: the sibling containers it refers to, and the
+//     animation-definition sources whose records it carries). These files are
+//     *not* reader archives: they have no version-one trailer, and the tests
+//     below prove the two readers refuse each other's bytes.
+//   * `AnimationIndex::payload` — the fixed 68-byte block in front of the
+//     animation records, with the declared record count and the gravity.
+//   * `cs_app::animation::carrier::bind_animation_carrier` — the binding from
+//     the scope's paired `mis_anim.zrd` / `cam_anim.zrd` document (decoded with
+//     the production `.zrd` reader) to the carrier's member rows, plus the
+//     `startanims.zrd` startup identities, which are read and deliberately not
+//     bound.
+
+use cs_app::animation::carrier::{
+    ANIMATION_DEFINITION_FILE_KEY, ANIMATION_DEFINITIONS_KEY, ANIMATION_LIST_KEY,
+    ANIMATION_PATH_KEY, BindingBlocker, CarrierBinding, GRAVITY_KEY, PATH_ROOT_SEPARATOR,
+    STARTUP_MEMBER, SiblingReader, UNRESOLVED_REASON_NO_MEMBER, UNRESOLVED_REASON_NO_RECORD_NAMES,
+    bind_animation_carrier, survey_animation_bindings,
+};
+use cs_content::stunts::ZrdValue;
+use cs_formats::zbd::{
+    ANIMATION_SIGNATURE, AnimationIndexError, AnimationRowAnomaly, RECORDS_NOT_DECODED_REASON,
+    indexed_by_animation_header, read_animation_index,
+};
+use cs_formats::{ParseContext, ZbdFamily, ZbdProbe, dispatch};
+use cs_types::install::RelativePath;
+
+/// The world group whose carriers the retail section pins.
+const C1C: &str = "zbd/c1c";
+
+/// One row of a synthetic index table: a path and a stamp.
+type Row = (&'static str, u32);
+
+/// A synthetic animation container: the documented header, the two index
+/// tables in their measured field sizes, and a payload.
+fn anim_container_bytes(externals: &[Row], members: &[Row], payload: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&ANIMATION_SIGNATURE.to_le_bytes());
+    bytes.extend_from_slice(&53_u32.to_le_bytes());
+    bytes.extend_from_slice(&(externals.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&(members.len() as u32).to_le_bytes());
+    for (path, stamp) in externals {
+        let mut field = [0_u8; 128];
+        field[..path.len()].copy_from_slice(path.as_bytes());
+        bytes.extend_from_slice(&field);
+        bytes.extend_from_slice(&stamp.to_le_bytes());
+    }
+    for (path, stamp) in members {
+        let mut field = [0_u8; 80];
+        field[..path.len()].copy_from_slice(path.as_bytes());
+        bytes.extend_from_slice(&field);
+        bytes.extend_from_slice(&stamp.to_le_bytes());
+    }
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+/// A synthetic payload in the measured shape: the 68-byte header, 40 zero
+/// bytes, the first record's 32-byte name field, then record bytes this stage
+/// does not decode.
+fn carrier_payload(record_count: u16, first_record: &str) -> Vec<u8> {
+    let mut header = vec![0_u8; 68];
+    header[10..12].copy_from_slice(&record_count.to_le_bytes());
+    header[36..40].copy_from_slice(&(-9.8_f32).to_bits().to_le_bytes());
+    header[40..44].copy_from_slice(&1_u32.to_le_bytes());
+    header[60..64].copy_from_slice(&1_u32.to_le_bytes());
+    let mut bytes = header;
+    bytes.extend_from_slice(&[0_u8; 40]);
+    let mut name = [0_u8; 32];
+    name[..first_record.len()].copy_from_slice(first_record.as_bytes());
+    bytes.extend_from_slice(&name);
+    bytes.extend_from_slice(&[0x5a; 64]);
+    bytes
+}
+
+/// Encodes one `.zrd` node in the measured tagged form.
+fn zrd_node(value: &ZrdValue) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    match value {
+        ZrdValue::Int(word) => {
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        ZrdValue::Float(number) => {
+            bytes.extend_from_slice(&2_u32.to_le_bytes());
+            bytes.extend_from_slice(&number.to_bits().to_le_bytes());
+        }
+        ZrdValue::Text(text) => {
+            bytes.extend_from_slice(&3_u32.to_le_bytes());
+            bytes.extend_from_slice(&(text.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(text.as_bytes());
+        }
+        ZrdValue::List(children) => {
+            bytes.extend_from_slice(&4_u32.to_le_bytes());
+            // A list of `N` stores `N + 1`: the profiler writes one more than
+            // its child count (measured by F09, read by the production decoder).
+            bytes.extend_from_slice(&((children.len() + 1) as u32).to_le_bytes());
+            for child in children {
+                bytes.extend_from_slice(&zrd_node(child));
+            }
+        }
+    }
+    bytes
+}
+
+/// One text node.
+fn text(value: &str) -> ZrdValue {
+    ZrdValue::Text(value.to_owned())
+}
+
+/// The measured shape of a paired animation record: one `ANIMATION_DEFINITIONS`
+/// record whose body carries `GRAVITY`, `ANIMATION_PATH` and an
+/// `ANIMATION_LIST` of `ANIMATION_DEFINITION_FILE` paths.
+fn animation_definitions(roots: &[&str], files: &[&str]) -> Vec<u8> {
+    let mut body = vec![
+        text(GRAVITY_KEY),
+        ZrdValue::List(vec![ZrdValue::Float(-9.8)]),
+    ];
+    if !roots.is_empty() {
+        body.push(text(ANIMATION_PATH_KEY));
+        body.push(ZrdValue::List(
+            roots.iter().map(|root| text(root)).collect::<Vec<_>>(),
+        ));
+    }
+    body.push(text(ANIMATION_LIST_KEY));
+    let mut list = Vec::new();
+    for file in files {
+        list.push(text(ANIMATION_DEFINITION_FILE_KEY));
+        list.push(ZrdValue::List(vec![text(file)]));
+    }
+    body.push(ZrdValue::List(list));
+    zrd_node(&ZrdValue::List(vec![ZrdValue::List(vec![
+        text(ANIMATION_DEFINITIONS_KEY),
+        ZrdValue::List(body),
+    ])]))
+}
+
+/// The measured shape of `startanims.zrd`: one record of startup keys, each
+/// with a list of animation identities.
+fn start_anims(groups: &[(&str, &[&str])]) -> Vec<u8> {
+    let mut children = Vec::new();
+    for (key, identities) in groups {
+        children.push(text(key));
+        children.push(ZrdValue::List(
+            identities
+                .iter()
+                .map(|identity| ZrdValue::List(vec![text(identity)]))
+                .collect::<Vec<_>>(),
+        ));
+    }
+    zrd_node(&ZrdValue::List(vec![ZrdValue::List(children)]))
+}
+
+/// A reader archive over `members`, reusing this file's version-one writer.
+fn reader_over(members: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let borrowed: Vec<(&str, &[u8])> = members
+        .iter()
+        .map(|(name, bytes)| (*name, bytes.as_slice()))
+        .collect();
+    reader_bytes(&borrowed)
+}
+
+/// Binds a synthetic mission scope: its carrier, its reader and its document.
+fn bind_mission(
+    members: &[Row],
+    roots: &[&str],
+    files: &[&str],
+    startup: &[(&str, &[&str])],
+) -> CarrierBinding {
+    let carrier = anim_container_bytes(
+        &[
+            ("zbd\\c1c\\gamez.zbd", 0x39a7_7e80),
+            ("zbd\\planes.zbd", 0x39a7_7ba5),
+        ],
+        members,
+        &carrier_payload(573, "reserved_anim_0"),
+    );
+    let mut reader_members: Vec<(&str, Vec<u8>)> =
+        vec![("mis_anim.zrd", animation_definitions(roots, files))];
+    if !startup.is_empty() {
+        reader_members.push((STARTUP_MEMBER, start_anims(startup)));
+    }
+    let reader = reader_over(&reader_members);
+    bind_animation_carrier(
+        &RelativePath::new("zbd/c1c/m01/mis_anim.zbd").expect("a relative spelling"),
+        "zbd/c1c/m01/zrdr.zbd",
+        CarrierKind::Mission,
+        &carrier,
+        SiblingReader::Bytes(&reader),
+    )
+}
+
+/// The animation index of a synthetic carrier, read through production code.
+fn read_synthetic_index<'a>(
+    key: &'a str,
+    path: &'a RelativePath,
+    bytes: &'a [u8],
+) -> Result<cs_formats::zbd::AnimationIndex<'a>, AnimationIndexError> {
+    let mut context = ParseContext::with_defaults(key);
+    let decision = dispatch(ZbdProbe::new(key, path, &bytes[..8])).map_err(|error| {
+        AnimationIndexError::NotAnimationFamily {
+            container: error.container().to_owned(),
+            family: ZbdFamily::Reader,
+        }
+    })?;
+    read_animation_index(&mut context, decision, bytes)
+}
+
+/// The same bytes through the **reader** entry point, which must refuse them:
+/// the animation family has no version-one trailer, so
+/// `read_version_one_index` has to say so.
+fn reader_entry_point_refuses(bytes: &[u8]) -> bool {
+    let key = "zbd/c1c/m01/mis_anim.zbd";
+    let mut context = ParseContext::with_defaults(key);
+    let path = synthetic_path();
+    let Ok(decision) = dispatch(ZbdProbe::new(key, path, &bytes[..8])) else {
+        return false;
+    };
+    cs_formats::zbd::read_version_one_index(&mut context, decision, bytes).is_err()
+}
+
+/// The same check at the reader's own declared path, where two-key dispatch
+/// really does route the bytes to the reader family.
+fn reader_entry_point_refuses_reader(bytes: &[u8]) -> bool {
+    let key = "zbd/c1c/m01/zrdr.zbd";
+    let mut context = ParseContext::with_defaults(key);
+    let path = RelativePath::new(key).expect("a relative spelling");
+    let Ok(decision) = dispatch(ZbdProbe::new(key, &path, bytes)) else {
+        return false;
+    };
+    cs_formats::zbd::read_version_one_index(&mut context, decision, bytes).is_err()
+}
+
+/// The path the synthetic carriers are read under.
+fn synthetic_path() -> &'static RelativePath {
+    static PATH: std::sync::OnceLock<RelativePath> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| RelativePath::new("zbd/c1c/m01/mis_anim.zbd").expect("a relative spelling"))
+}
+
+/// The two families are told apart by their own readers, in both directions:
+/// the animation container is not a version-one trailer archive, and the
+/// reader archive is not an animation header. This is the acceptance
+/// criterion's "these are NOT reader archives", tested rather than asserted in
+/// a comment.
+#[test]
+fn accept_m01_lc_anim_carriers_an_animation_container_is_not_a_reader_archive() {
+    assert!(
+        indexed_by_animation_header(ZbdFamily::Animation),
+        "the animation family is indexed by its own front header"
+    );
+    let carrier = anim_container_bytes(
+        &[("zbd\\c1c\\gamez.zbd", 1), ("zbd\\planes.zbd", 2)],
+        &[("..\\data\\c1c\\m01\\zrdr\\mis_anim.zrd", 3)],
+        &carrier_payload(2, "reserved_anim_0"),
+    );
+    let index = read_synthetic_index("zbd/c1c/m01/mis_anim.zbd", synthetic_path(), &carrier)
+        .expect("the animation index reads");
+    assert_eq!(index.family(), ZbdFamily::Animation);
+    assert_eq!(index.member_count(), 1);
+    assert!(
+        reader_entry_point_refuses(&carrier),
+        "the version-one trailer reader refuses an animation container"
+    );
+
+    // And the other way round: a reader archive's own bytes, at the path the
+    // reader role rule declares, through the animation reader.
+    let reader = reader_bytes(&[("mis_anim.zrd", b"document")]);
+    assert!(
+        !reader_entry_point_refuses_reader(&reader),
+        "a reader archive is a trailer-indexed archive, so that reader accepts it"
+    );
+    let key = "zbd/c1c/m01/zrdr.zbd";
+    let mut context = ParseContext::with_defaults(key);
+    let path = RelativePath::new(key).expect("a relative spelling");
+    let decision = dispatch(ZbdProbe::new(key, &path, &reader[..8])).expect("a decision");
+    match read_animation_index(&mut context, decision, &reader) {
+        Err(AnimationIndexError::NotAnimationFamily { family, .. }) => {
+            assert_eq!(
+                family,
+                ZbdFamily::Reader,
+                "the other family's bytes are named"
+            );
+        }
+        other => panic!("expected NotAnimationFamily for a reader archive, got {other:?}"),
+    }
+}
+
+/// The index lists every declared row of both tables with its own span, stamp
+/// and path, and the payload header behind them states the declared record
+/// count and the gravity — the counts a consumer needs before any record is
+/// decoded.
+#[test]
+fn accept_m01_lc_anim_carriers_the_index_lists_every_row_and_the_payload_header() {
+    let carrier = anim_container_bytes(
+        &[
+            ("zbd\\c1c\\gamez.zbd", 0x39a7_7e80),
+            ("zbd\\planes.zbd", 0x39a7_7ba5),
+        ],
+        &[
+            ("..\\data\\c1c\\m01\\zrdr\\mis_anim.zrd", 10),
+            ("..\\data\\c1c\\m01\\zrdr\\zeps\\climbladder.zan", 11),
+            ("..\\data\\c1c\\m01\\zrdr\\zeps\\climbladder.zan", 12),
+        ],
+        &carrier_payload(573, "reserved_anim_0"),
+    );
+    let index = read_synthetic_index("zbd/c1c/m01/mis_anim.zbd", synthetic_path(), &carrier)
+        .expect("the index reads");
+    assert_eq!(index.version(), 53, "the documented retail version word");
+    assert_eq!(index.external_count(), 2);
+    assert_eq!(
+        index
+            .externals()
+            .iter()
+            .map(|row| String::from_utf8_lossy(row.path()).into_owned())
+            .collect::<Vec<_>>(),
+        vec!["zbd\\c1c\\gamez.zbd", "zbd\\planes.zbd"],
+        "both external rows, in declared order"
+    );
+    assert_eq!(index.member_count(), 3, "a repeated path stays three rows");
+    assert_eq!(index.member(0).expect("row 0").stamp(), 10);
+    assert_eq!(index.member(1).expect("row 1").stamp(), 11);
+    assert_eq!(index.member(2).expect("row 2").stamp(), 12);
+    assert_eq!(
+        index.member(0).expect("row 0").record_span().offset,
+        16 + 2 * 132,
+        "the first member row sits behind the two external rows"
+    );
+    assert!(
+        index.anomalous_rows().next().is_none(),
+        "a zero-padded row is conforming"
+    );
+
+    let payload = index.payload().expect("the payload header reads");
+    assert_eq!(payload.header().declared_record_count, 573);
+    assert_eq!(payload.header().gravity, -9.8);
+    assert!(payload.header().is_measured_shape());
+    assert_eq!(
+        payload.header().gravity_evidence(),
+        cs_types::evidence::ClaimStatus::Documented
+    );
+    assert_eq!(
+        payload.first_record_name(),
+        b"reserved_anim_0",
+        "the payload's first record name, verbatim"
+    );
+    assert_eq!(
+        payload.record_table_offset(),
+        index.payload_offset() + 68 + 40
+    );
+    assert_eq!(
+        payload.records_not_decoded_reason(),
+        RECORDS_NOT_DECODED_REASON,
+        "the records this stage does not decode say so in the value itself"
+    );
+}
+
+/// A byte after a row's terminating NUL is reported, not decoded: it is the
+/// measured state of 1115 of the 2595 retail member rows, and a reader that
+/// treated it as a second name would invent content.
+#[test]
+fn accept_m01_lc_anim_carriers_a_nonzero_byte_after_a_path_is_reported_not_decoded() {
+    let mut carrier = anim_container_bytes(
+        &[("zbd\\c1c\\gamez.zbd", 1), ("zbd\\planes.zbd", 2)],
+        &[("..\\data\\c1c\\m01\\zrdr\\mis_anim.zrd", 7)],
+        &carrier_payload(1, "reserved_anim_0"),
+    );
+    // The first member row's 80-byte path field starts at 16 + 2 * 132.
+    let field = 16 + 2 * 132;
+    let text_len = "..\\data\\c1c\\m01\\zrdr\\mis_anim.zrd".len();
+    carrier[field + text_len + 1] = b'X';
+    let index = read_synthetic_index("zbd/c1c/m01/mis_anim.zbd", synthetic_path(), &carrier)
+        .expect("the index reads");
+    let row = index.member(0).expect("row 0");
+    assert!(
+        row.has_anomaly(AnimationRowAnomaly::NonZeroPathPadding),
+        "the byte after the NUL is an anomaly, not a second name"
+    );
+    assert!(
+        !row.has_anomaly(AnimationRowAnomaly::UnterminatedPath),
+        "the path itself is still terminated"
+    );
+    assert_eq!(
+        row.path(),
+        b"..\\data\\c1c\\m01\\zrdr\\mis_anim.zrd",
+        "the path stops at its NUL"
+    );
+    assert_eq!(
+        row.padding().first().copied(),
+        Some(b'X'),
+        "the padding is kept verbatim"
+    );
+    assert_eq!(index.anomalous_rows().count(), 1);
+}
+
+/// The join itself: a full path binds to its row, a bare name resolves against
+/// the record's root, and the bound row reports which reference named it.
+#[test]
+fn accept_m01_lc_anim_carriers_a_definition_file_binds_to_its_member_row() {
+    let binding = bind_mission(
+        &[
+            ("..\\data\\c1c\\m01\\zrdr\\mis_anim.zrd", 1),
+            ("..\\data\\c1c\\m01\\zrdr\\zeps\\placezeps.zrd", 2),
+            ("..\\data\\common\\zrdr\\zeps\\wv_turrets.zrd", 3),
+        ],
+        &[r"..\data\c1c\m01\zrdr\zeps"],
+        &["placezeps.zrd", r"..\data\common\zrdr\zeps\wv_turrets.zrd"],
+        &[],
+    );
+    assert!(binding.blockers.is_empty(), "{:?}", binding.blockers);
+    assert_eq!(binding.kind, CarrierKind::Mission);
+    assert_eq!(binding.version, 53);
+    assert_eq!(binding.members.len(), 3);
+    assert_eq!(binding.references.len(), 2);
+    assert_eq!(binding.bound_reference_count(), 2);
+    assert!(binding.unresolved.is_empty());
+    assert_eq!(binding.referenced_member_count(), 2);
+    assert_eq!(
+        binding.unreferenced_member_count(),
+        1,
+        "the row the document never names is counted, not dropped"
+    );
+    assert_eq!(binding.references[0].raw, "placezeps.zrd");
+    assert_eq!(
+        binding.references[0].member,
+        Some(1),
+        "the bare name resolved to row 1"
+    );
+    assert_eq!(
+        binding.references[1].member,
+        Some(2),
+        "the full path matched row 2 verbatim"
+    );
+    assert_eq!(binding.members[1].references, vec![0]);
+    assert_eq!(binding.members[2].references, vec![1]);
+    assert!(binding.members[0].references.is_empty());
+    assert_eq!(
+        binding
+            .members
+            .iter()
+            .find(|row| row.index == 1)
+            .expect("row 1")
+            .span
+            .length,
+        84,
+        "each member row is the 84-byte record the index declares"
+    );
+    let document = binding
+        .document
+        .as_ref()
+        .expect("the paired record decoded");
+    assert_eq!(document.member, "mis_anim.zrd");
+    assert_eq!(document.roots, vec![r"..\data\c1c\m01\zrdr\zeps"]);
+    assert_eq!(document.gravity, Some(-9.8));
+}
+
+/// A `;`-joined `ANIMATION_PATH` is two roots, and the first one that names a
+/// member wins — the measured shape of the eight world-group carriers.
+#[test]
+fn accept_m01_lc_anim_carriers_a_joined_animation_path_offers_every_root_in_order() {
+    let binding = bind_mission(
+        &[
+            (r"..\data\c1c\zrdr\envmodels\speed_cue.zrd", 1),
+            (r"..\data\common\zrdr\zeps\wv_turrets.zrd", 2),
+        ],
+        &[],
+        &[r"..\data\common\zrdr\zeps\wv_turrets.zrd"],
+        &[],
+    );
+    // No root is needed for a full path, and the record's absence of
+    // `ANIMATION_PATH` is not a failure.
+    assert!(binding.document.is_some());
+    assert!(binding.document.as_ref().expect("decoded").roots.is_empty());
+    assert_eq!(binding.bound_reference_count(), 1);
+
+    let joined =
+        format!(r"..\data\c1c\zrdr\envmodels{PATH_ROOT_SEPARATOR}..\data\common\zrdr\zeps");
+    let binding = bind_mission(
+        &[(r"..\data\common\zrdr\zeps\wv_turrets.zrd", 1)],
+        &[joined.as_str()],
+        &["wv_turrets.zrd"],
+        &[],
+    );
+    let document = binding
+        .document
+        .as_ref()
+        .expect("the paired record decoded");
+    assert_eq!(
+        document.roots,
+        vec![
+            r"..\data\c1c\zrdr\envmodels".to_owned(),
+            r"..\data\common\zrdr\zeps".to_owned(),
+        ],
+        "one stored string, two roots, in order"
+    );
+    assert_eq!(
+        binding.bound_reference_count(),
+        1,
+        "the second root answered"
+    );
+    assert_eq!(binding.references[0].member, Some(0));
+}
+
+/// The M01 case measured on the original installation: the document names
+/// `..\data\common\zrdr\zeps\wv_tailhook.zrd` while the carrier stores the same
+/// basename under the mission root. A basename match is **not** a binding, so
+/// the reference is reported with the spelling it was compared against.
+#[test]
+fn accept_m01_lc_anim_carriers_a_reference_no_member_answers_is_reported_not_matched() {
+    let binding = bind_mission(
+        &[
+            (r"..\data\c1c\m01\zrdr\zeps\placezeps.zrd", 1),
+            (r"..\data\c1c\m01\zrdr\zeps\wv_tailhook.zrd", 2),
+        ],
+        &[r"..\data\c1c\m01\zrdr\zeps"],
+        &[r"..\data\common\zrdr\zeps\wv_tailhook.zrd"],
+        &[],
+    );
+    assert!(binding.blockers.is_empty(), "{:?}", binding.blockers);
+    assert_eq!(
+        binding.unresolved.len(),
+        1,
+        "the reference is reported, not bound"
+    );
+    let unresolved = &binding.unresolved[0];
+    assert_eq!(unresolved.raw, r"..\data\common\zrdr\zeps\wv_tailhook.zrd");
+    assert_eq!(
+        unresolved.candidates,
+        vec![r"..\data\common\zrdr\zeps\wv_tailhook.zrd".to_owned()],
+        "a full path is compared as it stands — one candidate, unrewritten"
+    );
+    assert_eq!(unresolved.reason, UNRESOLVED_REASON_NO_MEMBER);
+    assert_eq!(
+        binding.referenced_member_count(),
+        0,
+        "the same-basename member under another root is not a reference"
+    );
+    assert_eq!(binding.references[0].member, None);
+    assert!(
+        !binding.is_bound(),
+        "an unresolved reference is not a bound carrier"
+    );
+}
+
+/// The startup identities are read and deliberately not bound: an identity
+/// names a record inside the payload, and the payload's records are the open
+/// item. The reason travels with the value.
+#[test]
+fn accept_m01_lc_anim_carriers_startup_identities_are_listed_and_carry_their_open_reason() {
+    let binding = bind_mission(
+        &[(r"..\data\c1c\m01\zrdr\zeps\placezeps.zrd", 1)],
+        &[r"..\data\c1c\m01\zrdr\zeps"],
+        &["placezeps.zrd"],
+        &[
+            ("NEW_GAME_START", &["generic_intro", "wv_hookup_state"]),
+            ("LOAD_GAME_START", &["player_setup"]),
+        ],
+    );
+    assert!(binding.blockers.is_empty(), "{:?}", binding.blockers);
+    let startup = binding.startup.as_ref().expect("the startup record read");
+    assert_eq!(startup.member, STARTUP_MEMBER);
+    assert_eq!(
+        startup
+            .groups
+            .iter()
+            .map(|group| group.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["NEW_GAME_START", "LOAD_GAME_START"],
+        "the measured two-key startup table, in order"
+    );
+    assert_eq!(
+        startup.groups[0].identities,
+        vec!["generic_intro".to_owned(), "wv_hookup_state".to_owned()]
+    );
+    assert_eq!(
+        startup.groups[1].identities,
+        vec!["player_setup".to_owned()]
+    );
+    assert_eq!(binding.startup_identity_count(), 3);
+    assert_eq!(
+        startup.reason, UNRESOLVED_REASON_NO_RECORD_NAMES,
+        "why an identity is not bound is carried with it"
+    );
+    assert_eq!(
+        binding.bound_reference_count(),
+        1,
+        "a definition file still binds; an identity is a different input"
+    );
+
+    // A scope with no startup record is content, not a blocker.
+    let without = bind_mission(
+        &[(r"..\data\c1c\m01\zrdr\zeps\placezeps.zrd", 1)],
+        &[r"..\data\c1c\m01\zrdr\zeps"],
+        &["placezeps.zrd"],
+        &[],
+    );
+    assert!(without.startup.is_none());
+    assert!(
+        without.blockers.is_empty(),
+        "an absent startanims.zrd is not a failure: {:?}",
+        without.blockers
+    );
+}
+
+/// Fail-closed: counts that do not fit, a payload with no room for its header,
+/// and a reader without the paired record are each a named refusal, and the
+/// row still exists.
+#[test]
+fn accept_m01_lc_anim_carriers_every_unreadable_input_is_a_named_refusal() {
+    // A member count no file can hold.
+    let mut carrier = anim_container_bytes(
+        &[("zbd\\c1c\\gamez.zbd", 1), ("zbd\\planes.zbd", 2)],
+        &[("a.zrd", 1)],
+        &carrier_payload(1, "reserved_anim_0"),
+    );
+    carrier[12..16].copy_from_slice(&0xffff_u32.to_le_bytes());
+    match read_synthetic_index("zbd/c1c/m01/mis_anim.zbd", synthetic_path(), &carrier) {
+        Err(AnimationIndexError::IndexOutOfBounds {
+            count, row_bytes, ..
+        }) => {
+            assert_eq!(count, 0xffff);
+            assert_eq!(row_bytes, 84);
+        }
+        other => panic!("expected IndexOutOfBounds, got {other:?}"),
+    }
+
+    // A payload shorter than the fixed header.
+    let short = anim_container_bytes(
+        &[("zbd\\c1c\\gamez.zbd", 1), ("zbd\\planes.zbd", 2)],
+        &[("a.zrd", 1)],
+        &[0_u8; 16],
+    );
+    let index = read_synthetic_index("zbd/c1c/m01/mis_anim.zbd", synthetic_path(), &short)
+        .expect("the index still reads");
+    match index.payload() {
+        Err(AnimationIndexError::PayloadTooSmall {
+            needed, available, ..
+        }) => {
+            assert_eq!(needed, 68);
+            assert_eq!(available, 16);
+        }
+        other => panic!("expected PayloadTooSmall, got {other:?}"),
+    }
+
+    // A sibling reader with no paired record: the row is reported, not dropped.
+    let carrier = anim_container_bytes(
+        &[("zbd\\c1c\\gamez.zbd", 1), ("zbd\\planes.zbd", 2)],
+        &[("a.zrd", 1)],
+        &carrier_payload(1, "reserved_anim_0"),
+    );
+    let reader = reader_over(&[("objectives.zrd", b"other".to_vec())]);
+    let binding = bind_animation_carrier(
+        &RelativePath::new("zbd/c1c/m01/mis_anim.zbd").expect("a relative spelling"),
+        "zbd/c1c/m01/zrdr.zbd",
+        CarrierKind::Mission,
+        &carrier,
+        SiblingReader::Bytes(&reader),
+    );
+    assert!(matches!(
+        binding.blockers.as_slice(),
+        [BindingBlocker::DocumentAbsent {
+            member: "mis_anim.zrd",
+            ..
+        }]
+    ));
+    assert_eq!(
+        binding.members.len(),
+        1,
+        "the carrier's own row still exists"
+    );
+    assert!(binding.document.is_none());
+    assert!(binding.references.is_empty());
+
+    // A scope with no sibling reader at all names the reader it expected.
+    let binding = bind_animation_carrier(
+        &RelativePath::new("zbd/c1c/m01/mis_anim.zbd").expect("a relative spelling"),
+        "zbd/c1c/m01/zrdr.zbd",
+        CarrierKind::Mission,
+        &carrier,
+        SiblingReader::Absent,
+    );
+    assert!(matches!(
+        binding.blockers.as_slice(),
+        [BindingBlocker::MissingReader { expected_key }] if expected_key == "zbd/c1c/m01/zrdr.zbd"
+    ));
+}
+
+// --------------------------------------------------------------- retail ---
+
+/// The retail inventory of the c1c group: the measured member counts, the
+/// measured payload headers and the measured join between each carrier's own
+/// index and the `ANIMATION_DEFINITION_FILE` references of its paired record.
+///
+/// This is task #633's `retail` half, re-measured from `$CS_GAME_DIR` on every
+/// run — every number below is a count the production path computed, not a
+/// value copied out of a document.
+#[test]
+#[ignore = "requires CS_GAME_DIR: the original installation is needed"]
+fn accept_m01_lc_anim_carriers_retail_c1c_lists_binds_and_reports_every_member() {
+    let survey = survey_animation_bindings(&game_dir()).expect("the survey runs over the install");
+
+    // The census: eight world-group camera carriers and 53 mission-scoped
+    // carriers over the whole installation, all of them indexed.
+    assert_eq!(survey.carriers.len(), 61);
+    assert_eq!(survey.carriers_of(CarrierKind::Camera).count(), 8);
+    assert_eq!(survey.carriers_of(CarrierKind::Mission).count(), 53);
+    for carrier in &survey.carriers {
+        assert_eq!(
+            carrier.version, 53,
+            "{}: the documented retail version word",
+            carrier.container_key
+        );
+        assert_eq!(
+            carrier.blockers.len(),
+            0,
+            "{}: {:?}",
+            carrier.container_key,
+            carrier.blockers
+        );
+        assert!(carrier.payload.is_some(), "{}", carrier.container_key);
+        assert!(carrier.document.is_some(), "{}", carrier.container_key);
+        assert_eq!(
+            carrier.externals.len(),
+            2,
+            "{}: two sibling containers",
+            carrier.container_key
+        );
+    }
+
+    // c1c's five carriers: the measured member counts and joins.
+    let camera = survey
+        .carrier("zbd/c1c/cam_anim.zbd")
+        .expect("the c1c camera carrier has a row");
+    let m01 = survey
+        .carrier("zbd/c1c/m01/mis_anim.zbd")
+        .expect("the c1c M01 carrier has a row");
+    for (carrier, members, references, bound) in [
+        (camera, 134_usize, 2_usize, 2_usize),
+        (m01, 91, 22, 21),
+        (
+            survey
+                .carrier("zbd/c1c/ia1/mis_anim.zbd")
+                .expect("the c1c IA1 carrier has a row"),
+            9,
+            8,
+            8,
+        ),
+        (
+            survey
+                .carrier("zbd/c1c/mp1/mis_anim.zbd")
+                .expect("the c1c MP1 carrier has a row"),
+            2,
+            1,
+            1,
+        ),
+        (
+            survey
+                .carrier("zbd/c1c/mp3/mis_anim.zbd")
+                .expect("the c1c MP3 carrier has a row"),
+            14,
+            13,
+            13,
+        ),
+    ] {
+        assert_eq!(carrier.members.len(), members, "{}", carrier.container_key);
+        assert_eq!(
+            carrier.references.len(),
+            references,
+            "{}: definition files",
+            carrier.container_key
+        );
+        assert_eq!(
+            carrier.bound_reference_count(),
+            bound,
+            "{}: references that reached a member row",
+            carrier.container_key
+        );
+        assert_eq!(
+            carrier.referenced_member_count(),
+            bound,
+            "{}: member rows a reference named",
+            carrier.container_key
+        );
+        assert_eq!(
+            carrier.members.len() - carrier.referenced_member_count(),
+            carrier.unreferenced_member_count(),
+            "{}: every member row is accounted for",
+            carrier.container_key
+        );
+        let payload = carrier.payload.as_ref().expect("the payload header read");
+        assert_eq!(payload.gravity, -9.8, "{}", carrier.container_key);
+        assert_eq!(
+            payload.first_record_name, b"reserved_anim_0",
+            "{}: the payload's first record name",
+            carrier.container_key
+        );
+        assert!(
+            payload.declared_record_count as usize >= carrier.members.len(),
+            "{}: the declared record count is never below the member count",
+            carrier.container_key
+        );
+    }
+
+    // c1c's camera carrier: two roots stored in one `ANIMATION_PATH` string,
+    // both references bound, 132 member rows no reference names.
+    assert_eq!(
+        camera.document.as_ref().expect("the paired record").roots,
+        vec![
+            r"..\data\c1c\zrdr\envmodels".to_owned(),
+            r"..\data\common\zrdr\zeps".to_owned(),
+        ]
+    );
+    assert_eq!(camera.unreferenced_member_count(), 132);
+    assert_eq!(
+        camera
+            .payload
+            .as_ref()
+            .expect("payload")
+            .declared_record_count,
+        307
+    );
+    assert_eq!(camera.size_bytes, 1_217_815, "zbd/c1c/cam_anim.zbd");
+
+    // M01: 91 member rows, 22 references, 21 bound, and the one that is not,
+    // named with both spellings.
+    assert_eq!(m01.size_bytes, 2_019_493, "zbd/c1c/m01/mis_anim.zbd");
+    assert_eq!(m01.unreferenced_member_count(), 70);
+    assert_eq!(
+        m01.payload.as_ref().expect("payload").declared_record_count,
+        573
+    );
+    assert_eq!(m01.payload.as_ref().expect("payload").span.offset, 7924);
+    assert_eq!(
+        m01.payload.as_ref().expect("payload").span.length,
+        2_019_493 - 7924
+    );
+    let unresolved: Vec<&str> = m01
+        .unresolved
+        .iter()
+        .map(|entry| entry.raw.as_str())
+        .collect();
+    assert_eq!(
+        unresolved,
+        vec![r"..\data\common\zrdr\zeps\wv_tailhook.zrd"],
+        "M01's one unresolved reference, verbatim"
+    );
+    assert_eq!(m01.unresolved[0].reason, UNRESOLVED_REASON_NO_MEMBER);
+    // The container stores the same basename under the mission root; a
+    // basename is not a binding, so that row stays unreferenced.
+    assert!(
+        m01.members
+            .iter()
+            .any(|row| row.path == r"..\data\c1c\m01\zrdr\zeps\wv_tailhook.zrd"),
+        "the mission-scoped spelling is a member row"
+    );
+    // A bare definition-file name resolved against `ANIMATION_PATH`.
+    assert!(
+        m01.members
+            .iter()
+            .any(|row| row.path == r"..\data\c1c\m01\zrdr\zeps\placezeps.zrd"
+                && row.references.len() == 1),
+        "the bare name bound to the mission-rooted row"
+    );
+
+    // M01's startup table: two keys and seven identities, read and not bound.
+    let startup = m01.startup.as_ref().expect("M01's startup table read");
+    assert_eq!(startup.groups.len(), 2);
+    assert_eq!(
+        startup
+            .groups
+            .iter()
+            .map(|group| group.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["NEW_GAME_START", "LOAD_GAME_START"]
+    );
+    assert_eq!(m01.startup_identity_count(), 7);
+    assert_eq!(startup.reason, UNRESOLVED_REASON_NO_RECORD_NAMES);
+
+    // The corpus totals: 2595 member rows over 61 carriers, 739 references,
+    // 731 of which reach a row, and the 8 that do not — each named.
+    let members: usize = survey.carriers.iter().map(|row| row.members.len()).sum();
+    let references: usize = survey.carriers.iter().map(|row| row.references.len()).sum();
+    let bound: usize = survey
+        .carriers
+        .iter()
+        .map(CarrierBinding::bound_reference_count)
+        .sum();
+    assert_eq!(members, 2595, "every declared member row of every carrier");
+    assert_eq!(
+        references, 739,
+        "every definition file every paired record names"
+    );
+    assert_eq!(bound, 731, "references that reached a member row");
+    let unresolved: Vec<(&str, &str)> = survey
+        .unresolved_references()
+        .map(|(key, entry)| (key, entry.raw.as_str()))
+        .collect();
+    assert_eq!(unresolved.len(), 8, "{unresolved:?}");
+    for (key, raw) in &unresolved {
+        assert!(
+            raw.contains(r"zeps\wv_tailhook.zrd")
+                || raw.contains("hotelstart.zrd")
+                || raw.contains("pzep_hangerlights.zrd")
+                || raw.contains(r"zeps\no_rock.zrd")
+                || raw.contains("manned_aa_gun.zrd")
+                || raw.contains("generic_signs.zrd")
+                || raw.contains("tarzan_huts.zrd"),
+            "{key}: {raw} is one of the measured unresolved references"
+        );
+    }
+    // Every campaign mission scope the layout declares is in the census.
+    assert!(
+        survey.carrier("zbd/c1c/m01/mis_anim.zbd").is_some(),
+        "the c1c mission of the campaign has a row"
+    );
+    assert!(
+        !survey.is_complete(),
+        "the eight unresolved references keep the survey from claiming completeness"
+    );
+    assert!(
+        C1C.starts_with("zbd/"),
+        "the group key is an installation-relative spelling"
     );
 }
