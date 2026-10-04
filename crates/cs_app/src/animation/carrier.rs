@@ -36,9 +36,12 @@
 //! # Paths are compared verbatim
 //!
 //! The store keeps Windows separators, mixed case and — measured — a doubled
-//! separator in the very first member row of every carrier. Nothing here
-//! normalizes a spelling: a reference binds only on a byte-for-byte match
-//! (spec F06 non-negotiable #3), and every other case is named.
+//! separator in the first member row of each of the 8 camera carriers (that row
+//! spells the carrier's own `cam_anim.zrd`; no mission carrier does this). The
+//! first member row of every carrier is its scope's own paired document.
+//! Nothing here normalizes a spelling: a reference binds only on a
+//! byte-for-byte match (spec F06 non-negotiable #3), and every other case is
+//! named.
 //!
 //! # What is still not decoded
 //!
@@ -58,8 +61,9 @@ use cs_assets::install::{self, Discovery};
 use cs_content::stunts::{ZrdValue, decode_zrd, zrd_flat_fields};
 use cs_formats::io::ParseContext;
 use cs_formats::zbd::{
-    AnimationIndex, AnimationRow, DispatchBasis, HeaderStatus, ZbdFamily, ZbdProbe, dispatch,
-    family_record, read_animation_index, read_reader_archive, read_version_one_index,
+    AnimationIndex, AnimationRow, AnimationRowAnomaly, DispatchBasis, HeaderStatus, ZbdFamily,
+    ZbdProbe, dispatch, family_record, read_animation_index, read_reader_archive,
+    read_version_one_index,
 };
 use cs_types::evidence::SourceSpan;
 use cs_types::install::RelativePath;
@@ -129,12 +133,20 @@ pub struct CarrierMember {
     /// Whether the row is one of the two external-container rows rather than a
     /// member row.
     pub external: bool,
-    /// The row's path, verbatim.
+    /// The row's path, verbatim. Bytes outside ASCII are replaced by the
+    /// lossy decoder's marker, so [`Self::anomalies`] is how a caller learns
+    /// that the stored bytes were not the text this string shows.
     pub path: String,
     /// The row's stamp word, verbatim.
     pub stamp: u32,
     /// Where the row sits inside the carrier.
     pub span: SourceSpan,
+    /// What the format reader recorded against the row's own fields, carried
+    /// here so the binding never loses the reader's refusals. Measured over
+    /// the 61 retail carriers: 1115 of the 2595 member rows carry
+    /// [`AnimationRowAnomaly::NonZeroPathPadding`], and **no** retail row is
+    /// unterminated or non-ASCII.
+    pub anomalies: Vec<AnimationRowAnomaly>,
     /// The ordinals of the document references that name this row.
     pub references: Vec<usize>,
 }
@@ -144,6 +156,12 @@ impl CarrierMember {
     #[must_use]
     pub fn is_referenced(&self) -> bool {
         !self.references.is_empty()
+    }
+
+    /// Whether the row breaks `anomaly`.
+    #[must_use]
+    pub fn has_anomaly(&self, anomaly: AnimationRowAnomaly) -> bool {
+        self.anomalies.contains(&anomaly)
     }
 }
 
@@ -276,6 +294,15 @@ pub enum BindingBlocker {
         /// The family dispatch decided.
         family: ZbdFamily,
     },
+    /// The carrier's header bytes did not validate
+    /// (`HeaderStatus::Unvalidated`) — unreachable for the animation family,
+    /// which has a documented signature rule, and recorded for the same reason
+    /// as [`Self::WrongFamily`]: the index is **not** read from bytes the
+    /// header never confirmed.
+    UnvalidatedHeader {
+        /// The carrier's logical key.
+        key: String,
+    },
     /// The carrier indexed, but its payload header could not be read.
     PayloadRefused {
         /// The carrier's logical key.
@@ -333,6 +360,7 @@ impl BindingBlocker {
             Self::CarrierUnreadable { .. } => "carrier_unreadable",
             Self::CarrierRefused { .. } => "carrier_refused",
             Self::WrongFamily { .. } => "wrong_family",
+            Self::UnvalidatedHeader { .. } => "unvalidated_header",
             Self::PayloadRefused { .. } => "payload_refused",
             Self::MissingReader { .. } => "missing_reader",
             Self::ReaderUnreadable { .. } => "reader_unreadable",
@@ -358,6 +386,9 @@ impl fmt::Display for BindingBlocker {
                 "the animation carrier {key} dispatched to the `{}` family",
                 family.as_str()
             ),
+            Self::UnvalidatedHeader { key } => {
+                write!(f, "the animation carrier {key}'s header did not validate")
+            }
             Self::PayloadRefused { key, code } => {
                 write!(
                     f,
@@ -576,28 +607,32 @@ pub fn bind_animation_carrier(
         match dispatch(ZbdProbe::new(&key, path, probe_bytes)) {
             Ok(decision) => {
                 basis = decision.basis();
-                version = match decision.header_status() {
-                    HeaderStatus::Validated { version, .. } => version,
-                    HeaderStatus::Unvalidated { .. } => {
-                        blockers.push(BindingBlocker::CarrierRefused {
-                            key: key.clone(),
-                            code: "unvalidated_header",
-                        });
-                        0
-                    }
-                };
-                if decision.family() != ZbdFamily::Animation {
-                    Err(BindingBlocker::WrongFamily {
-                        key: key.clone(),
-                        family: decision.family(),
-                    })
-                } else {
-                    read_animation_index(&mut context, decision, carrier_bytes).map_err(|error| {
-                        BindingBlocker::CarrierRefused {
-                            key: key.clone(),
-                            code: error.code(),
+                match decision.header_status() {
+                    HeaderStatus::Validated {
+                        version: declared, ..
+                    } => {
+                        version = declared;
+                        if decision.family() != ZbdFamily::Animation {
+                            Err(BindingBlocker::WrongFamily {
+                                key: key.clone(),
+                                family: decision.family(),
+                            })
+                        } else {
+                            read_animation_index(&mut context, decision, carrier_bytes).map_err(
+                                |error| BindingBlocker::CarrierRefused {
+                                    key: key.clone(),
+                                    code: error.code(),
+                                },
+                            )
                         }
-                    })
+                    }
+                    // The animation family has a documented signature rule, so
+                    // dispatch never answers `Unvalidated` for it; if it ever
+                    // did, these are not bytes this reader walks, and the scope
+                    // is reported rather than indexed.
+                    HeaderStatus::Unvalidated { .. } => {
+                        Err(BindingBlocker::UnvalidatedHeader { key: key.clone() })
+                    }
                 }
             }
             Err(error) => Err(BindingBlocker::CarrierRefused {
@@ -716,6 +751,7 @@ fn owned_row(row: &AnimationRow<'_>) -> CarrierMember {
         path: String::from_utf8_lossy(row.path()).into_owned(),
         stamp: row.stamp(),
         span: row.record_span(),
+        anomalies: row.anomalies().collect(),
         references: Vec::new(),
     }
 }

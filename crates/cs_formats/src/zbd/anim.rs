@@ -39,12 +39,23 @@
 //! * The **member** rows are the animation-definition sources whose records
 //!   the payload carries: `.zrd` records and `.zan` sequences, named by the
 //!   same Windows-style relative path the mission's own animation document
-//!   uses. A path may repeat (`climbladder.zan` is 12 consecutive rows in
+//!   uses. A path may repeat (`climbladder.zan` is 14 consecutive rows in
 //!   M01's carrier), so rows stay separate and are addressed by index
-//!   (spec F06 non-negotiable #3).
-//! * `stamp` holds a build timestamp, not a pointer: the 39 distinct values
-//!   over the corpus all fall in 2000-08-26 08:00:56..08:06:58 UTC, the window
-//!   a single build session would produce. **What the original engine does
+//!   (spec F06 non-negotiable #3). Measured: **the first member row of all 61
+//!   containers is the scope's own paired document** — `..\data\<group>\
+//!   <mission>\zrdr\mis_anim.zrd` in a mission scope, and the camera
+//!   container's own `cam_anim.zrd` spelled `..\\data\\<group>\\zrdr\
+//!   cam_anim.zrd` (every separator but the last doubled) in the 8 camera
+//!   carriers — and no paired document names its own row, so member 0 is
+//!   unreferenced in every one.
+//! * `stamp` holds a build timestamp, not a pointer. Measured separately for
+//!   the two tables, because they differ: the 2595 member rows carry 39
+//!   distinct values, all inside 2000-08-26 08:00:56..08:06:58 UTC, the window
+//!   a single build session would produce, and every container's member rows
+//!   carry more than one of them; the 122 external rows carry 9 further
+//!   values, all **later** (08:11:17..08:48:20 UTC), one per world group plus
+//!   a single shared `zbd\planes.zbd` stamp repeated in all 61 containers
+//!   (48 distinct stamps over all rows). **What the original engine does
 //!   with it is not measured** — no source states it, so it is read as a
 //!   number and labelled as such.
 //!
@@ -69,24 +80,29 @@
 //!
 //! The 68 bytes are followed by 40 zero bytes in all 61 containers and then a
 //! 32-byte name field holding a NUL-terminated ASCII string in all 61
-//! ([`AnimationPayload::first_record_name`]). Everything from there to the end
-//! of the file is the **animation records**, which this stage does **not**
-//! decode: the record header layout, the sizes of the inline sub-tables and
-//! the meaning of the record-local pointers are all unmeasured, and a guessed
-//! walk would produce names no measured rule supports. That gap is the finding,
-//! not a silent omission — see [`RECORDS_NOT_DECODED_REASON`].
+//! ([`AnimationPayload::first_record_name`]). Fewer than
+//! [`ANIM_FIRST_RECORD_NAME_OFFSET`] + 32 bytes after the index is a named
+//! refusal ([`AnimationIndexError::FirstRecordNameTruncated`]) rather than an
+//! empty name. Everything from there to the end of the file is the **animation
+//! records**, which this stage does **not** decode: the record header layout,
+//! the sizes of the inline sub-tables and the meaning of the record-local
+//! pointers are all unmeasured, and a guessed walk would produce names no
+//! measured rule supports. That gap is the finding, not a silent omission —
+//! see [`RECORDS_NOT_DECODED_REASON`].
 //!
 //! # Fail-closed
 //!
 //! A family that is not the animation family is refused before a byte is read
 //! ([`AnimationIndexError::NotAnimationFamily`]), counts whose rows do not fit
 //! in the file are refused with the arithmetic that failed
-//! ([`AnimationIndexError::IndexOutOfBounds`]), and a path field with no NUL
-//! or with a non-ASCII byte is recorded per row as an
-//! [`AnimationRowAnomaly`] rather than being decoded into a `String`. A
-//! non-zero byte after a path's terminating NUL is also an anomaly, and it is
-//! a *measured* one: 1115 of the 2595 retail member rows carry one. Those
-//! bytes are kept verbatim in [`AnimationRow::padding`] and never interpreted.
+//! ([`AnimationIndexError::IndexOutOfBounds`]), a payload too short for the
+//! fixed header or for the first record's name field is refused with what it
+//! had and what it needed, and a path field with no NUL or with a non-ASCII
+//! byte is recorded per row as an [`AnimationRowAnomaly`] rather than being
+//! decoded into a `String`. A non-zero byte after a path's terminating NUL is
+//! also an anomaly, and it is a *measured* one: 1115 of the 2595 retail member
+//! rows carry one. Those bytes are kept verbatim in [`AnimationRow::padding`]
+//! and never interpreted.
 
 use std::fmt;
 
@@ -118,6 +134,16 @@ pub const ANIM_MEMBER_PATH_BYTES: usize = 80;
 
 /// Bytes of the fixed block at the front of the payload.
 pub const ANIM_PAYLOAD_HEADER_BYTES: u64 = 68;
+
+/// Measured zero bytes between the payload header and the first record.
+pub const ANIM_RECORD_GAP_BYTES: u64 = 40;
+
+/// Bytes of the first record's NUL-padded name field (`reserved_anim_0`).
+pub const ANIM_FIRST_RECORD_NAME_BYTES: u64 = 32;
+
+/// Offset of the first record's name field, counted from the payload start:
+/// the fixed header, the measured gap, then the name.
+pub const ANIM_FIRST_RECORD_NAME_OFFSET: u64 = ANIM_PAYLOAD_HEADER_BYTES + ANIM_RECORD_GAP_BYTES;
 
 /// Offset of the declared record count inside the payload header (u16).
 pub const ANIM_RECORD_COUNT_OFFSET: u64 = 10;
@@ -516,8 +542,11 @@ impl<'a> AnimationIndex<'a> {
     /// # Errors
     ///
     /// [`AnimationIndexError::PayloadTooSmall`] when fewer than
-    /// [`ANIM_PAYLOAD_HEADER_BYTES`] bytes follow the index, and
-    /// [`AnimationIndexError::Parse`] for a read failure or an allocation
+    /// [`ANIM_PAYLOAD_HEADER_BYTES`] bytes follow the index,
+    /// [`AnimationIndexError::FirstRecordNameTruncated`] when the payload
+    /// holds the header but stops before
+    /// [`ANIM_FIRST_RECORD_NAME_OFFSET`] + [`ANIM_FIRST_RECORD_NAME_BYTES`],
+    /// and [`AnimationIndexError::Parse`] for a read failure or an allocation
     /// refusal inside the header.
     pub fn payload(&self) -> Result<AnimationPayload<'a>, AnimationIndexError> {
         // `payload_offset <= bytes.len()` was checked when the index was read.
@@ -527,12 +556,20 @@ impl<'a> AnimationIndex<'a> {
         // 68 header bytes + 40 measured zero bytes + the first record's
         // 32-byte name field. The 40 and the 32 are this repository's
         // measurement; the name is read as a raw field because the records
-        // are not walked.
-        let record_table_offset = self.payload_offset + ANIM_PAYLOAD_HEADER_BYTES + 40;
-        let name_at = record_table_offset - self.payload_offset;
-        let first_record_name = payload
-            .get(name_at as usize..name_at as usize + 32)
-            .unwrap_or(&[]);
+        // are not walked. A payload that stops inside the name field names
+        // what it lacked instead of reporting an empty name.
+        let needed = ANIM_FIRST_RECORD_NAME_OFFSET + ANIM_FIRST_RECORD_NAME_BYTES;
+        if (payload.len() as u64) < needed {
+            return Err(AnimationIndexError::FirstRecordNameTruncated {
+                container: self.dispatch.container().to_owned(),
+                offset: self.payload_offset,
+                needed: ANIM_FIRST_RECORD_NAME_BYTES,
+                available: (payload.len() as u64).saturating_sub(ANIM_PAYLOAD_HEADER_BYTES),
+            });
+        }
+        let record_table_offset = self.payload_offset + ANIM_FIRST_RECORD_NAME_OFFSET;
+        let first_record_name = &payload[ANIM_FIRST_RECORD_NAME_OFFSET as usize
+            ..(ANIM_FIRST_RECORD_NAME_OFFSET + ANIM_FIRST_RECORD_NAME_BYTES) as usize];
         let name_len = first_record_name
             .iter()
             .position(|&byte| byte == 0)
@@ -598,6 +635,19 @@ pub enum AnimationIndexError {
         /// Bytes the container has from there.
         available: u64,
     },
+    /// The payload holds the fixed header but stops before the first
+    /// record's name field, so no record name can be reported: reported
+    /// rather than returned as an empty name.
+    FirstRecordNameTruncated {
+        /// The container's provenance label.
+        container: String,
+        /// Offset where the payload starts.
+        offset: u64,
+        /// Bytes the name field needs.
+        needed: u64,
+        /// Bytes the container has from there.
+        available: u64,
+    },
     /// A failure from the checked reader or the allocation budget, scoped as
     /// `zbd.anim.<field>`.
     Parse(ParseError),
@@ -611,6 +661,7 @@ impl AnimationIndexError {
             Self::HeaderTooSmall { .. } => "header_too_small",
             Self::IndexOutOfBounds { .. } => "index_out_of_bounds",
             Self::PayloadTooSmall { .. } => "payload_too_small",
+            Self::FirstRecordNameTruncated { .. } => "first_record_name_truncated",
             Self::Parse(_) => "parse",
         }
     }
@@ -621,7 +672,8 @@ impl AnimationIndexError {
             Self::NotAnimationFamily { container, .. }
             | Self::HeaderTooSmall { container, .. }
             | Self::IndexOutOfBounds { container, .. }
-            | Self::PayloadTooSmall { container, .. } => container,
+            | Self::PayloadTooSmall { container, .. }
+            | Self::FirstRecordNameTruncated { container, .. } => container,
             Self::Parse(error) => &error.container,
         }
     }
@@ -671,6 +723,16 @@ impl fmt::Display for AnimationIndexError {
                 f,
                 "{container} at offset {offset}: the payload header needs {needed} bytes, \
                  {available} follow the index"
+            ),
+            Self::FirstRecordNameTruncated {
+                container,
+                offset,
+                needed,
+                available,
+            } => write!(
+                f,
+                "{container} at offset {offset}: the payload holds the fixed header but stops \
+                 {available} bytes in, short of the first record's {needed}-byte name field"
             ),
             Self::Parse(error) => write!(f, "{error}"),
         }

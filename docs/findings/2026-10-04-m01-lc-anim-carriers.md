@@ -21,7 +21,9 @@ and what binds to it.
 - `crates/cs_app/src/animation/carrier.rs` (new): the binding —
   `bind_animation_carrier`, `survey_animation_bindings`, `bind_installation`,
   `CarrierBinding`, `CarrierMember`, `AnimationDocument`, `AnimationReference`,
-  `UnresolvedReference`, `StartupIdentities`, `BindingBlocker`. Wiring:
+  `UnresolvedReference`, `StartupIdentities`, `BindingBlocker`. Every row keeps
+  the format reader's `AnimationRowAnomaly` list in `CarrierMember::anomalies`,
+  so the lossy path decode cannot drop the reader's refusals. Wiring:
   `crates/cs_app/src/animation/mod.rs`.
 - `crates/cs_app/tests/accept_f20_d_validation.rs`: the `accept_m01_lc_anim_carriers_`
   section (9 tests: 8 synthetic, 1 retail). It lives in F20-D's existing test
@@ -65,13 +67,23 @@ measurement, labelled `ClaimStatus::ObservedTool` in the code.
 * **Members** are the animation-definition sources whose records the payload
   carries: `.zrd` records and `.zan` sequences, named by the same
   Windows-style relative path the scope's paired document uses. A path repeats
-  (`..\data\c1c\m01\zrdr\zeps\climbladder.zan` is 13 consecutive rows of M01's
-  carrier, `descendladder.zan` and `fbdescendladder.zan` 14 each; c1c's camera
-  carrier holds 134 rows over 106 distinct paths), so rows stay separate and are
-  addressed by index.
-* **Stamps** are build timestamps by measurement: 39 distinct values corpus-wide,
-  all inside 2000-08-26 08:00:56 .. 08:06:58 UTC. What the engine *does* with
-  them is not measured, so the code reads them as numbers and says so.
+  (`..\data\c1c\m01\zrdr\zeps\climbladder.zan` is 14 consecutive rows of M01's
+  carrier, `descendladder.zan` and `fbdescendladder.zan` 14 each and
+  `halfdescendladder.zan` 13; c1c's camera carrier holds 134 rows over 106
+  distinct paths), so rows stay separate and are addressed by index. Measured:
+  **the first member row of all 61 containers is the scope's own paired
+  document** (`..\data\<group>\<mission>\zrdr\mis_anim.zrd` in a mission scope,
+  and the camera container's own `cam_anim.zrd` with doubled separators in the
+  8 camera carriers), and no paired document's `ANIMATION_LIST` names its own
+  row — so member 0 is unreferenced in every one of the 61.
+* **Stamps** are build timestamps by measurement, and the two tables differ, so
+  they are counted separately: the 2595 member rows carry 39 distinct values,
+  all inside 2000-08-26 08:00:56 .. 08:06:58 UTC, the window a single build
+  session would produce, and every carrier's member rows carry more than one of
+  them; the 122 external rows carry 9 further values, all **later**
+  (08:11:17 .. 08:48:20 UTC) — one per world group, plus a single
+  `zbd\planes.zbd` stamp repeated in all 61 containers. What the engine *does*
+  with them is not measured, so the code reads them as numbers and says so.
 
 Two measured quirks of the path fields, both kept verbatim and neither decoded:
 
@@ -84,9 +96,11 @@ Two measured quirks of the path fields, both kept verbatim and neither decoded:
   second name**: doing so would invent animation content out of a padding byte.
 * **A doubled separator in exactly 8 rows corpus-wide**: the **first member row of
   all 8 camera carriers**, which spells its own paired record
-  `..\\data\\<group>\\zrdr\\cam_anim.zrd`. No mission carrier does this, and no
-  measured document names that row, so no binding breaks today — but a document
-  that did would not match verbatim, which is the point of comparing verbatim.
+  `..\\data\\<group>\\zrdr\cam_anim.zrd` — every separator doubled except the last
+  one. No mission carrier does this, and no measured document names that row
+  (every camera document names `..\data\common\zrdr\anim.zrd` instead, which is
+  member row 1), so no binding breaks today — but a document that did would not
+  match verbatim, which is the point of comparing verbatim.
 
 Every member path field is NUL-terminated and ASCII in all 2595 rows (0
 unterminated, 0 non-ASCII), so the reader's two refusal arms are unexercised by
@@ -189,6 +203,14 @@ bytes, declared record count **573**, gravity `-9.8`, first record
 `reserved_anim_0`. c1c's camera carrier: 1 217 815 bytes, payload at 11 536,
 1 206 279 payload bytes, declared record count **307**.
 
+The 731 bound references reach **730 distinct member rows**, and the difference
+is measured rather than rounded away: exactly one carrier,
+`zbd/c1b/m03`, binds two of its 29 references to one row. Reference 12 is the
+bare name `pzep_getcargo.zrd`, whose first root (`...\vessels`) names no member,
+so it resolves at the second root to row 18; reference 22 is the full
+`..\data\c1b\m03\zrdr\zeps\pzep_getcargo.zrd`, the same row. Every other carrier
+has one distinct row per bound reference.
+
 ### The 8 unresolved references, named
 
 Every one of them is reported with the spelling it was compared against; none is
@@ -267,3 +289,55 @@ thing the record walk has to settle.
 * The c1c retail test is one production discovery pass plus the whole 61-carrier
   census (~38 s on the implementer's machine), because the corpus totals are the
   evidence that 8 is the whole population and not a c1c artefact.
+
+## Review (2026-10-04, `bunny-alpha-1`)
+
+Reviewed in a fresh session with no memory of the implementation, by the same
+agent identity that wrote it — so it is a second pass over the code, **not**
+independent evidence, and the format claims above still want a different
+reviewer (a task asks for one).
+
+**Re-derived independently.** Every number this finding pins was recomputed
+from `$CS_GAME_DIR` with a throwaway reader written against the measured
+layout alone (the trailer's 148-byte index entries and the `.zrd` grammar, both
+re-implemented from this repository's readers) rather than through the code
+under review. All of it reproduces: 61 carriers / 2595 member rows / 739
+references / 731 bound / 8 unresolved / 1865 unreferenced, the c1c row-by-row
+table, the payload offsets, lengths and declared counts, the 19 `;`-joined
+`ANIMATION_PATH` records (11 without, 1 empty), the 53 `startanims.zrd` records
+with 195 identities and M01's exact seven, the 1115 padded rows over 41
+containers, the 272-byte stride of the first six records of c1c's camera
+carrier, and the 8 unresolved spellings.
+
+**Corrected here** (the findings were mine to fix, so they are fixed rather
+than filed): `climbladder.zan` is **14** consecutive M01 rows, not 13 (`13` is
+`halfdescendladder.zan`); the stamp counts are per table (39 member, 9
+external, 48 over all rows), not 39 "corpus-wide"; the doubled separator is in
+the first row of the **8 camera carriers** only, and its last separator is not
+doubled.
+
+**Fixed in the code.**
+
+* `AnimationIndex::payload()` used to report an **empty** first-record name
+  when the payload held the 68-byte header but stopped inside the name field.
+  It now refuses with `AnimationIndexError::FirstRecordNameTruncated` (needed
+  32, available what it had), covered by the synthetic refusal test.
+* `bind_animation_carrier` used to push a `carrier_refused` blocker carrying an
+  invented `unvalidated_header` code and then **read the index anyway** when
+  dispatch answered `HeaderStatus::Unvalidated`. It now refuses with
+  `BindingBlocker::UnvalidatedHeader`, matching `survey::CarrierBlocker` in the
+  sibling F20-D module. Unreachable for this family, which has a documented
+  signature rule — so the fix is consistency and fail-closed, not a live bug.
+* `CarrierMember` now carries the reader's `AnimationRowAnomaly` list. The
+  lossy path decode made an anomaly invisible to every consumer of the binding;
+  the retail test now asserts the measured census (1115 padded rows over 41
+  carriers, **zero** unterminated and zero non-ASCII rows) and that member 0 is
+  the scope's own paired document in all 61 carriers and unreferenced in all 61,
+  instead of leaving both claims as prose.
+
+**Not changed, and still the honest gap.** The animation records behind the
+payload header are not decoded. The task's acceptance sentence names "decoded"
+among the members that M01's documents reference; this stage decodes the
+carrier index, the payload header and the first record's name, and stops there
+because no measured rule fixes a record's length (see above). A follow-up task
+carries the record walk.

@@ -1517,6 +1517,47 @@ fn accept_m01_lc_anim_carriers_a_nonzero_byte_after_a_path_is_reported_not_decod
         "the padding is kept verbatim"
     );
     assert_eq!(index.anomalous_rows().count(), 1);
+
+    // The binding keeps the reader's refusal: an anomaly a consumer of
+    // `bind_animation_carrier` can still see, rather than one the lossy path
+    // decode silently drops.
+    let carrier = anim_container_bytes(
+        &[("zbd\\c1c\\gamez.zbd", 1), ("zbd\\planes.zbd", 2)],
+        &[("..\\data\\c1c\\m01\\zrdr\\mis_anim.zrd", 7)],
+        &carrier_payload(1, "reserved_anim_0"),
+    );
+    let binding = bind_animation_carrier(
+        &RelativePath::new("zbd/c1c/m01/mis_anim.zbd").expect("a relative spelling"),
+        "zbd/c1c/m01/zrdr.zbd",
+        CarrierKind::Mission,
+        &carrier,
+        SiblingReader::Absent,
+    );
+    assert!(
+        binding.members[0].anomalies.is_empty(),
+        "a zero-padded row carries no anomaly through the binding"
+    );
+    let mut carrier = carrier;
+    let field = 16 + 2 * 132;
+    let text_len = "..\\data\\c1c\\m01\\zrdr\\mis_anim.zrd".len();
+    carrier[field + text_len + 1] = b'X';
+    let binding = bind_animation_carrier(
+        &RelativePath::new("zbd/c1c/m01/mis_anim.zbd").expect("a relative spelling"),
+        "zbd/c1c/m01/zrdr.zbd",
+        CarrierKind::Mission,
+        &carrier,
+        SiblingReader::Absent,
+    );
+    assert_eq!(
+        binding.members[0].anomalies,
+        vec![AnimationRowAnomaly::NonZeroPathPadding],
+        "the binding reports what the reader recorded, unchanged"
+    );
+    assert!(binding.members[0].has_anomaly(AnimationRowAnomaly::NonZeroPathPadding));
+    assert_eq!(
+        binding.members[0].path, "..\\data\\c1c\\m01\\zrdr\\mis_anim.zrd",
+        "and the path it binds on is still the text before the NUL"
+    );
 }
 
 /// The join itself: a full path binds to its row, a bare name resolves against
@@ -1767,6 +1808,43 @@ fn accept_m01_lc_anim_carriers_every_unreadable_input_is_a_named_refusal() {
         }
         other => panic!("expected PayloadTooSmall, got {other:?}"),
     }
+
+    // A payload that holds the header but stops inside the first record's name
+    // field: named, never reported as an empty record name.
+    let truncated = anim_container_bytes(
+        &[("zbd\\c1c\\gamez.zbd", 1), ("zbd\\planes.zbd", 2)],
+        &[("a.zrd", 1)],
+        &[0_u8; 100],
+    );
+    let index = read_synthetic_index("zbd/c1c/m01/mis_anim.zbd", synthetic_path(), &truncated)
+        .expect("the index still reads");
+    match index.payload() {
+        Err(AnimationIndexError::FirstRecordNameTruncated {
+            needed, available, ..
+        }) => {
+            assert_eq!(needed, 32, "the name field is what it lacks");
+            assert_eq!(
+                available, 32,
+                "100 bytes: 68 of header, 32 short of the field"
+            );
+        }
+        other => panic!("expected FirstRecordNameTruncated, got {other:?}"),
+    }
+    // The header, the measured gap and the name field exactly: it reads.
+    let exact = anim_container_bytes(
+        &[("zbd\\c1c\\gamez.zbd", 1), ("zbd\\planes.zbd", 2)],
+        &[("a.zrd", 1)],
+        &carrier_payload(1, "reserved_anim_0")[..140],
+    );
+    let index = read_synthetic_index("zbd/c1c/m01/mis_anim.zbd", synthetic_path(), &exact)
+        .expect("the index still reads");
+    assert_eq!(
+        index
+            .payload()
+            .expect("exactly the header, the gap and the name field")
+            .first_record_name(),
+        b"reserved_anim_0"
+    );
 
     // A sibling reader with no paired record: the row is reported, not dropped.
     let carrier = anim_container_bytes(
@@ -2026,6 +2104,115 @@ fn accept_m01_lc_anim_carriers_retail_c1c_lists_binds_and_reports_every_member()
         .map(|row| row.unreferenced_member_count())
         .sum();
     assert_eq!(unreferenced, 1865, "member rows no definition file names");
+    // 731 bound references reach 730 distinct rows: exactly one carrier binds
+    // two of its references to the same row, because a bare name resolved
+    // against a later root and a full path name the same member. Measured, and
+    // named here so the two totals are not read as a contradiction.
+    let referenced_rows: usize = survey
+        .carriers
+        .iter()
+        .map(|row| row.referenced_member_count())
+        .sum();
+    assert_eq!(
+        referenced_rows, 730,
+        "distinct member rows a reference names"
+    );
+    let shared: Vec<&str> = survey
+        .carriers
+        .iter()
+        .filter(|row| {
+            row.bound_reference_count() > 0
+                && row.referenced_member_count() < row.bound_reference_count()
+        })
+        .map(|row| row.container_key.as_str())
+        .collect();
+    assert_eq!(shared, vec!["zbd/c1b/m03/mis_anim.zbd"]);
+    let m03 = survey
+        .carrier("zbd/c1b/m03/mis_anim.zbd")
+        .expect("the c1b M03 carrier has a row");
+    let row_18 = m03
+        .members
+        .iter()
+        .find(|row| row.index == 18)
+        .expect("member row 18");
+    assert_eq!(row_18.references, vec![12, 22]);
+    assert_eq!(
+        m03.references[12].raw, "pzep_getcargo.zrd",
+        "a bare name whose first root is not a member row"
+    );
+    assert_eq!(
+        m03.references[22].raw, r"..\data\c1b\m03\zrdr\zeps\pzep_getcargo.zrd",
+        "and the full path that reaches the same row"
+    );
+
+    // The index rows' own refusals, measured over the same corpus: 1115 member
+    // rows carry a non-zero byte after their NUL (41 containers), and **no**
+    // retail row is unterminated or non-ASCII — the two refusal arms the
+    // synthetic tests exercise instead.
+    let padded: usize = survey
+        .carriers
+        .iter()
+        .flat_map(|row| &row.members)
+        .filter(|row| row.has_anomaly(AnimationRowAnomaly::NonZeroPathPadding))
+        .count();
+    assert_eq!(
+        padded, 1115,
+        "member rows with a non-zero byte after the NUL"
+    );
+    let padded_carriers = survey
+        .carriers
+        .iter()
+        .filter(|row| {
+            row.members
+                .iter()
+                .any(|member| member.has_anomaly(AnimationRowAnomaly::NonZeroPathPadding))
+        })
+        .count();
+    assert_eq!(padded_carriers, 41, "containers that hold one");
+    for anomaly in [
+        AnimationRowAnomaly::UnterminatedPath,
+        AnimationRowAnomaly::NonAsciiPath,
+    ] {
+        let hits = survey
+            .carriers
+            .iter()
+            .flat_map(|row| &row.members)
+            .filter(|row| row.has_anomaly(anomaly))
+            .count();
+        assert_eq!(hits, 0, "{anomaly:?} does not occur in the original data");
+    }
+    // Every member row of every carrier is the scope's own paired document at
+    // index 0, and no paired document names it — which is why row 0 is
+    // unreferenced in all 61.
+    for carrier in &survey.carriers {
+        let first = carrier.members.first().expect("every carrier has member 0");
+        assert_eq!(first.index, 0);
+        assert!(
+            first.references.is_empty(),
+            "{}: the document never names its own row",
+            carrier.container_key
+        );
+        let expected = match carrier.kind {
+            CarrierKind::Mission => format!(
+                r"..\data\{scope}\zrdr\mis_anim.zrd",
+                scope = carrier
+                    .container_key
+                    .strip_prefix("zbd/")
+                    .and_then(|rest| rest.strip_suffix("/mis_anim.zbd"))
+                    .expect("a mission carrier key")
+                    .replace('/', "\\")
+            ),
+            CarrierKind::Camera => format!(
+                r"..\\data\\{group}\\zrdr\cam_anim.zrd",
+                group = carrier
+                    .container_key
+                    .strip_prefix("zbd/")
+                    .and_then(|rest| rest.strip_suffix("/cam_anim.zbd"))
+                    .expect("a camera carrier key")
+            ),
+        };
+        assert_eq!(first.path, expected, "{}: member 0", carrier.container_key);
+    }
     let c1c: Vec<&CarrierBinding> = survey
         .carriers
         .iter()
@@ -2237,8 +2424,14 @@ fn evidence_report_m01_lc_anim_carriers_writes_the_acceptance_report() {
         M01LC_OPEN_STATE
     );
     let review = "implementer: bunny-alpha-1/bunny-alpha-1 (Rally task #633, session of \
-         2026-10-04); reviewer: not yet assigned — this report is the implementer's own claim at \
-         level `implemented`, and no agent review replaces the owner's human approval";
+         2026-10-04); reviewer: bunny-alpha-1/bunny-alpha-1 again, in a fresh session with no \
+         memory of the implementation — a second pass over the code and an independent re-derivation \
+         of every measured number, but the SAME agent identity, so it is not an independent \
+         reviewer and not independent original-reference evidence (a follow-up task asks for one). \
+         The review fixed a fail-open empty first-record name, an Unvalidated-header arm that read \
+         the index anyway, the row anomalies the binding had dropped, and three measured-claim \
+         slips in this repository's docs; the claim stays at level `implemented`, and no agent \
+         review replaces the owner's human approval";
 
     let document = format!(
         "{{\n\
@@ -2301,6 +2494,7 @@ fn evidence_report_m01_lc_anim_carriers_writes_the_acceptance_report() {
     for open in [
         "animation records behind each carrier",
         "195 startanims.zrd identities",
+        "SAME agent identity",
     ] {
         assert!(
             written.contains(open),
