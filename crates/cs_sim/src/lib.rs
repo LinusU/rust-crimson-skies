@@ -310,7 +310,13 @@
 //! one revision — a replayed packet can never pay twice and a replayed
 //! mission never moves progression. The declared, provenance-carrying
 //! schema is `cs_content::campaign`; the lowering boundary is
-//! `cs_app::campaign`; purchases, saves and briefing wiring are F43-B/C.
+//! `cs_app::campaign`; the saves and briefing wiring is F43-C. F43-B added the
+//! other two transactions of that contract to [`campaign`]:
+//! [`campaign::CampaignState::advance_interludes`], which walks a selected
+//! narrative beat forward (nothing else can, so a campaign crossing a briefing
+//! was unfinishable without it), and [`campaign::CampaignState::purchase`], the
+//! economy draft validated against the expected profile revision before it
+//! writes.
 //!
 //! [`multiplayer`] is the F56-A multiplayer rule layer
 //! (`specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stage

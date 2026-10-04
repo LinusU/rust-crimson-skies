@@ -54,6 +54,12 @@ Three properties are deliberate:
   exactly where it was rather than half-way down a chain it cannot finish. This
   is what lets F43-D tell a bad import from a rule this stage has not
   implemented.
+* **A cycling beat chain is refused too.** A declared chain that comes back to a
+  beat it already crossed is a cycle in the *declared* campaign, and nothing
+  upstream rejects one. `CampaignError::InterludeLoop` names the beat, and the
+  walk is additionally bounded by the graph's node count, which is the longest a
+  legitimate chain can be. Both guards exist: the refusal makes the answer
+  right, the bound keeps a lost guard from hanging the caller.
 * **A non-beat is not a walk.** `advance_interludes` on a mission returns an
   empty advance and writes nothing, which is asserted so the call cannot be
   mistaken for a progression move.
@@ -72,14 +78,16 @@ bit-identical afterwards.
 
 Two ordering decisions are load-bearing and are pinned by tests:
 
-* **Revision last, deliberately.** Availability, ownership and money are
-  *semantic* facts about what the player is trying to do; staleness is a fact
-  about the caller's view. Reporting "you cannot afford it" for a stale draft
-  would send the caller to refresh a view and be told the same thing forever.
-* **Availability first.** A stale draft naming an item this run does not offer
-  must not read as a conflict: refreshing would re-show a menu entry that cannot
-  be bought. So the availability fault is reported, and a stale draft naming an
-  *available* item is then reported as stale even when it is also unaffordable.
+* **Revision last, deliberately.** Availability and ownership are *structural*
+  facts — a roster gate the run has not opened, an item the owned set already
+  holds — and no refresh can change either, so they are reported even when the
+  draft is stale. The balance can move under any other committed transaction, so
+  its verdict drawn from a stale view is the least reliable thing the call could
+  say; the caller refreshes and re-reads it. Putting the revision check first
+  would report the conflict for drafts whose real fault survives the refresh.
+* **Availability before staleness.** The same argument for the item itself: a
+  stale draft naming an item this run does not offer must not read as a
+  conflict, because refreshing cannot make the item appear.
 
 **Idempotence** falls out of the same place the interlude's does: a purchase
 adds the item to the owned set, so a draft replayed after a crash is refused
@@ -109,8 +117,9 @@ F43-A AC01 behavior this stage must not regress.
 
 ## Test inventory (`accept_f43_b_*`)
 
-All ten are in `crates/cs_app/tests/accept_f43_b_progression_and_economy.rs`
-and all run in CI (no `retail` needed, no `#[ignore]`):
+All thirteen are in
+`crates/cs_app/tests/accept_f43_b_progression_and_economy.rs` and all run in CI
+(no `retail` needed, no `#[ignore]`):
 
 | Test | Covers |
 | --- | --- |
@@ -119,22 +128,86 @@ and all run in CI (no `retail` needed, no `#[ignore]`):
 | `accept_f43_b_progression_walks_a_declared_interlude` | the walk, the beat's own grant, and reaching the ending through the declared path |
 | `accept_f43_b_walking_a_beat_twice_pays_it_once` | idempotence, a non-beat writing nothing, a defeat replay on an old node |
 | `accept_f43_b_a_beat_with_no_onward_edge_is_refused_not_silently_stopped` | `InterludeDeadEnd` and the refusal leaving the run untouched |
+| `accept_f43_b_a_declared_beat_cycle_is_refused_not_walked_forever` | `InterludeLoop` for a self-looped beat and for a two-beat cycle (review fix 1) |
+| `accept_f43_b_a_beat_chain_granting_more_than_i64_max_pays_exactly` | the currency accumulator's width (review fix 2) |
+| `accept_f43_b_a_beat_grant_that_would_overflow_the_balance_is_refused` | `CurrencyOverflow` from a beat grant, and nothing written |
 | `accept_f43_b_a_purchase_is_validated_then_written_once` | the purchase rule and its idempotence |
 | `accept_f43_b_every_purchase_refusal_leaves_the_profile_untouched` | `ItemUnavailable` / `InsufficientFunds` / `StaleRevision` and the bit-identical invariant |
-| `accept_f43_b_a_stale_draft_is_reported_as_stale_before_its_other_faults` | the refusal ordering the contract's "fail and refresh the view" depends on |
+| `accept_f43_b_purchase_refusals_report_the_structural_faults_before_staleness` | the refusal ordering the contract's "fail and refresh the view" depends on |
 | `accept_f43_b_a_replay_invalidates_a_draft_taken_before_it` | the shared revision counter: a paying-nothing replay still invalidates a draft |
 | `accept_f43_b_the_declared_beat_lowers_to_an_interlude_and_a_roster_gate_holds` | the walk and the classification agree on what a beat is |
 
 ### Measured sensitivity
 
-Both mutations were applied to production code, run, and reverted:
+All mutations were applied to production code, run, and reverted:
 
-* **stubbing `advance_interludes` to an empty advance** — 7 of 10 fail.
+* **stubbing `advance_interludes` to an empty advance** — 7 of the original 10
+  fail.
 * **dropping the `expected_revision` check** — the same 7 fail.
 
 A third probe worth recording: the AC02 test is the only one that catches a
-regression which *lowers* `best_score`, because it is the only test that
-replays with a worse score against a completed node.
+regression which *lowers* `best_score`, because it is the only test that replays
+with a worse score against a completed node.
+
+### Review (bunny-2, reviewing its own implementation)
+
+**This review is not independent evidence.** The implementer and the reviewer are
+the same agent instance (`bunny-2/bunny-2`) continuing in a second session, so
+this section records a self-review with the same measurements available to any
+reviewer, not a second opinion. AGENTS.md asks for a different instance or model
+for format/mission semantics; the owner should treat the F43-B claims below as
+reviewed-but-not-independently-reviewed.
+
+Three things were found and fixed; the first two were defects in the code this
+stage added.
+
+**1. A declared beat cycle never terminated the walk (defect, fixed).** Neither
+`cs_content::campaign::try_new` nor `CampaignGraph::try_new` rejects a cycle —
+both only require a non-ending node to declare *an* edge — and the walk was a
+bare `while` over `Victory` edges with no memory of where it had been. Measured
+before the fix, on a declared `beat --Victory--> beat`: the walk produced no
+result within 100 ms, and with the guard removed under test it was still running
+after 30 minutes and had to be killed. A cycle therefore turned a progression
+transaction into a hang. Fixed by refusing the repeat as
+`CampaignError::InterludeLoop { node }` and bounding the walk by the graph's node
+count — the longest a legitimate chain can be — so that losing the guard fails
+the caller instead of spinning it. Measured after the fix, with **only** the
+refusal neutered and the bound kept: the test fails in 0.00 s and shows the
+damage concretely (`traversed: [beat, beat, beat]`, `currency_delta: 30` — the
+same beat crossed and paid three times).
+
+**2. A beat chain granting more than `i64::MAX` minor units panicked (defect,
+fixed).** The chain's grants were summed in an `i64` accumulator and cast back to
+`u64`, so a legitimate chain of three `2^62` grants — above `i64::MAX`, inside
+`u64` — overflowed. Measured before the fix: `attempt to add with overflow` at
+`state.rs:481`, i.e. a debug-build panic on a syntactically valid declaration, and
+a wrapped (wrong) sum in a release build, which can silently pay the wrong
+balance. The walk now accumulates in the currency's own `u64` with
+`checked_add`, so it either pays the exact sum or refuses with
+`CurrencyOverflow`; `InterludeAdvance::currency_delta` is `u64` for the same
+reason, since a walk only ever grants. Measured after the fix: the three-beat
+chain pays `3 * 2^62` exactly, and a grant that would carry the balance past
+`u64::MAX` is refused with nothing written.
+
+**3. A test name and a doc comment stated the opposite of the pinned behaviour
+(correctness of the record, fixed).** `purchase` checks the expected revision
+**last**, and
+`accept_f43_b_a_stale_draft_is_reported_as_stale_before_its_other_faults` asserted
+exactly that — availability first, price before staleness — under a name claiming
+the opposite, while `purchase`'s own doc comment said the revision "is *always*
+reported as stale". Neither the name nor the comment was wrong about the code;
+they were wrong about each other. The test is now
+`accept_f43_b_purchase_refusals_report_the_structural_faults_before_staleness`,
+and both the comment and the section above give the honest reason for the order:
+structural facts are reported even for a stale draft, the balance is not.
+
+What the review checked and found sound, unchanged: the exactly-once ledger and
+its `AlreadyApplied` answer (F43-A's AC01, still pinned here), replay never
+moving `current` or re-paying a grant, the single mutation point in both
+transactions, every refusal leaving the profile bit-identical, and the AC02 test
+being the only one that catches a lowered `best_score`. `advance_interludes`
+being unwired is unchanged and is still F43-C's job; nothing on this branch
+depends on the walk happening implicitly.
 
 ## Recorded unknowns (not guessed — spec F43 behavior 4)
 
@@ -147,7 +220,12 @@ replays with a worse score against a completed node.
    them.** `advance_interludes` implements the declared schema's semantics
    ("transitions unconditionally", a `Victory` edge). Whether the original
    campaign routes through narrative beats this way is unmeasured; if it does
-   not, this path is simply never taken.
+   not, this path is simply never taken. The *refusals* on top of that walk are
+   engine policy, not measured original rules: what the original does with a
+   beat that has no onward edge, with a chain that cycles, and with a grant it
+   cannot represent is **unknown**. F43-D must observe it; until then the
+   runtime's refusal is a designed answer to a declaration nothing upstream
+   validates.
 3. **Whether a campaign may legally *begin* on an interlude.** Still open from
    F43-A and deliberately left open: `CampaignState::begin` selects the entry
    node and does not walk, so a campaign whose entry is a beat needs one

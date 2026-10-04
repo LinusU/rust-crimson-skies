@@ -24,6 +24,12 @@
 //!   one in F43-A: no mission reports an outcome for a beat, so nothing moved
 //!   `current` off it. `accept_f43_b_progression_walks_a_declared_interlude`
 //!   drives the walk, and its idempotence and dead-end refusals.
+//! * **The declared campaign's mistakes, refused rather than obeyed.** A beat
+//!   with no onward edge, a chain of beats that cycles back on itself, and a
+//!   grant chain that would carry the balance past the currency type are all
+//!   declarations the schema accepts and the walk must not obey: nothing upstream
+//!   rejects them, and each one would otherwise hang the walk, crash it, or write
+//!   a wrong balance.
 //! * **The economy draft.** The contract's purchase rule — validate
 //!   availability, money and the expected profile revision before writing, and
 //!   fail a conflicting revision without overwriting unrelated progression.
@@ -268,6 +274,112 @@ fn completed_run() -> (CampaignGraph, CampaignState) {
         .apply_outcome(&graph, &outcome(1, 40, 1, "m02", Outcome::Succeeded, 4000))
         .expect("m02 applies");
     state.advance_interludes(&graph).expect("m02 is not a beat");
+    (graph, state)
+}
+
+/// A declared campaign whose victory path crosses `chain`, the beat ids in the
+/// order the walk crosses them. The entry mission grants `entry_grant` and every
+/// beat grants `beat_grant`; the last beat's `Victory` edge targets `tail` (a
+/// mission that can report an outcome) or, with `cycle`, back at the first beat.
+fn beat_chain_campaign(
+    chain: &[&str],
+    tail: &str,
+    cycle: bool,
+    entry_grant: u64,
+    beat_grant: u64,
+) -> CampaignDefinition {
+    assert!(!chain.is_empty(), "a beat chain needs at least one beat");
+    let mut draft = empty_draft(node("m01"));
+    draft.nodes.push(CampaignNode {
+        id: node("m01"),
+        kind: NodeKind::Mission {
+            mission: known(mission_content("m01")),
+        },
+        edges: vec![CampaignEdge {
+            on: EdgeCondition::Victory,
+            to: node(chain[0]),
+            grant: Some(RewardSpec {
+                currency: known(entry_grant),
+                unlocks: Vec::new(),
+            }),
+            provenance: designed(),
+        }],
+        provenance: designed(),
+    });
+    for (index, id) in chain.iter().enumerate() {
+        let next = if index + 1 == chain.len() {
+            if cycle { chain[0] } else { tail }
+        } else {
+            chain[index + 1]
+        };
+        draft.nodes.push(CampaignNode {
+            id: node(id),
+            kind: NodeKind::Interlude {
+                asset: unknown_asset("unsurveyed"),
+            },
+            edges: vec![CampaignEdge {
+                on: EdgeCondition::Victory,
+                to: node(next),
+                grant: Some(RewardSpec {
+                    currency: known(beat_grant),
+                    unlocks: Vec::new(),
+                }),
+                provenance: designed(),
+            }],
+            provenance: designed(),
+        });
+    }
+    if !cycle {
+        draft.nodes.push(CampaignNode {
+            id: node(tail),
+            kind: NodeKind::Mission {
+                mission: known(mission_content(tail)),
+            },
+            edges: vec![CampaignEdge {
+                on: EdgeCondition::Victory,
+                to: node("ending"),
+                grant: None,
+                provenance: designed(),
+            }],
+            provenance: designed(),
+        });
+        draft.nodes.push(CampaignNode {
+            id: node("ending"),
+            kind: NodeKind::Ending,
+            edges: Vec::new(),
+            provenance: designed(),
+        });
+    }
+    CampaignDefinition::try_new(draft).expect("a declared beat chain is a valid campaign")
+}
+
+/// Wins `m01` in a [`beat_chain_campaign`] run, parking it on the first beat
+/// with the entry grant already paid.
+fn parked_on_first_beat(
+    chain: &[&str],
+    tail: &str,
+    cycle: bool,
+    entry_grant: u64,
+    beat_grant: u64,
+) -> (CampaignGraph, CampaignState) {
+    let graph = lower_campaign(&beat_chain_campaign(
+        chain,
+        tail,
+        cycle,
+        entry_grant,
+        beat_grant,
+    ))
+    .expect("it lowers");
+    let mut state = CampaignState::begin(
+        profile(),
+        CampaignRunId::new(RUN).expect("valid run id"),
+        DifficultyId::new("standard").expect("valid difficulty"),
+        &graph,
+    );
+    state
+        .apply_outcome(&graph, &outcome(1, 10, 1, "m01", Outcome::Succeeded, 100))
+        .expect("m01 applies");
+    assert_eq!(state.current(), &key(chain[0]), "m01 did not park the run");
     (graph, state)
 }
 
@@ -570,6 +682,105 @@ fn accept_f43_b_a_beat_with_no_onward_edge_is_refused_not_silently_stopped() {
     assert_eq!(state.revision(), revision, "the refusal wrote a revision");
 }
 
+/// A declared chain of beats that returns to a beat it already crossed is a
+/// cycle in the *declared* campaign, and nothing upstream rejects one: the
+/// declared schema and `CampaignGraph` only require a non-ending node to declare
+/// *an* edge. The walk itself must therefore refuse it — it may not cross the
+/// same beat forever, and it may not pay it again on every turn. A self-looped
+/// beat and a longer cycle are both pinned; both name the beat the chain came
+/// back to.
+#[test]
+fn accept_f43_b_a_declared_beat_cycle_is_refused_not_walked_forever() {
+    for chain in [vec!["beat"], vec!["beat_a", "beat_b"]] {
+        let (graph, mut state) = parked_on_first_beat(&chain, "m02", true, 10, 10);
+        let revision = state.revision();
+        let currency = state.currency();
+        assert_eq!(
+            state
+                .advance_interludes(&graph)
+                .expect_err("a cyclic beat chain is refused, not walked"),
+            CampaignError::InterludeLoop {
+                node: key(chain[0])
+            },
+            "the refusal does not name the beat the chain came back to"
+        );
+        // …and it paid nothing: the whole walk is computed before the single
+        // mutation point, so a refusal is never half a walk.
+        assert_eq!(state.current(), &key(chain[0]), "the refusal moved the run");
+        assert_eq!(state.revision(), revision, "the refusal wrote a revision");
+        assert_eq!(state.currency(), currency, "the refusal paid a beat");
+    }
+}
+
+/// A chain of beats may legitimately grant more than `i64::MAX` minor units —
+/// here three beats of `2^62` each — and the walk must pay that sum **exactly**.
+/// A narrower signed accumulator panics on such a chain in a debug build and
+/// wraps to a wrong sum in a release one; the currency's own `u64` holds it.
+#[test]
+fn accept_f43_b_a_beat_chain_granting_more_than_i64_max_pays_exactly() {
+    let big = 1_u64 << 62;
+    let chain = ["beat_a", "beat_b", "beat_c"];
+    let graph = lower_campaign(&beat_chain_campaign(&chain, "m02", false, 1, big))
+        .expect("the chain lowers");
+    let mut state = CampaignState::begin(
+        profile(),
+        CampaignRunId::new(RUN).expect("valid run id"),
+        DifficultyId::new("standard").expect("valid difficulty"),
+        &graph,
+    );
+    state
+        .apply_outcome(&graph, &outcome(1, 10, 1, "m01", Outcome::Succeeded, 100))
+        .expect("m01 applies");
+    assert_eq!(state.currency(), 1, "the entry grant was not paid");
+
+    let advance = state
+        .advance_interludes(&graph)
+        .expect("a chain inside u64 is walkable");
+    assert_eq!(
+        advance.traversed,
+        chain.iter().map(|id| key(id)).collect::<Vec<_>>(),
+        "the chain was not walked whole"
+    );
+    assert_eq!(
+        advance.currency_delta,
+        3 * big,
+        "the chain's grants were not summed exactly"
+    );
+    assert_eq!(
+        state.currency(),
+        1 + 3 * big,
+        "the balance is not the exact sum of every grant"
+    );
+    assert_eq!(
+        state.current(),
+        &key("m02"),
+        "the chain did not land on m02"
+    );
+}
+
+/// …and a chain whose grants would carry the balance past `u64::MAX` is
+/// refused, never wrapped: `CurrencyOverflow` names the balance before the walk
+/// and the grant that would have carried it over, and nothing is written.
+#[test]
+fn accept_f43_b_a_beat_grant_that_would_overflow_the_balance_is_refused() {
+    // `m01`'s victory takes the balance to the top of `u64`; the beat's own
+    // grant cannot be added to it.
+    let (graph, mut state) = parked_on_first_beat(&["beat"], "m02", false, u64::MAX, 1);
+    assert_eq!(state.currency(), u64::MAX, "the entry grant was not paid");
+    let revision = state.revision();
+    assert_eq!(
+        state.advance_interludes(&graph),
+        Err(CampaignError::CurrencyOverflow {
+            before: u64::MAX,
+            delta: 1
+        }),
+        "an impossible balance was written instead of refused"
+    );
+    assert_eq!(state.currency(), u64::MAX, "the refusal moved the balance");
+    assert_eq!(state.current(), &key("beat"), "the refusal moved the run");
+    assert_eq!(state.revision(), revision, "the refusal wrote a revision");
+}
+
 // ------------------------------------------------------------- economy ------
 
 /// The contract's purchase rule: validate availability, money and the expected
@@ -701,11 +912,15 @@ fn accept_f43_b_every_purchase_refusal_leaves_the_profile_untouched() {
     );
 }
 
-/// A stale draft must be reported as stale even when the purchase would *also*
-/// have failed for another reason, so the view the caller refreshes names the
-/// real cause.
+/// The refusal order is pinned, because the contract's "fail and refresh the
+/// view" depends on it: availability and ownership are *structural* facts (a
+/// roster gate, the owned set) that no refresh can change, so they are reported
+/// even for a stale draft; the balance can move under any other committed
+/// transaction, so its verdict drawn from a stale view is reported before
+/// staleness too. Staleness is reported last, and only for a draft the earlier
+/// checks do not already refuse.
 #[test]
-fn accept_f43_b_a_stale_draft_is_reported_as_stale_before_its_other_faults() {
+fn accept_f43_b_purchase_refusals_report_the_structural_faults_before_staleness() {
     let (graph, mut state) = progressed_past_the_beat();
     let revision = state.revision();
     // Both faults at once: the item is unavailable *and* the draft is stale, and
@@ -720,9 +935,9 @@ fn accept_f43_b_a_stale_draft_is_reported_as_stale_before_its_other_faults() {
             },
         )
         .expect_err("an unavailable item cannot be bought");
-    // Availability is checked first and reported: the caller's view must learn
-    // the item does not exist in this run before it learns the price or the
-    // revision, or a refresh would show a menu entry that cannot be bought.
+    // Availability is reported first: a refresh cannot change it, so the caller
+    // must learn the item is not offered in this run before it learns anything
+    // about the price or the revision.
     assert_eq!(
         error,
         CampaignError::ItemUnavailable {
@@ -731,9 +946,10 @@ fn accept_f43_b_a_stale_draft_is_reported_as_stale_before_its_other_faults() {
         "the refusal order changed: {error}"
     );
 
-    // With the item available, the *revision* fault outranks the price fault, so
-    // a stale view is never told "you cannot afford it" when the truth is that
-    // the profile moved on.
+    // With the item available, the *price* fault outranks staleness too: the
+    // balance is part of what the stale view got wrong, so "you cannot afford
+    // it" is the honest reading of this draft and the caller re-reads it from
+    // the refreshed view.
     let plane_b = content(ContentKind::Airframe, "plane_b");
     let error = state
         .purchase(

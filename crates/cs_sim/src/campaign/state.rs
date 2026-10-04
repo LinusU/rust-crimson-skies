@@ -139,6 +139,17 @@ pub enum CampaignError {
         /// The interlude with no onward victory edge.
         node: CampaignNodeKey,
     },
+    /// The chain of beats returned to a beat it had already crossed, so the
+    /// declared campaign's beats form a cycle.
+    ///
+    /// Neither the declared schema nor [`CampaignGraph`] rejects a cycle — both
+    /// only require a non-ending node to declare *an* edge — so the walk is the
+    /// only place that can see one. It refuses rather than crossing the same beat
+    /// forever, and rather than paying it again on every turn.
+    InterludeLoop {
+        /// The beat the chain returned to.
+        node: CampaignNodeKey,
+    },
     /// The draft was written against an older profile revision than the state
     /// holds (contract: "Conflicting revisions fail and refresh the view").
     ///
@@ -195,6 +206,11 @@ impl fmt::Display for CampaignError {
                 f,
                 "interlude {node} has no victory edge, so the declared campaign \
                  cannot be walked past it"
+            ),
+            Self::InterludeLoop { node } => write!(
+                f,
+                "the chain of beats came back to {node}, which it had already crossed: \
+                 the declared campaign's beats form a cycle"
             ),
             Self::StaleRevision { expected, actual } => write!(
                 f,
@@ -456,48 +472,68 @@ impl CampaignState {
     /// # Errors
     ///
     /// [`CampaignError::InterludeDeadEnd`] when the selected interlude declares no
-    /// `Victory` edge, and [`CampaignError::CurrencyOverflow`] when a beat's grant
-    /// would overflow the balance. Either way the state is untouched.
+    /// `Victory` edge, [`CampaignError::InterludeLoop`] when the chain of beats
+    /// returns to one it already crossed, and [`CampaignError::CurrencyOverflow`]
+    /// when a beat's grant would overflow the balance. Either way the state is
+    /// untouched.
     pub fn advance_interludes(
         &mut self,
         graph: &CampaignGraph,
     ) -> Result<InterludeAdvance, CampaignError> {
         let mut traversed: Vec<CampaignNodeKey> = Vec::new();
-        let mut currency_delta: i64 = 0;
+        let mut walked: BTreeSet<CampaignNodeKey> = BTreeSet::new();
         let mut unlocks: Vec<ContentId> = Vec::new();
-        // Compute the whole walk before touching anything: a beat with no onward
-        // edge must leave the run exactly where it was, not half-way down a chain
-        // it cannot finish.
+        // Compute the whole walk before touching anything: a beat the walk
+        // cannot finish must leave the run exactly where it was, not half-way
+        // down a chain it cannot complete.
         let mut landed: Option<CampaignNodeKey> = None;
+        let mut currency = self.currency;
         let mut cursor = self.current.clone();
-        while graph
-            .node(&cursor)
-            .is_some_and(|node| node.kind == RuntimeNodeKind::Interlude)
-        {
+        // A chain of beats cannot legitimately be longer than the graph, so the
+        // walk is bounded by the node count as well as by `walked`. Two guards,
+        // one answer: a chain that returns to a beat it already crossed is a
+        // cycle in the *declared* campaign (nothing upstream rejects one), and
+        // the walk must refuse it — crossing the same beat forever, and paying it
+        // again on every turn, are both worse than a refusal.
+        for _ in 0..=graph.nodes().count() {
+            if !graph
+                .node(&cursor)
+                .is_some_and(|node| node.kind == RuntimeNodeKind::Interlude)
+            {
+                landed = Some(cursor.clone());
+                break;
+            }
+            if !walked.insert(cursor.clone()) {
+                return Err(CampaignError::InterludeLoop { node: cursor });
+            }
             let Some(edge) = graph.transition(&cursor, Outcome::Succeeded) else {
                 return Err(CampaignError::InterludeDeadEnd { node: cursor });
             };
             traversed.push(cursor.clone());
-            currency_delta += edge.grant.currency as i64;
+            // Accumulated in the currency's own `u64`, never in a narrower
+            // signed type: a chain may legitimately grant more than
+            // `i64::MAX` minor units, and a signed accumulator would overflow
+            // there — a panic in a debug build, a wrapped (wrong) sum in a
+            // release one — instead of either paying exactly or refusing.
+            currency = currency.checked_add(edge.grant.currency).ok_or(
+                CampaignError::CurrencyOverflow {
+                    before: self.currency,
+                    delta: edge.grant.currency,
+                },
+            )?;
             unlocks.extend(edge.grant.unlocks.iter().cloned());
             cursor = edge.to.clone();
-            landed = Some(cursor.clone());
         }
         if traversed.is_empty() {
             return Ok(InterludeAdvance::default());
         }
-        let new_currency = self.currency.checked_add(currency_delta as u64).ok_or(
-            CampaignError::CurrencyOverflow {
-                before: self.currency,
-                delta: currency_delta as u64,
-            },
-        )?;
+        let currency_delta = currency - self.currency;
 
         // Commit — one revision for the whole chain.
         if let Some(to) = landed {
             self.current = to;
         }
-        self.currency = new_currency;
+        self.currency = currency;
         self.unlocks.extend(unlocks.iter().cloned());
         self.revision += 1;
         Ok(InterludeAdvance {
@@ -513,10 +549,13 @@ impl CampaignState {
     /// unrelated progression.").
     ///
     /// Order of checks — availability, then ownership, then money, then the
-    /// expected revision last, so a stale draft is *always* reported as stale and
-    /// never as "you cannot afford it": the view the caller refreshes on a
-    /// conflict must describe the same reason the conflict had. Every refusal
-    /// leaves the state bit-identical.
+    /// expected revision **last**. Availability and ownership are facts about
+    /// the run's *structure* (a roster gate, the owned set) that no refresh can
+    /// change, so they are reported even for a stale draft; the balance can move
+    /// under any other committed transaction, so its verdict drawn from a stale
+    /// view is the least reliable thing this call could say, and the caller
+    /// re-reads it from the refreshed view. Every refusal returns before the
+    /// single mutation point, so the profile is bit-identical afterwards.
     ///
     /// Idempotent by the same argument as the interlude walk: the item joins
     /// [`Self::unlocks`], so a repeated draft is refused with
@@ -573,7 +612,10 @@ pub struct InterludeAdvance {
     /// interlude — which is also the case that leaves the revision untouched.
     pub traversed: Vec<CampaignNodeKey>,
     /// Currency the beats granted, in minor units.
-    pub currency_delta: i64,
+    ///
+    /// A walk only ever grants, so this is the currency's own `u64` and not a
+    /// signed delta: the chain's total is reported exactly, never wrapped.
+    pub currency_delta: u64,
     /// Content the beats unlocked.
     pub unlocks: Vec<ContentId>,
 }
