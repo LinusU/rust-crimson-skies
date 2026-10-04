@@ -9,6 +9,12 @@
 //! ([`SelectError::SelectionFailed`]), which is what turns a typo'd or
 //! missing prefix into a loud failure instead of a green run with zero tests.
 //!
+//! It also keeps cargo's "the test harness was not on disk" diagnostic out of
+//! the generic [`SelectError::CargoFailed`] bucket: such a run executed no test
+//! at all, so it is reported on its own ([`SelectError::HarnessMissing`], task
+//! #608) with the rule that only a rerun of the identical command says
+//! anything, and that a green rerun never makes the failed run green.
+//!
 //! The owner's note on F00-C puts discovery in the agents' hands rather than
 //! in CI: CI keeps running fmt, clippy and the whole workspace suite (see
 //! [`crate::ci`]), while the implementing and reviewing agents run this gate
@@ -87,6 +93,19 @@ pub enum SelectError {
     /// The prefix selected no test at all — the empty-selection failure the
     /// contract explicitly forbids.
     Empty { prefix: String },
+    /// Cargo could not execute a test harness because the executable was not
+    /// on disk (`could not execute process … (never executed)`).
+    ///
+    /// This is its own failure, not a [`Self::CargoFailed`] fallback: no test
+    /// in that unit ran, so the run says nothing at all about the code under
+    /// test, and a rerun that passes does not turn the failed run green.
+    HarnessMissing {
+        context: String,
+        /// Exactly what cargo printed as unexecutable: the harness path,
+        /// followed by whatever test arguments cargo appended to it.
+        command: String,
+        tail: String,
+    },
     /// A test failed when it was re-run alone with `--exact`.
     ExactFailed { name: String, failed: u32 },
     /// A discovered test selected nothing when re-run alone with `--exact`,
@@ -121,6 +140,20 @@ impl fmt::Display for SelectError {
                 f,
                 "prefix {prefix:?} selected no test; a task test prefix must \
  resolve to at least one test that runs"
+            ),
+            Self::HarnessMissing {
+                context,
+                command,
+                tail,
+            } => write!(
+                f,
+                "cargo could not execute the test harness {command} during {context}: \
+the executable was not on disk, so no test in that unit reported a result. \
+This is not a test failure and says nothing about the code under test. \
+Rerun the identical command once; if that rerun passes, report both runs — \
+never the rerun alone — and see \
+docs/findings/2026-10-04-f54-x7-missing-test-harness-binary.md.\n\
+last output:\n{tail}"
             ),
             Self::ExactFailed { name, failed } => write!(
                 f,
@@ -210,6 +243,69 @@ fn tail(log: &str, lines: usize) -> String {
     let all: Vec<&str> = log.lines().collect();
     let start = all.len().saturating_sub(lines);
     all[start..].join("\n")
+}
+
+/// The command cargo could not execute, if that is what happened.
+///
+/// Cargo prints `Running <unit> (<path>)`, then, when `exec` of that path
+/// fails, `could not execute process <path> (never executed)` and the OS
+/// error below it. `(never executed)` is the load-bearing part: it means the
+/// harness never started, so no test in that unit ran and no assertion was
+/// evaluated. Returns what cargo printed between the two markers, which is the
+/// harness path followed by any test arguments cargo appended to it.
+///
+/// Only that one message is matched, and only together with
+/// `could not execute process`, so a compile error, a failing test or any
+/// other cargo diagnostic is not mistaken for it.
+pub fn missing_harness_command(log: &str) -> Option<String> {
+    for line in log.lines() {
+        let line = line.trim();
+        if !line.contains("(never executed)") || !line.contains("could not execute process") {
+            continue;
+        }
+        let after = line.split_once("could not execute process")?.1;
+        let command = after
+            .split("(never executed)")
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_matches('`')
+            .trim();
+        if command.is_empty() {
+            continue;
+        }
+        return Some(command.to_string());
+    }
+    None
+}
+
+/// Decides whether a finished run must be reported as a vanished test harness
+/// instead of a generic cargo failure.
+///
+/// All three conditions are required, and each one matters:
+///
+/// * cargo failed — a green run never lost a harness;
+/// * no test reported a failure — a real failing test is the specific
+///   problem and keeps its own, more precise error;
+/// * the log names an executable cargo never executed.
+///
+/// Returns the error to report, or `None` when this was an ordinary cargo
+/// failure that the caller must classify as before.
+pub fn classify_missing_harness(
+    context: &str,
+    cargo_failure: Option<&str>,
+    parsed: &ParsedLog,
+    log: &str,
+) -> Option<SelectError> {
+    if cargo_failure.is_none() || parsed.failed > 0 {
+        return None;
+    }
+    let command = missing_harness_command(log)?;
+    Some(SelectError::HarnessMissing {
+        context: context.to_string(),
+        command,
+        tail: tail(log, 12),
+    })
 }
 
 /// Decides what a finished prefix selection means.
@@ -338,6 +434,14 @@ pub fn select_tests(workspace_root: &Path, prefix: &str) -> Result<Selection, Se
     let parsed = parse_run_log(&run.log);
     let log_tail = tail(&run.log, 30);
     let cargo_failure = (!run.success).then(|| run.status.clone());
+    if let Some(error) = classify_missing_harness(
+        &format!("the selection run for prefix {prefix:?}"),
+        cargo_failure.as_deref(),
+        &parsed,
+        &run.log,
+    ) {
+        return Err(error);
+    }
     classify_selection(prefix, cargo_failure, &parsed, &log_tail)?;
 
     let mut tests = parsed.tests;
@@ -361,6 +465,14 @@ pub fn verify_exact(workspace_root: &Path, names: &[String]) -> Result<(), Selec
         let parsed = parse_run_log(&run.log);
         let log_tail = tail(&run.log, 30);
         let cargo_failure = (!run.success).then(|| run.status.clone());
+        if let Some(error) = classify_missing_harness(
+            &format!("the --exact re-run of {name:?}"),
+            cargo_failure.as_deref(),
+            &parsed,
+            &run.log,
+        ) {
+            return Err(error);
+        }
         classify_exact(name, cargo_failure, &parsed, &log_tail)?;
     }
     Ok(())
