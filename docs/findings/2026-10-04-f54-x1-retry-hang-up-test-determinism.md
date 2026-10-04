@@ -31,7 +31,8 @@ timeout and pacing decision reads that accumulator. From the pinned sources:
 | Fact | Where |
 | --- | --- |
 | `NETCODE_SEND_RATE = 250 ms`: a client sends at most one protocol packet per 250 ms **of its own accumulated time** | `renetcode2-0.16.1/src/lib.rs:61`, `client.rs:354-359` |
-| The connect token's `timeout_seconds` (5 s here) is compared against the same accumulator, in `SendingConnectionRequest`, `SendingConnectionResponse` **and `Connected`** | `renetcode2-0.16.1/src/client.rs:303-304`, `342-345` |
+| The connect token's `timeout_seconds` (5 s) is compared against the same accumulator, in `SendingConnectionRequest`, `SendingConnectionResponse` **and `Connected`** | `renetcode2-0.16.1/src/client.rs:303-304`, `342-345` |
+| `timeout_seconds` is the pinned unsecure token's fixed 5, so every loopback client here gets a 5 s window with nothing in `cs_net` setting it | `renetcode2-0.16.1/src/server.rs:912` |
 | `Packet::Disconnect` is honored **only** in `ClientState::Connected`; every other state falls through the `_ => {}` arm | `renetcode2-0.16.1/src/client.rs:256-259` |
 | The server generates and sends that hang-up **exactly once**, in the update where the reliable layer no longer holds the connection, and drops the netcode client | `renet2_netcode-0.16.1/src/server.rs:185-193`, `renetcode2-0.16.1/src/server.rs:829` |
 
@@ -65,8 +66,9 @@ Production (`crates/cs_net`), all of it making the retry's decision observable
 instead of inferable from a round budget:
 
 - `ServerSession::reopen` now returns `Result<usize, ServerFault>`: how many
-  connections the retry hung up. `HostTransport::reopen` already computed that
-  count and `ServerSession` discarded it.
+  netcode connections it hung up beyond the peers `close` already reached — in
+  practice the clients that hold no peer id. `HostTransport::reopen` already
+  computed that count and `ServerSession` discarded it.
 - `ServerSession::reopen` drains the deferred hang-up queue. The host hangs up on
   a refused client one round after the refusal (F54-C, on purpose, so renet can
   flush the refusal first), and the retry subsumes every such condemned
@@ -91,7 +93,7 @@ The test now:
    exactly the one connection that held no peer id, and the fresh epoch holds no
    connection for it;
 4. gives the hang-up `HANGUP_ROUNDS = 64` rounds (about a second of
-   connection-layer time, while the client's own 5 s window is ~250 rounds away)
+   connection-layer time, while the client's own 5 s window is ~312 rounds away)
    and then asserts the reason is `DisconnectedByServer` by name.
 
 The assertion is stronger than before, not weaker: it still proves the refused
@@ -122,6 +124,31 @@ interleaved, machine load average ~98 on 11 cores (other agents building):
 Whole binary, `--test-threads=16`, no artificial load, machine load average
 80-124 from other agents: 10 of 60 runs failing before, 4 of 60 after.
 
+## Review verification (2026-10-04)
+
+The two probes above were repeated independently on the reviewed head, and a
+third was added that stubs the new return value. All three fail the test:
+
+| Removed | Failure |
+| --- | --- |
+| `HostTransport::reopen`'s `self.server.disconnect_all()` | `the retry hung up on the connection that held no peer id within 64 rounds` (line 2077) |
+| `ServerSession::reopen`'s `self.hung_up.clear()` | `… does not report it again …` (line 2088) |
+| `ServerSession::reopen`'s returned count, replaced by `0` | `assertion 'left == right' failed: the retry hung up on the connection that held no peer id` (line 2056) |
+
+Both binaries were then built once each and run **interleaved** in the same time
+window, so the comparison is not two different machine conditions. With load
+average 120 on 11 cores (other agents linking), `--test-threads=16`, 30 runs each:
+
+| Binary | Runs with a failure | Retry-test failures |
+| --- | --- | --- |
+| before (origin/main `aa688133`) | **23 / 30** | 8 |
+| after | **7 / 30** | 3 |
+
+At load average 38-43 the same two binaries gave 0 failures in 100 runs each, and
+64 CPU spinners on top of the existing load added none in a further 40 runs of
+the retry test. The failure is therefore a property of the load, not of either
+version — which is what the residual limit below says.
+
 ## Residual limit (not this task)
 
 Under >2x CPU oversubscription **both** versions fail broadly and randomly
@@ -132,3 +159,8 @@ property of this test: every test in this file needs a real handshake, and
 `pump_until`'s `MAX_ROUNDS` budget does not survive it either. Filed as a
 separate task; this finding records it so the numbers above are not read as a
 claim that `cs_net`'s suite is load-immune.
+
+One single-shot dependency survives the fix and belongs to that task too: the
+pinned layer sends `Packet::Disconnect` exactly once and never retransmits it,
+so a lost hang-up packet fails `HANGUP_ROUNDS` instead of being retried. The old
+test had that exposure plus a round budget that raced the client's own window.

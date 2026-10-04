@@ -77,12 +77,17 @@ const MAX_ROUNDS: usize = 2_000;
 /// How many rounds a retry's hang-up gets to reach the peer-less client.
 ///
 /// The refused client only ever learns of the retry through the connection
-/// layer's own hang-up packet, and that packet is sent on the host's first pump
-/// after the retry and read on the client's next one — a handful of rounds, with
-/// no retransmission and no timer involved. [`STEP`] is 16 ms, so this budget is
-/// about a second of connection-layer time while the client's own five-second
-/// disconnect window is still some 250 rounds away: a connection that dies
-/// inside it died by hang-up, and the reason assertion says so by name.
+/// layer's own hang-up packet: `HostTransport::reopen` marks the reliable
+/// connection closed, the pinned layer turns that into one `Packet::Disconnect`
+/// on the host's next update, and the client honors it on its next one. With
+/// both sides at [`STEP`] that is two rounds, and the packet is never
+/// retransmitted, so a lost one fails this test rather than being retried.
+///
+/// [`STEP`] is 16 ms, so this budget is about a second of connection-layer time
+/// while the client's own five-second disconnect window — the pinned unsecure
+/// token's `timeout_seconds` — is still some 310 rounds away. A connection that
+/// dies inside this budget died by hang-up, and the reason assertion below names
+/// which party sent it.
 const HANGUP_ROUNDS: usize = 64;
 
 /// A live loopback pair: one bound host session and one connecting client
