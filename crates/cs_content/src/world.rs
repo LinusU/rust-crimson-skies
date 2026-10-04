@@ -4474,6 +4474,15 @@ pub const UNINDEXED_ROLE_UNMEASURED: &str = "f18-world.unindexed-collision-role-
 /// identified a world object by slot.
 pub const OBJECT_ID_IS_THE_NODE_SLOT: &str = "f18-world.object-id-is-the-node-slot";
 
+/// A record that stores no mesh index binds no mesh.
+///
+/// **Measured fact.** `mesh_index` is a signed word; a negative one is the store
+/// saying the record draws no stored mesh, and this conversion resolves no mesh
+/// reference for it rather than substituting geometry. It has its own claim id
+/// because it is a statement about a record's own bytes, not about the
+/// identity of the record and not about a role the container never states.
+pub const OBJECT_STORES_NO_MESH: &str = "f18-world.object-stores-no-mesh-index";
+
 /// Why a world container could not be imported.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorldImportError {
@@ -4757,7 +4766,9 @@ impl WorldPartitionGrid {
     /// the bytes themselves stay addressable through
     /// [`RawNode::data_offset`](cs_formats::gamez::RawNode::data_offset). This
     /// is that re-derivation, and it ends exactly where the reader said the
-    /// block ends.
+    /// block ends — checked against both the recomputed block length and the
+    /// reader's own recorded end (`data_bytes`, which also covers the world's
+    /// child slots), not against one of them.
     ///
     /// # Errors
     ///
@@ -4860,6 +4871,19 @@ impl WorldPartitionGrid {
             return Err(WorldImportError::GridEndMismatch {
                 walked: offset,
                 expected: block,
+            });
+        }
+        // The reader walked the grid and **then** the world's own child slots, so
+        // the grid's end plus those slots is where the reader recorded the
+        // record ending (`data_bytes`). Checking only the block length recomputed
+        // from the same two counts would accept a walk that agreed with itself
+        // and with the counts while the reader had walked another distance.
+        let child_bytes = 4 * u64::try_from(world.children.len()).unwrap_or(u64::MAX);
+        let reader_end = base + world.data_bytes;
+        if block + child_bytes != reader_end {
+            return Err(WorldImportError::GridEndMismatch {
+                walked: block + child_bytes,
+                expected: reader_end,
             });
         }
         Ok(Self {
@@ -5338,12 +5362,12 @@ pub fn import_world_container(
             });
         };
         let indexed_record = indexed.contains(&record.index);
-        if indexed_record && object.matrix_disagrees() {
+        if object.matrix_disagrees() {
             matrix_disagreements += 1;
         }
         let mesh = if record.mesh_index() < 0 {
             Resolved::Unknown {
-                claim_id: claim(OBJECT_ID_IS_THE_NODE_SLOT),
+                claim_id: claim(OBJECT_STORES_NO_MESH),
                 reason: format!(
                     "node slot {} stores no mesh index, so this record draws geometry of its \
                      own nowhere in the container",

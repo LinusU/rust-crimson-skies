@@ -160,7 +160,7 @@ pub use residency::{
 };
 pub use retail::{
     GRID_IS_THE_SECTOR_INDEX, RETAIL_WORLD_IMPORT, RetailWorldContainer, RetailWorldError,
-    imported_objects, read_world_container,
+    read_world_container,
 };
 pub use spawn::{
     INSTANCE_TRANSFORM_TOLERANCE, InstanceTransform, MeshReference, SkipReason, SkippedInstance,

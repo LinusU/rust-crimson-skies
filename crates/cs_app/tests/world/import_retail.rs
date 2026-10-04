@@ -24,6 +24,12 @@
 //!   unknown with a claim id, as does every gameplay surface and the world's
 //!   boundary. Nothing is silently defaulted, so a consumer can enumerate the
 //!   gaps instead of discovering them in flight.
+//! * **the identity is the node slot, the mesh reference is the caller's table,
+//!   and a record that stores no mesh index names that fact itself.** The
+//!   identity is the `node-<slot>` key, the mesh reference is the caller's entry
+//!   for the stored index, a mesh index the caller's table does not hold refuses
+//!   the container, and the record that stores no mesh at all carries its own
+//!   claim id rather than borrowing the identity's.
 //! * **the refusal is the refusal.** A grid value that names a missing record,
 //!   names one record twice, or names a non-object record stops the container
 //!   with a typed error carrying the counts, and the ownership statements are
@@ -32,8 +38,10 @@
 //!   definition names uploaded through the production F17-B adapter.
 //!
 //! The retail half is `#[ignore]`d (`requires CS_GAME_DIR`): it asserts the
-//! **measured** counts of `ZBD/C1C/gamez.zbd` and runs the spawn over the real
-//! container. It is read-only and commits no derived bytes.
+//! **measured** counts of `ZBD/C1C/gamez.zbd`, that every resolved value carries
+//! the import claim at `ObservedTool` with the container's own source span, and
+//! runs the spawn over the real container. It is read-only and commits no derived
+//! bytes.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,7 +54,7 @@ use cs_content::coordinates::SourceAdapter;
 use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_content::scene::MeshSlot;
 use cs_content::world::{
-    INDEXED_RECORD_IS_STATIC, ImportedWorld, OBJECT_ID_IS_THE_NODE_SLOT,
+    INDEXED_RECORD_IS_STATIC, ImportedWorld, OBJECT_ID_IS_THE_NODE_SLOT, OBJECT_STORES_NO_MESH,
     PARTITION_GRID_IS_THE_SECTOR_INDEX, UNINDEXED_ROLE_UNMEASURED, WORLD_BOUNDARY_UNMEASURED,
     WORLD_SURFACE_UNMEASURED, WorldImportError, WorldPartitionGrid, import_world_container,
 };
@@ -457,14 +465,11 @@ fn accept_m01_lc_world_import_the_partition_grid_becomes_the_sector_index() {
         "one sector per cell, keyed by the cell's grid coordinates"
     );
 
-    // A sector's extent is the union of the stored boxes its members state: the
-    // fixture's two cells are one metre apart, so a converted extent that ignored
-    // the members would put them in the same box or in none.
-    //
     // A sector's extent is the **union** of the stored boxes its members state.
-    // The first cell holds two records whose boxes reach past each other, so an
-    // extent built from either one alone is a different box: `tile_a` alone is
-    // `[-10,-9] x [0,0] x [-10,-9]` and `slab` alone reaches `z = -12`.
+    // The fixture's first cell holds two records whose boxes reach past each
+    // other, so an extent built from either one alone is a different box:
+    // `tile_a` alone is `[-10,-9] x [0,0] x [-10,-9]` and `slab` alone reaches
+    // `z = -12`.
     let first = world.sectors()[0].bounds();
     assert_eq!(
         first.min(),
@@ -540,9 +545,18 @@ fn accept_m01_lc_world_import_an_object_carries_its_slot_its_mesh_and_its_stored
     let marker = world
         .object(&cs_content::world::WorldObjectId::new("node-4").expect("the key is valid"))
         .expect("the meshless world-owned record is imported too");
+    let mesh = marker.mesh();
+    let Resolved::Unknown { claim_id, reason } = &mesh else {
+        panic!("a record that stores no mesh index resolves no mesh: {mesh:?}");
+    };
+    assert_eq!(
+        claim_id.as_str(),
+        OBJECT_STORES_NO_MESH,
+        "and the claim names the record's own bytes, not its identity"
+    );
     assert!(
-        !marker.mesh().is_known(),
-        "a record that stores no mesh index resolves no mesh, and says so"
+        reason.contains("no mesh index"),
+        "the reason names what the record stores: {reason}"
     );
     assert!(marker.is_resident(), "and it belongs to no cell");
 
@@ -659,6 +673,24 @@ fn accept_m01_lc_world_import_a_grid_that_contradicts_itself_blocks_the_containe
     };
     assert_eq!((cell, slot), (0, 99));
 
+    // A value naming a record that is not an object record: the world node's own
+    // slot, which a spatial index of object geometry has no reason to hold.
+    let not_an_object = Fixture {
+        grid: vec![vec![WORLD], vec![TILE_B]],
+        ..Fixture::default()
+    };
+    let bytes = write_container(&not_an_object);
+    let records = read(&bytes);
+    assert_eq!(
+        WorldPartitionGrid::read(&records, &bytes).expect_err("a non-object value is refused"),
+        WorldImportError::PartitionSlotNotAnObject {
+            cell: 0,
+            slot: WORLD,
+            kind: "world",
+        },
+        "an index that names a world record is not the object index this conversion reads"
+    );
+
     // A record the world node owns that is in neither the grid nor the stored
     // child list: the three ownership statements no longer agree, and the
     // conversion is blocked rather than run under a rule its own bytes
@@ -676,6 +708,36 @@ fn accept_m01_lc_world_import_a_grid_that_contradicts_itself_blocks_the_containe
             child_list: 1,
             naming: 5,
         }
+    );
+}
+
+/// **A stored mesh index the caller's table does not answer blocks the container
+/// rather than resolving a mesh from somewhere else.**
+#[test]
+fn accept_m01_lc_world_import_a_mesh_index_the_callers_table_does_not_hold_refuses_the_container() {
+    let bytes = write_container(&Fixture::default());
+    let records = read(&bytes);
+    // `tile_a` stores mesh index 7 and `slab` 6, so a table of seven slots
+    // answers one of the three fixture records and leaves the other two out.
+    let mut slots = mesh_slots();
+    slots.truncate(MESH_SLAB as usize + 1);
+    let refused = import_world_container(
+        cs_content::world::WorldId::from_key("fixture").expect("the fixture world key is valid"),
+        Origin::SyntheticFixture,
+        &records,
+        &bytes,
+        &slots,
+        &adapter(),
+        provenance(),
+    )
+    .expect_err("a mesh index outside the caller's table is refused");
+    assert_eq!(
+        refused,
+        WorldImportError::MeshSlotMissing {
+            index: MESH_TILE_A as u32,
+            slots: MESH_SLAB as usize + 1,
+        },
+        "the refusal names the index the record stored and how many slots exist"
     );
 }
 
@@ -750,6 +812,7 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
         WORLD_SURFACE_UNMEASURED,
         WORLD_BOUNDARY_UNMEASURED,
         OBJECT_ID_IS_THE_NODE_SLOT,
+        OBJECT_STORES_NO_MESH,
         RETAIL_WORLD_IMPORT,
     ] {
         assert!(
@@ -764,10 +827,11 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
         WORLD_SURFACE_UNMEASURED,
         WORLD_BOUNDARY_UNMEASURED,
         OBJECT_ID_IS_THE_NODE_SLOT,
+        OBJECT_STORES_NO_MESH,
     ]
     .into_iter()
     .collect();
-    assert_eq!(distinct.len(), 6, "each gap has its own claim id");
+    assert_eq!(distinct.len(), 7, "each gap has its own claim id");
 }
 
 // ------------------------------------------------------------------ the retail half --
@@ -894,6 +958,38 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
         "the container is the one production discovery spells"
     );
     assert!(!retail.container.container_sha256().is_empty());
+
+    // Every resolved value points back at the bytes it was read from, and the
+    // class it carries is `ObservedTool` — measured from the container by the
+    // production readers, never `VerifiedOriginal`, because no original run
+    // happened.
+    let mut role_provenance = None;
+    for object in world.objects() {
+        let provenance = object.provenance();
+        assert_eq!(
+            provenance.claim_id.as_str(),
+            RETAIL_WORLD_IMPORT,
+            "a retail-derived value is filed under the import's own claim"
+        );
+        assert_eq!(
+            provenance.class,
+            ClaimStatus::ObservedTool,
+            "reading container bytes is a tool observation, not an original run"
+        );
+        assert_eq!(
+            provenance.source.as_ref(),
+            Some(retail.container.span()),
+            "and it names the container span a reader can go back to"
+        );
+        if let Resolved::Known(known) = object.collision() {
+            role_provenance = Some(known.provenance.clone());
+        }
+    }
+    // A resolved *value* carries the same provenance as the record it belongs
+    // to, so a consumer reading the role alone can still get back to the bytes.
+    let role = role_provenance.expect("an indexed record resolves a collision role");
+    assert_eq!(role.claim_id.as_str(), RETAIL_WORLD_IMPORT);
+    assert_eq!(role.source.as_ref(), Some(retail.container.span()));
 }
 
 /// **`spawn_world` runs on the definition imported from c1c's real container, and

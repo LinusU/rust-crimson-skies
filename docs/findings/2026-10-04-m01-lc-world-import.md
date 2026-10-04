@@ -22,14 +22,17 @@ run happened, so nothing here is `verified_original`.
 - `crates/cs_app/src/world/mod.rs` (wiring only): `pub mod retail;` and its
   re-exports.
 - `crates/cs_app/tests/world/import_retail.rs` (new, an F18 owner path): the
-  six `accept_m01_lc_world_import_` tests, two of them retail.
+  seven `accept_m01_lc_world_import_` tests, two of them retail.
 - `crates/cs_app/tests/world/main.rs` (wiring only): `mod import_retail;`.
 - This file.
 
 **No reader refusal was weakened.** `git diff` touches no line of
 `crates/cs_formats`, `crates/cs_types` or `crates/cs_assets`; the grid is read
 from the *same* bytes `read_gamez_nodes` walked, and the walk is checked to end
-exactly where the reader said the block ends.
+exactly where the reader said the block ends — against **two** ends, the block
+length recomputed from the grid counts and the reader's own recorded
+`data_bytes`, which also covers the world's child slots the reader walked after
+the grid (see "Review" below for the second check and why it is there).
 
 ## The measurement
 
@@ -152,8 +155,8 @@ adapter — and `WorldPartitionCell::header_floats_are_interpreted()` returns
   order the records happen to be stored in.
 - **The stored 3×3 wins over the record's euler triple** — the format reader's
   own precedence rule — and the number of records where the two disagree is
-  reported (`matrix_disagreements`, 0 in `c1c`) so a reader knows how often that
-  precedence was a choice.
+  reported (`matrix_disagreements`, counted over **every** imported record, 0 in
+  `c1c`) so a reader knows how often that precedence was a choice.
 - **A record that stores the identity gets the identity**, not a default: the
   store states it (`OBJECT3D_FLAGS_IDENTITY`), and a conversion that could not
   tell "the store said identity" from "we filled in identity" would be unable to
@@ -175,18 +178,20 @@ adapter — and `WorldPartitionCell::header_floats_are_interpreted()` returns
 | `accept_m01_lc_world_import_` test | Covers | Fails when |
 | --- | --- | --- |
 | `the_partition_grid_becomes_the_sector_index` | the shape of the grid read, `value_count`, `indexed_slots`, `empty_cells`; the two cells becoming `partition-00-00` / `partition-00-01`; each sector's extent being the **union** of its members' stored boxes, checked against a first cell that holds two records whose boxes disagree on one axis; membership per cell; the record the grid does not name staying resident; the cell header floats surviving the read **and** `header_floats_are_interpreted() == false` | the grid stops being the sector index, a sector's extent stops coming from the members' boxes (including from only one of them), the stored header floats are read as an extent, or an unindexed record stops being resident |
-| `an_object_carries_its_slot_its_mesh_and_its_stored_transform` | the `node-<slot>` identity, the caller's mesh-slot table resolving the stored index, the identity record's identity transform, the meshless world-owned record resolving no mesh and staying resident, and the caller's provenance reaching every record | the identity stops being the stored slot, a mesh index resolves without the caller's table, or a stored transform is replaced by a default |
+| `an_object_carries_its_slot_its_mesh_and_its_stored_transform` | the `node-<slot>` identity, the caller's mesh-slot table resolving the stored index, the identity record's identity transform, the meshless world-owned record resolving **no** mesh with its **own** claim id and reason (`f18-world.object-stores-no-mesh-index`, not the identity claim) and staying resident, and the caller's provenance reaching every record | the identity stops being the stored slot, a mesh index resolves without the caller's table, a stored transform is replaced by a default, or the meshless record starts reporting a claim id that is about something else |
 | `the_collision_role_follows_the_index_and_every_other_role_is_named` | `Solid` + `FromMesh` for an indexed record; the **claim id and reason text** on an unindexed record's role and shape; every surface and the world's boundary carrying their own claim ids; and every count of the report (4 objects, 3 with a mesh, 3 solid, 3 in a sector, 1 resident, 2 sectors) | a role is defaulted, a gap loses its claim id, or a report count stops matching the definition |
-| `a_grid_that_contradicts_itself_blocks_the_container` | `PartitionSlotRepeated` for two cells naming one record; `PartitionSlotOutOfRange` with the cell and slot for a value outside the array; `OwnershipDisagreement { grid: 2, child_list: 1, naming: 4 }` for a world-owned record in neither statement | a contradictory grid is imported, or the ownership cross-check stops running |
+| `a_grid_that_contradicts_itself_blocks_the_container` | `PartitionSlotRepeated` for two cells naming one record; `PartitionSlotOutOfRange` with the cell and slot for a value outside the array; `PartitionSlotNotAnObject { cell: 0, slot: 0, kind: "world" }` for a value naming the world record itself; `OwnershipDisagreement { grid: 3, child_list: 1, naming: 5 }` for a world-owned record in neither statement | a contradictory grid is imported, or the ownership cross-check stops running |
+| `a_mesh_index_the_callers_table_does_not_hold_refuses_the_container` | `MeshSlotMissing { index: 7, slots: 7 }` when the caller's mesh table is one slot short of a stored index | a record resolves a mesh the caller's table does not hold, or the refusal loses the index it names |
 | `spawn_world_runs_on_the_imported_definition` | the production `spawn_world` over the imported definition: every object presented, three colliders, the one record with no measured role reported as `SkipReason::UnknownCollisionRole`, and every derived collider a **triangle mesh** | the spawn stops accepting an imported definition, a role stops deciding the collider, or a `FromMesh` record is collided by a substituted shape |
-| `the_conversion_is_recorded_under_its_own_claim_ids` | the six claim ids the records carry plus `RETAIL_WORLD_IMPORT` are all valid `ClaimId`s and are six **distinct** claims | two gaps start sharing a claim id, or an id is malformed |
-| `retail_c1c_becomes_a_world_definition_with_every_gap_named` (retail) | `ZBD/C1C/gamez.zbd` end to end: 144 cells, 293 indexed records, 292 of them with a mesh, 0 empty cells, 53 in the world's stored child list, 346 objects, 309 with a mesh, 293 solid, 293 in a sector, 53 resident, 144 sectors, 0 without an extent, 0 matrix disagreements, 53 unresolved roles each carrying its claim id, 346 unresolved surfaces each carrying its claim id, no boundary, the reported unit factor and its `Unknown` class, 3 045 mesh-binding records the world node does not own, and the container's own logical key | any measured count moves, a gap loses its claim id, or the unit stops being reported |
+| `the_conversion_is_recorded_under_its_own_claim_ids` | the seven claim ids the records carry plus `RETAIL_WORLD_IMPORT` are all valid `ClaimId`s and are seven **distinct** claims | two gaps start sharing a claim id, or an id is malformed |
+| `retail_c1c_becomes_a_world_definition_with_every_gap_named` (retail) | `ZBD/C1C/gamez.zbd` end to end: 144 cells, 293 indexed records, 292 of them with a mesh, 0 empty cells, 53 in the world's stored child list, 346 objects, 309 with a mesh, 293 solid, 293 in a sector, 53 resident, 144 sectors, 0 without an extent, 0 matrix disagreements, 53 unresolved roles each carrying its claim id, 346 unresolved surfaces each carrying its claim id, no boundary, the reported unit factor and its `Unknown` class, 3 045 mesh-binding records the world node does not own, the container's own logical key, and **every** object's provenance being `RETAIL_WORLD_IMPORT` at `ObservedTool` with the container's own `SourceSpan` (and the same for a resolved collision value) | any measured count moves, a gap loses its claim id, a retail-derived value stops pointing back at its bytes, the class is inflated to `VerifiedOriginal`, or the unit stops being reported |
 | `retail_spawn_world_runs_on_the_imported_c1c_definition` (retail) | the real container's geometry uploaded through the production F17-B adapter and the production `spawn_world` run over it: 346 objects presented, 292 colliders, and the spawn's skip report being **exactly** `{unknown_collision_role: 53, unknown_mesh: 1}` with no double-reported object | a count moves, an indexed record stops colliding, a substitute shape appears, or a record reports two reasons |
 
 The two retail tests each run one production discovery pass over the
 installation, which takes about three and a half minutes on this host; they are
 the slowest tests in the suite and are the reason they are two tests rather than
-one.
+one. Neither test imports anything the other does not: both call the same
+`retail()` helper, so a failing import fails both.
 
 **Sensitivity.** Seven mutations were applied to `import_world_container`, the
 non-retail selection was re-run and the source restored each time. **All seven
@@ -211,6 +216,9 @@ stored boxes disagree on one axis.
 
 ## Unknowns and limitations (recorded, not guessed)
 
+- **Only `c1c` is imported by a test.** The other seven containers are measured
+  (tables above) but not covered; **#639** covers them, and `c1`/`c5` also
+  exercise the affine path on retail data.
 - **Which side the 2000 engine trusted at load time is UNMEASURED.** No original
   run happened. The partition grid is measured as *what the container's bytes
   say*; nothing here claims the engine streamed on it, and the hierarchy
@@ -255,10 +263,90 @@ stored boxes disagree on one axis.
 
 ## Follow-ups filed
 
-- The F10-C.03 mesh catalog as the world container's mesh source, so a world
-  object's mesh identity is a catalog element rather than a per-container name.
+- **#638** — the F10-C.03 mesh catalog as the world container's mesh source, so a
+  world object's mesh identity is a catalog element rather than a per-container
+  name (`RetailWorldContainer::mesh_key` names the seam).
+- **#639** — import and spawn **all eight** world containers, not only `c1c`.
+  `c1` and `c5` hold grid records that store a real transform, so they also
+  exercise the affine path on retail data.
+- **#645** — one rule for a stored `object3d` transform. This conversion and
+  `scene::canonical_local` use different precedence (see "Review"), which the
+  corpus shows to be latent rather than harmful today.
 - The `scene_node` id grammar blocker F11-A's world names hit, so a world record's
   identity can come from its authored name-path as well as from its slot.
+
+## Review
+
+Reviewed 2026-10-04 by **bunny-2** — the same agent instance that implemented
+this stage, so this review is **not independent evidence**. A fresh-context
+reviewer should still read it; the measurements below were re-taken by the
+reviewer rather than copied.
+
+Seven defects were found and fixed in the branch:
+
+1. **A claim id that named the wrong thing.** A record that stores no mesh index
+   resolved its mesh to `Resolved::Unknown` under
+   `f18-world.object-id-is-the-node-slot` — a claim about *identity*, carried by
+   a value about *mesh binding*. It now has its own claim,
+   `f18-world.object-stores-no-mesh-index`, and a test asserts the claim id and
+   the reason rather than only `!is_known()`.
+2. **`matrix_disagreements` undercounted.** It counted only *indexed* records
+   while its own doc said "imported records", so a disagreement on an unindexed
+   record reported 0. It now counts every imported record. `c1c` is 0 either way,
+   which the retail test pins.
+3. **The walk's end was cross-checked against itself.** `GridEndMismatch`
+   compared the re-walk's end with the block length recomputed from the same two
+   grid counts, which a walk wrong in the same way as the reader would satisfy.
+   It now also compares against the reader's own recorded `data_bytes`. Measured
+   while fixing this: the reader walks the grid and **then** the world's child
+   slots, so the grid's end plus `4 × children` is where `data_bytes` points —
+   a first version that compared `data_bytes` directly failed the fixture by
+   exactly one child slot, which is how that relation became known.
+4. **A silent skip in `mesh_index_of`.** A mesh name of this container's own
+   shape that carried no decimal index returned `Ok(None)` and was skipped, which
+   is the exact outcome the function's doc says it exists to prevent. It is now
+   a typed `UnknownMeshReference`.
+5. **`imported_objects` was dead API** — a one-line wrapper over
+   `definition.objects()` with no caller. Removed, with its re-export.
+6. **A duplicated comment paragraph** in the sector-index test said the same
+   thing twice; and this file's test inventory claimed six claim ids and
+   `OwnershipDisagreement { grid: 2, child_list: 1, naming: 4 }`, neither of which
+   matched the test that ran. Both corrected.
+7. **Uncovered production refusals.** `PartitionSlotNotAnObject` and
+   `MeshSlotMissing` were reachable and typed but untested; both now have an arm.
+
+The re-walk's second end also fixed a documentation claim: this file previously
+said the walk "is checked to end exactly where the reader said the block ends",
+which was true only in the weaker sense above.
+
+### The transform rule, measured
+
+This conversion returns the identity whenever a record flags
+`OBJECT3D_FLAGS_IDENTITY`, and otherwise always uses the stored 3×3.
+`scene::canonical_local` (`crates/cs_content/src/scene.rs`) is stricter in both
+places: identity only when the record flags it **and** really is the identity,
+and the euler-derived matrix when the stored one agrees with the triple.
+
+Measured over all eight world containers with the production reader:
+
+| container | world-owned object records | flagged identity | flagged identity but not really identity | transformed | stored matrix disagrees |
+| --- | --- | --- | --- | --- | --- |
+| c1 | 412 | 340 | 0 | 72 | **1** |
+| c1b | 233 | 154 | 0 | 79 | 0 |
+| c1c | 346 | 316 | 0 | 30 | 0 |
+| c2 | 282 | 252 | 0 | 30 | 0 |
+| c2b | 338 | 304 | 0 | 34 | 0 |
+| c3 | 453 | 436 | 0 | 17 | 0 |
+| c4 | 401 | 344 | 0 | 57 | 0 |
+| c5 | 576 | 411 | 0 | 165 | 0 |
+
+So the divergence is **latent, not observed**: no world-owned record flags
+identity while storing something else, and exactly one record in the corpus
+(`c1`) is one where the two rules differ. Every other record is placed
+identically by both paths. Two rules for one conversion is still a canonical
+contract defect (AGENTS rule 7), and unifying them means changing the scene
+layer, which is outside this task's owner paths — so it is filed as **#645**
+rather than done here.
 
 ## Sources used
 

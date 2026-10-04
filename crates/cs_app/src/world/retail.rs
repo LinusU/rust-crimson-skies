@@ -57,9 +57,7 @@ use cs_assets::install::{self, DiscoveryError};
 use cs_content::coordinates::SourceAdapter;
 use cs_content::mesh::{MeshPresentationUnknown, RenderMesh, RenderMeshError};
 use cs_content::scene::{GameZSceneError, MeshSlot};
-use cs_content::world::{
-    ImportedWorld, WorldDefinition, WorldId, WorldIdError, WorldImportError, WorldObjectInstance,
-};
+use cs_content::world::{ImportedWorld, WorldDefinition, WorldId, WorldIdError, WorldImportError};
 use cs_formats::gamez::{GameZMeshes, GameZNodes, read_gamez_meshes, read_gamez_nodes};
 use cs_formats::io::ParseContext;
 use cs_types::asset_id::SourceSpan;
@@ -394,9 +392,7 @@ impl RetailWorldContainer {
             if out.contains(known) {
                 continue;
             }
-            let Some(index) = self.mesh_index_of(known)? else {
-                continue;
-            };
+            let index = self.mesh_index_of(known)?;
             let Some(slot) = self.meshes.get(index) else {
                 // The node reader reported the index as in range but the slot
                 // holds an all-zero stub, or the array is shorter. Either way the
@@ -414,20 +410,24 @@ impl RetailWorldContainer {
 
     /// The mesh-array index a definition-side mesh reference names.
     ///
-    /// `Err` when the reference is not one of this container's own slot names.
-    /// That cannot happen for a definition [`Self::definition`] produced, so it
-    /// is a refusal about the *caller* rather than a silent skip: a definition
-    /// built from somewhere else names meshes this source does not hold, and
-    /// quietly registering nothing for them would leave a world whose objects
-    /// report a `MeshUnavailable` gap for a reason the report never names.
-    fn mesh_index_of(&self, mesh: &ContentId) -> Result<Option<u32>, RetailWorldError> {
+    /// `Err` when the reference is not one of this container's own slot names,
+    /// **including** a name of this container that carries no index. That cannot
+    /// happen for a definition [`Self::definition`] produced, so it is a refusal
+    /// about the *caller* rather than a silent skip: a definition built from
+    /// somewhere else names meshes this source does not hold, and quietly
+    /// registering nothing for them would leave a world whose objects report a
+    /// `MeshUnavailable` gap for a reason the report never names.
+    fn mesh_index_of(&self, mesh: &ContentId) -> Result<u32, RetailWorldError> {
+        let unknown = RetailWorldError::UnknownMeshReference {
+            mesh: mesh.key().to_owned(),
+        };
         let prefix = format!("{}.mesh-", self.group.to_ascii_lowercase());
         let Some(suffix) = mesh.key().strip_prefix(&prefix) else {
-            return Err(RetailWorldError::UnknownMeshReference {
-                mesh: mesh.key().to_owned(),
-            });
+            return Err(unknown);
         };
-        Ok(suffix.parse::<u32>().ok())
+        // `mesh_key` is the only producer of these names and it writes the index
+        // in decimal, so anything else is a name this source did not mint.
+        suffix.parse::<u32>().map_err(|_| unknown)
     }
 }
 
@@ -567,8 +567,3 @@ pub fn read_world_container(
 /// under, re-exported so a consumer does not have to reach into
 /// `cs_content` for it.
 pub use cs_content::world::PARTITION_GRID_IS_THE_SECTOR_INDEX as GRID_IS_THE_SECTOR_INDEX;
-
-/// Every world object of one imported definition, in definition order.
-pub fn imported_objects(definition: &WorldDefinition) -> Vec<&WorldObjectInstance> {
-    definition.objects().iter().collect()
-}
