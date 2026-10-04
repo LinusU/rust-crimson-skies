@@ -19,7 +19,7 @@ the deleting process is identified. It is not a bug in this repository, it is
 not fixed by anything in this repository, and no `test = false` anywhere in
 this workspace would prevent it.
 
-Three results, each measured below:
+Four results, each measured below:
 
 1. **The reported signature reproduces spontaneously** — `could not execute
    process … (never executed)` / `No such file or directory (os error 2)` — in
@@ -58,15 +58,17 @@ The instruments are in `docs/findings/scripts/`:
 | `2026-10-04-t617-watch-deps.py` | every executable that appears or disappears in `target/debug/deps` during a run, with the size and mtime age it had |
 | `2026-10-04-t617-watch-tree.py` | the same over `target/debug` recursively, with inode, link count and mtime/ctime/atime ages |
 | `2026-10-04-t617-sample-procs.py` | every pid that appears on the host, with its ppid and full command line, on a tight interval |
+| `2026-10-04-t617-timestamper.py` | the line-timestamp filter the run script pipes cargo's output through |
+| `2026-10-04-t617-decisive.sh` | the campaign driver: runs the gate N times with the sampler and the tree watcher up for the whole window |
 
-The last one is the attribution instrument. `fs_usage`, `dtrace` and
+The sampler is the attribution instrument. `fs_usage`, `dtrace` and
 `sudo`-gated tools are unavailable to an agent on this host, and FSEvents
 reports no pid, so attribution has to come from sampling the process table: a
 prune pass is not a daemon, it exists only while it deletes.
 
 ## Reproduction: spontaneous, on an unmodified tree
 
-Two occurrences, both from `cargo test --workspace --locked` on
+Three occurrences, all from `cargo test --workspace --locked` on
 `origin/main` (`2676355d`), branch `rally/617-…`, with this checkout's own
 `CARGO_TARGET_DIR` and no other cargo in that directory.
 
@@ -96,6 +98,16 @@ the victim is the crate this task is about:
       No such file or directory (os error 2)
 ```
 
+**Occurrence 3** — this task's own required `cargo test --workspace --locked`
+check, 553 tests into the run, died on
+`accept_f48_d_crash_recovery_matrix-be042b1c8f1a3c3e`: the same binary
+occurrence 2's burst had already deleted once, and it took two more bursts to
+come back. Its build phase finished in **1.88 s**, i.e. cargo rebuilt nothing
+and accepted every harness as fresh — so the deletion landed inside the
+execution phase, exactly as the mechanism requires. The rerun of the identical
+command was green (349 `test result: ok`, 3391 passed, 0 failed), and this
+task's handover reports both runs in that order.
+
 `cs_inspect` carries 92 `#[test]`s in `src/` (11 modules, `campaign.rs` 2,
 `catalog.rs` 12, `config.rs` 18, `handling.rs` 3, `interp.rs` 14, `resolve.rs`
 5, `rof.rs` 9, `routes.rs` 3, `script_discovery.rs` 10, `textures.rs` 8,
@@ -104,9 +116,9 @@ would not have helped.
 
 ## The unlink is observed directly, not inferred
 
-`watch_deps.py` records every executable that disappears from
-`target/debug/deps`. Both occurrences above were preceded by an unlink burst,
-in the same run, while cargo was executing harnesses:
+`watch-deps.py` records every executable that disappears from
+`target/debug/deps`. The first two occurrences above were each preceded by an
+unlink burst, in the same run, while cargo was executing harnesses:
 
 | Run | Removals | Of those, in this run's own plan | Died? |
 | --- | --- | --- | --- |
@@ -140,7 +152,12 @@ Two details in that burst matter:
   `cs_inspect` harnesses and the 119 MiB `cs` binary are not in that run's
   plan. So this is not a targeted removal of "the binary cargo is about to
   exec"; it is a sweep over the directory, and which of its victims is
-  scheduled next is chance.
+  scheduled next is chance. The `run-2` burst is the other side of that coin:
+  all 6 of its victims *were* in the plan, and all 6 were pending.
+
+  Note this includes `cs`, the 119 MiB application binary — cargo does not
+  `exec` that during a test run at all. The sweep is over executables in the
+  directory, not over what the current run happens to need.
 
 ## Attribution: the prune loop, exactly
 
@@ -253,7 +270,7 @@ ruled-out table.
 
 `test = false` on a crate with real unit tests would delete real tests from the
 gate, which is exactly what AGENTS.md rule 6 forbids. It is therefore not
-available for the eight crates that carry unit tests:
+available for the seven crates that carry unit tests in `src/`:
 
 | Crate | `#[test]`s in `src/` |
 | --- | --- |
@@ -264,6 +281,7 @@ available for the eight crates that carry unit tests:
 | `cs_formats` | 36 |
 | `cs_assets` | 24 |
 | `cs_types` | 20 |
+| **total** | **635** |
 | `cs_script`, `cs_net`, `cs_xtask` | 0 |
 
 And it would not have helped anyway, for a reason this task measured. Look at
@@ -309,15 +327,17 @@ run gives the exact population the prune is drawing from. That run scheduled
 | `cs` (`cs_app`'s `--bin`) | — (same crate as `cs_app`) |
 | `cs_xtask` | 0, and #610 removed it from the plan entirely |
 
-So after #610 the plan still carries 9 unit-test harnesses from the 7 crates
-that have real unit tests in `src/`, plus 2 from the 2 that have none. Every
-one of the 9 real-test crates carries at least 20 `#[test]`s, so
-`test = false` is unavailable on all of them, and `cs_net`/`cs_script` are the
-only members where it would even be legitimate — and they hold no tests to lose.
+So after #610 the plan still carries 9 unit-test harnesses belonging to the 7
+crates that have real unit tests in `src/` (`cs_inspect` contributing two),
+plus 1 from `cs_script` and 1 from `cs_net`, which have none. Every one of
+those 7 real-test crates carries at least 20 `#[test]`s, so `test = false` is
+unavailable on all of them; `cs_net`/`cs_script` are the only members where it
+would even be legitimate, and they hold no tests to lose.
 
-**This is the scope fact #610 could not reach, stated exactly:** the
-`test = false` fix is available on 2 of 10 members and covers 0 real tests. The
-other 8 members, holding 635 `#[test]`s between them, stay in the plan and stay
+**This is the scope fact #610 could not reach, stated exactly:** of the 10
+workspace members, `test = false` is legitimate on 3 (`cs_net`, `cs_script`,
+and the `cs_xtask` it was already applied to) and covers 0 real tests. The
+other 7 members, holding 635 `#[test]`s between them, stay in the plan and stay
 exposed.
 
 ## Ruled out here, with the check that rules each out
@@ -327,29 +347,30 @@ exposed.
 | A second cargo writing this target dir | No second cargo exists in it. `lsof` over the whole tree returned only this task's own watcher and its own test run, and the only other `cargo` processes on the host had their cwd in `bunny-2` and `swe2-max-1`, whose `.env` sets `CARGO_TARGET_DIR` to their own checkout (checked for `bunny-2`, `swe2-max-1` and `bunny-alpha-1`: all three differ from this one). The attributed burst makes it moot anyway: the deleting command is not cargo. |
 | Cargo's own relinking is being mistaken for the prune | It is distinguishable, and both were observed in the same log. A cargo relink has `age_ctime_s ≈ 0` against an old `age_mtime_s` — that is the `target/debug/cs` unlink at t=957.178 (`age_mtime_s: 2533.7`, `age_ctime_s: 130.5`), and the file was back 1.3 s later. Every prune victim has `age_mtime_s == age_ctime_s` and never came back. The t=1074.073 burst is nine files, all `age_mtime_s == age_ctime_s`, all absent afterwards. |
 | A test in this suite deletes an artifact of the real target dir | Every `remove_file` / `remove_dir_all` under `crates/**` and `tools/**` was enumerated: 104 in `tests/`, 59 in `src/`. None of the 163 names a target directory — grepping all of them for `target`, `debug`, `deps` or `CARGO_TARGET_DIR` returns nothing. Each is scoped to a fixture root, a `TempDir`, or a scratch directory the same test created, and since #610 each fixture root carries a `std::process::id()` component so two suite processes cannot delete each other's trees. |
-| Cargo itself deleted them | Ruled out three ways. (a) Cargo's own churn is unlink-then-rewrite: the F54-X7 measurement saw 46 harnesses unlinked during a build phase and all 46 present afterwards, and the one cargo relink observed here (`target/debug/cs`, t=957.178) was back 1.3 s later. (b) Zero of the 24 files removed across the four bursts came back over six further minutes of watching. (c) The `deps/` bursts at t=65.404 and t=1074.073 are the two seconds in which `prune-stale-bins.sh --delete` was running. Cargo does not delete an artifact it is about to execute. |
+| Cargo itself deleted them | Ruled out three ways. (a) Cargo's own churn is unlink-then-rewrite: the F54-X7 measurement saw 46 harnesses unlinked during a build phase and all 46 present afterwards, and the one cargo relink observed here (`target/debug/cs`, t=957.178) was back 1.3 s later. (b) Zero of the 25 files removed across the observed bursts came back over six further minutes of watching. (c) The `deps/` bursts at t=65.404 and t=1074.073 fall in the two seconds in which `prune-stale-bins.sh --delete` was running. Cargo does not delete an artifact it is about to execute. |
 | A test in the suite runs `cargo clean` | `cargo clean` appears in the repository only inside error *message* strings asserted on by `accept_t433_` and `accept_t440_` (`"cargo clean --target-dir"` as the remediation the stale-dir gate tells a human to run). No source file invokes it, and no clean of any kind is invoked from any Rust or Python source. |
 | Disk pressure caused it | `/System/Volumes/Data` was at 97 % capacity with 34 GiB free throughout. Low free space is a real constraint on this host, but it cannot produce `ENOENT` on a path that existed a moment earlier: the unlink is observed directly, and the file is absent afterwards. |
-| The failures are a real test failure being misread | No `test result: FAILED` line appears in either occurrence's log, and `test_select::classify_missing_harness` requires exactly that — a cargo failure, zero reported test failures, and cargo's own message — before it will call it a vanished harness. |
+| The failures are a real test failure being misread | No `test result: FAILED` line appears in any occurrence's log — occurrence 3 reached 553 passing tests before dying. `test_select::classify_missing_harness` requires exactly this (a cargo failure, zero reported test failures, cargo's own message) before it will call it a vanished harness, and it did not fire here because these runs were not routed through `test-select`. |
 | `test = false` on the empty harnesses would have prevented it | Directly contradicted by the `run-2` burst: six of six victims were in the plan, and `cs_xtask` was not among them. |
 
 ## Rate
 
-Two campaigns, 23 instrumented `cargo test --workspace --locked` runs in total,
-all on unmodified `origin/main` (`2676355d`), all with this checkout's own
-`CARGO_TARGET_DIR`, `loadavg` 80-111, `/System/Volumes/Data` at 97 % with
-34 GiB free:
+Two campaigns plus this task's own check runs, 24 instrumented
+`cargo test --workspace --locked` runs in total, all on unmodified
+`origin/main` (`2676355d`), all with this checkout's own `CARGO_TARGET_DIR`,
+`loadavg` 80-111, `/System/Volumes/Data` at 97 % with 34 GiB free:
 
 | Campaign | Runs | Failures |
 | --- | --- | --- |
 | first (per-run watchers only) | 8 | **2** |
 | attributed (0.4 s process sampler + target-dir watcher) | 14 | 0 |
-| total | **23** | **2** |
+| this task's own required checks | 1 (+1 rerun) | **1** |
+| total | **24** | **3** |
 
-The two failures are the two occurrences quoted above. The 14-run campaign had
-a prune burst land *inside* a run (`t617-8`) and survived it, because that run
-had already executed the doomed files — see the controlled comparison above.
-So the rate is better read per burst than per run:
+The three failures are the three occurrences quoted above. The 14-run campaign
+had a prune burst land *inside* a run (`t617-8`) and survived it, because that
+run had already executed the doomed files — see the controlled comparison
+above. So the rate is better read per burst than per run:
 
 | Prune burst | A run in flight? | Outcome |
 | --- | --- | --- |
@@ -374,12 +395,33 @@ the class is gone.
 
 ## What was *not* established
 
-* **The prune's selection rule.** The victims in both bursts are ordinary
-  executables spread across the directory, and their mtimes (33-53 min old) do
-  not separate them from the survivors (the oldest surviving executable in
-  `target/debug/deps` is 89 hours old). So the rule is not "oldest first" and
-  not "older than N minutes". It reads the script's log or the script itself to
-  know; that is owner-side.
+* **The prune's selection rule.** This is the one open question, and the data
+  narrows it without settling it. Recorded victim mtime ages, per burst:
+
+  | Burst | Victim mtime ages | Executables that survived in the same directory |
+  | --- | --- | --- |
+  | baseline (06:22:47Z) | 1976-2053 s (33-34 min) | 3 min to 90 h old, 367 files |
+  | run-2 (06:42:50Z) | 3097-3203 s (52-53 min) | same |
+  | attributed (07:22:51Z) | 2651-2655 s (44 min, all within 5 s) | same |
+
+  So the rule is **not** "oldest first": files 90 hours old survive every pass
+  while files 33-53 minutes old are taken, and the 100+ MiB binaries survive
+  while a 1.0 MiB one does not. Nor is it "anything older than N minutes".
+  What the victims do share is a **narrow mtime window per burst** — all nine
+  in the attributed burst were linked within 5 s of each other — rather than
+  being spread across the directory's age range. Whether that window means
+  "recently linked and not yet claimed by a finished run", or is a hash-prefix
+  or name rule, is **unknown**. Reading `prune-stale-bins.sh` settles it, and
+  that file is outside every checkout, so it is the owner's to read. Do not
+  record a guessed rule.
+
+  One claim this finding does **not** make: that a freshly linked harness is
+  safe. An earlier reading of occurrence 3's 1.88 s build phase suggested the
+  victim had just been relinked, which would have shown freshness is not the
+  discriminator. That reading was wrong — a 1.88 s build phase means cargo
+  rebuilt nothing, and the file's mtime is from the *green rerun*, hours after
+  it was linked. The narrow-window observation above stands; a rule inferred
+  from it does not.
 * **Whether the prune intends to be safe here.** The F54-X7 finding quotes its
   own log line failing on a file that had just been replaced underneath it, so
   the job already races live builds. Whether it is *supposed* to skip live
@@ -392,24 +434,32 @@ the class is gone.
 This belongs to #613 (F54-X8), which is filed and blocked, and this task adds
 the reproduction and the attribution it needs. In preference order:
 
-1. **Make the prune skip live target directories**, or skip directories whose
-   harnesses a running `cargo test` is executing. That removes the class
-   outright and costs nothing else. It is the only option that does not trade
-   away something.
+1. **Make the prune skip a `deps/` directory that has a live `cargo test`
+   executing in it.** That removes the class outright and costs nothing else,
+   and it is the only option that does not trade something away. The check is
+   cheap: the pass already runs `stat` over the directory.
 2. **Serialise the agents** if the prune cannot be changed. This removes the
    concurrency that makes the window reachable at all, at the cost of wall
    clock on a host that is already at load 80-110.
 3. **Free disk.** `/System/Volumes/Data` at 97 % / 34 GiB free is a real
-   problem for builds in its own right, but it is not the cause of *this*
-   failure and should not be recorded as the fix.
+   problem for builds in its own right, and the prune is presumably a response
+   to it. But it is not the cause of *this* failure and should not be recorded
+   as the fix.
 4. **Accept the flake and document it.** Then the rerun rule in AGENTS.md and
    `cs_xtask::test_select` is the whole mitigation, and it is already
    implemented: rerun the identical command once, report both runs in order,
-   never the rerun alone.
+   never the rerun alone. This is what happens today, and this task's own
+   check run is an instance of it: occurrence 3 failed, the identical rerun was
+   green, and both are reported above.
 
-What this repository should *not* do: set `test = false` anywhere else. It
-would delete real tests from the gate, and the measurement above shows it
-would not remove the failure.
+Two things this repository should **not** do:
+
+* **Set `test = false` anywhere else.** It would delete real tests from the
+  gate, and the measurement above shows it would not remove the failure.
+* **Treat a green rerun as proof the class is gone.** The 14-run campaign had
+  zero failures and still had a prune burst land inside a live run. The rate
+  is a scheduling coincidence, so it will read as "fixed" at exactly the wrong
+  moments.
 
 ## The scripts
 
