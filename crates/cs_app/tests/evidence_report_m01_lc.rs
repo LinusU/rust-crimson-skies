@@ -60,6 +60,46 @@ fn review_method(census: &RetailControlCensus, own_tests: usize, shared_plus_own
         .map(|(kind, missions)| format!("{kind} on {} mission(s)", missions.len()))
         .collect();
     let fields = census.unmeasured_fields();
+    // The name-reading counterexample is **derived**, never written down: the
+    // reader whose longest member exceeds its control member by the largest
+    // factor, with both byte extents from the same census row.
+    let widest = census
+        .measured_rows()
+        .filter_map(|row| {
+            let control_len = match &row.program {
+                ControlProgram::Measured { len, .. } => *len,
+                ControlProgram::Absent { .. } => return None,
+            };
+            row.members
+                .iter()
+                .filter(|member| !member.is_control && member.len > control_len && control_len > 0)
+                .max_by_key(|member| member.len)
+                .map(|member| {
+                    (
+                        row.mission.clone(),
+                        member.len as f64 / control_len as f64,
+                        member.len,
+                        control_len,
+                    )
+                })
+        })
+        .fold(
+            (String::new(), 0.0_f64, 0_u64, 0_u64),
+            |worst, candidate| {
+                if candidate.1 > worst.1 {
+                    candidate
+                } else {
+                    worst
+                }
+            },
+        );
+    let (widest_mission, widest_ratio, widest_len, control_len) = widest;
+    let widest_mission = if widest_mission.is_empty() {
+        "no measured reader".to_owned()
+    } else {
+        widest_mission
+    };
+    let widest_ratio = format!("{widest_ratio:.2}");
     format!(
         "Acceptance suite run locally with the retail capability; this harness derives every field \
          from the recorded log, production discovery of $CS_GAME_DIR, and a second production run \
@@ -73,9 +113,10 @@ fn review_method(census: &RetailControlCensus, own_tests: usize, shared_plus_own
          carried as a measured absence, not dropped and not counted as campaign missions. Over the \
          measured archives the installation declares {} numbered objective blocks, {} directive \
          sites and {} distinct directive keys. The rule is measured to disagree with the name \
-         reading the task started from: in M01 the longest member of the reader is more than three \
-         times the length of the control member and declares no objective block at all, so a \
-         size-or-name heuristic would have selected an animation definition as the mission program. \
+         reading the task started from: in {} the longest member of the reader is {}x the length \
+         of that reader's control member ({} bytes beside {}) and declares no objective block at \
+         all, so a size-or-name heuristic would have selected an animation definition as the \
+         mission program. \
          The declared argument shape of every directive site was measured, keeping nested lists \
          nested and counting the sites whose shape disagrees across a key's own sites; no shape is \
          flattened into a positional list and no majority shape is resolved. Exactly two directive \
@@ -113,6 +154,10 @@ fn review_method(census: &RetailControlCensus, own_tests: usize, shared_plus_own
         census.blocks(),
         census.sites(),
         census.directive_keys().len(),
+        widest_mission,
+        widest_ratio,
+        widest_len,
+        control_len,
         if unmet.is_empty() {
             "none".to_owned()
         } else {

@@ -111,8 +111,9 @@ objective program is not a mission the engine can run.
 
 ## The dispositions: what the engine may do, and what it may not
 
-Each distinct key gets one of exactly two dispositions, and there is no third
-"probably this" variant:
+A disposition is a property of **one archive's** sites, so it is counted per
+record. Each distinct key of a record gets one of exactly two dispositions, and
+there is no third "probably this" variant:
 
 * **`TerminalOutcome`** — the two measured outcome keys, whose spelling the
   mission IR has an action for.
@@ -120,15 +121,30 @@ Each distinct key gets one of exactly two dispositions, and there is no third
   * `meaning_not_measured` — the spelling is measured and its **effect** is not.
     Most keys carry this.
   * `disagreeing_argument_shape` — the key's own sites spell more than one shape.
-    Measured for 26 keys; `INACTIVE1` spells `[text]` at 35 sites, `[text,text]`
-    at 130 and `[text,text,text]` at 106. Both/all shapes are kept and **no
-    majority is resolved** — a reader that picked the plurality would be inventing
-    a rule the original does not state.
-  * `argument_shape_has_no_value` — every site agrees, but the agreed shape nests
-    a list and `cs_script::ir::Value` has no list variant. Measured for `ANIM_STATE`
-    (`[text,[text,[text],text,[text]]]`, 51 sites) among others. Flattening it
-    into a positional `Vec<Value>` would be a format change presented as a binding,
-    so it is refused by name.
+    `INACTIVE1` spells `[text]` at 35 sites, `[text,text]` at 130 and
+    `[text,text,text]` at 106 **corpus-wide** (of its 271 sites; in M01 alone 2
+    and 10). Both/all shapes are kept and **no majority is resolved** — a reader
+    that picked the plurality would be inventing a rule the original does not
+    state.
+  * `argument_shape_has_no_value` — every site of that record agrees, but the
+    agreed shape nests a list and `cs_script::ir::Value` has no list variant.
+    Measured in M01 for `ANIM_STATE` (`[text,[text,[text],text,[text]]]`, 3 sites)
+    and `COMPLETED_STOPPOINT` (`[[text,int,int]]`, 1 site), and in other archives
+    for `ADD_OBJECTIVE_TARGET`, `REMOVE_OBJECTIVE_TARGET`, `ADD_OTHER_TARGET`,
+    `REMOVE_OTHER_TARGET`, `SET_AI_NET`, `SET_AI_TEAM`, `SET_AI_`, `SET_HELP_LABEL`,
+    `TRAVELERS`, `WAKE_ANIM` and `WARP_VEHICLE`. Flattening such a shape into a
+    positional `Vec<Value>` would be a format change presented as a binding, so it
+    is refused by name.
+
+**M01's own record**, measured and pinned by
+`accept_m01_lc_every_directive_m01_spells_is_measured_and_only_outcomes_run`: of
+its 43 keys, **2** are implemented, **30** are refused `meaning_not_measured`,
+**9** `disagreeing_argument_shape` and **2** `argument_shape_has_no_value`. A
+key's disposition is **not** a corpus-wide constant — the same spelling agrees in
+one record and disagrees in another — so the corpus figure is stated as "carries
+this reason in at least one archive": 46 keys `meaning_not_measured`, 31
+`disagreeing_argument_shape`, 13 `argument_shape_has_no_value` and 2 implemented,
+which is 57 distinct keys with 2 of them in more than one bucket.
 
 ### A bare key is not an outcome key
 
@@ -161,6 +177,41 @@ it:
 So the task's acceptance criterion is answered on its **second** branch: the task
 records exactly which instructions and fields remain unmeasured, and
 `campaign_ready()` is `false` while a single one does.
+
+## This stage disagrees with F39-D/F39-E1 about `BEGIN_DORMANT`, and the bytes settle it
+
+F39-D and F39-E1 measured that **1096** of the installation's 1338 blocks carry
+`BEGIN_DORMANT`. This stage measures **1118**. Both numbers were taken on the
+same install (`b4e780ab…`) over the same 53 readers and the same 1338 numbered
+blocks, so one of the two walks is wrong, and the difference is not noise.
+
+The cause is the flat (text, value) pairing in `cs_content::stunts::zrd_flat_fields`.
+It advances two children per field, so a directive the original spells **bare** —
+a text key immediately followed by another text key — is paired with the *next
+key's spelling* and that next key is then stepped over and counted nowhere. There
+are 49 bare directive sites corpus-wide (21 `INSTANTLOSS`, 24 `INSTANTWIN`, and
+the four English words below); 28 of them are followed by another key. Measured
+directly: exactly **22** of the 1118 `BEGIN_DORMANT` sites are the key immediately
+after a bare directive, and 1118 − 22 = **1096**, the number the flat walk
+reports. Every other key agrees between the two walks — `COMPLETED_SOUND_GROUP`
+585, `DEDG` 130, `IDENTITY` 112, `INACTIVE_COMPLETION_COUNT` 130, `TRAVELERS`
+75, `START_TAXI` 7, `STOP_QUEUED_SOUNDS` 49, `TICK_DEPENDS_ON_OBJ` 35 — so
+`BEGIN_DORMANT` is the visible face of a systematic undercount, not a different
+population.
+
+A grammar-free cross-check agrees with the larger number: counting every text
+occurrence of `BEGIN_DORMANT` inside a numbered block, with no pairing rule at
+all, also gives **1118**. The same audit found **no** content-name-shaped string
+read as a directive key — the only non-uppercase keys in the 57-key vocabulary are
+`Change`, `to`, `mobile` and `net`, which are the stray note described above — so
+the directive grammar this stage measures does not swallow an argument anywhere in
+the corpus.
+
+What this stage does **not** do is fix `zrd_flat_fields` or re-publish F39-D's,
+F39-E1's, F39-E2's or F39-E4's numbers. Those belong to `cs_content::stunts` and
+to those findings, and every claim downstream of the flat walk (F39-E1's 992
+sentinel / 104 positive arguments in particular) has to be re-checked rather than
+silently re-based. Filed as **#646** (`F39-D-COUNT`).
 
 ## The bytecode mission VM is still unlocated
 
@@ -274,6 +325,56 @@ committed.
 | `cargo test --workspace --locked` | 0 |
 | `cargo test --workspace --locked -- accept_m01_lc_ --include-ignored` | 0 (19 tests: 14 synthetic, 5 retail) |
 
+The acceptance selection was run twice. The first run exited 101 with
+`could not execute process .../accept_doclib_conflict-3bad038241d20373 (never
+executed)` / `No such file or directory (os error 2)` — the F54-X8 harness-missing
+case documented in `docs/findings/2026-10-04-f54-x7-missing-test-harness-binary.md`,
+in which cargo could not exec a harness it had already accepted as fresh, so **no**
+test in that unit ran and the `accept_m01_lc_` tests in a different binary were
+never reached. `ls -l` on that harness confirms the file is gone from
+`target/debug/deps`. The **identical** command was rerun and is green; that rerun
+is the run of record and the log committed as evidence is the rerun. The failed
+first run is a failed run and is reported as one. Nothing in the tests, the
+assertions or the lints was changed in response.
+
+## Review record
+
+Reviewed 2026-10-04 by `bunny-alpha-2/bunny-alpha-2`, the **same agent instance
+that implemented the work**, so this review is **not independent** and its context
+is not fresh; it is a second pass over the same author's reasoning. The
+corrections it made, all of them to claims rather than to behaviour:
+
+* the evidence report's method text claimed M01's longest member is "more than
+  three times" its control member; the measured ratio is **1.61x** (38639 bytes
+  beside 24012). The harness now derives the ratio, the mission and both byte
+  extents from the census it renders, so the number cannot drift from the data.
+* the finding claimed "1118 sites carry `-1.0`". Only the shape is measured here
+  (`[float]` at all 1118); the values are F39-E1's (992 sentinel, 104 positive),
+  and the finding now says so.
+* the finding counted `disagreeing_argument_shape` over "26 keys", a number no
+  reading of this census reproduces. A disposition belongs to one archive's sites,
+  so the finding now states the basis, gives M01's measured 30/9/2/2 split and the
+  corpus figure as "in at least one archive" (46/31/13/2).
+* `read_control_member` returned a member row reporting **zero** objective blocks
+  and `is_control: false` for the very member the rule had just selected. It now
+  reports what the rule measured, and a retail test pins it.
+* the census doc claimed no member can go unmeasured; it now says that the census
+  sees what production discovery yields, that an archive yielding no member at all
+  would arrive as `Absent { scanned: 0 }`, and that the corpus-level test fails on
+  a row with no candidates rather than letting it pass.
+
+The review also measured, independently of the production walk, that the directive
+grammar does not misread the corpus: a grammar-free count of every text occurrence
+inside a numbered block reproduces every key count (`BEGIN_DORMANT` 1118, `DEDG`
+130, `COMPLETED_SOUND_GROUP` 585, `IDENTITY` 112, `TRAVELERS` 75,
+`INACTIVE_COMPLETION_COUNT` 130, `START_TAXI` 7, `STOP_QUEUED_SOUNDS` 49,
+`TICK_DEPENDS_ON_OBJ` 35), that no content-name-shaped string is read as a
+directive key, that 1338 blocks over 40 archives with a block-bearing member and
+none with two, and that `ZBD/C4/M01`'s `OBJECTIVE24` really does read
+`BEGIN_DORMANT, Change, to, mobile, net, SET_AI_NET, NAP_OBJECTIVE_WHEN_I_COMPLETE`.
+That audit is what produced the `BEGIN_DORMANT` disagreement below and filed
+#646.
+
 ## Recorded unknowns (not guessed)
 
 - **What any directive key *does* is unmeasured.** No original executable has
@@ -289,8 +390,13 @@ committed.
 - **An inactive stage's rule is unmeasured.** F39-E4 measured the names a stage
   carries (node, part, part-state) and **not** what the stage asserts; a completion
   threshold's unit is likewise unmeasured.
-- **`BEGIN_DORMANT`'s number is unmeasured.** 1118 sites carry `-1.0`; no duration,
-  delay or sentinel reading is asserted.
+- **`BEGIN_DORMANT`'s number is unmeasured.** This stage measures only the
+  argument's **shape** (`[float]` at every one of its 1118 sites) and no value at
+  all. The values are F39-E1's measurement, not this stage's: of the 1096 blocks
+  it counted, 992 carry the `-1` sentinel and 104 carry a positive argument
+  (1.0 to 300.0, exactly one fractional, `13.5`). No duration, delay or sentinel
+  reading is asserted here, and the 22-site difference between F39-E1's 1096 and
+  this stage's 1118 is the swallowing walk described above.
 - **Five record-key spellings are unclassified.** `MISSION_WON_SOUND`,
   `MISSION_LOST_SOUND`, `PRIMARY_COMPLETE_SOUND`, `SECONDARY_COMPLETE_SOUND` and
   `TERTIARY_COMPLETE_SOUND` appear once each and are reported as unclassified.

@@ -944,8 +944,8 @@ fn accept_m01_lc_m01s_control_member_is_measured_and_not_assumed() {
 
 /// The name reading the task started from is measurably the wrong rule: the
 /// member a reader would guess from "the mission's driving program by name shape"
-/// is three times longer than the control member and declares no objective block
-/// at all.
+/// is 1.61x the length of the control member (measured: 38639 bytes beside 24012)
+/// and declares no objective block at all.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_lc_the_longest_member_is_not_the_control_program() {
@@ -956,6 +956,12 @@ fn accept_m01_lc_the_longest_member_is_not_the_control_program() {
     assert_eq!(
         objective_blocks_of(&DecodedMember::new("x", document.clone())),
         58
+    );
+    assert_eq!(
+        (member.objective_blocks, member.is_control),
+        (58, true),
+        "the row the reader returns describes the member the rule chose: it carries \
+         that member's own measured block count and marks it as the control program"
     );
 
     // Now measure every member of the same archive through production discovery
@@ -1052,6 +1058,23 @@ fn accept_m01_lc_every_directive_m01_spells_is_measured_and_only_outcomes_run() 
         );
         assert!(!keys.is_empty(), "{code} has keys");
     }
+    // The split the finding quotes, measured per record: a disposition is a
+    // property of one archive's sites, so it is counted here and not corpus-wide.
+    assert_eq!(
+        (
+            by_reason.get("meaning_not_measured").map_or(0, Vec::len),
+            by_reason
+                .get("disagreeing_argument_shape")
+                .map_or(0, Vec::len),
+            by_reason
+                .get("argument_shape_has_no_value")
+                .map_or(0, Vec::len),
+            implemented.len()
+        ),
+        (30, 9, 2, 2),
+        "M01's 43 keys split into 30 unmeasured-of-meaning, 9 disagreeing, 2 with a \
+         nested agreed shape and the 2 outcome keys: {by_reason:?}"
+    );
     assert!(
         by_reason.contains_key("meaning_not_measured"),
         "most keys are refused for want of a measured meaning, which is the \

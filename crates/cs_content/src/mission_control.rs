@@ -225,10 +225,11 @@ pub fn objective_blocks_of(member: &DecodedMember) -> u32 {
 /// exactly when its decoded record declares at least one numbered
 /// `OBJECTIVE<N>` block. Nothing else about a member counts: not its name, not
 /// its length, not its position in the archive. That is what makes the rule
-/// falsifiable — M01's `wv_tailhook.zrd` is three times longer than its
-/// `objectives.zrd` and carries no block at all, so the size-and-name heuristic
-/// the task description started from ([`CONTROL_MEMBER`]'s doc) is measured to be
-/// wrong, and this function is what replaces it.
+/// falsifiable — M01's `wv_tailhook.zrd` is 38639 bytes beside its 24012-byte
+/// `objectives.zrd` (**1.61x**, measured) and carries no block at all, so the
+/// size-and-name heuristic the task description started from
+/// ([`CONTROL_MEMBER`]'s doc) is measured to be wrong, and this function is what
+/// replaces it.
 ///
 /// # Errors
 ///

@@ -37,6 +37,13 @@
 //! * A member that fails to decode is a **refusal**
 //!   ([`ControlCensusError::Decode`]) and fails the whole census, so a
 //!   mission cannot vanish from the denominator by having one unreadable member.
+//!   The census measures the members production discovery **yields**: a member
+//!   the reader index itself refuses to slice is recorded in
+//!   `ContainerDiscovery::findings` and never reaches this module, so an archive
+//!   that yields no member at all would arrive here as an absent program with
+//!   `scanned: 0`. That cannot pass unnoticed: the corpus-level acceptance test
+//!   requires every row to have offered candidates, so a reader that parses into
+//!   nothing fails the suite instead of being counted as a scenario.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -691,13 +698,14 @@ pub fn read_control_member(
                 continue;
             };
             let span = program.locator().span();
+            let member = DecodedMember::new(name.to_owned(), document);
             decoded.push((
-                DecodedMember::new(name.to_owned(), document),
+                member.clone(),
                 RetailMemberRow {
                     name: name.to_owned(),
                     offset: span.offset,
                     len: span.len,
-                    objective_blocks: 0,
+                    objective_blocks: objective_blocks_of(&member),
                     is_control: false,
                 },
             ));
@@ -707,7 +715,12 @@ pub fn read_control_member(
         let index = decoded
             .iter()
             .position(|(member, _)| member.name == control.name)?;
-        return Some((decoded[index].0.document.clone(), decoded[index].1.clone()));
+        // The row describes the member the rule chose, so it carries what the rule
+        // measured about it: a row reporting zero blocks for the control member
+        // would contradict the very selection this function performed.
+        let mut row = decoded[index].1.clone();
+        row.is_control = true;
+        return Some((decoded[index].0.document.clone(), row));
     }
     None
 }
