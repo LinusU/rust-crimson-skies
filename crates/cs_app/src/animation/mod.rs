@@ -169,10 +169,12 @@ pub use carrier::{
     ANIMATION_DEFINITION_FILE_KEY, ANIMATION_DEFINITIONS_KEY, ANIMATION_LIST_KEY,
     ANIMATION_PATH_KEY, AnimationBindingError, AnimationBindingSurvey, AnimationDocument,
     AnimationReference, BindingBlocker, CarrierBinding, CarrierMember, GRAVITY_KEY,
-    PATH_COMPONENT_SEPARATOR, PATH_ROOT_SEPARATOR, PayloadFacts, STARTUP_MEMBER, SiblingReader,
-    StartupGroup, StartupIdentities, UNRESOLVED_REASON_NO_MEMBER,
-    UNRESOLVED_REASON_NO_RECORD_NAMES, bind_animation_carrier, bind_installation, carrier_name,
-    document_member, survey_animation_bindings,
+    PATH_COMPONENT_SEPARATOR, PATH_ROOT_SEPARATOR, PayloadFacts, RecordFacts, STARTUP_MEMBER,
+    ScopeStartupBinding, SiblingReader, StartupBinding, StartupGroup, StartupIdentities,
+    StartupOutcome, UNBOUND_REASON_AMBIGUOUS, UNBOUND_REASON_NO_RECORD, UNBOUND_REASON_NOT_WALKED,
+    UNRESOLVED_REASON_NO_MEMBER, UNRESOLVED_REASON_NO_RECORD_NAMES, bind_animation_carrier,
+    bind_installation, bind_startup_identities, carrier_name, document_member,
+    survey_animation_bindings,
 };
 pub use playback::{
     AnimationLog, AnimationPlayError, AnimationPlayback, AnimationRefusal, BlockedTrack,

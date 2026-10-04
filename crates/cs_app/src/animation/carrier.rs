@@ -43,15 +43,21 @@
 //! byte-for-byte match (spec F06 non-negotiable #3), and every other case is
 //! named.
 //!
-//! # What is still not decoded
+//! # The records, and the startup identities (task #650)
 //!
-//! The carrier's **animation records** — the payload behind the fixed header
-//! [`cs_formats::zbd::anim`] reads — are not decoded, so a member is bound here
-//! but its *contents* are not. [`startup_identities`] names the animation
-//! identities `startanims.zrd` carries beside them, which have nothing to bind
-//! to until the records are decoded; they are reported as an open input with
-//! the reason, never matched by a byte search dressed as a binding. Both gaps
-//! are recorded in `docs/findings/2026-10-04-m01-lc-anim-carriers.md`.
+//! The carrier's **animation records** are walked
+//! (`cs_formats::zbd::AnimationPayload::records`, task #650,
+//! `docs/findings/2026-10-05-m01-lc-anim-records.md`), and [`PayloadFacts`]
+//! keeps each record's identity (`anim_name`) in carrier order. What is *inside*
+//! a record — the event streams, the pointer words — is still not decoded.
+//!
+//! `startanims.zrd` names animation identities, and [`bind_startup_identities`]
+//! binds one only when its text equals **exactly one** record's `anim_name`
+//! across the scope's mission carrier and its world group's camera carrier. The
+//! measured census of that rule is in the finding; an identity that matches no
+//! record, or more than one, stays an open input with the reason, never a
+//! guess. Which carrier an identity lives in is *measured*, not assumed: the
+//! rule looks in both.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -118,11 +124,27 @@ pub const UNRESOLVED_REASON_NO_MEMBER: &str = "no member row of this carrier spe
      (or any of its resolved candidates) byte for byte; the container keeps Windows separators, \
      case and a doubled separator verbatim, and this reader never rewrites a spelling";
 
-/// Why the animation identities `startanims.zrd` names are not bound here.
-pub const UNRESOLVED_REASON_NO_RECORD_NAMES: &str = "startanims.zrd names animation identities, and an animation record's name lives in the carrier \
-     payload, whose records are not decoded (cs_formats::zbd::anim \
-     RECORDS_NOT_DECODED_REASON); no measured rule maps an identity onto an index row, so the \
-     identity is reported as an open input rather than matched by a byte search";
+/// Why the animation identities `startanims.zrd` names are not bound by the
+/// carrier alone: an identity names a record's `anim_name`, which may live in
+/// the scope's camera carrier, so the join needs both
+/// ([`bind_startup_identities`]).
+pub const UNRESOLVED_REASON_NO_RECORD_NAMES: &str = "startanims.zrd names animation identities, and an animation record's anim_name lives in \
+     a carrier payload that may be the mission's or its world group's camera carrier; bind_startup_identities \
+     joins an identity to a record only when its text equals exactly one record's anim_name across the \
+     two carriers, so this carrier alone leaves it an open input";
+
+/// Why an identity that matches no record stays unbound.
+pub const UNBOUND_REASON_NO_RECORD: &str = "no record of the mission carrier or of its camera \
+     carrier has this identity as its anim_name; whether the original engine resolved it \
+     elsewhere is unmeasured";
+
+/// Why an identity stays unbound when a carrier it would live in was not walked.
+pub const UNBOUND_REASON_NOT_WALKED: &str = "the mission carrier or its world group's camera carrier \
+     is missing or its record walk was refused, so \"exactly one record\" cannot be established";
+
+/// Why an identity that matches several records stays unbound.
+pub const UNBOUND_REASON_AMBIGUOUS: &str = "more than one record of the mission and camera \
+     carriers has this identity as its anim_name; no measured rule picks one";
 
 /// One index row of a carrier, as this module keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,11 +224,41 @@ pub struct PayloadFacts {
     pub gravity: f32,
     /// Where the animation records begin.
     pub record_table_offset: u64,
-    /// The payload's **first** record name, exactly as stored. The records are
-    /// not walked, so this is one name and not a table.
+    /// The payload's **first** record name, exactly as stored (record 0).
     pub first_record_name: Vec<u8>,
-    /// Why the records are not decoded.
+    /// Why the content inside the records is not decoded.
     pub records_not_decoded_reason: &'static str,
+    /// The walked records, when the walk succeeded. A failed walk is a
+    /// [`BindingBlocker::RecordsRefused`], never an empty list.
+    pub records: Option<RecordFacts>,
+}
+
+/// What the record walk found, as owned data: identities in carrier order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordFacts {
+    /// Records walked: the payload header's declared count.
+    pub count: usize,
+    /// Every record's `anim_name`, verbatim, in carrier order (record 0 is
+    /// `reserved_anim_0` in all 61 retail carriers).
+    pub anim_names: Vec<Vec<u8>>,
+    /// Where the region after the last record starts, counted from the payload.
+    pub trailing_offset: u64,
+    /// Length of the region after the last record, **not walked**.
+    pub trailing_bytes: u64,
+}
+
+impl RecordFacts {
+    /// The indices of the records whose `anim_name` equals `name` byte for
+    /// byte.
+    #[must_use]
+    pub fn indices_named(&self, name: &[u8]) -> Vec<usize> {
+        self.anim_names
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| candidate.as_slice() == name)
+            .map(|(index, _)| index)
+            .collect()
+    }
 }
 
 /// The paired animation record of one scope, decoded through the production
@@ -310,6 +362,13 @@ pub enum BindingBlocker {
         /// The refusal code, verbatim.
         code: &'static str,
     },
+    /// The payload header read, but the record walk stopped.
+    RecordsRefused {
+        /// The carrier's logical key.
+        key: String,
+        /// The refusal code, verbatim.
+        code: &'static str,
+    },
     /// The scope has no sibling `zrdr.zbd`, so no document pairs with it.
     MissingReader {
         /// The reader key the layout expects.
@@ -362,6 +421,7 @@ impl BindingBlocker {
             Self::WrongFamily { .. } => "wrong_family",
             Self::UnvalidatedHeader { .. } => "unvalidated_header",
             Self::PayloadRefused { .. } => "payload_refused",
+            Self::RecordsRefused { .. } => "records_refused",
             Self::MissingReader { .. } => "missing_reader",
             Self::ReaderUnreadable { .. } => "reader_unreadable",
             Self::ReaderRefused { .. } => "reader_refused",
@@ -393,6 +453,12 @@ impl fmt::Display for BindingBlocker {
                 write!(
                     f,
                     "the animation carrier {key} refused its payload ({code})"
+                )
+            }
+            Self::RecordsRefused { key, code } => {
+                write!(
+                    f,
+                    "the animation carrier {key} refused its record walk ({code})"
                 )
             }
             Self::MissingReader { expected_key } => {
@@ -643,14 +709,35 @@ pub fn bind_animation_carrier(
 
     let payload = match &index {
         Ok(index) => match index.payload() {
-            Ok(payload) => Some(PayloadFacts {
-                span: payload.span(),
-                declared_record_count: payload.header().declared_record_count,
-                gravity: payload.header().gravity,
-                record_table_offset: payload.record_table_offset(),
-                first_record_name: payload.first_record_name().to_vec(),
-                records_not_decoded_reason: payload.records_not_decoded_reason(),
-            }),
+            Ok(payload) => {
+                let records = match payload.records() {
+                    Ok(walk) => Some(RecordFacts {
+                        count: walk.len(),
+                        anim_names: walk
+                            .iter()
+                            .map(|record| record.anim_name().to_vec())
+                            .collect(),
+                        trailing_offset: walk.trailing_offset(),
+                        trailing_bytes: walk.trailing().len() as u64,
+                    }),
+                    Err(error) => {
+                        blockers.push(BindingBlocker::RecordsRefused {
+                            key: key.clone(),
+                            code: error.code(),
+                        });
+                        None
+                    }
+                };
+                Some(PayloadFacts {
+                    span: payload.span(),
+                    declared_record_count: payload.header().declared_record_count,
+                    gravity: payload.header().gravity,
+                    record_table_offset: payload.record_table_offset(),
+                    first_record_name: payload.first_record_name().to_vec(),
+                    records_not_decoded_reason: payload.records_not_decoded_reason(),
+                    records,
+                })
+            }
             Err(error) => {
                 blockers.push(BindingBlocker::PayloadRefused {
                     key: key.clone(),
@@ -720,6 +807,151 @@ pub fn bind_animation_carrier(
         startup,
         blockers,
     }
+}
+
+/// Where a startup identity's record was found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StartupOutcome {
+    /// Exactly one record across the two carriers has this `anim_name`.
+    Bound {
+        /// Which carrier holds the record.
+        carrier: CarrierKind,
+        /// The record's index in that carrier's record list.
+        record: usize,
+    },
+    /// The identity is left open, with the reason and every match found.
+    Unbound {
+        /// Why.
+        reason: &'static str,
+        /// The matches that were found, if any (more than one when ambiguous).
+        matches: Vec<(CarrierKind, usize)>,
+    },
+}
+
+/// One startup identity and where it went.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartupBinding {
+    /// The startup key (`NEW_GAME_START` / `LOAD_GAME_START`).
+    pub key: String,
+    /// The identity as `startanims.zrd` spells it.
+    pub identity: String,
+    /// The outcome.
+    pub outcome: StartupOutcome,
+}
+
+/// The startup bindings of one mission scope.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopeStartupBinding {
+    /// The mission carrier's logical key.
+    pub mission_key: String,
+    /// The camera carrier key the scope was joined with.
+    pub camera_key: String,
+    /// One row per identity, in declared order.
+    pub bindings: Vec<StartupBinding>,
+}
+
+impl ScopeStartupBinding {
+    /// How many identities bound.
+    #[must_use]
+    pub fn bound_count(&self) -> usize {
+        self.bindings
+            .iter()
+            .filter(|row| matches!(row.outcome, StartupOutcome::Bound { .. }))
+            .count()
+    }
+}
+
+/// Joins a scope's startup identities to the records of its two carriers.
+///
+/// An identity binds only when its text equals **exactly one** record's
+/// `anim_name` across the mission carrier and the world group's camera carrier
+/// (byte for byte, never normalized). This is a rule *measured over the
+/// retail files* — the census is in
+/// `docs/findings/2026-10-05-m01-lc-anim-records.md` — and says nothing about
+/// what the original engine did; no original run exists. An identity that
+/// matches none, or several, is left open with the reason.
+#[must_use]
+pub fn bind_startup_identities(
+    mission: &CarrierBinding,
+    camera: Option<&CarrierBinding>,
+) -> Vec<StartupBinding> {
+    let Some(startup) = &mission.startup else {
+        return Vec::new();
+    };
+    let walked = records_of(mission).zip(camera.and_then(records_of));
+    let mut rows = Vec::new();
+    for group in &startup.groups {
+        for identity in &group.identities {
+            let outcome = match &walked {
+                None => StartupOutcome::Unbound {
+                    reason: UNBOUND_REASON_NOT_WALKED,
+                    matches: Vec::new(),
+                },
+                Some((mission_records, camera_records)) => {
+                    let name = identity.as_bytes();
+                    let mut matches: Vec<(CarrierKind, usize)> = mission_records
+                        .indices_named(name)
+                        .into_iter()
+                        .map(|record| (CarrierKind::Mission, record))
+                        .collect();
+                    matches.extend(
+                        camera_records
+                            .indices_named(name)
+                            .into_iter()
+                            .map(|record| (CarrierKind::Camera, record)),
+                    );
+                    match matches.as_slice() {
+                        [(carrier, record)] => StartupOutcome::Bound {
+                            carrier: *carrier,
+                            record: *record,
+                        },
+                        [] => StartupOutcome::Unbound {
+                            reason: UNBOUND_REASON_NO_RECORD,
+                            matches,
+                        },
+                        _ => StartupOutcome::Unbound {
+                            reason: UNBOUND_REASON_AMBIGUOUS,
+                            matches,
+                        },
+                    }
+                }
+            };
+            rows.push(StartupBinding {
+                key: group.key.clone(),
+                identity: identity.clone(),
+                outcome,
+            });
+        }
+    }
+    rows
+}
+
+impl AnimationBindingSurvey {
+    /// The startup bindings of every mission scope that carries
+    /// `startanims.zrd`, each joined with its world group's camera carrier
+    /// (`zbd/<group>/cam_anim.zbd`).
+    #[must_use]
+    pub fn startup_bindings(&self) -> Vec<ScopeStartupBinding> {
+        self.carriers_of(CarrierKind::Mission)
+            .filter(|mission| mission.startup.is_some())
+            .map(|mission| {
+                let group = mission.container_key.split('/').nth(1).unwrap_or_default();
+                let camera_key = format!("zbd/{group}/{}", carrier_name(CarrierKind::Camera));
+                ScopeStartupBinding {
+                    bindings: bind_startup_identities(mission, self.carrier(&camera_key)),
+                    mission_key: mission.container_key.clone(),
+                    camera_key,
+                }
+            })
+            .collect()
+    }
+}
+
+fn records_of(carrier: &CarrierBinding) -> Option<&RecordFacts> {
+    carrier
+        .payload
+        .as_ref()
+        .and_then(|payload| payload.records.as_ref())
 }
 
 /// The bytes the documented header rule evaluates: the signature and version
