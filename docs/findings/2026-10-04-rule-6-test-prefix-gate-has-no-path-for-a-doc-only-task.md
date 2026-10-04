@@ -2,12 +2,14 @@
 
 Date: 2026-10-04. Task: #615, opened by bunny-alpha-1 while reviewing #614
 (F54-X9, "AGENTS.md: 'could not execute process (never executed)' means rerun
-once, never 'the run was green'"). All measurements below were taken on
+once, never 'the run was green'"). Measurements 1-4 were taken on
 `origin/main` = `bf72340cf97a5eeb46acc20bc9d0811a4bd3711c` with rustc 1.98.1 /
-cargo 1.98.1 on the implementing host. Capabilities used: ordinary build/test
-only — no `CS_GAME_DIR` read, no `retail`/`gpu`/`audio`, no human play. This is
-a finding about the project's own agent contract on a multi-agent machine; it
-says nothing about the original game.
+cargo 1.98.1 on the implementing host; #614 has since landed as `47b1e547`, so
+this finding is rebased onto it and the re-measurement on that base is noted
+under measurement 4. Capabilities used: ordinary build/test only — no
+`CS_GAME_DIR` read, no `retail`/`gpu`/`audio`, no human play. This is a finding
+about the project's own agent contract on a multi-agent machine; it says
+nothing about the original game.
 
 ## The gap, in one sentence
 
@@ -145,6 +147,13 @@ Ran 6 tests ... OK              exit 0
 a truncated or unreadable `AGENTS.md` — but it is completely insensitive to the
 *edit*. Rule 6 requires a selection that "fail[s] when the change is removed",
 and this one does not, so naming it does not satisfy the sub-bullet as written.
+
+#614 landed while this task was open, as `47b1e547` ("docs(agents): split the
+vanished-harness rule into three paragraphs"), so the paragraph is now on `main`
+and the experiment reproduces in one step: delete the F54-X9 paragraphs from
+`AGENTS.md` on `47b1e547` and run the selection. Measured there — the string
+`never executed` is gone from the file, and the selection still reports 6/6 OK,
+exit 0.
 
 ## Measurement 5: this task fails its own gate the same way
 
