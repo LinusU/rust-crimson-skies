@@ -35,11 +35,28 @@
 //! outstanding for [`HostLedger::retry`]; refusing them is the one thing
 //! teardown does not do, because an earned reward must not evaporate with the
 //! session.
+//!
+//! The fact side: [`MissionSession::advance`] reads a [`MissionFacts`] the
+//! caller builds, but nothing decides what `actors` it holds. That is
+//! [`ActorFactTable`] — the writer F39-E7 recorded as missing (its unknown #7).
+//! It keeps the same once-per-kind record the damage ledger's lifecycle set
+//! keeps: registration admits an actor [`ActorState::Alive`], one
+//! [`LifecycleKind`] transition is recorded at most once per actor, and a
+//! terminal transition closes the record. What each transition *does* to the
+//! row is decided in exactly one place, [`lifecycle_fact_effect`] — measured
+//! or refused by name, the way `CountKind::from_lifecycle` is the gate for
+//! the counted categories; no state is written because the variant exists.
+//! [`MissionSession::advance_observed`] is the wired path: the caller hands
+//! one tick's [`ActorFactInput`] — the same `(actor, kind)` surface
+//! [`crate::objectives::runtime::TickInput::lifecycles`] carries — and the
+//! session folds it, then steps on the populated map.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use cs_script::ir::{MissionProgram, Outcome, ValidatedProgram, ValidationError};
+use cs_script::ir::{
+    ActorId, ActorState, MissionProgram, Outcome, ValidatedProgram, ValidationError,
+};
 use cs_script::runtime::{
     EventKind, ExecutionKey, MissionEvent, MissionFacts, MissionState, MissionStateSnapshot,
     RestoreError, SNAPSHOT_VERSION, SessionGeneration, StopReason, TerminalState, TickError,
@@ -47,6 +64,8 @@ use cs_script::runtime::{
 };
 use cs_types::Tick;
 use cs_types::content::ContentId;
+
+use crate::damage::LifecycleKind;
 
 /// Most refused effects a host may hold for a retry. A designed bound on the
 /// record's size and on the work one save carries, not a measured original
@@ -69,6 +88,11 @@ pub struct MissionSession {
     program: ValidatedProgram,
     state: MissionState,
     host: HostLedger,
+    /// The session's actor-fact table: the writer that folds the
+    /// simulation's authoritative actor record into the [`MissionFacts`]
+    /// `Condition::ActorIs` reads. Empty at launch; actors enter play by
+    /// registration.
+    facts: ActorFactTable,
 }
 
 /// A refused launch: the mission stays Unsupported.
@@ -103,15 +127,19 @@ impl MissionSession {
             program,
             host: HostLedger::new(session, rewards),
             state,
+            facts: ActorFactTable::new(),
         })
     }
 
     /// Advances one tick and applies the resulting host effects.
     ///
-    /// This is the wired path: [`MissionState::step`] is the producer, the
+    /// This is the consumer's path: [`MissionState::step`] is the producer, the
     /// ledger is the consumer, and a session that reaches a terminal state is
     /// torn down before the call returns — deferred work dropped, further
-    /// effects refused.
+    /// effects refused. The `MissionFacts` are the caller's: a session advanced
+    /// on a caller-built map keeps the evaluator's own contract that it never
+    /// invents world state. [`Self::advance_observed`] is the path that
+    /// populates the map from the session's authoritative [`ActorFactTable`].
     ///
     /// # Errors
     ///
@@ -139,6 +167,93 @@ impl MissionSession {
     /// [`TickError`] when the tick does not advance.
     pub fn step(&mut self, facts: &MissionFacts, tick: Tick) -> Result<TickResult, TickError> {
         self.state.step(&self.program, facts, tick)
+    }
+
+    /// The session's actor-fact table — the writer that maps the simulation's
+    /// authoritative actor state into the [`MissionFacts`] the evaluator
+    /// reads (see [`ActorFactTable`]).
+    pub fn actor_facts(&self) -> &ActorFactTable {
+        &self.facts
+    }
+
+    /// The mutable table, for registering actors as they enter play. Actors
+    /// may also register through [`ActorFactInput::registered`] on the tick
+    /// they enter; the two surfaces reach the same record.
+    pub fn actor_facts_mut(&mut self) -> &mut ActorFactTable {
+        &mut self.facts
+    }
+
+    /// Registers one mission actor that entered play — [`ActorState::Alive`]
+    /// traced to its admission event.
+    ///
+    /// # Errors
+    ///
+    /// [`FactError::DuplicateActor`] when the actor was already registered:
+    /// serials are never recycled inside a session.
+    pub fn register_actor(&mut self, actor: ActorId) -> Result<FactObservation, FactError> {
+        self.facts.register(actor)
+    }
+
+    /// Advances one tick on the session's own facts: `input` is folded into
+    /// the [`ActorFactTable`] first — registrations, then transitions,
+    /// validated whole — and the evaluator then steps on the populated
+    /// [`MissionFacts`]. The caller hands over what the authoritative
+    /// simulation recorded this tick, never a hand-built map: this is the
+    /// path that makes `Condition::ActorIs` observable.
+    ///
+    /// A refused fold applies nothing and does not step, so the caller can
+    /// fix the producer defect and offer the same tick again. A fold that
+    /// succeeds but is followed by a refused tick leaves its records
+    /// standing: the table mirrors the authoritative record whether or not
+    /// the mission stepped on it, and the next input should not offer
+    /// those transitions again.
+    ///
+    /// # Errors
+    ///
+    /// [`ObservedError::Facts`] when the input is refused, or
+    /// [`ObservedError::Tick`] when the tick does not advance.
+    pub fn advance_observed(
+        &mut self,
+        input: &ActorFactInput<'_>,
+        tick: Tick,
+    ) -> Result<ObservedTick, ObservedError> {
+        let observed = self
+            .facts
+            .observe_tick(input)
+            .map_err(ObservedError::Facts)?;
+        let mission = self
+            .advance(&self.facts.facts(), tick)
+            .map_err(ObservedError::Tick)?;
+        Ok(ObservedTick {
+            mission,
+            facts: observed,
+        })
+    }
+
+    /// `step`'s observed variant: the tick's actor input folded and the
+    /// program evaluated on the populated facts, without host effects.
+    ///
+    /// # Errors
+    ///
+    /// [`ObservedError::Facts`] when the input is refused, or
+    /// [`ObservedError::Tick`] when the tick does not advance.
+    pub fn step_observed(
+        &mut self,
+        input: &ActorFactInput<'_>,
+        tick: Tick,
+    ) -> Result<ObservedStep, ObservedError> {
+        let observed = self
+            .facts
+            .observe_tick(input)
+            .map_err(ObservedError::Facts)?;
+        let result = self
+            .state
+            .step(&self.program, &self.facts.facts(), tick)
+            .map_err(ObservedError::Tick)?;
+        Ok(ObservedStep {
+            result,
+            facts: observed,
+        })
     }
 
     /// Retries every host effect that was refused and is still outstanding.
@@ -189,14 +304,17 @@ impl MissionSession {
         &mut self.host
     }
 
-    /// The session's save record: the evaluator state and the authoritative
-    /// host record together, because a reward the host already applied must
-    /// not be applied again after the restore.
+    /// The session's save record: the evaluator state, the authoritative
+    /// host record and the actor-fact table together — a reward the host
+    /// already applied must not be applied again after the restore, and a
+    /// state an actor already reached must still be what an unfired
+    /// `Condition::ActorIs` observes.
     pub fn snapshot(&self) -> MissionSessionSnapshot {
         MissionSessionSnapshot {
             version: SNAPSHOT_VERSION,
             state: self.state.snapshot(&self.program),
             host: self.host.snapshot(),
+            facts: self.facts.snapshot(),
         }
     }
 
@@ -228,13 +346,650 @@ impl MissionSession {
         let state =
             MissionState::restore(&program, snapshot.state).map_err(SessionRestoreError::State)?;
         let host = HostLedger::restore(snapshot.host).map_err(SessionRestoreError::Host)?;
+        let facts = ActorFactTable::restore(snapshot.facts).map_err(SessionRestoreError::Facts)?;
         Ok(Self {
             program,
             state,
             host,
+            facts,
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// The actor-fact table: `MissionFacts` populated from authoritative state.
+// ---------------------------------------------------------------------------
+
+/// The named reason [`ActorState::Disabled`] and [`ActorState::Escaped`]
+/// have no producer: no [`LifecycleKind`] transition reports either — the
+/// same structural fact
+/// [`crate::objectives::counters::CountKind::producer`] answers `None` for,
+/// asked from the condition side. The original's own objective records
+/// never declare a counted category for either (F39-E4's census), and the
+/// mission program that could carry an actor-state report is still
+/// undecoded, so nothing measurable writes them. A state is never written
+/// because its variant exists.
+pub const NO_TRANSITION_WRITES_THIS_STATE: &str = "no_lifecycle_transition_writes_this_actor_state";
+
+/// The named reason [`ActorState::Detached`] has no producer: F39-E7
+/// measured over every reader archive in the owner's installation that the
+/// original writes a detach as an **event** — `WAKE_ANIM drop_paratroopers`
+/// completing `zbd/c2/m05 OBJECTIVE23` — never as a counted category, and
+/// no [`LifecycleKind`] transition reports a detach either. The engine
+/// represents one as the released payload that keeps its objective
+/// ([`crate::world_actors::release::release_payload`], F34 non-negotiable
+/// 4); whether that release should also write this state is unmeasured, so
+/// the state refuses rather than guess.
+pub const DETACHED_IS_AN_EVENT: &str = "detached_is_an_event_not_an_actor_state";
+
+/// The named reason a [`LifecycleKind::PilotBailout`] writes no
+/// [`ActorState`]: F29 keeps bailout apart from death — a bailed-out pilot
+/// left the airframe without destroying it — and nothing measured maps it
+/// to a condition state. It is not the `Escaped` distinction, which has no
+/// producer of its own.
+pub const PILOT_BAILOUT_WRITES_NO_STATE: &str = "pilot_bailout_writes_no_actor_state";
+
+/// What recording one authoritative [`LifecycleKind`] transition does to an
+/// actor's row in the [`ActorFactTable`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FactEffect {
+    /// The transition writes this [`ActorState`] — a measured producer.
+    Writes(ActorState),
+    /// The transition is recorded in the actor's set but writes no state;
+    /// the reason names why. The actor's state is unchanged: a bailout
+    /// leaves the airframe in play exactly where the damage domain leaves
+    /// it ([`PILOT_BAILOUT_WRITES_NO_STATE`]).
+    RecordedUnwritten(&'static str),
+    /// `LifecycleKind::MissionRemoved`: the actor left mission accounting.
+    /// Its row keeps the recorded transition — and stays closed — but the
+    /// actor is **absent** from [`ActorFactTable::facts`] from here on, so
+    /// no `Condition::ActorIs` observes it again. Absence is the event's
+    /// own meaning — "left mission accounting" — not a default state, and
+    /// deliberately not `Despawned`: a cinematic removal is not the actor
+    /// leaving the world.
+    RemovesFromAccounting,
+}
+
+/// What one authoritative lifecycle transition does to an actor's fact row
+/// — the single place the `LifecycleKind` → `ActorState` mapping is
+/// decided, measured or refused by name the way
+/// [`crate::objectives::counters::CountKind::from_lifecycle`] is the gate
+/// for the counted categories.
+///
+/// Measured: `Destroyed` writes [`ActorState::Dead`], `OwnershipCaptured`
+/// writes [`ActorState::Captured`], `Despawned` writes
+/// [`ActorState::Despawned`] — the three transitions F39-E4 measured as the
+/// counted categories' producers, asked from the condition side.
+///
+/// Refused by name: `PilotBailout` records but writes nothing
+/// ([`PILOT_BAILOUT_WRITES_NO_STATE`]), and `MissionRemoved` ends the
+/// actor's mission accounting rather than writing a state. Neither is
+/// defaulted to a nearby meaning: a bailout is not a death and a cinematic
+/// removal is not a kill.
+#[must_use]
+pub const fn lifecycle_fact_effect(kind: LifecycleKind) -> FactEffect {
+    match kind {
+        LifecycleKind::Destroyed => FactEffect::Writes(ActorState::Dead),
+        LifecycleKind::OwnershipCaptured => FactEffect::Writes(ActorState::Captured),
+        LifecycleKind::Despawned => FactEffect::Writes(ActorState::Despawned),
+        LifecycleKind::PilotBailout => FactEffect::RecordedUnwritten(PILOT_BAILOUT_WRITES_NO_STATE),
+        LifecycleKind::MissionRemoved => FactEffect::RemovesFromAccounting,
+    }
+}
+
+/// The [`ActorState`] one lifecycle transition writes — `None` where
+/// [`lifecycle_fact_effect`] records a named refusal or an accounting
+/// removal.
+#[must_use]
+pub const fn actor_state_of(kind: LifecycleKind) -> Option<ActorState> {
+    match lifecycle_fact_effect(kind) {
+        FactEffect::Writes(state) => Some(state),
+        FactEffect::RecordedUnwritten(_) | FactEffect::RemovesFromAccounting => None,
+    }
+}
+
+/// The authoritative event that writes one [`ActorState`], or the named
+/// reason nothing does — the producer question for the whole condition
+/// vocabulary, asked state by state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActorStateProducer {
+    /// Registration — the actor entering play — is the event that writes
+    /// `Alive`. Nothing else may: `Alive` is never a default a caller can
+    /// reach for.
+    Registration,
+    /// A lifecycle transition is the measured producer of the state.
+    Lifecycle(LifecycleKind),
+    /// No event produces the state; the reason names why.
+    Unproduced(&'static str),
+}
+
+/// The event that writes `state`, or the named reason nothing does.
+///
+/// Derived from [`lifecycle_fact_effect`] over [`LifecycleKind::ALL`] — the
+/// same trick `CountKind::producer` uses — so the answer can never drift
+/// from the forward gate.
+#[must_use]
+pub fn actor_state_producer(state: ActorState) -> ActorStateProducer {
+    if state == ActorState::Alive {
+        return ActorStateProducer::Registration;
+    }
+    for kind in LifecycleKind::ALL {
+        if let FactEffect::Writes(written) = lifecycle_fact_effect(*kind)
+            && written == state
+        {
+            return ActorStateProducer::Lifecycle(*kind);
+        }
+    }
+    ActorStateProducer::Unproduced(match state {
+        ActorState::Detached => DETACHED_IS_AN_EVENT,
+        // `Disabled`, `Escaped` and any later variant with no producer.
+        _ => NO_TRANSITION_WRITES_THIS_STATE,
+    })
+}
+
+/// What one observation recorded into an [`ActorFactTable`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FactRecord {
+    /// The actor entered play — its admission event.
+    Registered,
+    /// An authoritative lifecycle transition.
+    Lifecycle(LifecycleKind),
+}
+
+/// What one accepted observation did to a fact row, in observation order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FactObservation {
+    /// The actor the observation is about — the mission-scoped
+    /// `cs_script::ir::ActorId`, `MissionFacts`' own key space.
+    pub actor: ActorId,
+    /// What was recorded.
+    pub recorded: FactRecord,
+    /// What it did to the row.
+    pub effect: FactEffect,
+    /// The actor's [`ActorState`] after the record — `None` once it has
+    /// left mission accounting (absent from [`ActorFactTable::facts`]).
+    pub state: Option<ActorState>,
+}
+
+/// Why an observation was refused — every refusal is a producer defect, so
+/// the caller can tell "the transition was offered" from "the row changed".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FactError {
+    /// The actor was already registered — serials are never recycled inside
+    /// a session (mirroring `DamageError::DuplicateActor`).
+    DuplicateActor {
+        /// The actor the record names.
+        actor: ActorId,
+    },
+    /// A transition names an actor the table never registered — the caller
+    /// must admit actors as they enter play, the same `UnknownActor`
+    /// refusal the damage ledger makes.
+    UnknownActor {
+        /// The actor the transition names.
+        actor: ActorId,
+    },
+    /// The transition kind is already in the actor's recorded set — a
+    /// replay (mirroring `DamageError::DuplicateLifecycle`).
+    DuplicateLifecycle {
+        /// The actor the record names.
+        actor: ActorId,
+        /// The kind already recorded.
+        kind: LifecycleKind,
+    },
+    /// The actor's record is closed by a terminal transition — a despawn or
+    /// a mission removal already ended it (mirroring
+    /// `DamageError::ActorClosed`).
+    ActorClosed {
+        /// The actor the record names.
+        actor: ActorId,
+        /// The terminal transition that closed the record.
+        terminal: LifecycleKind,
+    },
+}
+
+impl fmt::Display for FactError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateActor { actor } => {
+                write!(f, "actor {actor:?} is already registered")
+            }
+            Self::UnknownActor { actor } => {
+                write!(f, "transition names unregistered actor {actor:?}")
+            }
+            Self::DuplicateLifecycle { actor, kind } => {
+                write!(f, "actor {actor:?} already recorded {kind}")
+            }
+            Self::ActorClosed { actor, terminal } => {
+                write!(f, "actor {actor:?} record closed by {terminal}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FactError {}
+
+/// One tick's authoritative actor input: which mission actors entered play
+/// and which lifecycle transitions were recorded for them.
+///
+/// `lifecycles` is the same `(actor, kind)` surface
+/// [`crate::objectives::runtime::TickInput::lifecycles`] carries — the host
+/// feeds both runtimes one observation. `registered` is the admission
+/// event: an actor must enter play here or through
+/// [`ActorFactTable::register`] before a transition may name it, so
+/// [`ActorState::Alive`] is always traced to the event that caused it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ActorFactInput<'a> {
+    /// The actors that entered play this tick.
+    pub registered: &'a [ActorId],
+    /// The lifecycle transitions recorded this tick, in observation order.
+    pub lifecycles: &'a [(ActorId, LifecycleKind)],
+}
+
+/// The per-session map from mission actors to the [`ActorState`] the
+/// simulation's authoritative lifecycle record puts them in — the writer
+/// that populates [`MissionFacts::actors`] so `Condition::ActorIs` can
+/// observe the contract's distinctions.
+///
+/// The table keeps the same once-per-kind ledger shape the damage
+/// resolver's own record keeps: registration admits an actor `Alive`, one
+/// [`LifecycleKind`] per actor is recorded at most once, and a terminal
+/// transition closes the record. What a transition *does* is decided in
+/// one place, [`lifecycle_fact_effect`] — measured or refused by name, and
+/// never because the `ActorState` variant exists.
+///
+/// Actors are keyed by the mission-scoped [`cs_script::ir::ActorId`] —
+/// `MissionFacts`' own key space. The host maps the world's
+/// `cs_types::net::ActorId` to it exactly as `TickInput::lifecycles`
+/// already does; that identity bridge is the caller's surface, not this
+/// table's.
+///
+/// # Why `NetLifecycle` cannot feed this table
+///
+/// [`crate::net_state::NetLifecycle`] is the *presentation* summary ("is
+/// this actor still here?"): its `Despawned` folds mission removal,
+/// capture and unload into one kind — exactly the distinctions the
+/// contract demands kept apart. Reading it would write
+/// [`ActorState::Despawned`] for a captured actor. The damage lifecycle is
+/// the only record that keeps the five transitions separate, so it is the
+/// only record this table consumes.
+///
+/// # The derived state and its designed precedence
+///
+/// `Condition::ActorIs` asks for the actor's *one* current state, so a row
+/// holding several recorded transitions resolves them in a declared order
+/// — designed, and deliberately the same question answered the same way
+/// [`crate::allies::AlliesRoster::status`] answers it: a terminal
+/// transition wins (`MissionRemoved` → absent, `Despawned` →
+/// `Despawned`), then `Destroyed` → `Dead`, then `OwnershipCaptured` →
+/// `Captured`, otherwise `Alive`. Whether the original's condition would
+/// have latched on the earlier state of a same-tick pair is unmeasured —
+/// the precedence is the designed reading until it is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActorFactTable {
+    /// Each registered actor's recorded transition set. An absent actor was
+    /// never registered; `LifecycleKind::MissionRemoved` in the set means
+    /// the row is closed *and* absent from [`Self::facts`].
+    actors: BTreeMap<ActorId, BTreeSet<LifecycleKind>>,
+}
+
+impl ActorFactTable {
+    /// An empty table: no actor has entered play yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The actors the table knows, in id order.
+    pub fn actors(&self) -> impl Iterator<Item = ActorId> + '_ {
+        self.actors.keys().copied()
+    }
+
+    /// Whether the actor entered play — `Alive` or any recorded end.
+    #[must_use]
+    pub fn is_registered(&self, actor: &ActorId) -> bool {
+        self.actors.contains_key(actor)
+    }
+
+    /// The transitions recorded for the actor; `None` when unregistered.
+    #[must_use]
+    pub fn lifecycle(&self, actor: &ActorId) -> Option<&BTreeSet<LifecycleKind>> {
+        self.actors.get(actor)
+    }
+
+    /// The actor's current [`ActorState`], or `None` when it never entered
+    /// play or has left mission accounting. The precedence is the declared
+    /// order in the type docs.
+    #[must_use]
+    pub fn state(&self, actor: &ActorId) -> Option<ActorState> {
+        self.actors.get(actor).and_then(Self::state_of)
+    }
+
+    /// The one state a recorded set resolves to — the declared precedence:
+    /// terminal first, then dead, then captured, else alive.
+    fn state_of(set: &BTreeSet<LifecycleKind>) -> Option<ActorState> {
+        if set.contains(&LifecycleKind::MissionRemoved) {
+            None
+        } else if set.contains(&LifecycleKind::Despawned) {
+            Some(ActorState::Despawned)
+        } else if set.contains(&LifecycleKind::Destroyed) {
+            Some(ActorState::Dead)
+        } else if set.contains(&LifecycleKind::OwnershipCaptured) {
+            Some(ActorState::Captured)
+        } else {
+            Some(ActorState::Alive)
+        }
+    }
+
+    /// The [`MissionFacts`] for the next evaluation: every registered actor
+    /// still in accounting, at its current state. The whole map is rebuilt
+    /// on each call, so what the evaluator reads on a tick is exactly what
+    /// the table holds — populated from the authoritative record on every
+    /// tick, never accumulated by a caller.
+    #[must_use]
+    pub fn facts(&self) -> MissionFacts {
+        MissionFacts {
+            actors: self
+                .actors
+                .iter()
+                .filter_map(|(actor, set)| Self::state_of(set).map(|state| (*actor, state)))
+                .collect(),
+        }
+    }
+
+    /// The admission event: `actor` enters play [`ActorState::Alive`].
+    ///
+    /// # Errors
+    ///
+    /// [`FactError::DuplicateActor`] — serials are never recycled inside a
+    /// session.
+    pub fn register(&mut self, actor: ActorId) -> Result<FactObservation, FactError> {
+        if self.actors.contains_key(&actor) {
+            return Err(FactError::DuplicateActor { actor });
+        }
+        self.actors.insert(actor, BTreeSet::new());
+        Ok(FactObservation {
+            actor,
+            recorded: FactRecord::Registered,
+            effect: FactEffect::Writes(ActorState::Alive),
+            state: Some(ActorState::Alive),
+        })
+    }
+
+    /// One authoritative lifecycle transition for `actor`.
+    ///
+    /// # Errors
+    ///
+    /// [`FactError::UnknownActor`], [`FactError::ActorClosed`] or
+    /// [`FactError::DuplicateLifecycle`] — the same three refusals the
+    /// damage ledger's `record_lifecycle` makes, so a replay or a late
+    /// event can never rewrite what the mission already observed.
+    pub fn observe(
+        &mut self,
+        actor: ActorId,
+        kind: LifecycleKind,
+    ) -> Result<FactObservation, FactError> {
+        let set = self
+            .actors
+            .get(&actor)
+            .ok_or(FactError::UnknownActor { actor })?;
+        Self::check(set, actor, kind)?;
+        Ok(self.record(actor, kind))
+    }
+
+    /// One tick's authoritative input, validated whole before anything is
+    /// recorded — a refused input records nothing at all, the same atomic
+    /// rule `ObjectiveRuntime` applies to a refused movement, so the caller
+    /// may fix the defect and offer the same tick again.
+    ///
+    /// Registrations are validated first; an actor registered *and*
+    /// transitioned in the same input is legal, and a transition offered
+    /// after a terminal one — in the record or earlier in the same input —
+    /// refuses the whole input.
+    ///
+    /// # Errors
+    ///
+    /// [`FactError`] — the first defect the input carries.
+    pub fn observe_tick(
+        &mut self,
+        input: &ActorFactInput<'_>,
+    ) -> Result<Vec<FactObservation>, FactError> {
+        // Validate the whole input before recording any of it.
+        let mut registered = BTreeSet::new();
+        for actor in input.registered {
+            if self.actors.contains_key(actor) || !registered.insert(*actor) {
+                return Err(FactError::DuplicateActor { actor: *actor });
+            }
+        }
+        // Transitions offered by this input, per actor, plus the terminal
+        // each has already reached inside it.
+        let mut offered: BTreeMap<ActorId, BTreeSet<LifecycleKind>> = BTreeMap::new();
+        let mut closed: BTreeMap<ActorId, LifecycleKind> = BTreeMap::new();
+        for (actor, kind) in input.lifecycles {
+            if let Some(terminal) = closed.get(actor) {
+                return Err(FactError::ActorClosed {
+                    actor: *actor,
+                    terminal: *terminal,
+                });
+            }
+            match self.actors.get(actor) {
+                Some(set) => Self::check(set, *actor, *kind)?,
+                // An actor this same input registers has an empty record so
+                // far; anything else is a producer defect.
+                None if !registered.contains(actor) => {
+                    return Err(FactError::UnknownActor { actor: *actor });
+                }
+                None => {}
+            }
+            if !offered.entry(*actor).or_default().insert(*kind) {
+                return Err(FactError::DuplicateLifecycle {
+                    actor: *actor,
+                    kind: *kind,
+                });
+            }
+            if kind.is_terminal() {
+                closed.insert(*actor, *kind);
+            }
+        }
+        // Then record in input order: admissions before transitions.
+        let mut out = Vec::with_capacity(input.registered.len() + input.lifecycles.len());
+        for actor in input.registered {
+            out.push(self.register(*actor).expect("the input was validated"));
+        }
+        for (actor, kind) in input.lifecycles {
+            out.push(self.record(*actor, *kind));
+        }
+        Ok(out)
+    }
+
+    /// The refusals [`Self::observe`] and [`Self::observe_tick`] share for a
+    /// stored record: closed first, then the replay — the damage ledger's
+    /// own order.
+    fn check(
+        set: &BTreeSet<LifecycleKind>,
+        actor: ActorId,
+        kind: LifecycleKind,
+    ) -> Result<(), FactError> {
+        if let Some(terminal) = set.iter().find(|kind| kind.is_terminal()) {
+            return Err(FactError::ActorClosed {
+                actor,
+                terminal: *terminal,
+            });
+        }
+        if set.contains(&kind) {
+            return Err(FactError::DuplicateLifecycle { actor, kind });
+        }
+        Ok(())
+    }
+
+    /// Inserts `kind` and reports what it did. Callers validate first.
+    fn record(&mut self, actor: ActorId, kind: LifecycleKind) -> FactObservation {
+        let set = self
+            .actors
+            .get_mut(&actor)
+            .expect("the input was validated");
+        set.insert(kind);
+        FactObservation {
+            actor,
+            recorded: FactRecord::Lifecycle(kind),
+            effect: lifecycle_fact_effect(kind),
+            state: Self::state_of(set),
+        }
+    }
+
+    /// The table's save record.
+    #[must_use]
+    pub fn snapshot(&self) -> ActorFactSnapshot {
+        ActorFactSnapshot {
+            version: FACT_SNAPSHOT_VERSION,
+            actors: self
+                .actors
+                .iter()
+                .map(|(actor, set)| (*actor, set.iter().copied().collect()))
+                .collect(),
+        }
+    }
+
+    /// Rebuilds a table from a save record.
+    ///
+    /// # Errors
+    ///
+    /// [`FactRestoreError`]: the record is checked rather than trusted —
+    /// version, one row per actor, and no set holding two terminal kinds,
+    /// which the live path can never produce.
+    pub fn restore(snapshot: ActorFactSnapshot) -> Result<Self, FactRestoreError> {
+        if snapshot.version != FACT_SNAPSHOT_VERSION {
+            return Err(FactRestoreError::SnapshotVersion {
+                found: snapshot.version,
+            });
+        }
+        let mut actors = BTreeMap::new();
+        for (actor, kinds) in snapshot.actors {
+            let set: BTreeSet<LifecycleKind> = kinds.into_iter().collect();
+            let mut terminals = set.iter().filter(|kind| kind.is_terminal());
+            if let (Some(first), Some(second)) = (terminals.next(), terminals.next()) {
+                return Err(FactRestoreError::ConflictingTerminal {
+                    actor,
+                    first: *first,
+                    second: *second,
+                });
+            }
+            if actors.insert(actor, set).is_some() {
+                return Err(FactRestoreError::DuplicateActor { actor });
+            }
+        }
+        Ok(Self { actors })
+    }
+}
+
+/// Version of the [`ActorFactSnapshot`] record this crate writes — the fact
+/// table's own epoch, separate from the evaluator record's
+/// `SNAPSHOT_VERSION`, so an older fact record is refused rather than
+/// reinterpreted.
+pub const FACT_SNAPSHOT_VERSION: u32 = 1;
+
+/// The fact table's save record: each registered actor's recorded
+/// transitions. The table decides pending `Condition::ActorIs` reads, so it
+/// is gameplay-relevant and crosses the save beside the evaluator and host
+/// records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActorFactSnapshot {
+    pub version: u32,
+    /// Each registered actor's recorded transitions, in actor then kind
+    /// order.
+    pub actors: Vec<(ActorId, Vec<LifecycleKind>)>,
+}
+
+/// Why a fact-table save record was refused: the defect it carries, named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FactRestoreError {
+    /// The record's version is not the one this build writes.
+    SnapshotVersion {
+        /// The version the record claims.
+        found: u32,
+    },
+    /// An actor is listed twice.
+    DuplicateActor {
+        /// The actor listed twice.
+        actor: ActorId,
+    },
+    /// A record's set holds two terminal kinds — unreachable through the
+    /// live path (the first terminal closes the record), so the record is
+    /// corrupt.
+    ConflictingTerminal {
+        /// The actor the record names.
+        actor: ActorId,
+        /// The first terminal kind in the set.
+        first: LifecycleKind,
+        /// The second terminal kind in the set.
+        second: LifecycleKind,
+    },
+}
+
+impl fmt::Display for FactRestoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SnapshotVersion { found } => {
+                write!(f, "actor-fact snapshot version {found} is not supported")
+            }
+            Self::DuplicateActor { actor } => {
+                write!(f, "actor {actor:?} listed twice in the record")
+            }
+            Self::ConflictingTerminal {
+                actor,
+                first,
+                second,
+            } => {
+                write!(
+                    f,
+                    "actor {actor:?} record holds two terminal kinds: {first} and {second}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for FactRestoreError {}
+
+/// One tick stepped through the session's fact table: what the input did to
+/// the table (in observation order) and the mission tick it produced.
+#[derive(Debug, PartialEq)]
+pub struct ObservedTick {
+    /// The mission tick [`MissionSession::advance`] produced.
+    pub mission: MissionTick,
+    /// What each record in the input did — the writes, the named refusals
+    /// and the accounting removals.
+    pub facts: Vec<FactObservation>,
+}
+
+/// The evaluation-only half of [`ObservedTick`]: no host effects applied.
+#[derive(Debug, PartialEq)]
+pub struct ObservedStep {
+    /// The tick result [`MissionSession::step`] produced.
+    pub result: TickResult,
+    /// What each record in the input did.
+    pub facts: Vec<FactObservation>,
+}
+
+/// Why an observed tick was refused.
+#[derive(Debug)]
+pub enum ObservedError {
+    /// The actor input was a producer defect: the whole fold was refused,
+    /// nothing was recorded and the tick did not run.
+    Facts(FactError),
+    /// The tick did not advance.
+    Tick(TickError),
+}
+
+impl fmt::Display for ObservedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Facts(error) => write!(f, "actor facts: {error}"),
+            Self::Tick(error) => write!(f, "tick: {error:?}"),
+        }
+    }
+}
+
+impl std::error::Error for ObservedError {}
 
 /// One evaluated tick: what the program did and what the host did about it.
 #[derive(Debug, PartialEq)]
@@ -809,6 +1564,10 @@ pub struct MissionSessionSnapshot {
     pub version: u32,
     pub state: MissionStateSnapshot,
     pub host: HostLedgerSnapshot,
+    /// The actor-fact table's record: which `ActorState` an unfired
+    /// `Condition::ActorIs` would observe is gameplay-relevant, so the
+    /// table crosses the save beside the two other records.
+    pub facts: ActorFactSnapshot,
 }
 
 /// Why a session could not be restored.
@@ -821,6 +1580,8 @@ pub enum SessionRestoreError {
     Program(ValidationError),
     State(RestoreError),
     Host(HostRestoreError),
+    /// The actor-fact record is checked rather than trusted.
+    Facts(FactRestoreError),
 }
 
 impl fmt::Display for SessionRestoreError {
@@ -833,6 +1594,7 @@ impl fmt::Display for SessionRestoreError {
             Self::Program(e) => write!(f, "program refused: {e}"),
             Self::State(e) => write!(f, "evaluator record refused: {e}"),
             Self::Host(e) => write!(f, "host record refused: {e}"),
+            Self::Facts(e) => write!(f, "actor-fact record refused: {e}"),
         }
     }
 }
