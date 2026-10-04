@@ -181,6 +181,30 @@ F39-E4's census located them: `objective_record_count` counts a root's children,
 reading any member's root as a record list would report two "objective records"
 for an animation table.
 
+### Corroboration with F39-E6 (independent, on main)
+
+F39-E6 landed on `main` while this stage was working and walked the same
+complement for a different question: `survey_excluded_objective_records` measures
+every member of every archive `mission_scope` does not name, plus every
+`targets.zrd` member of every reader archive. Its table
+(`docs/findings/2026-10-04-f39-e6-repeated-completion-effect-key.md`) reports
+**9** archives outside mission scope, **612** members decoded there, **53**
+`targets.zrd` members (52 mission + the `zbd/c1c` world-group one), **332**
+objective records, and — the same zero this stage is here for — *excluded members
+declaring an `OBJECTIVE<N>` block: **0***.
+
+Two independent implementations, one installation fingerprint, and the same
+figures for the scope denominator, the member count and the block count. What
+stays this stage's is the *decision* F39-E6 does not make: that the
+mission-scoped denominator is therefore the right one for the objective-block
+surface; the complete objective-named **spelling** inventory (F39-E6 scans only
+the branching and order spellings, so it never sees `OBJECTIVESLIST`); the
+`MSG_OBJ_*` label reading of the five `c1c` records; and the statement that the
+dialog members are absent from every mission-scoped reader. F39-E6's
+`targets.zrd` vocabulary reading (`category_label`, `description`, `help_label`,
+`nodes`, `objective`, `other_target`) is the same six-key set this stage measured
+for `c1c` minus `other_target`, which that record does not carry.
+
 ## The verdict
 
 1. **F39-D's denominator is right, and now bounded.** For numbered objective
@@ -298,7 +322,9 @@ python3 tools/validate_evidence.py private/evidence/F39-E3/acceptance.json \
 `specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`,
 `docs/contracts/SCRIPT-MISSION.md`, `docs/contracts/CLI-EVIDENCE.md`, the F39-D
 finding (its unknown #5, superseded here) and the F39-E1/E2/E4/E5 findings, the
-F14-D.1 reader-directory finding (`docs/findings/2026-10-02-f14-d-1-reader-archive-directories.md`,
-the member rules this stage now shares one definition of), `#463`'s `.zrd`
+F39-E6 finding (the independent walk of the same complement, which corroborates
+the 9 archives, the 612 members and the zero blocks), the F14-D.1 reader-directory
+finding (`docs/findings/2026-10-02-f14-d-1-reader-archive-directories.md`, the
+member rules this stage now shares one definition of), `#463`'s `.zrd`
 objective-record decoding, and the read-only `$CS_GAME_DIR` listing. No web source
 was consulted and no original executable was run.
