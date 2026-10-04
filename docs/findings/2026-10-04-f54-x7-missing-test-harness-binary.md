@@ -55,9 +55,10 @@ because the file was not on disk. Consequences an agent can rely on:
 
   So the disappearance lands **after** the build phase, while cargo is
   executing harnesses. For this workspace that is not a microsecond window:
-  there are 432 harness executables in `target/debug/deps`, cargo runs several
-  at a time, and the execution phase of a full workspace run on this machine
-  lasts minutes. Anything that removes one of those files during that window
+  a few hundred harness executables sit in `target/debug/deps` (432 at the time
+  of the baseline run below; the count moves as configurations come and go),
+  cargo runs several at a time, and the execution phase of a full workspace run
+  on this machine lasts minutes. Anything that removes one of those files during that window
   produces this error, in whatever crate happens to be pending next — which is
   exactly the reported pattern (three different crates, one per run).
 
@@ -117,6 +118,23 @@ cargo test --workspace --locked -- accept_f54_x7_deterministic_probe_ --include-
 wait
 ```
 
+Re-verified on this branch during review with the same one variable, on a
+single crate so the window is easy to hit (`cs_app`, 9.5 s, 4 deletions):
+
+```
+$ cargo test -p cs_app --locked -- accept_f54_x7_probe_ &
+     Running unittests src/lib.rs (target/debug/deps/cs_app-d95888fab103ceeb)
+error: test failed, to rerun pass `-p cs_app --lib`
+
+Caused by:
+  could not execute process `.../target/debug/deps/cs_app-d95888fab103ceeb accept_f54_x7_probe_` (never executed)
+
+Caused by:
+  No such file or directory (os error 2)
+
+exit 101, one `Running` line, 0 `test result:` lines.
+```
+
 The run fails with the reported error and stops there:
 
 ```
@@ -146,10 +164,12 @@ log are worth keeping:
   that command verbatim rather than guessing where the path ends.
 
 Spontaneous rate: **0 in the two full runs measured here**, against 3 in one
-session reported on #600 and 2 more recorded in the T496 finding of
-2026-10-03. It is rare, it recurs, and it has never been seen on a fresh CI
-runner — which fits a host-specific deleter of files in a long-lived target
-directory rather than anything in the code under test.
+session reported on #600, plus further runs recorded in the T496 finding of
+2026-10-03 ("several runs aborted with `error: test failed, to rerun pass -p
+cs_xtask`"). The T496 note does not give a count, so no total is claimed here.
+It is rare, it recurs, and it has never been seen on a fresh CI runner — which
+fits a host-specific deleter of files in a long-lived target directory rather
+than anything in the code under test.
 
 ## Measurements
 
@@ -162,6 +182,8 @@ its own `CARGO_TARGET_DIR`.
 | Baseline (`origin/main` 4a8844bc, unmodified) | `cargo test --workspace --locked` | 0 | 490 s | 346 | 0 |
 | After this task's change | `cargo test --workspace --locked` | 0 | 76 s | 347 | 0 |
 | Deterministic reproduction | `cargo test --workspace --locked -- <filter>`, harnesses deleted in flight | 101 | — | 0 | 1 |
+| Reviewer's re-verification, whole workspace | `cargo test --workspace --locked` | 0 | ~240 s | 349 | 0 |
+| Reviewer's re-verification, single crate | `cargo test -p cs_app --locked -- <filter>`, harnesses deleted in flight | 101 | 9.5 s | 0 | 1 |
 
 The reproduction deleted 371 distinct harness-shaped names and the run died on
 the first one it had not yet executed. 30 of those 371 are still absent, and
@@ -190,6 +212,13 @@ replaced by `None`, tests re-run:
 | `accept_f54_x7_the_diagnosis_keeps_the_arguments_cargo_appended_to_the_path` | FAILED |
 | the three guard tests (precedence, green run, compile error) | passed, as they must |
 
+The same experiment after review added the `ENOENT` discrimination below: with
+`harness_fault` reporting every exec failure as absent, exactly the two tests
+that pin that discrimination fail
+(`accept_f54_x7_only_enoent_is_called_a_vanished_harness`,
+`accept_f54_x7_the_diagnosis_never_claims_a_deletion_cargo_did_not_report`); the
+six guard tests still pass.
+
 ## What changed
 
 The occurrence cannot be eliminated from inside the repository — the file is
@@ -199,8 +228,8 @@ in-repo fix:
 
 * `cs_xtask::test_select` now classifies the message as
   `SelectError::HarnessMissing` instead of letting it fall into the generic
-  `SelectError::CargoFailed`. The error names the executable that was not on
-  disk, says in one sentence that no test ran and that this is not a test
+  `SelectError::CargoFailed`. The error names the executable cargo could not
+  execute, says in one sentence that no test ran and that this is not a test
   failure, and says the only thing that decides anything is a rerun of the
   identical command — with the instruction to report **both** runs and never the
   rerun alone. That is the "rerun once, never 'the run was green'" rule, in the
@@ -209,6 +238,15 @@ in-repo fix:
   problems: cargo must have failed, no test may have reported a failure, and
   the log must carry cargo's exact message. A failing test still gets its own,
   more precise error, and a compile error still gets the generic one.
+* **The cause is quoted, not assumed.** `could not execute process … (never
+  executed)` is printed for *every* failed `exec`; only the OS error on the next
+  line says which. `HarnessFault` therefore distinguishes `Absent` (only
+  `No such file or directory (os error 2)`) from `OsError(..)` (e.g.
+  `Permission denied (os error 13)`, `Exec format error (os error 8)`) and
+  `Unattributed` (cargo printed no recognisable OS error). A permission or
+  format failure is *not* this finding's vanished-harness class — the file may be
+  there and unrunnable — so the message says so and says a repeat of that is a
+  real fault to investigate, instead of telling the agent to rerun and hope.
 * No test was weakened, skipped or made tolerant, and no assertion anywhere was
   changed. `accept_f54_x7_` in
   `tools/cs_xtask/tests/accept_f54_x7_missing_harness_binary.rs` calls the
@@ -220,9 +258,12 @@ in-repo fix:
 ```sh
 cargo fmt --all -- --check                                                       # 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  # 0
-cargo test --workspace --locked                                                 # 0: 347 passed, 0 failed
-cargo test --workspace --locked -- accept_f54_x7_ --include-ignored             # 0: 6 passed
+cargo test --workspace --locked                              # 0: 3372 passed, 0 failed, 0 never-executed
+cargo test --workspace --locked -- accept_f54_x7_ --include-ignored             # 0: 8 passed
 ```
+
+Re-run on the reviewer's tree after the `ENOENT` discrimination above; the
+counts are the whole workspace, not this task's six tests.
 
 ## What an agent does when it sees this error
 
@@ -232,7 +273,13 @@ cargo test --workspace --locked -- accept_f54_x7_ --include-ignored             
    passed" on the strength of the rerun.
 3. Never change a test, an assertion or a skip to make this message go away. It
    is not a test result, so there is nothing to fix in the tests.
-4. If it recurs, attach cargo's exact error plus
+4. **Read the OS error before believing the class.** This finding is about
+   `No such file or directory (os error 2)`. If the same message arrives with
+   `Permission denied` or `Exec format error`, the harness was there and is not
+   runnable, which is a different problem: rerun once, and if it repeats,
+   investigate it as a real fault (`ls -l` and `file` on the named harness)
+   rather than filing it against this finding.
+5. If it recurs, attach cargo's exact error plus
    `ls target/debug/deps | wc -l` before and after the run and file it against
    this finding. A recurrence that names a *different* harness each time is the
    signature of the external deleter above; a recurrence that always names the

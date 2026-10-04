@@ -8,14 +8,16 @@
 //! a run was reported as a generic cargo failure, which is indistinguishable
 //! from a real regression unless whoever reads it already knows the message.
 //!
-//! These tests pin the classification the `cs_xtask test-select` gate uses, and
-//! they pin that a real failing test keeps outranking it, so the fix cannot
-//! quietly turn a genuine failure into "rerun once". The mechanism, the
-//! reproduction and the residual limit are in
+//! These tests pin the classification the `cs_xtask test-select` gate uses, they
+//! pin that a real failing test keeps outranking it, so the fix cannot quietly
+//! turn a genuine failure into "rerun once", and they pin that only cargo's own
+//! `ENOENT` is ever called a vanished harness. The mechanism, the reproduction
+//! and the residual limit are in
 //! `docs/findings/2026-10-04-f54-x7-missing-test-harness-binary.md`.
 
 use cs_xtask::test_select::{
-    ParsedLog, SelectError, classify_missing_harness, missing_harness_command, parse_run_log,
+    HarnessFault, ParsedLog, SelectError, classify_missing_harness, harness_fault,
+    missing_harness_command, parse_run_log,
 };
 
 /// The cargo output of an observed failure on this workspace, with the paths
@@ -73,7 +75,10 @@ fn accept_f54_x7_a_run_whose_harness_vanished_is_reported_as_a_missing_harness()
 
     match &error {
         SelectError::HarnessMissing {
-            context, command, ..
+            context,
+            command,
+            fault,
+            ..
         } => {
             assert_eq!(
                 command, "/workspace/target/debug/deps/cs_inspect-c0cbf818ae044ebc",
@@ -82,6 +87,11 @@ fn accept_f54_x7_a_run_whose_harness_vanished_is_reported_as_a_missing_harness()
             assert!(
                 context.contains("accept_f54_x7_"),
                 "the error must say which run lost the harness, got {context:?}"
+            );
+            assert_eq!(
+                fault,
+                &HarnessFault::Absent,
+                "the observed log's OS error is ENOENT, so this is the vanished case"
             );
         }
         other => panic!("a vanished harness must not be reported as {other:?}"),
@@ -249,5 +259,81 @@ fn accept_f54_x7_only_the_full_cargo_exec_message_names_a_harness() {
         missing_harness_command(OBSERVED_LOG),
         Some("/workspace/target/debug/deps/cs_inspect-c0cbf818ae044ebc".to_string()),
         "the real message must name the executable"
+    );
+}
+
+/// Cargo prints `could not execute process … (never executed)` for *every*
+/// failed `exec`, not only for a deleted file, and it follows it with the OS
+/// error that says which. `Permission denied` means the harness is present and
+/// cannot be run; calling that a vanished harness sends an agent looking for a
+/// prune job that never touched anything.
+///
+/// Observable failure if every exec failure is reported as
+/// `HarnessFault::Absent`: this test fails on the first assert.
+#[test]
+fn accept_f54_x7_only_enoent_is_called_a_vanished_harness() {
+    let not_runnable = OBSERVED_LOG.replace(
+        "No such file or directory (os error 2)",
+        "Permission denied (os error 13)",
+    );
+    assert_eq!(
+        harness_fault(&not_runnable),
+        HarnessFault::OsError("Permission denied (os error 13)".to_string()),
+        "a permission failure must keep its own OS error, not be called absent"
+    );
+
+    let corrupt = OBSERVED_LOG.replace(
+        "No such file or directory (os error 2)",
+        "Exec format error (os error 8)",
+    );
+    assert_eq!(
+        harness_fault(&corrupt),
+        HarnessFault::OsError("Exec format error (os error 8)".to_string()),
+        "a truncated or wrong-architecture harness is not a deleted one"
+    );
+
+    assert_eq!(
+        harness_fault(OBSERVED_LOG),
+        HarnessFault::Absent,
+        "the observed ENOENT is the one case this finding covers"
+    );
+}
+
+/// The message must not tell an agent the file was gone when cargo's OS error
+/// says otherwise, and it must say what to do about that case instead.
+///
+/// Observable failure if the cause is dropped from the message: the first two
+/// asserts fail, because every message would then read "was not on disk".
+#[test]
+fn accept_f54_x7_the_diagnosis_never_claims_a_deletion_cargo_did_not_report() {
+    let denied = OBSERVED_LOG.replace(
+        "No such file or directory (os error 2)",
+        "Permission denied (os error 13)",
+    );
+    let error = classify_missing_harness(
+        "the selection run",
+        Some("exit status: 101"),
+        &green_run(),
+        &denied,
+    )
+    .expect("an unexecutable harness is still classified, with its real cause");
+    let message = error.to_string();
+
+    assert!(
+        !message.contains("was not on disk"),
+        "a permission failure must not be reported as a deleted file: {message}"
+    );
+    assert!(
+        message.contains("Permission denied (os error 13)"),
+        "the diagnosis must quote the OS error cargo actually printed: {message}"
+    );
+    assert!(
+        message.contains("real fault to investigate"),
+        "a non-ENOENT exec failure is a real problem, not a rerun-and-hope: {message}"
+    );
+    // The part that does hold for every unexecuted harness still stands.
+    assert!(
+        message.contains("Rerun the identical command once"),
+        "one rerun is still the first thing to try: {message}"
     );
 }

@@ -9,11 +9,13 @@
 //! ([`SelectError::SelectionFailed`]), which is what turns a typo'd or
 //! missing prefix into a loud failure instead of a green run with zero tests.
 //!
-//! It also keeps cargo's "the test harness was not on disk" diagnostic out of
+//! It also keeps cargo's "the test harness was not executed" diagnostic out of
 //! the generic [`SelectError::CargoFailed`] bucket: such a run executed no test
 //! at all, so it is reported on its own ([`SelectError::HarnessMissing`], task
 //! #608) with the rule that only a rerun of the identical command says
-//! anything, and that a green rerun never makes the failed run green.
+//! anything, and that a green rerun never makes the failed run green. The cause
+//! is quoted from cargo's own OS error ([`HarnessFault`]) rather than assumed:
+//! only `ENOENT` is called a vanished harness.
 //!
 //! The owner's note on F00-C puts discovery in the agents' hands rather than
 //! in CI: CI keeps running fmt, clippy and the whole workspace suite (see
@@ -93,8 +95,8 @@ pub enum SelectError {
     /// The prefix selected no test at all — the empty-selection failure the
     /// contract explicitly forbids.
     Empty { prefix: String },
-    /// Cargo could not execute a test harness because the executable was not
-    /// on disk (`could not execute process … (never executed)`).
+    /// Cargo could not execute a test harness
+    /// (`could not execute process … (never executed)`).
     ///
     /// This is its own failure, not a [`Self::CargoFailed`] fallback: no test
     /// in that unit ran, so the run says nothing at all about the code under
@@ -104,6 +106,10 @@ pub enum SelectError {
         /// Exactly what cargo printed as unexecutable: the harness path,
         /// followed by whatever test arguments cargo appended to it.
         command: String,
+        /// What the `exec` itself failed with, read from the OS error cargo
+        /// printed. The message says "not on disk" only for
+        /// [`HarnessFault::Absent`].
+        fault: HarnessFault,
         tail: String,
     },
     /// A test failed when it was re-run alone with `--exact`.
@@ -111,6 +117,51 @@ pub enum SelectError {
     /// A discovered test selected nothing when re-run alone with `--exact`,
     /// so the prefix matched a name no harness would run in isolation.
     ExactEmpty { name: String },
+}
+
+/// Why an `exec` of a test harness failed, as far as cargo's own output says.
+///
+/// `could not execute process … (never executed)` is printed for *every* failed
+/// `exec`, and only the OS error on the next line says which kind of failure it
+/// was. Naming the wrong one would be worse than naming none, so the cases are
+/// kept apart instead of collapsed into "the file was deleted" (task #608).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HarnessFault {
+    /// Cargo's OS error was `ENOENT` (`No such file or directory (os error 2)`):
+    /// the executable was gone when cargo tried to start it. This is the case
+    /// `docs/findings/2026-10-04-f54-x7-missing-test-harness-binary.md`
+    /// documents.
+    Absent,
+    /// Cargo printed a different OS error. The file may be present and simply
+    /// not runnable — wrong mode, truncated, still open for writing — so this
+    /// is *not* the vanished-harness class and a repeat is a real fault to
+    /// investigate as one.
+    OsError(String),
+    /// Cargo printed the exec message but no OS error this parser recognises,
+    /// so nothing is claimed about the cause.
+    Unattributed,
+}
+
+impl fmt::Display for HarnessFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Absent => write!(
+                f,
+                "the executable was not on disk, the case documented in the finding"
+            ),
+            Self::OsError(error) => write!(
+                f,
+                "the exec failed with `{error}`, which is not the vanished-harness \
+case: the file may be present and unrunnable, so a repeat of this is a real \
+fault to investigate as one"
+            ),
+            Self::Unattributed => write!(
+                f,
+                "cargo printed no OS error for the exec, so the cause is not \
+established here"
+            ),
+        }
+    }
 }
 
 impl fmt::Display for SelectError {
@@ -144,12 +195,13 @@ impl fmt::Display for SelectError {
             Self::HarnessMissing {
                 context,
                 command,
+                fault,
                 tail,
             } => write!(
                 f,
-                "cargo could not execute the test harness {command} during {context}: \
-the executable was not on disk, so no test in that unit reported a result. \
-This is not a test failure and says nothing about the code under test. \
+                "cargo could not execute the test harness {command} during {context}: {fault}. \
+No test in that unit reported a result, so this is not a test failure and says \
+nothing about the code under test. \
 Rerun the identical command once; if that rerun passes, report both runs — \
 never the rerun alone — and see \
 docs/findings/2026-10-04-f54-x7-missing-test-harness-binary.md.\n\
@@ -245,6 +297,37 @@ fn tail(log: &str, lines: usize) -> String {
     all[start..].join("\n")
 }
 
+/// The OS error cargo printed for a failed `exec`, if it printed one.
+///
+/// Cargo follows the `could not execute process … (never executed)` line with
+/// the error the `exec` itself returned, e.g. `No such file or directory (os
+/// error 2)`. Only a handful of lines after the message are scanned, so a
+/// different crate's compile error later in the same log cannot be mistaken
+/// for this run's `exec` failure.
+fn exec_os_error(log: &str) -> Option<String> {
+    let lines: Vec<&str> = log.lines().collect();
+    let message = lines
+        .iter()
+        .position(|line| is_missing_harness_line(line))?;
+    lines
+        .iter()
+        .skip(message + 1)
+        .take(5)
+        .map(|line| line.trim())
+        .find(|line| line.contains("(os error "))
+        .map(str::to_string)
+}
+
+/// Whether one line is cargo's "the harness was never executed" message.
+///
+/// Both halves are required: `could not execute process` alone also appears in
+/// other cargo diagnostics, and `(never executed)` alone says nothing about
+/// what failed.
+fn is_missing_harness_line(line: &str) -> bool {
+    let line = line.trim();
+    line.contains("could not execute process") && line.contains("(never executed)")
+}
+
 /// The command cargo could not execute, if that is what happened.
 ///
 /// Cargo prints `Running <unit> (<path>)`, then, when `exec` of that path
@@ -259,11 +342,10 @@ fn tail(log: &str, lines: usize) -> String {
 /// other cargo diagnostic is not mistaken for it.
 pub fn missing_harness_command(log: &str) -> Option<String> {
     for line in log.lines() {
-        let line = line.trim();
-        if !line.contains("(never executed)") || !line.contains("could not execute process") {
+        if !is_missing_harness_line(line) {
             continue;
         }
-        let after = line.split_once("could not execute process")?.1;
+        let after = line.trim().split_once("could not execute process")?.1;
         let command = after
             .split("(never executed)")
             .next()
@@ -279,8 +361,25 @@ pub fn missing_harness_command(log: &str) -> Option<String> {
     None
 }
 
-/// Decides whether a finished run must be reported as a vanished test harness
-/// instead of a generic cargo failure.
+/// Reads the cause of a failed harness `exec` out of cargo's own output.
+///
+/// Only `ENOENT` is turned into [`HarnessFault::Absent`], because that is the
+/// only OS error that supports "the file was not on disk": `Permission denied`
+/// means the file is there and unreadable as an executable, `Exec format error`
+/// means it is there and not a runnable image, and `Text file busy` means
+/// something else is writing it. Collapsing those into a deletion would send an
+/// agent looking for a prune job that never touched anything (rule 4: unknown
+/// means unknown).
+pub fn harness_fault(log: &str) -> HarnessFault {
+    match exec_os_error(log) {
+        Some(error) if error.contains("os error 2") => HarnessFault::Absent,
+        Some(error) => HarnessFault::OsError(error),
+        None => HarnessFault::Unattributed,
+    }
+}
+
+/// Decides whether a finished run must be reported as an unexecutable test
+/// harness instead of a generic cargo failure.
 ///
 /// All three conditions are required, and each one matters:
 ///
@@ -304,6 +403,7 @@ pub fn classify_missing_harness(
     Some(SelectError::HarnessMissing {
         context: context.to_string(),
         command,
+        fault: harness_fault(log),
         tail: tail(log, 12),
     })
 }
