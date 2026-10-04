@@ -580,8 +580,13 @@ fn dep_info_files(target_dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Whether `entry` is a directory that can be listed.
+///
+/// A listing entry whose file vanished mid-walk still classifies as a
+/// directory under [`transient::SCAN`]: skipping a profile directory because
+/// its own `file_type` call lost a race would read none of its dep-info and
+/// pass a stale target directory as clean.
 fn is_directory(entry: &fs::DirEntry) -> bool {
-    entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
+    transient::file_type(entry, transient::SCAN).is_ok_and(|kind| kind.is_dir())
 }
 
 /// Extracts the `target_directory` string from `cargo metadata` JSON.

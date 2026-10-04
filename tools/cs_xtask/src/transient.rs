@@ -13,14 +13,35 @@
 //! a `cargo test` away from the build that is rewriting the same directory.
 //!
 //! Retrying [`ErrorKind::NotFound`] — and only that kind — turns the gap
-//! back into the read the file was going to answer. [`PATIENT`] waits out a
-//! writer that removes a file and recreates it at the end of a compile or
-//! link; [`SCAN`] covers a rename pair inside a listing where absence is a
-//! normal answer, so a genuinely missing entry is still skipped within the
-//! walk instead of costing the whole budget. Every other error kind is
+//! back into the read the file was going to answer. Every other error kind is
 //! returned on first sight: a permission problem is reported, never slept
 //! through. A file that stays absent keeps its `NotFound` — the retry buys
 //! the writer's window, it never invents the file.
+//!
+//! Two budgets, because the two kinds of question are not alike:
+//!
+//! * [`PATIENT`] sleeps, and is for a **file the caller requires to exist**
+//!   whose writer may still be producing it: cargo unlinks a test binary and
+//!   relinks it at the end of its work, so the gap lasts a whole compile. One
+//!   wait per required file, and the failure lands on input that really is
+//!   broken, where a delay is worth the certainty.
+//! * [`SCAN`] does not sleep, and is for an **entry inside a walk** where
+//!   absence is a normal answer — the ancestor search for a workspace
+//!   manifest, the `<profile>/deps` probe [`crate::target_dir`] makes under
+//!   every directory of a target directory, the "is this recorded checkout
+//!   still there" question. Those walks visit an unbounded number of paths:
+//!   the dep-info scan alone probes one missing `deps` per directory in
+//!   `target/`, and a workspace that has run its test suites leaves thousands
+//!   of fixture directories there (3194 measured in one checkout of this
+//!   workspace, one of which was a cargo profile). A sleeping budget is
+//!   therefore priced per *entry*, not per call: at 20 ms a retry the
+//!   measured checkout spent ~319 s asleep inside a single scan, and the
+//!   `#433` acceptance test that scans three times never finished. So this
+//!   policy retries immediately instead of waiting — a handful of extra
+//!   `open`/`stat` calls, microseconds each, which still ride out the
+//!   remove-then-recreate instant of a directory a writer is replacing, and a
+//!   directory that is genuinely absent stays absent for a few microseconds
+//!   instead of a fifth of a second.
 
 use std::fs::{self, Metadata, ReadDir};
 use std::io::{self, ErrorKind};
@@ -48,27 +69,34 @@ pub const PATIENT: Policy = Policy {
     interval: Duration::from_millis(50),
 };
 
-/// Policy for an entry inside a listing, where absence is a normal answer —
-/// the ancestor walk for a workspace manifest, the profile scan of a target
-/// directory. Long enough for a rename pair to complete, short enough that
-/// an ordinary missing entry stays a cheap skip rather than a delay on
-/// every directory walked.
+/// Policy for an entry inside a walk, where absence is a normal answer.
+///
+/// It retries without sleeping. The cost of an absent entry must stay at a
+/// few syscalls because the walks that use this policy are priced per
+/// *entry*, not per call: [`crate::target_dir::dep_info_files`] probes
+/// `<entry>/deps` under every directory a target directory holds, so a
+/// sleeping budget turns one scan of a `target/` with thousands of
+/// directories into minutes of `nanosleep`. `attempts` therefore buys
+/// immediacy, not patience; [`PATIENT`] is the policy that buys patience.
 pub const SCAN: Policy = Policy {
-    attempts: 5,
-    interval: Duration::from_millis(20),
+    attempts: 4,
+    interval: Duration::ZERO,
 };
 
 /// `op` retried while it fails with [`ErrorKind::NotFound`], up to
-/// `policy.attempts` extra tries `policy.interval` apart. An error of any
-/// other kind — and the last `NotFound` once the attempts run out — is
-/// returned untouched.
+/// `policy.attempts` extra tries `policy.interval` apart. A zero interval
+/// retries without yielding, so a sleep-free policy costs one syscall per
+/// attempt. An error of any other kind — and the last `NotFound` once the
+/// attempts run out — is returned untouched.
 fn retry<T>(policy: Policy, mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     let mut remaining = policy.attempts;
     loop {
         match op() {
             Err(error) if error.kind() == ErrorKind::NotFound && remaining > 0 => {
                 remaining -= 1;
-                thread::sleep(policy.interval);
+                if !policy.interval.is_zero() {
+                    thread::sleep(policy.interval);
+                }
             }
             result => return result,
         }
@@ -95,6 +123,17 @@ pub fn read_dir(path: &Path, policy: Policy) -> io::Result<ReadDir> {
 /// [`fs::metadata`] under `policy`, same contract as [`read_to_string`].
 pub fn metadata(path: &Path, policy: Policy) -> io::Result<Metadata> {
     retry(policy, || fs::metadata(path))
+}
+
+/// [`fs::DirEntry::file_type`] under `policy`, same contract as
+/// [`read_to_string`].
+///
+/// The entry of a listing whose entry a writer has since removed: the name is
+/// still held, so the retry can still classify it, and a caller that treats a
+/// failed classification as "not a directory" would otherwise skip a whole
+/// profile directory and read none of its dep-info.
+pub fn file_type(entry: &fs::DirEntry, policy: Policy) -> io::Result<fs::FileType> {
+    retry(policy, || entry.file_type())
 }
 
 /// [`Path::is_file`] under `policy`: `false` only when the path is still

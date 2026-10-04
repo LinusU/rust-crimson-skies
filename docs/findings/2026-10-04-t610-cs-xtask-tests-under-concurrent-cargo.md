@@ -93,11 +93,11 @@ Three mechanisms, all from a second cargo writing the same target dir:
   them.
 - `tools/cs_xtask/src/transient.rs` (new): retries an operation that fails
   with `ErrorKind::NotFound` — and only that kind — under a `Policy`.
-  `PATIENT` (60 × 50 ms) spans a remove-and-relink window for files that
-  must exist; `SCAN` (5 × 20 ms) covers a rename pair inside a listing walk
-  where absence is a normal answer. Every other error kind is returned on
-  first sight; a file that stays absent keeps its `NotFound` — the retry
-  buys the writer's window, it never invents the file. `command_output`
+  `PATIENT` (60 × 50 ms) spans a remove-and-relink window for a file the
+  caller requires to exist; `SCAN` (4 attempts, no sleep) is for an entry
+  inside a walk, where absence is a normal answer. Every other error kind is
+  returned on first sight; a file that stays absent keeps its `NotFound` — the
+  retry buys the writer's window, it never invents the file. `command_output`
   applies the same retry to `Command::output` for binaries the tests exec
   out of `target/`.
 - `budget.rs`, `ci.rs`, `pins.rs`, `package.rs`, `bootstrap.rs`,
@@ -120,15 +120,53 @@ Three mechanisms, all from a second cargo writing the same target dir:
   must never surface `NotFound`; a permanently absent file still errors;
   `command_output` execs a stable binary and reports a missing one; the
   `read_dir`/`is_dir`/`is_file` probes behave the way the dep-info walk
-  consumes them; and the `test = false` manifest configuration plus the
-  no-`#[test]` invariant in `src/lib.rs`/`src/main.rs` are pinned.
+  consumes them; the walk still records its one profile through a target
+  directory full of non-profile directories; the walk budget never sleeps;
+  and the `test = false` manifest configuration plus the no-`#[test]`
+  invariant in `src/lib.rs`/`src/main.rs` are pinned.
+
+## A sleeping walk budget does not scale: review correction
+
+The first version of this work gave `SCAN` five 20 ms retries, reasoning that
+a walk entry should be skipped "quickly". That reasoning was wrong about the
+price, because the walks that use `SCAN` are priced per *entry*, not per
+call. `target_dir::dep_info_files` probes `<entry>/deps` under **every**
+directory a target directory holds, and a checkout that has run its test
+suites has thousands of them: measured in this workspace's `bunny-alpha-2`
+checkout after the `tests/accept_*` pid-keyed fixture roots landed, `target/`
+held **3194 top-level directories, of which exactly one (`debug`) had a
+`deps/` child**. One `dep_info_files` scan therefore took 3193 absent probes
+x 100 ms = ~319 s of `nanosleep`, and `accept_t433_this_worktrees_target_dir_holds_no_removed_worktree`
+— which scans three times — did not finish in 25 minutes (`sample` showed the
+thread parked in `std::thread::sleep` inside `transient::retry` called from
+`transient::read_dir`). `cargo test -p cs_xtask` was unusable in that state.
+
+`SCAN` now retries **without sleeping** (4 immediate attempts). An atomic
+rename never produces a `NotFound` at all, so the only window a listing probe
+can hit is a remove-then-recreate, and for a directory listing that is rare
+and short: a few extra `open`/`stat` calls ride it out, and a genuinely
+absent entry stays absent for microseconds. `PATIENT` keeps the sleep for the
+one case where patience is right — a file the caller *requires*, whose writer
+removes it and rebuilds it at the end of a compile. After the correction the
+same suite runs in 6.6 s and the whole `cs_xtask` package (81 tests) in 42 s.
+`accept_t610_the_walk_policy_never_sleeps` pins the split, and
+`accept_t610_a_walk_over_non_profile_directories_still_records_its_profile`
+pins the walk's answer through the same junk.
+
+The same correction reaches `DirEntry::file_type`: `dep_info_files` classified
+each listing entry with one unretried `file_type()`, and an entry that vanished
+mid-walk classified as "not a directory" — which skips a whole profile
+directory and reads none of its dep-info, i.e. a *false pass* on the #433
+gate. It now goes through `transient::file_type(entry, transient::SCAN)`,
+which keeps the same answer and retries the classification.
 
 ## Checks
 
 - `cargo test -p cs_xtask --locked --test accept_t610_transient_target_dir`
-  — 5/5 pass.
+  — 7/7 pass (5 from the implementation, 2 added by review).
 - `cargo test -p cs_xtask --locked --test accept_t433_stale_target_dir` run
   in two overlapping 6-iteration loops — 12/12 invocations pass (was 1/12).
+- `cargo test -p cs_xtask --locked` — 81/81 pass in 42 s.
 - `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
   --all-features --locked -- -D warnings`, `cargo test --workspace
   --locked` — results recorded in the Rally handover.
@@ -136,11 +174,21 @@ Three mechanisms, all from a second cargo writing the same target dir:
 ## Known limits
 
 - Probes whose expected answer may be "absent" (`removed_manifest_dirs`,
-  `foreign_manifest_dirs_with_home`) use `SCAN`, so a missing directory
-  costs ~100 ms instead of `PATIENT`'s 3 s — the rename-pair window a walk
-  realistically has to span, not the whole link. Probes for files that must
-  exist (workspace and member manifests, the `--workspace-root` argument)
-  keep `PATIENT`.
+  `foreign_manifest_dirs_with_home`, the `<entry>/deps` probe) use `SCAN`,
+  which buys immediacy rather than patience: a transient removal inside such a
+  walk longer than a few syscalls is answered as absence, which for
+  `removed_manifest_dirs` means the walk can under-report a removed worktree
+  while a cargo is mid-relink. That is the deliberate trade — the alternative
+  is a sleep priced once per directory in `target/`, measured above at ~319 s
+  per scan. Probes for files that must exist (workspace and member manifests,
+  the `--workspace-root` argument) keep `PATIENT`, so a genuinely missing file
+  is reported ~3 s late rather than instantly.
+- `corpus.rs` still reads the source tree, the committed fixtures and the
+  private install with unretried `fs::` calls. That is deliberate: none of
+  those paths is written by a concurrent cargo, and a retry there would be
+  paid once per file of an install-sized tree.
 - The fixture roots remain under the shared `target/`; a process is now
   protected only from *other processes'* deletion, and stale `<pid>` trees
-  accumulate until `cargo clean` reaps them, same as before.
+  accumulate until `cargo clean` reaps them, same as before. This is also why
+  `target/` holds thousands of directories, which is what priced the walk
+  budget above.

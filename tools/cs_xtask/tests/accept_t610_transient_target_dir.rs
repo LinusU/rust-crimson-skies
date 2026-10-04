@@ -2,23 +2,30 @@
 //! must stay deterministic while a *second* cargo process writes this target
 //! directory.
 //!
-//! Two mechanisms produced the reported `No such file or directory (os error
+//! Three mechanisms produced the reported `No such file or directory (os error
 //! 2)` failures:
 //!
 //! - Cargo scheduled empty unit-test harness binaries for `src/lib.rs` and
 //!   `src/main.rs`; a concurrent rebuild replaced them between cargo's
 //!   discovery and exec. `tools/cs_xtask/Cargo.toml` now sets `test = false`
 //!   on both targets so workspace test runs never exec them.
-//! - Every gate read (`fs::read_to_string`, `fs::read_dir`, `Path::exists`)
-//!   ran once against paths a writer can transiently remove. Those reads now
-//!   go through [`cs_xtask::transient`], which retries only `NotFound` and
-//!   surfaces the last real error.
+//! - Every gate read (`fs::read_to_string`, `fs::read`, `fs::read_dir`,
+//!   `Path::is_file`/`is_dir`, `DirEntry::file_type`) ran once against paths a
+//!   writer can transiently remove. Those reads now go through
+//!   [`cs_xtask::transient`], which retries only `NotFound` and surfaces the
+//!   last real error.
+//! - The `accept_*` suites wrote their fixtures at fixed paths, so two
+//!   overlapping `cargo test` processes deleted each other's trees mid-build.
+//!   Each fixture root is now keyed by `std::process::id()`.
 //!
 //! The tests below exercise the production helpers against a real concurrent
-//! rewriter and pin the manifest configuration that keeps the empty harnesses
-//! out of the test plan. They intentionally do **not** weaken any T430
-//! assertion — `accept_t430_ci_disk_budget.rs` is untouched by this task.
+//! rewriter, pin the two retry budgets (a required file waits, a walk entry
+//! must not) and pin the manifest configuration that keeps the empty harnesses
+//! out of the test plan. They do **not** weaken any T430 assertion: the one
+//! change to `accept_t430_ci_disk_budget.rs` routes that suite's own re-exec
+//! through `transient::command_output` and changes no assertion.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -27,6 +34,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use cs_xtask::target_dir;
 use cs_xtask::transient::{self, Policy};
 
 fn workspace_root() -> PathBuf {
@@ -150,6 +158,88 @@ fn accept_t610_directory_scans_retry_then_report_absence() {
     );
     assert!(transient::is_dir(&dir, transient::PATIENT));
     assert!(transient::is_file(&dir.join("one.d"), transient::PATIENT));
+}
+
+/// The walk policy must be priced per *entry* in microseconds, not in
+/// milliseconds.
+///
+/// [`cs_xtask::target_dir::dep_info_files`] probes `<entry>/deps` under
+/// **every** directory a target directory holds, and a workspace that has run
+/// its test suites leaves thousands of directories in `target/` (3194
+/// measured in one checkout of this workspace, exactly one of them a cargo
+/// profile). With a sleeping scan policy that single probe cost 100 ms per
+/// absent entry, so one scan of that `target/` spent ~319 s in `nanosleep`
+/// and the `#433` acceptance test — three scans — never finished. A walk
+/// budget therefore retries immediately, and only a required file
+/// ([`transient::PATIENT`]) buys a wait. The numbers are pinned rather than
+/// timed: a wall-clock assertion here would be a flaky test on a loaded
+/// runner, and the invariant that matters is "no sleep, few tries".
+// The policies are `const`, so this reads as an assertion on constants. It is
+// deliberately left a runtime assertion: a regression in the walk budget is
+// this suite's finding to report, not a compile error in whatever crate is
+// built next.
+#[allow(clippy::assertions_on_constants)]
+#[test]
+fn accept_t610_the_walk_policy_never_sleeps() {
+    assert_eq!(
+        transient::SCAN.interval,
+        Duration::ZERO,
+        "the walk policy must retry immediately: its price is paid once per \
+         entry of an unbounded walk, so any sleep multiplies into minutes"
+    );
+    assert!(
+        transient::SCAN.attempts <= 8,
+        "the walk policy must buy immediacy, not patience: {} attempts per \
+         absent entry is a cost no walk should pay",
+        transient::SCAN.attempts
+    );
+    assert!(
+        transient::PATIENT.interval > Duration::ZERO,
+        "a required file is the case that waits out a writer: {:?}",
+        transient::PATIENT
+    );
+}
+
+/// The `#433` walk answers the same question with or without the surrounding
+/// junk: a target directory holding many directories that are not cargo
+/// profiles must still yield the manifest directory its one profile's
+/// dep-info records. This is the walk [`transient::SCAN`] is priced for —
+/// every non-profile entry is an absent `<entry>/deps` probe — so it is the
+/// case that regressed when the policy slept.
+#[test]
+fn accept_t610_a_walk_over_non_profile_directories_still_records_its_profile() {
+    let target = scratch("walk");
+    let checkout = target.join("the-checkout");
+    fs::create_dir_all(&checkout).expect("the recorded checkout must be creatable");
+    let deps = target.join("debug/deps");
+    fs::create_dir_all(&deps).expect("the profile dep-info directory must be creatable");
+    fs::write(
+        deps.join("probe.d"),
+        format!(
+            "probe: src/lib.rs\n# env-dep:{}={}\n",
+            target_dir::MANIFEST_DIR_VAR,
+            checkout.display()
+        ),
+    )
+    .expect("the dep-info fixture must be writable");
+
+    // Every one of these is an absent `<entry>/deps` probe for the walk.
+    for index in 0..40 {
+        fs::create_dir_all(target.join(format!("fixture-{index}")))
+            .expect("a non-profile directory must be creatable");
+    }
+
+    let recorded = target_dir::recorded_manifest_dirs(&target);
+    assert_eq!(
+        recorded,
+        BTreeSet::from([checkout]),
+        "the walk must find the profile's dep-info through the junk, and \
+         report nothing else: {recorded:?}"
+    );
+    assert!(
+        target_dir::removed_manifest_dirs(&target).is_empty(),
+        "a checkout that is present is not a removed worktree"
+    );
 }
 
 /// The reported flake exec'd `cs_xtask --lib` and `--bin cs_xtask` unit-test
