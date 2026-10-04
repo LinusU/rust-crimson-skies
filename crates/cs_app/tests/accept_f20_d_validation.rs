@@ -1183,20 +1183,136 @@ fn anim_container_bytes(externals: &[Row], members: &[Row], payload: &[u8]) -> V
 }
 
 /// A synthetic payload in the measured shape: the 68-byte header, 40 zero
-/// bytes, the first record's 32-byte name field, then record bytes this stage
-/// does not decode.
+/// bytes, and `record_count` records of the measured 272-byte fixed part (the
+/// first named `first_record`, the rest `record_<n>`), with no table and no
+/// sequence, so the walk tiles it exactly.
 fn carrier_payload(record_count: u16, first_record: &str) -> Vec<u8> {
+    let mut specs = vec![RecordSpec::named(first_record)];
+    specs.extend((1..record_count).map(|n| RecordSpec::named(&format!("record_{n}"))));
+    record_payload(&specs, &[])
+}
+
+/// One synthetic animation record, in the measured layout.
+#[derive(Clone, Default)]
+struct RecordSpec {
+    name: String,
+    unknowns: u32,
+    objects: u8,
+    nodes: u8,
+    lights: u8,
+    puffers: u8,
+    dynamic_sounds: u8,
+    static_sounds: u8,
+    effects: u8,
+    prerequisites: u8,
+    animation_refs: u8,
+    index_words: u8,
+    reset: Option<Vec<u8>>,
+    damage: Option<Vec<u8>>,
+    sequences: Vec<(String, Vec<u8>)>,
+}
+
+impl RecordSpec {
+    fn named(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            ..Self::default()
+        }
+    }
+
+    /// The bytes this record occupies, and nothing else.
+    fn bytes(&self) -> Vec<u8> {
+        let mut bytes = vec![0_u8; 272];
+        bytes[..self.name.len()].copy_from_slice(self.name.as_bytes());
+        bytes[36..40].copy_from_slice(&self.unknowns.to_le_bytes());
+        // The unknowns pointer, the reset pointer and the damage pointer are
+        // nonzero exactly when the block they point at is present.
+        if self.unknowns != 0 {
+            bytes[32..36].copy_from_slice(&0x0436_0000_u32.to_le_bytes());
+        }
+        bytes[162] = 4;
+        bytes[163] = 2;
+        if self.reset.is_some() {
+            bytes[208..212].copy_from_slice(&0x0436_1000_u32.to_le_bytes());
+        }
+        if self.damage.is_some() {
+            bytes[212..216].copy_from_slice(&0x0436_2000_u32.to_le_bytes());
+        }
+        bytes[216] = self.sequences.len() as u8;
+        bytes[217] = self.objects;
+        bytes[218] = self.nodes;
+        bytes[219] = self.lights;
+        bytes[220] = self.puffers;
+        bytes[221] = self.dynamic_sounds;
+        bytes[222] = self.static_sounds;
+        bytes[223] = self.effects;
+        bytes[224] = self.prerequisites;
+        bytes[226] = self.animation_refs;
+        bytes[227] = self.index_words;
+        let tables: [(usize, usize, u8); 9] = [
+            (36, self.unknowns as usize, 0xa1),
+            (92, usize::from(self.objects), 0xa2),
+            (44, usize::from(self.nodes), 0xa3),
+            (44, usize::from(self.lights), 0xa4),
+            (44, usize::from(self.puffers), 0xa5),
+            (44, usize::from(self.dynamic_sounds), 0xa6),
+            (40, usize::from(self.static_sounds), 0xa7),
+            (48, usize::from(self.prerequisites), 0xa8),
+            (72, usize::from(self.animation_refs), 0xa9),
+        ];
+        for (entry, count, fill) in tables {
+            for index in 0..count {
+                let mut field = vec![0_u8; entry];
+                // A name at the entry's own name field: node entries carry it
+                // four bytes in, the others at the start.
+                let label = format!("t{fill:02x}_{index}");
+                let at = if fill == 0xa3 { 4 } else { 0 };
+                field[at..at + label.len()].copy_from_slice(label.as_bytes());
+                bytes.extend_from_slice(&field);
+            }
+        }
+        for index in 0..usize::from(self.index_words) {
+            bytes.extend_from_slice(&(index as u32).to_le_bytes());
+        }
+        if let Some(events) = &self.reset {
+            bytes.extend_from_slice(&sequence_block("RESET_SEQUENCE", events));
+        }
+        if let Some(events) = &self.damage {
+            bytes.extend_from_slice(&sequence_block("DAMAGE_SEQUENCE", events));
+        }
+        for (name, events) in &self.sequences {
+            bytes.extend_from_slice(&sequence_block(name, events));
+        }
+        bytes
+    }
+}
+
+/// A 64-byte sequence info block (flags `0x303`, a nonzero pointer, `size`
+/// events) followed by its events.
+fn sequence_block(name: &str, events: &[u8]) -> Vec<u8> {
+    let mut block = vec![0_u8; 64];
+    block[..name.len()].copy_from_slice(name.as_bytes());
+    block[32..36].copy_from_slice(&0x303_u32.to_le_bytes());
+    block[56..60].copy_from_slice(&0x0436_3000_u32.to_le_bytes());
+    block[60..64].copy_from_slice(&(events.len() as u32).to_le_bytes());
+    block.extend_from_slice(events);
+    block
+}
+
+/// A payload of `specs` records followed by `trailing` bytes, with the
+/// declared count equal to the record count.
+fn record_payload(specs: &[RecordSpec], trailing: &[u8]) -> Vec<u8> {
     let mut header = vec![0_u8; 68];
-    header[10..12].copy_from_slice(&record_count.to_le_bytes());
+    header[10..12].copy_from_slice(&(specs.len() as u16).to_le_bytes());
     header[36..40].copy_from_slice(&(-9.8_f32).to_bits().to_le_bytes());
     header[40..44].copy_from_slice(&1_u32.to_le_bytes());
     header[60..64].copy_from_slice(&1_u32.to_le_bytes());
     let mut bytes = header;
     bytes.extend_from_slice(&[0_u8; 40]);
-    let mut name = [0_u8; 32];
-    name[..first_record.len()].copy_from_slice(first_record.as_bytes());
-    bytes.extend_from_slice(&name);
-    bytes.extend_from_slice(&[0x5a; 64]);
+    for spec in specs {
+        bytes.extend_from_slice(&spec.bytes());
+    }
+    bytes.extend_from_slice(trailing);
     bytes
 }
 
@@ -2256,6 +2372,829 @@ fn accept_m01_lc_anim_carriers_retail_c1c_lists_binds_and_reports_every_member()
         C1C.starts_with("zbd/"),
         "the group key is an installation-relative spelling"
     );
+}
+
+// ------------------- task #650: the animation record walk ---------------------
+//
+// `AnimationPayload::records` derives every record's length from fields inside
+// the record (a 272-byte fixed part, count x entry-size tables, and 64-byte
+// sequence blocks that carry their own event length), so record *n* starts at
+// the sum of the lengths before it. The synthetic tests build records from
+// exactly that rule and check the production walk against it, plus every
+// refusal; the retail test pins the measured counts of `zbd/c1c`.
+
+use cs_app::animation::carrier::{
+    StartupOutcome, UNBOUND_REASON_AMBIGUOUS, UNBOUND_REASON_NO_RECORD, bind_startup_identities,
+};
+use cs_formats::zbd::{
+    AnimationRecordError, AnimationRecordSequenceKind, AnimationRecordTableKind,
+    POINTERS_UNRESOLVED_REASON,
+};
+
+/// The payload of a synthetic container, walked through production code.
+fn walk_synthetic(payload: Vec<u8>) -> Result<Vec<RecordSnapshot>, AnimationRecordError> {
+    let carrier = anim_container_bytes(
+        &[("zbd\\c1c\\gamez.zbd", 1), ("zbd\\planes.zbd", 2)],
+        &[(r"..\data\c1c\m01\zrdr\mis_anim.zrd", 10)],
+        &payload,
+    );
+    let path = synthetic_path();
+    let index = read_synthetic_index("zbd/c1c/m01/mis_anim.zbd", path, &carrier)
+        .expect("the synthetic index reads");
+    let payload = index.payload().expect("the payload header reads");
+    let walk = payload.records()?;
+    Ok(walk
+        .iter()
+        .map(|record| RecordSnapshot {
+            offset: record.payload_offset(),
+            len: record.len(),
+            name: String::from_utf8_lossy(record.anim_name()).into_owned(),
+            sequences: record
+                .sequences()
+                .iter()
+                .map(|sequence| {
+                    (
+                        sequence.kind(),
+                        String::from_utf8_lossy(sequence.name()).into_owned(),
+                        sequence.events().to_vec(),
+                    )
+                })
+                .collect(),
+            tables: record
+                .tables()
+                .iter()
+                .map(|table| {
+                    (
+                        table.kind(),
+                        table.count(),
+                        table
+                            .name(0)
+                            .map(|name| String::from_utf8_lossy(name).into_owned()),
+                    )
+                })
+                .collect(),
+            trailing: walk.trailing().to_vec(),
+        })
+        .collect())
+}
+
+/// What a test needs of one walked record, owned so the walk can be dropped.
+struct RecordSnapshot {
+    offset: u64,
+    len: usize,
+    name: String,
+    sequences: Vec<(AnimationRecordSequenceKind, String, Vec<u8>)>,
+    tables: Vec<(AnimationRecordTableKind, usize, Option<String>)>,
+    trailing: Vec<u8>,
+}
+
+/// The records every test below mixes: a bare one, one with every table, one
+/// with a reset block, a damage block and two ordinary sequences, and one with
+/// unknowns and an index list.
+fn mixed_specs() -> Vec<RecordSpec> {
+    let mut tables = RecordSpec::named("tables");
+    tables.objects = 3;
+    tables.nodes = 2;
+    tables.lights = 1;
+    tables.puffers = 2;
+    tables.dynamic_sounds = 1;
+    tables.static_sounds = 2;
+    tables.prerequisites = 2;
+    tables.animation_refs = 1;
+    tables.sequences = vec![("only".to_owned(), vec![7; 20])];
+    let mut blocks = RecordSpec::named("blocks");
+    blocks.reset = Some(vec![1; 16]);
+    blocks.damage = Some(vec![2; 8]);
+    blocks.sequences = vec![
+        ("first".to_owned(), vec![3; 12]),
+        (String::new(), vec![4; 4]),
+    ];
+    let mut unknowns = RecordSpec::named("unknowns");
+    unknowns.unknowns = 2;
+    unknowns.index_words = 6;
+    vec![
+        RecordSpec::named("reserved_anim_0"),
+        tables,
+        blocks,
+        unknowns,
+        RecordSpec::named("last"),
+    ]
+}
+
+/// The acceptance criterion's derivation, stated as arithmetic and checked: a
+/// record is 272 bytes plus its tables plus 64 bytes and the declared events
+/// per sequence block, and record *n + 1* starts where record *n* ends.
+#[test]
+fn accept_m01_lc_anim_records_a_records_length_is_derived_from_its_own_counts_and_event_sizes() {
+    let specs = mixed_specs();
+    let walked = walk_synthetic(record_payload(&specs, &[])).expect("the walk reads");
+    assert_eq!(walked.len(), specs.len());
+
+    let expected_lens = [
+        272,
+        // objects 3 x 92, nodes 2 x 44, lights 44, puffers 2 x 44, dynamic 44,
+        // static 2 x 40, prerequisites 2 x 48, refs 72, one 64-byte block with
+        // 20 event bytes.
+        272 + 3 * 92 + 2 * 44 + 44 + 2 * 44 + 44 + 2 * 40 + 2 * 48 + 72 + 64 + 20,
+        // reset 64 + 16, damage 64 + 8, then 64 + 12 and 64 + 4.
+        272 + (64 + 16) + (64 + 8) + (64 + 12) + (64 + 4),
+        // two 36-byte unknowns and six 4-byte index words.
+        272 + 2 * 36 + 6 * 4,
+        272,
+    ];
+    let mut start = 108_u64;
+    for (record, expected) in walked.iter().zip(expected_lens) {
+        assert_eq!(record.offset, start, "{}: start", record.name);
+        assert_eq!(record.len, expected, "{}: derived length", record.name);
+        start += expected as u64;
+    }
+    assert_eq!(
+        walked
+            .iter()
+            .map(|record| record.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["reserved_anim_0", "tables", "blocks", "unknowns", "last"],
+        "every record is addressed by its own index, in order"
+    );
+    assert!(walked[0].trailing.is_empty());
+
+    // The tables, in on-disk order, each with its own first entry's name.
+    let kinds: Vec<_> = walked[1]
+        .tables
+        .iter()
+        .map(|(kind, count, _)| (kind.code(), *count))
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            ("objects", 3),
+            ("nodes", 2),
+            ("lights", 1),
+            ("puffers", 2),
+            ("dynamic_sounds", 1),
+            ("static_sounds", 2),
+            ("activation_prerequisites", 2),
+            ("animation_refs", 1),
+        ]
+    );
+    assert_eq!(
+        walked[1].tables[0].2.as_deref(),
+        Some("t".to_owned() + "a2_0").as_deref(),
+        "an object entry's name is at the start of the entry"
+    );
+    assert_eq!(
+        walked[1].tables[1].2.as_deref(),
+        Some("ta3_0"),
+        "a node entry's name is four bytes in"
+    );
+
+    // Reset, damage, then the ordinary sequences, each with its own events.
+    assert_eq!(
+        walked[2].sequences,
+        vec![
+            (
+                AnimationRecordSequenceKind::Reset,
+                "RESET_SEQUENCE".to_owned(),
+                vec![1; 16]
+            ),
+            (
+                AnimationRecordSequenceKind::Damage,
+                "DAMAGE_SEQUENCE".to_owned(),
+                vec![2; 8]
+            ),
+            (
+                AnimationRecordSequenceKind::Sequence,
+                "first".to_owned(),
+                vec![3; 12]
+            ),
+            (
+                AnimationRecordSequenceKind::Sequence,
+                String::new(),
+                vec![4; 4]
+            ),
+        ]
+    );
+    assert_eq!(
+        walked[3]
+            .tables
+            .iter()
+            .map(|(kind, count, _)| (kind.code(), *count))
+            .collect::<Vec<_>>(),
+        vec![("unknowns", 2), ("index_words", 6)]
+    );
+}
+
+/// Every refusal names the record and the part that did not fit, and an effect
+/// table — for which no entry size is measured — is refused rather than
+/// skipped with a guessed size.
+#[test]
+fn accept_m01_lc_anim_records_a_record_that_does_not_fit_is_a_named_refusal() {
+    // Declared three records, only two present.
+    let mut short = record_payload(&mixed_specs()[..2], &[]);
+    short[10..12].copy_from_slice(&3_u16.to_le_bytes());
+    match walk_synthetic(short) {
+        Err(AnimationRecordError::Truncated {
+            record,
+            part,
+            needed,
+            ..
+        }) => {
+            assert_eq!((record, part, needed), (2, "fixed part", 272));
+        }
+        other => panic!("expected a truncated fixed part, got {:?}", other.err()),
+    }
+
+    // A table that runs past the end of the payload.
+    let mut spec = RecordSpec::named("cut");
+    spec.objects = 4;
+    let mut cut = record_payload(&[spec], &[]);
+    cut.truncate(cut.len() - 92);
+    match walk_synthetic(cut) {
+        Err(AnimationRecordError::Truncated { part, needed, .. }) => {
+            assert_eq!((part, needed), ("objects", 4 * 92));
+        }
+        other => panic!("expected a truncated table, got {:?}", other.err()),
+    }
+
+    // A sequence whose events claim more bytes than remain.
+    let mut spec = RecordSpec::named("events");
+    spec.sequences = vec![("seq".to_owned(), vec![9; 10])];
+    let mut events = record_payload(&[spec], &[]);
+    events.truncate(events.len() - 1);
+    match walk_synthetic(events) {
+        Err(AnimationRecordError::Truncated { part, needed, .. }) => {
+            assert_eq!((part, needed), ("sequence events", 10));
+        }
+        other => panic!("expected truncated events, got {:?}", other.err()),
+    }
+
+    // A sequence block cut inside its 64-byte info.
+    let mut spec = RecordSpec::named("info");
+    spec.sequences = vec![("seq".to_owned(), Vec::new())];
+    let mut info = record_payload(&[spec], &[]);
+    info.truncate(info.len() - 10);
+    match walk_synthetic(info) {
+        Err(AnimationRecordError::Truncated { part, needed, .. }) => {
+            assert_eq!((part, needed), ("sequence info", 64));
+        }
+        other => panic!("expected a truncated info block, got {:?}", other.err()),
+    }
+
+    // An effect table has no measured entry size.
+    let mut spec = RecordSpec::named("effects");
+    spec.effects = 2;
+    match walk_synthetic(record_payload(&[spec], &[])) {
+        Err(
+            error @ AnimationRecordError::UnmeasuredEffectTable {
+                record: 0,
+                count: 2,
+                ..
+            },
+        ) => {
+            assert_eq!(error.code(), "unmeasured_effect_table");
+        }
+        other => panic!("expected the effect-table refusal, got {:?}", other.err()),
+    }
+}
+
+/// What follows the last record is reported, not walked.
+#[test]
+fn accept_m01_lc_anim_records_the_region_after_the_last_record_is_reported_not_walked() {
+    let specs = mixed_specs();
+    let expected_end: u64 = 108
+        + specs
+            .iter()
+            .map(|spec| spec.bytes().len() as u64)
+            .sum::<u64>();
+    let trailing: Vec<u8> = (0..37).collect();
+    let walked = walk_synthetic(record_payload(&specs, &trailing)).expect("the walk reads");
+    assert_eq!(
+        walked.len(),
+        specs.len(),
+        "the declared count bounds the walk"
+    );
+    assert_eq!(walked[0].trailing, trailing);
+
+    let carrier = anim_container_bytes(
+        &[("zbd\\c1c\\gamez.zbd", 1), ("zbd\\planes.zbd", 2)],
+        &[(r"..\data\c1c\m01\zrdr\mis_anim.zrd", 10)],
+        &record_payload(&specs, &trailing),
+    );
+    let index = read_synthetic_index("zbd/c1c/m01/mis_anim.zbd", synthetic_path(), &carrier)
+        .expect("the index reads");
+    let payload = index.payload().expect("the payload reads");
+    let walk = payload.records().expect("the walk reads");
+    assert_eq!(walk.trailing_offset(), expected_end);
+    assert_eq!(walk.trailing().len(), 37);
+    assert!(
+        payload.records_not_decoded_reason().contains("not walked"),
+        "the open state names the region it leaves"
+    );
+}
+
+/// Pointer words are returned raw and never used: the reset and damage words
+/// say whether a block is present, and nothing resolves one to a record.
+#[test]
+fn accept_m01_lc_anim_records_pointer_words_are_reported_raw_and_unresolved() {
+    let specs = mixed_specs();
+    let carrier = anim_container_bytes(
+        &[("zbd\\c1c\\gamez.zbd", 1), ("zbd\\planes.zbd", 2)],
+        &[(r"..\data\c1c\m01\zrdr\mis_anim.zrd", 10)],
+        &record_payload(&specs, &[]),
+    );
+    let index = read_synthetic_index("zbd/c1c/m01/mis_anim.zbd", synthetic_path(), &carrier)
+        .expect("the index reads");
+    let payload = index.payload().expect("the payload reads");
+    let walk = payload.records().expect("the walk reads");
+
+    let blocks = walk.get(2).expect("record 2");
+    let pointers = blocks.pointers();
+    assert_eq!(pointers.reset_state, 0x0436_1000);
+    assert_eq!(pointers.damage_sequence, 0x0436_2000);
+    assert_eq!(
+        blocks.pointers_unresolved_reason(),
+        POINTERS_UNRESOLVED_REASON
+    );
+    let bare = walk.get(0).expect("record 0").pointers();
+    assert_eq!((bare.reset_state, bare.damage_sequence), (0, 0));
+    assert_eq!(
+        blocks.field_evidence(),
+        cs_types::evidence::ClaimStatus::ObservedTool,
+        "every fixed-part field is this repository's own measurement"
+    );
+    // The pointer is a word, never an offset: a record whose pointer values
+    // are far beyond the payload walks exactly the same.
+    assert!(u64::from(pointers.reset_state) > payload.bytes().len() as u64);
+    assert_eq!(blocks.sequences().len(), 4);
+    assert_eq!(
+        walk.by_anim_name(b"blocks")
+            .map(|record| record.index())
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+    assert!(walk.by_anim_name(b"nope").next().is_none());
+}
+
+/// A startup identity binds only to exactly one record across the mission
+/// carrier and its camera carrier; absent and ambiguous identities stay open
+/// with their own reason.
+#[test]
+fn accept_m01_lc_anim_records_a_startup_identity_binds_only_to_exactly_one_record() {
+    fn carrier_over(names: &[&str]) -> Vec<u8> {
+        let specs: Vec<RecordSpec> = std::iter::once(RecordSpec::named("reserved_anim_0"))
+            .chain(names.iter().map(|name| RecordSpec::named(name)))
+            .collect();
+        anim_container_bytes(
+            &[
+                ("zbd\\c1c\\gamez.zbd", 0x39a7_7e80),
+                ("zbd\\planes.zbd", 0x39a7_7ba5),
+            ],
+            &[(r"..\data\c1c\m01\zrdr\placezeps.zrd", 1)],
+            &record_payload(&specs, &[]),
+        )
+    }
+    let startup = start_anims(&[
+        (
+            "NEW_GAME_START",
+            &["mission_only", "camera_only", "both", "neither"],
+        ),
+        ("LOAD_GAME_START", &["repeated_in_camera"]),
+    ]);
+    let mission_reader = reader_over(&[
+        ("mis_anim.zrd", animation_definitions(&[], &[])),
+        (STARTUP_MEMBER, startup),
+    ]);
+    let camera_reader = reader_over(&[("cam_anim.zrd", animation_definitions(&[], &[]))]);
+    let mission_carrier = carrier_over(&["mission_only", "both"]);
+    let camera_carrier = carrier_over(&[
+        "camera_only",
+        "both",
+        "repeated_in_camera",
+        "repeated_in_camera",
+    ]);
+    let mission = bind_animation_carrier(
+        &RelativePath::new("zbd/c1c/m01/mis_anim.zbd").expect("a relative spelling"),
+        "zbd/c1c/m01/zrdr.zbd",
+        CarrierKind::Mission,
+        &mission_carrier,
+        SiblingReader::Bytes(&mission_reader),
+    );
+    let camera = bind_animation_carrier(
+        &RelativePath::new("zbd/c1c/cam_anim.zbd").expect("a relative spelling"),
+        "zbd/c1c/zrdr.zbd",
+        CarrierKind::Camera,
+        &camera_carrier,
+        SiblingReader::Bytes(&camera_reader),
+    );
+    assert!(mission.blockers.is_empty(), "{:?}", mission.blockers);
+    assert!(camera.blockers.is_empty(), "{:?}", camera.blockers);
+    let facts = mission
+        .payload
+        .as_ref()
+        .and_then(|payload| payload.records.as_ref())
+        .expect("the mission carrier's records walked");
+    assert_eq!(facts.count, 3);
+    assert_eq!(facts.indices_named(b"both"), vec![2]);
+
+    let rows = bind_startup_identities(&mission, Some(&camera));
+    let outcomes: Vec<_> = rows
+        .iter()
+        .map(|row| (row.identity.as_str(), row.outcome.clone()))
+        .collect();
+    assert_eq!(
+        outcomes,
+        vec![
+            (
+                "mission_only",
+                StartupOutcome::Bound {
+                    carrier: CarrierKind::Mission,
+                    record: 1
+                }
+            ),
+            (
+                "camera_only",
+                StartupOutcome::Bound {
+                    carrier: CarrierKind::Camera,
+                    record: 1
+                }
+            ),
+            (
+                "both",
+                StartupOutcome::Unbound {
+                    reason: UNBOUND_REASON_AMBIGUOUS,
+                    matches: vec![(CarrierKind::Mission, 2), (CarrierKind::Camera, 2)],
+                }
+            ),
+            (
+                "neither",
+                StartupOutcome::Unbound {
+                    reason: UNBOUND_REASON_NO_RECORD,
+                    matches: Vec::new(),
+                }
+            ),
+            (
+                "repeated_in_camera",
+                StartupOutcome::Unbound {
+                    reason: UNBOUND_REASON_AMBIGUOUS,
+                    matches: vec![(CarrierKind::Camera, 3), (CarrierKind::Camera, 4)],
+                }
+            ),
+        ],
+        "an identity binds only to exactly one record; the rest keep their reason"
+    );
+    assert_eq!(
+        rows[0].key, "NEW_GAME_START",
+        "the startup key travels with its identity"
+    );
+    assert_eq!(rows[4].key, "LOAD_GAME_START");
+
+    // Without the camera carrier, "exactly one" cannot be established, so
+    // nothing binds.
+    let alone = bind_startup_identities(&mission, None);
+    assert_eq!(alone.len(), 5);
+    assert!(
+        alone
+            .iter()
+            .all(|row| matches!(row.outcome, StartupOutcome::Unbound { .. })),
+        "a missing camera carrier binds nothing"
+    );
+}
+
+/// The retail half: the walk over every original carrier, with the measured
+/// counts of `zbd/c1c/m01/mis_anim.zbd` and `zbd/c1c/cam_anim.zbd` pinned.
+#[test]
+#[ignore = "requires CS_GAME_DIR: the original installation is needed"]
+fn accept_m01_lc_anim_records_retail_walk_pins_counts_and_startup_census() {
+    let root = game_dir();
+    let survey = survey_animation_bindings(&root).expect("the survey runs over the install");
+    assert_eq!(survey.carriers.len(), 61);
+
+    let mut total_records = 0_usize;
+    let mut zero_trailing = 0_usize;
+    let mut trailing_min = u64::MAX;
+    let mut trailing_max = 0_u64;
+    for carrier in &survey.carriers {
+        assert!(
+            carrier.blockers.is_empty(),
+            "{}: {:?}",
+            carrier.container_key,
+            carrier.blockers
+        );
+        let payload = carrier.payload.as_ref().expect("payload read");
+        let records = payload.records.as_ref().expect("records walked");
+        assert_eq!(
+            records.count,
+            usize::from(payload.declared_record_count),
+            "{}: the walk reaches the declared count and stays inside the payload",
+            carrier.container_key
+        );
+        assert_eq!(
+            payload.first_record_name, b"reserved_anim_0",
+            "{}: record 0",
+            carrier.container_key
+        );
+        assert_eq!(records.anim_names[0], b"reserved_anim_0");
+        total_records += records.count;
+        if records.trailing_bytes == 0 {
+            zero_trailing += 1;
+        } else {
+            trailing_min = trailing_min.min(records.trailing_bytes);
+            trailing_max = trailing_max.max(records.trailing_bytes);
+        }
+    }
+    assert_eq!(total_records, 15_024, "every declared record is walked");
+    assert_eq!(
+        zero_trailing, 30,
+        "carriers whose records end at the payload's end"
+    );
+    assert_eq!((trailing_min, trailing_max), (29_690, 1_361_762));
+
+    // The two carriers the task names.
+    let m01 = survey
+        .carrier("zbd/c1c/m01/mis_anim.zbd")
+        .and_then(|carrier| carrier.payload.as_ref())
+        .and_then(|payload| payload.records.as_ref())
+        .expect("M01's records");
+    assert_eq!(m01.count, 573);
+    assert_eq!(m01.trailing_bytes, 543_041);
+    assert_eq!(m01.trailing_offset, 1_468_528);
+    let camera = survey
+        .carrier("zbd/c1c/cam_anim.zbd")
+        .and_then(|carrier| carrier.payload.as_ref())
+        .and_then(|payload| payload.records.as_ref())
+        .expect("the c1c camera records");
+    assert_eq!(camera.count, 307);
+    assert_eq!(camera.trailing_bytes, 405_135);
+
+    // Identities, as measured: M01's anim names are unique, the camera
+    // carrier repeats five.
+    let unique = |names: &[Vec<u8>]| {
+        names
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    };
+    assert_eq!(unique(&m01.anim_names), 573);
+    assert_eq!(unique(&camera.anim_names), 302);
+    assert_eq!(m01.indices_named(b"pzep_engines_start"), vec![36]);
+    assert_eq!(m01.indices_named(b"wvzep_engines_start"), vec![414]);
+    assert_eq!(m01.indices_named(b"bszep_engines_start"), vec![230]);
+    assert_eq!(m01.indices_named(b"wv_hookup_state"), vec![496]);
+    assert_eq!(camera.indices_named(b"generic_intro"), vec![23]);
+    assert_eq!(camera.indices_named(b"call_add_jack"), vec![60]);
+    assert_eq!(camera.indices_named(b"player_setup"), vec![115]);
+
+    // The startup census: all 53 scopes, 195 identities.
+    let scopes = survey.startup_bindings();
+    assert_eq!(scopes.len(), 53);
+    let identities: usize = scopes.iter().map(|scope| scope.bindings.len()).sum();
+    assert_eq!(identities, 195);
+    let m01_scope = scopes
+        .iter()
+        .find(|scope| scope.mission_key == "zbd/c1c/m01/mis_anim.zbd")
+        .expect("M01's scope");
+    assert_eq!(m01_scope.camera_key, "zbd/c1c/cam_anim.zbd");
+    let by_identity: std::collections::BTreeMap<_, _> = m01_scope
+        .bindings
+        .iter()
+        .map(|row| (row.identity.as_str(), row.outcome.clone()))
+        .collect();
+    assert_eq!(
+        by_identity["wv_hookup_state"],
+        StartupOutcome::Bound {
+            carrier: CarrierKind::Mission,
+            record: 496
+        }
+    );
+    assert_eq!(
+        by_identity["player_setup"],
+        StartupOutcome::Bound {
+            carrier: CarrierKind::Camera,
+            record: 115
+        }
+    );
+    assert_eq!(
+        m01_scope.bound_count(),
+        7,
+        "all of M01's seven identities bind"
+    );
+    let census = startup_census(&scopes);
+    assert_eq!(census, STARTUP_CENSUS);
+}
+
+/// The retail half's field census: every claim the record reader's docs make
+/// about the original files is counted here from the 15 024 walked records,
+/// not copied out of a finding.
+#[test]
+#[ignore = "requires CS_GAME_DIR: the original installation is needed"]
+fn accept_m01_lc_anim_records_retail_fields_hold_over_every_record() {
+    let root = game_dir();
+    let found =
+        cs_assets::install::discover(&root).expect("production discovery reads the install");
+    let mut records = 0_usize;
+    let mut nonzero = 0_usize;
+    let mut blocks = 0_usize;
+    let (mut pointer_min, mut pointer_max) = (u32::MAX, 0_u32);
+    let mut largest_container = 0_usize;
+    let mut anim_equals_root = 0_usize;
+    let mut priorities = std::collections::BTreeSet::new();
+    let mut activations = std::collections::BTreeSet::new();
+    for file in &found.manifest.files {
+        let key = file.relative_spelling.logical_key();
+        if !(key.ends_with("/mis_anim.zbd") || key.ends_with("/cam_anim.zbd")) {
+            continue;
+        }
+        let bytes =
+            std::fs::read(root.join(file.relative_spelling.as_str())).expect("read carrier");
+        largest_container = largest_container.max(bytes.len());
+        let index = read_synthetic_index(&key, &file.relative_spelling, &bytes).expect("index");
+        let payload = index.payload().expect("payload");
+        let walk = payload
+            .records()
+            .expect("the walk reaches the declared count");
+        assert_eq!(
+            walk.len(),
+            usize::from(payload.header().declared_record_count),
+            "{key}"
+        );
+        // Record 0 is a bare fixed part with every count zero.
+        let first = walk.get(0).expect("record 0");
+        assert_eq!(
+            first.len(),
+            272,
+            "{key}: record 0 is exactly the fixed part"
+        );
+        assert_eq!(first.anim_name(), b"reserved_anim_0");
+        assert!(
+            first.tables().is_empty() && first.sequences().is_empty(),
+            "{key}"
+        );
+        // The records tile the payload: each starts where the last ended.
+        let mut next = 108_u64;
+        for record in walk.iter() {
+            assert_eq!(
+                record.payload_offset(),
+                next,
+                "{key}: record {}",
+                record.index()
+            );
+            next += record.len() as u64;
+            records += 1;
+        }
+        assert_eq!(walk.trailing_offset(), next, "{key}");
+        for record in walk.iter().skip(1) {
+            nonzero += 1;
+            assert_eq!(record.status(), 0, "{key}");
+            assert_eq!(record.two_word(), 2, "{key}");
+            assert_eq!(record.counts().effects, 0, "{key}: no effect tables");
+            priorities.insert(record.execution_priority());
+            activations.insert(record.activation());
+            let pointers = record.pointers();
+            if pointers.anim == pointers.anim_root {
+                anim_equals_root += 1;
+            }
+            for word in [
+                pointers.unknowns,
+                pointers.seq_defs,
+                pointers.reset_state,
+                pointers.damage_sequence,
+                pointers.objects,
+                pointers.nodes,
+                pointers.lights,
+                pointers.puffers,
+                pointers.dynamic_sounds,
+                pointers.static_sounds,
+                pointers.effects,
+                pointers.activation_prerequisites,
+                pointers.animation_refs,
+            ] {
+                if word != 0 {
+                    pointer_min = pointer_min.min(word);
+                    pointer_max = pointer_max.max(word);
+                }
+            }
+            // The reset and damage words say whether the block is present.
+            let kinds: Vec<_> = record
+                .sequences()
+                .iter()
+                .map(|block| block.kind())
+                .collect();
+            assert_eq!(
+                kinds.contains(&AnimationRecordSequenceKind::Reset),
+                pointers.reset_state != 0,
+                "{key}"
+            );
+            assert_eq!(
+                kinds.contains(&AnimationRecordSequenceKind::Damage),
+                pointers.damage_sequence != 0,
+                "{key}"
+            );
+            assert_eq!(
+                kinds
+                    .iter()
+                    .filter(|kind| **kind == AnimationRecordSequenceKind::Sequence)
+                    .count(),
+                usize::from(record.counts().sequences),
+                "{key}"
+            );
+            for block in record.sequences() {
+                blocks += 1;
+                assert!(matches!(block.flags(), 0 | 0x303), "{key}: block flags");
+                assert_ne!(
+                    block.pointer(),
+                    0,
+                    "{key}: a block carries its pointer word"
+                );
+                assert!(!block.events().is_empty(), "{key}: no empty event stream");
+                assert!(
+                    block.info()[36..56].iter().all(|byte| *byte == 0),
+                    "{key}: info bytes 36..56 are zero"
+                );
+                match block.kind() {
+                    AnimationRecordSequenceKind::Reset => {
+                        assert_eq!(block.name(), b"RESET_SEQUENCE", "{key}")
+                    }
+                    AnimationRecordSequenceKind::Damage => {
+                        assert_eq!(block.name(), b"DAMAGE_SEQUENCE", "{key}")
+                    }
+                    AnimationRecordSequenceKind::Sequence => {}
+                }
+            }
+            // The zero entry of the object and node tables is unnamed.
+            for kind in [
+                AnimationRecordTableKind::Objects,
+                AnimationRecordTableKind::Nodes,
+            ] {
+                if let Some(table) = record.table(kind) {
+                    assert_eq!(
+                        table.name(0),
+                        Some(&b""[..]),
+                        "{key}: {} entry 0",
+                        kind.code()
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(records, 15_024);
+    assert_eq!(nonzero, 14_963);
+    assert_eq!(
+        blocks, 56_994,
+        "reset, damage and ordinary blocks over the installation"
+    );
+    assert_eq!(
+        anim_equals_root, 12_051,
+        "the two small id words agree in 12 051 records"
+    );
+    assert_eq!(
+        priorities.iter().copied().collect::<Vec<_>>(),
+        vec![1, 4, 5, 6],
+        "the pinned MechWarrior source asserts 4; this family does not"
+    );
+    assert_eq!(
+        activations.iter().copied().collect::<Vec<_>>(),
+        vec![0, 2, 3, 4]
+    );
+    // No pointer word can be an offset into any container: every nonzero one
+    // is far beyond the largest carrier.
+    assert_eq!(largest_container, 2_019_493);
+    assert!(
+        pointer_min as usize > largest_container,
+        "smallest nonzero pointer word {pointer_min:#x} is beyond every container"
+    );
+    assert_eq!((pointer_min, pointer_max), (0x01fa_dcf8, 0x04f7_fe60));
+}
+
+/// `(bound in mission, bound in camera, ambiguous, absent)` over all identities.
+type StartupCensus = (usize, usize, usize, usize);
+
+/// The measured census of the exactly-one rule over the retail installation:
+/// 185 of the 195 identities bind (117 to a record of their own mission
+/// carrier, 68 to one of their group's camera carrier), none is ambiguous, and
+/// 10 match no record of either carrier — `pure_panic` x4, `deactivate_bmhookup_node`
+/// x3, `fueltrlight1`, `black_chimneysmoke` and `dtzep_engines_start`. Three of
+/// those names *are* record names in another scope's carrier (c1/m02, c1's
+/// camera, c2/m02, c4/m04), which is unmeasured evidence about the original's
+/// lookup and is not used.
+const STARTUP_CENSUS: StartupCensus = (117, 68, 0, 10);
+
+fn startup_census(scopes: &[cs_app::animation::carrier::ScopeStartupBinding]) -> StartupCensus {
+    let mut census = (0, 0, 0, 0);
+    for row in scopes.iter().flat_map(|scope| &scope.bindings) {
+        match &row.outcome {
+            StartupOutcome::Bound {
+                carrier: CarrierKind::Mission,
+                ..
+            } => census.0 += 1,
+            StartupOutcome::Bound {
+                carrier: CarrierKind::Camera,
+                ..
+            } => census.1 += 1,
+            StartupOutcome::Unbound { matches, .. } if matches.is_empty() => census.3 += 1,
+            StartupOutcome::Unbound { .. } => census.2 += 1,
+        }
+    }
+    census
 }
 
 // ------------------- task #633: the evidence-report harness ------------------
