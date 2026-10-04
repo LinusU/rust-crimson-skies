@@ -74,6 +74,17 @@ const STEP: Duration = Duration::from_millis(16);
 /// How many pump rounds an end-to-end expectation gets before it fails.
 const MAX_ROUNDS: usize = 2_000;
 
+/// How many rounds a retry's hang-up gets to reach the peer-less client.
+///
+/// The refused client only ever learns of the retry through the connection
+/// layer's own hang-up packet, and that packet is sent on the host's first pump
+/// after the retry and read on the client's next one — a handful of rounds, with
+/// no retransmission and no timer involved. [`STEP`] is 16 ms, so this budget is
+/// about a second of connection-layer time while the client's own five-second
+/// disconnect window is still some 250 rounds away: a connection that dies
+/// inside it died by hang-up, and the reason assertion says so by name.
+const HANGUP_ROUNDS: usize = 64;
+
 /// A live loopback pair: one bound host session and one connecting client
 /// session, plus every notice each side produced.
 struct Link {
@@ -122,6 +133,16 @@ impl Link {
     fn round(&mut self) {
         self.client_notices.extend(self.client.pump(STEP));
         self.host_notices.extend(self.host.pump(STEP));
+    }
+
+    /// One round that pumps the client alone.
+    ///
+    /// Where the host must not run another update: a hang-up the previous pump
+    /// condemned fires in the next one, and a test that needs the host to stay
+    /// exactly where it is can still give the client the rounds it needs to read
+    /// what the host has already sent.
+    fn client_round(&mut self) {
+        self.client_notices.extend(self.client.pump(STEP));
     }
 
     /// Pumps until `done` holds, or fails with `what` after [`MAX_ROUNDS`].
@@ -1961,55 +1982,114 @@ fn accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer() {
     // A refused client keeps a netcode connection but never becomes a peer, so
     // `close` does not reach it and a retry has to: the new epoch does not know
     // that connection, so it may neither keep a session slot for it nor let it
-    // back in. The client below stays silent between rounds, and four
-    // one-second rounds stay inside the connection layer's own five-second
-    // timeout, so the only thing that can disconnect it is a hang-up.
+    // back in.
     let mut allocator = SessionAllocator::new();
     let first = allocator.allocate().expect("the first epoch allocates");
     let second = allocator.allocate().expect("the retry epoch allocates");
     let mut hello = synthetic_hello();
     hello.compatibility.rules_sha256 = ContentHash::from_bytes([0x00; 32]);
-    let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let mut host =
-        ServerSession::bind(first, synthetic_parameters(), bind, Duration::ZERO).expect("binds");
-    let addr = host.local_addr().expect("the bound host has an address");
-    let mut client =
-        ClientSession::connect(hello, addr, 0xCD, Duration::ZERO).expect("the client socket binds");
+    let mut link = Link::new(first, synthetic_parameters(), hello);
 
+    // Both sides are driven by the same [`STEP`], which is the clock every pump
+    // here takes: the pinned connection layer times its own 250 ms keep-alive
+    // and its five-second disconnect window off the duration each pump is
+    // handed, so a round that advances one side by a second races that window
+    // instead of the handshake.
     let mut refused = false;
     for _ in 0..MAX_ROUNDS {
-        if host
-            .pump(STEP)
-            .iter()
-            .any(|notice| matches!(notice, ServerNotice::PeerRefused { .. }))
-        {
+        link.host_notices.extend(link.host.pump(STEP));
+        if link.host_has(|notice| matches!(notice, ServerNotice::PeerRefused { .. })) {
             refused = true;
             break;
         }
-        client.pump(STEP);
+        link.client_round();
     }
-    assert!(refused, "the handshake was refused");
     assert!(
-        client.transport().is_connected(),
-        "the refused client still holds a connection, and the host has only recorded the hang-up"
+        refused,
+        "the handshake was never refused; the host saw {:?}",
+        link.host_notices
     );
 
-    host.reopen(second).expect("the retry binds a fresh epoch");
-
-    // The host keeps pumping while the refused client stays silent, so the
-    // client can only learn what the retry did to it: four one-second rounds
-    // stay inside the connection layer's own five-second timeout, so a
-    // disconnection here can only be a hang-up.
-    for _ in 0..4 {
-        host.pump(STEP);
-        client.pump(Duration::from_secs(1));
-        if !client.transport().is_connected() {
+    // The client still has to read the verdict, and only its own rounds may run
+    // to do it: the host hangs up on a refused client one round later, on
+    // purpose, so that renet can flush the refusal first — and the retry below
+    // is what has to hang this connection up, so it has to start from one the
+    // host still holds.
+    for _ in 0..MAX_ROUNDS {
+        if link.client.phase().closure().is_some() {
             break;
         }
+        link.client_round();
     }
     assert!(
-        !client.transport().is_connected(),
+        link.client.phase().closure().is_some(),
+        "the client never applied the refusal; it saw {:?}",
+        link.client_notices
+    );
+    assert!(
+        link.client_has(|notice| matches!(
+            notice,
+            ClientNotice::Refused {
+                reason: HandshakeReject::RulesMismatch { .. }
+            }
+        )),
+        "the client holds the named refusal: {:?}",
+        link.client_notices
+    );
+    assert!(
+        link.client.transport().is_connected(),
+        "the refused client still holds a connection, and the host has only recorded the hang-up"
+    );
+    assert!(link.client.grant().is_none(), "and it never became a peer");
+    assert_eq!(
+        link.host.connected_clients(),
+        1,
+        "and that connection still holds one netcode slot"
+    );
+    assert!(
+        link.host.members().next().is_none(),
+        "the host has no member for it, so a teardown has nothing to reach"
+    );
+
+    // The retry's decision, with no clock in it at all: it hung up on the
+    // connection that holds no peer id, and the new epoch keeps no slot for it.
+    assert_eq!(
+        link.host
+            .reopen(second)
+            .expect("the retry binds a fresh epoch"),
+        1,
         "the retry hung up on the connection that held no peer id"
+    );
+    assert_eq!(link.host.session(), second);
+    assert_eq!(
+        link.host.connected_clients(),
+        0,
+        "the fresh epoch holds no connection for it"
+    );
+
+    // The refused client stays silent while both sides keep pumping, so the only
+    // thing that can take its connection down is the host's hang-up.
+    let mut rounds = 0;
+    while rounds < HANGUP_ROUNDS && link.client.transport().is_connected() {
+        link.round();
+        rounds += 1;
+    }
+    assert!(
+        !link.client.transport().is_connected(),
+        "the retry hung up on the connection that held no peer id within {HANGUP_ROUNDS} rounds; the host saw {:?} and the client saw {:?}",
+        link.host_notices,
+        link.client_notices
+    );
+    assert_eq!(
+        link.client.transport().disconnect_reason(),
+        Some(renetcode2::DisconnectReason::DisconnectedByServer),
+        "the connection died because the host hung up, not because the client missed its window"
+    );
+    assert!(
+        !link.host_has(|notice| matches!(notice, ServerNotice::HungUp { .. })),
+        "the retry hung up on that connection as one decision, so the fresh epoch does not report \
+         it again as a per-connection hang-up of the spent epoch: {:?}",
+        link.host_notices
     );
 }
 
