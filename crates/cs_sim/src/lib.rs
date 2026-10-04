@@ -231,9 +231,15 @@
 //! a validated `cs_script::ir::MissionProgram`, drives the tick-ordered
 //! objective state, and applies the effects that state asks for through
 //! [`mission::HostLedger`] — the authoritative record of granted rewards, the
-//! session's one resolved outcome and the effects refused for a retry. It also
-//! moves the evaluator state and that host record together across a save.
-//! Native host bindings are F38.
+//! session's one resolved outcome and the effects refused for a retry. The
+//! session's [`mission::ActorFactTable`] is the writer that folds the
+//! simulation's authoritative lifecycle record into the `MissionFacts` a
+//! `Condition::ActorIs` reads — measured or refused by name, never because
+//! the `ActorState` variant exists — and
+//! [`mission::MissionSession::advance_observed`] is the wired path over one
+//! tick's registrations and transitions. It also moves the evaluator state,
+//! that host record and the fact table together across a save. Native host
+//! bindings are F38.
 //!
 //! [`objectives`] is the F39 objective/trigger/spawn/timer runtime
 //! (`specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`):

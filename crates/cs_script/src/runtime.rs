@@ -197,7 +197,14 @@ impl PrecedencePolicy {
 }
 
 /// What the simulation tells the mission about actors this tick. An actor
-/// absent from the map matches no [`Condition::ActorIs`].
+/// absent from the map matches no [`Condition::ActorIs`] — so an actor that
+/// left mission accounting is absent, not defaulted to another state.
+///
+/// The evaluator never invents these facts: the simulation's authoritative
+/// actor record writes them, which is `cs_sim`'s actor-fact table —
+/// registration writes [`ActorState::Alive`], a measured lifecycle
+/// transition writes `Dead`, `Captured` or `Despawned`, and a state with no
+/// measured producer is refused by name rather than written.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MissionFacts {
     pub actors: BTreeMap<ActorId, ActorState>,

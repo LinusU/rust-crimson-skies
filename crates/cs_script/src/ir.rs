@@ -100,8 +100,12 @@ impl Value {
     }
 }
 
-/// Why an actor is no longer in play. The contract keeps these distinct: an
-/// actor removed by a cinematic is not necessarily a kill.
+/// Why an actor is no longer in play — or that it still is. The contract
+/// keeps these distinct: an actor removed by a cinematic is not necessarily
+/// a kill, a capture is not a destruction, and a detach is an event, not a
+/// state (F39-E7). `cs_sim`'s actor-fact table is the writer: a state is
+/// populated only where an authoritative event produces it, and refused by
+/// name where nothing does — a variant's existence never writes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ActorState {
     Alive,
