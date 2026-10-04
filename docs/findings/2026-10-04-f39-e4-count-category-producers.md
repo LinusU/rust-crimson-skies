@@ -315,6 +315,19 @@ under AGENTS.md it is therefore **not independent evidence**. Nothing in this
 stage was re-verified against an original run, so no level above `checked` is
 claimed anywhere.
 
+**The rebase over F39-E1 changed how this stage reads the second member.**
+F39-E1 (merged while this task was in review) split the census walk into
+`locate_mission_objective_records` — one definition of "every mission", carrying
+each mission's decoded `objectives.zrd` — and made `survey_retail_dormant_reveal`
+share it. This stage's second surface is the `targets.zrd` member, so it now
+carries those **bytes** on `MissionObjectiveRecord` and decodes them in
+`survey_retail_objective_records`, which is the only caller that reads them: a
+target record that fails to decode fails the objectives census and cannot fail
+F39-E1's dormant walk, and the measured absence (`targets_bytes: None`) is still
+carried rather than defaulted. No measured number in this document changed: the
+census re-measured on the rebased tree is field-for-field the pre-rebase census,
+apart from the `candidate_tree` it records.
+
 What the review session did independently:
 
 * re-ran the four checks on the branch head and the `accept_f39_e4_` selection
