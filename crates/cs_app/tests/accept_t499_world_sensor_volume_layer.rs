@@ -389,12 +389,16 @@ fn accept_t499_a_world_sensor_volume_never_clamps_stops_or_delays_a_spawn() {
         );
 
         // Every later tick, value for value: nothing may delay the body either.
+        // Both tolerances are a *fraction of the fired speed* rather than an
+        // absolute number, because what is being excluded is "stopped" — a body
+        // that lost its velocity or its travel — and that is a difference of
+        // 100%, not of a few parts per million of f32 integration.
         for tick in 2..=TICKS {
             fixture.step(1);
             let (z, vz) = axis(&fixture, body, 2);
             let free = spawn_z + speed * tick as f32 * dt;
             assert!(
-                (z - free).abs() < 1e-4 && (vz - speed).abs() < 1e-3,
+                (z - free).abs() < 1e-3 * speed * dt && (vz - speed).abs() < 1e-3 * speed,
                 "a trigger volume must not delay a body either: at {speed} m/s tick \
                  {tick} ended at z = {z:.6}, vz = {vz}, against the free {free:.6} and \
                  {speed}"
@@ -598,8 +602,13 @@ fn accept_t499_solid_world_geometry_still_clamps_a_spawn() {
         "and the solid leg is not a volume the spawn crossed"
     );
     let (x, vx) = axis(&fixture, body, 0);
+    // The solver leaves a small residual against the face it is easing the body
+    // onto — measured here at -0.000826 m/s, and #415 measured -0.0019 m/s on the
+    // same pinned engine with its own geometry — so this bound is a thousandth of
+    // the fired speed rather than an absolute number: what it has to exclude is
+    // "not stopped", which is 60 m/s.
     assert!(
-        x <= near_x + 1e-3 && vx.abs() < 1e-3,
+        x <= near_x + 1e-3 && vx.abs() < 1e-3 * DWELL_SPEED_M_S,
         "the body must rest at the leg's near face ({near_x}) with its into-obstacle \
          motion ended: x = {x}, vx = {vx}"
     );
