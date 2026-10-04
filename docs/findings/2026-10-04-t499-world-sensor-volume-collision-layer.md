@@ -151,6 +151,17 @@ consumer delivered **1** crossing and counted **2** refusals
 volume — a trigger that fired once per tick would be a mission objective that
 fires at the frame rate.
 
+The fixture also carries **both** producers, because `world_app()` installs
+`WorldSweptCrossingPlugin` and the measurement adds the preflight on top of it.
+So the single delivery is measured with #498's ordinary-flight pass running
+against the same pair. It contributes no second entry: `sweep_volume_crossings`
+first sees the body on the tick it spawned, already inside the volume, and its
+first-sight branch registers that state and casts nothing — a body that
+materialized inside a volume is an exit or a dwell, not an entry, which is
+#498's stated rule. The pair therefore crosses the ledger once from either
+producer, which is the "the two must be consistent rather than each inventing a
+way to name a volume" requirement measured rather than asserted.
+
 ## Why `classify_hit` is untouched
 
 The preflight is F23-C's path and its `classify_hit` is already the right

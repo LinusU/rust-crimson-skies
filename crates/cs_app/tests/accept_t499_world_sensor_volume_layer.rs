@@ -419,17 +419,31 @@ fn accept_t499_a_world_sensor_volume_never_clamps_stops_or_delays_a_spawn() {
 /// crossing of a world trigger volume was unobservable, and now it is delivered
 /// once, on the tick it happened, naming the volume.
 ///
-/// That is what makes the F18-C overlay path and the spawn-tick path agree: both
+/// That is what makes the F18-C overlay path and the spawn-tick path agree on
+/// what a crossing is. **Both producers run in this fixture** — the composition
+/// installs [`WorldSweptCrossingPlugin`](cs_app::world::WorldSweptCrossingPlugin)
+/// as every world fixture does, and this one adds the spawn preflight — and both
 /// hand the same `(actor, volume)` pair to the same
 /// [`TriggerCrossings`](cs_app::objectives::TriggerCrossings) ledger, from
 /// [`CrossingSource::SpawnTickPreflight`] here and
-/// [`CrossingSource::OrdinaryFlightSweep`] there, so a pair cannot fire twice
-/// because two producers saw it.
+/// [`CrossingSource::OrdinaryFlightSweep`] there. The single delivery below is
+/// therefore measured with *both* producers present, not only the one under test.
 #[test]
 fn accept_t499_a_spawn_tick_crossing_of_a_world_volume_reaches_the_consumer() {
     let spec = arch_projectile(PASS_THROUGH_SPEED_M_S);
     let (mut fixture, body) = preflight_fixture(&spec);
     let volume = collider_of(&fixture, OBJECT_SENSOR);
+
+    // Both producers are in this composition; without that, the delivery count
+    // below would say nothing about the two paths agreeing.
+    assert!(
+        fixture
+            .world()
+            .get_resource::<cs_app::world::SweptBodyTracks>()
+            .is_some(),
+        "the ordinary-flight crossing pass is part of the world composition, so this \
+         test measures two producers sharing one pair ledger rather than one"
+    );
 
     // Preconditions, asserted rather than assumed: the body must cross the whole
     // volume inside its first tick, or the engine's discrete phase would report
