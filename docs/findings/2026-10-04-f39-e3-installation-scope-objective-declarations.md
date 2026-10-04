@@ -68,11 +68,14 @@ not in the other.
   `OBJECTIVE_SPELLING_NEEDLE` search rule, and the two bounded doc comments on
   `RetailObjectiveRow::target_kinds` /
   `RetailObjectiveCensus::missions_without_targets` below.
-* `crates/cs_app/tests/accept_f39_e3_scope_objective_census.rs` (new): 6 tests,
-  prefix `accept_f39_e3_` (4 unit + 2 retail).
-* `crates/cs_app/tests/evidence_report_f39_e3.rs` (new): the evidence harness,
-  plus two synthetic tests that pin the report's measured numbers in their own
-  clauses.
+* `crates/cs_app/tests/campaign/f39_e3.rs` (new): 6 tests, prefix
+  `accept_f39_e3_` (4 unit + 2 retail).
+* `crates/cs_app/tests/campaign/f39_e3_evidence.rs` (new): the evidence
+  harness, plus two synthetic tests that pin the report's measured numbers in
+  their own clauses.
+* `crates/cs_app/tests/campaign/main.rs`: the two module declarations and the
+  doc paragraph that says why both members live in the shared `campaign` test
+  binary (one fewer link on CI's disk-bound runners).
 * `docs/findings/2026-10-03-f39-d-branching-optional-and-failure-validation.md`:
   unknown #5 gains a supersession pointer (one paragraph).
 * Wiring only: none — every edited file is an owner path.
@@ -229,7 +232,7 @@ for `c1c` minus `other_target`, which that record does not carry.
 
 ## Test inventory (`accept_f39_e3_*`)
 
-`crates/cs_app/tests/accept_f39_e3_scope_objective_census.rs` (4 unit + 2 retail)
+`crates/cs_app/tests/campaign/f39_e3.rs` (4 unit + 2 retail)
 and `crates/cs_content/src/catalog/reader_dirs.rs` (2 unit):
 
 | Test | Covers |
@@ -349,6 +352,16 @@ rendering of the numbers, never in the reading of them.
 The acceptance selection now discovers **8** `accept_f39_e3_` tests; the two
 prose-pinning tests are synthetic, unprefixed, and run in CI.
 
+A second review pass the same day (Devin SWE-2/swe2-max-1, fresh context)
+folded the two new test files into the shared `campaign` test binary as
+`f39_e3.rs` / `f39_e3_evidence.rs` — the convention `evidence.rs` and
+`f50_e4.rs` already set — because each standalone test target links a full
+`cs_app` binary and the CI runners' disk could not afford one more link
+(`docs/findings/2026-09-30-t430-rust-lld-sigbus-in-ci.md`). The selection, the
+tests and the harness invocation by test name are unchanged; this file's
+paths and command list were updated to match, and `docs/findings/evidence/F39-E3.json`
+was regenerated on the final tree.
+
 ## Commands
 
 ```sh
@@ -356,7 +369,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --locked
 cargo test --workspace --locked -- accept_f39_e3_ --include-ignored
-cargo test --locked -p cs_app --test evidence_report_f39_e3 -- --ignored
+cargo test --locked --test campaign evidence_report_f39_e3 -- --ignored
 python3 tools/validate_evidence.py private/evidence/F39-E3/acceptance.json \
   --artifact-root private/evidence/F39-E3 --require-pass
 ```

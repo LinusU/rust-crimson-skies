@@ -494,7 +494,7 @@ fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
         panic!(
             "{name} is not set: this harness only runs through the sequence in its module doc \
-             (crates/cs_app/tests/evidence_report_f39_e3.rs)"
+             (crates/cs_app/tests/campaign/f39_e3_evidence.rs)"
         )
     })
 }
