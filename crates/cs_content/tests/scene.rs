@@ -496,14 +496,13 @@ fn accept_f11_a_rejects_cycles_dangling_parents_and_ambiguous_roots() {
     assert_eq!(escaped_graph.len(), 1);
     assert_eq!(escaped_graph.roots()[0].key(), "fix_planes.bad-20name");
 
+    // A name-path whose key outgrows MAX_CONTENT_KEY_LEN is spelled by a
+    // digest (#628) and the authored name stays on the node.
     let too_long = ParsedNode::new(0, "n".repeat(200), ParsedNodeKind::World);
-    assert_eq!(
-        build(&[too_long]).map(|_| ()),
-        Err(SceneError::NodeId {
-            node: 0,
-            source: cs_types::content::ContentIdError::KeyTooLong { len: 211 }
-        })
-    );
+    let long_graph = build(&[too_long]).expect("an over-long name-path is spelled by a digest");
+    assert!(long_graph.roots()[0].key().starts_with("fix_planes.-h"));
+    assert!(long_graph.roots()[0].key().len() <= 128);
+    assert_eq!(long_graph.nodes()[0].name(), "n".repeat(200));
 }
 
 /// Field-level refusals: non-finite transforms, bad LOD ranges, wrong-kind

@@ -48,12 +48,14 @@
 //! [`ParsedNode::name`] and [`SceneNode::name`] keep the stored bytes, so the
 //! escape only ever decides how the name is *spelled in an id*.
 //!
-//! Case is the one documented loss: [`ContentId`] folds ASCII case centrally
-//! (`M01` and `m01` are one content item), so two stored names differing only
-//! in case derive one id and are refused as [`SceneError::DuplicateNodeId`]
-//! rather than disambiguated. Escaping the case would break the roster
-//! discovery's own case-insensitive match between a script-declared root name
-//! and the stored node name, so folding stays.
+//! Case is folded: [`ContentId`] folds ASCII case centrally (`M01` and `m01`
+//! are one content item), so two sibling names differing only in case derive one
+//! id. They are refused as [`SceneError::DuplicateNodeId`] unless every one of
+//! them stores a distinct [`ParsedNode::disambiguator`], in which case each takes
+//! `-i<hex>` of it; a name-path past the key bound is spelled `-h<digest>` (see
+//! `docs/findings/2026-10-04-m01-lc-world-scene-ids.md`). Escaping the case would
+//! break the roster discovery's own case-insensitive match between a
+//! script-declared root name and the stored node name, so folding stays.
 //!
 //! # Transforms and mirroring
 //!
@@ -252,9 +254,31 @@ pub fn escape_scene_node_name(name: &str) -> String {
     escaped
 }
 
+/// The marker of an id whose full name-path does not fit the key bound and was
+/// replaced by a digest of it. `h` is not a hex digit, so `-h` can never be
+/// mistaken for an escape (`-` + two hex digits); `-i`, which introduces a
+/// sibling disambiguator, is chosen for the same reason.
+const SCENE_NODE_DIGEST_MARK: &str = "-h";
+
+/// The low three bytes of a node record's trailing `node_index` word; the top
+/// byte is the constant tag the reader asserts.
+const NODE_INDEX_WORD_MASK: u32 = 0x00ff_ffff;
+
 /// Reads one escaped name component back, or `None` when it is not something
-/// [`escape_scene_node_name`] could have written.
+/// [`escape_scene_node_name`] could have written. A trailing disambiguator
+/// (`-i<hex>`) is dropped: it is not part of the name.
 fn unescape_scene_node_name(component: &str) -> Option<String> {
+    let component = match component.rfind("-i") {
+        Some(at)
+            if (1..=6).contains(&component[at + 2..].len())
+                && component[at + 2..]
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) =>
+        {
+            &component[..at]
+        }
+        _ => component,
+    };
     let bytes = component.as_bytes();
     let mut name = Vec::with_capacity(bytes.len());
     let mut at = 0;
@@ -275,6 +299,74 @@ fn unescape_scene_node_name(component: &str) -> Option<String> {
         at += 3;
     }
     String::from_utf8(name).ok()
+}
+
+/// Each node's escaped name component, in `nodes` order.
+///
+/// A component is the escaped name, unless two siblings (children of one
+/// parent, or two roots) would spell the same component once [`ContentId`] folds
+/// its case. Then **every** member of that set takes `-i<hex>` of its stored
+/// [`ParsedNode::disambiguator`], so no member is privileged by position. The
+/// suffix is applied only when every member stores a word and the words differ;
+/// otherwise the plain components are kept and [`SceneGraph::build`] refuses the
+/// collision as [`SceneError::DuplicateNodeId`], as it always did.
+fn sibling_components(
+    nodes: &[ParsedNode],
+    position_of: &BTreeMap<u32, usize>,
+    roots: &[usize],
+) -> Vec<String> {
+    let mut components: Vec<String> = nodes
+        .iter()
+        .map(|node| escape_scene_node_name(&node.name))
+        .collect();
+    let mut families: Vec<Vec<usize>> = vec![roots.to_vec()];
+    families.extend(
+        nodes
+            .iter()
+            .map(|node| node.children.iter().map(|slot| position_of[slot]).collect()),
+    );
+    for family in families {
+        let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for &position in &family {
+            by_name
+                .entry(components[position].to_ascii_lowercase())
+                .or_default()
+                .push(position);
+        }
+        for set in by_name.values().filter(|set| set.len() > 1) {
+            let words: Option<BTreeSet<u32>> = set
+                .iter()
+                .map(|&position| nodes[position].disambiguator)
+                .collect();
+            let Some(words) = words else { continue };
+            if words.len() != set.len() {
+                continue;
+            }
+            for &position in set {
+                let word = nodes[position].disambiguator.expect("checked above");
+                components[position] = format!("{}-i{word:x}", components[position]);
+            }
+        }
+    }
+    components
+}
+
+/// The escaped path as an id spells it: itself while `<container>.<path>` fits
+/// the key bound, otherwise a digest of it.
+///
+/// A name-path past [`MAX_CONTENT_KEY_LEN`](cs_types::content::MAX_CONTENT_KEY_LEN)
+/// cannot be spelled. Its id is `<container>.-h<32 hex digits>`, the first 128
+/// bits of the SHA-256 of the lowercased escaped path, so it is stable and a
+/// different path derives a different id. The id then no longer says what the
+/// file said; [`SceneNode::path`] and [`SceneNode::name`] still do, and
+/// [`SceneNodeId::authored_names`] answers `None` for such an id rather than a
+/// guess.
+fn fit_key_bound(container: &ContentId, escaped_path: &str) -> String {
+    if container.key().len() + 1 + escaped_path.len() <= cs_types::content::MAX_CONTENT_KEY_LEN {
+        return escaped_path.to_owned();
+    }
+    let digest = cs_assets::install::sha256(escaped_path.to_ascii_lowercase().as_bytes()).to_hex();
+    format!("{SCENE_NODE_DIGEST_MARK}{}", &digest[..32])
 }
 
 /// The stable identity of one scene node.
@@ -710,6 +802,11 @@ pub struct ParsedNode {
     pub zone_id: u32,
     /// The stored node flags, uninterpreted.
     pub flags: u32,
+    /// A stored word that tells apart siblings sharing one name, or `None`
+    /// when the record stores none. Identity uses it only where two siblings
+    /// would otherwise derive one id (see [`SceneNodeId::authored_names`]); it
+    /// is never a position.
+    pub disambiguator: Option<u32>,
 }
 
 impl ParsedNode {
@@ -728,6 +825,7 @@ impl ParsedNode {
             mesh: None,
             zone_id: ZONE_DEFAULT,
             flags: 0,
+            disambiguator: None,
         }
     }
 }
@@ -1260,6 +1358,7 @@ impl SceneGraph {
         // which is what an id spells. They differ only where a stored name holds
         // a character the key grammar cannot write, and the authored name
         // itself is never rewritten.
+        let components = sibling_components(nodes, &position_of, &roots);
         let mut order: Vec<usize> = Vec::with_capacity(nodes.len());
         let mut paths: Vec<Option<String>> = vec![None; nodes.len()];
         let mut escaped: Vec<Option<String>> = vec![None; nodes.len()];
@@ -1276,11 +1375,11 @@ impl SceneGraph {
                 visited[position] = true;
                 let name = &nodes[position].name;
                 let (path, key) = if prefix.is_empty() {
-                    (name.clone(), escape_scene_node_name(name))
+                    (name.clone(), components[position].clone())
                 } else {
                     (
                         format!("{prefix}.{name}"),
-                        format!("{escaped_prefix}.{}", escape_scene_node_name(name)),
+                        format!("{escaped_prefix}.{}", components[position]),
                     )
                 };
                 paths[position] = Some(path.clone());
@@ -1305,7 +1404,7 @@ impl SceneGraph {
         for (position, key) in escaped.iter().enumerate() {
             let id = SceneNodeId::for_escaped_path(
                 container,
-                key.as_ref().expect("every node was reached"),
+                &fit_key_bound(container, key.as_ref().expect("every node was reached")),
                 nodes[position].index,
             )?;
             if !seen_ids.insert(id.clone()) {
@@ -3705,6 +3804,7 @@ fn parsed_node_from_gamez(
         mesh,
         zone_id: node.zone_id(),
         flags: node.flags(),
+        disambiguator: Some(node.node_index & NODE_INDEX_WORD_MASK),
     })
 }
 
