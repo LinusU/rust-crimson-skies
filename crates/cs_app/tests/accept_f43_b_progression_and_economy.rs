@@ -877,6 +877,14 @@ fn accept_f43_b_an_overflowing_later_beat_names_the_running_balance_not_the_walk
 
 /// The contract's purchase rule: validate availability, money and the expected
 /// revision **before** writing, then write once.
+/// A weight verdict that fits, for the tests that are not about weight.
+fn fits() -> cs_sim::campaign::LoadoutWeight {
+    cs_sim::campaign::LoadoutWeight::Measured {
+        total: 10,
+        limit: 10,
+    }
+}
+
 #[test]
 fn accept_f43_b_a_purchase_is_validated_then_written_once() {
     let (graph, mut state) = progressed_past_the_beat();
@@ -893,6 +901,7 @@ fn accept_f43_b_a_purchase_is_validated_then_written_once() {
     let draft = cs_sim::campaign::PurchaseDraft {
         item: plane_b.clone(),
         price: 400,
+        weight: fits(),
         expected_revision: revision,
     };
     let receipt = state.purchase(&graph, &draft).expect("the draft is valid");
@@ -946,6 +955,7 @@ fn accept_f43_b_every_purchase_refusal_leaves_the_profile_untouched() {
             &cs_sim::campaign::PurchaseDraft {
                 item: plane_c.clone(),
                 price: 1,
+                weight: fits(),
                 expected_revision: revision,
             },
         ),
@@ -960,6 +970,7 @@ fn accept_f43_b_every_purchase_refusal_leaves_the_profile_untouched() {
             &cs_sim::campaign::PurchaseDraft {
                 item: plane_b.clone(),
                 price: currency + 1,
+                weight: fits(),
                 expected_revision: revision,
             },
         ),
@@ -984,6 +995,7 @@ fn accept_f43_b_every_purchase_refusal_leaves_the_profile_untouched() {
             &cs_sim::campaign::PurchaseDraft {
                 item: plane_b.clone(),
                 price: 1,
+                weight: fits(),
                 expected_revision: stale,
             },
         ),
@@ -1023,6 +1035,7 @@ fn accept_f43_b_purchase_refusals_report_the_structural_faults_before_staleness(
             &cs_sim::campaign::PurchaseDraft {
                 item: content(ContentKind::Airframe, "never_gated"),
                 price: u64::MAX,
+                weight: fits(),
                 expected_revision: revision + 7,
             },
         )
@@ -1049,6 +1062,7 @@ fn accept_f43_b_purchase_refusals_report_the_structural_faults_before_staleness(
             &cs_sim::campaign::PurchaseDraft {
                 item: plane_b,
                 price: u64::MAX,
+                weight: fits(),
                 expected_revision: revision + 7,
             },
         )
@@ -1070,6 +1084,7 @@ fn accept_f43_b_a_replay_invalidates_a_draft_taken_before_it() {
     let draft = cs_sim::campaign::PurchaseDraft {
         item: plane_b,
         price: 10,
+        weight: fits(),
         expected_revision: revision,
     };
 
@@ -1128,6 +1143,7 @@ fn bought_plane_b() -> (CampaignGraph, CampaignState, ContentId) {
             &cs_sim::campaign::PurchaseDraft {
                 item: plane_b.clone(),
                 price: 400,
+                weight: fits(),
                 expected_revision: revision,
             },
         )
@@ -1188,6 +1204,7 @@ fn accept_f43_b_1_a_sold_item_is_available_to_buy_again() {
             &cs_sim::campaign::PurchaseDraft {
                 item: plane_b.clone(),
                 price: 300,
+                weight: fits(),
                 expected_revision: state.revision(),
             },
         )
@@ -1252,4 +1269,137 @@ fn accept_f43_b_1_every_sale_refusal_leaves_the_profile_untouched() {
     );
     assert_eq!(granted_state, before);
     let _ = graph;
+}
+
+/// The weight half of the contract's purchase rule ("Validate current
+/// availability, money and weight before writing"). The boundary resolves the
+/// weight from the F44-A records; the campaign transaction judges the integers.
+/// The fixtures are synthetic: no original mass or ceiling is measured (F44-D).
+mod weight {
+    use super::*;
+    use cs_app::campaign::loadout_weight;
+    use cs_content::construction::{
+        ArmorFitment, SYNTHETIC_BOUNDARY_MASS_LIMIT_UNITS, SYNTHETIC_HEAVY_PLATE_KEY,
+        SYNTHETIC_OVERFLOW_ENGINE_KEY, declared_synthetic_blueprint, declared_synthetic_price_book,
+        synthetic_armor_fitments, synthetic_blueprint_with_engine, synthetic_boundary_rules,
+        synthetic_unmeasured_limit_rules,
+    };
+    use cs_sim::campaign::LoadoutWeight;
+
+    fn draft_with(weight: LoadoutWeight, state: &CampaignState) -> cs_sim::campaign::PurchaseDraft {
+        cs_sim::campaign::PurchaseDraft {
+            item: content(ContentKind::Airframe, "plane_b"),
+            price: 400,
+            weight,
+            expected_revision: state.revision(),
+        }
+    }
+
+    fn one_unit_over() -> cs_content::construction::AircraftBlueprint {
+        let mut armor = synthetic_armor_fitments();
+        let zone = armor.remove(0);
+        armor.insert(
+            0,
+            ArmorFitment::try_new(
+                zone.zone().clone(),
+                ContentId::from_source(ContentKind::Armor, SYNTHETIC_HEAVY_PLATE_KEY)
+                    .expect("valid id"),
+            )
+            .expect("valid fitment"),
+        );
+        declared_synthetic_blueprint()
+            .with_armor(armor)
+            .expect("valid armor")
+    }
+
+    #[test]
+    fn accept_f43_b_2_a_loadout_exactly_at_the_ceiling_is_bought() {
+        let (graph, mut state) = progressed_past_the_beat();
+        let weight = loadout_weight(
+            &synthetic_boundary_rules(),
+            &declared_synthetic_price_book(),
+            &declared_synthetic_blueprint(),
+        );
+        assert_eq!(
+            weight,
+            LoadoutWeight::Measured {
+                total: SYNTHETIC_BOUNDARY_MASS_LIMIT_UNITS,
+                limit: SYNTHETIC_BOUNDARY_MASS_LIMIT_UNITS,
+            }
+        );
+        state
+            .purchase(&graph, &draft_with(weight, &state))
+            .expect("a total equal to the ceiling is inside it");
+    }
+
+    #[test]
+    fn accept_f43_b_2_an_overweight_loadout_is_refused_and_writes_nothing() {
+        let (graph, mut state) = progressed_past_the_beat();
+        let weight = loadout_weight(
+            &synthetic_boundary_rules(),
+            &declared_synthetic_price_book(),
+            &one_unit_over(),
+        );
+        let before = state.clone();
+        let result = state.purchase(&graph, &draft_with(weight, &state));
+        assert_eq!(
+            result,
+            Err(CampaignError::LoadoutOverweight {
+                total: SYNTHETIC_BOUNDARY_MASS_LIMIT_UNITS + 1,
+                limit: SYNTHETIC_BOUNDARY_MASS_LIMIT_UNITS,
+            }),
+            "a loadout one unit over the ceiling was bought"
+        );
+        assert_eq!(state, before, "the refusal changed the profile");
+    }
+
+    #[test]
+    fn accept_f43_b_2_an_unknown_mass_or_ceiling_is_refused_not_assumed() {
+        let (graph, mut state) = progressed_past_the_beat();
+        let before = state.clone();
+        let book = declared_synthetic_price_book();
+        let unknown_ceiling = loadout_weight(
+            &synthetic_unmeasured_limit_rules(),
+            &book,
+            &declared_synthetic_blueprint(),
+        );
+        let overflowing = loadout_weight(
+            &synthetic_boundary_rules(),
+            &book,
+            &synthetic_blueprint_with_engine(
+                ContentId::from_source(ContentKind::Engine, SYNTHETIC_OVERFLOW_ENGINE_KEY)
+                    .expect("valid id"),
+            )
+            .expect("valid blueprint"),
+        );
+        for weight in [unknown_ceiling, overflowing] {
+            assert!(
+                matches!(weight, LoadoutWeight::Unknown { .. }),
+                "an unknown was resolved to {weight:?}"
+            );
+            assert!(matches!(
+                state.purchase(&graph, &draft_with(weight, &state)),
+                Err(CampaignError::LoadoutWeightUnknown { .. })
+            ));
+            assert_eq!(state, before, "the refusal changed the profile");
+        }
+    }
+
+    #[test]
+    fn accept_f43_b_2_money_is_judged_before_weight_and_weight_before_revision() {
+        let (graph, mut state) = progressed_past_the_beat();
+        let over = LoadoutWeight::Measured { total: 2, limit: 1 };
+        let mut draft = draft_with(over.clone(), &state);
+        draft.price = state.currency() + 1;
+        assert!(matches!(
+            state.purchase(&graph, &draft),
+            Err(CampaignError::InsufficientFunds { .. })
+        ));
+        let mut stale = draft_with(over, &state);
+        stale.expected_revision = state.revision() + 1;
+        assert!(matches!(
+            state.purchase(&graph, &stale),
+            Err(CampaignError::LoadoutOverweight { .. })
+        ));
+    }
 }
