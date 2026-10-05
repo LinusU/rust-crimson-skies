@@ -20,6 +20,19 @@
 //! game data. Whether the original disabled firing from a destroyed mount, and
 //! which consumer debris, scoring or bailout had, is unrecovered (F29 "Research
 //! boundary"); see `docs/findings/2026-10-02-f29-c-damage-consumers.md`.
+//!
+//! **F29-C.1** (`accept_f29_c_propulsion_`, task #517) adds the propulsion
+//! system's consumer — the flight-authority gate — to this binary rather than
+//! to a test target of its own: the extra Bevy/Avian-linked binary it used to
+//! be (123.5 MB) is what the CI runner's disk ran out of, twice, on this
+//! branch. The file and its reason are at `damage/propulsion_gate.rs`; nothing
+//! about the seven tests changed.
+
+/// The propulsion system's consumer, from F29-C.1. A module and not its own
+/// integration-test target: see the file's own header for the measured disk
+/// cost this avoids on every `cargo test`.
+#[path = "damage/propulsion_gate.rs"]
+mod propulsion_gate;
 
 use std::collections::BTreeMap;
 
