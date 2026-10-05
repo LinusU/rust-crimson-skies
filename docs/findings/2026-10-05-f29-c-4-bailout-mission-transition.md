@@ -7,9 +7,11 @@ acceptance case **AC04**: "Bailout and ordinary death trigger the correct
 distinct mission transitions", with non-negotiable behaviors 3 and 4). Shared
 contract: `docs/contracts/STATE-TRANSACTIONS.md`.
 
-Task test prefix: **`accept_f29_c_04_`** (6 tests,
-`crates/cs_sim/tests/accept_f29_c_04_bailout_mission_transition.rs`). The
-re-homed suffix follows `docs/TASK-SPLITTING.md`'s convention for a split stage
+Task test prefix: **`accept_f29_c_04_`** (7 tests: 6 in
+`crates/cs_sim/tests/accept_f29_c_04_bailout_mission_transition.rs`, plus 1 in
+`crates/cs_app/tests/accept_f29_c_04_bailout_session_consumer.rs` added during
+review to cover the consumer's dispatch). The re-homed suffix follows
+`docs/TASK-SPLITTING.md`'s convention for a split stage
 (`F38-B.01` → `accept_f38_b_01_`), and it nests inside the sheet's own
 `accept_f29_c_` prefix so the F29-C suite still selects it.
 
@@ -37,6 +39,9 @@ produced by this task — see "Evidence" for why the claim cannot exceed
   new event kinds, and `SessionRefusal::Transition` so a refusal reaches a
   consumer that does not want to re-walk the stream.
 - `crates/cs_sim/tests/accept_f29_c_04_bailout_mission_transition.rs` (**new**).
+- `crates/cs_app/tests/accept_f29_c_04_bailout_session_consumer.rs` (**new**, in
+  review: the consumer dispatch this task added in `cs_app`, which no test
+  covered).
 - This file.
 
 No protected path, no `Cargo.toml`, no binary, no original data committed.
@@ -151,6 +156,14 @@ helper would assert a mapping production code does not have.
 | `accept_f29_c_04_the_unmeasured_bailout_policy_grants_no_result_and_no_survival` | the policy is `Unmeasured`, `is_measured()` false, `reason()` names the absence, `terminal_outcome()` is `None`, `grants_survival()` false; a bailout settles nothing and no stream event claims otherwise; a bystander's kill still counts |
 | `accept_f29_c_04_the_ledger_is_the_one_place_the_transition_is_decided` | `from_lifecycle` is total over the two kinds and `None` for the other three, round-trips through `lifecycle()`, and covers `MissionTransition::ALL`; an unconfirmed bailout latches nothing; a confirmed one applies once, repeats silently, consumes its confirmation and refuses a second; the ledger is per actor |
 
+The same prefix also selects one test in the **consumer** layer,
+`crates/cs_app/tests/accept_f29_c_04_bailout_session_consumer.rs`, added in
+review: it drives a launched `ObjectiveSession` over the declared F39-C
+fixture, pins that a refused transition is reported as
+`cs_app::objectives::SessionRefusal::Transition` rather than dropped, that the
+airframe stays in the live registry, and that the refusal shields nothing — a
+real destruction afterwards still counts as the actor's one transition.
+
 ## Mutation probes
 
 Each probe edited one production line, ran the `accept_f29_c_04_` selection,
@@ -162,6 +175,7 @@ recorded the failing tests, and restored the file from a saved copy.
 | the latch keeps the last report | `MissionTransitions::observe`'s "already holds a transition" branch disabled | 2 failed: the later-destruction case and the ledger test |
 | the policy grants success | `BailoutResultPolicy::terminal_outcome` returning `Some(TerminalOutcome::Success)` | 3 failed: the policy test, the minimum, and the later-destruction case |
 | the input-context gate is bypassed | `BailoutConfirmation::admits` returning `Ok(())` | 1 failed: the confirmation test |
+| the consumer drops the refusal | `cs_app::objectives`'s `TransitionRefused` dispatch arm replaced with `{}` | 1 failed: the session-consumer test (`refusals` came back `[]`) |
 
 Note on the last probe: disabling *only* `confirm`'s gate call
 (`confirmation.admits()?` → `let _ = confirmation;`) left all 6 green, because
@@ -188,9 +202,15 @@ anything as the original did.
   F29-C already named, and its consumer lives outside this task's owner paths.
 - **The host that calls `confirm_bailout`.** `ObjectiveRuntime::confirm_bailout`
   is the declaration gate, and `cs_app`'s session forwards the stream, but no
-  Bevy system yet reads `ControlBuffer`'s eject edge and calls it. That is the
-  mission host's producer surface (F39-C's ordinary-flight pass), not this
-  slice's.
+  Bevy system yet reads `ControlBuffer`'s eject edge and calls it. Two things
+  are missing, and the second is easy to miss: nothing reads the edge, **and**
+  `ObjectiveSession` exposes only `runtime() -> &ObjectiveRuntime`, so a host
+  holding the session has no mutable path to its runtime and cannot confirm a
+  bailout through it at all. That producer surface is F39-C's ordinary-flight
+  pass (F29-C.6, Rally #674), not this slice's. Until it exists, a bailout
+  reported to a launched session is refused as `Unconfirmed` — which is the
+  gate working, and is pinned by
+  `crates/cs_app/tests/accept_f29_c_04_bailout_session_consumer.rs`.
 - **The parachute visual.** `chuteman` is authored content and this engine has no
   consumer for it; nothing here depends on it, which is the point of the
   confirmation gate.

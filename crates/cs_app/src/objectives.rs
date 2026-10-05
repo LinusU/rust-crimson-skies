@@ -1499,6 +1499,14 @@ impl ObjectiveSession {
                 // registry and this session's to tear down. What the mission
                 // does with it is a declared [`CountReaction`]'s business, and
                 // the unmeasured bailout policy requests nothing.
+                //
+                // This arm is reached only once a host registers a confirmation
+                // through the runtime; nothing does yet (F29-C.6, Rally #674),
+                // and this session exposes no mutable path to its runtime, so
+                // today a bailout reported here arrives as the
+                // [`ObjectiveEventKind::TransitionRefused`] below instead. The
+                // arm stays because the confirmed transition is what the next
+                // task turns on, not because anything reaches it today.
                 ObjectiveEventKind::PilotBailedOut { .. } => {}
                 // A refused transition is named, never dropped: the stream says
                 // the world reported a destruction after a bailout and the

@@ -56,7 +56,7 @@
 //!
 //! | phase | what it applies | why there |
 //! | --- | --- | --- |
-//! | 1 counters | [`LifecycleKind`](crate::damage::LifecycleKind) transitions into [`ActorCounters`](super::counters::ActorCounters) | a counter is a fact about this tick before anything may depend on it |
+//! | 1 counters | [`LifecycleKind`](crate::damage::LifecycleKind) transitions through the [`MissionTransitions`](super::bailout::MissionTransitions) ledger into [`ActorCounters`](super::counters::ActorCounters) | a counter is a fact about this tick before anything may depend on it, and the ledger is what keeps a destruction arriving after a bailout from becoming one |
 //! | 2 conditions | a satisfied [`CountCondition`] latches once and applies its declared [`CountReaction`] | a condition is a decision, so it follows its facts |
 //! | 3 triggers | swept crossings from this tick's real movement segments | a crossing is a fact; a program sees it, and it never applies an effect itself |
 //! | 4 signals | this tick's declared signals are collected | a signal raised now is eligible next tick |
@@ -470,8 +470,10 @@ pub struct ObjectiveSpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ObjectiveEventKind {
     /// An actor's declared lifecycle transition was counted. A pilot bailout
-    /// and a mission removal produce none, because they are not one of the five
-    /// categories.
+    /// and a mission removal are never counted, because they are not one of the
+    /// five categories: a bailout is reported as
+    /// [`ObjectiveEventKind::PilotBailedOut`] instead, and a mission removal is
+    /// reported nowhere.
     Counted { actor: ActorId, kind: CountKind },
     /// A confirmed pilot bailout: the **distinct** mission transition F29 AC04
     /// requires, and never a [`ObjectiveEventKind::Counted`] event however the
@@ -1367,11 +1369,11 @@ impl ObjectiveRuntime {
     /// reason and is bounded too: no effect kind completes an objective, so a
     /// drain can never queue an effect of its own.
     fn declared_event_count(&self, input: &TickInput<'_>) -> usize {
-        let counted = Self::counted_events(input);
+        let lifecycles = Self::lifecycle_events(input);
         let conditions = 2 * (self.conditions.len() - self.latched.len());
         let crossings = 2 * self.triggers.len() * input.movements.len();
         let timers = 2 * self.timers.len();
-        counted
+        lifecycles
             + conditions
             + crossings
             + input.signals.len()
@@ -1391,7 +1393,7 @@ impl ObjectiveRuntime {
     /// bailout is now reported and a refused transition is now named — both were
     /// silent before, and neither may sit outside the bound the tick is checked
     /// against.
-    fn counted_events(input: &TickInput<'_>) -> usize {
+    fn lifecycle_events(input: &TickInput<'_>) -> usize {
         input.lifecycles.len()
     }
 
