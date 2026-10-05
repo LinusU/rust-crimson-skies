@@ -185,7 +185,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 
 use cs_formats::gamez::{GameZNodes, NodeKind as StoredNodeKind, RawLodData, RawNode};
-use cs_formats::interp::{DecodedInterp, InterpLine};
+use cs_formats::interp::{DecodedInterp, InterpLine, InterpScript};
 use cs_types::content::{ContentId, ContentIdError, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::install::RelativePath;
@@ -5097,4 +5097,333 @@ fn fold_bytes(bytes: &[u8]) -> Option<String> {
 /// Folds an engine-supplied spelling for comparison.
 fn fold_str(text: &str) -> String {
     text.to_ascii_lowercase()
+}
+
+// ------------------------------------------ mission-only airframe discovery ---
+
+/// The claim id the per-chapter `LoadGameGen` shape is recorded under as
+/// unable to tell an airframe from a world prop.
+///
+/// The per-chapter load scripts spell every loaded model the same way —
+/// `LoadGameGen <model> <alias>` — and follow it with whatever that one load
+/// needs (`AddChild`, `DeleteChildFromDB`, `SetIntersectSurface`). Nothing the
+/// scripts state distinguishes a model that is an airframe from one that is a
+/// zeppelin, a vessel or a flag, so no load is a roster row: the shape that
+/// would make it one is unmeasured, and this claim says so.
+pub const LOAD_SHAPE_UNDISTINGUISHED_CLAIM: &str = "f11d2-1.load-shape-undistinguished";
+
+/// The claim id the per-chapter scene containers' unattributed node records are
+/// recorded under.
+pub const CHAPTER_CONTAINER_UNATTRIBUTED_CLAIM: &str = "f11d2-1.chapter-container-unattributed";
+
+/// The caller-supplied shape of a per-chapter load line.
+///
+/// Like [`AirframeDeclaration`] this is input, not a shipped table: "these
+/// scripts load models with this command" is a claim somebody made against
+/// fingerprinted bytes and carries its own [`Provenance`]. The declared shape is
+/// `<load_command> <model> <alias>` and nothing more: it is a **load**, not a
+/// declaration of an airframe.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChapterLoadIdiom {
+    /// The command that loads one model under an alias, e.g. `LoadGameGen`.
+    pub load_command: String,
+    /// The per-chapter scripts to read, matched case-insensitively.
+    pub scripts: Vec<String>,
+    /// Where the idiom was measured.
+    pub provenance: Provenance,
+}
+
+/// One model load a per-chapter script performs, as stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChapterLoad {
+    script: String,
+    model_spelling: String,
+    alias: String,
+    offset: u64,
+    shared_airframe: Option<ContentId>,
+}
+
+impl ChapterLoad {
+    /// The script that holds the load line.
+    #[must_use]
+    pub fn script(&self) -> &str {
+        &self.script
+    }
+
+    /// The model spelling the line loads, as stored.
+    #[must_use]
+    pub fn model_spelling(&self) -> &str {
+        &self.model_spelling
+    }
+
+    /// The alias the line gives the loaded model, as stored.
+    #[must_use]
+    pub fn alias(&self) -> &str {
+        &self.alias
+    }
+
+    /// Byte offset, inside the loading-script container, of the load line.
+    #[must_use]
+    pub const fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// The shared-archive airframe whose declared model this load spells, when
+    /// there is one.
+    ///
+    /// This is a **measured equality of two stored spellings**, nothing more: a
+    /// load of a model the shared roster already declares is another instance of
+    /// that airframe and therefore not a mission-only one. A load with no such
+    /// equal is **unclassified**, not an airframe and not a prop.
+    #[must_use]
+    pub fn shared_airframe(&self) -> Option<&ContentId> {
+        self.shared_airframe.as_ref()
+    }
+}
+
+/// A line of a per-chapter script the discovery could not read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChapterLoadIssue {
+    /// A named script is not in the container.
+    ScriptAbsent {
+        /// The script the idiom names.
+        script: String,
+    },
+    /// Two scripts of the container share a named script's name.
+    ScriptAmbiguous {
+        /// The script name.
+        script: String,
+        /// How many scripts carry it.
+        found: usize,
+    },
+    /// A load line is stored with an argument count the idiom does not spell.
+    LineUnreadable {
+        /// The script holding the line.
+        script: String,
+        /// Byte offset of the line.
+        offset: u64,
+        /// The arguments (tokens after the command) the line stores.
+        stored_arguments: usize,
+    },
+}
+
+/// What a per-chapter discovery explicitly does not know.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MissionOnlyUnknown {
+    /// No line shape distinguishes an airframe load from a world-prop load.
+    LoadShapeUndistinguished {
+        /// The claim the unknown is recorded under.
+        claim_id: ClaimId,
+        /// How many loads are unclassified (no shared-roster equal).
+        unclassified_loads: usize,
+        /// Why it is unknown.
+        reason: String,
+    },
+    /// The stored node records of the per-chapter scene containers, none of
+    /// which this discovery attributes to an airframe.
+    ContainerUnattributed {
+        /// The claim the unknown is recorded under.
+        claim_id: ClaimId,
+        /// The containers, with their header-declared record counts.
+        containers: Vec<SceneContainerRef>,
+        /// Why it is unknown.
+        reason: String,
+    },
+}
+
+impl MissionOnlyUnknown {
+    /// The claim the unknown is recorded under.
+    #[must_use]
+    pub fn claim_id(&self) -> &ClaimId {
+        match self {
+            Self::LoadShapeUndistinguished { claim_id, .. }
+            | Self::ContainerUnattributed { claim_id, .. } => claim_id,
+        }
+    }
+}
+
+/// What a per-chapter discovery found.
+///
+/// It never contains an airframe row: [`Self::airframe_count`] is zero by
+/// construction until a shape that distinguishes an airframe is measured and
+/// supplied, and [`Self::is_complete`] is false while any unknown stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissionOnlyDiscovery {
+    loads: Vec<ChapterLoad>,
+    issues: Vec<ChapterLoadIssue>,
+    unknowns: Vec<MissionOnlyUnknown>,
+    followed: Vec<String>,
+}
+
+impl MissionOnlyDiscovery {
+    /// Every load line read, in script then line order.
+    #[must_use]
+    pub fn loads(&self) -> &[ChapterLoad] {
+        &self.loads
+    }
+
+    /// The loads that spell a model the shared roster declares.
+    pub fn shared_loads(&self) -> impl Iterator<Item = &ChapterLoad> + '_ {
+        self.loads
+            .iter()
+            .filter(|load| load.shared_airframe.is_some())
+    }
+
+    /// The loads with no shared-roster equal: neither an airframe nor a prop,
+    /// because nothing measured says which.
+    pub fn unclassified_loads(&self) -> impl Iterator<Item = &ChapterLoad> + '_ {
+        self.loads
+            .iter()
+            .filter(|load| load.shared_airframe.is_none())
+    }
+
+    /// Mission-only airframes discovered. Zero until a distinguishing shape is
+    /// measured: a load line alone is not a declaration.
+    #[must_use]
+    pub fn airframe_count(&self) -> usize {
+        0
+    }
+
+    /// The lines the discovery could not read.
+    #[must_use]
+    pub fn issues(&self) -> &[ChapterLoadIssue] {
+        &self.issues
+    }
+
+    /// The facts the discovery explicitly does not know.
+    #[must_use]
+    pub fn unknowns(&self) -> &[MissionOnlyUnknown] {
+        &self.unknowns
+    }
+
+    /// The scripts the walk read, in idiom order.
+    #[must_use]
+    pub fn followed_scripts(&self) -> &[String] {
+        &self.followed
+    }
+
+    /// Whether the discovery is complete: no unreadable line and nothing
+    /// unknown. It is not while the load shape is undistinguished.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.issues.is_empty() && self.unknowns.is_empty()
+    }
+}
+
+/// Reads the per-chapter load scripts and states honestly what they do not
+/// declare.
+///
+/// Each named script is read for lines whose head is the idiom's load command
+/// and which store exactly `<model> <alias>`; every other line is skipped (the
+/// scripts are not interpreted). A load whose model spelling equals, ASCII
+/// case-insensitively, the model of a row in `shared` is attributed to that
+/// airframe — another instance of a shared airframe, not a mission-only one.
+/// **Every other load stays unclassified.** No row is produced from a model
+/// name, a file name or a chapter directory, and `chapter_containers` (the
+/// per-chapter scene containers with their header-declared record counts) is
+/// reported as unattributed, so the gap is stated in records and not hidden.
+///
+/// The returned unknowns are never empty: [`MissionOnlyUnknown::LoadShapeUndistinguished`]
+/// is always recorded, and so is [`MissionOnlyUnknown::ContainerUnattributed`]
+/// when containers are supplied.
+#[must_use]
+pub fn discover_mission_only_airframes(
+    container: &DecodedInterp<'_>,
+    idiom: &ChapterLoadIdiom,
+    shared: &AirframeRosterDiscovery,
+    chapter_containers: &[SceneContainerRef],
+) -> MissionOnlyDiscovery {
+    let load = fold_str(&idiom.load_command);
+    let mut loads = Vec::new();
+    let mut issues = Vec::new();
+    let mut followed = Vec::new();
+    for name in &idiom.scripts {
+        let folded = fold_str(name);
+        let matching: Vec<&InterpScript<'_>> = container
+            .scripts()
+            .iter()
+            .filter(|script| fold_bytes(script.name()).is_some_and(|stored| stored == folded))
+            .collect();
+        let script = match matching.as_slice() {
+            [] => {
+                issues.push(ChapterLoadIssue::ScriptAbsent {
+                    script: name.clone(),
+                });
+                continue;
+            }
+            [one] => *one,
+            many => {
+                issues.push(ChapterLoadIssue::ScriptAmbiguous {
+                    script: name.clone(),
+                    found: many.len(),
+                });
+                continue;
+            }
+        };
+        let script_name = String::from_utf8_lossy(script.name()).into_owned();
+        followed.push(script_name.clone());
+        for line in script.lines() {
+            let Some(head) = line.head().and_then(|head| fold_bytes(head.bytes())) else {
+                continue;
+            };
+            if head != load {
+                continue;
+            }
+            let tokens = line.tokens();
+            let (true, Some(model), Some(alias)) = (
+                tokens.len() == 3,
+                tokens.get(1).filter(|t| !t.is_empty()),
+                tokens.get(2).filter(|t| !t.is_empty()),
+            ) else {
+                issues.push(ChapterLoadIssue::LineUnreadable {
+                    script: script_name.clone(),
+                    offset: line.offset(),
+                    stored_arguments: tokens.len().saturating_sub(1),
+                });
+                continue;
+            };
+            let model_spelling = String::from_utf8_lossy(model.bytes()).into_owned();
+            let shared_airframe = shared
+                .discovered()
+                .iter()
+                .find(|row| row.model_spelling().eq_ignore_ascii_case(&model_spelling))
+                .map(|row| row.airframe().clone());
+            loads.push(ChapterLoad {
+                script: script_name.clone(),
+                model_spelling,
+                alias: String::from_utf8_lossy(alias.bytes()).into_owned(),
+                offset: line.offset(),
+                shared_airframe,
+            });
+        }
+    }
+
+    let unclassified = loads
+        .iter()
+        .filter(|load| load.shared_airframe.is_none())
+        .count();
+    let mut unknowns = vec![MissionOnlyUnknown::LoadShapeUndistinguished {
+        claim_id: ClaimId::new(LOAD_SHAPE_UNDISTINGUISHED_CLAIM).expect("the claim id is valid"),
+        unclassified_loads: unclassified,
+        reason: "the per-chapter scripts load every model with one command shape and follow it \
+                 with per-load setup lines; no stored shape separates an airframe from a world \
+                 prop, so no load is declared an airframe"
+            .to_owned(),
+    }];
+    if !chapter_containers.is_empty() {
+        unknowns.push(MissionOnlyUnknown::ContainerUnattributed {
+            claim_id: ClaimId::new(CHAPTER_CONTAINER_UNATTRIBUTED_CLAIM)
+                .expect("the claim id is valid"),
+            containers: chapter_containers.to_vec(),
+            reason: "no stored node record of these containers is attributed to an airframe: \
+                     without a declaring shape the records are unassigned, not absent"
+                .to_owned(),
+        });
+    }
+    MissionOnlyDiscovery {
+        loads,
+        issues,
+        unknowns,
+        followed,
+    }
 }

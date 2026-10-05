@@ -27,13 +27,14 @@ use std::collections::BTreeMap;
 use cs_content::coordinates::SourceAdapter;
 use cs_content::scene::{
     AirframeBlocker, AirframeDeclaration, AirframeRoster, AnimationBinding, AuditGap,
-    AuthoredTransform, BindingMap, CollisionRole, ContainerBlocker, ContainerOutcome,
-    ForcedMissionAssignment, GameZSceneError, LodChoice, LodCoverage, LodInfo, LodSelectError,
-    MeshBinding, MeshSlot, NodeKind, ParsedNode, ParsedNodeKind, PartRole, RosterAvailability,
-    RosterDeclarations, RosterDiscoveryError, RosterDiscoveryIssue, RosterDiscoveryUnknown,
-    RosterEntry, RosterError, RosterRoleRule, SceneContainerRef, SceneError, SceneGraph,
-    SceneNodeId, SceneRootRef, SemanticBinding, discover_airframe_roster, escape_scene_node_name,
-    parsed_nodes_from_gamez, scene_graph_from_gamez, select_lod_variant,
+    AuthoredTransform, BindingMap, ChapterLoadIdiom, ChapterLoadIssue, CollisionRole,
+    ContainerBlocker, ContainerOutcome, ForcedMissionAssignment, GameZSceneError, LodChoice,
+    LodCoverage, LodInfo, LodSelectError, MeshBinding, MeshSlot, MissionOnlyUnknown, NodeKind,
+    ParsedNode, ParsedNodeKind, PartRole, RosterAvailability, RosterDeclarations,
+    RosterDiscoveryError, RosterDiscoveryIssue, RosterDiscoveryUnknown, RosterEntry, RosterError,
+    RosterRoleRule, SceneContainerRef, SceneError, SceneGraph, SceneNodeId, SceneRootRef,
+    SemanticBinding, discover_airframe_roster, discover_mission_only_airframes,
+    escape_scene_node_name, parsed_nodes_from_gamez, scene_graph_from_gamez, select_lod_variant,
 };
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
@@ -7534,4 +7535,561 @@ fn accept_f11_d_2_an_included_script_runs_once_per_include_line() {
                 && pair[0].declared_at() < pair[1].declared_at()),
         "both rows are created by the same line and are told apart by the line that named them"
     );
+}
+
+// ============ F11-D2.1: the mission-only airframes, per-chapter loads ============
+
+/// The authored per-chapter idiom the synthetic tests read.
+fn synthetic_chapter_idiom(scripts: &[&str]) -> ChapterLoadIdiom {
+    ChapterLoadIdiom {
+        load_command: "LoadGameGen".to_owned(),
+        scripts: scripts.iter().map(|name| (*name).to_owned()).collect(),
+        provenance: designed("f11d2-1.test.load-idiom"),
+    }
+}
+
+/// Builds the shared discovery the chapter tests attribute loads against, from
+/// the newly authored roster fixture (models `kestrel` and `autogyro`).
+fn synthetic_shared_discovery() -> cs_content::scene::AirframeRosterDiscovery {
+    use cs_formats::interp::decode_interp;
+    use cs_formats::io::ParseContext;
+
+    let bytes = synthetic_roster_interp();
+    let decoded = decode_interp(&mut ParseContext::with_defaults("zbd/interp.zbd"), &bytes)
+        .expect("the authored container decodes");
+    discover_airframe_roster(&decoded, &synthetic_roster_declarations())
+        .expect("the authored roster is consistent")
+}
+
+/// A load line is a load, not an airframe: the synthetic chapter script loads a
+/// model the shared roster declares, a model it does not, and one malformed
+/// line, and the discovery attributes the first, leaves the second
+/// unclassified, reports the third, finds no airframe and says why.
+#[test]
+fn accept_f11_d2p1_a_load_line_is_not_an_airframe_declaration() {
+    use cs_formats::interp::decode_interp;
+    use cs_formats::io::ParseContext;
+
+    let shared = synthetic_shared_discovery();
+    assert_eq!(shared.airframe_count(), 2);
+    let fixture = roster_container(&[
+        (
+            b"support\\c9\\load.gw",
+            vec![
+                roster_line(&[b"FindNode", b"world"]),
+                roster_line(&[
+                    b"LoadGameGen",
+                    b"COMMON\\planes\\fixture\\kestrel.kestrel.flt",
+                    b"kestrel_copy",
+                ]),
+                roster_line(&[
+                    b"LoadGameGen",
+                    b"common\\zeps\\fixture\\blimp.flt",
+                    b"blimp",
+                ]),
+                roster_line(&[b"LoadGameGen", b"common\\objects\\lonely.flt"]),
+                roster_line(&[b"AddChild", b"blimp"]),
+            ],
+        ),
+        (b"support\\c8\\load.gw", vec![]),
+    ]);
+    let decoded = decode_interp(
+        &mut ParseContext::with_defaults("zbd/interp.zbd"),
+        &fixture.bytes,
+    )
+    .expect("the authored container decodes");
+    let containers = [SceneContainerRef::new(
+        cid(ContentKind::InstallFile, "zbd_2f_c9_2f_gamez.zbd"),
+        1_000,
+        64,
+    )];
+    let idiom = synthetic_chapter_idiom(&[
+        "support\\c9\\load.gw",
+        "support\\c8\\load.gw",
+        "support\\c7\\load.gw",
+    ]);
+    let found = discover_mission_only_airframes(&decoded, &idiom, &shared, &containers);
+
+    assert_eq!(found.loads().len(), 2, "two well-formed load lines");
+    assert_eq!(found.loads()[0].alias(), "kestrel_copy");
+    assert_eq!(found.loads()[0].offset(), fixture.offsets[1]);
+    assert_eq!(
+        found.loads()[0].shared_airframe(),
+        Some(&cid(ContentKind::Airframe, "player_kestrel")),
+        "a load of a model the shared roster declares is that airframe, not a new one"
+    );
+    assert_eq!(found.shared_loads().count(), 1);
+    let unclassified: Vec<&str> = found
+        .unclassified_loads()
+        .map(|load| load.model_spelling())
+        .collect();
+    assert_eq!(unclassified, ["common\\zeps\\fixture\\blimp.flt"]);
+    assert_eq!(
+        found.airframe_count(),
+        0,
+        "no shape distinguishes an airframe, so no load becomes a row"
+    );
+    assert_eq!(
+        found.issues(),
+        [
+            ChapterLoadIssue::LineUnreadable {
+                script: "support\\c9\\load.gw".to_owned(),
+                offset: fixture.offsets[3],
+                stored_arguments: 2 - 1,
+            },
+            ChapterLoadIssue::ScriptAbsent {
+                script: "support\\c7\\load.gw".to_owned()
+            },
+        ]
+    );
+    assert_eq!(found.followed_scripts().len(), 2);
+    assert_eq!(found.unknowns().len(), 2);
+    assert!(matches!(
+        found.unknowns()[0],
+        MissionOnlyUnknown::LoadShapeUndistinguished {
+            unclassified_loads: 1,
+            ..
+        }
+    ));
+    assert!(matches!(
+        found.unknowns()[1],
+        MissionOnlyUnknown::ContainerUnattributed { ref containers, .. } if containers.len() == 1
+    ));
+    assert!(!found.is_complete());
+}
+
+/// Two scripts of one name are ambiguous and never resolved by position; with no
+/// container supplied only the load-shape unknown is recorded, and it is still
+/// recorded.
+#[test]
+fn accept_f11_d2p1_an_ambiguous_script_is_a_finding_and_the_unknown_stands() {
+    use cs_formats::interp::decode_interp;
+    use cs_formats::io::ParseContext;
+
+    let shared = synthetic_shared_discovery();
+    let fixture = roster_container(&[
+        (
+            b"support\\c9\\load.gw",
+            vec![roster_line(&[b"LoadGameGen", b"a.flt", b"a"])],
+        ),
+        (
+            b"SUPPORT\\C9\\LOAD.GW",
+            vec![roster_line(&[b"LoadGameGen", b"b.flt", b"b"])],
+        ),
+    ]);
+    let decoded = decode_interp(
+        &mut ParseContext::with_defaults("zbd/interp.zbd"),
+        &fixture.bytes,
+    )
+    .expect("the authored container decodes");
+    let found = discover_mission_only_airframes(
+        &decoded,
+        &synthetic_chapter_idiom(&["support\\c9\\load.gw"]),
+        &shared,
+        &[],
+    );
+    assert!(found.loads().is_empty(), "an ambiguous name is never read");
+    assert_eq!(
+        found.issues(),
+        [ChapterLoadIssue::ScriptAmbiguous {
+            script: "support\\c9\\load.gw".to_owned(),
+            found: 2
+        }]
+    );
+    assert_eq!(found.unknowns().len(), 1);
+    assert_eq!(
+        found.unknowns()[0].claim_id().as_str(),
+        cs_content::scene::LOAD_SHAPE_UNDISTINGUISHED_CLAIM
+    );
+    assert!(!found.is_complete());
+}
+
+/// The five per-chapter loading scripts of the real container, in chapter order.
+const RETAIL_CHAPTER_LOAD_SCRIPTS: [&str; 5] = [
+    "support\\c1\\load.gw",
+    "support\\c2\\load.gw",
+    "support\\c3\\load.gw",
+    "support\\c4\\load.gw",
+    "support\\c5\\load.gw",
+];
+
+/// The measured per-script load counts of the real chapter scripts: how many
+/// `LoadGameGen` lines each stores, and how many of them spell a model the shared
+/// roster declares.
+const RETAIL_CHAPTER_LOADS: [(&str, usize, usize); 5] = [
+    ("support\\c1\\load.gw", 55, 0),
+    ("support\\c2\\load.gw", 86, 0),
+    ("support\\c3\\load.gw", 53, 3),
+    ("support\\c4\\load.gw", 50, 4),
+    ("support\\c5\\load.gw", 100, 1),
+];
+
+/// The real per-chapter containers (every GameZ archive but the shared one) and
+/// the loading-script discovery over them.
+fn retail_chapter_discovery(
+    decoded: &cs_formats::interp::DecodedInterp<'_>,
+    shared: &cs_content::scene::AirframeRosterDiscovery,
+    census: &[GameZCensusRow],
+) -> cs_content::scene::MissionOnlyDiscovery {
+    let containers: Vec<SceneContainerRef> = census
+        .iter()
+        .filter(|row| row.logical != "zbd/planes.zbd")
+        .map(|row| {
+            SceneContainerRef::new(
+                cid(ContentKind::InstallFile, &row.catalog_key),
+                row.stored_nodes,
+                row.nodes_offset,
+            )
+        })
+        .collect();
+    let idiom = ChapterLoadIdiom {
+        load_command: "LoadGameGen".to_owned(),
+        scripts: RETAIL_CHAPTER_LOAD_SCRIPTS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect(),
+        // The shape `<command> <model> <alias>` is read from the five scripts'
+        // own lines; it declares a load, not an airframe.
+        provenance: designed("f11d2-1.retail.load-idiom"),
+    };
+    discover_mission_only_airframes(decoded, &idiom, shared, &containers)
+}
+
+/// AC04 over the real installation, honestly: the five per-chapter loading
+/// scripts are read, every `LoadGameGen` line is accounted for, and **no
+/// mission-only airframe is discovered**, because nothing the scripts store
+/// separates an airframe from a world prop. The gap is reported in records: the
+/// eight per-chapter scene containers hold 53 303 stored nodes, none attributed.
+/// The shared roster is then audited over all nine containers, unchanged.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f11_d2p1_retail_the_chapter_loads_declare_no_airframe() {
+    use cs_assets::install as install_api;
+    use cs_formats::interp::decode_interp;
+    use cs_formats::io::ParseContext;
+
+    let game_dir = retail_dir();
+    let discovery = install_api::discover(&game_dir).expect("production discovery must read it");
+    let install_sha256 = install_api::fingerprint(&discovery.manifest);
+    let bytes = std::fs::read(game_dir.join("ZBD").join("interp.zbd"))
+        .expect("the container must be there");
+    let decoded = decode_interp(&mut ParseContext::with_defaults("zbd/interp.zbd"), &bytes)
+        .expect("the loading-script container must decode");
+    let shared = discover_airframe_roster(&decoded, &retail_roster_declarations(install_sha256))
+        .expect("eleven distinct roots are not a contradiction");
+    assert_eq!(shared.airframe_count(), 11);
+    let census = retail_gamez_census(&game_dir);
+    assert_eq!(census.len(), 9);
+    let found = retail_chapter_discovery(&decoded, &shared, &census);
+
+    assert!(found.issues().is_empty(), "{:?}", found.issues());
+    assert_eq!(found.followed_scripts(), RETAIL_CHAPTER_LOAD_SCRIPTS);
+    for (script, loads, shared_loads) in RETAIL_CHAPTER_LOADS {
+        let of_script = || found.loads().iter().filter(|load| load.script() == script);
+        assert_eq!(of_script().count(), loads, "{script}: stored load lines");
+        assert_eq!(
+            of_script()
+                .filter(|load| load.shared_airframe().is_some())
+                .count(),
+            shared_loads,
+            "{script}: loads of a model the shared roster declares"
+        );
+    }
+    assert_eq!(found.loads().len(), 344);
+    assert_eq!(found.shared_loads().count(), 8);
+    assert_eq!(found.unclassified_loads().count(), 336);
+    assert!(
+        found
+            .shared_loads()
+            .all(|load| shared.row(load.shared_airframe().unwrap()).is_some()),
+        "an attributed load names a row the shared discovery really holds"
+    );
+    assert_eq!(
+        found.airframe_count(),
+        0,
+        "no stored shape separates an airframe from a prop: nothing is guessed from a model name"
+    );
+
+    // The gap, in the containers' own header-declared records.
+    assert_eq!(found.unknowns().len(), 2);
+    assert!(matches!(
+        found.unknowns()[0],
+        MissionOnlyUnknown::LoadShapeUndistinguished {
+            unclassified_loads: 336,
+            ..
+        }
+    ));
+    let MissionOnlyUnknown::ContainerUnattributed { containers, .. } = &found.unknowns()[1] else {
+        panic!("the container gap is recorded: {:?}", found.unknowns());
+    };
+    assert_eq!(containers.len(), 8);
+    assert_eq!(
+        containers
+            .iter()
+            .map(|c| u64::from(c.stored_nodes()))
+            .sum::<u64>(),
+        53_303,
+        "every stored node record of the per-chapter containers is unattributed"
+    );
+    assert!(!found.is_complete());
+
+    // The shared roster audited over all nine containers, as before: nothing
+    // about it moves because the chapter loads declare nothing.
+    let all: Vec<SceneContainerRef> = census
+        .iter()
+        .map(|row| {
+            SceneContainerRef::new(
+                cid(ContentKind::InstallFile, &row.catalog_key),
+                row.stored_nodes,
+                row.nodes_offset,
+            )
+        })
+        .collect();
+    let verdicts = retail_container_verdicts(&game_dir, &census);
+    let report = shared.roster().audit(&all, |container| {
+        verdicts
+            .get(container.as_str())
+            .expect("the audit only asks about the containers it was given")
+            .as_ref()
+            .map_err(Clone::clone)
+    });
+    assert_eq!(report.container_count(), 9);
+    assert_eq!(report.airframe_count(), 11);
+    assert_eq!(report.mapped_airframes().count(), 10);
+    assert_eq!(report.blocked_airframes().count(), 1);
+    assert!(!report.is_complete());
+}
+
+/// The limits F11-D2.1 records instead of guessing, quoted in `review.method`.
+const F11_D2_1_LIMITATIONS: &[&str] = &[
+    "No mission-only airframe is discovered. The five per-chapter loading scripts store 344 \
+     LoadGameGen lines in one command shape, `<model> <alias>`, followed by per-load setup lines \
+     shared with world props; nothing stored separates an airframe from a zeppelin, a vessel or a \
+     flag (claim f11d2-1.load-shape-undistinguished). 8 loads spell a model the shared roster \
+     declares and are attributed to it; 336 are unclassified, neither airframe nor prop. Affected \
+     content: every airframe a mission spawns that is not one of the eleven shared ones. Resolving \
+     tasks: F39 (mission language) and F13 (mission opcodes), which read how a mission names the \
+     airframe it spawns.",
+    "The eight per-chapter scene containers hold 53,303 stored node records and none is attributed \
+     to an airframe (claim f11d2-1.chapter-container-unattributed). Affected content: the scene \
+     content of every mission. Resolving task: the world-import stages (F18) and the tasks above.",
+    "RosterAvailability stays undiscovered and no forced assignment is recorded: a mission-only \
+     airframe is MissionOnly at most, and only where a discovery recorded that fact; none did. \
+     Resolving tasks: F22, F49, F39, F13 (see F11-D2).",
+    "discover_mission_only_airframes is a library path driven by the acceptance suite and this \
+     harness only. Evidence class: ObservedTool; no original run happened and nothing here claims \
+     verified_original.",
+];
+
+/// The F11-D2.1 evidence harness; not an acceptance test (no task prefix), it
+/// fails loudly without its inputs. Run from the workspace root after the
+/// acceptance suite:
+///
+/// ```sh
+/// mkdir -p private/evidence/F11-D2.1
+/// cargo test --workspace --locked -- accept_f11_d2p1_ --include-ignored \
+///   2>&1 | tee private/evidence/F11-D2.1/cargo-test.log
+/// CS_EVIDENCE_DIR=private/evidence/F11-D2.1 CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+/// CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f11_d2p1_ --include-ignored" \
+/// CS_EVIDENCE_EXIT_CODE=0 \
+///   cargo test --locked -p cs_content --test scene -- evidence_report_f11_d2p1_ --ignored
+/// python3 tools/validate_evidence.py private/evidence/F11-D2.1/acceptance.json \
+///   --artifact-root private/evidence/F11-D2.1 --require-pass
+/// ```
+#[test]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+fn evidence_report_f11_d2p1_writes_the_acceptance_report() {
+    use std::path::PathBuf;
+
+    use cs_assets::install as install_api;
+    use cs_formats::interp::decode_interp;
+    use cs_formats::io::ParseContext;
+
+    let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
+    let candidate_tree = env_var("CS_CANDIDATE_TREE");
+    let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !argv.is_empty(),
+        "CS_EVIDENCE_ARGV must hold the acceptance command"
+    );
+    let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
+        .parse()
+        .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+    let game_dir = PathBuf::from(env_var("CS_GAME_DIR"));
+    assert_eq!(
+        candidate_tree,
+        git(&["rev-parse", "HEAD^{tree}"]),
+        "CS_CANDIDATE_TREE must be the tree of the tested commit"
+    );
+
+    let log_path = evidence_dir.join("cargo-test.log");
+    let log = fs::read_to_string(&log_path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", log_path.display()));
+    let suite = parse_f11_d_suite(&log, "accept_f11_d2p1_");
+    let assertions = suite.assertions.clone();
+    assert!(
+        !assertions.is_empty() && suite.passed > 0,
+        "no `accept_f11_d2p1_` tests were recorded in {}",
+        log_path.display()
+    );
+    let retail = assertions
+        .iter()
+        .find(|(name, _)| name.contains("accept_f11_d2p1_retail_"))
+        .expect("the retail acceptance test did not run: run it with --include-ignored");
+    assert_eq!(retail.1, "pass", "the retail acceptance test must pass");
+
+    let found = install_api::discover(&game_dir).expect("production discovery must read it");
+    let install_hash = install_api::fingerprint(&found.manifest);
+    let install_sha256 = install_hash.to_hex();
+    let content_sha256 = install_api::content_fingerprint(&found.manifest).to_hex();
+    let interp_bytes =
+        std::fs::read(game_dir.join("ZBD").join("interp.zbd")).expect("interp.zbd must be there");
+    let decoded = decode_interp(
+        &mut ParseContext::with_defaults("zbd/interp.zbd"),
+        &interp_bytes,
+    )
+    .expect("the loading-script container must decode");
+    let shared = discover_airframe_roster(&decoded, &retail_roster_declarations(install_hash))
+        .expect("eleven distinct roots are not a contradiction");
+    let census = retail_gamez_census(&game_dir);
+    let chapter = retail_chapter_discovery(&decoded, &shared, &census);
+    assert_eq!(chapter.airframe_count(), 0);
+
+    let per_script: Vec<String> = RETAIL_CHAPTER_LOAD_SCRIPTS
+        .iter()
+        .map(|script| {
+            let of = || {
+                chapter
+                    .loads()
+                    .iter()
+                    .filter(|load| load.script() == *script)
+            };
+            format!(
+                "{{\"script\": {}, \"loads\": {}, \"shared\": {}}}",
+                jstr(script),
+                of().count(),
+                of().filter(|load| load.shared_airframe().is_some()).count()
+            )
+        })
+        .collect();
+    let unattributed: u64 = census
+        .iter()
+        .filter(|row| row.logical != "zbd/planes.zbd")
+        .map(|row| u64::from(row.stored_nodes))
+        .sum();
+    let claims: Vec<String> = chapter
+        .unknowns()
+        .iter()
+        .map(|unknown| jstr(unknown.claim_id().as_str()))
+        .collect();
+    let discovery_json = format!(
+        "{{\"schema\":\"cs-scene-mission-only-discovery/1\",\"retail\":true,\"install_sha256\":{},\
+         \"mission_only_airframes\":{},\"loads\":{},\"shared_loads\":{},\"unclassified_loads\":{},\
+         \"issues\":{},\"unattributed_stored_nodes\":{},\"unknown_claims\":[{}],\
+         \"complete\":{},\"scripts\":[{}]}}",
+        jstr(&install_sha256),
+        chapter.airframe_count(),
+        chapter.loads().len(),
+        chapter.shared_loads().count(),
+        chapter.unclassified_loads().count(),
+        chapter.issues().len(),
+        unattributed,
+        claims.join(","),
+        chapter.is_complete(),
+        per_script.join(",")
+    );
+    let discovery_path = evidence_dir.join("mission-only-discovery.json");
+    fs::write(&discovery_path, &discovery_json)
+        .unwrap_or_else(|error| panic!("write {}: {error}", discovery_path.display()));
+    for needle in [
+        "\"mission_only_airframes\":0",
+        "\"loads\":344",
+        "\"shared_loads\":8",
+        "\"unclassified_loads\":336",
+        "\"issues\":0",
+        "\"unattributed_stored_nodes\":53303",
+        "\"complete\":false",
+    ] {
+        assert!(
+            discovery_json.contains(needle),
+            "missing {needle:?}: {discovery_json}"
+        );
+    }
+
+    let engine = format!(
+        "{{\"rust\": {}, \"bevy\": {}, \"avian\": {}}}",
+        jstr(&rustc_version()),
+        jstr(&locked_version("bevy")),
+        jstr(&locked_version("avian3d"))
+    );
+    let artifacts = vec![
+        artifact(&log_path, "log", &evidence_dir),
+        artifact(&discovery_path, "json", &evidence_dir),
+    ];
+    let review = std::env::var("CS_EVIDENCE_REVIEW").unwrap_or_else(|_| {
+        "pending: written by the implementing agent sonnet-2; the reviewer must regenerate this \
+         report on the reviewed commit and record their own identity (CS_EVIDENCE_REVIEW). \
+         Method: acceptance suite run locally with the retail capability over $CS_GAME_DIR; the \
+         consumer trace is the production cs_content::scene::discover_mission_only_airframes over \
+         the per-chapter loading scripts of ZBD/interp.zbd."
+            .to_owned()
+            + &F11_D2_1_LIMITATIONS
+                .iter()
+                .map(|limitation| format!(" LIMITATION: {limitation}"))
+                .collect::<String>()
+    });
+    let report_json = format!(
+        "{{\n\
+         \x20\"schema_version\": 1,\n\
+         \x20\"task_id\": \"F11-D2.1\",\n\
+         \x20\"candidate_tree\": {},\n\
+         \x20\"engine\": {},\n\
+         \x20\"created_at\": {},\n\
+         \x20\"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n\
+         \x20\"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+         \x20\"seed\": 0,\n\
+         \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
+         \x20\"overrides\": [],\n\
+         \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
+         \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \
+         \"ignored\": {}}},\n\
+         \x20\"assertions\": [{}],\n\
+         \x20\"artifacts\": [{}],\n\
+         \x20\"unknowns\": [],\n\
+         \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
+         \x20\"claim\": \"implemented\"\n\
+         }}\n",
+        jstr(&candidate_tree),
+        engine,
+        jstr(&iso_utc_now()),
+        str_array(&argv),
+        jstr(&git(&["rev-parse", "--show-toplevel"])),
+        exit_code,
+        jstr(&install_sha256),
+        jstr(&content_sha256),
+        suite.discovered,
+        suite.executed,
+        suite.passed,
+        suite.failed,
+        suite.ignored,
+        assertion_array(&assertions),
+        artifact_array(&artifacts),
+        jstr(
+            "implementer: sonnet-2 (Rally #500); review pending, so no independent review is \
+             claimed and nothing is raised above `checked`"
+        ),
+        jstr(&review),
+    );
+    let out = evidence_dir.join("acceptance.json");
+    fs::write(&out, &report_json)
+        .unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
+    assert!(
+        suite.failed == 0 && exit_code == 0,
+        "the acceptance run failed (exit {exit_code}, {} failed): the report must NOT validate",
+        suite.failed
+    );
+    println!("wrote {}", out.display());
 }
