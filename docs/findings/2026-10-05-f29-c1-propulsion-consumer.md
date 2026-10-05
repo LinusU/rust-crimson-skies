@@ -117,6 +117,60 @@ from a saved copy:
 | the gate ignores a disabled engine | `if damage.thrust_authority != 0.0` → `if false && …` | `…_a_destroyed_engine_cuts_thrust_in_the_flight_tick` and `…_a_repair_restores_thrust` failed |
 | the gate never lifts its cut | `if damage.thrust_authority == 0.0` → `if false && …` | `…_a_repair_restores_thrust` failed |
 
+### Review pass (bunny-alpha-1, 2026-10-06)
+
+Added by the review that re-landed this stage after the first landing attempt
+failed. Reviewer: `bunny-alpha-1`, a session with fresh context that did not
+implement the change — a different agent name and model from the implementer,
+so it is independent of the implementer's own probes but **not** independent
+evidence about the original game. Same method (edit one production line, run
+`cargo test --workspace --locked -- accept_f29_c_propulsion_ --include-ignored`,
+restore from a saved copy; the restored file's SHA-1 was checked equal to the
+committed one), three probes chosen to cover what the two above do not:
+
+| probe | edit | result |
+| --- | --- | --- |
+| the whole consumer is removed | `return outcome;` inserted as the first statement of `apply_propulsion_state` | **4 of 7 failed**: `…_a_destroyed_engine_cuts_thrust_in_the_flight_tick`, `…_a_repair_restores_thrust`, `…_an_unresolved_engine_pool_is_refused_and_leaves_the_gate`, `…_a_foreign_or_unregistered_actor_is_refused` |
+| a scratch is treated as a destruction | the cut arm's pattern `Some(SystemState::Disabled)` → `Some(SystemState::Disabled \| SystemState::Enabled)` | **4 of 7 failed**: `…_a_scratched_engine_keeps_full_thrust`, `…_an_enabled_engine_leaves_a_producers_partial_authority`, `…_a_destroyed_engine_cuts_thrust_in_the_flight_tick`, `…_a_repair_restores_thrust` |
+
+The three tests that survive the first probe — the scratch, the partial
+producer's authority and the graph with no engine — all assert that **nothing
+changed**, so a consumer that does nothing satisfies them by construction. They
+are not dead weight: the second probe shows each of them failing when the
+`Damaged`/`Enabled` distinction is removed, so all seven tests are pinned by
+production code and none of them passes vacuously.
+
+## The first landing attempt died of the runner's disk, not of a test
+
+Worth recording, because it looks like a red branch and is not one. Rally
+rebased this stage onto `main` as `ff317657a` and its landing attempt 1 of 3
+failed (Rally event `landing.failed`, 2026-10-05T22:38Z). The `rust` job's
+`cargo test` step has **no test failure in it at all**: the job's only
+`failure`-level annotation is the runner itself,
+
+```
+Unhandled exception. System.IO.IOException: No space left on device :
+'/home/runner/actions-runner/cached/2.337.0/_diag/Worker_20261005-222831-utc.log'
+```
+
+— the runner could not write its own diagnostic log, so `cargo test` never
+reported a `test result: FAILED` for any binary. The same tree was green on
+`cc84263c`, and `main` was green on the `cd42cd17` this was rebased onto in
+the same minute. This is the fault measured and diagnosed in
+`docs/findings/2026-09-30-t430-rust-lld-sigbus-in-ci.md` (runner disk, not
+content), still unfixed on the owner's side because every lever it names is a
+`.github/` change.
+
+One number from this stage, for whoever budgets that disk: the new
+`crates/cs_app/tests/accept_f29_c_propulsion_gate.rs` target is a
+**123.5 MB** test binary on this machine, measured with the committed
+`[profile.dev] debug = "line-tables-only"` — against a runner that
+`docs/findings/2026-09-30-t432-ci-disk-verification.md` measured at 1.91 GiB
+free with `cargo test` running. That is one more binary the budget has to hold,
+and it is why `docs/findings/2026-09-30-t432-ci-disk-verification.md`'s unmet
+criterion 2 ("a branch adding one new `cs_app` test target is green") is now
+answered: on this runner, sometimes it is not.
+
 ## Evidence
 
 Synthetic fixtures and designed contracts only. No original-data, visual,
