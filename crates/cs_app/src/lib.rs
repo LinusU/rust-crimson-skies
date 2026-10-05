@@ -201,8 +201,16 @@
 //! [`animation::CommittedSessionTick`] and it installs the fixed-tick advance,
 //! so a [`physics::PhysicsSession`] that adds the plugin through its
 //! `configure` seam drives the whole path. The mission-marker consumer of
-//! [`animation::AnimationLog`] is still absent (the mission/objective layers
-//! are F37/F39) and is filed as a follow-up rather than stubbed.
+//! [`animation::AnimationLog`] is [`mission_markers`]: it drains the log
+//! through the seam F20-C named, resolves each fired gameplay marker through
+//! the mission host's **declared** cue → signal table
+//! ([`mission_markers::MissionMarkerBindings`], which refuses an unbound cue
+//! rather than inventing a symbol) and raises it into a real
+//! [`objectives::ObjectiveSession`] step, exactly once per marker activation
+//! ([`mission_markers::MarkerActivation`]) so a loop pass, a skip or a
+//! re-drained batch cannot duplicate a mission event (F20 non-negotiable
+//! behavior 5). It is task #507's slice; no production mission host drives it
+//! yet (the animation composition is filed as #509).
 //! `### F20-C.04` gives the verdict's collider half its reader in
 //! [`physics::collider`], so the clip's half of the verdict now reaches the
 //! simulation and the animation path still writes nothing but its own record.
@@ -594,6 +602,7 @@ pub mod interaction;
 pub mod livery;
 pub mod loading;
 pub mod mission_control;
+pub mod mission_markers;
 pub mod mission_start;
 pub mod network;
 pub mod objectives;
