@@ -53,7 +53,7 @@
 
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use std::collections::BTreeMap;
 
@@ -66,7 +66,9 @@ use cs_content::mesh::{
 };
 use cs_content::scene::{GameZSceneError, MeshSlot};
 use cs_content::textures::TextureCatalog;
-use cs_content::world::{ImportedWorld, WorldDefinition, WorldId, WorldIdError, WorldImportError};
+use cs_content::world::{
+    ImportedWorld, WorldDefinition, WorldId, WorldIdError, WorldImportError, WorldPartitionGrid,
+};
 use cs_formats::gamez::{GameZMeshes, GameZNodes, read_gamez_meshes, read_gamez_nodes};
 use cs_formats::io::ParseContext;
 use cs_types::asset_id::{AssetKey, ResolveContext, SourceSpan, WorldGroup};
@@ -367,6 +369,26 @@ impl RetailWorldContainer {
         &self.meshes
     }
 
+    /// The world record's partition grid, decoded from this container's own
+    /// bytes.
+    ///
+    /// The same [`WorldPartitionGrid::read`] the import itself calls, so the
+    /// grid a consumer measures here and the grid the sector index was built
+    /// from are one read of one block rather than two implementations that agree
+    /// today. It exists because the container **keeps** its bytes for exactly
+    /// this: the node reader leaves the grid's two counts behind and the content
+    /// is re-derived from the same block, so a consumer that wants the world's
+    /// spatial shape has nothing else to read it from.
+    ///
+    /// # Errors
+    ///
+    /// Every [`WorldImportError`] [`WorldPartitionGrid::read`] can raise: the
+    /// walk not ending where the reader said it does, a value naming a record
+    /// twice, one outside the array, or one that is not an object record.
+    pub fn partition_grid(&self) -> Result<WorldPartitionGrid, WorldImportError> {
+        WorldPartitionGrid::read(&self.nodes, &self.bytes)
+    }
+
     /// The mesh catalog the definition's mesh references are elements of.
     #[must_use]
     pub const fn mesh_catalog(&self) -> &MeshCatalog {
@@ -434,6 +456,23 @@ impl RetailWorldContainer {
     /// registered: the spawn reports it as
     /// [`SkipReason::MeshUnavailable`](super::spawn::SkipReason) rather than
     /// being handed a substitute shape.
+    ///
+    /// # A mesh the store holds no geometry for is a **gap**, not an error
+    ///
+    /// A world record can name a stored mesh whose own record decodes to **zero
+    /// polygons**. Measured over the installation's eight world containers
+    /// (task #639): `ZBD/C5/gamez.zbd` names 16 of its mesh slots and **every one
+    /// of those slots stores no geometry at all** (an empty polygon list and an
+    /// empty position list), and every other world container names none.
+    ///
+    /// So they are **not registered**, and the spawn reports the object rather
+    /// than handing it a substitute shape. Refusing the whole container over one
+    /// empty slot would leave the other 346 meshes of `c5` unloadable, which is
+    /// the opposite of reporting a gap: it destroys a world over a hole the store
+    /// itself states. [`WorldMeshBuildError::NoGeometry`] is therefore the one
+    /// build refusal treated as a gap here; **every other** one still refuses the
+    /// container, because those are the adapter's refusals about geometry that
+    /// *is* there.
     pub fn uploaded_meshes(
         &self,
         definition: &WorldDefinition,
@@ -455,8 +494,17 @@ impl RetailWorldContainer {
                 .catalog
                 .prepare_upload(&self.session, resolved)
                 .map_err(|reason| RetailWorldError::Mesh { index, reason })?;
-            out.insert_mesh_upload(known.clone(), &upload)
-                .map_err(|reason| RetailWorldError::Upload { index, reason })?;
+            match out.insert_mesh_upload(known.clone(), &upload) {
+                Ok(_) => {}
+                // The documented gap, not a refusal of the container: this slot
+                // decodes and stores no triangle, so nothing is registered and the
+                // spawn names the object. See the note above for the
+                // measurement.
+                Err(WorldMeshBuildError::NoGeometry) => continue,
+                Err(reason) => {
+                    return Err(RetailWorldError::Upload { index, reason });
+                }
+            }
         }
         Ok(out)
     }
@@ -533,135 +581,249 @@ pub fn stored_presentation_unknowns(render: &RenderMesh) -> Vec<MeshPresentation
     unknowns
 }
 
+/// One **production discovery** of an installation, reusable for every world
+/// group it found (task #639).
+///
+/// Discovery hashes the whole tree, which is a property of the *installation*
+/// rather than of one group, and a caller that wants more than one world
+/// container should pay for it once. [`Self::container`] is the same read
+/// [`read_world_container`] performs, and the two cannot disagree because there
+/// is one implementation of each step.
+///
+/// Holding one container at a time also keeps the peak footprint bounded: a
+/// container holds its whole file, its decoded node array, its decoded mesh array
+/// **and** an open content session with its mesh catalog, and eight of those at
+/// once is the one thing a caller reading "every world group" should not do.
+#[derive(Clone, Debug)]
+pub struct RetailWorldContainers {
+    install_root: PathBuf,
+    found: install::Discovery,
+}
+
+impl RetailWorldContainers {
+    /// The installation root this discovery walked, as the caller spelled it.
+    #[must_use]
+    pub fn install_root(&self) -> &Path {
+        &self.install_root
+    }
+
+    /// The SHA-256 of the whole installation, from production discovery.
+    ///
+    /// The same value every container's [`RetailWorldContainer::span`] carries,
+    /// so a reader can tell one installation from another without reading a file.
+    #[must_use]
+    pub fn install_sha256(&self) -> String {
+        install::fingerprint(&self.found.manifest).to_hex()
+    }
+
+    /// Every world group the installation declares, as its **original** spelling.
+    ///
+    /// `["C1", "C1B", "C1C", "C2", "C2B", "C3", "C4", "C5"]` for a complete
+    /// installation, in discovered (logical-key) order. The spelling is the
+    /// directory's own so a caller can hand a name straight back to
+    /// [`Self::container`] and cannot pair one group's name with another's file.
+    #[must_use]
+    pub fn groups(&self) -> Vec<String> {
+        self.found
+            .diagnosis
+            .world_groups
+            .iter()
+            .map(|directory| {
+                directory
+                    .as_str()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(directory.as_str())
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    /// The [`REFERENCE_WORLD_GROUP_LEADS`](cs_assets::install::REFERENCE_WORLD_GROUP_LEADS)
+    /// this installation does not hold.
+    ///
+    /// Reported, never used to filter: a group the reference list names and this
+    /// installation lacks is a fact about the installation, and every group the
+    /// installation does hold is read whatever the reference list says.
+    #[must_use]
+    pub fn absent_reference_groups(&self) -> &[String] {
+        &self.found.diagnosis.absent_reference_groups
+    }
+
+    /// Reads one group's container from the discovery this already holds.
+    ///
+    /// The path is the one production discovery spells — the manifest's own
+    /// `relative_spelling`, not a re-joined logical key — because a
+    /// case-sensitive filesystem would refuse the join. Both arrays are decoded
+    /// through the production readers, and the mesh-slot table is built for every
+    /// slot the array holds so a record's stored `mesh_index` resolves without a
+    /// second guess.
+    ///
+    /// # Errors
+    ///
+    /// [`RetailWorldError::Absent`] when the installation holds no such
+    /// container, [`RetailWorldError::Read`] when the file cannot be read,
+    /// [`RetailWorldError::Catalog`] when the container's mesh catalog does not
+    /// open, and [`RetailWorldError::Nodes`] / [`RetailWorldError::Meshes`] when
+    /// a section does not decode. A refusal here aborts rather than importing a
+    /// container the readers could only partly read.
+    pub fn container(&self, group: &str) -> Result<RetailWorldContainer, RetailWorldError> {
+        let install_root = self.install_root.as_path();
+        let found = &self.found;
+        let container_key = format!(
+            "zbd/{}/{GEOMETRY_CONTAINER_FILE}",
+            group.to_ascii_lowercase()
+        );
+        let Some(record) = found
+            .manifest
+            .files
+            .iter()
+            .find(|record| record.relative_spelling.logical_key() == container_key)
+        else {
+            return Err(RetailWorldError::Absent {
+                container: container_key,
+            });
+        };
+        let container_sha256 = record.sha256.to_hex();
+        let bytes = fs::read(
+            found
+                .manifest
+                .host_root
+                .join(record.relative_spelling.as_str()),
+        )
+        .map_err(|error| RetailWorldError::Read {
+            container: container_key.clone(),
+            reason: error.to_string(),
+        })?;
+
+        let mut parse = ParseContext::with_defaults(container_key.clone());
+        let nodes =
+            read_gamez_nodes(&mut parse, &bytes).map_err(|error| RetailWorldError::Nodes {
+                container: container_key.clone(),
+                reason: error.to_string(),
+            })?;
+        let mut mesh_parse = ParseContext::with_defaults(container_key.clone());
+        let meshes =
+            read_gamez_meshes(&mut mesh_parse, &container_key, &bytes).map_err(|error| {
+                RetailWorldError::Meshes {
+                    container: container_key.clone(),
+                    reason: error.to_string(),
+                }
+            })?;
+
+        let span = SourceSpan::new(
+            install::fingerprint(&found.manifest),
+            record.relative_spelling.as_str(),
+            None,
+            0,
+            u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            Some(record.sha256),
+        )
+        .map_err(|error| RetailWorldError::Unresolved {
+            reason: format!("the container's source span is not recordable: {error}"),
+        })?;
+
+        let (session, catalog, group_key) =
+            open_catalog(install_root, found, group, &container_key)?;
+        let Some(opened) = catalog.containers().next() else {
+            let reason = catalog
+                .failures()
+                .next()
+                .map_or_else(|| "no container opened".to_owned(), |(_, e)| e.to_string());
+            return Err(RetailWorldError::Catalog {
+                container: container_key,
+                reason,
+            });
+        };
+        // The slot's provenance is the catalog's own: the span of the container it
+        // read, in the session that read it.
+        let provenance = Provenance::new(
+            ClaimId::new(RETAIL_WORLD_IMPORT).map_err(|error| RetailWorldError::Unresolved {
+                reason: format!("the import claim id is invalid: {error}"),
+            })?,
+            ClaimStatus::ObservedTool,
+            Some(opened.span().clone()),
+        )
+        .map_err(|error| RetailWorldError::Unresolved {
+            reason: error.to_string(),
+        })?;
+        let mut slots = Vec::with_capacity(meshes.meshes.len());
+        let mut resolved = BTreeMap::new();
+        for index in 0..meshes.meshes.len() {
+            let index = u32::try_from(index).unwrap_or(u32::MAX);
+            let id = opened
+                .id(index)
+                .content_id()
+                .map_err(|reason| RetailWorldError::Slot {
+                    index: index as usize,
+                    reason,
+                })?;
+            slots.push(
+                MeshSlot::new(id.clone(), provenance.clone())
+                    .map_err(RetailWorldError::SceneSlot)?,
+            );
+            // An absent or refused slot keeps its id (a node may name it) but has no
+            // resolution: nothing is registered for it and the spawn reports the gap.
+            if let Ok(mesh) = catalog.resolve(&session, &group_key, index) {
+                resolved.insert(id, mesh);
+            }
+        }
+
+        Ok(RetailWorldContainer {
+            group: group.to_owned(),
+            container_key,
+            container_sha256,
+            span,
+            bytes,
+            nodes,
+            meshes,
+            slots,
+            session,
+            catalog,
+            resolved,
+        })
+    }
+}
+
+/// Discovers the installation at `install_root` once, for reading more than one
+/// world container out of it.
+///
+/// **One production discovery, then any number of containers.** Discovery hashes
+/// the whole tree; measured on this host it is the dominant cost of a world read,
+/// so a caller that reads eight groups by calling [`read_world_container`] eight
+/// times pays it eight times for the same manifest. This function is the seam that
+/// pays it once.
+///
+/// # Errors
+///
+/// [`RetailWorldError::Discovery`] when the installation cannot be inventoried.
+/// A group that cannot be read is refused by [`RetailWorldContainers::container`]
+/// naming that group, not by this call.
+pub fn read_world_containers(
+    install_root: &Path,
+) -> Result<RetailWorldContainers, RetailWorldError> {
+    Ok(RetailWorldContainers {
+        install_root: install_root.to_path_buf(),
+        found: install::discover(install_root)?,
+    })
+}
+
 /// Reads one world group's container out of an installation.
 ///
-/// The path is the one production discovery spells — the manifest's own
-/// `relative_spelling`, not a re-joined logical key — because a case-sensitive
-/// filesystem would refuse the join. Both arrays are decoded through the
-/// production readers, and the mesh-slot table is built for every slot the array
-/// holds so a record's stored `mesh_index` resolves without a second guess.
+/// The convenience form for the single-group case: one discovery, one read. A
+/// caller that reads more than one group wants [`read_world_containers`]
+/// instead, which pays for discovery once.
 ///
 /// # Errors
 ///
 /// [`RetailWorldError::Discovery`] when the installation cannot be inventoried,
-/// [`RetailWorldError::Absent`] when it holds no such container,
-/// [`RetailWorldError::Read`] when the file cannot be read, and
-/// [`RetailWorldError::Nodes`] / [`RetailWorldError::Meshes`] when a section
-/// does not decode. A refusal here aborts rather than importing a container the
-/// readers could only partly read.
+/// and every [`RetailWorldContainers::container`] refusal for a container that
+/// cannot be read or decoded.
 pub fn read_world_container(
     install_root: &Path,
     group: &str,
 ) -> Result<RetailWorldContainer, RetailWorldError> {
-    let found = install::discover(install_root)?;
-    let container_key = format!(
-        "zbd/{}/{GEOMETRY_CONTAINER_FILE}",
-        group.to_ascii_lowercase()
-    );
-    let Some(record) = found
-        .manifest
-        .files
-        .iter()
-        .find(|record| record.relative_spelling.logical_key() == container_key)
-    else {
-        return Err(RetailWorldError::Absent {
-            container: container_key,
-        });
-    };
-    let container_sha256 = record.sha256.to_hex();
-    let bytes = fs::read(
-        found
-            .manifest
-            .host_root
-            .join(record.relative_spelling.as_str()),
-    )
-    .map_err(|error| RetailWorldError::Read {
-        container: container_key.clone(),
-        reason: error.to_string(),
-    })?;
-
-    let mut parse = ParseContext::with_defaults(container_key.clone());
-    let nodes = read_gamez_nodes(&mut parse, &bytes).map_err(|error| RetailWorldError::Nodes {
-        container: container_key.clone(),
-        reason: error.to_string(),
-    })?;
-    let mut mesh_parse = ParseContext::with_defaults(container_key.clone());
-    let meshes = read_gamez_meshes(&mut mesh_parse, &container_key, &bytes).map_err(|error| {
-        RetailWorldError::Meshes {
-            container: container_key.clone(),
-            reason: error.to_string(),
-        }
-    })?;
-
-    let span = SourceSpan::new(
-        install::fingerprint(&found.manifest),
-        record.relative_spelling.as_str(),
-        None,
-        0,
-        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-        Some(record.sha256),
-    )
-    .map_err(|error| RetailWorldError::Unresolved {
-        reason: format!("the container's source span is not recordable: {error}"),
-    })?;
-
-    let (session, catalog, group_key) = open_catalog(install_root, &found, group, &container_key)?;
-    let Some(opened) = catalog.containers().next() else {
-        let reason = catalog
-            .failures()
-            .next()
-            .map_or_else(|| "no container opened".to_owned(), |(_, e)| e.to_string());
-        return Err(RetailWorldError::Catalog {
-            container: container_key,
-            reason,
-        });
-    };
-    // The slot's provenance is the catalog's own: the span of the container it
-    // read, in the session that read it.
-    let provenance = Provenance::new(
-        ClaimId::new(RETAIL_WORLD_IMPORT).map_err(|error| RetailWorldError::Unresolved {
-            reason: format!("the import claim id is invalid: {error}"),
-        })?,
-        ClaimStatus::ObservedTool,
-        Some(opened.span().clone()),
-    )
-    .map_err(|error| RetailWorldError::Unresolved {
-        reason: error.to_string(),
-    })?;
-    let mut slots = Vec::with_capacity(meshes.meshes.len());
-    let mut resolved = BTreeMap::new();
-    for index in 0..meshes.meshes.len() {
-        let index = u32::try_from(index).unwrap_or(u32::MAX);
-        let id = opened
-            .id(index)
-            .content_id()
-            .map_err(|reason| RetailWorldError::Slot {
-                index: index as usize,
-                reason,
-            })?;
-        slots.push(
-            MeshSlot::new(id.clone(), provenance.clone()).map_err(RetailWorldError::SceneSlot)?,
-        );
-        // An absent or refused slot keeps its id (a node may name it) but has no
-        // resolution: nothing is registered for it and the spawn reports the gap.
-        if let Ok(mesh) = catalog.resolve(&session, &group_key, index) {
-            resolved.insert(id, mesh);
-        }
-    }
-
-    Ok(RetailWorldContainer {
-        group: group.to_owned(),
-        container_key,
-        container_sha256,
-        span,
-        bytes,
-        nodes,
-        meshes,
-        slots,
-        session,
-        catalog,
-        resolved,
-    })
+    read_world_containers(install_root)?.container(group)
 }
 
 /// Opens a content session on the installation scoped to `group`, and the mesh

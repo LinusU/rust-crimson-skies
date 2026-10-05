@@ -159,8 +159,8 @@ pub use residency::{
     damage_object, load_sector, load_world, residency, unload_sector, unload_world,
 };
 pub use retail::{
-    GRID_IS_THE_SECTOR_INDEX, RETAIL_WORLD_IMPORT, RetailWorldContainer, RetailWorldError,
-    read_world_container,
+    GRID_IS_THE_SECTOR_INDEX, RETAIL_WORLD_IMPORT, RetailWorldContainer, RetailWorldContainers,
+    RetailWorldError, read_world_container, read_world_containers,
 };
 pub use spawn::{
     INSTANCE_TRANSFORM_TOLERANCE, InstanceTransform, MeshReference, SkipReason, SkippedInstance,

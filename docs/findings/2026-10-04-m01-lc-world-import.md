@@ -228,9 +228,16 @@ stored boxes disagree on one axis.
 
 ## Unknowns and limitations (recorded, not guessed)
 
-- **Only `c1c` is imported by a test.** The other seven containers are measured
-  (tables above) but not covered; **#639** covers them, and `c1`/`c5` also
-  exercise the affine path on retail data.
+- ~~**Only `c1c` is imported by a test.**~~ **Closed by #639** on 2026-10-05:
+  `crates/cs_app/tests/world/world_units.rs` runs the production path over **all
+  eight** world containers and pins the per-group counts. See
+  `docs/findings/2026-10-05-f18-world-units-containers.md`, which also records the
+  two things covering all eight exposed: `c5` names 16 mesh slots the store holds
+  no geometry for, and `uploaded_meshes` was aborting the whole container over the
+  first of them (now a named gap); and `objects_in_a_sector` is **not** the grid's
+  value count outside `c1c` — residency and the collision role are separate
+  questions, and `c1b`/`c3`/`c5` lose 15/5/3 indexed records to cells that store
+  no extent.
 - **Which side the 2000 engine trusted at load time is UNMEASURED.** No original
   run happened. The partition grid is measured as *what the container's bytes
   say*; nothing here claims the engine streamed on it, and the hierarchy
@@ -273,9 +280,11 @@ stored boxes disagree on one axis.
 
 - **#638** — done: the F10-C.03 mesh catalog is the world container's mesh source
   (see "The mesh identity is the catalog's").
-- **#639** — import and spawn **all eight** world containers, not only `c1c`.
-  `c1` and `c5` hold grid records that store a real transform, so they also
-  exercise the affine path on retail data.
+- ~~**#639** — import and spawn **all eight** world containers, not only `c1c`.~~
+  **Done** on 2026-10-05; see
+  `docs/findings/2026-10-05-f18-world-units-containers.md`. `c1` and `c5` did
+  exercise the affine path on retail data: all 3 041 records across the eight
+  containers place exactly, with 0 shears and 0 refusals.
 - **#645** — one rule for a stored `object3d` transform. This conversion and
   `scene::canonical_local` use different precedence (see "Review"), which the
   corpus shows to be latent rather than harmful today.

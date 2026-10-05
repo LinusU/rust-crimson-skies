@@ -87,6 +87,20 @@
 //! both producers installed against the same volume. It is a module here
 //! rather than a separate test binary so the suite links one Bevy image fewer.
 
+//! **#639** (`accept_f18_world_units_containers_`) runs the **production** path
+//! over **all eight** world containers production discovery finds, from **one**
+//! discovery pass, and pins each group's grid dimensions, value count, stored
+//! child-list length, object count, sector count and unresolved-role counts.
+//! `world_units` owns it. Two things only covering all eight could find are
+//! recorded in `docs/findings/2026-10-05-f18-world-units-containers.md`: `c5`
+//! names 16 mesh slots the store holds no geometry for (and the upload used to
+//! abort the whole container over the first of them), and `objects_in_a_sector`
+//! is **not** the grid's value count outside `c1c`, because residency and the
+//! collision role are separate questions. The one group whose collider settle
+//! cannot finish on this host (`c3`, whose stored mesh carries subnormal
+//! coordinates that make parry's BVH bin index overflow) is **pinned and named**
+//! there rather than skipped.
+
 mod audit;
 mod common;
 mod crossing;
@@ -105,3 +119,4 @@ mod sweep;
 mod trigger;
 mod triggers;
 mod visibility;
+mod world_units;
