@@ -17,8 +17,14 @@
 //!    ```
 //! 3. ```sh
 //!    python3 tools/validate_evidence.py private/evidence/M01-LC-AUDIO-DEVICE/acceptance.json \
-//!      --artifact-root private/evidence/M01-LC-AUDIO-DEVICE --require-pass
+//!      --artifact-root private/evidence/M01-LC-AUDIO-DEVICE
 //!    ```
+//!    **Without `--require-pass`**, deliberately: that flag rejects any nonempty
+//!    `unknowns`, and this report's `unknowns` holds the scope limits that gate
+//!    every audible and fidelity claim. Removing them to satisfy the flag is the
+//!    shortcut `docs/contracts/CLI-EVIDENCE.md` forbids. The same choice, for the
+//!    same reason, is documented in
+//!    `docs/findings/2026-09-29-f12-j-letter-o-colour.md`.
 //! 4. Commit a copy as `docs/findings/evidence/M01-LC-AUDIO-DEVICE.json`.
 //!
 //! Every field is derived from the recorded log, the environment, production

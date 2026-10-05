@@ -58,6 +58,10 @@ use cs_sim::audio_events::{
 };
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::net::SessionId;
+// The voice source's `channels`/`sample_rate`/`total_duration` are `rodio::Source`
+// methods; the trait is named here rather than re-declared on the type, so what
+// is asserted is what rodio itself is told.
+use rodio::Source;
 
 const SESSION: u64 = 0x635;
 const ENGINE_KEY: &str = "synthetic.engine.loop";
@@ -831,6 +835,163 @@ fn accept_m01_lc_audio_device_an_unplaceable_shape_is_refused_by_name() {
     let non_finite =
         PcmAudio::try_new(1, 22_050, vec![f32::NAN]).expect_err("a NaN sample is not playable");
     assert_eq!(non_finite, PcmError::NonFiniteSample);
+}
+
+/// The values a voice hands to the stream are the asset's, placed where the pan
+/// says: this is the boundary a headless machine can still check.
+///
+/// Three properties, each of which sounds plausible and is wrong if broken, and
+/// none of which needed an output device to measure:
+///
+/// 1. **Channel interleave.** A stereo member stores left at an even index and
+///    right at an odd one. Reading the channel off the cursor *after* it advances
+///    swaps every frame, which is inaudible on a centred loop and obvious on a
+///    panned one — so this scenario uses distinct left/right values.
+/// 2. **The pan law.** Constant power: a hard-left voice emits the left gain at
+///    `1.0` and the right at `0.0`, and a centred voice emits the same gain on
+///    both sides. Read off the emitted stream, not recomputed from the formula,
+///    so the assertion is about what the source produces.
+/// 3. **The loop seam.** The cursor wraps, so a source over a two-frame asset
+///    repeats its exact values with no gap, no duplicated frame and no skipped
+///    one.
+#[test]
+fn accept_m01_lc_audio_device_a_voice_source_emits_the_assets_channels_placed_and_repeated() {
+    // Two stereo frames with distinct, signed values per channel, so a swap or a
+    // reorder is visible in the emitted sequence.
+    let mut samples = Vec::new();
+    for (left, right) in [(0.5f32, -0.25f32), (-0.75, 0.125)] {
+        samples.push(left);
+        samples.push(right);
+    }
+    let stereo = PcmAudio::try_new(2, 48_000, samples.clone()).expect("a playable stereo asset");
+
+    // 1. Interleave, at a hard left so the two channels carry different gains.
+    //
+    // The muted side is compared as "inaudible", not as exactly `0.0`: the pan
+    // law is `cos`/`sin` of the angle, and `cos(π/2)` is `6.1e-17` in `f64`, not
+    // a clean zero. Asserting an exact zero here would be asserting a rounding
+    // accident rather than the placement.
+    let mut voice = cs_app::audio::LoopingVoice::new(&stereo, -1.0);
+    let emitted: Vec<f32> = voice.by_ref().take(8).collect();
+    assert!(
+        near(&emitted, &[0.5, 0.0, -0.75, 0.0, 0.5, 0.0, -0.75, 0.0]),
+        "a hard-left stereo voice emits the left channel at unity and the right silent, \
+         in the member's own interleave: {emitted:?}"
+    );
+
+    // 2. The pan law, read off the stream at both extremes and at centre.
+    let hard_right: Vec<f32> = cs_app::audio::LoopingVoice::new(&stereo, 1.0)
+        .take(4)
+        .collect();
+    assert!(
+        near(&hard_right, &[0.0, -0.25, 0.0, 0.125]),
+        "a hard-right voice mutes the left channel instead of the right: {hard_right:?}"
+    );
+    let (centre_left, centre_right) = cs_app::audio::LoopingVoice::new(&stereo, 0.0).gains();
+    assert!(
+        (centre_left - centre_right).abs() < 1e-6 && centre_left > 0.7,
+        "a centred voice is the same gain on both sides and not silence: {centre_left} {centre_right}"
+    );
+    // And the law holds its power: the two gains' squares sum to one, which is
+    // what "constant power" means and what a linear crossfade would not give.
+    assert!(
+        (f64::from(centre_left).powi(2) + f64::from(centre_right).powi(2) - 1.0).abs() < 1e-6,
+        "the centred gains hold constant power"
+    );
+
+    // 3. A placement update moves the voice **without disturbing the interleave**,
+    //    and takes effect on the very next value.
+    //
+    // The update lands mid-frame on purpose: after one value the cursor is on
+    // the right channel, so a source that recomputed the channel from a
+    // re-zeroed cursor would emit the *left* gain on a right-channel value. The
+    // expected sequence is therefore right(frame 0), left(frame 1),
+    // right(frame 1) at the new hard-right placement — each value carrying the
+    // gain of the channel it belongs to.
+    let mut moving = cs_app::audio::LoopingVoice::new(&stereo, -1.0);
+    assert_eq!(
+        moving.next(),
+        Some(0.5),
+        "the first value is the left channel"
+    );
+    moving.set_pan(1.0);
+    let after: Vec<f32> = moving.take(3).collect();
+    assert!(
+        near(&after, &[-0.25, 0.0, 0.125]),
+        "the moved placement takes effect on the next value and each value carries the gain of \
+         the channel it belongs to: right(frame 0) at unity, left(frame 1) muted, \
+         right(frame 1) at unity: {after:?}"
+    );
+
+    // A mono member is spread to stereo rather than left as one channel, so the
+    // pan is a real placement instead of a gain on a signal with no sides.
+    let mono = PcmAudio::try_new(1, 22_050, vec![0.5, -0.5]).expect("a playable mono asset");
+    let mono_left: Vec<f32> = cs_app::audio::LoopingVoice::new(&mono, -1.0)
+        .take(4)
+        .collect();
+    assert!(
+        near(&mono_left, &[0.5, 0.0, -0.5, 0.0]),
+        "a mono member is spread across both channels and then placed: {mono_left:?}"
+    );
+    let mono_right: Vec<f32> = cs_app::audio::LoopingVoice::new(&mono, 1.0)
+        .take(4)
+        .collect();
+    assert!(
+        near(&mono_right, &[0.0, 0.5, 0.0, -0.5]),
+        "the same mono member is placed fully right: {mono_right:?}"
+    );
+}
+
+/// Whether two emitted sequences agree to within a rounding tolerance.
+///
+/// `1e-6` is the tolerance the pan law needs at its extremes: `cos(π/2)` and
+/// `sin(0)` are `6.1e-17` and `0.0`, and a member's own samples are carried
+/// exactly, so nothing here hides a real ordering or gain error — those are
+/// whole fractions and would miss by orders of magnitude more.
+fn near(left: &[f32], right: &[f32]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(seen, wanted)| (seen - wanted).abs() < 1e-6)
+}
+
+/// The voice source reports the **member's own** rate and always two channels,
+/// because that is what it emits.
+///
+/// A source that reported the device's rate, or a mono count after being spread,
+/// would make the output stream resample or downmix a signal that needs neither,
+/// which is a resample this project has no measurement for.
+#[test]
+fn accept_m01_lc_audio_device_the_voice_source_reports_the_members_rate_and_stereo_channels() {
+    let mono = PcmAudio::try_new(1, 11_025, vec![0.25, -0.25]).expect("a playable mono asset");
+    let voice = cs_app::audio::LoopingVoice::new(&mono, 0.0);
+    assert_eq!(voice.channels().get(), 2, "a spread voice is stereo");
+    assert_eq!(
+        voice.sample_rate().get(),
+        11_025,
+        "the member's own declared rate, not the device's"
+    );
+    assert_eq!(
+        voice.total_duration(),
+        None,
+        "a looping voice has no end, so rodio is told so rather than given a fiction"
+    );
+    // And the samples are the member's own buffer, shared rather than copied: a
+    // million-sample member must not be duplicated per started voice.
+    let again = cs_app::audio::LoopingVoice::new(&mono, 0.0);
+    assert_eq!(
+        cs_app::audio::PcmAudio::shared_samples(&mono).len(),
+        mono.sample_count() as usize,
+        "the shared handle carries every value the member decoded to"
+    );
+    assert_eq!(
+        again.take(2).collect::<Vec<f32>>(),
+        cs_app::audio::LoopingVoice::new(&mono, 0.0)
+            .take(2)
+            .collect::<Vec<f32>>(),
+        "two voices over one member start from the same values"
+    );
 }
 
 /// A loop whose emitter belongs to another session generation is refused by the

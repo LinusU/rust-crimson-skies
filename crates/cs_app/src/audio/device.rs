@@ -325,6 +325,16 @@ impl PcmAudio {
         &self.samples
     }
 
+    /// The same interleaved samples as a shared handle.
+    ///
+    /// A device voice holds the member's samples rather than copying them, so
+    /// starting the same loop twice costs one handle, not one copy of a decoded
+    /// member. The buffer is immutable once built, so sharing it is safe.
+    #[must_use]
+    pub fn shared_samples(audio: &Self) -> Arc<Vec<f32>> {
+        Arc::clone(&audio.samples)
+    }
+
     /// The samples of one decoded member, normalized under the format **its
     /// own** declaration names.
     ///
@@ -511,52 +521,86 @@ struct AudibleVoice {
 /// the mixer starts is a loop: a one-shot cue is F41-C's radio and music path,
 /// which is driven by tick-completion rather than by a voice's own end.
 ///
-/// A mono asset is upmixed to stereo **here** rather than by the device's
+/// A mono asset is spread to stereo **here** rather than by the device's
 /// channel converter, so the pan below is a real left/right placement instead of
-/// a gain applied to a signal that has not been split into channels yet.
-struct LoopingVoice {
+/// a gain applied to a signal that has not been split into channels yet. The
+/// spread happens one frame at a time in [`Iterator::next`] rather than into a
+/// second buffer at construction: a decoded member is up to a million samples,
+/// and copying (then doubling) it per started voice would put megabytes of
+/// allocation on the audio thread's start path for no gain.
+///
+/// Public because it is the boundary a headless machine can still check: the
+/// pan law, the channel interleave, the mono spread and the loop seam are all
+/// observable by pulling samples from this iterator, with no output hardware at
+/// all. That is what makes them testable in CI rather than only on a machine
+/// with a sound card.
+pub struct LoopingVoice {
+    /// The member's own interleaved samples, shared with the library rather than
+    /// copied per voice.
     samples: Arc<Vec<f32>>,
-    channels: u16,
+    /// Whether the member stored one value per frame, so each frame owes a right
+    /// channel this source has not emitted yet.
+    mono: bool,
     rate_hz: u32,
+    /// Index of the next stored value.
     cursor: usize,
+    /// Whether the value at `cursor` still owes its right channel.
+    pending_right: bool,
     pan: Arc<AtomicF32>,
     probe: Option<Arc<SampleProbe>>,
 }
 
 impl LoopingVoice {
-    fn new(audio: &PcmAudio, pan: Arc<AtomicF32>, probe: Option<Arc<SampleProbe>>) -> Self {
-        let channels = audio.channels();
-        let samples = if channels == 2 {
-            audio.samples().to_vec()
-        } else {
-            upmix_mono(audio.samples())
-        };
+    /// A voice looping `audio`, placed at `pan`.
+    ///
+    /// # Panics
+    ///
+    /// Never: every field a [`PcmAudio`] holds was validated when it was built.
+    #[must_use]
+    pub fn new(audio: &PcmAudio, pan: f32) -> Self {
         Self {
-            samples: Arc::new(samples),
-            channels: 2,
+            samples: PcmAudio::shared_samples(audio),
+            mono: audio.channels() == 1,
             rate_hz: audio.rate_hz(),
             cursor: 0,
-            pan,
-            probe,
+            pending_right: false,
+            pan: Arc::new(AtomicF32::new(pan)),
+            probe: None,
         }
     }
 
-    /// The constant-power gains for the current pan, in `-1.0 ..= 1.0`.
-    fn gains(&self) -> (f32, f32) {
+    /// Attaches a probe that records every value this source emits.
+    #[must_use]
+    pub fn with_probe(mut self, probe: Arc<SampleProbe>) -> Self {
+        self.probe = Some(probe);
+        self
+    }
+
+    /// Moves the placement without stopping the voice.
+    ///
+    /// This is the [`cs_sim::audio_events::AudioDevice::update_voice`] path: a
+    /// rodio source is moved into the audio thread's mixer and cannot be
+    /// borrowed afterwards, so the placement travels through the shared cell the
+    /// source reads per frame.
+    pub fn set_pan(&self, pan: f32) {
+        self.pan.store(pan);
+    }
+
+    /// The shared cell this source reads its placement from.
+    ///
+    /// A voice keeps the handle so a later update can move the placement after
+    /// the source has been moved into the audio thread's mixer.
+    fn pan_handle(&self) -> Arc<AtomicF32> {
+        Arc::clone(&self.pan)
+    }
+
+    /// The constant-power gains for the current pan, in `0.0 ..= 1.0`.
+    #[must_use]
+    pub fn gains(&self) -> (f32, f32) {
         let pan = f64::from(self.pan.load()).clamp(-1.0, 1.0);
         let angle = (pan + 1.0) * std::f64::consts::FRAC_PI_4;
         (angle.cos() as f32, angle.sin() as f32)
     }
-}
-
-/// Interleaves a mono asset into stereo by duplicating every sample.
-fn upmix_mono(mono: &[f32]) -> Vec<f32> {
-    let mut stereo = Vec::with_capacity(mono.len() * 2);
-    for value in mono {
-        stereo.push(*value);
-        stereo.push(*value);
-    }
-    stereo
 }
 
 impl Iterator for LoopingVoice {
@@ -567,13 +611,28 @@ impl Iterator for LoopingVoice {
             return None;
         }
         let (left, right) = self.gains();
-        let interleaved = self.samples.len();
-        let frame_start = self.cursor;
         let value = self.samples[self.cursor];
-        let is_right = frame_start % 2 == 1;
-        self.cursor += 1;
-        if self.cursor == interleaved {
-            self.cursor = 0;
+        // The channel is read off the cursor **before** it advances: an
+        // interleaved stereo member stores left at an even index and right at an
+        // odd one, so reading it afterwards swaps every frame.
+        let is_right = if self.mono {
+            self.pending_right
+        } else {
+            self.cursor % 2 == 1
+        };
+        if self.mono {
+            self.pending_right = !self.pending_right;
+            if !self.pending_right {
+                self.cursor += 1;
+                if self.cursor == self.samples.len() {
+                    self.cursor = 0;
+                }
+            }
+        } else {
+            self.cursor += 1;
+            if self.cursor == self.samples.len() {
+                self.cursor = 0;
+            }
         }
         let out = if is_right {
             value * right
@@ -598,9 +657,9 @@ impl Source for LoopingVoice {
     }
 
     fn channels(&self) -> ChannelCount {
-        // `LoopingVoice::new` upmixes every asset to stereo, so the channel
-        // count it reports is its own and never zero.
-        NonZero::new(self.channels).expect("a voice's channel count is two")
+        // A mono member is spread to stereo by `next`, so the channel count this
+        // source reports is always two and never zero.
+        NonZero::new(2).expect("two is nonzero")
     }
 
     fn sample_rate(&self) -> SampleRate {
@@ -879,8 +938,12 @@ impl AudioDevice for AudibleDevice {
             ));
         };
         let voice = DeviceVoiceId(self.next_voice);
-        let pan_handle = Arc::new(AtomicF32::new(pan));
-        let source = LoopingVoice::new(audio, Arc::clone(&pan_handle), self.probe.clone());
+        let source = LoopingVoice::new(audio, pan);
+        let pan_handle = source.pan_handle();
+        let source = match self.probe.clone() {
+            Some(probe) => source.with_probe(probe),
+            None => source,
+        };
         let player = Player::connect_new(sink.mixer());
         player.set_volume(gain);
         player.set_speed(pitch);

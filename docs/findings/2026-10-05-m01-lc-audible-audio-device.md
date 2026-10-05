@@ -44,6 +44,17 @@ output, no `audio`-capable run could produce an audible artifact, and VS-M01-RUN
   constant-power stereo gain applied inside the source and shared with the mixer
   through an atomic cell (a rodio source is moved into the audio thread's mixer
   and cannot be borrowed afterwards).
+* **`LoopingVoice`** — the per-voice source, **public**. It was private at first,
+  which left the three properties the finding below names as the highest
+  deviation risk — the channel interleave, the pan law and the loop seam —
+  reachable only on a machine with an output device. It is a plain
+  `Iterator<Item = f32>`, so pulling from it measures exactly what an output
+  stream would consume with no hardware involved, and those three properties are
+  now covered in CI. It also **shares** the member's sample buffer through an
+  `Arc` instead of copying it per voice: a decoded retail member is over a million
+  samples, and the first version copied (and, for mono, doubled) that on every
+  voice start, on the audio thread's start path. A mono member is spread to
+  stereo one frame at a time in `next` rather than into a second buffer.
 * **`open_audible_device`** — the capability gate. **Capability first**: a machine
   that does not declare `audio` is refused with `audio_capability_absent` *before
   any hardware call*. **Hardware second**: a declared machine with no stream gets
@@ -68,7 +79,17 @@ output, no `audio`-capable run could produce an audible artifact, and VS-M01-RUN
 ## Verification
 
 `crates/cs_app/tests/accept_m01_lc_audio_device.rs`, prefix
-`accept_m01_lc_audio_device_`. 18 tests, 17 synthetic + 1 retail+audio.
+`accept_m01_lc_audio_device_`. 20 tests, 19 synthetic + 1 retail+audio.
+
+The two `a_voice_source_*` scenarios were added during review. At
+implementation time the pan law, the channel interleave and the loop seam were
+reachable **only** through a running output stream, so they were asserted only in
+the one `#[ignore]`d retail scenario — on a machine with an `audio` capability
+and nothing else. Making the source public moved all three into CI. Two of them
+caught something on the way: `cos(π/2)` is `6.1e-17`, not a clean zero, so the
+muted side of a hard-panned voice is asserted inaudible rather than exactly
+`0.0`; and a placement update that lands mid-frame must apply to the channel
+actually due, which is now asserted rather than assumed.
 
 The minimum scenario
 (`a_retail_sound_member_decodes_and_plays_through_the_real_device`,
@@ -167,7 +188,7 @@ but the device is broken", which is a different claim with a different exit code
 `classify_refusal` reads that distinction off the declaration rather than out of
 the error's wording, so a diagnostic does not depend on prose.
 
-## Test inventory (`accept_m01_lc_audio_device_`, 18)
+## Test inventory (`accept_m01_lc_audio_device_`, 20)
 
 | Test | Needs | What fails if the implementation goes |
 | --- | --- | --- |
@@ -184,13 +205,15 @@ the error's wording, so a diagnostic does not depend on prose.
 | `a_foreign_session_loop_never_reaches_the_device` | synthetic | a stale generation's loop reaches this generation's device |
 | `device_loss_closes_the_audible_device_and_simulation_continues` | synthetic | the loss path moves simulation state, or the retry is silent |
 | `the_mix_the_device_is_asked_for_carries_the_engine_level` | synthetic | gain/pitch are dropped, so the loop plays at a fixed rate |
+| `a_voice_source_emits_the_assets_channels_placed_and_repeated` | synthetic | every frame's channels are swapped, the pan law is wrong, or the loop seam drops or duplicates a frame |
+| `the_voice_source_reports_the_members_rate_and_stereo_channels` | synthetic | a spread voice reports one channel, or the device's rate is imposed on the member's |
 | `the_two_open_failures_carry_different_codes` | synthetic | a missing capability and a missing device are indistinguishable |
 | `a_stand_in_world_is_not_audible_and_says_so` | synthetic | "audible" is inferred from a running frame |
 | `the_probe_measures_the_sample_path_and_nothing_else` | synthetic | a refused start is reported as playback |
 | `close_is_idempotent_and_leaves_no_voice` | synthetic | teardown strands a voice |
 | `a_retail_sound_member_decodes_and_plays_through_the_real_device` *(retail + audio)* | hardware | nothing plays, or the decoded member is not what reached the stream |
 
-All 18 call production code. The 17 synthetic tests write RIFF/WAVE members byte
+All 20 call production code. The 19 synthetic tests write RIFF/WAVE members byte
 by byte and reach the conversion through the production header reader and
 decoder, so the values asserted on are the ones a real member would carry; no
 fabricated `DecodedSound` is used. The retail test re-derives every figure from
@@ -206,9 +229,11 @@ Three places a reviewer should look hardest:
 2. **The gate's ordering** — capability before hardware. Reversed, a headless
    machine would attempt an open and report `no_output_device` for what is really
    a missing capability, which is a false statement about the machine.
-3. **`LoopingVoice`'s cursor and pan** — the cursor wraps the interleaved buffer
-   and indexes `is_right` off `cursor % 2` *before* incrementing. Off-by-one there
-   swaps the channels of every frame, which sounds plausible and is wrong.
+3. **`LoopingVoice`'s cursor and pan** — the cursor wraps the member's shared
+   buffer and the channel is read off it *before* it advances (for a mono member,
+   off the "this frame still owes a right channel" flag instead). Off-by-one there
+   swaps the channels of every frame, which sounds plausible and is wrong. This
+   is now asserted in CI rather than only on a machine with a sound card.
 
 ## Follow-up tasks filed rather than fixed here
 

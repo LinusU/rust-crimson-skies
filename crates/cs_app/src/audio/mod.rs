@@ -56,9 +56,9 @@ pub mod plugin;
 pub use device::{
     AudibleDevice, AudioBackendKind, AudioBackendLog, AudioBackendRefusal, CODE_CAPABILITY_ABSENT,
     CODE_DEVICE_CLOSED, CODE_INVALID_MIX, CODE_NO_OUTPUT_DEVICE, CODE_SAMPLE_UNAVAILABLE,
-    CODE_UNKNOWN_VOICE, CapabilityDeclaration, EXIT_MISSING_CAPABILITY, InMemorySamples, PcmAudio,
-    PcmError, RefusingAudioDevice, SampleLibrary, SampleProbe, audibility_exit_code,
-    classify_refusal, open_audible_device, sound_member_pcm,
+    CODE_UNKNOWN_VOICE, CapabilityDeclaration, EXIT_MISSING_CAPABILITY, InMemorySamples,
+    LoopingVoice, PcmAudio, PcmError, RefusingAudioDevice, SampleLibrary, SampleProbe,
+    audibility_exit_code, classify_refusal, open_audible_device, sound_member_pcm,
 };
 pub use engine::{EngineVoiceFollow, EngineVoices, smooth_engine_voices};
 pub use handoff::{
