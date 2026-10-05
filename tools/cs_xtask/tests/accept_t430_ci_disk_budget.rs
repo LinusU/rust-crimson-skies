@@ -197,21 +197,23 @@ fn cs_xtask_t430_panic_helper() {
 /// The setting above is only worth its megabytes if the binary really keeps
 /// `file:line`, so this checks the artifact instead of the manifest string: it
 /// runs [`PANIC_HELPER`] in a child process with `RUST_BACKTRACE=1` and
-/// requires a backtrace *frame* to name a source file and a line.
+/// requires a backtrace *frame* to name a line of this file.
 ///
 /// Only the frames are read, never the header the panic hook prints for the
 /// panic's own location: that location is a string the compiler wrote into the
-/// binary, so it would pass even with the line program thrown away. A profile
-/// without line tables prints `0x...` per frame instead, and this fails.
+/// binary, so it would pass even with the line program thrown away. Frames in
+/// `std` do not count either: they resolve from the toolchain's prebuilt
+/// rlibs whatever this workspace's profile says, so only a frame in this file
+/// shows that the workspace's own code kept its line tables. A profile
+/// without them prints the helper's frame with no location, and this fails.
 #[test]
 fn accept_t430_a_panic_backtrace_names_the_file_and_line() {
+    let exe = std::env::current_exe().expect("this test binary must have a path to re-run");
     let child = transient::command_output(
-        std::process::Command::new(
-            std::env::current_exe().expect("this test binary must have a path to re-run"),
-        )
-        .args(["--exact", PANIC_HELPER, "--nocapture"])
-        .env(PANIC_HELPER_ENV, "1")
-        .env("RUST_BACKTRACE", "1"),
+        std::process::Command::new(&exe)
+            .args(["--exact", PANIC_HELPER, "--nocapture"])
+            .env(PANIC_HELPER_ENV, "1")
+            .env("RUST_BACKTRACE", "1"),
     )
     .expect("the panic helper must be runnable");
     let output = format!(
@@ -227,22 +229,39 @@ fn accept_t430_a_panic_backtrace_names_the_file_and_line() {
         .split_once("stack backtrace:")
         .map_or("", |(_, frames)| frames);
     assert!(
-        names_source_location(frames),
-        "no backtrace frame named a source file and line, so the test binaries \
-CI builds cannot locate a failing test: RUST_BACKTRACE=1 printed only \
-addresses. The committed setting is [profile.dev] debug = \
-\"line-tables-only\" (cs_xtask verify-ci-budget); the helper's output was: \
-{output}"
+        names_source_location(frames, THIS_FILE),
+        "no backtrace frame named a line of {THIS_FILE}, so the test binaries \
+CI builds cannot locate a failing test. The committed setting is \
+[profile.dev] debug = \"line-tables-only\" (cs_xtask verify-ci-budget); the \
+helper's output was: {output}"
     );
 }
 
-/// Whether any whitespace-separated token in `text` is a `something.rs:12` style
-/// location, which is what a backtrace frame looks like when the line program
-/// survived. The column that may follow the line number is ignored.
-fn names_source_location(text: &str) -> bool {
+/// The file name the helper's own backtrace frames must point into.
+const THIS_FILE: &str = "accept_t430_ci_disk_budget.rs";
+
+/// Whether any whitespace-separated token in `text` is a `.../file:12` style
+/// location in `file`, which is what a backtrace frame looks like when the line
+/// program survived. The column that may follow the line number is ignored.
+fn names_source_location(text: &str, file: &str) -> bool {
+    let needle = format!("{file}:");
     text.split_ascii_whitespace().any(|token| {
-        token
-            .rsplit_once(".rs:")
-            .is_some_and(|(_, position)| position.starts_with(|c: char| c.is_ascii_digit()))
+        token.split_once(&needle).is_some_and(|(dir, position)| {
+            (dir.is_empty() || dir.ends_with('/'))
+                && position.starts_with(|c: char| c.is_ascii_digit())
+        })
     })
+}
+
+#[test]
+fn accept_t430_only_this_files_frames_count_as_located() {
+    let std_only = "0: core::panicking::panic_fmt\n at /rustc/x/library/core/src/panicking.rs:80:14\n\
+2: accept_t430_ci_disk_budget::cs_xtask_t430_panic_helper\n";
+    assert!(!names_source_location(std_only, THIS_FILE));
+    let located = "2: cs_xtask_t430_panic_helper\n at ./tools/cs_xtask/tests/accept_t430_ci_disk_budget.rs:194:5\n";
+    assert!(names_source_location(located, THIS_FILE));
+    assert!(!names_source_location(
+        "at ./tests/not_accept_t430_ci_disk_budget.rs:194:5",
+        THIS_FILE
+    ));
 }
