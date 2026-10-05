@@ -94,8 +94,8 @@ fn accept_f39_e1_every_mission_record_is_measured_whole() {
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f39_e1_retail_the_dormant_arguments_are_one_number_each() {
     let census = census();
-    assert_eq!(census.dormant_blocks(), 1096);
-    assert_eq!(census.sentinel_blocks(), 992);
+    assert_eq!(census.dormant_blocks(), 1118);
+    assert_eq!(census.sentinel_blocks(), 1014);
     assert_eq!(census.dated_blocks(), 104);
     assert_eq!(
         census.sentinel_blocks() + census.dated_blocks(),
@@ -155,14 +155,14 @@ fn accept_f39_e1_retail_the_dormant_and_staged_families_are_counted_apart() {
         .count();
     assert_eq!(staged_without_dormant, 115);
 
-    // The five families partition every block exactly once: 836 sentinel blocks
+    // The five families partition every block exactly once: 858 sentinel blocks
     // with no stage, 156 sentinel blocks with one, 104 dated blocks (none of
-    // which carries a stage), 115 staged blocks that are not dormant, and 127
+    // which carries a stage), 115 staged blocks that are not dormant, and 105
     // blocks that declare neither.
     let sentinel_without_stages = census.sentinel_blocks() - sentinel_with_stages;
-    assert_eq!(sentinel_without_stages, 836);
+    assert_eq!(sentinel_without_stages, 858);
     let neither = census.block_count() - census.dormant_blocks() - staged_without_dormant;
-    assert_eq!(neither, 127);
+    assert_eq!(neither, 105);
     assert_eq!(
         sentinel_without_stages
             + sentinel_with_stages
@@ -447,9 +447,9 @@ fn accept_f39_e1_retail_the_display_message_ids_are_not_resolvable() {
         ]
     );
     assert_eq!(census.identity_messages(), 79);
-    // 86 blocks are dormant *and* the one the player is shown: the two
+    // 91 blocks are dormant *and* the one the player is shown: the two
     // declarations are independent, so "dormant" cannot be read as "hidden".
-    assert_eq!(census.dormant_identity_blocks(), 86);
+    assert_eq!(census.dormant_identity_blocks(), 91);
 
     // The message ids the objectives name, and the fact that none of them is
     // defined by a shipped header. `RESOURCE.H` and `RESRC1.H` are read through
@@ -492,4 +492,26 @@ fn accept_f39_e1_retail_the_display_message_ids_are_not_resolvable() {
             "{id} became a defined id, so the measurement must be redone"
         );
     }
+}
+
+/// F39-D-COUNT: `BEGIN_DORMANT` is counted 1118 times, not the 1096 the flat
+/// (text, value) walk reported. Two production readers that share no counting
+/// code — the F39-D key census and the F39-E1 dormant census — are compared
+/// against each other and against the figure `cs_content::mission_control`'s
+/// directive walk measured first.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f39_d_count_retail_begin_dormant_is_counted_in_every_block() {
+    let root = game_dir();
+    let objectives = cs_app::objectives::survey_retail_objective_records(&root)
+        .expect("the objective census measures");
+    let sites: u32 = objectives
+        .rows()
+        .iter()
+        .flat_map(|row| row.keys.iter())
+        .filter(|(key, _)| key == cs_content::objectives::OBJECTIVE_DORMANT_KEY)
+        .map(|(_, count)| count)
+        .sum();
+    assert_eq!(sites, 1118);
+    assert_eq!(census().dormant_blocks(), 1118);
 }

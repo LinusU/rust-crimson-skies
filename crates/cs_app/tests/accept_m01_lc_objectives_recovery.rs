@@ -67,7 +67,7 @@ fn accept_m01_lc_objectives_retail_m01_drops_no_record() {
     assert_eq!(recovery.blocks().len(), 58);
 
     // Every field is accounted for, none silently dropped.
-    assert_eq!(recovery.fields_read(), 356);
+    assert_eq!(recovery.fields_read(), 358);
     assert_eq!(
         recovery.fields_recovered() + recovery.unrecovered().len(),
         recovery.fields_read()
