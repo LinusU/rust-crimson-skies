@@ -585,6 +585,7 @@ pub mod capital;
 pub mod capture;
 pub mod cinematics;
 pub mod cli;
+pub mod construction;
 pub mod damage;
 pub mod diagnostics;
 pub mod environment;

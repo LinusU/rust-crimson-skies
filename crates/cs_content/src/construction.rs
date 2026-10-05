@@ -46,7 +46,7 @@
 //! all **unmeasured** — F44-D's audit. Nothing here may be read as an original
 //! component price, rack limit or blueprint.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved, Unit};
@@ -1807,6 +1807,307 @@ impl ConstructionRules {
             breaches,
         })
     }
+}
+
+// ------------------------------------------------------ shared validator ----
+
+/// The host-and-catalog side of the shared validator (F44-B): which guns may
+/// be mated, which components the host bans and which components exist for
+/// this caller at all.
+///
+/// One policy value is built per caller — the campaign boundary derives
+/// availability from the profile's owned and purchasable items, Instant Action
+/// and multiplayer from the host's catalog — and **every** caller runs the same
+/// [`ConstructionRules::validate`], so an imported blueprint meets the rules a
+/// hand-built one does (sheet AC03).
+///
+/// The pairing rule is [`Resolved`]: which guns the original lets a player mate
+/// is unmeasured (F44-D), so an unmeasured rule refuses a paired selection
+/// instead of allowing or forbidding it by guess.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConstructionPolicy {
+    pairable_guns: Resolved<BTreeSet<ContentId>>,
+    banned: BTreeSet<ContentId>,
+    available: BTreeSet<ContentId>,
+}
+
+impl ConstructionPolicy {
+    /// A policy over the declared pairing rule, the host's banned list and the
+    /// components available to this caller.
+    #[must_use]
+    pub const fn new(
+        pairable_guns: Resolved<BTreeSet<ContentId>>,
+        banned: BTreeSet<ContentId>,
+        available: BTreeSet<ContentId>,
+    ) -> Self {
+        Self {
+            pairable_guns,
+            banned,
+            available,
+        }
+    }
+
+    /// The declared pairing rule.
+    #[must_use]
+    pub const fn pairable_guns(&self) -> &Resolved<BTreeSet<ContentId>> {
+        &self.pairable_guns
+    }
+
+    /// The components the host forbids regardless of availability.
+    #[must_use]
+    pub const fn banned(&self) -> &BTreeSet<ContentId> {
+        &self.banned
+    }
+
+    /// The components this caller may use.
+    #[must_use]
+    pub const fn available(&self) -> &BTreeSet<ContentId> {
+        &self.available
+    }
+
+    /// The same policy with `component` banned.
+    #[must_use]
+    pub fn with_banned(mut self, component: ContentId) -> Self {
+        self.banned.insert(component);
+        self
+    }
+}
+
+/// One rule a blueprint breaks. A violation is a measured verdict, unlike a
+/// [`ValidationRefusal`], which is an unknown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConstraintViolation {
+    /// A gun fitment occupies a number of positions other than one (single) or
+    /// two (pair), the only selections non-negotiable 1 observes.
+    UnsupportedGunSelection {
+        /// The mount.
+        mount: DamageNodeKey,
+        /// The positions it claimed.
+        positions: u32,
+    },
+    /// A paired gun fitment names a gun the pairing rule does not let be mated.
+    GunNotPairable {
+        /// The gun.
+        gun: ContentId,
+        /// The mount.
+        mount: DamageNodeKey,
+    },
+    /// The host bans the component.
+    BannedComponent {
+        /// The banned component.
+        component: ContentId,
+        /// The category it was fitted into.
+        category: BudgetCategory,
+    },
+    /// The component is not available to this caller.
+    Unavailable {
+        /// The unavailable component.
+        component: ContentId,
+        /// The category it was fitted into.
+        category: BudgetCategory,
+    },
+}
+
+impl fmt::Display for ConstraintViolation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedGunSelection { positions, .. } => write!(
+                f,
+                "a gun selection of {positions} positions is neither single nor pair"
+            ),
+            Self::GunNotPairable { gun, .. } => write!(f, "{gun} cannot be mated as a pair"),
+            Self::BannedComponent {
+                component,
+                category,
+            } => write!(f, "{component} ({category}) is banned by the host"),
+            Self::Unavailable {
+                component,
+                category,
+            } => write!(f, "{component} ({category}) is not available"),
+        }
+    }
+}
+
+/// Why a blueprint could not be judged at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ValidationRefusal {
+    /// The budget arithmetic could not be measured.
+    Budget(BudgetRefusal),
+    /// A paired selection exists but the pairing rule is unmeasured.
+    UnknownPairingRule {
+        /// The paired gun.
+        gun: ContentId,
+    },
+}
+
+impl fmt::Display for ValidationRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Budget(refusal) => write!(f, "{refusal}"),
+            Self::UnknownPairingRule { gun } => write!(
+                f,
+                "the paired-gun rule is unmeasured, so a pair of {gun} cannot be judged"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ValidationRefusal {}
+
+impl From<BudgetRefusal> for ValidationRefusal {
+    fn from(refusal: BudgetRefusal) -> Self {
+        Self::Budget(refusal)
+    }
+}
+
+/// The validator's whole answer: exact totals plus every broken limit and
+/// constraint. Warnings are not produced yet: no original warning rule is
+/// known, so none is invented.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlueprintVerdict {
+    assessment: BlueprintAssessment,
+    violations: Vec<ConstraintViolation>,
+}
+
+impl BlueprintVerdict {
+    /// The exact totals and limit breaches.
+    #[must_use]
+    pub const fn assessment(&self) -> &BlueprintAssessment {
+        &self.assessment
+    }
+
+    /// Every broken constraint, in blueprint order.
+    #[must_use]
+    pub fn violations(&self) -> &[ConstraintViolation] {
+        &self.violations
+    }
+
+    /// Whether the blueprint is inside every limit and breaks no constraint.
+    /// Reads integers and sets only.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.assessment.is_within_limits() && self.violations.is_empty()
+    }
+}
+
+impl AircraftBlueprint {
+    /// Every component this blueprint names, with the category it is fitted
+    /// into, in the order the budget prices them.
+    #[must_use]
+    pub fn components(&self) -> Vec<(BudgetCategory, &ContentId)> {
+        let mut out = vec![
+            (BudgetCategory::Airframe, &self.airframe),
+            (BudgetCategory::Engine, &self.engine),
+        ];
+        out.extend(self.armor.iter().map(|a| (BudgetCategory::Armor, &a.armor)));
+        out.extend(self.guns.iter().map(|g| (BudgetCategory::Guns, &g.gun)));
+        out.extend(
+            self.ordnance
+                .iter()
+                .map(|o| (BudgetCategory::Ordnance, &o.ordnance)),
+        );
+        out.extend(
+            self.equipment
+                .iter()
+                .map(|e| (BudgetCategory::Equipment, e)),
+        );
+        out
+    }
+}
+
+impl ConstructionRules {
+    /// The one validator every construction path shares: the exact budget
+    /// ([`Self::assess`]) plus the paired-gun, banned-component and
+    /// availability constraints of `policy`.
+    ///
+    /// Symmetry is not a constraint: an asymmetric loadout is as valid as a
+    /// mirrored one.
+    ///
+    /// # Errors
+    ///
+    /// [`ValidationRefusal`] when the budget cannot be measured or a paired
+    /// selection meets an unmeasured pairing rule.
+    pub fn validate(
+        &self,
+        policy: &ConstructionPolicy,
+        blueprint: &AircraftBlueprint,
+        book: &PriceBook,
+    ) -> Result<BlueprintVerdict, ValidationRefusal> {
+        let assessment = self.assess(blueprint, book)?;
+        let mut violations = Vec::new();
+        for (category, component) in blueprint.components() {
+            if policy.banned.contains(component) {
+                violations.push(ConstraintViolation::BannedComponent {
+                    component: component.clone(),
+                    category,
+                });
+            }
+            if !policy.available.contains(component) {
+                violations.push(ConstraintViolation::Unavailable {
+                    component: component.clone(),
+                    category,
+                });
+            }
+        }
+        for fitment in blueprint.guns() {
+            // `assess` refused an unknown position count, so it is known here.
+            let Some(positions) = fitment.known_positions() else {
+                continue;
+            };
+            match positions {
+                1 => {}
+                2 => match policy.pairable_guns.clone().known() {
+                    None => {
+                        return Err(ValidationRefusal::UnknownPairingRule {
+                            gun: fitment.gun().clone(),
+                        });
+                    }
+                    Some(pairable) if !pairable.contains(fitment.gun()) => {
+                        violations.push(ConstraintViolation::GunNotPairable {
+                            gun: fitment.gun().clone(),
+                            mount: fitment.mount().clone(),
+                        });
+                    }
+                    Some(_) => {}
+                },
+                other => violations.push(ConstraintViolation::UnsupportedGunSelection {
+                    mount: fitment.mount().clone(),
+                    positions: other,
+                }),
+            }
+        }
+        Ok(BlueprintVerdict {
+            assessment,
+            violations,
+        })
+    }
+}
+
+/// A policy for the synthetic fixture: the fixture gun is pairable, nothing is
+/// banned and every priced fixture component is available.
+#[must_use]
+pub fn synthetic_policy() -> ConstructionPolicy {
+    let mut available = BTreeSet::new();
+    for (kind, key) in [
+        (ContentKind::Airframe, SYNTHETIC_AIRFRAME_KEY),
+        (ContentKind::Engine, SYNTHETIC_ENGINE_KEY),
+        (ContentKind::Armor, SYNTHETIC_PLATE_KEY),
+        (ContentKind::Armor, SYNTHETIC_HEAVY_PLATE_KEY),
+        (ContentKind::Weapon, SYNTHETIC_GUN_KEY),
+        (ContentKind::Weapon, SYNTHETIC_MISSILE_KEY),
+        (ContentKind::Weapon, SYNTHETIC_HEAVY_MISSILE_KEY),
+        (ContentKind::HardpointEquipment, SYNTHETIC_RADIO_KEY),
+    ] {
+        available.insert(fixture_id(kind, key));
+    }
+    ConstructionPolicy::new(
+        known(BTreeSet::from([fixture_id(
+            ContentKind::Weapon,
+            SYNTHETIC_GUN_KEY,
+        )])),
+        BTreeSet::new(),
+        available,
+    )
 }
 
 // ------------------------------------------------------------- fixture ------

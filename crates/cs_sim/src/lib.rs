@@ -346,6 +346,11 @@
 //! quantization budgets are `cs_net::snapshot`; the receiver boundary is
 //! `cs_app::network::physics`.
 //!
+//! [`economy`] is the F44-B construction transaction: a staged
+//! [`economy::ConstructionDraft`] of purchases and sales that
+//! [`economy::commit`] applies to a campaign state as one revision or not at
+//! all, refusing a sale an active blueprint still references.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
@@ -359,6 +364,7 @@ pub mod cinematic_state;
 pub mod collision;
 pub mod control;
 pub mod damage;
+pub mod economy;
 pub mod environment;
 pub mod flight;
 pub mod interaction;
