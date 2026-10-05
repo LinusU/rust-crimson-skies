@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F11-D2.1",
+ "candidate_tree": "dd422550c6c2d2861920322c00a781fa20728c9e",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-05T07:04:38Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f11_d2p1_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 3, "executed": 3, "passed": 3, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f11_d2p1_an_ambiguous_script_is_a_finding_and_the_unknown_stands", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f11_d2p1_a_load_line_is_not_an_airframe_declaration", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f11_d2p1_retail_the_chapter_loads_declare_no_airframe", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "f847e48025c153613ba0fd73d6a73ed827dd778a75c3cc849f212e33244d5a1a", "kind": "log"}, {"path": "mission-only-discovery.json", "sha256": "08efff65ab83337f064830fa98d2a3f47580711ce98f769cec39f27e928f6ef7", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: sonnet-2 (Rally #500); review pending, so no independent review is claimed and nothing is raised above `checked`", "method": "pending: written by the implementing agent sonnet-2; the reviewer must regenerate this report on the reviewed commit and record their own identity (CS_EVIDENCE_REVIEW). Method: acceptance suite run locally with the retail capability over $CS_GAME_DIR; the consumer trace is the production cs_content::scene::discover_mission_only_airframes over the per-chapter loading scripts of ZBD/interp.zbd. LIMITATION: No mission-only airframe is discovered. The five per-chapter loading scripts store 344 LoadGameGen lines in one command shape, `<model> <alias>`, followed by per-load setup lines shared with world props; nothing stored separates an airframe from a zeppelin, a vessel or a flag (claim f11d2-1.load-shape-undistinguished). 8 loads spell a model the shared roster declares and are attributed to it; 336 are unclassified, neither airframe nor prop. Affected content: every airframe a mission spawns that is not one of the eleven shared ones. Resolving tasks: F39 (mission language) and F13 (mission opcodes), which read how a mission names the airframe it spawns. LIMITATION: The eight per-chapter scene containers hold 53,303 stored node records and none is attributed to an airframe (claim f11d2-1.chapter-container-unattributed). Affected content: the scene content of every mission. Resolving task: the world-import stages (F18) and the tasks above. LIMITATION: RosterAvailability stays undiscovered and no forced assignment is recorded: a mission-only airframe is MissionOnly at most, and only where a discovery recorded that fact; none did. Resolving tasks: F22, F49, F39, F13 (see F11-D2). LIMITATION: discover_mission_only_airframes is a library path driven by the acceptance suite and this harness only. Evidence class: ObservedTool; no original run happened and nothing here claims verified_original."},
+ "claim": "implemented"
+}
