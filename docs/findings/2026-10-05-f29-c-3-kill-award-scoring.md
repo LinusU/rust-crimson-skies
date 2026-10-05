@@ -138,12 +138,16 @@ these 5 plus #107's 8 `accept_f29_c_damage_consumers` tests in `cs_app`.
 
 ## Mutation probes
 
-(Recorded after the suite ran; each probe edited one production line,
-ran the task selection, recorded the failures and restored the file.)
+Each probe edited one production line of `crates/cs_sim/src/net_state.rs`,
+ran `cargo test -p cs_sim --test accept_f29_c_kill_award --locked`, recorded
+the failing tests and restored the file from a saved copy (the tree was
+`git diff`-clean afterwards).
 
 | probe | edit | result |
 | --- | --- | --- |
-| _pending_ | _pending_ | _pending_ |
+| the wiring is removed | `apply_kill_awards` returns its empty report before it looks at an event (`continue` straight after the `KillAwarded` pattern) | **all 5** `accept_f29_c_kill_*` tests failed (0 passed) |
+| the session check is skipped | `if event.id.session != self.session` → `if false && event.id.session != self.session` | only `accept_f29_c_kill_a_foreign_session_generation_is_refused` failed (4 passed) — exactly the criterion that check owns |
+| a lifecycle event is scored like a kill | the consumer's `KillAwarded` pattern became a match whose `Lifecycle { actor, .. }` arm yields `(*actor, None)` | `accept_f29_c_kill_a_bailout_awards_nothing` failed (4 failed, 1 passed), because the `PilotBailout` batch then moved the score |
 
 ## Follow-ups left open (filed with `create_tasks`)
 
