@@ -42,25 +42,34 @@
 //! * **No role is invented.** Every collision role the container does not state
 //!   arrives as an explicit unknown carrying a claim id, and so does every
 //!   gameplay surface and the world's boundary.
-//! * **The mesh identity is this module's.** Which catalog element a stored
-//!   mesh-array slot stands for is F10-C.03's discovery question in general; for
-//!   a world container this module names the slots
-//!   `<group>.mesh-<index>` so that the definition's mesh references and the
-//!   uploaded geometry agree by construction, and
-//!   [`RetailWorldContainer::mesh_key`] is the one place that name is spelled.
+//! * **The mesh identity is the catalog's.** A stored mesh-array slot is an
+//!   element of the shared render-mesh collection
+//!   ([`cs_content::mesh::MeshCatalog`], F10-C.03): the definition's mesh
+//!   references are [`cs_content::mesh::MeshId::content_id`], the same
+//!   `mesh/<container>.<slot>` id the retail baseline inventory gives that
+//!   mesh, and the geometry is uploaded from the catalog's own
+//!   [`MeshUpload`](cs_content::mesh::MeshUpload) payload. No per-container
+//!   name is minted here, so two containers cannot hold one mesh under two ids.
 
 use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use std::collections::BTreeMap;
+
 use cs_assets::install::{self, DiscoveryError};
+use cs_assets::vfs::{ContentSession, SessionBuilder, WORLD_NAMESPACE};
 use cs_content::coordinates::SourceAdapter;
-use cs_content::mesh::{MeshPresentationUnknown, RenderMesh, RenderMeshError};
+use cs_content::mesh::{
+    MeshCatalog, MeshDependencies, MeshError, MeshPresentationUnknown, RenderMesh, RenderMeshError,
+    ResolvedMesh,
+};
 use cs_content::scene::{GameZSceneError, MeshSlot};
+use cs_content::textures::TextureCatalog;
 use cs_content::world::{ImportedWorld, WorldDefinition, WorldId, WorldIdError, WorldImportError};
 use cs_formats::gamez::{GameZMeshes, GameZNodes, read_gamez_meshes, read_gamez_nodes};
 use cs_formats::io::ParseContext;
-use cs_types::asset_id::SourceSpan;
+use cs_types::asset_id::{AssetKey, ResolveContext, SourceSpan, WorldGroup};
 use cs_types::content::{ContentId, ContentIdError, ContentKind, Origin, Provenance};
 use cs_types::evidence::{ClaimId, ClaimStatus};
 
@@ -124,6 +133,20 @@ pub enum RetailWorldError {
     },
     /// The import refused the container.
     Import(WorldImportError),
+    /// The session or the mesh catalog could not be opened over the container.
+    Catalog {
+        /// The container's logical key.
+        container: String,
+        /// Why.
+        reason: String,
+    },
+    /// The mesh catalog refused to resolve or prepare a stored mesh.
+    Mesh {
+        /// The mesh-array slot.
+        index: u32,
+        /// The catalog's own refusal.
+        reason: MeshError,
+    },
     /// A stored mesh did not become a render mesh.
     RenderMesh {
         /// The mesh-array slot.
@@ -138,7 +161,8 @@ pub enum RetailWorldError {
         /// The refusal itself.
         reason: WorldMeshBuildError,
     },
-    /// The definition named a mesh this container's slot table does not hold.
+    /// The definition named a mesh that is not an element of this container's
+    /// mesh catalog.
     UnknownMeshReference {
         /// The mesh reference the definition named.
         mesh: String,
@@ -182,6 +206,15 @@ impl fmt::Display for RetailWorldError {
                 write!(f, "mesh slot {index} has no catalog name: {reason}")
             }
             Self::Import(error) => write!(f, "{error}"),
+            Self::Catalog { container, reason } => {
+                write!(
+                    f,
+                    "could not open the mesh catalog of {container}: {reason}"
+                )
+            }
+            Self::Mesh { index, reason } => {
+                write!(f, "mesh slot {index} is not a catalog upload: {reason}")
+            }
             Self::RenderMesh { index, reason } => {
                 write!(f, "mesh slot {index} is not a usable render mesh: {reason}")
             }
@@ -191,7 +224,7 @@ impl fmt::Display for RetailWorldError {
             Self::UnknownMeshReference { mesh } => {
                 write!(
                     f,
-                    "the definition names mesh `{mesh}`, which this container does not hold"
+                    "the definition names mesh `{mesh}`, which is not in this container's mesh catalog"
                 )
             }
             Self::SceneSlot(error) => write!(f, "{error}"),
@@ -207,6 +240,7 @@ impl std::error::Error for RetailWorldError {
             Self::WorldId { reason, .. } => Some(reason),
             Self::Slot { reason, .. } => Some(reason),
             Self::Import(error) => Some(error),
+            Self::Mesh { reason, .. } => Some(reason),
             Self::RenderMesh { reason, .. } => Some(reason),
             Self::Upload { reason, .. } => Some(reason),
             Self::SceneSlot(error) => Some(error),
@@ -250,19 +284,13 @@ fn import_provenance(span: Option<SourceSpan>) -> Result<Provenance, RetailWorld
     })
 }
 
-/// The one place this crate spells a **per-container mesh identity**:
+/// The **playtest scene's** per-container mesh identity:
 /// `<group>.mesh-<index>` in the `mesh` namespace.
 ///
-/// Both production consumers of a stored mesh-array position go through here —
-/// [`RetailWorldContainer::mesh_key`] for the world import and
-/// [`crate::playtest_retail`] for the retail free-flight scene — so a mesh the
-/// world import draws and a mesh the playtest scene draws are one catalog
-/// element **by construction** rather than by two copies of one string rule that
-/// could drift apart (AGENTS rule 7, stable content ids).
-///
-/// This is **not** F10-C.03's catalog discovery, and it does not become it by
-/// accident: it is a per-container naming, and #638 is where the shared
-/// render-mesh catalog replaces it.
+/// [`crate::playtest_retail`] is the only caller. The world import no longer
+/// uses it: its mesh references are elements of the shared render-mesh catalog
+/// (`MeshId::content_id`, #638). The playtest scene still names its meshes this
+/// way and is the remaining per-container naming to move onto the catalog.
 ///
 /// # Errors
 ///
@@ -281,7 +309,7 @@ pub fn container_mesh_key(group: &str, index: usize) -> Result<ContentId, Conten
 /// container's bytes are kept because the world record's partition grid lives in
 /// them: the node reader keeps the grid's two counts because they are what make
 /// the block knowable, and the content is re-derived from the same bytes.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct RetailWorldContainer {
     group: String,
     container_key: String,
@@ -291,6 +319,11 @@ pub struct RetailWorldContainer {
     nodes: GameZNodes,
     meshes: GameZMeshes,
     slots: Vec<MeshSlot>,
+    session: ContentSession,
+    catalog: MeshCatalog,
+    /// Each present mesh's catalog id and its resolution, so a definition's mesh
+    /// reference reaches the catalog's upload without re-parsing the id.
+    resolved: BTreeMap<ContentId, ResolvedMesh>,
 }
 
 impl RetailWorldContainer {
@@ -334,20 +367,16 @@ impl RetailWorldContainer {
         &self.meshes
     }
 
-    /// The catalog name of one stored mesh-array slot.
-    ///
-    /// One spelling of a mesh identity, taken from
-    /// [`container_mesh_key`]: the definition's mesh references and the
-    /// uploaded geometry both come from there, so they agree by construction
-    /// rather than by a second naming rule.
-    ///
-    /// This is **not** F10-C.03's catalog discovery — that maps a slot to an
-    /// element of the shared render-mesh catalog, which needs the whole
-    /// installation. It is a per-container naming, stated as such, and it is the
-    /// seam a catalog-backed source replaces.
-    pub fn mesh_key(&self, index: usize) -> Result<ContentId, RetailWorldError> {
-        container_mesh_key(&self.group, index)
-            .map_err(|reason| RetailWorldError::Slot { index, reason })
+    /// The mesh catalog the definition's mesh references are elements of.
+    #[must_use]
+    pub const fn mesh_catalog(&self) -> &MeshCatalog {
+        &self.catalog
+    }
+
+    /// The content session the mesh catalog was read in.
+    #[must_use]
+    pub const fn session(&self) -> &ContentSession {
+        &self.session
     }
 
     /// The world this container is.
@@ -394,13 +423,15 @@ impl RetailWorldContainer {
         .map_err(RetailWorldError::Import)
     }
 
-    /// Uploads the geometry `definition` names, one engine mesh per stored mesh.
+    /// Uploads the geometry `definition` names, one engine mesh per catalog mesh.
     ///
-    /// The upload goes through the **production** F17-B adapter
-    /// ([`WorldMeshes::insert_render_mesh`]) over a render mesh built by the
-    /// production F10-E builder, so a mesh object's collider is derived from the
-    /// same triangles its visual draws. A mesh this container holds no geometry
-    /// for is **not** registered: the spawn reports it as
+    /// Each mesh reference is resolved through the container's
+    /// [`MeshCatalog`] and uploaded from the catalog's own
+    /// [`MeshUpload`](cs_content::mesh::MeshUpload) through the **production**
+    /// F17-B adapter ([`WorldMeshes::insert_mesh_upload`]), so a mesh object's
+    /// collider is derived from the same triangles its visual draws and its id
+    /// is the catalog's. A mesh this container holds no geometry for is **not**
+    /// registered: the spawn reports it as
     /// [`SkipReason::MeshUnavailable`](super::spawn::SkipReason) rather than
     /// being handed a substitute shape.
     pub fn uploaded_meshes(
@@ -416,42 +447,31 @@ impl RetailWorldContainer {
             if out.contains(known) {
                 continue;
             }
-            let index = self.mesh_index_of(known)?;
-            let Some(slot) = self.meshes.get(index) else {
-                // The node reader reported the index as in range but the slot
-                // holds an all-zero stub, or the array is shorter. Either way the
-                // store has no geometry there: nothing is registered and the
-                // spawn reports the gap.
-                continue;
+            let Some(resolved) = self.resolved.get(known) else {
+                return Err(self.unknown_reference(known));
             };
-            let render = stored_render_mesh(slot)?;
-            let unknowns = stored_presentation_unknowns(&render);
-            out.insert_render_mesh(known.clone(), &render, &unknowns)
+            let index = resolved.id().index;
+            let upload = self
+                .catalog
+                .prepare_upload(&self.session, resolved)
+                .map_err(|reason| RetailWorldError::Mesh { index, reason })?;
+            out.insert_mesh_upload(known.clone(), &upload)
                 .map_err(|reason| RetailWorldError::Upload { index, reason })?;
         }
         Ok(out)
     }
 
-    /// The mesh-array index a definition-side mesh reference names.
-    ///
-    /// `Err` when the reference is not one of this container's own slot names,
-    /// **including** a name of this container that carries no index. That cannot
-    /// happen for a definition [`Self::definition`] produced, so it is a refusal
-    /// about the *caller* rather than a silent skip: a definition built from
-    /// somewhere else names meshes this source does not hold, and quietly
-    /// registering nothing for them would leave a world whose objects report a
-    /// `MeshUnavailable` gap for a reason the report never names.
-    fn mesh_index_of(&self, mesh: &ContentId) -> Result<u32, RetailWorldError> {
-        let unknown = RetailWorldError::UnknownMeshReference {
+    /// The refusal for a reference that is not an element of this container's
+    /// catalog. It cannot happen for a definition [`Self::definition`] produced,
+    /// so it is a refusal about the *caller* rather than a silent skip: a
+    /// definition built from somewhere else names meshes this source does not
+    /// hold, and quietly registering nothing for them would leave a world whose
+    /// objects report a `MeshUnavailable` gap for a reason the report never
+    /// names.
+    fn unknown_reference(&self, mesh: &ContentId) -> RetailWorldError {
+        RetailWorldError::UnknownMeshReference {
             mesh: mesh.key().to_owned(),
-        };
-        let prefix = format!("{}.mesh-", self.group.to_ascii_lowercase());
-        let Some(suffix) = mesh.key().strip_prefix(&prefix) else {
-            return Err(unknown);
-        };
-        // `mesh_key` is the only producer of these names and it writes the index
-        // in decimal, so anything else is a name this source did not mint.
-        suffix.parse::<u32>().map_err(|_| unknown)
+        }
     }
 }
 
@@ -584,9 +604,52 @@ pub fn read_world_container(
     .map_err(|error| RetailWorldError::Unresolved {
         reason: format!("the container's source span is not recordable: {error}"),
     })?;
-    let provenance = import_provenance(Some(span.clone()))?;
 
-    let mut container = RetailWorldContainer {
+    let (session, catalog, group_key) = open_catalog(install_root, &found, group, &container_key)?;
+    let Some(opened) = catalog.containers().next() else {
+        let reason = catalog
+            .failures()
+            .next()
+            .map_or_else(|| "no container opened".to_owned(), |(_, e)| e.to_string());
+        return Err(RetailWorldError::Catalog {
+            container: container_key,
+            reason,
+        });
+    };
+    // The slot's provenance is the catalog's own: the span of the container it
+    // read, in the session that read it.
+    let provenance = Provenance::new(
+        ClaimId::new(RETAIL_WORLD_IMPORT).map_err(|error| RetailWorldError::Unresolved {
+            reason: format!("the import claim id is invalid: {error}"),
+        })?,
+        ClaimStatus::ObservedTool,
+        Some(opened.span().clone()),
+    )
+    .map_err(|error| RetailWorldError::Unresolved {
+        reason: error.to_string(),
+    })?;
+    let mut slots = Vec::with_capacity(meshes.meshes.len());
+    let mut resolved = BTreeMap::new();
+    for index in 0..meshes.meshes.len() {
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
+        let id = opened
+            .id(index)
+            .content_id()
+            .map_err(|reason| RetailWorldError::Slot {
+                index: index as usize,
+                reason,
+            })?;
+        slots.push(
+            MeshSlot::new(id.clone(), provenance.clone()).map_err(RetailWorldError::SceneSlot)?,
+        );
+        // An absent or refused slot keeps its id (a node may name it) but has no
+        // resolution: nothing is registered for it and the spawn reports the gap.
+        if let Ok(mesh) = catalog.resolve(&session, &group_key, index) {
+            resolved.insert(id, mesh);
+        }
+    }
+
+    Ok(RetailWorldContainer {
         group: group.to_owned(),
         container_key,
         container_sha256,
@@ -594,15 +657,56 @@ pub fn read_world_container(
         bytes,
         nodes,
         meshes,
-        slots: Vec::new(),
+        slots,
+        session,
+        catalog,
+        resolved,
+    })
+}
+
+/// Opens a content session on the installation scoped to `group`, and the mesh
+/// catalog over the group's `gamez.zbd` in it.
+fn open_catalog(
+    install_root: &Path,
+    found: &install::Discovery,
+    group: &str,
+    container_key: &str,
+) -> Result<(ContentSession, MeshCatalog, AssetKey), RetailWorldError> {
+    let fail = |reason: String| RetailWorldError::Catalog {
+        container: container_key.to_owned(),
+        reason,
     };
-    let mut slots = Vec::with_capacity(container.meshes.meshes.len());
-    for index in 0..container.meshes.meshes.len() {
-        let id = container.mesh_key(index)?;
-        slots.push(MeshSlot::new(id, provenance.clone()).map_err(RetailWorldError::SceneSlot)?);
-    }
-    container.slots = slots;
-    Ok(container)
+    let group_path = format!("zbd/{group}");
+    let world_group = found
+        .diagnosis
+        .world_groups
+        .iter()
+        .find(|candidate| candidate.as_str().eq_ignore_ascii_case(&group_path))
+        .ok_or_else(|| fail("discovery names no such world group".to_owned()))?
+        .clone();
+    let context = ResolveContext::new(install::fingerprint(&found.manifest))
+        .with_world_group(WorldGroup::from_relative(world_group));
+    let mut builder = SessionBuilder::new(context);
+    builder
+        .mount_installation(install_root, &found.diagnosis)
+        .map_err(|error| fail(error.to_string()))?;
+    let session = builder.open();
+    let key = |name: &str| {
+        AssetKey::from_spelling(WORLD_NAMESPACE, name, "default")
+            .map_err(|error| fail(error.to_string()))
+    };
+    let geometry = key(GEOMETRY_CONTAINER_FILE)?;
+    let archive = key("texture.zbd")?;
+    let textures = TextureCatalog::open(&session, std::slice::from_ref(&archive));
+    let catalog = MeshCatalog::open(
+        &session,
+        std::slice::from_ref(&geometry),
+        &MeshDependencies {
+            archive: &archive,
+            textures: &textures,
+        },
+    );
+    Ok((session, catalog, geometry))
 }
 
 /// The claim the partition grid's role in the imported definition is recorded
