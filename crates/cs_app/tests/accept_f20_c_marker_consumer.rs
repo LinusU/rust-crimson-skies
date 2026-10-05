@@ -47,7 +47,7 @@ use cs_app::animation::{
     bind_animated_node,
 };
 use cs_app::mission_markers::{
-    MarkerAdmission, MarkerBindingError, MarkerRefusal, MissionMarkerBinding,
+    MarkerAdmission, MarkerBindingError, MarkerRefusal, MarkerTeardownError, MissionMarkerBinding,
     MissionMarkerBindings, MissionMarkerConsumer, RESERVED_ACTOR_EVENT_SOURCE,
     step_mission_with_markers,
 };
@@ -66,8 +66,10 @@ use cs_content::objectives::{
 };
 use cs_script::ir::SymbolId;
 use cs_script::runtime::SessionGeneration;
-use cs_sim::animated_object::AnimationEvent;
-use cs_sim::objectives::runtime::{ObjectiveEventKind, RuntimeError, TickInput};
+use cs_sim::animated_object::{AnimationEvent, AnimationEventId};
+use cs_sim::objectives::runtime::{
+    ObjectiveEventKind, RuntimeError, RuntimeLimits, StopReason, TickInput,
+};
 use cs_sim::objectives::state::ObjectiveState;
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
@@ -164,6 +166,24 @@ fn mission() -> ObjectiveSession {
         GEN,
     )
     .expect("the lowered program launches")
+}
+
+/// The same mission, launched under a runtime that admits no events at all.
+///
+/// A designed bound, not a measured original limit: it is the smallest value
+/// that makes `ObjectiveRuntime`'s own pre-apply budget check stop every tick,
+/// which is what pins what this layer does when the mission applied nothing.
+fn bounded_mission() -> ObjectiveSession {
+    ObjectiveSession::launch(
+        lower_program(&declared_synthetic_objectives())
+            .expect("the fixture program lowers")
+            .with_limits(RuntimeLimits {
+                max_events_per_tick: 0,
+                ..RuntimeLimits::default()
+            }),
+        GEN,
+    )
+    .expect("the lowered program launches under a tighter bound")
 }
 
 /// Spawns one scene node: its stable binding and its composed world pose.
@@ -401,9 +421,22 @@ fn accept_f20_c_marker_consumer_a_fired_gameplay_marker_drives_the_mission_exact
         visible.contains(&SECONDARY),
         "the revealed objective is on the display the player reads: {visible:?}"
     );
-    assert!(
-        !visible.contains(&PRIMARY) || objectives.display().row(PRIMARY).expect("row").revealed,
-        "only the declared reveal rule moved a row"
+    // The primary was born revealed and nothing the marker raised names a rule
+    // against it, so the one signal moved one row and left the other alone.
+    let primary = objectives
+        .display()
+        .row(PRIMARY)
+        .expect("the primary objective has a display row");
+    assert!(primary.revealed, "the primary was revealed at launch");
+    assert_eq!(
+        primary.state,
+        ObjectiveState::Active,
+        "the signal no declared rule names left the primary objective's state alone"
+    );
+    assert_eq!(
+        reveals(&step.tick, PRIMARY),
+        0,
+        "the marker's tick reported no event about the primary objective"
     );
 
     // Later committed ticks of the same session: the one-shot clip is finished,
@@ -473,6 +506,33 @@ fn accept_f20_c_marker_consumer_a_fired_gameplay_marker_drives_the_mission_exact
             .expect("the secondary objective has a display row")
             .revealed,
         "the refused repeat changed nothing in the mission"
+    );
+
+    // The activation identity is the live instance and the marker, deliberately
+    // **not** the firing's stamp: the same activation presented under another
+    // tick and another sequence is still that one activation, so it is refused
+    // as the repeat too. A key built from the whole `EventId` would let every
+    // re-stamped presentation through and duplicate the mission event.
+    let restamped = AnimationEvent {
+        id: AnimationEventId {
+            tick: Tick(raised.at.0 + 999),
+            sequence: raised.event.sequence.wrapping_add(7),
+            ..fired[0].id
+        },
+        ..fired[0].clone()
+    };
+    let repeat = consumer.admit(&restamped);
+    assert!(
+        matches!(
+            repeat,
+            MarkerAdmission::Refused(MarkerRefusal::RepeatedActivation { .. })
+        ),
+        "the tick and the sequence are not part of the activation: {repeat:?}"
+    );
+    assert_eq!(
+        consumer.applied().len(),
+        1,
+        "and the ledger still holds exactly the one activation"
     );
 }
 
@@ -578,6 +638,271 @@ fn accept_f20_c_marker_consumer_a_loop_pass_raises_one_signal_and_no_presentatio
             .state,
         ObjectiveState::Hidden,
         "the objective no rule names kept its state"
+    );
+}
+
+/// AC04 at this layer's scope: the **skip is what crosses the marker**. The
+/// head jumps from before the door's authored tick to past it in one advance,
+/// the firing the skip published becomes exactly one mission signal, the
+/// objective it reveals is revealed exactly once — and every later skip over
+/// the same finished activation adds nothing.
+#[test]
+fn accept_f20_c_marker_consumer_a_skip_across_the_marker_reaches_the_mission_once() {
+    let generation = SceneGeneration::default().next();
+    let declared = declared_synthetic_door_clip();
+    let mut scene = wired_session(50);
+
+    {
+        let world = scene.world_mut().expect("the session is active");
+        bind_clip(
+            world,
+            &declared,
+            "synthetic.hangar.door",
+            instance(1),
+            generation,
+            Tick(0),
+        );
+    }
+    // One fixed tick, so the session is live and the head sits before the
+    // marker's authored tick.
+    scene.step(1).expect("the session is active");
+    assert!(
+        published(scene.world().expect("the session is active"))
+            .iter()
+            .all(|event| !event.effect.is_gameplay()),
+        "nothing has crossed the marker yet"
+    );
+
+    // The skip: one advance from clip time 1 straight past the open tick.
+    advance_animation(
+        scene.world_mut().expect("the session is active"),
+        Tick(SYNTHETIC_DOOR_OPEN_TICK + 20),
+    );
+    let mut objectives = mission();
+    let mut consumer = MissionMarkerConsumer::new(session(50), bound_cues(REACHED_WRECK));
+    let skipped = {
+        let world = scene.world_mut().expect("the session is active");
+        step_mission_with_markers(world, &mut consumer, &mut objectives, &facts(2, 1))
+            .expect("the objective tick is accepted")
+    };
+
+    assert_eq!(
+        skipped.markers.raised().len(),
+        1,
+        "the skip published the marker once and it became one signal: {:?}",
+        skipped.markers
+    );
+    assert_eq!(
+        skipped.markers.raised()[0].at,
+        Tick(SYNTHETIC_DOOR_OPEN_TICK + 20),
+        "the raise is stamped with the session tick the crossing was published \
+         on — the skip's — because that is what the event id carries"
+    );
+    assert_eq!(signals_raised(&skipped.tick, REACHED_WRECK), 1);
+    assert_eq!(reveals(&skipped.tick, SECONDARY), 1);
+    assert!(
+        objectives
+            .display()
+            .row(SECONDARY)
+            .expect("the secondary objective has a display row")
+            .revealed,
+        "the skip's crossing reached the mission runtime's display"
+    );
+
+    // Further skips over the same activation, and a skip back before it: the
+    // mission does not move again, and a reversal is named rather than silent.
+    advance_animation(
+        scene.world_mut().expect("the session is active"),
+        Tick(SYNTHETIC_DOOR_OPEN_TICK * 3),
+    );
+    let again = {
+        let world = scene.world_mut().expect("the session is active");
+        step_mission_with_markers(world, &mut consumer, &mut objectives, &facts(3, 1))
+            .expect("the objective tick is accepted")
+    };
+    assert!(
+        again.markers.raised().is_empty(),
+        "a second skip past the same activation raises nothing: {:?}",
+        again.markers
+    );
+    assert_eq!(reveals(&again.tick, SECONDARY), 0);
+    assert_eq!(again.markers.signals(), Vec::<SymbolId>::new());
+}
+
+/// The producer serial is what makes `(session, producer, marker)` the identity
+/// of an **activation** rather than a conservative approximation: two instances
+/// of one clip are two live producers, so two engines starting are two mission
+/// events — the marker is not dedup'd across instances.
+#[test]
+fn accept_f20_c_marker_consumer_two_instances_of_one_clip_are_two_activations() {
+    let generation = SceneGeneration::default().next();
+    let declared = declared_synthetic_door_clip();
+    let mut scene = wired_session(51);
+
+    {
+        let world = scene.world_mut().expect("the session is active");
+        // The same clip, the same node, two instance identities: the second
+        // `bind_animated_node` starts a second live producer.
+        bind_clip(
+            world,
+            &declared,
+            "synthetic.hangar.door",
+            instance(1),
+            generation,
+            Tick(0),
+        );
+        bind_clip(
+            world,
+            &declared,
+            "synthetic.hangar.door",
+            instance(2),
+            generation,
+            Tick(0),
+        );
+    }
+    scene
+        .step(SYNTHETIC_DOOR_OPEN_TICK)
+        .expect("the session is active");
+
+    let mut objectives = mission();
+    let mut consumer = MissionMarkerConsumer::new(session(51), bound_cues(UNDECLARED));
+    let step = {
+        let world = scene.world_mut().expect("the session is active");
+        step_mission_with_markers(world, &mut consumer, &mut objectives, &facts(1, 1))
+            .expect("the objective tick is accepted")
+    };
+
+    assert_eq!(
+        step.markers.raised().len(),
+        2,
+        "two instances of one clip are two activations, not one: {:?}",
+        step.markers
+    );
+    let producers: Vec<u32> = step
+        .markers
+        .raised()
+        .iter()
+        .map(|raised| raised.activation.producer())
+        .collect();
+    assert_ne!(
+        producers[0], producers[1],
+        "the two activations are distinguished by their producer serial, {producers:?}"
+    );
+    assert_ne!(
+        step.markers.raised()[0].activation,
+        step.markers.raised()[1].activation,
+        "and each is its own ledger key"
+    );
+    assert_eq!(consumer.applied().len(), 2, "both are on record");
+    assert_eq!(
+        signals_raised(&step.tick, UNDECLARED),
+        2,
+        "two engines starting are two mission events"
+    );
+}
+
+/// The composition **adds** the marker's signals to the host's own facts; it
+/// never substitutes them. A host that raises its own signal on the same tick
+/// sees both, in the host's order first.
+#[test]
+fn accept_f20_c_marker_consumer_the_hosts_own_signals_survive_the_composition() {
+    let generation = SceneGeneration::default().next();
+    let (mut scene, _fired) = crossed_door(52, generation);
+
+    let mut objectives = mission();
+    let mut consumer = MissionMarkerConsumer::new(session(52), bound_cues(REACHED_WRECK));
+
+    // The host's own fact this tick: a signal of its own, raised for its own
+    // reasons (here the same declared signal, so the count is what shows it).
+    let host_signals = [REACHED_WRECK];
+    let mut host = facts(1, 1);
+    host.signals = &host_signals;
+    let step = {
+        let world = scene.world_mut().expect("the session is active");
+        step_mission_with_markers(world, &mut consumer, &mut objectives, &host)
+            .expect("the objective tick is accepted")
+    };
+
+    assert_eq!(
+        step.markers.signals(),
+        vec![REACHED_WRECK],
+        "the delivery still reports only what the marker raised"
+    );
+    assert_eq!(
+        signals_raised(&step.tick, REACHED_WRECK),
+        2,
+        "the host's own signal and the marker's are both applied: the composed \
+         step added the marker rather than replacing the host's facts"
+    );
+    assert_eq!(
+        reveals(&step.tick, SECONDARY),
+        1,
+        "and one declared reveal rule still reveals the objective once"
+    );
+}
+
+/// A tick a runtime **bound** stopped is not a refusal: the session answers
+/// `Ok` with a [`StopReason`] and applied nothing. The delivery therefore still
+/// carries the marker's signal, the caller retries the next tick with it, and
+/// the gameplay effect happens then — once. A layer that dropped the delivery
+/// on a stopped tick would lose the marker for good.
+#[test]
+fn accept_f20_c_marker_consumer_a_stopped_objective_tick_still_hands_the_signal_back() {
+    let generation = SceneGeneration::default().next();
+    let (mut scene, _fired) = crossed_door(53, generation);
+
+    let mut objectives = bounded_mission();
+    let mut consumer = MissionMarkerConsumer::new(session(53), bound_cues(REACHED_WRECK));
+    let stopped = {
+        let world = scene.world_mut().expect("the session is active");
+        step_mission_with_markers(world, &mut consumer, &mut objectives, &facts(1, 1))
+            .expect("a bounded tick is a stop, not a refusal")
+    };
+
+    assert!(
+        matches!(stopped.tick.stop, Some(StopReason::EventBudget { .. })),
+        "the runtime's own bound stopped the tick: {:?}",
+        stopped.tick.stop
+    );
+    assert_eq!(
+        stopped.markers.signals(),
+        vec![REACHED_WRECK],
+        "a stopped tick still hands the marker's signal back, so the caller can \
+         retry with it: {:?}",
+        stopped.markers
+    );
+    assert_eq!(
+        reveals(&stopped.tick, SECONDARY),
+        0,
+        "the stopped tick revealed nothing"
+    );
+    assert!(
+        !objectives
+            .display()
+            .row(SECONDARY)
+            .expect("the secondary objective has a display row")
+            .revealed,
+        "and the mission display did not move"
+    );
+
+    // The retry the delivery invites: the host carries the signals to a tick
+    // this runtime accepts, and the gameplay effect happens there, once.
+    let mut relaunched = mission();
+    let carried = stopped.markers.signals();
+    let mut retry = facts(2, 1);
+    retry.signals = &carried;
+    let applied = relaunched
+        .step(&retry)
+        .expect("an accepted tick applies the carried signals");
+    assert_eq!(signals_raised(&applied, REACHED_WRECK), 1);
+    assert_eq!(reveals(&applied, SECONDARY), 1);
+    assert!(
+        relaunched
+            .display()
+            .row(SECONDARY)
+            .expect("the secondary objective has a display row")
+            .revealed,
+        "the marker's effect happened exactly once, on the tick that applied it"
     );
 }
 
@@ -937,7 +1262,9 @@ fn accept_f20_c_marker_consumer_a_reversed_cinematic_is_named_and_raises_nothing
 
 /// A generation change releases the applied activations, so the next generation
 /// is not refused as the repeat of the last one's — and the release is reported
-/// rather than silently dropped.
+/// rather than silently dropped. A retry that names the generation **already
+/// served** is refused: clearing the ledger of a live mission would re-arm every
+/// activation in it and hand the same mission event out a second time.
 #[test]
 fn accept_f20_c_marker_consumer_a_generation_change_releases_the_ledger() {
     let generation = SceneGeneration::default().next();
@@ -947,13 +1274,36 @@ fn accept_f20_c_marker_consumer_a_generation_change_releases_the_ledger() {
     assert!(
         matches!(
             consumer.admit(&fired[0]),
-            MarkerAdmission::Raised(refused_before) if refused_before.cue == DOOR_CUE
+            MarkerAdmission::Raised(raised) if raised.cue == DOOR_CUE
         ),
         "the firing applies under the generation that published it"
     );
     assert_eq!(consumer.applied().len(), 1);
 
-    let teardown = consumer.retry(session(49));
+    // The live generation is refused, and the refused retry changes nothing.
+    let refused = consumer
+        .retry(session(48))
+        .expect_err("a retry for the live generation is not a generation change");
+    assert_eq!(
+        refused,
+        MarkerTeardownError::SameSession {
+            served: session(48)
+        },
+        "the refusal names the generation that is already served"
+    );
+    assert!(
+        refused.to_string().contains("live mission"),
+        "the refusal says what it protects: {refused}"
+    );
+    assert_eq!(
+        consumer.applied().len(),
+        1,
+        "a refused retry re-armed nothing: the live mission keeps its ledger"
+    );
+
+    let teardown = consumer
+        .retry(session(49))
+        .expect("a new generation is a change");
     assert_eq!(teardown.served, session(49));
     assert_eq!(teardown.released, 1, "the release is reported, not dropped");
     assert_eq!(consumer.served(), session(49));

@@ -19,14 +19,14 @@ layer exists and this is its consumer.
 
 ## Files and the one observable failure (listed before editing)
 
-- `crates/cs_app/src/mission_markers.rs` (**new**, ~900 lines): the consumer.
+- `crates/cs_app/src/mission_markers.rs` (**new**, ~890 lines): the consumer.
   `MissionMarkerBindings` (the declared cue → mission-signal table),
   `MissionMarkerConsumer` (`admit`, `drain`, `retry`, the applied ledger),
-  `MarkerActivation`, `MarkerDelivery`, `MarkerRefusal` and the composed
-  `step_mission_with_markers`.
+  `MarkerActivation`, `MarkerDelivery`, `MarkerRefusal`, `MarkerTeardownError`
+  and the composed `step_mission_with_markers`.
 - `crates/cs_app/src/lib.rs` (wiring only): the module declaration and one doc
   paragraph.
-- `crates/cs_app/tests/accept_f20_c_marker_consumer.rs` (**new**): the nine
+- `crates/cs_app/tests/accept_f20_c_marker_consumer.rs` (**new**): the thirteen
   `accept_f20_c_marker_consumer_` tests below.
 - This file.
 
@@ -106,6 +106,82 @@ not transfer, F20 behavior 2). No rule below claims an original counterpart.
    activation, so a mission that needs the same marker's effect again must
    restart the animation (a fresh producer serial, a new activation) rather than
    expect a re-raise.
+9. **`retry` refuses the generation it already serves** (review fix,
+   `MarkerTeardownError::SameSession`). Clearing the ledger of the **live**
+   generation would re-arm every activation in a running mission and hand the
+   same mission event out a second time — the exact duplicate behavior 5
+   forbids, reachable through this module's own public entry.
+   `ObjectiveSession::retry` already refuses `SessionLaunchError::SameGeneration`
+   for the runtime this layer feeds; the reviewer added the same guard here
+   rather than leave it to the caller's discipline. See "Review fixes" below.
+
+## Review fixes (applied by the reviewer, bunny-alpha-2, 2026-10-05)
+
+The reviewer was the implementing agent's own later session, so this section
+records what changed and why, and the reviewer noted the independence limit in
+the handover rather than claiming a fresh-context review.
+
+1. **A vacuous assertion in the acceptance test.** It read
+   `!visible.contains(&PRIMARY) || row(PRIMARY).revealed`, under the message
+   "only the declared reveal rule moved a row". `ObjectiveDisplay::visible()`
+   filters on `revealed && state.is_visible()`, so the second operand follows
+   from the first: the assertion could never fail. It is replaced by three that
+   can — the primary row is still `Active`, it was already revealed at launch,
+   and the marker's tick reported no event about it.
+2. **`retry` accepted the live generation** (decision 9 above). Now refused, and
+   the test asserts both the refusal and that the ledger is untouched afterwards.
+3. **Two documentation defects.** `MarkerBindingError::DuplicateCue`'s doc said
+   "two bindings claim the same cue **for different signals**", while
+   `MissionMarkerBindings::new` refuses any repeated cue, including one repeated
+   with the same signal. `MarkerDelivery`'s doc said the blocked tracks and
+   attachment records were "handed on rather than lost"; they are not handed on —
+   they leave the log with the batch and only a count survives. Both now say
+   what the code does.
+4. **`RaisedMarker::at` had an incomplete doc.** It is the *session* tick the
+   publishing advance ran at, so a skip stamps the tick it jumped to, not the
+   marker's clip tick. `AnimationEvent` carries no clip time at all, so this
+   layer cannot report one; filed as #673.
+5. **Four claims were asserted but not pinned.** New tests, and probes O2/R
+   below show the first of them was previously invisible to every mutation:
+   * `..._a_skip_across_the_marker_reaches_the_mission_once` (AC04 at this
+     layer) — the **skip is what crosses the marker**. The pre-existing
+     acceptance test only skipped *past* a marker that had already fired, so
+     "the skip raises nothing" would have held even if `advance_animation` were
+     never called.
+   * `..._two_instances_of_one_clip_are_two_activations` — pins the
+     producer-serial claim that the whole key design rests on. Probe N (the key
+     forgets the producer) is caught only by this test.
+   * `..._the_hosts_own_signals_survive_the_composition` — decision 7 was prose
+     only; probe K (substituting the host's signals for the marker's) now fails.
+   * `..._a_stopped_objective_tick_still_hands_the_signal_back` — a tick the
+     runtime **bound** stopped (`StopReason::EventBudget`) is `Ok`, not `Err`,
+     and applied nothing. The delivery must still carry the signal or the marker
+     is lost for good; probe L (a stopped tick returning an empty delivery) now
+     fails.
+   * plus a restamped-event assertion in the acceptance test: the same
+     activation presented under another tick and sequence is still that one
+     activation, which pins "the tick and the sequence are deliberately not part
+     of the key".
+
+## Boundaries the reviewer recorded instead of fixing in place
+
+- **`crates/cs_app/src/animation/` still says the consumer is absent**, in
+  `mod.rs` (~lines 87-91) and `binding.rs` (lines 35-43). This task's owner
+  paths allow that directory "only if a read-only accessor is missing", so the
+  prose was left and filed as **#670**.
+- **`AnimationLog` has one drainer and five record kinds**; the total
+  `std::mem::take` drain means `BlockedTrack` and `AttachmentRecord` entries
+  leave the log with the batch and only their count survives here. A partial
+  drain is a mutating accessor on the playback's record, outside this task.
+  Filed as **#671**.
+- **A binding may name a symbol the program declares.** `MissionMarkerBindings`
+  refuses the reserved source because that constant it *can* decide; a cue bound
+  to an objective, condition, timer or trigger symbol the program owns would
+  alias that declaration's own `SignalRaised`, and nothing checks it —
+  `crates/cs_app/src/objectives.rs` states that rule as the host's contract.
+  Filed as **#672**. The module doc now says so where a caller reads it.
+- **No clip time on the crossing** — #673.
+
 
 ## What is still not wired, and who owns it
 
@@ -127,7 +203,7 @@ not transfer, F20 behavior 2). No rule below claims an original counterpart.
 
 ## Tests
 
-`crates/cs_app/tests/accept_f20_c_marker_consumer.rs`, all nine prefixed
+`crates/cs_app/tests/accept_f20_c_marker_consumer.rs`, all thirteen prefixed
 `accept_f20_c_marker_consumer_`. Every test calls production code: the real
 `PhysicsSession` + `AnimationPlugin`, `bind_animated_node`, `advance_animation`,
 `MissionMarkerConsumer::{admit, drain, retry}`, `step_mission_with_markers`,
@@ -136,15 +212,19 @@ and the real `ObjectiveSession` launched from the F39-C lowering of
 
 | test | what it pins |
 | --- | --- |
-| `..._a_fired_gameplay_marker_drives_the_mission_exactly_once` (minimum, AC04) | the wired session's door marker, crossed at its authored tick and then skipped past, becomes one mission signal; the F39 runtime raised it once and revealed the objective whose declared `OnSignal` rule names it; later fixed ticks, the skip and a re-offer of the same firing each raise nothing; the refused repeat is `RepeatedActivation` and the mission does not move |
+| `..._a_fired_gameplay_marker_drives_the_mission_exactly_once` (minimum, AC04) | the wired session's door marker, crossed at its authored tick and then skipped past, becomes one mission signal; the F39 runtime raised it once and revealed the objective whose declared `OnSignal` rule names it; later fixed ticks, the skip and a re-offer of the same firing each raise nothing; the refused repeat is `RepeatedActivation` and the mission does not move; the same activation **restamped** under another tick and sequence is still refused, and the primary objective's row is untouched |
+| `..._a_skip_across_the_marker_reaches_the_mission_once` (AC04, added in review) | the skip is what crosses the marker: from before the door's authored tick to past it in one advance, the firing becomes one signal and one reveal stamped with the skip's session tick; a further skip over the same activation adds nothing |
 | `..._a_loop_pass_raises_one_signal_and_no_presentation_cue` (AC02, behavior 1) | a looping rotor over four passes fires its gameplay marker once and its presentation cue once per pass; the consumer raises the gameplay marker once, counts the presentation cues, and raises none of them |
+| `..._two_instances_of_one_clip_are_two_activations` (added in review) | two instances of one clip are two live producers, so two engines starting are two mission events; the two activations differ by producer serial and the ledger holds both |
+| `..._the_hosts_own_signals_survive_the_composition` (added in review) | the composed step **adds** the marker's signal to the host's own `TickInput::signals` rather than replacing them: both are applied on the same tick |
+| `..._a_stopped_objective_tick_still_hands_the_signal_back` (added in review) | a tick the runtime's own event budget stopped is `Ok` with a `StopReason` and applied nothing; the delivery still carries the signal, the caller retries with it, and the reveal happens then, once |
 | `..._an_unbound_cue_is_refused_by_name` | a table that binds nothing refuses the door's cue by clip, marker, cue and pass; no signal is invented, no activation is consumed, and the same firing still applies to a consumer whose table binds it |
 | `..._a_stale_session_marker_is_refused` | a firing published in session 44 is refused by a consumer serving session 45, before its cue is resolved, and consumes no activation |
 | `..._a_blocked_marker_effect_is_reported_and_never_applied` (behavior 2) | a clip whose marker effect is `Resolved::Unknown` publishes a block that reaches the mission layer with the unknown's claim and reason, raises nothing, and is reported once rather than per tick |
 | `..._the_declared_table_refuses_what_it_cannot_decide` | an empty cue, the same cue bound to two signals, and a binding to the reserved source are each refused by name; a valid table resolves by cue and nothing else |
 | `..._a_refused_objective_tick_keeps_the_markers` | a non-advancing objective tick is refused, its delivery is named rather than dropped, the retry with those signals reveals the objective once, and a blind re-drain applies nothing |
 | `..._a_reversed_cinematic_is_named_and_raises_nothing` (behavior 5) | a backwards advance is held, offers no marker, and the hold is reported with clip, instance and both clip times instead of draining away |
-| `..._a_generation_change_releases_the_ledger` | `retry` reports the activations it released, leaves the ledger empty, and the old generation's firing is stale to the new one |
+| `..._a_generation_change_releases_the_ledger` | `retry` **refuses** the generation already served and leaves the ledger untouched, reports the activations a real generation change released, leaves the ledger empty, and the old generation's firing is stale to the new one |
 
 ## Mutation probes
 
@@ -153,6 +233,8 @@ Each probe edited one production file, ran
 on failure), then restored `crates/cs_app/src/mission_markers.rs` byte for byte
 (`cmp` clean against `private/scratch/507-probes/mission_markers.rs.orig`; the
 selection was green again afterwards).
+
+### Implementer's six probes, against the nine tests as submitted
 
 | probe | edit | tests that fail (of 9) |
 | --- | --- | --- |
@@ -163,7 +245,36 @@ selection was green again afterwards).
 | E the composition raises nothing | `step_mission_with_markers` does not extend the input's signals | the three composed-step tests (`..._exactly_once`, `..._loop_pass_...`, `..._reversed_cinematic_...`) |
 | F **the consumer is removed** | `drain` never reads the `AnimationLog` resource | six tests, including the acceptance test |
 
+### Reviewer's ten probes, against the thirteen tests after the review fixes
+
+The reviewer re-ran F (the required "fails when the consumer is removed") and
+added probes for the claims the first pass left unpinned. All eleven are listed
+together; `mission_markers.rs` was restored byte for byte after each (final
+`shasum` `ebca559450cdc2673edc0475dd3deb129a0aa46c`, equal to the pristine copy
+in `private/scratch/507-review-probes/`).
+
+| probe | edit | tests that fail (of 13) |
+| --- | --- | --- |
+| F **the consumer is removed** | `drain` never reads the `AnimationLog` resource | **10**, including the acceptance test, the new skip test and the new two-instance test |
+| G retry accepts the live generation | `retry` drops the `served == self.served` guard | `..._a_generation_change_releases_the_ledger` |
+| K signals substituted | the composition replaces the host's signals instead of adding to them | `..._the_hosts_own_signals_survive_the_composition` |
+| L a stopped tick drops its delivery | `MissionStep` returns an empty delivery when `tick.stop.is_some()` | `..._a_stopped_objective_tick_still_hands_the_signal_back` |
+| M the ledger is not consulted | `admit` skips the `applied.contains` guard | `..._exactly_once` |
+| N the key forgets the producer | `MarkerActivation::new(session, 0, marker)` | `..._two_instances_of_one_clip_are_two_activations` |
+| O2 the key includes the tick | `marker` is keyed as `marker@tick` | `..._exactly_once` — **this probe passed all nine submitted tests**, which is why the restamped-event assertion was added |
+| R the key is the whole event id | `marker` is keyed as `marker#tick.sequence` | `..._exactly_once` |
+| P the session is not checked | `admit` skips the stale-session guard | `..._a_stale_session_marker_is_refused`, `..._a_generation_change_releases_the_ledger` |
+| Q the effect kind is not read | `admit` skips the `is_gameplay` guard | `..._a_loop_pass_raises_one_signal_and_no_presentation_cue` |
+
+O2 is the review's substantive result: the module doc has claimed since the
+first draft that "the tick and the event sequence are deliberately **not** part
+of it", and no test failed when the key was changed to include the tick. The
+submitted suite could not tell the design decision from an accident.
+
+
 ## Checks run
+
+### Implementer (bunny-alpha-2, implementation session)
 
 - `cargo fmt --all -- --check` — exit 0.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
@@ -175,6 +286,33 @@ selection was green again afterwards).
   slice), all passing.
 - the six mutation probes above.
 
+### Reviewer (bunny-alpha-2, review session — the same agent, see below)
+
+- `cargo fmt --all -- --check` — exit 0.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  — exit 0.
+- `cargo test --workspace --locked` — exit 0; **381** test-suite results,
+  **3667** tests, 0 failed
+  (`private/checks/507-review/workspace-test-final.log`).
+- `cargo test --workspace --locked -- accept_f20_c_ --include-ignored` — exit 0,
+  **71 tests matched** across the seven `accept_f20_c_*` files (13 of them this
+  slice), 0 failed
+  (`private/checks/507-review/accept-f20c-final.log`).
+- `cargo test -p cs_app --locked --test accept_f20_c_marker_consumer` — exit 0,
+  13 tests.
+- the ten probes above.
+
+**Independence limit, stated rather than glossed.** The reviewer of this branch
+is `bunny-alpha-2`, the same agent identity that implemented it in an earlier
+session. AGENTS.md is explicit that a same-agent review is not independent
+evidence, and AGENTS.md also asks for a *different* agent instance with a fresh
+context for format and mission semantics — which is what this is. Rally offered
+the branch to this agent, and the alternative (handing it straight back) was not
+available. The reviewer therefore re-derived the sensitive claims rather than
+trusting the handover: the activation-key probes N/O2/R, the greedy-drain
+wording, the `retry` guard and the vacuous assertion were all found by reading
+the code and re-running the selection, not by reading the summary.
+
 **Host note, reported because it changed a run of record.** This machine
 exports `CARGO_PROFILE_DEV_DEBUG=0`, which overrides the committed
 `[profile.dev] debug = "line-tables-only"` and makes the pre-existing
@@ -184,7 +322,11 @@ workspace run, made under that variable, therefore stopped on that test. The run
 of record above was made with the variable unset
 (`env -u CARGO_PROFILE_DEV_DEBUG cargo test --workspace --locked`), which is the
 committed configuration; the same test passes there. Neither the failure nor the
-fix touches this task's code, and no test was weakened to accommodate it.
+fix touches this task's code, and no test was weakened to accommodate it. The
+reviewer confirmed the mechanism by reading the test
+(`tools/cs_xtask/tests/accept_t430_ci_disk_budget.rs`: it re-runs its own binary
+as a child with `RUST_BACKTRACE=1` and requires a frame to name `something.rs:12`)
+and the manifest (`[profile.dev] debug = "line-tables-only"`, `Cargo.toml`).
 
 No command needed `CS_GAME_DIR`; no `accept_f20_c_marker_consumer_*` test is
 `#[ignore]`d; `CS_CAPABILITIES` (`retail,gpu,audio`) was not exercised.

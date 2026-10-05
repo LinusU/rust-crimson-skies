@@ -89,6 +89,25 @@
 //! `step_mission_with_markers` again instead would find the log empty — the
 //! activation was consumed, which is what makes the layer idempotent.
 //!
+//! # What the host must still get right
+//!
+//! This layer refuses the cue nobody declared, the reserved source, a stale
+//! generation and a repeated activation. Two things stay the host's contract,
+//! because this module cannot decide either from what it is given:
+//!
+//! * **A binding must not name a symbol the program declares.** The F39
+//!   runtime treats a host-injected signal as a mission signal and emits
+//!   `SignalRaised` under it; a cue bound to an objective, condition, timer or
+//!   trigger symbol the program already owns would alias that declaration's own
+//!   event, exactly as the reserved source would. [`MissionMarkerBindings`]
+//!   refuses [`RESERVED_ACTOR_EVENT_SOURCE`] because that one is a constant it
+//!   *can* decide; the rest needs the lowered program, which the mission host
+//!   owns beside this table.
+//! * **A retry is a generation change.** [`MissionMarkerConsumer::retry`]
+//!   refuses the generation it already serves ([`MarkerTeardownError::SameSession`]),
+//!   but it cannot tell a caller that meant a fresh generation from one that
+//!   meant to clear the ledger of the live mission.
+//!
 //! # What is **not** claimed
 //!
 //! * **No original marker semantics.** The original `mis_anim.zbd` /
@@ -169,9 +188,11 @@ pub enum MarkerBindingError {
     /// marker could ever carry, so the row is an authoring defect rather than a
     /// binding.
     EmptyCue,
-    /// Two bindings claim the same cue for different signals. Which one the
-    /// marker should raise is then undecided, so the table is refused instead
-    /// of resolved by registration order.
+    /// Two bindings claim the same cue. Which row a marker would resolve to is
+    /// then decided by registration order rather than by the host's
+    /// declaration, so the table is refused instead — including when both rows
+    /// name the same signal, where a repeated row is an authoring defect rather
+    /// than a second declaration of anything.
     DuplicateCue {
         /// The cue both rows name.
         cue: String,
@@ -358,6 +379,13 @@ pub struct RaisedMarker {
     /// marker, which never fires on a later pass).
     pub pass: u64,
     /// The simulation tick the firing was stamped with.
+    ///
+    /// This is the tick the publishing advance ran at, so a **skip** stamps the
+    /// tick it jumped to rather than the marker's clip tick. The crossing's
+    /// position inside the clip is not on the event at all
+    /// ([`AnimationEvent`](cs_sim::animated_object::AnimationEvent) carries no
+    /// clip time), so this layer cannot report it; recovering it would be a
+    /// producer-side addition.
     pub at: Tick,
 }
 
@@ -511,12 +539,17 @@ pub enum MarkerAdmission {
 /// [`MissionMarkerConsumer::applied`].
 ///
 /// The playback's log holds more than markers — blocked *track* references and
-/// attachment transitions are in it too — so the delivery counts those instead
-/// of dropping them silently
-/// ([`Self::tracks_blocked`], [`Self::attachments`]): they are the render and
-/// collision consumers' diagnostics, this layer neither applies nor resolves
-/// them, and a mission reading a pass should be able to see that they were
-/// handed on rather than lost.
+/// attachment transitions are in it too — so the delivery counts those rather
+/// than letting them disappear without a word
+/// ([`Self::tracks_blocked`], [`Self::attachments`]). Be clear about what that
+/// count is: this layer is the log's **only** drainer today, so those records
+/// leave the log with the batch and the count is the whole of what survives
+/// here. They are the render and collision consumers' diagnostics, this layer
+/// neither applies nor resolves them, and a mission reading a pass can at least
+/// see that the batch carried them. A second consumer of the same log will need
+/// a partial drain on `AnimationLog` itself, which is outside this module; the
+/// hazard is recorded in
+/// `docs/findings/2026-10-05-f20-c-mission-marker-consumer.md`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MarkerDelivery {
     raised: Vec<RaisedMarker>,
@@ -588,6 +621,38 @@ pub struct MarkerTeardown {
     pub released: usize,
 }
 
+/// Why a generation change was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkerTeardownError {
+    /// `served` is the generation this consumer already serves.
+    ///
+    /// Clearing the ledger for the generation that is **live** would re-arm
+    /// every activation of a running mission, which is the duplicate F20
+    /// non-negotiable behavior 5 forbids. A generation change is the only thing
+    /// that may release an activation, so this is refused here rather than left
+    /// to the caller — the same rule
+    /// [`ObjectiveSession::retry`](crate::objectives::ObjectiveSession::retry)
+    /// applies to the runtime it feeds.
+    SameSession {
+        /// The generation that is already served.
+        served: SessionId,
+    },
+}
+
+impl fmt::Display for MarkerTeardownError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SameSession { served } => write!(
+                f,
+                "{served} is the generation already served, so a retry would re-arm the \
+                 activations of a live mission"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MarkerTeardownError {}
+
 /// The mission layer's consumer of fired animation gameplay markers.
 ///
 /// One consumer serves one session generation and owns the two pieces of state
@@ -641,20 +706,27 @@ impl MissionMarkerConsumer {
     ///
     /// The F39-C retry, for this layer: the activations the failed generation
     /// consumed are reported and dropped, so a marker of the next generation
-    /// cannot be refused as a repeat of the last one's. This entry does not
-    /// refuse a repeated [`SessionId`], because clearing the ledger is the whole
-    /// of what it does and the consumer keeps no other per-generation state.
+    /// cannot be refused as a repeat of the last one's.
     ///
     /// Note what a generation change does **not** restore: the evaluator fires
     /// a one-shot gameplay marker once per activation, so a mission that needs
     /// the same marker's effect again must restart the animation (which yields a
     /// fresh producer serial, and therefore a new activation) rather than expect
     /// this layer to re-raise a signal.
-    pub fn retry(&mut self, served: SessionId) -> MarkerTeardown {
+    ///
+    /// # Errors
+    ///
+    /// [`MarkerTeardownError::SameSession`] for the generation already served.
+    /// The ledger is left untouched, so a refused retry cannot re-arm a live
+    /// mission.
+    pub fn retry(&mut self, served: SessionId) -> Result<MarkerTeardown, MarkerTeardownError> {
+        if served == self.served {
+            return Err(MarkerTeardownError::SameSession { served });
+        }
         let released = self.applied.len();
         self.applied.clear();
         self.served = served;
-        MarkerTeardown { served, released }
+        Ok(MarkerTeardown { served, released })
     }
 
     /// Decides what one fired event does, recording the activation when it
@@ -725,8 +797,10 @@ impl MissionMarkerConsumer {
     /// attachment transitions the render and collision consumers published are
     /// counted here ([`MarkerDelivery::tracks_blocked`],
     /// [`MarkerDelivery::attachments`]) rather than dropped without a word. This
-    /// layer is the first drainer of the log, so it is also the first place
-    /// where "somebody else was meant to read those" has to be visible.
+    /// layer is the log's only drainer, so those records leave the log with the
+    /// batch and the count is all that is left of them — see
+    /// [`MarkerDelivery`]'s own note on what a second consumer of this log
+    /// would need.
     pub fn drain(&mut self, world: &mut World) -> MarkerDelivery {
         let batch = match world.get_resource_mut::<AnimationLog>() {
             Some(mut log) => log.drain(),
