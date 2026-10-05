@@ -344,6 +344,7 @@ among the members that M01's documents reference; this stage decodes the
 carrier index, the payload header and the first record's name, and stops there
 because no measured rule fixes a record's length (see above). A follow-up task
 carries the record walk.
+
 ## Independent review (2026-10-05, `sonnet-1`)
 
 Task #651 (`M01-LC-ANIM-INDEP`). Reviewer: `sonnet-1/sonnet-1`, Sonnet 5.5, a
@@ -411,3 +412,7 @@ regenerated: its harness would pin a new candidate tree and a stale `OPEN` list
 (the record walk exists now), so this identity is recorded here and in the Rally
 submission instead. The `M01LC_REVIEW` text in the test file still describes the
 earlier review.
+
+The merge review of this branch was done by the same identity (`sonnet-1`) that wrote
+the section above, in a later session. It checked the diff and CI only; it adds no
+independent evidence beyond the section itself.
