@@ -19,9 +19,11 @@
 //!   ratio, centred, never stretched (non-negotiable behavior 4).
 //!
 //! Decoded playback against the master clock is [`playback`] and authored
-//! camera timelines are [`timeline`] (F40-B); the skip/pause wiring is F40-C.
+//! camera timelines are [`timeline`] (F40-B); the skip/pause/failure wiring is
+//! [`session`] (F40-C).
 
 pub mod playback;
+pub mod session;
 pub mod timeline;
 
 use std::fmt;
