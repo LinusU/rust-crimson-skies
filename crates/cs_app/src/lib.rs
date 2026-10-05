@@ -368,6 +368,18 @@
 //! [`damage::repair_damage_zone`]) that decides a destroyed zone's collider and
 //! calls the F20-C.04 collision seam.
 //!
+//! [`debris`] is the F29-C.2 debris consumer
+//! (`specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
+//! `### F29-C`): [`debris::PartDebrisBinding`], the spawn path's record of
+//! which authored debris object one part's destruction presents, and
+//! [`debris::apply_debris_state`], the state-driven pass that spawns exactly
+//! one [`debris::SpawnedDebris`] instance for every destroyed part with a
+//! resolved binding, despawns it again when the authority stops calling the
+//! part destroyed, refuses an unresolved binding by name and invents nothing
+//! for a part that has none — with [`debris::release_debris`] as the
+//! reload/restart/swap teardown entry. The debris asset and its presentation
+//! belong to another stage; this module owns the decision and the record.
+//!
 //! [`targeting`] is the F30-A/F30-B targeting boundary
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
 //! stages `### F30-A`/`### F30-B`): [`targeting::lower_rules`], which
@@ -595,6 +607,7 @@ pub mod cinematics;
 pub mod cli;
 pub mod construction;
 pub mod damage;
+pub mod debris;
 pub mod diagnostics;
 pub mod environment;
 pub mod input;

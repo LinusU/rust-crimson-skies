@@ -719,10 +719,14 @@ pub fn repair_damage_zone(
 //
 // [`apply_damage_state`] wires [`SystemKind::Weapon`];
 // [`apply_propulsion_state`] wires [`SystemKind::Propulsion`] to the
-// flight-authority gate (F29-C.1). Debris, scoring and the bailout mission
+// flight-authority gate (F29-C.1). Scoring and the bailout mission
 // transition need consumers that do not exist on this branch yet; they are
-// recorded as follow-ups, never guessed. Nothing in this pass *decides*
-// damage — it only reflects the resolver's state onto the two consumers.
+// recorded as follow-ups, never guessed. Debris is no longer one of them: the
+// state-driven pass in [`crate::debris`] reads the same authoritative
+// `part_state` and spawns/despawns the authored debris instance itself, so
+// this pass stays the gate + visual consumer it is. Nothing in this pass
+// *decides* damage — it only reflects the resolver's state onto the two
+// consumers.
 
 /// Why the damage → consumer pass could not update a consumer.
 ///
