@@ -1460,6 +1460,10 @@ pub const AUTHORITY_KEY_VOCABULARY: [&str; 12] = [
 /// out of the data, which is exactly the failure the authority census must not
 /// have. A child that is not text is skipped, so a malformed tail cannot shift
 /// the pairing for the rest of the record.
+///
+/// It **assumes every key has a value**. Inside an objective block that is false
+/// (a bare directive is followed directly by the next key); use
+/// [`zrd_directive_fields`] there.
 #[must_use]
 pub fn zrd_flat_fields(node: &ZrdValue) -> Vec<(&str, &ZrdValue)> {
     let Some(children) = node.as_list() else {
@@ -1473,6 +1477,55 @@ pub fn zrd_flat_fields(node: &ZrdValue) -> Vec<(&str, &ZrdValue)> {
             index += 2;
         } else {
             index += 1;
+        }
+    }
+    fields
+}
+
+/// What a bare directive is paired with by [`zrd_directive_fields`]: an empty
+/// list, so a reader that wants an argument finds none.
+static BARE_DIRECTIVE_ARGUMENT: ZrdValue = ZrdValue::List(Vec::new());
+
+/// Whether `value` is the placeholder [`zrd_directive_fields`] pairs with a bare
+/// directive (by identity, so a genuine empty list is not mistaken for one).
+#[must_use]
+pub fn zrd_is_bare_argument(value: &ZrdValue) -> bool {
+    std::ptr::eq(value, &BARE_DIRECTIVE_ARGUMENT)
+}
+
+/// An objective block's children read with the measured **directive grammar**.
+///
+/// [`zrd_flat_fields`] assumes every key is followed by exactly one value. The
+/// original spells a no-argument directive (`INSTANTWIN`, `INSTANTLOSS`) by
+/// leaving the next key beside it, so that walk pairs the bare key with the next
+/// key's spelling and skips the next key entirely: 22 of the retail
+/// installation's 1118 `BEGIN_DORMANT` sites vanish that way. Here a text
+/// followed by another text (or by the end of the block) is a bare directive,
+/// paired with [`zrd_is_bare_argument`]'s placeholder and advancing by one; any
+/// other follower is its argument and the walk advances by two. This is the same
+/// rule as `mission_control::measure_control_record`. A non-text child where a
+/// key is expected is skipped, as in the flat walk.
+#[must_use]
+pub fn zrd_directive_fields(node: &ZrdValue) -> Vec<(&str, &ZrdValue)> {
+    let Some(children) = node.as_list() else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    let mut index = 0;
+    while index < children.len() {
+        let Some(name) = children[index].as_text() else {
+            index += 1;
+            continue;
+        };
+        match children.get(index + 1) {
+            None | Some(ZrdValue::Text(_)) => {
+                fields.push((name, &BARE_DIRECTIVE_ARGUMENT));
+                index += 1;
+            }
+            Some(argument) => {
+                fields.push((name, argument));
+                index += 2;
+            }
         }
     }
     fields
@@ -2052,7 +2105,7 @@ pub fn objective_state_machine(document: &ZrdValue) -> ObjectiveStateMachine {
         let mut required_count = None;
         let mut block_counts: std::collections::BTreeMap<String, u32> =
             std::collections::BTreeMap::new();
-        for (field, field_value) in zrd_flat_fields(value) {
+        for (field, field_value) in zrd_directive_fields(value) {
             *counts.entry(field.to_owned()).or_insert(0) += 1;
             *block_counts.entry(field.to_owned()).or_insert(0) += 1;
             match field {

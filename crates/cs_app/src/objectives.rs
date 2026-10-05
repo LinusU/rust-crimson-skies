@@ -188,7 +188,7 @@ use cs_content::objectives::{
 use cs_content::stunts::{
     OBJECTIVE_BLOCK_PREFIX, SCENARIO_OBJECTIVES_MEMBER, SCENARIO_TARGETS_MEMBER,
     TARGET_CATEGORY_KEY, TARGET_HELP_KEY, ZrdValue, objective_record, objective_record_count,
-    objective_record_keys, zrd_field, zrd_flat_fields,
+    objective_record_keys, zrd_directive_fields, zrd_field, zrd_flat_fields,
 };
 use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
@@ -1649,7 +1649,7 @@ pub fn measure_block_precedence(document: &ZrdValue) -> MeasuredBranchPrecedence
             continue;
         };
         measured.blocks += 1;
-        let sites: Vec<MeasuredBranchSite> = zrd_flat_fields(block_value)
+        let sites: Vec<MeasuredBranchSite> = zrd_directive_fields(block_value)
             .into_iter()
             .filter_map(|(field, value)| {
                 let kind = BranchEffectKind::from_measured_key(field)?;
@@ -1867,7 +1867,7 @@ pub fn measure_count_conditions(document: &ZrdValue) -> MeasuredCountConditions 
     for (_, block_value) in zrd_flat_fields(record) {
         let mut has_threshold = false;
         let mut has_stage = false;
-        for (field, value) in zrd_flat_fields(block_value) {
+        for (field, value) in zrd_directive_fields(block_value) {
             if field == OBJECTIVE_INACTIVE_COUNT_KEY {
                 measured.threshold_sites += 1;
                 has_threshold = true;
@@ -3175,7 +3175,7 @@ fn branching_spellings(document: &ZrdValue) -> (u32, u32) {
 // F39-E1: the dormant/reveal census
 // ---------------------------------------------------------------------------
 //
-// F39-D counted the declarations (`BEGIN_DORMANT` in 1096 of 1338 blocks, an
+// F39-D counted the declarations (`BEGIN_DORMANT` in 1118 of 1338 blocks (F39-D published 1096 from a walk that swallowed the key after a bare directive; F39-D-COUNT), an
 // `INACTIVE<n>` stage in 1335, an `INACTIVE_COMPLETION_COUNT` in 130) and left
 // what they *do* as its unknown #4. This census is the measurement half of that
 // question: it reads every mission-scoped objective record through
@@ -5502,7 +5502,7 @@ impl ObjectiveRecovery {
         for (key, value) in zrd_flat_fields(objective_record(document)) {
             if let Some(number) = cs_content::objectives::objective_block_number(key) {
                 blocks.push(number);
-                for (field, _) in zrd_flat_fields(value) {
+                for (field, _) in zrd_directive_fields(value) {
                     fields_read += 1;
                     unrecovered.push(UnrecoveredField {
                         block: Some(number),

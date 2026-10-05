@@ -116,7 +116,7 @@
 //!
 //! # F39-E1: what the dormant/reveal declarations declare, and what they do not
 //!
-//! F39-D left one question open (its unknown #4): 1096 of the installation's
+//! F39-D left one question open (its unknown #4): 1118 of the installation's
 //! 1338 objective blocks carry [`OBJECTIVE_DORMANT_KEY`], 1335 carry an
 //! `INACTIVE<n>` stage and 130 an [`OBJECTIVE_INACTIVE_COUNT_KEY`], and
 //! nothing was known about what any of them *does*. The measurement half of
@@ -1210,7 +1210,8 @@ pub const OBJECTIVE_INACTIVE_STAGE_PREFIX: &str = "INACTIVE";
 pub const OBJECTIVE_INACTIVE_COUNT_KEY: &str = "INACTIVE_COMPLETION_COUNT";
 
 /// The measured key an objective block carries to begin dormant. Measured in
-/// 1096 of the 1338 blocks.
+/// 1118 of the 1338 blocks (F39-D and F39-E1 first published 1096, from a walk
+/// that swallowed the key after a bare directive; F39-D-COUNT corrected it).
 pub const OBJECTIVE_DORMANT_KEY: &str = "BEGIN_DORMANT";
 
 /// One measured **completion effect**: a key an objective block carries to
@@ -3154,8 +3155,8 @@ pub fn declared_synthetic_completion_effects() -> DeclaredObjectiveProgram {
 // measurement half of F39-D unknown #4
 // (`docs/findings/2026-10-03-f39-d-branching-optional-and-failure-validation.md`),
 // which left the dormant/reveal lifecycle unrecovered because no rule had been
-// isolated for any of the three declarations: `BEGIN_DORMANT` (1096 of the
-// installation's 1338 blocks), the `INACTIVE<n>` stage keys (1335) and
+// isolated for any of the three declarations: `BEGIN_DORMANT` (1118 of the
+// installation's 1338 blocks; 1096 as first published, see F39-D-COUNT), the `INACTIVE<n>` stage keys (1335) and
 // `INACTIVE_COMPLETION_COUNT` (130).
 //
 // The reader keeps every measured value **as measured** and classifies nothing
@@ -3185,7 +3186,9 @@ pub fn declared_synthetic_completion_effects() -> DeclaredObjectiveProgram {
 // records them. A reader that turned these declarations into a reveal rule
 // would be the guess the contract forbids.
 
-use crate::stunts::{OBJECTIVE_BLOCK_PREFIX, ZrdValue, objective_record, zrd_flat_fields};
+use crate::stunts::{
+    OBJECTIVE_BLOCK_PREFIX, ZrdValue, objective_record, zrd_directive_fields, zrd_flat_fields,
+};
 
 /// The key a block declares its objective identity with: the display role, the
 /// ordinal inside that role and, for most blocks, the message id the original
@@ -3206,7 +3209,7 @@ pub const OBJECTIVE_WAKEUP_SOUND_GROUP_KEY: &str = "WAKEUP_SOUND_GROUP";
 
 /// The measured `BEGIN_DORMANT` argument that declares no elapsed time.
 ///
-/// Measured: 992 of the 1096 `BEGIN_DORMANT` arguments are exactly this value,
+/// Measured: 1014 of the 1118 `BEGIN_DORMANT` arguments are exactly this value,
 /// and no other negative argument occurs.
 pub const DORMANT_NO_ELAPSED_TIME: f32 = -1.0;
 
@@ -3217,7 +3220,7 @@ pub const DORMANT_NO_ELAPSED_TIME: f32 = -1.0;
 /// seconds, is unmeasured and stays that way; see [`InactiveCondition`] and the
 /// module section above.
 ///
-/// The split into the two arms is **measured** (992 arguments are exactly `-1`
+/// The split into the two arms is **measured** (1014 arguments are exactly `-1`
 /// and 104 are positive). That the positive arm is a *time* rather than some
 /// other quantity that merely increases through the mission is an **inference**
 /// from the key's spelling and from F39-E1's controlled condition over the
@@ -3573,7 +3576,7 @@ pub const MEASURED_MAX_CONDITION_ARITY: usize = 3;
 /// Measures the dormant/reveal declarations of one objective block.
 ///
 /// `fields` is the block's flat `key, value` list, as
-/// [`crate::stunts::zrd_flat_fields`] reads it. Keys this stage does not
+/// [`crate::stunts::zrd_directive_fields`] reads it. Keys this stage does not
 /// measure are ignored, so the block may declare anything else; the keys it
 /// *does* measure are read strictly, and a shape F39-E1 never measured is a
 /// named [`DormantReadError`] rather than a silently dropped declaration.
@@ -3671,7 +3674,7 @@ pub fn measure_dormant_declarations(
         if objective_block_number(key).is_none() {
             continue;
         }
-        measured.push(measure_dormant_block(key, &zrd_flat_fields(value))?);
+        measured.push(measure_dormant_block(key, &zrd_directive_fields(value))?);
     }
     Ok(measured)
 }
@@ -4154,7 +4157,7 @@ pub fn measure_detached_vocabulary(
             continue;
         }
         let block = format!("{OBJECTIVE_BLOCK_PREFIX}{block}");
-        let fields = zrd_flat_fields(value);
+        let fields = zrd_directive_fields(value);
         // Surface 1: the only counter the records write is a threshold over a
         // block's own stages, so a stage beside no threshold is not a counted
         // condition and is read as a plain declaration instead.
