@@ -307,13 +307,69 @@ and `human_review` were not exercised and are not in that list.** `claim` is
 would award `checked` at most.
 
 One process note: the committed report names
-`candidate_tree 2ff4f00fa3426319a33d40fff86f3739364f5ea2`, the tree of the commit
-that carried the acceptance suite when the run was recorded. The evidence harness
-itself was added after that run, so the rebased commit has a different tree. The
-reviewer regenerates the report on the rebased commit and compares it, which is
-what the contract asks for; the numbers that depend on the tree (candidate_tree
-itself) change and the ones that do not (18/18/18, exit 0, 2520/2520, the member's
-shape, the two digests) must reproduce.
+`candidate_tree 9d37b04bb037c5611dc9149a6ab289ef6e746409`, the tree of the commit
+that carried the acceptance suite when the run was recorded. Committing the
+report itself changes the tree, so a report can never name the tree that contains
+it; the reviewer regenerates the report on the reviewed commit and compares it,
+which is what the contract asks for. The numbers that depend on the tree
+(`candidate_tree` itself) change and the ones that do not (**20/20/20**, exit 0,
+2520/2520, the member's shape, the two digests) must reproduce.
+
+The reviewer regenerated it. Both figures that moved are accounted for: the test
+count went 18 → 20 with the two `a_voice_source_*` scenarios added during review,
+and the tree changed with them. Everything the second production observation
+derives from the installation reproduced exactly — 2520 members, all 2520
+`decoded`, first decoded member `c2-NW-m1_briefing.wav` at 1137765 samples,
+11025 Hz, 1 channel — and the retail scenario passed again on the reviewed code,
+so the review's change to the voice source did not alter what reaches the stream.
+
+## What the review changed
+
+Reviewer: `bunny-2/bunny-2`, a separate session with fresh context over the same
+agent's implementation. **This is not an independent review** — the same agent
+instance both implemented and reviewed the work, so it is not independent
+evidence about the original game, and it is recorded as such here and in the
+report's `review.identity`. `docs/findings/evidence/M01-LC-AUDIO-DEVICE.json`
+names the same identity for the same reason. What this review can support is that
+the code does what this finding says and that its claims are checked by tests
+that reach production code.
+
+Three things changed, all of them in this finding's "where the deviation risk
+is" list:
+
+1. **The per-voice sample copy is gone.** `LoopingVoice::new` copied the whole
+   decoded member — and doubled it for mono — on every voice start. A retail
+   member is over a million samples (`c2-NW-m1_briefing.wav` decodes to 1137765),
+   so starting one engine loop allocated several megabytes, and starting it again
+   allocated them again. It now shares the `Arc` the `PcmAudio` already holds and
+   spreads mono to stereo one frame at a time in `next`. Same emitted values; the
+   assertion that pins them is the new `a_voice_source_*` scenario.
+2. **The pan law, the channel interleave and the loop seam are covered in CI.**
+   All three were asserted only inside the `#[ignore]`d retail scenario, because
+   `LoopingVoice` was private. They are the three properties this finding names as
+   the most likely to be silently wrong, and a machine without an `audio`
+   capability could not check any of them. The source is now public and the three
+   are asserted by pulling from it.
+3. **The evidence harness's own instructions were wrong.** Its module doc told
+   the reader to validate with `--require-pass`, which rejects any nonempty
+   `unknowns` — and this report's `unknowns` are the scope limits that gate every
+   audible claim. The review method below already said the report is validated
+   without that flag; the step-by-step instructions contradicted it, so the next
+   agent to follow the doc would have deleted the limits. The doc now states the
+   omission and why.
+
+Two assertions written during the review were **wrong on first run and the code
+was right**, which is recorded because it is the interesting part:
+
+* `cos(π/2)` is `6.1e-17`, not `0.0`. The constant-power law's muted side is
+  inaudible, not a clean zero, and asserting an exact zero would have been
+  asserting a rounding accident. The scenarios now compare inaudible-to-1e-6 and
+  say why that tolerance cannot hide an ordering or gain error.
+* A placement update that lands **mid-frame** — after one value, the cursor is on
+  the right channel — must apply to the channel actually due. The first
+  expectation assumed the cursor restarted at a frame boundary; the source does
+  not, and must not. That is now asserted: a source that recomputed the channel
+  from a re-zeroed cursor would put the left gain on a right-channel value.
 
 ## Checks
 
@@ -322,5 +378,5 @@ shape, the two digests) must reproduce.
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
 | `cargo test --workspace --locked` | 0 |
-| `cargo test --workspace --locked -- accept_m01_lc_audio_device_ --include-ignored` | 0 (18: 17 synthetic, 1 retail+audio) |
+| `cargo test --workspace --locked -- accept_m01_lc_audio_device_ --include-ignored` | 0 (20: 19 synthetic, 1 retail+audio) |
 | `python3 tools/validate_evidence.py private/evidence/M01-LC-AUDIO-DEVICE/acceptance.json --artifact-root private/evidence/M01-LC-AUDIO-DEVICE` | 0 (without `--require-pass`, see above) |
