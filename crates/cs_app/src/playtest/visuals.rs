@@ -18,8 +18,8 @@ use bevy::prelude::{
 use bevy::text::FontSize;
 use cs_content::cameras::AspectRatio;
 
-use super::scene::{PlaytestAircraft, PlaytestGround, PlaytestObstacle};
 use super::retail::RetailContent;
+use super::scene::{PlaytestAircraft, PlaytestGround, PlaytestObstacle};
 use super::{PlaytestCamera, PlaytestCameraMarker, PlaytestState};
 
 /// The camera's far plane: the ground slab is 20 km across.

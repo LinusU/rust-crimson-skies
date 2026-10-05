@@ -97,7 +97,11 @@ pub const fn cycles(seconds: u32) -> u32 {
 fn script(cycles: u32, steer_into_area: bool) -> Vec<(u32, Step)> {
     let mut steps = Vec::new();
     for cycle in 0..cycles.max(1) {
-        pass(&mut steps, f64::from(cycle * CYCLE_SECONDS), steer_into_area);
+        pass(
+            &mut steps,
+            f64::from(cycle * CYCLE_SECONDS),
+            steer_into_area,
+        );
     }
     steps.sort_by_key(|(frame, _)| *frame);
     steps
@@ -384,7 +388,13 @@ fn smoke_step(
     aircraft: Query<&Position, With<PlaytestAircraft>>,
     camera: Res<PlaytestCamera>,
     retail: Option<Res<RetailContent>>,
-    area: Query<(), (With<retail::PlaytestAreaBody>, With<avian3d::prelude::Collider>)>,
+    area: Query<
+        (),
+        (
+            With<retail::PlaytestAreaBody>,
+            With<avian3d::prelude::Collider>,
+        ),
+    >,
 ) {
     let frame = script.frame;
     data.frames = frame;
@@ -582,7 +592,12 @@ fn evaluate(
         sample
             .position_m
             .iter()
-            .chain([&sample.speed_m_s, &sample.pitch_deg, &sample.roll_deg, &sample.heading_deg])
+            .chain([
+                &sample.speed_m_s,
+                &sample.pitch_deg,
+                &sample.roll_deg,
+                &sample.heading_deg,
+            ])
             .any(|value| !value.is_finite())
     }) {
         failures.push(format!(

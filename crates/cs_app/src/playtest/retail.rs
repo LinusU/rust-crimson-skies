@@ -26,8 +26,8 @@ use bevy::prelude::{App, Component, Entity, Handle, Quat, Resource, StandardMate
 
 use super::PlaytestError;
 use crate::playtest_retail::{
-    self as scene_source, PLAYTEST_AIRCRAFT_ROOT_NAME, PLAYTEST_WORLD_GROUP, PlaytestAircraftReport,
-    PlaytestAreaReport, PlaytestConfig, PlaytestSources,
+    self as scene_source, PLAYTEST_AIRCRAFT_ROOT_NAME, PLAYTEST_WORLD_GROUP,
+    PlaytestAircraftReport, PlaytestAreaReport, PlaytestConfig, PlaytestSources,
 };
 
 /// The label every surface of the original-assets playtest shows.
@@ -83,7 +83,12 @@ impl RetailRequest {
         Ok(Self {
             cs_path,
             world: pick("--world", world, DEFAULT_WORLD, DOCUMENTED_WORLDS)?,
-            aircraft: pick("--aircraft", aircraft, DEFAULT_AIRCRAFT, DOCUMENTED_AIRCRAFT)?,
+            aircraft: pick(
+                "--aircraft",
+                aircraft,
+                DEFAULT_AIRCRAFT,
+                DOCUMENTED_AIRCRAFT,
+            )?,
         })
     }
 }
@@ -156,7 +161,7 @@ pub fn read_sources(request: &RetailRequest) -> Result<PlaytestSources, Playtest
     scene_source::read_playtest_sources(&request.cs_path, PLAYTEST_WORLD_GROUP).map_err(|source| {
         PlaytestError::Retail {
             path: request.cs_path.clone(),
-            source,
+            source: Box::new(source),
         }
     })
 }
@@ -177,19 +182,17 @@ pub fn install(
 ) -> Result<(), PlaytestError> {
     // The headless composition has no PBR plugin; the asset collection is all
     // the development material needs.
-    if !app
-        .world()
-        .contains_resource::<Assets<StandardMaterial>>()
-    {
+    if !app.world().contains_resource::<Assets<StandardMaterial>>() {
         app.init_asset::<StandardMaterial>();
     }
     let config = PlaytestConfig::documented();
-    let content = scene_source::spawn_playtest_content(app, sources, &config).map_err(
-        |source| PlaytestError::Retail {
-            path: request.cs_path.clone(),
-            source,
-        },
-    )?;
+    let content =
+        scene_source::spawn_playtest_content(app, sources, &config).map_err(|source| {
+            PlaytestError::Retail {
+                path: request.cs_path.clone(),
+                source: Box::new(source),
+            }
+        })?;
     let mut area_entities = Vec::new();
     for object in content.spawned.objects() {
         area_entities.extend(object.entities());
@@ -201,7 +204,12 @@ pub fn install(
     let half_extents_m = extent.map(|side| ((side / 2.0) as f32).max(0.25));
     let containers = [sources.world(), sources.aircraft()]
         .iter()
-        .map(|c| (c.container_key().to_owned(), c.container_sha256().to_owned()))
+        .map(|c| {
+            (
+                c.container_key().to_owned(),
+                c.container_sha256().to_owned(),
+            )
+        })
         .collect();
     let mut state = app.world_mut().resource_mut::<super::PlaytestState>();
     state.spawn_m = content.spawn;
@@ -224,7 +232,10 @@ pub fn install(
 /// How many of the area's entities carry a derived [`Collider`] right now.
 pub fn area_colliders(world: &mut bevy::prelude::World) -> usize {
     world
-        .query_filtered::<(), (bevy::prelude::With<PlaytestAreaBody>, bevy::prelude::With<Collider>)>()
+        .query_filtered::<(), (
+            bevy::prelude::With<PlaytestAreaBody>,
+            bevy::prelude::With<Collider>,
+        )>()
         .iter(world)
         .count()
 }

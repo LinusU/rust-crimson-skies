@@ -2019,7 +2019,7 @@ fn place_capture_scene(
         rotation,
         adapter,
     } = content;
-    let bounds = report.bounds.clone();
+    let bounds = report.bounds;
     let aircraft_extent = aircraft.extent_m;
     let aircraft_entity = app
         .world_mut()

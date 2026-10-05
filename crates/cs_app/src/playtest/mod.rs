@@ -65,8 +65,8 @@ use crate::physics::{
     PhysicsBodiesPlugin, PhysicsTickLedger,
 };
 
-pub use self::retail::RetailRequest;
 use self::command::{CRUISE_THROTTLE, flight_command, playtest_action_map};
+pub use self::retail::RetailRequest;
 use self::retail::{PlaytestAreaBody, RetailContent};
 use self::scene::{PlaytestAircraft, PlaytestGround, PlaytestObstacle};
 
@@ -106,7 +106,7 @@ pub enum PlaytestError {
     /// fallback to the synthetic scene.
     Retail {
         path: PathBuf,
-        source: crate::playtest_retail::PlaytestError,
+        source: Box<crate::playtest_retail::PlaytestError>,
     },
     /// The smoke run could not write its artifacts.
     Io {
@@ -443,10 +443,14 @@ fn sync_pause(
 }
 
 /// Counts new contact episodes between the aircraft and the scene.
+/// The bodies a contact counts as hitting the obstacle: the synthetic wall or
+/// any entity of the original area.
+type ObstacleFilter = Or<(With<PlaytestObstacle>, With<PlaytestAreaBody>)>;
+
 fn record_collisions(
     reports: Res<ContactReports>,
     ledger: Res<PhysicsTickLedger>,
-    obstacles: Query<(), Or<(With<PlaytestObstacle>, With<PlaytestAreaBody>)>>,
+    obstacles: Query<(), ObstacleFilter>,
     grounds: Query<(), With<PlaytestGround>>,
     mut state: ResMut<PlaytestState>,
 ) {
