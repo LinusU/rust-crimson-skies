@@ -1115,3 +1115,141 @@ fn accept_f43_b_the_declared_beat_lowers_to_an_interlude_and_a_roster_gate_holds
         "m02 did not lower to a mission bound to its content id"
     );
 }
+
+// --------------------------------------------------------------- sell -------
+
+fn bought_plane_b() -> (CampaignGraph, CampaignState, ContentId) {
+    let (graph, mut state) = progressed_past_the_beat();
+    let plane_b = content(ContentKind::Airframe, "plane_b");
+    let revision = state.revision();
+    state
+        .purchase(
+            &graph,
+            &cs_sim::campaign::PurchaseDraft {
+                item: plane_b.clone(),
+                price: 400,
+                expected_revision: revision,
+            },
+        )
+        .expect("the purchase is valid");
+    (graph, state, plane_b)
+}
+
+/// A sale refunds the price actually paid, once, and a replayed draft cannot
+/// credit the balance again.
+#[test]
+fn accept_f43_b_1_a_sale_refunds_the_price_paid_once() {
+    let (_graph, mut state, plane_b) = bought_plane_b();
+    assert_eq!(state.currency(), 125);
+    assert_eq!(state.paid_for(&plane_b), Some(400));
+    let revision = state.revision();
+
+    let draft = cs_sim::campaign::SellDraft {
+        item: plane_b.clone(),
+        expected_revision: revision,
+    };
+    let receipt = state.sell(&draft).expect("the draft is valid");
+    assert_eq!(receipt.refunded, 400);
+    assert_eq!(state.currency(), 525, "the paid price was not refunded");
+    assert!(!state.unlocks().any(|item| *item == plane_b), "still owned");
+    assert_eq!(state.paid_for(&plane_b), None, "the ledger kept the entry");
+    assert_eq!(state.revision(), revision + 1);
+
+    assert_eq!(
+        state.sell(&draft),
+        Err(CampaignError::NotOwned {
+            item: plane_b.clone()
+        }),
+        "a replayed sale was accepted twice"
+    );
+    assert_eq!(state.currency(), 525, "a replayed sale credited twice");
+    assert_eq!(state.revision(), revision + 1);
+}
+
+/// Designed semantics: a sale does not revoke the roster gate, so the item is
+/// available and unowned again and can be bought again at a newly drafted
+/// price; the refund then follows the new price.
+#[test]
+fn accept_f43_b_1_a_sold_item_is_available_to_buy_again() {
+    let (graph, mut state, plane_b) = bought_plane_b();
+    state
+        .sell(&cs_sim::campaign::SellDraft {
+            item: plane_b.clone(),
+            expected_revision: state.revision(),
+        })
+        .expect("sale");
+    assert!(
+        graph.available_items(&state).any(|item| *item == plane_b),
+        "the sale revoked the roster gate"
+    );
+    state
+        .purchase(
+            &graph,
+            &cs_sim::campaign::PurchaseDraft {
+                item: plane_b.clone(),
+                price: 300,
+                expected_revision: state.revision(),
+            },
+        )
+        .expect("rebuy");
+    assert_eq!(state.paid_for(&plane_b), Some(300));
+    let receipt = state
+        .sell(&cs_sim::campaign::SellDraft {
+            item: plane_b,
+            expected_revision: state.revision(),
+        })
+        .expect("sell again");
+    assert_eq!(receipt.refunded, 300, "the refund used a stale price");
+    assert_eq!(state.currency(), 525);
+}
+
+/// Every sale refusal leaves the profile bit-identical, and the order mirrors
+/// purchase: ownership, purchased-ness, overflow, staleness last.
+#[test]
+fn accept_f43_b_1_every_sale_refusal_leaves_the_profile_untouched() {
+    let (graph, mut state, plane_b) = bought_plane_b();
+    // `reward`'s item is owned by grant, not purchase.
+    let (_, completed) = completed_run();
+    let granted = completed
+        .unlocks()
+        .next()
+        .expect("the completed run granted an unlock")
+        .clone();
+
+    let before = state.clone();
+    let revision = state.revision();
+    let never = content(ContentKind::Airframe, "never_owned");
+    assert_eq!(
+        state.sell(&cs_sim::campaign::SellDraft {
+            item: never.clone(),
+            expected_revision: revision + 9,
+        }),
+        Err(CampaignError::NotOwned { item: never }),
+        "ownership must outrank staleness"
+    );
+    assert_eq!(
+        state.sell(&cs_sim::campaign::SellDraft {
+            item: plane_b.clone(),
+            expected_revision: revision - 1,
+        }),
+        Err(CampaignError::StaleRevision {
+            expected: revision - 1,
+            actual: revision,
+        })
+    );
+    assert_eq!(state, before, "a refusal changed the profile");
+
+    let mut granted_state = completed;
+    let before = granted_state.clone();
+    let revision = granted_state.revision();
+    assert_eq!(
+        granted_state.sell(&cs_sim::campaign::SellDraft {
+            item: granted.clone(),
+            expected_revision: revision,
+        }),
+        Err(CampaignError::NotPurchased { item: granted }),
+        "a granted item was refunded at an invented price"
+    );
+    assert_eq!(granted_state, before);
+    let _ = graph;
+}
