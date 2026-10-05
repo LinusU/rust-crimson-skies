@@ -1652,6 +1652,17 @@ fn log_scene_event(world: &mut World, event: SceneEvent) {
 /// each despawned entity with it. An entity some other stage already
 /// despawned is simply absent and is not counted.
 fn release_scene(world: &mut World, live: &LiveAirframeScene) -> usize {
+    // Same step as the despawn below, and before it: the instances of a
+    // superseded generation release what they applied and the animated links
+    // under any entity that is about to go are cut, so the despawn cannot take
+    // an animated node with its parent (F20 non-negotiable behavior 4).
+    crate::animation::release_superseded_instances(world);
+    let doomed: Vec<Entity> = live.import.entities().map(|(_, entity)| entity).collect();
+    for entity in doomed {
+        if world.get_entity(entity).is_ok() {
+            crate::animation::release_attachments_before_despawn(world, entity);
+        }
+    }
     let present = live
         .import
         .entities()
