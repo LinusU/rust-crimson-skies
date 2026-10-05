@@ -158,8 +158,16 @@ fn accept_playtest_retail_launch_content_pose_and_collider_are_connected() {
         spawn,
         "smoke and HUD read the same spawn"
     );
-    let aircraft_half = app.world().resource::<RetailContent>().half_extents_m;
-    assert!((aircraft_half[2] - 5.1).abs() < 0.2, "{aircraft_half:?}");
+    let content = app.world().resource::<RetailContent>();
+    let extent = content.aircraft.extent_m;
+    for axis in 0..3 {
+        assert!(
+            (f64::from(content.half_extents_m[axis]) - extent[axis] / 2.0).abs() < 1e-4
+                || content.half_extents_m[axis] == 0.25,
+            "the collider box is half the composed extent of the drawn set: {:?} vs {extent:?}",
+            content.half_extents_m
+        );
+    }
 }
 
 #[test]
@@ -229,6 +237,11 @@ fn accept_playtest_retail_launch_scripted_smoke_collides_with_the_original_area(
     assert!(manifest.contains(sources.installation()), "{manifest}");
     assert!(manifest.contains(sources.world().container_sha256()));
     assert!(manifest.contains(sources.aircraft().container_sha256()));
+    assert!(
+        manifest.contains("\"aircraft_mesh_bindings\":")
+            && manifest.contains("\"aircraft_undrawn\":["),
+        "the smoke report lists the aircraft's drawn bindings and its undrawn ones"
+    );
     let report_json = std::fs::read_to_string(dir.join("report.json")).expect("report.json");
     assert!(
         report_json.contains("\"passed\":true") && report_json.contains(sources.installation())

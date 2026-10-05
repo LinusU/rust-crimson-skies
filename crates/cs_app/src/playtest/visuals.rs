@@ -209,15 +209,10 @@ fn attach_aircraft(
     for entity in &aircraft {
         // The body has no mesh of its own; its parts inherit its visibility.
         commands.entity(entity).insert(Visibility::Inherited);
-        if let Some(retail) = &retail {
-            // The original fuselage mesh, turned so its stored nose is the
-            // body's forward axis (the designed half turn).
-            commands.spawn((
-                Mesh3d(retail.mesh.clone()),
-                MeshMaterial3d(retail.material.clone()),
-                Transform::from_rotation(retail.visual_rotation),
-                ChildOf(entity),
-            ));
+        if retail.is_some() {
+            // The original airframe's parts are children of the body from the
+            // moment the scene spawns it (`scene::spawn_aircraft`), so the
+            // headless and windowed apps hold the same entities.
             continue;
         }
         let yellow = materials.add(StandardMaterial {

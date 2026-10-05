@@ -20,8 +20,10 @@
 //!   517 (`piratezep`) and its 792 descendants, over the measured 793 nodes /
 //!   401 mesh bindings / 8 673 triangles; a pinned slot holding a different record
 //!   is refused by name rather than substituted.
-//! * **the aircraft is one explicit original mesh**: the `bloodhawk` airframe's
-//!   `fuse03` node, mesh-array slot 1 436, 140 triangles, 3 material groups.
+//! * **the aircraft is the whole intact `bloodhawk` airframe** (task #665): every
+//!   mesh binding of one selected LOD band plus the static propeller, each part's
+//!   triangle count measured from the container; the full-aircraft checks live in
+//!   `tests/playtest_full_aircraft.rs`.
 //! * **visual and collider geometry are one value.** Every area record presents
 //!   and collides from the same `Assets<Mesh>` handle, the collider is a triangle
 //!   mesh, and its triangle count is the record's own.
@@ -45,7 +47,7 @@ use bevy::mesh::Mesh;
 use bevy::prelude::{Assets, Mesh3d, MeshMaterial3d};
 use cs_app::playtest_retail::{
     AIRCRAFT_CONTAINER_KEY, CAPTURE_HEIGHT, CAPTURE_WIDTH, CaptureError,
-    PLAYTEST_AIRCRAFT_MESH_NODE_NAME, PLAYTEST_AIRCRAFT_MESH_NODE_SLOT,
+    PLAYTEST_AIRCRAFT_INTACT_NODE_NAME, PLAYTEST_AIRCRAFT_INTACT_NODE_SLOT,
     PLAYTEST_AIRCRAFT_POSE_IS_DESIGNED, PLAYTEST_AIRCRAFT_ROOT_NAME, PLAYTEST_AREA_IS_DESIGNED,
     PLAYTEST_AREA_NODE_NAME, PLAYTEST_AREA_NODE_SLOT, PLAYTEST_COLLISION_IS_THE_DRAWN_MESH,
     PLAYTEST_LABEL, PLAYTEST_NEUTRAL_MATERIAL, PLAYTEST_UNIT_IS_DESIGNED,
@@ -169,12 +171,12 @@ fn accept_playtest_retail_every_designed_value_is_recorded_under_its_own_claim()
     assert_eq!(config.area_node_name, PLAYTEST_AREA_NODE_NAME);
     assert_eq!(config.aircraft_root_name, PLAYTEST_AIRCRAFT_ROOT_NAME);
     assert_eq!(
-        config.aircraft_mesh_node_slot,
-        PLAYTEST_AIRCRAFT_MESH_NODE_SLOT
+        config.aircraft_intact_node_slot,
+        PLAYTEST_AIRCRAFT_INTACT_NODE_SLOT
     );
     assert_eq!(
-        config.aircraft_mesh_node_name,
-        PLAYTEST_AIRCRAFT_MESH_NODE_NAME
+        config.aircraft_intact_node_name,
+        PLAYTEST_AIRCRAFT_INTACT_NODE_NAME
     );
     assert_eq!(config.capture_size(), (CAPTURE_WIDTH, CAPTURE_HEIGHT));
     assert_eq!(config, PlaytestConfig::default());
@@ -591,44 +593,51 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
         assert!(object.id().as_str().starts_with("playtest.node-"));
     }
 
-    // -- the aircraft is one explicit original mesh --------------------------
+    // -- the aircraft is the whole intact airframe ----------------------------
     let aircraft = scene.aircraft();
     assert_eq!(aircraft.container_key, AIRCRAFT_CONTAINER_KEY);
     assert_eq!(aircraft.root_name, PLAYTEST_AIRCRAFT_ROOT_NAME);
-    assert_eq!(aircraft.node_slot, PLAYTEST_AIRCRAFT_MESH_NODE_SLOT);
-    assert_eq!(aircraft.node_name, PLAYTEST_AIRCRAFT_MESH_NODE_NAME);
     assert_eq!(
-        aircraft.mesh_index, 1_436,
-        "the mesh-array slot the pinned node binds"
+        aircraft.intact_node_slot,
+        PLAYTEST_AIRCRAFT_INTACT_NODE_SLOT
     );
     assert_eq!(
-        aircraft.triangles, 140,
-        "the stored triangles over the production F10-E builder"
-    );
-    assert_eq!(
-        aircraft.groups, 3,
-        "its stored material groups, merged into one upload"
+        aircraft.intact_node_name,
+        PLAYTEST_AIRCRAFT_INTACT_NODE_NAME
     );
     assert!(
-        (aircraft.extent_m[2] - 10.233_251).abs() < 1e-5,
-        "the fuselage's stored length, which every declared camera distance is a multiple of: \
-         {}",
-        aircraft.extent_m[2]
+        aircraft.mesh_bindings() > 1,
+        "more than the fuselage is drawn: {}",
+        aircraft.mesh_bindings()
+    );
+    for part in &aircraft.parts {
+        let stored = sources
+            .aircraft()
+            .meshes()
+            .get(part.mesh_index)
+            .expect("a drawn binding's mesh is stored");
+        let measured = cs_app::world::retail::stored_render_mesh(stored)
+            .expect("a drawn binding's mesh builds")
+            .triangles()
+            .len();
+        assert_eq!(
+            part.triangles, measured,
+            "{} draws the triangles the container stores for mesh {}",
+            part.node_name, part.mesh_index
+        );
+    }
+    assert!(
+        aircraft.extent_m[0] > 5.0 * 2.111_164_6,
+        "the composed extent is the wingspan, not the fuselage's width: {:?}",
+        aircraft.extent_m
     );
     assert!(
-        (aircraft.extent_m[0] - 2.111_164_6).abs() < 1e-5,
-        "and its width: {}",
-        aircraft.extent_m[0]
-    );
-    assert!(
-        (aircraft.extent_m[1] - 1.492_971_9).abs() < 1e-5,
-        "and its height: {}",
-        aircraft.extent_m[1]
-    );
-    assert_eq!(
-        aircraft.composed_translation_m,
-        [0.0, 0.0, 0.0],
-        "the mesh is already in its airframe's own frame, so the spawn pose places it unchanged"
+        aircraft
+            .extent_m
+            .iter()
+            .all(|side| side.is_finite() && *side > 0.0),
+        "{:?}",
+        aircraft.extent_m
     );
 
     // -- the scene is finite, bounded and owned -------------------------------
@@ -700,17 +709,24 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
         engine_meshes > engine_meshes_before,
         "and the scene really uploaded something: {engine_meshes_before} -> {engine_meshes}"
     );
-    // The aircraft is drawn from its own asset, on its own entity.
-    assert!(
-        app.world().get::<Mesh3d>(scene.aircraft_entity()).is_some(),
-        "the aircraft presents its own mesh"
-    );
-    assert!(
-        app.world()
-            .get::<MeshMaterial3d<bevy::pbr::StandardMaterial>>(scene.aircraft_entity())
-            .is_some(),
-        "and it is presented, which the world records' presentation path does not do itself"
-    );
+    // The aircraft is one parent entity with one presented child per drawn binding.
+    let children = app
+        .world()
+        .get::<bevy::prelude::Children>(scene.aircraft_entity())
+        .expect("the aircraft parent has its parts");
+    assert_eq!(children.len(), scene.aircraft().mesh_bindings());
+    for child in children {
+        assert!(
+            app.world().get::<Mesh3d>(*child).is_some(),
+            "every part presents its own mesh"
+        );
+        assert!(
+            app.world()
+                .get::<MeshMaterial3d<bevy::pbr::StandardMaterial>>(*child)
+                .is_some(),
+            "and is presented, which the world records' presentation path does not do itself"
+        );
+    }
 
     // -- the capture: real frames from the same spawned content --------------
     let dir = capture_dir("area");
@@ -830,9 +846,17 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
         scene.spawned().objects().len(),
         "a reload produces the same records, from the same sources"
     );
+    let fingerprints = |scene: &cs_app::playtest_retail::PlaytestScene| {
+        scene
+            .aircraft()
+            .parts
+            .iter()
+            .map(|part| part.fingerprint)
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        reloaded.aircraft().fingerprint,
-        scene.aircraft().fingerprint,
+        fingerprints(&reloaded),
+        fingerprints(&scene),
         "and the same aircraft geometry, so the upload is deterministic"
     );
     assert_ne!(
@@ -900,13 +924,13 @@ fn accept_playtest_retail_retail_a_pinned_slot_holding_another_record_is_refused
         Ok(_) => panic!("an absent airframe root must not spawn a scene"),
     }
 
-    // A mesh slot inside the airframe that binds no mesh.
+    // An intact-state slot the airframe does not hold.
     let mut no_mesh = PlaytestConfig::documented();
-    no_mesh.aircraft_mesh_node_slot = PLAYTEST_AREA_NODE_SLOT;
+    no_mesh.aircraft_intact_node_slot = PLAYTEST_AREA_NODE_SLOT;
     match &spawn_playtest_scene(&mut app, &sources, &no_mesh) {
         Err(PlaytestError::AircraftNode { what, .. }) => {
             assert_eq!(
-                *what, "aircraft mesh node",
+                *what, "aircraft intact node",
                 "the refusal names which node is missing"
             );
         }

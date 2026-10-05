@@ -4,7 +4,7 @@
 //! labelled as such on screen. Nothing is original geometry.
 
 use avian3d::prelude::Rotation;
-use bevy::prelude::{Component, Entity, World};
+use bevy::prelude::{ChildOf, Component, Entity, Mesh3d, MeshMaterial3d, World};
 use cs_sim::collision::CollisionLayer;
 use cs_sim::flight::{EngineState, FlightModel, synthetic_fixed_wing};
 
@@ -12,6 +12,7 @@ use super::retail::RetailContent;
 use crate::physics::{
     BodyError, BodyMode, BodySpec, FlightSpawnError, FlightSpawnSpec, spawn_body, spawn_flight_body,
 };
+use crate::playtest_retail::AircraftPart;
 
 /// Where the aircraft starts, in meters (+Y up, forward is -Z).
 pub const SPAWN_POSITION_M: [f32; 3] = [0.0, 250.0, 0.0];
@@ -137,6 +138,34 @@ pub fn spawn_aircraft(world: &mut World) -> Result<Entity, SceneError> {
     let entity = spawn_flight_body(world, FlightModel::new(synthetic_fixed_wing()), &spec)
         .map_err(SceneError::Aircraft)?;
     world.entity_mut(entity).insert(PlaytestAircraft);
+    spawn_retail_parts(world, entity);
     debug_assert!(world.get::<Rotation>(entity).is_some());
     Ok(entity)
+}
+
+/// Puts every drawn original mesh of the airframe under the flight body, one child
+/// per mesh binding at its composed transform (with the designed nose mapping
+/// applied once), so the whole aircraft moves as the one rigid body whose pose the
+/// flight path owns. A child carries no body, no collider and no pose of its own;
+/// despawning the body (reset) despawns every part with it.
+fn spawn_retail_parts(world: &mut World, body: Entity) {
+    let Some(retail) = world.get_resource::<RetailContent>() else {
+        return;
+    };
+    let rotation = retail.visual_rotation;
+    let material = retail.material.clone();
+    let parts: Vec<_> = retail
+        .parts
+        .iter()
+        .map(|part| (part.mesh.clone(), part.oriented(rotation), part.node_slot))
+        .collect();
+    for (mesh, transform, node_slot) in parts {
+        world.spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material.clone()),
+            transform,
+            AircraftPart { node_slot },
+            ChildOf(body),
+        ));
+    }
 }

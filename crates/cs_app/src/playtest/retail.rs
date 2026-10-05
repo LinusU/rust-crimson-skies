@@ -3,13 +3,14 @@
 //! The synthetic playtest's input → F24 flight → Avian → chase-camera loop with
 //! its scene swapped for the content `PLAYTEST-RETAIL-SCENE` (#648) prepared:
 //! one documented area of the original `c1c` world, spawned as world records
-//! whose colliders are derived from the triangles they draw, and the original
-//! `bloodhawk` fuselage mesh as the player aircraft's visual.
+//! whose colliders are derived from the triangles they draw, and the whole intact
+//! original `bloodhawk` airframe (every mesh binding of one LOD band, plus a static
+//! propeller) as the player aircraft's visual.
 //!
 //! Nothing here is `verified_original`, and the label says so
 //! ([`RETAIL_LABEL`]). The airframe's tuning is still the synthetic fixed-wing,
-//! the aircraft's collider is a box measured from the one mesh it draws (the
-//! fuselage alone, no wings), the spawn is [`crate::playtest_retail::spawn_pose`]'s
+//! the aircraft's collider is one box measured from the composed extent of the
+//! whole drawn set, the propeller is static, the spawn is [`crate::playtest_retail::spawn_pose`]'s
 //! designed fraction of the area's extent, and the area has no ground, so flying
 //! off the area keeps falling or flying until `R`. Every one of those is a
 //! development choice recorded in `docs/PLAYTEST.md`.
@@ -21,12 +22,11 @@ use std::path::PathBuf;
 
 use avian3d::prelude::Collider;
 use bevy::asset::{AssetApp, Assets};
-use bevy::mesh::Mesh;
 use bevy::prelude::{App, Component, Entity, Handle, Quat, Resource, StandardMaterial};
 
 use super::PlaytestError;
 use crate::playtest_retail::{
-    self as scene_source, PLAYTEST_AIRCRAFT_ROOT_NAME, PLAYTEST_WORLD_GROUP,
+    self as scene_source, AircraftPartAsset, PLAYTEST_AIRCRAFT_ROOT_NAME, PLAYTEST_WORLD_GROUP,
     PlaytestAircraftReport, PlaytestAreaReport, PlaytestConfig, PlaytestSources,
 };
 
@@ -113,12 +113,14 @@ pub struct RetailContent {
     pub area_entities: Vec<Entity>,
     /// The designed spawn position, metres.
     pub spawn_m: [f32; 3],
-    /// Half extents of the aircraft's collider, measured from its mesh.
+    /// Half extents of the aircraft's collider: half the composed extent of the
+    /// drawn set.
     pub half_extents_m: [f32; 3],
     /// The half turn that maps the stored nose onto the flight body's forward.
     pub visual_rotation: Quat,
-    /// The aircraft's engine mesh.
-    pub mesh: Handle<Mesh>,
+    /// The aircraft's engine meshes, one per drawn binding, each with its composed
+    /// placement in the airframe.
+    pub parts: Vec<AircraftPartAsset>,
     /// The development material the aircraft is drawn with.
     pub material: Handle<StandardMaterial>,
 }
@@ -137,14 +139,13 @@ impl RetailContent {
         format!(
             "{{\"label\":\"{RETAIL_LABEL}\",\"installation\":\"{}\",\"containers\":[{containers}],\
 \"area_node\":\"{}\",\"area_mesh_records\":{},\"area_triangles\":{},\"area_colliders\":{},\
-\"aircraft_mesh_node\":\"{}\",\"aircraft_triangles\":{}}}",
+{}}}",
             self.installation,
             self.area.node_name,
             self.area.mesh_records,
             self.area.triangles,
             self.area.colliders(),
-            self.aircraft.node_name,
-            self.aircraft.triangles,
+            self.aircraft.json_fields(),
         )
     }
 }
@@ -223,7 +224,7 @@ pub fn install(
         spawn_m: content.spawn,
         half_extents_m,
         visual_rotation: content.rotation,
-        mesh: content.aircraft_mesh,
+        parts: content.aircraft_parts,
         material: content.aircraft_material,
     });
     Ok(())

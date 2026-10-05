@@ -62,18 +62,19 @@
 //!   are four other airships of the same shape, 20 volumetric fog boxes, a 17 km
 //!   horizon dome and ~45 vegetation instances, while the world record's own
 //!   spatial index adds 144 flat 1 024-unit quads at `y = 960`.
-//! * the aircraft is **one** mesh from `ZBD/planes.zbd`: node slot
-//!   [`PLAYTEST_AIRCRAFT_MESH_NODE_SLOT`] ([`PLAYTEST_AIRCRAFT_MESH_NODE_NAME`]), the
-//!   fuselage LOD variant of the airframe rooted at
-//!   [`PLAYTEST_AIRCRAFT_ROOT_NAME`]. Measured: mesh-array slot 1 436, 140 stored
-//!   triangles over 3 material groups, stored extent 2.11 × 1.49 × 10.23 units,
-//!   and an identity composed transform — the mesh is already in its airframe's
-//!   own frame.
+//! * the aircraft is the **whole intact `bloodhawk` airframe** of
+//!   `ZBD/planes.zbd` (root [`PLAYTEST_AIRCRAFT_ROOT_NAME`]): the subtree under
+//!   its intact-state node (slot [`PLAYTEST_AIRCRAFT_INTACT_NODE_SLOT`],
+//!   [`PLAYTEST_AIRCRAFT_INTACT_NODE_NAME`]), with **one** LOD band chosen by
+//!   [`select_lod_variant`] at [`PLAYTEST_AIRCRAFT_LOD_DISTANCE_M`], plus the one
+//!   static propeller node [`PLAYTEST_AIRCRAFT_PROP_NODE_SLOT`]. Every mesh
+//!   binding of that set is drawn at its own composed transform; every binding
+//!   that is not drawn (the other LOD bands, the shadow, the wreck pieces, the
+//!   other propeller states, a binding that will not build) is **listed** in
+//!   [`PlaytestAircraftReport::undrawn`] with its reason. Nothing falls back to
+//!   the fuselage alone.
 //!
-//! One mesh is one mesh on purpose. The airframe's other mesh bindings (wings,
-//! propellers, engines, canopies, the wreck variants) are **not** claimed here;
-//! the full silhouette is the next step, and a precise subset beats a collection
-//! of half-read records.
+//! The selection is documented on [`select_aircraft_parts`].
 //!
 //! # Why the area's graph is built over a subtree
 //!
@@ -155,6 +156,7 @@
 //! stale aircraft from a previous generation, because the scene owns its
 //! entities and nothing else does.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -178,8 +180,8 @@ use cs_assets::install::{self, DiscoveryError};
 use cs_content::coordinates::SourceAdapter;
 use cs_content::mesh::RenderMeshError;
 use cs_content::scene::{
-    BindingMap, GameZSceneError, MeshSlot, ParsedNode, SceneError, SceneGraph, SceneNodeId,
-    scene_graph_from_gamez,
+    BindingMap, GameZSceneError, LodCoverage, MeshSlot, NodeKind, ParsedNode, SceneError,
+    SceneGraph, SceneNode, SceneNodeId, scene_graph_from_gamez, select_lod_variant,
 };
 use cs_content::world::{
     Aabb, ObjectInstanceError, SurfaceRole, WORLD_SURFACE_UNMEASURED, WorldCollisionRole,
@@ -193,6 +195,7 @@ use cs_types::content::{
     ContentId, ContentIdError, ContentKind, Known, Origin, Provenance, Resolved,
 };
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
+use cs_types::space::Meters;
 
 use crate::world::WorldMeshes;
 use crate::world::fixture::MESH_SETTLE_UPDATES;
@@ -256,11 +259,35 @@ pub const PLAYTEST_AREA_NODE_NAME: &str = "piratezep";
 /// through [`SceneGraph::root`] and only the chosen mesh is addressed by slot.
 pub const PLAYTEST_AIRCRAFT_ROOT_NAME: &str = "bloodhawk";
 
-/// The stored node slot of the **one** aircraft mesh this scene draws.
-pub const PLAYTEST_AIRCRAFT_MESH_NODE_SLOT: u32 = 2525;
+/// The stored node slot of the airframe's intact-state subtree: `healthy`.
+///
+/// Pinned like the area slot, and checked against
+/// [`PLAYTEST_AIRCRAFT_INTACT_NODE_NAME`] on every spawn. Measured: its children
+/// are six `Lod` bands (`nearest` 0–150 m, `l12` 0–50 m, `l3`, `l5`, `l7`, `l8`);
+/// its siblings are `markers` (no meshes), `shadow`, `destroyed` (four wreck
+/// pieces) and `dontmove` (six propeller meshes).
+pub const PLAYTEST_AIRCRAFT_INTACT_NODE_SLOT: u32 = 2296;
 
-/// The authored name the pinned aircraft mesh node stores.
-pub const PLAYTEST_AIRCRAFT_MESH_NODE_NAME: &str = "fuse03";
+/// The authored name the pinned intact-state node stores.
+pub const PLAYTEST_AIRCRAFT_INTACT_NODE_NAME: &str = "healthy";
+
+/// The stored node slot of the one propeller mesh drawn, static.
+///
+/// Measured: `dontmove` holds six propeller meshes (`staticprop1`, `prop1`,
+/// `prop1b`, `prop2`, `prop2b`, `nitroprop1`); which of them the original shows
+/// when is unmeasured (the node flag bits are), so exactly one is drawn — the one
+/// whose authored name says it is the static propeller (16 triangles at the nose,
+/// `z = +4.5`) — and the rest are listed as undrawn. This is a **name** read, a
+/// designed development choice, and it is why the propeller is provisional.
+pub const PLAYTEST_AIRCRAFT_PROP_NODE_SLOT: u32 = 2541;
+
+/// The authored name the pinned propeller node stores.
+pub const PLAYTEST_AIRCRAFT_PROP_NODE_NAME: &str = "staticprop1";
+
+/// The viewer distance, in metres, the LOD band is selected at: the
+/// highest-detail band range the airframe authors (0–50 m), at a typical chase
+/// distance. A **designed** value; the original's LOD distances are unmeasured.
+pub const PLAYTEST_AIRCRAFT_LOD_DISTANCE_M: f64 = 20.0;
 
 /// The container key the aircraft is read from.
 pub const AIRCRAFT_CONTAINER_KEY: &str = "zbd/planes.zbd";
@@ -1012,6 +1039,206 @@ pub fn aircraft_graph(
     })
 }
 
+/// The mesh bindings of the airframe the selection decided on, before any of them
+/// is built.
+struct AircraftSelection<'g> {
+    selected_lod: Option<&'g SceneNode>,
+    coverage: Option<LodCoverage>,
+    hidden_lods: Vec<HiddenLod>,
+    /// The mesh-bearing nodes to draw, in the graph's own preorder.
+    draw: Vec<&'g SceneNode>,
+    /// Every other mesh-bearing node of the airframe, with its reason.
+    undrawn: Vec<UndrawnBinding>,
+    airframe_bindings: usize,
+}
+
+/// Decides which mesh bindings of the `bloodhawk` airframe make **one complete
+/// intact aircraft**.
+///
+/// The rule, in order:
+///
+/// 1. the intact subtree is the pinned node ([`PlaytestConfig::aircraft_intact_node_slot`],
+///    name-checked); everything outside it — the shadow, the wreck pieces and the
+///    propeller states — is not part of the intact set;
+/// 2. the intact node's `Lod` children are the bands. A band whose range lies
+///    **inside** a wider sibling band is a *detail overlay* (measured: `l12`,
+///    0–50 m, holds only the four engine meshes and no airframe) and not a
+///    variant of the same part, so it is not a candidate;
+/// 3. [`select_lod_variant`] — the one F11-B rule — chooses among the remaining
+///    bands at [`PlaytestConfig::aircraft_lod_distance_m`]. Applying it to **all**
+///    siblings would pick the tightest band, the engine overlay, and draw no wings;
+/// 4. every mesh binding under the chosen band, plus any outside every band, is
+///    drawn; every binding under another band is hidden with that band;
+/// 5. the one pinned static propeller is added.
+///
+/// A mesh the container cannot build is not decided here: the caller reports it
+/// as undrawn rather than failing the aircraft.
+///
+/// # Errors
+///
+/// [`PlaytestError::AircraftNode`] when a pinned node is not what the container
+/// holds, or the LOD rule refuses the bands.
+fn select_aircraft_parts<'g>(
+    planes: &'g SceneGraph,
+    airframe: &'g SceneNode,
+    config: &PlaytestConfig,
+) -> Result<AircraftSelection<'g>, PlaytestError> {
+    let members = planes.subtree(airframe.id());
+    let pinned =
+        |slot: u32, name: &str, what: &'static str| -> Result<&'g SceneNode, PlaytestError> {
+            let node = members
+                .iter()
+                .copied()
+                .find(|node| node.index() == slot)
+                .ok_or(PlaytestError::AircraftNode {
+                    what,
+                    asked: format!("slot {slot} of the {} airframe", config.aircraft_root_name),
+                })?;
+            if node.name() != name {
+                return Err(PlaytestError::AircraftNode {
+                    what,
+                    asked: format!("slot {slot} holds {:?}, not {name:?}", node.name()),
+                });
+            }
+            Ok(node)
+        };
+    let intact = pinned(
+        config.aircraft_intact_node_slot,
+        &config.aircraft_intact_node_name,
+        "aircraft intact node",
+    )?;
+    let prop = pinned(
+        config.aircraft_prop_node_slot,
+        &config.aircraft_prop_node_name,
+        "aircraft propeller node",
+    )?;
+
+    let intact_members: BTreeSet<u32> = planes
+        .subtree(intact.id())
+        .iter()
+        .map(|node| node.index())
+        .collect();
+    let bands: Vec<&SceneNode> = intact
+        .children()
+        .iter()
+        .filter_map(|id| planes.node(id))
+        .filter(|node| matches!(node.kind(), NodeKind::Lod(_)))
+        .collect();
+    let range = |node: &SceneNode| match node.kind() {
+        NodeKind::Lod(info) => (info.range_min.0, info.range_max.0),
+        _ => (0.0, 0.0),
+    };
+    let is_overlay = |band: &SceneNode| {
+        let (min, max) = range(band);
+        bands.iter().any(|other| {
+            let (other_min, other_max) = range(other);
+            other.index() != band.index()
+                && other_min <= min
+                && max <= other_max
+                && (other_min, other_max) != (min, max)
+        })
+    };
+    let variants: Vec<&SceneNode> = bands.iter().copied().filter(|b| !is_overlay(b)).collect();
+    let (selected_lod, coverage) = if variants.is_empty() {
+        (None, None)
+    } else {
+        let infos: Vec<_> = variants
+            .iter()
+            .filter_map(|node| node.lod().copied())
+            .collect();
+        let choice = select_lod_variant(&infos, Meters(config.aircraft_lod_distance_m)).map_err(
+            |error| PlaytestError::AircraftNode {
+                what: "aircraft LOD selection",
+                asked: error.to_string(),
+            },
+        )?;
+        (Some(variants[choice.index]), Some(choice.coverage))
+    };
+    let hidden_lods: Vec<HiddenLod> = bands
+        .iter()
+        .filter(|band| selected_lod.is_none_or(|chosen| chosen.index() != band.index()))
+        .map(|band| {
+            let (min, max) = range(band);
+            let reason = if is_overlay(band) {
+                format!(
+                    "detail overlay band {min}-{max} m nested inside a wider band: not a \
+                     variant of the same part, so not a candidate for the selection"
+                )
+            } else {
+                format!(
+                    "LOD band {min}-{max} m not selected at {} m",
+                    config.aircraft_lod_distance_m
+                )
+            };
+            HiddenLod {
+                node_slot: band.index(),
+                node_name: band.name().to_owned(),
+                reason,
+            }
+        })
+        .collect();
+
+    // Which band (if any) a node hangs under.
+    let band_of = |node: &'g SceneNode| -> Option<&'g SceneNode> {
+        let mut cursor = Some(node);
+        while let Some(current) = cursor {
+            if bands.iter().any(|band| band.index() == current.index()) {
+                return Some(current);
+            }
+            cursor = current.parent().and_then(|id| planes.node(id));
+        }
+        None
+    };
+
+    let mut draw = Vec::new();
+    let mut undrawn = Vec::new();
+    let mut airframe_bindings = 0usize;
+    for node in &members {
+        let Some(binding) = node.mesh() else {
+            continue;
+        };
+        airframe_bindings += 1;
+        let reason = if node.index() == prop.index() {
+            None
+        } else if !intact_members.contains(&node.index()) {
+            Some(
+                "outside the intact subtree: shadow, wreck piece or a propeller state the \
+                 original shows under conditions that are unmeasured"
+                    .to_owned(),
+            )
+        } else if let Some(band) = band_of(node) {
+            if selected_lod.is_some_and(|chosen| chosen.index() == band.index()) {
+                None
+            } else {
+                Some(format!(
+                    "under LOD band {:?} (slot {}), which is not drawn",
+                    band.name(),
+                    band.index()
+                ))
+            }
+        } else {
+            None
+        };
+        match reason {
+            None => draw.push(*node),
+            Some(reason) => undrawn.push(UndrawnBinding {
+                node_slot: node.index(),
+                node_name: node.name().to_owned(),
+                mesh_index: binding.index,
+                reason,
+            }),
+        }
+    }
+    Ok(AircraftSelection {
+        selected_lod,
+        coverage,
+        hidden_lods,
+        draw,
+        undrawn,
+        airframe_bindings,
+    })
+}
+
 /// The parsed scene records of the slots `keep` names, plus the world record.
 fn parsed(
     container: &PlaytestContainer,
@@ -1069,7 +1296,7 @@ fn bindings() -> Result<BindingMap, PlaytestError> {
 /// configuration is **not** a search: a caller that wants a different area says
 /// which stored subtree it wants, and this module measures the result rather than
 /// hunting for a good-looking one.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlaytestConfig {
     /// The world group whose container the area is read from.
     pub world_group: String,
@@ -1079,10 +1306,16 @@ pub struct PlaytestConfig {
     pub area_node_name: String,
     /// The authored name of the airframe root in the aircraft container.
     pub aircraft_root_name: String,
-    /// The stored node slot of the one aircraft mesh to draw.
-    pub aircraft_mesh_node_slot: u32,
-    /// The authored name that mesh node must store.
-    pub aircraft_mesh_node_name: String,
+    /// The stored node slot of the airframe's intact-state subtree.
+    pub aircraft_intact_node_slot: u32,
+    /// The authored name that node must store.
+    pub aircraft_intact_node_name: String,
+    /// The stored node slot of the one static propeller mesh.
+    pub aircraft_prop_node_slot: u32,
+    /// The authored name that node must store.
+    pub aircraft_prop_node_name: String,
+    /// The viewer distance the aircraft's LOD band is selected at, in metres.
+    pub aircraft_lod_distance_m: f64,
     /// The capture frame's width, in pixels.
     pub capture_width: u32,
     /// The capture frame's height, in pixels.
@@ -1092,7 +1325,7 @@ pub struct PlaytestConfig {
 impl PlaytestConfig {
     /// The configuration this task documents: `C1C`, node slot
     /// [`PLAYTEST_AREA_NODE_SLOT`], the `bloodhawk` airframe's node slot
-    /// [`PLAYTEST_AIRCRAFT_MESH_NODE_SLOT`], and a [`CAPTURE_WIDTH`] ×
+    /// [`PLAYTEST_AIRCRAFT_INTACT_NODE_SLOT`], and a [`CAPTURE_WIDTH`] ×
     /// [`CAPTURE_HEIGHT`] frame.
     #[must_use]
     pub fn documented() -> Self {
@@ -1101,8 +1334,11 @@ impl PlaytestConfig {
             area_node_slot: PLAYTEST_AREA_NODE_SLOT,
             area_node_name: PLAYTEST_AREA_NODE_NAME.to_owned(),
             aircraft_root_name: PLAYTEST_AIRCRAFT_ROOT_NAME.to_owned(),
-            aircraft_mesh_node_slot: PLAYTEST_AIRCRAFT_MESH_NODE_SLOT,
-            aircraft_mesh_node_name: PLAYTEST_AIRCRAFT_MESH_NODE_NAME.to_owned(),
+            aircraft_intact_node_slot: PLAYTEST_AIRCRAFT_INTACT_NODE_SLOT,
+            aircraft_intact_node_name: PLAYTEST_AIRCRAFT_INTACT_NODE_NAME.to_owned(),
+            aircraft_prop_node_slot: PLAYTEST_AIRCRAFT_PROP_NODE_SLOT,
+            aircraft_prop_node_name: PLAYTEST_AIRCRAFT_PROP_NODE_NAME.to_owned(),
+            aircraft_lod_distance_m: PLAYTEST_AIRCRAFT_LOD_DISTANCE_M,
             capture_width: CAPTURE_WIDTH,
             capture_height: CAPTURE_HEIGHT,
         }
@@ -1178,17 +1414,13 @@ impl PlaytestAreaReport {
     }
 }
 
-/// One original aircraft mesh, as the scene reads it.
+/// One drawn mesh binding of the aircraft.
 #[derive(Clone, Debug)]
-pub struct PlaytestAircraftReport {
-    /// The container the mesh came from.
-    pub container_key: String,
-    /// The stored slot of the mesh node, inside the airframe root's subtree.
+pub struct AircraftPartReport {
+    /// The stored slot of the mesh node.
     pub node_slot: u32,
     /// The authored name that node stores.
     pub node_name: String,
-    /// The airframe root this mesh belongs to.
-    pub root_name: String,
     /// The mesh-array slot the node binds.
     pub mesh_index: u32,
     /// The catalog element the mesh is registered under.
@@ -1197,14 +1429,134 @@ pub struct PlaytestAircraftReport {
     pub triangles: usize,
     /// How many material groups it stores.
     pub groups: usize,
-    /// The mesh's stored extent, in canonical metres.
-    pub extent_m: [f64; 3],
     /// The F17-B fingerprint of the upload this scene drew.
     pub fingerprint: ContentHash,
-    /// The composed transform the mesh node carries in its airframe: measured to
-    /// be the identity for the pinned mesh, so the draw places it at the spawn
-    /// pose unchanged.
+    /// The composed transform's translation in the airframe, in canonical metres.
     pub composed_translation_m: [f64; 3],
+}
+
+/// One mesh binding of the airframe that is **not** drawn, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UndrawnBinding {
+    /// The stored slot of the mesh node.
+    pub node_slot: u32,
+    /// The authored name that node stores.
+    pub node_name: String,
+    /// The mesh-array slot the node binds.
+    pub mesh_index: u32,
+    /// Why this binding is not part of the drawn set.
+    pub reason: String,
+}
+
+/// One LOD band of the intact subtree that the selection hid, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HiddenLod {
+    /// The stored slot of the band node.
+    pub node_slot: u32,
+    /// The authored name that node stores.
+    pub node_name: String,
+    /// Why the band is hidden.
+    pub reason: String,
+}
+
+/// The original aircraft, as the scene reads it: the **whole** intact airframe.
+#[derive(Clone, Debug)]
+pub struct PlaytestAircraftReport {
+    /// The container the meshes came from.
+    pub container_key: String,
+    /// The airframe root these meshes belong to.
+    pub root_name: String,
+    /// The stored slot of the intact-state subtree root.
+    pub intact_node_slot: u32,
+    /// The authored name that node stores.
+    pub intact_node_name: String,
+    /// The viewer distance the LOD band was selected at, in metres.
+    pub lod_distance_m: f64,
+    /// The LOD band [`select_lod_variant`] chose, as `(slot, name)`; `None` when
+    /// the intact subtree holds no LOD bands.
+    pub selected_lod: Option<(u32, String)>,
+    /// How the rule arrived at that band.
+    pub lod_coverage: Option<LodCoverage>,
+    /// The LOD bands the selection hid.
+    pub hidden_lods: Vec<HiddenLod>,
+    /// Every drawn mesh binding.
+    pub parts: Vec<AircraftPartReport>,
+    /// Every mesh binding of the airframe that is not drawn.
+    pub undrawn: Vec<UndrawnBinding>,
+    /// How many mesh bindings the whole airframe subtree holds.
+    pub airframe_bindings: usize,
+    /// The composed extent of the drawn set, in canonical metres.
+    pub extent_m: [f64; 3],
+}
+
+impl PlaytestAircraftReport {
+    /// How many mesh bindings are drawn.
+    #[must_use]
+    pub fn mesh_bindings(&self) -> usize {
+        self.parts.len()
+    }
+
+    /// How many stored triangles the drawn set holds.
+    #[must_use]
+    pub fn triangles(&self) -> usize {
+        self.parts.iter().map(|part| part.triangles).sum()
+    }
+
+    /// The selection, the drawn set's size and every undrawn binding as one JSON
+    /// object body (no braces), for the startup `playtest sources` line and the
+    /// smoke report.
+    #[must_use]
+    pub fn json_fields(&self) -> String {
+        let hidden = self
+            .hidden_lods
+            .iter()
+            .map(|lod| {
+                format!(
+                    "{{\"slot\":{},\"name\":\"{}\",\"reason\":\"{}\"}}",
+                    lod.node_slot,
+                    json_escape(&lod.node_name),
+                    json_escape(&lod.reason)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let undrawn = self
+            .undrawn
+            .iter()
+            .map(|binding| {
+                format!(
+                    "{{\"slot\":{},\"name\":\"{}\",\"mesh\":{},\"reason\":\"{}\"}}",
+                    binding.node_slot,
+                    json_escape(&binding.node_name),
+                    binding.mesh_index,
+                    json_escape(&binding.reason)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let selected = self.selected_lod.as_ref().map_or_else(
+            || "null".to_owned(),
+            |(slot, name)| format!("{{\"slot\":{slot},\"name\":\"{}\"}}", json_escape(name)),
+        );
+        let coverage = self
+            .lod_coverage
+            .map_or_else(|| "null".to_owned(), |c| format!("\"{c:?}\""));
+        format!(
+            "\"aircraft_mesh_bindings\":{},\"aircraft_triangles\":{},\"aircraft_airframe_bindings\":{},\
+\"aircraft_selection\":{{\"intact_node\":\"{}\",\"lod_distance_m\":{},\"selected_lod\":{selected},\
+\"lod_coverage\":{coverage},\"hidden_lods\":[{hidden}]}},\"aircraft_undrawn\":[{undrawn}]",
+            self.mesh_bindings(),
+            self.triangles(),
+            self.airframe_bindings,
+            json_escape(&self.intact_node_name),
+            self.lod_distance_m,
+        )
+    }
+}
+
+/// Escapes the two characters a quoted JSON string cannot hold raw.
+fn json_escape(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// One camera view, in canonical metres.
@@ -1735,44 +2087,65 @@ pub fn spawn_playtest_content(
                 what: "airframe root",
                 asked: config.aircraft_root_name.clone(),
             })?;
-    let airframe_members = planes.subtree(airframe.id());
-    let aircraft_node = airframe_members
-        .iter()
-        .find(|node| node.index() == config.aircraft_mesh_node_slot)
-        .ok_or(PlaytestError::AircraftNode {
-            what: "aircraft mesh node",
-            asked: format!(
-                "slot {} of the {} airframe",
-                config.aircraft_mesh_node_slot, config.aircraft_root_name
-            ),
-        })?;
-    if aircraft_node.name() != config.aircraft_mesh_node_name {
+    let selection = select_aircraft_parts(&planes, airframe, config)?;
+    let mut undrawn = selection.undrawn;
+    let mut aircraft_meshes = WorldMeshes::new();
+    // (node, mesh id, render mesh) of every binding that builds.
+    let mut built = Vec::new();
+    let mut aircraft_min = [f64::INFINITY; 3];
+    let mut aircraft_max = [f64::NEG_INFINITY; 3];
+    for node in &selection.draw {
+        let Some(binding) = node.mesh() else {
+            continue;
+        };
+        let refuse = |reason: String| UndrawnBinding {
+            node_slot: node.index(),
+            node_name: node.name().to_owned(),
+            mesh_index: binding.index,
+            reason,
+        };
+        let id = match &binding.mesh {
+            Resolved::Known(known) => known.value.clone(),
+            Resolved::Unknown { reason, .. } => {
+                undrawn.push(refuse(format!("the mesh binding is unknown: {reason}")));
+                continue;
+            }
+        };
+        let render = match render_of(sources.aircraft(), binding.index) {
+            Ok(render) => render,
+            Err(error) => {
+                undrawn.push(refuse(format!("the stored mesh would not build: {error}")));
+                continue;
+            }
+        };
+        let unknowns = stored_presentation_unknowns(&render);
+        if let Err(reason) = aircraft_meshes.insert_render_mesh(id.clone(), &render, &unknowns) {
+            undrawn.push(refuse(format!("the mesh would not upload: {reason}")));
+            continue;
+        }
+        grow(
+            &mut aircraft_min,
+            &mut aircraft_max,
+            &render,
+            node.world_transform(),
+        )?;
+        built.push((*node, id));
+    }
+    if built.is_empty() {
         return Err(PlaytestError::AircraftNode {
-            what: "aircraft mesh node",
-            asked: format!(
-                "slot {} holds {:?}, not {:?}",
-                config.aircraft_mesh_node_slot,
-                aircraft_node.name(),
-                config.aircraft_mesh_node_name
-            ),
+            what: "aircraft mesh bindings",
+            asked: "the selected intact set draws no mesh".to_owned(),
         });
     }
-    let aircraft_binding = aircraft_node.mesh().ok_or(PlaytestError::AircraftNode {
-        what: "aircraft mesh binding",
-        asked: format!("node {} binds no mesh", config.aircraft_mesh_node_slot),
-    })?;
-    let aircraft_mesh_id = match &aircraft_binding.mesh {
-        Resolved::Known(known) => known.value.clone(),
-        Resolved::Unknown { reason, .. } => {
-            return Err(PlaytestError::AircraftNode {
-                what: "aircraft mesh binding",
-                asked: reason.clone(),
-            });
-        }
-    };
-    let aircraft_render = render_of(sources.aircraft(), aircraft_binding.index)?;
-    let aircraft_extent = extent_of(&aircraft_render);
-    let composed = aircraft_node.world_transform().translation();
+    let aircraft_bounds =
+        Aabb::try_new(aircraft_min, aircraft_max).map_err(|error| PlaytestError::World {
+            reason: format!("the aircraft's composed extent was refused: {error}"),
+        })?;
+    let aircraft_extent = [
+        aircraft_bounds.max()[0] - aircraft_bounds.min()[0],
+        aircraft_bounds.max()[1] - aircraft_bounds.min()[1],
+        aircraft_bounds.max()[2] - aircraft_bounds.min()[2],
+    ];
 
     // -- the area's records --------------------------------------------------
     let provenance = sources.world().provenance()?;
@@ -1897,31 +2270,44 @@ pub fn spawn_playtest_content(
     }
 
     // -- the aircraft --------------------------------------------------------
-    let aircraft_unknowns = stored_presentation_unknowns(&aircraft_render);
-    meshes
-        .insert_render_mesh(
-            aircraft_mesh_id.clone(),
-            &aircraft_render,
-            &aircraft_unknowns,
-        )
-        .map_err(|reason| PlaytestError::World {
-            reason: format!("the aircraft mesh would not upload: {reason}"),
-        })?;
-    let uploaded = meshes
-        .get(&aircraft_mesh_id)
-        .ok_or_else(|| PlaytestError::World {
-            reason: format!(
-                "the aircraft mesh {} is not registered after being uploaded",
-                aircraft_mesh_id.key()
-            ),
-        })?;
-    let aircraft_fingerprint = uploaded.fingerprint();
-    let aircraft_triangles = uploaded.triangles();
-    let aircraft_groups = uploaded.group_count();
-    let handle: Handle<Mesh> = app
-        .world_mut()
-        .resource_mut::<Assets<Mesh>>()
-        .add(uploaded.mesh().clone());
+    let mut aircraft_parts: Vec<AircraftPartAsset> = Vec::new();
+    let mut part_reports: Vec<AircraftPartReport> = Vec::new();
+    for (node, id) in &built {
+        let uploaded = aircraft_meshes
+            .get(id)
+            .ok_or_else(|| PlaytestError::World {
+                reason: format!(
+                    "the aircraft mesh {} is not registered after being uploaded",
+                    id.key()
+                ),
+            })?;
+        let handle: Handle<Mesh> = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(uploaded.mesh().clone());
+        let local = crate::scene::NodeVisualTransform::from_canonical(node.visual_transform())
+            .map_err(|error| PlaytestError::World {
+                reason: format!("aircraft node {} would not convert: {error}", node.index()),
+            })?
+            .global()
+            .compute_transform();
+        aircraft_parts.push(AircraftPartAsset {
+            node_slot: node.index(),
+            node_name: node.name().to_owned(),
+            mesh: handle,
+            local,
+        });
+        part_reports.push(AircraftPartReport {
+            node_slot: node.index(),
+            node_name: node.name().to_owned(),
+            mesh_index: node.mesh().map_or(0, |binding| binding.index),
+            mesh: id.clone(),
+            triangles: uploaded.triangles(),
+            groups: uploaded.group_count(),
+            fingerprint: uploaded.fingerprint(),
+            composed_translation_m: node.world_transform().translation(),
+        });
+    }
     let world_material = add_material(app, WORLD_MATERIAL_COLOR);
     let aircraft_material = add_material(app, AIRCRAFT_MATERIAL_COLOR);
     for entity in &entities {
@@ -1944,16 +2330,19 @@ pub fn spawn_playtest_content(
     };
     let aircraft = PlaytestAircraftReport {
         container_key: sources.aircraft().container_key().to_owned(),
-        node_slot: aircraft_node.index(),
-        node_name: aircraft_node.name().to_owned(),
         root_name: config.aircraft_root_name.clone(),
-        mesh_index: aircraft_binding.index,
-        mesh: aircraft_mesh_id,
-        triangles: aircraft_triangles,
-        groups: aircraft_groups,
+        intact_node_slot: config.aircraft_intact_node_slot,
+        intact_node_name: config.aircraft_intact_node_name.clone(),
+        lod_distance_m: config.aircraft_lod_distance_m,
+        selected_lod: selection
+            .selected_lod
+            .map(|node| (node.index(), node.name().to_owned())),
+        lod_coverage: selection.coverage,
+        hidden_lods: selection.hidden_lods,
+        parts: part_reports,
+        undrawn,
+        airframe_bindings: selection.airframe_bindings,
         extent_m: aircraft_extent,
-        fingerprint: aircraft_fingerprint,
-        composed_translation_m: composed,
     };
     Ok(PlaytestContent {
         definition,
@@ -1961,13 +2350,46 @@ pub fn spawn_playtest_content(
         entities,
         report,
         aircraft,
-        aircraft_mesh: handle,
+        aircraft_parts,
         aircraft_material,
-        world_meshes: meshes.len().saturating_sub(1),
+        world_meshes: meshes.len(),
         spawn,
         rotation,
         adapter,
     })
+}
+
+/// Marks one entity of the drawn aircraft: a child of the aircraft's body, one per
+/// mesh binding. The marker owns no state; it names the stored node the entity draws.
+#[derive(bevy::prelude::Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AircraftPart {
+    /// The stored slot of the mesh node this entity draws.
+    pub node_slot: u32,
+}
+
+/// One drawn aircraft mesh, ready to be put on an entity: the engine asset and its
+/// composed placement in the airframe.
+#[derive(Clone, Debug)]
+pub struct AircraftPartAsset {
+    /// The stored slot of the mesh node.
+    pub node_slot: u32,
+    /// The authored name that node stores.
+    pub node_name: String,
+    /// The engine mesh (one F17-B upload).
+    pub mesh: Handle<Mesh>,
+    /// The node's composed transform in the airframe, canonical metres, with no
+    /// nose mapping applied.
+    pub local: Transform,
+}
+
+impl AircraftPartAsset {
+    /// The placement under a body whose forward axis is the stored nose turned by
+    /// `rotation` (the designed half turn, [`PlaytestContent::rotation`]): the
+    /// nose mapping applied once, to the composed transform.
+    #[must_use]
+    pub fn oriented(&self, rotation: bevy::math::Quat) -> Transform {
+        Transform::from_rotation(rotation) * self.local
+    }
 }
 
 /// What [`spawn_playtest_content`] spawned and measured: the area's records,
@@ -1984,9 +2406,9 @@ pub struct PlaytestContent {
     pub report: PlaytestAreaReport,
     /// What the aircraft read.
     pub aircraft: PlaytestAircraftReport,
-    /// The aircraft's engine mesh.
-    pub aircraft_mesh: Handle<Mesh>,
-    /// The development material the aircraft mesh is drawn with.
+    /// The aircraft's engine meshes, one per drawn binding.
+    pub aircraft_parts: Vec<AircraftPartAsset>,
+    /// The development material every aircraft mesh is drawn with.
     pub aircraft_material: Handle<StandardMaterial>,
     /// How many distinct area meshes were uploaded (the aircraft's is not one).
     pub world_meshes: usize,
@@ -2012,7 +2434,7 @@ fn place_capture_scene(
         mut entities,
         report,
         aircraft,
-        aircraft_mesh,
+        aircraft_parts,
         aircraft_material,
         world_meshes,
         spawn,
@@ -2021,14 +2443,27 @@ fn place_capture_scene(
     } = content;
     let bounds = report.bounds;
     let aircraft_extent = aircraft.extent_m;
+    // One parent at the spawn pose, one child per drawn binding at its composed
+    // transform: the aircraft moves as one rigid body. Despawning the parent
+    // despawns the parts with it, so `entities` holds the parent alone.
     let aircraft_entity = app
         .world_mut()
         .spawn((
-            Mesh3d(aircraft_mesh),
-            MeshMaterial3d(aircraft_material),
             Transform::from_translation(bevy::math::Vec3::from(spawn)).with_rotation(rotation),
+            Visibility::Inherited,
         ))
         .id();
+    for part in &aircraft_parts {
+        app.world_mut().spawn((
+            Mesh3d(part.mesh.clone()),
+            MeshMaterial3d(aircraft_material.clone()),
+            part.local,
+            AircraftPart {
+                node_slot: part.node_slot,
+            },
+            bevy::prelude::ChildOf(aircraft_entity),
+        ));
+    }
     entities.push(aircraft_entity);
 
     // -- the camera and the lights ------------------------------------------
@@ -2048,7 +2483,10 @@ fn place_capture_scene(
 
     let material = PlaytestMaterial::neutral(vec![
         (sources.world().container_key().to_owned(), world_meshes),
-        (sources.aircraft().container_key().to_owned(), 1),
+        (
+            sources.aircraft().container_key().to_owned(),
+            aircraft.parts.len(),
+        ),
     ]);
     Ok(PlaytestScene {
         config: config.clone(),
@@ -2090,30 +2528,6 @@ fn unknown<T>(which: &str, reason: &str) -> Result<Resolved<T>, PlaytestError> {
         object: which.to_owned(),
         reason: error.to_string(),
     })
-}
-
-/// One node's stored mesh extent, in canonical metres.
-fn extent_of(render: &cs_content::mesh::RenderMesh) -> [f64; 3] {
-    let mut min = [f64::INFINITY; 3];
-    let mut max = [f64::NEG_INFINITY; 3];
-    for vertex in render.vertices() {
-        for axis in 0..3 {
-            let value = f64::from(vertex.position[axis]);
-            if value.is_finite() {
-                min[axis] = min[axis].min(value);
-                max[axis] = max[axis].max(value);
-            }
-        }
-    }
-    let mut extent = [0.0; 3];
-    for axis in 0..3 {
-        extent[axis] = if min[axis].is_finite() && max[axis].is_finite() {
-            (max[axis] - min[axis]).max(0.0)
-        } else {
-            0.0
-        };
-    }
-    extent
 }
 
 /// Grows a composed world bound by one mesh's own corners through one node's
@@ -2536,6 +2950,35 @@ struct RenderedView {
     png_bytes: u64,
 }
 
+/// Installs the screenshot observer and the capture resources once per app.
+fn install_capture_observer(app: &mut App) {
+    if !app.world().contains_resource::<CapturedFrame>() {
+        app.init_resource::<CapturedFrame>();
+        app.add_observer(
+            |captured: On<ScreenshotCaptured>,
+             frame: Res<CapturedFrame>,
+             slot: Res<CaptureSlot>| {
+                if captured.image.data.is_some() {
+                    let image = captured.image.clone();
+                    if let Ok(mut guard) = frame.0.lock() {
+                        *guard = Some(measure(&image));
+                    }
+                }
+                // The measurement pass carries no path, so nothing is written for
+                // it: one documented view, one PNG.
+                if let Ok(path) = slot.0.lock()
+                    && let Some(path) = path.clone()
+                {
+                    save_to_disk(path)(captured);
+                }
+            },
+        );
+    }
+    if !app.world().contains_resource::<CaptureSlot>() {
+        app.init_resource::<CaptureSlot>();
+    }
+}
+
 /// Renders the scene's documented views on the real GPU and writes one PNG each.
 ///
 /// Each view is rendered **twice**: once with the aircraft presented and once
@@ -2562,31 +3005,7 @@ pub fn capture_playtest_views(
     scene: &PlaytestScene,
     out_dir: &Path,
 ) -> Result<Vec<PlaytestCapture>, PlaytestError> {
-    if !app.world().contains_resource::<CapturedFrame>() {
-        app.init_resource::<CapturedFrame>();
-        app.add_observer(
-            |captured: On<ScreenshotCaptured>,
-             frame: Res<CapturedFrame>,
-             slot: Res<CaptureSlot>| {
-                if captured.image.data.is_some() {
-                    let image = captured.image.clone();
-                    if let Ok(mut guard) = frame.0.lock() {
-                        *guard = Some(measure(&image));
-                    }
-                }
-                // The measurement pass carries no path, so nothing is written for
-                // it: one documented view, one PNG.
-                if let Ok(path) = slot.0.lock()
-                    && let Some(path) = path.clone()
-                {
-                    save_to_disk(path)(captured);
-                }
-            },
-        );
-    }
-    if !app.world().contains_resource::<CaptureSlot>() {
-        app.init_resource::<CaptureSlot>();
-    }
+    install_capture_observer(app);
     let mut captures = Vec::with_capacity(scene.views.len());
     for view in scene.views() {
         let png = out_dir.join(format!(
@@ -2662,6 +3081,98 @@ pub fn capture_playtest_views(
         });
     }
     Ok(captures)
+}
+
+/// The screen footprint of the aircraft's non-core parts in one real GPU frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaytestPartFootprint {
+    /// The view's label.
+    pub view: &'static str,
+    /// Pixels the whole aircraft changed against the aircraft hidden.
+    pub aircraft_pixels: usize,
+    /// Pixels the core parts alone changed against the aircraft hidden: the core's
+    /// measured screen footprint.
+    pub core_pixels: usize,
+    /// Pixels of the whole aircraft's footprint that lie **outside** the core's
+    /// footprint: what the other parts add to the silhouette.
+    pub outside_core_pixels: usize,
+    /// Where the PNG of the whole aircraft was written.
+    pub png: String,
+}
+
+/// Measures how much of the aircraft's screen footprint the parts **outside** `core`
+/// add, in one view, on the real GPU.
+///
+/// Three renders of the same frame: the whole aircraft, only the parts whose node
+/// slot is in `core`, and no aircraft. The core's footprint is the second against
+/// the third; the aircraft's is the first against the third; the answer is the
+/// pixels that changed with the whole aircraft but **not** with the core alone.
+/// Only the whole-aircraft frame is written, under `out_dir`.
+///
+/// # Errors
+///
+/// [`PlaytestError::Capture`] when a frame does not come back, and
+/// [`PlaytestError::World`] when `view` is not one of the scene's views.
+pub fn capture_part_footprint(
+    app: &mut App,
+    scene: &PlaytestScene,
+    view: usize,
+    core: &[u32],
+    out_dir: &Path,
+) -> Result<PlaytestPartFootprint, PlaytestError> {
+    install_capture_observer(app);
+    let view = scene.views.get(view).ok_or(PlaytestError::World {
+        reason: format!("the scene has no view {view}"),
+    })?;
+    let png = out_dir.join(format!("playtest-full-aircraft-{}.png", view.name));
+    let set_parts = |app: &mut App, visible: &dyn Fn(u32) -> bool| {
+        let parts: Vec<(Entity, u32)> = app
+            .world_mut()
+            .query::<(Entity, &AircraftPart)>()
+            .iter(app.world())
+            .map(|(entity, part)| (entity, part.node_slot))
+            .collect();
+        for (entity, slot) in parts {
+            let value = if visible(slot) {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
+            app.world_mut().entity_mut(entity).insert(value);
+        }
+    };
+    set_parts(app, &|_| true);
+    aircraft_visible(app, scene, true);
+    let all = render_view(app, scene, view, Some(png.clone()))?;
+    set_parts(app, &|slot| core.contains(&slot));
+    let only_core = render_view(app, scene, view, None)?;
+    set_parts(app, &|_| true);
+    aircraft_visible(app, scene, false);
+    let none = render_view(app, scene, view, None)?;
+    aircraft_visible(app, scene, true);
+
+    let changed = |left: &FrameFacts, right: &FrameFacts| -> Vec<bool> {
+        left.pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(right.pixels.as_chunks::<4>().0.iter())
+            .map(|(a, b)| a != b)
+            .collect()
+    };
+    let whole = changed(&all.facts, &none.facts);
+    let core_footprint = changed(&only_core.facts, &none.facts);
+    Ok(PlaytestPartFootprint {
+        view: view.name,
+        aircraft_pixels: whole.iter().filter(|p| **p).count(),
+        core_pixels: core_footprint.iter().filter(|p| **p).count(),
+        outside_core_pixels: whole
+            .iter()
+            .zip(&core_footprint)
+            .filter(|(whole, core)| **whole && !**core)
+            .count(),
+        png: all.png,
+    })
 }
 
 /// Renders one view once and returns its measured facts.
