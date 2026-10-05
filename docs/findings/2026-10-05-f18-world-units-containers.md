@@ -116,7 +116,7 @@ denormal magnitude specifically.
 **Affected content:** the collision of whichever records in `c3` name mesh slot
 447, on this host and this parry version. **Not affected:** presentation (the mesh
 draws), the import, the sector index, or the other seven containers — every one
-of them finishes its settle. **Resolving task:** filed below; the honest fix
+of them finishes its settle. **Resolving task:** **#656** below; the honest fix
 belongs at the parry/Avian boundary or in an explicit stated rule about denormal
 stored coordinates, and neither is this task's owner path.
 
@@ -173,8 +173,8 @@ at all), and the only one whose mesh array holds empty slots.
 | `accept_f18_world_units_containers_` test | Covers | Fails when |
 | --- | --- | --- |
 | `every_world_group_imports_with_the_measured_counts` | all eight groups discovered (and every reference lead present); per group the grid's `x_count`/`y_count`, value count, distinct-slot count, cell count and world node; the three ownership counts and the relation between them; empty-cell and no-extent counts; `sectors == cells - no_extent`; residency as a **separate** question from the role, with its bounds; `objects_with_mesh` vs `values_with_mesh`; `matrix_disagreements`; `mesh_binding_records_elsewhere`; every unresolved role and surface carrying its claim id; no invented boundary; the reported unit factor at `Unknown`; every object's provenance at `ObservedTool` with the container's own span | a reader changes its walk, a count moves, residency stops being distinguished from the role, a gap loses its claim id, or a retail-derived value stops pointing at its bytes |
-| `every_world_group_spawns_and_reports_its_gaps` | the production `spawn_world` over all eight, per group into its own app with the geometry uploaded through the production F17-B adapter: every object presented; colliders equal to the import's `partition_records_with_mesh`; every collider's record declaring `FromMesh` (so no substitute shape entered, checked on the spawn report so it holds even where the settle fails); and the settle check that every built collider really is a triangle mesh | the spawn stops accepting a container, a collider stops being derived from its own record's mesh, or the skip report stops being exactly the two gaps the bytes imply |
-| `a_mesh_the_store_holds_no_geometry_for_is_a_gap` | `c5`'s 16 empty mesh slots and 61 affected records: the slot **exists** in the container's array (so it is a gap, not an out-of-range reference) and stores **no geometry at all** (so it is a gap, not a decode failure); every distinct mesh that does hold geometry is registered and **nothing else**; the mesh count is below the record count because records share meshes; and each affected record is reported with no collider at all | the `NoGeometry` arm becomes a refusal again (which loses the whole container), an empty slot gets registered, or an affected record is given a substitute shape |
+| `every_world_group_spawns_and_reports_its_gaps` | the production `spawn_world` over all eight, per group into its own app with the geometry uploaded through the production F17-B adapter: every object presented; colliders equal to the import's `partition_records_with_mesh`; every collider's record declaring `FromMesh` (so no substitute shape entered, checked on the spawn report so it holds even where the settle fails); and the settle check that every built collider really is a triangle mesh, under the same `SETTLE_HOOK_LOCK`-serialised silence window the blocker test uses | the spawn stops accepting a container, a collider stops being derived from its own record's mesh, or the skip report stops being exactly the two gaps the bytes imply |
+| `a_mesh_the_store_holds_no_geometry_for_is_a_gap` | `c5`'s 16 empty mesh slots and 61 affected records: the slot **exists** in the container's array as a **present** mesh record (non-zero `parent_count`, so not an all-zero array stub) whose **own stored `polygon_count` and `vertex_count` are zero** — so the empty decode is what the bytes state, not a reader that walked the wrong offset, with a non-zero stored count asserted for every slot that decodes polygons so the check discriminates; every distinct mesh that does hold geometry is registered and **nothing else**; the mesh count is below the record count because records share meshes; and each affected record is reported with no collider at all | the `NoGeometry` arm becomes a refusal again (which loses the whole container), an empty slot gets registered, an affected record is given a substitute shape, or the emptiness stops being the store's own stored fact |
 | `the_settle_blocker_is_named_not_hidden` | the blocker **exists**, is **exactly** `["C3"]`, and rests on the measured stored bytes: mesh slot 447 stores exactly two vertices with a subnormal coordinate, decoded verbatim by the reader | the blocker is silently skipped or silently disappears, a new group breaks the settle, or the stored subnormals are no longer there (i.e. the premise changed) |
 | `every_stored_transform_places_exactly` | the per-group count of records storing a real (non-identity) transform — `c1` 72 and `c5` 165 being the two the task named — and that the production `instance_placement`, the classifier the spawn runs over every instance *before* spawning anything, places **every** record of **every** group exactly | a record's transform is dropped on the way in, or a stored matrix is placed approximately rather than refused |
 
@@ -192,6 +192,66 @@ killed**:
 | the sector-membership loop reads no cell (everything resident) | the import test (`C1: left: 412, right: 66`) |
 | the grid names nothing (`indexed` emptied) | **all five** — the ownership cross-check refuses the container before anything else can agree |
 
+## Review (2026-10-05, reviewer `bunny-alpha-2`)
+
+Reviewed by the same agent instance that implemented the work, so **this is not
+independent review**; the context was fresh (no memory of the implementing
+session) but the identity is not. The owner's human review and any further
+capability-gated claims remain outstanding.
+
+What the reviewer checked against the sources, rather than against this document:
+
+- **`NoGeometry` really is only "the store holds nothing there."** Traced
+  `upload_groups` (`crates/cs_app/src/render/bevy_mesh.rs`): it yields at least
+  one upload per `RenderMesh` group, so the empty list `from_group_uploads`
+  refuses is reachable **only** when the stored mesh's render mesh has no
+  material group at all. Every other arm of `WorldMeshBuildError` still refuses
+  the container, so the relaxation cannot hide an adapter refusal about geometry
+  that *is* there.
+- **The gap arm is what the parent finding already designed.** `docs/findings/
+  2026-10-04-m01-lc-world-import.md` lists, under "Design decisions", "**A mesh
+  the container holds no geometry for is not registered.**" The code contradicted
+  that decision and #639 makes it true.
+- **The `c3` root cause was re-derived from the dependency**, not taken on trust:
+  `parry3d-0.27.0/src/partitioning/bvh/bvh_binned_build.rs:55-59` computes
+  `k1 = NUM_BINS * (1 - eps) / (centroid_max - centroid_min)` and then
+  `bins[(k1 * (c - centroid_min)) as usize]`, so a **denormal** extent overflows
+  the `f32` division, the `as usize` cast saturates to `usize::MAX`, and line 59
+  indexes the 8-entry array out of bounds. An extent of exactly zero is harmless
+  (`inf * 0.0` is `NaN`, which casts to `0`), which is why the finding's
+  `y = 0` control builds and only the subnormals do not.
+
+Two changes were made on review, both in test code (no production change, no
+weakened assertion):
+
+1. **The `c5` gap test now pins the emptiness to the container's own stored
+   record.** It asserted only that the *decoded* polygon and position lists were
+   empty, which a reader walking a wrong offset would also produce. Each empty
+   slot is now additionally required to be a **present** mesh record
+   (`info.parent_count != 0`, so not an all-zero array stub) whose own
+   `info.polygon_count` and `info.vertex_count` are **zero**, with a non-zero
+   stored count asserted for every slot that decodes polygons so the check
+   discriminates. The gap rule therefore rests on the store's own stated fact:
+   this reader keeps exactly one decoded polygon per stored `polygon_count` and
+   one position per `vertex_count` (`read_mesh_polygons` never drops a record), so
+   a decode that disagreed with the stored counts would now fail here loudly.
+2. **The spawn test reuses the `settles` helper** instead of a second, weaker
+   inline loop that kept running frames after a backend panic and printed the
+   known blocker's backtrace, and the dead `_spawned` parameter is gone. Unifying
+   the helper gave one settle implementation, but it also made two tests silence
+   the **process-global** panic hook concurrently — and interleaved
+   save/restore leaves the last one out owning the no-op hook permanently,
+   swallowing every later backtrace in the binary. The silence window is
+   therefore taken under `SETTLE_HOOK_LOCK`, so the swap is strictly nested and
+   the settle measurements serialise (seconds, not minutes).
+
+The reviewer also re-ran the sensitivity check on the production change: with the
+`NoGeometry` arm restored to a refusal, `a_mesh_the_store_holds_no_geometry_for_is_a_gap`
+fails with `an empty mesh slot is a gap, not a refusal of the whole container:
+Upload { index: 909, reason: NoGeometry }` — the defect is real, the arm is
+load-bearing, and the measured first empty slot is 909 as recorded. The source was
+restored and the failure is not reported as a passing run.
+
 ## Unknowns and limitations (recorded, not guessed)
 
 - **`c3`'s colliders are not verified on this host.** 33 of 374 are not built,
@@ -199,7 +259,7 @@ killed**:
   denormal. **Affected content:** collision for whichever `c3` records name mesh
   slot 447, on this host and this parry version. **Not affected:** presentation,
   the import, the sector index, and the other seven containers. **Resolving task:**
-  the follow-up filed below. This task does **not** claim a working `c3`
+  **#656** below. This task does **not** claim a working `c3`
   collision path.
 - **Whether the 2000 engine loaded a world this way is UNMEASURED.** No original
   run happened. Every fact here is measured from the container bytes by the

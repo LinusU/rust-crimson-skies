@@ -730,13 +730,10 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
         }
 
         // And for the groups whose settle finishes, every collider really is a
-        // triangle mesh built by the physics backend from that upload.
-        let mut settled = true;
-        for _ in 0..MESH_SETTLE_UPDATES {
-            settled &=
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.update())).is_ok();
-        }
-        if settled {
+        // triangle mesh built by the physics backend from that upload. The settle
+        // is the shared helper the blocker test uses, so a group that cannot
+        // finish it is measured the same way in both tests.
+        if settles(&mut app) {
             for object in world.objects() {
                 let Some(entity) = spawned.collider_for(object.id()) else {
                     continue;
@@ -830,10 +827,11 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
 ///
 /// What is pinned:
 ///
-/// * the empty slots **exist** in the container's own mesh array, so the store
-///   holds a record there rather than the slot being out of range;
-/// * each stores **no geometry at all**, which is what makes it a gap and not a
-///   decode failure; and
+/// * the empty slots **exist** in the container's own mesh array as **present**
+///   records whose stored `polygon_count` and `vertex_count` are zero, so the
+///   store holds a record there and states it has no geometry — rather than the
+///   slot being out of range, an all-zero stub, or a reader that walked the
+///   wrong offset; and
 /// * the world still uploads, registers every mesh that does hold geometry, and
 ///   spawns with its colliders — with each record that named an empty slot
 ///   reported rather than silently collided or handed a substitute shape.
@@ -870,7 +868,32 @@ fn accept_f18_world_units_containers_a_mesh_the_store_holds_no_geometry_for_is_a
         // which is what makes it a gap rather than a decode failure.
         assert_eq!(slot.index, index, "the mesh array addresses slot {index}");
         if slot.mesh.polygons.is_empty() && slot.mesh.positions.is_empty() {
+            // **The stored record says so.** The empty decode on its own would be
+            // consistent with a reader that walked the wrong offset, so the
+            // emptiness is pinned against the container's own 100-byte record: a
+            // **present** mesh (`parent_count` non-zero, so not an all-zero array
+            // stub) whose stored `polygon_count` and `vertex_count` are both zero.
+            // That is the store stating it has nothing there, which is the whole
+            // reason the upload treats it as a gap rather than a refusal.
+            assert_ne!(
+                slot.info.parent_count, 0,
+                "slot {index} is a present mesh record, not an all-zero stub"
+            );
+            assert_eq!(
+                (slot.info.polygon_count, slot.info.vertex_count),
+                (0, 0),
+                "slot {index} states zero stored polygon records and zero stored \
+                 positions, so the empty decode is what the bytes say"
+            );
             *empty.entry(index).or_default() += 1;
+        } else if !slot.mesh.polygons.is_empty() {
+            // The control: a slot that decodes polygons states a non-zero stored
+            // count, so the assertion above discriminates on the store's own
+            // record rather than holding for every mesh in the container.
+            assert!(
+                slot.info.polygon_count > 0,
+                "slot {index} decodes polygons, so its own stored record states some"
+            );
         }
     }
 
@@ -1046,7 +1069,17 @@ fn accept_f18_world_units_containers_the_settle_blocker_is_named_not_hidden() {
         let mut app = world_app();
         let spawned = spawn_world(&mut app, world, &meshes)
             .unwrap_or_else(|error| panic!("{}: the world spawns: {error}", measured.group));
-        let settled = settles(&mut app, &spawned);
+        // The spawn's own acceptance is asserted, not assumed: this test is about
+        // the settle that *follows* it, and its collider count is the number the
+        // settle is trying to realise.
+        assert_eq!(
+            spawned.colliders().len(),
+            imported.report().partition_records_with_mesh(),
+            "{}: the spawn reports every indexed record that binds a mesh, and \
+             those are the colliders the settle has to build",
+            measured.group
+        );
+        let settled = settles(&mut app);
         if settled != measured.settles {
             if settled {
                 blockers.push(format!(
@@ -1074,6 +1107,16 @@ fn accept_f18_world_units_containers_the_settle_blocker_is_named_not_hidden() {
     );
 }
 
+/// The panic hook is **process-global**, so the silence window below is taken
+/// under this lock.
+///
+/// Without it two of these tests, which libtest runs on parallel threads, would
+/// interleave their save/restore and the last one out would install the *other*
+/// test's no-op hook as the process's permanent one — silently swallowing the
+/// backtrace of every later failure in this binary. One settle at a time keeps
+/// the swap strictly nested, and the hook a test finds is always the one it left.
+static SETTLE_HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Runs the settle updates, reporting whether they all completed.
 ///
 /// The physics backend builds mesh-derived colliders inside Bevy systems, so a
@@ -1081,8 +1124,15 @@ fn accept_f18_world_units_containers_the_settle_blocker_is_named_not_hidden() {
 /// turns "the run crashed" into "this group is a named blocker", which is the
 /// difference between a measurement and an unexplained failure. The panic hook is
 /// silenced for the duration so a known blocker does not print a backtrace that
-/// reads like a test failure.
-fn settles(app: &mut bevy::prelude::App, _spawned: &cs_app::world::SpawnedWorld) -> bool {
+/// reads like a test failure, and the loop **stops at the first** failure: a
+/// backend that panicked mid-frame is not in a state where running more frames
+/// measures anything.
+fn settles(app: &mut bevy::prelude::App) -> bool {
+    // A panic while the lock is held would poison it; the measurement itself is
+    // what failed, and the other test still needs its own settle window.
+    let _guard = SETTLE_HOOK_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let mut settled = true;
