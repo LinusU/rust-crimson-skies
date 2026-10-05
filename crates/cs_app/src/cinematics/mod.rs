@@ -18,7 +18,11 @@
 //! * [`fit_letterboxed`] — fits a frame into a surface at its own aspect
 //!   ratio, centred, never stretched (non-negotiable behavior 4).
 //!
-//! Decoding, camera timelines and the skip/pause wiring are F40-B/C.
+//! Decoded playback against the master clock is [`playback`] and authored
+//! camera timelines are [`timeline`] (F40-B); the skip/pause wiring is F40-C.
+
+pub mod playback;
+pub mod timeline;
 
 use std::fmt;
 
