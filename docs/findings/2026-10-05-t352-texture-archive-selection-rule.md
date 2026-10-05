@@ -247,6 +247,15 @@ is equivalent.
   world directory's files resolve as `world/default/<file>` and the global
   directory's as `install/default/zbd/<file>`, which is what F04's designed
   mount layout serves.
+* **Designed: a name no key can spell is never a candidate.** `TextureFiles::find`
+  skips a listed name it cannot spell as an `AssetKey` instead of reporting it
+  as found, because a candidate the session could never open would make the
+  walk promise an archive it does not have; `TextureDirectory::new` refuses a
+  namespace or prefix that could not spell a key at all, where it is built,
+  rather than leaving such a directory to answer every probe with "does not
+  exist". `WorldTextureError` therefore has one variant, `NoArchive`. Every name
+  the walk generates (`texture.zbd`, `rtexture<k>.zbd`, `rimage.zbd`) spells, so
+  this only decides what a hostile listing does.
 * **Adopted unchanged: exact candidate comparison.** Candidate names are
   generated lower case and compared exactly against the listing. Every name
   the original probes is lower case and retail spells every archive that way,
@@ -318,6 +327,7 @@ is equivalent.
 | `accept_f08_c_selection_the_video_dropdown_rows_map_to_the_measured_settings` | §5: the three rows with their indices and written settings, the load direction for every enum value, the round trip, and every row leaving a retail-shaped group on `texture.zbd` for the software and no-DirectDraw paths while a hardware device's total decides alone |
 | `accept_f08_c_selection_the_lookup_order_is_the_world_archive_image_archive_then_loose_files` | §4: the four-source order, the key of each source, case folding, the `.bmp` fallback, the order following the selected archive and skipping one that does not exist |
 | `accept_f08_c_selection_open_world_catalogs_the_archive_the_rule_selects` | the rule reaching production: `open_world` opens the selected tier, the resolved texture's texels come from that tier, the software path opens the other world's unnumbered archive, `rimage.zbd` opens from the global directory, and an unopenable selection stays a failed row |
+| `accept_f08_c_selection_a_name_no_key_can_spell_is_never_a_candidate` | the probe cannot promise a file the session would refuse: a listed name no `AssetKey` spells is skipped rather than reported found, so no walk opens it, while a spellable source beside it stays reachable; and `TextureDirectory::new` refuses a namespace or prefix that could never spell a key, while the world's and global constructors stay infallible |
 | `accept_f08_c_selection_retail_world_groups_select_the_measured_archive` (ignored) | §3 on the real installation: all eight groups, their tier census, the selection at 16/12/8/7/1 MiB and without DirectDraw with the r-flag check, the software renderer at every setting, `open_world` opening `ZBD/C1/rtexture15.zbd` with 881 entries, `rimage.zbd` opening with 254 entries, and the two namespaces sharing no name |
 
 Retail result on this machine (installation fingerprinted `b4e780ab…1978`):
@@ -342,6 +352,9 @@ one):
 | `TextureDetailRow::for_setting` sends 3 to the top row | 1 fails |
 | the loose `.tif`/`.bmp` sources dropped from the lookup order | 1 fails |
 | `open_world` always opening `texture.zbd` | 1 fails |
+| `TextureFiles::find` reporting an unspellable name as found | 1 fails |
+| `TextureFiles::find` panicking on an unspellable name (the pre-review code) | 1 fails |
+| `TextureDirectory::new` accepting a namespace or prefix that cannot spell a key | 1 fails |
 
 ## Checks run on this branch (2026-10-05)
 

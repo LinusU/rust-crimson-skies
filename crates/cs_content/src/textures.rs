@@ -1413,30 +1413,68 @@ impl TextureDirectory {
     /// A search directory that is neither a world group nor the global
     /// fallback: the key a file found here resolves under is built from
     /// `namespace` and `prefix`.
+    ///
+    /// # Errors
+    ///
+    /// [`AssetKeyError`] when the namespace or the prefix cannot spell a key
+    /// for any file in the directory. Such a directory would answer every
+    /// probe with "does not exist" no matter what it holds, so it is refused
+    /// where it is built rather than left to look like an empty one.
     pub fn new(
         label: impl Into<String>,
         namespace: &'static str,
         prefix: impl Into<String>,
         files: impl IntoIterator<Item = String>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, AssetKeyError> {
+        let prefix = prefix.into();
+        // Probe with a name this crate generates, so the check covers the
+        // namespace, the variant and the prefix exactly as `key_for` spells
+        // them.
+        AssetKey::from_spelling(
+            namespace,
+            &Self::key_path(&prefix, WORLD_ARCHIVE_FILE),
+            TEXTURE_ARCHIVE_VARIANT,
+        )?;
+        Ok(Self {
             label: label.into(),
             namespace,
-            prefix: prefix.into(),
+            prefix,
             files: files.into_iter().collect(),
+        })
+    }
+
+    /// The key path a file named `file` resolves under in a directory with
+    /// `prefix`.
+    fn key_path(prefix: &str, file: &str) -> String {
+        if prefix.is_empty() {
+            file.to_owned()
+        } else {
+            format!("{prefix}/{file}")
         }
     }
 
     /// A world group's own texture directory, the original's `zbd\<group>`:
     /// its files resolve as `world/default/<file>`, so two worlds never share
     /// one archive.
+    ///
+    /// # Panics
+    ///
+    /// Never: [`Self::new`] is given the world's own namespace and an empty
+    /// prefix, which [`WORLD_NAMESPACE`] and a bare file name always spell.
     pub fn world(label: impl Into<String>, files: impl IntoIterator<Item = String>) -> Self {
         Self::new(label, WORLD_NAMESPACE, "", files)
+            .expect("the world namespace and a bare file name are a usable key spelling")
     }
 
     /// The global fallback directory, searched last: its files resolve as
     /// `install/default/zbd/<file>`, because the installation mount spells
     /// paths below its own root.
+    ///
+    /// # Panics
+    ///
+    /// Never: [`Self::new`] is given the installation's own namespace and the
+    /// `zbd` prefix, which [`INSTALL_NAMESPACE`] and [`GLOBAL_TEXTURE_DIRECTORY`]
+    /// always spell.
     pub fn global(files: impl IntoIterator<Item = String>) -> Self {
         Self::new(
             GLOBAL_TEXTURE_DIRECTORY,
@@ -1444,6 +1482,7 @@ impl TextureDirectory {
             GLOBAL_TEXTURE_DIRECTORY,
             files,
         )
+        .expect("the install namespace and the zbd prefix are a usable key spelling")
     }
 
     /// The directory's own spelling, for diagnostics: `zbd\c1` for a world
@@ -1461,15 +1500,17 @@ impl TextureDirectory {
     ///
     /// # Errors
     ///
-    /// [`AssetKeyError`] when the name is not a usable key path, which cannot
-    /// happen for a name this crate generates.
+    /// [`AssetKeyError`] when the name is not a usable key path. A name this
+    /// crate generates never fails, because [`Self::new`] checked the
+    /// namespace and the prefix; only a caller-supplied name can fail, and
+    /// [`TextureFiles::find`] skips such a name rather than treating it as a
+    /// candidate it could never open.
     pub fn key_for(&self, file: &str) -> Result<AssetKey, AssetKeyError> {
-        let path = if self.prefix.is_empty() {
-            file.to_owned()
-        } else {
-            format!("{}/{file}", self.prefix)
-        };
-        AssetKey::from_spelling(self.namespace, &path, TEXTURE_ARCHIVE_VARIANT)
+        AssetKey::from_spelling(
+            self.namespace,
+            &Self::key_path(&self.prefix, file),
+            TEXTURE_ARCHIVE_VARIANT,
+        )
     }
 }
 
@@ -1576,27 +1617,21 @@ impl TextureFiles {
     /// here (recorded in the finding).
     ///
     /// A listing entry that is not a usable key spelling is not a candidate:
-    /// nothing could resolve it.
+    /// nothing could resolve it, so reporting it as found would promise an
+    /// archive the session cannot open.
     pub fn find(&self, name: &str) -> Option<FoundFile> {
         self.directories
             .iter()
             .enumerate()
             .find_map(|(index, directory)| {
-                directory
-                    .files()
-                    .iter()
-                    .any(|listed| listed == name)
-                    .then(|| {
-                        // The listing is already known to hold the name, so this only
-                        // fails for a caller-supplied name no key can spell.
-                        FoundFile {
-                            directory: index,
-                            name: name.to_owned(),
-                            key: directory.key_for(name).unwrap_or_else(|error| {
-                                panic!("a listed name is a usable key: {error}")
-                            }),
-                        }
-                    })
+                if !directory.files().iter().any(|listed| listed == name) {
+                    return None;
+                }
+                directory.key_for(name).ok().map(|key| FoundFile {
+                    directory: index,
+                    name: name.to_owned(),
+                    key,
+                })
             })
     }
 
@@ -1834,16 +1869,13 @@ pub fn texture_lookup_order(
 pub enum WorldTextureError {
     /// No candidate file existed, so the original marks the descriptor failed
     /// and the world has no archive textures at all.
+    ///
+    /// A listed file whose name no key can spell is not a candidate and
+    /// contributes nothing here: [`TextureFiles::find`] skips it, because
+    /// naming it as the archive would promise a file the session cannot open.
     NoArchive {
         /// Every candidate the probe walked, in order.
         probes: Vec<ArchiveProbe>,
-    },
-    /// The chosen file's name is not a usable key spelling.
-    Key {
-        /// The file the choice named.
-        file: String,
-        /// The refusal, as the key renders it.
-        detail: String,
     },
 }
 
@@ -1852,7 +1884,6 @@ impl WorldTextureError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::NoArchive { .. } => "no_texture_archive",
-            Self::Key { .. } => "asset_key",
         }
     }
 }
@@ -1868,7 +1899,6 @@ impl fmt::Display for WorldTextureError {
                     .join(", ");
                 write!(f, "no texture archive exists; probed {walked}")
             }
-            Self::Key { file, detail } => write!(f, "{file} is not a usable key: {detail}"),
         }
     }
 }
@@ -1888,10 +1918,8 @@ impl TextureCatalog {
     ///
     /// # Errors
     ///
-    /// [`WorldTextureError::NoArchive`] when no candidate file exists, which
-    /// is what the original's failed descriptor means; and
-    /// [`WorldTextureError::Key`] when the chosen name cannot be spelled as a
-    /// key.
+    /// [`WorldTextureError::NoArchive`] when no candidate file exists, which is
+    /// what the original's failed descriptor means.
     pub fn open_world(
         session: &ContentSession,
         files: &TextureFiles,
@@ -3440,6 +3468,68 @@ mod tests {
     fn archive_key(file: &str) -> AssetKey {
         AssetKey::from_spelling(WORLD_NAMESPACE, file, TEXTURE_ARCHIVE_VARIANT)
             .expect("a texture archive key is valid")
+    }
+
+    /// A name no asset key can spell is never reported as a found candidate, so
+    /// the probe cannot promise an archive the session would refuse to open.
+    /// A directory whose own namespace or prefix could not spell a key is
+    /// refused where it is built.
+    #[test]
+    fn accept_f08_c_selection_a_name_no_key_can_spell_is_never_a_candidate() {
+        // A listed name that no `RelativePath` accepts: an absolute spelling.
+        // `find` must skip it rather than hand out a key it cannot build.
+        let unspellable = "\\\\absolute/texture.zbd";
+        let files = TextureFiles::new_with([
+            TextureDirectory::world("zbd/c1", vec![unspellable.to_owned()]),
+            TextureDirectory::global(vec![IMAGE_ARCHIVE_FILE.to_owned()]),
+        ]);
+        assert!(
+            files.find(unspellable).is_none(),
+            "a name no key can spell is not a candidate"
+        );
+        assert!(!files.exists(unspellable));
+        // The walk therefore finds nothing at all rather than opening it.
+        let choice = select_world_archive(&files, &WorldTextureLoad::project_default());
+        assert!(
+            !choice.is_open(),
+            "an unspellable name never opens an archive: {:?}",
+            choice.opened_name()
+        );
+        assert!(
+            choice.probes().iter().all(|probe| !probe.exists()),
+            "and it is never recorded as found"
+        );
+        // The shared image archive, which is spellable, is still reachable, so
+        // the skip is about the name and not about the search breaking.
+        assert_eq!(
+            texture_lookup_order("sky", &files, unspellable)
+                .first()
+                .map(|source| source.file().name().to_owned()),
+            Some(IMAGE_ARCHIVE_FILE.to_owned())
+        );
+
+        // A directory that could never spell a key is refused when it is built,
+        // instead of silently answering every probe with "does not exist".
+        assert!(
+            TextureDirectory::new("zbd/c1", WORLD_NAMESPACE, "..", Vec::<String>::new()).is_err(),
+            "a prefix that escapes the mount root is refused"
+        );
+        assert!(
+            TextureDirectory::new("zbd/c1", "Not A Label", "", Vec::<String>::new()).is_err(),
+            "a namespace that is not a label is refused"
+        );
+        // The two constructors the rule itself uses stay infallible.
+        let world = TextureDirectory::world("zbd/c1", vec![WORLD_ARCHIVE_FILE.to_owned()]);
+        assert_eq!(
+            world.key_for(WORLD_ARCHIVE_FILE).map(|key| key.to_string()),
+            Ok("world/default/texture.zbd".to_owned())
+        );
+        assert_eq!(
+            TextureDirectory::global(Vec::new())
+                .key_for(IMAGE_ARCHIVE_FILE)
+                .map(|key| key.to_string()),
+            Ok("install/default/zbd/rimage.zbd".to_owned())
+        );
     }
 
     /// Retail: every world group selects the archive the measured rule names,
