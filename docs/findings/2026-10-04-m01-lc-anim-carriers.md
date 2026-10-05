@@ -104,7 +104,9 @@ Two measured quirks of the path fields, both kept verbatim and neither decoded:
 
 Every member path field is NUL-terminated and ASCII in all 2595 rows (0
 unterminated, 0 non-ASCII), so the reader's two refusal arms are unexercised by
-the original installation and are exercised by the synthetic tests instead.
+the original installation. They were also unexercised by the synthetic tests until the
+independent review below added one (the first draft of this paragraph claimed they
+were covered).
 
 ## The payload header, and what is behind it
 
@@ -198,7 +200,7 @@ c1c row by row: camera `134` members / `2` references / `2` bound / `132`
 unreferenced; `m01` `91` / `22` / `21` / `70`; `ia1` `9` / `8` / `8` / `1`;
 `mp1` `2` / `1` / `1` / `1`; `mp3` `14` / `13` / `13` / `1`.
 
-M01's payload: 2 019 493 bytes, payload at offset 7 924, 2 015 569 payload
+M01's payload: 2 019 493 bytes, payload at offset 7 924, 2 011 569 payload
 bytes, declared record count **573**, gravity `-9.8`, first record
 `reserved_anim_0`. c1c's camera carrier: 1 217 815 bytes, payload at 11 536,
 1 206 279 payload bytes, declared record count **307**.
@@ -264,7 +266,8 @@ thing the record walk has to settle.
 | claim | class | why |
 | --- | --- | --- |
 | signature / version offsets, the `AnimNameC` row shape | `Documented` | the pinned mech3ax v0.6.0 source [S02/S06] |
-| gravity `-9.8` at `+36` | `Documented` | the same source asserts that constant |
+| gravity `-9.8` (the value) | `Documented` | the same source asserts that constant |
+| gravity at `+36` (the offset) | `ObservedTool` | the pinned source reads it at `+28` of its 68-byte block; see the independent review |
 | two count words, the 128-byte and 80-byte path fields, the 68-byte payload header, the 40 zero bytes, the first record name, the stamp range, the non-zero padding, the doubled separator | `ObservedTool` | read out of the 61 retail containers by this repository; no source states them |
 | the container is "the animation family" (role rule) | `Documented` | the mech3ax README's family list, task #340 findings |
 | `+10` counts animation records | **inference** | the pinned source reads a record count at the same offset of *its* layout; nothing here confirms it, so the field is reported as a declared count and no consumer indexes a record by it |
@@ -341,3 +344,70 @@ among the members that M01's documents reference; this stage decodes the
 carrier index, the payload header and the first record's name, and stops there
 because no measured rule fixes a record's length (see above). A follow-up task
 carries the record walk.
+## Independent review (2026-10-05, `sonnet-1`)
+
+Task #651 (`M01-LC-ANIM-INDEP`). Reviewer: `sonnet-1/sonnet-1`, Sonnet 5.5, a
+fresh context that had not seen #633's implementation or either of its two
+`bunny-alpha-1` passes. This is the different-agent pass the first review asked
+for. It is **not** `verified_original`: no original run happened, and no agent
+review replaces the owner's approval.
+
+**1. Re-derived from `$CS_GAME_DIR`.** Two throwaway Python scripts, written from
+the layout in this finding and the version-one trailer's 148-byte entry, share no
+code with the Rust under review. Everything reproduces: 61 carriers, 2595 member
+rows, 739 references, 731 bound (730 distinct rows), 8 unresolved with the
+spellings tabled above, 1865 unreferenced rows, the c1c row-by-row table, M01's
+payload at offset 7 924 with declared count 573 and c1c's camera at 11 536 / 307,
+1115 padded rows over 41 containers, 0 unterminated and 0 non-ASCII rows, 39
+member and 9 external stamp values with the ranges above, the 40 zero bytes and
+`reserved_anim_0` in 61 of 61, the zero/one fields of the payload header, `+40`
+as 1 in 48 and 0 in 13, `+16`/`+20` both zero in 30, and 15 024 as the sum of
+`+10`. The 19 `;`-joined `ANIMATION_PATH` records and the 11 with none also
+reproduce. One slip: M01's payload is **2 011 569** bytes (2 019 493 - 7 924), not
+2 015 569; fixed above (c1c's 1 206 279 was right).
+
+**2. Evidence classes.** Checked against the pinned source itself
+(`crates/mech3ax-anim/src/parse.rs` at the pinned commit): the signature
+`0x08170616`, the 84-byte `AnimNameC { name: Ascii<80>, unknown: u32 }` and the
+gravity constant `-9.800000190734863` are all there, so those three are fairly
+`Documented`. Two claims are stronger than the evidence:
+
+* The source documents **no** version 53 (it reads 28, 39 and 50), so the
+  version word is `ObservedTool`, which the finding already says.
+* The source's 68-byte info block is **not** this header. It reads `gravity` at
+  `+28` and asserts `world_ptr` at `+24` is nonzero, `loc_count` and `loc_ptr` at
+  `+16`/`+20` are zero, and `+32` is zero. Retail has `+24` and `+28` zero in 61
+  of 61, `+16`/`+20` nonzero in 31, `+32`/`+34` varying per container (this
+  finding's own table), and gravity at `+36`. Only the
+  *value* is documented; the table row now says so, and the code's
+  `gravity_evidence()` should be read as the value's class. `+10` as a u16
+  count, `+60 == 1` and the zero `+0 +4 +8 +64` do match the source, which makes
+  the count reading much stronger than "inference" (see 3).
+
+**3. Is the cut at the payload header right?** At the time, yes, and the finding
+is honest that it is a cut. But the argument "the record boundary is underivable"
+was too strong: #650, one day later, derived a length (272 fixed bytes plus
+count-driven tables) and walked all 61 containers to exactly the `+10` count, 15
+024 records. So the boundary was derivable, from an upstream *later* source's
+layout as a hint plus measurement. I accept that #633 had no pinned-source basis
+for it and that stopping was the fail-closed choice; I do not accept it as proof
+the record was underivable, and #633 alone did **not** meet "listed, decoded and
+bound" for the records. #650 closes that, and also upgrades the `+10` reading from
+inference to a measured count (an unrelated 61-of-61 coincidence is not credible).
+
+**4. Test sensitivity.** The retail test panics without `CS_GAME_DIR`
+(`CS_GAME_DIR must name the original installation ... NotPresent`) and passes with
+it (9 of 9, 40 s). Mutating the production code: a basename fallback in
+`bind_references`, a payload offset moved by 4 bytes, and dropping the
+`NonZeroPathPadding` flag each fail at least one test. **Dropping the
+`UnterminatedPath` flag, and dropping `NonAsciiPath`, passed every test**: no retail
+row has either, so the retail assertion of zero is satisfied by a reader that
+never flags them, and no synthetic test built such a row. Added
+`accept_m01_lc_anim_carriers_an_unterminated_or_non_ascii_path_is_reported_not_trusted`;
+both mutations now fail it.
+
+**Not done here.** `docs/findings/evidence/M01-LC-ANIM-CARRIERS.json` is not
+regenerated: its harness would pin a new candidate tree and a stale `OPEN` list
+(the record walk exists now), so this identity is recorded here and in the Rally
+submission instead. The `M01LC_REVIEW` text in the test file still describes the
+earlier review.
