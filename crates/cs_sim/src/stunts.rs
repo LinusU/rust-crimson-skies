@@ -511,6 +511,7 @@ pub struct StuntRule {
     id: ContentId,
     world: ContentId,
     rule: TraversalRule,
+    follow_on: Vec<TraversalRule>,
     missions: Vec<ContentId>,
     criticality: StuntCriticality,
     repeat: StuntRepeat,
@@ -526,8 +527,11 @@ pub struct StuntRuleDraft {
     pub id: ContentId,
     /// The `world` the gate lives in.
     pub world: ContentId,
-    /// The traversal rule.
+    /// The traversal rule of the first gate.
     pub rule: TraversalRule,
+    /// The rules of the gates that follow the first, in the order they must
+    /// be flown. Empty for a single-gate stunt.
+    pub follow_on: Vec<TraversalRule>,
     /// The missions that declare the stunt; non-empty and unique.
     pub missions: Vec<ContentId>,
     /// Whether a completion may affect mission success.
@@ -553,6 +557,7 @@ impl StuntRule {
             id,
             world,
             rule,
+            follow_on,
             missions,
             criticality,
             repeat,
@@ -585,6 +590,7 @@ impl StuntRule {
             id,
             world,
             rule,
+            follow_on,
             missions,
             criticality,
             repeat,
@@ -609,6 +615,29 @@ impl StuntRule {
     #[must_use]
     pub const fn rule(&self) -> &TraversalRule {
         &self.rule
+    }
+
+    /// The rules of the gates after the first, in flight order.
+    #[must_use]
+    pub fn follow_on(&self) -> &[TraversalRule] {
+        &self.follow_on
+    }
+
+    /// How many gates must be flown in order to complete the stunt: one for
+    /// a single-gate stunt.
+    #[must_use]
+    pub fn gate_count(&self) -> usize {
+        1 + self.follow_on.len()
+    }
+
+    /// The rule of the `index`th gate in flight order, or [`None`] past the
+    /// last one.
+    #[must_use]
+    pub fn gate_rule(&self, index: usize) -> Option<&TraversalRule> {
+        match index {
+            0 => Some(&self.rule),
+            _ => self.follow_on.get(index - 1),
+        }
     }
 
     /// The declared missions, in authored order.
@@ -1113,6 +1142,16 @@ pub enum TraversalOutcome {
     /// granted, which is reported as a refusal below so a caller cannot pay
     /// twice by accident).
     Completed(Box<TraversalCompletion>),
+    /// A gate of a multi-gate stunt was flown in order and the stunt is not
+    /// finished yet. Nothing is paid until the last gate.
+    Advanced {
+        /// The stunt in progress.
+        stunt: ContentId,
+        /// How many of its gates have now been flown in order.
+        passed: usize,
+        /// How many gates it has.
+        of: usize,
+    },
     /// The stunt was not completed, for a named reason.
     Refused(PassRefusal),
 }
@@ -1204,6 +1243,9 @@ pub struct StuntBook {
     subject: ActorId,
     rules: Vec<StuntRule>,
     ledger: StuntLedger,
+    /// Per rule (same order), how many gates of its sequence have been flown
+    /// in order since the last completion, restart or discontinuity.
+    cursors: Vec<usize>,
     last_tick: Option<Tick>,
     completions: u32,
 }
@@ -1249,6 +1291,7 @@ impl StuntBook {
                 });
             }
         }
+        let cursors = vec![0; rules.len()];
         Ok(Self {
             session,
             profile,
@@ -1256,6 +1299,7 @@ impl StuntBook {
             subject,
             rules,
             ledger,
+            cursors,
             last_tick: None,
             completions: 0,
         })
@@ -1330,7 +1374,7 @@ impl StuntBook {
         self.last_tick = Some(request.tick);
 
         let mut outcomes = Vec::with_capacity(self.rules.len());
-        for rule in &self.rules {
+        for (index, rule) in self.rules.iter().enumerate() {
             let id = rule.id().as_str().to_owned();
             let outcome = if request.actor != self.subject {
                 TraversalOutcome::Refused(PassRefusal::ForeignActor {
@@ -1347,11 +1391,44 @@ impl StuntBook {
                     mission: self.mission.as_str().to_owned(),
                 })
             } else if let Some((from_m, to_m)) = request.movement.swept() {
-                match rule.rule().classify(from_m, to_m) {
+                let cursor = self.cursors[index];
+                let next = rule
+                    .gate_rule(cursor)
+                    .expect("a cursor always points inside its sequence");
+                // Out of order, a pass of the *first* gate restarts the
+                // sequence instead of being lost, so a pilot who flubs the
+                // second gate can loop back without leaving the sequence.
+                let restart = cursor > 0
+                    && next.classify(from_m, to_m).is_err()
+                    && rule.rule().classify(from_m, to_m).is_ok();
+                let step = if restart {
+                    self.cursors[index] = 1;
+                    Ok(None)
+                } else {
+                    next.classify(from_m, to_m).map(Some)
+                };
+                match step {
                     Err(reason) => {
                         TraversalOutcome::Refused(PassRefusal::Geometry { stunt: id, reason })
                     }
-                    Ok(passage) => {
+                    Ok(passed)
+                        if self.cursors[index] + usize::from(passed.is_some())
+                            < rule.gate_count() =>
+                    {
+                        if passed.is_some() {
+                            self.cursors[index] += 1;
+                        }
+                        TraversalOutcome::Advanced {
+                            stunt: rule.id().clone(),
+                            passed: self.cursors[index],
+                            of: rule.gate_count(),
+                        }
+                    }
+                    Ok(passed) => {
+                        // Only the last gate of the sequence reaches here, so
+                        // `passed` is its measurement.
+                        let passage = passed.expect("a restart never completes a sequence");
+                        self.cursors[index] = 0;
                         let key = StuntRewardKey::new(
                             self.profile.clone(),
                             self.mission.clone(),
@@ -1392,11 +1469,71 @@ impl StuntBook {
                     }
                 }
             } else {
+                // A sequence is one continuous flight: a jump forgets the
+                // gates already flown.
+                self.cursors[index] = 0;
                 TraversalOutcome::Refused(PassRefusal::Discontinuous { stunt: id })
             };
             outcomes.push(outcome);
         }
         Ok(outcomes)
+    }
+}
+
+/// How the subject's pose got to this tick's position, as the physics and
+/// origin owners report it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoseChange {
+    /// Ordinary integration.
+    Flight,
+    /// Integration across an origin rebase: the local frame moved, the world
+    /// position did not jump.
+    Rebase,
+    /// A discontinuous move (respawn, checkpoint, developer placement).
+    Teleport,
+}
+
+/// Turns one actor's per-tick world positions into the swept movement the
+/// [`StuntBook`] judges.
+///
+/// The book needs a segment, and a segment needs the previous position, so
+/// the sampler is the single holder of "where was it last tick". The first
+/// sample after construction or [`StuntSampler::reset`] has no previous
+/// position and so is a teleport: nothing can be flown through before the
+/// aircraft has a path.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StuntSampler {
+    previous_m: Option<WorldPosition>,
+}
+
+impl StuntSampler {
+    /// A sampler with no previous position.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { previous_m: None }
+    }
+
+    /// Forgets the previous position, as after a restart or respawn.
+    pub const fn reset(&mut self) {
+        self.previous_m = None;
+    }
+
+    /// Records `position_m` and returns the movement that reached it.
+    pub fn advance(&mut self, position_m: WorldPosition, change: PoseChange) -> StuntMovement {
+        let previous = self.previous_m.replace(position_m);
+        match (previous, change) {
+            (Some(from_m), PoseChange::Flight) => StuntMovement::Swept {
+                from_m,
+                to_m: position_m,
+            },
+            (Some(from_m), PoseChange::Rebase) => StuntMovement::Rebased {
+                from_m,
+                to_m: position_m,
+            },
+            (None, _) | (Some(_), PoseChange::Teleport) => {
+                StuntMovement::Teleport { to_m: position_m }
+            }
+        }
     }
 }
 

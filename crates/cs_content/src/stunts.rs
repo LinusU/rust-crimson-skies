@@ -312,6 +312,7 @@ pub struct StuntDefinition {
     origin: Origin,
     world: ContentId,
     gate: Resolved<Gate>,
+    follow_on_gates: Vec<Gate>,
     rules: TraversalRules,
     scope: MissionScope,
     criticality: StuntCriticality,
@@ -332,6 +333,11 @@ pub struct StuntDraft {
     pub world: ContentId,
     /// The authored gate, or an explicit unknown.
     pub gate: Resolved<Gate>,
+    /// The gates flown after `gate`, in order, for a multi-gate stunt; empty
+    /// for a single-gate stunt. They share the stunt's direction and
+    /// clearance rules. How the original spells a sequence is not measured,
+    /// so a sequence is a designed vocabulary like the rest of the record.
+    pub follow_on_gates: Vec<Gate>,
     /// The authored direction and clearance rules.
     pub rules: TraversalRules,
     /// The missions that declare the stunt.
@@ -361,6 +367,7 @@ impl StuntDefinition {
             origin,
             world,
             gate,
+            follow_on_gates,
             rules,
             scope,
             criticality,
@@ -378,6 +385,22 @@ impl StuntDefinition {
             && let Some(error) = gate_error(&known.value)
         {
             return Err(error);
+        }
+        for follow_on in &follow_on_gates {
+            if let Some(error) = gate_error(follow_on) {
+                return Err(error);
+            }
+            if let Resolved::Known(clearance) = &rules.min_clearance_m {
+                let max_possible_m = follow_on
+                    .right_half_extent_m
+                    .min(follow_on.up_half_extent_m);
+                if clearance.value > max_possible_m {
+                    return Err(StuntError::UnsatisfiableClearance {
+                        required_m: clearance.value,
+                        max_possible_m,
+                    });
+                }
+            }
         }
         if let Resolved::Known(known) = &rules.min_forward_cosine
             && !(known.value.is_finite() && (-1.0..=1.0).contains(&known.value))
@@ -416,6 +439,7 @@ impl StuntDefinition {
             origin,
             world,
             gate,
+            follow_on_gates,
             rules,
             scope,
             criticality,
@@ -447,6 +471,13 @@ impl StuntDefinition {
     #[must_use]
     pub fn gate(&self) -> &Resolved<Gate> {
         &self.gate
+    }
+
+    /// The gates flown after the first, in order; empty for a single-gate
+    /// stunt.
+    #[must_use]
+    pub fn follow_on_gates(&self) -> &[Gate] {
+        &self.follow_on_gates
     }
 
     /// The authored direction and clearance rules.
@@ -3189,6 +3220,7 @@ pub fn declared_synthetic_gate_stunt() -> StuntDefinition {
         origin: Origin::SyntheticFixture,
         world: ContentId::from_source(ContentKind::World, "synthetic.harbor")
             .expect("fixture world id is valid"),
+        follow_on_gates: Vec::new(),
         gate: Resolved::Known(cs_types::content::Known::new(
             Gate {
                 center_m: SYNTHETIC_GATE_CENTER_M,
@@ -3273,6 +3305,7 @@ mod tests {
             origin: stunt.origin,
             world: stunt.world,
             gate: stunt.gate,
+            follow_on_gates: stunt.follow_on_gates,
             rules: stunt.rules,
             scope: stunt.scope,
             criticality: stunt.criticality,

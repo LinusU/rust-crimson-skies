@@ -53,18 +53,40 @@ pub fn lower_stunt(declared: &StuntDefinition) -> Result<StuntRule, StuntLowerEr
             });
         }
     };
+    let follow_on_gates = declared
+        .follow_on_gates()
+        .iter()
+        .map(|known| {
+            RuntimeGate::new(
+                known.center_m,
+                known.normal,
+                known.right_half_extent_m,
+                known.up_half_extent_m,
+                known.half_depth_m,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| StuntLowerError::Rejected {
+            stunt: declared.id().as_str().to_owned(),
+            reason: error.to_string(),
+        })?;
     let min_forward_cosine = resolve(&declared.rules().min_forward_cosine, |claim_id, reason| {
         StuntLowerError::UnknownDirectionRule { claim_id, reason }
     })?;
     let min_clearance_m = resolve(&declared.rules().min_clearance_m, |claim_id, reason| {
         StuntLowerError::UnknownClearanceRule { claim_id, reason }
     })?;
-    let rule = TraversalRule::new(gate, min_forward_cosine, min_clearance_m).map_err(|error| {
-        StuntLowerError::Rejected {
-            stunt: declared.id().as_str().to_owned(),
-            reason: error.to_string(),
-        }
-    })?;
+    let rejected = |error: &dyn fmt::Display| StuntLowerError::Rejected {
+        stunt: declared.id().as_str().to_owned(),
+        reason: error.to_string(),
+    };
+    let rule = TraversalRule::new(gate, min_forward_cosine, min_clearance_m)
+        .map_err(|error| rejected(&error))?;
+    let follow_on = follow_on_gates
+        .into_iter()
+        .map(|gate| TraversalRule::new(gate, min_forward_cosine, min_clearance_m))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| rejected(&error))?;
 
     let fame = match &declared.reward().fame {
         Resolved::Known(known) => known.value,
@@ -98,6 +120,7 @@ pub fn lower_stunt(declared: &StuntDefinition) -> Result<StuntRule, StuntLowerEr
         id: declared.id().clone(),
         world: declared.world().clone(),
         rule,
+        follow_on,
         missions: declared.scope().missions().to_vec(),
         criticality: lower_criticality(declared),
         repeat: lower_repeat(declared),

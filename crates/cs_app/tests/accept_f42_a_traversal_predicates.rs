@@ -114,6 +114,9 @@ fn expect_refused(outcomes: &[TraversalOutcome]) -> &PassRefusal {
             stunt = done.stunt,
             crossing = done.crossing_m
         ),
+        TraversalOutcome::Advanced { stunt, .. } => {
+            panic!("{stunt:?} advanced a sequence, but it had to be refused")
+        }
     }
 }
 
@@ -880,6 +883,7 @@ fn draft_of(record: &StuntDefinition) -> StuntDraft {
         origin: record.origin().clone(),
         world: record.world().clone(),
         gate: record.gate().clone(),
+        follow_on_gates: record.follow_on_gates().to_vec(),
         rules: record.rules().clone(),
         scope: record.scope().clone(),
         criticality: record.criticality(),
