@@ -135,6 +135,18 @@
 //! path. Every member and every reference gets a disposition; the animation
 //! records inside the payload stay undecoded, and the startup identities that
 //! would need them are listed as the open input they are.
+//!
+//! Task #678 (`M01-LC-ACTOR-ANIM-PLAYBACK`) adds [`mission`], the **consumer**
+//! the two halves above were measured for: it joins one mission scope's
+//! `startanims.zrd` identities to both the `.zrd` member that declares them and
+//! the carrier record that stores them, checks the two name agreements that
+//! make those halves one animation (the record's `object_name` is one of the
+//! declaration's selectors, and the declaration's sequence names are the
+//! record's ordinary sequence block names in order), resolves every name the
+//! animation addresses against the group's world container, carries the
+//! `ON_STARTUP` placements of the mission's own archive as its world actors, and
+//! **refuses every record with its source locator** because a record's sequence
+//! blocks are still raw bytes ([`mission::EVENTS_NOT_DECODED_CLAIM`]).
 
 use std::fmt;
 
@@ -148,6 +160,7 @@ pub mod binding;
 pub mod capture;
 pub mod carrier;
 pub mod lower;
+pub mod mission;
 pub mod playback;
 pub mod presentation;
 pub mod programs;
@@ -175,6 +188,15 @@ pub use carrier::{
     UNRESOLVED_REASON_NO_MEMBER, UNRESOLVED_REASON_NO_RECORD_NAMES, bind_animation_carrier,
     bind_installation, bind_startup_identities, carrier_name, document_member,
     survey_animation_bindings,
+};
+pub use mission::{
+    AMBIGUOUS_DECLARATION_REASON, AnimationRecordFacts, AnimationTarget, CarrierFact,
+    DECLARATION_MATCH_CLAIM, EVENTS_NOT_DECODED_CLAIM, EVENTS_NOT_DECODED_REASON,
+    MissionAnimationBinding, MissionAnimationError, MissionAnimationRun,
+    OBJECT_NAME_DISAGREES_REASON, PLACEMENT_FIELDS_CLAIM, PLACEMENT_FIELDS_REASON, PlayRefusal,
+    RecordResolution, RecordSequence, SEQUENCE_NAMES_DISAGREE_REASON, StartupAnimation,
+    TargetResolution, TargetSource, UNDECLARED_REASON, UNREADABLE_TARGET_REASON,
+    WorldActorPlacement, bind_mission_animation, join_startup_animation,
 };
 pub use playback::{
     AnimationLog, AnimationPlayError, AnimationPlayback, AnimationRefusal, BlockedTrack,
