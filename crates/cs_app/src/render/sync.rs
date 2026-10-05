@@ -126,6 +126,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use bevy::asset::{AssetId, Assets, Handle};
+use bevy::camera::visibility::Visibility;
 use bevy::core_pipeline::tonemapping::Tonemapping as BevyTonemapping;
 use bevy::ecs::entity::Entity;
 use bevy::ecs::hierarchy::{ChildOf, Children};
@@ -886,7 +887,9 @@ fn push_optional_hash(bytes: &mut Vec<u8>, hash: Option<ContentHash>) {
 /// What it writes per batch: one entity with the batch's [`Mesh3d`] and one
 /// [`MeshMaterial3d`] whose material is the batch's own, and one child entity
 /// per row ([`BatchInstancePlacement`]) at that row's own place, sharing the
-/// same mesh and material handles. Every class has a drawable material, so
+/// same mesh and material handles. The batch entity holds the handles and is
+/// hidden; only the placements are drawn, so the entities a renderer draws are
+/// exactly the placed rows. Every class has a drawable material, so
 /// every batch is placed: the additive class with
 /// [`AdditiveMaterial`], every other class with a `StandardMaterial`, and the
 /// component's own type is the material, so one batch entity never carries
@@ -1155,12 +1158,18 @@ pub fn sync_frame(
                 .get_resource_or_insert_with(BatchAssetRefs::default)
                 .own(owned);
         }
-        world.entity_mut(entity).insert(BatchDraw {
-            key: digest,
-            phase: batch.phase(),
-            image,
-            instances: batch.instances().to_vec(),
-        });
+        // The batch entity holds the shared handles; it is not itself a draw.
+        // Hidden on every pass, a reused entity included, so a batch can never
+        // put one more copy of its geometry at the origin.
+        world.entity_mut(entity).insert((
+            BATCH_VISIBILITY,
+            BatchDraw {
+                key: digest,
+                phase: batch.phase(),
+                image,
+                instances: batch.instances().to_vec(),
+            },
+        ));
         set_material(world, entity, material.clone());
         // One placed entity per row the composed verdict draws. The batch key
         // covers the rows, so a reused entity is the same batch; the
@@ -1423,6 +1432,26 @@ fn reclaim_store_entries(world: &mut World, owned: BatchAssets) -> ReclaimedAsse
     reclaimed
 }
 
+/// The batch entity's visibility: never drawn.
+///
+/// A batch entity carries [`Mesh3d`] and its material because it is the
+/// *owner* of the two handles its placements borrow ([`BatchAssets`]) and the
+/// record the reuse path checks, not because it is a draw. An entity with a
+/// mesh and Bevy's default visibility is rendered at its own transform, and a
+/// batch entity's transform is the identity — so without this every batch
+/// would draw one extra copy of its geometry at the world origin, on top of
+/// its placed rows (Rally #506). The placements are the draws.
+const BATCH_VISIBILITY: Visibility = Visibility::Hidden;
+
+/// A placement's visibility: drawn, whatever its batch entity says.
+///
+/// `Visible` rather than the default `Inherited`, because the parent is
+/// [`BATCH_VISIBILITY`] and a placement that inherited it would be hidden with
+/// it. Whether a row is drawn at all is the composed visibility verdict's
+/// decision (rule 6), made before a placement exists: a withheld row has no
+/// placement to hide.
+const PLACEMENT_VISIBILITY: Visibility = Visibility::Visible;
+
 /// Puts one placed entity per row under `batch`, and returns how many rows are
 /// now placed.
 ///
@@ -1476,13 +1505,22 @@ fn place_rows(
         let transform = Transform::from_translation(Vec3::from(row.center_m()));
         let child = match existing.remove(&row.item_index()) {
             Some(child) => {
-                world
-                    .entity_mut(child)
-                    .insert((transform, Mesh3d(mesh.clone()), placement));
+                world.entity_mut(child).insert((
+                    transform,
+                    PLACEMENT_VISIBILITY,
+                    Mesh3d(mesh.clone()),
+                    placement,
+                ));
                 child
             }
             None => world
-                .spawn((ChildOf(batch), transform, Mesh3d(mesh.clone()), placement))
+                .spawn((
+                    ChildOf(batch),
+                    transform,
+                    PLACEMENT_VISIBILITY,
+                    Mesh3d(mesh.clone()),
+                    placement,
+                ))
                 .id(),
         };
         // The material goes on after the spawn, by kind: the component's own

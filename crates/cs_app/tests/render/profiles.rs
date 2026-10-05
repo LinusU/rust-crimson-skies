@@ -22,17 +22,21 @@
 //! the chain into F17-B's capture, no enhancement changing a draw decision,
 //! the batching refusals, and the consumer's teardown, refusal and retry.
 
+use bevy::app::{App, PostUpdate};
 use bevy::asset::Assets;
+use bevy::camera::visibility::{InheritedVisibility, VisibilityPlugin, VisibilitySystems};
 use bevy::core_pipeline::tonemapping::Tonemapping as BevyTonemapping;
 use bevy::ecs::entity::Entity;
 use bevy::ecs::hierarchy::ChildOf;
 use bevy::ecs::prelude::World;
+use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::image::Image;
 use bevy::light::DirectionalLight;
 use bevy::math::Vec3;
 use bevy::mesh::{Mesh, Mesh3d};
 use bevy::pbr::{MeshMaterial3d, StandardMaterial};
 use bevy::render::view::Msaa;
+use bevy::transform::TransformPlugin;
 use bevy::transform::prelude::Transform;
 use bevy::window::{Window, WindowResolution};
 
@@ -873,6 +877,110 @@ fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
     assert!(released.sessions);
     assert_eq!(batch_entities(&world), 0);
     assert_eq!(placed_draws(&world), 0, "no stranded geometry");
+}
+
+/// The entities a renderer draws are exactly the placed rows (Rally #506).
+///
+/// A batch entity holds the mesh and material its placements share, and its
+/// transform is the identity: if it were drawn, every batch would put one more
+/// copy of its geometry at the world origin on top of its placed rows. The
+/// count is taken after Bevy's own `VisibilityPlugin` has propagated
+/// visibility through the hierarchy, so it is the renderer's verdict, not a
+/// component count — and it is taken again after a re-sync that reuses every
+/// batch and after a frame that releases and respawns some.
+#[test]
+fn accept_f17_c_only_the_placed_rows_are_drawn_never_the_batch_entity() {
+    let fixture = fixture();
+    let mut app = App::new();
+    app.add_plugins((TransformPlugin, VisibilityPlugin));
+    // Only the hierarchy propagation is under test: culling against views and
+    // bounds need a camera and render resources this world does not have, and
+    // `InheritedVisibility` is decided before either of them.
+    app.configure_sets(
+        PostUpdate,
+        (
+            VisibilitySystems::CalculateBounds,
+            VisibilitySystems::CheckVisibility,
+            VisibilitySystems::MarkNewlyHiddenEntitiesInvisible,
+        )
+            .run_if(|| false),
+    );
+    let world = app.world_mut();
+    world.insert_resource(Assets::<Image>::default());
+    world.insert_resource(Assets::<Mesh>::default());
+    world.insert_resource(Assets::<StandardMaterial>::default());
+    world.insert_resource(Assets::<AdditiveMaterial>::default());
+    world.insert_resource(RenderProfileRequest::set(
+        SESSION,
+        RenderProfile::faithful(),
+    ));
+    process_render_profile_request(world);
+
+    let submitted = fixture.submitted();
+    let frame = fixture.batch(&RenderProfile::faithful());
+    let report =
+        sync_frame(world, &submitted, &frame, SESSION, &fixture.runtime).expect("the frame syncs");
+    assert_eq!(report.spawned, 4, "the fixture has four batches");
+    assert_eq!(report.placed, 5, "and five drawn rows");
+    app.update();
+    assert_eq!(
+        drawn_meshes(app.world()),
+        report.placed,
+        "one drawn mesh per placed row, and none for a batch entity"
+    );
+    for entity in app.world().iter_entities() {
+        if entity.contains::<BatchDraw>() {
+            assert_eq!(
+                entity.get::<InheritedVisibility>().map(|seen| seen.get()),
+                Some(false),
+                "a batch entity is not drawn"
+            );
+        }
+    }
+
+    // A re-sync reuses every batch entity; it stays hidden.
+    let repeat = sync_frame(
+        app.world_mut(),
+        &submitted,
+        &frame,
+        SESSION,
+        &fixture.runtime,
+    )
+    .expect("the frame resyncs");
+    assert_eq!(repeat.reused, 4);
+    app.update();
+    assert_eq!(drawn_meshes(app.world()), repeat.placed);
+
+    // A frame that releases three batches and spawns two: the new ones are
+    // hidden too, and the merged batch's three rows are all drawn.
+    let mut repainted = fixture.visuals.clone();
+    repainted.insert(InstanceVisual::bound(
+        PLANE_B,
+        fixture.runtime.livery(PLANE_A).expect("a is bound"),
+    ));
+    let next = batch_frame(
+        &submitted,
+        &fixture.plan,
+        &repainted,
+        &RenderProfile::faithful(),
+        TICK,
+    )
+    .expect("the repainted frame batches");
+    let swapped = sync_frame(
+        app.world_mut(),
+        &submitted,
+        &next,
+        SESSION,
+        &fixture.runtime,
+    )
+    .expect("the next frame syncs");
+    assert_eq!(swapped.spawned, 2);
+    app.update();
+    assert_eq!(
+        drawn_meshes(app.world()),
+        swapped.placed,
+        "a spawned batch entity is as hidden as a reused one"
+    );
 }
 
 /// A batch's identity is *which* instances it draws, not where they are: a
@@ -1891,6 +1999,20 @@ fn presentation_targets(world: &mut World) -> (Entity, Entity, Entity) {
     let light = world.spawn(DirectionalLight::default()).id();
     let window = world.spawn(Window::default()).id();
     (camera, light, window)
+}
+
+/// How many entities with a mesh Bevy's visibility propagation left visible:
+/// what a camera in front of all of them would draw.
+fn drawn_meshes(world: &World) -> usize {
+    world
+        .iter_entities()
+        .filter(|entity| {
+            entity.contains::<Mesh3d>()
+                && entity
+                    .get::<InheritedVisibility>()
+                    .is_some_and(|seen| seen.get())
+        })
+        .count()
 }
 
 /// How many entities draw a batch.
