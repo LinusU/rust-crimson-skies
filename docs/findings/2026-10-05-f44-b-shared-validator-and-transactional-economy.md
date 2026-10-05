@@ -14,7 +14,7 @@ economy transaction". Capabilities: ordinary build/test only.
   `EconomyError`, `CommitReceipt`.
 - `crates/cs_app/src/construction/mod.rs` (new): `ConstructionSession`
   (edit / verdict / cancel / commit) joining the two.
-- `crates/cs_app/tests/accept_f44_b_transactional_economy.rs`: seven tests.
+- `crates/cs_app/tests/accept_f44_b_transactional_economy.rs`: nine tests.
 - Wiring only: `pub mod economy;` in `cs_sim/src/lib.rs`, `pub mod construction;`
   in `cs_app/src/lib.rs`.
 
@@ -36,6 +36,28 @@ to show the comparison is not vacuous.
   revision is reported stale.
 - A sale is refused while the edited blueprint or any other active blueprint
   references the component.
+- One rule for the preview and the commit. `ConstructionSession` widens the
+  caller's availability by the owned set the session was opened on and uses
+  that one policy for both `verdict` and `commit`, so the editor's live preview
+  and the verdict the commit enforces cannot disagree. See "Review finding"
+  below.
+
+## Review finding (bunny-2, reviewer)
+
+The first submission had `verdict` run the caller's *raw* availability while
+`commit` ran it widened by what the profile owns — two different rules for one
+blueprint. Withdrawn from the catalog, every component of an already-purchased
+loadout was drawn as `Unavailable` in the preview and then accepted by the
+commit, which is the preview/reality split sheet behavior 4 and AC04 exist to
+prevent. `ConstructionSession::policy` now returns one policy used by both, and
+`accept_f44_b_the_preview_and_the_commit_judge_one_policy` fails on the
+pre-review code (13 `Unavailable` violations where the fix reports none).
+
+The reviewer also added `accept_f44_b_one_cost_unit_over_the_price_ceiling_is_refused`.
+AC01 names the weight *and* the cost limit; the submitted suite exercised only
+the weight boundary through the shared validator, leaving the price ceiling
+uncovered on this path (`accept_f44_a_*` covers it one layer down, at
+`ConstructionRules::assess`).
 
 ## Recorded unknowns (not guessed)
 

@@ -23,7 +23,8 @@ use cs_content::campaign::{
 };
 use cs_content::construction::{
     AircraftBlueprint, ConstraintViolation, ConstructionPolicy, ConstructionRules, GunFitment,
-    LimitBreach, PriceBook, SYNTHETIC_HEAVY_PLATE_KEY, SYNTHETIC_MISSILE_KEY, ValidationRefusal,
+    LimitBreach, PriceBook, SYNTHETIC_BOUNDARY_COST_MINOR, SYNTHETIC_HEAVY_MISSILE_KEY,
+    SYNTHETIC_HEAVY_PLATE_KEY, SYNTHETIC_MISSILE_KEY, ValidationRefusal,
     declared_synthetic_blueprint, declared_synthetic_price_book, synthetic_boundary_rules,
     synthetic_gun_fitments, synthetic_policy,
 };
@@ -350,6 +351,111 @@ fn accept_f44_b_the_validator_accepts_the_limit_and_rejects_one_unit_over() {
     at_limit
         .commit(&fx.ctx(), &mut state)
         .expect("exactly at the limit commits");
+}
+
+/// AC01 names the *cost* limit as well as the weight one, and the shared
+/// validator is the thing that enforces it: a loadout exactly at the price
+/// ceiling commits, one minor unit over it does not, and the refusal names the
+/// cost breach rather than the mass one.
+#[test]
+fn accept_f44_b_one_cost_unit_over_the_price_ceiling_is_refused() {
+    let fx = Fixture::new();
+    let mut state = funded(&fx.graph);
+
+    // The heavy missile costs exactly one minor unit more and weighs the same,
+    // so only the price limit is crossed.
+    let mut ordnance = cs_content::construction::synthetic_ordnance_fitments();
+    ordnance[0] = cs_content::construction::OrdnanceFitment::try_new(
+        ordnance[0].hardpoint().clone(),
+        id(ContentKind::Weapon, SYNTHETIC_HEAVY_MISSILE_KEY),
+    )
+    .expect("valid ordnance");
+    let over = declared_synthetic_blueprint()
+        .with_ordnance(ordnance)
+        .expect("valid blueprint");
+
+    let before = state.snapshot();
+    let session = ConstructionSession::begin(&state, over, vec![]);
+    let verdict = session.verdict(&fx.ctx()).expect("measurable");
+    assert!(
+        !verdict.is_valid(),
+        "one minor unit over the ceiling is invalid"
+    );
+    assert_eq!(verdict.assessment().breaches().len(), 1);
+    assert!(matches!(
+        verdict.assessment().first_breach(),
+        Some(LimitBreach::Cost { .. })
+    ));
+    assert!(
+        matches!(
+            session.commit(&fx.ctx(), &mut state),
+            Err(ConstructionError::Invalid(_))
+        ),
+        "one unit over the price ceiling must not commit"
+    );
+    assert_eq!(state.snapshot(), before, "no partial purchase");
+
+    // The very same loadout with the ordinary missile is exactly one minor unit
+    // cheaper — 42000, exactly the ceiling — and commits, so the refusal above
+    // is the price limit and nothing about the blueprint.
+    let at_limit = ConstructionSession::begin(&state, declared_synthetic_blueprint(), vec![]);
+    let verdict = at_limit.verdict(&fx.ctx()).expect("measurable");
+    assert_eq!(
+        verdict.assessment().totals().cost().as_minor(),
+        SYNTHETIC_BOUNDARY_COST_MINOR,
+        "the accepted loadout sits exactly on the price ceiling"
+    );
+    assert!(verdict.is_valid());
+    let receipt = at_limit
+        .commit(&fx.ctx(), &mut state)
+        .expect("exactly at the price ceiling commits");
+    // The four missiles are one content id, so it is bought once.
+    assert_eq!(receipt.charged, DISTINCT_PRICE);
+}
+
+/// The live preview and the commit must be judged by the *same* rule. Before
+/// this was fixed the preview ran the caller's raw availability while the
+/// commit widened it by what the profile owns, so a loadout of already-purchased
+/// components — exactly the loadout an editor is normally reopened on — was
+/// drawn as "unavailable" and then accepted. Here the host catalog offers
+/// nothing at all, so only the owned set can make the blueprint legal.
+#[test]
+fn accept_f44_b_the_preview_and_the_commit_judge_one_policy() {
+    let fx = Fixture::new();
+    let mut state = funded(&fx.graph);
+    ConstructionSession::begin(&state, declared_synthetic_blueprint(), vec![])
+        .commit(&fx.ctx(), &mut state)
+        .expect("buys the components");
+    let owned = state.snapshot();
+
+    // The catalog has withdrawn every component, but the profile owns them all:
+    // a withdrawn component is still available to whoever already paid for it.
+    let withdrawn = ConstructionPolicy::new(
+        fx.policy.pairable_guns().clone(),
+        BTreeSet::new(),
+        BTreeSet::new(),
+    );
+    let ctx = ConstructionContext {
+        policy: &withdrawn,
+        ..fx.ctx()
+    };
+
+    let session = ConstructionSession::begin(&state, declared_synthetic_blueprint(), vec![]);
+    let verdict = session.verdict(&ctx).expect("measurable");
+    assert_eq!(
+        verdict.violations(),
+        &[] as &[ConstraintViolation],
+        "an owned component is available: {verdict:?}"
+    );
+    assert!(verdict.is_valid(), "the preview agrees with the commit");
+
+    // The same session commits under the same rule: nothing to buy, nothing to
+    // sell, so the draft is empty and refused as such, and nothing moves.
+    assert!(matches!(
+        session.commit(&ctx, &mut state),
+        Err(ConstructionError::Economy(EconomyError::EmptyDraft))
+    ));
+    assert_eq!(state.snapshot(), owned);
 }
 
 #[test]

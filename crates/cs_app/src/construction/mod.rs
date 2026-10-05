@@ -72,6 +72,7 @@ impl std::error::Error for ConstructionError {}
 #[derive(Clone, Debug)]
 pub struct ConstructionSession {
     expected_revision: u64,
+    owned: BTreeSet<ContentId>,
     edited: AircraftBlueprint,
     sells: Vec<ContentId>,
     other_active: Vec<AircraftBlueprint>,
@@ -81,6 +82,11 @@ impl ConstructionSession {
     /// Opens a session on `blueprint` against the profile's current revision.
     /// `other_active` are the profile's other blueprints; components they use
     /// cannot be sold.
+    ///
+    /// The owned set and the revision are read from the same `state`, so the
+    /// session is one consistent view: a profile that changed under it is
+    /// refused by [`Self::commit`] as a stale revision rather than answered
+    /// from a mixture of two revisions.
     #[must_use]
     pub fn begin(
         state: &CampaignState,
@@ -89,6 +95,7 @@ impl ConstructionSession {
     ) -> Self {
         Self {
             expected_revision: state.revision(),
+            owned: state.unlocks().cloned().collect(),
             edited: blueprint,
             sells: Vec::new(),
             other_active,
@@ -113,6 +120,13 @@ impl ConstructionSession {
 
     /// The validator's live verdict on the edited blueprint, for the preview.
     ///
+    /// This is judged by exactly the policy [`Self::commit`] judges it by — the
+    /// same pairing rule, the same host bans and the same availability widened
+    /// by the owned set the session was opened on — so the preview the editor
+    /// draws and the verdict the commit enforces can never disagree. A preview
+    /// that called an owned component unavailable would be a different rule
+    /// from the one that accepts the commit.
+    ///
     /// # Errors
     ///
     /// [`ValidationRefusal`].
@@ -121,22 +135,21 @@ impl ConstructionSession {
         ctx: &ConstructionContext<'_>,
     ) -> Result<BlueprintVerdict, ValidationRefusal> {
         ctx.rules
-            .validate(&self.policy_for(ctx, None), &self.edited, ctx.book)
+            .validate(&self.policy(ctx), &self.edited, ctx.book)
     }
 
     /// Abandons every edit. The profile was never touched.
     pub fn cancel(self) {}
 
     /// The caller's policy with availability widened by what the profile owns.
-    fn policy_for(
-        &self,
-        ctx: &ConstructionContext<'_>,
-        state: Option<&CampaignState>,
-    ) -> ConstructionPolicy {
+    ///
+    /// A component the profile already owns is available to it even when the
+    /// roster gate that once offered it is not (or is no longer) satisfied, so
+    /// widening is what keeps a loadout the player has already paid for from
+    /// reading as unavailable.
+    fn policy(&self, ctx: &ConstructionContext<'_>) -> ConstructionPolicy {
         let mut available: BTreeSet<ContentId> = ctx.policy.available().clone();
-        if let Some(state) = state {
-            available.extend(state.unlocks().cloned());
-        }
+        available.extend(self.owned.iter().cloned());
         ConstructionPolicy::new(
             ctx.policy.pairable_guns().clone(),
             ctx.policy.banned().clone(),
@@ -146,6 +159,12 @@ impl ConstructionSession {
 
     /// Validates, then commits purchases and sales as one profile revision.
     ///
+    /// The blueprint is judged by [`Self::policy`] — the same policy, and so
+    /// the same rule, the live preview drew. What still belongs to the profile
+    /// is priced against `state` itself, so the buy list is the truth at the
+    /// moment of the commit; a profile that changed since [`Self::begin`] is
+    /// then refused by [`economy::commit`] as a stale revision.
+    ///
     /// # Errors
     ///
     /// [`ConstructionError`]; on any error `state` is unchanged.
@@ -154,19 +173,18 @@ impl ConstructionSession {
         ctx: &ConstructionContext<'_>,
         state: &mut CampaignState,
     ) -> Result<CommitReceipt, ConstructionError> {
-        let policy = self.policy_for(ctx, Some(state));
         let verdict = ctx
             .rules
-            .validate(&policy, &self.edited, ctx.book)
+            .validate(&self.policy(ctx), &self.edited, ctx.book)
             .map_err(ConstructionError::Refused)?;
         if !verdict.is_valid() {
             return Err(ConstructionError::Invalid(Box::new(verdict)));
         }
-        let owned: BTreeSet<&ContentId> = state.unlocks().collect();
         let mut draft = ConstructionDraft::new(
             self.expected_revision,
             loadout_weight(ctx.rules, ctx.book, &self.edited),
         );
+        let owned: BTreeSet<&ContentId> = state.unlocks().collect();
         let mut needed: BTreeSet<&ContentId> = BTreeSet::new();
         for (_, component) in self.edited.components() {
             if !owned.contains(component) && needed.insert(component) {
