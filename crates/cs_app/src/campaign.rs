@@ -21,9 +21,10 @@ use std::fmt;
 use cs_content::campaign::{
     CampaignDefinition, CampaignNode, CampaignNodeId, EdgeCondition, NodeKind,
 };
+use cs_content::construction::{AircraftBlueprint, ConstructionRules, PriceBook};
 use cs_sim::campaign::{
-    CampaignGraph, CampaignNodeKey, GraphError, Outcome, Reward, RosterGate, RuntimeEdge,
-    RuntimeNode, RuntimeNodeKind,
+    CampaignGraph, CampaignNodeKey, GraphError, LoadoutWeight, Outcome, Reward, RosterGate,
+    RuntimeEdge, RuntimeNode, RuntimeNodeKind,
 };
 use cs_types::content::Resolved;
 
@@ -149,6 +150,42 @@ fn lower_node(node: &CampaignNode) -> Result<RuntimeNode, CampaignLowerError> {
         kind,
         edges,
     })
+}
+
+/// Resolves the weight verdict input of a purchase draft: the exact mass of
+/// `loadout` (the blueprint the purchase would produce) against the ceiling of
+/// `rules`, both read from the F44-A declared records.
+///
+/// `cs_sim` cannot depend on `cs_content`, so the campaign transaction is
+/// handed plain integers (`cs_sim::campaign::LoadoutWeight`) and this boundary
+/// is where the content types are read. Any unknown — an unmeasured limit or
+/// component mass, an unpriced component, a mismatched airframe or an
+/// overflowing total — becomes [`LoadoutWeight::Unknown`] carrying the named
+/// budget refusal, so it can never pass as a loadout that fits. The numbers
+/// are only as good as the records: no original mass or ceiling is measured
+/// yet (F44-D).
+#[must_use]
+pub fn loadout_weight(
+    rules: &ConstructionRules,
+    book: &PriceBook,
+    loadout: &AircraftBlueprint,
+) -> LoadoutWeight {
+    match rules.assess(loadout, book) {
+        Ok(assessment) => match rules.max_mass().clone().known() {
+            Some(limit) => LoadoutWeight::Measured {
+                total: assessment.totals().mass().as_units(),
+                limit: limit.as_units(),
+            },
+            // `assess` refuses an unknown limit, so this is unreachable in
+            // practice; it is still answered as unknown rather than assumed.
+            None => LoadoutWeight::Unknown {
+                reason: "the weight ceiling is unmeasured".to_owned(),
+            },
+        },
+        Err(refusal) => LoadoutWeight::Unknown {
+            reason: refusal.to_string(),
+        },
+    }
 }
 
 /// Lowers a declared campaign into the validated runtime graph. The first
