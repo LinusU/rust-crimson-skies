@@ -181,6 +181,18 @@ pub enum CampaignError {
         /// The balance in minor units.
         balance: u64,
     },
+    /// The profile does not own the item, so there is nothing to sell. This is
+    /// also the answer to a second sale of the same item.
+    NotOwned {
+        /// The item that is not owned.
+        item: ContentId,
+    },
+    /// The profile owns the item but did not buy it: a reward grant has no
+    /// recorded price, so there is no amount to refund and none is invented.
+    NotPurchased {
+        /// The granted item.
+        item: ContentId,
+    },
 }
 
 impl fmt::Display for CampaignError {
@@ -232,6 +244,11 @@ impl fmt::Display for CampaignError {
                 f,
                 "price {price} exceeds the balance {balance} in minor units"
             ),
+            Self::NotOwned { item } => write!(f, "item {item} is not owned and cannot be sold"),
+            Self::NotPurchased { item } => write!(
+                f,
+                "item {item} was granted, not bought: no paid price is recorded to refund"
+            ),
         }
     }
 }
@@ -259,6 +276,10 @@ pub struct CampaignState {
     progress: BTreeMap<CampaignNodeKey, NodeProgress>,
     currency: u64,
     unlocks: BTreeSet<ContentId>,
+    /// What each *bought* item cost, in minor units, at the purchase that
+    /// charged it. A granted unlock has no entry, which is how a sale tells the
+    /// two apart. An item is in `paid` only while it is also in `unlocks`.
+    paid: BTreeMap<ContentId, u64>,
     applied: BTreeSet<OutcomeId>,
     revision: u64,
     modified: bool,
@@ -280,6 +301,7 @@ impl CampaignState {
             progress: BTreeMap::new(),
             currency: 0,
             unlocks: BTreeSet::new(),
+            paid: BTreeMap::new(),
             applied: BTreeSet::new(),
             revision: 0,
             modified: false,
@@ -325,6 +347,11 @@ impl CampaignState {
     /// Granted unlocks.
     pub fn unlocks(&self) -> impl Iterator<Item = &ContentId> {
         self.unlocks.iter()
+    }
+
+    /// What was paid for `item`, when the profile bought it and still owns it.
+    pub fn paid_for(&self, item: &ContentId) -> Option<u64> {
+        self.paid.get(item).copied()
     }
 
     /// The monotonic profile revision — the optimistic-concurrency counter
@@ -604,10 +631,73 @@ impl CampaignState {
         // Commit — the single mutation point.
         self.currency -= draft.price;
         self.unlocks.insert(draft.item.clone());
+        self.paid.insert(draft.item.clone(), draft.price);
         self.revision += 1;
         Ok(PurchaseReceipt {
             item: draft.item.clone(),
             paid: draft.price,
+            revision: self.revision,
+        })
+    }
+
+    /// Sells back one item the profile bought: the mirror of [`Self::purchase`].
+    ///
+    /// The refund is the price **actually paid**, read from the purchase ledger,
+    /// never a list price: the declared schema has no price field and `cs_sim`
+    /// cannot reach one. An item the profile owns by reward grant has no ledger
+    /// entry and is refused with [`CampaignError::NotPurchased`] rather than
+    /// refunded at a guessed amount.
+    ///
+    /// Order of checks mirrors purchase: ownership, purchased-ness, the balance
+    /// the refund would reach (overflow), and the expected revision **last**.
+    /// Every refusal returns before the single mutation point, so the profile is
+    /// bit-identical afterwards.
+    ///
+    /// Idempotent: the sale removes the item from [`Self::unlocks`] and the
+    /// ledger, so a repeated draft is refused with [`CampaignError::NotOwned`]
+    /// and cannot credit the balance twice.
+    ///
+    /// **Designed semantics, not observed behaviour** (no original rule is
+    /// known): selling does not revoke the roster gate. Availability is derived
+    /// from completed gate nodes, so a sold item is simply available and not
+    /// owned again, and may be bought again at the price then drafted.
+    ///
+    /// # Errors
+    ///
+    /// [`CampaignError`].
+    pub fn sell(&mut self, draft: &SellDraft) -> Result<SellReceipt, CampaignError> {
+        if !self.unlocks.contains(&draft.item) {
+            return Err(CampaignError::NotOwned {
+                item: draft.item.clone(),
+            });
+        }
+        let Some(refund) = self.paid.get(&draft.item).copied() else {
+            return Err(CampaignError::NotPurchased {
+                item: draft.item.clone(),
+            });
+        };
+        let new_currency =
+            self.currency
+                .checked_add(refund)
+                .ok_or(CampaignError::CurrencyOverflow {
+                    before: self.currency,
+                    delta: refund,
+                })?;
+        if draft.expected_revision != self.revision {
+            return Err(CampaignError::StaleRevision {
+                expected: draft.expected_revision,
+                actual: self.revision,
+            });
+        }
+
+        // Commit — the single mutation point.
+        self.currency = new_currency;
+        self.unlocks.remove(&draft.item);
+        self.paid.remove(&draft.item);
+        self.revision += 1;
+        Ok(SellReceipt {
+            item: draft.item.clone(),
+            refunded: refund,
             revision: self.revision,
         })
     }
@@ -660,5 +750,27 @@ pub struct PurchaseReceipt {
     /// What was charged, in minor units.
     pub paid: u64,
     /// The profile revision after the purchase.
+    pub revision: u64,
+}
+
+/// A request to sell back one bought item, written against the revision the
+/// view was built from. It carries no price: the refund is the recorded paid
+/// price.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SellDraft {
+    /// The item to sell.
+    pub item: ContentId,
+    /// The profile revision the view was built from.
+    pub expected_revision: u64,
+}
+
+/// What one accepted sale did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SellReceipt {
+    /// The item sold.
+    pub item: ContentId,
+    /// What was credited, in minor units: the price paid.
+    pub refunded: u64,
+    /// The profile revision after the sale.
     pub revision: u64,
 }

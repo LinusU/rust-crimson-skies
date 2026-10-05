@@ -29,7 +29,8 @@
 //!   progression transaction — the one that walks a selected narrative
 //!   beat forward, which no mission outcome can do — and
 //!   [`CampaignState::purchase`] (F43-B) is the economy draft, validated
-//!   against the expected profile revision before it writes.
+//!   against the expected profile revision before it writes;
+//!   [`CampaignState::sell`] (F43-B.1) is its mirror, refunding the price paid.
 //!
 //! The declared schema (`cs_content::campaign`) and the lowering boundary
 //! (`cs_app::campaign`) hold the provenance-carrying records; nothing here
@@ -53,5 +54,5 @@ pub use identity::{CampaignNodeKey, CampaignRunId, DifficultyId, OutcomeId, Prof
 pub use outcome::{MissionOutcome, OutcomeAuthority};
 pub use state::{
     AppliedOutcome, CampaignError, CampaignState, InterludeAdvance, NodeProgress, OutcomeReceipt,
-    PurchaseDraft, PurchaseReceipt, TransactionPlan,
+    PurchaseDraft, PurchaseReceipt, SellDraft, SellReceipt, TransactionPlan,
 };
