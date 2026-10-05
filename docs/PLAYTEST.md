@@ -20,8 +20,9 @@ cargo run --locked -p cs_app --bin cs -- --playtest --cs-path "$CS_GAME_DIR" --w
 ```
 
 Window title and banner: **ORIGINAL ASSETS / DEVELOPMENT FREE FLIGHT /
-PROVISIONAL TUNING**. You fly the original `bloodhawk` fuselage mesh
-(`ZBD/planes.zbd`, node `fuse03`, 140 triangles) beside one original airship
+PROVISIONAL TUNING**. You fly the whole intact original `bloodhawk`
+(`ZBD/planes.zbd`: 16 mesh bindings, 927 triangles: fuselage, wings, ailerons,
+elevators, rudder, canopy, pilot and a static propeller) beside one original airship
 of `ZBD/C1C/gamez.zbd` (subtree `piratezep`, 401 mesh records, 8 673
 triangles). The controls below are the same. The airship's colliders are derived
 from the triangles it draws: fly into it and the HUD counts an obstacle
@@ -32,16 +33,25 @@ default; `c1c` is the only documented world. Any other id is refused.
 An explicit `--cs-path` that is missing, is not an installation, or lacks
 `ZBD/C1C/gamez.zbd` / `ZBD/planes.zbd` exits non-zero with the reason and
 **never** falls back to the synthetic scene. Plain `--playtest` stays synthetic.
-On start the command prints `playtest sources: {...}` (installation fingerprint
-and the sha-256 of both containers); a smoke run records the same object in
+On start the command prints `playtest sources: {...}` (installation fingerprint,
+the sha-256 of both containers and the aircraft's drawn/undrawn bindings); a smoke run records the same object in
 `report.json`.
 
 What is provisional (all labelled, none original behaviour):
 
 * Flight is the synthetic fixed-wing tuning, not the Bloodhawk's. It has no
   attitude stability and its velocity follows the nose only slowly.
-* The aircraft's collider is a box measured from the one fuselage mesh (no
-  wings, propellers or canopy are drawn or collide).
+* The aircraft's collider is **one box** measured from the composed extent of the
+  drawn set (wingspan included), centred on the flight body; the parts do not
+  collide individually.
+* The propeller is **static** (`staticprop1` only, picked by its authored name;
+  the other five propeller meshes, whose use is unmeasured, are not drawn), no
+  control surface moves, and the engine-detail band `l12`, the shadow and the wreck
+  pieces are not drawn. The drawn LOD band (`nearest`) is selected at a designed
+  20 m viewer distance and never changes in flight. Every undrawn binding is listed
+  with its reason in the `playtest sources` line and the smoke `report.json`
+  (`aircraft_undrawn`), next to `aircraft_mesh_bindings`, `aircraft_triangles` and
+  `aircraft_selection`.
 * Spawn: 0.6 area-widths off the airship's port side, 55 % up its height,
   amidships, heading -Z (designed, `playtest_retail::spawn_pose`).
 * One neutral material, no textures, no lighting from the original, no sky or

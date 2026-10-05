@@ -28,7 +28,7 @@ test asserts it verbatim and asserts that it never contains `M01`, `faithful`,
 | area | the node subtree of stored node slot **517**, authored name `piratezep` | a record of the world node's own stored child list; measured 793 nodes, 401 of them binding a mesh, **8 673 stored triangles**, composed extent 106.3 × 217.7 × 839.5 canonical m |
 | aircraft container | `ZBD/planes.zbd` | the shared aircraft archive |
 | aircraft airframe | the root named **`bloodhawk`**, found by name through the production `SceneGraph::root` | F11's identity rule: an airframe references a root in PLANES.ZBD, never a mesh-array position |
-| aircraft mesh | **one** mesh: node slot **2525**, authored name `fuse03`, mesh-array slot **1 436** | measured 140 stored triangles over 3 material groups, stored extent 2.111 × 1.493 × 10.233 units, identity composed transform |
+| aircraft meshes | the **whole intact airframe** (#665): the subtree of node slot **2296** `healthy`, one LOD band (`nearest`, slot 2299) selected by the F11-B rule, plus the static propeller node slot **2541** `staticprop1` | measured 16 mesh bindings, 927 triangles, composed extent about 11.6 × 2.7 × 10.6 units; 24 of the airframe's 40 bindings are listed as undrawn |
 
 The **same** area cannot be had from the partition-grid import, and that is the
 gap this stage closes. Measured over `ZBD/C1C/gamez.zbd`:
@@ -46,9 +46,10 @@ gap this stage closes. Measured over `ZBD/C1C/gamez.zbd`:
 So a mission could load an original world and see almost nothing in it. This
 stage renders the part that is visible.
 
-`fuse03` is one mesh on purpose. The airframe's other mesh bindings (wings,
-propellers, engines, canopies, the wreck variants) are **not** claimed here; the
-full silhouette is the next step.
+The aircraft was one mesh (`fuse03`) in #648; #665 replaced it with the whole
+intact set, so the wings, tail, canopy and propeller are drawn. See
+`docs/findings/2026-10-05-t665-full-aircraft.md` for the selection rule and the
+bindings that are still not drawn.
 
 ## The designed values (PROVISIONAL TUNING)
 
