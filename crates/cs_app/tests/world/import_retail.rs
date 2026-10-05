@@ -1043,3 +1043,78 @@ fn accept_m01_lc_world_import_retail_spawn_world_runs_on_the_imported_c1c_defini
          reach the role check first, which is why the count above is 53"
     );
 }
+
+/// **A world object's mesh reference is an element of the shared render-mesh
+/// catalog**, not a per-container name: the id is the one
+/// `MeshId::content_id` (and so the retail baseline inventory) gives that stored
+/// mesh, it names the bytes of the container the catalog read, and the catalog and the
+/// session that read it agree on the generation.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f18_mesh_catalog_world_references_are_catalog_elements() {
+    let retail = retail();
+    let world = retail.imported.definition();
+    let catalog = retail.container.mesh_catalog();
+    let catalog_ids: BTreeSet<ContentId> = catalog
+        .records()
+        .iter()
+        .filter_map(|record| record.id.as_ref())
+        .map(|id| id.content_id().expect("a catalog mesh has an id"))
+        .collect();
+    assert!(!catalog_ids.is_empty(), "the catalog holds c1c's meshes");
+    assert_eq!(
+        catalog.generation(),
+        retail.container.session().generation(),
+        "the catalog was read by the session the container holds"
+    );
+    let container_span = catalog
+        .containers()
+        .next()
+        .expect("the catalog opened c1c's container")
+        .span()
+        .clone();
+
+    let mut referenced = BTreeSet::new();
+    for object in world.objects() {
+        let Resolved::Known(known) = object.mesh() else {
+            continue;
+        };
+        assert_eq!(known.value.kind(), ContentKind::Mesh);
+        assert!(
+            !known.value.key().contains(".mesh-"),
+            "no per-container naming survives: {}",
+            known.value
+        );
+        assert!(
+            catalog_ids.contains(&known.value),
+            "{} is an element of the mesh catalog",
+            known.value
+        );
+        // The definition files the reference under the import's own claim, with
+        // the span the container's discovery spells; the catalog spells the same
+        // file as a member of its group. They must name the same bytes.
+        let source = known
+            .provenance
+            .source
+            .as_ref()
+            .expect("a retail reference names its bytes");
+        assert_eq!(source.install_sha256(), container_span.install_sha256());
+        assert_eq!(source.member_sha256(), container_span.member_sha256());
+        assert_eq!(source.length(), container_span.length());
+        referenced.insert(known.value.clone());
+    }
+    assert!(!referenced.is_empty());
+
+    let meshes = retail
+        .container
+        .uploaded_meshes(world)
+        .expect("the catalog's uploads fill the world's meshes");
+    assert_eq!(
+        meshes.len(),
+        referenced.len(),
+        "one engine mesh per catalog element the world names"
+    );
+    for id in &referenced {
+        assert!(meshes.contains(id), "{id} is uploaded under its catalog id");
+    }
+}
