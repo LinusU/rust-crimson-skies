@@ -149,11 +149,10 @@ the digests above.
 * **Not a flight loop.** `spawn_playtest_scene` produces a scene and a pose; a
   consumer drives it. This module owns no window, no input and no fixed-step
   integration, so `PLAYTEST-FLY-NOW` keeps the generic loop.
-* **Not textured.** The per-material texture binding (F10-C.02's dependency audit
-  through F17's image upload) is **not** built here, so every surface is flat-shaded
-  and no material identity is claimed. Drawing a stored texture is the next step,
-  and `PLAYTEST-RETAIL-HANDOFF` should take it rather than mistake this stage's
-  flat shading for a property of the original.
+* **Not textured *by this stage*.** This stage flat-shaded every surface. Task
+  #666 (`PLAYTEST-TEXTURES`) now draws the stored textures; see "Textures" below.
+  The neutral material remains the fallback for a material whose texture does not
+  resolve.
 * **Not `verified_original`.** The counts and extents are measured from the
   original bytes by the production readers, which is `ObservedTool`. The designed
   values are `Designed`. No original run happened.
@@ -197,3 +196,58 @@ Avian's physics plugins and this crate's passes, finished and cleaned up before
 anything is spawned. A consumer that wants a windowed loop adds its own window
 plugin and camera on top; the renderer, the asset stack and the physics stack are
 already there.
+
+## Textures (task #666, `PLAYTEST-TEXTURES`)
+
+`crates/cs_app/src/playtest_textures.rs` joins F10-C.02's material records and
+texture-name table, F08-C's `TextureCatalog` and F17-B's RGB565 expansion for this
+scene. Each mesh is cut back into one drawn part per stored material group (the
+merged upload keeps its whole-mesh `Mesh3d`, for the area's collider and as the
+aircraft binding's `AircraftPart` entity, but carries no material of its own), and
+each part gets the material its stored index resolves to. An aircraft part's
+pieces are children of its binding entity, so they move, hide and despawn with it.
+
+Three **designed** choices, each under its own claim id and none an original
+claim:
+
+| decision | value | claim |
+| --- | --- | --- |
+| archive | the highest-numbered `rtexture<N>.zbd` tier of the world group (`ZBD/C1C/rtexture10.zbd`), else `texture.zbd`; the aircraft uses the flown world's archive because F10-C.04 measured the airframe's archive as a runtime fact | `playtest-textures.archive-selection-is-designed` |
+| name reading | stored name up to its first `.`, ASCII lower case (`TextureNameRule::FirstDotCaseFolded`) | `playtest-textures.name-reading-is-designed` |
+| presentation | lit `StandardMaterial`, sRGB, repeat, keyed coverage as `AlphaMode::Mask(0.5)`, no vertex colour, both sides drawn | `playtest-textures.presentation-is-provisional` |
+
+The exact-name rule resolves 10 of 4 478 retail material rows
+(`docs/findings/2026-09-29-f10-c-04-gamez-texture-archive-binding.md`), which is
+why the name reading is a development value here. It is scoped to this playtest.
+A texture of another world group's archive is refused (`check_group`); there is
+no aliasing across groups. Whether the stored UV origin matches Bevy's is
+unmeasured (`UvOrigin`), so textures are drawn with the stored UVs unflipped.
+
+Measured on the pinned pair (`C1C` + `bloodhawk`, `rtexture10.zbd`, 640 × 480,
+Apple M5 Max / Metal), with the whole intact airframe drawn (PLAYTEST-FULL-AIRCRAFT):
+**51 of 52** area materials and **16 of 16** aircraft materials resolve (the one
+other area material is a flat-colour record, which names no texture); 365 of 367
+area parts and 37 of 37 aircraft pieces (over every drawn binding) are textured;
+no material is unresolved. The area binds 51 distinct images and the aircraft 16.
+Distinct colours over the pixels the aircraft / the area contribute, neutral
+baseline against textured:
+
+| view | aircraft colours | area colours |
+| --- | --- | --- |
+| `chase` | 203 → 1 457 | 105 → 2 767 |
+| `quarter` | 175 → 1 292 | 137 → 1 641 |
+| `overview` | 10 → 20 | 123 → 1 609 |
+
+The frames are under `private/evidence/PLAYTEST-TEXTURES/{neutral,textured}/`
+(Git-ignored; nothing original is committed). Reproduce:
+
+```sh
+CS_GAME_DIR="$CS_GAME_DIR" cargo test -p cs_app --test playtest_textures -- \
+  accept_playtest_textures_ --include-ignored
+```
+
+`PlaytestConfig::textured = false` renders the neutral baseline the textured
+frames are compared against. Teardown releases every material, image and mesh the
+scene created (tested over three spawn/teardown rounds). The `playtest sources`
+line and the smoke `report.json` carry the chosen archive and the textured and
+neutral counts.

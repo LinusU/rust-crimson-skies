@@ -34,7 +34,10 @@ An explicit `--cs-path` that is missing, is not an installation, or lacks
 `ZBD/C1C/gamez.zbd` / `ZBD/planes.zbd` exits non-zero with the reason and
 **never** falls back to the synthetic scene. Plain `--playtest` stays synthetic.
 On start the command prints `playtest sources: {...}` (installation fingerprint,
-the sha-256 of both containers and the aircraft's drawn/undrawn bindings); a smoke run records the same object in
+the sha-256 of both containers, the aircraft's drawn/undrawn bindings, and a
+`textures` object: the chosen archive, its sha-256, the claims, and per container
+the textured and neutral material counts and every unresolved material); a smoke
+run records the same object in
 `report.json`.
 
 What is provisional (all labelled, none original behaviour):
@@ -54,8 +57,18 @@ What is provisional (all labelled, none original behaviour):
   `aircraft_selection`.
 * Spawn: 0.6 area-widths off the airship's port side, 55 % up its height,
   amidships, heading -Z (designed, `playtest_retail::spawn_pose`).
-* One neutral material, no textures, no lighting from the original, no sky or
-  ground: the area has no floor, so you fall or fly on until `R`.
+* Textures are the original ones, bound by a **designed** rule (task #666): the
+  world group's highest-numbered `rtexture<N>.zbd` tier (`ZBD/C1C/rtexture10.zbd`,
+  printed in the `playtest sources` line), a material's stored texture name read
+  up to its first `.` in ASCII lower case (the exact-name rule of the lookup
+  contract reaches almost nothing on retail data, so this is a development
+  value, not the engine's rule), a plain lit material with sRGB, repeat
+  addressing, keyed coverage as a 0.5 mask and no vertex colour. The aircraft is
+  textured from the flown world's archive; every drawn binding of the airframe
+  is cut into one textured piece per stored material group. A material whose texture does not
+  resolve keeps the neutral colour and is listed in the report with its source id
+  and mesh count. No lighting from the original, no sky or ground: the area has
+  no floor, so you fall or fly on until `R`.
 * World scale and handedness are a designed identity reading. No audio, no
   mission scripts, no M01 setup, no other sectors, worlds or airframes.
 
