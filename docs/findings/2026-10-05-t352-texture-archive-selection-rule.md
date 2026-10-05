@@ -328,17 +328,20 @@ The test takes about 52 seconds in a debug build, almost all of it the
 installation walk.
 
 Mutation probes (each applied, `cargo test -p cs_content --locked --
-accept_f08_c_selection` run, then reverted):
+accept_f08_c_selection` run, then reverted; the file is restored after every
+one):
 
 | Mutation | Result |
 | --- | --- |
-| r-prefixed candidate probed after the plain one | 2 fail |
-| the tier walk counts up instead of down | 1 fails |
-| the setting path sets the r-flag | 2 fail |
-| `TextureMemory` value 3 mapped to 7 MiB | 2 fail |
+| r-prefixed candidate probed after the plain one | 3 fail |
+| the tier walk counts up instead of down | 5 fail |
+| a missing candidate falls through to the next tier instead of winning | 5 fail |
+| the setting path sets the r-flag | 3 fail |
+| the highest-tier cap removed, so the walk starts at the budget | 2 fail |
+| `TextureMemory` value 3 mapped to 7 MiB | 1 fails |
 | `TextureDetailRow::for_setting` sends 3 to the top row | 1 fails |
 | the loose `.tif`/`.bmp` sources dropped from the lookup order | 1 fails |
-| `open_world` always opening `texture.zbd` | 2 fail |
+| `open_world` always opening `texture.zbd` | 1 fails |
 
 ## Out of scope, filed as tasks
 
