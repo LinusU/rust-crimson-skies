@@ -1,5 +1,7 @@
 # F39-E2: the precedence between `WAKE`, `NAP` and `KILL` in one objective block
 
+> **Correction (F39-D-COUNT, 2026-10-05):** the block counts below that come from the flat walk undercount `BEGIN_DORMANT` (1096 → 1118; sentinel 992 → 1014). See `2026-10-05-f39-d-count-bare-directive-walk.md`.
+
 Date: 2026-10-03. Task: F39-E2 "Measure the precedence between WAKE, NAP and KILL
 in one objective block" (Rally #596; the sheet
 `specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md` has no

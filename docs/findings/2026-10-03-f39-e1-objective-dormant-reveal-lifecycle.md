@@ -1,5 +1,7 @@
 # F39-E1: the objective block's dormant/reveal lifecycle — what the installation declares, and what it still does not say
 
+> **Correction (F39-D-COUNT, 2026-10-05):** the block counts below that come from the flat walk undercount `BEGIN_DORMANT` (1096 → 1118; sentinel 992 → 1014). See `2026-10-05-f39-d-count-bare-directive-walk.md`.
+
 Date: 2026-10-03. Task: F39-E1 "Recover the original objective block's
 dormant/reveal lifecycle" (#595), the follow-up to F39-D (#160), whose
 unknown #4 this stage answers. Sheet:
