@@ -40,6 +40,9 @@
 //! **engine-asset** half of that claim (#425): four records naming one stored
 //! mesh share one `Assets<Mesh>` entry on all four mesh layouts, records naming
 //! different meshes do not, and unloading the world releases the shared asset.
+//! `failed_load` owns the other release (#502): a world load that fails after
+//! objects have spawned leaves no entity, no residency and no mesh asset it
+//! took, while a failed sector load gives back only its own spawns.
 //!
 //! **F18-D** (`accept_f18_d_`) is the evidence stage over the original
 //! installation: `audit` owns AC04 — every discovered world group visited, its
@@ -104,6 +107,7 @@
 mod audit;
 mod common;
 mod crossing;
+mod failed_load;
 mod hierarchy;
 mod import;
 mod import_retail;
