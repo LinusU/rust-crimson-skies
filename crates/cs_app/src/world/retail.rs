@@ -400,8 +400,8 @@ impl RetailWorldContainer {
                 // spawn reports the gap.
                 continue;
             };
-            let render = render_mesh(slot)?;
-            let unknowns = presentation_unknowns(&render);
+            let render = stored_render_mesh(slot)?;
+            let unknowns = stored_presentation_unknowns(&render);
             out.insert_render_mesh(known.clone(), &render, &unknowns)
                 .map_err(|reason| RetailWorldError::Upload { index, reason })?;
         }
@@ -432,7 +432,20 @@ impl RetailWorldContainer {
 }
 
 /// Builds one stored mesh's render mesh through the production F10-E builder.
-fn render_mesh(slot: &cs_formats::gamez::GameZMesh) -> Result<RenderMesh, RetailWorldError> {
+///
+/// **Public** because a second production consumer needs the same builder rather
+/// than a second copy of it: the retail playtest scene (`crate::playtest_retail`,
+/// task #648) reads one world container's stored meshes and this is the conversion
+/// it uploads, so the area's geometry is built by exactly this function and not by
+/// a variant of it.
+///
+/// # Errors
+///
+/// [`RetailWorldError::RenderMesh`] when the stored mesh does not have one
+/// material group per polygon, or when the F10-E builder refuses it.
+pub fn stored_render_mesh(
+    slot: &cs_formats::gamez::GameZMesh,
+) -> Result<RenderMesh, RetailWorldError> {
     if !slot.groups_are_complete() {
         return Err(RetailWorldError::RenderMesh {
             index: slot.index,
@@ -459,7 +472,12 @@ fn render_mesh(slot: &cs_formats::gamez::GameZMesh) -> Result<RenderMesh, Retail
 /// so they are one fixed list; the fourth exists only when the mesh really
 /// stored a polygon with more than one material group, because a mesh that
 /// stores one group per polygon has no such question.
-fn presentation_unknowns(render: &RenderMesh) -> Vec<MeshPresentationUnknown> {
+///
+/// **Public** for the same reason as [`stored_render_mesh`]: the upload adapter
+/// takes exactly this list, so every production consumer of a retail render mesh
+/// declares the same presentation unknowns rather than a list of its own.
+#[must_use]
+pub fn stored_presentation_unknowns(render: &RenderMesh) -> Vec<MeshPresentationUnknown> {
     let mut unknowns = vec![
         MeshPresentationUnknown::FrontFaceWinding,
         MeshPresentationUnknown::UvOrigin,
