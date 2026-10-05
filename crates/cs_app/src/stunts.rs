@@ -15,13 +15,21 @@
 //!
 //! [`Resolved::Unknown`]: cs_types::content::Resolved::Unknown
 
+use std::collections::BTreeSet;
 use std::fmt;
 
+use cs_content::scrapbook::{ScrapbookCatalog, UnlockFact};
 use cs_content::stunts::StuntDefinition;
+use cs_script::ir::ActorId;
+use cs_sim::campaign::SessionGeneration;
+use cs_sim::records::{Fact, FactKind, ScrapbookRecords};
 use cs_sim::stunts::{
-    Gate as RuntimeGate, GateEvidence as RuntimeGateEvidence, StuntReward, StuntRule,
-    StuntRuleDraft, TraversalRule,
+    Gate as RuntimeGate, GateEvidence as RuntimeGateEvidence, StuntReward, StuntRewardKey,
+    StuntRule, StuntRuleDraft, TraversalCompletion, TraversalOutcome, TraversalRule,
 };
+use cs_types::Tick;
+
+use crate::ui::scrapbook::record_stunt;
 use cs_types::content::{ContentId, Resolved};
 use cs_types::evidence::ClaimId;
 
@@ -315,6 +323,171 @@ impl std::error::Error for StuntLowerError {}
 /// Re-exported so a caller can attribute a lowering refusal to its declared
 /// record without naming two crates' error types.
 pub use cs_sim::stunts::StuntError as StuntRuntimeError;
+
+// ------------------------------------------- the consumers (F42-C) ----------
+
+/// The persistent fame total of one profile, and the completions already
+/// counted into it.
+///
+/// Fame is paid per completion, so a repeatable stunt pays every time and a
+/// one-time stunt pays once (the book already withheld the second one). What
+/// this tally adds is exactly-once *application*: a completion handed over
+/// twice — a replayed frame, a retried hand-over — moves the total once. A
+/// completion is identified by its session, its reward key and its tick; a
+/// mission retry runs in a new session, so its completions are new.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FameTally {
+    total: u64,
+    applied: BTreeSet<(SessionGeneration, StuntRewardKey, Tick)>,
+}
+
+impl FameTally {
+    /// The fame earned so far.
+    #[must_use]
+    pub const fn total(&self) -> u64 {
+        self.total
+    }
+}
+
+/// What the AI sees of a stunt: that it happened, never what it paid.
+///
+/// How the original's pursuing AI reacts to a stunt is unmeasured (finding
+/// `2026-10-05-f42-c-fame-ai-and-scrapbook-wiring.md`), so this carries the
+/// observation for an AI consumer and decides no reaction.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StuntSighting {
+    /// The stunt flown.
+    pub stunt: ContentId,
+    /// The actor that flew it.
+    pub actor: ActorId,
+    /// The tick it completed on.
+    pub tick: Tick,
+    /// Where the gate was crossed, in meters.
+    pub crossing_m: [f64; 3],
+}
+
+/// What applying one batch of outcomes changed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StuntConsumption {
+    /// Fame added to the tally.
+    pub fame_added: u64,
+    /// Completions skipped because they were already applied.
+    pub already_applied: usize,
+    /// Scrapbook items this batch newly unlocked.
+    pub unlocked_media: Vec<ContentId>,
+    /// One observation per newly applied completion, for the AI.
+    pub sightings: Vec<StuntSighting>,
+}
+
+/// Why a batch of outcomes could not be applied. Nothing was changed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StuntConsumeError {
+    /// The completion's reward media is not in the scrapbook catalog, so its
+    /// unlock could never be shown.
+    MediaNotInCatalog {
+        /// The stunt.
+        stunt: String,
+        /// The missing scrapbook item.
+        media: String,
+    },
+    /// Fame would overflow the tally.
+    FameOverflow,
+}
+
+impl fmt::Display for StuntConsumeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MediaNotInCatalog { stunt, media } => write!(
+                f,
+                "stunt `{stunt}` unlocks `{media}`, which the scrapbook catalog does not declare"
+            ),
+            Self::FameOverflow => f.write_str("the fame total would overflow"),
+        }
+    }
+}
+
+impl std::error::Error for StuntConsumeError {}
+
+/// Applies the completions in `outcomes` to fame and the scrapbook and
+/// reports what the AI should be told.
+///
+/// Only [`TraversalOutcome::Completed`] does anything: an advance pays
+/// nothing and a refusal is not a completion. A critical-path stunt is
+/// applied exactly like an optional one here; whether it affects the mission
+/// is the mission's business, never this consumer's (sheet behavior 4).
+/// Cash is the economy's (F43) and is not applied.
+///
+/// The batch is validated before anything is changed, so an error leaves the
+/// tally and the scrapbook as they were.
+///
+/// # Errors
+///
+/// [`StuntConsumeError`].
+pub fn consume_stunt_outcomes(
+    session: SessionGeneration,
+    outcomes: &[TraversalOutcome],
+    catalog: &ScrapbookCatalog,
+    fame: &mut FameTally,
+    scrapbook: &mut ScrapbookRecords,
+) -> Result<StuntConsumption, StuntConsumeError> {
+    let mut batch: Vec<&TraversalCompletion> = Vec::new();
+    for outcome in outcomes {
+        if let TraversalOutcome::Completed(completion) = outcome {
+            if let Some(media) = &completion.reward.media
+                && catalog.entry(media).is_none()
+            {
+                return Err(StuntConsumeError::MediaNotInCatalog {
+                    stunt: completion.stunt.as_str().to_owned(),
+                    media: media.as_str().to_owned(),
+                });
+            }
+            batch.push(completion);
+        }
+    }
+    let mut report = StuntConsumption::default();
+    let mut seen = BTreeSet::new();
+    let mut fresh: Vec<&TraversalCompletion> = Vec::new();
+    for completion in batch {
+        let id = (session, completion.key.clone(), completion.tick);
+        if fame.applied.contains(&id) || !seen.insert(id) {
+            report.already_applied += 1;
+        } else {
+            fresh.push(completion);
+        }
+    }
+    let mut total = fame.total;
+    for completion in &fresh {
+        total = total
+            .checked_add(u64::from(completion.reward.fame))
+            .ok_or(StuntConsumeError::FameOverflow)?;
+    }
+    report.fame_added = total - fame.total;
+    fame.total = total;
+    for completion in fresh {
+        fame.applied
+            .insert((session, completion.key.clone(), completion.tick));
+        record_stunt(scrapbook, &completion.stunt);
+        if let Some(media) = &completion.reward.media
+            && let Some(entry) = catalog.entry(media)
+            && catalog.is_unlocked(entry, &|leaf: &UnlockFact| {
+                scrapbook.facts.has(&Fact {
+                    kind: FactKind::StuntCompleted,
+                    subject: leaf.subject.clone(),
+                })
+            })
+            && !report.unlocked_media.contains(media)
+        {
+            report.unlocked_media.push(media.clone());
+        }
+        report.sightings.push(StuntSighting {
+            stunt: completion.stunt.clone(),
+            actor: completion.actor,
+            tick: completion.tick,
+            crossing_m: completion.crossing_m,
+        });
+    }
+    Ok(report)
+}
 
 // ------------------------------------------- the retail encoding survey ----
 //
