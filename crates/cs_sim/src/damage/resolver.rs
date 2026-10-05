@@ -58,6 +58,10 @@ use super::events::{
     LifecycleKind, RefusalReason,
 };
 use super::graph::{DamageChannel, DamageGraph, DamageNodeKey, PartState, SystemKind, SystemState};
+use super::initial::{
+    AppliedInitialDamage, InitialDamage, InitialDamageRefusal, InitialDamageReport,
+    UnresolvedInitialDamage,
+};
 
 /// The declared rules one actor's resolution runs under.
 ///
@@ -124,6 +128,13 @@ pub enum DamageError {
         /// The terminal transition that closed it.
         terminal: LifecycleKind,
     },
+    /// Authored initial damage was offered to an actor that is no longer
+    /// pristine or has recorded a lifecycle transition; initial damage is
+    /// part of registration, not of play.
+    InitialDamageTooLate {
+        /// The actor.
+        actor: ActorId,
+    },
 }
 
 impl fmt::Display for DamageError {
@@ -151,6 +162,10 @@ impl fmt::Display for DamageError {
             Self::DuplicateLifecycle { actor, kind } => {
                 write!(f, "{actor} already recorded lifecycle {kind}")
             }
+            Self::InitialDamageTooLate { actor } => write!(
+                f,
+                "{actor} is no longer pristine, so authored initial damage cannot apply"
+            ),
             Self::ActorClosed { actor, terminal } => {
                 write!(f, "{actor} is closed by terminal lifecycle {terminal}")
             }
@@ -346,6 +361,84 @@ impl DamageResolver {
         }
         self.actors.insert(actor, ActorDamage::new(&graph, policy));
         Ok(())
+    }
+
+    /// Starts a registered actor's known pools in the authored damaged state.
+    ///
+    /// Each statement is applied to its node's pool on its own merits: one
+    /// that cannot be resolved (unknown node, unresolved pool, invalid or
+    /// pool-exhausting amount, repeated node) is left out of the state and
+    /// named in the report's `unresolved` list with its reason. Nothing is
+    /// clamped or guessed, and a pool is never started destroyed.
+    ///
+    /// # Errors
+    ///
+    /// [`DamageError::UnknownActor`] when `actor` is not registered,
+    /// [`DamageError::ActorClosed`] when a terminal transition closed it, and
+    /// [`DamageError::InitialDamageTooLate`] when it already recorded a
+    /// lifecycle transition or any known pool is no longer pristine.
+    pub fn apply_initial_damage(
+        &mut self,
+        actor: &ActorId,
+        damage: &[InitialDamage],
+    ) -> Result<InitialDamageReport, DamageError> {
+        let state = self
+            .actors
+            .get_mut(actor)
+            .ok_or(DamageError::UnknownActor { actor: *actor })?;
+        if let Some(terminal) = state.terminal {
+            return Err(DamageError::ActorClosed {
+                actor: *actor,
+                terminal,
+            });
+        }
+        let pristine = state.lifecycle.is_empty()
+            && state.graph.nodes().all(|node| {
+                matches!(
+                    state.part_state(node.key()),
+                    PartState::Intact | PartState::Unknown
+                )
+            });
+        if !pristine {
+            return Err(DamageError::InitialDamageTooLate { actor: *actor });
+        }
+        let mut report = InitialDamageReport::default();
+        let mut seen = BTreeSet::new();
+        for statement in damage {
+            let refusal = if !seen.insert(statement.node.clone()) {
+                Some(InitialDamageRefusal::DuplicateNode)
+            } else if !(statement.amount.is_finite() && statement.amount > 0.0) {
+                Some(InitialDamageRefusal::InvalidAmount)
+            } else if let Some(node) = state.graph.node(&statement.node) {
+                match (node.integrity(), state.remaining.get(&statement.node)) {
+                    (Resolved::Known(known), Some(_)) if statement.amount >= known.value => {
+                        Some(InitialDamageRefusal::PreDestroyed { pool: known.value })
+                    }
+                    (Resolved::Known(_), Some(_)) => None,
+                    _ => Some(InitialDamageRefusal::UnresolvedPool),
+                }
+            } else {
+                Some(InitialDamageRefusal::UnknownNode)
+            };
+            match refusal {
+                Some(refusal) => report.unresolved.push(UnresolvedInitialDamage {
+                    damage: statement.clone(),
+                    refusal,
+                }),
+                None => {
+                    let remaining = state
+                        .remaining
+                        .get_mut(&statement.node)
+                        .expect("a known pool was checked above");
+                    *remaining -= statement.amount;
+                    report.applied.push(AppliedInitialDamage {
+                        damage: statement.clone(),
+                        remaining: *remaining,
+                    });
+                }
+            }
+        }
+        Ok(report)
     }
 
     /// The declared rules a registered actor resolves under; `None` when

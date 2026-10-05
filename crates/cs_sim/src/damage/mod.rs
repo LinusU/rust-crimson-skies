@@ -51,6 +51,7 @@
 
 pub mod events;
 pub mod graph;
+pub mod initial;
 pub mod resolver;
 pub mod synthetic;
 
@@ -61,6 +62,10 @@ pub use events::{
 pub use graph::{
     DamageChannel, DamageGraph, DamageGraphError, DamageNode, DamageNodeKey, DamageNodeKind,
     MAX_NODE_KEY_LEN, NodeKeyError, PartState, SystemKind, SystemState,
+};
+pub use initial::{
+    AppliedInitialDamage, InitialDamage, InitialDamageRefusal, InitialDamageReport,
+    UnresolvedInitialDamage,
 };
 pub use resolver::{DamageError, DamagePolicy, DamageResolver, TickResolution};
 pub use synthetic::{

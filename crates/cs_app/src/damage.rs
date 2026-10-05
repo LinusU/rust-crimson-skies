@@ -24,6 +24,9 @@
 //!   subject, generation-stamped like
 //!   [`crate::scene::SceneNodeBinding`] so a reload can never leave a
 //!   stale binding looking live.
+//! * [`apply_world_initial_damage`] — starts a registered actor in the
+//!   damage state a mission's [`WorldInstance`] authors, reporting every
+//!   object or statement it could not resolve (task #515);
 //! * [`apply_damage_state`] — the F29-C consumer seam: it reads the
 //!   resolver's authoritative part state for one actor and rewrites the
 //!   weapon firing gate ([`FireResolver`]'s disabled-mount set) and the
@@ -63,6 +66,8 @@
 //! designed behavior, recorded in
 //! `docs/findings/2026-10-02-f29-damage-zone-collider-call.md`.
 
+use std::collections::BTreeMap;
+
 use bevy::ecs::component::Component;
 use bevy::prelude::{Entity, Resource, World};
 use cs_content::damage::{
@@ -70,10 +75,11 @@ use cs_content::damage::{
     DeclaredDamageGraph, DeclaredDamageNode, SystemKind as DeclaredSystemKind,
 };
 use cs_content::scene::SceneNodeId;
+use cs_content::world::{WorldInstance, WorldObjectId};
 use cs_sim::damage::{
     ActorId, AttributionRule, DamageEvent, DamageEventKind, DamageGraph, DamageGraphError,
-    DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy, DamageResolver, NodeKeyError,
-    PartState, SystemKind,
+    DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy, DamageResolver, InitialDamage,
+    InitialDamageReport, NodeKeyError, PartState, SystemKind,
 };
 use cs_sim::weapons::FireResolver;
 use cs_types::content::{ContentId, Known, Resolved};
@@ -1077,6 +1083,56 @@ fn apply_mount(
             });
         }
     }
+}
+
+/// Authored initial damage for a world object: the damage node it is and the
+/// integrity it starts without.
+///
+/// Neither half is derivable from
+/// [`WorldInstance::initially_damaged`] (a bare set of object ids), so the
+/// caller supplies them from authored data; an object without an entry is
+/// reported, never given a guessed node or amount (task #515).
+pub type WorldDamageMapping = BTreeMap<WorldObjectId, InitialDamage>;
+
+/// What [`apply_world_initial_damage`] did.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorldInitialDamageReport {
+    /// The resolver's account of the mapped statements it applied or refused.
+    pub resolver: InitialDamageReport,
+    /// Objects the load starts damaged that the mapping says nothing about.
+    pub unmapped_objects: Vec<WorldObjectId>,
+}
+
+/// Starts `actor`'s damage graph in the state `instance` authors.
+///
+/// Each object of [`WorldInstance::initially_damaged`] is looked up in
+/// `mapping`; mapped ones go to
+/// [`DamageResolver::apply_initial_damage`], unmapped ones are named in
+/// [`WorldInitialDamageReport::unmapped_objects`]. Mapping entries for
+/// objects the load does not start damaged are ignored.
+///
+/// # Errors
+///
+/// Any [`cs_sim::damage::DamageError`] the resolver refuses with.
+pub fn apply_world_initial_damage(
+    resolver: &mut DamageResolver,
+    actor: &ActorId,
+    instance: &WorldInstance,
+    mapping: &WorldDamageMapping,
+) -> Result<WorldInitialDamageReport, cs_sim::damage::DamageError> {
+    let mut mapped = Vec::new();
+    let mut unmapped_objects = Vec::new();
+    for object in instance.initially_damaged() {
+        match mapping.get(object) {
+            Some(damage) => mapped.push(damage.clone()),
+            None => unmapped_objects.push(object.clone()),
+        }
+    }
+    let resolver = resolver.apply_initial_damage(actor, &mapped)?;
+    Ok(WorldInitialDamageReport {
+        resolver,
+        unmapped_objects,
+    })
 }
 
 /// The refusal constructors, so [`apply_damage_state`] stays readable.
