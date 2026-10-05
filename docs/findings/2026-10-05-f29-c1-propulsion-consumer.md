@@ -80,6 +80,13 @@ keeps the original-family gate; nothing here claims an original behaviour.
 - **A partial authority is not remembered across a destroy/repair.** The gate
   lifts its own cut to full (`1`), not to a partial value another producer
   had written before the cut.
+- **The gate cannot tell its own cut from another producer's zero.** An
+  `Enabled` state lifts any `thrust_authority == 0`, including a zero a
+  `FlightEquipment` record wrote. No such producer writes zero on this branch.
+- **Repair is modelled, not driven.** `DamageResolver` has no repair entry
+  yet, so the repair test applies an intact authoritative state (a freshly
+  registered actor), as F29-C's convergence test does. A real repair path
+  must reach the same `Enabled` state.
 - No scheduled ECS system calls the pass yet; like `apply_damage_state` it is
   the seam the session tick calls with the actor's resolver and body.
 

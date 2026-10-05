@@ -288,7 +288,9 @@ fn accept_f29_c_propulsion_a_repair_restores_thrust() {
     assert_eq!(cut.report.thrust_cut, 1);
     assert_eq!(thrust_after_tick(&mut world, plane), 0.0);
 
-    // The repaired state: the same actor's engine is intact again.
+    // The repaired state: the same actor's engine is intact again. The
+    // resolver has no repair entry yet, so the repaired authoritative state is
+    // a freshly registered actor, as F29-C's convergence test models it.
     let repaired = registered();
     let outcome = apply(&mut world, plane, &repaired, actor(1));
     assert_eq!(
