@@ -3012,12 +3012,19 @@ mod f57_c_acceptance {
             rebased.max_conversion_m
         );
 
-        // And the aircraft keeps flying the same path afterwards, at the same
-        // speed: a rebase is not a velocity impulse.
+        // And the aircraft keeps flying the same path afterwards at the same
+        // speed: a rebase is not a velocity impulse. Render tick 35 falls
+        // halfway between the two post-rebase samples, and the buffer blends
+        // there — which it could not do across a displacement it mistook for
+        // motion.
         world.deliver_remote(40, 10_030.0);
         let (x, mode) = world.presented_x(41);
-        assert!(mode != SampleMode::Extrapolated, "{mode:?}");
-        assert!((x - 10_030.0).abs() < 0.05, "{x}");
+        assert_eq!(
+            mode,
+            SampleMode::Interpolated,
+            "the rebase looked like motion"
+        );
+        assert!((x - 10_025.0).abs() < 0.05, "{x}");
     }
 
     /// The other half of AC03: a snapshot from the *old* epoch is refused after
@@ -3336,29 +3343,63 @@ mod f57_c_acceptance {
     #[test]
     fn accept_f57_c_refused_snapshots_never_reach_the_local_predictor() {
         let mut world = Wired::new();
-        world.deliver_remote(10, 10_000.0);
-
-        // Reconcile with no local record yet.
+        // A session that has ingested nothing holds no local record, so it says
+        // so instead of reconciling against a guess.
+        let mut fresh = NetSession::new(SESSION, origin(), InterpolationConfig::default());
+        fresh
+            .attach_local(
+                world.local,
+                world.local_generation().get(),
+                PredictionConfig::default(),
+            )
+            .expect("attach");
         assert_eq!(
-            world.session.reconcile_local(),
+            fresh.reconcile_local(),
             Err(SessionError::UnknownLocalActor {
                 expected: Some(world.local)
             })
         );
 
-        // An epoch-mismatched snapshot is refused whole, so the mirror holds no
-        // local record to reconcile against.
+        world.deliver_remote(10, 10_000.0);
+        world
+            .session
+            .reconcile_local()
+            .expect("reconciles from the mirror");
+        let before = world
+            .session
+            .predictor()
+            .expect("attached")
+            .authoritative()
+            .expect("reconciled")
+            .tick;
+        let retired_frame_wire = world.last_wire();
+
         world
             .session
             .rebase(WorldPosition::try_new([18_000.0, 0.0, -1_000.0]).expect("finite"))
-            .expect("forward");
-        let stale = world.session.mirror().origin();
-        assert!(stale.epoch().0 > 1);
+            .expect("forward epoch");
+
+        // The retired frame's packet arrives after the rebase: refused whole, so
+        // it reached neither the mirror nor the predictor.
+        let report = world
+            .session
+            .ingest(&retired_frame_wire, Tick(30))
+            .expect("session is live");
+        assert_eq!(report.applied, 0);
+        assert!(matches!(
+            report.outcome,
+            IngestOutcome::Refused(IngestRefusal::EpochMismatch { .. })
+        ));
         assert_eq!(
-            world.session.reconcile_local(),
-            Err(SessionError::UnknownLocalActor {
-                expected: Some(world.local)
-            })
+            world
+                .session
+                .predictor()
+                .expect("attached")
+                .authoritative()
+                .expect("reconciled")
+                .tick,
+            before,
+            "a refused snapshot reached the local predictor"
         );
     }
 
