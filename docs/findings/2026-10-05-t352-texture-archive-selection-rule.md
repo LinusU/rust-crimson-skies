@@ -343,6 +343,22 @@ one):
 | the loose `.tif`/`.bmp` sources dropped from the lookup order | 1 fails |
 | `open_world` always opening `texture.zbd` | 1 fails |
 
+## Checks run on this branch (2026-10-05)
+
+| Command | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | clean |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | clean |
+| `cargo test --workspace --locked` | one pre-existing failure, `cs_xtask --test accept_t430_ci_disk_budget::accept_t430_a_panic_backtrace_names_the_file_and_line`, reproduced on a clean `origin/main` worktree on this macOS host (frames print no `file:line`); filed as task #691. CI on `main` is green. |
+| `cargo test --workspace --locked --no-fail-fast` | 381 test binaries ok, that one target failed; nothing else failed |
+| `cargo test --workspace --locked -- accept_f08_c_selection --include-ignored` | 7 passed, 0 failed (6 synthetic + the retail one, 54 s) |
+| each of the seven with `--exact`, alone | 1 passed each |
+| `env -u CS_GAME_DIR cargo test -p cs_content --locked -- accept_f08_c_selection --include-ignored` | the retail test **fails** with "CS_GAME_DIR must point at the original installation for this test", the six synthetic ones pass |
+
+No evidence report: this task's retail use is the census and the per-world
+selection a test observes, following F08-C and F08-B's precedent, and the
+fingerprinted decode audit against a pinned reference is F08-D.
+
 ## Out of scope, filed as tasks
 
 * #688 — wire the renderer-settings consumer: own `TextureMemory_HW`/`_SW` and
