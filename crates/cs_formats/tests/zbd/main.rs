@@ -14,6 +14,7 @@
 //! instead of pretending it checked them. Task #340 documented the GameZ and
 //! animation signatures, so the AC01 pair is now two documented headers.
 
+mod dzones;
 mod readers;
 mod samples;
 mod t340;

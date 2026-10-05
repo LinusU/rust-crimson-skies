@@ -37,6 +37,8 @@
 //!   animation-definition sources their payload carries — are read here, and
 //!   the fixed block at the front of the payload with them. The animation
 //!   records themselves stay undecoded, for the reason the module states.
+//! * [`detection_zones`] decodes the campaign mission's `dzones.zrd` member by a
+//!   grammar measured over all 23 retail members (task #513).
 //! * [`wave`] reads the RIFF/WAVE header of one sound member into the
 //!   descriptor [`sound_archive`] reports (task #344).
 //! * [`adpcm`] reads the `fmt ` extension the two ADPCM tags carry and decodes
@@ -70,6 +72,7 @@
 pub mod adpcm;
 pub mod anim;
 pub mod archive;
+pub mod detection_zones;
 pub mod dispatch;
 pub mod family;
 pub mod header;
