@@ -20,10 +20,12 @@
 //!   name it. A record the world node owns but the grid does not name stays
 //!   **resident**, which is what the record says rather than an absence.
 //! * **the role follows the index, and everything else is named.** An indexed
-//!   record is `Solid` + `FromMesh`; an unindexed one carries an explicit
-//!   unknown with a claim id, as does every gameplay surface and the world's
-//!   boundary. Nothing is silently defaulted, so a consumer can enumerate the
-//!   gaps instead of discovering them in flight.
+//!   record is `Solid` + `FromMesh`; an unindexed record that stores no
+//!   collision geometry resolves to `None` (task #677's measured split); an
+//!   unindexed record that does carries an explicit unknown with a claim id, as
+//!   does every gameplay surface and the world's boundary. Nothing is silently
+//!   defaulted, so a consumer can enumerate the gaps instead of discovering
+//!   them in flight.
 //! * **the identity is the node slot, the mesh reference is the caller's table,
 //!   and a record that stores no mesh index names that fact itself.** The
 //!   identity is the `node-<slot>` key, the mesh reference is the caller's entry
@@ -55,8 +57,9 @@ use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_content::scene::MeshSlot;
 use cs_content::world::{
     INDEXED_RECORD_IS_STATIC, ImportedWorld, OBJECT_ID_IS_THE_NODE_SLOT, OBJECT_STORES_NO_MESH,
-    PARTITION_GRID_IS_THE_SECTOR_INDEX, UNINDEXED_ROLE_UNMEASURED, WORLD_BOUNDARY_UNMEASURED,
-    WORLD_SURFACE_UNMEASURED, WorldImportError, WorldPartitionGrid, import_world_container,
+    PARTITION_GRID_IS_THE_SECTOR_INDEX, UNINDEXED_RECORD_STORES_NO_GEOMETRY,
+    UNINDEXED_ROLE_UNMEASURED, WORLD_BOUNDARY_UNMEASURED, WORLD_SURFACE_UNMEASURED,
+    WorldImportError, WorldPartitionGrid, import_world_container,
 };
 use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMesh, RawPolygon, read_gamez_nodes};
 use cs_formats::io::ParseContext;
@@ -81,6 +84,9 @@ const TILE_A: u32 = 1;
 const SLAB: u32 = 2;
 const TILE_B: u32 = 3;
 const MARKER: u32 = 4;
+/// An unindexed record that **does** carry geometry: the role the container
+/// leaves unmeasured (task #677's split).
+const VOLUME: u32 = 5;
 
 /// The fixture's grid: two cells along the second axis, one along the first.
 const GRID_X: u32 = 1;
@@ -144,14 +150,19 @@ impl Default for Fixture {
             // past each other, so a sector extent built from one member's box
             // differs from the union of the boxes the store states.
             grid: vec![vec![TILE_A, SLAB], vec![TILE_B]],
-            stored_children: vec![MARKER],
+            stored_children: vec![MARKER, VOLUME],
             objects: vec![
                 ObjectSpec::new("tile_a", MESH_TILE_A)
                     .extent([-10.0, 0.0, -10.0], [-9.0, 0.0, -9.0]),
                 ObjectSpec::new("slab", MESH_SLAB).extent([-9.0, 0.0, -12.0], [-8.0, 0.0, -10.0]),
                 ObjectSpec::new("tile_b", MESH_TILE_B).extent([0.0, 0.0, 0.0], [1.0, 0.0, 1.0]),
-                // A world-owned record with no extent and no mesh at all.
+                // A world-owned record with no extent and no mesh at all: the
+                // measured anchor class, resolved to `None` (task #677).
                 ObjectSpec::new("marker", -1),
+                // A world-owned record with a mesh **and** an extent that the
+                // grid does not name: the measured volume class, whose role the
+                // container leaves unmeasured.
+                ObjectSpec::new("volume", 5).extent([2.0, 0.0, 2.0], [3.0, 1.0, 3.0]),
             ],
             unlisted_extra: false,
         }
@@ -332,6 +343,16 @@ fn adapter() -> SourceAdapter {
         .expect("the F16-A registry declares the canonical source")
 }
 
+/// The conversion the **retail** container is imported through: the measured
+/// GameZ source (task #677), whose scale landmark census pins one stored unit
+/// to the metre at `observed_tool` while the rest of the convention stays
+/// honestly uncalibrated.
+fn retail_adapter(container: &RetailWorldContainer) -> SourceAdapter {
+    SourceAdapter::new(cs_content::coordinates::CoordinateSource::retail_gamez(
+        container.span().clone(),
+    ))
+}
+
 /// The fixture imported, through production code.
 fn imported(bytes: &[u8]) -> ImportedWorld {
     let records = read(bytes);
@@ -503,14 +524,17 @@ fn accept_m01_lc_world_import_the_partition_grid_becomes_the_sector_index() {
         "and the second cell has its own single member"
     );
 
-    // The record the grid does not name stays resident, which is what the store
+    // The records the grid does not name stay resident, which is what the store
     // says rather than the absence of a membership record.
     let resident: Vec<String> = world
         .resident_objects()
         .iter()
         .map(|object| object.id().as_str().to_owned())
         .collect();
-    assert_eq!(resident, vec![format!("node-{MARKER}")]);
+    assert_eq!(
+        resident,
+        vec![format!("node-{MARKER}"), format!("node-{VOLUME}")]
+    );
 }
 
 /// **The identity is the node slot, the mesh reference is the caller's table, and
@@ -565,8 +589,9 @@ fn accept_m01_lc_world_import_an_object_carries_its_slot_its_mesh_and_its_stored
     assert_eq!(tile.provenance(), &provenance());
 }
 
-/// **The role follows the spatial index; everything the container does not state
-/// is an explicit unknown with a claim id, and nothing is defaulted.**
+/// **The role follows the spatial index; an unindexed record that stores no
+/// geometry resolves to `None`, one that does keeps its measured unknown, and
+/// every other unmeasured surface is named — nothing is defaulted.**
 #[test]
 fn accept_m01_lc_world_import_the_collision_role_follows_the_index_and_every_other_role_is_named() {
     let bytes = write_container(&Fixture::default());
@@ -587,12 +612,39 @@ fn accept_m01_lc_world_import_the_collision_role_follows_the_index_and_every_oth
         "and its collider is derived from its own mesh"
     );
 
-    let unindexed = world
+    // The measured anchor arm (task #677): an unindexed record that binds no
+    // mesh and stores no extent has nothing a collider could be built from, so
+    // its role resolves to `None` — and its *shape* stays an explicit unknown,
+    // because a record with no geometry stores no shape at all.
+    let anchor = world
         .object(&cs_content::world::WorldObjectId::new("node-4").expect("the key is valid"))
-        .expect("the unindexed record imported");
+        .expect("the unindexed anchor record imported");
+    assert_eq!(
+        anchor.known_collision(),
+        Some(cs_content::world::WorldCollisionRole::None),
+        "a record with no mesh and no extent is presented and never blocks"
+    );
+    let shape = anchor.shape();
+    let Resolved::Unknown { claim_id, reason } = shape else {
+        panic!("a record with no geometry stores no shape: {shape:?}");
+    };
+    assert_eq!(claim_id.as_str(), UNINDEXED_RECORD_STORES_NO_GEOMETRY);
+    assert!(
+        reason.contains("no mesh"),
+        "the reason names what the record stores: {reason}"
+    );
+
+    // The measured volume arm: an unindexed record that **does** bind a mesh
+    // and an extent keeps the honest unknown — the container never says whether
+    // the engine collided with it.
+    let unindexed = world
+        .object(&cs_content::world::WorldObjectId::new("node-5").expect("the key is valid"))
+        .expect("the unindexed volume record imported");
     let role = unindexed.collision();
     let Resolved::Unknown { claim_id, reason } = role else {
-        panic!("a record the grid does not name has no measured role: {role:?}");
+        panic!(
+            "a record the grid does not name but that stores geometry has no measured role: {role:?}"
+        );
     };
     assert_eq!(claim_id.as_str(), UNINDEXED_ROLE_UNMEASURED);
     assert!(
@@ -603,7 +655,7 @@ fn accept_m01_lc_world_import_the_collision_role_follows_the_index_and_every_oth
 
     // Every surface and the world's boundary are unknown too, and every one of
     // them says which measurement is missing.
-    assert_eq!(world.objects().len(), 4);
+    assert_eq!(world.objects().len(), 5);
     for object in world.objects() {
         let Resolved::Unknown { claim_id, .. } = object.surface() else {
             panic!("no surface is measured: {object:?}");
@@ -626,18 +678,23 @@ fn accept_m01_lc_world_import_the_collision_role_follows_the_index_and_every_oth
     assert_eq!(report.partition_cells(), 2);
     assert_eq!(report.partition_records(), 3);
     assert_eq!(report.partition_records_with_mesh(), 3);
-    assert_eq!(report.stored_child_list(), 1);
-    assert_eq!(report.objects(), 4);
-    assert_eq!(report.objects_with_mesh(), 3);
+    assert_eq!(report.stored_child_list(), 2);
+    assert_eq!(report.objects(), 5);
+    assert_eq!(report.objects_with_mesh(), 4);
     assert_eq!(report.objects_solid(), 3);
+    assert_eq!(report.objects_unindexed_none(), 1);
+    assert_eq!(report.objects_unindexed_unresolved(), 1);
     assert_eq!(report.objects_in_a_sector(), 3);
-    assert_eq!(report.objects_resident(), 1);
+    assert_eq!(report.objects_resident(), 2);
     assert_eq!(report.sectors(), 2);
     assert_eq!(report.sectors_without_extent(), 0);
     assert_eq!(report.empty_cells(), 0);
     assert_eq!(
         report.unit_class(),
-        adapter().source().calibration().claim_status(),
+        adapter()
+            .source()
+            .calibration()
+            .quantity_status(cs_content::coordinates::CalibratedQuantity::Scale),
         "the report carries the caller's own evidence class for the unit"
     );
 }
@@ -705,8 +762,8 @@ fn accept_m01_lc_world_import_a_grid_that_contradicts_itself_blocks_the_containe
         imported_checked(&records, &bytes).expect_err("disagreeing ownership is refused"),
         WorldImportError::OwnershipDisagreement {
             grid: 3,
-            child_list: 1,
-            naming: 5,
+            child_list: 2,
+            naming: 6,
         }
     );
 }
@@ -777,12 +834,18 @@ fn accept_m01_lc_world_import_spawn_world_runs_on_the_imported_definition() {
     assert_eq!(
         skipped,
         vec![SkipReason::UnknownCollisionRole],
-        "the one record with no measured role is reported as exactly that"
+        "the unindexed record that stores geometry is reported as exactly that"
+    );
+    assert_eq!(
+        spawned.non_colliding(),
+        vec![cs_content::world::WorldObjectId::new("node-4").expect("the key is valid")],
+        "the anchor stores nothing a collider could be built from, so it is \
+         presented and never blocks — a deliberate answer, not a skip"
     );
     assert_eq!(
         spawned.colliders().len(),
         3,
-        "one collider per indexed record, and none for the unindexed one"
+        "one collider per indexed record, and none for the unindexed ones"
     );
     // Every derived collider carries the twelve triangles of the one stored mesh
     // the fixture uploaded, so nothing substituted a shape on the way in.
@@ -809,6 +872,7 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
         PARTITION_GRID_IS_THE_SECTOR_INDEX,
         INDEXED_RECORD_IS_STATIC,
         UNINDEXED_ROLE_UNMEASURED,
+        UNINDEXED_RECORD_STORES_NO_GEOMETRY,
         WORLD_SURFACE_UNMEASURED,
         WORLD_BOUNDARY_UNMEASURED,
         OBJECT_ID_IS_THE_NODE_SLOT,
@@ -824,6 +888,7 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
         PARTITION_GRID_IS_THE_SECTOR_INDEX,
         INDEXED_RECORD_IS_STATIC,
         UNINDEXED_ROLE_UNMEASURED,
+        UNINDEXED_RECORD_STORES_NO_GEOMETRY,
         WORLD_SURFACE_UNMEASURED,
         WORLD_BOUNDARY_UNMEASURED,
         OBJECT_ID_IS_THE_NODE_SLOT,
@@ -831,7 +896,7 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
     ]
     .into_iter()
     .collect();
-    assert_eq!(distinct.len(), 7, "each gap has its own claim id");
+    assert_eq!(distinct.len(), 8, "each gap has its own claim id");
 }
 
 // ------------------------------------------------------------------ the retail half --
@@ -856,7 +921,7 @@ fn retail() -> Retail {
         source: container.span().clone(),
     };
     let imported = container
-        .definition(origin, &adapter())
+        .definition(origin, &retail_adapter(&container))
         .expect("the container imports");
     Retail {
         container,
@@ -905,12 +970,31 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
     assert_eq!(report.sectors(), 144);
     assert_eq!(report.sectors_without_extent(), 0);
 
+    // Task #677's measured split of the 53 unindexed records: the 36 that bind
+    // no mesh and store no extent — the `horizon`, the `g27816` transform
+    // groups and the zeppelin anchors — resolve to `None` because the store
+    // gives them nothing a collider could be built from; the 17 `fvol*` fog
+    // volumes bind a mesh and an extent, and the container says nothing about
+    // what the engine did with them, so they stay an explicit unknown.
+    assert_eq!(
+        report.objects_unindexed_none(),
+        36,
+        "the anchors, transform groups and horizon resolve to a deliberate `None`"
+    );
+    assert_eq!(
+        report.objects_unindexed_unresolved(),
+        17,
+        "the fvol* volumes keep the role the container does not state"
+    );
+
     // Everything the container does not state is an explicit unknown, and the
     // definition's own accessors report every one of them.
     assert_eq!(report.matrix_disagreements(), 0);
     assert!(
-        !world.unresolved_collision().is_empty() && world.unresolved_collision().len() == 53,
-        "the 53 records the spatial index does not name have no measured role"
+        world.unresolved_collision().len() == 17,
+        "exactly the unindexed records that store collision geometry have no \
+         measured role: {}",
+        world.unresolved_collision().len()
     );
     assert_eq!(
         world.unresolved_surface().len(),
@@ -932,16 +1016,18 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
     }
 
     // The unit is named, not assumed: the report states the factor it used and
-    // that factor's own evidence class, and this workspace has measured none.
+    // that factor's own evidence class — which for the measured GameZ source is
+    // `observed_tool`, the strongest claim a byte census without an original
+    // run can carry (task #677).
     assert_eq!(
         report.meters_per_unit(),
-        adapter().source().convention().meters_per_unit(),
-        "the factor is the caller's, reported"
+        1.0,
+        "one stored GameZ unit is the metre, measured"
     );
     assert_eq!(
         report.unit_class(),
-        ClaimStatus::Unknown,
-        "and the original's world-vertex unit is still unmeasured"
+        ClaimStatus::ObservedTool,
+        "the scale evidence is tool-observed, never verified_original"
     );
 
     // The container's other content is counted, not imported: these records bind
@@ -1028,7 +1114,9 @@ fn accept_m01_lc_world_import_retail_spawn_world_runs_on_the_imported_c1c_defini
     assert_eq!(
         reasons,
         BTreeMap::from([
-            ("unknown_collision_role", 53),
+            // The 17 fvol* volumes: unindexed and mesh-bearing, so the role the
+            // container never states is the gap (task #677's measured split).
+            ("unknown_collision_role", 17),
             // The one indexed record that stores no mesh index: it is in the
             // world's spatial index and draws nothing, so it is reported rather
             // than given substitute geometry.
@@ -1036,11 +1124,18 @@ fn accept_m01_lc_world_import_retail_spawn_world_runs_on_the_imported_c1c_defini
         ]),
         "the spawn reports exactly the two gaps the container's own bytes imply"
     );
+    // The 36 anchors are a *deliberate* `None`: presented, never blocking, and
+    // not in the skip list — a resolved record does not read as a gap.
+    assert_eq!(
+        spawned.non_colliding().len(),
+        36,
+        "the anchors and horizon are presented with no collider by their own answer"
+    );
     assert_eq!(
         spawned.presentation_gap_count(),
         0,
-        "no object reports two reasons: the 36 unindexed records with no mesh \
-         reach the role check first, which is why the count above is 53"
+        "no object reports two reasons: an anchor's own shape question stays an \
+         unknown rather than reaching the mesh check"
     );
 }
 

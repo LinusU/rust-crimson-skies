@@ -1409,11 +1409,13 @@ impl Default for PlaytestConfig {
 /// The coordinate source this scene renders stored geometry under.
 ///
 /// **The identity map**: stored `x`/`y`/`z` are canonical metres, right-handed,
-/// `+Y` up, radians. That is a **designed** reading and not a measurement — the
-/// original's world-vertex unit and handedness are unmeasured (task #436,
-/// blocked) — and it is the reading the rest of this workspace's world path
-/// already spawns retail geometry under, so the area and the aircraft are in one
-/// frame instead of two. [`PLAYTEST_UNIT_IS_DESIGNED`] records it.
+/// `+Y` up, radians. That is a **designed** reading and not a measurement — its
+/// scale happens to agree with the metre task #677 measured for GameZ
+/// containers, but the axis map and handedness remain unmeasured
+/// (task #436, blocked) — and it is the reading the rest of this workspace's
+/// world path already spawns retail geometry under, so the area and the
+/// aircraft are in one frame instead of two. [`PLAYTEST_UNIT_IS_DESIGNED`]
+/// records it.
 ///
 /// This is the workspace's **declared canonical source**, taken from
 /// [`SourceAdapter::declared`]: no second conversion rule is introduced here.

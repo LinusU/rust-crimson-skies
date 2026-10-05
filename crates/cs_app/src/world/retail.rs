@@ -33,11 +33,15 @@
 //! * **Not `verified_original`.** `retail` is read access to the owner's files.
 //!   No original run happened, so nothing here is evidence of how the 2000
 //!   engine loaded, streamed or collided with a world.
-//! * **No unit is measured.** The original's world-vertex unit is task #436's
-//!   measurement and it has not been made; `definition` therefore takes its
-//!   conversion from the caller's [`SourceAdapter`] and the import report names
-//!   the factor it used
-//!   ([`WorldImportReport::meters_per_unit`](cs_content::world::WorldImportReport::meters_per_unit)).
+//! * **The unit is measured for the scale only.** Task #677's landmark census
+//!   pins one stored GameZ unit to the metre at `observed_tool`
+//!   ([`cs_content::coordinates::CoordinateSource::retail_gamez`]); the rest of
+//!   the convention — axis map, handedness, angle unit — is still unmeasured.
+//!   `definition` therefore takes its conversion from the caller's
+//!   [`SourceAdapter`] and the import report names both the factor it used and
+//!   that quantity's own evidence class
+//!   ([`WorldImportReport::meters_per_unit`](cs_content::world::WorldImportReport::meters_per_unit),
+//!   [`WorldImportReport::unit_class`](cs_content::world::WorldImportReport::unit_class)).
 //!   Nothing here supplies a factor of its own.
 //! * **No role is invented.** Every collision role the container does not state
 //!   arrives as an explicit unknown carrying a claim id, and so does every
@@ -423,10 +427,12 @@ impl RetailWorldContainer {
     /// Imports the container into the definition the runtime consumes.
     ///
     /// `adapter` supplies the stored-unit-to-metre conversion and the axis map.
-    /// This module never supplies one of its own: the original's world-vertex
-    /// unit is unmeasured, so a factor chosen here would be a guess about a
-    /// length. Whatever the caller passes, the factor and its own evidence class
-    /// travel on the returned
+    /// This module never supplies one of its own: for the retail container the
+    /// measured choice is
+    /// [`CoordinateSource::retail_gamez`](cs_content::coordinates::CoordinateSource::retail_gamez),
+    /// whose scale is pinned to the metre by task #677's landmark census while
+    /// its other quantities stay declared. Whatever the caller passes, the
+    /// factor and its own evidence class travel on the returned
     /// [`WorldImportReport`](cs_content::world::WorldImportReport).
     pub fn definition(
         &self,

@@ -53,7 +53,7 @@ use cs_app::world::{
     MESH_SETTLE_UPDATES, RETAIL_WORLD_IMPORT, RetailWorldContainer, RetailWorldContainers,
     SkipReason, instance_placement, read_world_containers, spawn_world, world_app,
 };
-use cs_content::coordinates::SourceAdapter;
+use cs_content::coordinates::{CoordinateSource, SourceAdapter};
 use cs_content::world::{UNINDEXED_ROLE_UNMEASURED, WORLD_SURFACE_UNMEASURED, WorldPartitionGrid};
 use cs_types::content::{Origin, Resolved};
 use cs_types::evidence::ClaimStatus;
@@ -92,6 +92,14 @@ struct Measured {
     /// How many of this container's records end up **resident**: the unindexed ones
     /// plus the indexed ones whose cell could not be given an extent.
     resident: usize,
+    /// How many unindexed records resolve to `None` — the anchors, transform
+    /// groups and dummies that store no geometry of their own (task #677's
+    /// measured split: `anchors + unresolved_roles == child_list`).
+    anchors: usize,
+    /// How many unindexed records still carry an explicit unknown — the ones
+    /// that store a mesh, an extent or both with no class saying what the
+    /// engine did with it.
+    unresolved_roles: usize,
     /// How many of this container's records store a transform that is not the
     /// identity, so the affine path is exercised on retail data.
     transformed: usize,
@@ -126,6 +134,8 @@ const MEASURED: [Measured; 8] = [
         matrix_disagreements: 1,
         elsewhere: 3671,
         resident: 66,
+        anchors: 56,
+        unresolved_roles: 10,
         transformed: 72,
         settles: true,
     },
@@ -145,6 +155,8 @@ const MEASURED: [Measured; 8] = [
         matrix_disagreements: 0,
         elsewhere: 3346,
         resident: 93,
+        anchors: 78,
+        unresolved_roles: 0,
         transformed: 79,
         settles: true,
     },
@@ -162,6 +174,8 @@ const MEASURED: [Measured; 8] = [
         matrix_disagreements: 0,
         elsewhere: 3045,
         resident: 53,
+        anchors: 36,
+        unresolved_roles: 17,
         transformed: 30,
         settles: true,
     },
@@ -179,6 +193,8 @@ const MEASURED: [Measured; 8] = [
         matrix_disagreements: 0,
         elsewhere: 2372,
         resident: 24,
+        anchors: 24,
+        unresolved_roles: 0,
         transformed: 30,
         settles: true,
     },
@@ -196,6 +212,8 @@ const MEASURED: [Measured; 8] = [
         matrix_disagreements: 0,
         elsewhere: 2741,
         resident: 48,
+        anchors: 39,
+        unresolved_roles: 9,
         transformed: 34,
         settles: true,
     },
@@ -214,6 +232,8 @@ const MEASURED: [Measured; 8] = [
         matrix_disagreements: 0,
         elsewhere: 2494,
         resident: 19,
+        anchors: 14,
+        unresolved_roles: 0,
         transformed: 17,
         settles: false,
     },
@@ -231,6 +251,8 @@ const MEASURED: [Measured; 8] = [
         matrix_disagreements: 0,
         elsewhere: 4613,
         resident: 51,
+        anchors: 38,
+        unresolved_roles: 13,
         transformed: 57,
         settles: true,
     },
@@ -251,6 +273,8 @@ const MEASURED: [Measured; 8] = [
         matrix_disagreements: 0,
         elsewhere: 5551,
         resident: 108,
+        anchors: 20,
+        unresolved_roles: 85,
         // The group whose stored mesh slots include sixteen the store holds no
         // geometry for; see
         // [`accept_f18_world_units_containers_a_mesh_the_store_holds_no_geometry_for_is_a_gap`].
@@ -276,13 +300,11 @@ fn retail_root() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR is set"))
 }
 
-/// The conversion every import here is made through: the canonical convention,
-/// declared, with the unit evidence class its own calibration reports.
-fn adapter() -> SourceAdapter {
-    SourceAdapter::declared()
-        .into_iter()
-        .find(|adapter| adapter.source().label() == "canonical")
-        .expect("the F16-A registry declares the canonical source")
+/// The conversion every import here is made through: the measured GameZ source
+/// (task #677), whose scale landmark census pins one stored unit to the metre
+/// at `observed_tool` while the rest of the convention stays uncalibrated.
+fn adapter(container: &RetailWorldContainer) -> SourceAdapter {
+    SourceAdapter::new(CoordinateSource::retail_gamez(container.span().clone()))
 }
 
 /// One production discovery, shared by every group.
@@ -416,7 +438,7 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
         );
 
         let imported = container
-            .definition(origin(&container), &adapter())
+            .definition(origin(&container), &adapter(&container))
             .unwrap_or_else(|error| panic!("{}: the container imports: {error}", measured.group));
         let report = imported.report();
         let world = imported.definition();
@@ -557,11 +579,33 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
             measured.group
         );
 
+        // Task #677's measured split of the unindexed records: the ones that
+        // store no geometry resolve to `None`, the ones that do keep the role
+        // the container never states.
+        assert_eq!(
+            report.objects_unindexed_none(),
+            measured.anchors,
+            "{}: the unindexed records with no mesh and no extent resolve to `None`",
+            measured.group
+        );
+        assert_eq!(
+            report.objects_unindexed_unresolved(),
+            measured.unresolved_roles,
+            "{}: the unindexed records that store geometry keep an unknown role",
+            measured.group
+        );
+        assert_eq!(
+            measured.anchors + measured.unresolved_roles,
+            measured.child_list,
+            "{}: and the two classes partition the unindexed records exactly",
+            measured.group
+        );
+
         // Every gap is named, per group, with its own claim id.
         assert_eq!(
             world.unresolved_collision().len(),
-            measured.child_list,
-            "{}: exactly the unindexed records have no measured role",
+            measured.unresolved_roles,
+            "{}: exactly the geometry-bearing unindexed records have no measured role",
             measured.group
         );
         for object in world.unresolved_collision() {
@@ -600,17 +644,26 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
             measured.group
         );
 
-        // The unit is reported, never assumed.
+        // The unit is reported, never assumed: one stored unit is the metre at
+        // `observed_tool` (task #677's landmark census) — the strongest claim a
+        // byte census without an original run can carry — while the rest of the
+        // source calibration stays unmeasured.
         assert_eq!(
             report.meters_per_unit(),
-            adapter().source().convention().meters_per_unit(),
+            adapter(&container).source().convention().meters_per_unit(),
             "{}: the factor is the caller's, reported",
             measured.group
         );
         assert_eq!(
+            report.meters_per_unit(),
+            1.0,
+            "{}: and it is the metre, measured",
+            measured.group
+        );
+        assert_eq!(
             report.unit_class(),
-            ClaimStatus::Unknown,
-            "{}: and the original's world-vertex unit is still unmeasured",
+            ClaimStatus::ObservedTool,
+            "{}: and its evidence class is tool-observed, never verified_original",
             measured.group
         );
 
@@ -670,7 +723,7 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
             .container(measured.group)
             .unwrap_or_else(|error| panic!("{}: the container reads: {error}", measured.group));
         let imported = container
-            .definition(origin(&container), &adapter())
+            .definition(origin(&container), &adapter(&container))
             .unwrap_or_else(|error| panic!("{}: the container imports: {error}", measured.group));
         let world = imported.definition();
         let report = imported.report();
@@ -758,9 +811,10 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
             );
         }
 
-        // The skip report is **exactly** the two gaps the container's own bytes
-        // imply, with nothing double-reported. An unindexed record reaches the
-        // role check first, so the mesh it also lacks is never reported twice.
+        // The skip report is **exactly** the gaps the container's own bytes
+        // imply, with nothing double-reported. An unindexed record that stores
+        // geometry reaches the role check first, so the mesh it also lacks —
+        // or binds — is never reported twice.
         let mut reasons: BTreeMap<&str, usize> = BTreeMap::new();
         for entry in spawned.skipped() {
             *reasons.entry(entry.reason.label()).or_default() += 1;
@@ -768,9 +822,10 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
         assert_eq!(
             reasons
                 .get(SkipReason::UnknownCollisionRole.label())
-                .copied(),
-            Some(measured.child_list),
-            "{}: exactly the records the spatial index does not name report an \
+                .copied()
+                .unwrap_or(0),
+            measured.unresolved_roles,
+            "{}: exactly the geometry-bearing unindexed records report an \
              unknown role",
             measured.group
         );
@@ -786,8 +841,17 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
         );
         assert_eq!(
             reasons.len(),
-            2,
+            1 + usize::from(measured.unresolved_roles > 0),
             "{}: no other gap reason appears",
+            measured.group
+        );
+        // The anchors are a *deliberate* `None` (task #677): presented, never
+        // blocking, and not in the skip list — a resolved record is not a gap.
+        assert_eq!(
+            spawned.non_colliding().len(),
+            measured.anchors,
+            "{}: the unindexed records that store no geometry are presented \
+             with no collider by their own answer",
             measured.group
         );
         assert_eq!(
@@ -797,9 +861,10 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
             measured.group
         );
         assert_eq!(
-            spawned.colliders().len() + spawned.skipped_count(),
+            spawned.colliders().len() + spawned.skipped_count() + spawned.non_colliding().len(),
             world.objects().len(),
-            "{}: every object either collides or is reported once",
+            "{}: every object collides, is reported once, or is deliberately \
+             non-colliding",
             measured.group
         );
 
@@ -843,7 +908,7 @@ fn accept_f18_world_units_containers_a_mesh_the_store_holds_no_geometry_for_is_a
         .container("C5")
         .expect("the c5 geometry container reads");
     let imported = container
-        .definition(origin(&container), &adapter())
+        .definition(origin(&container), &adapter(&container))
         .expect("the c5 container imports");
     let world = imported.definition();
 
@@ -1060,7 +1125,7 @@ fn accept_f18_world_units_containers_the_settle_blocker_is_named_not_hidden() {
             .container(measured.group)
             .unwrap_or_else(|error| panic!("{}: the container reads: {error}", measured.group));
         let imported = group_container
-            .definition(origin(&group_container), &adapter())
+            .definition(origin(&group_container), &adapter(&group_container))
             .unwrap_or_else(|error| panic!("{}: the container imports: {error}", measured.group));
         let world = imported.definition();
         let meshes = group_container
@@ -1174,7 +1239,7 @@ fn accept_f18_world_units_containers_every_stored_transform_places_exactly() {
             .container(measured.group)
             .unwrap_or_else(|error| panic!("{}: the container reads: {error}", measured.group));
         let imported = container
-            .definition(origin(&container), &adapter())
+            .definition(origin(&container), &adapter(&container))
             .unwrap_or_else(|error| panic!("{}: the container imports: {error}", measured.group));
         let world = imported.definition();
 
