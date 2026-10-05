@@ -23,7 +23,7 @@ use cs_content::objectives::{
     OBJECTIVE_INACTIVE_COUNT_KEY, measure_dormant_block, measure_dormant_declarations,
     objective_block_number,
 };
-use cs_content::stunts::{ZrdValue, zrd_flat_fields};
+use cs_content::stunts::{ZrdValue, zrd_directive_fields};
 
 fn text(value: &str) -> ZrdValue {
     ZrdValue::Text(value.to_owned())
@@ -67,7 +67,7 @@ fn measure_named(
         .map(|(key, value)| (key.to_owned(), value))
         .collect();
     let document = record(owned);
-    let pairs = zrd_flat_fields(&document);
+    let pairs = zrd_directive_fields(&document);
     measure_dormant_block(block, &pairs)
 }
 
@@ -328,7 +328,7 @@ fn accept_f39_e1_stage_numbering_is_either_measured_or_refused() {
             .map(|stage| (format!("INACTIVE{stage}"), list(vec![text("geminizep")])))
             .collect();
         let document = record(entries);
-        let pairs = zrd_flat_fields(&document);
+        let pairs = zrd_directive_fields(&document);
         assert_eq!(
             measure_dormant_block("OBJECTIVE9", &pairs).unwrap_err(),
             DormantReadError::StageNumbering {
