@@ -76,8 +76,11 @@
 
 use std::f64::consts::PI;
 
+use cs_types::asset_id::SourceSpan;
 use cs_types::content::{Origin, Provenance};
-use cs_types::evidence::{ClaimId, ClaimStatus, EvidenceRecord, EvidenceSource};
+use cs_types::evidence::{
+    ClaimId, ClaimStatus, EvidenceRecord, EvidenceSource, ObservationLocator, ObservationMethod,
+};
 use cs_types::space::{Meters, Quaternion, Radians, SpaceError, UnitVec3, Winding, WorldPosition};
 
 /// Declared round-trip tolerance for positions, in meters.
@@ -472,6 +475,7 @@ pub struct CoordinateSource {
     convention: SourceConvention,
     origin: Origin,
     provenance: Provenance,
+    landmarks: Vec<Landmark>,
 }
 
 impl CoordinateSource {
@@ -496,6 +500,7 @@ impl CoordinateSource {
             convention,
             origin,
             provenance,
+            landmarks: Vec::new(),
         })
     }
 
@@ -523,18 +528,45 @@ impl CoordinateSource {
         &self.provenance
     }
 
+    /// Records a landmark against this source's [`UnitCalibration`].
+    ///
+    /// The independence check runs through the calibration itself — the same
+    /// rule a free-standing record applies — so a landmark that reuses another
+    /// one's observation is refused here exactly as it would be there.
+    ///
+    /// # Errors
+    ///
+    /// [`CalibrationError::RepeatedDescription`] or
+    /// [`CalibrationError::RepeatedObservation`].
+    pub fn record_landmark(&mut self, landmark: Landmark) -> Result<(), CalibrationError> {
+        let mut check = self.calibration();
+        check.record(landmark.clone())?;
+        self.landmarks.push(landmark);
+        Ok(())
+    }
+
     /// This source's calibration record under `F16` non-negotiable behavior 1.
     ///
     /// Every declared source starts with an **empty** calibration: no original
     /// handedness, axis order, scale or angle unit has been measured yet, and
     /// a caller that asks gets [`ClaimStatus::Unknown`] until someone records
-    /// landmarks together with the evidence for them. Returning the record
-    /// rather than a "is calibrated" boolean is the point: the gaps are
-    /// reportable, so an uncalibrated source cannot be mistaken for a
-    /// calibrated one.
+    /// landmarks together with the evidence for them. A source built from a
+    /// measurement — [`Self::retail_gamez`] is the first — replays the
+    /// landmarks it recorded, and its gaps report is the *per-quantity* answer:
+    /// an incompletely calibrated source can have the quantity it measured
+    /// satisfied while the rest stay open, which is what
+    /// `Unknown` looks like partway through. Returning the record rather than
+    /// a "is calibrated" boolean is the point: the gaps are reportable, so an
+    /// uncalibrated source cannot be mistaken for a calibrated one.
     #[must_use]
     pub fn calibration(&self) -> UnitCalibration {
-        UnitCalibration::empty(self.label.clone())
+        let mut calibration = UnitCalibration::empty(self.label.clone());
+        for landmark in &self.landmarks {
+            calibration
+                .record(landmark.clone())
+                .expect("a source's landmarks were validated when recorded");
+        }
+        calibration
     }
 
     /// Every source declared at F16-A.
@@ -549,6 +581,64 @@ impl CoordinateSource {
             Self::z_up_right_handed_degrees_fixture(),
             Self::left_handed_z_up_centimeters_fixture(),
         ]
+    }
+
+    /// The coordinate convention of the original's GameZ containers, with its
+    /// length scale measured (task #677).
+    ///
+    /// **One quantity measured, the rest declared.** The landmark census —
+    /// recorded on this source's [`calibration`](Self::calibration) and
+    /// written up in `docs/findings/2026-10-05-m01-lc-world-unit-roles.md` —
+    /// pins [`CalibratedQuantity::Scale`] to **one stored unit per metre**:
+    /// every animation container stores the Earth's gravitational acceleration
+    /// in its payload header, and the human-scale and airframe meshes measure
+    /// their known real sizes only under that unit. The axis map, rotation
+    /// sense, angle unit and front-face rule are the **same identity
+    /// declaration** the world import already applies: they are *not*
+    /// measured, and the calibration's gap list says so, so this source is
+    /// honestly `Unknown` at the whole-convention level while the scale is
+    /// pinned.
+    ///
+    /// `source` is the installation span of a GameZ container the measurement
+    /// ran over — the convention's provenance points at original bytes, which
+    /// is what [`Origin::Installation`] is for. It is deliberately **not** a
+    /// member of [`Self::declared`]: the declared registry is the designed
+    /// self-map and its fixtures, and a measured source is built where its
+    /// span exists.
+    pub fn retail_gamez(source: SourceSpan) -> Self {
+        let mut built = Self::new(
+            "retail.gamez",
+            SourceConvention::new(
+                [
+                    SourceAxis::positive(Axis::X),
+                    SourceAxis::positive(Axis::Y),
+                    SourceAxis::positive(Axis::Z),
+                ],
+                Axis::Z,
+                1.0,
+                AngleUnit::Radians,
+                RotationSense::RightHandRule,
+                Winding::CounterClockwise,
+            )
+            .expect("the measured GameZ convention is a valid declaration"),
+            Origin::Installation {
+                source: source.clone(),
+            },
+            Provenance::new(
+                ClaimId::new(GAMEZ_VERTEX_UNIT_IS_THE_METRE)
+                    .expect("the measured-unit claim id is valid"),
+                ClaimStatus::ObservedTool,
+                Some(source),
+            )
+            .expect("an observed_tool declaration with a span is valid"),
+        )
+        .expect("the measured GameZ source is a valid declaration");
+        for landmark in gamez_scale_landmarks() {
+            built
+                .record_landmark(landmark)
+                .expect("the measured scale landmarks are independent");
+        }
+        built
     }
 
     /// The canonical convention itself, as a source: mapping through it is
@@ -638,6 +728,116 @@ impl CoordinateSource {
         Self::new(label, convention, origin, provenance)
             .expect("declared coordinate source is valid")
     }
+}
+
+/// The stored length unit of the original's GameZ containers is the metre.
+///
+/// **Measured over the owner's retail installation (task #677), at
+/// `observed_tool`.** The landmark census behind the declaration is
+/// [`CoordinateSource::retail_gamez`]'s own
+/// [`calibration`](CoordinateSource::calibration), and the write-up with the
+/// per-container numbers is
+/// `docs/findings/2026-10-05-m01-lc-world-unit-roles.md`. The claim is about
+/// the stored unit only: the container family stores no axis map, handedness
+/// or angle-unit declaration anyone has measured, and no original run
+/// happened, so the convention's other quantities stay gaps.
+pub const GAMEZ_VERTEX_UNIT_IS_THE_METRE: &str = "f18-world.gamez-vertex-unit-is-the-metre";
+
+/// The scale landmarks the GameZ measurement rests on (task #677).
+///
+/// Every one is an independent observation over the owner's retail
+/// installation — a different container, member family or record population —
+/// and each says what it would take for the reading to be wrong in its
+/// `limitations`. None of them alone is the proof: the metre is what the
+/// *intersection* pins.
+fn gamez_scale_landmarks() -> Vec<Landmark> {
+    // Every observation was produced by running the production readers over
+    // the owner's installation — a tool probe, which is the strongest claim a
+    // measurement without an original run can carry (`observed_tool`). The
+    // locator names the container family each census ran over.
+    let evidence = |container: &str, limitation: &str| EvidenceRecord {
+        source: EvidenceSource::ToolRun {
+            tool: "cs_formats/cs_content GameZ, ZBD-anim and ZRD readers \
+                   (task #677 census, re-run by the accept_m01_lc_world_unit_roles \
+                   tests)"
+                .to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+        },
+        fingerprint: None,
+        locator: Some(ObservationLocator {
+            container: container.to_owned(),
+            span: None,
+        }),
+        method: ObservationMethod::ToolProbe,
+        limitations: vec![limitation.to_owned()],
+    };
+    [
+        Landmark::new(
+            CalibratedQuantity::Scale,
+            LandmarkKind::Artifact,
+            "every one of the installation's 61 animation containers stores its \
+             payload GRAVITY word as the f32 -9.8 (bits 0xC11CCCCD): the Earth's \
+             gravitational acceleration, which reads as an SI value only when \
+             the stored length unit is the metre",
+            evidence(
+                "zbd/*/mis_anim.zbd and cam_anim.zbd payload headers",
+                "a stored constant is the format's own declared value, not an \
+                 observed original run",
+            ),
+        ),
+        Landmark::new(
+            CalibratedQuantity::Scale,
+            LandmarkKind::Behavior,
+            "the pilot-figure subtrees (`cpilot`, `pickup_cpilot`) measure \
+             about 0.7 x 1.9 x 0.5 stored units — a standing human's height \
+             measured against a known size, which is a real pilot at the metre \
+             and a 0.58 m figure at the foot",
+            evidence(
+                "zbd/planes.zbd aircraft scene roots",
+                "the measured distance presumes the depicted object has its \
+                 known real-world size",
+            ),
+        ),
+        Landmark::new(
+            CalibratedQuantity::Scale,
+            LandmarkKind::Behavior,
+            "the eleven airframe subtree roots span 8.8-27.2 stored units — \
+             fighter-class aircraft measured against known airframe \
+             dimensions; under the foot the largest 'fighter' would span 8.3 m",
+            evidence(
+                "zbd/planes.zbd airframe subtrees",
+                "the same presumption, applied to a different record population",
+            ),
+        ),
+        Landmark::new(
+            CalibratedQuantity::Scale,
+            LandmarkKind::Artifact,
+            "the aircraft nodes' stored LOD switch ranges run 50-3000 units — \
+             view-distance bands of tens of metres to about three kilometres, \
+             which only read as distances in metres",
+            evidence(
+                "zbd/planes.zbd lod records",
+                "an authored range is a hint about working distances, not a \
+                 ruler: it corroborates, it does not pin",
+            ),
+        ),
+        Landmark::new(
+            CalibratedQuantity::Scale,
+            LandmarkKind::Behavior,
+            "the world containers' stored bounds run -16384..256 units, a \
+             12-16 km archipelago theatre at the metre and a 3.7-5 km map — \
+             with 300-m dogfight cells — at the foot",
+            evidence(
+                "zbd/*/gamez.zbd world records and partition grids",
+                "map size is the loosest constraint: either unit produces a \
+                 plausible theatre, so this landmark corroborates rather than \
+                 decides",
+            ),
+        ),
+    ]
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .expect("the declared landmarks are described")
 }
 
 /// Converts values from one declared source convention into canonical space,
@@ -1313,6 +1513,58 @@ impl UnitCalibration {
         }
         if self
             .landmarks
+            .iter()
+            .any(|landmark| matches!(landmark.evidence().source, EvidenceSource::ToolRun { .. }))
+        {
+            return ClaimStatus::ObservedTool;
+        }
+        ClaimStatus::Unknown
+    }
+
+    /// The strongest claim the evidence for **one quantity** supports.
+    ///
+    /// [`claim_status`](Self::claim_status) is the whole-convention answer: a
+    /// calibration that has not measured all four quantities claims nothing,
+    /// which is the right answer for "what convention does this source use".
+    /// A consumer that converts a *single* quantity — the world import's
+    /// `meters_per_unit` is the scale's — asks here instead: `Unknown` while
+    /// the quantity's own landmark rule is unmet (fewer than three
+    /// independent landmarks, or no observed behavior among them), otherwise
+    /// the class *that quantity's* evidence reaches under the same ladder
+    /// [`claim_status`](Self::claim_status) applies.
+    #[must_use]
+    pub fn quantity_status(&self, quantity: CalibratedQuantity) -> ClaimStatus {
+        let landmarks: Vec<&Landmark> = self
+            .landmarks
+            .iter()
+            .filter(|landmark| landmark.quantity() == quantity)
+            .collect();
+        if landmarks.len() < Self::MIN_LANDMARKS
+            || !landmarks
+                .iter()
+                .any(|landmark| landmark.kind() == LandmarkKind::Behavior)
+        {
+            return ClaimStatus::Unknown;
+        }
+        if landmarks
+            .iter()
+            .all(|landmark| landmark.evidence().verifies_original())
+        {
+            return ClaimStatus::VerifiedOriginal;
+        }
+        if landmarks
+            .iter()
+            .any(|landmark| matches!(landmark.evidence().source, EvidenceSource::SyntheticFixture))
+        {
+            return ClaimStatus::Unknown;
+        }
+        if landmarks
+            .iter()
+            .all(|landmark| matches!(landmark.evidence().source, EvidenceSource::Document(_)))
+        {
+            return ClaimStatus::Documented;
+        }
+        if landmarks
             .iter()
             .any(|landmark| matches!(landmark.evidence().source, EvidenceSource::ToolRun { .. }))
         {
