@@ -361,7 +361,8 @@ pub struct SubjectTextures {
     pub resolved_names: Vec<String>,
     /// Stored names that did not.
     pub unresolved_names: Vec<String>,
-    /// Every image bound, once.
+    /// Every image this container's materials bound, once (an image two
+    /// containers share is listed under both).
     pub images: Vec<BoundImage>,
     /// Every material kept neutral because its texture did not resolve.
     pub unresolved: Vec<UnresolvedMaterial>,
@@ -586,13 +587,17 @@ impl<'a> TextureBinder<'a> {
                 Some(name) => match self.archive.fetch(&name.name) {
                     Err((_, reason)) => unresolved(self, Some(name.name.clone()), reason),
                     Ok((id, decoded)) => {
-                        let (handle, key) = self.image_for(app, &id, &decoded);
+                        let (handle, bound) = self.image_for(app, &id, &decoded);
+                        let key = bound.key.clone();
                         let masked = keyed(&decoded);
                         let material = app
                             .world_mut()
                             .resource_mut::<Assets<StandardMaterial>>()
                             .add(textured_material(handle, masked));
                         let subject = self.subject(container);
+                        if !subject.images.iter().any(|image| image.key == bound.key) {
+                            subject.images.push(bound);
+                        }
                         subject.textured_materials += 1;
                         subject
                             .resolved_names
@@ -611,9 +616,9 @@ impl<'a> TextureBinder<'a> {
         app: &mut App,
         id: &TextureId,
         decoded: &DecodedImage,
-    ) -> (Handle<Image>, String) {
+    ) -> (Handle<Image>, BoundImage) {
         if let Some((handle, bound)) = self.images.get(&id.entry_index) {
-            return (handle.clone(), bound.key.clone());
+            return (handle.clone(), bound.clone());
         }
         let (image, translucent, note) = to_bevy_image(decoded);
         let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image);
@@ -624,9 +629,9 @@ impl<'a> TextureBinder<'a> {
             translucent_texels: translucent,
             coverage_note: note,
         };
-        let key = bound.key.clone();
-        self.images.insert(id.entry_index, (handle.clone(), bound));
-        (handle, key)
+        self.images
+            .insert(id.entry_index, (handle.clone(), bound.clone()));
+        (handle, bound)
     }
 
     /// Splits `world_mesh` into one part per stored material group and gives each
@@ -747,15 +752,6 @@ impl<'a> TextureBinder<'a> {
             subject.resolved_names.dedup();
             subject.unresolved_names.sort();
             subject.unresolved_names.dedup();
-        }
-        let image_entries: Vec<(usize, BoundImage)> = self
-            .images
-            .iter()
-            .map(|(entry, (_, bound))| (*entry, bound.clone()))
-            .collect();
-        // Images are shared by the archive, so every subject that bound one lists it.
-        for subject in self.subjects.values_mut() {
-            subject.images = image_entries.iter().map(|(_, b)| b.clone()).collect();
         }
         PlaytestTextureReport {
             claims: [
