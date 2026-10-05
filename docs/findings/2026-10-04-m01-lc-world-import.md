@@ -169,7 +169,9 @@ adapter — and `WorldPartitionCell::header_floats_are_interpreted()` returns
   the very id `catalog::baseline` gives the mesh — and the geometry is uploaded
   from the catalog's own `MeshUpload`. What is measured: the ids are catalog
   elements (every referenced id is among `MeshCatalog::records`), no
-  `<group>.mesh-<index>` name survives, the catalog and the container's session
+  `<group>.mesh-<index>` name survives in the world import (the retail playtest
+  scene, `playtest_retail`, still names its meshes that way and is not yet on the
+  catalog), the catalog and the container's session
   share a generation, the reference's source span names the same bytes as the
   catalog's container (the span itself is spelled as discovery spells it, not as a
   group member), and c1c still spawns **292** colliders. What is **not** measured:
