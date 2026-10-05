@@ -208,6 +208,12 @@ pub enum CampaignError {
         /// The granted item.
         item: ContentId,
     },
+    /// A persisted snapshot does not describe a state this graph could have
+    /// produced, so it is refused rather than resumed on.
+    CorruptSnapshot {
+        /// What did not hold together.
+        reason: String,
+    },
 }
 
 impl fmt::Display for CampaignError {
@@ -271,6 +277,9 @@ impl fmt::Display for CampaignError {
                 f,
                 "item {item} was granted, not bought: no paid price is recorded to refund"
             ),
+            Self::CorruptSnapshot { reason } => {
+                write!(f, "persisted campaign state is unusable: {reason}")
+            }
         }
     }
 }
@@ -284,6 +293,35 @@ pub struct AppliedOutcome {
     pub receipt: OutcomeReceipt,
     /// The profile revision after this call (unchanged when deduped).
     pub revision: u64,
+}
+
+/// A [`CampaignState`] as plain data: what the persistence boundary writes
+/// and reads. Built only by [`CampaignState::snapshot`] and resumed only
+/// through [`CampaignState::restore`], which validates it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignSnapshot {
+    /// The profile.
+    pub profile: ProfileId,
+    /// The run.
+    pub run: CampaignRunId,
+    /// The difficulty.
+    pub difficulty: DifficultyId,
+    /// The selected node.
+    pub current: CampaignNodeKey,
+    /// Per-mission records.
+    pub progress: Vec<(CampaignNodeKey, NodeProgress)>,
+    /// The balance in minor units.
+    pub currency: u64,
+    /// Owned items.
+    pub unlocks: Vec<ContentId>,
+    /// Price paid per bought item.
+    pub paid: Vec<(ContentId, u64)>,
+    /// The dedup ledger.
+    pub applied: Vec<OutcomeId>,
+    /// The profile revision.
+    pub revision: u64,
+    /// Whether a modified outcome touched the run.
+    pub modified: bool,
 }
 
 /// One run's progression state: the contract's `CampaignState` —
@@ -308,6 +346,93 @@ pub struct CampaignState {
 }
 
 impl CampaignState {
+    /// Every field of the state as plain data, for the persistence boundary.
+    /// The inverse of [`Self::restore`].
+    pub fn snapshot(&self) -> CampaignSnapshot {
+        CampaignSnapshot {
+            profile: self.profile.clone(),
+            run: self.run.clone(),
+            difficulty: self.difficulty.clone(),
+            current: self.current.clone(),
+            progress: self
+                .progress
+                .iter()
+                .map(|(node, progress)| (node.clone(), progress.clone()))
+                .collect(),
+            currency: self.currency,
+            unlocks: self.unlocks.iter().cloned().collect(),
+            paid: self.paid.iter().map(|(i, p)| (i.clone(), *p)).collect(),
+            applied: self.applied.iter().cloned().collect(),
+            revision: self.revision,
+            modified: self.modified,
+        }
+    }
+
+    /// Resumes a state from a persisted snapshot, checking it against the
+    /// graph it will run on: every named node must exist, the selected node
+    /// must be one the run can stand on, every paid item must be owned and
+    /// every applied outcome must belong to this `(profile, run)`. Anything
+    /// else is a save from a different campaign or a damaged one, and is
+    /// refused instead of resumed.
+    ///
+    /// # Errors
+    ///
+    /// [`CampaignError::CorruptSnapshot`].
+    pub fn restore(
+        graph: &CampaignGraph,
+        snapshot: CampaignSnapshot,
+    ) -> Result<Self, CampaignError> {
+        let corrupt = |reason: String| CampaignError::CorruptSnapshot { reason };
+        if graph.node(&snapshot.current).is_none() {
+            return Err(corrupt(format!(
+                "the selected node {} is not in the campaign",
+                snapshot.current
+            )));
+        }
+        let mut progress = BTreeMap::new();
+        for (node, record) in snapshot.progress {
+            if !graph
+                .node(&node)
+                .is_some_and(|n| matches!(n.kind, RuntimeNodeKind::Mission { .. }))
+            {
+                return Err(corrupt(format!("{node} has a record but is not a mission")));
+            }
+            if progress.insert(node.clone(), record).is_some() {
+                return Err(corrupt(format!("{node} is recorded twice")));
+            }
+        }
+        let unlocks: BTreeSet<ContentId> = snapshot.unlocks.into_iter().collect();
+        let mut paid = BTreeMap::new();
+        for (item, price) in snapshot.paid {
+            if !unlocks.contains(&item) {
+                return Err(corrupt(format!("{item} has a paid price but is not owned")));
+            }
+            paid.insert(item, price);
+        }
+        let mut applied = BTreeSet::new();
+        for id in snapshot.applied {
+            if id.profile != snapshot.profile || id.run != snapshot.run {
+                return Err(corrupt(
+                    "an applied outcome belongs to another run".to_owned(),
+                ));
+            }
+            applied.insert(id);
+        }
+        Ok(Self {
+            profile: snapshot.profile,
+            run: snapshot.run,
+            difficulty: snapshot.difficulty,
+            current: snapshot.current,
+            progress,
+            currency: snapshot.currency,
+            unlocks,
+            paid,
+            applied,
+            revision: snapshot.revision,
+            modified: snapshot.modified,
+        })
+    }
+
     /// Starts a run at the graph's entry node, which is never an interlude
     /// (`GraphError::InterludeEntry`), so the run is playable at once.
     pub fn begin(
