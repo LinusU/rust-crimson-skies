@@ -1682,6 +1682,36 @@ fn accept_m01_lc_anim_carriers_a_nonzero_byte_after_a_path_is_reported_not_decod
     );
 }
 
+/// The other two row anomalies: no retail row has either (the retail test
+/// asserts both counts are zero), so only a synthetic row can show that the
+/// reader flags them rather than passing them through as clean.
+#[test]
+fn accept_m01_lc_anim_carriers_an_unterminated_or_non_ascii_path_is_reported_not_trusted() {
+    let unterminated: &str = "a".repeat(80).leak();
+    let carrier = anim_container_bytes(
+        &[("zbd\\c1c\\gamez.zbd", 1), ("zbd\\planes.zbd", 2)],
+        &[(unterminated, 7), ("caf\u{e9}.zrd", 8), ("clean.zrd", 9)],
+        &carrier_payload(3, "reserved_anim_0"),
+    );
+    let index = read_synthetic_index("zbd/c1c/m01/mis_anim.zbd", synthetic_path(), &carrier)
+        .expect("the index reads");
+    let row = index.member(0).expect("row 0");
+    assert!(row.has_anomaly(AnimationRowAnomaly::UnterminatedPath));
+    assert!(!row.has_anomaly(AnimationRowAnomaly::NonAsciiPath));
+    assert_eq!(
+        row.path(),
+        unterminated.as_bytes(),
+        "the whole field is the path"
+    );
+    let row = index.member(1).expect("row 1");
+    assert!(row.has_anomaly(AnimationRowAnomaly::NonAsciiPath));
+    assert!(!row.has_anomaly(AnimationRowAnomaly::UnterminatedPath));
+    let row = index.member(2).expect("row 2");
+    assert!(!row.has_anomaly(AnimationRowAnomaly::UnterminatedPath));
+    assert!(!row.has_anomaly(AnimationRowAnomaly::NonAsciiPath));
+    assert_eq!(index.anomalous_rows().count(), 2);
+}
+
 /// The join itself: a full path binds to its row, a bare name resolves against
 /// the record's root, and the bound row reports which reference named it.
 #[test]
@@ -3252,6 +3282,7 @@ const M01LC_SYNTHETIC_TESTS: &[&str] = &[
     "accept_m01_lc_anim_carriers_an_animation_container_is_not_a_reader_archive",
     "accept_m01_lc_anim_carriers_the_index_lists_every_row_and_the_payload_header",
     "accept_m01_lc_anim_carriers_a_nonzero_byte_after_a_path_is_reported_not_decoded",
+    "accept_m01_lc_anim_carriers_an_unterminated_or_non_ascii_path_is_reported_not_trusted",
     "accept_m01_lc_anim_carriers_a_definition_file_binds_to_its_member_row",
     "accept_m01_lc_anim_carriers_a_joined_animation_path_offers_every_root_in_order",
     "accept_m01_lc_anim_carriers_a_reference_no_member_answers_is_reported_not_matched",
