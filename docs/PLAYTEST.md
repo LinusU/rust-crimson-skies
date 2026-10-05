@@ -13,6 +13,61 @@ cargo run --locked -p cs_app --bin cs -- --playtest
 It opens a native window with a yellow-and-red aircraft in open sky, a flat
 ground with reference lines and one large orange tower 450 m dead ahead.
 
+## Original-assets free flight (what you can test now)
+
+```sh
+cargo run --locked -p cs_app --bin cs -- --playtest --cs-path "$CS_GAME_DIR" --world c1c
+```
+
+Window title and banner: **ORIGINAL ASSETS / DEVELOPMENT FREE FLIGHT /
+PROVISIONAL TUNING**. You fly the original `bloodhawk` fuselage mesh
+(`ZBD/planes.zbd`, node `fuse03`, 140 triangles) beside one original airship
+of `ZBD/C1C/gamez.zbd` (subtree `piratezep`, 401 mesh records, 8 673
+triangles). The controls below are the same. The airship's colliders are derived
+from the triangles it draws: fly into it and the HUD counts an obstacle
+contact and the aircraft stops. `R` resets the aircraft only (the area is
+never respawned). `--aircraft bloodhawk` is the only documented aircraft and the
+default; `c1c` is the only documented world. Any other id is refused.
+
+An explicit `--cs-path` that is missing, is not an installation, or lacks
+`ZBD/C1C/gamez.zbd` / `ZBD/planes.zbd` exits non-zero with the reason and
+**never** falls back to the synthetic scene. Plain `--playtest` stays synthetic.
+On start the command prints `playtest sources: {...}` (installation fingerprint
+and the sha-256 of both containers); a smoke run records the same object in
+`report.json`.
+
+What is provisional (all labelled, none original behaviour):
+
+* Flight is the synthetic fixed-wing tuning, not the Bloodhawk's. It has no
+  attitude stability and its velocity follows the nose only slowly.
+* The aircraft's collider is a box measured from the one fuselage mesh (no
+  wings, propellers or canopy are drawn or collide).
+* Spawn: 0.6 area-widths off the airship's port side, 55 % up its height,
+  amidships, heading -Z (designed, `playtest_retail::spawn_pose`).
+* One neutral material, no textures, no lighting from the original, no sky or
+  ground: the area has no floor, so you fall or fly on until `R`.
+* World scale and handedness are a designed identity reading. No audio, no
+  mission scripts, no M01 setup, no other sectors, worlds or airframes.
+
+Tested at commit `66290057` (+ this document) on macOS 26, Apple M3 Pro GPU
+(Metal). A real windowed scripted run (the `cs` binary, same input -> F24 flight
+-> Avian -> chase camera route, **not** `human_play`): 120 simulated seconds,
+7 200 rendered frames, 6 pause/focus-loss cycles, 12 resets, 54 contacts with
+the airship, no panic, finite poses, 6 framebuffer PNGs. Private artifacts
+(ignored by Git): `private/playtest-retail/` (`report.json`, `trace.jsonl`,
+`frame_*.png`). Reproduce:
+
+```sh
+CS_PLAYTEST_RETAIL_OUT=$PWD/private/playtest-retail cargo test -p cs_app --locked \
+  --test playtest_retail_launch -- --include-ignored windowed
+cargo run --locked -p cs_app --bin cs -- --playtest --cs-path "$CS_GAME_DIR" \
+  --smoke-seconds 20 --capture-dir private/playtest-retail
+```
+
+The smoke exits non-zero on a panic, a non-finite pose, a missing player,
+camera or area, a missing container, an empty framebuffer, or a missing contact
+or reset. Nobody has played this by hand yet; that is for you.
+
 ## Controls (keyboard only)
 
 | Key | Action |

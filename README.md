@@ -24,7 +24,7 @@ No original assets, executables, extracted scripts, manuals or decompiled code a
 ## Try it
 
 A flyable development playtest (synthetic scene, not original data):
-`cargo run --locked -p cs_app --bin cs -- --playtest`. See [docs/PLAYTEST.md](docs/PLAYTEST.md).
+`cargo run --locked -p cs_app --bin cs -- --playtest`. With your installation: `cargo run --locked -p cs_app --bin cs -- --playtest --cs-path "$CS_GAME_DIR" --world c1c` flies an original aircraft mesh beside an original c1c airship. See [docs/PLAYTEST.md](docs/PLAYTEST.md).
 
 ## Running agents
 
