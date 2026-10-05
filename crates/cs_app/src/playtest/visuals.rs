@@ -19,7 +19,8 @@ use bevy::text::FontSize;
 use cs_content::cameras::AspectRatio;
 
 use super::scene::{PlaytestAircraft, PlaytestGround, PlaytestObstacle};
-use super::{PLAYTEST_LABEL, PlaytestCamera, PlaytestCameraMarker, PlaytestState};
+use super::retail::RetailContent;
+use super::{PlaytestCamera, PlaytestCameraMarker, PlaytestState};
 
 /// The camera's far plane: the ground slab is 20 km across.
 const FAR_PLANE_M: f32 = 40_000.0;
@@ -58,7 +59,8 @@ impl Plugin for PlaytestVisualsPlugin {
 #[derive(Component)]
 struct HudStatus;
 
-fn spawn_lights_and_hud(mut commands: Commands) {
+fn spawn_lights_and_hud(mut commands: Commands, state: Res<PlaytestState>) {
+    let label = state.label;
     commands.spawn((
         DirectionalLight {
             illuminance: 12_000.0,
@@ -84,7 +86,7 @@ fn spawn_lights_and_hud(mut commands: Commands) {
         })
         .with_children(|parent| {
             parent.spawn((
-                Text::new(PLAYTEST_LABEL),
+                Text::new(label),
                 font(22.0),
                 TextColor(Color::srgb(1.0, 0.85, 0.2)),
                 BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
@@ -200,12 +202,24 @@ fn attach_obstacle(
 fn attach_aircraft(
     mut commands: Commands,
     aircraft: Query<Entity, Added<PlaytestAircraft>>,
+    retail: Option<Res<RetailContent>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for entity in &aircraft {
         // The body has no mesh of its own; its parts inherit its visibility.
         commands.entity(entity).insert(Visibility::Inherited);
+        if let Some(retail) = &retail {
+            // The original fuselage mesh, turned so its stored nose is the
+            // body's forward axis (the designed half turn).
+            commands.spawn((
+                Mesh3d(retail.mesh.clone()),
+                MeshMaterial3d(retail.material.clone()),
+                Transform::from_rotation(retail.visual_rotation),
+                ChildOf(entity),
+            ));
+            continue;
+        }
         let yellow = materials.add(StandardMaterial {
             base_color: Color::srgb(0.95, 0.85, 0.15),
             ..default()

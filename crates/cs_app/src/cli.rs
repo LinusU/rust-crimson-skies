@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 
 use crate::playtest::smoke::MIN_SMOKE_SECONDS;
-use crate::playtest::{DEFAULT_CAPTURE_DIR, PlaytestRequest, SmokeRequest};
+use crate::playtest::{DEFAULT_CAPTURE_DIR, PlaytestRequest, RetailRequest, SmokeRequest};
 use crate::run::SyntheticRequest;
 
 /// Exit code for invalid input or unsupported content (CLI-EVIDENCE contract).
@@ -41,8 +41,10 @@ pub enum CliRequest {
     /// ticks, optionally recording a trace and optionally starting from a
     /// root seed.
     Synthetic(SyntheticRequest),
-    /// `--playtest [--smoke-seconds <n> [--capture-dir <dir>]]`: open the
-    /// windowed development playtest (task #647), or run its finite
+    /// `--playtest [--cs-path <dir> [--world <id>] [--aircraft <id>]]
+    /// [--smoke-seconds <n> [--capture-dir <dir>]]`: open the windowed
+    /// development playtest (task #647) over the synthetic scene or, with
+    /// `--cs-path`, over original assets (task #649), or run its finite
     /// deterministic smoke.
     Playtest(PlaytestRequest),
     /// No arguments at all: invalid input, reported on stderr and exit 2.
@@ -89,6 +91,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut playtest = false;
     let mut smoke_seconds: Option<u32> = None;
     let mut capture_dir: Option<PathBuf> = None;
+    let mut cs_path: Option<PathBuf> = None;
+    let mut world: Option<String> = None;
+    let mut aircraft: Option<String> = None;
     let mut unknown = false;
 
     let mut index = 0;
@@ -112,6 +117,17 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                             ),
                         };
                     }
+                }
+                values = 1;
+            }
+            "--cs-path" | "--world" | "--aircraft" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    return CliRequest::Unsupported { args };
+                };
+                match arg.as_str() {
+                    "--cs-path" => cs_path = Some(PathBuf::from(value)),
+                    "--world" => world = Some(value),
+                    _ => aircraft = Some(value),
                 }
                 values = 1;
             }
@@ -188,6 +204,22 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                     .to_string(),
             };
         }
+        let retail = match (cs_path, world, aircraft) {
+            (Some(cs_path), world, aircraft) => {
+                match RetailRequest::new(cs_path, world.as_deref(), aircraft.as_deref()) {
+                    Ok(request) => Some(request),
+                    Err(reason) => return CliRequest::Invalid { reason },
+                }
+            }
+            (None, None, None) => None,
+            (None, _, _) => {
+                return CliRequest::Invalid {
+                    reason: "--world and --aircraft select original content, which needs \
+ --cs-path <dir> (the plain --playtest is the synthetic scene)"
+                        .to_string(),
+                };
+            }
+        };
         let smoke = match smoke_seconds {
             Some(seconds) if seconds < MIN_SMOKE_SECONDS => {
                 return CliRequest::Invalid {
@@ -203,7 +235,14 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             }),
             None => None,
         };
-        return CliRequest::Playtest(PlaytestRequest { smoke });
+        return CliRequest::Playtest(PlaytestRequest { smoke, retail });
+    }
+    if cs_path.is_some() || world.is_some() || aircraft.is_some() {
+        return CliRequest::Invalid {
+            reason: "--cs-path, --world and --aircraft select the original-assets \
+ --playtest; the --mission run modes are not implemented here"
+                .to_string(),
+        };
     }
     if smoke_seconds.is_some() || capture_dir.is_some() {
         return CliRequest::Invalid {
@@ -296,6 +335,13 @@ WINDOWED PLAYTEST (development, not original)
         keyboard: W/S pitch, Q/E roll, A/D yaw, Left Shift / F throttle,
         R reset, Esc pause/resume, F10 quit. Needs no installation and no GPU
         capture; it is never original M01. See docs/PLAYTEST.md
+    --playtest --cs-path <dir> [--world c1c] [--aircraft bloodhawk]
+        The same flight loop over ORIGINAL assets read from the installation at
+        <dir> (read-only): one documented area of the c1c world with colliders
+        derived from its drawn triangles, and the original bloodhawk fuselage
+        mesh as the player aircraft, labelled ORIGINAL ASSETS / DEVELOPMENT
+        FREE FLIGHT / PROVISIONAL TUNING. A missing or unusable <dir> exits
+        non-zero; it never falls back to the synthetic scene
     --playtest --smoke-seconds <n> [--capture-dir <dir>]
         Run the scripted, deterministic smoke (n >= 20 simulated seconds) in
         the same window path: it injects keys through the real input path,

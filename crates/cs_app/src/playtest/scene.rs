@@ -8,6 +8,7 @@ use bevy::prelude::{Component, Entity, World};
 use cs_sim::collision::CollisionLayer;
 use cs_sim::flight::{EngineState, FlightModel, synthetic_fixed_wing};
 
+use super::retail::RetailContent;
 use crate::physics::{
     BodyError, BodyMode, BodySpec, FlightSpawnError, FlightSpawnSpec, spawn_body, spawn_flight_body,
 };
@@ -112,9 +113,18 @@ pub fn spawn_world(world: &mut World) -> Result<(), SceneError> {
 
 /// Spawns the player aircraft through the production flight path in the known
 /// flyable state: level, at cruise speed and cruise throttle, heading -Z.
+///
+/// Over original content ([`RetailContent`]) the spawn point is the designed
+/// pose in the area's frame and the collider is the box measured from the
+/// aircraft's own mesh; the flight model is still the synthetic fixed-wing.
 pub fn spawn_aircraft(world: &mut World) -> Result<Entity, SceneError> {
-    let mut spec = FlightSpawnSpec::level_at(SPAWN_POSITION_M, [0.0, 0.0, -SPAWN_SPEED_M_S]);
-    spec.half_extents_m = AIRCRAFT_HALF_EXTENTS_M;
+    let (position, half_extents) = world
+        .get_resource::<RetailContent>()
+        .map_or((SPAWN_POSITION_M, AIRCRAFT_HALF_EXTENTS_M), |retail| {
+            (retail.spawn_m, retail.half_extents_m)
+        });
+    let mut spec = FlightSpawnSpec::level_at(position, [0.0, 0.0, -SPAWN_SPEED_M_S]);
+    spec.half_extents_m = half_extents;
     spec.engine = EngineState::direct(f64::from(super::command::CRUISE_THROTTLE));
     spec.command = cs_sim::flight::FlightInput::try_new(
         0.0,

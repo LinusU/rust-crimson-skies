@@ -1690,6 +1690,27 @@ pub fn spawn_playtest_scene(
     sources: &PlaytestSources,
     config: &PlaytestConfig,
 ) -> Result<PlaytestScene, PlaytestError> {
+    let content = spawn_playtest_content(app, sources, config)?;
+    place_capture_scene(app, sources, config, content)
+}
+
+/// Steps 1–3 of [`spawn_playtest_scene`] and the aircraft mesh upload, without
+/// the aircraft entity, the camera or the lights: the original area spawned
+/// into `app` as world records with mesh-derived colliders, and the aircraft's
+/// mesh uploaded as an engine asset.
+///
+/// The free-flight playtest (`cs --playtest --cs-path`) builds on this: it owns
+/// the aircraft as a flight body and the camera as the chase rig, so it must not
+/// get the capture scene's static aircraft entity or capture camera.
+///
+/// # Errors
+///
+/// The refusals [`spawn_playtest_scene`] documents for steps 1–3.
+pub fn spawn_playtest_content(
+    app: &mut App,
+    sources: &PlaytestSources,
+    config: &PlaytestConfig,
+) -> Result<PlaytestContent, PlaytestError> {
     let adapter = playtest_adapter()?;
     let (graph, root) = area_graph(sources.world(), config.area_node_slot, &adapter)?;
     let root_name = graph
@@ -1910,38 +1931,6 @@ pub fn spawn_playtest_scene(
                 .insert(MeshMaterial3d(world_material.clone()));
         }
     }
-    let aircraft_entity = app
-        .world_mut()
-        .spawn((
-            Mesh3d(handle),
-            MeshMaterial3d(aircraft_material),
-            Transform::from_translation(bevy::math::Vec3::from(spawn)).with_rotation(rotation),
-        ))
-        .id();
-    entities.push(aircraft_entity);
-
-    // -- the camera and the lights ------------------------------------------
-    let views = camera_poses(
-        &bounds,
-        spawn,
-        [
-            aircraft_extent[0] as f32,
-            aircraft_extent[1] as f32,
-            aircraft_extent[2] as f32,
-        ],
-    )?;
-    let (width, height) = config.capture_size();
-    let (camera, lights, target) = add_camera_and_lights(app, &views[0], width, height);
-    entities.push(camera);
-    entities.extend(lights.iter().copied());
-
-    let material = PlaytestMaterial::neutral(vec![
-        (
-            sources.world().container_key().to_owned(),
-            meshes.len().saturating_sub(1),
-        ),
-        (sources.aircraft().container_key().to_owned(), 1),
-    ]);
     let report = PlaytestAreaReport {
         world: world.clone(),
         node_slot: config.area_node_slot,
@@ -1966,6 +1955,101 @@ pub fn spawn_playtest_scene(
         fingerprint: aircraft_fingerprint,
         composed_translation_m: composed,
     };
+    Ok(PlaytestContent {
+        definition,
+        spawned,
+        entities,
+        report,
+        aircraft,
+        aircraft_mesh: handle,
+        aircraft_material,
+        world_meshes: meshes.len().saturating_sub(1),
+        spawn,
+        rotation,
+        adapter,
+    })
+}
+
+/// What [`spawn_playtest_content`] spawned and measured: the area's records,
+/// the aircraft's uploaded mesh and the designed spawn pose, with nothing yet
+/// placed for the aircraft itself.
+pub struct PlaytestContent {
+    /// The world definition the area's records were spawned from.
+    pub definition: WorldDefinition,
+    /// The spawned records, each with the collider derived from its mesh.
+    pub spawned: SpawnedWorld,
+    /// Every entity this content created (released by teardown).
+    pub entities: Vec<Entity>,
+    /// What the area read and spawned.
+    pub report: PlaytestAreaReport,
+    /// What the aircraft read.
+    pub aircraft: PlaytestAircraftReport,
+    /// The aircraft's engine mesh.
+    pub aircraft_mesh: Handle<Mesh>,
+    /// The development material the aircraft mesh is drawn with.
+    pub aircraft_material: Handle<StandardMaterial>,
+    /// How many distinct area meshes were uploaded (the aircraft's is not one).
+    pub world_meshes: usize,
+    /// The designed spawn position (see [`spawn_pose`]), in metres.
+    pub spawn: [f32; 3],
+    /// The designed half turn mapping the stored nose onto forward.
+    pub rotation: bevy::math::Quat,
+    /// The coordinate source the geometry was read under.
+    pub adapter: SourceAdapter,
+}
+
+/// Step 4 of [`spawn_playtest_scene`]: the static aircraft entity, the camera and
+/// the lights of the capture scene.
+fn place_capture_scene(
+    app: &mut App,
+    sources: &PlaytestSources,
+    config: &PlaytestConfig,
+    content: PlaytestContent,
+) -> Result<PlaytestScene, PlaytestError> {
+    let PlaytestContent {
+        definition,
+        spawned,
+        mut entities,
+        report,
+        aircraft,
+        aircraft_mesh,
+        aircraft_material,
+        world_meshes,
+        spawn,
+        rotation,
+        adapter,
+    } = content;
+    let bounds = report.bounds.clone();
+    let aircraft_extent = aircraft.extent_m;
+    let aircraft_entity = app
+        .world_mut()
+        .spawn((
+            Mesh3d(aircraft_mesh),
+            MeshMaterial3d(aircraft_material),
+            Transform::from_translation(bevy::math::Vec3::from(spawn)).with_rotation(rotation),
+        ))
+        .id();
+    entities.push(aircraft_entity);
+
+    // -- the camera and the lights ------------------------------------------
+    let views = camera_poses(
+        &bounds,
+        spawn,
+        [
+            aircraft_extent[0] as f32,
+            aircraft_extent[1] as f32,
+            aircraft_extent[2] as f32,
+        ],
+    )?;
+    let (width, height) = config.capture_size();
+    let (camera, lights, target) = add_camera_and_lights(app, &views[0], width, height);
+    entities.push(camera);
+    entities.extend(lights.iter().copied());
+
+    let material = PlaytestMaterial::neutral(vec![
+        (sources.world().container_key().to_owned(), world_meshes),
+        (sources.aircraft().container_key().to_owned(), 1),
+    ]);
     Ok(PlaytestScene {
         config: config.clone(),
         definition,

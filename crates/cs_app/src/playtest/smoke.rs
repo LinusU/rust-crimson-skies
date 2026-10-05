@@ -30,8 +30,9 @@ use bevy::prelude::{
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy::window::WindowFocused;
 
-use super::scene::{PlaytestAircraft, SPAWN_POSITION_M};
-use super::{PLAYTEST_LABEL, PlaytestError, PlaytestState, SmokeRequest};
+use super::retail::{self, RetailContent};
+use super::scene::PlaytestAircraft;
+use super::{PlaytestCamera, PlaytestError, PlaytestState, SmokeRequest};
 use crate::input::platform::PlatformInput;
 use crate::physics::PhysicsTickLedger;
 
@@ -62,7 +63,21 @@ fn frame_of(seconds: f64) -> u32 {
     (seconds * SMOKE_FRAME_HZ).round() as u32
 }
 
+/// Simulated seconds one pass of [`script`] takes.
+pub const CYCLE_SECONDS: u32 = 20;
+
+/// How many whole passes of the script a run of `seconds` holds: a 2-minute run
+/// is six passes, each with its pauses and its two resets.
+#[must_use]
+pub const fn cycles(seconds: u32) -> u32 {
+    seconds / CYCLE_SECONDS
+}
+
 /// The scripted sequence as `(frame, step)`, sorted by frame.
+///
+/// `steer_into_area` holds yaw-right through the second half of every pass, which
+/// is how the original-assets run reaches the area's own collider (the aircraft
+/// spawns alongside it); the synthetic wall is dead ahead and needs no steering.
 ///
 /// | seconds | action |
 /// | --- | --- |
@@ -77,11 +92,21 @@ fn frame_of(seconds: f64) -> u32 {
 /// | 10.5 | `R` reset |
 /// | 10.5 – 19.5 | neutral: the aircraft flies into the wall |
 /// | 19.5 | `R` reset again |
-fn script() -> Vec<(u32, Step)> {
+///
+/// The pass repeats every [`CYCLE_SECONDS`] for as long as the run lasts.
+fn script(cycles: u32, steer_into_area: bool) -> Vec<(u32, Step)> {
     let mut steps = Vec::new();
+    for cycle in 0..cycles.max(1) {
+        pass(&mut steps, f64::from(cycle * CYCLE_SECONDS), steer_into_area);
+    }
+    steps.sort_by_key(|(frame, _)| *frame);
+    steps
+}
+
+fn pass(steps: &mut Vec<(u32, Step)>, at: f64, steer_into_area: bool) {
     let mut hold = |key, from: f64, to: f64| {
-        steps.push((frame_of(from), Step::Press(key)));
-        steps.push((frame_of(to), Step::Release(key)));
+        steps.push((frame_of(at + from), Step::Press(key)));
+        steps.push((frame_of(at + to), Step::Release(key)));
     };
     hold(KeyCode::KeyS, 1.0, 3.0);
     hold(KeyCode::KeyE, 4.0, 5.0);
@@ -93,10 +118,12 @@ fn script() -> Vec<(u32, Step)> {
     hold(KeyCode::Escape, 9.0, 9.1);
     hold(KeyCode::KeyR, 10.5, 10.6);
     hold(KeyCode::KeyR, 19.5, 19.6);
-    steps.push((frame_of(9.5), Step::Focus(false)));
-    steps.push((frame_of(10.0), Step::Focus(true)));
-    steps.sort_by_key(|(frame, _)| *frame);
-    steps
+    if steer_into_area {
+        hold(KeyCode::KeyD, 10.7, 12.5);
+        hold(KeyCode::KeyE, 12.5, 15.0);
+    }
+    steps.push((frame_of(at + 9.5), Step::Focus(false)));
+    steps.push((frame_of(at + 10.0), Step::Focus(true)));
 }
 
 /// One trace record.
@@ -187,6 +214,11 @@ pub struct SmokeReport {
     pub max_distance_m: f32,
     /// The screenshots taken.
     pub shots: Vec<ShotRecord>,
+    /// The label the run flew under.
+    pub label: &'static str,
+    /// The original-assets source manifest (a JSON object), when flown over
+    /// original content.
+    pub retail: Option<String>,
     /// Every failed check; empty means the run passed.
     pub failures: Vec<String>,
 }
@@ -251,6 +283,7 @@ struct SmokeConfig {
 
 impl Plugin for SmokePlugin {
     fn build(&self, app: &mut App) {
+        let retail_run = app.world().contains_resource::<RetailContent>();
         let shots = [
             (0.5, "initial"),
             (2.5, "pitch_up"),
@@ -264,7 +297,7 @@ impl Plugin for SmokePlugin {
             request: self.request.clone(),
             capture: self.capture,
             handle: self.handle.clone(),
-            script: script(),
+            script: script(cycles(self.request.seconds), retail_run),
             shots,
         })
         .init_resource::<SmokeShots>()
@@ -349,6 +382,9 @@ fn smoke_step(
     mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
     aircraft: Query<&Position, With<PlaytestAircraft>>,
+    camera: Res<PlaytestCamera>,
+    retail: Option<Res<RetailContent>>,
+    area: Query<(), (With<retail::PlaytestAreaBody>, With<avian3d::prelude::Collider>)>,
 ) {
     let frame = script.frame;
     data.frames = frame;
@@ -413,7 +449,13 @@ fn smoke_step(
     let delivered = shots.0.lock().map_or(0, |shots| shots.len());
     let finished_capturing = !config.capture || delivered >= data.shots_requested;
     if frame >= end_frame && (finished_capturing || frame >= end_frame + SCREENSHOT_GRACE_FRAMES) {
-        let report = evaluate(&config, &state, &ledger, &data, &shots);
+        let facts = Facts {
+            camera_frame: camera.frame.is_some(),
+            retail: retail.as_ref().map(|content| content.manifest_json()),
+            area_records: retail.as_ref().map(|content| content.area.mesh_records),
+            area_colliders: area.iter().count(),
+        };
+        let report = evaluate(&config, &state, &ledger, &data, &shots, &facts);
         let outcome = write_artifacts(&config.request.capture_dir, &data, &report)
             .map(|()| report.clone())
             .map_err(|(path, error)| format!("cannot write {}: {error}", path.display()));
@@ -475,12 +517,24 @@ fn sample_at(samples: &[Sample], seconds: f64) -> Option<&Sample> {
         .min_by_key(|sample| sample.frame.abs_diff(frame))
 }
 
+/// What the run read off the world at its end, besides the trace.
+struct Facts {
+    camera_frame: bool,
+    /// The source manifest, when flown over original content.
+    retail: Option<String>,
+    /// How many mesh records the original area spawned.
+    area_records: Option<usize>,
+    /// How many area entities carry a derived collider.
+    area_colliders: usize,
+}
+
 fn evaluate(
     config: &SmokeConfig,
     state: &PlaytestState,
     ledger: &PhysicsTickLedger,
     data: &SmokeData,
     shots: &SmokeShots,
+    facts: &Facts,
 ) -> SmokeReport {
     let shots = shots
         .0
@@ -493,7 +547,7 @@ fn evaluate(
         .iter()
         .map(|sample| {
             (0..3)
-                .map(|axis| (sample.position_m[axis] - SPAWN_POSITION_M[axis]).powi(2))
+                .map(|axis| (sample.position_m[axis] - state.spawn_m[axis]).powi(2))
                 .sum::<f32>()
                 .sqrt()
         })
@@ -521,6 +575,32 @@ fn evaluate(
             }
         }
     }
+    if data.samples.is_empty() {
+        failures.push("the run never saw a player aircraft".to_owned());
+    }
+    if let Some(sample) = data.samples.iter().find(|sample| {
+        sample
+            .position_m
+            .iter()
+            .chain([&sample.speed_m_s, &sample.pitch_deg, &sample.roll_deg, &sample.heading_deg])
+            .any(|value| !value.is_finite())
+    }) {
+        failures.push(format!(
+            "the aircraft pose was not finite at frame {}",
+            sample.frame
+        ));
+    }
+    if !facts.camera_frame {
+        failures.push("the chase camera never resolved a frame".to_owned());
+    }
+    if let Some(records) = facts.area_records
+        && (records == 0 || facts.area_colliders == 0)
+    {
+        failures.push(format!(
+            "the original area has {records} records and {} derived colliders",
+            facts.area_colliders
+        ));
+    }
     if max_distance_m < 200.0 {
         failures.push(format!(
             "the aircraft never left its spawn point (max distance {max_distance_m:.1} m)"
@@ -532,8 +612,12 @@ fn evaluate(
             state.input_changes
         ));
     }
-    if state.resets != 2 {
-        failures.push(format!("expected 2 resets, saw {}", state.resets));
+    let expected_resets = 2 * cycles(config.request.seconds);
+    if state.resets != expected_resets {
+        failures.push(format!(
+            "expected {expected_resets} resets, saw {}",
+            state.resets
+        ));
     }
     if state.obstacle_contacts == 0 {
         failures.push("the aircraft never collided with the obstacle".to_owned());
@@ -590,6 +674,8 @@ fn evaluate(
         real_focus_overrides: data.real_focus_overrides,
         max_distance_m,
         shots,
+        label: state.label,
+        retail: facts.retail.clone(),
         failures,
     }
 }
@@ -628,7 +714,7 @@ fn write_artifacts(
     std::fs::create_dir_all(dir).map_err(|error| (dir.to_path_buf(), error))?;
     let mut trace = format!(
         "{{\"kind\":\"playtest-smoke-trace\",\"provenance\":{},\"frame_hz\":{}}}\n",
-        json_string(PLAYTEST_LABEL),
+        json_string(report.label),
         SMOKE_FRAME_HZ
     );
     for sample in &data.samples {
@@ -680,8 +766,8 @@ fn write_artifacts(
         .collect::<Vec<_>>()
         .join(",");
     let body = format!(
-        "{{\"kind\":\"playtest-smoke-report\",\"provenance\":{},\"human_play\":false,\"frames\":{},\"ticks\":{},\"input_changes\":{},\"resets\":{},\"obstacle_contacts\":{},\"ground_contacts\":{},\"ticks_while_paused\":{},\"real_focus_overrides\":{},\"max_distance_m\":{},\"shots\":[{}],\"failures\":[{}],\"passed\":{}}}\n",
-        json_string(PLAYTEST_LABEL),
+        "{{\"kind\":\"playtest-smoke-report\",\"provenance\":{},\"human_play\":false,\"frames\":{},\"ticks\":{},\"input_changes\":{},\"resets\":{},\"obstacle_contacts\":{},\"ground_contacts\":{},\"ticks_while_paused\":{},\"real_focus_overrides\":{},\"max_distance_m\":{},\"retail\":{},\"shots\":[{}],\"failures\":[{}],\"passed\":{}}}\n",
+        json_string(report.label),
         report.frames,
         report.ticks,
         report.input_changes,
@@ -691,6 +777,7 @@ fn write_artifacts(
         report.ticks_while_paused,
         report.real_focus_overrides,
         json_f32(report.max_distance_m),
+        report.retail.as_deref().unwrap_or("null"),
         shots,
         failures,
         report.failures.is_empty(),
@@ -712,7 +799,8 @@ pub fn finish(handle: &SmokeHandle, request: &SmokeRequest) -> Result<SmokeRepor
         .ok_or_else(|| PlaytestError::Exit("the smoke run ended before it finished".to_owned()))?;
     let report = outcome.map_err(PlaytestError::Exit)?;
     println!(
-        "playtest smoke: {PLAYTEST_LABEL}\n  frames {} ticks {} input changes {} resets {} obstacle contacts {} ground contacts {}\n  max distance from spawn {:.0} m, framebuffers {} ({}), artifacts in {}",
+        "playtest smoke: {}\n  frames {} ticks {} input changes {} resets {} obstacle contacts {} ground contacts {}\n  max distance from spawn {:.0} m, framebuffers {} ({}), artifacts in {}",
+        report.label,
         report.frames,
         report.ticks,
         report.input_changes,

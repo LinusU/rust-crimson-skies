@@ -28,6 +28,7 @@
 //! deterministic run. [`run_playtest`] is what `cs --playtest` calls.
 
 pub mod command;
+pub mod retail;
 pub mod scene;
 pub mod smoke;
 pub mod visuals;
@@ -41,7 +42,7 @@ use bevy::app::{AppExit, RunFixedMainLoop, RunFixedMainLoopSystems};
 use bevy::input::ButtonInput;
 use bevy::input::keyboard::KeyCode;
 use bevy::prelude::{
-    App, Entity, FixedLast, IntoScheduleConfigs, Plugin, Quat, Query, Res, ResMut, Resource,
+    App, Entity, FixedLast, IntoScheduleConfigs, Or, Plugin, Quat, Query, Res, ResMut, Resource,
     Startup, Time, Transform, Update, Vec3, With, World,
 };
 use bevy::time::{Fixed, Real, TimeUpdateStrategy, Virtual};
@@ -64,7 +65,9 @@ use crate::physics::{
     PhysicsBodiesPlugin, PhysicsTickLedger,
 };
 
+pub use self::retail::RetailRequest;
 use self::command::{CRUISE_THROTTLE, flight_command, playtest_action_map};
+use self::retail::{PlaytestAreaBody, RetailContent};
 use self::scene::{PlaytestAircraft, PlaytestGround, PlaytestObstacle};
 
 /// The label shown on screen and in every artifact of the playtest.
@@ -76,6 +79,9 @@ pub struct PlaytestRequest {
     /// `Some` runs the finite deterministic smoke instead of the open-ended
     /// interactive session.
     pub smoke: Option<SmokeRequest>,
+    /// `Some` flies over original assets read from the named installation
+    /// (task #649) instead of the synthetic scene.
+    pub retail: Option<RetailRequest>,
 }
 
 /// The finite smoke run (`--smoke-seconds <n> --capture-dir <dir>`).
@@ -96,6 +102,12 @@ pub const DEFAULT_CAPTURE_DIR: &str = "private/playtest";
 pub enum PlaytestError {
     /// The scene could not be built.
     Scene(scene::SceneError),
+    /// The explicit original installation could not be used. There is no
+    /// fallback to the synthetic scene.
+    Retail {
+        path: PathBuf,
+        source: crate::playtest_retail::PlaytestError,
+    },
     /// The smoke run could not write its artifacts.
     Io {
         path: PathBuf,
@@ -111,6 +123,11 @@ impl std::fmt::Display for PlaytestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Scene(error) => write!(f, "{error}"),
+            Self::Retail { path, source } => write!(
+                f,
+                "cannot fly the original assets of {} (no fallback to the synthetic scene): {source}",
+                path.display()
+            ),
             Self::Io { path, source } => write!(f, "cannot write {}: {source}", path.display()),
             Self::SmokeFailed(failures) => {
                 write!(f, "playtest smoke failed: {}", failures.join("; "))
@@ -173,6 +190,10 @@ pub struct PlaytestState {
     pub quit_requested: bool,
     /// The latest aircraft readout.
     pub telemetry: Telemetry,
+    /// Where the aircraft spawns and resets to, metres.
+    pub spawn_m: [f32; 3],
+    /// The label every surface shows.
+    pub label: &'static str,
 }
 
 impl Default for PlaytestState {
@@ -189,6 +210,8 @@ impl Default for PlaytestState {
             ticks_while_paused: 0,
             quit_requested: false,
             telemetry: Telemetry::default(),
+            spawn_m: scene::SPAWN_POSITION_M,
+            label: PLAYTEST_LABEL,
         }
     }
 }
@@ -301,7 +324,11 @@ pub fn headless_app_with(configure: impl FnOnce(&mut App)) -> App {
 }
 
 fn setup_scene(world: &mut World) {
-    scene::spawn_world(world).expect("the playtest world is valid");
+    // Over original content the area is already spawned (and recorded as
+    // `RetailContent`); the synthetic ground and wall exist only without it.
+    if !world.contains_resource::<RetailContent>() {
+        scene::spawn_world(world).expect("the playtest world is valid");
+    }
     scene::spawn_aircraft(world).expect("the playtest aircraft is valid");
     world.spawn((PlaytestCameraMarker, Transform::default()));
 }
@@ -419,7 +446,7 @@ fn sync_pause(
 fn record_collisions(
     reports: Res<ContactReports>,
     ledger: Res<PhysicsTickLedger>,
-    obstacles: Query<(), With<PlaytestObstacle>>,
+    obstacles: Query<(), Or<(With<PlaytestObstacle>, With<PlaytestAreaBody>)>>,
     grounds: Query<(), With<PlaytestGround>>,
     mut state: ResMut<PlaytestState>,
 ) {
@@ -533,12 +560,26 @@ fn follow_camera(
 
 /// Builds the windowed app: the real window, renderer and wall-clock fixed
 /// loop, with the playtest on top.
-pub fn windowed_app(smoke: Option<&SmokeRequest>) -> (App, Option<smoke::SmokeHandle>) {
+///
+/// # Errors
+///
+/// [`PlaytestError::Retail`] when `retail` names an installation that cannot be
+/// read, **before** any window exists.
+pub fn windowed_app(
+    smoke: Option<&SmokeRequest>,
+    retail: Option<&RetailRequest>,
+) -> Result<(App, Option<smoke::SmokeHandle>), PlaytestError> {
     use bevy::prelude::{DefaultPlugins, PluginGroup, Window, WindowPlugin};
+    let sources = retail.map(retail::read_sources).transpose()?;
+    let label = if retail.is_some() {
+        retail::RETAIL_LABEL
+    } else {
+        PLAYTEST_LABEL
+    };
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: format!("Crimson Skies — {PLAYTEST_LABEL}"),
+            title: format!("Crimson Skies — {label}"),
             resolution: (1280, 720).into(),
             ..Window::default()
         }),
@@ -554,13 +595,16 @@ pub fn windowed_app(smoke: Option<&SmokeRequest>) -> (App, Option<smoke::SmokeHa
     }
     app.add_plugins(PlaytestPlugin);
     app.add_plugins(visuals::PlaytestVisualsPlugin);
+    if let (Some(request), Some(sources)) = (retail, &sources) {
+        retail::install(&mut app, sources, request)?;
+    }
     let handle = smoke.map(|request| {
         let plugin = smoke::SmokePlugin::windowed(request.clone());
         let handle = plugin.handle();
         app.add_plugins(plugin);
         handle
     });
-    (app, handle)
+    Ok((app, handle))
 }
 
 /// Runs `cs --playtest`: opens the window and blocks until it closes (or the
@@ -571,7 +615,10 @@ pub fn windowed_app(smoke: Option<&SmokeRequest>) -> (App, Option<smoke::SmokeHa
 /// [`PlaytestError`] when the smoke run fails its own checks or cannot write
 /// its artifacts, or the app exits with an error.
 pub fn run_playtest(request: &PlaytestRequest) -> Result<(), PlaytestError> {
-    let (mut app, handle) = windowed_app(request.smoke.as_ref());
+    let (mut app, handle) = windowed_app(request.smoke.as_ref(), request.retail.as_ref())?;
+    if let Some(content) = app.world().get_resource::<RetailContent>() {
+        println!("playtest sources: {}", content.manifest_json());
+    }
     let exit = app.run();
     if let (Some(handle), Some(smoke_request)) = (&handle, &request.smoke) {
         smoke::finish(handle, smoke_request)?;
