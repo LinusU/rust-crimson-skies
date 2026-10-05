@@ -105,7 +105,7 @@ use cs_types::content::{
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 use cs_types::space::SpaceError;
 
-use crate::coordinates::SourceAdapter;
+use crate::coordinates::{CalibratedQuantity, SourceAdapter};
 use crate::scene::{
     BindingMap, CanonicalTransform, GameZSceneError, MeshSlot, ParsedNode, SceneError, SceneGraph,
     parsed_nodes_from_gamez,
@@ -4661,13 +4661,19 @@ pub const PARTITION_GRID_IS_THE_SECTOR_INDEX: &str = "f18-world.partition-grid-i
 /// about **this** conversion, not about how the 2000 engine collided.
 pub const INDEXED_RECORD_IS_STATIC: &str = "f18-world.indexed-record-is-static";
 
-/// The original's world-vertex unit, coordinate handedness and axis order.
+/// The original's coordinate handedness, axis order and angle unit — and, for
+/// a conversion that never measured it, the world-vertex unit.
 ///
-/// Unmeasured: nothing in the container states a length in a unit anyone has
-/// tied to a known size, and no original run happened. The import takes its
-/// conversion from the caller's [`SourceAdapter`] and reports the factor it
-/// used, so a consumer always knows which number turned stored units into
-/// numbers.
+/// The **unit** is measured: task #677 pinned one stored GameZ unit to the
+/// metre over five independent landmark censuses
+/// ([`crate::coordinates::GAMEZ_VERTEX_UNIT_IS_THE_METRE`], at
+/// `observed_tool`). What remains unmeasured under this claim is the rest of
+/// the convention — the container family stores no handedness, axis-order or
+/// angle-unit declaration anyone has tied to an original behavior. The import
+/// takes its conversion from the caller's [`SourceAdapter`] and reports both
+/// the factor it used and that quantity's own evidence class, so a consumer
+/// always knows which number turned stored units into numbers and how strong
+/// its evidence is.
 pub const WORLD_UNIT_UNMEASURED: &str = "f18-world.unit-unmeasured";
 
 /// The original's world floor, ceiling and lateral rules.
@@ -4692,7 +4698,34 @@ pub const WORLD_SURFACE_UNMEASURED: &str = "f18-world.surface-unmeasured";
 /// objects (they are the world node's own children) with this claim id on their
 /// collision role, so a consumer sees "the container did not say" instead of a
 /// world in which every effect blocks a plane.
+///
+/// The claim is kept for the records that still need it — an unindexed record
+/// that **does** store collision geometry (a mesh, an extent or both) could be
+/// a wall, a sensor or a decoration and the container does not say which. An
+/// unindexed record that stores *neither* resolves to `None` under
+/// [`UNINDEXED_RECORD_STORES_NO_GEOMETRY`].
 pub const UNINDEXED_ROLE_UNMEASURED: &str = "f18-world.unindexed-collision-role-unmeasured";
+
+/// An unindexed record that binds no mesh and stores no extent carries no
+/// collision geometry of its own, so its role resolves to `None`.
+///
+/// **Designed resolution over a measured fact.** Measured over all eight world
+/// containers of the original installation (task #677): every record the
+/// partition grid omits stores *either* a mesh index and a non-zero `unk140`
+/// bounding box *or* neither of them — the corpus contains no unindexed record
+/// carrying only one of the two. For the no-mesh, no-extent half — the
+/// `horizon`, the `g*` transform groups, the zeppelin and vehicle anchors —
+/// the store gives this record nothing a collider could be built from:
+/// `FromMesh` has no mesh to derive from and a `Cuboid` has no extent to fill.
+/// [`WorldCollisionRole::None`] is therefore what the record itself states:
+/// presented, never blocking, never reporting a contact.
+///
+/// The claim is about **this record's own geometry only**. The content parked
+/// under such an anchor — the airship the `*zep` record parents, the instances
+/// a `g*` group scatters — is other records' business (the actor and animation
+/// surfaces measure those), and does not change what *this* record bounds.
+pub const UNINDEXED_RECORD_STORES_NO_GEOMETRY: &str =
+    "f18-world.unindexed-record-stores-no-geometry";
 
 /// The identity of an imported world object is its container's own node slot.
 ///
@@ -5204,6 +5237,8 @@ pub struct WorldImportReport {
     objects_in_a_sector: usize,
     objects_resident: usize,
     objects_solid: usize,
+    objects_unindexed_none: usize,
+    objects_unindexed_unresolved: usize,
     sectors: usize,
     sectors_without_extent: usize,
     mesh_binding_records_elsewhere: usize,
@@ -5292,6 +5327,23 @@ impl WorldImportReport {
         self.objects_solid
     }
 
+    /// How many unindexed records resolved to `None` — the anchors, groups and
+    /// dummies that store no geometry of their own
+    /// ([`UNINDEXED_RECORD_STORES_NO_GEOMETRY`], task #677).
+    #[must_use]
+    pub const fn objects_unindexed_none(&self) -> usize {
+        self.objects_unindexed_none
+    }
+
+    /// How many unindexed records still carry `Unknown` — the ones that store
+    /// collision geometry (a mesh, an extent or both) without a class saying
+    /// what the engine did with it ([`UNINDEXED_ROLE_UNMEASURED`], task #677's
+    /// `fvol*` census).
+    #[must_use]
+    pub const fn objects_unindexed_unresolved(&self) -> usize {
+        self.objects_unindexed_unresolved
+    }
+
     /// How many sectors the definition declares.
     ///
     /// Equal to the cell count minus [`Self::sectors_without_extent`]: a cell
@@ -5340,9 +5392,12 @@ impl WorldImportReport {
 
     /// How strong the evidence behind that factor is.
     ///
-    /// `Unknown` for every conversion this workspace has declared so far,
-    /// including the one the original's geometry needs: the original's
-    /// world-vertex unit is unmeasured ([`WORLD_UNIT_UNMEASURED`]).
+    /// The **scale quantity's** own class, not the whole convention's: a
+    /// source whose axis map or angle unit is unmeasured can still have a
+    /// measured unit, and this accessor names which. `Unknown` for every
+    /// declared fixture conversion ([`WORLD_UNIT_UNMEASURED`]); the measured
+    /// GameZ source reports `ObservedTool`
+    /// ([`crate::coordinates::GAMEZ_VERTEX_UNIT_IS_THE_METRE`], task #677).
     #[must_use]
     pub const fn unit_class(&self) -> ClaimStatus {
         self.unit_class
@@ -5476,14 +5531,20 @@ fn canonical_transform(
 ///
 /// * the world's boundary, floor and ceiling ([`WORLD_BOUNDARY_UNMEASURED`]);
 /// * every object's gameplay surface ([`WORLD_SURFACE_UNMEASURED`]);
-/// * the collision role of every record the spatial index does not name
-///   ([`UNINDEXED_ROLE_UNMEASURED`]);
+/// * the collision role of an unindexed record that stores collision
+///   geometry — a mesh, an extent or both — but no class saying what the
+///   engine did with it ([`UNINDEXED_ROLE_UNMEASURED`]);
 /// * the length unit, which the caller's [`SourceAdapter`] supplies and the
-///   report names ([`WORLD_UNIT_UNMEASURED`]).
+///   report names ([`WORLD_UNIT_UNMEASURED`], or a measured claim id when the
+///   adapter's source has one).
 ///
 /// An object the grid names becomes the world's static geometry
 /// ([`INDEXED_RECORD_IS_STATIC`]) — a **designed** rule over a measured fact,
-/// not a measurement of how the 2000 engine collided. Its id is its node slot
+/// not a measurement of how the 2000 engine collided. An unindexed object that
+/// binds no mesh and stores no extent is the store saying this record has no
+/// geometry, so its role resolves to `None`
+/// ([`UNINDEXED_RECORD_STORES_NO_GEOMETRY`]) — measured to be exactly the
+/// anchors, transform groups and dummies. Its id is its node slot
 /// ([`OBJECT_ID_IS_THE_NODE_SLOT`]).
 ///
 /// `meshes` is the caller's mesh-slot table, exactly as
@@ -5579,6 +5640,8 @@ pub fn import_world_container(
     let mut objects_in_a_sector = 0usize;
     let mut objects_resident = 0usize;
     let mut objects_solid = 0usize;
+    let mut objects_unindexed_none = 0usize;
+    let mut objects_unindexed_unresolved = 0usize;
     let mut matrix_disagreements = 0usize;
     let mut partition_records_with_mesh = 0usize;
     for record in records
@@ -5628,7 +5691,25 @@ pub fn import_world_container(
                     provenance.clone(),
                 )),
             )
+        } else if record.mesh_index() < 0 && stored_extent(record)?.is_none() {
+            // Measured (task #677): the partition grid omits either both of a
+            // record's geometry fields or neither, so this arm is exactly the
+            // anchors, groups and dummies — a record with no mesh and no
+            // extent has nothing a collider could be built from.
+            objects_unindexed_none += 1;
+            (
+                Resolved::Known(Known::new(WorldCollisionRole::None, provenance.clone())),
+                Resolved::Unknown {
+                    claim_id: claim(UNINDEXED_RECORD_STORES_NO_GEOMETRY),
+                    reason: format!(
+                        "node slot {} binds no mesh and stores no bounding box, so the \
+                         container states no shape for it",
+                        record.index
+                    ),
+                },
+            )
         } else {
+            objects_unindexed_unresolved += 1;
             let reason = format!(
                 "node slot {} is not named by the world record's partition grid and the \
                  container states no collision role for it",
@@ -5701,12 +5782,17 @@ pub fn import_world_container(
         objects_in_a_sector,
         objects_resident,
         objects_solid,
+        objects_unindexed_none,
+        objects_unindexed_unresolved,
         sectors: definition.sectors().len(),
         sectors_without_extent,
         mesh_binding_records_elsewhere,
         matrix_disagreements,
         meters_per_unit: adapter.source().convention().meters_per_unit(),
-        unit_class: adapter.source().calibration().claim_status(),
+        unit_class: adapter
+            .source()
+            .calibration()
+            .quantity_status(CalibratedQuantity::Scale),
     };
     Ok(ImportedWorld { definition, report })
 }
