@@ -206,9 +206,25 @@ fn cs_xtask_t430_panic_helper() {
 /// rlibs whatever this workspace's profile says, so only a frame in this file
 /// shows that the workspace's own code kept its line tables. A profile
 /// without them prints the helper's frame with no location, and this fails.
+///
+/// On macOS the one host condition under which this cannot judge the profile
+/// is checked first: see [`missing_debug_map_objects`].
 #[test]
 fn accept_t430_a_panic_backtrace_names_the_file_and_line() {
     let exe = std::env::current_exe().expect("this test binary must have a path to re-run");
+    let missing = missing_debug_map_objects(&exe);
+    if !missing.is_empty() {
+        eprintln!(
+            "accept_t430_a_panic_backtrace_names_the_file_and_line NOT RUN on this \
+host: {} names its line tables by debug-map (N_OSO) paths and {} of them were \
+removed after the link, so no backtrace from it can name a line whatever the \
+profile says (task #691, docs/findings/2026-10-06-t691-macos-backtrace-line-tables.md). \
+Rebuild the binary to run it. Missing: {missing:?}",
+            exe.display(),
+            missing.len()
+        );
+        return;
+    }
     let child = transient::command_output(
         std::process::Command::new(&exe)
             .args(["--exact", PANIC_HELPER, "--nocapture"])
@@ -264,4 +280,134 @@ fn accept_t430_only_this_files_frames_count_as_located() {
         "at ./tests/not_accept_t430_ci_disk_budget.rs:194:5",
         THIS_FILE
     ));
+}
+
+/// The objects of `exe`'s own crate that its Mach-O debug map names but that
+/// no longer exist. Empty on every other host, and for a binary that keeps its
+/// DWARF itself.
+///
+/// rustc's macOS default (`-C split-debuginfo=unpacked`, which cargo passes
+/// explicitly) links no DWARF into the binary: its symbol table holds one
+/// `N_OSO` entry per object, and the crate's own line tables stay in the
+/// `<binary>.<cgu>.rcgu.o` files beside it in `target/debug/deps`. `std` opens
+/// those paths only when it prints a backtrace. A deletion after the link —
+/// this host's prune of agents' target directories — leaves every frame of
+/// the crate without a location, which is a property of the host's files, not
+/// of the profile this test guards.
+fn missing_debug_map_objects(exe: &Path) -> Vec<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    let image = std::fs::read(exe).expect("this test binary must be readable");
+    let own_prefix = format!(
+        "{}.",
+        exe.file_name()
+            .expect("this test binary must have a file name")
+            .to_string_lossy()
+    );
+    debug_map_objects(&image)
+        .into_iter()
+        .map(PathBuf::from)
+        .filter(|object| {
+            object.file_name().is_some_and(|name| {
+                let name = name.to_string_lossy();
+                name.starts_with(&own_prefix) && name.ends_with(".o")
+            })
+        })
+        .filter(|object| !object.exists())
+        .collect()
+}
+
+/// `MH_MAGIC_64`, the little-endian magic of a thin 64-bit Mach-O image.
+const MH_MAGIC_64: u32 = 0xfeed_facf;
+/// `LC_SYMTAB`, the load command that locates the symbol and string tables.
+const LC_SYMTAB: u32 = 0x2;
+/// `N_OSO`, the stab type of a debug-map entry naming an object file.
+const N_OSO: u8 = 0x66;
+/// Size of a `struct nlist_64`.
+const NLIST_64_SIZE: usize = 16;
+
+/// The `N_OSO` paths of a thin 64-bit Mach-O image, in symbol-table order.
+/// Panics on anything else: a binary this cannot read is a broken check, and
+/// must not look like a host condition.
+fn debug_map_objects(image: &[u8]) -> Vec<String> {
+    let u32_at = |offset: usize| {
+        u32::from_le_bytes(
+            image
+                .get(offset..offset + 4)
+                .and_then(|bytes| bytes.try_into().ok())
+                .expect("the Mach-O image must not be truncated"),
+        )
+    };
+    assert_eq!(
+        u32_at(0),
+        MH_MAGIC_64,
+        "the test binary must be thin Mach-O 64"
+    );
+    let command_count = u32_at(16);
+    let mut command = 32;
+    for _ in 0..command_count {
+        let (kind, size) = (u32_at(command), u32_at(command + 4));
+        if kind == LC_SYMTAB {
+            let (symbols, count) = (u32_at(command + 8) as usize, u32_at(command + 12) as usize);
+            let (strings, strings_size) =
+                (u32_at(command + 16) as usize, u32_at(command + 20) as usize);
+            let table = &image[strings..strings + strings_size];
+            return (0..count)
+                .map(|index| symbols + index * NLIST_64_SIZE)
+                .filter(|entry| image[entry + 4] == N_OSO)
+                .map(|entry| {
+                    let name = &table[u32_at(entry) as usize..];
+                    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+                    String::from_utf8_lossy(&name[..end]).into_owned()
+                })
+                .collect();
+        }
+        command += size as usize;
+    }
+    Vec::new()
+}
+
+/// The reader finds `N_OSO` entries and nothing else: a minimal image with one
+/// load command, one ordinary symbol and one debug-map entry.
+#[test]
+fn accept_t430_debug_map_reader_lists_only_object_paths() {
+    let strings = b"\0_main\0/t/deps/x-1.a.rcgu.o\0";
+    let (symbols, strings_at) = (32 + 24, 32 + 24 + 2 * NLIST_64_SIZE);
+    let mut image = Vec::new();
+    for word in [MH_MAGIC_64, 0x0100_000c, 0, 2, 1, 24, 0, 0] {
+        image.extend_from_slice(&word.to_le_bytes());
+    }
+    for word in [
+        LC_SYMTAB,
+        24,
+        symbols as u32,
+        2,
+        strings_at as u32,
+        strings.len() as u32,
+    ] {
+        image.extend_from_slice(&word.to_le_bytes());
+    }
+    for (name, kind) in [(1_u32, 0x0f_u8), (7, N_OSO)] {
+        image.extend_from_slice(&name.to_le_bytes());
+        image.extend_from_slice(&[kind, 0, 0, 0]);
+        image.extend_from_slice(&0_u64.to_le_bytes());
+    }
+    image.extend_from_slice(strings);
+    assert_eq!(debug_map_objects(&image), ["/t/deps/x-1.a.rcgu.o"]);
+}
+
+/// On macOS the guard reads the real binary, and right after `cargo test`
+/// built it every object its debug map names for this crate is still there,
+/// so the backtrace test above runs rather than excusing itself.
+#[cfg(target_os = "macos")]
+#[test]
+fn accept_t430_macos_guard_reads_this_binarys_debug_map() {
+    let exe = std::env::current_exe().expect("this test binary must have a path");
+    let image = std::fs::read(&exe).expect("this test binary must be readable");
+    let objects = debug_map_objects(&image);
+    assert!(
+        objects.iter().any(|object| object.ends_with(".rcgu.o")),
+        "an unpacked macOS build names its objects in the debug map: {objects:?}"
+    );
 }
