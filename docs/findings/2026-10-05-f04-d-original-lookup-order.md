@@ -112,8 +112,9 @@ and entry #100 (34711 B, an ANIMATION_DEFINITIONS document), unreachable by name
 
 `PRECEDENCE_ORDER_STATUS` stays `designed`: the evidence is static code analysis of one executable,
 not a measured retail run, and the VFS does not yet implement the measured order; changing the
-constant would claim the VFS follows it. Mismatches are filed as separate tasks (see the task
-history of #341).
+constant would claim the VFS follows it. Mismatches are filed as separate tasks: #685 (reader members: basename key,
+root-first, mission-before-world), #686 (ROF before loose for GOS requests), #687 (mission level,
+gamez/planes/anim bindings, texture rule with #352).
 
 ## Test
 
