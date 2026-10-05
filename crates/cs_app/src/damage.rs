@@ -34,6 +34,11 @@
 //!   destroyed weapon mount stops firing and its part is presented
 //!   destroyed; a repair brings both back. Every refusal is named in the
 //!   returned [`DamageConsumerLog`].
+//! * [`apply_propulsion_state`] — the F29-C.1 consumer seam for
+//!   [`SystemKind::Propulsion`]: it reads the resolver's authoritative system
+//!   state and rewrites the thrust authority of the actor's
+//!   [`FlightAircraft`] gate, so a destroyed engine stops producing thrust and
+//!   a repair gives it back.
 //!
 //! Nothing here owns damage state: pools, lifecycle records and event
 //! sequences are the resolver's; these are the conversion and binding
@@ -79,14 +84,16 @@ use cs_content::world::{WorldInstance, WorldObjectId};
 use cs_sim::damage::{
     ActorId, AttributionRule, DamageEvent, DamageEventKind, DamageGraph, DamageGraphError,
     DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy, DamageResolver, InitialDamage,
-    InitialDamageReport, NodeKeyError, PartState, SystemKind,
+    InitialDamageReport, NodeKeyError, PartState, SystemKind, SystemState,
 };
+use cs_sim::flight::DamageState;
 use cs_sim::weapons::FireResolver;
 use cs_types::content::{ContentId, Known, Resolved};
 use cs_types::evidence::ClaimId;
 
 use crate::physics::{
-    ColliderDecisionError, remove_collider_for_damage, restore_collider_after_repair,
+    ColliderDecisionError, FlightAircraft, remove_collider_for_damage,
+    restore_collider_after_repair,
 };
 use crate::scene::{AirframeDamageState, SceneGeneration};
 
@@ -710,10 +717,11 @@ pub fn repair_damage_zone(
 // instead of being swallowed, the way [`apply_damage_events`] reports its
 // collider refusals.
 //
-// Only [`SystemKind::Weapon`] is wired here. `Propulsion`'s consumer is the
-// flight-authority gate (`cs_sim::flight`), and debris, scoring and the bailout
-// mission transition need consumers that do not exist on this branch yet; they
-// are recorded as follow-ups, never guessed. Nothing in this pass *decides*
+// [`apply_damage_state`] wires [`SystemKind::Weapon`];
+// [`apply_propulsion_state`] wires [`SystemKind::Propulsion`] to the
+// flight-authority gate (F29-C.1). Debris, scoring and the bailout mission
+// transition need consumers that do not exist on this branch yet; they are
+// recorded as follow-ups, never guessed. Nothing in this pass *decides*
 // damage — it only reflects the resolver's state onto the two consumers.
 
 /// Why the damage → consumer pass could not update a consumer.
@@ -824,6 +832,18 @@ pub enum DamageConsumerEvent {
         /// The visual part it presents as.
         scene_node: SceneNodeId,
     },
+    /// A disabled propulsion system cut the actor's thrust authority to zero.
+    ThrustCut {
+        /// The actor.
+        actor: ActorId,
+    },
+    /// An enabled propulsion system lifted the gate's own cut: the thrust
+    /// authority is back at full — a repair, or the convergence that clears a
+    /// stale cut.
+    ThrustRestored {
+        /// The actor.
+        actor: ActorId,
+    },
     /// The update could not be applied; see [`DamageConsumerRefusal`].
     Refused(DamageConsumerRefusal),
 }
@@ -892,6 +912,11 @@ pub struct DamageConsumerReport {
     pub visuals_destroyed: u32,
     /// Parts newly recorded repaired in the visual state.
     pub visuals_repaired: u32,
+    /// Flight gates whose thrust authority a disabled propulsion system cut.
+    pub thrust_cut: u32,
+    /// Flight gates whose thrust authority an enabled propulsion system
+    /// restored.
+    pub thrust_restored: u32,
     /// Updates that could not be applied.
     pub refused: u32,
 }
@@ -904,6 +929,8 @@ impl DamageConsumerReport {
             && self.mounts_enabled == 0
             && self.visuals_destroyed == 0
             && self.visuals_repaired == 0
+            && self.thrust_cut == 0
+            && self.thrust_restored == 0
             && self.refused == 0
     }
 }
@@ -1133,6 +1160,92 @@ pub fn apply_world_initial_damage(
         resolver,
         unmapped_objects,
     })
+}
+
+/// Applies one actor's authoritative propulsion state to its flight-authority
+/// gate: the [`DamageState::thrust_authority`] the [`FlightAircraft`]'s
+/// equations scale thrust and boost by.
+///
+/// The pass reads [`DamageResolver::system_state`] for
+/// [`SystemKind::Propulsion`] — the aggregate the resolver already owns, never
+/// a replay of `SystemDisabled` events — and:
+///
+/// * [`SystemState::Disabled`] (any declaring part destroyed) cuts the thrust
+///   authority to `0`;
+/// * [`SystemState::Enabled`] lifts the gate's own cut: a thrust authority of
+///   exactly `0` goes back to [`DamageState::PRISTINE`]'s `1`, and any other
+///   value is left to the producer that wrote it;
+/// * [`SystemState::Unknown`] asserts neither direction: every unresolved
+///   declaring pool is refused by name and the gate is left as it is;
+/// * an actor whose graph declares no propulsion carrier leaves the gate
+///   untouched — "this actor has no engine part" is not "its engine is down".
+///
+/// Control authority and lift scale are not this system's and are never
+/// written. A foreign session generation and an unregistered actor are
+/// refused by name and change nothing.
+///
+/// **Designed rule, not original data.** Whether the original cut thrust on a
+/// destroyed engine, and how it aggregated several engines, is unmeasured; see
+/// `docs/findings/2026-10-05-f29-c1-propulsion-consumer.md`.
+#[must_use]
+pub fn apply_propulsion_state(
+    resolver: &DamageResolver,
+    actor: ActorId,
+    flight: &mut FlightAircraft,
+) -> DamageConsumerOutcome {
+    let mut outcome = DamageConsumerOutcome::default();
+
+    if actor.session != resolver.session() {
+        refusals::foreign_session(&mut outcome, resolver.session().get(), actor.session.get());
+        return outcome;
+    }
+    let Some(graph) = resolver.graph(&actor) else {
+        refusals::unknown_actor(&mut outcome, actor);
+        return outcome;
+    };
+
+    let damage = flight.damage();
+    match resolver.system_state(&actor, SystemKind::Propulsion) {
+        // No propulsion carrier declared: nothing to gate.
+        None => {}
+        Some(SystemState::Disabled) => {
+            if damage.thrust_authority != 0.0 {
+                set_thrust_authority(flight, damage, 0.0);
+                outcome.report.thrust_cut += 1;
+                outcome.log.push(DamageConsumerEvent::ThrustCut { actor });
+            }
+        }
+        Some(SystemState::Enabled) => {
+            if damage.thrust_authority == 0.0 {
+                set_thrust_authority(flight, damage, DamageState::PRISTINE.thrust_authority);
+                outcome.report.thrust_restored += 1;
+                outcome
+                    .log
+                    .push(DamageConsumerEvent::ThrustRestored { actor });
+            }
+        }
+        Some(SystemState::Unknown) => {
+            for node in graph.nodes() {
+                if node.disables() == Some(SystemKind::Propulsion)
+                    && resolver.part_state(&actor, node.key()) == Some(PartState::Unknown)
+                {
+                    refusals::unresolved_integrity(&mut outcome, actor, node);
+                }
+            }
+        }
+    }
+
+    outcome
+}
+
+/// Rewrites only the thrust authority of a validated damage state.
+fn set_thrust_authority(flight: &mut FlightAircraft, damage: DamageState, thrust_authority: f64) {
+    flight
+        .set_damage(DamageState {
+            thrust_authority,
+            ..damage
+        })
+        .expect("a validated damage state with a thrust authority of 0 or 1 stays valid");
 }
 
 /// The refusal constructors, so [`apply_damage_state`] stays readable.
