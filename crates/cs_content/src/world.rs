@@ -3207,6 +3207,11 @@ pub enum TriggerVolumeError {
         /// The zone name both records claim.
         zone: String,
     },
+    /// Two mission declarations claimed the same mission.
+    DuplicateMission {
+        /// The mission both declarations claim.
+        mission: String,
+    },
 }
 
 impl fmt::Display for TriggerVolumeError {
@@ -3241,6 +3246,9 @@ impl fmt::Display for TriggerVolumeError {
             }
             Self::DuplicateZone { world, zone } => {
                 write!(f, "two zones of world {world} claim the name {zone}")
+            }
+            Self::DuplicateMission { mission } => {
+                write!(f, "two declarations claim the mission {mission}")
             }
         }
     }
@@ -3659,18 +3667,184 @@ impl TriggerTickVerdict {
     }
 }
 
+/// Which key of a `dzones.zrd` record a zone name was stated under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZoneDeclarationKey {
+    /// `disable`: meaning unmeasured.
+    Disable,
+    /// `nosnapshot`: meaning unmeasured.
+    NoSnapshot,
+    /// `objective_numbers`: a zone bound to an integer; meaning unmeasured.
+    ObjectiveNumbers,
+}
+
+impl ZoneDeclarationKey {
+    /// The key's stored spelling.
+    #[must_use]
+    pub const fn spelling(self) -> &'static str {
+        match self {
+            Self::Disable => "disable",
+            Self::NoSnapshot => "nosnapshot",
+            Self::ObjectiveNumbers => "objective_numbers",
+        }
+    }
+}
+
+/// What one campaign mission's `dzones.zrd` declares, with the member's span.
+///
+/// The **structure** is measured over all 23 retail members. The **meaning** is
+/// not: nothing here says what disabling a zone, excluding it from a snapshot or
+/// binding it to an objective number does in the original, or which objective an
+/// integer indexes (`objectives.zrd`, F13-D / F39).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MissionZoneDeclaration {
+    mission: String,
+    world: WorldId,
+    member_container: String,
+    member_container_sha256: String,
+    member_offset: u64,
+    member_bytes: u64,
+    keys: Vec<ZoneDeclarationKey>,
+    disable: Vec<String>,
+    no_snapshot: Vec<String>,
+    objective_numbers: Vec<(String, u32)>,
+}
+
+impl MissionZoneDeclaration {
+    /// Assembles one mission's declaration. `keys` is the stored key order;
+    /// a key absent from it is a key the member does not state.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        mission: impl Into<String>,
+        world: WorldId,
+        member_container: impl Into<String>,
+        member_container_sha256: impl Into<String>,
+        member_span: (u64, u64),
+        keys: Vec<ZoneDeclarationKey>,
+        disable: Vec<String>,
+        no_snapshot: Vec<String>,
+        objective_numbers: Vec<(String, u32)>,
+    ) -> Self {
+        Self {
+            mission: mission.into(),
+            world,
+            member_container: member_container.into(),
+            member_container_sha256: member_container_sha256.into(),
+            member_offset: member_span.0,
+            member_bytes: member_span.1,
+            keys,
+            disable,
+            no_snapshot,
+            objective_numbers,
+        }
+    }
+
+    /// The mission, as its logical key (`zbd/c3/m01`).
+    #[must_use]
+    pub fn mission(&self) -> &str {
+        &self.mission
+    }
+
+    /// The world container whose zone nodes the names refer to.
+    #[must_use]
+    pub const fn world(&self) -> &WorldId {
+        &self.world
+    }
+
+    /// The reader archive the member is in.
+    #[must_use]
+    pub fn member_container(&self) -> &str {
+        &self.member_container
+    }
+
+    /// SHA-256 of that whole archive from production discovery.
+    #[must_use]
+    pub fn member_container_sha256(&self) -> &str {
+        &self.member_container_sha256
+    }
+
+    /// The member's absolute offset and byte length in the archive.
+    #[must_use]
+    pub const fn member_span(&self) -> (u64, u64) {
+        (self.member_offset, self.member_bytes)
+    }
+
+    /// The keys the member states, in stored order.
+    #[must_use]
+    pub fn keys(&self) -> &[ZoneDeclarationKey] {
+        &self.keys
+    }
+
+    /// The `disable` names.
+    #[must_use]
+    pub fn disable(&self) -> &[String] {
+        &self.disable
+    }
+
+    /// The `nosnapshot` names.
+    #[must_use]
+    pub fn no_snapshot(&self) -> &[String] {
+        &self.no_snapshot
+    }
+
+    /// The `objective_numbers` pairs, in stored order.
+    #[must_use]
+    pub fn objective_numbers(&self) -> &[(String, u32)] {
+        &self.objective_numbers
+    }
+
+    /// Every zone name the member states, with its key, in stored key order.
+    #[must_use]
+    pub fn named_zones(&self) -> Vec<(ZoneDeclarationKey, &str)> {
+        let mut named = Vec::new();
+        for key in &self.keys {
+            match key {
+                ZoneDeclarationKey::Disable => {
+                    named.extend(self.disable.iter().map(|n| (*key, n.as_str())));
+                }
+                ZoneDeclarationKey::NoSnapshot => {
+                    named.extend(self.no_snapshot.iter().map(|n| (*key, n.as_str())));
+                }
+                ZoneDeclarationKey::ObjectiveNumbers => {
+                    named.extend(
+                        self.objective_numbers
+                            .iter()
+                            .map(|(n, _)| (*key, n.as_str())),
+                    );
+                }
+            }
+        }
+        named
+    }
+}
+
+/// A zone a mission names that its world container has no node for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoneDeclarationGap {
+    /// The mission that names the zone.
+    pub mission: String,
+    /// The world container that lacks it.
+    pub world: String,
+    /// The zone name.
+    pub zone: String,
+    /// The key the mission stated it under.
+    pub key: ZoneDeclarationKey,
+}
+
 /// Every retail detection zone the survey measured, with the fingerprints that
 /// make the measurement checkable.
 ///
-/// The survey deliberately carries **no** mission-side declaration. The
-/// campaign's own detection-zone member names the same strings, but its framing
-/// is undecoded (see [`Self::zone_declarations_are_decoded`]), so a name a
-/// mission declares is not a fact this record can carry without guessing.
+/// The mission side is attached with [`Self::with_declarations`]: one
+/// [`MissionZoneDeclaration`] per campaign mission whose `dzones.zrd` was decoded
+/// (task #513), cross-checked against the zones the world containers carry by
+/// [`Self::declaration_gaps`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct RetailTriggerVolumeSurvey {
     install_sha256: String,
     vertex_scale_to_m: Option<f64>,
     volumes: Vec<RetailTriggerVolume>,
+    declarations: Option<Vec<MissionZoneDeclaration>>,
 }
 
 impl RetailTriggerVolumeSurvey {
@@ -3715,7 +3889,65 @@ impl RetailTriggerVolumeSurvey {
             install_sha256: install_sha256.into(),
             vertex_scale_to_m,
             volumes,
+            declarations: None,
         })
+    }
+
+    /// Attaches the mission-side declarations a decode of every campaign
+    /// mission's `dzones.zrd` produced.
+    ///
+    /// # Errors
+    ///
+    /// [`TriggerVolumeError::DuplicateMission`] for two declarations of one
+    /// mission.
+    pub fn with_declarations(
+        mut self,
+        declarations: Vec<MissionZoneDeclaration>,
+    ) -> Result<Self, TriggerVolumeError> {
+        for (index, declaration) in declarations.iter().enumerate() {
+            if declarations[index + 1..]
+                .iter()
+                .any(|other| other.mission() == declaration.mission())
+            {
+                return Err(TriggerVolumeError::DuplicateMission {
+                    mission: declaration.mission().to_owned(),
+                });
+            }
+        }
+        self.declarations = Some(declarations);
+        Ok(self)
+    }
+
+    /// Every mission's decoded declaration, empty while none is attached.
+    #[must_use]
+    pub fn declarations(&self) -> &[MissionZoneDeclaration] {
+        self.declarations.as_deref().unwrap_or_default()
+    }
+
+    /// The names a mission declares that **no** zone node in its world container
+    /// carries, one row per name per key it was stated under.
+    ///
+    /// A **reported gap**, never a silent drop: a mission naming a zone its
+    /// container lacks is a fact the survey must show.
+    #[must_use]
+    pub fn declaration_gaps(&self) -> Vec<ZoneDeclarationGap> {
+        let mut gaps = Vec::new();
+        for declaration in self.declarations() {
+            for (key, zone) in declaration.named_zones() {
+                let present = self.volumes.iter().any(|volume| {
+                    volume.world().key() == declaration.world().key() && volume.zone() == zone
+                });
+                if !present {
+                    gaps.push(ZoneDeclarationGap {
+                        mission: declaration.mission().to_owned(),
+                        world: declaration.world().key().to_owned(),
+                        zone: zone.to_owned(),
+                        key,
+                    });
+                }
+            }
+        }
+        gaps
     }
 
     /// SHA-256 of the installation fingerprint the measurement was taken over.
@@ -3769,18 +4001,17 @@ impl RetailTriggerVolumeSurvey {
             })
     }
 
-    /// Whether the campaign's own detection-zone member has been decoded.
+    /// Whether the campaign's own detection-zone members have been decoded and
+    /// attached: `true` once [`Self::with_declarations`] has been given the
+    /// mission side.
     ///
-    /// It has **not**, and this is the survey saying so rather than a consumer
-    /// having to remember. The member exists and is located with an exact byte
-    /// span (see [`crate::world`]'s findings record); its framing is not a
-    /// length-prefixed value list, because its second word is not an item count
-    /// — the same word precedes a list of four strings in one member and a list
-    /// of one in another — so reading it as one is a guess, and a guess here
-    /// would be a guess about what a mission says a trigger is.
+    /// What is decoded is the **grammar** (task #513: a list's second word is
+    /// its child count plus one). What a mission *means* by `disable`,
+    /// `nosnapshot` or an objective number is still unknown; see
+    /// [`MissionZoneDeclaration`].
     #[must_use]
     pub const fn zone_declarations_are_decoded(&self) -> bool {
-        false
+        self.declarations.is_some()
     }
 
     /// How far a body travelling at `speed_m_s` moves in one tick at `tick_hz`,
