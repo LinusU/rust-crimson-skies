@@ -308,7 +308,8 @@ pub struct CampaignState {
 }
 
 impl CampaignState {
-    /// Starts a run at the graph's entry node.
+    /// Starts a run at the graph's entry node, which is never an interlude
+    /// (`GraphError::InterludeEntry`), so the run is playable at once.
     pub fn begin(
         profile: ProfileId,
         run: CampaignRunId,

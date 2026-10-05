@@ -87,6 +87,12 @@ pub enum GraphError {
         /// The undeclared key.
         node: CampaignNodeKey,
     },
+    /// The entry node is an interlude. Designed engine rule (not measured from
+    /// original data): a run begins on a node that can report an outcome.
+    InterludeEntry {
+        /// The entry node.
+        node: CampaignNodeKey,
+    },
     /// An edge targets an undeclared node.
     DanglingEdge {
         /// The source node.
@@ -136,6 +142,9 @@ impl fmt::Display for GraphError {
             Self::DuplicateNode { node } => write!(f, "graph node {node} is declared twice"),
             Self::MissingEntry { node } => {
                 write!(f, "the graph's entry node {node} is not declared")
+            }
+            Self::InterludeEntry { node } => {
+                write!(f, "the graph's entry node {node} is an interlude")
             }
             Self::DanglingEdge { from, to } => {
                 write!(f, "node {from} edges to undeclared node {to}")
@@ -193,6 +202,9 @@ impl CampaignGraph {
         }
         if !map.contains_key(&entry) {
             return Err(GraphError::MissingEntry { node: entry });
+        }
+        if map[&entry].kind == RuntimeNodeKind::Interlude {
+            return Err(GraphError::InterludeEntry { node: entry });
         }
         for node in map.values() {
             if let RuntimeNodeKind::Mission { mission } = &node.kind

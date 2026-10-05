@@ -271,11 +271,17 @@ both need #175 on `main` before they can start.
    cannot represent is **unknown**. F43-D must observe it; until then the
    runtime's refusal is a designed answer to a declaration nothing upstream
    validates.
-3. **Whether a campaign may legally *begin* on an interlude.** Still open from
-   F43-A and deliberately left open: `CampaignState::begin` selects the entry
-   node and does not walk, so a campaign whose entry is a beat needs one
-   `advance_interludes` call to become playable. Making `begin` walk silently
-   would decide the question, and nothing measured decides it.
+3. **Whether a campaign may legally *begin* on an interlude.** Resolved by
+   F43-B.3 (#623) as a **designed** rule, **not measured**: no original
+   campaign data was read, so whether the original opens on a narrative beat
+   is still unknown. A campaign's entry must be a node that can report an
+   outcome. `CampaignDefinition::try_new` refuses a beat entry with
+   `CampaignError::InterludeEntry` and `CampaignGraph::try_new` with
+   `GraphError::InterludeEntry`, so a run never needs a manual
+   `advance_interludes` to start and `begin` stays a pure selection with no
+   grant or commit. `advance_interludes` is still needed mid-campaign. If
+   F43-D measures an original entry beat, this refusal must be revisited.
+   Tests: `accept_f43_b_3_*`.
 4. **Sell is not implemented.** The contract says "Purchase/sell"; this stage
    implements the purchase side only. A sale needs a purchase ledger to refund
    the price actually paid (the declared schema has no price field at all), and

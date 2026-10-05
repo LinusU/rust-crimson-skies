@@ -259,6 +259,13 @@ pub enum CampaignError {
         /// The undeclared id.
         node: CampaignNodeId,
     },
+    /// The entry node is an interlude. Designed engine rule (not measured from
+    /// original data): a run begins on a node that can report an outcome, so a
+    /// narrative beat cannot be the entry.
+    InterludeEntry {
+        /// The entry node.
+        node: CampaignNodeId,
+    },
     /// An edge names a node that is not declared.
     DanglingEdge {
         /// The edge's source node.
@@ -311,6 +318,9 @@ impl fmt::Display for CampaignError {
             Self::DuplicateNode { node } => write!(f, "campaign node {node} is declared twice"),
             Self::MissingEntry { node } => {
                 write!(f, "the campaign's entry node {node} is not declared")
+            }
+            Self::InterludeEntry { node } => {
+                write!(f, "the campaign's entry node {node} is an interlude")
             }
             Self::DanglingEdge { from, to } => {
                 write!(f, "node {from} edges to undeclared node {to}")
@@ -383,6 +393,9 @@ impl CampaignDefinition {
         }
         if !nodes.contains_key(&draft.entry) {
             return Err(CampaignError::MissingEntry { node: draft.entry });
+        }
+        if matches!(nodes[&draft.entry].kind, NodeKind::Interlude { .. }) {
+            return Err(CampaignError::InterludeEntry { node: draft.entry });
         }
         for node in nodes.values() {
             if let NodeKind::Mission {
