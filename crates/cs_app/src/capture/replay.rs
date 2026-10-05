@@ -503,7 +503,7 @@ fn fly(request: &RunRequest<'_>) -> Result<RecordedRun, CaptureRunError> {
     subject.tuning.validate().map_err(CaptureRunError::Tuning)?;
     check_stream_range(request.stream, request.ticks)?;
 
-    let mut session = PhysicsSession::builder()
+    let mut session = PhysicsSession::production_builder()
         .fixed_hz(subject.fixed_hz)
         .configure(|app| {
             app.add_plugins(FlightForcesPlugin);

@@ -186,8 +186,19 @@ impl PhysicsSessionBuilder {
     /// exposes. The hook is remembered, so
     /// [`restart`](PhysicsSession::restart) rebuilds the same world rather
     /// than a plainer one.
+    ///
+    /// Hooks compose: a second call runs after the first rather than
+    /// replacing it, so a caller of
+    /// [`PhysicsSession::production_builder`] adds to the production
+    /// composition instead of dropping it.
     pub fn configure(mut self, configure: impl Fn(&mut App) + Send + Sync + 'static) -> Self {
-        self.configure = Some(Arc::new(configure));
+        self.configure = Some(match self.configure.take() {
+            Some(previous) => Arc::new(move |app: &mut App| {
+                previous(app);
+                configure(app);
+            }),
+            None => Arc::new(configure),
+        });
         self
     }
 
@@ -273,6 +284,17 @@ impl PhysicsSession {
             gravity: Vec3::ZERO,
             configure: None,
         }
+    }
+
+    /// Starts building a session with the production composition: the
+    /// one-stop [`AnimationPlugin`](crate::animation::AnimationPlugin), so the
+    /// session's committed ticks drive the F20-C animation path. Callers add
+    /// their own plugins through [`configure`](PhysicsSessionBuilder::configure)
+    /// and must not add `AnimationPlugin` or `AnimationSchedulePlugin` again.
+    pub fn production_builder() -> PhysicsSessionBuilder {
+        Self::builder().configure(|app| {
+            app.add_plugins(crate::animation::AnimationPlugin);
+        })
     }
 
     /// A session at the declared rate with the default (zero) gravity.
