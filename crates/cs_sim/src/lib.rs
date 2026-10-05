@@ -342,9 +342,13 @@
 //! it is reported, and advances only the client input acknowledgment. Nothing
 //! client-authored can move an actor, spend a round or boost capacity, or end a
 //! record, which is what keeps a client's prediction from becoming authority
-//! (contract `docs/contracts/UI-NETWORK.md`). The wire schema and its declared
-//! quantization budgets are `cs_net::snapshot`; the receiver boundary is
-//! `cs_app::network::physics`.
+//! (contract `docs/contracts/UI-NETWORK.md`). It is also this session's score
+//! consumer for the damage domain's kill award (F29-C.3): it delivers
+//! `DamageEventKind::KillAwarded` exactly once per session-qualified victim
+//! through the same destruction record, refuses an award from another session
+//! generation instead of applying it, and never scores a bailout. The wire
+//! schema and its declared quantization budgets are `cs_net::snapshot`; the
+//! receiver boundary is `cs_app::network::physics`.
 //!
 //! [`economy`] is the F44-B construction transaction: a staged
 //! [`economy::ConstructionDraft`] of purchases and sales that

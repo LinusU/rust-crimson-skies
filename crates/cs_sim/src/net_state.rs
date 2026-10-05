@@ -47,6 +47,43 @@
 //! unbounded set (`docs/01-ARCHITECTURE.md`, "Sound, score, capture,
 //! destruction and reward consumers keep appropriate deduplication state").
 //!
+//! # The kill is scored exactly once (F29-C.3)
+//!
+//! The damage domain emits one
+//! [`KillAwarded`](crate::damage::DamageEventKind::KillAwarded) per
+//! destruction; nothing scored it. [`NetStateLedger`] is the score consumer
+//! that event was missing: [`Self::apply_kill_awards`] takes a resolution's
+//! events and [`Self::record_kill_award`] is the single awarding entry point
+//! behind it. An award is keyed by the victim's session-qualified
+//! [`ActorId`] and rides the same once-per-generation destruction record the
+//! network path already keeps, so there is one answer to "has this kill been
+//! awarded?" in the process and no second score store:
+//!
+//! * the first delivery scores ([`KillAward::Awarded`]);
+//! * every later delivery of the same victim — a replayed batch, a second
+//!   report in the same tick — is [`KillAward::AlreadyAwarded`] and moves
+//!   nothing;
+//! * an award stamped for another session generation is **refused, not
+//!   applied**, before any part of it lands ([`NetStateError::ForeignSession`],
+//!   contract `docs/contracts/STATE-TRANSACTIONS.md`: "Results, previous
+//!   targets and delayed callbacks are always generation-qualified");
+//! * an actor whose record already ended *without* a kill — a bailout, a
+//!   despawn — is [`NetStateError::AlreadyTerminal`], so a bailout awards
+//!   nothing and a later award cannot revive it;
+//! * an event that is not a kill award — [`crate::damage::LifecycleKind`] is
+//!   five distinct transitions — is not a score event and is ignored.
+//!
+//! A restart or an aircraft swap starts a new session generation (and new
+//! actor serials), so neither can double-award or carry an award across.
+//!
+//! The *value* is designed, not measured: the original's per-kill scoring
+//! numbers are unmeasured (F29 "Research boundary"), so the number this
+//! ledger awards travels in a provenance-carrying [`KillScoreValue`] whose
+//! [`ClaimId`] names the design, and a caller that holds a measured value
+//! supplies it with [`Self::set_kill_score`] instead of the ledger inventing
+//! one. The designed value and the unknowns around it are recorded in
+//! `docs/findings/2026-10-05-f29-c-3-kill-award-scoring.md`.
+//!
 //! # Ammunition and fuel stay server-side
 //!
 //! [`NetWeapons`] and [`NetFlight`] are ordinary authoritative fields: the only
@@ -77,8 +114,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use cs_types::Tick;
+use cs_types::evidence::{ClaimId, ClaimIdError};
 use cs_types::net::{ActorId, EventId, SessionId};
 use cs_types::space::{Quaternion, WorldPosition};
+
+use crate::damage::{DamageEvent, DamageEventKind};
 
 /// A nonzero actor generation.
 ///
@@ -374,6 +414,10 @@ pub enum NetStateError {
     },
     /// The generation counter would wrap.
     GenerationExhausted,
+    /// A kill award would push the session's score past what the score tally
+    /// can hold. Refused before anything is written, so the tally never wraps
+    /// and no partial award lands.
+    ScoreOverflow,
 }
 
 impl fmt::Display for NetStateError {
@@ -440,6 +484,9 @@ impl fmt::Display for NetStateError {
             Self::GenerationExhausted => {
                 write!(f, "actor generation counter is exhausted for this ledger")
             }
+            Self::ScoreOverflow => {
+                write!(f, "the kill score would overflow; nothing was awarded")
+            }
         }
     }
 }
@@ -476,6 +523,199 @@ impl Destruction {
         match self {
             Self::Recorded { tick } | Self::AlreadyRecorded { tick } => tick,
         }
+    }
+}
+
+/// Why a [`KillScoreValue`] could not be built.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KillScoreError {
+    /// A kill can only add score. A negative award would be a penalty, and
+    /// nothing here has measured a penalty rule (F29 "Research boundary").
+    NegativePoints {
+        /// The rejected value.
+        points: i64,
+    },
+    /// The provenance claim id did not satisfy [`ClaimId`]'s grammar.
+    Claim(ClaimIdError),
+}
+
+impl fmt::Display for KillScoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NegativePoints { points } => {
+                write!(f, "a kill score of {points} points would subtract score")
+            }
+            Self::Claim(error) => write!(f, "kill score claim id is invalid: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for KillScoreError {}
+
+/// The score one kill awards, carrying the provenance of that number.
+///
+/// The original's per-kill scoring values are **unmeasured**: the only
+/// numeric `score_*` table in the installation is the multiplayer match table
+/// `player.zrd` (`cs_content::stunts::SCORE_CONFIG_MEMBER`), which is not this
+/// consumer's value, and F29's research boundary forbids inventing an original
+/// rule. So the number is designed, and it travels with the [`ClaimId`] that
+/// names the design instead of standing naked in the ledger — the same
+/// provenance discipline `cs_types::content::Resolved` and
+/// `cs_content::stunts`' designed rewards use.
+///
+/// The default is [`Self::designed`]; a caller that later measures a value
+/// passes its own through [`NetStateLedger::set_kill_score`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KillScoreValue {
+    points: i64,
+    claim: ClaimId,
+}
+
+impl KillScoreValue {
+    /// The claim id the engine's designed value is recorded under.
+    pub const DESIGNED_CLAIM: &'static str = "f29-c3.designed-kill-score";
+
+    /// The points the engine's designed value awards.
+    ///
+    /// One point per kill: the least invented number there is — it counts the
+    /// kill the resolver already decided happened and adds no multiplier,
+    /// grade or bonus nothing has measured.
+    pub const DESIGNED_POINTS: i64 = 1;
+
+    /// Builds a value from `points` and the claim id it is recorded under.
+    ///
+    /// # Errors
+    ///
+    /// [`KillScoreError::NegativePoints`] or [`KillScoreError::Claim`].
+    pub fn try_new(points: i64, claim: &str) -> Result<Self, KillScoreError> {
+        if points < 0 {
+            return Err(KillScoreError::NegativePoints { points });
+        }
+        Ok(Self {
+            points,
+            claim: ClaimId::new(claim).map_err(KillScoreError::Claim)?,
+        })
+    }
+
+    /// The engine's designed value: [`Self::DESIGNED_POINTS`] under
+    /// [`Self::DESIGNED_CLAIM`].
+    #[must_use]
+    pub fn designed() -> Self {
+        Self::try_new(Self::DESIGNED_POINTS, Self::DESIGNED_CLAIM)
+            .expect("the designed kill-score claim id is valid")
+    }
+
+    /// The points one kill awards.
+    #[must_use]
+    pub const fn points(&self) -> i64 {
+        self.points
+    }
+
+    /// The claim this value is recorded under.
+    #[must_use]
+    pub fn claim(&self) -> &ClaimId {
+        &self.claim
+    }
+}
+
+/// What one delivered kill award did to this session's score.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KillAward {
+    /// The first delivery of this victim: the score moved by `points`.
+    Awarded {
+        /// The destroyed actor the award is keyed by.
+        victim: ActorId,
+        /// The attacker the declared attribution rule credited.
+        credited: Option<ActorId>,
+        /// The tick the award was recorded on.
+        tick: Tick,
+        /// The points this award added.
+        points: i64,
+    },
+    /// A later delivery of the same victim: a replayed batch, a second report
+    /// on the same tick or a retransmission. Absorbed — no second score, no
+    /// state change, and `first` is the tick the score was awarded on.
+    AlreadyAwarded {
+        /// The destroyed actor.
+        victim: ActorId,
+        /// The tick the score was first awarded for it.
+        first: Tick,
+    },
+}
+
+impl KillAward {
+    /// Whether this report moved the score.
+    pub const fn awarded(self) -> bool {
+        matches!(self, Self::Awarded { .. })
+    }
+
+    /// The victim this report is about.
+    pub const fn victim(self) -> ActorId {
+        match self {
+            Self::Awarded { victim, .. } | Self::AlreadyAwarded { victim, .. } => victim,
+        }
+    }
+
+    /// The points this report added (`0` for an absorbed repeat).
+    pub const fn points(self) -> i64 {
+        match self {
+            Self::Awarded { points, .. } => points,
+            Self::AlreadyAwarded { .. } => 0,
+        }
+    }
+}
+
+/// What one batch of damage events did to this session's score.
+///
+/// The batch is consumed event by event: a kill award is scored, a repeat is
+/// absorbed, a refused award is reported by name rather than dropped, and an
+/// event that is not a kill award is not a score event at all. A report whose
+/// refusals are non-empty left the ledger with exactly the awards it lists.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KillAwardReport {
+    outcomes: Vec<KillAward>,
+    refusals: Vec<(ActorId, NetStateError)>,
+    points: i64,
+}
+
+impl KillAwardReport {
+    fn record(&mut self, award: KillAward) {
+        self.points += award.points();
+        self.outcomes.push(award);
+    }
+
+    fn refuse(&mut self, victim: ActorId, fault: NetStateError) {
+        self.refusals.push((victim, fault));
+    }
+
+    /// Every award this batch produced, in event order.
+    #[must_use]
+    pub fn outcomes(&self) -> &[KillAward] {
+        &self.outcomes
+    }
+
+    /// The awards this batch refused, as `(victim, why)`, in event order.
+    #[must_use]
+    pub fn refusals(&self) -> &[(ActorId, NetStateError)] {
+        &self.refusals
+    }
+
+    /// The points this batch added to the ledger's score.
+    #[must_use]
+    pub const fn points(&self) -> i64 {
+        self.points
+    }
+
+    /// How many kills this batch newly scored.
+    #[must_use]
+    pub fn awarded(&self) -> usize {
+        self.outcomes.iter().filter(|award| award.awarded()).count()
+    }
+
+    /// How many of this batch's awards were repeats it absorbed.
+    #[must_use]
+    pub fn already_awarded(&self) -> usize {
+        self.outcomes.len() - self.awarded()
     }
 }
 
@@ -609,6 +849,27 @@ impl ShotOutcome {
     }
 }
 
+/// One actor's recorded destruction — the ledger's single answer to "has this
+/// kill been awarded?", kept beside the tick it was first recorded on.
+///
+/// Two facts, one record, because they are the same question asked of the
+/// same `(actor, generation)`: `tick` is when the destruction was first
+/// reported, and `scored` is when *this session's score* was awarded for it.
+/// They differ exactly when a destruction arrived without its award — a
+/// snapshot that reports an actor already gone records the destruction at
+/// `Tick(0)`, a tick nobody knows, and with no award
+/// ([`NetStateLedger::publish`]) — which is why the award path can still
+/// score a destruction somebody else recorded, and why a second award for a
+/// scored victim is absorbed instead of paid twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DestructionRecord {
+    /// The tick the destruction was first recorded on.
+    tick: Tick,
+    /// The tick the kill score was awarded on, or `None` while this
+    /// destruction carries no award yet.
+    scored: Option<Tick>,
+}
+
 /// The per-session authority for everything a snapshot publishes.
 ///
 /// A ledger is created for one [`SessionId`] and is never reused across a
@@ -621,11 +882,21 @@ pub struct NetStateLedger {
     session: SessionId,
     actors: BTreeMap<ActorId, ActorGeneration>,
     states: BTreeMap<ActorId, NetActorState>,
-    destruction: BTreeMap<ActorId, Tick>,
+    destruction: BTreeMap<ActorId, DestructionRecord>,
     /// One constant-size shot book per actor (F57-C). Dropped with the actor by
     /// [`Self::forget`], so a long session never accumulates shot state for
     /// actors the ledger no longer owns.
     shots: BTreeMap<ActorId, ShotBook>,
+    /// The score this session's kills have awarded, and the value they were
+    /// scored at. Nothing but [`Self::record_kill_award`] moves it.
+    score: i64,
+    /// The score credited to each attacker, keyed by the session-qualified
+    /// actor id — the read a score/progression consumer does. Dropped with
+    /// the attacker by [`Self::forget`], so the tally never outlives the
+    /// actor identities it names.
+    credited_score: BTreeMap<ActorId, i64>,
+    /// What one kill is worth here, with the provenance of that number.
+    kill_score: KillScoreValue,
     next_generation: u16,
     acknowledged: u32,
 }
@@ -642,6 +913,9 @@ impl NetStateLedger {
             states: BTreeMap::new(),
             destruction: BTreeMap::new(),
             shots: BTreeMap::new(),
+            score: 0,
+            credited_score: BTreeMap::new(),
+            kill_score: KillScoreValue::designed(),
             next_generation: 1,
             acknowledged: 0,
         }
@@ -721,10 +995,18 @@ impl NetStateLedger {
         let lifecycle = state.lifecycle;
         self.states.insert(state.actor, state);
         if lifecycle == NetLifecycle::Destroyed && !self.destruction.contains_key(&state.actor) {
-            // The tick is not known here; `record_destruction` is the awarding
-            // entry point and fills it in. A state that only *reports*
-            // destruction still retires the actor.
-            self.destruction.insert(state.actor, Tick(0));
+            // The tick is not known here; `record_destruction` is the
+            // awarding entry point and fills it in. A state that only
+            // *reports* destruction still retires the actor, and it reports
+            // no award — so the kill-score path can still score this victim
+            // when its `KillAwarded` arrives.
+            self.destruction.insert(
+                state.actor,
+                DestructionRecord {
+                    tick: Tick(0),
+                    scored: None,
+                },
+            );
         }
         Ok(())
     }
@@ -764,7 +1046,7 @@ impl NetStateLedger {
             });
         }
         if let Some(first) = self.destruction.get(&actor) {
-            return Ok(Destruction::AlreadyRecorded { tick: *first });
+            return Ok(Destruction::AlreadyRecorded { tick: first.tick });
         }
         let current = self
             .states
@@ -777,11 +1059,178 @@ impl NetStateLedger {
                 lifecycle: current.lifecycle,
             });
         }
-        self.destruction.insert(actor, tick);
+        self.destruction
+            .insert(actor, DestructionRecord { tick, scored: None });
         if let Some(state) = self.states.get_mut(&actor) {
             state.lifecycle = NetLifecycle::Destroyed;
         }
         Ok(Destruction::Recorded { tick })
+    }
+
+    /// Delivers one `KillAwarded` to this session's score.
+    ///
+    /// This is the score consumer the damage domain's scoring event was
+    /// missing (`specs/F29-...`, stage `### F29-C`, "scoring"). The award is
+    /// keyed by the victim's session-qualified [`ActorId`] and rides the one
+    /// destruction record this ledger already keeps, so the score answers the
+    /// same question the destruction gate does — no second score store:
+    ///
+    /// * the first delivery for a victim scores ([`KillAward::Awarded`]);
+    /// * a second delivery — a replayed batch, another report on the same
+    ///   tick — is [`KillAward::AlreadyAwarded`] and changes nothing;
+    /// * an award naming an actor (or an attacker) of another session
+    ///   generation is refused whole, before any of it is applied
+    ///   (`docs/contracts/STATE-TRANSACTIONS.md`: results are always
+    ///   generation-qualified);
+    /// * a victim whose record already ended *without* a kill — a bailout, a
+    ///   despawn — is [`NetStateError::AlreadyTerminal`]: a bailout awards
+    ///   nothing, and neither does a later award for an actor that left;
+    /// * an overflow of the tally is [`NetStateError::ScoreOverflow`],
+    ///   refused before anything is written.
+    ///
+    /// # Errors
+    ///
+    /// [`NetStateError::InvalidActorId`], `ForeignSession`, `UnknownActor`,
+    /// `AlreadyTerminal` or `ScoreOverflow`; a refused award changes nothing.
+    pub fn record_kill_award(
+        &mut self,
+        victim: ActorId,
+        credited: Option<ActorId>,
+        tick: Tick,
+    ) -> Result<KillAward, NetStateError> {
+        self.expect_own_actor(victim)?;
+        if let Some(credited) = credited {
+            self.expect_own_actor(credited)?;
+        }
+        if let Some(first) = self
+            .destruction
+            .get(&victim)
+            .and_then(|record| record.scored)
+        {
+            return Ok(KillAward::AlreadyAwarded { victim, first });
+        }
+        // Everything that can refuse is decided before anything is written,
+        // so a refused award leaves the score exactly as it was.
+        let points = self.kill_score.points();
+        let score = self
+            .score
+            .checked_add(points)
+            .ok_or(NetStateError::ScoreOverflow)?;
+        let credited_score = match credited {
+            None => None,
+            Some(credited) => {
+                let total = self.credited_score.get(&credited).copied().unwrap_or(0);
+                let total = total
+                    .checked_add(points)
+                    .ok_or(NetStateError::ScoreOverflow)?;
+                Some((credited, total))
+            }
+        };
+        // The one gate: the same once-per-generation destruction record the
+        // network path keeps. It records the destruction this award implies,
+        // and it refuses a victim that already ended some other way.
+        let generation = self
+            .actors
+            .get(&victim)
+            .copied()
+            .ok_or(NetStateError::UnknownActor { actor: victim })?;
+        self.record_destruction(victim, generation, tick)?;
+        self.score = score;
+        if let Some((credited, total)) = credited_score {
+            self.credited_score.insert(credited, total);
+        }
+        if let Some(record) = self.destruction.get_mut(&victim) {
+            record.scored = Some(tick);
+        }
+        Ok(KillAward::Awarded {
+            victim,
+            credited,
+            tick,
+            points,
+        })
+    }
+
+    /// Delivers every kill award of one resolution batch to the score.
+    ///
+    /// `events` is what the session's [`crate::damage::DamageResolver`]
+    /// produced. Only [`DamageEventKind::KillAwarded`] is a score event: the
+    /// five lifecycle transitions are distinct from it (F29 non-negotiable
+    /// behavior 3), so a batch that carries only a `PilotBailout` scores
+    /// nothing, and a hit, a part transition or a refusal is not a score
+    /// event either.
+    ///
+    /// An event stamped for another session generation is refused before any
+    /// part of it is applied, and a victim this ledger refuses is reported by
+    /// name in [`KillAwardReport::refusals`] rather than dropped; the rest of
+    /// the batch still lands, so one bad award cannot silently cancel a good
+    /// one in the same tick.
+    #[must_use]
+    pub fn apply_kill_awards(&mut self, events: &[DamageEvent]) -> KillAwardReport {
+        let mut report = KillAwardReport::default();
+        for event in events {
+            let DamageEventKind::KillAwarded {
+                victim, credited, ..
+            } = &event.kind
+            else {
+                continue;
+            };
+            if event.id.session != self.session {
+                report.refuse(
+                    *victim,
+                    NetStateError::ForeignSession {
+                        expected: self.session,
+                        found: event.id.session,
+                    },
+                );
+                continue;
+            }
+            match self.record_kill_award(*victim, *credited, event.id.tick) {
+                Ok(award) => report.record(award),
+                Err(fault) => report.refuse(*victim, fault),
+            }
+        }
+        report
+    }
+
+    /// The score this session's kills have awarded.
+    #[must_use]
+    pub const fn score(&self) -> i64 {
+        self.score
+    }
+
+    /// The score this session has credited to `attacker` (`0` when none).
+    ///
+    /// Keyed by the session-qualified id, so an attacker of an earlier
+    /// generation can never be handed this session's score: its id simply is
+    /// not in the map, and an award naming it would be refused instead.
+    #[must_use]
+    pub fn score_for(&self, attacker: ActorId) -> i64 {
+        self.credited_score.get(&attacker).copied().unwrap_or(0)
+    }
+
+    /// How many kills this session has scored.
+    #[must_use]
+    pub fn scored_kills(&self) -> usize {
+        self.destruction
+            .values()
+            .filter(|record| record.scored.is_some())
+            .count()
+    }
+
+    /// The value this ledger awards for one kill, with its provenance.
+    #[must_use]
+    pub fn kill_score(&self) -> &KillScoreValue {
+        &self.kill_score
+    }
+
+    /// Replaces the value one kill awards, returning the previous one.
+    ///
+    /// The replacement is a caller's to make — this engine's default is the
+    /// designed [`KillScoreValue::designed`], and nothing here may substitute
+    /// a number for a measured one it has not measured.
+    #[must_use]
+    pub fn set_kill_score(&mut self, value: KillScoreValue) -> KillScoreValue {
+        std::mem::replace(&mut self.kill_score, value)
     }
 
     /// Ends an actor's record without a kill: bailout, mission removal or
@@ -1105,6 +1554,7 @@ impl NetStateLedger {
         self.states.remove(&actor);
         self.destruction.remove(&actor);
         self.shots.remove(&actor);
+        self.credited_score.remove(&actor);
         Ok(())
     }
 
