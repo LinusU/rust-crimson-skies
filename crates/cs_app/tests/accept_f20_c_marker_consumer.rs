@@ -363,6 +363,17 @@ fn accept_f20_c_marker_consumer_a_fired_gameplay_marker_drives_the_mission_exact
         "the raise is stamped with the tick the marker fired on"
     );
     assert_eq!(step.markers.signals(), vec![REACHED_WRECK]);
+    assert_eq!(
+        step.markers.drained(),
+        1,
+        "the batch held exactly the one fired marker: {:?}",
+        step.markers
+    );
+    assert_eq!(
+        (step.markers.tracks_blocked(), step.markers.attachments()),
+        (0, 0),
+        "the render and collision consumers' records are counted, not dropped without a word"
+    );
     assert!(
         step.markers.refusals().is_empty(),
         "a bound, live, first-presentation marker is not refused: {:?}",

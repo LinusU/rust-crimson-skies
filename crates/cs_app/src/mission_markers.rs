@@ -509,11 +509,21 @@ pub enum MarkerAdmission {
 /// This is the trace of a pass, not the layer's state: the authoritative record
 /// of what has been applied is
 /// [`MissionMarkerConsumer::applied`].
+///
+/// The playback's log holds more than markers — blocked *track* references and
+/// attachment transitions are in it too — so the delivery counts those instead
+/// of dropping them silently
+/// ([`Self::tracks_blocked`], [`Self::attachments`]): they are the render and
+/// collision consumers' diagnostics, this layer neither applies nor resolves
+/// them, and a mission reading a pass should be able to see that they were
+/// handed on rather than lost.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MarkerDelivery {
     raised: Vec<RaisedMarker>,
     refusals: Vec<MarkerRefusal>,
     presentation: usize,
+    tracks_blocked: usize,
+    attachments: usize,
     drained: usize,
 }
 
@@ -524,8 +534,8 @@ impl MarkerDelivery {
         &self.raised
     }
 
-    /// The refusals: the blocked effects first, then the per-event refusals in
-    /// publication order.
+    /// The refusals: the blocked effects first, then the held advances, then the
+    /// per-event refusals in publication order.
     #[must_use]
     pub fn refusals(&self) -> &[MarkerRefusal] {
         &self.refusals
@@ -545,7 +555,24 @@ impl MarkerDelivery {
         self.presentation
     }
 
-    /// How many entries the drained batch held in total, whatever kind.
+    /// How many track applications the batch reported blocked by an unknown
+    /// reference, and this layer neither applied nor resolved.
+    #[must_use]
+    pub const fn tracks_blocked(&self) -> usize {
+        self.tracks_blocked
+    }
+
+    /// How many attachment transitions the batch carried, and this layer
+    /// neither applied nor resolved.
+    #[must_use]
+    pub const fn attachments(&self) -> usize {
+        self.attachments
+    }
+
+    /// How many entries the drained batch held in total, whatever kind: the
+    /// raised and refused markers, the ignored presentation cues, the blocked
+    /// effects, the held advances, the blocked tracks and the attachment
+    /// records.
     #[must_use]
     pub const fn drained(&self) -> usize {
         self.drained
@@ -692,10 +719,14 @@ impl MissionMarkerConsumer {
     /// Blocked effects become refusals before the events are dispatched, and a
     /// held advance is named after them, so a mission can see that a transition
     /// it expected was gated by an unknown — or that a rewind published nothing
-    /// at all — rather than finding a silence where the marker should have
-    /// been. Every entry the batch held is accounted for: the fired events as
-    /// raises or refusals, the presentation cues as a count, the blocked
-    /// markers and the held advances as refusals.
+    /// at all — rather than finding a silence where the marker should have been.
+    ///
+    /// The log holds more than markers: the blocked **track** references and the
+    /// attachment transitions the render and collision consumers published are
+    /// counted here ([`MarkerDelivery::tracks_blocked`],
+    /// [`MarkerDelivery::attachments`]) rather than dropped without a word. This
+    /// layer is the first drainer of the log, so it is also the first place
+    /// where "somebody else was meant to read those" has to be visible.
     pub fn drain(&mut self, world: &mut World) -> MarkerDelivery {
         let batch = match world.get_resource_mut::<AnimationLog>() {
             Some(mut log) => log.drain(),
@@ -703,6 +734,8 @@ impl MissionMarkerConsumer {
         };
         let mut delivery = MarkerDelivery {
             drained: batch.len(),
+            tracks_blocked: batch.blocked_tracks().len(),
+            attachments: batch.attachments().len(),
             ..MarkerDelivery::default()
         };
         for blocked in batch.blocked_markers() {
