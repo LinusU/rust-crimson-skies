@@ -131,6 +131,9 @@ use cs_types::content::ContentId;
 
 use crate::damage::LifecycleKind;
 
+use super::bailout::{
+    BailoutConfirmation, BailoutRefusal, MissionTransition, MissionTransitions, TransitionOutcome,
+};
 use super::counters::{ActorCounters, CountKind};
 use super::spawn::{Admission, Emission, EmissionLedger, IdempotencyKey};
 use super::state::{IllegalTransition, ObjectiveCell, ObjectiveState};
@@ -470,6 +473,33 @@ pub enum ObjectiveEventKind {
     /// and a mission removal produce none, because they are not one of the five
     /// categories.
     Counted { actor: ActorId, kind: CountKind },
+    /// A confirmed pilot bailout: the **distinct** mission transition F29 AC04
+    /// requires, and never a [`ObjectiveEventKind::Counted`] event however the
+    /// policy reads.
+    ///
+    /// The transition is reported whether or not it changes anything, so a
+    /// consumer sees the bailout rather than inferring it from the absence of a
+    /// kill. `confirmation` is what asked for it — a [`BailoutConfirmation`]
+    /// built from the declared eject edge or from a mission program — and it is
+    /// `Some` always, because an unconfirmed bailout produces this event never:
+    /// it is refused instead.
+    PilotBailedOut {
+        /// The actor whose pilot left the airframe.
+        actor: ActorId,
+        /// What confirmed the departure.
+        confirmation: BailoutConfirmation,
+    },
+    /// A lifecycle transition produced no mission transition and the reason
+    /// names why. Refused, not dropped: a caller can tell "the world reported a
+    /// destruction after a bailout" from "nothing happened".
+    TransitionRefused {
+        /// The actor the transition was reported for.
+        actor: ActorId,
+        /// The transition the caller asked for.
+        requested: MissionTransition,
+        /// Why nothing was recorded.
+        reason: BailoutRefusal,
+    },
     /// A count condition latched: it is satisfied and stays satisfied.
     ConditionMet {
         condition: SymbolId,
@@ -844,6 +874,13 @@ pub struct ObjectiveRuntime {
     latched: BTreeSet<SymbolId>,
     triggers: BTreeMap<(SymbolId, ActorId), SweptTrigger>,
     counters: ActorCounters,
+    /// The mission-transition ledger: the first mission transition each actor
+    /// reached, plus the bailout confirmations recorded ahead of them (F29-C.4).
+    ///
+    /// It is what keeps a destruction report arriving after a bailout from
+    /// becoming a kill, so phase 1 consults it for every lifecycle transition
+    /// this module owns a transition for and the counters follow it.
+    transitions: MissionTransitions,
     timers: BTreeMap<SymbolId, MissionTimer>,
     /// Signals raised on an earlier tick, eligible to arm timers now. Consumed
     /// by the tick that observes them, so a signal arms a waiting deadline once.
@@ -889,6 +926,7 @@ impl ObjectiveRuntime {
             latched: BTreeSet::new(),
             triggers: BTreeMap::new(),
             counters: ActorCounters::default(),
+            transitions: MissionTransitions::default(),
             timers: BTreeMap::new(),
             eligible_signals: BTreeSet::new(),
             raised_signals: BTreeSet::new(),
@@ -1166,6 +1204,44 @@ impl ObjectiveRuntime {
         self.latched.contains(&condition)
     }
 
+    /// The mission transition `actor` reached, or `None` when it reached none.
+    ///
+    /// The **only** way to ask whether an actor died or merely lost its pilot: a
+    /// [`MissionTransition::PilotBailedOut`] is not a kill and never reads as
+    /// one, whatever the counters hold.
+    #[must_use]
+    pub fn mission_transition(&self, actor: ActorId) -> Option<MissionTransition> {
+        self.transitions.transition(actor)
+    }
+
+    /// The declared mission-result policy for a bailout (F29-C.4).
+    #[must_use]
+    pub const fn bailout_policy(&self) -> super::bailout::BailoutResultPolicy {
+        self.transitions.policy()
+    }
+
+    /// Records what confirmed a pilot's departure, before the tick that reports
+    /// the [`LifecycleKind::PilotBailout`] transition reaches this runtime.
+    ///
+    /// The declaration gate of the F29-C.4 wiring, and the analogue of
+    /// [`add_condition`](Self::add_condition): a confirmation is a *fact about
+    /// the input and the program* rather than a field of the tick's facts, so it
+    /// is registered here instead of carried in [`TickInput`]. One edge and one
+    /// request per actor; a repeated confirmation is refused by name.
+    ///
+    /// # Errors
+    ///
+    /// [`BailoutRefusal`] — the input context gate, a repeated confirmation, or
+    /// an actor whose mission transition is already latched. Nothing is written
+    /// when a confirmation is refused.
+    pub fn confirm_bailout(
+        &mut self,
+        actor: ActorId,
+        confirmation: BailoutConfirmation,
+    ) -> Result<(), BailoutRefusal> {
+        self.transitions.confirm(actor, confirmation)
+    }
+
     /// A declared timer's state.
     #[must_use]
     pub fn timer_state(&self, timer: SymbolId) -> Option<TimerState> {
@@ -1271,7 +1347,9 @@ impl ObjectiveRuntime {
     /// is to refuse an obviously unbounded tick, not to meter it exactly. Each
     /// term is the most that source could contribute:
     ///
-    /// * one event per countable lifecycle transition;
+    /// * one event per lifecycle transition: the counted record, the bailout
+    ///   transition, or the refusal — never more than one, whatever the
+    ///   transition turned out to be;
     /// * two events per count condition that has not latched (`ConditionMet`
     ///   plus its reaction);
     /// * two crossings per watched trigger per movement (entry then exit);
@@ -1289,11 +1367,7 @@ impl ObjectiveRuntime {
     /// reason and is bounded too: no effect kind completes an objective, so a
     /// drain can never queue an effect of its own.
     fn declared_event_count(&self, input: &TickInput<'_>) -> usize {
-        let counted = input
-            .lifecycles
-            .iter()
-            .filter(|(_, kind)| CountKind::from_lifecycle(*kind).is_some())
-            .count();
+        let counted = Self::counted_events(input);
         let conditions = 2 * (self.conditions.len() - self.latched.len());
         let crossings = 2 * self.triggers.len() * input.movements.len();
         let timers = 2 * self.timers.len();
@@ -1307,6 +1381,18 @@ impl ObjectiveRuntime {
             + timers
             + self.objectives.len()
             + self.declared_completion_effects()
+    }
+
+    /// How many events one tick's lifecycle facts could produce at most.
+    ///
+    /// One per reported transition, whatever it turns out to be: a counted
+    /// record, a bailout transition, or a refusal. F29-C.4 raised this term from
+    /// "one per *countable* transition" to "one per transition", because a
+    /// bailout is now reported and a refused transition is now named — both were
+    /// silent before, and neither may sit outside the bound the tick is checked
+    /// against.
+    fn counted_events(input: &TickInput<'_>) -> usize {
+        input.lifecycles.len()
     }
 
     /// How many completion effects one tick could apply at most: every effect
@@ -1375,22 +1461,78 @@ impl ObjectiveRuntime {
 
     // -- phases -------------------------------------------------------------
 
-    /// Phase 1: fold this tick's lifecycle transitions into the counters.
+    /// Phase 1: fold this tick's lifecycle transitions into the counters, through
+    /// the mission-transition ledger.
+    ///
+    /// The ledger owns the two transitions F29 keeps apart, so the counters
+    /// follow it instead of reading the raw facts: a *bailout* is reported as
+    /// [`ObjectiveEventKind::PilotBailedOut`] and counted toward nothing, and a
+    /// *destruction* is counted only when destruction is the transition this
+    /// actor actually reached. That is what stops a destruction report arriving
+    /// after a bailout from becoming a kill — refused by name, never dropped.
+    /// Capture and despawn keep their own measured counted category, and a
+    /// mission removal keeps counting toward nothing.
     fn apply_counters(&mut self, input: &TickInput<'_>, out: &mut Emitter) {
         for (actor, kind) in input.lifecycles {
-            // A pilot bailout and a mission removal are not one of the five
-            // categories, so they are recorded nowhere and reported nowhere.
-            let Some(counted) = CountKind::from_lifecycle(*kind) else {
+            let Some(transition) = MissionTransition::from_lifecycle(*kind) else {
+                // The three kinds this ledger does not own, unchanged.
+                let Some(counted) = CountKind::from_lifecycle(*kind) else {
+                    continue;
+                };
+                if self.counters.record(counted, *actor) {
+                    out.push(
+                        ACTOR_EVENT_SOURCE,
+                        ObjectiveEventKind::Counted {
+                            actor: *actor,
+                            kind: counted,
+                        },
+                    );
+                }
                 continue;
             };
-            if self.counters.record(counted, *actor) {
-                out.push(
-                    ACTOR_EVENT_SOURCE,
-                    ObjectiveEventKind::Counted {
-                        actor: *actor,
-                        kind: counted,
-                    },
-                );
+            match self.transitions.observe(*actor, transition) {
+                TransitionOutcome::Applied(applied) => match applied.confirmation {
+                    // A bailout: reported, never counted, and the declared policy
+                    // — which today measures nothing — is the only thing that
+                    // could settle the mission over it.
+                    Some(confirmation) => {
+                        if let Some(outcome) = self.transitions.policy().terminal_outcome() {
+                            self.requests.push((ACTOR_EVENT_SOURCE, outcome));
+                        }
+                        out.push(
+                            ACTOR_EVENT_SOURCE,
+                            ObjectiveEventKind::PilotBailedOut {
+                                actor: applied.actor,
+                                confirmation,
+                            },
+                        );
+                    }
+                    // A destruction: the kill path, counted once.
+                    None => {
+                        if self.counters.record(CountKind::Destroyed, applied.actor) {
+                            out.push(
+                                ACTOR_EVENT_SOURCE,
+                                ObjectiveEventKind::Counted {
+                                    actor: applied.actor,
+                                    kind: CountKind::Destroyed,
+                                },
+                            );
+                        }
+                    }
+                },
+                // The actor already reached this exact transition: the counters
+                // are idempotent, so a repeated report stays silent as before.
+                TransitionOutcome::Repeated(_) => {}
+                TransitionOutcome::Refused(reason) => {
+                    out.push(
+                        ACTOR_EVENT_SOURCE,
+                        ObjectiveEventKind::TransitionRefused {
+                            actor: *actor,
+                            requested: transition,
+                            reason,
+                        },
+                    );
+                }
             }
         }
     }

@@ -57,9 +57,23 @@
 //!   as data with no unit because what it measures is unmeasured, and never
 //!   interpreted.
 //!
+//! # The pilot bailout's own mission transition (F29-C.4)
+//!
+//! - [`bailout`]: [`bailout::MissionTransition`], the **two** transitions F29
+//!   keeps apart (`Destroyed` is a kill, `PilotBailedOut` is not), and
+//!   [`bailout::MissionTransitions`], the per-actor ledger that keeps the *first*
+//!   one — so a destruction report arriving after a bailout cannot become a
+//!   kill. [`bailout::BailoutConfirmation`] gates the transition on the declared
+//!   eject edge under the modern bindings, so a rendering parachute is never a
+//!   confirmation, and [`bailout::BailoutResultPolicy`] is the declared
+//!   mission-result policy — currently [`bailout::BailoutResultPolicy::Unmeasured`],
+//!   which withholds every result and credits no survival because nothing
+//!   measured says what the original did.
+//!
 //! The mission wiring — the authored content form, the Bevy producers and the
 //! UI and dialogue consumers — is F39-C.
 
+pub mod bailout;
 pub mod counters;
 pub mod runtime;
 pub mod spawn;

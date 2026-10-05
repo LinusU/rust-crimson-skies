@@ -192,6 +192,7 @@ use cs_content::stunts::{
 };
 use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
+use cs_sim::objectives::bailout::BailoutRefusal;
 use cs_sim::objectives::counters::CountKind;
 use cs_sim::objectives::runtime::{
     CompletionEffect, CompletionEffectKind, CountCondition, CountReaction, ObjectiveCompletion,
@@ -1079,6 +1080,16 @@ pub enum SessionRefusal {
         /// The dialogue that was not played.
         dialogue: ContentId,
     },
+    /// A lifecycle transition produced no mission transition (F29-C.4). The
+    /// actor's record keeps the transition it had already reached.
+    ///
+    /// Reported rather than dropped, because "a destruction arrived after a
+    /// bailout and was refused" is a fact no consumer can recover by reading the
+    /// counters: the counter simply never moved.
+    Transition {
+        /// Why nothing was recorded.
+        reason: BailoutRefusal,
+    },
 }
 
 /// One row of the objective display the UI reads.
@@ -1481,6 +1492,20 @@ impl ObjectiveSession {
                             instances.retain(|instance| *instance != *actor);
                         }
                     }
+                }
+                // A confirmed pilot bailout is reported, not applied: the
+                // airframe is still in the world (F30-A's measured contract is
+                // that a bailout does not end targetability), so it stays in the
+                // registry and this session's to tear down. What the mission
+                // does with it is a declared [`CountReaction`]'s business, and
+                // the unmeasured bailout policy requests nothing.
+                ObjectiveEventKind::PilotBailedOut { .. } => {}
+                // A refused transition is named, never dropped: the stream says
+                // the world reported a destruction after a bailout and the
+                // ledger kept the bailout, which is what a consumer can never
+                // reconstruct by reading the counters alone.
+                ObjectiveEventKind::TransitionRefused { reason, .. } => {
+                    refusals.push(SessionRefusal::Transition { reason: *reason })
                 }
                 ObjectiveEventKind::OutcomeSettled { .. }
                 | ObjectiveEventKind::ConditionMet { .. }
