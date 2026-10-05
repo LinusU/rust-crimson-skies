@@ -188,7 +188,10 @@ use cs_content::world::{
     WorldCollisionShape, WorldDefinition, WorldError, WorldId, WorldIdError, WorldObjectId,
     WorldObjectInstance,
 };
-use cs_formats::gamez::{GameZMeshes, GameZNodes, read_gamez_meshes, read_gamez_nodes};
+use cs_formats::gamez::{
+    GameZMaterials, GameZMeshes, GameZNodes, read_gamez_materials, read_gamez_meshes,
+    read_gamez_nodes,
+};
 use cs_formats::io::ParseContext;
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{
@@ -197,6 +200,10 @@ use cs_types::content::{
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 use cs_types::space::Meters;
 
+use crate::playtest_textures::{
+    NeutralColor, PlaytestPart, PlaytestTextureArchive, PlaytestTextureError,
+    PlaytestTextureReport, TextureBinder,
+};
 use crate::world::WorldMeshes;
 use crate::world::fixture::MESH_SETTLE_UPDATES;
 use crate::world::retail::{container_mesh_key, stored_presentation_unknowns, stored_render_mesh};
@@ -503,6 +510,8 @@ pub enum PlaytestError {
     },
     /// A capture could not be produced.
     Capture(CaptureError),
+    /// The original textures could not be set up.
+    Textures(PlaytestTextureError),
 }
 
 impl fmt::Display for PlaytestError {
@@ -577,6 +586,7 @@ impl fmt::Display for PlaytestError {
                  there is no scene to frame"
             ),
             Self::Capture(error) => write!(f, "{error}"),
+            Self::Textures(error) => write!(f, "{error}"),
         }
     }
 }
@@ -592,8 +602,15 @@ impl std::error::Error for PlaytestError {
             Self::Definition(error) => Some(error),
             Self::Spawn(error) => Some(error),
             Self::Capture(error) => Some(error),
+            Self::Textures(error) => Some(error),
             _ => None,
         }
+    }
+}
+
+impl From<PlaytestTextureError> for PlaytestError {
+    fn from(error: PlaytestTextureError) -> Self {
+        Self::Textures(error)
     }
 }
 
@@ -687,6 +704,7 @@ pub struct PlaytestContainer {
     span: SourceSpan,
     nodes: GameZNodes,
     meshes: GameZMeshes,
+    materials: GameZMaterials,
     table: Vec<MeshSlot>,
 }
 
@@ -726,6 +744,12 @@ impl PlaytestContainer {
     #[must_use]
     pub const fn meshes(&self) -> &GameZMeshes {
         &self.meshes
+    }
+
+    /// The decoded material records and texture-name table.
+    #[must_use]
+    pub const fn materials(&self) -> &GameZMaterials {
+        &self.materials
     }
 
     /// The container's mesh-slot table: one [`MeshSlot`] per stored mesh-array
@@ -779,6 +803,7 @@ pub struct PlaytestSources {
     installation: String,
     world: PlaytestContainer,
     aircraft: PlaytestContainer,
+    textures: std::sync::Arc<PlaytestTextureArchive>,
 }
 
 impl PlaytestSources {
@@ -798,6 +823,12 @@ impl PlaytestSources {
     #[must_use]
     pub const fn aircraft(&self) -> &PlaytestContainer {
         &self.aircraft
+    }
+
+    /// The texture archive the scene's materials are looked up in.
+    #[must_use]
+    pub fn textures(&self) -> &PlaytestTextureArchive {
+        &self.textures
     }
 }
 
@@ -827,10 +858,12 @@ pub fn read_playtest_sources(
     let group = world_group.to_ascii_lowercase();
     let world = read_container(&found, world_group, &format!("zbd/{group}/gamez.zbd"))?;
     let aircraft = read_container(&found, "planes", AIRCRAFT_CONTAINER_KEY)?;
+    let textures = PlaytestTextureArchive::open(install_root, &found, world_group)?;
     Ok(PlaytestSources {
         installation: install::fingerprint(&found.manifest).to_string(),
         world,
         aircraft,
+        textures: std::sync::Arc::new(textures),
     })
 }
 
@@ -880,6 +913,14 @@ fn read_container(
         }
     })?;
 
+    let mut material_parse = ParseContext::with_defaults(container_key.to_owned());
+    let materials =
+        read_gamez_materials(&mut material_parse, container_key, &bytes).map_err(|error| {
+            PlaytestError::World {
+                reason: format!("{container_key}'s material records would not read: {error}"),
+            }
+        })?;
+
     let span = SourceSpan::new(
         install::fingerprint(&found.manifest),
         record.relative_spelling.as_str(),
@@ -900,6 +941,7 @@ fn read_container(
         span,
         nodes,
         meshes,
+        materials,
         table: Vec::new(),
     };
     let mut table = Vec::with_capacity(container.meshes.meshes.len());
@@ -1320,6 +1362,10 @@ pub struct PlaytestConfig {
     pub capture_width: u32,
     /// The capture frame's height, in pixels.
     pub capture_height: u32,
+    /// Whether materials are bound to the original textures. `false` draws every
+    /// surface with the neutral development material of #648, which is the
+    /// baseline a textured frame is measured against.
+    pub textured: bool,
 }
 
 impl PlaytestConfig {
@@ -1341,6 +1387,7 @@ impl PlaytestConfig {
             aircraft_lod_distance_m: PLAYTEST_AIRCRAFT_LOD_DISTANCE_M,
             capture_width: CAPTURE_WIDTH,
             capture_height: CAPTURE_HEIGHT,
+            textured: true,
         }
     }
 
@@ -1809,6 +1856,7 @@ pub struct PlaytestScene {
     report: PlaytestAreaReport,
     aircraft: PlaytestAircraftReport,
     material: PlaytestMaterial,
+    textures: PlaytestTextureReport,
     spawn: [f32; 3],
     rotation: bevy::math::Quat,
     views: Vec<PlaytestCameraView>,
@@ -1854,6 +1902,13 @@ impl PlaytestScene {
     #[must_use]
     pub const fn material(&self) -> &PlaytestMaterial {
         &self.material
+    }
+
+    /// What the area's and the aircraft's materials resolved to: which archive
+    /// was chosen and how many materials are textured or neutral.
+    #[must_use]
+    pub const fn textures(&self) -> &PlaytestTextureReport {
+        &self.textures
     }
 
     /// The aircraft's entity.
@@ -1924,6 +1979,12 @@ pub struct PlaytestTeardown {
     /// How many engine mesh assets this scene had registered for the world
     /// records, after the release.
     pub world_mesh_assets: usize,
+    /// How many engine materials were live when the teardown began, so a test can
+    /// show the count falling once the released entities settle out.
+    pub materials_before: usize,
+    /// How many engine images (decoded original textures) were live when the
+    /// teardown began.
+    pub images_before: usize,
 }
 
 /// Builds the Bevy world this scene is spawned into: physics, the asset stack
@@ -2164,6 +2225,9 @@ pub fn spawn_playtest_content(
     )?;
 
     let mut meshes = WorldMeshes::new();
+    let mut binder = TextureBinder::new(sources.textures(), config.textured);
+    let mut world_parts: std::collections::BTreeMap<ContentId, Vec<PlaytestPart>> =
+        std::collections::BTreeMap::new();
     let mut records: Vec<WorldObjectInstance> = Vec::new();
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
@@ -2191,6 +2255,17 @@ pub fn spawn_playtest_content(
             .map_err(|reason| PlaytestError::World {
                 reason: format!("mesh slot {index} of the area would not upload: {reason}"),
             })?;
+        if !world_parts.contains_key(&known.value)
+            && let Some(uploaded) = meshes.get(&known.value)
+        {
+            let parts = binder.parts(
+                app,
+                sources.world(),
+                uploaded,
+                NeutralColor(WORLD_MATERIAL_COLOR),
+            );
+            world_parts.insert(known.value.clone(), parts);
+        }
         grow(&mut min, &mut max, &render, node.world_transform())?;
         triangles += render.triangles().len();
         mesh_records += 1;
@@ -2285,6 +2360,12 @@ pub fn spawn_playtest_content(
             .world_mut()
             .resource_mut::<Assets<Mesh>>()
             .add(uploaded.mesh().clone());
+        let pieces = binder.parts(
+            app,
+            sources.aircraft(),
+            uploaded,
+            NeutralColor(AIRCRAFT_MATERIAL_COLOR),
+        );
         let local = crate::scene::NodeVisualTransform::from_canonical(node.visual_transform())
             .map_err(|error| PlaytestError::World {
                 reason: format!("aircraft node {} would not convert: {error}", node.index()),
@@ -2295,6 +2376,7 @@ pub fn spawn_playtest_content(
             node_slot: node.index(),
             node_name: node.name().to_owned(),
             mesh: handle,
+            pieces,
             local,
         });
         part_reports.push(AircraftPartReport {
@@ -2308,13 +2390,24 @@ pub fn spawn_playtest_content(
             composed_translation_m: node.world_transform().translation(),
         });
     }
-    let world_material = add_material(app, WORLD_MATERIAL_COLOR);
-    let aircraft_material = add_material(app, AIRCRAFT_MATERIAL_COLOR);
-    for entity in &entities {
-        if app.world().get::<Mesh3d>(*entity).is_some() {
-            app.world_mut()
-                .entity_mut(*entity)
-                .insert(MeshMaterial3d(world_material.clone()));
+    let textures = binder.finish();
+    // The area's records keep their whole-mesh `Mesh3d` (the collider is derived
+    // from it) but carry **no** material of their own, so the engine does not
+    // draw it; each stored material group is drawn by a child part instead.
+    for object in spawned.objects() {
+        let Some(mesh) = &object.mesh else {
+            continue;
+        };
+        let Some(parts) = world_parts.get(&mesh.id) else {
+            continue;
+        };
+        for part in parts {
+            app.world_mut().spawn((
+                Mesh3d(part.mesh.clone()),
+                MeshMaterial3d(part.material.clone()),
+                bevy::prelude::Transform::IDENTITY,
+                bevy::prelude::ChildOf(object.visual),
+            ));
         }
     }
     let report = PlaytestAreaReport {
@@ -2351,7 +2444,7 @@ pub fn spawn_playtest_content(
         report,
         aircraft,
         aircraft_parts,
-        aircraft_material,
+        textures,
         world_meshes: meshes.len(),
         spawn,
         rotation,
@@ -2375,8 +2468,12 @@ pub struct AircraftPartAsset {
     pub node_slot: u32,
     /// The authored name that node stores.
     pub node_name: String,
-    /// The engine mesh (one F17-B upload).
+    /// The engine mesh (one F17-B upload). It sits on the part's entity without a
+    /// material, so it is not drawn; [`Self::pieces`] draw it.
     pub mesh: Handle<Mesh>,
+    /// The mesh cut into one piece per stored material group, each with its
+    /// textured (or neutral) material.
+    pub pieces: Vec<PlaytestPart>,
     /// The node's composed transform in the airframe, canonical metres, with no
     /// nose mapping applied.
     pub local: Transform,
@@ -2389,6 +2486,37 @@ impl AircraftPartAsset {
     #[must_use]
     pub fn oriented(&self, rotation: bevy::math::Quat) -> Transform {
         Transform::from_rotation(rotation) * self.local
+    }
+
+    /// Spawns this binding under `parent` at `transform`: one [`AircraftPart`]
+    /// entity holding the whole mesh, with one drawn child per piece. Despawning
+    /// the parent despawns all of them.
+    pub fn spawn(
+        &self,
+        world: &mut bevy::prelude::World,
+        parent: Entity,
+        transform: Transform,
+    ) -> Entity {
+        let entity = world
+            .spawn((
+                Mesh3d(self.mesh.clone()),
+                transform,
+                Visibility::Inherited,
+                AircraftPart {
+                    node_slot: self.node_slot,
+                },
+                bevy::prelude::ChildOf(parent),
+            ))
+            .id();
+        for piece in &self.pieces {
+            world.spawn((
+                Mesh3d(piece.mesh.clone()),
+                MeshMaterial3d(piece.material.clone()),
+                Transform::IDENTITY,
+                bevy::prelude::ChildOf(entity),
+            ));
+        }
+        entity
     }
 }
 
@@ -2406,10 +2534,11 @@ pub struct PlaytestContent {
     pub report: PlaytestAreaReport,
     /// What the aircraft read.
     pub aircraft: PlaytestAircraftReport,
-    /// The aircraft's engine meshes, one per drawn binding.
+    /// The aircraft's engine meshes, one per drawn binding, each with its
+    /// textured (or neutral) pieces.
     pub aircraft_parts: Vec<AircraftPartAsset>,
-    /// The development material every aircraft mesh is drawn with.
-    pub aircraft_material: Handle<StandardMaterial>,
+    /// What the area's and the aircraft's materials resolved to.
+    pub textures: PlaytestTextureReport,
     /// How many distinct area meshes were uploaded (the aircraft's is not one).
     pub world_meshes: usize,
     /// The designed spawn position (see [`spawn_pose`]), in metres.
@@ -2435,7 +2564,7 @@ fn place_capture_scene(
         report,
         aircraft,
         aircraft_parts,
-        aircraft_material,
+        textures,
         world_meshes,
         spawn,
         rotation,
@@ -2454,15 +2583,7 @@ fn place_capture_scene(
         ))
         .id();
     for part in &aircraft_parts {
-        app.world_mut().spawn((
-            Mesh3d(part.mesh.clone()),
-            MeshMaterial3d(aircraft_material.clone()),
-            part.local,
-            AircraftPart {
-                node_slot: part.node_slot,
-            },
-            bevy::prelude::ChildOf(aircraft_entity),
-        ));
+        part.spawn(app.world_mut(), aircraft_entity, part.local);
     }
     entities.push(aircraft_entity);
 
@@ -2498,6 +2619,7 @@ fn place_capture_scene(
         report,
         aircraft,
         material,
+        textures,
         spawn,
         rotation,
         views,
@@ -2586,25 +2708,6 @@ fn grow(
         }
     }
     Ok(())
-}
-
-/// One neutral development material, created once per colour.
-fn add_material(app: &mut App, color: [f32; 4]) -> Handle<StandardMaterial> {
-    app.world_mut()
-        .resource_mut::<Assets<StandardMaterial>>()
-        .add(StandardMaterial {
-            base_color: Color::srgba(color[0], color[1], color[2], color[3]),
-            metallic: 0.0,
-            // No back-face culling, and this is a declared decision rather than a
-            // default: whether a stored winding is front-facing is F17's open
-            // `FrontFaceWinding` question, so culling on an unmeasured rule would
-            // make the frame depend on a question this stage does not answer, and
-            // a one-sided mesh would come back as empty sky — which a capture
-            // would then refuse. Drawing both sides keeps the frame about the
-            // stored triangles and nothing else.
-            cull_mode: None,
-            ..default()
-        })
 }
 
 /// The camera, the two lights and the render target a capture drives, at `view`.
@@ -2749,6 +2852,14 @@ pub fn settle_playtest_colliders(app: &mut App, scene: &PlaytestScene) -> usize 
 /// is zero by construction and therefore says nothing on its own about whether
 /// anything was held.
 pub fn teardown_playtest_scene(app: &mut App, scene: &PlaytestScene) -> PlaytestTeardown {
+    let materials_before = app
+        .world()
+        .get_resource::<Assets<StandardMaterial>>()
+        .map_or(0, Assets::len);
+    let images_before = app
+        .world()
+        .get_resource::<Assets<Image>>()
+        .map_or(0, Assets::len);
     let mut count = 0;
     for entity in &scene.entities {
         if app.world_mut().despawn(*entity) {
@@ -2767,6 +2878,8 @@ pub fn teardown_playtest_scene(app: &mut App, scene: &PlaytestScene) -> Playtest
             .world()
             .get_resource::<WorldMeshAssets>()
             .map_or(0, WorldMeshAssets::len),
+        materials_before,
+        images_before,
     }
 }
 
@@ -2809,6 +2922,17 @@ pub struct PlaytestCapture {
     /// Pixels the area's geometry contributed, measured as the covered pixels of
     /// the same frame with the aircraft hidden.
     pub environment_pixels: usize,
+    /// Distinct RGB colours over the aircraft's own pixels (the ones that changed
+    /// when it was hidden). A flat-shaded surface holds a handful; texture detail
+    /// holds many.
+    pub aircraft_distinct_colors: usize,
+    /// Variance of the 8-bit luminance over the aircraft's pixels.
+    pub aircraft_luma_variance: f64,
+    /// Distinct RGB colours over the area's pixels (the covered pixels of the
+    /// frame with the aircraft hidden).
+    pub environment_distinct_colors: usize,
+    /// Variance of the 8-bit luminance over the area's pixels.
+    pub environment_luma_variance: f64,
     /// Where the PNG was written.
     pub png: String,
     /// SHA-256 of the written PNG's bytes.
@@ -3034,6 +3158,19 @@ pub fn capture_playtest_views(
 
         let aircraft_pixels = differing(&with.facts.pixels, &without.facts.pixels);
         let environment_pixels = without.facts.covered_pixels;
+        let aircraft_detail = color_detail(&with.facts.pixels, |index| {
+            with.facts.pixels[index * 4..index * 4 + 4]
+                != without.facts.pixels[index * 4..index * 4 + 4]
+        });
+        let environment_detail = color_detail(&without.facts.pixels, |index| {
+            let pixel = &without.facts.pixels[index * 4..index * 4 + 3];
+            let clear = [
+                (CLEAR_COLOR[0] * 255.0).round() as u8,
+                (CLEAR_COLOR[1] * 255.0).round() as u8,
+                (CLEAR_COLOR[2] * 255.0).round() as u8,
+            ];
+            pixel != clear
+        });
         if !with.facts.distinct_luminance.gt(&1) {
             let _ = fs::remove_file(&png);
             return Err(PlaytestError::Capture(CaptureError::UniformFrame {
@@ -3075,6 +3212,10 @@ pub fn capture_playtest_views(
             covered_permille: rendered.covered_permille,
             aircraft_pixels,
             environment_pixels,
+            aircraft_distinct_colors: aircraft_detail.0,
+            aircraft_luma_variance: aircraft_detail.1,
+            environment_distinct_colors: environment_detail.0,
+            environment_luma_variance: environment_detail.1,
             png: rendered.png,
             png_sha256: rendered.png_sha256,
             png_bytes: rendered.png_bytes,
@@ -3292,6 +3433,31 @@ fn pose_camera(app: &mut App, scene: &PlaytestScene, view: &PlaytestCameraView) 
                 Transform::from_translation(position).looking_at(target, bevy::math::Vec3::Y);
         }
     }
+}
+
+/// Distinct RGB colours and 8-bit luminance variance over the pixels `select`
+/// accepts (by pixel index): a measure of how much detail a surface shows.
+fn color_detail(pixels: &[u8], select: impl Fn(usize) -> bool) -> (usize, f64) {
+    let mut colors: std::collections::BTreeSet<[u8; 3]> = std::collections::BTreeSet::new();
+    let (mut count, mut sum, mut sum_squares) = (0.0_f64, 0.0_f64, 0.0_f64);
+    for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
+        if !select(index) {
+            continue;
+        }
+        colors.insert([pixel[0], pixel[1], pixel[2]]);
+        let luminance = f64::from(
+            (29 * u32::from(pixel[0]) + 150 * u32::from(pixel[1]) + 77 * u32::from(pixel[2])) >> 8,
+        );
+        count += 1.0;
+        sum += luminance;
+        sum_squares += luminance * luminance;
+    }
+    let variance = if count > 0.0 {
+        sum_squares / count - (sum / count) * (sum / count)
+    } else {
+        0.0
+    };
+    (colors.len(), variance)
 }
 
 /// How many pixels differ between two frames.

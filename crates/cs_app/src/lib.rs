@@ -611,6 +611,7 @@ pub mod origin;
 pub mod physics;
 pub mod playtest;
 pub mod playtest_retail;
+pub mod playtest_textures;
 pub mod profile;
 pub mod render;
 pub mod roster;

@@ -22,13 +22,15 @@ use std::path::PathBuf;
 
 use avian3d::prelude::Collider;
 use bevy::asset::{AssetApp, Assets};
-use bevy::prelude::{App, Component, Entity, Handle, Quat, Resource, StandardMaterial};
+use bevy::image::Image;
+use bevy::prelude::{App, Component, Entity, Quat, Resource, StandardMaterial};
 
 use super::PlaytestError;
 use crate::playtest_retail::{
     self as scene_source, AircraftPartAsset, PLAYTEST_AIRCRAFT_ROOT_NAME, PLAYTEST_WORLD_GROUP,
     PlaytestAircraftReport, PlaytestAreaReport, PlaytestConfig, PlaytestSources,
 };
+use crate::playtest_textures::PlaytestTextureReport;
 
 /// The label every surface of the original-assets playtest shows.
 pub const RETAIL_LABEL: &str = scene_source::PLAYTEST_LABEL;
@@ -118,11 +120,11 @@ pub struct RetailContent {
     pub half_extents_m: [f32; 3],
     /// The half turn that maps the stored nose onto the flight body's forward.
     pub visual_rotation: Quat,
-    /// The aircraft's engine meshes, one per drawn binding, each with its composed
-    /// placement in the airframe.
+    /// The aircraft's drawn bindings, each with its composed placement in the
+    /// airframe and its pieces textured from the flown world's archive.
     pub parts: Vec<AircraftPartAsset>,
-    /// The development material the aircraft is drawn with.
-    pub material: Handle<StandardMaterial>,
+    /// What the area's and the aircraft's materials resolved to.
+    pub textures: PlaytestTextureReport,
 }
 
 impl RetailContent {
@@ -139,13 +141,14 @@ impl RetailContent {
         format!(
             "{{\"label\":\"{RETAIL_LABEL}\",\"installation\":\"{}\",\"containers\":[{containers}],\
 \"area_node\":\"{}\",\"area_mesh_records\":{},\"area_triangles\":{},\"area_colliders\":{},\
-{}}}",
+{},\"textures\":{}}}",
             self.installation,
             self.area.node_name,
             self.area.mesh_records,
             self.area.triangles,
             self.area.colliders(),
             self.aircraft.json_fields(),
+            self.textures.json(),
         )
     }
 }
@@ -186,6 +189,9 @@ pub fn install(
     if !app.world().contains_resource::<Assets<StandardMaterial>>() {
         app.init_asset::<StandardMaterial>();
     }
+    if !app.world().contains_resource::<Assets<Image>>() {
+        app.init_asset::<Image>();
+    }
     let config = PlaytestConfig::documented();
     let content =
         scene_source::spawn_playtest_content(app, sources, &config).map_err(|source| {
@@ -225,7 +231,7 @@ pub fn install(
         half_extents_m,
         visual_rotation: content.rotation,
         parts: content.aircraft_parts,
-        material: content.aircraft_material,
+        textures: content.textures,
     });
     Ok(())
 }

@@ -646,15 +646,18 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
         assert!(value.is_finite(), "the spawn pose must be finite");
     }
     assert_eq!(scene.views().len(), VIEW_COUNT);
-    assert!(
-        scene.material().is_neutral(),
-        "the material decision is the neutral development one, reported once"
-    );
+    // The neutral development material is now only the **fallback** for a material
+    // whose texture does not resolve; the textured decision (task #666) is reported
+    // by `scene.textures()` and tested in `playtest_textures.rs`.
     assert_eq!(scene.material().claim, PLAYTEST_NEUTRAL_MATERIAL);
     assert_eq!(
         scene.material().covered.len(),
         2,
-        "the one material decision covers both containers, named"
+        "the fallback decision still names both containers"
+    );
+    assert!(
+        scene.textures().textured_materials() > 0,
+        "the scene draws original textures, not only the neutral fallback"
     );
 
     // -- colliders exist, are triangle meshes, and carry the record's own count
@@ -709,24 +712,42 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
         engine_meshes > engine_meshes_before,
         "and the scene really uploaded something: {engine_meshes_before} -> {engine_meshes}"
     );
-    // The aircraft is one parent entity with one presented child per drawn binding.
-    let children = app
+    // The aircraft is one parent entity with one child per drawn binding, and each
+    // binding presents one material-bearing piece per stored material group.
+    let children: Vec<_> = app
         .world()
         .get::<bevy::prelude::Children>(scene.aircraft_entity())
-        .expect("the aircraft parent has its parts");
+        .expect("the aircraft parent has its parts")
+        .iter()
+        .copied()
+        .collect();
     assert_eq!(children.len(), scene.aircraft().mesh_bindings());
-    for child in children {
+    let mut pieces = 0usize;
+    for child in children.iter().copied() {
         assert!(
-            app.world().get::<Mesh3d>(*child).is_some(),
-            "every part presents its own mesh"
+            app.world().get::<Mesh3d>(child).is_some(),
+            "every part holds its own mesh"
         );
-        assert!(
-            app.world()
-                .get::<MeshMaterial3d<bevy::pbr::StandardMaterial>>(*child)
-                .is_some(),
-            "and is presented, which the world records' presentation path does not do itself"
-        );
+        for piece in app
+            .world()
+            .get::<bevy::prelude::Children>(child)
+            .expect("every part has its drawn pieces")
+        {
+            assert!(app.world().get::<Mesh3d>(*piece).is_some());
+            assert!(
+                app.world()
+                    .get::<MeshMaterial3d<bevy::pbr::StandardMaterial>>(*piece)
+                    .is_some(),
+                "and is presented, which the world records' presentation path does not do itself"
+            );
+            pieces += 1;
+        }
     }
+    let groups: usize = scene.aircraft().parts.iter().map(|part| part.groups).sum();
+    assert_eq!(
+        pieces, groups,
+        "one presented piece per stored material group of every drawn binding"
+    );
 
     // -- the capture: real frames from the same spawned content --------------
     let dir = capture_dir("area");

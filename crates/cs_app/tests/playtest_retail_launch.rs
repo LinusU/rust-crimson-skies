@@ -182,6 +182,26 @@ fn accept_playtest_retail_launch_reset_owns_only_the_aircraft() {
         .resource::<RetailContent>()
         .area_entities
         .clone();
+    // A reset respawns only the aircraft, from handles the content already holds:
+    // it must create no image, material or mesh asset (no leak across resets).
+    let assets = |app: &App| {
+        (
+            app.world()
+                .resource::<bevy::prelude::Assets<bevy::image::Image>>()
+                .len(),
+            app.world()
+                .resource::<bevy::prelude::Assets<bevy::prelude::StandardMaterial>>()
+                .len(),
+            app.world()
+                .resource::<bevy::prelude::Assets<bevy::mesh::Mesh>>()
+                .len(),
+        )
+    };
+    let assets_before = assets(&app);
+    assert!(
+        assets_before.0 > 0 && assets_before.1 > 0,
+        "the original textures are live: {assets_before:?}"
+    );
     for reset in 1..=3 {
         tap_r(&mut app);
         for _ in 0..30 {
@@ -190,6 +210,7 @@ fn accept_playtest_retail_launch_reset_owns_only_the_aircraft() {
         assert_eq!(count::<PlaytestAircraft>(&mut app), 1);
         assert_eq!(count::<PlaytestCameraMarker>(&mut app), 1);
         assert_eq!(app.world().resource::<PlaytestState>().resets, reset);
+        assert_eq!(assets(&app), assets_before, "reset {reset} leaked an asset");
     }
     assert!(
         before.iter().all(|e| app.world().get_entity(*e).is_ok()),
@@ -241,6 +262,11 @@ fn accept_playtest_retail_launch_scripted_smoke_collides_with_the_original_area(
         manifest.contains("\"aircraft_mesh_bindings\":")
             && manifest.contains("\"aircraft_undrawn\":["),
         "the smoke report lists the aircraft's drawn bindings and its undrawn ones"
+    );
+    // The report records the chosen texture archive and the textured counts.
+    assert!(
+        manifest.contains(sources.textures().path()) && manifest.contains("\"textured_materials\""),
+        "{manifest}"
     );
     let report_json = std::fs::read_to_string(dir.join("report.json")).expect("report.json");
     assert!(
