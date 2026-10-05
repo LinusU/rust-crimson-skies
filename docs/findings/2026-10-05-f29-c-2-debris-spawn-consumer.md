@@ -153,20 +153,20 @@ failing tests and restored the file from Git:
 
 ## Follow-ups left open (filed with `create_tasks`)
 
-- **Scheduling the debris pass.** `apply_debris_state` / `release_debris` are
+- **Scheduling the debris pass — filed as #668 (F29-C-SCHEDULE).**
+  `apply_debris_state` / `release_debris` are
   production seams in the shape F29-C's own `apply_damage_state` and
   `apply_damage_events` already have: real implementations, driven directly by
   their tests, with no schedule system calling them yet. Whoever owns the
   runtime damage tick must call them beside the other consumers, and the
   session/scene teardown must call `release_debris` beside the other release
   work.
-- **Publishing the bindings.** `PartDebrisBinding` is inserted by the spawn
+- **Publishing the bindings and presenting an instance — filed as #669
+  (F29-C.5).** `PartDebrisBinding` is inserted by the spawn
   path, exactly as `DamageZoneBinding` is; neither is inserted by a production
-  spawn path yet. The stage that authors the wreckage objects owns those
-  insertions.
-- **Presenting an instance.** Resolving `SpawnedDebris::source` to a rendered,
-  simulated wreck (pose, physics, lifetime) is the debris presentation
-  stage's.
+  spawn path yet, and nothing resolves `SpawnedDebris::source` to a rendered,
+  simulated wreck (pose, physics, lifetime). Both belong to the stages that
+  author the wreckage objects.
 
 ## Evidence
 
