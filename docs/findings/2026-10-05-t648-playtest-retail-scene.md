@@ -30,10 +30,13 @@ the measurement and the limitation record.
   `accept_playtest_retail_` tests, three of them retail.
 - `crates/cs_app/src/world/retail.rs` (minimal adapter change, an F18 owner path):
   `render_mesh` → **`pub fn stored_render_mesh`** and
-  `presentation_unknowns` → **`pub fn stored_presentation_unknowns`**. The playtest
-  scene reads one world container's stored meshes and must upload them through
-  **this** builder and declare **this** presentation-unknown list, or the project
-  would have two of each (AGENTS rule 7).
+  `presentation_unknowns` → **`pub fn stored_presentation_unknowns`**, plus the
+  `<group>.mesh-<index>` string rule lifted out of
+  `RetailWorldContainer::mesh_key` into **`pub fn container_mesh_key`**. The
+  playtest scene reads one world container's stored meshes and must upload them
+  through **this** builder and declare **this** presentation-unknown list, and
+  must name a mesh slot through **this** rule, or the project would have two of
+  each (AGENTS rule 7).
 - `crates/cs_app/src/lib.rs` (wiring only): `pub mod playtest_retail;`.
 - `docs/PLAYTEST-RETAIL.md` (new): the label, the chosen world/aircraft/start
   transform/scale/material overrides and the exact command.
@@ -317,3 +320,66 @@ CS_GAME_DIR="$CS_GAME_DIR" cargo test -p cs_app --test playtest_retail -- \
   accept_playtest_retail_ --include-ignored
 #   11 tests: 8 run and pass, 3 retail run and pass
 ```
+
+## Review findings (fixed on this branch, before merge)
+
+Recorded here because the review changed code, not only prose.
+
+- **One mesh-identity rule, not two.** `PlaytestContainer::mesh_key` was a private
+  copy of `RetailWorldContainer::mesh_key` — the same `<group>.mesh-<index>`
+  string rule in two places, which is exactly the "stable content ids" seam AGENTS
+  rule 7 asks to have one owner, and a drift risk the module's own doc comment
+  papered over by *asserting* the two agree. Both now spell it through one
+  `world::retail::container_mesh_key`, so a mesh the area draws and a mesh the
+  world import draws are one catalog element by construction rather than by two
+  copies of one format string. #638 replaces this per-container name with the
+  shared catalog either way, so the fix is not waiting on #638 to be right.
+- **The teardown's asset assertion proved nothing.** `PlaytestTeardown` reported
+  the loader's asset count *after* removing the `WorldMeshAssets` resource, so it
+  was zero by construction and the retail test's `assert_eq!(…, 0)` would have
+  passed against a teardown that released nothing. The struct now also reports
+  `released_world_mesh_assets` — measured **before** the release — and the retail
+  test asserts it equals the count the spawn filled. The stronger check is on the
+  engine's own stack: after the teardown the test asserts `Assets::<Mesh>::len()`
+  is back to the baseline it measured before the spawn, so "no stale ownership" is
+  a statement about released assets rather than about a counter.
+  **Measured while fixing this, and the reason it is in the findings:** the first
+  version of that check drove the baseline off a *fresh* `playtest_app()` and
+  failed with `4 != 3` on every run, two updates and six updates alike. The
+  survivor is **not** one of the scene's uploads — a fresh `playtest_app()` holds
+  3 meshes and **4 after its own first update** (an extra 2-triangle quad, no
+  original geometry), so the baseline had to be taken after that warm-up update.
+  With it, the assertion holds exactly: the engine's mesh count after the teardown
+  is the count it held before the spawn, so every upload the scene made is gone.
+  Asset release is also not synchronous — Avian's `ColliderCache`, added by
+  `PhysicsPlugins`, holds the `ColliderConstructor` and so one more `Handle<Mesh>`
+  for every mesh a collider was built from, and releases it only after reading the
+  `AssetEvent` — so the test drives `ASSET_RELEASE_UPDATES` updates first and
+  asserts exactly afterwards.
+- **The engine-vs-loader mesh assertion was near-vacuous.** `engine_meshes >=
+  assets.len()` cannot fail while the aircraft is uploaded on its own asset. It is
+  now `>`, which fails if the aircraft were ever drawn from a world record's
+  asset, plus a check that the scene raised the engine's mesh count at all.
+- **A fixed scratch directory name.** `a_directory_without_the_containers_is_
+  refused_by_key` used `…/playtest-retail-empty-install` and then removed it, so
+  two concurrent runs on one host could delete each other's `ZBD` mid-`discover`
+  and turn an `Absent` refusal into a `Discovery` one. The name now carries the
+  process id.
+- **One `expect` left in the production path.** The aircraft's registered upload
+  was read back with `.expect("the aircraft mesh was just registered")`. It
+  cannot fail — the insert is the line above — but this module returns a typed
+  error everywhere else, and a panic is not a typed refusal. It is now
+  `PlaytestError::World` by name.
+- **`CaptureTarget` derived `Resource` and `Clone` but was never a resource.** It
+  is the scene's own field, deliberately, so a second scene in the same `App`
+  captures into its own target; the doc comment now says so instead of leaving a
+  derive that implies a shared owner.
+
+The review was run by the **same agent instance that implemented the work**, so it
+is **not independent** evidence (see the policy in `AGENTS.md`), and it is
+recorded as such. Before touching any code it decoded the three committed PNGs
+with a separate script and reproduced the table above exactly — 548 / 423 / 91
+permille, clear colour `rgb(92, 133, 184)`, ~11.7 k reddish aircraft pixels in
+`chase` — so the render evidence was checked against the file rather than against
+the prose. A fresh-context reviewer of this format and evidence work is still
+wanted, and no agent review replaces the owner's approval.

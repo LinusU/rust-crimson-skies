@@ -250,6 +250,31 @@ fn import_provenance(span: Option<SourceSpan>) -> Result<Provenance, RetailWorld
     })
 }
 
+/// The one place this crate spells a **per-container mesh identity**:
+/// `<group>.mesh-<index>` in the `mesh` namespace.
+///
+/// Both production consumers of a stored mesh-array position go through here —
+/// [`RetailWorldContainer::mesh_key`] for the world import and
+/// [`crate::playtest_retail`] for the retail free-flight scene — so a mesh the
+/// world import draws and a mesh the playtest scene draws are one catalog
+/// element **by construction** rather than by two copies of one string rule that
+/// could drift apart (AGENTS rule 7, stable content ids).
+///
+/// This is **not** F10-C.03's catalog discovery, and it does not become it by
+/// accident: it is a per-container naming, and #638 is where the shared
+/// render-mesh catalog replaces it.
+///
+/// # Errors
+///
+/// [`ContentIdError`] when the group's own name is one the id grammar refuses —
+/// which is a refusal, not a name to guess around.
+pub fn container_mesh_key(group: &str, index: usize) -> Result<ContentId, ContentIdError> {
+    ContentId::from_source(
+        ContentKind::Mesh,
+        &format!("{}.mesh-{index}", group.to_ascii_lowercase()),
+    )
+}
+
 /// One original world container, read and held open for the importer.
 ///
 /// The node array and the mesh array are decoded **once**, here, and the
@@ -311,18 +336,17 @@ impl RetailWorldContainer {
 
     /// The catalog name of one stored mesh-array slot.
     ///
-    /// The one place this module spells a mesh identity: `<group>.mesh-<index>`
-    /// in the `mesh` namespace. The definition's mesh references and the
-    /// uploaded geometry both come from this function, so they agree by
-    /// construction rather than by a second naming rule.
+    /// One spelling of a mesh identity, taken from
+    /// [`container_mesh_key`]: the definition's mesh references and the
+    /// uploaded geometry both come from there, so they agree by construction
+    /// rather than by a second naming rule.
     ///
     /// This is **not** F10-C.03's catalog discovery — that maps a slot to an
     /// element of the shared render-mesh catalog, which needs the whole
     /// installation. It is a per-container naming, stated as such, and it is the
     /// seam a catalog-backed source replaces.
     pub fn mesh_key(&self, index: usize) -> Result<ContentId, RetailWorldError> {
-        let key = format!("{}.mesh-{index}", self.group.to_ascii_lowercase());
-        ContentId::from_source(ContentKind::Mesh, &key)
+        container_mesh_key(&self.group, index)
             .map_err(|reason| RetailWorldError::Slot { index, reason })
     }
 

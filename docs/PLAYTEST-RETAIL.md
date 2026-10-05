@@ -102,6 +102,16 @@ Measured on the pinned pair (640 × 480, `Apple M3 Pro`, Metal):
 | `quarter` | 130 166 | 423 | **5 089** | 130 166 | 121 371 |
 | `overview` | 28 113 | 91 | **10** | 28 103 | 38 574 |
 
+The digests of those exact files, so a later reader can tell a rerun's frame from
+this one instead of trusting a byte count (they are reproducible on the pinned
+pair and not across drivers):
+
+```
+6bd0c0e87ced6928e3b32766bedc7ba1a8bc9ad0460dc4099166e0a2f08bc76b  playtest-retail-c1c-chase.png
+50c3e2bf3596b5681d33153e4334107b28587c918b622c2bca8af3822722b8c9  playtest-retail-c1c-overview.png
+694a0a9510e0ed85c1e46d372ee31df24943aba6fa75cb05efe70e0cbc7b4535  playtest-retail-c1c-quarter.png
+```
+
 The refusal thresholds are named and every refusal **deletes the PNG**, so a file
 that exists on disk is a frame that was measured: a frame with a single luminance
 level is `UniformFrame`, less than 20 permille of non-sky pixels is
@@ -116,12 +126,21 @@ CS_GAME_DIR="$CS_GAME_DIR" cargo test -p cs_app --test playtest_retail -- \
 ```
 
 11 tests: 8 run and pass without the installation, 3 are `#[ignore]`d
-(`requires CS_GAME_DIR`) and run and pass with it. The retail half takes about
-four minutes per test, dominated by the one production discovery pass that
-fingerprints the installation.
+(`requires CS_GAME_DIR`) and run and pass with it. Measured on the two review
+runs (`Apple M3 Pro`): the retail half of the selection finished in **48 s** and
+in **60 s**, with the installation's pages already in the page cache. A cold run
+is dominated by the one production discovery pass that fingerprints every file in
+the installation, so budget minutes rather than seconds for the first run of a
+session.
 
-The exact commit is the branch head recorded in the handover summary; every
-number in this document was produced by the tests above on that commit.
+The exact commit every number in this document was produced on is
+`0717f3bd9297225ee8f3c85678a961af6aff1996`. The review that followed changed the
+mesh-identity rule to have one owner instead of two copies, made the teardown
+report the size of the asset release it performs (and the retail test assert that
+every uploaded engine mesh is gone afterwards), and gave the non-retail scratch
+directory a per-process name; **no rendered geometry, camera, spawn or threshold
+changed**, and the review re-ran the selection and got the same three frames with
+the digests above.
 
 ## What this is **not**
 

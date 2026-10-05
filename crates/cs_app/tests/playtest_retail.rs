@@ -96,7 +96,14 @@ fn accept_playtest_retail_a_missing_installation_is_refused_by_name() {
 /// `CS_GAME_DIR` is distinguishable from a corrupt one.
 #[test]
 fn accept_playtest_retail_a_directory_without_the_containers_is_refused_by_key() {
-    let root = std::env::temp_dir().join("playtest-retail-empty-install");
+    // Per process, not a fixed name: two runs of this selection on one host would
+    // otherwise share the scratch directory, and one run's `remove_dir_all` would
+    // take the other's `ZBD` away mid-`discover`, turning an `Absent` refusal into
+    // a `Discovery` one.
+    let root = std::env::temp_dir().join(format!(
+        "playtest-retail-empty-install-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(root.join("ZBD")).expect("the scratch directory is writable");
     let error = read_playtest_sources(&root, PLAYTEST_WORLD_GROUP)
         .expect_err("an installation holding neither container must be refused");
@@ -408,6 +415,18 @@ fn accept_playtest_retail_a_non_finite_pose_input_is_refused_by_name() {
     }
 }
 
+/// How many updates the teardown check drives so Bevy's asset bookkeeping and
+/// Avian's collider cache have released the scene's uploads.
+///
+/// Freeing an uploaded mesh is not a synchronous step in either framework:
+/// despawning the entities drops the strong handles, Bevy publishes the
+/// `AssetEvent` on a later frame, and Avian's `ColliderCache` — added by
+/// `PhysicsPlugins` — holds the `ColliderConstructor`, and so one more
+/// `Handle<Mesh>`, for every mesh a collider was built from, and releases it only
+/// after reading that event. Three is what this check gives it; the assertion
+/// afterwards is exact, so a longer release would fail rather than pass quietly.
+const ASSET_RELEASE_UPDATES: usize = 3;
+
 /// The triangle count of a derived collider's shape, when it is a triangle mesh.
 ///
 /// Read through Avian's own `as_trimesh`, the same accessor the mesh-collider
@@ -480,6 +499,13 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
     assert!(!sources.installation().is_empty());
 
     let mut app = cs_app::playtest_retail::playtest_app();
+    // One warm-up update **before** the baseline, because the app's own first
+    // update creates a mesh of its own: measured on the pinned pair, a fresh
+    // `playtest_app()` holds 3 meshes and holds 4 after one update (an extra
+    // 2-triangle quad, not one of this scene's). A baseline taken before any
+    // update would therefore blame the teardown for the app's own mesh.
+    app.update();
+    let engine_meshes_before = app.world().resource::<Assets<Mesh>>().len();
     let scene = spawn_playtest_scene(&mut app, &sources, &config)
         .expect("the documented area and aircraft spawn");
 
@@ -656,14 +682,23 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
             object.object
         );
     }
-    // The engine holds exactly one mesh asset per distinct mesh the area names,
-    // plus the aircraft's own.
-    let assets = app.world().resource::<WorldMeshAssets>();
-    assert!(assets.len() > 1, "the area names many distinct meshes");
+    // The loader's cache holds one asset per **distinct** mesh the area names, and
+    // the engine holds that plus the aircraft's own upload, so the engine's count
+    // is strictly greater — a `>=` here would hold even if the aircraft were
+    // drawn from a world record's asset.
+    let loader_assets = app.world().resource::<WorldMeshAssets>().len();
+    assert!(loader_assets > 1, "the area names many distinct meshes");
     let engine_meshes = app.world().resource::<Assets<Mesh>>().len();
     assert!(
-        engine_meshes >= assets.len(),
-        "the loader's owning handle and the engine's own count cannot disagree"
+        engine_meshes > loader_assets,
+        "the loader's cache ({} meshes) plus the aircraft's own upload, so the engine holds more \
+         than the world records alone: {}",
+        loader_assets,
+        engine_meshes
+    );
+    assert!(
+        engine_meshes > engine_meshes_before,
+        "and the scene really uploaded something: {engine_meshes_before} -> {engine_meshes}"
     );
     // The aircraft is drawn from its own asset, on its own entity.
     assert!(
@@ -757,6 +792,11 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
         "every entity this scene created is despawned by its teardown"
     );
     assert_eq!(
+        teardown.released_world_mesh_assets, loader_assets,
+        "the release dropped the cache the spawn filled, not an empty one: the count *after* the \
+         release is zero by construction and would look the same either way"
+    );
+    assert_eq!(
         teardown.world_mesh_assets, 0,
         "and the world mesh assets go with it, so a reload starts from nothing"
     );
@@ -768,6 +808,19 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
     assert!(
         app.world().get_resource::<WorldMeshAssets>().is_none(),
         "the loader's owning handle is released, so nothing stale can be reused"
+    );
+    // Several updates, not one, because asset release is not synchronous in either
+    // framework — see `ASSET_RELEASE_UPDATES`. Without them the "no stale
+    // ownership" claim would be about a loader counter while the engine's own
+    // meshes are still settling out of the asset stack.
+    for _ in 0..ASSET_RELEASE_UPDATES {
+        app.update();
+    }
+    assert_eq!(
+        app.world().resource::<Assets<Mesh>>().len(),
+        engine_meshes_before,
+        "every engine mesh this scene uploaded is freed once nothing holds it, so a reload \
+         cannot reuse the last scene's geometry"
     );
 
     let reloaded = spawn_playtest_scene(&mut app, &sources, &config)

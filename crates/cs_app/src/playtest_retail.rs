@@ -196,7 +196,7 @@ use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 
 use crate::world::WorldMeshes;
 use crate::world::fixture::MESH_SETTLE_UPDATES;
-use crate::world::retail::{stored_presentation_unknowns, stored_render_mesh};
+use crate::world::retail::{container_mesh_key, stored_presentation_unknowns, stored_render_mesh};
 use crate::world::spawn::{
     SkipReason, SpawnedWorld, WorldMeshAssets, WorldSpawnError, spawn_object,
 };
@@ -705,12 +705,13 @@ impl PlaytestContainer {
     /// position, named the way the world-import path names it
     /// (`<group>.mesh-<index>`).
     ///
-    /// **The same naming rule as
-    /// [`RetailWorldContainer::mesh_key`](crate::world::RetailWorldContainer::mesh_key)**,
-    /// so a mesh the area draws and a mesh the world import draws are one catalog
-    /// element. It is still a **per-container** name rather than an element of the
-    /// shared render-mesh catalog, which is task #638's job; that seam is named
-    /// there rather than papered over here.
+    /// **The one naming rule,
+    /// [`crate::world::retail::container_mesh_key`]**, not a copy of it: a mesh the
+    /// area draws and a mesh the world import draws are one catalog element
+    /// because both spell it through that function. It is still a
+    /// **per-container** name rather than an element of the shared render-mesh
+    /// catalog, which is task #638's job; that seam is named there rather than
+    /// papered over here.
     #[must_use]
     pub fn table(&self) -> &[MeshSlot] {
         &self.table
@@ -718,6 +719,10 @@ impl PlaytestContainer {
 
     /// The mesh-array index a mesh reference names, or `None` when the reference
     /// is not one of this container's own slot names.
+    ///
+    /// The inverse of [`container_mesh_key`], so it reads the same
+    /// `<group>.mesh-` prefix that function writes rather than a second spelling
+    /// of it.
     #[must_use]
     pub fn mesh_index_of(&self, mesh: &ContentId) -> Option<u32> {
         let prefix = format!("{}.mesh-", self.group.to_ascii_lowercase());
@@ -726,13 +731,9 @@ impl PlaytestContainer {
             .and_then(|suffix| suffix.parse::<u32>().ok())
     }
 
-    /// The catalog name of one stored mesh-array slot.
+    /// The catalog name of one stored mesh-array slot, from the crate's one rule.
     fn mesh_key(&self, index: usize) -> Result<ContentId, PlaytestError> {
-        ContentId::from_source(
-            ContentKind::Mesh,
-            &format!("{}.mesh-{index}", self.group.to_ascii_lowercase()),
-        )
-        .map_err(|error| PlaytestError::Id {
+        container_mesh_key(&self.group, index).map_err(|error| PlaytestError::Id {
             what: format!("mesh slot {index} of {}", self.container_key),
             reason: error.to_string(),
         })
@@ -1559,6 +1560,15 @@ impl PlaytestScene {
 pub struct PlaytestTeardown {
     /// How many entities were despawned.
     pub entities: usize,
+    /// How many engine mesh assets the loader was **holding** for the world
+    /// records when the teardown began — the size of the release, measured
+    /// before it happened.
+    ///
+    /// Recorded separately from [`Self::world_mesh_assets`] because the count
+    /// *after* the release is zero by construction, so on its own it proves
+    /// nothing: a teardown that released a populated cache and one that released
+    /// an empty one look the same. This is the number that tells them apart.
+    pub released_world_mesh_assets: usize,
     /// How many engine mesh assets this scene had registered for the world
     /// records, after the release.
     pub world_mesh_assets: usize,
@@ -1878,7 +1888,12 @@ pub fn spawn_playtest_scene(
         })?;
     let uploaded = meshes
         .get(&aircraft_mesh_id)
-        .expect("the aircraft mesh was just registered");
+        .ok_or_else(|| PlaytestError::World {
+            reason: format!(
+                "the aircraft mesh {} is not registered after being uploaded",
+                aircraft_mesh_id.key()
+            ),
+        })?;
     let aircraft_fingerprint = uploaded.fingerprint();
     let aircraft_triangles = uploaded.triangles();
     let aircraft_groups = uploaded.group_count();
@@ -2230,6 +2245,11 @@ pub fn settle_playtest_colliders(app: &mut App, scene: &PlaytestScene) -> usize 
 /// drops its strong handles and the engine meshes with them. A spawn after a
 /// teardown therefore starts from the same live-entity count and the same asset
 /// count it started from the first time.
+///
+/// The size of the release is measured **before** the resource goes
+/// ([`PlaytestTeardown::released_world_mesh_assets`]), because the count after it
+/// is zero by construction and therefore says nothing on its own about whether
+/// anything was held.
 pub fn teardown_playtest_scene(app: &mut App, scene: &PlaytestScene) -> PlaytestTeardown {
     let mut count = 0;
     for entity in &scene.entities {
@@ -2237,9 +2257,14 @@ pub fn teardown_playtest_scene(app: &mut App, scene: &PlaytestScene) -> Playtest
             count += 1;
         }
     }
+    let released = app
+        .world()
+        .get_resource::<WorldMeshAssets>()
+        .map_or(0, WorldMeshAssets::len);
     app.world_mut().remove_resource::<WorldMeshAssets>();
     PlaytestTeardown {
         entities: count,
+        released_world_mesh_assets: released,
         world_mesh_assets: app
             .world()
             .get_resource::<WorldMeshAssets>()
@@ -2388,7 +2413,10 @@ impl fmt::Display for CaptureError {
 impl std::error::Error for CaptureError {}
 
 /// The render target every frame is drawn into and read back from.
-#[derive(Resource, Clone)]
+///
+/// Deliberately **not** a `Resource`: the image belongs to the scene that created
+/// it, so [`PlaytestScene`] holds it and a second scene in the same `App` captures
+/// into its own target instead of overwriting a shared one.
 struct CaptureTarget {
     image: Handle<Image>,
 }
