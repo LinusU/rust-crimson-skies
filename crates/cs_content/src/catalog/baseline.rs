@@ -2391,6 +2391,24 @@ fn mesh_id(container_key: &str, slot: u32) -> Result<ContentId, BaselineError> {
     })
 }
 
+/// The catalog identity of the mesh stored at array slot `slot` of the
+/// container the installation spells `container_spelling`.
+///
+/// The one public spelling of the rule [`retail_baseline`]'s `mesh` rows are
+/// keyed by, so the render-mesh collection
+/// ([`crate::mesh::MeshId::content_id`]) and the baseline inventory name one
+/// mesh with one id and cannot drift apart.
+///
+/// # Errors
+///
+/// [`ContentIdError`] when the joined key is outside the id grammar.
+pub fn mesh_content_id(container_spelling: &str, slot: u32) -> Result<ContentId, ContentIdError> {
+    ContentId::from_source(
+        ContentKind::Mesh,
+        &format!("{}.{slot}", install_file_key(container_spelling)),
+    )
+}
+
 /// The `faction` rows the installation's paint records name, plus the record of
 /// what the producing palette reader could not turn into a faction.
 ///

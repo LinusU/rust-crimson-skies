@@ -220,6 +220,7 @@ use cs_formats::gamez::{
 };
 use cs_formats::zbd::ZbdFamily;
 use cs_types::asset_id::{AssetKey, AssetVariant, MountId, SourceSpan};
+use cs_types::content::ContentId;
 use cs_types::evidence::{ClaimStatus, ContentHash};
 use cs_types::install::{ParseState, RelativePath};
 
@@ -2422,6 +2423,24 @@ pub struct MeshId {
     pub variant: AssetVariant,
     /// Position in the container's mesh array.
     pub index: u32,
+}
+
+impl MeshId {
+    /// The shared catalog identity of this mesh: a [`ContentKind::Mesh`] id keyed
+    /// by the container's installation path and the stored array position.
+    ///
+    /// This is the same id the retail baseline inventory gives the mesh
+    /// ([`crate::catalog::baseline::mesh_content_id`]), so a definition that names
+    /// it names an element of the shared render-mesh collection, and two
+    /// containers can never hold one mesh under two ids.
+    ///
+    /// # Errors
+    ///
+    /// [`cs_types::content::ContentIdError`] when the path is outside the id
+    /// grammar.
+    pub fn content_id(&self) -> Result<ContentId, cs_types::content::ContentIdError> {
+        crate::catalog::baseline::mesh_content_id(self.container.as_str(), self.index)
+    }
 }
 
 impl fmt::Display for MeshId {
@@ -6179,6 +6198,36 @@ mod tests {
             "the material half has nothing to say: {:?}",
             container.audit().blocked
         );
+    }
+
+    /// **A catalog mesh's id is the baseline inventory's mesh id.** The id is a
+    /// `mesh` element keyed by the container's installation path and the stored
+    /// slot, so a world definition that names it names the shared collection's
+    /// element, and two slots of one container never share an id.
+    #[test]
+    fn accept_f18_mesh_catalog_world_the_catalog_id_is_the_baseline_mesh_id() {
+        let tree = Tree::world(&["sky"], &[]);
+        tree.write("ZBD/c1/gamez.zbd", &seam_container());
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        let archive = texture_key();
+        let catalog = MeshCatalog::open(
+            &session,
+            &[gamez_key()],
+            &seam_dependencies(&textures, &archive),
+        );
+        let container = catalog.containers().next().expect("one container");
+        let first = container.id(0).content_id().expect("a valid id");
+        let second = container.id(1).content_id().expect("a valid id");
+        assert_eq!(first.kind(), cs_types::content::ContentKind::Mesh);
+        assert_ne!(first, second, "one id per stored slot");
+        assert_eq!(
+            first,
+            crate::catalog::baseline::mesh_content_id(container.path().as_str(), 0)
+                .expect("a valid id"),
+            "the catalog and the baseline inventory name one mesh with one id"
+        );
+        assert!(first.key().ends_with(".0"), "{first}");
     }
 
     /// The container that reports node findings is the same container whose
