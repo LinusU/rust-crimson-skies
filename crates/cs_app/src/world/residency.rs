@@ -56,7 +56,9 @@
 //! resident for the next one. A *sector* unload releases nothing: the source the
 //! assets were built from is caller-owned and outlives every sector
 //! (`docs/findings/2026-09-30-f18-b-followup-mesh-source-from-catalog.md`), and
-//! releasing per sector is a streaming decision no policy owns yet.
+//! releasing per sector is a streaming decision no policy owns yet. A *failed*
+//! [`load_world`] gives its assets back as well as its entities (task #502): it
+//! leaves no residency, so no [`unload_world`] could ever release them.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -487,6 +489,13 @@ pub fn damage_object(app: &mut App, object: &WorldObjectId) -> Result<(), WorldL
 /// definition, [`WorldLoadError::WorldAlreadyResident`] when a world is already
 /// loaded, and [`WorldLoadError::Spawn`] when an activated object's matrix has
 /// no runtime form. Nothing is spawned in any of those cases.
+///
+/// [`WorldLoadError::VanishedEntity`] when an entity this call had just spawned
+/// was despawned by something else before it could be stamped. That refusal
+/// comes after objects exist, and it is rolled back: every entity this call
+/// spawned is despawned, no [`WorldResidency`] is inserted, and the
+/// [`WorldMeshAssets`] record is put back as the call found it, so the engine
+/// releases the meshes the failed load uploaded.
 pub fn load_world(
     app: &mut App,
     definition: &WorldDefinition,
@@ -540,23 +549,44 @@ pub fn load_world(
         required: instance.required_objects().clone(),
     };
 
+    // 2. Spawn, with the same shape as [`load_sector`]: an object joins
+    //    `incoming` the moment its entities exist, before the steps that can
+    //    still fail, and every failure goes through [`abandon_world`]. The record
+    //    is inserted only after the last object, so an abort has no half-written
+    //    residency to take back — only the entities and the engine mesh assets
+    //    this call took, and the latter are what `unload_world` would otherwise
+    //    release, except that a failed load leaves no world to unload.
+    let mesh_assets = app.world().get_resource::<WorldMeshAssets>().cloned();
     let mut report = SpawnedWorld::of(definition.id());
+    let mut incoming: Vec<SpawnedObject> = Vec::new();
     for object in population {
-        let spawned = spawn_object(app, definition, object, meshes)?;
+        // `instance_placements` above refuses every reason `spawn_object` has,
+        // so this arm is not expected to run; it is routed through the same
+        // rollback rather than assumed, because a half-loaded world is the one
+        // outcome this module exists to prevent.
+        let spawned = match spawn_object(app, definition, object, meshes) {
+            Ok(spawned) => spawned,
+            Err(err) => {
+                return Err(abandon_world(
+                    app,
+                    &incoming,
+                    mesh_assets,
+                    WorldLoadError::Spawn(err),
+                ));
+            }
+        };
+        incoming.push(spawned.clone());
         let condition = resident.condition(object.id());
         if let Err(err) = stamp(app.world_mut(), &spawned, condition) {
-            // Unreachable after `instance_placements` above, and handled rather
-            // than assumed: a half-loaded world is the one outcome this module
-            // exists to prevent.
-            despawn_all(app.world_mut(), resident.objects.values());
-            return Err(err);
+            return Err(abandon_world(app, &incoming, mesh_assets, err));
         }
-        resident
-            .objects
-            .insert(spawned.object.clone(), spawned.clone());
         report.record(spawned);
     }
 
+    resident.objects = incoming
+        .into_iter()
+        .map(|spawned| (spawned.object.clone(), spawned))
+        .collect();
     app.world_mut().insert_resource(WorldResidency { resident });
     Ok(report)
 }
@@ -868,7 +898,8 @@ fn despawn_all<'a>(world: &mut World, spawned: impl IntoIterator<Item = &'a Spaw
     }
 }
 
-/// Takes back exactly what one aborted [`load_sector`] spawned, and leaves
+/// Takes back exactly what one aborted [`load_sector`] — or, through
+/// [`abandon_world`], one aborted [`load_world`] — spawned, and leaves
 /// everything that was already present exactly where it was.
 ///
 /// The objects this call did *not* spawn belong to the load that put them there;
@@ -883,6 +914,37 @@ fn rollback(app: &mut App, incoming: &[SpawnedObject], error: WorldLoadError) ->
     if let Some(mut residency) = world.get_resource_mut::<WorldResidency>() {
         for spawned in incoming {
             residency.resident.objects.remove(&spawned.object);
+        }
+    }
+    error
+}
+
+/// Takes back everything one aborted [`load_world`] took: its entities, through
+/// the same [`rollback`] an aborted [`load_sector`] uses, **and** the engine mesh
+/// assets its spawns registered.
+///
+/// `before` is the [`WorldMeshAssets`] this Bevy world held when the load
+/// started, and it is put back exactly: absent stays absent, and a record left
+/// by something other than a world load keeps its own entries and loses only the
+/// ones this call added. With the record restored and this call's entities gone,
+/// no strong handle to an asset the failed load uploaded is left, so the engine
+/// frees it on its next asset update — the release [`unload_world`] would have
+/// done, for a world that never became resident and so can never be unloaded.
+///
+/// A failed [`load_sector`] deliberately does not come here: the assets it
+/// shares belong to the resident world, which is still loaded.
+fn abandon_world(
+    app: &mut App,
+    incoming: &[SpawnedObject],
+    before: Option<WorldMeshAssets>,
+    error: WorldLoadError,
+) -> WorldLoadError {
+    let error = rollback(app, incoming, error);
+    let world = app.world_mut();
+    match before {
+        Some(before) => world.insert_resource(before),
+        None => {
+            world.remove_resource::<WorldMeshAssets>();
         }
     }
     error
