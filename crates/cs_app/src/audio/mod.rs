@@ -3,7 +3,7 @@
 //! lifecycle, the engine smoothing and the mixer that drives an output device.
 //!
 //! Spec: `specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stages
-//! `### F41-A` and `### F41-B`. Shared contract:
+//! `### F41-A`, `### F41-B` and `### F41-D`. Shared contract:
 //! `docs/contracts/IDENTITY-CONTENT.md`.
 //!
 //! This module sits between the declared audio catalog
@@ -30,6 +30,9 @@
 //! * [`mixer`] — the consumer that turns the session's outcomes and the spatial
 //!   law into device commands, with [`mixer::device_lost`] as the
 //!   device-failure path that leaves the simulation untouched (behavior 2);
+//! * [`device`] — the audible backend: the one [`AudioDevice`] that opens real
+//!   output hardware, gated on the `audio` capability so a machine that cannot
+//!   play refuses by name (task #635, F41-D);
 //! * [`handoff::insert_audio_session`] and [`AudioPlugin`] — the wiring: the
 //!   loading handoff owns the session, and the plugin registers the systems in
 //!   the app schedule.
@@ -42,6 +45,7 @@
 //! every fidelity claim.
 
 pub mod audit;
+pub mod device;
 pub mod engine;
 pub mod handoff;
 pub mod loops;
@@ -49,6 +53,13 @@ pub mod lower;
 pub mod mixer;
 pub mod plugin;
 
+pub use device::{
+    AudibleDevice, AudioBackendKind, AudioBackendLog, AudioBackendRefusal, CODE_CAPABILITY_ABSENT,
+    CODE_DEVICE_CLOSED, CODE_INVALID_MIX, CODE_NO_OUTPUT_DEVICE, CODE_SAMPLE_UNAVAILABLE,
+    CODE_UNKNOWN_VOICE, CapabilityDeclaration, EXIT_MISSING_CAPABILITY, InMemorySamples, PcmAudio,
+    PcmError, RefusingAudioDevice, SampleLibrary, SampleProbe, audibility_exit_code,
+    classify_refusal, open_audible_device, sound_member_pcm,
+};
 pub use engine::{EngineVoiceFollow, EngineVoices, smooth_engine_voices};
 pub use handoff::{
     AudioHandoffLog, AudioHandoffRefusal, AudioInstall, DeclaredAudioCatalog, insert_audio_session,
@@ -58,7 +69,8 @@ pub use lower::{
     AudioLowerError, LoweredAudioAsset, lower_bus, lower_catalog, lower_mode, lower_record,
 };
 pub use mixer::{
-    AudioMixReport, AudioOutput, AudioSpatial, device_lost, device_restored, mix_session,
+    AudioMixReport, AudioMixing, AudioOutput, AudioSpatial, device_lost, device_restored,
+    mix_session,
 };
 pub use plugin::AudioPlugin;
 

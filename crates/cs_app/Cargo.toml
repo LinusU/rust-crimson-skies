@@ -31,6 +31,16 @@ cs_types.workspace = true
 # the `cs_sim::capital` aggregate is keyed by; `cs_sim` re-exports neither it
 # nor a substitute, so the boundary depends on the crate that owns it.
 cs_script.workspace = true
+# `rodio` is a production dependency of `src/audio/device.rs` (task #635): the
+# audible `AudioDevice` opens the machine's default output stream and plays
+# decoded sound-archive members through it. It is the same crate `bevy_audio`
+# already compiles into this workspace, named directly rather than reached
+# through `bevy::audio`, because the device boundary is `&mut dyn AudioDevice`
+# with no `World` and therefore cannot go through Bevy's `AudioSink` entities.
+# Only `playback` is enabled — no codec and no recording feature — because this
+# crate decodes original members itself (F06-C) rather than handing files to a
+# decoder.
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
 
 [[bin]]
 name = "cs"

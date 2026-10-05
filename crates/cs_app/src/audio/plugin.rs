@@ -26,16 +26,27 @@
 //! * `mix_session` runs **after** `sync_emitter_loops`, so the loops of this
 //!   frame are the ones the mixer carries to the device.
 //!
-//! # What the plugin does not do
+//! # Which device it mixes to
 //!
-//! It opens no device and loads no audio. The output is a
-//! [`RecordingAudioDevice`](cs_sim::audio_events::RecordingAudioDevice) until a
-//! hardware backend exists (F41-D, which needs the `audio` capability), and the
-//! session's specs come from the delivered load, not from this plugin: it holds
-//! the declared catalog the loading path publishes and lowers only what the
-//! handoff actually delivered.
+//! Three, and the world says which in [`AudioBackendLog`]:
+//!
+//! * [`Self::audible`] asks for the real
+//!   [`AudibleDevice`](super::device::AudibleDevice), which opens the machine's
+//!   default output stream **only** when `$CS_CAPABILITIES` declares `audio`
+//!   (task #635, F41-D). A machine that cannot play gets a
+//!   [`RefusingAudioDevice`](super::device::RefusingAudioDevice) reporting the
+//!   gate's own named refusal on every command — never a silent mute.
+//! * [`Self::with_device`] takes a caller's device as-is.
+//! * Neither asks for a backend, and the world is a headless or test one: the
+//!   output is a
+//!   [`RecordingAudioDevice`](cs_sim::audio_events::RecordingAudioDevice), which
+//!   records commands and makes no sound.
+//!
+//! The plugin loads no audio either: the session's specs come from the delivered
+//! load, not from here. It holds the declared catalog the loading path publishes
+//! and lowers only what the handoff actually delivered.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use bevy::app::{App, Plugin};
 use bevy::ecs::schedule::IntoScheduleConfigs;
@@ -43,6 +54,9 @@ use bevy::prelude::{FixedUpdate, PreUpdate, Update};
 use cs_content::audio::AudioCatalog;
 use cs_sim::audio_events::AudioDevice;
 
+use super::device::{
+    AudioBackendLog, CapabilityDeclaration, RefusingAudioDevice, SampleLibrary, open_audible_device,
+};
 use super::engine::{EngineVoices, smooth_engine_voices};
 use super::handoff::{AudioHandoffLog, DeclaredAudioCatalog, insert_audio_session};
 use super::loops::{advance_radio, sync_emitter_loops};
@@ -60,6 +74,12 @@ pub struct AudioPlugin {
     catalog: AudioCatalog,
     spatial: AudioSpatial,
     device: Mutex<Option<Box<dyn AudioDevice>>>,
+    /// The sample library the audible backend plays from, when the world asked
+    /// for real output hardware.
+    audible: Option<Arc<dyn SampleLibrary>>,
+    /// The capability declaration the gate reads; `None` reads
+    /// `$CS_CAPABILITIES` when the plugin is built.
+    declaration: Option<CapabilityDeclaration>,
 }
 
 impl AudioPlugin {
@@ -71,25 +91,56 @@ impl AudioPlugin {
             catalog,
             spatial,
             device: Mutex::new(None),
+            audible: None,
+            declaration: None,
         }
     }
 
     /// Mixes to `device` instead of the default recording device.
     ///
-    /// The recording device makes no sound; a hardware backend is F41-D's and
-    /// needs the `audio` capability. This exists so the wiring has one place a
-    /// backend is plugged in.
+    /// The recording device makes no sound. This exists so the wiring has one
+    /// place an alternative device is plugged in; [`Self::audible`] is the
+    /// production one (task #635).
     ///
     /// The device is *moved* into the world the plugin builds, so a plugin
     /// value installs one device and no more: `build` is called once per
     /// `add_plugins`, and a plugin added twice has no device left to give.
     #[must_use]
-    pub fn with_device(self, device: Box<dyn AudioDevice>) -> Self {
+    pub fn with_device(mut self, device: Box<dyn AudioDevice>) -> Self {
+        self.device = Mutex::new(Some(device));
+        self
+    }
+
+    /// Mixes to the real audible backend, playing `library`'s samples.
+    ///
+    /// This is the production device: the world gets an [`AudibleDevice`] over
+    /// the machine's default output stream when — and only when — that machine
+    /// declares the `audio` capability. It needs the `audio` capability, which
+    /// is exactly F41-D's gate.
+    ///
+    /// A machine that cannot play is **not** silently muted. The gate refuses by
+    /// name, and the world installs a [`RefusingAudioDevice`] carrying that same
+    /// refusal, so every mixer pass reports it and
+    /// [`AudioBackendLog`] records why. Which backend a world ended up with is
+    /// readable from [`AudioBackendLog`] rather than inferred from silence.
+    #[must_use]
+    pub fn audible(self, library: Arc<dyn SampleLibrary>) -> Self {
         Self {
-            catalog: self.catalog,
-            spatial: self.spatial,
-            device: Mutex::new(Some(device)),
+            audible: Some(library),
+            ..self
         }
+    }
+
+    /// Reads the capability gate from `declaration` instead of
+    /// `$CS_CAPABILITIES`.
+    ///
+    /// The environment is the production source; this is how a caller states a
+    /// machine's capabilities itself, and how a test exercises the absent-
+    /// capability refusal without mutating the process environment.
+    #[must_use]
+    pub fn with_capabilities(mut self, declaration: CapabilityDeclaration) -> Self {
+        self.declaration = Some(declaration);
+        self
     }
 }
 
@@ -97,15 +148,45 @@ impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(DeclaredAudioCatalog::new(self.catalog.clone()));
         app.insert_resource(self.spatial);
+        let declaration = self
+            .declaration
+            .clone()
+            .unwrap_or_else(CapabilityDeclaration::from_environment);
         let device = self
             .device
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        app.insert_resource(match device {
-            Some(device) => AudioOutput::new(device),
-            None => AudioOutput::default(),
-        });
+        // One device, and the log says which: an explicitly given device, the
+        // real audible backend, or the recording stand-in. The audible branch
+        // never falls back to the stand-in on failure — a refused gate installs
+        // a device that reports the refusal on every command, because a
+        // recording device would make a capability failure look like a mission
+        // with nothing to say.
+        let (output, backend) = match device {
+            Some(device) => (
+                AudioOutput::new(device),
+                AudioBackendLog::stand_in(&declaration),
+            ),
+            None => match &self.audible {
+                Some(library) => match open_audible_device(Arc::clone(library), &declaration) {
+                    Ok(device) => (
+                        AudioOutput::new(Box::new(device)),
+                        AudioBackendLog::audible(&declaration),
+                    ),
+                    Err(error) => (
+                        AudioOutput::new(Box::new(RefusingAudioDevice::new(error.clone()))),
+                        AudioBackendLog::refused(&declaration, &error),
+                    ),
+                },
+                None => (
+                    AudioOutput::default(),
+                    AudioBackendLog::stand_in(&declaration),
+                ),
+            },
+        };
+        app.insert_resource(output);
+        app.insert_resource(backend);
         app.init_resource::<AudioHandoffLog>();
         app.init_resource::<AudioMixReport>();
         app.init_resource::<EngineVoices>();

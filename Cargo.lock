@@ -2524,6 +2524,7 @@ dependencies = [
  "cs_script",
  "cs_sim",
  "cs_types",
+ "rodio",
 ]
 
 [[package]]
