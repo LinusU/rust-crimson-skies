@@ -565,6 +565,10 @@ pub struct IngestReport {
     pub despawned: Vec<ActorId>,
     /// Per-record refusals, with the actor they belong to.
     pub refused: Vec<(ActorId, IngestRefusal)>,
+    /// Records the mirror accepted but the interpolation buffer refused (for
+    /// example a stale generation). Empty out of the mirror; filled by
+    /// [`NetSession::ingest`] so a buffer refusal is reported, not swallowed.
+    pub buffer_refused: Vec<(ActorId, BufferRefusal)>,
 }
 
 impl IngestReport {
@@ -582,6 +586,7 @@ impl IngestReport {
             destroyed: Vec::new(),
             despawned: Vec::new(),
             refused: Vec::new(),
+            buffer_refused: Vec::new(),
         }
     }
 
@@ -716,6 +721,7 @@ impl RemoteMirror {
             destroyed: Vec::new(),
             despawned: Vec::new(),
             refused: Vec::new(),
+            buffer_refused: Vec::new(),
         };
         for record in &snapshot.actors {
             if record.actor.session != self.session {
@@ -1773,6 +1779,14 @@ pub enum SessionError {
         /// The local actor the session is bound to.
         expected: Option<ActorId>,
     },
+    /// The local actor is already attached under a different generation; the
+    /// caller tears the session down and starts a new one for a respawn.
+    StaleLocalGeneration {
+        /// The generation the predictor is bound to.
+        attached: u16,
+        /// The generation the caller asked for.
+        requested: u16,
+    },
     /// A buffer or the predictor refused the request.
     Buffer(BufferRefusal),
     /// A tracer operation was refused.
@@ -1794,6 +1808,13 @@ impl fmt::Display for SessionError {
                 Some(actor) => write!(f, "the session's local actor is {actor}"),
                 None => write!(f, "the session has no local actor bound"),
             },
+            Self::StaleLocalGeneration {
+                attached,
+                requested,
+            } => write!(
+                f,
+                "the local actor is attached at generation {attached}, not {requested}"
+            ),
             Self::Buffer(error) => write!(f, "a network buffer refused the request: {error}"),
             Self::Tracer(error) => write!(f, "a client tracer refused the request: {error}"),
         }
@@ -1806,7 +1827,10 @@ impl std::error::Error for SessionError {
             Self::Origin(error) => Some(error),
             Self::Buffer(error) => Some(error),
             Self::Tracer(error) => Some(error),
-            Self::TornDown | Self::NoLocalActor | Self::UnknownLocalActor { .. } => None,
+            Self::TornDown
+            | Self::NoLocalActor
+            | Self::UnknownLocalActor { .. }
+            | Self::StaleLocalGeneration { .. } => None,
         }
     }
 }
@@ -2259,12 +2283,22 @@ impl NetSession {
         prediction: PredictionConfig,
     ) -> Result<(), SessionError> {
         self.expect_live()?;
-        if let Some(predictor) = &self.predictor
-            && predictor.actor() != actor
-        {
-            return Err(SessionError::UnknownLocalActor {
-                expected: Some(predictor.actor()),
-            });
+        if let Some(predictor) = &self.predictor {
+            if predictor.actor() != actor {
+                return Err(SessionError::UnknownLocalActor {
+                    expected: Some(predictor.actor()),
+                });
+            }
+            // The same actor under another generation is a respawn: keeping the
+            // old predictor would make every later reconcile refuse the new
+            // generation forever, and silently returning Ok would hide that.
+            if predictor.generation() != generation {
+                return Err(SessionError::StaleLocalGeneration {
+                    attached: predictor.generation(),
+                    requested: generation,
+                });
+            }
+            return Ok(());
         }
         if self.predictor.is_none() {
             self.predictor = Some(LocalPredictor::new(actor, generation, prediction));
@@ -2296,13 +2330,12 @@ impl NetSession {
         tick: Tick,
     ) -> Result<IngestReport, SessionError> {
         self.expect_live()?;
-        let report = self.mirror.ingest(snapshot, tick);
+        let mut report = self.mirror.ingest(snapshot, tick);
         // The buffers are fed from the report and the mirror's *current* state,
-        // which is what makes a refused record contribute no sample.
-        self.interpolator.observe(&report, snapshot, &self.mirror);
-        // A destroyed or despawned remote actor's buffer is retired by
-        // `observe`; a reliably removed one is forgotten so a later id reuse
-        // cannot inherit its history.
+        // which is what makes a refused record contribute no sample. A
+        // destroyed or despawned remote actor's buffer is retired by `observe`.
+        // Its per-actor refusals are surfaced on the report, not dropped.
+        report.buffer_refused = self.interpolator.observe(&report, snapshot, &self.mirror);
         Ok(report)
     }
 
@@ -2418,6 +2451,21 @@ impl NetSession {
             .map_err(SessionError::Tracer)
     }
 
+    /// Drops tracers whose presentation window has elapsed at `now`, and
+    /// returns how many were dropped. The lifetime bound on the wired path.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::TornDown`] after teardown.
+    pub fn expire_tracers(&mut self, now: Tick) -> Result<usize, SessionError> {
+        self.expect_live()?;
+        Ok(self.tracers.as_mut().map_or(0, |tracers| {
+            let before = tracers.len();
+            tracers.expire(now);
+            before - tracers.len()
+        }))
+    }
+
     /// Applies the server's word about a shot to the local tracers.
     ///
     /// # Errors
@@ -2464,8 +2512,9 @@ impl NetSession {
         // buffers hold samples decoded against the old frame, so they do not.
         self.interpolator.clear();
         // The local predictor's history is canonical world positions too, so it
-        // survives; only its pending correction is a change of frame, and it is
-        // recomputed from the next record.
+        // survives, and so does any pending correction: a correction is a world
+        // displacement toward the authoritative pose, not an origin-relative
+        // quantity, so a change of frame does not alter it.
         self.origin = next;
         Ok(transition)
     }
@@ -3581,11 +3630,54 @@ mod f57_c_acceptance {
                 expected: Some(world.local)
             })
         );
-        // Re-attaching the same actor is idempotent.
+        // Re-attaching the same actor and generation is idempotent.
+        let generation = world.session.predictor().expect("attached").generation();
         world
             .session
-            .attach_local(world.local, 1, PredictionConfig::default())
+            .attach_local(world.local, generation, PredictionConfig::default())
             .expect("same actor");
+    }
+
+    /// The same local actor under a different generation is a respawn: the
+    /// session says so instead of keeping a predictor that would refuse the new
+    /// generation forever.
+    #[test]
+    fn accept_f57_c_a_respawned_local_actor_is_refused_not_silently_kept() {
+        let mut world = Wired::new();
+        let attached = world.session.predictor().expect("attached").generation();
+        assert_eq!(
+            world
+                .session
+                .attach_local(world.local, attached + 1, PredictionConfig::default()),
+            Err(SessionError::StaleLocalGeneration {
+                attached,
+                requested: attached + 1
+            })
+        );
+    }
+
+    /// The tracer lifetime bound is reachable through the session, so an
+    /// unanswered shot cannot pin memory on the wired path.
+    #[test]
+    fn accept_f57_c_the_session_expires_unanswered_tracers() {
+        let mut world = Wired::new();
+        let shot = ShotId::try_new(1).expect("nonzero");
+        world
+            .session
+            .spawn_tracer(shot, Tick(5), at(10_000.0), [0.0, 0.0, -300.0])
+            .expect("spawn");
+        assert_eq!(world.session.expire_tracers(Tick(6)), Ok(0));
+        assert_eq!(
+            world
+                .session
+                .expire_tracers(Tick(5 + Tracers::TRACER_LIFETIME_TICKS + 1)),
+            Ok(1)
+        );
+        world.session.teardown();
+        assert_eq!(
+            world.session.expire_tracers(Tick(0)),
+            Err(SessionError::TornDown)
+        );
     }
 
     /// The buffer refusals the wired path can report are the buffer's own, so a
