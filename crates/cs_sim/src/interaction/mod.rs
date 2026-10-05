@@ -22,6 +22,9 @@
 //!   declared per-transition [`transaction::TransferPolicy`]: one
 //!   [`transaction::ControlOwner`] at every stage, completion validates
 //!   authorization and target liveness, and an abort applies no effects.
+//! * [`transfer`] (F36-B) derives the initiator's velocity from f64 world
+//!   positions so an origin rebase cannot create a false speed, and applies a
+//!   completed outcome to pilot and inventory bindings atomically and once.
 //! * [`synthetic`] is the designed moving-hook fixture the acceptance tests
 //!   drive.
 //!
@@ -40,6 +43,7 @@ pub mod eligibility;
 pub mod state;
 pub mod synthetic;
 pub mod transaction;
+pub mod transfer;
 
 pub use eligibility::{
     EligibilityEnvelope, EligibilityRefusal, EnvelopeError, evaluate_eligibility,
@@ -59,4 +63,8 @@ pub use transaction::{
     AbortReason, CameraTransfer, ControlOwner, InteractionAbort, InteractionOutcome,
     InteractionRefusal, InteractionTransaction, InventoryTransfer, LatchRefusal, PilotTransfer,
     TransferEffects, TransferPolicy, VelocityTransfer,
+};
+pub use transfer::{
+    InitiatorMotion, MotionError, PilotId, TransferLedger, TransferRefusal, TransferReport,
+    evaluate_motion_eligibility,
 };

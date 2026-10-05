@@ -254,3 +254,52 @@ pub struct InteractionActorBinding {
     /// The scene generation that spawned the binding.
     pub generation: SceneGeneration,
 }
+
+/// Why an initiator's spatial record could not supply an interaction motion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnchorMotionError {
+    /// The record has no swept segment: it was just spawned or teleported, so
+    /// no continuous path exists and no velocity may be inferred (a
+    /// teleport is not a rebase, F16 non-negotiable behavior 5).
+    NoContinuousPath,
+    /// The segment could not form a motion.
+    Motion(cs_sim::interaction::MotionError),
+}
+
+impl std::fmt::Display for AnchorMotionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoContinuousPath => {
+                write!(f, "the initiator has no continuous path to sweep")
+            }
+            Self::Motion(source) => write!(f, "the initiator motion is invalid: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for AnchorMotionError {}
+
+/// Builds the initiator's one-tick world-frame motion from its spatial record.
+///
+/// Both endpoints are the record's f64 world positions, which an
+/// [`OriginShift`](crate::origin::OriginShift) never changes, so a rebase
+/// between the two samples cannot show up as speed. The f32 local cache is
+/// deliberately not read.
+///
+/// # Errors
+///
+/// [`AnchorMotionError::NoContinuousPath`] without a swept segment, or
+/// [`AnchorMotionError::Motion`] for a non-finite position or zero rate.
+pub fn initiator_motion(
+    anchor: &crate::origin::SpatialAnchor,
+    ticks_per_second: u32,
+) -> Result<cs_sim::interaction::InitiatorMotion, AnchorMotionError> {
+    let sweep = anchor.sweep().ok_or(AnchorMotionError::NoContinuousPath)?;
+    cs_sim::interaction::InitiatorMotion::try_new(
+        sweep.from_world().to_array(),
+        anchor.world().to_array(),
+        1,
+        ticks_per_second,
+    )
+    .map_err(AnchorMotionError::Motion)
+}
