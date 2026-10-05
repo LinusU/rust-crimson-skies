@@ -41,6 +41,7 @@
 //! `docs/findings/2026-10-01-f41-b-loops-and-spatial-emitters.md` and gate
 //! every fidelity claim.
 
+pub mod audit;
 pub mod engine;
 pub mod handoff;
 pub mod loops;
