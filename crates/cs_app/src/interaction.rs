@@ -303,3 +303,28 @@ pub fn initiator_motion(
     )
     .map_err(AnchorMotionError::Motion)
 }
+
+/// Resource: the interaction session of the running mission (F36-C).
+///
+/// Wraps [`cs_sim::interaction::InteractionSession`] so the app's destroyed-
+/// actor, pause and retry paths reach one owner; the resource holds no state
+/// of its own.
+#[derive(bevy::ecs::resource::Resource, Clone, Debug, PartialEq)]
+pub struct InteractionRuntime(pub cs_sim::interaction::InteractionSession);
+
+impl InteractionRuntime {
+    /// Reports that an actor's last damage zone was destroyed. Every active
+    /// interaction involving it aborts and control resolves back to the
+    /// surviving initiator.
+    pub fn on_actor_destroyed(
+        &mut self,
+        actor: ActorId,
+    ) -> Vec<cs_sim::interaction::InteractionAbort> {
+        self.0.actor_destroyed(actor)
+    }
+
+    /// Retries the mission under a new session generation.
+    pub fn on_retry(&mut self, session: u64) -> Vec<cs_sim::interaction::InteractionAbort> {
+        self.0.retry(session)
+    }
+}

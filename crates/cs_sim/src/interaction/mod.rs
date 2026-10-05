@@ -25,6 +25,9 @@
 //! * [`transfer`] (F36-B) derives the initiator's velocity from f64 world
 //!   positions so an origin rebase cannot create a false speed, and applies a
 //!   completed outcome to pilot and inventory bindings atomically and once.
+//! * [`session`] (F36-C) drives transactions and the ledger together and
+//!   resolves control when a carrier is destroyed, a pause or retry aborts,
+//!   or a transfer is refused.
 //! * [`synthetic`] is the designed moving-hook fixture the acceptance tests
 //!   drive.
 //!
@@ -40,6 +43,7 @@
 //! (`docs/01-ARCHITECTURE.md`): no Bevy, no renderer, no file access.
 
 pub mod eligibility;
+pub mod session;
 pub mod state;
 pub mod synthetic;
 pub mod transaction;
@@ -48,6 +52,7 @@ pub mod transfer;
 pub use eligibility::{
     EligibilityEnvelope, EligibilityRefusal, EnvelopeError, evaluate_eligibility,
 };
+pub use session::{ControlHolder, InteractionSession, SessionRefusal};
 pub use state::{
     InteractionAuthorization, InteractionCompletion, InteractionId, InteractionKind,
     InteractionState,
