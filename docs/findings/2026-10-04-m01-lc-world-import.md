@@ -161,13 +161,21 @@ adapter — and `WorldPartitionCell::header_floats_are_interpreted()` returns
   store states it (`OBJECT3D_FLAGS_IDENTITY`), and a conversion that could not
   tell "the store said identity" from "we filled in identity" would be unable to
   report either.
-- **The mesh identity is per-container and stated as such.** A stored
-  mesh-array slot is named `<group>.mesh-<index>` by
-  `RetailWorldContainer::mesh_key`, so the definition's mesh references and the
-  uploaded geometry agree by construction. This is **not** F10-C.03's catalog
-  discovery, which maps a slot to an element of the shared render-mesh catalog
-  and needs the whole installation; that is the seam a catalog-backed source
-  replaces, and it is named as such rather than presented as the catalog.
+- **The mesh identity is the catalog's (#638).** A stored mesh-array slot is an
+  element of the shared render-mesh collection: `read_world_container` opens a
+  content session scoped to the group and a `cs_content::mesh::MeshCatalog` over
+  its `gamez.zbd` (F10-C.03), the definition's mesh references are
+  `MeshId::content_id` — `mesh/<container path as the baseline spells it>.<slot>`,
+  the very id `catalog::baseline` gives the mesh — and the geometry is uploaded
+  from the catalog's own `MeshUpload`. What is measured: the ids are catalog
+  elements (every referenced id is among `MeshCatalog::records`), no
+  `<group>.mesh-<index>` name survives, the catalog and the container's session
+  share a generation, the reference's source span names the same bytes as the
+  catalog's container (the span itself is spelled as discovery spells it, not as a
+  group member), and c1c still spawns **292** colliders. What is **not** measured:
+  that the original engine addressed meshes this way; the id is the catalog's
+  convention. The definition's mesh reference keeps the import's claim id and span
+  (`RETAIL_WORLD_IMPORT`, `ObservedTool`), not the catalog's own row provenance.
 - **A mesh the container holds no geometry for is not registered.** The spawn then
   reports the gap (`SkipReason::UnknownMesh` /
   `MeshUnavailable`) rather than the source handing a solid object a substitute
@@ -186,6 +194,8 @@ adapter — and `WorldPartitionCell::header_floats_are_interpreted()` returns
 | `the_conversion_is_recorded_under_its_own_claim_ids` | the seven claim ids the records carry plus `RETAIL_WORLD_IMPORT` are all valid `ClaimId`s and are seven **distinct** claims | two gaps start sharing a claim id, or an id is malformed |
 | `retail_c1c_becomes_a_world_definition_with_every_gap_named` (retail) | `ZBD/C1C/gamez.zbd` end to end: 144 cells, 293 indexed records, 292 of them with a mesh, 0 empty cells, 53 in the world's stored child list, 346 objects, 309 with a mesh, 293 solid, 293 in a sector, 53 resident, 144 sectors, 0 without an extent, 0 matrix disagreements, 53 unresolved roles each carrying its claim id, 346 unresolved surfaces each carrying its claim id, no boundary, the reported unit factor and its `Unknown` class, 3 045 mesh-binding records the world node does not own, the container's own logical key, and **every** object's provenance being `RETAIL_WORLD_IMPORT` at `ObservedTool` with the container's own `SourceSpan` (and the same for a resolved collision value) | any measured count moves, a gap loses its claim id, a retail-derived value stops pointing back at its bytes, the class is inflated to `VerifiedOriginal`, or the unit stops being reported |
 | `retail_spawn_world_runs_on_the_imported_c1c_definition` (retail) | the real container's geometry uploaded through the production F17-B adapter and the production `spawn_world` run over it: 346 objects presented, 292 colliders, and the spawn's skip report being **exactly** `{unknown_collision_role: 53, unknown_mesh: 1}` with no double-reported object | a count moves, an indexed record stops colliding, a substitute shape appears, or a record reports two reasons |
+| `accept_f18_mesh_catalog_world_references_are_catalog_elements` (retail, #638) | every object's mesh reference is a `mesh` id among `MeshCatalog::records`, with no `.mesh-` naming, naming the catalog container's bytes, the catalog and session sharing a generation, and one engine mesh per referenced id uploaded under it | a per-container name returns, a reference is not a catalog element, or an upload is registered under another id |
+| `accept_f18_mesh_catalog_world_the_catalog_id_is_the_baseline_mesh_id` (`cs_content`, synthetic) | `MeshId::content_id` equals the baseline inventory's mesh id and differs per slot | the two collections name one mesh differently |
 
 The two retail tests each run one production discovery pass over the
 installation, which takes about three and a half minutes on this host; they are
@@ -242,10 +252,6 @@ stored boxes disagree on one axis.
 - **The original's gameplay surface classes are UNMEASURED.** Every imported
   object's surface is an explicit unknown, so no contact inherits a water or
   ground rule from a guess.
-- **The mesh identity is per-container.** `<group>.mesh-<index>` is this
-  module's naming, not the shared catalog's, so two world containers can hold
-  the same mesh under different ids until the catalog-backed source replaces it.
-  **Resolving task:** the F10-C.03 mesh catalog consumer for world containers.
 - **F11-A's `scene_node` id grammar still refuses world node names**, which is
   why `SceneGraph::build` cannot build a world container and why this import
   addresses records by slot instead. That blocker is unchanged by this task;
@@ -263,9 +269,8 @@ stored boxes disagree on one axis.
 
 ## Follow-ups filed
 
-- **#638** — the F10-C.03 mesh catalog as the world container's mesh source, so a
-  world object's mesh identity is a catalog element rather than a per-container
-  name (`RetailWorldContainer::mesh_key` names the seam).
+- **#638** — done: the F10-C.03 mesh catalog is the world container's mesh source
+  (see "The mesh identity is the catalog's").
 - **#639** — import and spawn **all eight** world containers, not only `c1c`.
   `c1` and `c5` hold grid records that store a real transform, so they also
   exercise the affine path on retail data.
