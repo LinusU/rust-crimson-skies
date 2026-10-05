@@ -181,6 +181,21 @@ pub enum CampaignError {
         /// The balance in minor units.
         balance: u64,
     },
+    /// The loadout the purchase would produce is heavier than the airframe's
+    /// ceiling.
+    LoadoutOverweight {
+        /// The resulting loadout weight, in game-weight units.
+        total: u64,
+        /// The ceiling it was judged against, in game-weight units.
+        limit: u64,
+    },
+    /// The draft could not say what the loadout weighs or what it may weigh —
+    /// a mass or ceiling is an explicit unknown. Refused, never treated as
+    /// zero or as no limit.
+    LoadoutWeightUnknown {
+        /// Why the weight is unknown.
+        reason: String,
+    },
     /// The profile does not own the item, so there is nothing to sell. This is
     /// also the answer to a second sale of the same item.
     NotOwned {
@@ -244,6 +259,13 @@ impl fmt::Display for CampaignError {
                 f,
                 "price {price} exceeds the balance {balance} in minor units"
             ),
+            Self::LoadoutOverweight { total, limit } => write!(
+                f,
+                "loadout weight {total} exceeds the ceiling {limit} game-weight units"
+            ),
+            Self::LoadoutWeightUnknown { reason } => {
+                write!(f, "loadout weight cannot be validated: {reason}")
+            }
             Self::NotOwned { item } => write!(f, "item {item} is not owned and cannot be sold"),
             Self::NotPurchased { item } => write!(
                 f,
@@ -584,7 +606,10 @@ impl CampaignState {
     /// unrelated progression.").
     ///
     /// Order of checks — availability, then ownership, then money, then the
-    /// expected revision **last**. Availability and ownership are facts about
+    /// loadout weight, then the expected revision **last**. The weight is the
+    /// boundary's resolved verdict on the draft's loadout (see
+    /// [`LoadoutWeight`]); `cs_sim` compares the integers it was handed and
+    /// never reads a mass table. Availability and ownership are facts about
     /// the run's *structure* (a roster gate, the owned set) that no refresh can
     /// change, so they are reported even for a stale draft; the balance can move
     /// under any other committed transaction, so its verdict drawn from a stale
@@ -620,6 +645,20 @@ impl CampaignState {
                 price: draft.price,
                 balance: self.currency,
             });
+        }
+        match &draft.weight {
+            LoadoutWeight::Measured { total, limit } if total > limit => {
+                return Err(CampaignError::LoadoutOverweight {
+                    total: *total,
+                    limit: *limit,
+                });
+            }
+            LoadoutWeight::Measured { .. } => {}
+            LoadoutWeight::Unknown { reason } => {
+                return Err(CampaignError::LoadoutWeightUnknown {
+                    reason: reason.clone(),
+                });
+            }
         }
         if draft.expected_revision != self.revision {
             return Err(CampaignError::StaleRevision {
@@ -738,8 +777,36 @@ pub struct PurchaseDraft {
     pub item: ContentId,
     /// The price in minor units.
     pub price: u64,
+    /// The weight of the loadout the purchase would produce, against its
+    /// ceiling.
+    pub weight: LoadoutWeight,
     /// The profile revision the view was built from.
     pub expected_revision: u64,
+}
+
+/// The boundary's resolved weight verdict input for one purchase.
+///
+/// `cs_sim` may not depend on `cs_content`, so it cannot name the content
+/// crate's weight types or read its mass tables. The boundary
+/// (`cs_app::campaign`) resolves them and hands over plain integers in
+/// game-weight units; the **numbers themselves are unmeasured for the
+/// original** (F44-D) and only synthetic fixtures exist today. There is
+/// deliberately no "unchecked" or "no limit" variant: a mass or ceiling that is
+/// not known is [`Self::Unknown`] and refuses the purchase.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoadoutWeight {
+    /// Both numbers are known.
+    Measured {
+        /// The weight of the resulting loadout.
+        total: u64,
+        /// The airframe's weight ceiling. A total equal to it is inside it.
+        limit: u64,
+    },
+    /// A mass or the ceiling is an explicit unknown.
+    Unknown {
+        /// Why.
+        reason: String,
+    },
 }
 
 /// What one accepted purchase did.

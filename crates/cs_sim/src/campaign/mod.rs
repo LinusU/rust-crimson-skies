@@ -53,6 +53,6 @@ pub use graph::{
 pub use identity::{CampaignNodeKey, CampaignRunId, DifficultyId, OutcomeId, ProfileId};
 pub use outcome::{MissionOutcome, OutcomeAuthority};
 pub use state::{
-    AppliedOutcome, CampaignError, CampaignState, InterludeAdvance, NodeProgress, OutcomeReceipt,
-    PurchaseDraft, PurchaseReceipt, SellDraft, SellReceipt, TransactionPlan,
+    AppliedOutcome, CampaignError, CampaignState, InterludeAdvance, LoadoutWeight, NodeProgress,
+    OutcomeReceipt, PurchaseDraft, PurchaseReceipt, SellDraft, SellReceipt, TransactionPlan,
 };
