@@ -40,13 +40,12 @@
 //!   unit is unmeasured (task #436), so the survey reports
 //!   [`TriggerTickVerdict::UnitUnmeasured`](cs_content::world::TriggerTickVerdict::UnitUnmeasured)
 //!   with the **break-even factor** rather than a verdict;
-//! * it does not decode the campaign's `dzones.zrd` framing. Measured, the word
-//!   after a list tag is not an item count — the same value precedes a list of
-//!   four strings in `ZBD/C3/M02`'s member and a list of one in the same file's
-//!   objective list — so reading the member as a length-prefixed value list is a
-//!   guess, and a guess about what a mission says a trigger is. The survey says
-//!   so through
-//!   [`zone_declarations_are_decoded`](cs_content::world::RetailTriggerVolumeSurvey::zone_declarations_are_decoded);
+//! * it decodes the campaign's `dzones.zrd` **framing** (task #513: a list's
+//!   word is its child count plus one) but not its **meaning**: the survey
+//!   carries what each mission states under `disable`, `nosnapshot` and
+//!   `objective_numbers`, cross-checked against the container's zone nodes
+//!   ([`declaration_gaps`](cs_content::world::RetailTriggerVolumeSurvey::declaration_gaps)),
+//!   and none of the three keys' meaning is claimed;
 //! * it does not claim the original detected these zones by sensor overlap at
 //!   all. Which native consumes them, and how, is F13/F39's question.
 //!
@@ -60,12 +59,15 @@ use std::path::Path;
 
 use cs_assets::install::{self, DiscoveryError};
 use cs_content::world::{
-    DETECTION_ZONE_PREFIX, RetailTriggerVolume, RetailTriggerVolumeSurvey, StoredVolume,
-    TriggerVolumeError, TriggerVolumeSpan, WorldId, is_detection_zone_name,
+    DETECTION_ZONE_MEMBER, DETECTION_ZONE_PREFIX, MissionZoneDeclaration, RetailTriggerVolume,
+    RetailTriggerVolumeSurvey, StoredVolume, TriggerVolumeError, TriggerVolumeSpan, WorldId,
+    ZoneDeclarationKey, is_detection_zone_name,
 };
 use cs_formats::gamez::nodes::{NODE_SLOT_BYTES, NodeKind};
 use cs_formats::gamez::read_gamez_nodes;
 use cs_formats::io::ParseContext;
+use cs_formats::script_raw::discover_container;
+use cs_formats::zbd::detection_zones::{DetectionZoneKey, read_detection_zones};
 
 use super::audit::GEOMETRY_CONTAINER_FILE;
 
@@ -142,6 +144,19 @@ pub enum TriggerVolumeSurveyError {
     },
     /// The survey the bytes produced was refused.
     Refused(TriggerVolumeError),
+    /// A mission's `dzones.zrd` member could not be decoded.
+    Declarations {
+        /// The reader archive's logical key.
+        container: String,
+        /// The decoder's own refusal.
+        reason: String,
+    },
+    /// A mission declares zones but sits in no world group the installation
+    /// declares, so its names cannot be cross-checked.
+    MissionWithoutWorld {
+        /// The reader archive's logical key.
+        container: String,
+    },
 }
 
 impl fmt::Display for TriggerVolumeSurveyError {
@@ -186,6 +201,16 @@ impl fmt::Display for TriggerVolumeSurveyError {
                 write!(f, "world {world} zone {zone} stores no box at all")
             }
             Self::Refused(error) => write!(f, "the trigger-volume survey is unusable: {error}"),
+            Self::Declarations { container, reason } => {
+                write!(
+                    f,
+                    "{container}: {DETECTION_ZONE_MEMBER} is undecodable: {reason}"
+                )
+            }
+            Self::MissionWithoutWorld { container } => write!(
+                f,
+                "{container} declares detection zones but sits in no declared world group"
+            ),
         }
     }
 }
@@ -438,8 +463,87 @@ pub fn survey_retail_trigger_volumes(
         }
     }
 
+    let declarations = read_mission_declarations(&found, &groups)?;
     RetailTriggerVolumeSurvey::new(install_sha256, None, volumes)
+        .and_then(|survey| survey.with_declarations(declarations))
         .map_err(TriggerVolumeSurveyError::Refused)
+}
+
+/// The reader archive every campaign mission keeps its members in.
+const MISSION_READER_FILE: &str = "zrdr.zbd";
+
+/// Decodes every mission's `dzones.zrd` through the production discovery and the
+/// production [`read_detection_zones`], one declaration per member found.
+fn read_mission_declarations(
+    found: &install::Discovery,
+    groups: &[cs_types::install::RelativePath],
+) -> Result<Vec<MissionZoneDeclaration>, TriggerVolumeSurveyError> {
+    let mut declarations = Vec::new();
+    for record in &found.manifest.files {
+        let key = record.relative_spelling.logical_key();
+        if key.rsplit('/').next() != Some(MISSION_READER_FILE) {
+            continue;
+        }
+        let bytes = fs::read(
+            found
+                .manifest
+                .host_root
+                .join(record.relative_spelling.as_str()),
+        )
+        .map_err(|error| TriggerVolumeSurveyError::Read {
+            container: key.clone(),
+            reason: error.to_string(),
+        })?;
+        let discovery = discover_container(&key, &record.relative_spelling, &bytes);
+        for program in discovery.programs() {
+            if program.locator().member() != Some(DETECTION_ZONE_MEMBER) {
+                continue;
+            }
+            let decoded = read_detection_zones(program.bytes()).map_err(|error| {
+                TriggerVolumeSurveyError::Declarations {
+                    container: key.clone(),
+                    reason: error.to_string(),
+                }
+            })?;
+            let mission = program.mission().map(str::to_owned).ok_or_else(|| {
+                TriggerVolumeSurveyError::MissionWithoutWorld {
+                    container: key.clone(),
+                }
+            })?;
+            let world_key = mission.rsplit_once('/').map(|(world, _)| world);
+            let world = groups
+                .iter()
+                .find(|group| Some(group.logical_key().as_str()) == world_key)
+                .and_then(|group| {
+                    let name = group.logical_key().rsplit('/').next()?.to_owned();
+                    WorldId::from_key(&name).ok()
+                })
+                .ok_or_else(|| TriggerVolumeSurveyError::MissionWithoutWorld {
+                    container: key.clone(),
+                })?;
+            let span = program.locator().span();
+            declarations.push(MissionZoneDeclaration::new(
+                mission,
+                world,
+                key.clone(),
+                record.sha256.to_hex(),
+                (span.offset, span.len),
+                decoded
+                    .keys()
+                    .iter()
+                    .map(|key| match key {
+                        DetectionZoneKey::Disable => ZoneDeclarationKey::Disable,
+                        DetectionZoneKey::NoSnapshot => ZoneDeclarationKey::NoSnapshot,
+                        DetectionZoneKey::ObjectiveNumbers => ZoneDeclarationKey::ObjectiveNumbers,
+                    })
+                    .collect(),
+                decoded.disable().unwrap_or_default().to_vec(),
+                decoded.no_snapshot().unwrap_or_default().to_vec(),
+                decoded.objective_numbers().unwrap_or_default().to_vec(),
+            ));
+        }
+    }
+    Ok(declarations)
 }
 
 /// The name prefix the survey matched, re-exported so a consumer reading this

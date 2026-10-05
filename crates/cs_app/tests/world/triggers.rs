@@ -32,9 +32,9 @@ use cs_app::world::triggers::{
     TriggerVolumeSurveyError, ZONE_PREFIX, survey_retail_trigger_volumes, zone_box_field,
 };
 use cs_content::world::{
-    DETECTION_ZONE_PARENT, DETECTION_ZONE_PREFIX, RetailTriggerVolume, RetailTriggerVolumeSurvey,
-    StoredVolume, TriggerTickVerdict, TriggerVolumeError, TriggerVolumeSpan, WorldId,
-    is_detection_zone_name,
+    DETECTION_ZONE_PARENT, DETECTION_ZONE_PREFIX, MissionZoneDeclaration, RetailTriggerVolume,
+    RetailTriggerVolumeSurvey, StoredVolume, TriggerTickVerdict, TriggerVolumeError,
+    TriggerVolumeSpan, WorldId, ZoneDeclarationKey, is_detection_zone_name,
 };
 
 /// The tick rate the world simulation runs at (F23-A's fixed schedule).
@@ -549,8 +549,15 @@ fn accept_t427_every_zone_carries_the_span_and_fingerprint_it_was_measured_from(
     // though a mission's `dzones.zrd` had been read.
     assert!(
         !survey.zone_declarations_are_decoded(),
-        "the campaign's detection-zone member framing is undecoded; a survey that claimed \
-         otherwise would be reporting a decode this workspace never made"
+        "a survey nobody attached a decode to must not look as though a mission's \
+         `dzones.zrd` had been read"
+    );
+    let attached = synthetic_survey(None)
+        .with_declarations(Vec::new())
+        .expect("an empty declaration set attaches");
+    assert!(
+        attached.zone_declarations_are_decoded(),
+        "once the mission side is attached the survey says the declarations are decoded"
     );
 }
 
@@ -1227,21 +1234,246 @@ fn accept_t427_retail_the_thin_original_trigger_needs_a_tenth_of_a_metre_per_uni
     );
 }
 
-/// The limitation this measurement leaves, asserted rather than described: the
-/// survey is one tick's travel over a **stored** extent, so with the unit
-/// unmeasured it cannot say the original's triggers are thick enough. The
-/// factor it reports is the number that would settle it, and the task that owns
-/// the unit is named by the record rather than left to memory.
+// ------------------------------------------------ the mission side (task #513) ---
+
+fn declaration(
+    mission: &str,
+    world: &str,
+    disable: &[&str],
+    objectives: &[(&str, u32)],
+) -> MissionZoneDeclaration {
+    let mut keys = Vec::new();
+    if !disable.is_empty() {
+        keys.push(ZoneDeclarationKey::Disable);
+    }
+    if !objectives.is_empty() {
+        keys.push(ZoneDeclarationKey::ObjectiveNumbers);
+    }
+    MissionZoneDeclaration::new(
+        mission,
+        WorldId::from_key(world).expect("a valid world key"),
+        format!("{mission}/zrdr.zbd"),
+        "b".repeat(64),
+        (100, 155),
+        keys,
+        disable.iter().map(|zone| (*zone).to_owned()).collect(),
+        Vec::new(),
+        objectives
+            .iter()
+            .map(|(zone, number)| ((*zone).to_owned(), *number))
+            .collect(),
+    )
+}
+
+/// A mission naming a zone its world container has no node for is a **reported
+/// gap**, never a silent drop; a zone another world has does not count.
+#[test]
+fn accept_t427_dzones_a_declared_zone_no_container_has_is_a_reported_gap() {
+    let survey = synthetic_survey(None)
+        .with_declarations(vec![
+            // c5 has dzpath1 and dzpath2; dzpath3 exists only in c3.
+            declaration(
+                "zbd/c5/m01",
+                "c5",
+                &["dzpath1", "dzpath3"],
+                &[("dzpath2", 18)],
+            ),
+            declaration("zbd/c3/m01", "c3", &[], &[("dzpath3", 20), ("dzpath9", 21)]),
+        ])
+        .expect("two distinct missions attach");
+    assert!(survey.zone_declarations_are_decoded());
+    assert_eq!(survey.declarations().len(), 2);
+    let gaps = survey.declaration_gaps();
+    let found: Vec<(&str, &str, ZoneDeclarationKey)> = gaps
+        .iter()
+        .map(|gap| (gap.mission.as_str(), gap.zone.as_str(), gap.key))
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            ("zbd/c5/m01", "dzpath3", ZoneDeclarationKey::Disable),
+            (
+                "zbd/c3/m01",
+                "dzpath9",
+                ZoneDeclarationKey::ObjectiveNumbers
+            ),
+        ]
+    );
+
+    let none = synthetic_survey(None)
+        .with_declarations(vec![declaration("zbd/c5/m01", "c5", &["dzpath1"], &[])])
+        .expect("attaches");
+    assert!(none.declaration_gaps().is_empty());
+
+    assert!(matches!(
+        synthetic_survey(None).with_declarations(vec![
+            declaration("zbd/c5/m01", "c5", &["dzpath1"], &[]),
+            declaration("zbd/c5/m01", "c5", &["dzpath2"], &[]),
+        ]),
+        Err(TriggerVolumeError::DuplicateMission { .. })
+    ));
+}
+
+/// The corpus: every one of the 23 members decodes through the production
+/// discovery and reader, each is cross-checked against the world containers, and
+/// the gap list is stated rather than assumed.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_t427_retail_the_zone_declaration_carrier_is_still_undecoded() {
+fn accept_t427_dzones_retail_every_campaign_member_decodes_and_is_cross_checked() {
     let survey = survey_retail_trigger_volumes(&retail_root()).expect("the retail corpus surveys");
-    assert!(
-        !survey.zone_declarations_are_decoded(),
-        "no test may let the corpus look as though the campaign's own detection-zone member \
-         (dzones.zrd, located in 23 campaign mission readers) had been decoded: its framing's \
-         second word is not an item count, so reading it as one is a guess about what a mission \
-         says a trigger is. Which zones a given mission names, and what the original does with \
-         them, stay F13/F39's question."
+    assert!(survey.zone_declarations_are_decoded());
+    let declarations = survey.declarations();
+    assert_eq!(
+        declarations.len(),
+        23,
+        "23 campaign readers carry the member"
     );
+    let bytes: u64 = declarations.iter().map(|d| d.member_span().1).sum();
+    assert_eq!(bytes, 9_197, "the members total the measured byte count");
+    let smallest = declarations.iter().map(|d| d.member_span().1).min();
+    let largest = declarations.iter().map(|d| d.member_span().1).max();
+    assert_eq!((smallest, largest), (Some(155), Some(826)));
+
+    let count = |key: ZoneDeclarationKey| {
+        declarations
+            .iter()
+            .filter(|d| d.keys().contains(&key))
+            .count()
+    };
+    assert_eq!(count(ZoneDeclarationKey::Disable), 16);
+    assert_eq!(count(ZoneDeclarationKey::NoSnapshot), 12);
+    assert_eq!(count(ZoneDeclarationKey::ObjectiveNumbers), 20);
+
+    for declaration in declarations {
+        assert_eq!(declaration.member_container_sha256().len(), 64);
+        assert!(declaration.member_container().ends_with("zrdr.zbd"));
+        assert!(
+            declaration
+                .mission()
+                .starts_with(&format!("zbd/{}/", declaration.world().key()))
+        );
+        let numbers: BTreeSet<u32> = declaration
+            .objective_numbers()
+            .iter()
+            .map(|(_, number)| *number)
+            .collect();
+        assert_eq!(
+            numbers.len(),
+            declaration.objective_numbers().len(),
+            "{}: an objective number is bound to one zone",
+            declaration.mission()
+        );
+        for (_, number) in declaration.objective_numbers() {
+            assert!(
+                (18..=31).contains(number),
+                "{}: {number}",
+                declaration.mission()
+            );
+        }
+    }
+
+    // The cross-check: the measured corpus names no zone a container lacks. This
+    // is the *measured* answer; the gap list is the mechanism that would report
+    // one, and the synthetic test above proves it does.
+    assert_eq!(
+        survey.declaration_gaps(),
+        Vec::new(),
+        "every declared zone has a node in its mission's world container"
+    );
+}
+
+/// A version-one reader archive: member data, then one 148-byte index entry per
+/// member (u32 start, u32 length, a 64-byte NUL-padded name, 76 bytes), then the
+/// u32 version `1` and the u32 member count. Authored for this file.
+fn reader_archive(members: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut entries = Vec::new();
+    for (name, member) in members {
+        entries.push((bytes.len() as u32, member.len() as u32, *name));
+        bytes.extend_from_slice(member);
+    }
+    for (start, length, name) in &entries {
+        bytes.extend_from_slice(&start.to_le_bytes());
+        bytes.extend_from_slice(&length.to_le_bytes());
+        let mut field = [0_u8; 64];
+        field[..name.len()].copy_from_slice(name.as_bytes());
+        bytes.extend_from_slice(&field);
+        bytes.extend_from_slice(&[0_u8; 76]);
+    }
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.extend_from_slice(&(members.len() as u32).to_le_bytes());
+    bytes
+}
+
+fn zrd_text(value: &str) -> Vec<u8> {
+    let mut out = 3_u32.to_le_bytes().to_vec();
+    out.extend((value.len() as u32).to_le_bytes());
+    out.extend(value.as_bytes());
+    out
+}
+
+fn zrd_list(children: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut out = 4_u32.to_le_bytes().to_vec();
+    out.extend((children.len() as u32 + 1).to_le_bytes());
+    children.into_iter().for_each(|child| out.extend(child));
+    out
+}
+
+fn mission_world_install(label: &str, member: &[u8]) -> TempInstallation {
+    let install = TempInstallation::new(label);
+    install.write(
+        "ZBD/C5/gamez.zbd",
+        &synthetic_world_container(&[
+            SyntheticNode::object("dzpath1", [[-10.0, 4.0, -20.0], [-2.0, 9.5, -1.0]], 949),
+            SyntheticNode::object("dzpath2", [[0.0, 0.0, 0.0], [40.0, 12.0, 90.0]], 950),
+        ]),
+    );
+    install.write(
+        "ZBD/C5/M01/zrdr.zbd",
+        &reader_archive(&[("dzones.zrd", member.to_vec())]),
+    );
+    install
+}
+
+/// The survey, over a **file**: production discovery finds the mission's reader
+/// archive, the production reader decodes its member, the content layer joins it
+/// to the world's zone nodes, and a zone the container lacks is a reported gap.
+/// This is the CI-visible half of the retail test, so a survey that decoded
+/// nothing fails here too.
+#[test]
+fn accept_t427_dzones_the_survey_joins_a_mission_member_to_its_world_container() {
+    let member = zrd_list(vec![
+        zrd_text("disable"),
+        zrd_list(vec![zrd_text("dzpath2"), zrd_text("dzpath7")]),
+    ]);
+    let install = mission_world_install("dzones", &member);
+    let survey = survey_retail_trigger_volumes(&install.root)
+        .unwrap_or_else(|error| panic!("the fixture installation surveys: {error}"));
+    assert!(survey.zone_declarations_are_decoded());
+    let [declaration] = survey.declarations() else {
+        panic!("one mission declares zones: {:?}", survey.declarations());
+    };
+    assert_eq!(declaration.mission(), "zbd/c5/m01");
+    assert_eq!(declaration.world().key(), "c5");
+    assert_eq!(declaration.disable(), ["dzpath2", "dzpath7"]);
+    assert_eq!(declaration.keys(), [ZoneDeclarationKey::Disable]);
+    assert!(declaration.member_container().ends_with("zrdr.zbd"));
+    assert_eq!(declaration.member_container_sha256().len(), 64);
+    assert_eq!(declaration.member_span().1, member.len() as u64);
+    let gaps = survey.declaration_gaps();
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert_eq!(gaps[0].zone, "dzpath7");
+}
+
+/// A member that does not decode aborts the survey by name rather than being
+/// dropped.
+#[test]
+fn accept_t427_dzones_an_undecodable_member_refuses_the_survey_by_name() {
+    let mut member = zrd_list(vec![zrd_text("disable"), zrd_list(vec![])]);
+    member.extend([0, 0]);
+    let install = mission_world_install("dzones-bad", &member);
+    assert!(matches!(
+        survey_retail_trigger_volumes(&install.root),
+        Err(TriggerVolumeSurveyError::Declarations { .. })
+    ));
 }
