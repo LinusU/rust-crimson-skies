@@ -20,7 +20,9 @@
 //! [`textures`] is the F08-C wiring
 //! (`specs/F08-texture-archives-and-conventional-image-decoding.md`,
 //! `### F08-C`): texture archives resolved through a content session, the
-//! image catalog they populate, and the handoff to the GPU upload boundary.
+//! image catalog they populate, the handoff to the GPU upload boundary, and
+//! the measured rule that picks which of a world's `texture.zbd` /
+//! `rtexture*.zbd` tiers a world load opens.
 //!
 //! [`livery`] is the F09 paint composition
 //! (`specs/F09-bm-multilayer-liveries-and-paint-composition.md`): the three
