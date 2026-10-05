@@ -22,18 +22,22 @@
 //!   it resolves ([`StartRecord::field_six_record`]). What the reference
 //!   *means* is not claimed.
 //!
+//! * **The start pose as stored** ([`MissionStartConfiguration::stored_pose`]):
+//!   field 1 (three floats) and field 2 (a float) of the player record, with
+//!   the measured facts about them on [`StoredStartPose`]. Task #676.
+//!
 //! # What it refuses, by name
 //!
-//! * **The airframe.** No field of the record is measured to name one, and the
+//! * **The airframe.** No field of the record is measured to name one (#676:
+//!   the player's field 0 is the none value in every retail mission), and the
 //!   mission-language statements that may assign it are undecoded (F13-B/C,
 //!   F38). [`MissionStartConfiguration::airframe`] is a
 //!   [`Resolved::Unknown`] with that reason, for the player and for each
 //!   wingmate. Reading a number in the record as an airframe index would be a
 //!   guess (AGENTS.md rule 4).
-//! * **The pose and the player-wingmate relation.** The record has a vector of
-//!   three floats and a float near a compass bearing at fixed positions, and
-//!   that is all that is known: no unit, frame or origin is measured, so
-//!   [`MissionStartConfiguration::initial_pose`] is unknown too, and a
+//! * **The metric pose and the player-wingmate relation.** The position unit
+//!   is unmeasured (#436) and the heading's zero direction is too, so
+//!   [`MissionStartConfiguration::initial_pose`] stays unknown, and a
 //!   `wingman_<n>` name does not say whose wingmate it is.
 //!
 //! Nothing here is `verified_original`: the claims are
@@ -60,10 +64,15 @@ const WINGMATE_PREFIX: &str = "wingman_";
 /// The field of an aircraft record that names another record, where one does.
 const REFERENCE_FIELD: usize = 6;
 
+/// The field of an aircraft record that holds the position vector.
+const POSITION_FIELD: usize = 1;
+/// The field of an aircraft record that holds the heading.
+const HEADING_FIELD: usize = 2;
+
 /// The reason an airframe cannot be bound.
-pub const AIRFRAME_UNKNOWN_REASON: &str = "no field of an aiv.zrd aircraft record is measured to name an airframe, and the mission-language statements that may assign one are undecoded (F13-B/C, F38)";
-/// The reason a pose cannot be bound.
-pub const POSE_UNKNOWN_REASON: &str = "the record's vector and bearing fields are unmeasured: no unit, frame or origin is established, and the mission program may move the aircraft before launch (F13-B/C, F38)";
+pub const AIRFRAME_UNKNOWN_REASON: &str = "no field of an aiv.zrd aircraft record names an airframe: the player's field 0 is the none value (0xFFFFFFFF) in all 53 retail missions that have a player record, the other fields are shared with scripted AI aircraft, and the mission-language statements that may assign one are undecoded (F13-B/C, F38)";
+/// The reason a metric pose cannot be bound.
+pub const POSE_UNKNOWN_REASON: &str = "the stored position unit is unmeasured (#436, blocked) and the heading's zero direction and handedness are unmeasured, so a metre and radian pose would be a guess; the stored values are bound as `stored_pose`, and the mission program may move the aircraft before launch (F13-B/C, F38)";
 
 /// A start pose: position and heading, in the units the simulation uses.
 ///
@@ -73,6 +82,23 @@ pub struct StartPose {
     /// World position, metres.
     pub position: [f32; 3],
     /// Heading, radians.
+    pub heading: f32,
+}
+
+/// A start pose exactly as the record stores it, in the original's own units.
+///
+/// Measured over every retail `aiv.zrd` that has a `player` record (53
+/// missions): field 1 is a vector of three floats and field 2 a float. Axis 1
+/// is the vertical one (its range, 110 to 1400, is small beside the 1363 to
+/// 13257 of the other two); the heading is not in radians (its magnitude
+/// reaches 330 and every value is a multiple of 5), so it is degrees-like.
+/// The position unit, the heading's zero direction and its handedness are not
+/// measured.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StoredStartPose {
+    /// The position vector as stored; axis 1 is the vertical one.
+    pub position: [f32; 3],
+    /// The heading as stored, in unmeasured degrees-like units.
     pub heading: f32,
 }
 
@@ -116,6 +142,13 @@ pub struct StartRecord {
     /// The index of the record that field 6 names, when it names one that
     /// exists. Its meaning is unmeasured.
     pub field_six_record: Option<usize>,
+    /// Field 0 as stored, when it is an integer. `0xFFFFFFFF` (no value) on
+    /// every `player` and `wingman_<n>` record; scripted AI aircraft carry
+    /// other values whose meaning is unmeasured.
+    pub field_zero: Option<u32>,
+    /// The position and heading as stored, when the record has the measured
+    /// shape (a three-float vector in field 1, a float in field 2).
+    pub stored_pose: Option<StoredStartPose>,
     /// Where the record was read from.
     pub provenance: Provenance,
 }
@@ -129,6 +162,7 @@ pub struct MissionStartConfiguration {
     airframe: Resolved<ContentId>,
     wingmate_airframes: Vec<Resolved<ContentId>>,
     initial_pose: Resolved<StartPose>,
+    stored_pose: Resolved<StoredStartPose>,
 }
 
 impl MissionStartConfiguration {
@@ -173,6 +207,8 @@ impl MissionStartConfiguration {
                 index: *index,
                 field_count: fields.len(),
                 field_six_record,
+                field_zero: fields.first().and_then(ZrdValue::as_int),
+                stored_pose: stored_pose(fields),
                 provenance: Provenance::new(
                     claim_id(&format!("{label}.{claim}"))?,
                     ClaimStatus::ObservedTool,
@@ -217,6 +253,22 @@ impl MissionStartConfiguration {
             }
         }
 
+        let pose_claim = claim_id(&format!("{label}.player-stored-pose"))?;
+        let stored = match &player {
+            Resolved::Known(known) => known.value.stored_pose,
+            Resolved::Unknown { .. } => None,
+        };
+        let stored_pose = match stored {
+            Some(pose) => Resolved::Known(Known::new(
+                pose,
+                Provenance::new(pose_claim, ClaimStatus::ObservedTool, Some(source.clone()))
+                    .map_err(|error| MissionStartError::Provenance(error.to_string()))?,
+            )),
+            None => unknown(
+                pose_claim,
+                "the player record is missing or has no three-float vector in field 1 and float in field 2",
+            )?,
+        };
         let airframe_claim = || claim_id(&format!("{label}.player-airframe"));
         let wingmate_airframes = wingmates
             .iter()
@@ -237,6 +289,7 @@ impl MissionStartConfiguration {
                 claim_id(&format!("{label}.initial-pose"))?,
                 POSE_UNKNOWN_REASON,
             )?,
+            stored_pose,
         })
     }
 
@@ -270,7 +323,14 @@ impl MissionStartConfiguration {
         &self.wingmate_airframes
     }
 
-    /// The pose the player starts at.
+    /// The player's start position and heading exactly as stored, unit
+    /// unmeasured: known when the player record has the measured shape.
+    #[must_use]
+    pub const fn stored_pose(&self) -> &Resolved<StoredStartPose> {
+        &self.stored_pose
+    }
+
+    /// The pose the player starts at, in metres and radians.
     #[must_use]
     pub const fn initial_pose(&self) -> &Resolved<StartPose> {
         &self.initial_pose
@@ -336,6 +396,23 @@ pub fn recover_retail_start_configuration(
     )
     .map_err(|error| MissionStartError::Provenance(error.to_string()))?;
     MissionStartConfiguration::read(mission, &document, &source)
+}
+
+fn stored_pose(fields: &[ZrdValue]) -> Option<StoredStartPose> {
+    let [x, y, z] = fields.get(POSITION_FIELD)?.as_list()? else {
+        return None;
+    };
+    let float = |value: &ZrdValue| match value {
+        ZrdValue::Float(number) if number.is_finite() => Some(*number),
+        _ => None,
+    };
+    let ZrdValue::Float(heading) = fields.get(HEADING_FIELD)? else {
+        return None;
+    };
+    Some(StoredStartPose {
+        position: [float(x)?, float(y)?, float(z)?],
+        heading: *heading,
+    })
 }
 
 fn claim_label(mission: &str) -> String {

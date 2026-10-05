@@ -49,3 +49,46 @@ for the airframe and pose, and VS-M01-RUNTIME (#359) stays blocked on them.
 `accept_m01_lc_player_config_*` in
 `crates/cs_app/tests/campaign/m01_lc_player_config.rs` (2 synthetic, 1 retail
 `#[ignore = "requires CS_GAME_DIR"]`), in the existing campaign test binary.
+
+## #676 M01-LC-PLAYER-AIRFRAME-POSE: what the measurement found
+
+Date: 2026-10-05. Capability: **`retail`**. Nothing is `verified_original`. The
+measurement dumped the `player` record of `aiv.zrd` in every retail
+`zbd/*/*/zrdr.zbd` that has one (**53** missions, all decoding) and M01's
+whole table.
+
+**Airframe: still unknown, now with evidence.**
+* Field 0 of the player record is `0xFFFFFFFF` in all 53 missions, and of every
+  `wingman_<n>` record in M01. Scripted AI aircraft carry other values there
+  (M01: `rusdevastator_*` 24, `devastator_2` 28, `devastator_3` 29,
+  `bsfury_1` 34). The header's `(id, name)` table has entries for 24, 25, 28
+  and 29 (`Scout1`..`Scout4`) but not 34, so even the AI values are unmeasured.
+* Field 4 is `5` on M01's player and wingmates but `0` in most other missions
+  and `4` in `c1b` and `c3/m02`; it is the same for the player and the AI in a
+  mission, so it is not a per-aircraft airframe field.
+* No member of M01's `zrdr.zbd` contains the text `bloodhawk` (searched all 12).
+  `player_setup.zrd` toggles the player's active state and names no airframe.
+  The airframe is not stored in the mission data read so far; it may be a
+  profile, hangar or mission-program choice.
+
+**Pose: the stored values are bound; the metric pose stays unknown.**
+* Field 1 is a three-float vector, field 2 a float, on every player record.
+  M01: position `(-3694, 1318, -12482)`, heading `170`; `wingman_3`
+  `(-4531, 1280, -13065)`, `wingman_2` `(-3421, 1350, -13114)`, both `180`.
+* Axis 1 is vertical (110..1400 against 1363..13257 on the other axes). The
+  heading is not radians (|value| reaches 330; all 53 are multiples of 5).
+* M01's start lies outside `c1c`'s grid `[-12288, 0]^2` on the third axis
+  (by 194 stored units for the player), so the frame relation to the world is
+  not simply "inside the grid".
+* Unmeasured: the position unit (#436, blocked), the heading's zero direction
+  and handedness.
+
+New in `cs_app::mission_start`: `StoredStartPose`, `StartRecord::field_zero`,
+`StartRecord::stored_pose` and `MissionStartConfiguration::stored_pose()`
+(`Known`, `ObservedTool`, with the member's span). `airframe()` and
+`initial_pose()` stay `Unknown` with updated reasons.
+
+**Unmet:** the airframe and the metric pose. Affected: VS-M01-RUNTIME (#359)
+player spawn. Resolving: #436 (unit), F13-B/C and F38 (statements that may assign
+an airframe or move the aircraft). `missions/bindings/M01.json` is protected and
+unchanged, so its unknown still stands.

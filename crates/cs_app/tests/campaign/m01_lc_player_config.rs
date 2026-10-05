@@ -19,6 +19,13 @@ fn text(value: &str) -> ZrdValue {
 
 fn record(name: &str, reference: &str) -> ZrdValue {
     let mut fields = vec![ZrdValue::Int(0); 8];
+    fields[0] = ZrdValue::Int(u32::MAX);
+    fields[1] = ZrdValue::List(vec![
+        ZrdValue::Float(-3694.0),
+        ZrdValue::Float(1318.0),
+        ZrdValue::Float(-12482.0),
+    ]);
+    fields[2] = ZrdValue::Float(170.0);
     fields[6] = text(reference);
     ZrdValue::List(vec![text(name), ZrdValue::List(fields)])
 }
@@ -67,9 +74,31 @@ fn accept_m01_lc_player_config_binds_records_and_names_the_unknowns() {
     assert_eq!(config.wingmate_airframes().len(), 2);
     assert!(config.wingmate_airframes().iter().all(|a| !a.is_known()));
     let Resolved::Unknown { reason, .. } = config.initial_pose() else {
-        panic!("no pose is measured");
+        panic!("no metric pose is measured");
     };
     assert_eq!(reason, POSE_UNKNOWN_REASON);
+
+    assert_eq!(player.value.field_zero, Some(u32::MAX));
+    let Resolved::Known(stored) = config.stored_pose() else {
+        panic!("the stored pose is bound");
+    };
+    assert_eq!(stored.value.position, [-3694.0, 1318.0, -12482.0]);
+    assert_eq!(stored.value.heading, 170.0);
+    assert_eq!(stored.provenance.class, ClaimStatus::ObservedTool);
+    assert_eq!(stored.provenance.source.as_ref(), Some(&span()));
+}
+
+#[test]
+fn accept_m01_lc_player_config_a_player_without_the_pose_shape_has_no_stored_pose() {
+    let mut shapeless = vec![ZrdValue::Int(0); 8];
+    shapeless[1] = ZrdValue::List(vec![ZrdValue::Float(1.0), ZrdValue::Float(2.0)]);
+    let document = ZrdValue::List(vec![
+        ZrdValue::List(vec![ZrdValue::Int(0)]),
+        ZrdValue::List(vec![text("player"), ZrdValue::List(shapeless)]),
+    ]);
+    let config = MissionStartConfiguration::read("zbd/c0/m00", &document, &span()).expect("read");
+    assert!(config.player().is_known());
+    assert!(!config.stored_pose().is_known());
 }
 
 #[test]
@@ -105,4 +134,22 @@ fn accept_m01_lc_player_config_retail_m01_binds_player_and_names_unknowns() {
 
     assert!(!config.airframe().is_known());
     assert!(!config.initial_pose().is_known());
+
+    // Measured values of M01's player record (and no airframe in field 0).
+    assert_eq!(player.value.field_zero, Some(u32::MAX));
+    assert!(
+        config
+            .wingmates()
+            .iter()
+            .all(|w| w.field_zero == Some(u32::MAX))
+    );
+    let Resolved::Known(stored) = config.stored_pose() else {
+        panic!("M01's player record has the pose shape");
+    };
+    assert_eq!(stored.value.position, [-3694.0, 1318.0, -12482.0]);
+    assert_eq!(stored.value.heading, 170.0);
+    assert_eq!(
+        config.wingmates()[0].stored_pose.map(|p| p.position),
+        Some([-4531.0, 1280.0, -13065.0])
+    );
 }
