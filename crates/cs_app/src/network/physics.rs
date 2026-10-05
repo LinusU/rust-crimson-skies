@@ -846,6 +846,103 @@ impl RemoteMirror {
         self.ended.remove(&actor);
         self.removed.remove(&actor);
     }
+
+    /// Adopts a new shared origin epoch, re-projecting every mirrored record.
+    ///
+    /// This is F57-C's answer to "origin change across snapshot boundaries" (F57
+    /// AC03). Positions on the wire are integers relative to whichever epoch the
+    /// snapshot declares, so a receiver whose local frame moves to a new epoch
+    /// must (a) adopt that epoch, or every subsequent snapshot is refused as
+    /// [`IngestRefusal::EpochMismatch`] and remote aircraft freeze forever, and
+    /// (b) treat the change as a conversion rather than a displacement, or every
+    /// mirrored aircraft teleports by exactly `origin_shift_m`.
+    ///
+    /// The canonical f64 world position is what a rebase preserves, so each
+    /// record is re-projected through the new frame *and measured* against its
+    /// stored value; the largest drift is reported as
+    /// [`EpochTransition::max_conversion_m`]. A record that still carried the old
+    /// frame's local numbers would move by `origin_shift_m` here, which is why the
+    /// transition reports both numbers instead of quietly succeeding.
+    ///
+    /// Epochs are never reused, so an epoch that is not strictly newer than the
+    /// one held is refused: adopting an old or repeated epoch would let a stale
+    /// frame name live records.
+    ///
+    /// # Errors
+    ///
+    /// [`OriginError::EpochMismatch`] for an epoch that is not strictly newer
+    /// than the held one, and [`OriginError::Space`] when a record's position
+    /// cannot be converted through the new frame — in which case the mirror is
+    /// left exactly as it was.
+    pub fn adopt_origin(&mut self, next: WorldOrigin) -> Result<EpochTransition, OriginError> {
+        if next.epoch() <= self.origin.epoch() {
+            return Err(OriginError::EpochMismatch {
+                anchor: self.origin.epoch(),
+                frame: next.epoch(),
+            });
+        }
+        // Phase one: plan every conversion. A record that cannot be converted
+        // aborts the whole transition, so the mirror is never half-rebased.
+        let mut projections = Vec::with_capacity(self.actors.len());
+        let mut max_conversion_m = 0.0_f64;
+        for (actor, record) in &self.actors {
+            let local = next.local_of(record.position)?;
+            let projected = next.world_of(local)?;
+            let drift = distance(projected.to_array(), record.position.to_array());
+            let tolerance = crate::origin::local_round_trip_tolerance_m(record.position, local);
+            if drift > tolerance {
+                return Err(OriginError::Space(cs_types::space::SpaceError::NonFinite {
+                    field: "origin re-projection",
+                }));
+            }
+            max_conversion_m = max_conversion_m.max(drift);
+            projections.push((*actor, projected));
+        }
+        // Phase two: commit.
+        let previous = self.origin;
+        for (actor, projected) in projections {
+            if let Some(record) = self.actors.get_mut(&actor) {
+                record.position = projected;
+            }
+        }
+        self.origin = next;
+        Ok(EpochTransition {
+            from: previous.epoch(),
+            to: next.epoch(),
+            origin: next.position(),
+            origin_shift_m: distance(previous.position().to_array(), next.position().to_array()),
+            converted: self.actors.len(),
+            max_conversion_m,
+        })
+    }
+}
+
+/// What adopting a new shared origin epoch did to a mirror.
+///
+/// A rebase is a *conversion*, not a move (`docs/contracts/FLIGHT-PHYSICS.md`:
+/// "an origin shift translates both endpoints consistently"; F16 non-negotiable
+/// behavior 5). This report is the measurement that says so: `origin_shift_m` is
+/// how far the frame moved, and `max_conversion_m` is how far any mirrored actor
+/// moved as a result. A consumer that wants to be sure the epoch change was not
+// a displacement compares the two — they are orders of magnitude apart, and the
+/// acceptance test asserts exactly that.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EpochTransition {
+    /// The epoch the mirror read records in before the transition.
+    pub from: LocalOriginEpoch,
+    /// The epoch it reads records in now.
+    pub to: LocalOriginEpoch,
+    /// The new origin's canonical world position.
+    pub origin: WorldPosition,
+    /// How far the origin itself moved, in meters. This is the distance that
+    /// must *not* appear in any actor's pose.
+    pub origin_shift_m: f64,
+    /// How many mirror records were re-projected through the new frame.
+    pub converted: usize,
+    /// The largest distance any re-projected record moved, in meters: the
+    /// world → local → world round-trip tolerance
+    /// ([`crate::origin::local_round_trip_tolerance_m`]), not a displacement.
+    pub max_conversion_m: f64,
 }
 
 /// The per-record refusal that names why a record could not be mirrored.
@@ -1144,6 +1241,16 @@ impl RemoteInterpolator {
         self.ended.remove(&actor);
     }
 
+    /// Drops every buffer, remembered generation included.
+    ///
+    /// The teardown path ([`NetSession::teardown`]). Per-actor releases use
+    /// [`Self::forget`] so a single actor's history can be released without
+    /// ending the session; this is for the end of the session itself.
+    pub fn clear(&mut self) {
+        self.tracks.clear();
+        self.ended.clear();
+    }
+
     /// Feeds the effect of one ingested snapshot into the buffers: applied and
     /// replaced records are buffered from `mirror`, destroyed and despawned
     /// actors are retired at the generation the snapshot named.
@@ -1393,6 +1500,34 @@ impl LocalPredictor {
         }
     }
 
+    /// The local aircraft this predictor owns the history of.
+    #[must_use]
+    pub const fn actor(&self) -> ActorId {
+        self.actor
+    }
+
+    /// The local aircraft's generation the history belongs to.
+    #[must_use]
+    pub const fn generation(&self) -> u16 {
+        self.generation
+    }
+
+    /// Drops the predicted history, the pending correction and the authoritative
+    /// loadout.
+    ///
+    /// The teardown path ([`NetSession::teardown`]). After this the predictor
+    /// answers as a fresh one: the next record has no predicted pose to compare
+    /// against, so it is adopted by snap, which is the honest reading of "no
+    /// prediction exists" rather than a silent guess.
+    pub fn reset(&mut self) {
+        self.history.clear();
+        self.pending_translation = [0.0; 3];
+        self.pending_rotation = [0.0, 0.0, 0.0, 1.0];
+        self.remaining_ticks = 0;
+        self.boosting = false;
+        self.authoritative = None;
+    }
+
     /// Records the pose the local body had at `tick`, and whether the player is
     /// holding boost. The boost flag is cosmetic: it drives presentation only.
     ///
@@ -1574,6 +1709,806 @@ impl LocalPredictor {
             translation_m: translation,
             rotation: to_quaternion(step).unwrap_or(Quaternion::IDENTITY),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F57-C: the wired session. Reconciliation, projectile confirmation and origin
+// epochs on the path that actually runs.
+//
+// Spec: `specs/F57-*.md`, stage `### F57-C`. Everything below is newly authored
+// engine design; no original networked projectile, confirmation or origin
+// behavior has been measured, and none is asserted.
+//
+// F57-A built the schema, F57-B built the pieces. This stage is the wiring:
+// [`NetSession`] is the one object the app owns per session, and it is what
+// connects the producer ([`cs_sim::net_state::NetStateLedger`] through
+// [`publish_snapshot`]) to the consumers ([`RemoteInterpolator`],
+// [`LocalPredictor`] and [`Tracers`]) in the order the data actually flows. Each
+// piece above was previously driven by hand from a test; nothing assembled them
+// for a running app.
+//
+// # The rules the wiring exists to enforce
+//
+// * **Origin epochs are shared and adopted, never assumed.**
+//   [`NetSession::rebase`] moves the session's frame and every consumer's
+//   together, converting rather than displacing (F57 AC03). A snapshot whose
+//   epoch does not match is refused by [`RemoteMirror::ingest`]; after a rebase
+//   the session is in the new epoch, so the *next* snapshot applies and an old
+//   one still does not.
+// * **A correction belongs to the pose owner, not to this session.**
+//   [`NetSession::next_correction`] is what the single pose owner applies each
+//   tick. The session never writes a body, so there is one owner of a pose.
+// * **A local tracer cannot award a kill.** [`Tracers`] is presentation state
+//   with a hard ceiling on retention. A shot the server accepted is a
+//   [`cs_sim::net_state::ShotId`]; a hit is only ever what
+//   [`cs_sim::net_state::NetStateLedger::confirm_shot`] returns, and the only
+//   thing the client derives from it is a visual confirmation. Removing the
+//   confirmation leaves the tracer cosmetic, which is the sheet's non-negotiable
+//   behavior 3.
+// * **Teardown and retry are part of the path.** [`NetSession::teardown`] is
+//   idempotent and releases every buffer; a new session starts clean, because
+//   [`RemoteMirror::forget`] and the interpolator's own `forget` are the only
+//   ways their generation memory is released.
+// ---------------------------------------------------------------------------
+
+/// Why a session-level operation was refused.
+///
+/// Distinct from [`PublishError`] (the producer's refusal) and
+/// [`IngestRefusal`] (one snapshot's refusal): this names the *session's* own
+/// state — that it has been torn down, or that a caller asked for something
+/// before the piece that produces it exists.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionError {
+    /// The origin conversion the caller asked for was refused.
+    Origin(OriginError),
+    /// The session has been torn down. It holds no buffers and accepts no
+    /// further work; a retry is a new session, not a revived one.
+    TornDown,
+    /// The caller asked for local prediction before attaching a local actor.
+    NoLocalActor,
+    /// The caller asked for the local aircraft without naming one, or named
+    /// another one.
+    UnknownLocalActor {
+        /// The local actor the session is bound to.
+        expected: Option<ActorId>,
+    },
+    /// A buffer or the predictor refused the request.
+    Buffer(BufferRefusal),
+    /// A tracer operation was refused.
+    Tracer(TracerRefusal),
+}
+
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Origin(error) => write!(f, "origin conversion refused: {error}"),
+            Self::TornDown => write!(f, "the network session has been torn down"),
+            Self::NoLocalActor => {
+                write!(
+                    f,
+                    "no local actor is attached; local prediction has nothing to own"
+                )
+            }
+            Self::UnknownLocalActor { expected } => match expected {
+                Some(actor) => write!(f, "the session's local actor is {actor}"),
+                None => write!(f, "the session has no local actor bound"),
+            },
+            Self::Buffer(error) => write!(f, "a network buffer refused the request: {error}"),
+            Self::Tracer(error) => write!(f, "a client tracer refused the request: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for SessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Origin(error) => Some(error),
+            Self::Buffer(error) => Some(error),
+            Self::Tracer(error) => Some(error),
+            Self::TornDown | Self::NoLocalActor | Self::UnknownLocalActor { .. } => None,
+        }
+    }
+}
+
+impl From<OriginError> for SessionError {
+    fn from(value: OriginError) -> Self {
+        Self::Origin(value)
+    }
+}
+
+/// How a client-side tracer learned what happened to it.
+///
+/// Deliberately coarser than the damage domain's hit taxonomy: the client
+/// learns *that* the server confirmed a shot, never *how much* it hurt or which
+/// subsystem failed. Anything finer would let a client draw a conclusion the
+/// server never published.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TracerVerdict {
+    /// Still in flight: predicted, not yet answered by the server.
+    Pending,
+    /// The server confirmed this shot hit `target`.
+    Confirmed {
+        /// What the server named.
+        target: Option<ActorId>,
+    },
+    /// The server resolved this shot and it did **not** hit anything. The tracer
+    /// is retired; it still never awarded anything.
+    Missed,
+}
+
+impl TracerVerdict {
+    /// Whether the server has resolved this shot either way.
+    #[must_use]
+    pub const fn is_resolved(self) -> bool {
+        !matches!(self, Self::Pending)
+    }
+}
+
+/// One predicted client-side projectile, and the server's word about it.
+///
+/// A tracer is a *cosmetic*: it is spawned from the local aircraft's own trigger
+/// pull, it exists only so the pilot sees a shot leave the guns, and it has no
+/// path to awarding damage. The only field that changes authority anywhere is the
+/// [`TracerVerdict`], and the only way to reach it is
+/// [`Tracers::apply_confirmation`], which takes the server's
+/// [`cs_sim::net_state::ShotConfirmation`] rather than any client-computed
+/// geometry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tracer {
+    /// Which local shot this is. It matches the
+    /// [`cs_sim::net_state::ShotId`] the server accepted.
+    pub shot: cs_sim::net_state::ShotId,
+    /// The tick the tracer was spawned on.
+    pub spawned: Tick,
+    /// Where the shot was spawned, in canonical world coordinates.
+    pub origin: WorldPosition,
+    /// The predicted flight direction, in m/s.
+    pub direction_mps: [f64; 3],
+    /// The server's word about it, once there is one.
+    pub verdict: TracerVerdict,
+}
+
+/// Bounded client-side tracers, keyed by shot.
+///
+/// Bounded twice over: [`TRACER_HARD_CAP`] is the hard ceiling the constructor
+/// refuses to exceed, and each entry carries the tick it may be presented for
+/// until ([`TRACER_LIFETIME_TICKS`]) so a shot nobody ever answers cannot pin
+/// memory forever. A confirmed tracer is *not* dropped early: it stays until its
+/// presentation window ends, so a pilot can see the hit they earned.
+#[derive(Clone, Debug)]
+pub struct Tracers {
+    local: ActorId,
+    cap: usize,
+    /// Tracers keyed by the shot they belong to, so the retention rule can drop
+    /// the oldest by `spawned` tick rather than by insertion order.
+    entries: BTreeMap<cs_sim::net_state::ShotId, Tracer>,
+}
+
+impl Tracers {
+    /// The most tracers a session may hold, whatever the caller asks for.
+    ///
+    /// Bounded because a local trigger held down under prediction would
+    /// otherwise allocate one entry per tick; the acceptance test drives past
+    /// the configured limit and asserts this ceiling holds.
+    pub const TRACER_HARD_CAP: usize = 256;
+
+    /// How many ticks a tracer may live before it is dropped unanswered.
+    ///
+    /// Newly authored design, chosen as a presentation window rather than
+    /// measured: no original projectile lifetime has been measured.
+    pub const TRACER_LIFETIME_TICKS: u64 = 120;
+
+    /// A tracer book for `local`, holding at most `cap` entries.
+    ///
+    /// A cap of zero is raised to one and a cap above [`Self::TRACER_HARD_CAP`]
+    /// is clamped: a presentation buffer is sized by configuration, and
+    /// mis-sizing it must not turn into a refusal of a *shot*. Use
+    /// [`Self::try_new`] where the cap is a caller's claim worth checking.
+    #[must_use]
+    pub fn new(local: ActorId, cap: usize) -> Self {
+        Self {
+            local,
+            cap: cap.clamp(1, Self::TRACER_HARD_CAP),
+            entries: BTreeMap::new(),
+        }
+    }
+
+    /// The checked constructor: refuses a cap above [`Self::TRACER_HARD_CAP`]
+    /// rather than silently clamping it, so a caller that believes it holds more
+    /// than the ceiling allows is told instead of quietly holding less.
+    ///
+    /// # Errors
+    ///
+    /// [`CapError::AboveHardCap`] for a cap above the ceiling.
+    pub fn try_new(local: ActorId, cap: usize) -> Result<Self, CapError> {
+        if cap > Self::TRACER_HARD_CAP {
+            return Err(CapError::AboveHardCap {
+                requested: cap,
+                max: Self::TRACER_HARD_CAP,
+            });
+        }
+        Ok(Self::new(local, cap))
+    }
+
+    /// The configured retention cap.
+    #[must_use]
+    pub const fn cap(&self) -> usize {
+        self.cap
+    }
+
+    /// The local aircraft these tracers belong to.
+    #[must_use]
+    pub const fn local(&self) -> ActorId {
+        self.local
+    }
+
+    /// How many tracers are held.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether no tracer is held.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The tracer for `shot`.
+    #[must_use]
+    pub fn tracer(&self, shot: cs_sim::net_state::ShotId) -> Option<&Tracer> {
+        self.entries.get(&shot)
+    }
+
+    /// Spawns a predicted tracer for a shot the *server already accepted*.
+    ///
+    /// The shot id is the server's ([`cs_sim::net_state::NetStateLedger::
+    /// accept_shot`]); this function only records the cosmetic. A shot the server
+    /// refused has no accepted id, so it cannot be spawned here at all.
+    ///
+    /// Refuses rather than overwrites when the shot already has a tracer, so a
+    /// replayed fire request cannot silently restamp one. When the book is at its
+    /// cap the oldest unanswered tracer is dropped to make room, and a confirmed
+    /// one is never dropped in its place: a pilot sees the hit they earned.
+    ///
+    /// # Errors
+    ///
+    /// [`TracerRefusal::AlreadyTracked`] for a shot that already has a tracer and
+    /// [`TracerRefusal::UnusableDirection`] for a non-finite direction.
+    pub fn spawn(
+        &mut self,
+        shot: cs_sim::net_state::ShotId,
+        tick: Tick,
+        origin: WorldPosition,
+        direction_mps: [f64; 3],
+    ) -> Result<(), TracerRefusal> {
+        if self.entries.contains_key(&shot) {
+            return Err(TracerRefusal::AlreadyTracked { shot });
+        }
+        if !direction_mps.iter().all(|value| value.is_finite()) {
+            return Err(TracerRefusal::UnusableDirection);
+        }
+        self.evict_until_room();
+        self.entries.insert(
+            shot,
+            Tracer {
+                shot,
+                spawned: tick,
+                origin,
+                direction_mps,
+                verdict: TracerVerdict::Pending,
+            },
+        );
+        Ok(())
+    }
+
+    /// Drops tracers until the book is below its cap.
+    ///
+    /// Oldest first by `spawned` tick, and only while it is *over* the cap, so a
+    /// quiet book keeps its whole window. A confirmed tracer is only dropped once
+    /// every pending one is gone, which is the preference order: an unanswered
+    /// prediction is the one a pilot cannot resolve themselves.
+    fn evict_until_room(&mut self) {
+        while self.entries.len() >= self.cap {
+            let oldest_pending = self
+                .entries
+                .values()
+                .filter(|tracer| !tracer.verdict.is_resolved())
+                .min_by_key(|tracer| tracer.spawned)
+                .map(|tracer| tracer.shot);
+            let victim = oldest_pending.or_else(|| {
+                self.entries
+                    .values()
+                    .min_by_key(|tracer| tracer.spawned)
+                    .map(|tracer| tracer.shot)
+            });
+            let Some(victim) = victim else {
+                return;
+            };
+            self.entries.remove(&victim);
+        }
+    }
+
+    /// Drops every tracer whose presentation window has elapsed at `now`.
+    ///
+    /// The bound that stops a shot nobody ever answers from pinning memory
+    /// forever: [`Self::TRACER_LIFETIME_TICKS`] is newly authored design, chosen
+    /// as a presentation window rather than measured.
+    pub fn expire(&mut self, now: Tick) {
+        self.entries.retain(|_, tracer| {
+            now.0.saturating_sub(tracer.spawned.0) <= Self::TRACER_LIFETIME_TICKS
+        });
+    }
+
+    /// Applies the server's word about a shot.
+    ///
+    /// Takes a [`cs_sim::net_state::ShotConfirmation`], not a client-computed
+    /// intersection: there is no code path from local geometry to a resolved
+    /// verdict, so a predicted tracer can never award anything (F57
+    /// non-negotiable behavior 3). A confirmation for a shot with no tracer is
+    /// refused and named — a server hit the client never predicted is a fact to
+    /// report, not to display as a local shot.
+    pub fn apply_confirmation(
+        &mut self,
+        confirmation: &cs_sim::net_state::ShotConfirmation,
+    ) -> Result<(), TracerRefusal> {
+        if confirmation.shooter != self.local {
+            return Err(TracerRefusal::ForeignShooter {
+                local: self.local,
+                found: confirmation.shooter,
+            });
+        }
+        let entry = self
+            .entries
+            .get_mut(&confirmation.shot)
+            .ok_or(TracerRefusal::UnknownShot {
+                shot: confirmation.shot,
+            })?;
+        entry.verdict = match confirmation.target {
+            Some(target) => TracerVerdict::Confirmed {
+                target: Some(target),
+            },
+            None => TracerVerdict::Missed,
+        };
+        Ok(())
+    }
+
+    /// How many tracers have a resolved verdict.
+    #[must_use]
+    pub fn resolved_count(&self) -> usize {
+        self.entries
+            .values()
+            .filter(|tracer| tracer.verdict.is_resolved())
+            .count()
+    }
+
+    /// Drops every tracer the local aircraft has, answered or not.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// Why a tracer operation was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TracerRefusal {
+    /// The shot already has a tracer; a replayed fire request changed nothing.
+    AlreadyTracked {
+        /// The shot that already had one.
+        shot: cs_sim::net_state::ShotId,
+    },
+    /// The predicted direction held a non-finite component.
+    UnusableDirection,
+    /// The confirmation names a shooter that is not this client.
+    ForeignShooter {
+        /// The local actor.
+        local: ActorId,
+        /// The shooter the confirmation names.
+        found: ActorId,
+    },
+    /// The confirmation names a shot with no predicted tracer.
+    UnknownShot {
+        /// The untracked shot.
+        shot: cs_sim::net_state::ShotId,
+    },
+}
+
+impl fmt::Display for TracerRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyTracked { shot } => write!(f, "{shot} already has a tracer"),
+            Self::UnusableDirection => write!(f, "predicted tracer direction is not finite"),
+            Self::ForeignShooter { local, found } => {
+                write!(
+                    f,
+                    "confirmation names {found}, but the local aircraft is {local}"
+                )
+            }
+            Self::UnknownShot { shot } => write!(f, "{shot} has no predicted tracer to confirm"),
+        }
+    }
+}
+
+impl std::error::Error for TracerRefusal {}
+
+/// Why a requested buffer cap was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapError {
+    /// The requested cap is above the hard ceiling this buffer enforces.
+    AboveHardCap {
+        /// What the caller asked for.
+        requested: usize,
+        /// The ceiling.
+        max: usize,
+    },
+}
+
+impl fmt::Display for CapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AboveHardCap { requested, max } => {
+                write!(f, "requested cap {requested} is above the hard cap {max}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CapError {}
+
+/// The per-session network state the app owns: the mirror, the interpolation
+/// buffers, the local predictor and the tracers, wired together.
+///
+/// This is the object F57-A and F57-B's pieces were waiting for. It owns the
+/// order the data flows in — decode happens at the transport, then
+/// [`Self::ingest`] applies one snapshot to the mirror and the buffers, then
+/// [`Self::sample`] presents remote aircraft, then [`Self::next_correction`] hands
+/// the pose owner its bounded correction — and it owns teardown, which is the
+/// only place the generation memory behind those buffers is released.
+///
+/// It holds no Bevy state and touches no body: [`Self::next_correction`] returns
+/// a [`PoseCorrection`] for the single pose owner to apply, so there is exactly
+/// one owner of a pose.
+#[derive(Clone, Debug)]
+pub struct NetSession {
+    session: SessionId,
+    origin: WorldOrigin,
+    mirror: RemoteMirror,
+    interpolator: RemoteInterpolator,
+    predictor: Option<LocalPredictor>,
+    tracers: Option<Tracers>,
+    torn_down: bool,
+}
+
+impl NetSession {
+    /// A session for `session`, reading records in `origin`'s frame.
+    ///
+    /// No local aircraft is attached yet, so local prediction and tracers are
+    /// absent until [`Self::attach_local`] names one.
+    #[must_use]
+    pub fn new(
+        session: SessionId,
+        origin: WorldOrigin,
+        interpolation: InterpolationConfig,
+    ) -> Self {
+        Self {
+            session,
+            origin,
+            mirror: RemoteMirror::new(session, origin),
+            interpolator: RemoteInterpolator::new(interpolation),
+            predictor: None,
+            tracers: None,
+            torn_down: false,
+        }
+    }
+
+    /// The session this belongs to.
+    #[must_use]
+    pub const fn session(&self) -> SessionId {
+        self.session
+    }
+
+    /// The world origin every consumer currently reads in.
+    #[must_use]
+    pub const fn origin(&self) -> WorldOrigin {
+        self.origin
+    }
+
+    /// Whether the session has been torn down.
+    #[must_use]
+    pub const fn is_torn_down(&self) -> bool {
+        self.torn_down
+    }
+
+    /// The mirror of remote aircraft.
+    #[must_use]
+    pub const fn mirror(&self) -> &RemoteMirror {
+        &self.mirror
+    }
+
+    /// The interpolation buffers.
+    #[must_use]
+    pub const fn interpolator(&self) -> &RemoteInterpolator {
+        &self.interpolator
+    }
+
+    /// The local predictor, when a local aircraft is attached.
+    #[must_use]
+    pub const fn predictor(&self) -> Option<&LocalPredictor> {
+        self.predictor.as_ref()
+    }
+
+    /// The client tracers, when a local aircraft is attached.
+    #[must_use]
+    pub const fn tracers(&self) -> Option<&Tracers> {
+        self.tracers.as_ref()
+    }
+
+    /// Binds the local aircraft, so local prediction and tracers exist.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::TornDown`] when the session is gone, and
+    /// [`SessionError::UnknownLocalActor`] when a *different* local actor is
+    /// already attached: switching the local aircraft mid-session would leave one
+    /// actor's predicted history and another's authoritative loadout interleaved,
+    /// so the caller tears the session down instead.
+    pub fn attach_local(
+        &mut self,
+        actor: ActorId,
+        generation: u16,
+        prediction: PredictionConfig,
+    ) -> Result<(), SessionError> {
+        self.expect_live()?;
+        if let Some(predictor) = &self.predictor
+            && predictor.actor() != actor
+        {
+            return Err(SessionError::UnknownLocalActor {
+                expected: Some(predictor.actor()),
+            });
+        }
+        if self.predictor.is_none() {
+            self.predictor = Some(LocalPredictor::new(actor, generation, prediction));
+            self.tracers = Some(Tracers::new(actor, 64));
+        }
+        Ok(())
+    }
+
+    /// The local aircraft's actor, when one is attached.
+    #[must_use]
+    pub fn local_actor(&self) -> Option<ActorId> {
+        self.predictor.as_ref().map(LocalPredictor::actor)
+    }
+
+    /// Applies one decoded snapshot to the mirror and the buffers.
+    ///
+    /// Check order is the contract: the mirror refuses an unmatched origin epoch
+    /// or an out-of-order tick before anything is touched, and only then does the
+    /// ingest report drive the interpolation buffers. The returned report is the
+    /// same one the mirror produced, so a refused snapshot is visibly refused
+    /// rather than silently ignored.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::TornDown`] when the session has been torn down.
+    pub fn ingest(
+        &mut self,
+        snapshot: &Snapshot,
+        tick: Tick,
+    ) -> Result<IngestReport, SessionError> {
+        self.expect_live()?;
+        let report = self.mirror.ingest(snapshot, tick);
+        // The buffers are fed from the report and the mirror's *current* state,
+        // which is what makes a refused record contribute no sample.
+        self.interpolator.observe(&report, snapshot, &self.mirror);
+        // A destroyed or despawned remote actor's buffer is retired by
+        // `observe`; a reliably removed one is forgotten so a later id reuse
+        // cannot inherit its history.
+        Ok(report)
+    }
+
+    /// Applies one reliable, idempotent session event.
+    ///
+    /// Returns whether this call is the one that recorded the removal, so a
+    /// replay is distinguishable from the first application. A removal that this
+    /// call recorded also releases the actor's interpolation history.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::TornDown`] when the session has been torn down.
+    pub fn apply_event(&mut self, event: &ReliableEvent) -> Result<bool, SessionError> {
+        self.expect_live()?;
+        let recorded = self.mirror.apply_event(event);
+        if recorded && let EventBody::ActorRemoved { actor } = event.body {
+            self.interpolator.forget(actor);
+        }
+        Ok(recorded)
+    }
+
+    /// The pose to present for `actor` at the estimated server tick `now`.
+    ///
+    /// # Errors
+    ///
+    /// [`BufferRefusal::Unusable`] when the blended pose is not representable.
+    pub fn sample(
+        &self,
+        actor: ActorId,
+        now: Tick,
+    ) -> Result<Option<InterpolatedAircraft>, BufferRefusal> {
+        self.interpolator.sample(actor, now)
+    }
+
+    /// Reconciles one mirrored record of the *local* aircraft.
+    ///
+    /// The single entry point to [`LocalPredictor::reconcile`], so the
+    /// authoritative loadout can only ever be written from a record that passed
+    /// the mirror. It reads the record from the mirror rather than taking it as
+    /// an argument, which is what makes "reconciliation follows ingestion" a
+    /// property of the type instead of a discipline.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::NoLocalActor`] when no local aircraft is attached,
+    /// [`SessionError::UnknownLocalActor`] when the mirror holds no record for
+    /// the local actor, and any [`BufferRefusal`] the predictor reports — the
+    /// record was refused, so nothing changed.
+    pub fn reconcile_local(&mut self) -> Result<Reconciliation, SessionError> {
+        self.expect_live()?;
+        let predictor = self.predictor.as_mut().ok_or(SessionError::NoLocalActor)?;
+        let actor = predictor.actor();
+        let record = *self
+            .mirror
+            .aircraft(actor)
+            .ok_or(SessionError::UnknownLocalActor {
+                expected: Some(actor),
+            })?;
+        predictor.reconcile(&record).map_err(SessionError::Buffer)
+    }
+
+    /// Records the pose the local body had at `tick`.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::NoLocalActor`] when no local aircraft is attached, and
+    /// [`BufferRefusal::NotNewer`] for a tick that does not advance.
+    pub fn record_local_pose(
+        &mut self,
+        tick: Tick,
+        pose: PredictedPose,
+        boosting: bool,
+    ) -> Result<(), SessionError> {
+        self.expect_live()?;
+        self.predictor
+            .as_mut()
+            .ok_or(SessionError::NoLocalActor)?
+            .record_predicted(tick, pose, boosting)
+            .map_err(SessionError::Buffer)
+    }
+
+    /// The correction the single pose owner should apply this tick.
+    ///
+    /// The identity when nothing is pending or no local aircraft is attached.
+    pub fn next_correction(&mut self) -> PoseCorrection {
+        self.predictor.as_mut().map_or(
+            PoseCorrection {
+                translation_m: [0.0; 3],
+                rotation: Quaternion::IDENTITY,
+            },
+            LocalPredictor::next_correction,
+        )
+    }
+
+    /// Spawns a predicted tracer for a shot the server accepted.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::NoLocalActor`], [`SessionError::TornDown`] and
+    /// [`SessionError::Tracer`] for the tracer's own refusals.
+    pub fn spawn_tracer(
+        &mut self,
+        shot: cs_sim::net_state::ShotId,
+        tick: Tick,
+        origin: WorldPosition,
+        direction_mps: [f64; 3],
+    ) -> Result<(), SessionError> {
+        self.expect_live()?;
+        self.tracers
+            .as_mut()
+            .ok_or(SessionError::NoLocalActor)?
+            .spawn(shot, tick, origin, direction_mps)
+            .map_err(SessionError::Tracer)
+    }
+
+    /// Applies the server's word about a shot to the local tracers.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::NoLocalActor`], [`SessionError::TornDown`] and
+    /// [`SessionError::Tracer`] for the tracer's own refusals.
+    pub fn apply_confirmation(
+        &mut self,
+        confirmation: &cs_sim::net_state::ShotConfirmation,
+    ) -> Result<(), SessionError> {
+        self.expect_live()?;
+        self.tracers
+            .as_mut()
+            .ok_or(SessionError::NoLocalActor)?
+            .apply_confirmation(confirmation)
+            .map_err(SessionError::Tracer)
+    }
+
+    /// Moves the whole session to a new world-origin epoch.
+    ///
+    /// This is F57-C's AC03 path: the frame changes and every consumer changes
+    /// with it, converting rather than displacing. The mirror re-projects its
+    /// records and the interpolation buffers are dropped, because a buffered
+    /// sample's stored integers belong to the frame they were decoded in and
+    /// cannot be reinterpreted in a new one — dropping them costs one
+    /// interpolation delay of smoothness and buys the guarantee that no aircraft
+    /// is drawn `origin_shift_m` away from where it was.
+    ///
+    /// Velocity and the local predictor's *authoritative loadout* are untouched:
+    /// a rebase is a change of frame, so it is not a velocity impulse, and the
+    /// server's ammunition and boost capacity do not depend on where the client
+    /// draws the world from.
+    ///
+    /// # Errors
+    ///
+    /// [`OriginError::EpochMismatch`] for an epoch that is not strictly newer
+    /// than the held one, [`OriginError::Space`] when a mirrored record cannot be
+    /// converted, and [`SessionError::TornDown`] after teardown.
+    pub fn rebase(&mut self, new_position: WorldPosition) -> Result<EpochTransition, SessionError> {
+        self.expect_live()?;
+        let next = self.origin.rebased(new_position)?;
+        let transition = self.mirror.adopt_origin(next)?;
+        // The mirror holds canonical world positions, so its records survive; the
+        // buffers hold samples decoded against the old frame, so they do not.
+        self.interpolator.clear();
+        // The local predictor's history is canonical world positions too, so it
+        // survives; only its pending correction is a change of frame, and it is
+        // recomputed from the next record.
+        self.origin = next;
+        Ok(transition)
+    }
+
+    /// Releases every buffer this session holds.
+    ///
+    /// Idempotent, and the *only* place the generation memory behind the mirror
+    /// and the buffers is released: after this the session answers every
+    /// operation with [`SessionError::TornDown`], so a late packet cannot be
+    /// applied to a torn-down session. A retry is a new session, which is what
+    /// keeps "no ghost aircraft" true across a reconnect (F57 AC01).
+    pub fn teardown(&mut self) -> usize {
+        if self.torn_down {
+            return 0;
+        }
+        let released = self.mirror.aircraft_count();
+        for actor in self
+            .mirror
+            .all_aircraft()
+            .map(|a| a.actor)
+            .collect::<Vec<_>>()
+        {
+            self.mirror.forget(actor);
+            self.interpolator.forget(actor);
+        }
+        self.interpolator.clear();
+        if let Some(tracers) = &mut self.tracers {
+            tracers.clear();
+        }
+        if let Some(predictor) = &mut self.predictor {
+            predictor.reset();
+        }
+        self.predictor = None;
+        self.tracers = None;
+        self.torn_down = true;
+        released
+    }
+
+    fn expect_live(&self) -> Result<(), SessionError> {
+        if self.torn_down {
+            return Err(SessionError::TornDown);
+        }
+        Ok(())
     }
 }
 
@@ -1887,5 +2822,800 @@ mod f57_b_acceptance {
             LocalPredictor::new(world.actor, generation + 1, PredictionConfig::default());
         assert!(fresh.reconcile(&record).is_err());
         assert!(predictor.reconcile(&wrong_generation).is_err());
+    }
+}
+
+// F57-C acceptance tests, in the same unit-test module as F57-B's: the CI
+// runners ran out of room linking another Bevy-linked test binary, and these
+// drive the same production path one stage further. Everything here goes through
+// `NetSession`, `publish_snapshot` and `NetStateLedger`, so a stage whose wiring
+// is removed cannot leave these passing.
+#[cfg(test)]
+mod f57_c_acceptance {
+    use super::{
+        BufferRefusal, CapError, EpochTransition, IngestOutcome, IngestRefusal,
+        InterpolationConfig, NetSession, PredictedPose, PredictionConfig, ReconcileKind,
+        SampleMode, SessionError, TracerRefusal, TracerVerdict, Tracers, publish_snapshot,
+    };
+    use crate::origin::{OriginEpoch, WorldOrigin};
+    use cs_net::message::{EventBody, ReliableEvent};
+    use cs_net::snapshot::Snapshot;
+    use cs_sim::net_state::{
+        ActorGeneration, Destruction, NetActorState, NetStateLedger, ShotConfirmation, ShotId,
+        ShotOutcome,
+    };
+    use cs_types::Tick;
+    use cs_types::net::{ActorAllocator, ActorId, EventId, SessionId};
+    use cs_types::space::{Quaternion, WorldPosition};
+
+    const SESSION: SessionId = match SessionId::new(73) {
+        Some(id) => id,
+        None => unreachable!(),
+    };
+
+    /// The world origin both ends start in: far from zero, so a frame mistake
+    /// cannot hide inside small coordinates.
+    fn origin() -> WorldOrigin {
+        WorldOrigin::new(
+            OriginEpoch(1),
+            WorldPosition::try_new([10_000.0, 0.0, -4_000.0]).expect("finite"),
+        )
+    }
+
+    fn at(x: f64) -> WorldPosition {
+        WorldPosition::try_new([x, 100.0, 0.0]).expect("finite")
+    }
+
+    /// The producer and the wired consumer, driven together.
+    struct Wired {
+        ledger: NetStateLedger,
+        session: NetSession,
+        /// The last published snapshot and the exact bytes it encodes to, so a
+        /// test can hold a packet "on the wire" across an epoch change and
+        /// deliver it late.
+        wire: Option<(Snapshot, Vec<u8>)>,
+        remote: ActorId,
+        local: ActorId,
+    }
+
+    impl Wired {
+        fn new() -> Self {
+            let mut ledger = NetStateLedger::new(SESSION);
+            let mut allocator = ActorAllocator::new(SESSION);
+            let remote = allocator.allocate().expect("serial");
+            let local = allocator.allocate().expect("serial");
+            let origin = origin();
+            for actor in [remote, local] {
+                ledger
+                    .spawn(NetActorState::spawn(
+                        actor,
+                        at(10_000.0),
+                        Quaternion::IDENTITY,
+                        400,
+                    ))
+                    .expect("spawn");
+            }
+            let mut session = NetSession::new(SESSION, origin, InterpolationConfig::default());
+            session
+                .attach_local(
+                    local,
+                    ledger.generation(local).expect("generation").get(),
+                    PredictionConfig::default(),
+                )
+                .expect("attach");
+            Self {
+                ledger,
+                session,
+                wire: None,
+                remote,
+                local,
+            }
+        }
+
+        /// Moves a remote actor, publishes, round-trips the bytes and feeds the
+        /// session: the whole producer → wire → consumer path.
+        fn deliver_remote(&mut self, tick: u64, x: f64) {
+            self.move_actor(self.remote, tick, x, 60.0);
+        }
+
+        fn move_actor(&mut self, actor: ActorId, tick: u64, x: f64, velocity: f64) {
+            let mut state = *self.ledger.state(actor).expect("known");
+            state.pose.position = at(x);
+            state.linear_velocity_mps = [velocity, 0.0, 0.0];
+            self.ledger.publish(state).expect("owned generation");
+            self.publish(tick);
+        }
+
+        fn publish(&mut self, tick: u64) {
+            let snapshot =
+                publish_snapshot(&self.ledger, &self.session.origin()).expect("publishable");
+            self.wire = Some((snapshot.clone(), snapshot.encode(SESSION).expect("encode")));
+            self.session
+                .ingest(&snapshot, Tick(tick))
+                .expect("session is live");
+        }
+
+        /// The decoded bytes of the last published snapshot, as the transport
+        /// would deliver them.
+        fn last_wire(&self) -> Snapshot {
+            let (snapshot, bytes) = self.wire.as_ref().expect("published");
+            let decoded = Snapshot::decode(bytes, SESSION).expect("decode");
+            assert_eq!(&decoded, snapshot, "the wire bytes do not decode back");
+            decoded.clone()
+        }
+
+        /// The presented world x of the remote aircraft at estimated tick `now`.
+        fn presented_x(&self, now: u64) -> (f64, SampleMode) {
+            let sampled = self
+                .session
+                .sample(self.remote, Tick(now))
+                .expect("representable")
+                .expect("buffered");
+            (sampled.state.position.x(), sampled.mode)
+        }
+
+        fn local_generation(&self) -> ActorGeneration {
+            self.ledger.generation(self.local).expect("generation")
+        }
+
+        fn shot(&self, number: u32) -> ShotId {
+            ShotId::try_new(number).expect("nonzero")
+        }
+    }
+
+    /// AC03 (the F57-C minimum scenario): **origin change across snapshot
+    /// boundaries produces no world-scale jump.**
+    ///
+    /// The session publishes and ingests in epoch 1, the world origin is rebased
+    /// by several kilometres, and publication resumes. Every presented position
+    /// must stay on the aircraft's actual path; the rebase may move the *frame*
+    /// arbitrarily far, and the measured conversion must stay inside the declared
+    /// round-trip tolerance.
+    #[test]
+    fn accept_f57_c_origin_change_across_snapshot_boundaries_produces_no_world_scale_jump() {
+        let mut world = Wired::new();
+        // Three snapshots in epoch 1: the aircraft flies from x = 10 000 at
+        // 60 m/s (1 m per tick at 60 Hz).
+        world.deliver_remote(10, 10_000.0);
+        world.deliver_remote(20, 10_010.0);
+        assert_eq!(world.presented_x(21).1, SampleMode::Interpolated);
+
+        // The origin moves 8 km in x and 3 km in z. This is the world-scale change
+        // an unconverted receiver would turn into a 8.5 km displacement.
+        let rebased = world
+            .session
+            .rebase(WorldPosition::try_new([18_000.0, 0.0, -1_000.0]).expect("finite"))
+            .expect("forward epoch");
+        assert!(
+            rebased.origin_shift_m > 8_000.0,
+            "{}",
+            rebased.origin_shift_m
+        );
+        assert_eq!(rebased.from.0 + 1, rebased.to.0);
+
+        // Publication resumes in the new epoch: the wire epoch changed, and the
+        // receiver accepts it because the session adopted the same epoch.
+        world.deliver_remote(30, 10_020.0);
+        let (x, _) = world.presented_x(31);
+        assert!(
+            (x - 10_020.0).abs() < 0.05,
+            "aircraft jumped to {x} across the rebase"
+        );
+
+        // No mirror record moved by anything like the origin shift: the
+        // transition is a conversion, bounded by the declared round-trip
+        // tolerance rather than by the displacement.
+        assert_eq!(rebased.converted, 2);
+        assert!(
+            rebased.max_conversion_m < 0.01,
+            "conversion drift {} m",
+            rebased.max_conversion_m
+        );
+
+        // And the aircraft keeps flying the same path afterwards, at the same
+        // speed: a rebase is not a velocity impulse.
+        world.deliver_remote(40, 10_030.0);
+        let (x, mode) = world.presented_x(41);
+        assert!(mode != SampleMode::Extrapolated, "{mode:?}");
+        assert!((x - 10_030.0).abs() < 0.05, "{x}");
+    }
+
+    /// The other half of AC03: a snapshot from the *old* epoch is refused after
+    /// the rebase, so a late packet cannot be read in the wrong frame.
+    #[test]
+    fn accept_f57_c_a_snapshot_from_a_retired_origin_epoch_is_refused_not_reinterpreted() {
+        let mut world = Wired::new();
+        world.deliver_remote(10, 10_000.0);
+        let old_epoch_wire = world.last_wire();
+
+        world
+            .session
+            .rebase(WorldPosition::try_new([18_000.0, 0.0, -1_000.0]).expect("finite"))
+            .expect("forward epoch");
+        world.deliver_remote(20, 10_010.0);
+        let before = world.presented_x(21).0;
+
+        // The in-flight packet from the retired frame arrives late.
+        let report = world
+            .session
+            .ingest(&old_epoch_wire, Tick(30))
+            .expect("session is live");
+        assert_eq!(
+            report.outcome,
+            IngestOutcome::Refused(IngestRefusal::EpochMismatch {
+                snapshot: old_epoch_wire.origin.0,
+                local: world.session.origin().epoch().0,
+            })
+        );
+        assert_eq!(report.applied, 0);
+        // The presented pose did not move: refusing is the only correct outcome,
+        // and reinterpreting those integers in the new frame would have moved it
+        // by the origin shift.
+        assert!((world.presented_x(21).0 - before).abs() < 1e-9);
+    }
+
+    /// An origin epoch that does not move forward is refused, so a reused epoch
+    /// can never name live records.
+    #[test]
+    fn accept_f57_c_an_origin_epoch_never_goes_backwards_or_repeats() {
+        let mut world = Wired::new();
+        world.deliver_remote(10, 10_000.0);
+
+        let moved = world
+            .session
+            .rebase(WorldPosition::try_new([18_000.0, 0.0, -1_000.0]).expect("finite"))
+            .expect("forward");
+        assert_eq!(moved.to.0, moved.from.0 + 1);
+
+        // The same position again would allocate the same next epoch... which is
+        // legal, so the refusal that matters is the mirror's: adopting an epoch
+        // that is not strictly newer. Reach it through the mirror directly.
+        let repeat = world
+            .session
+            .mirror()
+            .origin()
+            .rebased(WorldPosition::try_new([18_000.0, 0.0, -1_000.0]).expect("finite"));
+        assert!(repeat.is_ok());
+        let backwards = WorldOrigin::new(
+            moved.from,
+            WorldPosition::try_new([0.0, 0.0, 0.0]).expect("finite"),
+        );
+        let refusal = world.session.mirror().clone().adopt_origin(backwards);
+        assert!(refusal.is_err(), "a retired epoch was adopted again");
+    }
+
+    /// The projectile side of the sheet's non-negotiable behavior 3: a local
+    /// tracer is a cosmetic and only the server's confirmation resolves it.
+    #[test]
+    fn accept_f57_c_a_local_tracer_stays_cosmetic_until_the_server_confirms_the_shot() {
+        let mut world = Wired::new();
+        let shot = world.shot(1);
+
+        // The server accepts the fire request; only then is there a shot id.
+        world
+            .ledger
+            .accept_shot(world.local, world.local_generation(), shot)
+            .expect("live shooter");
+        assert_eq!(world.ledger.highest_shot(world.local), Some(shot));
+
+        world
+            .session
+            .spawn_tracer(shot, Tick(10), at(10_000.0), [0.0, 0.0, -300.0])
+            .expect("spawn");
+        // While the server has said nothing, nothing is resolved.
+        {
+            let tracers = world.session.tracers().expect("attached");
+            assert_eq!(
+                tracers.tracer(shot).expect("pending").verdict,
+                TracerVerdict::Pending
+            );
+            assert_eq!(tracers.resolved_count(), 0);
+        }
+
+        // The server confirms a hit on the remote actor. The confirmation is the
+        // only thing that resolves the tracer.
+        let outcome = world
+            .ledger
+            .confirm_shot(
+                world.local,
+                world.local_generation(),
+                shot,
+                Some(world.remote),
+                Tick(12),
+            )
+            .expect("accepted shot");
+        assert!(matches!(outcome, ShotOutcome::Confirmed(_)));
+        let confirmation = outcome.first_confirmation().expect("first");
+        world
+            .session
+            .apply_confirmation(&confirmation)
+            .expect("confirmation applies");
+        let tracers = world.session.tracers().expect("attached");
+        assert_eq!(
+            tracers.tracer(shot).expect("tracked").verdict,
+            TracerVerdict::Confirmed {
+                target: Some(world.remote)
+            }
+        );
+        assert_eq!(tracers.resolved_count(), 1);
+    }
+
+    /// A shot the server never accepted has no id to confirm, so a purely local
+    /// prediction cannot award anything — and a replayed fire request is refused
+    /// rather than firing twice.
+    #[test]
+    fn accept_f57_c_an_unaccepted_shot_can_neither_be_confirmed_nor_fire_twice() {
+        let mut world = Wired::new();
+        let first = world.shot(4);
+        let replay = world.shot(4);
+        let later = world.shot(9);
+
+        world
+            .ledger
+            .accept_shot(world.local, world.local_generation(), first)
+            .expect("first accepted");
+        // The same number again is a replayed fire request.
+        assert_eq!(
+            world
+                .ledger
+                .accept_shot(world.local, world.local_generation(), replay),
+            Err(cs_sim::net_state::NetStateError::StaleShot {
+                actor: world.local,
+                presented: replay,
+                highest: first,
+            })
+        );
+        assert_eq!(world.ledger.accepted_shots(world.local), 1);
+
+        // A shot number the server never accepted cannot be confirmed at all.
+        assert_eq!(
+            world.ledger.confirm_shot(
+                world.local,
+                world.local_generation(),
+                later,
+                Some(world.remote),
+                Tick(12),
+            ),
+            Err(cs_sim::net_state::NetStateError::ShotNotAccepted {
+                actor: world.local,
+                shot: later,
+            })
+        );
+
+        // A confirmation from another session's shooter is refused by the
+        // cosmetic book, which only ever draws the local aircraft's shots.
+        let foreign = ShotConfirmation {
+            shot: first,
+            shooter: world.remote,
+            generation: world.ledger.generation(world.remote).expect("generation"),
+            tick: Tick(12),
+            target: Some(world.remote),
+            destruction: None,
+        };
+        assert_eq!(
+            world.session.apply_confirmation(&foreign),
+            Err(SessionError::Tracer(TracerRefusal::ForeignShooter {
+                local: world.local,
+                found: world.remote,
+            }))
+        );
+    }
+
+    /// A replayed confirmation is idempotent and awards the kill at most once,
+    /// which is AC01's "no duplicate destruction" reached through the projectile
+    /// path rather than the snapshot path.
+    #[test]
+    fn accept_f57_c_a_replayed_confirmation_awards_one_kill_and_is_absorbed_the_second_time() {
+        let mut world = Wired::new();
+        let shot = world.shot(2);
+        world
+            .ledger
+            .accept_shot(world.local, world.local_generation(), shot)
+            .expect("accepted");
+
+        let first = world
+            .ledger
+            .confirm_shot(
+                world.local,
+                world.local_generation(),
+                shot,
+                Some(world.remote),
+                Tick(20),
+            )
+            .expect("confirmed");
+        assert!(first.awarded());
+        assert_eq!(
+            first.first_confirmation().expect("first").destruction,
+            Some(Destruction::Recorded { tick: Tick(20) })
+        );
+
+        // The same reliable hit report replayed (reconnect and retry can do
+        // this): absorbed, no second award.
+        let replay = world
+            .ledger
+            .confirm_shot(
+                world.local,
+                world.local_generation(),
+                shot,
+                Some(world.remote),
+                Tick(20),
+            )
+            .expect("absorbed");
+        assert!(!replay.awarded());
+        assert_eq!(
+            replay,
+            ShotOutcome::AlreadyConfirmed {
+                shot,
+                tick: Tick(20)
+            }
+        );
+        assert_eq!(world.ledger.confirmed_shots(world.local), 1);
+
+        // The remote aircraft really is destroyed once: publishing it reports the
+        // destruction and the mirror retires it with no ghost left behind.
+        let generation = world.ledger.generation(world.remote).expect("generation");
+        assert_eq!(
+            world.ledger.end_lifecycle(
+                world.remote,
+                generation,
+                cs_sim::net_state::NetLifecycle::Destroyed
+            ),
+            Err(cs_sim::net_state::NetStateError::AlreadyTerminal {
+                actor: world.remote,
+                generation,
+                lifecycle: cs_sim::net_state::NetLifecycle::Destroyed,
+            })
+        );
+    }
+
+    /// The reconciliation the wired session performs: a server correction during
+    /// a local boost keeps ammunition and fuel authoritative and hands the pose
+    /// owner a bounded correction.
+    #[test]
+    fn accept_f57_c_the_wired_session_reconciles_local_prediction_and_keeps_the_server_word() {
+        let mut world = Wired::new();
+
+        // The local body runs ahead while boosting; its predicted poses are the
+        // ones the session will compare against.
+        for tick in 1..=10_u64 {
+            world
+                .session
+                .record_local_pose(
+                    Tick(tick),
+                    PredictedPose {
+                        position: at(10_000.0 + tick as f64 * 2.3),
+                        orientation: Quaternion::IDENTITY,
+                    },
+                    true,
+                )
+                .expect("increasing ticks");
+        }
+        assert!(world.session.predictor().expect("attached").boost_shown());
+
+        // The server's tick 10: less boost capacity, fewer rounds, and a pose
+        // behind the prediction.
+        let mut state = *world.ledger.state(world.local).expect("known");
+        state.pose.position = at(10_000.0 + 20.0);
+        state.flight.boost_capacity = 0.25;
+        state.weapons.primary_rounds = 37;
+        world.ledger.publish(state).expect("owned");
+        world.publish(10);
+
+        let reconciliation = world.session.reconcile_local().expect("reconciles");
+        assert_eq!(reconciliation.kind, ReconcileKind::Smoothed);
+        assert!(
+            (reconciliation.error_m - 3.0).abs() < 0.05,
+            "{}",
+            reconciliation.error_m
+        );
+
+        // The server's word, read through the session.
+        let loadout = world
+            .session
+            .predictor()
+            .expect("attached")
+            .authoritative()
+            .expect("reconciled");
+        assert_eq!(loadout.rounds[0], 37);
+        assert!((loadout.flight[2] - 0.25).abs() < 1e-4);
+        assert!(world.session.predictor().expect("attached").boost_shown());
+
+        // The session hands the pose owner a bounded correction and never writes
+        // a body itself.
+        let correction = world.session.next_correction();
+        assert!(correction.translation_m[0].abs() > 0.0);
+        assert!(
+            correction.translation_m[0].abs() < 3.0,
+            "unbounded correction"
+        );
+    }
+
+    /// Reconciliation follows ingestion by construction: the session reads the
+    /// record from its own mirror, so a snapshot that was refused cannot reach
+    /// the predictor.
+    #[test]
+    fn accept_f57_c_refused_snapshots_never_reach_the_local_predictor() {
+        let mut world = Wired::new();
+        world.deliver_remote(10, 10_000.0);
+
+        // Reconcile with no local record yet.
+        assert_eq!(
+            world.session.reconcile_local(),
+            Err(SessionError::UnknownLocalActor {
+                expected: Some(world.local)
+            })
+        );
+
+        // An epoch-mismatched snapshot is refused whole, so the mirror holds no
+        // local record to reconcile against.
+        world
+            .session
+            .rebase(WorldPosition::try_new([18_000.0, 0.0, -1_000.0]).expect("finite"))
+            .expect("forward");
+        let stale = world.session.mirror().origin();
+        assert!(stale.epoch().0 > 1);
+        assert_eq!(
+            world.session.reconcile_local(),
+            Err(SessionError::UnknownLocalActor {
+                expected: Some(world.local)
+            })
+        );
+    }
+
+    /// Teardown is idempotent, releases the buffers, and answers everything after
+    /// it; a retry is a new session.
+    #[test]
+    fn accept_f57_c_teardown_releases_the_session_and_refuses_late_work() {
+        let mut world = Wired::new();
+        world.deliver_remote(10, 10_000.0);
+        world.deliver_remote(20, 10_010.0);
+        assert!(world.session.interpolator().track_count() > 0);
+
+        assert_eq!(world.session.teardown(), 2);
+        assert!(world.session.is_torn_down());
+        assert_eq!(world.session.interpolator().track_count(), 0);
+        assert_eq!(world.session.mirror().aircraft_count(), 0);
+        assert!(world.session.predictor().is_none());
+        assert!(world.session.tracers().is_none());
+
+        // Idempotent.
+        assert_eq!(world.session.teardown(), 0);
+
+        // A late snapshot, a late event and a correction request are all refused
+        // by name rather than silently doing nothing.
+        let snapshot = world.last_wire();
+        assert_eq!(
+            world.session.ingest(&snapshot, Tick(30)),
+            Err(SessionError::TornDown)
+        );
+        assert_eq!(
+            world
+                .session
+                .rebase(WorldPosition::try_new([0.0, 0.0, 0.0]).expect("finite")),
+            Err(SessionError::TornDown)
+        );
+        assert_eq!(world.session.reconcile_local(), Err(SessionError::TornDown));
+        // The pose correction is a no-op rather than an error: the single pose
+        // owner asks for it every tick and must get the identity after teardown.
+        let correction = world.session.next_correction();
+        assert_eq!(correction.translation_m, [0.0; 3]);
+
+        // A retry is a fresh session, and it starts with no remembered history.
+        let mut retry = NetSession::new(SESSION, origin(), InterpolationConfig::default());
+        assert_eq!(retry.interpolator().track_count(), 0);
+        retry
+            .attach_local(
+                world.local,
+                world.local_generation().get(),
+                PredictionConfig::default(),
+            )
+            .expect("attach");
+        let report = retry.ingest(&snapshot, Tick(1)).expect("live");
+        assert!(report.is_applied());
+    }
+
+    /// A reliably removed actor releases its interpolation history in the wired
+    /// session, and a replay of the same event changes nothing.
+    #[test]
+    fn accept_f57_c_a_reliable_removal_releases_history_and_its_replay_changes_nothing() {
+        let mut world = Wired::new();
+        world.deliver_remote(10, 10_000.0);
+        world.deliver_remote(20, 10_010.0);
+        assert_eq!(world.session.interpolator().sample_count(world.remote), 2);
+
+        let event = ReliableEvent {
+            id: EventId {
+                session: SESSION,
+                tick: Tick(21),
+                producer: 0,
+                sequence: 1,
+            },
+            body: EventBody::ActorRemoved {
+                actor: world.remote,
+            },
+        };
+        assert!(world.session.apply_event(&event).expect("live"));
+        assert_eq!(world.session.interpolator().sample_count(world.remote), 0);
+        assert_eq!(world.session.mirror().aircraft_count(), 1);
+
+        // The replay is absorbed.
+        assert!(!world.session.apply_event(&event).expect("live"));
+
+        // And a snapshot that still carries the removed actor cannot bring it
+        // back.
+        world.deliver_remote(30, 10_020.0);
+        assert!(world.session.mirror().aircraft(world.remote).is_none());
+    }
+
+    /// The tracer book is bounded twice over: by its configured cap and by the
+    /// hard ceiling, and a confirmed tracer outlives an unanswered one.
+    #[test]
+    fn accept_f57_c_tracers_are_bounded_and_a_confirmed_shot_outlives_a_prediction() {
+        let local = ActorId {
+            session: SESSION,
+            serial: 9,
+        };
+        // The checked constructor refuses an over-cap claim rather than silently
+        // holding less.
+        assert_eq!(
+            Tracers::try_new(local, Tracers::TRACER_HARD_CAP + 1).err(),
+            Some(CapError::AboveHardCap {
+                requested: Tracers::TRACER_HARD_CAP + 1,
+                max: Tracers::TRACER_HARD_CAP,
+            })
+        );
+
+        let mut tracers = Tracers::try_new(local, 2).expect("within the cap");
+        let early = ShotId::try_new(1).expect("nonzero");
+        let late = ShotId::try_new(2).expect("nonzero");
+        let newest = ShotId::try_new(3).expect("nonzero");
+        tracers
+            .spawn(early, Tick(10), at(10_000.0), [0.0, 0.0, -300.0])
+            .expect("spawn");
+        // `early` is confirmed, so it is the one kept over an unanswered tracer.
+        let confirmation = ShotConfirmation {
+            shot: early,
+            shooter: local,
+            generation: ActorGeneration::try_new(1).expect("nonzero"),
+            tick: Tick(11),
+            target: Some(ActorId {
+                session: SESSION,
+                serial: 10,
+            }),
+            destruction: None,
+        };
+        tracers.apply_confirmation(&confirmation).expect("applies");
+        tracers
+            .spawn(late, Tick(20), at(10_000.0), [0.0, 0.0, -300.0])
+            .expect("spawn");
+        // At the cap: the newest spawn evicts the unanswered `late`, not the
+        // confirmed `early`.
+        tracers
+            .spawn(newest, Tick(21), at(10_000.0), [0.0, 0.0, -300.0])
+            .expect("spawn");
+        assert_eq!(tracers.len(), 2);
+        assert!(
+            tracers.tracer(early).is_some(),
+            "a confirmed shot was evicted"
+        );
+        assert!(tracers.tracer(late).is_none(), "an unanswered one was kept");
+        assert!(tracers.tracer(newest).is_some());
+
+        // A replayed spawn for a tracked shot is refused rather than restamping.
+        assert_eq!(
+            tracers.spawn(early, Tick(22), at(10_000.0), [0.0, 0.0, -300.0]),
+            Err(TracerRefusal::AlreadyTracked { shot: early })
+        );
+        // A non-finite direction is refused.
+        assert_eq!(
+            tracers.spawn(
+                ShotId::try_new(4).expect("nonzero"),
+                Tick(23),
+                at(10_000.0),
+                [f64::NAN, 0.0, 0.0]
+            ),
+            Err(TracerRefusal::UnusableDirection)
+        );
+
+        // The lifetime bound drops an unanswered tracer nobody ever confirmed.
+        tracers.expire(Tick(21 + Tracers::TRACER_LIFETIME_TICKS + 1));
+        assert_eq!(tracers.len(), 0);
+    }
+
+    /// Attaching a second local aircraft to a live session is refused: switching
+    /// mid-session would interleave one aircraft's prediction with another's
+    /// authoritative loadout.
+    #[test]
+    fn accept_f57_c_a_live_session_refuses_a_different_local_actor() {
+        let mut world = Wired::new();
+        let other = ActorId {
+            session: SESSION,
+            serial: 77,
+        };
+        assert_eq!(
+            world
+                .session
+                .attach_local(other, 1, PredictionConfig::default()),
+            Err(SessionError::UnknownLocalActor {
+                expected: Some(world.local)
+            })
+        );
+        // Re-attaching the same actor is idempotent.
+        world
+            .session
+            .attach_local(world.local, 1, PredictionConfig::default())
+            .expect("same actor");
+    }
+
+    /// The buffer refusals the wired path can report are the buffer's own, so a
+    /// caller can tell a stale generation from an out-of-order tick.
+    #[test]
+    fn accept_f57_c_the_wired_path_reports_the_buffer_refusals_it_saw() {
+        let mut world = Wired::new();
+        world.deliver_remote(10, 10_000.0);
+        // Reconciling a record twice in a row: the second is not newer.
+        world.publish(10);
+        world.session.reconcile_local().expect("first");
+        let stale = world.session.reconcile_local();
+        assert!(stale.is_err(), "{stale:?}");
+        assert!(matches!(
+            stale,
+            Err(SessionError::Buffer(BufferRefusal::NotNewer { .. }))
+        ));
+    }
+
+    /// A session with no local aircraft attached reports that, rather than
+    /// quietly doing nothing when asked to predict.
+    #[test]
+    fn accept_f57_c_a_session_without_a_local_actor_says_so() {
+        let mut session = NetSession::new(SESSION, origin(), InterpolationConfig::default());
+        assert_eq!(
+            session.record_local_pose(
+                Tick(1),
+                PredictedPose {
+                    position: at(0.0),
+                    orientation: Quaternion::IDENTITY,
+                },
+                false,
+            ),
+            Err(SessionError::NoLocalActor)
+        );
+        assert_eq!(
+            session.spawn_tracer(
+                ShotId::try_new(1).expect("nonzero"),
+                Tick(1),
+                at(0.0),
+                [0.0, 0.0, -1.0],
+            ),
+            Err(SessionError::NoLocalActor)
+        );
+        assert!(session.predictor().is_none());
+    }
+
+    /// The `EpochTransition` a caller reads is the measurement the AC03 test
+    /// relies on: a large frame shift with a conversion inside the tolerance.
+    #[test]
+    fn accept_f57_c_an_epoch_transition_reports_the_shift_and_the_conversion_separately() {
+        let mut world = Wired::new();
+        world.deliver_remote(10, 10_000.0);
+        let before = world.session.origin();
+        let transition: EpochTransition = world
+            .session
+            .rebase(WorldPosition::try_new([90_000.0, 1_000.0, 60_000.0]).expect("finite"))
+            .expect("forward");
+        assert_ne!(transition.to, transition.from);
+        assert_ne!(transition.origin, before.position());
+        // The frame moved ~100 km; no record moved with it.
+        assert!(
+            transition.origin_shift_m > 90_000.0,
+            "{}",
+            transition.origin_shift_m
+        );
+        assert!(
+            transition.max_conversion_m < 1.0,
+            "{}",
+            transition.max_conversion_m
+        );
+        assert_eq!(transition.converted, 2);
     }
 }

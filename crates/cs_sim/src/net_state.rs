@@ -57,6 +57,18 @@
 //! authority half). Reconciliation of *motion* is F57-B; this stage fixes what
 //! stays authoritative.
 //!
+//! # Shots are proposed by the client and accepted here (F57-C)
+//!
+//! [`NetStateLedger::accept_shot`] is the weapon-acceptance gate: the client
+//! proposes a [`ShotId`] with its fire intent, the server accepts it only if it
+//! is strictly newer than every shot it already accepted, and
+//! [`NetStateLedger::confirm_shot`] will only confirm a shot that passed that
+//! gate. A client-drawn tracer whose shot was refused therefore has nothing that
+//! can confirm it, and a replayed confirmation is absorbed by the constant-size
+//! shot book — so a confirmed hit and an awarded kill cannot come apart, and
+//! two shots hitting one actor award one kill through
+//! [`NetStateLedger::record_destruction`].
+//!
 //! All values are newly authored engine design in SI units and radians
 //! (`docs/contracts/FLIGHT-PHYSICS.md`): no original networked flight, weapon or
 //! destruction behavior has been measured, and nothing here asserts any.
@@ -340,6 +352,26 @@ pub enum NetStateError {
         /// The offending field.
         field: &'static str,
     },
+    /// A proposed shot number is not newer than one this ledger already
+    /// accepted for the shooter: a replayed fire intent or a reordered one.
+    /// Weapon acceptance is the server's, so the shot does not exist.
+    StaleShot {
+        /// The shooter whose fire intent was presented.
+        actor: ActorId,
+        /// The proposed shot number.
+        presented: ShotId,
+        /// The highest shot number already accepted for the shooter.
+        highest: ShotId,
+    },
+    /// A confirmation names a shot the ledger never accepted for that shooter —
+    /// including a shot the server itself refused. A hit report cannot invent a
+    /// shot, so a purely predicted cosmetic can never be confirmed.
+    ShotNotAccepted {
+        /// The shooter the confirmation claims.
+        actor: ActorId,
+        /// The shot the confirmation names.
+        shot: ShotId,
+    },
     /// The generation counter would wrap.
     GenerationExhausted,
 }
@@ -393,6 +425,18 @@ impl fmt::Display for NetStateError {
                     "authoritative field {field} is outside its declared range"
                 )
             }
+            Self::StaleShot {
+                actor,
+                presented,
+                highest,
+            } => write!(
+                f,
+                "{actor} proposed {presented}, which is not newer than the accepted {highest}"
+            ),
+            Self::ShotNotAccepted { actor, shot } => write!(
+                f,
+                "{actor} has no accepted {shot}, so a confirmation for it cannot be authoritative"
+            ),
             Self::GenerationExhausted => {
                 write!(f, "actor generation counter is exhausted for this ledger")
             }
@@ -444,6 +488,127 @@ pub struct InputAck {
     pub tick: Tick,
 }
 
+// ---------------------------------------------------- shots and confirmation ----
+
+/// A shooter's shot sequence number: the identity of one accepted fire intent.
+///
+/// Monotonically increasing per `(actor, generation)` and never zero. The
+/// *client* proposes the number with its fire intent and the server decides
+/// whether the shot exists ([`NetStateLedger::accept_shot`]), so the number is a
+/// request identity rather than an authority: a proposed number the server
+/// refuses names no shot, and a shot the server accepted is the only one a
+/// confirmation can name. That is what keeps a predicted cosmetic tracer from
+/// ever becoming an authoritative hit (F57 non-negotiable behavior 3: "A local
+/// tracer cannot award a kill").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ShotId(u32);
+
+impl ShotId {
+    /// Wraps a proposed shot number; zero is refused, as everywhere else in
+    /// this crate, so a default field can never name a live shot.
+    pub const fn try_new(value: u32) -> Option<Self> {
+        if value == 0 { None } else { Some(Self(value)) }
+    }
+
+    /// The shot number.
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Display for ShotId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "shot {}", self.0)
+    }
+}
+
+/// What one shooter's shot book remembers: the highest shot ever accepted and
+/// the most recent confirmation.
+///
+/// Constant size, so the deduplication state does not grow with the number of
+/// rounds fired (`docs/01-ARCHITECTURE.md`, "consumers keep appropriate
+/// deduplication state"). A replay of the most recent confirmation is absorbed
+/// by comparing `last`; an *older* shot confirmed after a newer one is a second
+/// projectile hitting, which is a second confirmation of a different shot, and
+/// the kill it earns is still awarded at most once by the destruction gate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ShotBook {
+    highest: Option<ShotId>,
+    last: Option<(ShotId, Tick)>,
+    accepted: u32,
+    confirmed: u32,
+}
+
+/// What the server says about one shot.
+///
+/// The *only* source of a confirmed hit: `destruction` repeats the existing
+/// once-per-generation gate's verdict ([`Destruction::Recorded`] awards the
+/// kill, [`Destruction::AlreadyRecorded`] absorbs a second report), so a
+/// confirmed hit and an awarded kill cannot come apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShotConfirmation {
+    /// Which shot was confirmed.
+    pub shot: ShotId,
+    /// Who fired it.
+    pub shooter: ActorId,
+    /// Which generation of that shooter fired it.
+    pub generation: ActorGeneration,
+    /// The tick the hit was resolved on.
+    pub tick: Tick,
+    /// The actor that was hit, when the shot hit anything.
+    pub target: Option<ActorId>,
+    /// What the destruction gate said, when the hit could end an actor.
+    pub destruction: Option<Destruction>,
+}
+
+/// What one confirmation report did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShotOutcome {
+    /// The first report for this shot.
+    Confirmed(ShotConfirmation),
+    /// A replay of the shooter's most recent confirmation. Absorbed: no second
+    /// confirmation and no second award, whatever the transport did.
+    AlreadyConfirmed {
+        /// The replayed shot.
+        shot: ShotId,
+        /// The tick it was first confirmed on.
+        tick: Tick,
+    },
+}
+
+impl ShotOutcome {
+    /// The shot this report is about, whether it was the first report or a
+    /// replay.
+    #[must_use]
+    pub const fn shot(self) -> ShotId {
+        match self {
+            Self::Confirmed(confirmation) => confirmation.shot,
+            Self::AlreadyConfirmed { shot, .. } => shot,
+        }
+    }
+
+    /// The confirmation, or `None` for a replay.
+    #[must_use]
+    pub const fn first_confirmation(self) -> Option<ShotConfirmation> {
+        match self {
+            Self::Confirmed(confirmation) => Some(confirmation),
+            Self::AlreadyConfirmed { .. } => None,
+        }
+    }
+
+    /// Whether this report awarded a kill.
+    #[must_use]
+    pub const fn awarded(self) -> bool {
+        match self {
+            Self::Confirmed(ShotConfirmation {
+                destruction: Some(Destruction::Recorded { .. }),
+                ..
+            }) => true,
+            Self::Confirmed(_) | Self::AlreadyConfirmed { .. } => false,
+        }
+    }
+}
+
 /// The per-session authority for everything a snapshot publishes.
 ///
 /// A ledger is created for one [`SessionId`] and is never reused across a
@@ -457,6 +622,10 @@ pub struct NetStateLedger {
     actors: BTreeMap<ActorId, ActorGeneration>,
     states: BTreeMap<ActorId, NetActorState>,
     destruction: BTreeMap<ActorId, Tick>,
+    /// One constant-size shot book per actor (F57-C). Dropped with the actor by
+    /// [`Self::forget`], so a long session never accumulates shot state for
+    /// actors the ledger no longer owns.
+    shots: BTreeMap<ActorId, ShotBook>,
     next_generation: u16,
     acknowledged: u32,
 }
@@ -472,6 +641,7 @@ impl NetStateLedger {
             actors: BTreeMap::new(),
             states: BTreeMap::new(),
             destruction: BTreeMap::new(),
+            shots: BTreeMap::new(),
             next_generation: 1,
             acknowledged: 0,
         }
@@ -663,6 +833,193 @@ impl NetStateLedger {
         Ok(())
     }
 
+    /// Accepts one fire intent from `shooter` as `shot`.
+    ///
+    /// Weapon acceptance is the server's (`docs/contracts/UI-NETWORK.md`
+    /// ownership table), so this is where a proposed shot number becomes a
+    /// shot: the client proposes it with its local input, and only a shot that
+    /// passes here can ever be named by a confirmation. The shot must be
+    /// strictly newer than every shot already accepted for the shooter, so a
+    /// replayed or reordered fire intent is refused instead of firing twice.
+    ///
+    /// The number is the shooter's own, not a server counter, so a client is
+    /// free to skip numbers its own firing model never produced. Nothing about
+    /// the shot is published as state: ammunition stays where the weapon domain
+    /// owns it ([`NetWeapons`] is only ever written through
+    /// [`Self::publish`]), so a *predicted* shot still cannot spend a round here.
+    ///
+    /// # Errors
+    ///
+    /// [`NetStateError::UnknownActor`], `StaleGeneration`, `ForeignSession`,
+    /// `InvalidActorId`, `AlreadyTerminal` when the shooter has already ended,
+    /// and `StaleShot` for a proposal that is not newer than an accepted one.
+    pub fn accept_shot(
+        &mut self,
+        shooter: ActorId,
+        generation: ActorGeneration,
+        shot: ShotId,
+    ) -> Result<(), NetStateError> {
+        self.expect_own_actor(shooter)?;
+        let owned = *self
+            .actors
+            .get(&shooter)
+            .ok_or(NetStateError::UnknownActor { actor: shooter })?;
+        if generation != owned {
+            return Err(NetStateError::StaleGeneration {
+                actor: shooter,
+                presented: generation,
+                owned,
+            });
+        }
+        let current = self
+            .states
+            .get(&shooter)
+            .ok_or(NetStateError::UnknownActor { actor: shooter })?;
+        if current.lifecycle.is_terminal() {
+            return Err(NetStateError::AlreadyTerminal {
+                actor: shooter,
+                generation: owned,
+                lifecycle: current.lifecycle,
+            });
+        }
+        let book = self.shots.entry(shooter).or_default();
+        if let Some(highest) = book.highest
+            && shot <= highest
+        {
+            return Err(NetStateError::StaleShot {
+                actor: shooter,
+                presented: shot,
+                highest,
+            });
+        }
+        book.highest = Some(shot);
+        book.accepted = book.accepted.saturating_add(1);
+        Ok(())
+    }
+
+    /// The highest shot this ledger has accepted for `shooter`.
+    #[must_use]
+    pub fn highest_shot(&self, shooter: ActorId) -> Option<ShotId> {
+        self.shots.get(&shooter).and_then(|book| book.highest)
+    }
+
+    /// How many shots this ledger has accepted for `shooter`.
+    #[must_use]
+    pub fn accepted_shots(&self, shooter: ActorId) -> u32 {
+        self.shots.get(&shooter).map_or(0, |book| book.accepted)
+    }
+
+    /// Confirms that `shot`, fired by `shooter`, hit `target` on `tick`.
+    ///
+    /// A confirmation is only ever about a shot this ledger accepted, so a
+    /// purely predicted cosmetic — one the client drew and the server never
+    /// accepted — has nothing to be confirmed by. The first report returns
+    /// [`ShotOutcome::Confirmed`]; a replay of the shooter's most recent
+    /// confirmation returns [`ShotOutcome::AlreadyConfirmed`] and changes
+    /// nothing, which is what makes a retransmitted reliable hit report
+    /// idempotent.
+    ///
+    /// A hit that could end the target is routed through the same
+    /// once-per-generation gate as every other destruction, so two shots
+    /// hitting the same actor award one kill, and the confirmation reports
+    /// which it was. A target that had already ended *without* a kill (a
+    /// bailout, a mission removal) awards nothing and is not an error: the hit
+    /// happened, the actor was already gone.
+    ///
+    /// # Errors
+    ///
+    /// [`NetStateError::UnknownActor`], `ForeignSession` and `InvalidActorId`
+    /// for an actor id the ledger does not own, `StaleGeneration` when the
+    /// caller presents a generation the ledger does not own, and
+    /// `ShotNotAccepted` for a shot that was never accepted. A refused report
+    /// changes nothing.
+    pub fn confirm_shot(
+        &mut self,
+        shooter: ActorId,
+        generation: ActorGeneration,
+        shot: ShotId,
+        target: Option<ActorId>,
+        tick: Tick,
+    ) -> Result<ShotOutcome, NetStateError> {
+        self.expect_own_actor(shooter)?;
+        let owned = *self
+            .actors
+            .get(&shooter)
+            .ok_or(NetStateError::UnknownActor { actor: shooter })?;
+        if generation != owned {
+            return Err(NetStateError::StaleGeneration {
+                actor: shooter,
+                presented: generation,
+                owned,
+            });
+        }
+        let book = *self
+            .shots
+            .get(&shooter)
+            .ok_or(NetStateError::ShotNotAccepted {
+                actor: shooter,
+                shot,
+            })?;
+        if book.highest.is_none_or(|highest| shot > highest) {
+            return Err(NetStateError::ShotNotAccepted {
+                actor: shooter,
+                shot,
+            });
+        }
+        if let Some((last, last_tick)) = book.last
+            && last == shot
+        {
+            return Ok(ShotOutcome::AlreadyConfirmed {
+                shot,
+                tick: last_tick,
+            });
+        }
+        // Resolve the target before mutating anything, so a refused target
+        // leaves the shot book exactly as it was.
+        let resolved = match target {
+            None => None,
+            Some(target) => {
+                self.expect_own_actor(target)?;
+                let generation = *self
+                    .actors
+                    .get(&target)
+                    .ok_or(NetStateError::UnknownActor { actor: target })?;
+                Some((target, generation))
+            }
+        };
+        let destruction = match resolved {
+            None => None,
+            Some((target, generation)) => {
+                // A target that already ended *without* a kill (a bailout, a
+                // mission removal) cannot be routed through the gate and awards
+                // nothing: the hit happened, the actor was already gone.
+                let live = self
+                    .states
+                    .get(&target)
+                    .is_some_and(|state| !state.lifecycle.is_terminal());
+                live.then(|| self.record_destruction(target, generation, tick))
+                    .transpose()?
+            }
+        };
+        let book = self.shots.entry(shooter).or_default();
+        book.last = Some((shot, tick));
+        book.confirmed = book.confirmed.saturating_add(1);
+        Ok(ShotOutcome::Confirmed(ShotConfirmation {
+            shot,
+            shooter,
+            generation,
+            tick,
+            target,
+            destruction,
+        }))
+    }
+
+    /// How many shots this ledger has confirmed for `shooter`.
+    #[must_use]
+    pub fn confirmed_shots(&self, shooter: ActorId) -> u32 {
+        self.shots.get(&shooter).map_or(0, |book| book.confirmed)
+    }
+
     /// Consumes one client input sequence and returns the acknowledgment.
     ///
     /// This is the only client-derived input the ledger accepts, and it changes
@@ -747,6 +1104,7 @@ impl NetStateLedger {
             .ok_or(NetStateError::UnknownActor { actor })?;
         self.states.remove(&actor);
         self.destruction.remove(&actor);
+        self.shots.remove(&actor);
         Ok(())
     }
 
