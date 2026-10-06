@@ -2,7 +2,9 @@
 
 Date: 2026-10-06. Task: #693 (`Determine MetaOpenFile's name-matching rule for ROF members
 (case sensitivity)`), the follow-up #341's finding (section D) and #686's finding (sections C and E)
-left open. Test prefix: `accept_t693_`. Owner paths: `crates/cs_assets/tests/`, `docs/findings/`.
+left open. Test prefix: `accept_t693_`. Owner paths: `crates/cs_assets/tests/`, `docs/findings/`;
+doc-comment-only edits (no behaviour) in `crates/cs_assets/src/vfs/` (`gos.rs`, `mount.rs`,
+`resolve.rs`) and in #686's test file.
 
 **Outcome: the rule is settled from addresses, and it is neither of the two rules #686 offered.**
 
@@ -38,6 +40,12 @@ The image is read-only and **not** committed, and neither are its bytes, its str
 decompilation: this file records addresses, imports and behaviour only. Addresses in the table
 below are virtual addresses; `0x1000xxxx` is `roffile.dll`, `0x004xxxxx`/`0x006xxxxx` is the
 decrypted image (image base `0x400000`).
+
+The rule itself has no address inside `crimson.decrypted.exe`: that file only *calls*
+`MetaOpenFile` (section E), and the matching code lives in `roffile.dll`, which it loads by name.
+So the rule's addresses below are `roffile.dll` addresses, qualified by that module's sha256 in the
+table, and the decrypted image's own sha256 and its own addresses are recorded beside them — both
+are owner-supplied original files read from `$CS_GAME_DIR`, and neither is committed.
 
 ## A. `MetaOpenFile` itself: order, then the first source that answers
 
@@ -87,13 +95,14 @@ Inside `0x10004ba0`, and this is the rule:
 | copy the request | `0x10004bdc  call 0x10003aa0` | the local `CString` takes `param1`'s text |
 | **upper-case it** | `0x10004be5  call 0x10003e80` | `0x10003e80` is `MakeUpper`: `0x10003e8b  call dword [CharUpperA]` on `0x10017124` |
 | compare | `0x10004bfd`–`0x10004c1b` (tree walk), `0x10004c4c`–`0x10004c75` (equality re-check) | byte-for-byte `mov`/`cmp` loops, **no case folding** |
-| read the answer | `0x10004ca8` `rep movsd` | copies the 24-byte record of the matched entry into the out parameter |
+| read the answer | `0x10004ca8`–`0x10004cbc` | writes the 24-byte record of the matched entry into the out parameter (`rep movsd` at `0x10004cbc`) |
 
 The **keys** are the container's own name strings, inserted with the same byte-wise compare and
 **no folding**: `0x10004f90` builds the index for one directory block — name = that block's name
 table + the record's last `u32` (`0x10004fcd  mov edi,[ebp+0x28]`, `0x10004fda  mov eax,[esi+0x14]`,
-`0x10004fdd  add eax,edi`) — constructs the key `0x10004fea  call 0x100039b0`, finds-or-inserts it
-(`0x10005001  call 0x10005960`, `0x10005073  call 0x10005140`) and compares at
+`0x10004fdd  add eax,edi`) — constructs the key `0x10004fea  call 0x100039b0`, looks it up
+(`0x10005001  call 0x10005960`) and, on a miss, builds the entry (`0x10005073  call 0x10005140`)
+and inserts it (`0x1000507f  call 0x100050f0`), comparing at
 **`0x10005017`–`0x10005035`** with the same unfolded loop. Its only caller is `0x10004918`, in the
 slot-4 method above.
 
@@ -117,8 +126,9 @@ measurement:
 
 `CharUpperA` is imported once (`0x10017124`, `USER32.dll`) and **called at exactly one address in
 the whole image**: `0x10003e8b` inside `0x10003e80`. A byte scan for `ff 15 24 71 01 10` over
-`roffile.dll` returns that one site, and `CharLowerA`/`CharUpperBuff`/`LCMapString` folding of names
-is not used (`0x10017120` is `LoadStringA`; the import table has no `CharLower*`). `0x10003e80` has
+`roffile.dll` returns that one site, and `CharLowerA`/`CharUpperBuff` are not imported at all: the
+module's only two `USER32.dll` imports are `LoadStringA` (`0x10017120`) and `CharUpperA`
+(`0x10017124`). `0x10003e80` has
 three callers:
 
 | address | caller | folds |
@@ -131,25 +141,32 @@ Neither INI site is on the file-open path, so `0x10004be5` is the one place a fi
 anywhere in `roffile.dll`.
 
 The module also imports no comparison routine (`rabin2 -i`: no `strcmp`, `_stricmp`, `lstrcmp*`,
-`CompareString*`), so every name comparison is hand-rolled: 28 byte-compare epilogues
-(`1b c0 83 d8 ff`), all inside the INI code, the `std::map`/tree helpers, and the two functions
-above. None of them folds case.
+`CompareString*`), so comparisons are hand-rolled byte loops: the two-instruction epilogue
+`1b c0 83 d8 ff` of such a loop occurs 28 times in the image — in the INI code, in the
+`std::map`/tree helpers, in `0x10004ba0` and in `0x10004f90`, plus one occurrence at `0x100147aa`
+that sits in `.text` outside any function this analysis attributed, so it is counted but not
+claimed. The loop heads read for this task (`0x10004bfd`, `0x10004c4c`, `0x10005017`, `0x1000209b`,
+`0x10002129`) each compare one string's byte with the other's, untransformed: where folding happens
+in this module, it is the `CharUpperA` call of section C and nothing else.
 
 ## D. Loose-file matching: the host decides
 
-`CNOWADDirectory`'s slot 1 (`0x100069b0`) delegates to the file object embedded at `this+0x10`;
-the path is assembled by `0x100074b0` (called from `CNOWADDirectory`'s slot 4 at `0x10006a35`):
-it takes the registered directory's own path (`0x100074d3  call 0x10003aa0`), appends the same
-separator string `0x1001b238` (`0x100074d8  push`, `0x100074df  call 0x10003d30`), then appends
-**the requested name verbatim** (`0x100074e4`–`0x100074eb  call 0x10003d90`) and returns 1
-(`0x100074f2`) — no conversion of any kind, which section C makes conclusive rather than merely
-absent-looking.
+Nothing on this side can fold case, because section C already establishes that the module's one
+`CharUpperA` call site sits in the container lookup. What the code then does with the name is this:
+
+`CNOWADDirectory`'s slot 1 (`0x100069b0`) reaches the object embedded at `this+0x10` (built by
+`0x100068d8`–`0x100068e3`) and stores the handle it comes back with (`0x100069d5`–`0x100069db`).
+The path strings are assembled by `0x100074b0` — whose only caller is `CNOWADDirectory`'s slot 4 at
+`0x10006a35`, and which `AddNewDirectory`'s push-back invokes with the registered directory at
+`0x10001642` — as *copy, append the separator string `0x1001b238`, append its second argument*
+(`0x100074d3  call 0x10003aa0`, `0x100074d8  push` / `0x100074df  call 0x10003d30`,
+`0x100074eb  call 0x10003d90`), returning 1 at `0x100074f2`. No conversion appears anywhere in it.
 
 `CDiskFile`'s slot 2 (`0x10007710`) finishes the open: it takes the directory's path and the name
 (`0x10007744`–`0x10007765`, appending `0x1001b238` between them, or the name alone when there is no
 directory at `0x1000777a`), validates it (`0x1000778c  call 0x10007240`) and passes that string
 unmodified to **`0x100077bd  call dword [CreateFileA]`**. `CreateFileA` has two references in the
-module: that call and a pointer load in `CDiskFile`'s slot 6 (`0x1000765b`).
+module: that call, and a pointer load at `0x1000765b` (the other `CDiskFile` open helper).
 
 So on the loose side the rule is Win32's: on the retail Windows filesystems a case-insensitive
 match answers. That is a property of the host, not of `roffile.dll`, and it is why the loose pair
@@ -158,7 +175,9 @@ below is served whatever case a caller asks in — the loose side never refuses 
 ## E. The decrypted image adds no folding of its own
 
 `crimson.decrypted.exe` does not import `roffile.dll` statically and has no `CharUpperA` import at
-all; it loads the module and resolves the exports itself:
+all — it does import MSVCRT's `_strupr`, `toupper`, `tolower` and kernel32's `lstrcmpiA`, which is
+exactly why the call site below is pinned rather than assumed. It loads the module and resolves the
+exports itself:
 
 | address | what |
 | --- | --- |
@@ -217,6 +236,9 @@ different bytes (670/1641 versus 703/1813), so its answer is decided by registra
 * `docs/findings/evidence/T686.json` keeps its `unknowns` row for this rule. That report records
   what #686 knew when it ran, and rewriting reviewed machine-readable evidence to look better is
   exactly what AGENTS.md forbids; this file supersedes it and says so.
+* Neither `GosNameMatch` variant implements the rule's shape literally — both fold both sides or
+  neither, while the original folds the *request* only — and on retail that changes nothing, so it
+  is filed as #714 (`F04-D-gos-request-fold-rule`) rather than fixed here.
 
 Still unknown, and named rather than smoothed over:
 
@@ -232,4 +254,11 @@ Still unknown, and named rather than smoothed over:
 retail test `accept_t693_metaopenfile_name_matching_retail_pairs_and_container_spelling`
 (`#[ignore = "requires CS_GAME_DIR"]`, panics without it). It pins section F through production code
 only: the container spellings, the two-and-only-two case pairs, the resolution of the lowercase
-request to the container member, and the byte equality of each pair. No production code changes.
+request to the container member, and the byte equality of each pair.
+
+No production **behaviour** changes: the VFS keeps both rules as explicit chain inputs, because the
+rule's shape (fold the request, not the stored name) is not what either enum variant implements
+literally. What did change outside this file are doc comments in `crates/cs_assets/src/vfs/`
+(`gos.rs`, `mount.rs`, `resolve.rs`) and in #686's test file that still called the rule
+*unmeasured* — they now point here. The evidence report `docs/findings/evidence/T686.json` and the
+`unknowns()` text that generates it are left as they were (section G).
