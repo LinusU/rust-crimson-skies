@@ -971,7 +971,7 @@ pub fn measured_directive(key: &str) -> Option<MeasuredDirective> {
             operation: DirectiveOperation::DangerZoneThreshold,
             summary: "the flag-count threshold the danger-zones evaluator compares the nonzero \
                       flag bytes against",
-            evidence: &[FINDING_A],
+            evidence: &[FINDING_A, FINDING_B],
             unknowns: &[],
         },
         "DEDG" => MeasuredDirective {
@@ -1219,7 +1219,8 @@ pub fn measured_directive(key: &str) -> Option<MeasuredDirective> {
         "ADJUST_TIMER_WHEN_I_COMPLETE" => MeasuredDirective {
             operation: DirectiveOperation::AdjustMissionTimer,
             summary: "at completion the mission timer is set to the spelled seconds when child0 \
-                      spells `SET`, adjusted by them when it spells `ADJUST`",
+                      spells `SET`, adjusted by them when it spells `ADJUST`; a child0 spelling \
+                      neither writes no mode",
             evidence: &[FINDING_B, FINDING_D],
             unknowns: &[],
         },
@@ -1287,7 +1288,8 @@ pub fn measured_directive(key: &str) -> Option<MeasuredDirective> {
         "WAKE_ANIM" => MeasuredDirective {
             operation: DirectiveOperation::WakeAnimation,
             summary: "on wake the named animation executes on the named or defaulted target \
-                      object",
+                      object — skipped entirely when the animation is already in state 5 or the \
+                      named target does not resolve",
             evidence: &[FINDING_B, FINDING_C],
             unknowns: &[
                 "the animation call's three trailing arguments — the mission always passes \
@@ -1316,7 +1318,8 @@ pub fn measured_directive(key: &str) -> Option<MeasuredDirective> {
             operation: DirectiveOperation::TransitionAnimation,
             summary: "when this objective is put to nap or done — by its own timers or another \
                       objective's `SLEEP` list — the named animation executes on the named \
-                      target; it is not a completion effect",
+                      target (skipped when the animation is already in state 5); it is not a \
+                      completion effect",
             evidence: &[FINDING_B, FINDING_C],
             unknowns: &[
                 "the animation call's three trailing arguments — the mission always passes \
