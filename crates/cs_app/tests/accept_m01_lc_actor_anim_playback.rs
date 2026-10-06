@@ -1041,6 +1041,18 @@ fn accept_m01_lc_actor_anim_playback_retail_m01_startup_animations_are_joined_an
     assert_eq!(binding.startup().len(), 7);
     assert_eq!(binding.startup_of(NEW_GAME_START).len(), 6);
     assert_eq!(binding.startup_of(LOAD_GAME_START).len(), 1);
+    // `run` is the seam a mission asks: the same identities in the same order,
+    // and an event the table does not declare is an empty run, never a failure.
+    let new_game = binding.run(NEW_GAME_START);
+    assert_eq!(new_game.event(), NEW_GAME_START);
+    assert_eq!(new_game.len(), 6);
+    assert_eq!(new_game.playable().count(), 0);
+    assert_eq!(new_game.refused().count(), 6);
+    assert_eq!(binding.run(LOAD_GAME_START).len(), 1);
+    assert!(
+        binding.run("NO_SUCH_EVENT").is_empty(),
+        "an event the table does not declare is measured content, not a failure"
+    );
     let identities: Vec<(&str, &str)> = binding
         .startup()
         .iter()
@@ -1211,6 +1223,11 @@ fn accept_m01_lc_actor_anim_playback_retail_m01_startup_animations_are_joined_an
     assert!(
         targets > 7,
         "the seven animations address several names each"
+    );
+    assert_eq!(
+        binding.world_targets().count(),
+        targets,
+        "the join view yields every row's targets exactly once"
     );
     assert_eq!(
         unreadable, 3,
