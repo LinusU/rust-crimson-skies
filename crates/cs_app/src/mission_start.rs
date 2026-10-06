@@ -26,17 +26,44 @@
 //!   field 1 (three floats) and field 2 (a float) of the player record, with
 //!   the measured facts about them on [`StoredStartPose`]. Task #676.
 //!
+//! # Where the original does assign one (#715)
+//!
+//! Measured on retail data plus static analysis of the owner-supplied decrypted
+//! executable (`$CS_GAME_DIR/crimson.decrypted.exe`, sha256
+//! `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`); see
+//! `docs/findings/2026-10-06-m01-lc-player-airframe-source.md`:
+//!
+//! * the executable holds an **eleven-row airframe table** in `.data`
+//!   (`0x620c70`..`0x620da4`, seven pointers per row), transcribed here as
+//!   [`AIRFRAME_TABLE`], and one **name-to-index** routine (`0x426d80`) that
+//!   compares a name against row 0..10 with `tolower` and answers `11` — the
+//!   table's own "no such airframe" value — for an unknown or duplicated name;
+//! * the **only** document key the executable reads to name the player's
+//!   airframe is [`PLAYER_PLANE_KEY`], read once (`0x4593e5`) by the
+//!   instant-action setup routine, which also opens `ia.zrd` (`0x45a15b`).
+//!   Retail: the key is present in the eight `ZBD/<chapter>/IA1/zrdr.zbd`
+//!   archives and in no campaign mission archive — M01's members carry it
+//!   zero times. [`scenario_player_airframe`] reads that assignment where a
+//!   document has it, and [`airframe_index`] resolves the name the way the
+//!   original does;
+//! * no profile or hangar file exists in the installation, so where a
+//!   **campaign** mission gets its player's airframe is still unmeasured and
+//!   stays unknown (AGENTS.md rule 4).
+//!
 //! # What it refuses, by name
 //!
 //! * **The airframe.** No field of the record is measured to name one (#676:
-//!   the player's field 0 is the none value in every retail mission), and the
-//!   mission-language statements that may assign it are undecoded (F13-B/C,
+//!   the player's field 0 is the none value in every retail mission), no
+//!   campaign document carries the key the executable reads, and the
+//!   mission-language statements that may assign one are undecoded (F13-B/C,
 //!   F38). [`MissionStartConfiguration::airframe`] is a
 //!   [`Resolved::Unknown`] with that reason, for the player and for each
-//!   wingmate. Reading a number in the record as an airframe index would be a
-//!   guess (AGENTS.md rule 4).
-//! * **The metric pose and the player-wingmate relation.** The position unit
-//!   is unmeasured (#436) and the heading's zero direction is too, so
+//!   wingmate. Reading a number in the record as an airframe index, or the
+//!   table above as a *choice* of airframe, would be a guess (AGENTS.md
+//!   rule 4).
+//! * **The metric pose's heading.** The position unit is measured as the
+//!   metre (#436, owner note 2026-10-05), but the heading's zero direction and
+//!   handedness are not (the same note records compass zero as unmeasured), so
 //!   [`MissionStartConfiguration::initial_pose`] stays unknown, and a
 //!   `wingman_<n>` name does not say whose wingmate it is.
 //!
@@ -70,9 +97,178 @@ const POSITION_FIELD: usize = 1;
 const HEADING_FIELD: usize = 2;
 
 /// The reason an airframe cannot be bound.
-pub const AIRFRAME_UNKNOWN_REASON: &str = "no field of an aiv.zrd aircraft record names an airframe: the player's field 0 is the none value (0xFFFFFFFF) in all 53 retail missions that have a player record, the other fields are shared with scripted AI aircraft, and the mission-language statements that may assign one are undecoded (F13-B/C, F38)";
-/// The reason a metric pose cannot be bound.
-pub const POSE_UNKNOWN_REASON: &str = "the stored position unit is unmeasured (#436, blocked) and the heading's zero direction and handedness are unmeasured, so a metre and radian pose would be a guess; the stored values are bound as `stored_pose`, and the mission program may move the aircraft before launch (F13-B/C, F38)";
+///
+/// What #715 measured is in here, so a reader of the refusal can tell an
+/// *absent* source from an *unexamined* one: see
+/// `docs/findings/2026-10-06-m01-lc-player-airframe-source.md`.
+pub const AIRFRAME_UNKNOWN_REASON: &str = "no measured source assigns the player's airframe: no field of an aiv.zrd aircraft record names one (the player's field 0 is the none value 0xFFFFFFFF in all 53 retail missions that have a player record), no member of M01's zrdr.zbd carries the `player_plane` key the executable reads — that key is read only by the instant-action setup, from `ia.zrd`, and resolved through the executable's eleven-row airframe table — the installation holds no profile or hangar file, and the mission-language statements that may assign one are undecoded (F13-B/C, F38)";
+/// The reason a metric start pose cannot be bound.
+pub const POSE_UNKNOWN_REASON: &str = "the stored position unit is measured as the metre (#436, owner note 2026-10-05: 1 world unit = 1 metre, +Y up, right-handed, stored positions map to the canonical frame with identity axis map and scale 1.0), but the heading's zero direction and its handedness are unmeasured (the same owner note records the compass zero as not measured), so a radian start heading would be a guess; the stored values are bound as `stored_pose`, and the mission program may move the aircraft before launch (F13-B/C, F38)";
+
+/// Metres per stored position unit.
+///
+/// #436's owner note of 2026-10-05 (static analysis of the owner-supplied
+/// decrypted executable, sha256
+/// `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`) measures
+/// the original's world unit as the **metre** with +Y up and a right-handed
+/// frame: `0x48fc40` converts `position.y` to feet with ×3.2808399, `0x453aa2`
+/// converts m/s to mph with ×2.2369363, gravity is −9.8/9.82, and "stored
+/// positions map to the canonical frame with an identity axis map and a scale
+/// of 1.0".
+///
+/// Nothing here is `verified_original`: the landmark is code-derived (static)
+/// and no original run happened. The *frame relation* between a stored start
+/// position and the world grid is a separate question that stays unmeasured —
+/// M01's player start lies 194 stored units outside `c1c`'s `[-12288, 0]^2`
+/// node bounds (#676) — as do the heading's zero direction and handedness.
+pub const STORED_POSITION_METRES_PER_UNIT: f32 = 1.0;
+
+/// The document key an instant-action scenario (`ia.zrd`) names the player's
+/// airframe with.
+///
+/// Measured: the key is read exactly once in the decrypted executable
+/// (`0x4593e5`, inside the instant-action setup routine that opens `ia.zrd` at
+/// `0x45a15b`), and the retail archives carry it only in
+/// `ZBD/<chapter>/IA1/zrdr.zbd`. Its value is a **display name** from
+/// [`AIRFRAME_TABLE`] (`ZBD/C1C/IA1/zrdr.zbd` spells `Fury`), not a node name.
+pub const PLAYER_PLANE_KEY: &str = "player_plane";
+
+/// One row of the original's airframe table.
+///
+/// #715 measured the table as eleven 28-byte rows of seven pointers at
+/// `.data` `0x620c70`..`0x620da4`, transcribed here in index order. Only the
+/// fields whose meaning is measured are named:
+///
+/// * `display_name` — row 0 of the name-to-index routine `0x426d80`, and the
+///   value of the `player_plane` / `wingman_plane` / `ace_plane` /
+///   `enemy_plane` keys a scenario document carries;
+/// * `scene_root` — the node `support\planes.gw` in `ZBD/interp.zbd` creates
+///   for that airframe (`set planeOutput player_<x>`), which is what the
+///   original's `FindNode %player_plane%` lines name;
+/// * `model` — the `common\planes\<model>\<model>.flt` the same script loads
+///   (`set planeInput …`).
+///
+/// The row's other three pointers (`p…`, `r…`, `w…` variants and a second base
+/// name) are **not** transcribed: their meaning is unmeasured. Row 5's fourth
+/// pointer is `wingman`, not `wdevastator`, which is recorded in the finding
+/// rather than smoothed over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AirframeEntry {
+    /// The name a document writes, and the name `0x426d80` compares.
+    pub display_name: &'static str,
+    /// The scene root `support\planes.gw` creates for this airframe.
+    pub scene_root: &'static str,
+    /// The base name of the model the loading script loads for it.
+    pub model: &'static str,
+}
+
+/// The executable's airframe table, in the table's own index order (0..10).
+///
+/// Transcribed from `crimson.decrypted.exe`, sha256
+/// `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`; pinned
+/// by `accept_m01_lc_player_airframe_source_*`.
+pub const AIRFRAME_TABLE: [AirframeEntry; 11] = [
+    AirframeEntry {
+        display_name: "Autogyro",
+        scene_root: "player_autogyro",
+        model: "autogyro",
+    },
+    AirframeEntry {
+        display_name: "Hellhound",
+        scene_root: "player_avenger",
+        model: "avenger",
+    },
+    AirframeEntry {
+        display_name: "Balmoral",
+        scene_root: "player_balmoral",
+        model: "balmoral",
+    },
+    AirframeEntry {
+        display_name: "Bloodhawk",
+        scene_root: "player_bhawk",
+        model: "bloodhawk",
+    },
+    AirframeEntry {
+        display_name: "Brigand",
+        scene_root: "player_brigand",
+        model: "brigand",
+    },
+    AirframeEntry {
+        display_name: "Devastator",
+        scene_root: "player_pfighter",
+        model: "piratefighter",
+    },
+    AirframeEntry {
+        display_name: "Firebrand",
+        scene_root: "player_fbrand",
+        model: "firebrand",
+    },
+    AirframeEntry {
+        display_name: "Fury",
+        scene_root: "player_fury",
+        model: "fury",
+    },
+    AirframeEntry {
+        display_name: "Kestrel",
+        scene_root: "player_kestrel",
+        model: "kestrel",
+    },
+    AirframeEntry {
+        display_name: "Peacemaker",
+        scene_root: "player_peacemaker",
+        model: "peacemaker",
+    },
+    AirframeEntry {
+        display_name: "Warhawk",
+        scene_root: "player_warhawk",
+        model: "warhawk",
+    },
+];
+
+/// The name-to-index answer the original's `0x426d80` gives, as `Some`/`None`.
+///
+/// The routine compares the whole name case-insensitively against rows 0..10
+/// and answers `11` — the value every caller treats as "none" (`cmp eax, 0xb`)
+/// — both for an unknown name and for one that matches two rows. This mirrors
+/// that: `None` is `11`, `Some(index)` is the row index.
+#[must_use]
+pub fn airframe_index(name: &str) -> Option<usize> {
+    AIRFRAME_TABLE
+        .iter()
+        .position(|entry| entry.display_name.eq_ignore_ascii_case(name))
+}
+
+/// The table row a document's airframe name selects, with its index.
+///
+/// [`airframe_index`] is the lookup; this pairs it with the row a consumer
+/// needs to spawn the scene root and load the model.
+#[must_use]
+pub fn airframe_entry(name: &str) -> Option<(usize, &'static AirframeEntry)> {
+    let index = airframe_index(name)?;
+    AIRFRAME_TABLE.get(index).map(|entry| (index, entry))
+}
+
+/// The airframe a scenario document assigns the player, as its display name.
+///
+/// [`PLAYER_PLANE_KEY`], read from a decoded `ia.zrd` document. The original
+/// writes a value either bare or wrapped in a one-element list (its own
+/// `mission_type` reader accepts both, and `ZBD/C1C/IA1/zrdr.zbd` spells the
+/// plane as the bare `Fury`), so both shapes answer. A document without the
+/// key — every campaign mission measured — answers `None`, which is the honest
+/// absence, not an airframe.
+#[must_use]
+pub fn scenario_player_airframe(scenario: &ZrdValue) -> Option<&str> {
+    let value = cs_content::stunts::zrd_field(scenario, PLAYER_PLANE_KEY)?;
+    if let Some(text) = value.as_text() {
+        return Some(text);
+    }
+    let list = value.as_list()?;
+    if list.len() == 1 {
+        list[0].as_text()
+    } else {
+        None
+    }
+}
 
 /// A start pose: position and heading, in the units the simulation uses.
 ///
@@ -92,14 +288,33 @@ pub struct StartPose {
 /// is the vertical one (its range, 110 to 1400, is small beside the 1363 to
 /// 13257 of the other two); the heading is not in radians (its magnitude
 /// reaches 330 and every value is a multiple of 5), so it is degrees-like.
-/// The position unit, the heading's zero direction and its handedness are not
-/// measured.
+/// The position unit is measured as the metre
+/// ([`STORED_POSITION_METRES_PER_UNIT`], #436); the heading's zero direction
+/// and its handedness are not, and the frame relation between a stored start
+/// and the world grid is not either.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StoredStartPose {
     /// The position vector as stored; axis 1 is the vertical one.
     pub position: [f32; 3],
     /// The heading as stored, in unmeasured degrees-like units.
     pub heading: f32,
+}
+
+impl StoredStartPose {
+    /// The stored position in metres, from the measured unit
+    /// [`STORED_POSITION_METRES_PER_UNIT`].
+    ///
+    /// The *scale* is measured; the heading that would turn this position into
+    /// a start pose is not, so this is deliberately not a
+    /// [`StartPose`].
+    #[must_use]
+    pub fn position_metres(&self) -> [f32; 3] {
+        [
+            self.position[0] * STORED_POSITION_METRES_PER_UNIT,
+            self.position[1] * STORED_POSITION_METRES_PER_UNIT,
+            self.position[2] * STORED_POSITION_METRES_PER_UNIT,
+        ]
+    }
 }
 
 /// Why a start configuration could not be read.
