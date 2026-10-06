@@ -346,6 +346,16 @@ what this stage asked for. It is recorded as a note on **F16-E (#390)**, togethe
 with the question of how a landmark's free-text description becomes a
 `SourceConvention`.
 
+**Resolved by F16-E (#390), recorded 2026-10-06:** `CoordinateSource` now
+carries a `calibration: UnitCalibration` field, and
+`CoordinateSource::with_calibration` refuses a calibration whose
+`UnitCalibration::source()` is not the source's label. `CoordinateSource::new`
+still starts empty, so the F16-A declarations and their tests are untouched.
+The free-text question was answered by owner decision: measured values are
+**hand-transcribed** into `SourceConvention::new` and pinned by
+`accept_f16_e_` tests rather than derived from a landmark's description. See
+`docs/findings/2026-10-06-f16-e-original-unit-calibration-landmarks.md`.
+
 ### Review probes (same commit)
 
 | # | Edit | Result of the 16 tests |
