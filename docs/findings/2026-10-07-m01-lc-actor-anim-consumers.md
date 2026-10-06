@@ -24,6 +24,9 @@ nothing here is `verified_original`.
 - `crates/cs_app/tests/accept_t718_mission_animations.rs` (new): the seven
   `accept_t718_*` tests — six synthetic, one `#[ignore = "requires CS_GAME_DIR"]`
   retail.
+- `crates/cs_app/tests/evidence_report_m01_lc_actor_anim_consumers.rs` (new):
+  the `CLI-EVIDENCE` harness (see **Evidence** below); not named with the
+  acceptance prefix, so it never pads the task selection.
 - This file.
 
 **No reader refusal was weakened.** The diff touches no line of
