@@ -1517,13 +1517,7 @@ fn evidence_report_t686_writes_the_acceptance_report() {
          \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
          \x20\"assertions\": [{}],\n\
          \x20\"artifacts\": [{}],\n\
-         \x20\"unknowns\": [\n  {{\"id\": \"gos-name-matching\", \"detail\": \"MetaOpenFile's case-matching rule is unmeasured \
-         (#693), so it is an explicit chain input (GosNameMatch); the order is pinned independently of \
-         it\"}},\n  {{\"id\": \"gos-registry-key\", \"detail\": \"HKLM\\\\SOFTWARE\\\\Microsoft\\\\Microsoft Games\\\\Crimson \
-         Skies\\\\1.0 is not readable here, so both registry cases are measured over the same files by \
-         stating ExePathOrigin, and neither is claimed as the machine's real registry state\"}},\n  {{\"id\": \"gos-order-provenance\", \"detail\": \"the registration order is derived from static analysis \
-         of crimson.decrypted.exe and roffile.dll, not from running the original; GOS_ORDER_STATUS stays \
-         inferred\"}}\n ],\n\
+         \x20\"unknowns\": [{}],\n\
          \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
          \x20\"claim\": \"implemented\"\n\
          }}\n",
@@ -1560,6 +1554,11 @@ fn evidence_report_t686_writes_the_acceptance_report() {
                 "{{\"path\": {}, \"sha256\": {digest:?}, \"kind\": {kind:?}}}",
                 jstr(name)
             ))
+            .collect::<Vec<_>>()
+            .join(", "),
+        unknowns()
+            .iter()
+            .map(|unknown| jstr(unknown))
             .collect::<Vec<_>>()
             .join(", "),
         jstr(&reviewer),
@@ -1708,6 +1707,34 @@ fn registration_order_json(candidate_tree: &str, retail: &Retail) -> String {
         answer(&retail.registered),
         answer(&retail.without_registry),
     )
+}
+
+/// What this task does **not** know, recorded in the report as strings.
+///
+/// Each names the affected content and what would resolve it. They are here
+/// because the order is code-derived and two of its inputs are not measurable
+/// from files, and a report that claimed otherwise would be the failure this
+/// workspace's evidence policy forbids.
+fn unknowns() -> Vec<String> {
+    vec![
+        "gos-name-matching: MetaOpenFile's case-matching rule decides whether a request for \
+         ASSETS/GRAPHICS/ARIAL8.TGA or FONT.TGA gets the crimson.rof member or the loose \
+         GOSDATA copy of the same image; it is unmeasured (#693), so it is an explicit chain \
+         input (GosNameMatch) and both rules are implemented and exercised. Resolved by #693, or \
+         by an owner-supplied original run."
+            .to_owned(),
+        "gos-registry-key: HKLM\\SOFTWARE\\Microsoft\\Microsoft Games\\Crimson Skies\\1.0 is not \
+         readable on this host, so the registry state of this machine is not claimed; both \
+         registry cases (patch registered, patch skipped) are measured over the same \
+         installation files by stating ExePathOrigin. Resolved by the owner supplying the key's \
+         EXE Path value or an original-run capture."
+            .to_owned(),
+        "gos-order-provenance: the registration order crimptch.rof -> crimson.rof -> loose \
+         GOSDATA -> current directory is derived from static analysis of crimson.decrypted.exe \
+         and roffile.dll, not from running the original engine, so GOS_ORDER_STATUS stays \
+         inferred. Resolved only by an owner-supplied original run."
+            .to_owned(),
+    ]
 }
 
 // --------------------------------------------------------- harness utils ---
