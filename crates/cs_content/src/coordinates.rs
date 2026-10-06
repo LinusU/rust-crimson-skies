@@ -789,9 +789,9 @@ fn gamez_scale_landmarks() -> Vec<Landmark> {
             CalibratedQuantity::Scale,
             LandmarkKind::Behavior,
             "the pilot-figure subtrees (`cpilot`, `pickup_cpilot`) measure \
-             about 0.7 x 1.9 x 0.5 stored units — a standing human's height \
-             measured against a known size, which is a real pilot at the metre \
-             and a 0.58 m figure at the foot",
+             about 0.7 x 1.9 x 0.5 composed stored units — a standing human's \
+             height measured against a known size, which is a real pilot at \
+             the metre and a 0.58 m figure at the foot",
             evidence(
                 "zbd/planes.zbd aircraft scene roots",
                 "the measured distance presumes the depicted object has its \
@@ -801,9 +801,10 @@ fn gamez_scale_landmarks() -> Vec<Landmark> {
         Landmark::new(
             CalibratedQuantity::Scale,
             LandmarkKind::Behavior,
-            "the eleven airframe subtree roots span 8.8-27.2 stored units — \
-             fighter-class aircraft measured against known airframe \
-             dimensions; under the foot the largest 'fighter' would span 8.3 m",
+            "the eleven roster airframe subtree roots span 8.8-27.2 composed \
+             stored units — fighter-class aircraft measured against known \
+             airframe dimensions; under the foot the largest 'fighter' would \
+             span 8.3 m",
             evidence(
                 "zbd/planes.zbd airframe subtrees",
                 "the same presumption, applied to a different record population",
@@ -824,9 +825,10 @@ fn gamez_scale_landmarks() -> Vec<Landmark> {
         Landmark::new(
             CalibratedQuantity::Scale,
             LandmarkKind::Behavior,
-            "the world containers' stored bounds run -16384..256 units, a \
-             12-16 km archipelago theatre at the metre and a 3.7-5 km map — \
-             with 300-m dogfight cells — at the foot",
+            "the world containers' published sector bounds run -16384..256 \
+             stored units in 1024-unit grid cells, a 12-16 km archipelago \
+             theatre with kilometre cells at the metre and a 3.7-5 km map with \
+             ~300 m cells at the foot",
             evidence(
                 "zbd/*/gamez.zbd world records and partition grids",
                 "map size is the loosest constraint: either unit produces a \
