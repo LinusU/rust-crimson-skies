@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T693",
+ "candidate_tree": "bc885fcf97516ef0b3c4190a188dfe54b24d8e2c",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-06T19:08:16Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_t693_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-2", "exit_code": 0},
+ "source": {"install_sha256": "c14a876f4457d8710dee7986333ab636122c9549cf72b646fd69cbe7e72c5352", "content_sha256": "148a24b7b0506812e8f1ee13d8d3137a05926abebbe10161994e8c4cd300c35e"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail"],
+ "tests": {"discovered": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t693_metaopenfile_name_matching_retail_pairs_and_container_spelling", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "ea43ab20f6822fbc1b040596abe3ecdf9aef2aa3ffcb98fd86952f65c6af9437", "kind": "log"}, {"path": "pairs.json", "sha256": "f7e453ebd624f7354fde86079bb2d9b691ee1ef31f32916b59da7d261a39215d", "kind": "json"}],
+ "unknowns": ["The case and separator spelling the game's GOS requests carry at runtime is not established: #693 pinned what the original does *to* a request (roffile.dll upper-cases it for a container and hands it unfolded to CreateFileA for a loose file) and that the exe's own wrapper passes it through unchanged at 0x411e31 and 0x411ed0, but no original run shows what game code asks for. Affected content: every GOS request at runtime; resolving it needs an owner-supplied original run.", "The host filesystem's case behaviour for a loose name is a property of the machine the original ran on, not of roffile.dll: CreateFileA at 0x100077bd decides it. Affected content: the loose copies of ASSETS/GRAPHICS/arial8.tga and font.tga and any loose-only name whose case differs from a request; resolving it needs an original run on the target host.", "Non-ASCII/DBCS name folding follows CharUpperA's ANSI-codepage behaviour and was not measured: every retail GOS name in both containers and the loose tree is ASCII. Affected content: none on this installation."],
+ "review": {"identity": "implementer: bunny-2/bunny-2 (Rally #693 implement claim of 2026-10-06T17:39:16Z); reviewer: recorded by the reviewing agent — no review had happened when this report was generated, and no agent review replaces the owner's human approval", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the production GOS chain of that installation (pairs.json: container and loose member sets, the two case-only pairs and the bytes each serves), rustc and Cargo.lock. The rule itself is static analysis of roffile.dll recorded in docs/findings/2026-10-06-t693-metaopenfile-name-matching.md, so the claim is only `implemented`, never `verified_original`; validated with tools/validate_evidence.py (without --require-pass, because the three unknowns above are the task's residue)"},
+ "claim": "implemented"
+}
