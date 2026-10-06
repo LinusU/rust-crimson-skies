@@ -33,6 +33,9 @@
 //! * [`device`] — the audible backend: the one [`AudioDevice`] that opens real
 //!   output hardware, gated on the `audio` capability so a machine that cannot
 //!   play refuses by name (task #635, F41-D);
+//! * [`samples`] — the population pass: the delivered closure's audio members
+//!   decoded into the library that same load's device plays from, so a
+//!   `VoiceStart` naming a delivered asset finds it (task #652, M01-LC);
 //! * [`handoff::insert_audio_session`] and [`AudioPlugin`] — the wiring: the
 //!   loading handoff owns the session, and the plugin registers the systems in
 //!   the app schedule.
@@ -52,13 +55,14 @@ pub mod loops;
 pub mod lower;
 pub mod mixer;
 pub mod plugin;
+pub mod samples;
 
 pub use device::{
     AudibleDevice, AudioBackendKind, AudioBackendLog, AudioBackendRefusal, CODE_CAPABILITY_ABSENT,
     CODE_DEVICE_CLOSED, CODE_INVALID_MIX, CODE_NO_OUTPUT_DEVICE, CODE_SAMPLE_UNAVAILABLE,
-    CODE_UNKNOWN_VOICE, CapabilityDeclaration, EXIT_MISSING_CAPABILITY, InMemorySamples,
-    LoopingVoice, PcmAudio, PcmError, RefusingAudioDevice, SampleLibrary, SampleProbe,
-    audibility_exit_code, classify_refusal, open_audible_device, sound_member_pcm,
+    CODE_UNKNOWN_VOICE, CapabilityDeclaration, DeviceSampleLibrary, EXIT_MISSING_CAPABILITY,
+    InMemorySamples, LoopingVoice, PcmAudio, PcmError, RefusingAudioDevice, SampleLibrary,
+    SampleProbe, audibility_exit_code, classify_refusal, open_audible_device, sound_member_pcm,
 };
 pub use engine::{EngineVoiceFollow, EngineVoices, smooth_engine_voices};
 pub use handoff::{
@@ -73,6 +77,7 @@ pub use mixer::{
     mix_session,
 };
 pub use plugin::AudioPlugin;
+pub use samples::{AudioSampleSource, CODE_SAMPLE_ABSENT, ContentSampleSource, SampleSource};
 
 use bevy::ecs::component::Component;
 use cs_sim::audio_events::{AudioBus, AudioEmitterId};

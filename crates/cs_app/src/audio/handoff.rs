@@ -42,17 +42,21 @@ use std::sync::Arc;
 
 use bevy::ecs::resource::Resource;
 use bevy::ecs::world::World;
+use cs_assets::vfs::SessionGeneration;
 use cs_content::audio::{AudioCatalog, is_audio_kind};
 use cs_sim::audio_events::{AudioAssetSpec, AudioEmitterId, AudioRouter};
+use cs_types::asset_id::AssetKey;
 use cs_types::content::ContentId;
 use cs_types::net::SessionId;
 
 use crate::loading::{LoadIdentity, LoadedItemBinding};
 use crate::scene::{SceneGeneration, SceneGenerations};
 
+use super::device::DeviceSampleLibrary;
 use super::loops::AudioSession;
 use super::lower::{AudioLowerError, lower_record};
 use super::mixer::{AudioMixing, AudioOutput};
+use super::samples::{AudioSampleSource, populate};
 
 /// Resource: the declared audio catalog an installed session lowers its specs
 /// from.
@@ -92,6 +96,13 @@ pub struct AudioInstall {
     pub specs: usize,
     /// How many delivered audio records did not.
     pub refused: usize,
+    /// How many delivered audio members' samples this install put in the
+    /// device's [`SampleLibrary`](super::device::SampleLibrary) — the other
+    /// half of this same pass ([`super::samples`]).
+    pub samples: usize,
+    /// How many delivered audio members did not reach the library, each named
+    /// by its own code in [`AudioHandoffLog::refusals`].
+    pub sample_refusals: usize,
 }
 
 /// Why a delivered load could not install an audio session, or a delivered
@@ -125,6 +136,31 @@ pub enum AudioHandoffRefusal {
     NotLowerable {
         /// The refused record.
         error: AudioLowerError,
+    },
+    /// The world holds no sample source, so none of this load's delivered
+    /// audio members could be decoded and the library was emptied.
+    NoSampleSource,
+    /// The published sample source reads through another content session than
+    /// the delivered load ran under, so decoding through it would put one
+    /// session's bytes in another session's library.
+    ForeignSampleSource {
+        /// The load whose library this is.
+        load: LoadIdentity,
+        /// The session generation the source reads through.
+        generation: SessionGeneration,
+    },
+    /// A delivered audio member's samples could not be decoded; the member is
+    /// absent from the library and `code` is the refusal's own stable code.
+    SampleUndecodable {
+        /// The content the load delivered.
+        content: ContentId,
+        /// The refusal's own code: the member's header decode, the shape it
+        /// decoded to, the container's reader, or
+        /// [`super::samples::CODE_SAMPLE_ABSENT`] when no member of that
+        /// container carries this id.
+        code: &'static str,
+        /// What refused, in words.
+        detail: String,
     },
 }
 
@@ -237,6 +273,10 @@ pub fn insert_audio_session(world: &mut World) {
     let mut specs: Vec<AudioAssetSpec> = Vec::new();
     let mut lowered = 0;
     let mut refused = 0;
+    // The declared audio members this closure delivered: the population pass
+    // decodes exactly these, so the library and the session are built from one
+    // reading of one closure rather than from two walks that might disagree.
+    let mut delivered: Vec<(ContentId, AssetKey)> = Vec::new();
     for binding in query.iter(world) {
         if binding.load != newest || !is_audio_kind(binding.content.kind()) {
             continue;
@@ -248,6 +288,7 @@ pub fn insert_audio_session(world: &mut World) {
             });
             continue;
         };
+        delivered.push((binding.content.clone(), binding.key.clone()));
         match lower_record(record) {
             Ok(lowered_asset) => {
                 specs.push(lowered_asset.spec);
@@ -286,6 +327,19 @@ pub fn insert_audio_session(world: &mut World) {
         world.insert_resource(mixing);
     }
     world.insert_resource(AudioMixing::new(session));
+    // The other half of this pass: the same closure's members, decoded into
+    // the library the audible device plays from. It runs here — after the old
+    // mixer released its voices — so the samples a replaced load was playing
+    // are released before they become unreachable, and it fills or empties the
+    // library on every path (see `super::samples`).
+    let population = populate(
+        world.get_resource::<DeviceSampleLibrary>(),
+        world.get_resource::<AudioSampleSource>(),
+        &delivered,
+        catalog.catalog(),
+        newest,
+        &mut log,
+    );
     log.installs += 1;
     log.released = released;
     log.installed = Some(AudioInstall {
@@ -294,6 +348,8 @@ pub fn insert_audio_session(world: &mut World) {
         generation,
         specs: lowered,
         refused,
+        samples: population.samples,
+        sample_refusals: population.refused,
     });
     world.insert_resource(log);
 }

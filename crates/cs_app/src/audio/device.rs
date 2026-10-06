@@ -458,19 +458,95 @@ pub fn sound_member_pcm(
 /// The device never decodes and never opens a file: a load hands it the assets
 /// it actually delivered, and an asset the library does not hold is **refused
 /// by name** ([`CODE_SAMPLE_UNAVAILABLE`]) rather than played as silence.
+///
+/// # Why both methods take `&self`
+///
+/// The library is shared: the plugin hands the same object to the device and
+/// to the world, and the population pass of the delivered load
+/// ([`super::samples::populate`]) fills it *after* the device holds it. So a
+/// lookup cannot borrow the map — it returns an owned [`PcmAudio`] handle,
+/// which shares the samples behind an `Arc` and costs no copy of the decoded
+/// member — and filling goes through [`SampleLibrary::replace_samples`], which
+/// replaces the map wholesale rather than mutating entries in place.
 pub trait SampleLibrary: fmt::Debug + Send + Sync {
     /// The decoded asset `id` names, when this library holds it.
-    fn pcm(&self, id: &ContentId) -> Option<&PcmAudio>;
+    ///
+    /// An **owned handle**, not a borrow: the samples themselves stay behind a
+    /// shared `Arc`, so the caller holds the same decoded member without
+    /// holding the map it was found in (see the trait note above).
+    fn pcm(&self, id: &ContentId) -> Option<PcmAudio>;
+
+    /// Replaces every entry with `samples`: the whole population pass of one
+    /// delivered load, in one call.
+    ///
+    /// Replacing rather than merging is what makes a reload observable: the
+    /// previous load's samples are unreachable the moment this returns, so a
+    /// voice naming an asset of the replaced load is refused by name
+    /// ([`CODE_SAMPLE_UNAVAILABLE`]) instead of playing what the old closure
+    /// delivered.
+    fn replace_samples(&self, samples: BTreeMap<ContentId, PcmAudio>);
+}
+
+/// Resource: the [`SampleLibrary`] this world's audible backend plays from,
+/// which is the same object the delivered load's population pass fills.
+///
+/// The plugin inserts it when — and only when — it built the world's device
+/// from a library ([`AudioPlugin::audible`](super::AudioPlugin::audible)), so
+/// the device and the loader can never hold two different libraries: a world
+/// that mixes to the recording stand-in has no library and nothing to fill,
+/// and says so by having no such resource rather than by filling one nothing
+/// reads.
+#[derive(Resource, Clone)]
+pub struct DeviceSampleLibrary(Arc<dyn SampleLibrary>);
+
+impl DeviceSampleLibrary {
+    /// Shares `library` between the device and the load's population pass.
+    #[must_use]
+    pub fn new(library: Arc<dyn SampleLibrary>) -> Self {
+        Self(library)
+    }
+
+    /// The library the device plays from.
+    #[must_use]
+    pub fn library(&self) -> &Arc<dyn SampleLibrary> {
+        &self.0
+    }
+}
+
+impl fmt::Debug for DeviceSampleLibrary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeviceSampleLibrary")
+            .field("library", &self.0)
+            .finish()
+    }
 }
 
 /// A [`SampleLibrary`] held in memory, keyed by audio content id.
 ///
 /// This is what a delivered load fills: each audio content id the load's
 /// catalog declares and the load's assets contain gets the samples decoded from
-/// its own member, and nothing else is reachable.
-#[derive(Clone, Debug, Default)]
+/// its own member, and nothing else is reachable ([`super::samples`]).
+///
+/// The entries live behind a mutex rather than in the field itself: this is the
+/// object the load's population pass writes through a shared handle while the
+/// device reads it, and [`SampleLibrary::replace_samples`] is how the writing
+/// happens — wholesale, so a reload never leaves a mixture of two closures.
+#[derive(Debug, Default)]
 pub struct InMemorySamples {
-    entries: BTreeMap<ContentId, PcmAudio>,
+    entries: Mutex<BTreeMap<ContentId, PcmAudio>>,
+}
+
+impl Clone for InMemorySamples {
+    fn clone(&self) -> Self {
+        Self {
+            entries: Mutex::new(
+                self.entries
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone(),
+            ),
+        }
+    }
 }
 
 impl InMemorySamples {
@@ -482,25 +558,39 @@ impl InMemorySamples {
 
     /// Registers the samples of one audio content id.
     pub fn insert(&mut self, id: ContentId, audio: PcmAudio) {
-        self.entries.insert(id, audio);
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, audio);
     }
 
     /// How many assets this library holds.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     /// Whether this library holds nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.len() == 0
     }
 }
 
 impl SampleLibrary for InMemorySamples {
-    fn pcm(&self, id: &ContentId) -> Option<&PcmAudio> {
-        self.entries.get(id)
+    fn pcm(&self, id: &ContentId) -> Option<PcmAudio> {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .cloned()
+    }
+
+    fn replace_samples(&self, samples: BTreeMap<ContentId, PcmAudio>) {
+        *self.entries.lock().unwrap_or_else(PoisonError::into_inner) = samples;
     }
 }
 
@@ -938,7 +1028,7 @@ impl AudioDevice for AudibleDevice {
             ));
         };
         let voice = DeviceVoiceId(self.next_voice);
-        let source = LoopingVoice::new(audio, pan);
+        let source = LoopingVoice::new(&audio, pan);
         let pan_handle = source.pan_handle();
         let source = match self.probe.clone() {
             Some(probe) => source.with_probe(probe),

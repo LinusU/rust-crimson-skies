@@ -55,7 +55,8 @@ use cs_content::audio::AudioCatalog;
 use cs_sim::audio_events::AudioDevice;
 
 use super::device::{
-    AudioBackendLog, CapabilityDeclaration, RefusingAudioDevice, SampleLibrary, open_audible_device,
+    AudioBackendLog, CapabilityDeclaration, DeviceSampleLibrary, RefusingAudioDevice,
+    SampleLibrary, open_audible_device,
 };
 use super::engine::{EngineVoices, smooth_engine_voices};
 use super::handoff::{AudioHandoffLog, DeclaredAudioCatalog, insert_audio_session};
@@ -162,31 +163,43 @@ impl Plugin for AudioPlugin {
         // never falls back to the stand-in on failure — a refused gate installs
         // a device that reports the refusal on every command, because a
         // recording device would make a capability failure look like a mission
-        // with nothing to say.
-        let (output, backend) = match device {
+        // with nothing to say. The library travels with the audible branch
+        // only: it is published as a resource so the load's population pass
+        // fills the very object this device reads from, and a world that never
+        // asked for audible playback has nothing to fill.
+        let (output, backend, samples) = match device {
             Some(device) => (
                 AudioOutput::new(device),
                 AudioBackendLog::stand_in(&declaration),
+                None,
             ),
             None => match &self.audible {
-                Some(library) => match open_audible_device(Arc::clone(library), &declaration) {
-                    Ok(device) => (
-                        AudioOutput::new(Box::new(device)),
-                        AudioBackendLog::audible(&declaration),
-                    ),
-                    Err(error) => (
-                        AudioOutput::new(Box::new(RefusingAudioDevice::new(error.clone()))),
-                        AudioBackendLog::refused(&declaration, &error),
-                    ),
-                },
+                Some(library) => {
+                    let (output, backend) =
+                        match open_audible_device(Arc::clone(library), &declaration) {
+                            Ok(device) => (
+                                AudioOutput::new(Box::new(device)),
+                                AudioBackendLog::audible(&declaration),
+                            ),
+                            Err(error) => (
+                                AudioOutput::new(Box::new(RefusingAudioDevice::new(error.clone()))),
+                                AudioBackendLog::refused(&declaration, &error),
+                            ),
+                        };
+                    (output, backend, Some(Arc::clone(library)))
+                }
                 None => (
                     AudioOutput::default(),
                     AudioBackendLog::stand_in(&declaration),
+                    None,
                 ),
             },
         };
         app.insert_resource(output);
         app.insert_resource(backend);
+        if let Some(library) = samples {
+            app.insert_resource(DeviceSampleLibrary::new(library));
+        }
         app.init_resource::<AudioHandoffLog>();
         app.init_resource::<AudioMixReport>();
         app.init_resource::<EngineVoices>();
