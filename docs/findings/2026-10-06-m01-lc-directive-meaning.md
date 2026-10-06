@@ -61,6 +61,12 @@ pinned by `accept_m01_lc_directive_meaning_m01s_whole_vocabulary_is_measured_and
 | findings cited by M01's measured keys | exactly three: the B, C and D documents |
 | refusals (`BlockRefusal`) | 0 — every block was read |
 
+Corpus-wide, the same production run reports **53** mission-scoped readers, of
+which **40** are measured, **729** measured key occurrences beside **6**
+refused unmeasured ones and **80** unmet lowering rows, with **0** complete
+missions and `campaign_ready == false` (the `m01-directive-meaning.json`
+artifact beside the report).
+
 The three sets partition the vocabulary, and no key is left
 `meaning_not_measured`: the parent task's "measure what each reachable directive
 does" is discharged for `zbd/c1c/m01` — *as a static reading of the original's
