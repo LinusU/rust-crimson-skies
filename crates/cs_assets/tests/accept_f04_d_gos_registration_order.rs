@@ -924,14 +924,13 @@ fn accept_f04_d_gos_registration_order_leaves_other_namespaces_on_precedence() {
 /// exercises it fully. The defect was found there: `found_child` accepted the
 /// first case-insensitive match, and with two spellings present the chain
 /// mounted whichever `read_dir` returned first, so a local run could not see
-/// it at all. The path assertion below still checks the rule on every host,
-/// and the byte assertion adapts because the folded host has one file, not
-/// two. The loop repeats because an order-dependent implementation passes
-/// some iterations and fails others.
+/// it at all. The loop repeats because an order-dependent implementation
+/// passes some iterations and fails others.
 ///
-/// On a case-sensitive host the fixture is genuinely two directories holding
-/// two different containers, so resolving the wrong one serves the sibling's
-/// bytes for a name the original resolves elsewhere.
+/// On a case-sensitive host the fixture is genuinely two directories, so
+/// resolving the wrong one mounts `assets/sibling.rof` as the main container
+/// and `AIRFRAME.SCRIPT` — which only `Assets/crimson.rof` holds — is then not
+/// found at all.
 #[test]
 fn accept_f04_d_gos_registration_order_exact_container_spelling_wins_over_a_case_only_sibling() {
     let tree = TempTree::new("t686-case-order");
@@ -945,29 +944,23 @@ fn accept_f04_d_gos_registration_order_exact_container_spelling_wins_over_a_case
             b"the container the original asks for",
         )],
     );
-    // The same path spelled differently, with different bytes, so a chain that
-    // resolved the wrong one is visibly wrong rather than merely different.
+    // The case-only sibling directory holds a **differently named** container.
+    // A second `crimson.rof` there would make the *loose* mount (step 3, which
+    // walks all of `GOSDATA`) refuse the whole tree with `DuplicateMember` —
+    // a second spelling of a key it already holds. That refusal is correct
+    // production behaviour, but it fires before the resolution under test, so
+    // the sibling gets its own file name and the loose tree stays mountable.
     let sibling = nested_container(
         "ASSETS",
         "SCRIPTS",
-        &[Entry::plain("AIRFRAME.SCRIPT", b"a case-only sibling")],
+        &[Entry::plain("OTHER.SCRIPT", b"a case-only sibling")],
     );
     for (spelling, bytes) in [
         ("GOSDATA/Assets/crimson.rof", &main),
-        ("GOSDATA/assets/crimson.rof", &sibling),
+        ("GOSDATA/assets/sibling.rof", &sibling),
     ] {
         tree.write(spelling, bytes);
     }
-    // On a host that folds case the two spellings name one file, so the
-    // second write replaced the first and nothing distinguishes the two
-    // containers: the path assertion below still holds and still checks the
-    // rule, but there is no second byte string to tell the resolutions apart.
-    // It is skipped there rather than compared against a value the host has
-    // already overwritten.
-    let distinguishs_bytes = fs::read(tree.root().join("GOSDATA/Assets/crimson.rof"))
-        .expect("the exact container is readable")
-        != fs::read(tree.root().join("GOSDATA/assets/crimson.rof"))
-            .expect("the folded container is readable");
 
     for _ in 0..16 {
         let request = GosInstall::new(tree.root(), ExePathOrigin::RegistryKeyAbsent);
@@ -981,8 +974,9 @@ fn accept_f04_d_gos_registration_order_exact_container_spelling_wins_over_a_case
             "the exact spelling wins every time, not read_dir order: {}",
             step.container.display()
         );
-        // And it is the original's bytes that answer, not the sibling's: the
-        // two containers hold the same member name with different content.
+        // And the container that answers is the one the original asks for: only
+        // `Assets/crimson.rof` holds `AIRFRAME.SCRIPT`, so a chain that
+        // resolved `assets/` would find nothing at all.
         let served = chain
             .session
             .resolve(&gos_key("ASSETS/SCRIPTS/AIRFRAME.SCRIPT").expect("a key"))
@@ -994,12 +988,8 @@ fn accept_f04_d_gos_registration_order_exact_container_spelling_wins_over_a_case
             .expect("the served member reads");
         assert_eq!(
             read,
-            if distinguishs_bytes {
-                b"the container the original asks for".as_slice()
-            } else {
-                b"a case-only sibling"
-            },
-            "the served bytes are the exact spelling's, not the case-only sibling's"
+            b"the container the original asks for".as_slice(),
+            "the exact spelling's bytes answer"
         );
     }
 }
