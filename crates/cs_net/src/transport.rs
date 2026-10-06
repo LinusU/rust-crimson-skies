@@ -1106,8 +1106,9 @@ impl ClientTransport {
     /// # Errors
     ///
     /// The pinned layer's own verdict on this hang-up: `Ok` while its
-    /// connection state is still alive, [`TransportError::Netcode`] once it
-    /// has already given the connection up (its disconnect reason, the same
+    /// connection state is still alive, [`TransportError::NetcodeTransport`]
+    /// once it has already given the connection up (its reason is that
+    /// transport error's [`NetcodeTransportError::Netcode`] payload, the same
     /// value [`Self::disconnect_reason`] reports).
     ///
     /// The hang-up has already happened by then either way, so the result
