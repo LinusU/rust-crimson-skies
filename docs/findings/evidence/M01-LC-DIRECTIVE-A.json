@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M01-LC-DIRECTIVE-A",
+ "candidate_tree": "4807fbfd6aed5ca0688b69665e0e7ba5dd7951ef",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-06T05:28:03Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m01_lc_directive_a_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1", "exit_code": 0},
+ "source": {"install_sha256": "c14a876f4457d8710dee7986333ab636122c9549cf72b646fd69cbe7e72c5352", "content_sha256": "148a24b7b0506812e8f1ee13d8d3137a05926abebbe10161994e8c4cd300c35e"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m01_lc_directive_a_each_mapped_keys_argument_shapes_match_the_record", "status": "pass", "evidence": ["cargo-test.log", "directive-census.json"]}, {"id": "accept_m01_lc_directive_a_the_mapped_vocabulary_is_exactly_the_43_keys_m01_spells", "status": "pass", "evidence": ["cargo-test.log", "directive-census.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "ec624e23fe8f5d0a43d8fccb3e27bf318691e359f0b3e03568b0444ff0d3ad16", "kind": "log"}, {"path": "directive-census.json", "sha256": "4439d53f90b9dd8e0e8c64b00534d71edbc65d991746ce9821f410b99dedd981", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "swe2-max-1", "method": "Acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run of cs_app::mission_control::survey_mission_control_programs over the installation (directive-census.json). Claim is implemented only. MEASURED: the findings document docs/findings/2026-10-06-m01-lc-directive-a-objective-directive-parser.md maps the native CZMission objective-directive parser in $CS_GAME_DIR/crimson.decrypted.exe (sha256 43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75) for every key M01 spells, and the production census reports that vocabulary as 43 distinct directive keys across 353 sites in 58 numbered objective blocks - the acceptance suite asserts the map's key set and argument shapes key for key against that census, so a drift between the document and the data fails the run. The native-side evidence is STATIC CODE EVIDENCE ONLY: parse sites, node layout, argument arity and tag checks, record field offsets and the update-time consumers were read out of the executable with r2/objdump and no original program was run, so nothing here is verified_original runtime behaviour. LIMITS OF WHAT WAS MEASURED, each recorded in the findings document's Unknowns section: (1) field SEMANTICS are stage B/C/D work - this stage measures which fields each key writes and which update-time helpers read them, not what a DEDG pair, a travelers subject or an INACTIVE member flag means in game terms; (2) IDENTITY's third argument (the MSG_* label M01 spells at 4 of 5 sites) is never read by the measured parse - whether the retained document is re-read for it is unknown; (3) several parsers read child payloads as char* without a tag check, so a malformed non-string child is a latent runtime hazard, observed but not exercised; (4) the native error paths log and continue rather than aborting, so a wrong-typed argument leaves a stack scratch value in the field. `unknowns` is empty because every key M01 spells reached a measured handler: no spelled key is unresolved. TEST-SELECTION NOTE: the prefix accept_m01_lc_directive_a_ is unique to this task, so the 2 discovered assertions are exactly this task's tests. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
