@@ -1641,8 +1641,8 @@ fn registration_order_json(candidate_tree: &str, retail: &Retail) -> String {
             })
             .collect();
         let bytes = chain
-            .session
-            .read_all(&asset)
+            .chain
+            .read(&chain.session, &asset)
             .expect("the served member reads");
         format!(
             "{{\"mount\": {}, \"container\": {}, \"member\": {}, \"decoded_len\": {}, \
