@@ -926,7 +926,9 @@ fn accept_f54_b_server_packets_reach_the_granted_client() {
 #[test]
 fn accept_f54_b_disconnect_event_arrives_once() {
     let (mut link, grant) = Link::admitted(SYNTHETIC_SESSION, synthetic_parameters(), 42);
-    link.client.disconnect();
+    link.client
+        .disconnect()
+        .expect("the connection is live, so the hang-up reports nothing");
     for _ in 0..8 {
         link.round();
     }

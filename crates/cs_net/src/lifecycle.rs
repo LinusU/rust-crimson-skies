@@ -48,7 +48,11 @@
 //! could not be performed, [`ServerNotice::Dropped`] /
 //! [`ClientNotice::Dropped`] for traffic refused on the wire, and
 //! [`TransportFault`](ServerNotice::TransportFault) for a connection-layer
-//! error. Teardown is explicit on both sides ([`ServerSession::close`],
+//! error. The client's *send* path is part of that: a packet
+//! [`ClientTransport`] could not put on the wire arrives as
+//! [`ClientNotice::Dropped`] carrying [`ClientFault::Transport`], because the
+//! pinned layer pops a packet out of its queues before it can fail to send it.
+//! Teardown is explicit on both sides ([`ServerSession::close`],
 //! [`ClientSession::leave`]) and repeatable ([`ServerSession::reopen`] mints a
 //! fresh epoch for a retry, which is what makes every prior packet stale).
 //!
@@ -1327,6 +1331,14 @@ impl ClientSession {
                     );
                 }
             }
+            // The send path's own verdict: the packet left neither renet's
+            // queue nor the wire, so the caller is told and nothing else
+            // changes. Teardown stays with the connection layer's next round —
+            // a refused send is a report (F54-C error propagation), not a
+            // session decision this owner invents.
+            ClientEvent::SendFault { reason } => notices.push(ClientNotice::Dropped {
+                reason: ClientFault::Transport(format!("the send path refused: {reason}")),
+            }),
         }
     }
 
@@ -1543,10 +1555,18 @@ impl ClientSession {
     /// Leaves the session: tells the host on the reliable channel, then hangs
     /// up.
     ///
+    /// The phase becomes `Closed(LeftVoluntarily)` even when the hang-up's own
+    /// report below is an error: the transport is closed in both cases, and a
+    /// session that stayed open because its farewell failed would wait for a
+    /// host it can no longer reach.
+    ///
     /// # Errors
     ///
-    /// [`ClientFault::NotInSession`] before the handshake, or
-    /// [`ClientFault::Transport`] when the farewell cannot be sent.
+    /// [`ClientFault::NotInSession`] before the handshake,
+    /// [`ClientFault::Transport`] when the farewell cannot be queued, or when
+    /// the pinned layer reports that it had already given this connection up —
+    /// a verdict this method used to discard, so a caller could not tell a
+    /// clean hang-up from one the layer had already refused.
     pub fn leave(&mut self) -> Result<(), ClientFault> {
         if let ClientPhase::Closed(closure) = &self.phase {
             return Err(ClientFault::Closed {
@@ -1565,9 +1585,16 @@ impl ClientSession {
                 payload: ClientPayload::Leave,
             })
             .map_err(|reason| ClientFault::Transport(reason.to_string()))?;
-        self.transport.disconnect();
+        // The hang-up is unconditional — the socket is going away either way —
+        // but what the pinned layer answers for it is this call's documented
+        // `ClientFault::Transport`: reported, never swallowed, and never a
+        // reason to leave the session open after the transport is closed.
+        let farewell = self
+            .transport
+            .disconnect()
+            .map_err(|reason| ClientFault::Transport(reason.to_string()));
         self.phase = ClientPhase::Closed(ClientClosure::LeftVoluntarily);
-        Ok(())
+        farewell
     }
 }
 

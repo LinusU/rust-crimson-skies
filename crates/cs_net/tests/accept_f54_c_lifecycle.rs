@@ -416,6 +416,7 @@ impl RawPeer {
                 ClientEvent::Disconnected { .. } => "disconnected",
                 ClientEvent::PacketDropped { .. } => "undecodable reply",
                 ClientEvent::TransportFault { .. } => "transport fault",
+                ClientEvent::SendFault { .. } => "send fault",
             };
             match counts.iter_mut().find(|(name, _)| *name == kind) {
                 Some((_, seen)) => *seen += 1,
@@ -2011,6 +2012,136 @@ fn accept_f54_c_a_handshake_answer_that_cannot_be_sent_is_reported_not_swallowed
     assert!(
         raw.transport.grant().is_none() && raw.transport.rejection().is_none(),
         "the client holds neither a grant nor a reason, because neither was sent"
+    );
+}
+
+/// How long the client is pumped before the round under test, expressed as one
+/// hop past the window its own connect token carries.
+///
+/// The pinned layer accumulates its timeout purely from the `elapsed` a caller
+/// hands to `update` (see [`LOOPBACK_WINDOW`]), so a single round of one second
+/// more than that window *is* the timeout — no wall clock, no sleep, and no
+/// dependence on how fast this machine is. One second is the margin: the layer
+/// compares `last_received + window < now`, and `now` has just grown by
+/// `window + 1`.
+fn overdue_round() -> Duration {
+    let window = u64::try_from(LOOPBACK_WINDOW.const_seconds())
+        .expect("a window is a positive number of seconds");
+    Duration::from_secs(window + 1)
+}
+
+#[test]
+fn accept_f54_c_a_client_send_that_never_left_is_reported_not_swallowed() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut link = Link::joined(session);
+    let mut peer = link.raw_peer(0xC8);
+    peer.handshake(&mut link.host);
+
+    // Leave the socket quiet first, so the round under test has only its own
+    // verdict to report. Sixteen steps is a bound, not a wait: the host is
+    // never pumped again, so nothing new can arrive, and 16 * 16 ms is far
+    // inside the window the timeout below depends on.
+    let mut quiet = Vec::new();
+    for _ in 0..16 {
+        quiet = peer.transport.update(STEP);
+        if quiet.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        quiet.is_empty(),
+        "the fixture went quiet before the round under test: {quiet:?}"
+    );
+
+    // With the host silent, this round exhausts the connection window *inside*
+    // the transport's own update: the netcode layer records the timeout while
+    // `update` still reports success, and the send that follows it is refused
+    // after the packets it carried were already popped from renet's queues.
+    // Nothing else happened this round, so this refusal is its only report —
+    // the exact case the swallowed `let _ =` hid.
+    let events = peer.transport.update(overdue_round());
+    assert!(
+        matches!(
+            events.as_slice(),
+            [ClientEvent::SendFault { reason }] if reason.contains("connection timed out")
+        ),
+        "the refused send is reported and nothing else happened this round: {events:?}"
+    );
+
+    // The connection layer states the same death on the *next* round, where
+    // `transport.update` sees it first. So the event above was not a second
+    // voice for a fault already reported: it was the first one — and it stays
+    // quiet afterwards instead of restating it every round.
+    let following = peer.transport.update(STEP);
+    assert!(
+        matches!(
+            following.as_slice(),
+            [
+                ClientEvent::TransportFault { .. },
+                ClientEvent::Disconnected { .. }
+            ]
+        ),
+        "the layer reports the dead connection on the following round: {following:?}"
+    );
+
+    assert!(
+        peer.transport.disconnect().is_err(),
+        "and the hang-up returns the connection layer's verdict instead of discarding it"
+    );
+}
+
+#[test]
+fn accept_f54_c_a_refused_send_reaches_the_session_owner_as_a_notice() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut link = Link::joined(session);
+
+    // Same round as `accept_f54_c_a_client_send_that_never_left_is_reported_not_swallowed`,
+    // through the session owner an app actually drives.
+    let mut quiet = Vec::new();
+    for _ in 0..16 {
+        quiet = link.client.pump(STEP);
+        if quiet.is_empty() {
+            break;
+        }
+        link.client_notices.extend(quiet.iter().cloned());
+    }
+    assert!(
+        quiet.is_empty(),
+        "the fixture went quiet before the round under test: {quiet:?}"
+    );
+
+    let notices = link.client.pump(overdue_round());
+    assert!(
+        matches!(
+            notices.as_slice(),
+            [ClientNotice::Dropped {
+                reason: ClientFault::Transport(text)
+            }] if text.contains("connection timed out")
+        ),
+        "the send path's refusal reaches the caller as a named notice: {notices:?}"
+    );
+    assert!(
+        link.client.phase().open(),
+        "a report is not a session decision: the phase is {:?}",
+        link.client.phase()
+    );
+    link.client_notices.extend(notices.iter().cloned());
+
+    // Teardown still comes from the connection layer's own verdict, on the
+    // round after — reporting the send did not close anything early and did
+    // not hide the closure either.
+    link.client_round();
+    assert!(
+        matches!(
+            link.client.phase(),
+            ClientPhase::Closed(ClientClosure::TransportLost(_))
+        ),
+        "the layer's verdict still closes the session: {:?}",
+        link.client_notices
     );
 }
 

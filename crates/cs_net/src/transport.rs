@@ -58,6 +58,14 @@
 //!   committed, and an encode failure surfaces as [`HostEvent::ReplyFailed`]
 //!   instead of being swallowed. A client that cannot be told never becomes a
 //!   member.
+//! * The client's send path reports too: [`ClientTransport::update`] turns the
+//!   result of the pinned layer's `send_packets` into [`ClientEvent::SendFault`]
+//!   instead of discarding it, and [`ClientTransport::disconnect`] returns the
+//!   layer's verdict instead of dropping it. The pinned layer pops a packet out
+//!   of renet's queues *before* it can fail to put it on the wire, so a
+//!   swallowed failure is a payload that left neither the queue nor the wire
+//!   while every caller — test or app — sees a transport that is quiet rather
+//!   than one that cannot speak.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -936,6 +944,26 @@ pub enum ClientEvent {
         /// The reported error.
         reason: String,
     },
+    /// The send path could not put a packet on the wire.
+    ///
+    /// The pinned layer's `send_packets` takes what renet has queued *before*
+    /// it can fail — a `send_to` that fails, a payload the netcode layer
+    /// refuses — so those packets have already left the queue when the error
+    /// returns. Without this event they leave nothing else either: the caller,
+    /// every test and every app consumer would see a peer that is silent
+    /// rather than a peer that cannot send, which is the F54-C rule that a
+    /// connection-layer error is propagated, not swallowed.
+    ///
+    /// The one failure deliberately not repeated here is the connection
+    /// layer's own disconnect while the connection already carries its reason:
+    /// [`ClientEvent::TransportFault`] and [`ClientEvent::Disconnected`] report
+    /// that fact, and saying it again on every later round would be one event
+    /// with no new information. Every other send failure — including a
+    /// disconnect this round discovered — is reported.
+    SendFault {
+        /// The reported error.
+        reason: String,
+    },
 }
 
 /// The client's pinned transport: one UDP socket running a netcode
@@ -1074,9 +1102,25 @@ impl ClientTransport {
     }
 
     /// Hangs up at the transport layer.
-    pub fn disconnect(&mut self) {
+    ///
+    /// # Errors
+    ///
+    /// The pinned layer's own verdict on this hang-up: `Ok` while its
+    /// connection state is still alive, [`TransportError::Netcode`] once it
+    /// has already given the connection up (its disconnect reason, the same
+    /// value [`Self::disconnect_reason`] reports).
+    ///
+    /// The hang-up has already happened by then either way, so the result
+    /// never changes *this* transport's state — it is a report a caller would
+    /// otherwise never get. [`crate::lifecycle::ClientSession::leave`] turns
+    /// it into [`crate::lifecycle::ClientFault::Transport`], so a clean
+    /// hang-up and one the pinned layer had already refused are no longer the
+    /// same `Ok` to a session owner (F54-C error propagation).
+    pub fn disconnect(&mut self) -> Result<(), TransportError> {
         self.client.disconnect();
-        let _ = self.transport.send_packets(&mut self.client);
+        self.transport
+            .send_packets(&mut self.client)
+            .map_err(TransportError::from)
     }
 
     /// Advances the connection layers, sends the hello once the connection
@@ -1116,7 +1160,37 @@ impl ClientTransport {
             self.disconnect_reported = true;
             events.push(ClientEvent::Disconnected { reason });
         }
-        let _ = self.transport.send_packets(&mut self.client);
+        // The send path's result is reported, not discarded (F54-C error
+        // propagation). `send_packets` takes what renet has queued *before* it
+        // can fail, so a failure here is a payload that has left neither the
+        // queue nor the wire and that no later call can observe — a peer that
+        // cannot send would otherwise look exactly like a peer that is not
+        // trying.
+        //
+        // The single exception is the connection layer's own disconnect while
+        // this connection already carries its reason: `transport.update`
+        // reported that as `ClientEvent::TransportFault` above, and the
+        // `disconnect_reason` check just above this line reports it as
+        // `ClientEvent::Disconnected` (on the transition, exactly once). Re-
+        // stating it here on every later round would be one fact without new
+        // information.
+        let dead_and_known = self.client.disconnect_reason().is_some();
+        let refused = self
+            .transport
+            .send_packets(&mut self.client)
+            .err()
+            .filter(|reason| {
+                !(dead_and_known
+                    && matches!(
+                        reason,
+                        NetcodeTransportError::Netcode(NetcodeError::Disconnected(_))
+                    ))
+            });
+        if let Some(reason) = refused {
+            events.push(ClientEvent::SendFault {
+                reason: reason.to_string(),
+            });
+        }
         events
     }
 
