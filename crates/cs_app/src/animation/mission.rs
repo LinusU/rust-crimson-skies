@@ -1726,3 +1726,115 @@ fn declares_definition_record(bytes: &[u8]) -> bool {
 fn claim_id(id: &str) -> Result<ClaimId, MissionAnimationError> {
     ClaimId::new(id).map_err(|error| MissionAnimationError::Provenance(error.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::animation::programs::{LOAD_GAME_START, NEW_GAME_START};
+
+    /// A startup row in the smallest shape the binding holds: a declaration
+    /// nobody resolved, no record and one stored target name.
+    fn startup_row(event: &str, identity: &str, refusals: Vec<PlayRefusal>) -> StartupAnimation {
+        StartupAnimation {
+            declaration: StartupAnimationBinding::new(
+                event,
+                identity,
+                BindingResolution::Unresolved,
+            ),
+            record: RecordResolution::Unbound {
+                reason: UNBOUND_REASON_NOT_WALKED,
+                matches: Vec::new(),
+            },
+            targets: vec![AnimationTarget::resolve(
+                TargetSource::RecordNode,
+                format!("{identity}_node"),
+                None,
+            )],
+            refusals,
+        }
+    }
+
+    fn binding(rows: Vec<StartupAnimation>) -> MissionAnimationBinding {
+        MissionAnimationBinding {
+            scope: "zbd/c1c/m01".to_owned(),
+            group: "c1c".to_owned(),
+            archives: vec!["zbd/c1c/m01/zrdr.zbd".to_owned()],
+            world_container: "zbd/c1c/gamez.zbd".to_owned(),
+            carriers: Vec::new(),
+            startup: rows,
+            placements: Vec::new(),
+            provenance: Provenance::new(
+                claim_id(DECLARATION_MATCH_CLAIM).expect("the static claim id is valid"),
+                ClaimStatus::ObservedTool,
+                None,
+            )
+            .expect("an observed-tool claim with no source span is valid"),
+        }
+    }
+
+    /// The seam a mission asks `run` on answers exactly one event's rows, in
+    /// stored order — not every row the scope holds. A refused row reports its
+    /// refusals while `playable` answers the row with none, an event the table
+    /// never declared is an empty run rather than a failure, and
+    /// `world_targets` pairs every row's targets with the row they came from.
+    ///
+    /// The integration file cannot reach this seam without an installation:
+    /// the binding's fields stay private, so this test builds the measured
+    /// shapes in place.
+    #[test]
+    fn accept_m01_lc_actor_anim_playback_a_run_filters_one_event_and_reports_its_rows() {
+        let undeclared = || {
+            vec![PlayRefusal::Undeclared {
+                reason: UNDECLARED_REASON,
+            }]
+        };
+        let binding = binding(vec![
+            startup_row(NEW_GAME_START, "first", undeclared()),
+            startup_row(LOAD_GAME_START, "other", undeclared()),
+            startup_row(NEW_GAME_START, "second", Vec::new()),
+        ]);
+
+        let run = binding.run(NEW_GAME_START);
+        assert_eq!(run.event(), NEW_GAME_START);
+        assert_eq!(run.len(), 2, "only the asked event's rows answer");
+        assert!(!run.is_empty());
+        assert_eq!(
+            run.rows()
+                .iter()
+                .map(StartupAnimation::identity)
+                .collect::<Vec<_>>(),
+            vec!["first", "second"],
+            "the run keeps the event's stored order"
+        );
+        assert_eq!(run.playable().count(), 1, "the row with no refusal plays");
+        let (row, refusals) = run.refused().next().expect("exactly one refused row");
+        assert_eq!(row.identity(), "first");
+        assert_eq!(refusals.len(), 1);
+        assert_eq!(run.refused().count(), 1);
+
+        // The other event answers its own row; an undeclared event is an
+        // empty run, not a failure.
+        assert_eq!(binding.run(LOAD_GAME_START).len(), 1);
+        assert!(
+            binding.run("NO_SUCH_EVENT").is_empty(),
+            "an absent startup event is measured content, not an error"
+        );
+
+        // `startup_of` answers the same set by borrow, the counts agree with
+        // the rows, and `world_targets` joins each target to its own row.
+        assert_eq!(binding.startup_of(NEW_GAME_START).len(), 2);
+        assert_eq!(binding.playable_count(), 1);
+        assert_eq!(binding.refused_count(), 2);
+        assert_eq!(
+            binding.world_targets().count(),
+            3,
+            "one stored target per row"
+        );
+        assert!(
+            binding
+                .world_targets()
+                .all(|(target, row)| target.stored() == format!("{}_node", row.identity())),
+            "each target pairs with the row it came from"
+        );
+    }
+}
