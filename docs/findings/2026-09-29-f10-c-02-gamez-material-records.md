@@ -349,7 +349,14 @@ with both numbers — on a synthetic fixture that is one material versus two.
 - **A material's texture index is a lookup, not a resolution.** `texture_of`
   returns the table entry or `None`; it does not decide what the name *is*. The
   audit is the only place a name becomes an origin, and it does that through the
-  caller's archive with no folding, no stripping, no alias and no fallback.
+  caller's archive with no stripping, no alias and no fallback. The one
+  relaxation that later turned out to be real is the **ASCII case fold** of the
+  request, measured at `0x531930` and adopted by task #689: see
+  `docs/findings/2026-10-06-t689-texture-name-case-fold.md`. Every count in
+  this file was measured **before** that fold and is unchanged by it, which is
+  itself measured there: the fold newly resolves 0 of the 3 521 distinct names
+  the world's textured materials use, because each name that differs in case
+  also carries an extension the archive does not store.
 - **`array_size` is carried, not obeyed.** The reference asserts `array_size <=
   1000` and then always reads 1 000 slots; this reader does the same and says so
   in the constant's documentation. In the corpus the two are equal, so the corpus
@@ -412,11 +419,15 @@ established (deferred item 3 below). Its 19 810 stored references are inside its
 like every other archive's, and it contributes 954 materials and 298 texture
 names to the corpus totals above.
 
-### The exact-name rule resolves 10 of 3 543 rows, and that is the finding
+### The name rule resolves 10 of 3 543 rows, and that is the finding
 
 The discriminating acceptance case is the rule working as written, and on the
 installation it produces a large number of `missing_texture` rows. The reason is
-measurable and is **not** a defect in the audit:
+measurable and is **not** a defect in the audit. (This section was written when
+the rule was byte equality; task #689 replaced byte equality with the measured
+ASCII case fold of the request, which leaves **every number below unchanged** —
+measured, not assumed: the fold newly resolves none of the 3 521 distinct names
+the world's textured materials use.)
 
 - a GameZ container spells a texture with an extension and in mixed case —
   `Sky1.tif`, `SPACE.tif`, `A.tif`…`Z.tif`, `pass_Sparks.tif`,
@@ -458,12 +469,20 @@ lower case. The handful that match **nothing** are `pir_spinner.tif` and
 world's texture archives under any spelling this audit is allowed to try.
 
 So: **a case-insensitive, extension-insensitive match would resolve 549 of 551
-of `C1`'s names, and the exact rule the task specifies resolves none of
+of `C1`'s names, and the name rule the task specifies resolves none of
 `C1`'s.** Over the eight world archives the audit produces **3 543** rows and
 **10** of them resolve — the ten are `C2`'s and `C3`'s five extension-less
 lower-case names each. The other **3 481** are `missing_texture`. Both the
 per-world and the union figures are given above so that neither can be quoted
 without the other.
+
+**What the ASCII fold added to this, measured in #689: nothing.** Case folding
+alone is not enough to reach any of these names, because the container's name
+carries an extension and the archive stores a bare stem: `Sky1.tif` folds to
+`sky1.tif`, not `sky1`. Resolving these rows needs the extension stripped,
+which is the separate relaxation the table above counts and the audit does not
+perform. So the 10-of-3 543 figure is the same figure under the exact rule and
+under the measured fold.
 
 The task's rule is not relaxed here to make that number smaller, and no alias
 record is invented. The retail acceptance test asserts the rule on real data:
@@ -497,8 +516,8 @@ constants out rather than importing the reader's).
 | `..._the_section_boundary_fails_loudly_and_is_retryable` | a material naming a texture the container does not have, four truncations, and the allocation ledger left unchanged so the same context then reads the good bytes |
 | `..._retail_every_archive_lands_on_its_meshes_offset` (retail) | all nine archives: the walk ends on `meshes_offset`, `materials_offset == textures_offset + 44 × texture_count`, the recorded texture and material counts (3 985 and 4 669 in total), every stored texture index inside the container's own table, **zero** findings, every stored stem a prefix of its stored name, and the evidence class |
 | `..._audit_resolves_a_material_to_exactly_one_stored_texture` | the resolved row in full: the `TextureId` with its archive, entry and name, the row's ten catalog fields, and both stored references named at their own levels |
-| `..._audit_reports_a_missing_texture_with_its_exact_name_and_archive` | **the discriminating case**, with a *second archive of the same world* holding both `Sky1.tif` and `sky1`: the row is `missing_texture` naming the exact name and archive, the dependency list has one entry, and the second archive is shown to hold the name anyway |
-| `..._audit_neither_folds_case_nor_strips_an_extension` | `Sky1.tif` is missing, `sky1` and `ground` resolve, in the same audit |
+| `..._audit_reports_a_missing_texture_with_its_exact_name_and_archive` | **the discriminating case**, with a *second archive of the same world* holding `sky1.tif` — the spelling `Sky1.tif` folds to, so a fallback would succeed and must not be taken — plus `Sky1.tif` verbatim and `sky1`: the row is `missing_texture` naming the exact name and archive, the dependency list has one entry, every spelling of the request resolves to the stored `sky1.tif` rather than the stored `Sky1.tif`, and the world's own archive is shown to store none of the three |
+| `..._audit_neither_folds_case_nor_strips_an_extension` | `Sky1.tif` is missing, `sky1` and `ground` resolve, in the same audit. Since #689 the request *is* case-folded, and this is the case that says the fold does not rescue it: `Sky1.tif` folds to `sky1.tif` and the archive stores the bare stem `sky1` |
 | `..._audit_reports_a_material_index_past_the_table_and_never_clamps` | index 7 of 3 records is reported with `fingerprint: None` and no record, the last real record is **not** what it resolved to, and its three references are named |
 | `..._audit_keeps_untextured_and_unknown_field_rows` | `untextured` is **complete** (ready, parsed, no reasons) with its flat colour uninterpreted, and `unknown_field` is blocked |
 | `..._audit_reports_dangling_archive_and_duplicate_dependencies` | `texture_index_out_of_range`, `duplicate_texture` with both entry indices, and `archive_unavailable` for an archive the catalog does not hold — and a container-side defect still reported as itself |
