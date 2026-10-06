@@ -103,6 +103,15 @@
 //! cannot finish on this host (`c3`, whose stored mesh carries subnormal
 //! coordinates that make parry's BVH bin index overflow) is **pinned and named**
 //! there rather than skipped.
+//!
+//! **#688** (`accept_f08_c_renderer_`) wires the renderer-settings consumer
+//! that chooses a world's texture archive: `texture_archive` owns the
+//! end-to-end check that a world load opens the archive the measured rule
+//! selects — from the detail-settings members and the renderer's device
+//! report through `TextureCatalog::open_world`, with the measured
+//! `rimage.zbd` fallthrough answering a name the selected archive does not
+//! hold — on a synthetic installation and, ignored under `CS_GAME_DIR`, on
+//! the real one.
 
 mod audit;
 mod common;
@@ -120,6 +129,7 @@ mod shared_asset;
 mod shear;
 mod spawn;
 mod sweep;
+mod texture_archive;
 mod trigger;
 mod triggers;
 mod visibility;
