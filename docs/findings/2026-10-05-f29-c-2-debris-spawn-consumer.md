@@ -168,6 +168,55 @@ failing tests and restored the file from Git:
   simulated wreck (pose, physics, lifetime). Both belong to the stages that
   author the wreckage objects.
 
+## Review pass (opencode-1, 2026-10-06)
+
+Added by the review that re-landed this stage. Implementer: `opencode-1`
+(`opencode-1/opencode-1`); reviewer: the same agent name in a **fresh session
+with no shared context** (a new session, not a continuation of the
+implementation conversation) — so this is a second pass over the branch, not an
+independent-identity one, and it is not independent evidence about the original
+game. Nothing here awards `verified_original` or `release_approved`.
+
+Method: read the branch against `specs/F29-…`'s `### F29-C`, this task's
+acceptance list, `docs/contracts/STATE-TRANSACTIONS.md` and the sibling
+consumer seams (`apply_damage_state`, `apply_damage_events`,
+`repair_damage_zone`, `bound_entity`), then ran the checks on the rebased tree
+and one mutation probe chosen to confirm the pass is pinned by production code:
+
+| probe | edit | result |
+| --- | --- | --- |
+| the pass stops spawning (reviewer probe) | `if !kept` → `if false && !kept` in `apply_debris_state` | **5 of 9 failed**: `…_destroying_a_part_spawns_its_authored_debris_once`, `…_a_second_pass_spawns_none`, `…_a_repair_removes_the_spawned_debris`, `…_a_reload_releases_every_spawned_debris`, `…_a_superseded_binding_replaces_the_instance`; restored from Git, then 9 of 9 passed again |
+
+Confirmed during review, because the task's own acceptance depends on it:
+
+* **No sibling seam is scheduled either.** A repo-wide grep finds no production
+  caller for `apply_damage_state`, `apply_damage_events` or
+  `repair_damage_zone` — only docs and tests — so `apply_debris_state` /
+  `release_debris` having no schedule system is the same staging as the merged
+  F29-C work, tracked by #668 (F29-C-SCHEDULE) and #669 (F29-C.5), not a
+  silent stub. The bindings are still unpublished by any spawn path, so
+  **no retail airframe changes behaviour today**.
+* **First-bound-entity-wins** in `debris_bindings` matches the sibling rule
+  (`bound_entity` in `damage.rs` is also the first match in entity order).
+* `ClaimId::new("f29c2.unknown-integrity")` validates under
+  `cs_types::evidence::ClaimId` (non-empty, ≤128 bytes, allowed characters),
+  so the refusal constructor cannot panic on its fallback arm.
+
+**Rebase and the CI failure, recorded because it looks like a red branch and is
+not one.** The first push of this review (`a9a53354`, rebased onto `73f84b1c`)
+failed CI five times with *no test failure in any attempt*: `cargo fmt` and
+`cargo clippy` were green on every attempt, and the `cargo test` step died of
+`No space left on device` (one attempt shows the runner's own
+`Worker_…-utc.log` `IOException`, another `df -h /` → `/dev/root 145G 145G 4.8M
+100% /`). The arithmetic is in
+`docs/findings/2026-10-06-t696-ci-runner-disk-budget.md`: on base `73f84b1c`
+the job has 105 GB and writes ~104 GB, so it ends with **450 MB** free, and one
+more `cs_app` test file costs ~107 MB — this branch's
+`accept_f29_c_debris_spawn` target is exactly that, so the branch could not go
+green on its old base. Rebasing onto `1d95b72d`, whose `385160c2` frees 37 GB
+more (124 GB available → 20 GB free after tests), is the fix; the extra test
+target is 0.5% of that headroom.
+
 ## Evidence
 
 Synthetic fixtures and designed contracts only. No original-data, visual,
