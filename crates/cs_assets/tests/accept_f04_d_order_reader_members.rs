@@ -964,11 +964,11 @@ fn accept_f04_d_order_reader_retail_mission_shadows_world_in_five_cases() {
     assert_eq!(
         served_cases,
         vec![
-            "ZBD/C1C/IA1/targets.zrd",
-            "ZBD/C1C/MP1/targets.zrd",
-            "ZBD/C1C/MP3/targets.zrd",
-            "ZBD/C2/M01/security_destroy.zrd",
-            "ZBD/C3/M02/fueltruck.zrd",
+            "ZBD/C1C/IA1/zrdr.zbd/targets.zrd",
+            "ZBD/C1C/MP1/zrdr.zbd/targets.zrd",
+            "ZBD/C1C/MP3/zrdr.zbd/targets.zrd",
+            "ZBD/C2/M01/zrdr.zbd/security_destroy.zrd",
+            "ZBD/C3/M02/zrdr.zbd/fueltruck.zrd",
         ],
         "the five mission-over-world shadowing cases section F measures"
     );
@@ -1396,11 +1396,11 @@ fn evidence_report_t685_writes_the_acceptance_report() {
             .map(|(container, name, _)| format!("{container}/{name}"))
             .collect::<Vec<_>>(),
         vec![
-            "ZBD/C1C/IA1/targets.zrd",
-            "ZBD/C1C/MP1/targets.zrd",
-            "ZBD/C1C/MP3/targets.zrd",
-            "ZBD/C2/M01/security_destroy.zrd",
-            "ZBD/C3/M02/fueltruck.zrd",
+            "ZBD/C1C/IA1/zrdr.zbd/targets.zrd",
+            "ZBD/C1C/MP1/zrdr.zbd/targets.zrd",
+            "ZBD/C1C/MP3/zrdr.zbd/targets.zrd",
+            "ZBD/C2/M01/zrdr.zbd/security_destroy.zrd",
+            "ZBD/C3/M02/zrdr.zbd/fueltruck.zrd",
         ],
         "the five mission-over-world shadowing cases the acceptance suite pins, re-derived \
          from the production mounts of every declared reader archive"
