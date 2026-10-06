@@ -67,22 +67,25 @@
 //!
 //! Each row is reported as a [`LoweringRequirement`] carrying the measured
 //! numbers behind it and the fields that remain unknown, so the reader can see
-//! *why* the member is Unsupported rather than only that it is.
-//! [`LoweringRequirement::is_met`] is false for a retail record today, and
-//! [`ControlLowering::complete`] is false with it — nothing downstream may call
-//! a mission playable off this measurement (AGENTS.md rule 4, contract "If the
-//! actual program is unavailable or cannot be decoded, the mission remains
-//! Unsupported").
+//! *why* the member is Unsupported rather than only that it is. The
+//! `objective_condition` and `call_arguments` rows are unmet for every retail
+//! record today, and [`ControlLowering::complete`] is false with them —
+//! nothing downstream may call a mission playable off this measurement
+//! (AGENTS.md rule 4, contract "If the actual program is unavailable or cannot
+//! be decoded, the mission remains Unsupported").
 //!
 //! # What is measured and what is not
 //!
 //! Every spelling in this module was measured over the owner's installation on
 //! 2026-10-04 by reading each mission's reader archive through production
 //! discovery, decoding it with the production `.zrd` reader and walking the
-//! numbered blocks. What any spelling **does** is unmeasured: no original
-//! executable has been run, and `INSTANTWIN` naming a win is a reading of a
-//! name, not an observation of behaviour. Nothing here is `verified_original`
-//! (AGENTS.md rule 8), and no `content` field below is a decoded meaning.
+//! numbered blocks. What a covered spelling **does** is measured too —
+//! statically, out of the stage A–D findings' reading of the original code —
+//! and [`measured_directive`] carries it with its residual unknowns. What is
+//! still unmeasured is runtime behaviour: no original executable has been run,
+//! and `INSTANTWIN` naming a win is a reading of a name, not an observation of
+//! behaviour. Nothing here is `verified_original` (AGENTS.md rule 8), and no
+//! `content` field below is a decoded meaning.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
