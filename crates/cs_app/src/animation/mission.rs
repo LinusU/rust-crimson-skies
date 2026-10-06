@@ -1419,12 +1419,15 @@ pub fn bind_mission_animation(
         None => Vec::new(),
     };
 
-    // Walk each carrier's records once, so a bound identity can be read in full.
-    let paths = carrier_keys
+    // Walk each carrier's records once, so a bound identity can be read in
+    // full. The paths come from `carrier_facts`, which the read loop filled in
+    // the same order it pushed the bytes: a carrier the installation does not
+    // hold made it into neither, so the three lists can never disagree.
+    let paths = carrier_facts
         .iter()
-        .map(|(_, key, _)| {
-            RelativePath::new(&key.to_lowercase()).map_err(|error| MissionAnimationError::Carrier {
-                container: key.clone(),
+        .map(|fact| {
+            RelativePath::new(&fact.container_key).map_err(|error| MissionAnimationError::Carrier {
+                container: fact.container_key.clone(),
                 reason: error.to_string(),
             })
         })
