@@ -164,13 +164,21 @@ sensors or solids by inference.
   and trigger behaviour over those volumes. **Resolving task:** a follow-up
   measurement of the volume-class records' runtime consumption, if the
   mission semantics stage (#675/#676/#678 family) cannot already answer it.
+  *(Resolved by #716 — `docs/findings/2026-10-07-m01-lc-fvol-roles-and-axis-convention.md`:
+  the image's only name-keyed consumer of the `fvol` prefix is its fog
+  routine, so the 59 world-owned `fvol*` records resolve to `None` and the
+  75 records no measured prefix names keep this claim.)*
 - **The axis map, handedness, angle unit, rotation sense and front-face rule
   are DECLARED, not measured.** `retail_gamez` carries the identity
   convention because that is what the import already applied; the calibration
   gap list names every unmeasured quantity. **Affected content:** any claim
   that a stored transform's *orientation* is the original's rather than the
   declared convention's. **Resolving task:** #436's wider convention
-  measurement.
+  measurement. *(Partly resolved by #716: the axis map, orientation
+  preservation, angle unit and rotation sense are now measured by static
+  analysis of the decrypted image (#436's owner note) and reported per import
+  by `WorldImportReport::axis_class`; this source's own calibration still
+  carries no landmark for them, which is #390/F16-E's work.)*
 - **`observed_tool` is the ceiling here.** No original executable ran; the
   metre claim is a byte census. It could still be wrong if the format's
   `GRAVITY` word is not the Earth's, or if the aircraft were authored at a
