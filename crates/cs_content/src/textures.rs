@@ -1864,6 +1864,36 @@ pub fn texture_lookup_order(
     sources
 }
 
+/// What a consumer that resolves texture names through
+/// [`texture_lookup_order`] needs: the probe's own search list, the archive the
+/// world load chose, and the catalog the shared image list is opened in.
+///
+/// `world_archive` must name the file `world_archive` of every returned
+/// [`TextureLookupSource::WorldArchive`] — the archive the consumer's catalog
+/// holds. [`WorldArchiveChoice::opened_name`] spells it.
+///
+/// `images` is a **second** catalog, opened over `rimage.zbd`: the original
+/// registers the image list once at app init, separately from the world's
+/// archive, so a lookup that reaches it does not touch the world's catalog.
+/// `None` means the installation lists no `rimage.zbd`, which is the honest
+/// state rather than a catalog opened over nothing.
+///
+/// The loose sources a name can fall through to are listed for the caller to
+/// report; no loose-file reader is bound (recorded in
+/// `docs/findings/2026-10-05-t352-texture-archive-selection-rule.md`), so a
+/// `LooseTiff`/`LooseBmp` entry can never serve a row.
+#[derive(Clone, Copy, Debug)]
+pub struct TextureLookup<'a> {
+    /// The search list [`texture_lookup_order`] walks: the world's own texture
+    /// directory first, the global `zbd` directory last.
+    pub files: &'a TextureFiles,
+    /// The file name of the archive the world load opened, e.g.
+    /// `rtexture15.zbd`.
+    pub world_archive: &'a str,
+    /// The catalog the shared image archive is opened in, when it exists.
+    pub images: Option<&'a TextureCatalog>,
+}
+
 /// Why a world load could not be given a texture archive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorldTextureError {
