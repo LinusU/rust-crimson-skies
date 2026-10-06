@@ -232,6 +232,7 @@ fn render_airframe_source(
     let mut carried: Vec<String> = Vec::new();
     let mut decode_failures: Vec<String> = Vec::new();
     let mut mission_members: Vec<String> = Vec::new();
+    let mut mission_carries_key = false;
     let mut scenario_members: Vec<String> = Vec::new();
 
     for record in &found.manifest.files {
@@ -275,7 +276,11 @@ fn render_airframe_source(
             if key == SCENARIO_ARCHIVE {
                 scenario_members.push(name.to_owned());
             }
-            if zrd_field(&document, PLAYER_PLANE_KEY).is_some() {
+            let carries = zrd_field(&document, PLAYER_PLANE_KEY).is_some();
+            if key == MEASURED_MISSION && carries {
+                mission_carries_key = true;
+            }
+            if carries {
                 assignments += 1;
                 let assigned = scenario_player_airframe(&document)
                     .map(str::to_owned)
@@ -338,7 +343,7 @@ fn render_airframe_source(
              {archives},\n \"members_decoded\": {members},\n \"members_carrying_player_plane\": \
              {assignments},\n \"assignments\": [{}],\n \"decode_failures\": [{}],\n \
              \"measured_mission\": {{\"archive\": {}, \"members\": [{}], \"player_plane_carried\": \
-             false}},\n \"scenario_archive\": {{\"archive\": {}, \"members\": [{}]}},\n \
+             {mission_carries_key}}},\n \"scenario_archive\": {{\"archive\": {}, \"members\": [{}]}},\n \
              \"metres_per_stored_unit\": {},\n \"measured_mission_start\": {{\"stored_pose\": {}, \
              \"airframe\": {}, \"initial_pose\": {}}},\n \"airframe_table\": [{}]\n}}\n",
             jstr(install_sha256),
