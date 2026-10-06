@@ -1657,10 +1657,9 @@ fn iso_utc_now() -> String {
     let day_of_era = z.rem_euclid(146_097);
     let year_of_era =
         (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year_of_day =
-        year_of_era * 365 + day_of_era / 1_460 - day_of_era / 36_524 + year_of_era / 4;
-    let month_prime = (5 * year_of_day + 2) / 153;
-    let day = year_of_day - (153 * month_prime + 2) / 5 + 1;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
     let month = if month_prime < 10 {
         month_prime + 3
     } else {
