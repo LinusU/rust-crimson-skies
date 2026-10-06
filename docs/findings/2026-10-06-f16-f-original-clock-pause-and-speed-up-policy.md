@@ -170,9 +170,9 @@ a fixed dt; it is a debug option, not the shipping policy.
   the record carries an original fingerprint and a locator. Three limitations
   are recorded: static analysis rather than a run, frame pacing/timing
   uncertainty unmeasured, addresses-only provenance.
-* `OriginalClockPolicy::claim_status()` — the ladder is `synthetic →
-  unknown`, `authored → designed`, `inference → inferred`, `document review →
-  `documented`, `tool probe → observed_tool`, an unlocated/unfingerprinted
+* `OriginalClockPolicy::claim_status()` — the ladder: a synthetic source →
+  `unknown`, authored → `designed`, inference → `inferred`, document review →
+  `documented`, tool probe → `observed_tool`, an unfingerprinted or unlocated
   direct method → `unknown`, and a record that *does* verify the original →
   `verified_original` — **capped to `ORIGINAL_CLOCK_POLICY_STATUS`
   (`inferred`)** for a declared policy. A policy compiled from source can
@@ -244,7 +244,43 @@ findings entry against the declaration):
 
 ## Mutation probes (implementation neutered → tests fail; all reverted)
 
-Filled in after the runs below.
+Each probe was applied to `crates/cs_sim/src/time.rs` by a rerunnable Python
+driver, the selection was re-run with
+`cargo test -p cs_sim --locked --no-fail-fast -- accept_f16_f_`, the file was
+then restored from memory and its sha256 re-checked. The tree is clean: the
+file's sha256 before and after every probe is
+`42c49b4c079a4993c559021f23a03c8dd69168dec0f36b5130602154cf65f469`, which is
+also the committed blob.
+
+| # | Edit | Result of the 5 tests |
+| --- | --- | --- |
+| 1 | `OriginalClockPolicy::claim_status` returns the raw ladder, so a record that verifies the original raises the claim | 1 fails: `accept_f16_f_code_derived_evidence_never_verifies_the_original` (the structural cap is what stops `verified_original`) |
+| 2 | the declaration says paused time **is** banked | 3 fail: the constants pin, the relation set (`pause.bank` leaves `agrees`), and the driven behaviour |
+| 3 | the measured frame-dt cap shrinks from 125 ms to 10 ms | 4 fail: everything the 64 Hz tick no longer fits inside the window, i.e. the constants, the relation set, the tolerance test and the behaviour test |
+| 4 | the speed-up loses its network gate | 3 fail: the constants, the relation set (`speed-up.network-gate` leaves `agrees`) and the driven behaviour |
+| 5 | the two gameplay timers are declared to share one accumulator | 2 fail: the constants and the relation set (`timers.shared-dt-source` leaves `agrees`) |
+
+The probes are the sensitivity argument for the comparison: the relations are
+computed from the **declaration**, so a wrong declared constant cannot hide
+behind a correct-looking table.
+
+## Commands run
+
+All commands from the repository root on branch
+`rally/391-compare-fixed-tick-clock-probes-against`, Rust 1.98.1, based on
+`origin/main` `50832059`.
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 (410 `test result: ok` lines, no failure) |
+| `cargo test --workspace --locked -- accept_f16_f_ --include-ignored` | 0 (**5 tests**, all passing; the task selection is non-empty and every test drives `cs_sim::time`) |
+| `cargo test --workspace --locked -- accept_f16_ --include-ignored` | 0 (**54 tests**: every `accept_f16_a_`, `accept_f16_b_`, `accept_f16_c_`, `accept_f16_d_` test still passes untouched alongside the 5 new ones) |
+| mutation probes 1–5 (above), each with `--no-fail-fast` | 0 driver; every probe's selection exited 101 and the file was restored byte-for-byte |
+
+No command needed `CS_GAME_DIR`, and no `accept_f16_f_` test is `#[ignore]`d;
+`CS_CAPABILITIES` (`retail,gpu,audio`) was not exercised by this stage.
 
 ## Recorded unknowns (recorded, not guessed)
 
@@ -279,10 +315,6 @@ Filled in after the runs below.
 
 Both are `todo` with `ordinary build/test` as the required capability; neither
 may be settled by silently changing a policy pairing.
-
-## Commands run
-
-Filled in after the runs below.
 
 ## Wiring edits (outside owner paths, logic-free)
 
