@@ -419,10 +419,10 @@ never spells it.
 
 **Correction to stage A**, which listed `+0x544/+0x548` among the completion
 pass's on-complete lists: the completion pass (`0x46a94c`..`0x46ae86`, read in
-full) contains **no reference** to either field. The only reader in the mission
-region is `0x46b183`, inside the objective **state-transition** function
-`0x46b160`, immediately after it sets `+0xc = 0`, `+0x5c8 = mode` and
-`+0x5cc = 0`:
+full) contains **no reference** to either field. The only runtime consumer of
+either in the mission region is `0x46b183`, inside the objective
+**state-transition** function `0x46b160`, immediately after it sets `+0xc = 0`,
+`+0x5c8 = mode` and `+0x5cc = 0`:
 
 ```
 0x46b181  mov eax, [esi + 0x544]     ; the anim name
@@ -432,9 +432,10 @@ region is `0x46b183`, inside the objective **state-transition** function
 0x46b1d4  call 0x4edda0              ; anim, node, 0, 0, 0
 ```
 
-A search of the whole image for readers of the `0x544`/`0x548` displacements
-returns only `0x46b183`/`0x46b1b3` plus the parse at `0x4689f1`/`0x468a28` and
-unrelated code in other classes.
+A search of the whole image for the `0x544` and `0x548` displacements returns, in
+the mission region, only those two, the record destructor that `free`s both
+strings and zeroes them (`0x466943`..`0x46696f`, alongside `+0x53c`/`+0x540`), and
+unrelated code in other classes. Nothing else in the image reads either field.
 
 **Effect: play the named animation when the objective transitions** — and since
 `0x46b160` is what the nap (mode 2), kill (mode 3) and completion paths all go
