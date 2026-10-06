@@ -60,9 +60,10 @@ animation pair, the mission level or the texture rule.
 * `has_directory_fallback` is `false` for all four named archives and `true` for
   the texture role — the only level fallback among them.
 * `WorldLayout::missing(root)` lists the bindings this installation does not
-  ship, so a layout naming an absent archive is visible instead of failing
-  later. It is a **host listing**: no archive bytes are read, nothing is
-  written.
+  ship — the named archives, the texture archive the selection rule has bound
+  and the two directories the texture search walks — so a layout naming an
+  absent archive is visible instead of failing later. It is a **host listing**:
+  no archive bytes are read, nothing is written.
 
 ### The texture archive
 
@@ -75,7 +76,13 @@ and so cannot be called from it. A binding therefore starts empty, takes the
 file that rule selected (`bind`), and refuses a second one
 (`TextureArchiveAlreadyBound`) — the original opens exactly one archive per
 world, and a name it does not hold falls through to `rimage.zbd`, never to
-another tier. Nothing in this crate claims which tier a world picks.
+another tier. `bind` also refuses a file that is not **in** one of the two
+searched directories (`TextureArchiveOutsideSearch`), because the original
+never looks in another world's directory; the comparison is the case-folded
+logical key of the archive's own directory, exactly as a mount compares
+members, so `ZBD\C1C\RTexture15.zbd` binds for `zbd/c1c` and
+`zbd/c1/rtexture2.zbd` is refused. Nothing in this crate claims which tier a
+world picks.
 
 ### The mission level as mounts
 
@@ -88,21 +95,32 @@ all removed stays reportable.
 
 [`SessionBuilder::mount_installation_missions`] mounts each of them under the
 new `MISSION_NAMESPACE` (`mission`), bound to its world group **and** its own
-mission, at `PrecedenceClass::MissionWorld`. A mission mount is a namespace of
-its own rather than more of `WORLD_NAMESPACE` because two mounts in one
-namespace holding one member name would be an equal-priority collision the
-designed order cannot decide (F04 non-negotiable behavior 3) — where the
-original instead has an explicit [root, mission, world] *reader* order, already
-implemented by task #685 in `cs_assets::vfs::reader`.
+mission, at `PrecedenceClass::MissionWorld` as a retail source. A mission mount
+is a namespace of its own because a mission archive is keyed by the member name
+of its **own** directory — `mission/default/mis_anim.zbd`, the way the original
+opens it — while inside a world group's mount the same file is spelled
+`M01/mis_anim.zbd`; keeping the levels apart means no lookup has to decide
+between two levels of the installation by precedence class, which is the
+*designed* order the original does not use. The original's own answer for reader
+members is **mount order** — root, then mission, then world — implemented by
+task #685 in `cs_assets::vfs::reader`; here each mission mount is bound to its
+own world and mission, so a sibling mission is *skipped*
+(`SkipReason::ScopeMismatch`) rather than tied, and two mission mounts never
+present an equal-priority choice for the designed order to decide.
 
 `mount_installation` itself is unchanged and still mounts the world level only;
 its documentation now says so and points at this method, so nothing binds a
 mission archive a caller did not ask for.
 
-A mission directory whose own name is not a valid `MissionScope` label (for
-example `M01.2`) is refused with `SessionError::MissionScope` carrying the
-directory in the installation's spelling, because no context could ever be
-admitted to such a mount.
+A mission directory whose own name is not a valid `MissionScope` label — for
+example `_wip`, which starts with a separator the label rules refuse — is
+refused with `SessionError::MissionScope` carrying the directory in the
+installation's spelling, because no context could ever be admitted to such a
+mount. The refusal is immediate and names that directory; the mounts added
+before it stay, as for any other mount failure. No retail mission directory has
+such a name, so this is the defensive path, not a measured one — and a directory
+that merely *looks* unusual is not affected: `M01.2` folds to `m01.2`, which is
+a valid label and mounts like any other mission directory.
 
 ## C. What retail data says, through the new production path
 
@@ -184,32 +202,43 @@ on without the bindings.
 ## F. Tests
 
 `crates/cs_assets/tests/accept_f04_d_order_archives.rs`, prefix
-`accept_f04_d_order_archives_`.
+`accept_f04_d_order_archives_`: **twelve synthetic and four retail**, sixteen
+in all (`TASK_TESTS`).
 
 Synthetic (CI runs them): the four bindings in script order with their
 containers and levels; `gamez` per world group and `planes` from the root across
 three worlds; the mission level present only for a mission, absent without one,
 two missions binding two archives, and a mission without a world refused with
 its name; only the texture role falling back, to the shared directory and never
-another world; exactly one texture archive bound per world with the second tier
-refused and the bound one unchanged; every role reachable by its label and every
-family and level labelled; the bindings reported `inferred` with the designed
-precedence status untouched; `missing` naming exactly what an installation lacks;
-mission directories derived from discovery (a table-unknown `ZZ9` is a mission,
-a directory two levels deeper is not, an empty one is); the mission level
-mounted for its own mission with a sibling mission and another world refused it
-and the world's own archives still resolving from `WORLD_NAMESPACE`; and the
-world layout alone binding no mission.
+another world; exactly one texture archive bound per world, a second tier refused
+and the bound one unchanged, **and a file from outside the two searched
+directories refused**; every role reachable by its label and every family and
+level labelled; the bindings reported `inferred` with the designed precedence
+status untouched; `missing` naming exactly what an installation lacks, **bound
+texture archive included**; mission directories derived from discovery (a
+table-unknown `ZZ9` is a mission, a directory holding no regular file is one, a
+directory two levels deeper is not); the mission level mounted for its own
+mission, **as a retail mission/world mount**, with a sibling mission and another
+world refused it and the world's own archives still resolving from
+`WORLD_NAMESPACE`; a mission directory that is no valid scope label refused
+naming it while a dotted one mounts; and the world layout alone binding no
+mission.
 
 Retail (`--include-ignored`, needs `CS_GAME_DIR`): the four tests of section C,
 each also passing alone with `--exact`.
 
-Sensitivity was checked by mutation, not asserted: binding `gamez.zbd` at the
-mission level (a plausible reading of "per world group" as "under the load's
-own directory") fails **2** tests
-(`accept_f04_d_order_archives_the_bindings_are_named_in_the_scripts_order`,
-`accept_f04_d_order_archives_a_binding_this_installation_lacks_is_listed`). The
-mutation was reverted; the working tree matches.
+Sensitivity was checked by mutation, not asserted (seven mutations of the
+production code, each reverted; the tree matches the commit):
+
+| Mutation | Task tests that fail |
+| --- | --- |
+| `bind` accepts any file, ignoring the two searched directories | `one_texture_archive_is_bound_per_world` |
+| `missing` ignores the bound texture archive | `a_binding_this_installation_lacks_is_listed` |
+| `mission_directories` restricted to the campaign mission-name table | `mission_directories_come_from_discovery_not_a_name_table` |
+| the mission mount classed `Shared` | `the_mission_level_is_mounted_for_its_own_mission` |
+| the mission mount not declared `retail` | `the_mission_level_is_mounted_for_its_own_mission` |
+| an invalid mission directory skipped instead of refused | `a_mission_directory_that_is_no_scope_label_is_refused` |
+| `gamez.zbd` bound at the mission level | `the_bindings_are_named_in_the_scripts_order`, `gamez_is_per_world_group_and_planes_is_the_root`, `a_binding_this_installation_lacks_is_listed` |
 
 `evidence_report_t687_writes_the_acceptance_report` is the evidence harness
 (`docs/contracts/CLI-EVIDENCE.md`), not an acceptance test: it re-derives every
@@ -231,3 +260,52 @@ order stays in `cs_assets::vfs::reader` (#685): this task adds the layout and
 the mission level, and references both rather than duplicating either. Nothing
 here parses an archive; naming archives is this crate's job and reading them is
 the format crates'.
+
+Like #685, this stage has no consumer outside `cs_assets` and this suite yet:
+what a world load opens is still the world's own wiring (#688), and the tool
+`cs-inspect resolve` still mounts the world level only. That is deliberate
+scope, not an oversight — F04's owner paths include
+`tools/cs_inspect/src/resolve.rs`, so a follow-up may mount the mission level
+there to make the new namespace reachable from the command line.
+
+## H. Review corrections (2026-10-06)
+
+Reviewer `bunny-2/bunny-2` — **the same agent instance that implemented this
+stage, with its context, so this is not independent review** (see the identity
+note in the handover). Everything below was fixed on the task branch, not left
+as a comment:
+
+1. **`TextureBinding::bind` did not hold the search it records.** It refused a
+   second archive but accepted any path, so `zbd/c1/rtexture2.zbd` could be
+   bound to `zbd/c1c` — a name the original never opens, and a rule the
+   documentation stated but nothing enforced. Now refused with
+   `TextureArchiveOutsideSearch`, compared by logical key, with a test.
+2. **`WorldLayout::missing` skipped the texture archive.** Its contract is "the
+   spellings this load binds that do not exist"; a bound texture archive is one
+   of them and was not listed, so a rule that selected an archive this
+   installation does not ship passed as complete. Now listed, with a test.
+3. **`SessionError::MissionScope`'s documentation named a wrong example.**
+   `M01.2` folds to `m01.2`, which **is** a valid `MissionScope` label, so the
+   refused case it described cannot happen. Corrected to `_wip`, and the refusal
+   — previously untested production behavior — is now pinned, including that a
+   dotted directory still mounts.
+4. **The `MISSION_NAMESPACE` rationale was wrong.** It claimed two mounts in one
+   namespace holding one member name "would be an equal-priority collision the
+   designed order cannot decide". `observe_collisions` groups by **basename
+   across all mounts** regardless of namespace, and each mission mount is bound
+   to its own world and mission, so a sibling is skipped and no ambiguity
+   arises either way. The real reason (a mission archive is keyed by the member
+   name of its own directory, so no lookup decides between two levels by the
+   designed precedence) is now what the code and this finding say.
+5. **Two documented behaviors had no test**: a mission directory holding no
+   regular file is still a mission directory (the fixture wrote a `.keep` file
+   into it, so an implementation that required a file would have passed), and a
+   mission mount is a `MissionWorld` **retail** source (dropping either changes
+   F04 non-negotiable behavior 2 — a retail decision that must stay blocked
+   while the precedence order is only `designed` — with nothing failing). The
+   fixture directory is now genuinely empty and both properties are asserted.
+
+The reviewer's own mutation sweep (section F) found no gap in the original
+sensitivity claim, but corrected its size: binding `gamez.zbd` at the mission
+level fails **three** task tests, not two — `gamez_is_per_world_group_and_planes_is_the_root`
+catches the level as well.
