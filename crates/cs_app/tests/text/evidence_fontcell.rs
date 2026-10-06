@@ -1,53 +1,52 @@
-//! Evidence-report harness for task F51-D (`docs/contracts/CLI-EVIDENCE.md`,
-//! schema `schemas/evidence.schema.json`).
+//! Evidence-report harness for task #466 `F51-FONTCELL`
+//! (`docs/contracts/CLI-EVIDENCE.md`, schema `schemas/evidence.schema.json`).
 //!
-//! This test is deliberately **not** named `accept_f51_d_*`: it is not part of
-//! the acceptance suite, it fails loudly when its inputs are missing instead of
-//! passing vacuously, and the task's test selection must never pick it up as an
-//! acceptance test. Run from the workspace root, after the acceptance suite,
-//! exactly as:
+//! This test is deliberately **not** named `accept_f51_fontcell_*`: it is not
+//! part of the acceptance suite, it fails loudly when its inputs are missing
+//! instead of passing vacuously, and the task's test selection must never pick
+//! it up as an acceptance test. Run from the workspace root, after the
+//! acceptance suite, exactly as:
 //!
 //! 1. ```sh
-//!    CS_EVIDENCE_DIR=private/evidence/F51-D \
-//!      cargo test --workspace --locked -- accept_f51_d_ --include-ignored \
-//!      2>&1 | tee private/evidence/F51-D/cargo-test.log
+//!    mkdir -p private/evidence/F51-FONTCELL
+//!    CS_EVIDENCE_DIR=private/evidence/F51-FONTCELL \
+//!      cargo test --workspace --locked -- accept_f51_fontcell_ --include-ignored \
+//!      2>&1 | tee private/evidence/F51-FONTCELL/cargo-test.log
 //!    ```
 //!    (record the pipeline's exit status — it is passed to this harness as
-//!    `CS_EVIDENCE_EXIT_CODE`; `CS_EVIDENCE_DIR` also makes the GPU witness write
-//!    its PNGs here.)
+//!    `CS_EVIDENCE_EXIT_CODE`.)
 //! 2. ```sh
-//!    CS_EVIDENCE_DIR=private/evidence/F51-D \
-//!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f51_d_ --include-ignored" \
-//!    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
-//!      cargo test --locked -p cs_app --test text evidence_report_f51_d -- --ignored
+//!    CS_EVIDENCE_DIR=private/evidence/F51-FONTCELL \
+//!      CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+//!      CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f51_fontcell_ --include-ignored" \
+//!      CS_EVIDENCE_EXIT_CODE=<status from step 1> \
+//!      cargo test --locked -p cs_app --test text evidence_report_f51_fontcell -- --ignored
 //!    ```
 //! 3. ```sh
-//!    python3 tools/validate_evidence.py private/evidence/F51-D/acceptance.json \
-//!      --artifact-root private/evidence/F51-D --require-pass
+//!    python3 tools/validate_evidence.py private/evidence/F51-FONTCELL/acceptance.json \
+//!      --artifact-root private/evidence/F51-FONTCELL --require-pass
 //!    ```
 //! 4. Commit a copy of `acceptance.json` as
-//!    `docs/findings/evidence/F51-D.json`.
+//!    `docs/findings/evidence/F51-FONTCELL.json`.
 //!
 //! Every field is derived from real inputs: the recorded test log, the
 //! environment, production discovery of `$CS_GAME_DIR`, the production
-//! localization audit run over it, the PNGs the GPU witness wrote, and
-//! `rustc --version` and `Cargo.lock`. Nothing is typed in by hand.
+//! bitmap-font scan and localization audit re-run over that installation, and
+//! `rustc --version` + `Cargo.lock`. Nothing is typed in by hand.
 //!
-//! The `capabilities` are checked, not assumed: `retail` and `gpu` are declared
-//! only because every test listed in [`REQUIRED_TESTS`] — the retail audit test
-//! and the two adapter tests — is in the recorded log and passed.
+//! The `capabilities` are checked, not assumed: `retail` is declared only
+//! because both `$CS_GAME_DIR` tests in [`RETAIL_TESTS`] appear in the
+//! recorded log and passed, and `synthetic` only because the authored-fixture
+//! tests in [`SYNTHETIC_TESTS`] did.
 //!
-//! The report's `unknowns` are *this task's* blockers and are empty because the
-//! acceptance run passed. The product-incompleteness state F51-D measured — the
-//! bitmap-font cell-to-character mapping, still unmeasured when this report was
-//! first written and measured afterwards by task #466 (`F51-FONTCELL`), and the
-//! single available (English) installation — is **not** dropped anywhere: it is
-//! the audit's asserted verdict (pinned by the acceptance tests) and it is written
-//! out in `docs/findings/2026-10-01-f51-d-locale-glyph-overflow-and-license-audit.md`,
-//! which is where the product-incompleteness state lives, with the measured
-//! successor state in `docs/findings/2026-10-06-f51-fontcell-bitmap-font-coverage.md`.
-//! The claim is `implemented`, never `checked` or `verified_original`.
+//! The report's `unknowns` are *this task's* blockers. The bitmap-font
+//! question this task answers is not among them; what the audit still counts
+//! on the original installation — the `langui.dll` overflow F51-D measured —
+//! is written into the census artifact below rather than dropped, because a
+//! working audit may legitimately report incomplete product support. The
+//! claim is `implemented`, never `checked` or `verified_original`: static
+//! analysis of the executable and a scan of retail files are not a run of the
+//! original.
 
 use std::collections::VecDeque;
 use std::fs;
@@ -57,45 +56,37 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cs_assets::install::{content_fingerprint, discover, fingerprint};
 
-use cs_app::text::original_font::ORIGINAL_BITMAP_FONT_NAMES;
+use cs_app::text::original_font::{ORIGINAL_BITMAP_FONT_NAMES, gfont3d_coverage};
+use cs_app::text::{GlyphEvidence, measure_rimage_bitmap_fonts};
 
-use crate::common::{RETAIL_FONT_MEDIA, RETAIL_RIMAGE, retail_audit, retail_declared_locales};
+use crate::common::{RETAIL_FONT_MEDIA, RETAIL_RIMAGE, retail_audit};
 
-/// The acceptance tests whose capabilities this report declares.
-///
-/// `gpu` is carried by the two adapter tests, `retail` by the audit test and the
-/// installation discovery. All three must appear in the recorded log and pass,
-/// or the report is not written with that capability.
-const REQUIRED_TESTS: &[&str] = &[
-    "accept_f51_d_a_gpu_capture_proves_the_laid_out_lines_were_drawn",
-    "accept_f51_d_a_capture_that_drew_nothing_is_refused_rather_than_written",
-    "accept_f51_d_retail_every_string_image_and_font_is_audited_for_the_declared_locale",
+/// The acceptance tests whose `retail` capability this report declares: both
+/// read `$CS_GAME_DIR`, one through the production texture reader and one
+/// through the production localization audit. Both must appear in the
+/// recorded log and pass.
+const RETAIL_TESTS: &[&str] = &[
+    "accept_f51_fontcell_retail_ten_bitmap_fonts_measure_94_cells_each",
+    "accept_f51_fontcell_retail_no_media_is_unmeasured_and_every_blocker_names_its_cause",
 ];
 
-/// The synthetic half of the suite, which must be present beside the retail one:
-/// an evidence report that only ever ran capability-bound tests would not show
-/// that the audit's contract is pinned without the original data.
+/// The synthetic half of the suite: authored fixtures that prove the cell rule
+/// and its refusals without original data. An evidence report that only ever
+/// ran capability-bound tests would not show the contract is pinned by CI.
 const SYNTHETIC_TESTS: &[&str] = &[
-    "accept_f51_d_every_declared_locale_is_audited_against_each_string_image",
-    "accept_f51_d_unanswered_ids_and_unaccounted_rows_are_named_blockers",
-    "accept_f51_d_overflowing_text_is_counted_per_locale_and_never_covers_a_control",
-    "accept_f51_d_media_license_and_unmeasured_glyphs_are_audited_not_assumed",
+    "accept_f51_fontcell_cell_rule_maps_authored_cells_to_characters_in_order",
+    "accept_f51_fontcell_an_unmapped_character_is_a_named_audit_blocker_not_a_claim",
+    "accept_f51_fontcell_a_declared_font_the_package_lacks_is_reported",
+    "accept_f51_fontcell_a_font_image_without_a_stored_colour_key_is_refused",
 ];
 
-/// How many declared locales the GPU witness captures, one frame each.
-const DECLARED_LOCALES: usize = 3;
-
-/// The derived string/media census, written beside the report and referenced by
-/// digest: counts and digests only, never original text or bytes.
-const CENSUS_ARTIFACT: &str = "string-media-census.json";
-
-/// The per-locale GPU captures the adapter test wrote.
-const CAPTURE_PREFIX: &str = "render-";
-const CAPTURE_SUFFIX: &str = ".png";
+/// The derived font census, written beside the report and referenced by
+/// digest: measured numbers and digests only, never a glyph pixel.
+const CENSUS_ARTIFACT: &str = "bitmap-font-census.json";
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
-fn evidence_report_f51_d_writes_the_acceptance_report() {
+fn evidence_report_f51_fontcell_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
     let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
@@ -130,12 +121,12 @@ fn evidence_report_f51_d_writes_the_acceptance_report() {
     let suite = parse_suite(&log);
     assert!(
         suite.passed > 0 && !suite.assertions.is_empty(),
-        "no `accept_f51_d_` tests were recorded in {}",
+        "no `accept_f51_fontcell_` tests were recorded in {}",
         log_path.display()
     );
 
     // Capability coverage is checked, never assumed.
-    for required in REQUIRED_TESTS.iter().chain(SYNTHETIC_TESTS) {
+    for required in RETAIL_TESTS.iter().chain(SYNTHETIC_TESTS) {
         let status = suite
             .assertions
             .iter()
@@ -143,8 +134,8 @@ fn evidence_report_f51_d_writes_the_acceptance_report() {
             .map(|(_, status)| *status)
             .unwrap_or_else(|| {
                 panic!(
-                    "{required} did not run: F51-D requires capabilities `retail` and `gpu`, run \
-                     step 1 with `--include-ignored`, CS_GAME_DIR set and a GPU adapter available"
+                    "{required} did not run: F51-FONTCELL requires capabilities `retail` and \
+                     `synthetic`, run step 1 with `--include-ignored` and CS_GAME_DIR set"
                 )
             });
         assert_eq!(status, "pass", "{required} must pass; got status {status}");
@@ -157,60 +148,18 @@ fn evidence_report_f51_d_writes_the_acceptance_report() {
     let install_sha256 = fingerprint(&found.manifest).to_hex();
     let content_sha256 = content_fingerprint(&found.manifest).to_hex();
 
-    // The audit itself, re-run over that installation: the report's numbers are
-    // this report's own run, not a transcription of a test message.
-    let audit = retail_audit(&game_dir);
-    assert!(
-        !audit.is_complete(),
-        "the retail audit reported itself complete: it counts at least the overflow the stage \
-         exists to surface, and a report with no blocker at all would mean one was dropped"
-    );
-    // Every media carries a *measured* verdict — a coverage, a cell-rule scan
-    // or "the original never reads this file as a font". Reverting one to an
-    // unknown, or dropping a media entry, fails here rather than silently
-    // shrinking the report.
-    assert_eq!(
-        audit.media.len(),
-        RETAIL_FONT_MEDIA.len() + 1,
-        "both loose TGAs and rimage.zbd are audited as media"
-    );
-    for media in &audit.media {
-        assert!(
-            media.glyphs.is_measured(),
-            "{} does not carry a measured glyph verdict",
-            media.path
-        );
-    }
-    let rimage = audit
-        .media(RETAIL_RIMAGE)
-        .expect("rimage.zbd is audited as media");
-    let fonts = rimage
-        .glyphs
-        .bitmap_fonts()
-        .expect("its bitmap fonts are measured with the cell rule");
-    assert!(
-        fonts.missing.is_empty(),
-        "every declared retail font is present: {:?}",
-        fonts.missing
-    );
-    assert_eq!(
-        fonts.fonts.len(),
-        ORIGINAL_BITMAP_FONT_NAMES.len(),
-        "all ten fonts.zrd fonts are measured"
-    );
+    // The two production observations this task adds, re-run over that
+    // installation: the census is this report's own measurement, not a
+    // transcription of a test message.
+    let census = census(&game_dir, &install_sha256, &candidate_tree);
     let census_path = evidence_dir.join(CENSUS_ARTIFACT);
-    fs::write(&census_path, census_json(&audit))
+    fs::write(&census_path, &census)
         .unwrap_or_else(|error| panic!("write {}: {error}", census_path.display()));
 
-    let mut artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
-    artifacts.push(artifact(&census_path, "json", &evidence_dir));
-    let captures = capture_artifacts(&evidence_dir);
-    assert_eq!(
-        captures.len(),
-        DECLARED_LOCALES,
-        "the adapter test must have written one frame per declared locale"
-    );
-    artifacts.extend(captures);
+    let artifacts = vec![
+        artifact(&log_path, "log", &evidence_dir),
+        artifact(&census_path, "json", &evidence_dir),
+    ];
 
     let engine = Engine {
         rust: rustc_version(),
@@ -221,7 +170,7 @@ fn evidence_report_f51_d_writes_the_acceptance_report() {
     let document = format!(
         "{{\n\
          \x20\"schema_version\": 1,\n\
-         \x20\"task_id\": \"F51-D\",\n\
+         \x20\"task_id\": \"F51-FONTCELL\",\n\
          \x20\"candidate_tree\": {},\n\
          \x20\"engine\": {},\n\
          \x20\"created_at\": {},\n\
@@ -230,7 +179,7 @@ fn evidence_report_f51_d_writes_the_acceptance_report() {
          \x20\"seed\": 0,\n\
          \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
          \x20\"overrides\": [],\n\
-         \x20\"capabilities\": [\"retail\", \"gpu\", \"synthetic\"],\n\
+         \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
          \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
          \x20\"assertions\": [{}],\n\
          \x20\"artifacts\": [{}],\n\
@@ -263,8 +212,8 @@ fn evidence_report_f51_d_writes_the_acceptance_report() {
     let written = fs::read_to_string(&out).expect("the report reads back");
     for needle in [
         "\"schema_version\": 1",
-        "\"task_id\": \"F51-D\"",
-        "\"capabilities\": [\"retail\", \"gpu\", \"synthetic\"]",
+        "\"task_id\": \"F51-FONTCELL\"",
+        "\"capabilities\": [\"retail\", \"synthetic\"]",
         "\"claim\": \"implemented\"",
         "\"install_sha256\"",
         "\"assertions\": [",
@@ -284,167 +233,148 @@ fn evidence_report_f51_d_writes_the_acceptance_report() {
     println!("wrote {}", out.display());
 }
 
-/// The derived census of every string image and media file, as JSON: counts,
-/// digests and the audit's verdict, never original content and never a stored
-/// byte.
-fn census_json(audit: &cs_app::text::LocalizationAudit) -> String {
-    let declared: Vec<String> = retail_declared_locales()
-        .locales()
-        .iter()
-        .map(|locale| jstr(locale.as_str()))
-        .collect();
-    let blocker_codes: Vec<String> = audit
-        .blockers
-        .iter()
-        .map(|blocker| jstr(blocker.code()))
-        .collect();
+// ------------------------------------------------------------- census ---
 
-    let images: Vec<String> = audit
-        .images
+/// The derived font census: every declared font's measured shape, the two
+/// loose TGAs' verdict with its recorded evidence, and the audit's remaining
+/// blockers with their causes — all re-measured from the installation in this
+/// report's own run.
+fn census(game_dir: &Path, install_sha256: &str, candidate_tree: &str) -> String {
+    let bytes = fs::read(game_dir.join(RETAIL_RIMAGE))
+        .unwrap_or_else(|error| panic!("read {RETAIL_RIMAGE}: {error}"));
+    let measurement = measure_rimage_bitmap_fonts(&bytes)
+        .expect("the production scan measures the retail bitmap fonts");
+
+    let fonts: Vec<String> = ORIGINAL_BITMAP_FONT_NAMES
         .iter()
-        .map(|image| {
-            let locales: Vec<String> = image
-                .locales
-                .iter()
-                .map(|locale| {
-                    format!(
-                        "{{\"locale\":{},\"translated\":{},\"via_fallback\":{},\"missing\":{},\
-                          \"laid_out\":{},\"overflowing\":{},\"covering_controls\":{}}}",
-                        jstr(locale.locale.as_str()),
-                        locale.translated,
-                        locale.via_fallback,
-                        locale.missing,
-                        locale.laid_out,
-                        locale.overflowing,
-                        locale.covering_controls,
-                    )
-                })
-                .collect();
+        .map(|name| {
+            let font = measurement
+                .font(name)
+                .unwrap_or_else(|| panic!("{name} was measured"));
             format!(
-                "{{\"path\":{},\"rows\":{},\"ids\":{},\"decoded\":{},\"locales\":[{}],\
-                  \"undeclared\":{},\"missing_everywhere\":{},\"unmapped_languages\":{},\
-                  \"undecodable_ids\":{},\"duplicates\":{}}}",
-                jstr(&image.path),
-                image.rows,
-                image.ids,
-                image.decoded,
-                locales.join(","),
-                image.undeclared.len(),
-                image.missing_everywhere.len(),
-                image.unmapped_languages.len(),
-                image.undecodable_ids.len(),
-                image.duplicates.len(),
+                "{{\"name\":{},\"stored_name\":{},\"width\":{},\"height\":{},\"cells\":{},\
+                  \"coverage_chars\":{},\"unresolved\":{},\"stray_cells\":{},\
+                  \"average_advance\":{}}}",
+                jstr(&font.name),
+                jstr(&font.stored_name),
+                font.width,
+                font.height,
+                font.cells.len(),
+                font.coverage.len(),
+                font.unresolved.len(),
+                font.stray_cells,
+                font.average_advance,
             )
         })
         .collect();
+    let missing: Vec<String> = measurement.missing.clone();
 
-    let media: Vec<String> = audit
-        .media
+    let audit = retail_audit(game_dir);
+    let tgas: Vec<String> = RETAIL_FONT_MEDIA
         .iter()
-        .map(|media| {
+        .map(|path| {
+            let media = audit
+                .media(path)
+                .unwrap_or_else(|| panic!("{path} is audited as media"));
+            let reason = media.glyphs.unused_reason().unwrap_or_default();
             format!(
-                "{{\"path\":{},\"bytes\":{},\"sha256\":{},\"distributable\":{},\
-                  \"glyphs_measured\":{}}}",
-                jstr(&media.path),
-                media.bytes,
-                jstr(&media.sha256.to_hex()),
+                "{{\"path\":{},\"verdict\":{},\"distributable\":{},\"sha256\":{},\"reason\":{}}}",
+                jstr(path),
+                jstr(glyph_verdict(&media.glyphs)),
                 media.distributable,
-                media.glyphs.is_measured(),
+                jstr(&media.sha256.to_hex()),
+                jstr(reason),
+            )
+        })
+        .collect();
+    let rimage = audit
+        .media(RETAIL_RIMAGE)
+        .expect("rimage.zbd is audited as media");
+    let blockers: Vec<String> = audit
+        .blockers
+        .iter()
+        .map(|blocker| {
+            format!(
+                "{{\"code\":{},\"cause\":{}}}",
+                jstr(blocker.code()),
+                jstr(&blocker.to_string())
             )
         })
         .collect();
 
     format!(
-        "{{\"schema\":\"cs-f51-d-string-media-census/1\",\"declared_locales\":[{}],\
-          \"complete\":{},\"blocker_codes\":[{}],\"images\":[{}],\"media\":[{}]}}",
-        declared.join(","),
+        "{{\"schema\":\"cs-f51-fontcell-bitmap-font-census/1\",\"candidate_tree\":{},\
+          \"install_sha256\":{},\"rimage_sha256\":{},\"fonts\":[{}],\"missing\":[{}],\
+          \"fully_mapped\":{},\"gfont3d_coverage_chars\":{},\"tga_verdicts\":[{}],\
+          \"rimage_verdict\":{},\"rimage_sha256_by_audit\":{},\"audit_complete\":{},\
+          \"audit_blockers\":[{}]}}",
+        jstr(candidate_tree),
+        jstr(install_sha256),
+        jstr(&sha256(&bytes).to_hex()),
+        fonts.join(","),
+        str_array(&missing),
+        measurement.is_fully_mapped(),
+        gfont3d_coverage().len(),
+        tgas.join(","),
+        jstr(glyph_verdict(&rimage.glyphs)),
+        jstr(&rimage.sha256.to_hex()),
         audit.is_complete(),
-        blocker_codes.join(","),
-        images.join(","),
-        media.join(","),
+        blockers.join(","),
     )
 }
 
-/// Every per-locale PNG the adapter test wrote, hashed as artifacts.
-fn capture_artifacts(evidence_dir: &Path) -> Vec<(String, String, String)> {
-    let mut found: Vec<(String, String, String)> = fs::read_dir(evidence_dir)
-        .expect("the evidence directory is readable")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name.starts_with(CAPTURE_PREFIX) && name.ends_with(CAPTURE_SUFFIX)
-                })
-        })
-        .map(|path| {
-            let name = path
-                .file_name()
-                .expect("a capture has a file name")
-                .to_string_lossy()
-                .into_owned();
-            let bytes = fs::read(&path).expect("a capture is readable");
-            (name, sha256(&bytes).to_hex(), "png".to_owned())
-        })
-        .collect();
-    found.sort_by(|left, right| left.0.cmp(&right.0));
-    found
+/// The recorded verdict one media file carries.
+fn glyph_verdict(glyphs: &GlyphEvidence) -> &'static str {
+    match glyphs {
+        GlyphEvidence::Declared { .. } => "declared",
+        GlyphEvidence::Unmeasured { .. } => "unmeasured",
+        GlyphEvidence::UnusedByOriginal { .. } => "unused_in_original",
+        GlyphEvidence::BitmapFonts { .. } => "bitmap_fonts",
+    }
 }
 
+/// Who ran this report and what they ran it with.
 fn review_identity() -> String {
     String::from(
-        "implementer: deepseek-1/deepseek-1 (Rally #207, implement claim of \
-            2026-10-01T13:02:33Z, handed over at 13:45:59Z); reviewer: deepseek-1/deepseek-1 \
-            again, on the review claim of 2026-10-01T13:46:16Z, which re-ran the accept_f51_d_ \
-            selection, regenerated the report, found it matched and merged it at 14:04:32Z. The \
-            bytes committed here are the implementer's own run, not the reviewer's: this report's \
-            created_at falls inside the implement claim. The same agent instance is on both sides, \
-            so this review is not independent and is not independent original-reference evidence; \
-            the review claim started seventeen seconds after the hand-over, so the activity log \
-            cannot prove a fresh context and none is claimed. No agent review replaces the owner's \
-            human approval",
+        "implementer: bunny-1/bunny-1 (Rally #466, implement claim of 2026-10-06); reviewer: to \
+         be recorded by the Rally review claim. No agent review replaces the owner's human \
+         approval, and static code evidence plus a retail scan is never `verified_original`",
     )
 }
 
 fn review_method() -> String {
     String::from(
-        "the acceptance suite re-run locally with the retail capability and a real GPU adapter, \
-         the whole `accept_f51_d_` selection together with `--include-ignored`; this harness \
-         derives every field from the recorded log, production discovery of $CS_GAME_DIR, and the \
-         production localization audit re-run over that installation \
-         (`cs_app::text::audit::audit_localization` over the three routed PE string images read \
-         by `cs_content::config::StringCatalog::read`, with the two loose TGAs and `rimage.zbd` \
-         as media) plus the GPU frames the adapter test wrote \
-         (`cs_app::text::gpu_capture::capture_text_boxes`); validated with \
-         tools/validate_evidence.py --require-pass. The report's `unknowns` are this task's own \
-         blockers and are empty because the acceptance run passed; the product incompleteness the \
-         audit measured — the original bitmap-font cell-to-character mapping was unmeasured when \
-         F51-D ran (task #466 later measured the ten `rimage.zbd` fonts and recorded the TGAs as \
-         unused by the original, see docs/findings/2026-10-06-f51-fontcell-bitmap-font-coverage.md), \
-         and only one (English) installation was available, so no localized installation was \
-         compared — is the audit's asserted verdict and is written out in \
-         docs/findings/2026-10-01-f51-d-locale-glyph-overflow-and-license-audit.md, not dropped. \
+        "the `accept_f51_fontcell_` selection re-run locally with the retail capability, together \
+         with `--include-ignored`; this harness derives every field from the recorded log, \
+         production discovery of $CS_GAME_DIR, the production bitmap-font scan \
+         (`cs_app::text::original_font::measure_rimage_bitmap_fonts` over `ZBD/rimage.zbd` \
+         through `cs_formats::texture::read_zbd_textures`) and the production localization audit \
+         (`cs_app::text::audit::audit_localization`) re-run over that installation; validated \
+         with tools/validate_evidence.py --require-pass. The report's `unknowns` are this task's \
+         own blockers and are empty because the acceptance run passed; the product state the \
+         audit still reports — the 21 `langui.dll` strings that overflow the declared panel at \
+         declared development metrics, F51-D's own measurement — is written into the census \
+         artifact with its cause, not dropped, and the two loose TGAs are recorded there as \
+         unused by the original (owner static analysis, Rally #466 owner note 2026-10-05). \
          `claim` is `implemented` only. `candidate_tree` is the tree of the commit the suite ran \
          on: the only later delta is this report's own copy under docs/findings/evidence/, whose \
          bytes are that file",
     )
 }
 
-// ---------------------------------------------------------------- inputs ---
+// ------------------------------------------------------------- inputs ---
 
 fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
         panic!(
             "{name} is not set: this harness only runs through the sequence in its module doc \
-             (crates/cs_app/tests/text/evidence.rs)"
+             (crates/cs_app/tests/text/evidence_fontcell.rs)"
         )
     })
 }
 
 /// Cargo runs a test binary with its working directory set to the *package*
-/// root, so a path like `private/evidence/F51-D` written relative to the
-/// workspace root in the module doc must be re-anchored here.
+/// root, so a relative `private/evidence/...` must be re-anchored here.
 fn workspace_path(as_described: &str) -> PathBuf {
     let path = PathBuf::from(as_described);
     if path.is_absolute() {
@@ -504,7 +434,7 @@ fn sha256(bytes: &[u8]) -> cs_types::evidence::ContentHash {
     cs_assets::install::sha256(bytes)
 }
 
-// ---------------------------------------------------------- log parsing ---
+// --------------------------------------------------------- log parsing ---
 
 /// What the recorded `cargo test` output says actually happened.
 #[derive(Debug, Default)]
@@ -519,8 +449,9 @@ struct Suite {
 }
 
 /// Extracts the libtest summaries and the per-test results of the
-/// `accept_f51_d_` tests from a recorded `cargo test` output.
+/// `accept_f51_fontcell_` tests from a recorded `cargo test` output.
 fn parse_suite(log: &str) -> Suite {
+    const PREFIX: &str = "accept_f51_fontcell_";
     let mut suite = Suite::default();
     let mut pending: VecDeque<String> = VecDeque::new();
     for line in log.lines() {
@@ -558,7 +489,7 @@ fn parse_suite(log: &str) -> Suite {
                 break;
             };
             let full = &after[..separator];
-            if !full.contains("accept_f51_d_") {
+            if !full.contains(PREFIX) {
                 cursor = &after[separator + 5..];
                 continue;
             }
@@ -602,7 +533,7 @@ fn record(suite: &mut Suite, name: String, status: &'static str) {
     suite.assertions.push((name, status));
 }
 
-// ------------------------------------------------------------- artifacts ---
+// ---------------------------------------------------------- artifacts ---
 
 /// One referenced artifact: hashed here with the production SHA-256 of this
 /// workspace (the validator re-hashes it with `hashlib` independently).
@@ -623,7 +554,7 @@ fn artifact(source: &Path, kind: &str, evidence_dir: &Path) -> (String, String, 
     (name, sha256(&bytes).to_hex(), kind.to_owned())
 }
 
-// ------------------------------------------------------------- rendering ---
+// ---------------------------------------------------------- rendering ---
 
 struct Engine {
     rust: String,
@@ -696,11 +627,11 @@ fn jstr(value: &str) -> String {
 /// RFC 3339 with whole seconds and `Z`, which `datetime.fromisoformat`
 /// accepts after the validator's `Z` → `+00:00` replacement.
 fn iso_utc_now() -> String {
-    let epoch = SystemTime::now()
+    let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the system clock is after 1970")
         .as_secs() as i64;
-    let (year, month, day, hour, minute, second) = civil_from_unix(epoch);
+    let (year, month, day, hour, minute, second) = civil_from_unix(seconds);
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 

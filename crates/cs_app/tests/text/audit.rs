@@ -34,10 +34,11 @@ use cs_types::content::{Origin, Provenance};
 use cs_types::evidence::ContentHash;
 
 use crate::common::{
-    PANEL, RETAIL_FONT_MEDIA, RETAIL_STRING_IMAGES, buttons, claim, grammar, language_map, locale,
-    resource_row, retail_audit, retail_game_dir, substitutions,
+    PANEL, RETAIL_FONT_MEDIA, RETAIL_RIMAGE, RETAIL_STRING_IMAGES, buttons, claim, grammar,
+    language_map, locale, resource_row, retail_audit, retail_game_dir, substitutions,
 };
 use cs_app::text::layout::{LayoutRequest, layout_text};
+use cs_app::text::original_font::{CELL_COUNT, CHARACTER_COUNT, ORIGINAL_BITMAP_FONT_NAMES};
 
 /// A validated declared supported-locale set.
 fn supported(labels: &[&str]) -> SupportedLocales {
@@ -523,8 +524,10 @@ fn accept_f51_d_a_capture_that_drew_nothing_is_refused_rather_than_written() {
 }
 
 /// The retail half of the audit: every PE string image is read through the
-/// production reader, every row under the declared locale is counted, and the
-/// two original bitmap fonts are recorded with their unmeasured glyph coverage.
+/// production reader, every row under the declared locale is counted, the two
+/// loose TGAs carry the measured "the original never reads this as a font"
+/// verdict, and `rimage.zbd` carries the ten bitmap fonts the production scan
+/// measured with the colour-key cell rule.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f51_d_retail_every_string_image_and_font_is_audited_for_the_declared_locale() {
@@ -550,25 +553,93 @@ fn accept_f51_d_retail_every_string_image_and_font_is_audited_for_the_declared_l
         assert_eq!(en.covering_controls, 0, "AC01: no line reaches a button");
     }
 
-    // The two fonts are audited, are never distributable, and their unmeasured
-    // glyph coverage is a named blocker rather than a guessed pass.
+    // The two loose TGAs are audited, are never distributable, and carry the
+    // measured verdict that the original never opens either as a font — an
+    // answer with its evidence, not an unknown, so neither is a blocker.
     for spelling in RETAIL_FONT_MEDIA {
-        let media = audit.media(spelling).expect("every font was audited");
+        let media = audit.media(spelling).expect("every font file was audited");
         assert!(media.bytes > 0, "{spelling} has bytes");
         assert!(
             !media.distributable,
             "{spelling} is original and never ships"
         );
-        assert!(!media.glyphs.is_measured());
+        let reason = media.glyphs.unused_reason().unwrap_or_else(|| {
+            panic!("{spelling} must be classified as unused by the original, not as an unknown")
+        });
+        assert!(
+            reason.contains("gos_LoadFont") && reason.contains("0x5ce9e0"),
+            "the verdict cites the measured call site: {reason}"
+        );
+        assert!(
+            media.glyphs.is_measured(),
+            "{spelling} carries a measured verdict"
+        );
     }
     assert_eq!(
         audit.blockers_with_code("unmeasured_glyphs").count(),
-        RETAIL_FONT_MEDIA.len(),
-        "one unmeasured-glyph blocker per original font"
+        0,
+        "no audited media is unmeasured: the TGAs are answered and the bitmap fonts are scanned"
     );
-    assert_eq!(audit.distributable_media(), 0);
+
+    // `rimage.zbd` is audited with its ten bitmap fonts measured by the
+    // production scan: each stores exactly the 94 cells the rule requires, so
+    // every character `'!'`..`'~'` plus the space has a measured cell and the
+    // original's `'!'` substitution stays the only missing-glyph path.
+    let rimage = audit
+        .media(RETAIL_RIMAGE)
+        .expect("rimage.zbd was audited as media");
+    let fonts = rimage
+        .glyphs
+        .bitmap_fonts()
+        .expect("rimage carries measured bitmap fonts");
     assert!(
-        !audit.is_complete(),
-        "the audit is honestly incomplete while the original font mapping is unmeasured"
+        fonts.missing.is_empty(),
+        "every declared font is present: {:?}",
+        fonts.missing
     );
+    assert_eq!(fonts.fonts.len(), ORIGINAL_BITMAP_FONT_NAMES.len());
+    for name in ORIGINAL_BITMAP_FONT_NAMES {
+        let font = fonts.font(name).expect(name);
+        assert_eq!(font.cells.len(), CELL_COUNT, "{name} stores 94 cells");
+        assert!(
+            font.unresolved.is_empty(),
+            "{name} has a cell for every character: {:?}",
+            font.unresolved
+        );
+        assert_eq!(font.stray_cells, 0, "{name} stores no unaddressed cell");
+        assert_eq!(
+            font.coverage.len(),
+            CHARACTER_COUNT,
+            "{name} covers the space plus the 94 cells"
+        );
+        for ch in [' ', '!', '0', 'A', 'z', '~'] {
+            assert!(font.coverage.covers(ch), "{name} covers {ch:?}");
+        }
+        // A byte above 0x7E has no cell, so the original draws `'!'` for it.
+        assert!(!font.coverage.covers('é'), "{name} has no cell for é");
+        assert!(!font.coverage.covers('€'), "{name} has no cell for €");
+        assert_eq!(
+            font.average_advance,
+            i32::try_from(font.width).expect("a retail width fits") / 95 - 1,
+            "{name} average advance is width / 95 - 1"
+        );
+        let missing = font.missing_glyphs("Café");
+        assert_eq!(missing.missing(), ['é'], "{name} counts the missing glyph");
+        assert_eq!(missing.count('é'), 1);
+    }
+
+    // Exactly one blocker remains, and it is the overflow F51-D measured:
+    // 21 `langui.dll` strings do not fit the declared panel at the declared
+    // development metrics. No glyph verdict is unknown any more, so a new
+    // unknown — or a silently dropped one — fails here.
+    let codes: Vec<&str> = audit.blockers.iter().map(AuditBlocker::code).collect();
+    assert_eq!(
+        codes,
+        ["overflow"],
+        "the only remaining blocker is the counted overflow: {:?}",
+        audit.blockers
+    );
+    assert!(!audit.is_complete(), "the overflow keeps it honest");
+
+    assert_eq!(audit.distributable_media(), 0);
 }

@@ -5,7 +5,8 @@
 //! Spec: `specs/F51-localization-fonts-text-layout-and-original-media-ids.md`,
 //! stages `### F51-A`, `### F51-B` and `### F51-C`; shared contract
 //! `docs/contracts/UI-NETWORK.md`. Task test prefixes: `accept_f51_a_`,
-//! `accept_f51_b_` and `accept_f51_c_`.
+//! `accept_f51_b_`, `accept_f51_c_`, `accept_f51_d_` (in `audit`) and
+//! `accept_f51_fontcell_` (in `original_font`, Rally #466).
 //!
 //! These tests drive production code only: `cs_content::localization` owns the
 //! declared records, their validation, the markup parser and the F12 resource
@@ -34,9 +35,11 @@ mod audit;
 mod catalog;
 mod common;
 mod evidence;
+mod evidence_fontcell;
 mod fonts;
 mod layout;
 mod markup;
+mod original_font;
 mod resource;
 mod screen;
 mod session;

@@ -11,11 +11,12 @@
 //!
 //! * [`metrics::TextMetrics`] is the *typed measurement input* — advance
 //!   widths, line height, ascent and the font's declared glyph coverage at a
-//!   pixel size. The original font format is still unmeasured, so the numbers
-//!   stay a caller-supplied input and [`metrics::synthetic_monospace`] is a
+//!   pixel size. The original's bitmap fonts are now measured as a glyph
+//!   **coverage** by [`original_font`] (Rally #466), but their per-character
+//!   advances and vertical metrics are still unmeasured, so the numbers stay
+//!   a caller-supplied input and [`metrics::synthetic_monospace`] is a
 //!   declared monospace stand-in for development, never a measurement of the
-//!   original. A decode that fills this seam from an original font belongs to
-//!   the retail-capable F51-D audit once that format is known.
+//!   original.
 //! * [`layout::layout_text`] is the whole of AC01 at this stage: it lays a
 //!   validated [`MarkupDocument`] out inside a panel, keeps the text inside
 //!   the panel's largest **free band** — the horizontal band the panel's
@@ -42,10 +43,21 @@
 //!   lays every resolved string out in the caller's panel so an overflow or a
 //!   covered control is counted, and audits each media file's length, digest,
 //!   distributability and glyph evidence. A language, id or media the inputs do
-//!   not cover is a named [`audit::AuditBlocker`], and a media whose glyph
-//!   coverage was not measured — the original bitmap fonts — stays
-//!   [`audit::GlyphEvidence::Unmeasured`], so [`audit::LocalizationAudit::is_complete`]
-//!   is honestly `false` rather than a guessed pass.
+//!   not cover is a named [`audit::AuditBlocker`]. Every media carries a
+//!   *measured* verdict — a declared coverage, the per-font coverage
+//!   [`original_font`] derives for `rimage.zbd`, or the recorded verdict that
+//!   the file is not a font in the original at all — and only a media whose
+//!   coverage is still unknown stays [`audit::GlyphEvidence::Unmeasured`], so
+//!   [`audit::LocalizationAudit::is_complete`] stays honestly `false` rather
+//!   than a guessed pass.
+//! * [`original_font`] (Rally #466, `F51-FONTCELL`) records the original's font
+//!   sources as the owner's static analysis measured them: the ten `fonts.zrd`
+//!   bitmap fonts in `ZBD/rimage.zbd` are scanned by the colour-key cell rule
+//!   into a real [`GlyphCoverage`](cs_content::localization::GlyphCoverage)
+//!   per font, the two loose TGAs are recorded as unused by the original, and
+//!   `gfont3d`/`print3d` text is recorded as the Windows-1252 design target of
+//!   the OS font the original resolves to. Nothing there is a run of the
+//!   original, so none of it is `verified_original`.
 //! * [`gpu_capture::capture_text_boxes`] (F51-D) is the `gpu` half: it draws the
 //!   real line boxes [`layout::layout_text`] produced on the real renderer and
 //!   writes a PNG, refusing a frame that drew nothing. It is a geometry witness,
@@ -81,6 +93,7 @@ pub mod fonts;
 pub mod gpu_capture;
 pub mod layout;
 pub mod metrics;
+pub mod original_font;
 pub mod screen;
 pub mod session;
 
@@ -98,6 +111,10 @@ pub use layout::{
     TextFit, TextLayout, layout_text,
 };
 pub use metrics::{TextMetrics, TextMetricsError, synthetic_monospace};
+pub use original_font::{
+    BitmapFontCell, BitmapFontError, MeasuredBitmapFont, RimageBitmapFonts,
+    measure_rimage_bitmap_fonts,
+};
 pub use screen::{ScreenText, ScreenTextError, ScreenTextRequest, layout_localized_text};
 pub use session::{
     HudText, HudTextRequest, MenuText, MenuTextRequest, SubtitleRequest, SubtitleText, TextSession,
