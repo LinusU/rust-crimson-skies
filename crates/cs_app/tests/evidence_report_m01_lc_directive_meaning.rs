@@ -108,9 +108,13 @@ fn review_method(observed: &Observed) -> String {
          each finding recorded are carried per key (IDENTITY's third child, the in-play flag's \
          writers, DEDG's member-field rewrites, TRAVELERS' polarity, the sound-group handles, the \
          animation call's trailing arguments) and named again on the lowering row that owns them; \
-         keys no finding covers - SET_AI_, WAKEUP_OBJECTIVE_WHEN_I_COMPLETE, OBJECTIVE_HD_*, \
-         TEST_COMPLETE, WIN_ANIM, LOSS_ANIM, DELETE_ON_SUCCESS, the record-level keys and the \
-         stray English spellings - stay refused Unmeasured; and the parser map stage A recorded \
+         of the keys no finding covers only {corpus_unmeasured} unmeasured key occurrence(s) are \
+         refused in the census's own rows: the spelled keys SET_AI_, WAKEUP_OBJECTIVE_WHEN_I_COMPLETE \
+         and the stray English spellings Change / to / mobile / net. OBJECTIVE_HD_*, TEST_COMPLETE, \
+         COMPLETION_COUNT, WIN_ANIM, LOSS_ANIM and DELETE_ON_SUCCESS sit in the executable's parser \
+         vocabulary but are spelled by no mission in this census, so they carry no disposition here \
+         and would only be refused if spelled; the five record-level keys are refused as \
+         FieldSupport::ShapeMeasured rather than as directives; and the parser map stage A recorded \
          (directive-a) is cited by the stages rather than per key, so it is reported as held, not \
          as a key citation. TEST-SELECTION NOTE: the prefix \
          accept_m01_lc_directive_meaning_ is unique to this task, so the {own_tests} discovered \

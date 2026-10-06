@@ -62,10 +62,10 @@ pinned by `accept_m01_lc_directive_meaning_m01s_whole_vocabulary_is_measured_and
 | refusals (`BlockRefusal`) | 0 — every block was read |
 
 Corpus-wide, the same production run reports **53** mission-scoped readers, of
-which **40** are measured, **729** measured key occurrences beside **6**
-refused unmeasured ones and **80** unmet lowering rows, with **0** complete
-missions and `campaign_ready == false` (the `m01-directive-meaning.json`
-artifact beside the report).
+which **40** are measured, **729** measured key occurrences beside **44**
+terminal-outcome ones and **6** refused unmeasured ones, and **80** unmet
+lowering rows, with **0** complete missions and `campaign_ready == false` (the
+`m01-directive-meaning.json` artifact beside the report).
 
 The three sets partition the vocabulary, and no key is left
 `meaning_not_measured`: the parent task's "measure what each reachable directive
@@ -147,15 +147,37 @@ never *fully known*: each statement is carried on the key and named again on
 the lowering row that owns it.
 
 **Keys the corpus spells and no stage measured.** The boundary is the
-findings, not the data: `SET_AI_`, `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`,
-`OBJECTIVE_HD_a`, `OBJECTIVE_HD_b`, `TEST_COMPLETE`, `COMPLETION_COUNT`,
-`WIN_ANIM`, `LOSS_ANIM`, `DELETE_ON_SUCCESS`, and the stray English words
-`Change` / `to` / `mobile` / `net` the corpus spells between `BEGIN_DORMANT`
-and `SET_AI_NET` all keep `Unmeasured { MeaningNotMeasured }`. None of them is
-reachable in `zbd/c1c/m01`, which is why M01's unmeasured count is 0 while the
-corpus is not; `accept_m01_lc_directive_e_corpus_keys_no_finding_covers_stay_refused`
-and `accept_m01_lc_directive_meaning_every_recorded_stage_finding_is_held_and_cited_within`
+findings, not the data. Over the 40 measurable archives the census spells **57**
+distinct directive keys: 51 of them are `Measured` or `TerminalOutcome`, and
+**six** are spelled by some mission while no finding covers them, so they keep
+`Unmeasured { MeaningNotMeasured }`:
+
+| Key | Where it is spelled |
+| --- | --- |
+| `SET_AI_` | `zbd/c5/m04` |
+| `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` | `zbd/c1b/m03` |
+| `Change`, `to`, `mobile`, `net` | `zbd/c4/m01`, `OBJECTIVE24`, between `BEGIN_DORMANT` and `SET_AI_NET` |
+
+None of the six is reachable in `zbd/c1c/m01`, which is why M01's unmeasured
+count is 0 while the corpus's is not;
+`accept_m01_lc_directive_e_corpus_keys_no_finding_covers_stay_refused` and
+`accept_m01_lc_directive_meaning_every_recorded_stage_finding_is_held_and_cited_within`
 pin both halves.
+
+**Parser keys no mission spells.** `OBJECTIVE_HD_a`, `OBJECTIVE_HD_b`,
+`TEST_COMPLETE`, `COMPLETION_COUNT`, `WIN_ANIM`, `LOSS_ANIM` and
+`DELETE_ON_SUCCESS` are in `crimson.decrypted.exe`'s directive vocabulary
+(stage A's "Parser keys present but NOT spelled by M01" list; the last only as
+a `TRAVELERS` argument token, consumed by a string compare rather than looked
+up), but **no mission in this census spells any of the seven** — the census
+never reports a disposition for them, so they are not corpus refusals. What is
+measured is that our table has no entry for them: `measured_directive` answers
+`None` for all seven, so a mission that spelled one would get the same
+`Unmeasured { MeaningNotMeasured }` refusal. Recording them above as corpus
+spellings would claim something the installation does not support; this
+distinction is pinned by
+`accept_m01_lc_directive_meaning_every_recorded_stage_finding_is_held_and_cited_within`
+too.
 
 **The five record-level keys** (`MISSION_TIMER`, `PLAYER_INIT`,
 `RESTORE_ANIMS`, `EXECUTE_ANIMS`, `INVALIDATE_ANIMS`) sit outside the numbered

@@ -37,6 +37,7 @@ use std::path::{Path, PathBuf};
 use cs_app::mission_control::survey_mission_control_programs;
 use cs_content::mission_control::{
     DirectiveDisposition, LoweringRequirementKind, TerminalOutcome, measure_control_record,
+    measured_directive,
 };
 use cs_content::stunts::ZrdValue;
 
@@ -74,6 +75,33 @@ const REQUIRED_CITATIONS: [&str; 4] = [
     "2026-10-06-m01-lc-directive-b-objective-lifecycle-target-semantics",
     "2026-10-06-m01-lc-directive-c-ai-world-and-animation-directives",
     "2026-10-06-m01-lc-directive-d-sound-help-timer-directives",
+];
+
+/// The directive keys `crimson.decrypted.exe`'s parser vocabulary carries and
+/// **no mission in the census spells**: stage A's "Parser keys present but NOT
+/// spelled by M01" list (`DELETE_ON_SUCCESS` only ever as a `TRAVELERS`
+/// argument token). They therefore have no disposition in any census row —
+/// they are not corpus refusals — and [`measured_directive`] must keep
+/// answering `None` for them, so spelling one would refuse it.
+const PARSER_ONLY_KEYS: [&str; 7] = [
+    "OBJECTIVE_HD_a",
+    "OBJECTIVE_HD_b",
+    "TEST_COMPLETE",
+    "COMPLETION_COUNT",
+    "WIN_ANIM",
+    "LOSS_ANIM",
+    "DELETE_ON_SUCCESS",
+];
+
+/// The keys some mission in the census spells that no finding covers: the six
+/// live `Unmeasured { MeaningNotMeasured }` refusals the corpus carries.
+const CORPUS_REFUSED_KEYS: [&str; 6] = [
+    "Change",
+    "SET_AI_",
+    "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE",
+    "mobile",
+    "net",
+    "to",
 ];
 
 fn game_dir() -> PathBuf {
@@ -229,6 +257,13 @@ fn accept_m01_lc_directive_meaning_m01s_whole_vocabulary_is_measured_and_cites_i
 /// claim with nothing behind it — and a recorded finding whose slug no
 /// measurement anywhere rests on, which would mean the table and the record
 /// have drifted apart.
+///
+/// The same walk also pins the corpus vocabulary the parent finding's
+/// "What still has no measured effect" section rests on, so that section
+/// cannot claim a key the installation spells when it does not: exactly the
+/// six keys some mission spells and no finding covers stay refused, the
+/// parser-only keys are spelled by no mission at all, and
+/// [`measured_directive`] still refuses those.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_lc_directive_meaning_every_recorded_stage_finding_is_held_and_cited_within() {
@@ -246,6 +281,8 @@ fn accept_m01_lc_directive_meaning_every_recorded_stage_finding_is_held_and_cite
 
     let mut cited = BTreeSet::new();
     let mut measurements = 0usize;
+    let mut vocabulary: BTreeSet<&str> = BTreeSet::new();
+    let mut refused: BTreeSet<&str> = BTreeSet::new();
     for row in census.measured_rows() {
         let record = row
             .record()
@@ -259,8 +296,38 @@ fn accept_m01_lc_directive_meaning_every_recorded_stage_finding_is_held_and_cite
             );
             cited.extend(documents);
         }
+        for key in record.keys() {
+            vocabulary.insert(key.key.as_str());
+            if matches!(key.disposition(), DirectiveDisposition::Unmeasured { .. }) {
+                refused.insert(key.key.as_str());
+            }
+        }
     }
     assert!(measurements > 0, "the corpus carries measured keys");
+
+    assert_eq!(
+        vocabulary.len(),
+        57,
+        "the corpus's distinct directive keys (the mission-program finding's census)"
+    );
+    assert_eq!(
+        refused,
+        CORPUS_REFUSED_KEYS.into_iter().collect::<BTreeSet<_>>(),
+        "the keys some mission spells and no finding covers: exactly the corpus's live refusals, \
+         no key the installation does not spell may be claimed as one"
+    );
+    for key in PARSER_ONLY_KEYS {
+        assert!(
+            !vocabulary.contains(key),
+            "{key}: in the executable's parser vocabulary but spelled by no mission in the \
+             census, so the parent finding may not report it as a corpus refusal"
+        );
+        assert_eq!(
+            measured_directive(key),
+            None,
+            "{key}: no finding entry, so a mission that spelled it would be refused"
+        );
+    }
 
     let recorded: BTreeSet<&str> = RECORDED_FINDINGS.into_iter().collect();
     let invented: Vec<&str> = cited.difference(&recorded).copied().collect();
