@@ -59,10 +59,10 @@ whose scene root is `player_pfighter` and whose model is `piratefighter`.
 **Name → index.** One routine, `0x426d80`, walks the table from `ebp = 0x620c70`
 in `+0x1c` steps while `ebp < 0x620da4`, comparing the whole argument against
 row 0's pointer with `tolower` on both sides. It returns the running index on
-the **first** full match, and `0xb` (11) in three cases: no match, an argument
-longer than the row's name, and a second full match (a duplicate name). Every
-caller tests `cmp eax, 0xb` and treats 11 as "none", substituting its own
-default. Its five call sites:
+the **first** full match; otherwise — no row whose name the argument exhausts,
+or a **second** row matching a name that has already matched — it returns `0xb`
+(11), and every caller tests `cmp eax, 0xb` and treats 11 as "none",
+substituting its own default. Its five call sites:
 
 | caller | what it reads |
 | --- | --- |
