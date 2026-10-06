@@ -94,9 +94,16 @@ not as inferred): `crimptch.rof` holds exactly one member, `ASSETS/SCRIPTS/AIRFR
 `crimson.rof` (846 members) holds a member of the same name, so step 1 shadows step 2 for it when
 the key is present. `crimson.rof` holds `ASSETS/GRAPHICS/ARIAL8.TGA` and `ASSETS/GRAPHICS/FONT.TGA`
 while the loose directory holds `GOSDATA/ASSETS/GRAPHICS/arial8.tga` and `font.tga` — the two names
-differ only in case, so which of the pair a GOS request gets depends on `MetaOpenFile`'s matching
-rule, which the static analysis did not settle (#693). What *is* settled is the container order: both ROF
-containers are registered before the loose directory, so for `ASSETS/GRAPHICS/PX_*.TGA` (archive
+differ only in case. **Settled by #693**
+(`docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`): `MetaOpenFile`'s rule for a
+container is *upper-case the request, then compare byte for byte against the name the container
+stores, which is never folded* (`roffile.dll` `0x10004be5` → `0x10003e8b`, the module's only
+`CharUpperA` call, against keys inserted unfolded at `0x10005017`), and for a loose file it is *no
+folding at all* — the name reaches `CreateFileA` at `0x100077bd` as it was asked. So **both pairs are
+answered by `crimson.rof`**, under every casing of the request, and the two copies are
+byte-identical (45636 and 65580 bytes, sha256 `a8d6dca7…` and `3c544ab4…`), so the rule decides
+which source reports the pair, not which bytes arrive. What *is* settled is the container order: both
+ROF containers are registered before the loose directory, so for `ASSETS/GRAPHICS/PX_*.TGA` (archive
 only, no loose counterpart) the archive member is the sole answer.
 
 ## E. Directory-level fallback

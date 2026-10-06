@@ -82,27 +82,38 @@ overlapping where the case-only pairs are) resolves to a registered source
 under the folding rule, and every lookup's trace reports
 `GosRegistration`/`inferred`.
 
-## C. The case-only pairs: the order does not decide this
+## C. The case-only pairs, and what #693 settled about them
 
 `crimson.rof` stores `ASSETS/GRAPHICS/ARIAL8.TGA` and
 `ASSETS/GRAPHICS/FONT.TGA`; the loose tree stores the same two images as
 `ASSETS/GRAPHICS/arial8.tga` and `.../font.tga`. Both spellings were measured to
-exist, so **which of the two a GOS request gets depends on
-`MetaOpenFile`'s matching rule, which is unmeasured** (#693). This task does
-not settle it and does not let the order pretend to:
+exist, so which of the two a GOS request gets depends on `MetaOpenFile`'s
+matching rule. **#693 settled that rule** from addresses in `roffile.dll`
+(`docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`): a container
+request is upper-cased and compared byte for byte against the stored name,
+which is never folded, and a loose request is handed to `CreateFileA` with no
+folding at all. For this installation that means:
 
-* `GosNameMatch::AsciiInsensitive` (the documented default, the rule the rest
-  of this VFS applies to legacy spellings) serves the container member and the
-  loose copy never comes up;
-* `GosNameMatch::ExactSpelling` answers only a byte-equal name, so the
-  container's uppercase name is missed and the loose spelling is answered by
-  the loose file.
+* the original **answers both pairs from `crimson.rof`**, under every casing of
+  the request — which is what `GosNameMatch::AsciiInsensitive`, the documented
+  default, answers here *on the case dimension*, because every name both
+  containers store is ASCII-uppercase (measured through the production
+  reader). Separators are a separate dimension: the original splits a request
+  only on `\`, so how a caller spells `/` is a question about requests and
+  stays unmeasured (section E);
+* `GosNameMatch::ExactSpelling` is **not** what the original does: it answers
+  only a byte-equal spelling, so the container's uppercase name misses a
+  lowercase request and the loose spelling answers instead. It stays
+  implemented as a fixture for the rule shape, not as the original's behaviour;
+* the two copies are byte-identical (45636 and 65580 bytes, sha256 `a8d6dca7…`
+  and `3c544ab4…`), so for these pairs the rule decides which source reports the
+  answer, not which bytes arrive.
 
-Both rules are implemented and the rule is an explicit chain input, recorded
-with the chain and reported on every lookup; a second, different rule in one
-VFS is refused rather than silently taking effect. The part of the order that
-does **not** depend on the rule is the patch-over-main case above, which holds
-under either.
+Both rules are still implemented and the rule is still an explicit chain input,
+recorded with the chain and reported on every lookup; a second, different rule
+in one VFS is refused rather than silently taking effect. What changed is which
+one the original used. The part of the order that does **not** depend on the
+rule is the patch-over-main case above, which holds under either.
 
 ## D. Consequences for the rest of the VFS
 
@@ -122,12 +133,12 @@ under either.
   refuse every GOS answer over a status the order does not depend on. The
   answer is served and reports `inferred`, and raising that needs an original
   run, not this task.
-* **The unmeasured matching rule is scoped to the `gos` key space.** `GosNameMatch`
+* **The name-matching rule is scoped to the `gos` key space.** `GosNameMatch`
   is a property of the VFS, because `MetaOpenFile` is the one lookup that walks
   every registered source — but it applies **only** to keys of the `gos`
   namespace. A session that also holds `install`, `reader` or `world` mounts
   keeps folding ASCII case in those key spaces (spec F04 non-negotiable
-  behavior 1) whatever a GOS chain states, so an unmeasured rule for one key
+  behavior 1) whatever a GOS chain states, so a rule stated for one key
   space cannot quietly change another. `Vfs::matching_for` is where that scope
   lives.
 * **Container paths resolve as the host spells them.** The original asks for
@@ -161,7 +172,7 @@ under either.
 
 | what | why | who settles it |
 | --- | --- | --- |
-| `MetaOpenFile`'s case-matching rule | static analysis did not settle it; it decides the `ARIAL8.TGA` / `FONT.TGA` pair | #693 |
+| the case and separator spelling the game's GOS requests carry at runtime | #693 settled the *rule* the original applies to a request (`docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`); what requests actually look like only an original run shows | an owner-supplied original run |
 | the registry state of any machine | no agent has registry capability; `HKLM\…\Crimson Skies\1.0` is not readable here | the owner, by supplying the key's value or an original-run capture |
 | whether `crimptch.rof` shadows `crimson.rof` at runtime | the order is code-derived; nothing here ran the original | an owner-supplied original run |
 
