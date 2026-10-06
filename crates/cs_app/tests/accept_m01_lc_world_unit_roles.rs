@@ -46,6 +46,7 @@ use cs_content::coordinates::{
     CalibratedQuantity, CoordinateSource, GAMEZ_VERTEX_UNIT_IS_THE_METRE, SourceAdapter,
 };
 use cs_content::scene::{BindingMap, MeshSlot, scene_graph_from_gamez};
+use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
     OBJECT_STORES_NO_MESH, UNINDEXED_RECORD_STORES_NO_GEOMETRY, UNINDEXED_ROLE_UNMEASURED,
     WorldCollisionRole,
@@ -416,7 +417,9 @@ fn accept_m01_lc_world_unit_roles_every_scale_landmark_is_re_observed_over_the_i
     let mut theatre_high = f64::NEG_INFINITY;
     let mut cell_pitches: Vec<f64> = Vec::new();
     for group in worlds.groups() {
-        let container = worlds.container(&group).expect("the container reads");
+        let container = worlds
+            .container(&group, &WorldTextureLoad::project_default())
+            .expect("the container reads");
         let grid = container.partition_grid().expect("the grid reads");
         let mut previous: Option<f32> = None;
         for cell in grid.cells() {
@@ -602,7 +605,7 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
 
     for split in &SPLITS {
         let container = found
-            .container(split.group)
+            .container(split.group, &WorldTextureLoad::project_default())
             .unwrap_or_else(|error| panic!("{}: the container reads: {error}", split.group));
         let imported = container
             .definition(origin(&container), &retail_adapter(&container))
@@ -737,7 +740,7 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
 fn accept_m01_lc_world_unit_roles_the_c1c_spawn_reports_the_measured_split() {
     let found = retail();
     let container = found
-        .container("C1C")
+        .container("C1C", &WorldTextureLoad::project_default())
         .expect("the c1c geometry container reads");
     let imported = container
         .definition(origin(&container), &retail_adapter(&container))

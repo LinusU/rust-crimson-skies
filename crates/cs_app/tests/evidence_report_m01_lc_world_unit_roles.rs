@@ -37,6 +37,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cs_app::world::{RetailWorldContainer, read_world_containers};
 use cs_assets::install::{content_fingerprint, discover, fingerprint};
 use cs_content::coordinates::{CalibratedQuantity, CoordinateSource, SourceAdapter};
+use cs_content::textures::WorldTextureLoad;
 use cs_types::content::Origin;
 
 /// Every acceptance test the report must see pass: this task's own prefix, so
@@ -193,7 +194,7 @@ fn render_census(
     let mut imported = 0usize;
     for group in found.groups() {
         let container = found
-            .container(&group)
+            .container(&group, &WorldTextureLoad::project_default())
             .unwrap_or_else(|error| panic!("{group}: the container reads: {error}"));
         let adapter = retail_adapter(&container);
         let imported_world = container
@@ -239,7 +240,7 @@ fn render_census(
         .next()
         .expect("at least one world group exists");
     let span = found
-        .container(&first_group)
+        .container(&first_group, &WorldTextureLoad::project_default())
         .expect("the first group's container reads")
         .span()
         .clone();
