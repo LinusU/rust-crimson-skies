@@ -182,15 +182,17 @@ not an independent one).
   `cs_formats` 26+1, `cs_net` 9+1, `cs_script` 11+1, `cs_sim` 48+1,
   `cs_types` 5+1, `cs_inspect` 23+2, `cs_xtask` 14+0).
 * The size split was re-measured with an independent script that reads cargo's
-  `.d` sidecars itself and does not call the tool: 139 attributed sources (the
-  plan's 377 plus two it correctly refuses), 104.8 MB–233.3 MB engine-linked,
-  1.0 MB–20.8 MB small, median 107,113,240, total 17.02 GB. The two extra
-  attributions are `tools/cs_xtask/src/main.rs` (the `cs_xtask` binary itself,
-  which `test = false` keeps out of the plan) and
-  `crates/cs_app/tests/accept_f29_c_propulsion_gate.rs`, whose `.d` and binary
-  are still in the local target directory although the test file is gone. A
-  stale artifact for a deleted file is not part of the plan, which is right:
-  `cargo test` links nothing for it.
+  `.d` sidecars itself and does not call the tool. It attributes **379** sources
+  where the plan holds 377: the two extra ones are `tools/cs_xtask/src/main.rs`
+  (the `cs_xtask` binary itself, which `test = false` keeps out of the plan) and
+  `crates/cs_app/tests/accept_f29_c_propulsion_gate.rs`, whose `.d` and binary are
+  still in the local target directory although the test file is gone — a stale
+  artifact for a deleted file is not in the plan, which is right, because
+  `cargo test` links nothing for it. With those two in, the script measures
+  104.8 MB–233.3 MB engine-linked, 1.0 MB–20.8 MB small, median 107,113,240 and
+  17.02 GB in total, against the tool's 138/239, median 107,113,240 and 16.89 GB:
+  the same split, the extra 0.13 GB being the stale 129.5 MB `cs_app` binary and
+  the `cs_xtask` binary itself.
 * Two `accept_t696_` tests failed under a member-scoped
   `cargo test -p cs_xtask` in a fresh per-worktree target directory (task
   #383), because they demanded a workspace-wide build's coverage and its
