@@ -1245,15 +1245,16 @@ pub fn bind_mission_animation(
     scope: &str,
 ) -> Result<MissionAnimationBinding, MissionAnimationError> {
     let scope = scope.to_ascii_lowercase();
-    let group = scope
-        .split('/')
-        .nth(1)
-        .filter(|group| !group.is_empty())
-        .ok_or_else(|| MissionAnimationError::Archive {
-            container: scope.clone(),
-            reason: "a mission scope is spelled zbd/<group>/<mission>".to_owned(),
-        })?
-        .to_owned();
+    let components: Vec<&str> = scope.split('/').collect();
+    let group = match components.as_slice() {
+        ["zbd", group, mission] if !group.is_empty() && !mission.is_empty() => (*group).to_owned(),
+        _ => {
+            return Err(MissionAnimationError::Archive {
+                container: scope.clone(),
+                reason: "a mission scope is spelled zbd/<group>/<mission>".to_owned(),
+            });
+        }
+    };
     let found = install::discover(install_root)
         .map_err(|error| MissionAnimationError::Discovery(error.to_string()))?;
     let install_sha256 = install::fingerprint(&found.manifest);
