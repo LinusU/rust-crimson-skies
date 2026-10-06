@@ -285,9 +285,11 @@ module; the retail test reads `$CS_GAME_DIR` only and commits nothing from it.
 
 Retail result on this machine: 49 archives, 37 004 stored names, all already
 the folded spelling and pairwise distinct under it, all tables sorted, and
-3 264 mixed-case requests (64 × 49 archives, plus `rimage.zbd`) reached the
-stored entry with an identical upload. The test takes about six minutes in a
-debug build, almost all of it the installation walk.
+3 136 mixed-case requests (64 per archive across all 49, `rimage.zbd`
+included) reached the stored entry with an identical upload. The test takes
+about six minutes in a debug build, almost all of it the installation walk.
+(The figure was written down as "3 264" before; the run prints `asked`, which
+is `64 × archives`, and 49 archives give 3 136 — corrected in review.)
 
 ## Mutation probes
 
