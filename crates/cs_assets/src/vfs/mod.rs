@@ -62,7 +62,13 @@
 //!   from the original executable's code, not from a runtime capture, and
 //!   [`reader::READER_LOOKUP_ORDER_STATUS`] says so; the designed
 //!   [`PRECEDENCE_ORDER_STATUS`] is untouched and a reader lookup never
-//!   consults it.
+//!   consults it. When no archive holds the name, the original's **loose
+//!   directory pass** serves a loose host file
+//!   ([`reader::original_loose_reader_directories`],
+//!   [`ReaderMounts::add_original_loose_directories`]); when an archive *and* a
+//!   loose file hold it, the original's `CompareFileTime` override would decide
+//!   and production cannot, so the lookup is **refused**
+//!   ([`reader::READER_LOOSE_OVERRIDE_STATUS`]).
 //!
 //! Mounting archive members needs the archive readers of the format tasks.
 //! For every other key space the original lookup order is still unmeasured
@@ -101,10 +107,12 @@ pub use gos::{
 };
 pub use mount::{MemberRecord, Mount, MountBuilder, MountError, MountScope, SkipReason};
 pub use reader::{
-    READER_LOOKUP_ORDER_STATUS, READER_NAMESPACE, ReaderArchive, ReaderAttempt,
-    ReaderAttemptOutcome, ReaderLevel, ReaderLookupError, ReaderMember, ReaderMountError,
-    ReaderMounts, ReaderReadError, ReaderResolution, ReaderTrace, Unreachable,
-    mount_reader_archive,
+    LooseFileError, READER_LOOKUP_ORDER_STATUS, READER_LOOSE_ORDER_STATUS,
+    READER_LOOSE_OVERRIDE_STATUS, READER_NAMESPACE, READER_ROOT_DIRECTORY, ReaderArchive,
+    ReaderAttempt, ReaderAttemptOutcome, ReaderLevel, ReaderLookupError, ReaderLooseAttempt,
+    ReaderLooseDirectory, ReaderLooseError, ReaderLooseOutcome, ReaderMember, ReaderMountError,
+    ReaderMounts, ReaderOrigin, ReaderReadError, ReaderResolution, ReaderTrace, Unreachable,
+    mount_reader_archive, original_loose_reader_directories,
 };
 pub use resolve::{
     AttemptOutcome, ConflictOrigin, LookupOrder, LookupOrderStatus, ResolutionAttempt,

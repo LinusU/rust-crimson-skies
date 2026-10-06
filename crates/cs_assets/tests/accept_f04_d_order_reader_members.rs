@@ -48,8 +48,8 @@ use common::TempTree;
 use cs_assets::install::{self, Discovery, sha256};
 use cs_assets::vfs::{
     MountBuilder, READER_LOOKUP_ORDER_STATUS, READER_NAMESPACE, ReaderArchive,
-    ReaderAttemptOutcome, ReaderLevel, ReaderLookupError, ReaderMounts, SkipReason, Unreachable,
-    mount_reader_archive,
+    ReaderAttemptOutcome, ReaderLevel, ReaderLookupError, ReaderMounts, ReaderOrigin, SkipReason,
+    Unreachable, mount_reader_archive,
 };
 use cs_formats::zbd::{INDEX_ENTRY_BYTES, INDEX_NAME_BYTES, INDEX_UNEXPLAINED_BYTES};
 use cs_types::asset_id::{
@@ -236,11 +236,11 @@ fn accept_f04_d_order_reader_root_archive_shadows_mission_and_world() {
     let resolution = mounts
         .resolve(&fixture_context("mp1"), &key("targets.zrd"))
         .expect("the root archive holds targets.zrd");
-    assert_eq!(resolution.level, ReaderLevel::Root);
+    assert_eq!(resolution.level(), Some(ReaderLevel::Root));
     assert_eq!(resolution.container, "zbd/zrdr.zbd");
     assert_eq!(resolution.member, "targets.zrd");
     assert_eq!(resolution.basename, "targets.zrd");
-    assert_eq!(resolution.entry_index, 0);
+    assert_eq!(resolution.entry_index(), Some(0));
     assert_eq!(mounts.read(&resolution).expect("reads"), b"root targets");
 
     // The trace is in the original's mount order and says which archive lost
@@ -327,7 +327,7 @@ fn accept_f04_d_order_reader_mission_shadows_world_when_the_root_has_no_such_mem
     let resolution = mounts
         .resolve(&context, &key("targets.zrd"))
         .expect("the mission archive holds targets.zrd");
-    assert_eq!(resolution.level, ReaderLevel::Mission);
+    assert_eq!(resolution.level(), Some(ReaderLevel::Mission));
     assert_eq!(resolution.container, "zbd/c1c/mp3/zrdr.zbd");
     assert_eq!(mounts.read(&resolution).expect("reads"), b"mission targets");
     assert_eq!(
@@ -357,7 +357,7 @@ fn accept_f04_d_order_reader_mission_shadows_world_when_the_root_has_no_such_mem
     let fallback = world_only
         .resolve(&context, &key("targets.zrd"))
         .expect("the world archive holds targets.zrd");
-    assert_eq!(fallback.level, ReaderLevel::World);
+    assert_eq!(fallback.level(), Some(ReaderLevel::World));
     assert_eq!(
         world_only.read(&fallback).expect("reads"),
         b"world targets",
@@ -457,7 +457,8 @@ fn accept_f04_d_order_reader_matches_case_insensitively_and_serves_the_first_ent
             .resolve(&fixture_context("mp1"), &key(requested))
             .unwrap_or_else(|error| panic!("{requested} resolves: {error}"));
         assert_eq!(
-            resolution.entry_index, 0,
+            resolution.entry_index(),
+            Some(0),
             "{requested} reaches the first entry"
         );
         assert_eq!(
@@ -627,7 +628,7 @@ fn accept_f04_d_order_reader_a_skipped_archive_is_reported_and_the_next_one_serv
     let resolution = mounts
         .resolve(&fixture_context("mp3"), &key("targets.zrd"))
         .expect("the world archive is admitted and holds the name");
-    assert_eq!(resolution.level, ReaderLevel::World);
+    assert_eq!(resolution.level(), Some(ReaderLevel::World));
     assert_eq!(
         resolution.trace.attempts[0].outcome,
         ReaderAttemptOutcome::Skipped(SkipReason::ScopeMismatch),
@@ -644,7 +645,7 @@ fn accept_f04_d_order_reader_a_skipped_archive_is_reported_and_the_next_one_serv
     let admitted = mounts
         .resolve(&fixture_context("mp1"), &key("targets.zrd"))
         .expect("the mission archive is admitted here");
-    assert_eq!(admitted.level, ReaderLevel::Mission);
+    assert_eq!(admitted.level(), Some(ReaderLevel::Mission));
     assert_eq!(mounts.read(&admitted).expect("reads"), b"mp1 targets");
 }
 
@@ -790,7 +791,11 @@ fn accept_f04_d_order_reader_read_refuses_a_stale_or_foreign_resolution() {
     // A resolution stamped with another mount names bytes this archive does
     // not hold, so the mount set refuses it before it looks at any archive.
     let mut foreign = resolution.clone();
-    foreign.mount = MountId::new("reader-other").expect("a valid mount id");
+    foreign.origin = ReaderOrigin::Archive {
+        mount: MountId::new("reader-other").expect("a valid mount id"),
+        level: ReaderLevel::Root,
+        entry_index: 0,
+    };
     assert_eq!(
         mounts
             .read(&foreign)
@@ -809,7 +814,11 @@ fn accept_f04_d_order_reader_read_refuses_a_stale_or_foreign_resolution() {
 
     // A resolution that claims an entry the archive does not have is stale.
     let mut stale = resolution.clone();
-    stale.entry_index = 7;
+    stale.origin = ReaderOrigin::Archive {
+        mount: MountId::new("reader-root").expect("a valid mount id"),
+        level: ReaderLevel::Root,
+        entry_index: 7,
+    };
     assert_eq!(
         mounts
             .read(&stale)
@@ -983,7 +992,7 @@ fn accept_f04_d_order_reader_two_archives_under_one_mount_id_are_refused() {
         &reader_archive(&[("targets.zrd", b"world targets")]),
     ));
     assert_eq!(
-        mounts.archives_named(&first.mount),
+        mounts.archives_named(first.mount().expect("an archive origin names its mount"),),
         2,
         "the second archive reused the mount id the resolution names"
     );
@@ -1129,8 +1138,8 @@ fn accept_f04_d_order_reader_retail_mission_shadows_world_in_five_cases() {
         // archive holding the name, so the mission copy wins over the world
         // copy — and the two hold different bytes, so the order decides.
         assert_eq!(
-            resolution.level,
-            ReaderLevel::Mission,
+            resolution.level(),
+            Some(ReaderLevel::Mission),
             "{mission_dir}: the mission archive shadows the world archive"
         );
         assert_eq!(
@@ -1145,7 +1154,9 @@ fn accept_f04_d_order_reader_retail_mission_shadows_world_in_five_cases() {
         assert_eq!(
             resolution.trace.attempts[0].outcome,
             ReaderAttemptOutcome::Selected {
-                entry_index: resolution.entry_index
+                entry_index: resolution
+                    .entry_index()
+                    .expect("an archive origin names its entry index")
             },
             "{mission_dir}: the mission archive is searched before the world archive"
         );
@@ -1284,7 +1295,8 @@ fn accept_f04_d_order_reader_retail_root_player_is_served_by_its_first_entry() {
         .resolve(&context, &key("player.zrd"))
         .expect("player.zrd resolves for any context");
     assert_eq!(
-        resolution.entry_index, 22,
+        resolution.entry_index(),
+        Some(22),
         "the first entry is served by name"
     );
     assert_eq!(resolution.span.offset(), first.offset);

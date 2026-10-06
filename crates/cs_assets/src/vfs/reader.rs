@@ -15,10 +15,36 @@
 //!    case-insensitively and serves the **first** entry that matches — so the
 //!    first archive holding the name wins, and inside it the first entry.
 //!
-//! Those three rules are what this module implements, and nothing else: the
-//! loose-file override, the loose directory fallback and the meaning of the
-//! index entry's trailing timestamp stay unmeasured (sections A and F) and are
-//! not modelled here.
+//! Those three rules plus one of the two loose rules of section A are what
+//! this module implements:
+//!
+//! 4. **loose directory fallback** — only when *no* mounted archive holds the
+//!    basename, the loose pass searches the **most recently added** loose
+//!    directory first and `zbd` last (task #700). A loose file is registered
+//!    per directory ([`ReaderLooseDirectory`]) and serves a lookup no archive
+//!    can answer, exactly as the original's loose pass does.
+//!
+//! # The loose-file override is deliberately **not** decided
+//!
+//! The original also compares a loose file of the same basename against the
+//! archive copy and keeps the newer one (`CompareFileTime >= 1`, section A).
+//! Deciding that needs a time on the archive side, and the only candidate the
+//! bytes offer — the index entry's trailing `u64` — is **unknown**: nothing
+//! measured shows the original reading it, and task **#692** owns those 76
+//! bytes. So this module does not compare anything. Instead a lookup that
+//! finds **both** an archive member and a loose file of the same basename is
+//! **refused** ([`ReaderLookupError::LooseOverrideUndecided`]) with the real
+//! refusal, never answered with the archive member and never answered with the
+//! loose file: either choice would be a comparison nobody measured. That
+//! refusal happens whether the loose file is newer or older, because the
+//! archive side of the comparison is unknown — the host's modification time is
+//! not the original's `CompareFileTime` argument.
+//!
+//! A lookup that finds a loose file of the same basename and **no** archive
+//! member is decided by rule 4 alone and needs no comparison at all.
+//!
+//! [`READER_LOOSE_OVERRIDE_STATUS`] is therefore [`ClaimStatus::Unknown`]:
+//! the rule exists, the decision is not implemented.
 //!
 //! # Why a reader member is not a `Vfs::resolve` answer
 //!
@@ -66,12 +92,17 @@
 //! backing` instead of returning container bytes as if they were host files —
 //! the same split a ROF mount has ([`crate::rof`]).
 //!
+//! A **loose** file is a host file instead, so it is read through the same
+//! digest check ([`ReaderMounts::read`]) and never through a mount: it has no
+//! [`Mount`] and no [`SourceSpan`] member key, only the installation-relative
+//! path of the file itself.
+//!
 //! Nothing here writes to the installation.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use cs_formats::ParseContext;
@@ -106,6 +137,201 @@ pub const READER_NAMESPACE: &str = "reader";
 /// original lookup was compared against — is deliberately left at `designed`
 /// and is not consulted by a reader lookup.
 pub const READER_LOOKUP_ORDER_STATUS: ClaimStatus = ClaimStatus::Inferred;
+
+/// How well the original's **loose directory** search order is known.
+///
+/// The most recently added directory is searched first and `zbd` last, because
+/// `zbd` is the oldest addition (section A, startup `0x4a6ff0`). That order is
+/// read off the original executable's code, exactly like the archive order
+/// above, so it is [`ClaimStatus::Inferred`] and never
+/// [`ClaimStatus::VerifiedOriginal`].
+pub const READER_LOOSE_ORDER_STATUS: ClaimStatus = ClaimStatus::Inferred;
+
+/// How well the original's **loose-file override** is known, and why this
+/// module refuses instead of deciding it.
+///
+/// The rule exists in the original (section A: a loose file of the same
+/// basename that is newer, `CompareFileTime >= 1`, overrides the archive copy
+/// the archive pass found). The comparison is **not implemented**, because the
+/// archive side of it needs the index entry's trailing `u64`, whose meaning is
+/// unknown and which nothing measured shows the original reading (section F;
+/// task #692 owns those 76 bytes). So the rule's status here is
+/// [`ClaimStatus::Unknown`]: known to exist, not implemented, and a lookup that
+/// would have to apply it is refused
+/// ([`ReaderLookupError::LooseOverrideUndecided`]).
+pub const READER_LOOSE_OVERRIDE_STATUS: ClaimStatus = ClaimStatus::Unknown;
+
+/// The installation-relative spelling of the original's default reader
+/// directory `zbd`: the archive directory itself, which the loose pass also
+/// searches as the **oldest** addition (section A).
+pub const READER_ROOT_DIRECTORY: &str = "zbd";
+
+/// The loose reader directories the original adds for one world/mission load,
+/// **in the order the executable appends them** (section A, startup `0x4a6ff0`
+/// and world/mission load `0x463cb0`):
+///
+/// | order | spelling the original adds | added by |
+/// | --- | --- | --- |
+/// | 1 | `zbd` | startup default directory list |
+/// | 2 | `data/common/zrdr` | startup loose reader path `..\data\common\zrdr` |
+/// | 3 | `data/common` | world/mission load |
+/// | 4 | `data/<w>` | world/mission load |
+/// | 5 | `data/<w>/nets` | world/mission load |
+/// | 6 | `data/<w>/<m>` | world/mission load |
+///
+/// The loose pass searches this list **backwards** — the most recently added
+/// directory first, `zbd` last (section A: "searches the most recently added
+/// directory first, then `zbd`").
+///
+/// `world` and `mission` are the world **directory** and mission **directory**
+/// names the original's loose path spells (`c1c`, `mp1`), not the `zbd/<group>`
+/// world-group spelling; a value carrying a separator is refused
+/// ([`ReaderLooseError::NotADirectoryName`]) instead of being joined into a
+/// path nobody measured. The finding spells these components in lower case
+/// while this installation's `ZBD` directories are upper case; nothing measured
+/// distinguishes the two spellings, because **no loose reader directory exists
+/// in retail**, so the caller's spelling is used as given and is never
+/// case-folded here.
+///
+/// `world = None` yields the two startup directories only; `mission = None`
+/// with a world yields the four directories a world load adds.
+pub fn original_loose_reader_directories(
+    world: Option<&str>,
+    mission: Option<&str>,
+) -> Result<Vec<RelativePath>, ReaderLooseError> {
+    let directory_name = |spelling: &str| {
+        if spelling.contains(['/', '\\']) {
+            return Err(ReaderLooseError::NotADirectoryName {
+                spelling: spelling.to_owned(),
+            });
+        }
+        RelativePath::new(spelling).map_err(ReaderLooseError::Spelling)
+    };
+    let joined = |prefix: &str, suffix: &str| {
+        let spelling = format!("{prefix}/{suffix}");
+        RelativePath::new(&spelling).map_err(ReaderLooseError::Spelling)
+    };
+
+    let mut directories = vec![
+        RelativePath::new(READER_ROOT_DIRECTORY).map_err(ReaderLooseError::Spelling)?,
+        RelativePath::new("data/common/zrdr").map_err(ReaderLooseError::Spelling)?,
+        RelativePath::new("data/common").map_err(ReaderLooseError::Spelling)?,
+    ];
+    let Some(world) = world else {
+        return Ok(directories);
+    };
+    let world = directory_name(world)?;
+    directories.push(joined("data", world.as_str())?);
+    directories.push(joined(&format!("data/{world}"), "nets")?);
+    if let Some(mission) = mission {
+        let mission = directory_name(mission)?;
+        directories.push(joined(&format!("data/{world}"), mission.as_str())?);
+    }
+    Ok(directories)
+}
+
+/// Why a loose reader directory could not be declared.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReaderLooseError {
+    /// The spelling is not a valid installation-relative spelling, so no key,
+    /// span or host path could be built from it.
+    Spelling(RelativePathError),
+    /// A world or mission component carries a separator, so it cannot name one
+    /// loose directory. [`original_loose_reader_directories`] takes the world
+    /// **directory** name (`c1c`), not the `zbd/<group>` world-group spelling.
+    NotADirectoryName {
+        /// The component that was refused.
+        spelling: String,
+    },
+}
+
+impl ReaderLooseError {
+    /// Stable lowercase identifier for reports and structured diagnostics.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Spelling(_) => "spelling",
+            Self::NotADirectoryName { .. } => "not_a_directory_name",
+        }
+    }
+}
+
+impl fmt::Display for ReaderLooseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Spelling(reason) => {
+                write!(
+                    f,
+                    "the loose reader directory spelling is refused: {reason}"
+                )
+            }
+            Self::NotADirectoryName { spelling } => write!(
+                f,
+                "{spelling:?} carries a separator, so it cannot name one loose reader directory; \
+                 pass the world/mission directory name (c1c, mp1), not a world-group spelling \
+                 (zbd/c1c)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ReaderLooseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Spelling(reason) => Some(reason),
+            Self::NotADirectoryName { .. } => None,
+        }
+    }
+}
+
+/// One loose reader directory: an installation-relative spelling and the host
+/// root it is searched in.
+///
+/// The original adds its loose directories to one list at startup and per
+/// world/mission load, and searches that list **most recently added first**. A
+/// [`ReaderMounts`] set therefore records them in *addition* order
+/// ([`ReaderMounts::add_loose_directory`]) and searches them backwards
+/// ([`ReaderMounts::loose_search_order`]); a directory that does not exist on
+/// this host counts for nothing, exactly as the original counts "only existing
+/// directories" (section A) — and none of them exists in retail.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReaderLooseDirectory {
+    spelling: RelativePath,
+    host_root: PathBuf,
+}
+
+impl ReaderLooseDirectory {
+    /// Declares the loose reader directory `spelling` below the installation
+    /// root `root`. Nothing is read or written and the directory need not
+    /// exist: its absence is what the lookup reports
+    /// ([`ReaderLooseOutcome::Absent`]).
+    pub fn declare(root: &Path, spelling: &str) -> Result<Self, ReaderLooseError> {
+        let spelling =
+            RelativePath::new(spelling).map_err(|reason| ReaderLooseError::Spelling(reason))?;
+        Ok(Self {
+            spelling,
+            host_root: root.to_path_buf(),
+        })
+    }
+
+    /// The directory's installation-relative spelling, as the original adds it.
+    pub fn spelling(&self) -> &str {
+        self.spelling.as_str()
+    }
+
+    /// The host path of the directory itself.
+    pub fn host_path(&self) -> PathBuf {
+        self.host_root.join(self.spelling.as_str())
+    }
+
+    /// The host path of `basename` inside this directory.
+    ///
+    /// `basename` is the last component of a validated [`RelativePath`], so it
+    /// is one component with no separator, no `..` and no NUL: joining it here
+    /// cannot leave the declared directory.
+    pub fn candidate_path(&self, basename: &str) -> PathBuf {
+        self.host_path().join(basename)
+    }
+}
 
 /// One level of the original's reader mount list.
 ///
@@ -318,23 +544,37 @@ impl ReaderArchive {
     ///
     /// # Errors
     ///
-    /// [`ReaderReadError`] when the resolution names another archive
-    /// ([`ReaderReadError::ForeignArchive`]), no longer describes the entry it
-    /// was made for ([`ReaderReadError::StaleResolution`]), or the stored
-    /// bytes do not hash to what the mount recorded
-    /// ([`ReaderReadError::DigestMismatch`]).
+    /// [`ReaderReadError::LooseOrigin`] when the resolution names a loose host
+    /// file instead of a member of this archive,
+    /// [`ReaderReadError::ForeignArchive`] when the resolution names another
+    /// archive, [`ReaderReadError::StaleResolution`] when it no longer
+    /// describes the entry it was made for, and
+    /// [`ReaderReadError::DigestMismatch`] when the stored bytes do not hash to
+    /// what the mount recorded.
     pub fn read(&self, resolved: &ReaderResolution) -> Result<Vec<u8>, ReaderReadError> {
-        if self.mount.id() != &resolved.mount {
+        // A loose resolution names no archive member at all: reading it through
+        // an archive would return another source's bytes under this archive's
+        // provenance, so it is refused (`ReaderMounts::read` reads it from the
+        // host instead).
+        let ReaderOrigin::Archive {
+            mount, entry_index, ..
+        } = &resolved.origin
+        else {
+            return Err(ReaderReadError::LooseOrigin {
+                archive: self.mount.id().to_string(),
+            });
+        };
+        if self.mount.id() != mount {
             return Err(ReaderReadError::ForeignArchive {
-                mount: resolved.mount.to_string(),
+                mount: mount.to_string(),
                 expected: self.mount.id().to_string(),
             });
         }
-        let member = self.member_at(resolved.entry_index).ok_or_else(|| {
-            ReaderReadError::StaleResolution {
-                mount: resolved.mount.to_string(),
-            }
-        })?;
+        let member =
+            self.member_at(*entry_index)
+                .ok_or_else(|| ReaderReadError::StaleResolution {
+                    origin: self.mount.id().to_string(),
+                })?;
         let span = &resolved.span;
         let describes_entry = span.container_path() == self.container
             && span.member_key() == member.name.as_deref()
@@ -343,7 +583,7 @@ impl ReaderArchive {
             && span.member_sha256() == member.sha256;
         if !describes_entry {
             return Err(ReaderReadError::StaleResolution {
-                mount: resolved.mount.to_string(),
+                origin: self.mount.id().to_string(),
             });
         }
         self.read_entry(member)
@@ -391,18 +631,21 @@ impl ReaderArchive {
     }
 }
 
-/// The reader archives mounted for one context, in the original's mount order.
+/// The reader archives mounted for one context, in the original's mount order,
+/// plus the loose reader directories the original's loose pass would search.
 ///
 /// The set owns its archives and their bytes, so a resolution stays readable
 /// for as long as the set lives and no file handle outlives a session (spec F04
-/// non-negotiable behavior 4).
+/// non-negotiable behavior 4). Loose directories own no bytes: a loose file is
+/// read from the host when a lookup serves or re-reads it, never held open.
 #[derive(Debug, Default)]
 pub struct ReaderMounts {
     archives: Vec<ReaderArchive>,
+    loose: Vec<ReaderLooseDirectory>,
 }
 
 impl ReaderMounts {
-    /// An empty set: no reader archive is mounted.
+    /// An empty set: no reader archive and no loose directory is mounted.
     pub fn new() -> Self {
         Self::default()
     }
@@ -419,7 +662,63 @@ impl ReaderMounts {
         self
     }
 
-    /// How many archives are mounted.
+    /// Adds one loose reader directory, **in the order the original appends
+    /// it**. The lookup searches the registered directories backwards — the
+    /// most recently added first, `zbd` last — so the addition order is the
+    /// caller's declaration of the original's append order, not a search
+    /// order.
+    ///
+    /// [`original_loose_reader_directories`] returns the original's list in that
+    /// append order, and [`Self::add_original_loose_directories`] registers all
+    /// of it.
+    pub fn add_loose_directory(&mut self, directory: ReaderLooseDirectory) -> &mut Self {
+        self.loose.push(directory);
+        self
+    }
+
+    /// Registers the original's loose reader directories for one world/mission
+    /// load below the installation root `root`, in the order the executable
+    /// appends them.
+    ///
+    /// `world` and `mission` are the world and mission **directory** names the
+    /// original's loose path spells (`c1c`, `mp1`), not the `zbd/<group>`
+    /// world-group spelling; see [`original_loose_reader_directories`].
+    ///
+    /// # Errors
+    ///
+    /// [`ReaderLooseError`] when a directory spelling is not a valid
+    /// installation-relative spelling. Nothing is registered when the list
+    /// cannot be built.
+    pub fn add_original_loose_directories(
+        &mut self,
+        root: &Path,
+        world: Option<&str>,
+        mission: Option<&str>,
+    ) -> Result<&mut Self, ReaderLooseError> {
+        let spellings = original_loose_reader_directories(world, mission)?;
+        for spelling in spellings {
+            self.loose
+                .push(ReaderLooseDirectory::declare(root, spelling.as_str())?);
+        }
+        Ok(self)
+    }
+
+    /// The loose reader directories, in the order they were added — the
+    /// original's append order, **not** its search order.
+    pub fn loose_directories(&self) -> &[ReaderLooseDirectory] {
+        &self.loose
+    }
+
+    /// The loose reader directories in the order the original's loose pass
+    /// searches them: most recently added first, and the oldest addition (the
+    /// `zbd` default directory) last.
+    pub fn loose_search_order(&self) -> impl Iterator<Item = &ReaderLooseDirectory> {
+        self.loose.iter().rev()
+    }
+
+    /// How many archives are mounted. Loose reader directories are not
+    /// archives and are counted by [`Self::len`] alone; see
+    /// [`Self::loose_directories`].
     pub fn len(&self) -> usize {
         self.archives.len()
     }
@@ -453,7 +752,7 @@ impl ReaderMounts {
 
     /// Looks `requested` up the way the original engine opens a reader name.
     ///
-    /// The lookup is exactly three rules, in order:
+    /// The lookup is four rules, in order:
     ///
     /// 1. the requested path is reduced to its **basename** (`targets.zrd`,
     ///    whatever directory the caller spelled);
@@ -463,12 +762,23 @@ impl ReaderMounts {
     ///    loaded;
     /// 3. the remaining archives are searched in the original's mount order
     ///    (root, then mission, then world) and the **first** one holding the
-    ///    name serves it.
+    ///    name serves it;
+    /// 4. the loose pass (`0x579710` → `0x59d170`) runs **only when no
+    ///    archive held the name**: the registered loose reader directories are
+    ///    searched most recently added first, `zbd` last, and the first
+    ///    regular file of that basename serves the lookup.
     ///
     /// Archives searched after the winner are still reported, as
     /// [`ReaderAttemptOutcome::Shadowed`], because "the world copy was there
     /// and the mission copy won" is the fact a diagnostic has to be able to
-    /// see.
+    /// see. The same holds for loose directories searched after a loose
+    /// winner ([`ReaderLooseOutcome::Shadowed`]).
+    ///
+    /// When an archive **and** a loose file of the same basename both exist,
+    /// rule 3's answer is not the original's answer and this lookup **refuses**
+    /// ([`ReaderLookupError::LooseOverrideUndecided`]): deciding would mean
+    /// applying the `CompareFileTime` override, whose archive-side timestamp is
+    /// unknown ([`READER_LOOSE_OVERRIDE_STATUS`]).
     ///
     /// # Errors
     ///
@@ -476,8 +786,8 @@ impl ReaderMounts {
     /// reader key, [`ReaderLookupError::ForeignVariant`] when it specializes a
     /// variant (a reader archive declares one copy of each name and indexes it
     /// at [`AssetVariant::default`], so it cannot answer a variant), and
-    /// [`ReaderLookupError::NotFound`] when no mounted archive the context
-    /// admits holds the name.
+    /// [`ReaderLookupError::NotFound`] when neither a mounted archive the
+    /// context admits nor a loose reader directory holds the name.
     ///
     /// [`ReaderLookupError::UnspellableBasename`] and
     /// [`ReaderLookupError::EmptyBasename`] exist so the reduction is total
@@ -560,17 +870,32 @@ impl ReaderMounts {
             attempts.push(attempt);
         }
 
-        let trace = ReaderTrace {
-            attempts,
-            order_status: READER_LOOKUP_ORDER_STATUS,
-        };
         let Some((index, entry_index)) = selected else {
-            return Err(ReaderLookupError::NotFound {
+            // Rule 4: the original's loose pass runs exactly here, because no
+            // archive holds the name.
+            return self.resolve_loose(context, requested, basename, attempts);
+        };
+
+        // An archive holds the name. The original would still look for a loose
+        // file of the same basename and keep the newer one, so the loose pass
+        // is run for what it can decide — nothing — and its finding is a
+        // refusal, not an answer.
+        let LoosePass {
+            attempts: loose,
+            candidate,
+        } = self.loose_pass(LoosePassMode::Override, requested, basename)?;
+        if let Some(candidate) = candidate {
+            let archive = &self.archives[index];
+            return Err(ReaderLookupError::LooseOverrideUndecided {
                 requested: Box::new(requested.clone()),
                 basename: basename.to_owned(),
-                trace: Box::new(trace),
+                directory: candidate.directory,
+                host_path: candidate.host_path.into_boxed_path(),
+                size_bytes: candidate.size_bytes,
+                archive_container: archive.container.clone(),
+                trace: Box::new(reader_trace(attempts, loose)),
             });
-        };
+        }
 
         let archive = &self.archives[index];
         // `ReaderArchive::member` answers from the rows this mount was built
@@ -596,42 +921,415 @@ impl ReaderMounts {
         Ok(ReaderResolution {
             requested: requested.clone(),
             basename: basename.to_owned(),
-            mount: archive.mount.id().clone(),
             container: archive.container.clone(),
-            level: archive.level,
-            entry_index,
             member: spelling,
             span,
-            trace,
+            origin: ReaderOrigin::Archive {
+                mount: archive.mount.id().clone(),
+                level: archive.level,
+                entry_index,
+            },
+            trace: reader_trace(attempts, loose),
         })
     }
 
-    /// The bytes a resolution names, digest-checked, through the archive it
-    /// came from.
+    /// Rule 4 of the lookup, and the answer when no archive holds the name: the
+    /// original's loose pass.
+    ///
+    /// [`LoosePassMode::Fallback`] selects the first regular candidate, whose
+    /// bytes are then read once and digest-checked; a name no directory holds
+    /// is [`ReaderLookupError::NotFound`] with the loose attempts in its trace.
+    fn resolve_loose(
+        &self,
+        context: &ResolveContext,
+        requested: &AssetKey,
+        basename: &str,
+        attempts: Vec<ReaderAttempt>,
+    ) -> Result<ReaderResolution, ReaderLookupError> {
+        // The original opens the file its loose pass found, so the bytes are
+        // read once here and digest-checked; a name no directory holds is
+        // [`ReaderLookupError::NotFound`] with the loose attempts in its trace.
+        let LoosePass {
+            attempts: loose,
+            candidate,
+        } = self.loose_pass(LoosePassMode::Fallback, requested, basename)?;
+        let Some(candidate) = candidate else {
+            return Err(ReaderLookupError::NotFound {
+                requested: Box::new(requested.clone()),
+                basename: basename.to_owned(),
+                trace: Box::new(reader_trace(attempts, loose)),
+            });
+        };
+        // The fallback pass read the candidate's bytes, so the digest it
+        // resolved is the digest of exactly those bytes.
+        let digest = candidate
+            .sha256
+            .expect("the fallback pass reads a candidate's bytes, so it has their digest");
+        let file = format!("{}/{}", candidate.directory, basename);
+        // The directory spelling was validated when the directory was declared
+        // and `basename` is one component of a validated key, so the joined
+        // spelling is a valid relative one.
+        let span = SourceSpan::new(
+            context.installation,
+            &file,
+            // The file is the container itself: a loose file is not a member
+            // inside another container, which is what `member_key: None` means.
+            None,
+            0,
+            candidate.size_bytes,
+            Some(digest),
+        )
+        .expect(
+            "a validated loose directory spelling plus a validated basename is a relative path",
+        );
+
+        Ok(ReaderResolution {
+            requested: requested.clone(),
+            basename: basename.to_owned(),
+            container: file.clone(),
+            member: basename.to_owned(),
+            span,
+            origin: ReaderOrigin::Loose {
+                directory: candidate.directory,
+                file,
+                host_path: candidate.host_path,
+                size_bytes: candidate.size_bytes,
+                sha256: digest,
+            },
+            trace: reader_trace(attempts, loose),
+        })
+    }
+
+    /// The original's loose pass over the registered directories: most
+    /// recently added first, the oldest addition (`zbd`) last.
+    ///
+    /// `mode` decides what a regular candidate means. In
+    /// [`LoosePassMode::Fallback`] the first one is the answer the original
+    /// serves when no archive held the name; in [`LoosePassMode::Override`] the
+    /// original would compare it with the archive copy by file time, which is
+    /// not implemented, so every regular candidate only records that the
+    /// decision is undecidable ([`ReaderLooseOutcome::UndecidableShadow`]).
+    ///
+    /// Both passes probe every registered directory even after the answer is
+    /// known, so the trace reports the whole search; only the **first**
+    /// candidate is ever a candidate.
+    ///
+    /// In the fallback pass the candidate's bytes are read once, here, exactly
+    /// as the original opens the file its loose pass found; a file that is not a
+    /// regular file, cannot be read or changes under the read is refused rather
+    /// than skipped, because a lower-priority directory's copy is not the
+    /// original's answer.
+    fn loose_pass(
+        &self,
+        mode: LoosePassMode,
+        requested: &AssetKey,
+        basename: &str,
+    ) -> Result<LoosePass, ReaderLookupError> {
+        let mut pass = LoosePass::default();
+        for directory in self.loose_search_order() {
+            let host_path = directory.candidate_path(basename);
+            let unreadable = |source| ReaderLookupError::LooseUnreadable {
+                requested: Box::new(requested.clone()),
+                basename: basename.to_owned(),
+                directory: directory.spelling().to_owned(),
+                source: Box::new(source),
+            };
+            let probe = probe_loose(&host_path).map_err(unreadable)?;
+            let outcome = match probe {
+                LooseProbe::Absent => ReaderLooseOutcome::Absent,
+                LooseProbe::NotRegular => ReaderLooseOutcome::NotRegular,
+                LooseProbe::Regular { size_bytes } => match mode {
+                    LoosePassMode::Fallback if pass.candidate.is_some() => {
+                        ReaderLooseOutcome::Shadowed { size_bytes }
+                    }
+                    LoosePassMode::Fallback => {
+                        let bytes = read_loose_file(&host_path).map_err(unreadable)?;
+                        let digest = sha256(&bytes);
+                        pass.candidate = Some(LooseCandidate {
+                            directory: directory.spelling().to_owned(),
+                            host_path: host_path.clone(),
+                            size_bytes,
+                            sha256: Some(digest),
+                        });
+                        ReaderLooseOutcome::Selected {
+                            size_bytes,
+                            sha256: digest,
+                        }
+                    }
+                    LoosePassMode::Override => {
+                        // The original would compare this file with the archive
+                        // copy by time; production cannot, so the candidate is
+                        // recorded and the lookup is refused. The file's own
+                        // modification time is never read here: it is not the
+                        // original's comparison argument.
+                        pass.candidate.get_or_insert(LooseCandidate {
+                            directory: directory.spelling().to_owned(),
+                            host_path: host_path.clone(),
+                            size_bytes,
+                            sha256: None,
+                        });
+                        ReaderLooseOutcome::UndecidableShadow { size_bytes }
+                    }
+                },
+            };
+            pass.attempts.push(ReaderLooseAttempt {
+                directory: directory.spelling().to_owned(),
+                host_path,
+                outcome,
+            });
+        }
+        Ok(pass)
+    }
+
+    /// The bytes a resolution names, digest-checked, through the archive it came
+    /// from — or, for a loose answer, through the host file it named.
     ///
     /// The archive is found by mount id, so a set that registered the **same**
     /// mount id twice cannot say which of the two a resolution came from: that
     /// is refused ([`ReaderReadError::AmbiguousArchive`]) instead of picking
     /// the first one and returning its bytes as another archive's.
     ///
+    /// A **loose** resolution names no mount: the host path is rebuilt from the
+    /// registered directory the resolution names (never from the path the
+    /// resolution carries, which is only reported), and the file is re-read and
+    /// checked against the digest the resolution recorded. A directory that is
+    /// no longer registered is refused
+    /// ([`ReaderReadError::UnknownLooseDirectory`]), so a resolution cannot be
+    /// read against a path the set does not declare any more.
+    ///
     /// # Errors
     ///
     /// [`ReaderReadError::UnknownArchive`] when the set no longer holds the
     /// archive the resolution names, [`ReaderReadError::AmbiguousArchive`] when
     /// it holds more than one under that id, plus everything
-    /// [`ReaderArchive::read`] reports.
+    /// [`ReaderArchive::read`] and [`Self::read_loose`] report.
     pub fn read(&self, resolved: &ReaderResolution) -> Result<Vec<u8>, ReaderReadError> {
-        if self.archives_named(&resolved.mount) > 1 {
-            return Err(ReaderReadError::AmbiguousArchive {
-                mount: resolved.mount.to_string(),
+        match &resolved.origin {
+            ReaderOrigin::Archive { mount, .. } => {
+                if self.archives_named(mount) > 1 {
+                    return Err(ReaderReadError::AmbiguousArchive {
+                        mount: mount.to_string(),
+                    });
+                }
+                self.archive(mount)
+                    .ok_or_else(|| ReaderReadError::UnknownArchive {
+                        mount: mount.to_string(),
+                    })?
+                    .read(resolved)
+            }
+            ReaderOrigin::Loose {
+                directory,
+                host_path,
+                size_bytes,
+                sha256,
+                ..
+            } => self.read_loose(resolved, directory, host_path, *size_bytes, *sha256),
+        }
+    }
+
+    /// The bytes of a loose resolution, re-read from the host and
+    /// digest-checked against what the resolution named.
+    fn read_loose(
+        &self,
+        resolved: &ReaderResolution,
+        directory: &str,
+        host_path: &Path,
+        size_bytes: u64,
+        recorded: ContentHash,
+    ) -> Result<Vec<u8>, ReaderReadError> {
+        let declared = self
+            .loose
+            .iter()
+            .find(|entry| entry.spelling() == directory)
+            .ok_or_else(|| ReaderReadError::UnknownLooseDirectory {
+                directory: directory.to_owned(),
+            })?;
+        // The resolution must still describe this file: its container spelling
+        // is the file's own installation-relative path, it has no member key
+        // inside another container, its extent is the whole file, and the host
+        // path it named is the one the registered directory builds today.
+        let expected_container = format!("{}/{}", directory, resolved.basename);
+        let expected_host_path = declared.candidate_path(&resolved.basename);
+        let describes_file = resolved.container == expected_container
+            && resolved.span.container_path() == expected_container
+            && resolved.span.member_key().is_none()
+            && resolved.span.offset() == 0
+            && resolved.span.length() == size_bytes
+            && resolved.span.member_sha256() == Some(recorded)
+            && host_path == &expected_host_path;
+        if !describes_file {
+            return Err(ReaderReadError::StaleResolution {
+                origin: expected_container,
             });
         }
-        self.archive(&resolved.mount)
-            .ok_or_else(|| ReaderReadError::UnknownArchive {
-                mount: resolved.mount.to_string(),
-            })?
-            .read(resolved)
+        let bytes =
+            read_loose_file(&expected_host_path).map_err(|source| ReaderReadError::LooseFile {
+                directory: directory.to_owned(),
+                path: expected_host_path.clone(),
+                source: Box::new(source),
+            })?;
+        let found = sha256(&bytes);
+        if found != recorded {
+            return Err(ReaderReadError::LooseDigestMismatch {
+                path: expected_host_path,
+                recorded,
+                found,
+            });
+        }
+        Ok(bytes)
     }
+}
+
+/// Which of the original's two loose rules a pass is running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoosePassMode {
+    /// The archive pass found the name: the original would compare a loose file
+    /// of the same basename with the archive copy and keep the newer one. The
+    /// comparison is not implemented, so the pass only records that a candidate
+    /// exists and the lookup is refused.
+    Override,
+    /// No archive holds the name: the original's loose pass serves the first
+    /// file it finds, and no comparison is involved.
+    Fallback,
+}
+
+/// One loose reader directory's candidate: the file the original's loose pass
+/// would open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LooseCandidate {
+    directory: String,
+    host_path: PathBuf,
+    size_bytes: u64,
+    /// The digest of the bytes read for a fallback candidate. An override
+    /// candidate is never read — the lookup is refused before that — so it
+    /// carries no digest.
+    sha256: Option<ContentHash>,
+}
+
+/// What one run of the original's loose pass saw.
+#[derive(Debug, Default)]
+struct LoosePass {
+    /// One attempt per registered directory, in search order.
+    attempts: Vec<ReaderLooseAttempt>,
+    /// The first regular candidate, in search order.
+    candidate: Option<LooseCandidate>,
+}
+
+/// The trace of a lookup: the archive attempts in mount order, the loose
+/// attempts in the loose search order, and the status of each of the two
+/// orders — which is never the designed precedence status.
+fn reader_trace(attempts: Vec<ReaderAttempt>, loose: Vec<ReaderLooseAttempt>) -> ReaderTrace {
+    ReaderTrace {
+        attempts,
+        loose,
+        order_status: READER_LOOKUP_ORDER_STATUS,
+        loose_order_status: READER_LOOSE_ORDER_STATUS,
+    }
+}
+
+/// What a loose candidate path holds, without reading it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LooseProbe {
+    /// Nothing of that name exists here.
+    Absent,
+    /// Something of that name exists but is not a regular file, or is a symbolic
+    /// link. Links are never followed, exactly as in
+    /// [`crate::vfs::mount_directory`], so no target outside the installation
+    /// can be served or shadow an archive member.
+    NotRegular,
+    /// A regular file of that name.
+    Regular {
+        /// Its length in bytes.
+        size_bytes: u64,
+    },
+}
+
+/// What one loose candidate path holds on this host.
+///
+/// A `NotFound` (the common case: the original's loose directories do not
+/// exist in retail) is [`LooseProbe::Absent`]; every other failure is reported
+/// rather than read as an absence, because "the directory is not there" and
+/// "the directory could not be asked about" are different facts.
+fn probe_loose(path: &Path) -> Result<LooseProbe, LooseFileError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(LooseProbe::Absent),
+        Err(source) => return Err(LooseFileError::io(path, &source)),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Ok(LooseProbe::NotRegular);
+    }
+    Ok(LooseProbe::Regular {
+        size_bytes: metadata.len(),
+    })
+}
+
+/// Reads one loose reader file whole, refusing a symbolic link, a non-regular
+/// file and a file that changes while it is read.
+///
+/// The link check is repeated after the open by comparing the file identity the
+/// probe saw with the one the handle reports, so a link swapped in between the
+/// two cannot get its target served.
+fn read_loose_file(path: &Path) -> Result<Vec<u8>, LooseFileError> {
+    let walked = fs::symlink_metadata(path).map_err(|source| {
+        if source.kind() == io::ErrorKind::NotFound {
+            LooseFileError::NotRegular {
+                path: path.to_path_buf(),
+            }
+        } else {
+            LooseFileError::io(path, &source)
+        }
+    })?;
+    if walked.file_type().is_symlink() || !walked.is_file() {
+        return Err(LooseFileError::NotRegular {
+            path: path.to_path_buf(),
+        });
+    }
+    let mut file = fs::File::open(path).map_err(|source| LooseFileError::io(path, &source))?;
+    let opened = file
+        .metadata()
+        .map_err(|source| LooseFileError::io(path, &source))?;
+    if !opened.is_file() || !same_file(&walked, &opened) {
+        return Err(LooseFileError::NotRegular {
+            path: path.to_path_buf(),
+        });
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(opened.len()).unwrap_or(0));
+    file.read_to_end(&mut bytes)
+        .map_err(|source| LooseFileError::io(path, &source))?;
+    let after = file
+        .metadata()
+        .map_err(|source| LooseFileError::io(path, &source))?;
+    let before_modified = opened
+        .modified()
+        .map_err(|source| LooseFileError::io(path, &source))?;
+    let after_modified = after
+        .modified()
+        .map_err(|source| LooseFileError::io(path, &source))?;
+    if opened.len() != bytes.len() as u64
+        || after.len() != bytes.len() as u64
+        || before_modified != after_modified
+    {
+        return Err(LooseFileError::Changed {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(bytes)
+}
+
+/// Whether two metadata records describe the same host file, so a link swapped
+/// in between the probe and the open is refused.
+#[cfg(unix)]
+fn same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+/// Whether two metadata records describe the same host file. Without inode
+/// numbers the length is the only check available.
+#[cfg(not(unix))]
+fn same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    left.len() == right.len()
 }
 
 /// What one archive did for a reader lookup.
@@ -704,10 +1402,202 @@ impl fmt::Display for ReaderAttempt {
     }
 }
 
-/// Everything a reader lookup saw: every mounted archive in the original's
-/// search order, what it did, and how well that order is known.
+/// What one loose reader directory held of a requested basename.
 ///
-/// The status is [`READER_LOOKUP_ORDER_STATUS`], **not**
+/// Every variant is a fact about this host, never about the original's
+/// decision: the original's `CompareFileTime` comparison is not implemented
+/// ([`READER_LOOSE_OVERRIDE_STATUS`]), so a directory that holds the name while
+/// an archive also holds it reports [`Self::UndecidableShadow`] and the lookup
+/// is refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReaderLooseOutcome {
+    /// The directory does not exist on this host. The original counts only
+    /// existing directories, so this one cannot hold anything — which is the
+    /// state of every loose reader directory in the owner's installation.
+    Absent,
+    /// The directory exists and holds no file of this basename.
+    Miss,
+    /// An entry of this name exists but is not a regular file, or is a symbolic
+    /// link. This engine never follows a link out of an installation and never
+    /// serves a directory (the same guard as [`crate::vfs::mount_directory`]),
+    /// so such an entry is reported and can neither serve a lookup nor shadow an
+    /// archive member. **This is this engine's guard, not a rule measured in
+    /// the original**: a linked loose file would be opened and compared there.
+    NotRegular,
+    /// The directory holds the file and **no** archive did, so the loose pass
+    /// served it: the original's fallback, which needs no time comparison.
+    Selected {
+        /// The file's length in bytes.
+        size_bytes: u64,
+        /// SHA-256 of exactly those bytes.
+        sha256: ContentHash,
+    },
+    /// The directory holds the file, and so does an archive the original would
+    /// have served first. Which copy the original keeps is the unmodelled
+    /// `CompareFileTime` comparison, so the lookup is **refused**
+    /// ([`ReaderLookupError::LooseOverrideUndecided`]) instead of picking one.
+    UndecidableShadow {
+        /// The loose file's length in bytes.
+        size_bytes: u64,
+    },
+    /// The directory holds the file, but a directory searched earlier already
+    /// served it.
+    Shadowed {
+        /// The loose file's length in bytes.
+        size_bytes: u64,
+    },
+}
+
+impl ReaderLooseOutcome {
+    /// The stable label used in traces and reports.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Miss => "miss",
+            Self::NotRegular => "not_regular",
+            Self::Selected { .. } => "selected",
+            Self::UndecidableShadow { .. } => "undecidable_shadow",
+            Self::Shadowed { .. } => "shadowed",
+        }
+    }
+}
+
+impl fmt::Display for ReaderLooseOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Absent => f.write_str("absent"),
+            Self::Miss => f.write_str("miss"),
+            Self::NotRegular => f.write_str("not_regular"),
+            Self::Selected { size_bytes, .. } => write!(f, "selected({size_bytes} B)"),
+            Self::UndecidableShadow { size_bytes } => {
+                write!(f, "undecidable_shadow({size_bytes} B)")
+            }
+            Self::Shadowed { size_bytes } => write!(f, "shadowed({size_bytes} B)"),
+        }
+    }
+}
+
+/// One loose reader directory as a reader lookup consulted it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReaderLooseAttempt {
+    /// The directory's installation-relative spelling.
+    pub directory: String,
+    /// The host path the directory lives in.
+    pub host_path: PathBuf,
+    /// What it held of the requested basename.
+    pub outcome: ReaderLooseOutcome,
+}
+
+impl fmt::Display for ReaderLooseAttempt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} ({}) [{}]",
+            self.directory,
+            self.host_path.display(),
+            self.outcome
+        )
+    }
+}
+
+/// Why one loose reader file could not be handed out.
+///
+/// The guards mirror [`crate::vfs::source`]'s read path: a symbolic link is
+/// never followed, a non-regular file is never served, and a file that changes
+/// while it is read has no coherent bytes to serve.
+///
+/// An `io::Error` is neither [`Clone`] nor [`PartialEq`], and the lookup error
+/// family it travels in is both, so the OS error is kept as its
+/// [`io::ErrorKind`] plus its message instead of as the error itself. That is
+/// why this type does not implement
+/// [`Error::source`](std::error::Error::source): there is no error left to
+/// chain to, and the text the OS gave is what a diagnostic prints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LooseFileError {
+    /// The entry is a symbolic link or not a regular file. Links are never
+    /// followed: a target could lie outside the installation.
+    NotRegular {
+        /// The entry that was refused.
+        path: PathBuf,
+    },
+    /// The file could not be opened, read or asked about.
+    Io {
+        /// The file.
+        path: PathBuf,
+        /// What the operating system refused with.
+        kind: io::ErrorKind,
+        /// The message the operating system gave.
+        message: String,
+    },
+    /// The file's length or modification time moved during the read, so no
+    /// coherent digest exists.
+    Changed {
+        /// The file.
+        path: PathBuf,
+    },
+}
+
+impl LooseFileError {
+    /// Stable lowercase identifier for reports and structured diagnostics.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::NotRegular { .. } => "not_regular",
+            Self::Io { .. } => "io",
+            Self::Changed { .. } => "changed",
+        }
+    }
+
+    /// The file a refusal names.
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::NotRegular { path } | Self::Io { path, .. } | Self::Changed { path } => path,
+        }
+    }
+
+    /// Builds an I/O refusal from an [`io::Error`], keeping its kind and text.
+    fn io(path: &Path, source: &io::Error) -> Self {
+        Self::Io {
+            path: path.to_path_buf(),
+            kind: source.kind(),
+            message: source.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for LooseFileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotRegular { path } => write!(
+                f,
+                "{} is a symbolic link or not a regular file; a loose reader file is only ever a \
+                 regular file and a link is never followed",
+                path.display()
+            ),
+            Self::Io { path, message, .. } => {
+                write!(
+                    f,
+                    "cannot read the loose reader file {}: {message}",
+                    path.display()
+                )
+            }
+            Self::Changed { path } => write!(
+                f,
+                "the loose reader file {} changed while it was read; refusing the torn bytes",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LooseFileError {}
+
+/// Everything a reader lookup saw: every mounted archive in the original's
+/// search order, every loose reader directory the caller registered in the
+/// original's loose search order, what each did, and how well each of the two
+/// orders is known.
+///
+/// The archive order is [`READER_LOOKUP_ORDER_STATUS`] and the loose-directory
+/// order is [`READER_LOOSE_ORDER_STATUS`], **not**
 /// [`PRECEDENCE_ORDER_STATUS`]: a reader lookup never consults the designed
 /// precedence order, so reporting that status here would credit this trace
 /// with an order it did not use.
@@ -715,14 +1605,109 @@ impl fmt::Display for ReaderAttempt {
 pub struct ReaderTrace {
     /// The archives consulted, in the original's mount order.
     pub attempts: Vec<ReaderAttempt>,
-    /// Evidence status of that order.
+    /// The loose reader directories consulted, in the original's search order
+    /// (most recently added first, `zbd` last). Empty when the caller
+    /// registered none, which is every retail installation: none of the
+    /// original's loose reader directories exists there.
+    pub loose: Vec<ReaderLooseAttempt>,
+    /// Evidence status of the archive order.
     pub order_status: ClaimStatus,
+    /// Evidence status of the loose-directory order, which is a separate rule
+    /// with separate evidence from the archive order.
+    pub loose_order_status: ClaimStatus,
 }
 
 impl fmt::Display for ReaderTrace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let rendered: Vec<String> = self.attempts.iter().map(ReaderAttempt::to_string).collect();
-        write!(f, "{} [{}]", rendered.join("; "), self.order_status.label())
+        let rendered: Vec<String> = self
+            .attempts
+            .iter()
+            .map(ReaderAttempt::to_string)
+            .chain(
+                self.loose
+                    .iter()
+                    .map(|attempt| format!("loose {}", ReaderLooseAttempt::to_string(attempt))),
+            )
+            .collect();
+        write!(
+            f,
+            "{} [{}, loose order {}]",
+            rendered.join("; "),
+            self.order_status.label(),
+            self.loose_order_status.label()
+        )
+    }
+}
+
+/// What served a reader lookup.
+///
+/// A reader answer is either a member of a mounted archive or a **loose** host
+/// file found by the original's loose pass. Keeping the two apart is what makes
+/// a loose file a visible collision class instead of a second spelling of an
+/// archive member: `ReaderOrigin::Loose` names the file, and a lookup where
+/// both exist is refused rather than decided (see the module docs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReaderOrigin {
+    /// A member of a mounted reader archive.
+    Archive {
+        /// The archive's mount id.
+        mount: MountId,
+        /// Which level of the original's mount list served it.
+        level: ReaderLevel,
+        /// The entry index its first-hit scan returned.
+        entry_index: usize,
+    },
+    /// A loose host file, served by the original's loose directory pass
+    /// **only** because no mounted archive held the name.
+    Loose {
+        /// The loose directory's installation-relative spelling.
+        directory: String,
+        /// The file's installation-relative path: `<directory>/<basename>`.
+        file: String,
+        /// The host path the file was read from.
+        host_path: PathBuf,
+        /// Its length in bytes.
+        size_bytes: u64,
+        /// SHA-256 of exactly those bytes.
+        sha256: ContentHash,
+    },
+}
+
+impl ReaderOrigin {
+    /// The archive's mount id, or `None` when a loose file served the lookup.
+    pub fn mount(&self) -> Option<&MountId> {
+        match self {
+            Self::Archive { mount, .. } => Some(mount),
+            Self::Loose { .. } => None,
+        }
+    }
+
+    /// Which level of the original's mount list served the lookup, or `None`
+    /// when a loose file did — a loose file is not one of the three archive
+    /// levels, and [`ReaderLevel`] is not widened to pretend otherwise.
+    pub const fn level(&self) -> Option<ReaderLevel> {
+        match self {
+            Self::Archive { level, .. } => Some(*level),
+            Self::Loose { .. } => None,
+        }
+    }
+
+    /// The archive entry index, or `None` when a loose file served the lookup.
+    pub const fn entry_index(&self) -> Option<usize> {
+        match self {
+            Self::Archive { entry_index, .. } => Some(*entry_index),
+            Self::Loose { .. } => None,
+        }
+    }
+
+    /// Whether a mounted archive member served the lookup.
+    pub const fn is_archive(&self) -> bool {
+        matches!(self, Self::Archive { .. })
+    }
+
+    /// Whether a loose host file served the lookup.
+    pub const fn is_loose(&self) -> bool {
+        matches!(self, Self::Loose { .. })
     }
 }
 
@@ -734,20 +1719,36 @@ pub struct ReaderResolution {
     pub requested: AssetKey,
     /// The basename the lookup actually searched for.
     pub basename: String,
-    /// The archive that served it.
-    pub mount: MountId,
-    /// That archive's installation spelling.
+    /// The container the served bytes live in: the archive's installation
+    /// spelling, or the loose file's own installation-relative path.
     pub container: String,
-    /// Which level of the mount list served it.
-    pub level: ReaderLevel,
-    /// The entry index inside that archive.
-    pub entry_index: usize,
-    /// The member's spelling, exactly as the archive declares it.
+    /// The member's spelling, exactly as the archive declares it, or the loose
+    /// file's own name.
     pub member: String,
     /// The immutable origin of the member's bytes.
     pub span: SourceSpan,
+    /// What served the lookup: an archive member or a loose file.
+    pub origin: ReaderOrigin,
     /// The ordered attempts that produced this answer.
     pub trace: ReaderTrace,
+}
+
+impl ReaderResolution {
+    /// Which level of the original's mount list served it, or `None` when a
+    /// loose file did.
+    pub fn level(&self) -> Option<ReaderLevel> {
+        self.origin.level()
+    }
+
+    /// The archive's mount id, or `None` when a loose file served it.
+    pub fn mount(&self) -> Option<&MountId> {
+        self.origin.mount()
+    }
+
+    /// The archive entry index, or `None` when a loose file served it.
+    pub fn entry_index(&self) -> Option<usize> {
+        self.origin.entry_index()
+    }
 }
 
 /// Why a reader lookup produced no member.
@@ -786,13 +1787,54 @@ pub enum ReaderLookupError {
         /// The refusal the key construction itself reported.
         error: AssetKeyError,
     },
-    /// No mounted archive the context admits holds the name.
+    /// A mounted archive holds the name **and** a loose file of the same
+    /// basename exists, so the original's `CompareFileTime` override decides
+    /// which copy answers — and it is not implemented
+    /// ([`READER_LOOSE_OVERRIDE_STATUS`]). The lookup is refused rather than
+    /// answered with either copy, because answering would mean comparing
+    /// against the index entry's trailing `u64`, whose meaning is unknown
+    /// (task #692). The refusal is raised whatever the loose file's own
+    /// modification time says: the host's timestamp is not the original's
+    /// comparison argument.
+    LooseOverrideUndecided {
+        /// The key that was asked for.
+        requested: Box<AssetKey>,
+        /// The basename the lookup searched for.
+        basename: String,
+        /// The loose directory's installation-relative spelling.
+        directory: String,
+        /// The loose file's host path.
+        host_path: Box<Path>,
+        /// The loose file's length in bytes.
+        size_bytes: u64,
+        /// The archive that would otherwise have served the name.
+        archive_container: String,
+        /// Everything the lookup saw, including the loose pass.
+        trace: Box<ReaderTrace>,
+    },
+    /// The loose pass found a file the lookup would serve, but the file could
+    /// not be handed out coherently (a link, a non-regular entry, an I/O
+    /// failure or a file that changed under the read). It is refused rather
+    /// than skipped, because the original opens the first file the loose pass
+    /// finds: a lower-priority directory's copy is not the original's answer.
+    LooseUnreadable {
+        /// The key that was asked for.
+        requested: Box<AssetKey>,
+        /// The basename the lookup searched for.
+        basename: String,
+        /// The loose directory's installation-relative spelling.
+        directory: String,
+        /// Why the file could not be handed out.
+        source: Box<LooseFileError>,
+    },
+    /// No mounted archive the context admits holds the name, and no loose
+    /// reader directory holds it either.
     NotFound {
         /// The key that was asked for.
         requested: Box<AssetKey>,
         /// The basename the lookup searched for.
         basename: String,
-        /// The archives it searched, in order.
+        /// The archives and loose directories it searched, in order.
         trace: Box<ReaderTrace>,
     },
 }
@@ -824,13 +1866,41 @@ impl fmt::Display for ReaderLookupError {
                 f,
                 "{requested} reduces to {basename:?}, which cannot be spelled as a key: {error}"
             ),
+            Self::LooseOverrideUndecided {
+                requested,
+                basename,
+                directory,
+                host_path,
+                size_bytes,
+                archive_container,
+                trace,
+            } => write!(
+                f,
+                "{requested} ({basename:?}) could be answered by the archive member of \
+                 {archive_container} or by the loose file {} ({size_bytes} B) under {directory}, \
+                 and the original decides between them with CompareFileTime >= 1 against a \
+                 timestamp this engine does not know; refusing instead of guessing. The loose \
+                 file's own modification time decides nothing here. Attempts: {trace}",
+                host_path.display()
+            ),
+            Self::LooseUnreadable {
+                requested,
+                basename,
+                directory,
+                source,
+            } => write!(
+                f,
+                "{requested} ({basename:?}) cannot be answered: the loose file the original's \
+                 loose pass would serve under {directory} cannot be handed out: {source}"
+            ),
             Self::NotFound {
                 requested,
                 basename,
                 trace,
             } => write!(
                 f,
-                "no mounted reader archive holds {basename:?} for {requested}; attempts: {trace}"
+                "no mounted reader archive and no loose reader directory hold {basename:?} for \
+                 {requested}; attempts: {trace}"
             ),
         }
     }
@@ -1028,6 +2098,17 @@ impl std::error::Error for ReaderMountError {
 /// Why a reader member's bytes could not be read.
 #[derive(Debug)]
 pub enum ReaderReadError {
+    /// The resolution names a loose file, not a member of this archive.
+    LooseOrigin {
+        /// The archive that was asked to read it.
+        archive: String,
+    },
+    /// The loose resolution names a directory the mount set no longer holds,
+    /// so its host path cannot be rebuilt.
+    UnknownLooseDirectory {
+        /// The directory spelling the resolution names.
+        directory: String,
+    },
     /// The resolution names an archive other than the one asked to read it.
     ForeignArchive {
         /// The mount the resolution names.
@@ -1046,10 +2127,21 @@ pub enum ReaderReadError {
         /// The mount the resolution names.
         mount: String,
     },
-    /// The resolution does not describe the entry it was made for any more.
+    /// The resolution does not describe the entry or file it was made for any
+    /// more.
     StaleResolution {
-        /// The mount the resolution names.
-        mount: String,
+        /// The mount id, or the loose file's installation-relative path.
+        origin: String,
+    },
+    /// A loose reader file could not be read coherently: a link, a non-regular
+    /// entry, an I/O failure or a file that changed under the read.
+    LooseFile {
+        /// The loose directory's installation-relative spelling.
+        directory: String,
+        /// The file that was refused.
+        path: PathBuf,
+        /// Why it was refused.
+        source: Box<LooseFileError>,
     },
     /// The entry's declared extent does not lie inside the container bytes the
     /// archive was built from.
@@ -1074,18 +2166,31 @@ pub enum ReaderReadError {
         /// The digest of the bytes that were read.
         found: ContentHash,
     },
+    /// The loose file's bytes do not hash to what the resolution recorded.
+    LooseDigestMismatch {
+        /// The loose file.
+        path: PathBuf,
+        /// The digest recorded when the lookup resolved it.
+        recorded: ContentHash,
+        /// The digest of the bytes that were read.
+        found: ContentHash,
+    },
 }
 
 impl ReaderReadError {
     /// Stable lowercase identifier for reports and structured diagnostics.
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::LooseOrigin { .. } => "loose_origin",
+            Self::UnknownLooseDirectory { .. } => "unknown_loose_directory",
+            Self::LooseFile { .. } => "loose_file",
             Self::ForeignArchive { .. } => "foreign_archive",
             Self::UnknownArchive { .. } => "unknown_archive",
             Self::AmbiguousArchive { .. } => "ambiguous_archive",
             Self::StaleResolution { .. } => "stale_resolution",
             Self::OutOfBounds { .. } => "out_of_bounds",
             Self::DigestMismatch { .. } => "digest_mismatch",
+            Self::LooseDigestMismatch { .. } => "loose_digest_mismatch",
         }
     }
 }
@@ -1093,6 +2198,16 @@ impl ReaderReadError {
 impl fmt::Display for ReaderReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LooseOrigin { archive } => write!(
+                f,
+                "the resolution names a loose host file, not a member of the reader archive \
+                 {archive}"
+            ),
+            Self::UnknownLooseDirectory { directory } => write!(
+                f,
+                "no registered loose reader directory answers to {directory}, so the host path of \
+                 the file a resolution names cannot be rebuilt"
+            ),
             Self::ForeignArchive { mount, expected } => write!(
                 f,
                 "the resolution names archive {mount}, not the archive {expected} it was read from"
@@ -1105,9 +2220,18 @@ impl fmt::Display for ReaderReadError {
                 "{mount} names more than one mounted reader archive, so the bytes a resolution \
                  points at cannot be attributed to one of them"
             ),
-            Self::StaleResolution { mount } => write!(
+            Self::StaleResolution { origin } => write!(
                 f,
-                "the resolution of {mount} no longer describes the entry it was made for"
+                "the resolution of {origin} no longer describes the entry or file it was made for"
+            ),
+            Self::LooseFile {
+                directory,
+                path,
+                source,
+            } => write!(
+                f,
+                "the loose reader file {} under {directory} cannot be read: {source}",
+                path.display()
             ),
             Self::OutOfBounds {
                 entry_index,
@@ -1128,6 +2252,16 @@ impl fmt::Display for ReaderReadError {
                 f,
                 "entry {entry_index} ({member:?}) hashed to {found}, not the {mounted} it was \
                  mounted with"
+            ),
+            Self::LooseDigestMismatch {
+                path,
+                recorded,
+                found,
+            } => write!(
+                f,
+                "the loose reader file {} hashed to {found}, not the {recorded} the resolution \
+                 named",
+                path.display()
             ),
         }
     }
