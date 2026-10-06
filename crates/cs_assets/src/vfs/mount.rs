@@ -272,6 +272,7 @@ impl MountError {
             Self::ModClassWithoutBinding { .. } => "mod_class_without_binding",
             Self::BindingWithoutModClass { .. } => "binding_without_mod_class",
             Self::DuplicateMountId { .. } => "duplicate_mount_id",
+            Self::ConflictingGosNameMatch { .. } => "conflicting_gos_name_match",
         }
     }
 }
