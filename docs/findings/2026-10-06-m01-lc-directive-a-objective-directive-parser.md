@@ -135,7 +135,7 @@ plus `+0xdc` wake. A `−1` duration reads as "no such transition".
 | `REMOVE_OTHER_TARGET` | — (parser supports) | `0x46856c` | same | `+0x4c4`/`+0x4c8` |
 | `ADD_OBJECTIVE_TARGET` | `[s]`, `[[s,s]]` | `0x46861f` | same | `+0x4cc`/`+0x4d0` |
 | `REMOVE_OBJECTIVE_TARGET` | `[[s,s]]`, `[s]` | `0x4686d2` | same | `+0x4d4`/`+0x4d8` |
-| `COMPLETED_STOPPOINT` | `[[s,i,i]]` | `0x468465` | each child = list; grandchildren payloads: [0] strdup, [1] raw int, [2] nonzero→byte | `+0x440` count, `+0x444..` 12-byte `{name,int,bool}` records, cap 10 |
+| `COMPLETED_STOPPOINT` | `[[s,i,i]]` | `0x46842d` | each child = list; grandchildren payloads: [0] strdup, [1] raw int, [2] nonzero→byte | `+0x440` count, `+0x444..` 12-byte `{name,int,bool}` records, cap 10 (the cap check is at `0x468465`) |
 | `STOP_QUEUED_SOUNDS` | `[s,…]` | `0x468884` | children strdup'd, cap 10 | `+0x510` count, `+0x514..` names |
 | `COMPLETED_SOUND_GROUP` | `[s]` | `0x468a8a` | child0 payload → `0x596120` sound-group lookup | `+0x550` handle |
 | `WAKEUP_SOUND_GROUP` | `[s]` | `0x468a4a` | child0 payload → `0x596120` | `+0x54c` handle |
