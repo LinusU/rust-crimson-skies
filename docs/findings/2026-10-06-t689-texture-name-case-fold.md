@@ -12,8 +12,14 @@ follow-up that closed F08-C's recorded divergence "the name lookup folds case;
 requested name the way the original does and compares the folded spelling
 against the archive's **stored** spellings byte for byte; `TextureId` and the
 catalog rows keep the archive's own spelling, unchanged. One function,
-[`folded_texture_name`], is the fold, and both `resolve` and
-`texture_lookup_order` call it, so they cannot drift apart.
+[`folded_texture_name`], is the fold ~~and both `resolve` and
+`texture_lookup_order` call it, so they cannot drift apart.~~ **Amended
+2026-10-06 by task #703**: only `resolve` calls it — wherever a name is
+searched *inside an archive*. `texture_lookup_order` folds nothing at all,
+because the original's two loose-file probes receive the request unfolded
+(`0x534cf0`'s `sprintf(buf, "%s.tif", name)`, re-derived in
+`docs/findings/2026-10-06-t703-loose-file-name-folding.md`); what both keep is
+that no *stored* name is ever folded.
 
 ## Files and the one observable failure (listed before editing)
 
@@ -140,10 +146,14 @@ Adopt the measured fold, and nothing else:
 | Search scope | unchanged: one archive, no cross-archive fallback | T352's "no tier-to-tier fallback" |
 | Duplicate rule | unchanged: two entries holding the folded name are `duplicate_texture_name` with both indices | F08-C's visible collision refusal; the fold cannot create one on retail (0 fold collisions) |
 
-The implementation is one function, `folded_texture_name`, called by both
-`TextureCatalog::resolve` and `texture_lookup_order`. The "agreement" the task
-requires is therefore structural rather than a convention: there is no second
-spelling rule in the crate to disagree with.
+The implementation is one function, `folded_texture_name`, ~~called by both
+`TextureCatalog::resolve` and `texture_lookup_order`~~ called by
+`TextureCatalog::resolve` alone since task #703: the loose probes of
+`texture_lookup_order` are the one place the original does not fold, and they
+now match it (`docs/findings/2026-10-06-t703-loose-file-name-folding.md`).
+The "agreement" the task requires is therefore structural rather than a
+convention: there is no second spelling rule in the crate to disagree with —
+the loose probe is not a second rule but the original's own behaviour.
 
 ### Why this overrules the F08-C exact-match assertion
 
@@ -238,7 +248,7 @@ wrong retail resolution, because it introduced no retail resolution at all.
 
 ## Recorded unknowns and limitations
 
-* **The loose-file names are built from the folded spelling here, and from the
+* ~~**The loose-file names are built from the folded spelling here, and from the
   unfolded request in the original.** `0x534cf0` is `sprintf(buf, "%s.tif",
   name)` on the caller's string (the format literal `"%s.tif"` sits at
   `0x635578`), and `0x534060` does the same for `.bmp`; the original never
@@ -249,11 +259,24 @@ wrong retail resolution, because it introduced no retail resolution at all.
   directory (checked by listing, 2026-10-06), and the loose-file interface
   itself is already recorded as unestablished by F08-B.03/.04 and F08-C, so
   this is a bounded divergence on content that does not exist, not a claim that
-  the paths are equal.
+  the paths are equal.~~
+  **Closed by task #703** (`F08-C-loose-file-name-folding-divergence`,
+  2026-10-06): `texture_lookup_order` now builds `<name>.tif` and `<name>.bmp`
+  from the unfolded request, which is what the reading above says the original
+  does; `docs/findings/2026-10-06-t703-loose-file-name-folding.md` re-derived
+  the measurement (including the `%s.bmp` literal at `0x6353b0`) and records
+  the decision. What survives from this bullet is unchanged: retail ships no
+  loose `.tif`/`.bmp` under any `ZBD` directory (0 files, re-listed
+  2026-10-06), and the loose-file interface is still unestablished by
+  F08-B.03/.04 and F08-C — so the divergence was bounded then and the fix is
+  bounded now.
 * **The file probe's case handling is not established** (unchanged from T352):
-  `TextureFiles::find` compares candidate names exactly. Every candidate the
-  crate generates is lower case, so this stays equivalent for retail, but a
-  listing spelled in another case is not covered.
+  `TextureFiles::find` compares candidate names exactly. ~~Every candidate the
+  crate generates is lower case, so this stays equivalent for retail, but a~~
+  **Amended 2026-10-06 by task #703:** the archive candidates are still lower
+  case, but a loose candidate now carries the request's spelling, so the exact
+  comparison decides a mixed-case loose request here; a listing spelled in
+  another case is still not covered, and no retail content reaches the path.
 * **A duplicate is refused, the original would pick one.** The original's binary
   search returns *a* matching index; this crate returns `duplicate_texture_name`
   naming every holder, because F08-C chose to refuse a silent choice between
@@ -269,7 +292,7 @@ wrong retail resolution, because it introduced no retail resolution at all.
 | Test | Covers |
 | --- | --- |
 | `accept_f08_c_case_fold_a_mixed_case_request_resolves_the_folded_stored_name` | `sky`/`SKY`/`Sky`/`sKy` all resolve entry 1 of an archive that also stores `Sky`; the `TextureAttempt::Name` value is the folded spelling; identity keeps `sky` and the archive path; the upload decodes the stored texels; all four spellings yield one id |
-| `accept_f08_c_case_fold_folds_the_request_and_not_the_stored_name` | a stored `Mixed` is unreachable by `Mixed`/`mixed`/`MIXED`/`mIxEd` (the fold is not a case-insensitive comparison); the fold is ASCII-only against `İ`, `ẞ`, `ÀÉÎ`, `Straße`; `resolve` and `texture_lookup_order` fold through the same function, so the searched spelling equals the loose file name's stem |
+| `accept_f08_c_case_fold_folds_the_request_and_not_the_stored_name` | a stored `Mixed` is unreachable by `Mixed`/`mixed`/`MIXED`/`mIxEd` (the fold is not a case-insensitive comparison); the fold is ASCII-only against `İ`, `ẞ`, `ÀÉÎ`, `Straße`; `resolve` ~~and `texture_lookup_order` fold through the same function, so the searched spelling equals the loose file name's stem~~ folds the spelling the catalog searches, while the loose probes take the request verbatim — **amended 2026-10-06 by task #703**, which owns that assertion now |
 | `accept_f08_c_case_fold_a_stored_name_is_never_merged_by_the_fold` | identity keeps all five stored spellings (`Sky`, `sky`, `Mixed`, `dup`, `dup`) as five ids; `Sky` and `sky` stay distinct; a name stored twice is still `duplicate_texture_name` naming both entries for `dup`/`DUP`/`Dup`; the catalog rows are unchanged by the fold |
 | `accept_f08_c_case_fold_retail_stored_names_are_already_folded` (ignored) | the census on the real installation, all 49 archives: every stored name is already the folded spelling, no two fold onto one, every table is sorted; 64 mixed-case requests per archive reach the same entry, id and upload as the lower-case request |
 
@@ -303,7 +326,7 @@ accept_f08_c_case_fold` run, and the file restored:
 | `folded_texture_name` uses Unicode `to_lowercase` | 1 fails |
 | `resolve` folds the stored names too, matching either case | 1 fails |
 | `resolve` records the unfolded request in `TextureAttempt::Name` | 2 fail |
-| `texture_lookup_order` folds through `str::to_lowercase` again | 1 fails |
+| `texture_lookup_order` folds through `str::to_lowercase` again | 1 fails (true on this branch; #703 has since removed that fold — its own probes are in `2026-10-06-t703-loose-file-name-folding.md`) |
 | the fold made into an alias that falls back to another archive | 2 fail |
 
 Re-probed on the reviewed tree with the selection

@@ -4219,10 +4219,7 @@ mod tests {
                 .iter()
                 .map(|source| source.file().name().to_owned())
                 .collect();
-            let mut expected = vec![
-                WORLD_ARCHIVE_FILE.to_owned(),
-                IMAGE_ARCHIVE_FILE.to_owned(),
-            ];
+            let mut expected = vec![WORLD_ARCHIVE_FILE.to_owned(), IMAGE_ARCHIVE_FILE.to_owned()];
             if request == "sky" {
                 expected.push("sky.tif".to_owned());
             }
