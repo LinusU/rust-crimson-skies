@@ -14,7 +14,10 @@
 //! with both origins; flattening members into a first-wins map turns the
 //! ambiguity case into a silent success.
 
-use cs_assets::vfs::{AttemptOutcome, MountBuilder, MountError, ResolveError, SkipReason, Vfs};
+use cs_assets::vfs::{
+    AttemptOutcome, LookupOrder, LookupOrderStatus, MountBuilder, MountError, ResolveError,
+    SkipReason, Vfs,
+};
 use cs_types::asset_id::{
     AssetKey, AssetVariant, MissionScope, ModId, ModStack, MountId, MountNamespace,
     PrecedenceClass, ResolveContext, WorldGroup,
@@ -221,8 +224,11 @@ fn accept_f04_a_two_worlds_each_resolve_own_texture() {
 
     let attempts = &from_c1.trace.attempts;
     assert_eq!(
-        from_c1.trace.precedence_status,
-        ClaimStatus::Designed,
+        from_c1.trace.order,
+        LookupOrderStatus {
+            order: LookupOrder::Precedence,
+            status: ClaimStatus::Designed,
+        },
         "the ordering that decided this says it is designed, not measured"
     );
     let selected: Vec<&str> = attempts
@@ -636,7 +642,13 @@ fn accept_f04_a_unknown_key_reports_every_attempt() {
             "{mount_id} must be on record in the failure trace"
         );
     }
-    assert_eq!(trace.precedence_status, ClaimStatus::Designed);
+    assert_eq!(
+        trace.order,
+        LookupOrderStatus {
+            order: LookupOrder::Precedence,
+            status: ClaimStatus::Designed,
+        }
+    );
 
     let rendered = err.to_string();
     assert!(
@@ -832,8 +844,11 @@ fn accept_f04_a_case_only_collision_across_mounts_fails_with_both_origins() {
     );
     assert!(!trace.attempts.is_empty(), "the failure keeps its trace");
     assert_eq!(
-        trace.precedence_status,
-        ClaimStatus::Designed,
+        trace.order,
+        LookupOrderStatus {
+            order: LookupOrder::Precedence,
+            status: ClaimStatus::Designed,
+        },
         "the ordering that decided the tie says it is designed, not measured"
     );
 }

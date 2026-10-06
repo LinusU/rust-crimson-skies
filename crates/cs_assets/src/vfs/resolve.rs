@@ -15,42 +15,130 @@
 //! 2. A mount is eligible when its [`MountScope`] admits the
 //!    [`ResolveContext`]; otherwise the attempt records *why* it was
 //!    skipped (`scope_mismatch`, `mod_not_opted_in`).
-//! 3. Eligible mounts that hold the key are ranked by
-//!    `(precedence rank, position in the mod stack)` — spec F04
-//!    non-negotiable behavior 2: opt-in mods over patch overlays over
-//!    mission/world-specific sources over shared sources. Registration
-//!    order is never a tiebreak.
-//! 4. One mount at the top rank serves the key. Two or more return
-//!    [`ResolveError::Ambiguous`] carrying **both origins**. No candidate
-//!    at all returns [`ResolveError::NotFound`] carrying the attempts.
+//! 3. Eligible mounts that hold the key are ranked, and the rank decides:
+//!    * [`LookupOrder::Precedence`] — the designed order of
+//!      [`PrecedenceClass`], spec F04 non-negotiable behavior 2 (opt-in mods
+//!      over patch overlays over mission/world-specific sources over shared
+//!      sources). Two or more at the top rank return
+//!      [`ResolveError::Ambiguous`] carrying **both origins**;
+//!    * [`LookupOrder::GosRegistration`] — the original's **registration
+//!      order**, which is the only rule `MetaOpenFile` has (task #686, see
+//!      [`crate::vfs::gos`]): the sources are consulted in the order they
+//!      were registered and the **first that holds the name wins**.
+//!      [`crate::vfs::gos::SessionBuilder::mount_gos_chain`] registers them
+//!      in that order; nothing else may reorder them.
+//! 4. No candidate at all returns [`ResolveError::NotFound`] carrying the
+//!    attempts.
 //!
-//! The ordering that decides step 3 is reported as
-//! [`PRECEDENCE_ORDER_STATUS`] on every trace: `designed` until original
-//! lookup behavior is measured, never presented as measured. F04-D found
-//! no way to measure it with the available capabilities (see
-//! `docs/findings/`), so [`Vfs::resolve_blocking_unmeasured`] — the
-//! lookup content sessions use — refuses any retail answer that step 3
-//! alone decided between different bytes.
+//! Which order decided a lookup is reported on every trace as
+//! [`LookupOrder`] plus its [`ClaimStatus`]: the designed order is
+//! [`PRECEDENCE_ORDER_STATUS`] (`designed`, until original lookup behavior
+//! is measured) and the GOS registration order is
+//! [`crate::vfs::gos::GOS_ORDER_STATUS`] (`inferred`, code-derived). The
+//! former is why [`Vfs::resolve_blocking_unmeasured`] — the lookup content
+//! sessions use — refuses any retail answer that the designed order alone
+//! decided between different bytes; the latter is not designed, so a GOS
+//! answer is served and reports what it rests on.
 
 use std::fmt;
 use std::sync::Arc;
 
 use cs_types::asset_id::{
-    AssetKey, MountId, PRECEDENCE_ORDER_STATUS, PrecedenceClass, ResolveContext, SourceSpan,
+    AssetKey, MountId, MountNamespace, PRECEDENCE_ORDER_STATUS, PrecedenceClass, ResolveContext,
+    SourceSpan,
 };
 use cs_types::evidence::{ClaimStatus, ContentHash};
 
+use crate::vfs::gos::{GOS_NAMESPACE, GOS_ORDER_STATUS, GosNameMatch};
 use crate::vfs::mount::{MemberRecord, Mount, MountError, SkipReason};
 use crate::vfs::source::{self, ReadError};
+
+/// The order one key space resolves its keys by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LookupOrder {
+    /// The designed [`PrecedenceClass`] order of spec F04 non-negotiable
+    /// behavior 2. Status [`PRECEDENCE_ORDER_STATUS`]: `designed`, because
+    /// no original lookup order has been measured for these key spaces.
+    Precedence,
+    /// The original's GOS **registration order**: the sources
+    /// `roffile.dll`'s `AddNewROFDirectory` pushed back, walked in that
+    /// order by `MetaOpenFile`, first hit wins (task #686,
+    /// `docs/findings/2026-10-05-f04-d-original-lookup-order.md` section D).
+    /// Status [`GOS_ORDER_STATUS`]: `inferred` from static analysis of the
+    /// original executable and `roffile.dll` — not a runtime capture of the
+    /// original running.
+    GosRegistration,
+}
+
+impl LookupOrder {
+    /// The order a lookup in `namespace` is decided by: the GOS
+    /// registration order for [`GOS_NAMESPACE`], the designed precedence
+    /// order everywhere else.
+    pub fn for_namespace(namespace: &MountNamespace) -> Self {
+        if namespace.as_str() == GOS_NAMESPACE {
+            Self::GosRegistration
+        } else {
+            Self::Precedence
+        }
+    }
+
+    /// How well this order is known today.
+    pub const fn status(self) -> ClaimStatus {
+        match self {
+            Self::Precedence => PRECEDENCE_ORDER_STATUS,
+            Self::GosRegistration => GOS_ORDER_STATUS,
+        }
+    }
+
+    /// The stable label used in reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Precedence => "precedence",
+            Self::GosRegistration => "gos_registration",
+        }
+    }
+}
+
+impl fmt::Display for LookupOrder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// An order and how well it is known: what a trace or a report carries so a
+/// reader can see what an answer rests on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LookupOrderStatus {
+    /// Which order decided.
+    pub order: LookupOrder,
+    /// How well that order is known ([`LookupOrder::status`]).
+    pub status: ClaimStatus,
+}
+
+impl LookupOrderStatus {
+    /// The pair for `order`.
+    pub const fn of(order: LookupOrder) -> Self {
+        Self {
+            order,
+            status: order.status(),
+        }
+    }
+}
+
+impl fmt::Display for LookupOrderStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.order, self.status.label())
+    }
+}
 
 /// How one mount ended up participating in a lookup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AttemptOutcome {
     /// This mount served the key.
     Selected,
-    /// The mount holds the key, but a mount at higher precedence does
-    /// too — so it did not win. Its presence in the trace is what proves
-    /// the choice was precedence, not chance.
+    /// The mount holds the key, but a mount earlier in the deciding order
+    /// does too — so it did not win. Its presence in the trace is what
+    /// proves the choice was the order, not chance.
     Candidate,
     /// The mount was eligible but does not hold the key.
     Miss,
@@ -103,20 +191,29 @@ impl fmt::Display for ResolutionAttempt {
     }
 }
 
-/// Everything a resolution saw: the attempts in descending precedence
-/// order (ties by registration order) and how well that ordering is known.
+/// Everything a resolution saw: the attempts in the order that decided
+/// them, and how well that ordering is known.
 ///
-/// A successful resolution and both failure kinds carry the same trace, so
+/// A successful resolution and every failure kind carry the same trace, so
 /// a caller can always explain the answer — including *why* another
 /// world's mount did not serve this context.
+///
+/// The attempts are ordered by [`ResolutionTrace::order`]: descending
+/// precedence with registration order as the tiebreak for
+/// [`LookupOrder::Precedence`], registration order alone for
+/// [`LookupOrder::GosRegistration`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolutionTrace {
-    /// The mounts consulted, highest precedence first.
+    /// The mounts consulted, in deciding order.
     pub attempts: Vec<ResolutionAttempt>,
-    /// Evidence status of the ordering that decided this trace. It is
-    /// [`PRECEDENCE_ORDER_STATUS`] — `designed` — until F04-D measures
-    /// original lookup behavior.
-    pub precedence_status: ClaimStatus,
+    /// The order that decided this lookup, and how well it is known.
+    ///
+    /// `PRECEDENCE_ORDER_STATUS` — `designed` — for
+    /// [`LookupOrder::Precedence`]; `GOS_ORDER_STATUS` — `inferred` — for
+    /// [`LookupOrder::GosRegistration`]. Neither is
+    /// `verified_original`: neither order was measured by running the
+    /// original.
+    pub order: LookupOrderStatus,
 }
 
 impl fmt::Display for ResolutionTrace {
@@ -260,7 +357,7 @@ impl fmt::Display for ResolveError {
                      and the precedence order that decides it is {}, not measured; \
                      attempts: {trace}",
                     rendered.join(", "),
-                    trace.precedence_status.label()
+                    trace.order.status.label()
                 )
             }
         }
@@ -302,15 +399,26 @@ fn effective_rank(mount: &Mount, context: &ResolveContext) -> (u8, usize) {
     }
 }
 
-/// Builds the trace, sorted highest precedence first, marking the
+/// Builds the trace, ordered by the rule that decided it, marking the
 /// registration index that won.
-fn trace_of(mut considered: Vec<Considered<'_>>, selected: Option<usize>) -> ResolutionTrace {
-    considered.sort_by(|left, right| {
-        right
-            .rank
-            .cmp(&left.rank)
-            .then(left.index.cmp(&right.index))
-    });
+///
+/// [`LookupOrder::Precedence`] sorts highest precedence first and breaks a
+/// tie by registration order; [`LookupOrder::GosRegistration`] sorts by
+/// registration order alone, because that is the whole rule.
+fn trace_of(
+    mut considered: Vec<Considered<'_>>,
+    selected: Option<usize>,
+    order: LookupOrder,
+) -> ResolutionTrace {
+    match order {
+        LookupOrder::Precedence => considered.sort_by(|left, right| {
+            right
+                .rank
+                .cmp(&left.rank)
+                .then(left.index.cmp(&right.index))
+        }),
+        LookupOrder::GosRegistration => considered.sort_by_key(|entry| entry.index),
+    }
     let attempts = considered
         .into_iter()
         .map(|entry| ResolutionAttempt {
@@ -326,20 +434,22 @@ fn trace_of(mut considered: Vec<Considered<'_>>, selected: Option<usize>) -> Res
         .collect();
     ResolutionTrace {
         attempts,
-        precedence_status: PRECEDENCE_ORDER_STATUS,
+        order: LookupOrderStatus::of(order),
     }
 }
 
-/// Builds the conflict record of a mount that holds `key`.
+/// Builds the conflict record of a mount that holds `key` under `matching`.
 ///
 /// # Panics
 ///
 /// Only for a mount already classified as holding `key`, which
-/// [`Mount::member`] just answered.
-fn origin_of(mount: &Mount, key: &AssetKey) -> ConflictOrigin {
-    let member = mount
-        .member(key)
-        .expect("a conflict origin is a mount that holds the key");
+/// [`Vfs::serving_member`] just answered.
+fn origin_of(mount: &Mount, key: &AssetKey, matching: GosNameMatch) -> ConflictOrigin {
+    let member = match matching {
+        GosNameMatch::AsciiInsensitive => mount.member(key),
+        GosNameMatch::ExactSpelling => mount.member_spelled_exactly(key),
+    }
+    .expect("a conflict origin is a mount that holds the key under the matching rule");
     ConflictOrigin {
         mount: mount.id().clone(),
         container: mount.container().to_owned(),
@@ -362,6 +472,15 @@ fn origin_of(mount: &Mount, key: &AssetKey) -> ConflictOrigin {
 #[derive(Clone, Debug, Default)]
 pub struct Vfs {
     mounts: Vec<Arc<Mount>>,
+    /// How a GOS request's name is matched, for the sources of the
+    /// [`GOS_NAMESPACE`] key space.
+    ///
+    /// A property of the VFS rather than of one mount, because it is a
+    /// property of `MetaOpenFile` — the one lookup that walks all registered
+    /// sources — and the original registers all of them together. It is
+    /// `AsciiInsensitive` until a chain states otherwise, because that is
+    /// the rule every other legacy lookup here applies.
+    gos_name_match: GosNameMatch,
 }
 
 impl Vfs {
@@ -400,6 +519,59 @@ impl Vfs {
         self.mounts.is_empty()
     }
 
+    /// How a GOS request's name is matched against the sources' names.
+    ///
+    /// [`GosNameMatch::AsciiInsensitive`] until a
+    /// [`crate::vfs::gos::SessionBuilder::mount_gos_chain`] states the rule
+    /// for its chain, which is what makes the unmeasured matching rule
+    /// (#693) an explicit input instead of an assumption.
+    pub fn gos_name_match(&self) -> GosNameMatch {
+        self.gos_name_match
+    }
+
+    /// Sets the GOS name-matching rule.
+    ///
+    /// Refuses a second, different rule: two chains in one VFS that answer
+    /// the same key space under different rules would make the answer depend
+    /// on which chain a caller happened to mount, so that is a mistake to
+    /// report rather than a rule to keep. Stating the same rule twice is
+    /// accepted.
+    pub fn set_gos_name_match(&mut self, matching: GosNameMatch) -> Result<(), MountError> {
+        if self.gos_name_match != matching && self.has_gos_mounts() {
+            return Err(MountError::ConflictingGosNameMatch {
+                installed: self.gos_name_match,
+                requested: matching,
+            });
+        }
+        self.gos_name_match = matching;
+        Ok(())
+    }
+
+    /// Whether any mount of the [`GOS_NAMESPACE`] key space is registered.
+    pub fn has_gos_mounts(&self) -> bool {
+        self.mounts
+            .iter()
+            .any(|mount| mount.namespace().as_str() == GOS_NAMESPACE)
+    }
+
+    /// The member of `mount` that serves `key` under `order`'s matching
+    /// rule.
+    ///
+    /// Every key space folds ASCII case and separators except a chain that
+    /// states [`GosNameMatch::ExactSpelling`], which is the one unmeasured
+    /// rule (#693) and therefore only ever applies where a caller said so.
+    fn serving_member<'m>(
+        &self,
+        mount: &'m Mount,
+        key: &AssetKey,
+        matching: GosNameMatch,
+    ) -> Option<&'m MemberRecord> {
+        match matching {
+            GosNameMatch::AsciiInsensitive => mount.member(key),
+            GosNameMatch::ExactSpelling => mount.member_spelled_exactly(key),
+        }
+    }
+
     /// `resolve(context, key)` — the lookup contract of
     /// `docs/contracts/IDENTITY-CONTENT.md`.
     ///
@@ -412,6 +584,7 @@ impl Vfs {
         context: &ResolveContext,
         key: &AssetKey,
     ) -> Result<ResolvedAsset, ResolveError> {
+        let order = LookupOrder::for_namespace(key.namespace());
         let mut considered: Vec<Considered<'_>> = Vec::new();
         for (index, mount) in self.mounts().enumerate() {
             if mount.namespace() != key.namespace() {
@@ -421,7 +594,13 @@ impl Vfs {
             }
             let outcome = match mount.scope().admit(context) {
                 Err(reason) => AttemptOutcome::Skipped(reason),
-                Ok(()) if mount.member(key).is_some() => AttemptOutcome::Candidate,
+                Ok(())
+                    if self
+                        .serving_member(mount, key, self.gos_name_match)
+                        .is_some() =>
+                {
+                    AttemptOutcome::Candidate
+                }
                 Ok(()) => AttemptOutcome::Miss,
             };
             considered.push(Considered {
@@ -432,38 +611,58 @@ impl Vfs {
             });
         }
 
-        let best_rank = considered
-            .iter()
-            .filter(|entry| entry.outcome == AttemptOutcome::Candidate)
-            .map(|entry| entry.rank)
-            .max();
-        let winners: Vec<usize> = match best_rank {
-            Some(rank) => considered
-                .iter()
-                .filter(|entry| entry.outcome == AttemptOutcome::Candidate && entry.rank == rank)
-                .map(|entry| entry.index)
-                .collect(),
-            None => Vec::new(),
-        };
-
-        let selected = match winners.len() {
-            0 => None,
-            1 => Some(winners[0]),
-            _ => {
-                let candidates: Vec<ConflictOrigin> = winners
+        let selected = match order {
+            LookupOrder::Precedence => {
+                let best_rank = considered
                     .iter()
-                    .map(|index| origin_of(considered[*index].mount, key))
-                    .collect();
-                let trace = trace_of(considered, None);
-                return Err(ResolveError::Ambiguous {
-                    key: Box::new(key.clone()),
-                    candidates,
-                    trace: Box::new(trace),
-                });
+                    .filter(|entry| entry.outcome == AttemptOutcome::Candidate)
+                    .map(|entry| entry.rank)
+                    .max();
+                let winners: Vec<usize> = match best_rank {
+                    Some(rank) => considered
+                        .iter()
+                        .filter(|entry| {
+                            entry.outcome == AttemptOutcome::Candidate && entry.rank == rank
+                        })
+                        .map(|entry| entry.index)
+                        .collect(),
+                    None => Vec::new(),
+                };
+                match winners.len() {
+                    0 => None,
+                    1 => Some(winners[0]),
+                    _ => {
+                        let candidates: Vec<ConflictOrigin> = winners
+                            .iter()
+                            .map(|index| {
+                                origin_of(considered[*index].mount, key, self.gos_name_match)
+                            })
+                            .collect();
+                        let trace = trace_of(considered, None, order);
+                        return Err(ResolveError::Ambiguous {
+                            key: Box::new(key.clone()),
+                            candidates,
+                            trace: Box::new(trace),
+                        });
+                    }
+                }
+            }
+            LookupOrder::GosRegistration => {
+                // `MetaOpenFile` walks the registered sources in order and
+                // takes the first that has the name. The registration order
+                // is the VFS mount order, so the earliest candidate wins and
+                // the later ones stay in the trace as candidates that were
+                // passed over — never as a tie, because the original has no
+                // ambiguity to report.
+                considered
+                    .iter()
+                    .filter(|entry| entry.outcome == AttemptOutcome::Candidate)
+                    .map(|entry| entry.index)
+                    .min()
             }
         };
 
-        let trace = trace_of(considered, selected);
+        let trace = trace_of(considered, selected, order);
         let Some(index) = selected else {
             return Err(ResolveError::NotFound {
                 key: Box::new(key.clone()),
@@ -472,7 +671,9 @@ impl Vfs {
         };
 
         let mount = &self.mounts[index];
-        let member = mount.member(key).expect("the selected mount holds the key");
+        let member = self
+            .serving_member(mount, key, self.gos_name_match)
+            .expect("the selected mount holds the key under the matching rule");
         let span = SourceSpan::new(
             context.installation,
             mount.container(),
@@ -499,20 +700,35 @@ impl Vfs {
     /// precedence order decided between retail sources.
     ///
     /// When a retail mount ([`Mount::is_retail`]) wins over other retail
-    /// mounts that hold the key with different or unhashed bytes, the
-    /// result depends on [`PRECEDENCE_ORDER_STATUS`]. While that is
-    /// anything but `verified_original` the lookup fails with
-    /// [`ResolveError::UnmeasuredOrder`] naming every origin. Non-retail
-    /// sources and opted-in mods are exempt (their order is the caller's
-    /// or user's choice, not an original-behavior claim), and shadowed
-    /// copies with identical digests are no conflict (either order yields
-    /// the same bytes). Content sessions resolve through this.
+    /// mounts that hold the key with different or unhashed bytes, and the
+    /// only thing that decided between them is the **designed**
+    /// [`PrecedenceClass`] order, the result depends on
+    /// [`PRECEDENCE_ORDER_STATUS`]. While that is anything but
+    /// `verified_original` the lookup fails with
+    /// [`ResolveError::UnmeasuredOrder`] naming every origin (spec F04
+    /// non-negotiable behavior 2). Non-retail sources and opted-in mods
+    /// are exempt (their order is the caller's or user's choice, not an
+    /// original-behavior claim), and shadowed copies with identical digests
+    /// are no conflict (either order yields the same bytes). Content
+    /// sessions resolve through this.
+    ///
+    /// A [`GOS_NAMESPACE`] key is **not** blocked. Its order is the
+    /// original's own registration order, read out of `roffile.dll`
+    /// (`MetaOpenFile`), not a design decision this workspace made — see
+    /// [`LookupOrder::GosRegistration`]. Blocking it would refuse every
+    /// GOS answer for the sake of a status the order does not depend on: the
+    /// order is still reported as [`GOS_ORDER_STATUS`] (`inferred`) on the
+    /// trace, so what the answer rests on stays visible, and raising that to
+    /// `verified_original` needs an original run, not this task.
     pub fn resolve_blocking_unmeasured(
         &self,
         context: &ResolveContext,
         key: &AssetKey,
     ) -> Result<ResolvedAsset, ResolveError> {
         let resolved = self.resolve(context, key)?;
+        if resolved.trace.order.order == LookupOrder::GosRegistration {
+            return Ok(resolved);
+        }
         let mount = self
             .mounts()
             .find(|mount| *mount.id() == resolved.mount)
@@ -531,7 +747,7 @@ impl Vfs {
             .filter(|attempt| attempt.outcome == AttemptOutcome::Candidate)
             .filter_map(|attempt| self.mounts().find(|other| *other.id() == attempt.mount))
             .filter(|other| other.is_retail() && other.precedence() != PrecedenceClass::Mod)
-            .map(|other| origin_of(other, key))
+            .map(|other| origin_of(other, key, self.gos_name_match))
             .filter(|origin| selected_sha256.is_none() || origin.sha256 != selected_sha256)
             .collect();
         if shadowed.is_empty() {
@@ -539,7 +755,7 @@ impl Vfs {
         }
         Err(ResolveError::UnmeasuredOrder {
             key: Box::new(key.clone()),
-            selected: Box::new(origin_of(mount, key)),
+            selected: Box::new(origin_of(mount, key, self.gos_name_match)),
             shadowed,
             trace: Box::new(resolved.trace),
         })

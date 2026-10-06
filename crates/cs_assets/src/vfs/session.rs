@@ -330,6 +330,64 @@ impl SessionBuilder {
         self.vfs.is_empty()
     }
 
+    /// Sets the rule GOS requests are matched by, before the first GOS
+    /// source is mounted.
+    ///
+    /// Stating it is what keeps `MetaOpenFile`'s own matching rule (#693) an
+    /// input rather than an assumption: a chain that wants the exact-spelling
+    /// rule says so here, and a VFS that already answers under a different
+    /// rule refuses instead of mixing the two.
+    pub fn set_gos_name_match(
+        &mut self,
+        matching: crate::vfs::gos::GosNameMatch,
+    ) -> Result<(), SessionError> {
+        self.vfs
+            .set_gos_name_match(matching)
+            .map_err(SessionError::Mount)
+    }
+
+    /// The rule GOS requests are matched by.
+    pub fn gos_name_match(&self) -> crate::vfs::gos::GosNameMatch {
+        self.vfs.gos_name_match()
+    }
+
+    /// Mounts one directory of a GOS chain and reports how many members it
+    /// contributed.
+    ///
+    /// Internal to [`SessionBuilder::mount_gos_chain`](crate::vfs::gos::SessionBuilder::mount_gos_chain):
+    /// it exists so each step can record its own member count in the chain
+    /// rather than the caller having to re-derive it.
+    pub(crate) fn mount_gos_directory(
+        &mut self,
+        builder: MountBuilder,
+        root: &Path,
+    ) -> Result<usize, SourceError> {
+        let mounted = source::mount_directory(builder, root)?;
+        let members = mounted.mount.member_count();
+        let mount_id = mounted.mount.id().clone();
+        self.vfs.mount(mounted.mount).map_err(|error| match error {
+            MountError::DuplicateMountId { .. } | MountError::ConflictingGosNameMatch { .. } => {
+                SourceError::Mount(error)
+            }
+            other => SourceError::Mount(other),
+        })?;
+        self.rejected
+            .extend(mounted.rejected.into_iter().map(|entry| SessionRejection {
+                mount: mount_id.clone(),
+                entry,
+            }));
+        Ok(members)
+    }
+
+    /// How many members the mount `id` holds.
+    pub(crate) fn mount_members(&self, id: &MountId) -> usize {
+        self.vfs
+            .mounts()
+            .find(|mount| mount.id() == id)
+            .map(Mount::member_count)
+            .unwrap_or_default()
+    }
+
     /// Freezes the session under a fresh generation.
     pub fn open(self) -> ContentSession {
         ContentSession {

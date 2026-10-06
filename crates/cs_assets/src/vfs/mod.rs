@@ -37,7 +37,13 @@
 //! * [`collision`] lists every file-name collision among the mounts and
 //!   looks each member up under each context ([`compare_collisions`]),
 //!   classifying it as distinct by path, shadowed by identical bytes or
-//!   conflicting (F04-D).
+//!   conflicting (F04-D);
+//!
+//! * [`gos`] is the GOS file system, the one key space whose order is the
+//!   original's **registration order** rather than a designed precedence:
+//!   `crimptch.rof` (only when the registry names a path it exists under),
+//!   `crimson.rof`, the loose UI asset directory, the current directory
+//!   ([`gos::SessionBuilder::mount_gos_chain`], task #686).
 //!
 //! * [`binding`] records which archives one world/mission load opens and at
 //!   which level — `gamez.zbd` per world group, `planes.zbd` from the ZBD
@@ -59,14 +65,17 @@
 //!   consults it.
 //!
 //! Mounting archive members needs the archive readers of the format tasks.
-//! Original lookup behavior is unmeasured (F04-D findings), so the
-//! precedence order stays `designed` and content sessions refuse a retail
-//! answer that order alone decided. Nothing here writes to the original
-//! installation.
+//! For every other key space the original lookup order is still unmeasured
+//! (F04-D findings), so the precedence order stays `designed` and content
+//! sessions refuse a retail answer that order alone decided. The GOS
+//! registration order is separate: it is the original's own order, read out
+//! of `roffile.dll`, reported as `inferred` rather than presented as
+//! measured. Nothing here writes to the original installation.
 
 pub mod binding;
 pub mod collision;
 pub mod export;
+pub mod gos;
 pub mod mount;
 pub mod reader;
 pub mod resolve;
@@ -84,6 +93,12 @@ pub use collision::{
 pub use export::{
     ExportDirectory, ExportError, ExportedFile, UnsafeName, export_asset, export_components,
 };
+pub use gos::{
+    CURRENT_DIRECTORY_MOUNT_ID, DEFAULT_UI_ASSET_PATH, ExePathOrigin, GOS_NAMESPACE,
+    GOS_ORDER_STATUS, GosChain, GosError, GosInstall, GosNameMatch, GosSource, GosStep,
+    LOOSE_MOUNT_ID, MAIN_MOUNT_ID, PATCH_MOUNT_ID, PatchRegistration, gos_key, gos_order,
+    gos_order_status,
+};
 pub use mount::{MemberRecord, Mount, MountBuilder, MountError, MountScope, SkipReason};
 pub use reader::{
     READER_LOOKUP_ORDER_STATUS, READER_NAMESPACE, ReaderArchive, ReaderAttempt,
@@ -92,8 +107,8 @@ pub use reader::{
     mount_reader_archive,
 };
 pub use resolve::{
-    AttemptOutcome, ConflictOrigin, ResolutionAttempt, ResolutionTrace, ResolveError,
-    ResolvedAsset, Vfs,
+    AttemptOutcome, ConflictOrigin, LookupOrder, LookupOrderStatus, ResolutionAttempt,
+    ResolutionTrace, ResolveError, ResolvedAsset, Vfs,
 };
 pub use session::{
     CompletedRead, ContentSession, INSTALL_NAMESPACE, MISSION_NAMESPACE, PENDING_READ_CHUNK,

@@ -244,7 +244,10 @@ fn mount_error_container(error: &MountError) -> &str {
         | MountError::SpanOverflow { .. }
         | MountError::DuplicateMember { .. }
         | MountError::EmptyContainer
-        | MountError::ContainerNul => "",
+        | MountError::ContainerNul
+        // A VFS-wide GOS matching-rule conflict, not a property of one
+        // container's members; it names no mount of its own.
+        | MountError::ConflictingGosNameMatch { .. } => "",
     }
 }
 

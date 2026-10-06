@@ -14,8 +14,12 @@
 //! session. The JSON report names the installation fingerprint, the
 //! context, every mount of the session (with the entries it refused), the
 //! key, the result — the winning span or both origins of an ambiguity —
-//! and every ordered attempt with its outcome, plus the evidence status of
-//! the precedence order (`designed`).
+//! and every ordered attempt with its outcome, plus the lookup's deciding
+//! order and its evidence status (`precedence`/`designed` for an
+//! installation or world key, `gos_registration`/`inferred` for a GOS key —
+//! report version 2 replaced the flat `precedence_status` field with the
+//! `order` object, because a GOS lookup is not decided by precedence at
+//! all).
 //!
 //! `--export-dir` is the explicit private research export of spec F04
 //! non-negotiable behavior 5: the resolved member is read (digest-checked)
@@ -50,7 +54,7 @@ use cs_types::asset_id::{
 use cs_types::install::{LocaleLabel, RelativePathError};
 
 /// The report format version.
-pub const RESOLVE_REPORT_VERSION: &str = "cs-inspect-resolve/1";
+pub const RESOLVE_REPORT_VERSION: &str = "cs-inspect-resolve/2";
 
 /// Why the `resolve` command failed before or around the lookup.
 #[derive(Debug)]
@@ -539,7 +543,7 @@ pub fn resolve_report_json(
          \x20\"context\": {{\"world_group\": {}, \"locale\": {}, \"mission\": {}, \"mods\": [{}]}},\n\
          \x20\"session\": {{\"generation\": {}, \"mounts\": [{}]}},\n\
          \x20\"key\": {{\"namespace\": {}, \"path\": {}, \"variant\": {}, \"logical_key\": {}}},\n\
-         \x20\"precedence_status\": {},\n\
+         \x20\"order\": {{\"kind\": {}, \"status\": {}}},\n\
          \x20\"result\": {},\n\
          \x20\"trace\": {},\n\
          \x20\"export\": {}\n\
@@ -566,7 +570,8 @@ pub fn resolve_report_json(
         jstr(key.path().as_str()),
         jstr(key.variant().as_str()),
         jstr(&key.logical_key()),
-        jstr(trace.precedence_status.label()),
+        jstr(trace.order.order.label()),
+        jstr(trace.order.status.label()),
         result,
         trace_json(trace),
         export,
@@ -723,7 +728,7 @@ mod tests {
             "\"status\": \"resolved\", \"mount\": \"world-1\"".to_owned(),
             "\"container_path\": \"ZBD/c2\", \"member_key\": \"texture.zbd\"".to_owned(),
             format!("\"member_sha256\": \"{digest}\""),
-            "\"precedence_status\": \"designed\"".to_owned(),
+            "\"order\": {\"kind\": \"precedence\", \"status\": \"designed\"}".to_owned(),
             "{\"mount\": \"world-0\", \"container\": \"ZBD/c1\", \"precedence\": \
              \"mission_world\", \"outcome\": \"scope_mismatch\"}"
                 .to_owned(),
@@ -916,6 +921,6 @@ mod tests {
             );
             assert!(report.contains(&attempt), "missing {attempt}");
         }
-        assert!(report.contains("\"precedence_status\": \"designed\""));
+        assert!(report.contains("\"order\": {\"kind\": \"precedence\", \"status\": \"designed\"}"));
     }
 }

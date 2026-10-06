@@ -29,8 +29,9 @@ use std::thread;
 use common::TempTree;
 use cs_assets::install::{self, sha256};
 use cs_assets::vfs::{
-    CollisionReport, CollisionVerdict, ContentSession, LookupOutcome, MountBuilder,
-    PENDING_READ_CHUNK, ReadError, ResolveError, SessionBuilder, WORLD_NAMESPACE,
+    CollisionReport, CollisionVerdict, ContentSession, LookupOrder, LookupOrderStatus,
+    LookupOutcome, MountBuilder, PENDING_READ_CHUNK, ReadError, ResolveError, SessionBuilder,
+    WORLD_NAMESPACE,
 };
 use cs_types::asset_id::{
     AssetKey, ModId, ModStack, MountId, MountNamespace, PrecedenceClass, ResolveContext, WorldGroup,
@@ -303,7 +304,13 @@ fn accept_f04_d_designed_order_alone_never_decides_between_retail_bytes() {
             assert_eq!(shadowed[0].mount.as_str(), "shared");
             assert_eq!(shadowed[0].member_spelling, "hud/alert.dds");
             assert_eq!(shadowed[0].sha256, Some(sha256(b"shared alert")));
-            assert_eq!(trace.precedence_status, ClaimStatus::Designed);
+            assert_eq!(
+                trace.order,
+                LookupOrderStatus {
+                    order: LookupOrder::Precedence,
+                    status: ClaimStatus::Designed,
+                }
+            );
         }
         other => {
             panic!("a retail conflict decided by the designed order must block, got {other:?}")

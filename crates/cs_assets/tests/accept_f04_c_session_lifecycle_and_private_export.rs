@@ -25,8 +25,8 @@ use std::path::Path;
 use common::TempTree;
 use cs_assets::install::{self, sha256};
 use cs_assets::vfs::{
-    AttemptOutcome, ContentSession, ExportDirectory, ExportError, MountBuilder, ReadError,
-    SessionBuilder, SessionError, SkipReason, SourceError, UnsafeName, WORLD_NAMESPACE,
+    AttemptOutcome, ContentSession, ExportDirectory, ExportError, LookupOrder, MountBuilder,
+    ReadError, SessionBuilder, SessionError, SkipReason, SourceError, UnsafeName, WORLD_NAMESPACE,
     export_asset, export_components,
 };
 use cs_types::asset_id::{
@@ -526,7 +526,8 @@ fn accept_f04_c_session_trace_names_every_world_attempt() {
             ("world-1", "ZBD/c2", AttemptOutcome::Selected),
         ]
     );
-    assert_eq!(trace.precedence_status.label(), "designed");
+    assert_eq!(trace.order.order, LookupOrder::Precedence);
+    assert_eq!(trace.order.status.label(), "designed");
     assert_eq!(asset.resolved().span.container_path(), "ZBD/c2");
     assert_eq!(asset.resolved().span.member_key(), Some("texture.zbd"));
     assert_eq!(

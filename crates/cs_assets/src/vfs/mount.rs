@@ -198,6 +198,16 @@ pub enum MountError {
         /// The repeated id.
         id: MountId,
     },
+    /// A second, different GOS name-matching rule was requested for one
+    /// VFS. Two chains in one VFS answering the same key space under
+    /// different rules would make the answer depend on which chain a caller
+    /// happened to mount, so the conflict is reported rather than resolved.
+    ConflictingGosNameMatch {
+        /// The rule the VFS already answers with.
+        installed: crate::vfs::gos::GosNameMatch,
+        /// The rule that was asked for.
+        requested: crate::vfs::gos::GosNameMatch,
+    },
 }
 
 impl fmt::Display for MountError {
@@ -238,6 +248,14 @@ impl fmt::Display for MountError {
                  source may bind to a mod"
             ),
             Self::DuplicateMountId { id } => write!(f, "mount id {id} is already mounted"),
+            Self::ConflictingGosNameMatch {
+                installed,
+                requested,
+            } => write!(
+                f,
+                "this VFS already matches GOS names by {installed}; {requested} was \
+                 requested, which would make one key space answer under two rules"
+            ),
         }
     }
 }
@@ -450,6 +468,32 @@ impl Mount {
             variant: key.variant().as_str().to_owned(),
             path_key: key.path_key().to_owned(),
         })
+    }
+
+    /// The member serving `key` **only when its stored spelling equals the
+    /// request's spelling**, byte for byte — case and separators included.
+    ///
+    /// [`Mount::member`] compares the *logical* form, so `Alert.TGA` finds
+    /// `alert.tga`. That folding is right for every key space whose matching
+    /// rule is the legacy case-insensitive one, and wrong to assume for the
+    /// GOS space, where the original's own matching rule is **unmeasured**
+    /// (`MetaOpenFile`, task #693): `crimson.rof` stores
+    /// `ASSETS/GRAPHICS/ARIAL8.TGA` while the loose tree holds
+    /// `assets/graphics/arial8.tga`, and which of the two a request gets
+    /// depends on that rule. This lookup is the exact-spelling candidate: it
+    /// reports a member only when the two spellings are identical, so a
+    /// caller can offer both rules instead of assuming one.
+    ///
+    /// The namespace and variant must match exactly, as in
+    /// [`Mount::member`], so a key of another key space is never answered.
+    pub fn member_spelled_exactly(&self, key: &AssetKey) -> Option<&MemberRecord> {
+        if self.namespace != *key.namespace() || *key.variant() != AssetVariant::default() {
+            return None;
+        }
+        let asked = key.path().as_str();
+        self.members
+            .values()
+            .find(|member| member.spelling().as_str() == asked)
     }
 }
 
