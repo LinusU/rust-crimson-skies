@@ -1475,8 +1475,10 @@ fn evidence_report_t687_writes_the_acceptance_report() {
         artifacts
             .iter()
             .map(|entry| format!(
-                "{{\"path\": {}, \"sha256\": {:?}, \"kind\": {:?}}}",
-                entry.path, entry.sha256, entry.kind
+                "{{\"path\": {}, \"sha256\": {}, \"kind\": {}}}",
+                json(&entry.path),
+                json(&entry.sha256),
+                json(entry.kind)
             ))
             .collect::<Vec<_>>()
             .join(", "),
