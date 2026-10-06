@@ -2090,6 +2090,61 @@ fn spell(text: &[u8]) -> FieldSpelling {
     FieldSpelling::Text
 }
 
+/// The colour the original's `T` (text) record reader holds for a `Color`
+/// field, as measured from code (task #380, owner decrypted image; static
+/// code evidence, never `verified_original`).
+///
+/// The reader zeroes the record's colour, then, if the token is non-empty,
+/// runs `sscanf(token, "%x", &colour)` without checking the result. A token
+/// that fails the conversion (`oxff1E283C`, `xff000000`) leaves the zero, so
+/// it reads as `0`. `%x` accepts leading whitespace, an optional sign, an
+/// optional `0x`/`0X` prefix, then hex digits.
+///
+/// `None` is the part nothing measured: more than eight hex digits, or a
+/// prefix with no digit after it. The raw token is never altered by this.
+pub fn legacy_text_colour(token: &[u8]) -> Option<u32> {
+    if token.is_empty() {
+        return Some(0);
+    }
+    let rest = token.trim_ascii_start();
+    let (negative, rest) = match rest.first() {
+        Some(b'-') => (true, &rest[1..]),
+        Some(b'+') => (false, &rest[1..]),
+        _ => (false, rest),
+    };
+    let prefixed = rest
+        .strip_prefix(b"0x")
+        .or_else(|| rest.strip_prefix(b"0X"));
+    let digits = prefixed.unwrap_or(rest);
+    let run = digits.iter().take_while(|b| b.is_ascii_hexdigit()).count();
+    if run == 0 {
+        // Nothing converts: the destination is not written. A bare `0x` is
+        // not measured, because the CRT may consume its `0` as a digit.
+        return if prefixed.is_some() { None } else { Some(0) };
+    }
+    if run > 8 {
+        return None;
+    }
+    let text = std::str::from_utf8(&digits[..run]).ok()?;
+    let value = u32::from_str_radix(text, 16).ok()?;
+    Some(if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    })
+}
+
+/// The RGB the original draws text in for a parsed `T` colour: the alpha
+/// byte is dropped, and RGB `0` is drawn as `(15, 15, 15)` (task #380).
+pub fn legacy_text_rgb(colour: u32) -> [u8; 3] {
+    let [_, red, green, blue] = colour.to_be_bytes();
+    if colour & 0x00ff_ffff == 0 {
+        [15, 15, 15]
+    } else {
+        [red, green, blue]
+    }
+}
+
 /// Whether the bytes of one observed field can carry the kind its schema
 /// declares, which is the production form of the check task #371 measured
 /// only in a test.
@@ -5145,6 +5200,41 @@ SBROW=1,IDS_IMG,thumb.png,PNG,10,20,255,64,64,0,\"0,0,64,64\",1,1,1,TITLE,TEXT\r
             HashMap::from([(("Text", 7usize), 4usize)]),
             "a declared kind the shipped bytes do not spell"
         );
+    }
+
+    // ------------------------------------------------- #380
+
+    /// The measured read of the misspelt colours: a failed `%x` leaves the
+    /// zeroed field, which draws as RGB(15,15,15); alpha never matters.
+    #[test]
+    fn accept_f12_j_misspelt_colour_parses_to_zero_and_renders_near_black() {
+        let member = format!(
+            "TXT_J=T,!,1,2,0,3,4,{MISSPELT_COLOUR},0\r\nTXT_A=T,!,1,2,0,3,4,xff000000,0\r\n"
+        );
+        let document = records(member.as_bytes());
+        for key in [b"TXT_J".as_slice(), b"TXT_A".as_slice()] {
+            let entry = entry_of(&document, key);
+            let view = RecordView::for_entry(entry).expect("a T record");
+            let token = view.fields()[7].field.value();
+            assert!(token == b"oxff1E283C" || token == b"xff000000");
+            let colour = legacy_text_colour(token).expect("measured");
+            assert_eq!(colour, 0);
+            assert_eq!(legacy_text_rgb(colour), [15, 15, 15]);
+        }
+        // Raw bytes survive.
+        assert_eq!(document.reassemble(), member.as_bytes());
+
+        // Well-spelled values: RGB from the value, alpha ignored, 0 -> 15.
+        assert_eq!(legacy_text_colour(b"0xff1E283C"), Some(0xff1e_283c));
+        assert_eq!(legacy_text_rgb(0xff1e_283c), [0x1e, 0x28, 0x3c]);
+        assert_eq!(legacy_text_rgb(0x001e_283c), [0x1e, 0x28, 0x3c]);
+        assert_eq!(legacy_text_colour(b"0xff000000"), Some(0xff00_0000));
+        assert_eq!(legacy_text_rgb(0xff00_0000), [15, 15, 15]);
+        assert_eq!(legacy_text_rgb(0x0100_0001), [0, 0, 1]);
+        // Empty field: not read, stays zero. Unmeasured shapes stay None.
+        assert_eq!(legacy_text_colour(b""), Some(0));
+        assert_eq!(legacy_text_colour(b"0x"), None);
+        assert_eq!(legacy_text_colour(b"0x123456789"), None);
     }
 
     // ------------------------------------------------- F12-J (task #376)

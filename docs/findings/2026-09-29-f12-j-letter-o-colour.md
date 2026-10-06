@@ -188,3 +188,55 @@ documented `Color` kind of `T` position 7 and the four unspellable
 fields), the S12 static-recompilation project's Phase-0 report (SafeDisc
 v1.50 identification of the same image, independent of this workspace),
 and `$CS_GAME_DIR` (read-only) for every measurement.
+
+## Update 2026-10-06 (task #380): resolved by code evidence
+
+The `Unknown` above is resolved from code, not from a runtime capture. The
+owner supplied a decrypted engine image (`$CS_GAME_DIR/crimson.decrypted.exe`,
+sha256 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`,
+decrypted from `crimson.icd` `0e3b4724…9833b`) and had it analysed
+statically; the owner accepts that code evidence for this question. Status:
+**code-derived, below `verified_original`**. Virtual addresses; for `.text`,
+`.rdata` and `.data` below VA 0x643000, file offset = VA - 0x400000. No image
+bytes or decompiled code are committed.
+
+Rule, in reading order:
+
+1. `Layout.csv` is read as an ini file through `roffile.dll`
+   (`0x4112b0` / `0x411b30`, lookup `0x4119d0`).
+2. A control's `gui_init` calls the native `gosPageInit` (`0x403680`). It
+   first calls `0x405220`, which **zeroes the record-field block
+   `0x64b2a4..0x64b340`**, the colour at `0x64b2dc` included, then
+   dispatches on the type letter; `T`/`t` goes to `0x403f10`.
+3. `0x403f10` splits the fields with `0x404830(..., ",")`: ResID, X, Y, Z,
+   Width, Height (`atoi`), then **Color: `if (*token) sscanf(token, "%x",
+   &colour)`** (format string at `0x61eccc`), then Justify (`atoi`). The
+   `sscanf` result is not checked and nothing else writes a `T` colour.
+4. MSVC `%x` takes optional whitespace, an optional sign, an optional
+   `0x`/`0X`, then hex digits. A token that starts with `o` or a bare `x`
+   fails at once and **leaves the destination unwritten, so the colour stays
+   0**. Nothing carries over between records, because of the reset in 2.
+5. The `s_text` control (script class `PE`) copies the value in `gui_init`
+   unconditionally (no "0 means default" branch) and `gui_draw` passes it to
+   `print3d_attributes`, which reaches `gos_TextSetAttributes` (`0x5cecd0`).
+   That **drops the alpha byte** and, when `(colour & 0xFFFFFF) == 0`,
+   **draws RGB(15,15,15)** instead (`0x5cecfd`-`0x5ced0e`). The control's
+   alpha bookkeeping never runs (`framerate` is 0).
+
+| Record | Stored | Parsed | Drawn |
+| --- | --- | --- | --- |
+| `SBZ_T_TITLEJ`, `SBZ_T_CAPTIONJ`, `SBZ_T_TEXTJ` (lines 1156-1158) | `oxff1E283C` | `0x00000000` | RGB(15,15,15), visible; not the dark navy `0x1E283C` |
+| `SBZ_T_CAPTIONA` (line 1121) | `xff000000` | `0x00000000` | RGB(15,15,15), the same as the intended `0xff000000` |
+| any well-spelled `0xAARRGGBB` | as written | as written | its RGB, alpha ignored; RGB 0 draws (15,15,15) |
+
+The script names come from the `DEBUGINFO.TXT` obfuscation map
+(`$$JI$$` gosPageInit, `$$OJ$$` gosColor, `PE` s_text).
+
+In the workspace: `cs_content::config::legacy_text_colour` and
+`legacy_text_rgb` implement the parse and the draw rule; the test
+`accept_f12_j_misspelt_colour_parses_to_zero_and_renders_near_black` pins both
+and the byte-exact reassembly. The raw token is still never repaired.
+Shapes the measurement did not reach (a bare `0x`, more than eight digits)
+return `None` rather than a guess. There is no UI text renderer yet; the
+function is the rule it must use. The `KeyedList` dialect row no longer lists
+this unknown.

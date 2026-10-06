@@ -284,6 +284,12 @@ pub static TEXT_DIALECT_INVENTORY: [DialectRecord; 6] = [
         // (task #371/F12-I); what is left is listed here, in
         // docs/findings/2026-09-29-t351-keyed-list-reading-rules.md and
         // docs/findings/2026-09-29-f12-i-record-kind-schemas.md.
+        //
+        // Resolved by code evidence (task #380, never verified_original): a
+        // `T` colour is read with `sscanf("%x")` unchecked on a field zeroed
+        // per record, so a colour spelled without `0x` (`oxff1E283C`,
+        // `xff000000`) reads as 0 and draws as RGB(15,15,15); see
+        // docs/findings/2026-09-29-f12-j-letter-o-colour.md.
         unknowns: &[
             "whether a ';' after a value starts a comment (never observed)",
             "escaped or embedded quotes (never observed)",
@@ -296,7 +302,6 @@ pub static TEXT_DIALECT_INVENTORY: [DialectRecord; 6] = [
             "whether the local or the global name table is consulted first (no shadowing observed)",
             "whether <NAME> expansion substitutes text into the field or means something else",
             "the code page of bytes above 0x7F in localized installations",
-            "what the original reader does with a colour field spelled without a `0x` prefix (`oxff1E283C` on three live `SBZ_T_*J` records, `xff000000` on one): the reader is code inside the SafeDisc-packed engine image, so the rule is unmeasured (F12-J)",
         ],
     },
     DialectRecord {
