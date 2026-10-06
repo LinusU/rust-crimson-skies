@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M01-LC-DIRECTIVE-B",
+ "candidate_tree": "485e1306c8929f876e6f0e9c01852593230023a5",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-06T06:36:07Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m01_lc_directive_b_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1", "exit_code": 0},
+ "source": {"install_sha256": "c14a876f4457d8710dee7986333ab636122c9549cf72b646fd69cbe7e72c5352", "content_sha256": "148a24b7b0506812e8f1ee13d8d3137a05926abebbe10161994e8c4cd300c35e"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m01_lc_directive_b_each_measured_keys_argument_shapes_match_the_record", "status": "pass", "evidence": ["cargo-test.log", "directive-census.json"]}, {"id": "accept_m01_lc_directive_b_the_named_non_carriable_shapes_match_the_record", "status": "pass", "evidence": ["cargo-test.log", "directive-census.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "0fa026e9731ce73c05d14ce81d633ac98c5903bb5085ec59f1b9ae32112b783f", "kind": "log"}, {"path": "directive-census.json", "sha256": "d2bcc0dc0904153f81ead774eefbb62991afc350b7745349e866f0eb8f7443d5", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "swe2-max-1", "method": "Acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run of cs_app::mission_control::survey_mission_control_programs over the installation (directive-census.json). Claim is implemented only. MEASURED: the findings document docs/findings/2026-10-06-m01-lc-directive-b-objective-lifecycle-target-semantics.md records the runtime handler effects of M01's 43 spelled directive keys in $CS_GAME_DIR/crimson.decrypted.exe (sha256 43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75) across 353 sites in 58 numbered objective blocks - the acceptance suite asserts the spellings those semantics apply to and the exact set of argument shapes the mission IR cannot carry against the production census, so a drift between the document and the data fails the run. The native-side evidence is STATIC CODE EVIDENCE ONLY: the objective record layout, the CZMission::Update two-pass structure, the lifecycle state machine (+0x5c8 dormant/awake/nap/done), the condition evaluators, the completion pipeline and the target-flag helpers were read out of the executable with r2/objdump and no original program was run, so nothing here is verified_original runtime behaviour. LIMITS OF WHAT WAS MEASURED, each recorded in the findings document's Unknowns section: (1) IDENTITY's third argument is never read by the measured parse and no consumer was found; (2) the producers of the +0x24 bit-4 in-play flag and the +0x91d despawn byte are world code outside the bound - consumers measured, producers not; (3) the internals of the world-side consumers the pipeline calls (stoppoint, AI net/team, turret and enemy wake calls) are measured at their call sites only; (4) several parsers read payloads without tag checks, so malformed argument types are a latent hazard observed but not exercised; (5) +0x570 (danger-zone field) and the +0x71c128 pass-2 start rotation's writer are not traced. `unknowns` is empty because the report lists no machine-readable unresolved issue beyond these documented bounds. TEST-SELECTION NOTE: the prefix accept_m01_lc_directive_b_ is unique to this task, so the 2 discovered assertions are exactly this task's tests. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
