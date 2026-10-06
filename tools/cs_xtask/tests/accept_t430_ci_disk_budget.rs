@@ -429,8 +429,9 @@ on the artifact, because the environment decided this binary's debug level. \
 {name}={level:?} is set, and cargo's environment overrides the committed \
 profile; debug = {level} emits no line tables, so this binary's frames cannot \
 name a file:line whatever Cargo.toml says — the artifact would testify about \
-the environment, not the code. That is the shared build host's deliberate \
-common.env setting, not a defect. The committed profile is still asserted by \
+the environment, not the code. That is a deliberate environment override, not \
+a code defect (this build host used to export exactly this from common.env). \
+The committed profile is still asserted by \
 accept_t430_the_workspace_keeps_backtrace_line_numbers, and this check still \
 runs where the environment pins line tables — CI exports \
 CARGO_PROFILE_DEV_DEBUG=line-tables-only and \

@@ -139,3 +139,26 @@ pin.
 * A stale binary run by hand under a different environment than it was built
   with reads the *current* variables — cargo rebuilds on profile-env change,
   so this cannot arise through `cargo test`, which is how the suite runs.
+* Only `cargo test`'s own profiles are resolved: a `cargo test --release`
+  under `CARGO_PROFILE_RELEASE_DEBUG=0`/`CARGO_PROFILE_BENCH_DEBUG=0` would
+  still fail the artifact assertion, reported by `line_table_diagnosis`.
+  The suite's required commands do not use `--release`.
+
+## Postscript (added in review, 2026-10-06)
+
+`common.env` no longer exports `CARGO_PROFILE_DEV_DEBUG=0`: it now exports
+`line-tables-only`, and its own comment records that `debug = 0` was tried on
+2026-10-05 and reverted because it broke this test and still did not fit the
+disk. The trap it armed is gone at the source; the stand-down above keeps the
+test honest for any environment that repeats that experiment — including
+sessions started before the revert and any future host that trades line
+tables for disk again.
+
+Two rows of the resolution table were re-measured in review with a scratch
+crate (`/tmp`, since `Cargo.toml` is owner-maintained): a manifest that
+states `[profile.test] debug = "line-tables-only"` built a test binary whose
+frames kept `file:line` even under `CARGO_PROFILE_DEV_DEBUG=0` — the stated
+`[profile.test]` row really does outrank the dev environment variable — and
+`[profile.dev] debug = "line-directives-only"` produced frames that still
+name `./src/lib.rs:6`, which is why `keeps_line_tables` classifies it as
+keeping the line program.
