@@ -97,12 +97,14 @@
 //!
 //! * **A binding must not name a symbol the program declares.** The F39
 //!   runtime treats a host-injected signal as a mission signal and emits
-//!   `SignalRaised` under it; a cue bound to an objective, condition, timer or
-//!   trigger symbol the program already owns would alias that declaration's own
-//!   event, exactly as the reserved source would. [`MissionMarkerBindings`]
-//!   refuses [`RESERVED_ACTOR_EVENT_SOURCE`] because that one is a constant it
-//!   *can* decide; the rest needs the lowered program, which the mission host
-//!   owns beside this table.
+//!   `SignalRaised` under it; a cue bound to an objective, condition, timer,
+//!   trigger or spawn-group symbol the program already owns would alias that
+//!   declaration's own event, exactly as the reserved source would.
+//!   [`MissionMarkerBindings::new`] refuses [`RESERVED_ACTOR_EVENT_SOURCE`]
+//!   because that one is a constant it *can* decide; the rest needs the lowered
+//!   program, so the host runs the table through
+//!   [`MissionMarkerBindings::checked_against`] with the program it launches.
+//!   Calling it is still the host's contract.
 //! * **A retry is a generation change.** [`MissionMarkerConsumer::retry`]
 //!   refuses the generation it already serves ([`MarkerTeardownError::SameSession`]),
 //!   but it cannot tell a caller that meant a fresh generation from one that
@@ -143,7 +145,7 @@ use cs_types::evidence::ClaimId;
 use cs_types::net::SessionId;
 
 use crate::animation::{AnimationInstance, AnimationLog, AnimationRefusal};
-use crate::objectives::{ObjectiveSession, SessionTick};
+use crate::objectives::{LoweredObjectives, ObjectiveSession, SessionTick};
 
 /// The mission signal the F39 runtime reserves for actor-keyed events.
 ///
@@ -209,6 +211,45 @@ pub enum MarkerBindingError {
         /// The signal the row named.
         signal: SymbolId,
     },
+    /// A binding names a symbol the lowered program already declares, so the
+    /// marker's `SignalRaised` event would be keyed under that declaration's
+    /// own source symbol. Only [`MissionMarkerBindings::checked_against`]
+    /// produces it.
+    DeclaredSymbol {
+        /// The cue whose row names the declared symbol.
+        cue: String,
+        /// The signal the row named.
+        signal: SymbolId,
+        /// The declaration that owns the symbol.
+        owner: DeclaredSymbolOwner,
+    },
+}
+
+/// The kind of declaration in a [`LoweredObjectives`] that owns a symbol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DeclaredSymbolOwner {
+    /// An objective's id.
+    Objective,
+    /// A count condition's key.
+    CountCondition,
+    /// A timer's id.
+    Timer,
+    /// A swept trigger's id.
+    Trigger,
+    /// A spawn group's symbol.
+    SpawnGroup,
+}
+
+impl DeclaredSymbolOwner {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Objective => "an objective",
+            Self::CountCondition => "a count condition",
+            Self::Timer => "a timer",
+            Self::Trigger => "a trigger",
+            Self::SpawnGroup => "a spawn group",
+        }
+    }
 }
 
 impl fmt::Display for MarkerBindingError {
@@ -224,6 +265,12 @@ impl fmt::Display for MarkerBindingError {
                 f,
                 "the cue `{cue}` is bound to {signal:?}, the source the runtime reserves for \
                  actor-keyed events"
+            ),
+            Self::DeclaredSymbol { cue, signal, owner } => write!(
+                f,
+                "the cue `{cue}` is bound to {signal:?}, which the program declares as {}, so \
+                 the raised signal would alias that declaration's own events",
+                owner.label()
             ),
         }
     }
@@ -274,6 +321,64 @@ impl MissionMarkerBindings {
             signals.insert(binding.cue, binding.signal);
         }
         Ok(Self { signals })
+    }
+
+    /// Refuses every binding that names a symbol `program` declares.
+    ///
+    /// The F39 runtime keys a host-injected signal's `SignalRaised` event under
+    /// the signal's own symbol, the same `source` an objective, condition,
+    /// timer or trigger of that symbol keys its events under, so such a row
+    /// would alias the declaration's own events. Signals the program only
+    /// *listens* for (a reveal rule's `OnSignal`) are declared nowhere else and
+    /// stay bindable. Cues are checked in stable order.
+    ///
+    /// # Errors
+    ///
+    /// [`MarkerBindingError::DeclaredSymbol`] naming the cue, the symbol and
+    /// the declaration that owns it.
+    pub fn checked_against(self, program: &LoweredObjectives) -> Result<Self, MarkerBindingError> {
+        let mut owners: BTreeMap<SymbolId, DeclaredSymbolOwner> = BTreeMap::new();
+        let declared = program
+            .objectives
+            .iter()
+            .map(|spec| (spec.id, DeclaredSymbolOwner::Objective))
+            .chain(
+                program
+                    .conditions
+                    .iter()
+                    .map(|(condition, _)| (condition.key, DeclaredSymbolOwner::CountCondition)),
+            )
+            .chain(
+                program
+                    .timers
+                    .iter()
+                    .map(|timer| (timer.id(), DeclaredSymbolOwner::Timer)),
+            )
+            .chain(
+                program
+                    .triggers
+                    .iter()
+                    .map(|trigger| (trigger.id(), DeclaredSymbolOwner::Trigger)),
+            )
+            .chain(
+                program
+                    .spawn_groups
+                    .keys()
+                    .map(|group| (*group, DeclaredSymbolOwner::SpawnGroup)),
+            );
+        for (symbol, owner) in declared {
+            owners.entry(symbol).or_insert(owner);
+        }
+        for (cue, signal) in &self.signals {
+            if let Some(owner) = owners.get(signal) {
+                return Err(MarkerBindingError::DeclaredSymbol {
+                    cue: cue.clone(),
+                    signal: *signal,
+                    owner: *owner,
+                });
+            }
+        }
+        Ok(self)
     }
 
     /// The signal `cue` is bound to, when the host bound it.
