@@ -19,6 +19,14 @@
 //!
 //! Evidence, measurements and the `.github/` options left to the owner are in
 //! `docs/findings/2026-09-30-t430-rust-lld-sigbus-in-ci.md`.
+//!
+//! One wrinkle on hosts that override the committed profile: the artifact
+//! check measures the binary it runs in, so an environment that sets the
+//! debug level itself — this build host exports `CARGO_PROFILE_DEV_DEBUG=0`
+//! to keep the shared target directories inside the disk — would make the
+//! binary testify about the environment, not the code. That case is reported
+//! rather than asserted (task #684); the details are in
+//! `docs/findings/2026-10-06-t684-env-debug-override-and-backtrace-check.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -205,12 +213,31 @@ fn cs_xtask_t430_panic_helper() {
 /// `std` do not count either: they resolve from the toolchain's prebuilt
 /// rlibs whatever this workspace's profile says, so only a frame in this file
 /// shows that the workspace's own code kept its line tables. A profile
-/// without them prints the helper's frame with no location, and this fails,
-/// including when an environment variable overrides the committed profile
-/// (`CARGO_PROFILE_DEV_DEBUG=0` reproduces exactly that; see
-/// [`line_table_diagnosis`] for what the failure then reports).
+/// without them prints the helper's frame with no location, and this fails.
+///
+/// The claim is about the *committed* profile, so the assertion runs only when
+/// that profile decided this binary's debug level. When the environment
+/// overrode it with a level that emits no line tables — `CARGO_PROFILE_DEV_DEBUG=0`,
+/// which this build host exports on purpose — the binary cannot carry the
+/// frames whatever `Cargo.toml` says, and asserting on the artifact would
+/// report the environment as a defect. That case is reported rather than
+/// asserted ([`environment_overrode_line_tables`], task #684). The committed
+/// setting is still verified by
+/// [`accept_t430_the_workspace_keeps_backtrace_line_numbers`], the artifact
+/// check still runs where the environment pins the committed level — CI
+/// exports `line-tables-only`, asserted by
+/// [`accept_t430_b_ci_workflow_pins_line_tables_for_the_rust_job`] — and a
+/// failure the environment does not explain, like a level the manifest itself
+/// stated or debug-map objects deleted after the link, still fails with
+/// [`line_table_diagnosis`]'s report.
 #[test]
 fn accept_t430_a_panic_backtrace_names_the_file_and_line() {
+    let manifest = std::fs::read_to_string(workspace_root().join(budget::MANIFEST_PATH))
+        .expect("the workspace manifest must be readable");
+    if let Some(report) = environment_overrode_line_tables(&manifest) {
+        eprintln!("{report}");
+        return;
+    }
     let exe = std::env::current_exe().expect("this test binary must have a path to re-run");
     let child = transient::command_output(
         std::process::Command::new(&exe)
@@ -330,6 +357,89 @@ debug = \"line-tables-only\" was what this binary was built with",
         ));
     }
     notes
+}
+
+/// The environment's say on this binary's `debug` level, resolved the way
+/// cargo resolves it for the `test` profile that builds a test binary:
+/// `CARGO_PROFILE_TEST_DEBUG` beats a stated `[profile.test] debug`, which
+/// beats `CARGO_PROFILE_DEV_DEBUG`, which beats `[profile.dev] debug` —
+/// `test` inherits `dev`'s resolved value for a key it does not state, which
+/// is how a host's `CARGO_PROFILE_DEV_DEBUG` reaches a test binary. Measured
+/// for task #684: under `CARGO_PROFILE_DEV_DEBUG=0` the helper's frames carry
+/// no location, and adding `CARGO_PROFILE_TEST_DEBUG=line-tables-only`
+/// restores them. `None` means the environment did not decide the level — the
+/// committed manifest or rustc's default did.
+fn env_debug_level(
+    get: impl Fn(&str) -> Option<std::ffi::OsString>,
+    manifest: &str,
+) -> Option<(&'static str, std::ffi::OsString)> {
+    if let Some(value) = get("CARGO_PROFILE_TEST_DEBUG") {
+        return Some(("CARGO_PROFILE_TEST_DEBUG", value));
+    }
+    if budget::profile_debug(manifest, "test").is_some() {
+        return None;
+    }
+    if let Some(value) = get("CARGO_PROFILE_DEV_DEBUG") {
+        return Some(("CARGO_PROFILE_DEV_DEBUG", value));
+    }
+    None
+}
+
+/// Whether a cargo `debug` value keeps the line program a `file:line`
+/// backtrace is read from. `0`, `false` and `none` emit no debug info at all;
+/// every other accepted level keeps at least the line program. `None` is a
+/// value cargo does not accept, so it cannot be what built a binary that is
+/// running.
+fn keeps_line_tables(value: &str) -> Option<bool> {
+    match value.trim().trim_matches(['"', '\'']).trim() {
+        "0" | "false" | "none" => Some(false),
+        "1" | "2" | "true" | "limited" | "full" | "line-tables-only" | "line-directives-only" => {
+            Some(true)
+        }
+        _ => None,
+    }
+}
+
+/// The report printed instead of asserting on the artifact, when the
+/// environment — not the committed profile — decided this binary's `debug`
+/// level and chose one that emits no line tables. `None` keeps the assertion
+/// in force: the environment set nothing (the manifest or rustc's default
+/// decided), the override keeps line tables (CI's `line-tables-only` pin must
+/// still fail a binary that lost them), or the level without them was stated
+/// by the manifest itself, which is a defect rather than an environment.
+fn environment_overrode_line_tables(manifest: &str) -> Option<String> {
+    environment_overrode_line_tables_from(|name| std::env::var_os(name), manifest)
+}
+
+/// [`environment_overrode_line_tables`] over a caller-supplied lookup, so the
+/// rule can be checked against settings this process did not have to be built
+/// with.
+fn environment_overrode_line_tables_from(
+    get: impl Fn(&str) -> Option<std::ffi::OsString>,
+    manifest: &str,
+) -> Option<String> {
+    let (name, value) = env_debug_level(get, manifest)?;
+    let level = value.to_string_lossy();
+    if keeps_line_tables(&level) != Some(false) {
+        return None;
+    }
+    Some(format!(
+        "accept_t430_a_panic_backtrace_names_the_file_and_line: not asserting \
+on the artifact, because the environment decided this binary's debug level. \
+{name}={level:?} is set, and cargo's environment overrides the committed \
+profile; debug = {level} emits no line tables, so this binary's frames cannot \
+name a file:line whatever Cargo.toml says — the artifact would testify about \
+the environment, not the code. That is the shared build host's deliberate \
+common.env setting, not a defect. The committed profile is still asserted by \
+accept_t430_the_workspace_keeps_backtrace_line_numbers, and this check still \
+runs where the environment pins line tables — CI exports \
+CARGO_PROFILE_DEV_DEBUG=line-tables-only and \
+CARGO_PROFILE_TEST_DEBUG=line-tables-only (asserted by \
+accept_t430_b_ci_workflow_pins_line_tables_for_the_rust_job), and a local run \
+without the override inherits the manifest. To run the assertion under the \
+pinned level here: CARGO_PROFILE_DEV_DEBUG=line-tables-only \
+CARGO_PROFILE_TEST_DEBUG=line-tables-only cargo test --workspace --locked"
+    ))
 }
 
 /// Where this binary keeps the line tables of its own crate, on the platform
@@ -624,6 +734,178 @@ fn accept_t430_macos_report_accounts_for_every_object_it_finds() {
             object.exists() || report.contains(&object.display().to_string()),
             "every object the debug map names is either there or named in the report: \
 {report}"
+        );
+    }
+}
+
+/// The level table the resolver classifies with: the spellings cargo accepts
+/// that keep a line program, and the ones that emit none. Cargo rejects
+/// anything else before a binary is ever built, so it is unclassifiable rather
+/// than guessed.
+#[test]
+fn accept_t430_b_debug_levels_are_classified_by_their_line_tables() {
+    for value in ["0", "false", "none", "\"none\"", " 0 ", "'none'"] {
+        assert_eq!(keeps_line_tables(value), Some(false), "{value}");
+    }
+    for value in [
+        "1",
+        "2",
+        "true",
+        "limited",
+        "full",
+        "line-tables-only",
+        "line-directives-only",
+        "\"line-tables-only\"",
+    ] {
+        assert_eq!(keeps_line_tables(value), Some(true), "{value}");
+    }
+    for value in ["", "unrecognized", "debuginfo", "symbols"] {
+        assert_eq!(keeps_line_tables(value), None, "{value}");
+    }
+}
+
+/// An environment-set level that emits no line tables is the one case the
+/// artifact check reports instead of asserting — the binary's debug level was
+/// decided by the environment whatever the manifest says, so a missing
+/// `file:line` there cannot be the code's defect. Every other resolution
+/// keeps the assertion in force: no override, an override that keeps line
+/// tables (above all CI's `line-tables-only` pin, which must still fail a
+/// binary that lost them), or a level the manifest itself stated.
+#[test]
+fn accept_t430_b_only_an_env_level_without_line_tables_reports_instead_of_asserting() {
+    let line_tables = "[profile.dev]\ndebug = \"line-tables-only\"\n";
+
+    // The host's deliberate override reports and does not assert, and the
+    // report names the variable, why it is not a defect, and the environment
+    // where the assertion is real.
+    let report = environment_overrode_line_tables_from(
+        |name| (name == "CARGO_PROFILE_DEV_DEBUG").then(|| "0".into()),
+        line_tables,
+    )
+    .expect("CARGO_PROFILE_DEV_DEBUG=0 must report instead of asserting");
+    assert!(report.contains("CARGO_PROFILE_DEV_DEBUG"), "{report}");
+    assert!(report.contains("line-tables-only"), "{report}");
+    assert!(report.contains("CI"), "{report}");
+
+    // No environment override: the committed profile decided, so the
+    // artifact is asserted.
+    assert_eq!(
+        environment_overrode_line_tables_from(|_| None, line_tables),
+        None
+    );
+
+    // Overrides that keep line tables keep the assertion in force — the CI
+    // pin must still fail a binary that lost them.
+    for value in [
+        "line-tables-only",
+        "line-directives-only",
+        "1",
+        "2",
+        "limited",
+        "full",
+        "true",
+    ] {
+        assert_eq!(
+            environment_overrode_line_tables_from(
+                |name| (name == "CARGO_PROFILE_DEV_DEBUG").then(|| value.into()),
+                line_tables,
+            ),
+            None,
+            "CARGO_PROFILE_DEV_DEBUG={value} keeps line tables and must still assert"
+        );
+    }
+
+    // `CARGO_PROFILE_TEST_DEBUG` decides the test profile ahead of the dev
+    // override: removing the tables through it is the environment too, and
+    // pinning them through it rescues the check even under `dev = 0` —
+    // measured on this host for task #684.
+    assert!(
+        environment_overrode_line_tables_from(
+            |name| match name {
+                "CARGO_PROFILE_TEST_DEBUG" => Some("0".into()),
+                "CARGO_PROFILE_DEV_DEBUG" => Some("line-tables-only".into()),
+                _ => None,
+            },
+            line_tables,
+        )
+        .is_some()
+    );
+    assert_eq!(
+        environment_overrode_line_tables_from(
+            |name| match name {
+                "CARGO_PROFILE_TEST_DEBUG" => Some("line-tables-only".into()),
+                "CARGO_PROFILE_DEV_DEBUG" => Some("0".into()),
+                _ => None,
+            },
+            line_tables,
+        ),
+        None
+    );
+
+    // A stated `[profile.test]` outranks `CARGO_PROFILE_DEV_DEBUG` for the
+    // binaries this test runs in, so the manifest — not the environment —
+    // decides there and the assertion stands.
+    let test_profile_manifest =
+        "[profile.dev]\ndebug = \"line-tables-only\"\n\n[profile.test]\ndebug = 0\n";
+    assert_eq!(
+        environment_overrode_line_tables_from(
+            |name| (name == "CARGO_PROFILE_DEV_DEBUG").then(|| "0".into()),
+            test_profile_manifest,
+        ),
+        None
+    );
+
+    // Even over a manifest that itself states a level without line tables,
+    // the environment is this binary's decider: the artifact cannot testify
+    // either way, while the manifest itself is still rejected by
+    // accept_t430_the_workspace_keeps_backtrace_line_numbers and the budget
+    // gate it wraps.
+    assert!(
+        environment_overrode_line_tables_from(
+            |name| (name == "CARGO_PROFILE_DEV_DEBUG").then(|| "0".into()),
+            "[profile.dev]\ndebug = 0\n",
+        )
+        .is_some()
+    );
+
+    // And the two cases that are not the environment at all: a level without
+    // line tables stated by the manifest is a defect, and a value cargo does
+    // not accept cannot have built this binary — both leave the assertion in
+    // force.
+    assert_eq!(
+        environment_overrode_line_tables_from(|_| None, "[profile.dev]\ndebug = 0\n"),
+        None
+    );
+    assert_eq!(
+        environment_overrode_line_tables_from(
+            |name| (name == "CARGO_PROFILE_DEV_DEBUG").then(|| "unrecognized".into()),
+            line_tables,
+        ),
+        None
+    );
+}
+
+/// The stand-down above is sound only because CI pins the level itself, so
+/// the workflow is asserted where it is read: `.github/` is owner-maintained
+/// and cannot be edited from here, but the `rust` job must export both
+/// `CARGO_PROFILE_*_DEBUG` pins for the artifact check's "CI is where it is
+/// real" story to hold. Without them CI would test under each runner's
+/// ambient debug level and this file's stand-down would have no real
+/// counterpart.
+#[test]
+fn accept_t430_b_ci_workflow_pins_line_tables_for_the_rust_job() {
+    let workflow = std::fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
+        .expect("the CI workflow must be readable");
+    for name in ["CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_TEST_DEBUG"] {
+        assert!(
+            workflow.lines().any(|line| {
+                line.trim().split_once(':').is_some_and(|(key, value)| {
+                    key.trim() == name
+                        && value.trim().trim_matches(['"', '\'']) == "line-tables-only"
+                })
+            }),
+            ".github/workflows/ci.yml must set {name}: line-tables-only on the \
+rust job — that pin is what keeps the artifact backtrace check real in CI"
         );
     }
 }
