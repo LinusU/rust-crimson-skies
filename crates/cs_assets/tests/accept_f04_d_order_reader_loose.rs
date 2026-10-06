@@ -36,7 +36,11 @@
 //! `$CS_GAME_DIR` read-only and pin the fact that makes both rules unreachable
 //! from this installation: **none of the original's loose reader directories
 //! holds a reader member name** (the `data/...` ones do not exist at all, and
-//! `zbd` holds only the archives). CI skips the retail tests.
+//! `zbd` holds only the archives). They check that in both spellings of the
+//! world and mission names — this installation spells its `ZBD` directories
+//! upper case, the finding spells the loose paths lower case, and production
+//! folds neither — because on a case-sensitive host the two are different
+//! directories. CI skips the retail tests.
 
 mod common;
 
@@ -1054,21 +1058,22 @@ fn accept_f04_d_order_reader_loose_retail_no_loose_directory_holds_a_member_name
             .expect("a world group spelling has a last component")
             .to_owned();
         for mission in retail_missions(&world) {
-            let mission = mission.to_ascii_lowercase();
-            let mounts = loose_set(&world, Some(&mission));
-            for directory in mounts.loose_search_order() {
-                checked_directories += 1;
-                let spelling = directory.spelling();
-                let host = directory.host_path();
-                if host.exists() {
-                    assert_eq!(
-                        spelling,
-                        READER_ROOT_DIRECTORY,
-                        "only the default reader directory exists in this installation; \
-                         {spelling} ({}) does not, so nothing measured here can exercise the \
-                         loose pass",
-                        host.display()
-                    );
+            for (world, mission) in both_spellings(&world, &mission) {
+                let mounts = loose_set(&world, Some(&mission));
+                for directory in mounts.loose_search_order() {
+                    checked_directories += 1;
+                    let spelling = directory.spelling();
+                    let host = directory.host_path();
+                    if host.exists() {
+                        assert_eq!(
+                            spelling,
+                            READER_ROOT_DIRECTORY,
+                            "only the default reader directory exists in this installation, in \
+                             either spelling: {spelling} ({}) does not, so nothing measured \
+                             here can exercise the loose pass",
+                            host.display()
+                        );
+                    }
                 }
             }
         }
@@ -1084,22 +1089,33 @@ fn accept_f04_d_order_reader_loose_retail_no_loose_directory_holds_a_member_name
         .to_owned();
     let mission = retail_missions(&world)
         .first()
-        .map(|mission| mission.to_ascii_lowercase())
-        .unwrap_or_default();
-    let mounts = loose_set(&world, Some(&mission));
+        .cloned()
+        .expect("the first world declares a mission");
+    let sets: Vec<ReaderMounts> = both_spellings(&world, &mission)
+        .into_iter()
+        .map(|(world, mission)| loose_set(&world, Some(&mission)))
+        .collect();
+    assert_eq!(
+        sets.len(),
+        2,
+        "both the installation's spelling and the finding's lower-case one are probed"
+    );
     for name in &names {
         checked_names += 1;
-        for directory in mounts.loose_search_order() {
-            assert!(
-                !directory.candidate_path(name).exists(),
-                "{} holds {name}, which the loose rules would decide differently",
-                directory.host_path().display()
-            );
+        for mounts in &sets {
+            for directory in mounts.loose_search_order() {
+                assert!(
+                    !directory.candidate_path(name).exists(),
+                    "{} holds {name}, which the loose rules would decide differently",
+                    directory.host_path().display()
+                );
+            }
         }
     }
     println!(
-        "no loose reader file exists: {checked_names} names x 6 directories, \
-         {checked_directories} directories probed"
+        "no loose reader file exists: {checked_names} names x {} directory spellings, \
+         {checked_directories} directories probed",
+        6 * sets.len()
     );
 }
 
@@ -1122,12 +1138,14 @@ fn accept_f04_d_order_reader_loose_retail_every_member_still_resolves_with_the_l
         .to_owned();
     let mission = retail_missions(&world)
         .first()
-        .map(|mission| mission.to_ascii_lowercase())
-        .unwrap_or_default();
-    let context = retail_context(&format!("zbd/{world}"), &mission);
+        .cloned()
+        .expect("the first world declares a mission");
+    // A mission scope is a validated lower-case label, so the context names the
+    // mission that way while the loose-directory spellings keep the
+    // installation's own spelling (see `both_spellings`).
+    let context = retail_context(&format!("zbd/{world}"), &mission.to_ascii_lowercase());
 
-    let root = retail_archive("ZBD/zrdr.zbd", ReaderLevel::Root);
-    let member_names: Vec<String> = root
+    let member_names: Vec<String> = retail_archive("ZBD/zrdr.zbd", ReaderLevel::Root)
         .members()
         .iter()
         .filter_map(|member| member.name.clone())
@@ -1138,32 +1156,39 @@ fn accept_f04_d_order_reader_loose_retail_every_member_still_resolves_with_the_l
         "the root archive declares 221 entries"
     );
 
-    let mut mounts = ReaderMounts::new();
-    mounts.push(root);
-    mounts
-        .add_original_loose_directories(&game_dir(), Some(&world), Some(&mission))
-        .expect("the original's loose directories declare");
-    assert_eq!(
-        mounts.loose_directories().len(),
-        6,
-        "a world/mission load registers six loose directories"
-    );
+    // Both spellings of the world and mission names are checked: the
+    // installation spells its `ZBD` directories upper case and the finding
+    // spells the loose paths lower case, so a retail claim about the loose pass
+    // has to hold for both.
+    for (world, mission) in both_spellings(&world, &mission) {
+        let mut mounts = ReaderMounts::new();
+        mounts.push(retail_archive("ZBD/zrdr.zbd", ReaderLevel::Root));
+        mounts
+            .add_original_loose_directories(&game_dir(), Some(&world), Some(&mission))
+            .expect("the original's loose directories declare");
+        assert_eq!(
+            mounts.loose_directories().len(),
+            6,
+            "a world/mission load registers six loose directories"
+        );
 
-    for name in &member_names {
-        let resolution = mounts
-            .resolve(&context, &key(name))
-            .unwrap_or_else(|error| panic!("{name} resolves: {error}"));
-        assert!(
-            resolution.origin.is_archive(),
-            "{name} is served by the archive: a loose file of that name does not exist"
-        );
-        assert!(
-            resolution.trace.loose.iter().all(|attempt| !matches!(
-                attempt.outcome,
-                ReaderLooseOutcome::Selected { .. } | ReaderLooseOutcome::UndecidableShadow { .. }
-            )),
-            "{name}: no loose directory holds it, so no override arises"
-        );
+        for name in &member_names {
+            let resolution = mounts
+                .resolve(&context, &key(name))
+                .unwrap_or_else(|error| panic!("{name} resolves: {error}"));
+            assert!(
+                resolution.origin.is_archive(),
+                "{name} is served by the archive: a loose file of that name does not exist"
+            );
+            assert!(
+                resolution.trace.loose.iter().all(|attempt| !matches!(
+                    attempt.outcome,
+                    ReaderLooseOutcome::Selected { .. }
+                        | ReaderLooseOutcome::UndecidableShadow { .. }
+                )),
+                "{name}: no loose directory holds it, so no override arises"
+            );
+        }
     }
 }
 
@@ -1191,6 +1216,23 @@ fn loose_set(world: &str, mission: Option<&str>) -> ReaderMounts {
         .add_original_loose_directories(&game_dir(), Some(world), mission)
         .expect("the original's loose directories declare");
     mounts
+}
+
+/// Both spellings the loose directories could have on this host: the world and
+/// mission names exactly as the installation spells them, and their lower-case
+/// forms.
+///
+/// The finding spells the original's loose paths in lower case (`common`,
+/// `<w>`, `<w>\nets`, `<w>\<m>`) while this installation's `ZBD` directories are
+/// upper case, and a case-sensitive host distinguishes the two. Production does
+/// **not** fold case ([`original_loose_reader_directories`] uses the caller's
+/// spelling), so a retail claim about "no loose directory exists" has to hold for
+/// both spellings or it is only true of one of them.
+fn both_spellings(world: &str, mission: &str) -> Vec<(String, String)> {
+    vec![
+        (world.to_owned(), mission.to_owned()),
+        (world.to_ascii_lowercase(), mission.to_ascii_lowercase()),
+    ]
 }
 
 // ------------------------------------------------------ the measured survey ---
@@ -1256,37 +1298,57 @@ fn survey() -> LooseSurvey {
         "the installation declares mission reader archives"
     );
 
-    // One world's registered list, in the original's search order, and whether
-    // each directory exists on this host.
+    // One world's registered list in the original's search order, for **both**
+    // spellings the world/mission names could carry: this installation spells
+    // its `ZBD` directories upper case and the finding spells the loose paths
+    // lower case, so a "no loose directory exists" claim has to hold for both.
     let probe_world = &world_directories[0];
     let probe_mission = missions
         .iter()
         .find(|(world, _)| world == probe_world)
-        .map(|(_, mission)| mission.to_ascii_lowercase())
+        .map(|(_, mission)| mission.clone())
         .expect("a mission of the first world");
-    let mounts = loose_set(probe_world, Some(&probe_mission));
-    let directories: Vec<(String, bool)> = mounts
-        .loose_search_order()
-        .map(|directory| {
-            (
-                directory.spelling().to_owned(),
-                directory.host_path().exists(),
-            )
+    let spellings = both_spellings(probe_world, &probe_mission);
+    let sets: Vec<ReaderMounts> = spellings
+        .iter()
+        .map(|(world, mission)| loose_set(world, Some(mission)))
+        .collect();
+    let directories: Vec<(String, bool)> = sets
+        .iter()
+        .flat_map(|mounts| {
+            mounts
+                .loose_search_order()
+                .map(|directory| {
+                    (
+                        directory.spelling().to_owned(),
+                        directory.host_path().exists(),
+                    )
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
+    assert_eq!(
+        directories.len(),
+        12,
+        "six directories per spelling, two spellings"
+    );
 
-    // Every declared member name against every registered directory.
+    // Every declared member name against every registered directory of both
+    // spellings.
     let names = declared_member_names();
     let mut loose_files_found = 0;
     for name in &names {
-        for directory in mounts.loose_search_order() {
-            if directory.candidate_path(name).exists() {
-                loose_files_found += 1;
+        for mounts in &sets {
+            for directory in mounts.loose_search_order() {
+                if directory.candidate_path(name).exists() {
+                    loose_files_found += 1;
+                }
             }
         }
     }
 
-    // And the root archive's members, resolved with the loose pass registered.
+    // And the root archive's members, resolved with the loose pass registered in
+    // both spellings.
     let root = retail_archive("ZBD/zrdr.zbd", ReaderLevel::Root);
     let root_member_names: Vec<String> = root
         .members()
@@ -1294,9 +1356,16 @@ fn survey() -> LooseSurvey {
         .filter_map(|member| member.name.clone())
         .collect();
     let context = retail_context(&format!("zbd/{probe_world}"), &probe_mission);
-    let mut with_root = loose_set(probe_world, Some(&probe_mission));
-    with_root.push(root);
     let mut from_archive = 0;
+    let mut with_root = ReaderMounts::new();
+    with_root.push(root);
+    with_root
+        .add_original_loose_directories(
+            &game_dir(),
+            Some(probe_world),
+            Some(probe_mission.as_str()),
+        )
+        .expect("the original's loose directories declare");
     for name in &root_member_names {
         let resolution = with_root
             .resolve(&context, &key(name))
@@ -1305,6 +1374,29 @@ fn survey() -> LooseSurvey {
             from_archive += 1;
         }
     }
+    let mut from_archive_lower = 0;
+    let mut with_root_lower = ReaderMounts::new();
+    with_root_lower.push(retail_archive("ZBD/zrdr.zbd", ReaderLevel::Root));
+    with_root_lower
+        .add_original_loose_directories(
+            &game_dir(),
+            Some(&probe_world.to_ascii_lowercase()),
+            Some(&probe_mission.to_ascii_lowercase()),
+        )
+        .expect("the original's loose directories declare");
+    for name in &root_member_names {
+        let resolution = with_root_lower
+            .resolve(&context, &key(name))
+            .unwrap_or_else(|error| panic!("{name} resolves: {error}"));
+        if resolution.origin.is_archive() {
+            from_archive_lower += 1;
+        }
+    }
+    assert_eq!(
+        from_archive_lower, from_archive,
+        "registering the loose directories in either spelling changes no answer, because none \
+         of them holds a loose file"
+    );
 
     LooseSurvey {
         install_sha256: install::fingerprint(&found.manifest).to_hex(),
@@ -1802,11 +1894,13 @@ const UNKNOWNS: [&str; 6] = [
      recently added regular file as the candidate and refuses. Affected content: the refusal's \
      choice of candidate, not its refusal. Resolving task: further static work or an \
      owner-supplied capture (#358).",
-    "The loose pass matches a host file name case-exactly on a case-sensitive host, while the \
-     original's Windows filesystem was case-insensitive; nothing measured distinguishes the two \
-     because no loose reader file exists in this installation. Affected content: reader lookups \
-     against a modded or hand-edited installation with loose files. Resolving task: none filed; \
-     it needs a host whose loose directories exist.",
+    "The loose pass matches a host file name case-exactly on a case-sensitive host, and the loose \
+     DIRECTORY names keep the caller's spelling: the finding spells the original's loose paths in \
+     lower case (common, <w>, <w>\\nets, <w>\\<m>) while this installation's ZBD directories are \
+     upper case, so production registers both spellings in its retail measurements but folds \
+     neither, and nothing measured shows the original's filesystem case-insensitivity in play \
+     here. Affected content: reader lookups against a modded or hand-edited installation with loose \
+     files. Resolving task: none filed; it needs a host whose loose directories exist.",
     "A loose reader file that is a symbolic link, or any non-regular entry, is never served and \
      can never shadow an archive member: this engine never follows a link (the guard \
      mount_directory already applies), while the original's host would have opened and compared \

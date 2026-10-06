@@ -170,6 +170,17 @@ pub const READER_ROOT_DIRECTORY: &str = "zbd";
 /// **in the order the executable appends them** (section A, startup `0x4a6ff0`
 /// and world/mission load `0x463cb0`):
 ///
+/// # Case
+///
+/// The finding spells these paths in lower case (`common`, `<w>`, `<w>\nets`,
+/// `<w>\<m>`) while this installation's `ZBD` directories are upper case, so
+/// on a case-sensitive host `data/c1c` and `data/C1C` are different
+/// directories. Nothing measured shows the original's Windows filesystem
+/// case-insensitivity choosing between them — no loose reader directory exists
+/// in retail — so **this function folds no case**: it builds what it is given,
+/// and the caller's spelling stands. A caller that knows the host's spelling
+/// passes it.
+///
 /// | order | spelling the original adds | added by |
 /// | --- | --- | --- |
 /// | 1 | `zbd` | startup default directory list |
@@ -190,11 +201,7 @@ pub const READER_ROOT_DIRECTORY: &str = "zbd";
 /// names the original's loose path spells (`c1c`, `mp1`), not the `zbd/<group>`
 /// world-group spelling; a value carrying a separator is refused
 /// ([`ReaderLooseError::NotADirectoryName`]) instead of being joined into a
-/// path nobody measured. The finding spells these components in lower case
-/// while this installation's `ZBD` directories are upper case; nothing measured
-/// distinguishes the two spellings, because **no loose reader directory exists
-/// in retail**, so the caller's spelling is used as given and is never
-/// case-folded here.
+/// path nobody measured.
 ///
 /// `world = None` yields the two startup directories only; `mission = None`
 /// with a world yields the four directories a world load adds.
@@ -312,8 +319,7 @@ impl ReaderLooseDirectory {
     /// exist: its absence is what the lookup reports
     /// ([`ReaderLooseOutcome::Absent`]).
     pub fn declare(root: &Path, spelling: &str) -> Result<Self, ReaderLooseError> {
-        let spelling =
-            RelativePath::new(spelling).map_err(ReaderLooseError::Spelling)?;
+        let spelling = RelativePath::new(spelling).map_err(ReaderLooseError::Spelling)?;
         Ok(Self {
             spelling,
             host_root: root.to_path_buf(),
