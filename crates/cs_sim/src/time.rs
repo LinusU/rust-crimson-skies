@@ -44,11 +44,37 @@
 //! [`ClaimStatus::ObservedTool`] unless the reference's own evidence
 //! [`verifies_original`](EvidenceRecord::verifies_original) — a passing test
 //! cannot award originality.
+//!
+//! # F16-F: the original clock policy, declared from static code analysis
+//!
+//! F16-D had no original to compare against. F16-F declares that policy in
+//! code: [`OriginalClockPolicy`] is the original's clock, pause and speed-up
+//! behaviour as static analysis of the owner-supplied decrypted executable
+//! measured it (owner notes on task #391) — one variable `game_dt` per
+//! rendered frame capped at 125 ms, the flight world frozen while the frame
+//! clock and the accumulators keep running, **no** banking of paused time,
+//! one dt source feeding separate accumulators for the weapon cooldown and
+//! the objective timer, and a 2× single-player speed-up that is capped and
+//! gated off in network games.
+//!
+//! [`OriginalClockPolicy::compare_project_clocks`] compares that declaration
+//! with this module's [`ClockPolicy`]s under a [`PolicyTolerance`] chosen
+//! *before* the comparison. Every finding is one of three relations:
+//! [`PolicyRelation::Agrees`], [`PolicyRelation::Diverges`] (recorded in
+//! `docs/findings/` and filed, never silently "fixed" by changing a policy
+//! pairing) and [`PolicyRelation::NotModeled`] (a subsystem these clock
+//! policies do not cover). The comparison's claim is the policy's own
+//! [`claim_status`](OriginalClockPolicy::claim_status), capped at
+//! [`ORIGINAL_CLOCK_POLICY_STATUS`] (`inferred`): static code evidence never
+//! yields [`ClaimStatus::VerifiedOriginal`].
 
 use std::time::Duration;
 
 use cs_types::Tick;
-use cs_types::evidence::{ClaimStatus, EvidenceRecord};
+use cs_types::evidence::{
+    ClaimStatus, ContentHash, EvidenceRecord, EvidenceSource, Fingerprint, FingerprintKind,
+    ObservationLocator, ObservationMethod,
+};
 
 /// Nanoseconds in one second, the denominator of the tick accumulator.
 pub const NANOS_PER_SECOND: u128 = 1_000_000_000;
@@ -1299,6 +1325,927 @@ impl ProbeComparison {
             out.push_str(&format!("; {divergence}"));
         }
         out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F16-F: the original clock policy, declared from static code analysis
+// ---------------------------------------------------------------------------
+
+/// The findings entry that records this policy: addresses, image sha256 and
+/// the four measured answers (`docs/findings/`).
+pub const ORIGINAL_POLICY_FINDINGS: &str =
+    "docs/findings/2026-10-06-f16-f-original-clock-pause-and-speed-up-policy.md";
+
+/// sha256 of the owner-supplied decrypted image the policy was read from
+/// (`$CS_GAME_DIR/crimson.decrypted.exe`, a decryption of `crimson.icd`).
+///
+/// A hash of decrypted bytes, never the bytes: nothing executable, no
+/// decompiled code and no game data is committed anywhere in this tree.
+pub const ORIGINAL_IMAGE_SHA256: &str =
+    "43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75";
+
+/// How well [`OriginalClockPolicy`] is known.
+///
+/// `inferred`, never `verified_original`: the policy is derived from static
+/// analysis of the owner-supplied decrypted executable (owner notes on task
+/// #391, recorded in [`ORIGINAL_POLICY_FINDINGS`]), not from a run of the
+/// original engine. A task may not raise this constant itself; only
+/// owner-supplied original-run evidence can, and
+/// [`OriginalClockPolicy::claim_status`] caps a declared policy there
+/// structurally rather than trusting the record it carries.
+pub const ORIGINAL_CLOCK_POLICY_STATUS: ClaimStatus = ClaimStatus::Inferred;
+
+/// The tolerance F16-F declared **before** comparing anything
+/// (`FLIGHT-PHYSICS`, "Calibration acceptance": select tolerances before
+/// fitting, never after).
+///
+/// Zero slack: the project's fixed dt must land inside the original's
+/// measured per-frame window exactly, and a declared fixed debug dt must
+/// equal the project's. A caller that wants slack states it up front — the
+/// comparison reads the tolerance it is handed and never widens it.
+pub const ORIGINAL_POLICY_TOLERANCE: PolicyTolerance = PolicyTolerance { dt_slack_nanos: 0 };
+
+/// Where the original's per-frame `game_dt` comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum OriginalDtSource {
+    /// One **variable** step per rendered frame: `(GetTickCount() − last) ×
+    /// 0.001` s, scaled once and then clamped. The resolution is the OS tick,
+    /// not a fixed rate. This is the shipping policy: clamping is on by
+    /// default and the command line is not given.
+    VariableFrameDelta,
+    /// The debug `-freq F` option, which sets both the clamp bounds to `1/F`
+    /// and so forces a fixed dt. Declared because it exists, not because the
+    /// shipping game runs it.
+    FixedDebugFrequency {
+        /// The forced frame period, `1/F`.
+        period: Duration,
+    },
+}
+
+impl OriginalDtSource {
+    /// Stable label for diagnostics and evidence records.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::VariableFrameDelta => "variable-frame-dt",
+            Self::FixedDebugFrequency { .. } => "fixed-debug-frequency",
+        }
+    }
+}
+
+/// One subsystem of the original program, as the owner notes name them.
+///
+/// Addresses are virtual addresses in the analysed image and appear here only
+/// as documentation; no executable byte, disassembly listing or decompiled
+/// code is committed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum OriginalSubsystem {
+    /// World/node action-callback update: planes, AI, turrets, effects and
+    /// animations.
+    WorldSimulation,
+    /// The player plane callback's vehicle clock, which the weapon, AI and
+    /// turret intervals count against.
+    VehicleClock,
+    /// The mission update: elapsed time, dormant/nap timers and the countdown
+    /// object's expiry and HUD display.
+    MissionObjectives,
+    /// Camera shake, HUD and input.
+    CameraHudInput,
+    /// Playing sounds, snapshot-paused when the escape screen is pushed.
+    SoundPlayback,
+    /// The frame clock and the game/real accumulators.
+    FrameClock,
+    /// The sound system's per-frame update.
+    SoundSystemUpdate,
+    /// Network code, which reads the OS tick count directly.
+    Network,
+    /// Force-feedback and warning effect expiries, which compare against the
+    /// total game-time accumulator and therefore stop across a pause.
+    ForceFeedbackEffects,
+    /// The mission countdown's millisecond copy, a wall-time counter.
+    CountdownWallClock,
+}
+
+impl OriginalSubsystem {
+    /// Stable label for diagnostics and evidence records.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::WorldSimulation => "world-simulation",
+            Self::VehicleClock => "vehicle-clock",
+            Self::MissionObjectives => "mission-objectives",
+            Self::CameraHudInput => "camera-hud-input",
+            Self::SoundPlayback => "sound-playback",
+            Self::FrameClock => "frame-clock",
+            Self::SoundSystemUpdate => "sound-system-update",
+            Self::Network => "network",
+            Self::ForceFeedbackEffects => "force-feedback-effects",
+            Self::CountdownWallClock => "countdown-wall-clock",
+        }
+    }
+}
+
+/// The subsystems pause freezes, per the static analysis.
+const FROZEN_WHILE_PAUSED: &[OriginalSubsystem] = &[
+    OriginalSubsystem::WorldSimulation,
+    OriginalSubsystem::VehicleClock,
+    OriginalSubsystem::MissionObjectives,
+    OriginalSubsystem::CameraHudInput,
+    OriginalSubsystem::SoundPlayback,
+];
+
+/// The subsystems that keep running while paused, per the static analysis.
+const KEEPS_RUNNING_WHILE_PAUSED: &[OriginalSubsystem] = &[
+    OriginalSubsystem::FrameClock,
+    OriginalSubsystem::SoundSystemUpdate,
+    OriginalSubsystem::Network,
+    OriginalSubsystem::ForceFeedbackEffects,
+    OriginalSubsystem::CountdownWallClock,
+];
+
+/// The original's single-player speed-up, as measured.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OriginalSpeedUp {
+    /// The multiplier: while the speed-up flag is set, each frame scales real
+    /// dt by this factor.
+    factor: f64,
+    /// Whether the frame-dt clamp still applies while sped up, so the
+    /// speed-up saturates at low frame rates instead of running away.
+    capped_by_max_frame_dt: bool,
+    /// Whether a non-zero network setting refuses the speed-up entirely.
+    network_gated: bool,
+    /// Whether the command has a default binding a player can reach.
+    default_binding: bool,
+}
+
+impl OriginalSpeedUp {
+    /// The dt multiplier (2×).
+    #[must_use]
+    pub const fn factor(self) -> f64 {
+        self.factor
+    }
+
+    /// Whether the 125 ms frame-dt cap still applies while sped up.
+    #[must_use]
+    pub const fn capped_by_max_frame_dt(self) -> bool {
+        self.capped_by_max_frame_dt
+    }
+
+    /// Whether multiplayer refuses the speed-up (the network gate).
+    #[must_use]
+    pub const fn network_gated(self) -> bool {
+        self.network_gated
+    }
+
+    /// Whether a player can reach the speed-up without an external binding.
+    #[must_use]
+    pub const fn default_binding(self) -> bool {
+        self.default_binding
+    }
+}
+
+/// The original's clock, pause and speed-up policy, **declared in code** from
+/// static analysis of the owner-supplied decrypted executable (owner notes on
+/// task #391, recorded in [`ORIGINAL_POLICY_FINDINGS`]).
+///
+/// This is a declaration, not a measurement of a run: the values below are
+/// what the code does, read from the code. What only a run could give — frame
+/// pacing, the distribution of frame deltas, timing uncertainty — stays
+/// explicitly unmeasured and is listed in the findings entry.
+///
+/// The claim it can carry is [`ORIGINAL_CLOCK_POLICY_STATUS`] (`inferred`);
+/// see [`claim_status`](Self::claim_status).
+#[derive(Clone, Debug)]
+pub struct OriginalClockPolicy {
+    name: &'static str,
+    evidence: EvidenceRecord,
+    dt_source: OriginalDtSource,
+    max_frame_dt: Duration,
+    min_frame_dt: Duration,
+    frame_dt_clamped: bool,
+    banks_paused_time: bool,
+    frozen_subsystems: &'static [OriginalSubsystem],
+    keeps_running_subsystems: &'static [OriginalSubsystem],
+    gameplay_timers_share_dt_source: bool,
+    gameplay_timers_have_separate_accumulators: bool,
+    speed_up: OriginalSpeedUp,
+}
+
+impl OriginalClockPolicy {
+    /// The policy as static analysis of the 2000 PC original measured it:
+    /// variable `game_dt` capped at 125 ms, the flight world frozen while the
+    /// frame clock keeps ticking, no banking, one dt source with separate
+    /// accumulators for cooldown and objective timers, and a capped 2×
+    /// single-player speed-up that is gated off in network games and has no
+    /// default binding.
+    #[must_use]
+    pub fn measured_original() -> Self {
+        Self {
+            name: "crimson-skies-2000-original.static-code-analysis",
+            evidence: code_derived_evidence(),
+            dt_source: OriginalDtSource::VariableFrameDelta,
+            max_frame_dt: Duration::from_millis(125),
+            min_frame_dt: Duration::ZERO,
+            frame_dt_clamped: true,
+            banks_paused_time: false,
+            frozen_subsystems: FROZEN_WHILE_PAUSED,
+            keeps_running_subsystems: KEEPS_RUNNING_WHILE_PAUSED,
+            gameplay_timers_share_dt_source: true,
+            gameplay_timers_have_separate_accumulators: true,
+            speed_up: OriginalSpeedUp {
+                factor: 2.0,
+                capped_by_max_frame_dt: true,
+                network_gated: true,
+                default_binding: false,
+            },
+        }
+    }
+
+    /// The same policy with a different dt source, for comparing the debug
+    /// `-freq` variant against a fixed-rate project clock.
+    #[must_use]
+    pub const fn with_dt_source(mut self, dt_source: OriginalDtSource) -> Self {
+        self.dt_source = dt_source;
+        self
+    }
+
+    /// The same policy carrying different evidence.
+    ///
+    /// The claim still cannot rise above [`ORIGINAL_CLOCK_POLICY_STATUS`]:
+    /// [`claim_status`](Self::claim_status) caps it there, which is exactly
+    /// what the acceptance test pins.
+    #[must_use]
+    pub fn with_evidence(mut self, evidence: EvidenceRecord) -> Self {
+        self.evidence = evidence;
+        self
+    }
+
+    /// The declaration's stable name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The evidence behind the declaration: code-derived, never runtime.
+    #[must_use]
+    pub const fn evidence(&self) -> &EvidenceRecord {
+        &self.evidence
+    }
+
+    /// Where the original's per-frame `game_dt` comes from.
+    #[must_use]
+    pub const fn dt_source(&self) -> OriginalDtSource {
+        self.dt_source
+    }
+
+    /// The clamp upper bound: one rendered frame may never advance more than
+    /// this much game time (125 ms, 1/8 s).
+    #[must_use]
+    pub const fn max_frame_dt(&self) -> Duration {
+        self.max_frame_dt
+    }
+
+    /// The clamp lower bound (zero: a frame may be free, never negative).
+    #[must_use]
+    pub const fn min_frame_dt(&self) -> Duration {
+        self.min_frame_dt
+    }
+
+    /// Whether the clamp is enabled by default (it is).
+    #[must_use]
+    pub const fn frame_dt_clamped(&self) -> bool {
+        self.frame_dt_clamped
+    }
+
+    /// Whether paused time is banked (it is not: the frame clock keeps
+    /// ticking during a pause and the first resumed frame carries one normal
+    /// frame delta).
+    #[must_use]
+    pub const fn banks_paused_time(&self) -> bool {
+        self.banks_paused_time
+    }
+
+    /// The subsystems pause freezes.
+    #[must_use]
+    pub const fn frozen_subsystems(&self) -> &'static [OriginalSubsystem] {
+        self.frozen_subsystems
+    }
+
+    /// The subsystems that keep running while paused.
+    #[must_use]
+    pub const fn keeps_running_subsystems(&self) -> &'static [OriginalSubsystem] {
+        self.keeps_running_subsystems
+    }
+
+    /// Whether the declared policy says how `subsystem` behaves while paused.
+    ///
+    /// `None` means this declaration does not cover that subsystem — a gap to
+    /// record, never a default to assume.
+    #[must_use]
+    pub fn pause_policy_for(&self, subsystem: OriginalSubsystem) -> Option<PausePolicy> {
+        if self.frozen_subsystems.contains(&subsystem) {
+            Some(PausePolicy::Freeze)
+        } else if self.keeps_running_subsystems.contains(&subsystem) {
+            Some(PausePolicy::KeepRunning)
+        } else {
+            None
+        }
+    }
+
+    /// Whether the weapon cooldown and the objective timer read one shared dt
+    /// source.
+    #[must_use]
+    pub const fn gameplay_timers_share_dt_source(&self) -> bool {
+        self.gameplay_timers_share_dt_source
+    }
+
+    /// Whether those two timers are nevertheless separate accumulators,
+    /// advanced at different points of the frame.
+    #[must_use]
+    pub const fn gameplay_timers_have_separate_accumulators(&self) -> bool {
+        self.gameplay_timers_have_separate_accumulators
+    }
+
+    /// The original's speed-up policy.
+    #[must_use]
+    pub const fn speed_up(&self) -> OriginalSpeedUp {
+        self.speed_up
+    }
+
+    /// The claim this declaration's evidence supports.
+    ///
+    /// `verified_original` is **unreachable here by construction**: a policy
+    /// declared in source is compiled from static code analysis, never from
+    /// an observation of the running original program, so a record that would
+    /// [`verify`](EvidenceRecord::verifies_original) the original is still
+    /// reported as [`ORIGINAL_CLOCK_POLICY_STATUS`] (`inferred`). Synthetic
+    /// fixture evidence is `unknown`, authored evidence `designed`, a cited
+    /// document `documented`.
+    #[must_use]
+    pub fn claim_status(&self) -> ClaimStatus {
+        match claim_status_for(&self.evidence) {
+            ClaimStatus::VerifiedOriginal => ORIGINAL_CLOCK_POLICY_STATUS,
+            status => status,
+        }
+    }
+
+    /// Compares this declared original policy with the project's clock
+    /// policies at `rate`, under `tolerance`.
+    ///
+    /// The tolerance is an **input chosen before the comparison**, never
+    /// fitted afterwards: see [`ORIGINAL_POLICY_TOLERANCE`].
+    #[must_use]
+    pub fn compare_project_clocks(
+        &self,
+        rate: TickRate,
+        tolerance: PolicyTolerance,
+    ) -> OriginalPolicyComparison {
+        let gameplay: [(&'static str, ClockPolicy); 3] = [
+            (
+                "single-player simulation",
+                ClockPolicy::single_player_simulation(),
+            ),
+            (
+                "multiplayer simulation",
+                ClockPolicy::multiplayer_simulation(),
+            ),
+            (
+                "authoritative gameplay",
+                ClockPolicy::authoritative_gameplay(),
+            ),
+        ];
+        let presentation: [(&'static str, ClockPolicy); 2] = [
+            ("ui wall", ClockPolicy::ui_wall()),
+            ("media unscaled", ClockPolicy::media_unscaled()),
+        ];
+        let gameplay_freezes = gameplay
+            .iter()
+            .all(|(_, policy)| policy.pause() == PausePolicy::Freeze);
+        let presentation_keeps_running = presentation
+            .iter()
+            .all(|(_, policy)| policy.pause() == PausePolicy::KeepRunning);
+        // The declaration side of the same questions: the comparison reads
+        // what the measured policy says, not what the project already does.
+        let original_freezes_flight_world = [
+            OriginalSubsystem::WorldSimulation,
+            OriginalSubsystem::VehicleClock,
+            OriginalSubsystem::MissionObjectives,
+            OriginalSubsystem::CameraHudInput,
+        ]
+        .into_iter()
+        .all(|subsystem| self.pause_policy_for(subsystem) == Some(PausePolicy::Freeze));
+        let original_keeps_frame_clock_running =
+            self.pause_policy_for(OriginalSubsystem::FrameClock) == Some(PausePolicy::KeepRunning);
+        let single_player_speeds_up =
+            ClockPolicy::single_player_simulation().speed_up() == SpeedUpPolicy::AdvanceFixedTicks;
+        let multiplayer_refuses_speed_up =
+            ClockPolicy::multiplayer_simulation().speed_up() == SpeedUpPolicy::NoLocalAuthority;
+        let gameplay_has_no_local_authority =
+            ClockPolicy::authoritative_gameplay().speed_up() == SpeedUpPolicy::NoLocalAuthority;
+
+        let dt_nanos = NANOS_PER_SECOND / u128::from(rate.ticks_per_second());
+        let slack = u128::from(tolerance.dt_slack_nanos);
+        let dt_inside_original_window = dt_nanos + slack >= self.min_frame_dt.as_nanos()
+            && dt_nanos <= self.max_frame_dt.as_nanos() + slack;
+
+        let tick_source_relation = match self.dt_source {
+            OriginalDtSource::VariableFrameDelta => PolicyRelation::Diverges,
+            OriginalDtSource::FixedDebugFrequency { period } => {
+                if period.as_nanos().abs_diff(dt_nanos) <= slack {
+                    PolicyRelation::Agrees
+                } else {
+                    PolicyRelation::Diverges
+                }
+            }
+        };
+
+        let findings = vec![
+            PolicyFinding {
+                field: "pause.gameplay",
+                original: format!(
+                    "the flight world freezes: {}, because only the top screen \
+                     state is updated per frame",
+                    list_subsystems(self.frozen_subsystems),
+                ),
+                project: pause_summary(&gameplay),
+                relation: if original_freezes_flight_world && gameplay_freezes {
+                    PolicyRelation::Agrees
+                } else {
+                    PolicyRelation::Diverges
+                },
+            },
+            PolicyFinding {
+                field: "pause.presentation",
+                original: format!(
+                    "keeps running while paused: {}",
+                    list_subsystems(self.keeps_running_subsystems),
+                ),
+                project: pause_summary(&presentation),
+                relation: if original_keeps_frame_clock_running && presentation_keeps_running {
+                    PolicyRelation::Agrees
+                } else {
+                    PolicyRelation::Diverges
+                },
+            },
+            PolicyFinding {
+                field: "pause.sound-playback",
+                original:
+                    "playing sounds are snapshot-paused when the escape screen is pushed and \
+                     resumed when it is popped"
+                        .to_string(),
+                project: "cs_sim::time declares no audio policy; audio pause belongs to the audio \
+                     subsystem (F41/F46), not to a clock"
+                    .to_string(),
+                relation: PolicyRelation::NotModeled,
+            },
+            PolicyFinding {
+                field: "pause.network",
+                original: "network code keeps running and reads the OS tick count directly"
+                    .to_string(),
+                project: "cs_sim::time declares no network policy; session timing belongs to \
+                          the networking crate"
+                    .to_string(),
+                relation: PolicyRelation::NotModeled,
+            },
+            PolicyFinding {
+                field: "pause.bank",
+                original: format!(
+                    "paused time is not banked: the frame clock keeps ticking and the first \
+                     resumed frame carries one normal frame delta (at most {} ns)",
+                    self.max_frame_dt.as_nanos(),
+                ),
+                project: "PausePolicy::Freeze clocks drop paused wall time: SimClock::advance \
+                          returns zero and leaves the carry untouched, so resume never releases \
+                          a burst"
+                    .to_string(),
+                relation: if !self.banks_paused_time && gameplay_freezes {
+                    PolicyRelation::Agrees
+                } else {
+                    PolicyRelation::Diverges
+                },
+            },
+            PolicyFinding {
+                field: "clock.tick-source",
+                original: match self.dt_source {
+                    OriginalDtSource::VariableFrameDelta => format!(
+                        "{}: one variable game_dt per rendered frame, from the OS tick count",
+                        self.dt_source.label(),
+                    ),
+                    OriginalDtSource::FixedDebugFrequency { period } => format!(
+                        "{}: game_dt pinned to {} ns by the debug -freq option",
+                        self.dt_source.label(),
+                        period.as_nanos(),
+                    ),
+                },
+                project: format!(
+                    "fixed dt of {} ns (integer accumulator at {} Hz)",
+                    dt_nanos,
+                    rate.ticks_per_second(),
+                ),
+                relation: tick_source_relation,
+            },
+            PolicyFinding {
+                field: "clock.frame-dt-bound",
+                original: format!(
+                    "game_dt is clamped to [{}, {}] ns per frame (clamp on by default)",
+                    self.min_frame_dt.as_nanos(),
+                    self.max_frame_dt.as_nanos(),
+                ),
+                project: format!(
+                    "one tick advances {dt_nanos} ns; the declared tolerance admits {} ns of \
+                     slack",
+                    tolerance.dt_slack_nanos,
+                ),
+                relation: if dt_inside_original_window {
+                    PolicyRelation::Agrees
+                } else {
+                    PolicyRelation::Diverges
+                },
+            },
+            PolicyFinding {
+                field: "clock.frame-dt-cap",
+                original: if self.frame_dt_clamped {
+                    format!(
+                        "a stalled frame still advances at most {} ns of game time because the \
+                         clamp is applied after scaling",
+                        self.max_frame_dt.as_nanos(),
+                    )
+                } else {
+                    "the frame clamp is off, so a stalled frame advances its whole delta"
+                        .to_string()
+                },
+                project:
+                    "SimClock::advance accepts any Duration and commits all of its whole ticks; \
+                     the fixed-step accumulator declares no per-frame cap"
+                        .to_string(),
+                relation: if self.frame_dt_clamped {
+                    PolicyRelation::Diverges
+                } else {
+                    PolicyRelation::Agrees
+                },
+            },
+            PolicyFinding {
+                field: "timers.shared-dt-source",
+                original: "one dt source for both, with separate accumulators: the weapon, AI and \
+                     turret timers count the vehicle clock while the objective timers advance \
+                     inside the mission update, at a different point of the frame"
+                    .to_string(),
+                project:
+                    "one SimClock commits whole ticks and GameplayTimeline feeds both TickTimers \
+                     from the same commit in advance_frame, each timer keeping its own \
+                     remaining count"
+                        .to_string(),
+                relation: if self.gameplay_timers_share_dt_source
+                    && self.gameplay_timers_have_separate_accumulators
+                {
+                    PolicyRelation::Agrees
+                } else {
+                    PolicyRelation::Diverges
+                },
+            },
+            PolicyFinding {
+                field: "timers.player-down-gate",
+                original:
+                    "the mission update is skipped while the player flag is set, so objectives \
+                     freeze while the vehicle clock keeps advancing"
+                        .to_string(),
+                project: "GameplayTimeline has no player-down gate: every committed tick advances \
+                     both timers"
+                    .to_string(),
+                relation: PolicyRelation::NotModeled,
+            },
+            PolicyFinding {
+                field: "speed-up.network-gate",
+                original: format!(
+                    "{}× dt while the network setting is zero, refused when it is not; the \
+                     command has no default binding",
+                    self.speed_up.factor,
+                ),
+                project: format!(
+                    "single-player simulation {}, multiplayer simulation {}",
+                    speed_up_label(ClockPolicy::single_player_simulation().speed_up()),
+                    speed_up_label(ClockPolicy::multiplayer_simulation().speed_up()),
+                ),
+                relation: if self.speed_up.network_gated
+                    && single_player_speeds_up
+                    && multiplayer_refuses_speed_up
+                {
+                    PolicyRelation::Agrees
+                } else {
+                    PolicyRelation::Diverges
+                },
+            },
+            PolicyFinding {
+                field: "speed-up.mechanism",
+                original: format!(
+                    "a one-frame {}× multiplier on the variable dt, still clamped to {} ns",
+                    self.speed_up.factor,
+                    self.max_frame_dt.as_nanos(),
+                ),
+                project: "whole fixed ticks (F16 non-negotiable 4: speed-up advances fixed ticks, \
+                     never a variable dt)"
+                    .to_string(),
+                relation: PolicyRelation::Diverges,
+            },
+            PolicyFinding {
+                field: "speed-up.reaches-gameplay-timers",
+                original:
+                    "everything that reads dt scales together, so the speed-up accelerates the \
+                     vehicle clock, the weapon cooldowns and the objective timers alike"
+                        .to_string(),
+                project: format!(
+                    "authoritative gameplay {} and GameplayTimeline::advance_fixed_ticks \
+                     always refuses",
+                    speed_up_label(ClockPolicy::authoritative_gameplay().speed_up()),
+                ),
+                relation: if gameplay_has_no_local_authority {
+                    PolicyRelation::Diverges
+                } else {
+                    PolicyRelation::Agrees
+                },
+            },
+            PolicyFinding {
+                field: "speed-up.default-binding",
+                original:
+                    "the speed-up command has no default binding and is absent from the controls \
+                     screen, so a player cannot reach it without an external binding"
+                        .to_string(),
+                project:
+                    "cs_sim::time exposes the clock API only; the input layer binds no speed-up \
+                     command yet"
+                        .to_string(),
+                relation: PolicyRelation::NotModeled,
+            },
+        ];
+
+        OriginalPolicyComparison {
+            policy: self.name,
+            project_rate: rate,
+            tolerance,
+            findings,
+            claim: self.claim_status(),
+            verified_original: false,
+        }
+    }
+}
+
+/// The evidence behind [`OriginalClockPolicy::measured_original`]: a cited
+/// document over the original image, with a **non-runtime** method.
+///
+/// `ObservationMethod::Inference` is deliberate. The policy was read out of
+/// the executable's code, not watched in a running original program, so
+/// `RuntimeObservation` would be fabricated evidence and
+/// [`EvidenceRecord::verifies_original`] must stay false. The image sha256 is
+/// recorded so the analysed bytes are named, while the locator points at the
+/// findings entry a reviewer can actually read.
+fn code_derived_evidence() -> EvidenceRecord {
+    EvidenceRecord {
+        source: EvidenceSource::Document(ORIGINAL_POLICY_FINDINGS.to_string()),
+        fingerprint: Some(Fingerprint {
+            kind: FingerprintKind::Installation,
+            sha256: ContentHash::from_hex(ORIGINAL_IMAGE_SHA256)
+                .expect("ORIGINAL_IMAGE_SHA256 is 64 lowercase hex characters"),
+        }),
+        locator: Some(ObservationLocator {
+            container: ORIGINAL_POLICY_FINDINGS.to_string(),
+            span: None,
+        }),
+        method: ObservationMethod::Inference,
+        limitations: vec![
+            "static code analysis of the owner-supplied decrypted executable (Kuna decompiler \
+             v1.692, checked against the disassembly); never a run of the original program, so \
+             it is not a runtime observation"
+                .to_string(),
+            "frame pacing, timing uncertainty and the real distribution of frame deltas are \
+             unmeasured: only an original run could give them"
+                .to_string(),
+            "addresses are virtual addresses in the analysed image; no executable byte, \
+             disassembly listing or decompiled code is committed"
+                .to_string(),
+        ],
+    }
+}
+
+/// The strongest claim one [`EvidenceRecord`] supports, for a record that
+/// does not verify the original.
+///
+/// Synthetic fixtures claim `unknown`, a cited document `documented`, static
+/// reasoning `inferred`, authored work `designed`, and a tool run
+/// `observed_tool`. `verified_original` is decided first, by
+/// [`EvidenceRecord::verifies_original`] itself, and is then capped away for a
+/// declared policy by [`OriginalClockPolicy::claim_status`].
+fn claim_status_for(evidence: &EvidenceRecord) -> ClaimStatus {
+    if matches!(evidence.source, EvidenceSource::SyntheticFixture) {
+        return ClaimStatus::Unknown;
+    }
+    if evidence.verifies_original() {
+        return ClaimStatus::VerifiedOriginal;
+    }
+    match evidence.method {
+        ObservationMethod::Authored => ClaimStatus::Designed,
+        ObservationMethod::Inference => ClaimStatus::Inferred,
+        ObservationMethod::DocumentReview => ClaimStatus::Documented,
+        ObservationMethod::ToolProbe => ClaimStatus::ObservedTool,
+        // A direct method that still failed to verify the original observed
+        // nothing *original*: no original fingerprint or no locator.
+        ObservationMethod::ByteInspection | ObservationMethod::RuntimeObservation => {
+            ClaimStatus::Unknown
+        }
+    }
+}
+
+/// What a policy comparison may accept as "the same" — declared before the
+/// comparison runs, never fitted to its result (`FLIGHT-PHYSICS`,
+/// "Calibration acceptance").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PolicyTolerance {
+    /// Nanoseconds of slack allowed when a project dt is checked against the
+    /// original's measured per-frame window, and when a declared fixed debug
+    /// dt is compared with the project's fixed dt.
+    pub dt_slack_nanos: u64,
+}
+
+/// How one fact relates the measured original policy to the project's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PolicyRelation {
+    /// The original and the project agree on this fact.
+    Agrees,
+    /// They differ. Every divergence is recorded in `docs/findings/` and
+    /// filed as a task or an owner decision; a policy pairing is never
+    /// changed silently to make it go away.
+    Diverges,
+    /// The project's clock policies do not cover this subsystem at all, so
+    /// the comparison claims neither agreement nor divergence.
+    NotModeled,
+}
+
+impl PolicyRelation {
+    /// Stable label for diagnostics and evidence records.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Agrees => "agrees",
+            Self::Diverges => "diverges",
+            Self::NotModeled => "not-modeled",
+        }
+    }
+}
+
+/// One fact the comparison checked: what the original does, what the project
+/// declares, and how they relate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PolicyFinding {
+    /// The fact, as a stable dotted name.
+    pub field: &'static str,
+    /// What the measured original policy says.
+    pub original: String,
+    /// What the project's policies say.
+    pub project: String,
+    /// How the two relate.
+    pub relation: PolicyRelation,
+}
+
+impl std::fmt::Display for PolicyFinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} [{}] original: {} | project: {}",
+            self.field,
+            self.relation.label(),
+            self.original,
+            self.project
+        )
+    }
+}
+
+/// The result of comparing the declared [`OriginalClockPolicy`] with the
+/// project's [`ClockPolicy`]s.
+///
+/// Unlike [`ProbeComparison`], divergences here are mostly **designed**: the
+/// project's fixed tick is a spec requirement (F16 non-negotiable 3 and 4),
+/// so a divergence does not contradict the evidence and never changes the
+/// claim. The claim is the original policy's own
+/// [`claim_status`](OriginalClockPolicy::claim_status) — `inferred` for
+/// static code evidence, never `verified_original`.
+#[derive(Clone, Debug)]
+pub struct OriginalPolicyComparison {
+    policy: &'static str,
+    project_rate: TickRate,
+    tolerance: PolicyTolerance,
+    findings: Vec<PolicyFinding>,
+    claim: ClaimStatus,
+    verified_original: bool,
+}
+
+impl OriginalPolicyComparison {
+    /// The declared original policy's name.
+    #[must_use]
+    pub const fn policy(&self) -> &'static str {
+        self.policy
+    }
+
+    /// The project tick rate the comparison used.
+    #[must_use]
+    pub const fn project_rate(&self) -> TickRate {
+        self.project_rate
+    }
+
+    /// The tolerance the comparison was declared with.
+    #[must_use]
+    pub const fn tolerance(&self) -> PolicyTolerance {
+        self.tolerance
+    }
+
+    /// Every fact that was checked, in declaration order.
+    #[must_use]
+    pub fn findings(&self) -> &[PolicyFinding] {
+        &self.findings
+    }
+
+    /// The findings with relation `relation`.
+    #[must_use]
+    pub fn findings_with(&self, relation: PolicyRelation) -> Vec<&PolicyFinding> {
+        self.findings
+            .iter()
+            .filter(|finding| finding.relation == relation)
+            .collect()
+    }
+
+    /// The facts where the original and the project differ.
+    #[must_use]
+    pub fn divergences(&self) -> Vec<&PolicyFinding> {
+        self.findings_with(PolicyRelation::Diverges)
+    }
+
+    /// The facts the project's clock policies do not model.
+    #[must_use]
+    pub fn not_modeled(&self) -> Vec<&PolicyFinding> {
+        self.findings_with(PolicyRelation::NotModeled)
+    }
+
+    /// The claim the original policy's evidence supports.
+    #[must_use]
+    pub const fn claim(&self) -> ClaimStatus {
+        self.claim
+    }
+
+    /// Always false for a declared policy: static code evidence never
+    /// verifies the original (see
+    /// [`OriginalClockPolicy::claim_status`]).
+    #[must_use]
+    pub const fn verified_original(&self) -> bool {
+        self.verified_original
+    }
+
+    /// A one-line summary suitable for an evidence record.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        format!(
+            "{} vs project clock policies at {} Hz: {} findings ({} agree, {} diverge, {} not \
+             modelled), tolerance {} ns, claim {}",
+            self.policy,
+            self.project_rate.ticks_per_second(),
+            self.findings.len(),
+            self.findings_with(PolicyRelation::Agrees).len(),
+            self.divergences().len(),
+            self.not_modeled().len(),
+            self.tolerance.dt_slack_nanos,
+            self.claim.label(),
+        )
+    }
+}
+
+/// `a, b, c` for a subsystem list, for a readable finding.
+fn list_subsystems(subsystems: &[OriginalSubsystem]) -> String {
+    subsystems
+        .iter()
+        .copied()
+        .map(OriginalSubsystem::label)
+        .collect::<Vec<&str>>()
+        .join(", ")
+}
+
+/// `single-player simulation freeze, multiplayer simulation freeze, …`
+fn pause_summary(policies: &[(&'static str, ClockPolicy)]) -> String {
+    policies
+        .iter()
+        .map(|(name, policy)| format!("{name} {}", pause_label(policy.pause())))
+        .collect::<Vec<String>>()
+        .join(", ")
+}
+
+fn pause_label(pause: PausePolicy) -> &'static str {
+    match pause {
+        PausePolicy::Freeze => "freeze",
+        PausePolicy::KeepRunning => "keep-running",
+    }
+}
+
+fn speed_up_label(speed_up: SpeedUpPolicy) -> &'static str {
+    match speed_up {
+        SpeedUpPolicy::AdvanceFixedTicks => "advance-fixed-ticks",
+        SpeedUpPolicy::NoLocalAuthority => "no-local-authority",
     }
 }
 
