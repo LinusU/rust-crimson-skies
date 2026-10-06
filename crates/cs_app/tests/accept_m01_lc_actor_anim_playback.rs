@@ -877,11 +877,14 @@ fn accept_m01_lc_actor_anim_playback_a_placement_names_its_world_actor_and_refus
 // Synthetic: the run/seam a mission uses.
 // ---------------------------------------------------------------------------
 
-/// A mission asks one startup event what it fires. The run answers with the
-/// identities in stored order, each with its own refusals, and an event nobody
-/// declared is measured content (an empty run), never a failure.
+/// The joined rows keep the startup table's events and stored order: the
+/// identities the production reader yields, joined one per row, carry their
+/// own refusals — a bound row is refused for exactly the event gap, and the
+/// unbound ones add the record refusal. The `run` seam that filters this set
+/// per event is covered by the in-module test (the binding's fields stay
+/// private) and exercised end to end by the retail case.
 #[test]
-fn accept_m01_lc_actor_anim_playback_a_run_answers_one_startup_event_in_stored_order() {
+fn accept_m01_lc_actor_anim_playback_the_rows_keep_their_events_in_stored_order() {
     // Read the startup table through the production reader, then join each row
     // the way `bind_mission_animation` does.
     let startup = read_startup_animations(&startup_document(&[
@@ -948,7 +951,7 @@ fn accept_m01_lc_actor_anim_playback_a_run_answers_one_startup_event_in_stored_o
     assert_eq!(
         identities,
         vec!["pzep_engines_start", "wvzep_engines_start", "player_setup"],
-        "the run answers one event's identities in stored order"
+        "the joined rows keep every event's identities in stored order"
     );
     // One row is joined and refused only for its events; two are refused twice.
     assert_eq!(rows[0].refusals().len(), 1);
