@@ -232,11 +232,10 @@ fn m01_control_document(game_dir: &Path) -> ZrdValue {
             Some(DecodedMember::new(name.to_owned(), document))
         })
         .collect();
-    assert_eq!(
+    assert!(
         members
             .iter()
             .any(|member| member.name == SCENARIO_OBJECTIVES_MEMBER),
-        true,
         "M01 declares the control member the census names"
     );
     control_member("zbd/c1c/m01/zrdr.zbd", &members)
