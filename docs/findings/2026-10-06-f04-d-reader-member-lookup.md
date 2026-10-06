@@ -4,7 +4,8 @@ Date: 2026-10-06. Task #685 `F04-D-order-reader-members`, the first of the
 three follow-ups section G of
 `docs/findings/2026-10-05-f04-d-original-lookup-order.md` filed (#685 reader
 members, #686 ROF before loose for GOS requests, #687 mission level, gamez /
-planes / anim bindings and the texture rule).
+planes / anim bindings and the texture rule). Reviewed and corrected by
+`bunny-2/bunny-2`; see section G for what the review changed.
 
 ## Provenance
 
@@ -93,7 +94,12 @@ consulted by a reader lookup and stays `designed`
 A reader mount is refused outside the `reader` namespace
 (`foreign_namespace`), because a lookup that only searches that key space
 could never serve a mount elsewhere — better a refusal than a silently
-unreachable mount.
+unreachable mount. A request that **specializes a variant** is refused the same
+way (`foreign_variant`): a reader archive declares one copy of each name and
+indexes it at `AssetVariant::default`, so answering with that copy would return
+bytes the caller did not ask for, and the retail variant vocabulary is unknown
+(`AssetVariant::default` is an engine label). That refusal is the review's; see
+section G.
 
 ## D. What retail data says, through the new production path
 
@@ -134,19 +140,39 @@ the honest state of the evidence, not a claim of a measured retail shadowing.
 
 ## E. What stays unknown
 
-Unchanged by this task, and unchanged by the new code:
+Unchanged by this task, and unchanged by the new code. Each item names the
+affected content and the task that owns it, and each is recorded in the
+machine-readable report's `unknowns` array, **not** dropped:
 
 * the **loose-file override** (section A: a loose file of the same basename
   that is newer wins over the archive copy) — not modelled; the finding also
   records that the candidate for the comparison, the index entry's trailing
-  `u64`, is never observed being read;
+  `u64`, is never observed being read. Affects every reader member.
+  Owner: **#700** `F04-D-order-reader-loose` (filed by this review; §A's two
+  rules had no task), with **#692** for the timestamp;
 * the **loose directory fallback** (only when no archive holds the name) —
-  not modelled;
+  not modelled. Affects reader lookups that find no archive copy. Owner:
+  **#700**. No such loose directory exists in retail, so no test can exercise
+  it from the installation;
 * what the index entry's `u32 word` (`2` in all 1293 entries) and its
-  trailing `u64` mean — still `Unknown` in `cs_formats`, untouched;
+  trailing `u64` mean — still `Unknown` in `cs_formats`, untouched. Owner:
+  **#692**;
 * whether the world/mission **archive** set is exactly the campaign layout
-  this installation has (#687 owns the mission level and the gamez / planes /
-  animation bindings).
+  this installation has, and the **mission level** itself:
+  `SessionBuilder::mount_installation` still binds no mission, so which
+  archives are mounted for a mission is the caller's decision. Owner: **#687**;
+* the order itself is code-derived only: no run of the original observed it,
+  so `READER_LOOKUP_ORDER_STATUS` is `Inferred` and `PRECEDENCE_ORDER_STATUS`
+  stays `Designed`. Settling it against a run needs owner-supplied capture
+  (**#358**) or further static work.
+
+**No retail archive reaches a `ReaderMountError`.** All 62 `zrdr.zbd` declare
+1293 entries and every one passes dispatch, the index read, the bounds check
+and the spelling check (reviewer re-measured over `$CS_GAME_DIR`: 1293
+entries, no name containing a path separator, no non-UTF-8 name, no extent
+outside its container, `word == 2` in all of them). Every mount refusal is
+therefore a guard exercised by synthetic archives, which the module now says
+in its own documentation.
 
 ## F. Tests
 
@@ -164,8 +190,9 @@ answering differently under the admitted context; an archive of another world
 never searched; `not_found` listing every archive it searched; a mount outside
 the reader namespace refused; an empty archive; a foreign / stale / moved-span
 read refused; a row that does not describe the archive's bytes refused by the
-read guard; a key of another namespace refused; and the designed precedence
-status untouched.
+read guard; a key of another namespace refused; a request that specializes a
+variant refused while the plain request is still served; two archives sharing one
+mount id refused by the read path; and the designed precedence status untouched.
 
 Sensitivity was checked by mutation, not asserted: reversing
 `ReaderLevel::rank` fails three tests; dropping the basename reduction fails
@@ -187,3 +214,57 @@ their lengths, their digests and the read-back.
 counts, digests and the five shadowing cases) next to the recorded test log,
 then `acceptance.json` for `tools/validate_evidence.py`. The committed copy is
 `docs/findings/evidence/T685.json`.
+
+It is validated **without** `--require-pass`. That flag rejects a report whose
+`unknowns` is non-empty, and section E's limitations are exactly what this stage
+left open, so the report lists them (with the affected content and the resolving
+task) and the flag exits 3 with "Unresolved issues" — the expected result. The
+first version of this report declared `"unknowns": []` and was validated with
+`--require-pass`; that was an empty list produced to satisfy the validator, which
+the owner directive of 2026-09-28 forbids, and this review replaced it.
+
+## G. What the review changed
+
+Implementer `bunny-2/bunny-2`; reviewer `bunny-2/bunny-2` — **the same agent
+instance, and its context was not fresh** (the implementing session wrote
+`reader.rs`, the suite and this file). It is therefore *not* independent
+evidence of anything about the original; the owner policy asks for a different
+agent or model for format and mission semantics, and this is that kind of work.
+
+The retail measurements were nonetheless re-derived independently from
+`$CS_GAME_DIR` (a separate parser over the raw index trailers, not the
+production code under test) and agree with the pinned claims: 62 archives, 1293
+entries, root 221 declared / 220 mountable, `player.zrd` at entries 22 (3414 B,
+sha256 `a8cc7547…`) and 100 (34711 B, `f9bd5306…`), the five mission-over-world
+cases with differing digests, no name with a path separator, no non-UTF-8 name,
+no extent outside its container and `word == 2` in every entry.
+
+Two production defects were found and fixed:
+
+1. **A panic on a non-default `AssetKey` variant.** `ReaderMounts::resolve`
+   built its mount lookup key with the *requested* variant, while
+   `mount_reader_archive` indexes every member at `AssetVariant::default`, so
+   the `.expect("the selected archive holds the key…")` after the scan panicked
+   for any legal key carrying a variant (reproduced with
+   `AssetKey::from_spelling("reader", "targets.zrd", "night")`). The lookup now
+   refuses such a request with `ReaderLookupError::ForeignVariant` before
+   searching, rather than serving the default copy's bytes as an answer to a
+   different question. Pinned by
+   `accept_f04_d_order_reader_a_request_that_specializes_a_variant_is_refused`.
+2. **An ambiguous mount id was resolved by taking the first match.**
+   `ReaderMounts::read` finds its archive by mount id, so two archives
+   registered under one id made it return one archive's bytes under another's
+   provenance. It now refuses with `ReaderReadError::AmbiguousArchive`
+   (`archives_named` makes the ambiguity visible). Pinned by
+   `accept_f04_d_order_reader_two_archives_under_one_mount_id_are_refused`.
+
+Also: the module documents that no retail archive reaches a `ReaderMountError`,
+and the report's `unknowns` are the five items of section E instead of an empty
+list. **#700** was filed for the loose-file override and the loose-directory
+fallback, which section A of #341's finding described and no task owned.
+
+Still worth a fresh, independent reviewer's eye: whether refusing a specialized
+variant is the right boundary rather than serving the default copy, and whether
+a reader archive with no production caller yet (the acceptance suite and the
+evidence harness are its only consumers today) should be reachable from
+`cs-inspect` before it is used by a mission.

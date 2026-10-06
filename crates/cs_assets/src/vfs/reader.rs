@@ -45,6 +45,17 @@
 //! three members of three mounts, and the order that decides between them is
 //! the trace's.
 //!
+//! # Variants and mount ids
+//!
+//! A reader archive declares **one** copy of each name and indexes it at
+//! [`AssetVariant::default`], so [`ReaderMounts::resolve`] refuses a request
+//! that specializes a variant ([`ReaderLookupError::ForeignVariant`]) instead of
+//! answering with the default copy's bytes, and a request in another namespace
+//! is refused outright. Two archives registered under the same mount id make
+//! [`ReaderMounts::read`]'s attribution ambiguous, so that read is refused too
+//! ([`ReaderReadError::AmbiguousArchive`]) rather than served from whichever
+//! archive happens to come first.
+//!
 //! # Bytes
 //!
 //! A reader member is stored uncompressed inside its container, so
@@ -69,7 +80,7 @@ use cs_formats::zbd::{
     read_version_one_index,
 };
 use cs_types::asset_id::{
-    AssetKey, AssetKeyError, MountId, MountNamespace, ResolveContext, SourceSpan,
+    AssetKey, AssetKeyError, AssetVariant, MountId, MountNamespace, ResolveContext, SourceSpan,
 };
 use cs_types::evidence::{ClaimStatus, ContentHash};
 use cs_types::install::{RelativePath, RelativePathError};
@@ -399,6 +410,10 @@ impl ReaderMounts {
     /// Adds one archive. The set searches by [`ReaderLevel::rank`], not by
     /// insertion order, so the order the original mounts in is the order the
     /// lookup uses whatever order the archives were added in.
+    ///
+    /// Mount ids are expected to be unique in one set: [`Self::read`] finds its
+    /// archive by id, and refuses to guess when more than one answers to it
+    /// ([`ReaderReadError::AmbiguousArchive`]).
     pub fn push(&mut self, archive: ReaderArchive) -> &mut Self {
         self.archives.push(archive);
         self
@@ -426,6 +441,16 @@ impl ReaderMounts {
             .find(|archive| archive.mount.id() == mount)
     }
 
+    /// How many archives are registered under `mount`. One is the answer a
+    /// resolution can name; more than one is ambiguous, and
+    /// [`Self::archive`] cannot say which one a resolution came from.
+    pub fn archives_named(&self, mount: &MountId) -> usize {
+        self.archives
+            .iter()
+            .filter(|archive| archive.mount.id() == mount)
+            .count()
+    }
+
     /// Looks `requested` up the way the original engine opens a reader name.
     ///
     /// The lookup is exactly three rules, in order:
@@ -448,11 +473,17 @@ impl ReaderMounts {
     /// # Errors
     ///
     /// [`ReaderLookupError::ForeignNamespace`] when `requested` is not a
-    /// reader key, [`ReaderLookupError::UnspellableBasename`] when the reduced
-    /// basename cannot be spelled as a key (impossible for a key built by
-    /// [`AssetKey::from_spelling`], kept so the reduction never panics), and
+    /// reader key, [`ReaderLookupError::ForeignVariant`] when it specializes a
+    /// variant (a reader archive declares one copy of each name and indexes it
+    /// at [`AssetVariant::default`], so it cannot answer a variant), and
     /// [`ReaderLookupError::NotFound`] when no mounted archive the context
     /// admits holds the name.
+    ///
+    /// [`ReaderLookupError::UnspellableBasename`] and
+    /// [`ReaderLookupError::EmptyBasename`] exist so the reduction is total
+    /// rather than panicking; both are unreachable for a key built by
+    /// [`AssetKey::from_spelling`], whose logical key comes from a validated
+    /// [`RelativePath`].
     pub fn resolve(
         &self,
         context: &ResolveContext,
@@ -461,6 +492,18 @@ impl ReaderMounts {
         if requested.namespace().as_str() != READER_NAMESPACE {
             return Err(ReaderLookupError::ForeignNamespace {
                 namespace: requested.namespace().clone(),
+            });
+        }
+        // A reader archive declares exactly one copy of each name and indexes it
+        // at the default variant, so a request that specializes a variant asks
+        // for something no mounted archive can answer. It is refused rather
+        // than answered with the default copy, which would be different bytes
+        // than the caller asked for. The retail variant vocabulary is unknown
+        // (`AssetVariant::default`), so no variant is claimed to exist.
+        if requested.variant() != &AssetVariant::default() {
+            return Err(ReaderLookupError::ForeignVariant {
+                requested: Box::new(requested.clone()),
+                variant: requested.variant().as_str().to_owned(),
             });
         }
         // `AssetKey`'s path is a validated `RelativePath`, so its logical key
@@ -473,12 +516,12 @@ impl ReaderMounts {
             });
         };
         let member_key =
-            AssetKey::from_spelling(READER_NAMESPACE, basename, requested.variant().as_str())
+            AssetKey::from_spelling(READER_NAMESPACE, basename, AssetVariant::default().as_str())
                 .map_err(|error| ReaderLookupError::UnspellableBasename {
-                    requested: Box::new(requested.clone()),
-                    basename: basename.to_owned(),
-                    error,
-                })?;
+                requested: Box::new(requested.clone()),
+                basename: basename.to_owned(),
+                error,
+            })?;
 
         let mut order: Vec<usize> = (0..self.archives.len()).collect();
         order.sort_by_key(|index| {
@@ -566,12 +609,23 @@ impl ReaderMounts {
     /// The bytes a resolution names, digest-checked, through the archive it
     /// came from.
     ///
+    /// The archive is found by mount id, so a set that registered the **same**
+    /// mount id twice cannot say which of the two a resolution came from: that
+    /// is refused ([`ReaderReadError::AmbiguousArchive`]) instead of picking
+    /// the first one and returning its bytes as another archive's.
+    ///
     /// # Errors
     ///
     /// [`ReaderReadError::UnknownArchive`] when the set no longer holds the
-    /// archive the resolution names, plus everything
+    /// archive the resolution names, [`ReaderReadError::AmbiguousArchive`] when
+    /// it holds more than one under that id, plus everything
     /// [`ReaderArchive::read`] reports.
     pub fn read(&self, resolved: &ReaderResolution) -> Result<Vec<u8>, ReaderReadError> {
+        if self.archives_named(&resolved.mount) > 1 {
+            return Err(ReaderReadError::AmbiguousArchive {
+                mount: resolved.mount.to_string(),
+            });
+        }
         self.archive(&resolved.mount)
             .ok_or_else(|| ReaderReadError::UnknownArchive {
                 mount: resolved.mount.to_string(),
@@ -705,6 +759,16 @@ pub enum ReaderLookupError {
         /// The namespace the key was asked for.
         namespace: MountNamespace,
     },
+    /// The request specializes a variant. A reader archive declares one copy of
+    /// each name and indexes it at [`AssetVariant::default`], so no mounted
+    /// reader archive can serve another variant; the request is refused rather
+    /// than answered with the default copy.
+    ForeignVariant {
+        /// The key that was asked for.
+        requested: Box<AssetKey>,
+        /// The variant it asked for.
+        variant: String,
+    },
     /// The requested path has no basename to search for.
     EmptyBasename {
         /// The key that was asked for.
@@ -740,6 +804,11 @@ impl fmt::Display for ReaderLookupError {
                 f,
                 "{namespace} is not the reader key space {READER_NAMESPACE}; a reader member is \
                  looked up through ReaderMounts::resolve with a reader key"
+            ),
+            Self::ForeignVariant { requested, variant } => write!(
+                f,
+                "{requested} asks for variant {variant:?}; a reader archive declares one copy of \
+                 each name at the default variant and cannot answer another one"
             ),
             Self::EmptyBasename { requested } => {
                 write!(
@@ -971,6 +1040,12 @@ pub enum ReaderReadError {
         /// The mount the resolution names.
         mount: String,
     },
+    /// The mount set holds more than one archive under the id the resolution
+    /// names, so the bytes it points at cannot be attributed to one archive.
+    AmbiguousArchive {
+        /// The mount the resolution names.
+        mount: String,
+    },
     /// The resolution does not describe the entry it was made for any more.
     StaleResolution {
         /// The mount the resolution names.
@@ -1007,6 +1082,7 @@ impl ReaderReadError {
         match self {
             Self::ForeignArchive { .. } => "foreign_archive",
             Self::UnknownArchive { .. } => "unknown_archive",
+            Self::AmbiguousArchive { .. } => "ambiguous_archive",
             Self::StaleResolution { .. } => "stale_resolution",
             Self::OutOfBounds { .. } => "out_of_bounds",
             Self::DigestMismatch { .. } => "digest_mismatch",
@@ -1024,6 +1100,11 @@ impl fmt::Display for ReaderReadError {
             Self::UnknownArchive { mount } => {
                 write!(f, "no mounted reader archive answers to {mount}")
             }
+            Self::AmbiguousArchive { mount } => write!(
+                f,
+                "{mount} names more than one mounted reader archive, so the bytes a resolution \
+                 points at cannot be attributed to one of them"
+            ),
             Self::StaleResolution { mount } => write!(
                 f,
                 "the resolution of {mount} no longer describes the entry it was made for"
@@ -1080,6 +1161,15 @@ impl std::error::Error for ReaderReadError {}
 /// [`ReaderMountError`] when the archive cannot be read, does not dispatch to
 /// the reader family, has no readable version-one index, is refused by the
 /// family gate or listing, or when its mount is refused.
+///
+/// # Which refusals retail exercises
+///
+/// All 62 `zrdr.zbd` of the owner's installation declare 1293 entries and
+/// **every one** passes the dispatch, the index read, the bounds check and the
+/// spelling check, so no retail archive reaches a [`ReaderMountError`] at all.
+/// Those refusals are guards exercised by synthetic archives; they exist
+/// because a container that cannot be read must be reportable, not because the
+/// original data shows one failing.
 pub fn mount_reader_archive(
     mut builder: MountBuilder,
     container_path: &Path,
