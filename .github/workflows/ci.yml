@@ -24,10 +24,18 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
+      # The workspace's ~370 test binaries each link Bevy, and `cargo test --workspace` left main with
+      # 450 MB free on 2026-10-05, so drop every preinstalled toolchain this job does not use. Rust comes
+      # from rustup in ~/.rustup, and the system python3 stays.
       - name: Free runner disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache /usr/local/share/boost /usr/share/swift /usr/local/share/powershell \
+            /usr/local/share/chromium /usr/local/lib/node_modules /opt/microsoft /opt/google /opt/az \
+            /usr/lib/jvm /usr/share/miniconda
+          sudo docker image prune --all --force > /dev/null || true
+          df -h
 
       - uses: actions/checkout@v5
 
@@ -65,7 +73,7 @@ jobs:
 
       - name: Disk after tests
         if: always()
-        run: df -h /
+        run: df -h
 
   pack:
     runs-on: ubuntu-latest
