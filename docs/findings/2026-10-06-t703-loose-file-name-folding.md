@@ -188,7 +188,8 @@ was cut — #689 was still in review — so it was amended here once #689 landed
   false now. That file is not this task's owner path, so the correction is
   recorded here and handed over instead of made: two sentences, and #689
   edited the same file when its own change invalidated the same bullet, so a
-  follow-up is a one-line job.
+  follow-up is a one-line job. **Handed over as task #705**
+  (`F08-C-t352-stale-fold-sentences`), filed by this task's review.
 
 Everything else that names the old behaviour is a historical record of a run
 or of what #689 changed at the time, and stays as written.
@@ -201,3 +202,58 @@ which spelling is handed to that probe.
 No evidence report: this task's retail use is a directory listing and a
 static-code re-derivation a test observes, following F08-C, F08-B, T352 and
 T689's precedent.
+
+## Review amendment (2026-10-06)
+
+Recorded per AGENTS.md's review policy: this review was done by the same agent
+identity that implemented the task (`bunny-2`), in a new session whose context
+loaded the branch and the findings rather than the implementing conversation.
+That is **not** independent original-reference evidence, and no agent review
+replaces the owner's human approval.
+
+**Re-derived independently (read-only, `retail` capability).** SHA-256 of
+`$CS_GAME_DIR/crimson.decrypted.exe` recomputed: `43540fc9…c37d75`, matching
+T352/T689. `llvm-objdump -d` at `0x534cf0`: `movl 0x4(%esp), %eax` → the
+pointer is pushed unchanged with `0x635578` and the local buffer, then
+`calll *0xa20210`; `0x534060` has the same shape with `0x6353b0`. `xxd` at
+file offsets `0x235578` / `0x2353b0` reads `%s.tif` / `%s.bmp`. `0x531b60`
+loads the argument into `%edi` at `0x531b6e` and pushes that same register to
+`0x531900` twice, then `0x534cf0`, then `0x534060`, with no write in between.
+One detail this task's text does not name: the function called right after each
+`sprintf` is `0x52fb80`, which is a single-flag test
+(`movb 0x7581dc, %cl` … `setne %al` … `retl`) — it gates the path, it does not
+re-spell it. `find "$CS_GAME_DIR/ZBD" \( -iname '*.tif' -o -iname '*.bmp' \)`
+→ **0 files**. Nothing was written inside `$CS_GAME_DIR`.
+
+**Mutation re-run by the reviewer.** The loose names re-folded through
+`folded_texture_name(name)` — the pre-task code — fails the same **3 tests**
+(`accept_f08_c_loose_name_…`, `accept_f08_c_selection_…`,
+`accept_f08_c_case_fold_folds_the_request_and_not_the_stored_name`); the file
+was restored from git and the tree is clean. Test sensitivity is real, not
+taken from this file's table.
+
+**Two sentences tightened (no behaviour changed).** The review found the
+"options 1 and 2 differ only when one directory holds both `sky.tif` and
+`SKY.tif`" claim true *of the original* — where the host file system folds
+case — but over-broad as written, because `TextureFiles::find` compares
+exactly here: in this crate the request `SKY` is answered by a listing
+`sky.tif` under option 1 and by no loose file under option 2, for **any**
+listing whose spelling differs, not only a directory holding both. The same
+phrasing stood in `texture_lookup_order`'s doc. Both now say so, keep the
+consequence inside the already-recorded unknown (the file probe's case
+handling, T352; `TextureFiles::find`'s doc), and claim no more than that.
+
+**Checks run after the edits above (all exit 0). This record was written
+afterwards, and no check reads this file:**
+
+| Command | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | clean |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | clean |
+| `cargo test --workspace --locked` | green: 404 suites, 0 failed |
+| `cargo test --workspace --locked -- accept_f08_c_loose_name --include-ignored` | green: 1 test matched and passed |
+| `cargo test --workspace --locked -- accept_f08_c accept_f10_c --include-ignored` | green: 99 passed, 0 failed, 0 ignored across the workspace, retail tests included |
+
+**Handed over:** task **#705** (`F08-C-t352-stale-fold-sentences`) for the two
+false sentences in `docs/findings/2026-10-05-t352-texture-archive-selection-rule.md`,
+which are outside this task's owner paths.
