@@ -1388,19 +1388,22 @@ fn evidence_report_t685_writes_the_acceptance_report() {
         62,
         "every declared zrdr.zbd of the installation is mounted"
     );
+    // Sorted by installation spelling, so this pins *which* archive shadows
+    // which member and not the iteration order of the survey.
     assert_eq!(
         shadowed_cases(&measured)
             .iter()
-            .map(|(_, name, _)| name.as_str())
+            .map(|(container, name, _)| format!("{container}/{name}"))
             .collect::<Vec<_>>(),
         vec![
-            "fueltruck.zrd",
-            "security_destroy.zrd",
-            "targets.zrd",
-            "targets.zrd",
-            "targets.zrd",
+            "ZBD/C1C/IA1/targets.zrd",
+            "ZBD/C1C/MP1/targets.zrd",
+            "ZBD/C1C/MP3/targets.zrd",
+            "ZBD/C2/M01/security_destroy.zrd",
+            "ZBD/C3/M02/fueltruck.zrd",
         ],
-        "the five mission-over-world shadowing cases the acceptance suite pins"
+        "the five mission-over-world shadowing cases the acceptance suite pins, re-derived \
+         from the production mounts of every declared reader archive"
     );
     let lookup_path = evidence_dir.join("reader-lookup.json");
     fs::write(&lookup_path, reader_lookup_json(&candidate_tree, &measured))
