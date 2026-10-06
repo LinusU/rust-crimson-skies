@@ -59,21 +59,22 @@
 //! a consumer that silently repaired it would hide the only interesting record
 //! in the closure.
 //!
-//! # Why nothing is played, and what says so
+//! # What is played, and what still says why
 //!
-//! A record's sequence blocks are raw byte streams. No event layout is measured
-//! for this installation, so there is no statement, no tick and no pose to play.
-//! [`StartupAnimation::is_playable`] is therefore `false` for every record the
-//! installation holds, and each one says **why** with
-//! [`EVENTS_NOT_DECODED_CLAIM`] and the record's own [`SourceSpan`].
-//!
-//! That is the consumer's measured answer rather than a placeholder: the
-//! mission's startup set is established (which member declares each animation,
-//! which record stores it, which world nodes it addresses, which animations it
-//! calls) and every record is refused by name with its source. F20 behavior 2
-//! makes refusing the only correct answer until an event grammar is measured,
-//! and the gap, the affected content and the resolving task are named in the
-//! finding.
+//! A record's sequence blocks were raw bytes until this module's companion
+//! [`super::events`] measured their grammar: an eight-byte tag/length header
+//! per event, an opcode vocabulary that joins the installation's own statement
+//! spellings, and two timing fields (`START_TIME` at payload word `0`,
+//! `RUN_TIME` at the last word where the opcode's position is value-matched).
+//! A record whose blocks all walk and whose opcodes all join is **playable**:
+//! [`StartupAnimation::playback`] carries its duration and its per-tick pose
+//! report. Three refusals keep the honest answer for everything else — bytes
+//! this consumer does not hold or a stream that is not the measured shape
+//! ([`EVENTS_NOT_DECODED_CLAIM`]), an opcode no declaration joins
+//! ([`super::events::OPCODE_NOT_MEASURED_CLAIM`]) and a `RUN_TIME` position
+//! nobody value-matched ([`super::events::RUN_TIME_NOT_MEASURED_CLAIM`]) — and
+//! each keeps its byte offset. F20 behavior 2 is what makes a refusal, not a
+//! guess, the answer for those.
 //!
 //! # The world-actor half
 //!
@@ -108,6 +109,10 @@ use super::carrier::{
     STARTUP_MEMBER, SiblingReader, StartupBinding, StartupOutcome, UNBOUND_REASON_NOT_WALKED,
     bind_animation_carrier, bind_startup_identities, carrier_name,
 };
+use super::events::{
+    DecodedEvent, EventClass, EventStreamError, OPCODE_NOT_MEASURED_CLAIM,
+    RUN_TIME_NOT_MEASURED_CLAIM, opcode_info,
+};
 use super::programs::{
     ANIMATION_DEFINITIONS_RECORD, AnimationDefinitionSite, BindingResolution, ObjectSelector,
     SelectorMatch, StartupAnimationBinding, WorldActorProgramBinding, WorldNodeNames,
@@ -132,21 +137,23 @@ const WORLD_CONTAINER: &str = "gamez.zbd";
 pub const DECLARATION_MATCH_CLAIM: &str = "f20-anim.startup-record-matches-its-declaring-member";
 
 /// The claim under which "an animation record cannot be played yet" is recorded.
-pub const EVENTS_NOT_DECODED_CLAIM: &str = "f20-anim.sequence-event-stream-not-decoded";
+///
+/// One value, owned by [`super::events`]: this alias exists so the consumer's
+/// public name and the decoder's name cannot drift apart.
+pub const EVENTS_NOT_DECODED_CLAIM: &str = super::events::EVENT_STREAM_NOT_DECODED_CLAIM;
 
 /// The claim under which "a placed world actor is not spawned from its
 /// declaration yet" is recorded.
 pub const PLACEMENT_FIELDS_CLAIM: &str = "f20-anim.placement-member-fields-undecoded";
 
-/// Why a record whose declaration and record agree still cannot be played.
+/// Why a record this consumer holds no event bytes for is not played.
 ///
-/// The record's sequence blocks are raw bytes: no event layout is measured for
-/// this installation, so no statement, tick or pose is recoverable, and the
-/// MechWarrior 3 event grammar the pinned upstream source documents is
-/// explicitly not assumed to apply here (F20 behavior 2).
-pub const EVENTS_NOT_DECODED_REASON: &str = "the record's sequence blocks are raw bytes: no event layout is measured for this \
-     installation, so the record states no statement, no tick and no pose, and the pinned \
-     MechWarrior 3 event grammar is not assumed to apply (F20 behavior 2)";
+/// A record whose blocks **are** held is decoded by [`super::events`]; a
+/// structural failure of that walk keeps its own reason (the walk's), and an
+/// opcode no declaration joins keeps [`OPCODE_NOT_MEASURED_CLAIM`] instead.
+pub const EVENTS_NOT_DECODED_REASON: &str = "the consumer holds no event bytes for this record's \
+     sequence blocks (a synthetic or partial row), so nothing is decoded and no statement, tick or \
+     pose is recoverable from it";
 
 /// Why a record whose `object_name` is not one of its declaration's selectors is
 /// refused instead of matched to the nearest spelling.
@@ -225,8 +232,9 @@ impl std::error::Error for MissionAnimationError {}
 
 /// One sequence block of an animation record, as far as it is measured.
 ///
-/// The block's name and its event-stream length are measured; the events
-/// themselves are not decoded ([`EVENTS_NOT_DECODED_REASON`]).
+/// The block's name and its event-stream length are always measured; the
+/// events themselves are decoded by [`super::events`] when this consumer holds
+/// the block's bytes, and [`SequenceEvents::Absent`] says when it does not.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordSequence {
     /// Reset, damage or ordinary.
@@ -236,6 +244,57 @@ pub struct RecordSequence {
     pub name: String,
     /// The block's event stream in bytes — a length, never an interpretation.
     pub event_bytes: u64,
+    /// The block's decoded events, or why they are not decoded.
+    pub events: SequenceEvents,
+}
+
+/// What one sequence block's event bytes became.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SequenceEvents {
+    /// The consumer holds no bytes for this block (a synthetic or partial
+    /// row). Refused under [`EVENTS_NOT_DECODED_CLAIM`], never played.
+    Absent,
+    /// The stream walked and every opcode joined a statement: these are the
+    /// measured events, with their statement spellings and timing.
+    Decoded(Vec<DecodedEvent>),
+    /// The stream did not walk, or an opcode joins no statement. The refusal
+    /// keeps its byte offset and its claim, so a reviewer can read exactly
+    /// where the block stopped being measured.
+    Refused {
+        /// The decoder's own stable code.
+        code: &'static str,
+        /// Why it was refused, in the words of the finding.
+        reason: &'static str,
+        /// Byte offset inside the block's stream.
+        offset: u64,
+        /// The claim the refusal travels under.
+        claim_id: &'static str,
+        /// The opcode the refusal names, when it is an unjoined opcode.
+        opcode: Option<u8>,
+    },
+}
+
+impl SequenceEvents {
+    /// The decoded events, when the block walked and every opcode is measured.
+    #[must_use]
+    pub const fn decoded(&self) -> Option<&Vec<DecodedEvent>> {
+        match self {
+            Self::Decoded(events) => Some(events),
+            Self::Absent | Self::Refused { .. } => None,
+        }
+    }
+
+    /// Refuses a stream error with its own code, reason, offset and claim.
+    #[must_use]
+    pub fn refused(error: &EventStreamError) -> Self {
+        Self::Refused {
+            code: error.code(),
+            reason: error.reason(),
+            offset: error.offset(),
+            claim_id: error.claim_id(),
+            opcode: error.opcode(),
+        }
+    }
 }
 
 impl RecordSequence {
@@ -257,14 +316,384 @@ impl RecordSequence {
     pub const fn event_bytes(&self) -> u64 {
         self.event_bytes
     }
+
+    /// The block's decoded events, or why they are not decoded.
+    #[must_use]
+    pub const fn events(&self) -> &SequenceEvents {
+        &self.events
+    }
+}
+
+/// Why a walked record still cannot report a playback.
+///
+/// Every value keeps a byte offset and a claim, so a refusal is readable
+/// against the record's own source locator instead of being a boolean.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlaybackGap {
+    /// The consumer holds no bytes for this record's blocks: nothing is
+    /// decoded, so nothing plays.
+    Absent,
+    /// A block's bytes are not the measured event shape.
+    NotDecoded {
+        /// The decoder's own stable code.
+        code: &'static str,
+        /// Why it was refused, in the words of the finding.
+        reason: &'static str,
+        /// Byte offset inside the block's stream.
+        offset: u64,
+        /// The claim the refusal travels under.
+        claim_id: &'static str,
+    },
+    /// A block carries an opcode no declaration of the installation joins to a
+    /// statement: its class, timing and effect are unmeasured.
+    OpcodeNotDecoded {
+        /// The stored opcode.
+        opcode: u8,
+        /// [`super::events::OPCODE_NOT_MEASURED_REASON`], verbatim.
+        reason: &'static str,
+        /// Byte offset inside the block's stream.
+        offset: u64,
+        /// [`OPCODE_NOT_MEASURED_CLAIM`].
+        claim_id: &'static str,
+    },
+    /// A block carries a statement whose `RUN_TIME` position has not been
+    /// value-matched, so a duration for the record could only be guessed.
+    TimingNotDecoded {
+        /// The stored opcode.
+        opcode: u8,
+        /// [`super::events::RUN_TIME_NOT_MEASURED_REASON`], verbatim.
+        reason: &'static str,
+        /// Byte offset inside the block's stream.
+        offset: u64,
+        /// [`RUN_TIME_NOT_MEASURED_CLAIM`].
+        claim_id: &'static str,
+    },
+}
+
+impl PlaybackGap {
+    /// The stable label a report groups by.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Absent => "events_absent",
+            Self::NotDecoded { .. } => "event_stream_not_decoded",
+            Self::OpcodeNotDecoded { .. } => "event_opcode_not_decoded",
+            Self::TimingNotDecoded { .. } => "event_timing_not_decoded",
+        }
+    }
+
+    /// Why the record is not played, in the words of the finding.
+    #[must_use]
+    pub const fn reason(&self) -> &'static str {
+        match self {
+            Self::Absent => EVENTS_NOT_DECODED_REASON,
+            Self::NotDecoded { reason, .. }
+            | Self::OpcodeNotDecoded { reason, .. }
+            | Self::TimingNotDecoded { reason, .. } => reason,
+        }
+    }
+
+    /// The claim the refusal is recorded under.
+    #[must_use]
+    pub const fn claim_id(&self) -> &'static str {
+        match self {
+            Self::Absent | Self::NotDecoded { .. } => EVENTS_NOT_DECODED_CLAIM,
+            Self::OpcodeNotDecoded { claim_id, .. } | Self::TimingNotDecoded { claim_id, .. } => {
+                claim_id
+            }
+        }
+    }
+
+    /// The opcode the refusal names, when one is named.
+    #[must_use]
+    pub const fn opcode(&self) -> Option<u8> {
+        match self {
+            Self::OpcodeNotDecoded { opcode, .. } | Self::TimingNotDecoded { opcode, .. } => {
+                Some(*opcode)
+            }
+            Self::Absent | Self::NotDecoded { .. } => None,
+        }
+    }
+
+    /// The byte offset the refusal was found at, when the walk named one.
+    #[must_use]
+    pub const fn offset(&self) -> Option<u64> {
+        match self {
+            Self::Absent => None,
+            Self::NotDecoded { offset, .. }
+            | Self::OpcodeNotDecoded { offset, .. }
+            | Self::TimingNotDecoded { offset, .. } => Some(*offset),
+        }
+    }
+
+    /// Converts this gap into the consumer's refusal, keeping its reason, its
+    /// claim and its source locator.
+    #[must_use]
+    pub fn refusal(&self) -> PlayRefusal {
+        let claim_id = ClaimId::new(self.claim_id())
+            .expect("a gap's claim id is a static, validated constant");
+        let reason = self.reason();
+        let offset = self.offset();
+        match self {
+            Self::OpcodeNotDecoded { opcode, .. } => PlayRefusal::EventOpcodeUndecoded {
+                reason,
+                claim_id,
+                opcode: *opcode,
+                offset: offset.unwrap_or_default(),
+            },
+            Self::TimingNotDecoded { opcode, .. } => PlayRefusal::EventTimingUndecoded {
+                reason,
+                claim_id,
+                opcode: *opcode,
+                offset: offset.unwrap_or_default(),
+            },
+            Self::Absent | Self::NotDecoded { .. } => PlayRefusal::EventsNotDecoded {
+                reason,
+                claim_id,
+                offset,
+            },
+        }
+    }
+
+    /// Converts a decoder refusal into this consumer's gap.
+    #[must_use]
+    pub fn of(error: &EventStreamError) -> Self {
+        match error.opcode() {
+            Some(opcode) => match opcode_info(opcode).and_then(|info| info.timing_gap_claim()) {
+                Some(RUN_TIME_NOT_MEASURED_CLAIM) => Self::TimingNotDecoded {
+                    opcode,
+                    reason: error.reason(),
+                    offset: error.offset(),
+                    claim_id: RUN_TIME_NOT_MEASURED_CLAIM,
+                },
+                _ => Self::OpcodeNotDecoded {
+                    opcode,
+                    reason: error.reason(),
+                    offset: error.offset(),
+                    claim_id: OPCODE_NOT_MEASURED_CLAIM,
+                },
+            },
+            None => Self::NotDecoded {
+                code: error.code(),
+                reason: error.reason(),
+                offset: error.offset(),
+                claim_id: error.claim_id(),
+            },
+        }
+    }
+}
+
+impl SequenceEvents {
+    /// The gap that keeps this block's record from a playback, when there is
+    /// one. `None` means the block decoded.
+    #[must_use]
+    pub fn gap(&self) -> Option<PlaybackGap> {
+        match self {
+            Self::Absent => Some(PlaybackGap::Absent),
+            Self::Decoded(_) => None,
+            Self::Refused {
+                code,
+                reason,
+                offset,
+                claim_id,
+                opcode,
+            } => Some(match opcode {
+                Some(opcode) if *claim_id == RUN_TIME_NOT_MEASURED_CLAIM => {
+                    PlaybackGap::TimingNotDecoded {
+                        opcode: *opcode,
+                        reason,
+                        offset: *offset,
+                        claim_id,
+                    }
+                }
+                Some(opcode) => PlaybackGap::OpcodeNotDecoded {
+                    opcode: *opcode,
+                    reason,
+                    offset: *offset,
+                    claim_id,
+                },
+                None => PlaybackGap::NotDecoded {
+                    code,
+                    reason,
+                    offset: *offset,
+                    claim_id,
+                },
+            }),
+        }
+    }
+}
+
+/// One decoded sequence block of a playable record.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaybackSequence {
+    /// Reset, damage or ordinary.
+    pub kind: AnimationRecordSequenceKind,
+    /// The block's name, verbatim.
+    pub name: String,
+    /// The block's decoded events, in stored order.
+    pub events: Vec<DecodedEvent>,
+}
+
+impl PlaybackSequence {
+    /// The block's largest `end_time`, in the original's stored time unit.
+    #[must_use]
+    pub fn duration_time(&self) -> f32 {
+        self.events
+            .iter()
+            .map(DecodedEvent::end_time)
+            .fold(0.0_f32, f32::max)
+    }
+}
+
+/// A record's playback: its decoded blocks and the duration they measure.
+///
+/// The duration is the largest `end_time` over every decoded event of every
+/// block, in the **original's stored time unit**. The unit is not established
+/// (seconds is plausible, unverified), so this value is reported and never
+/// multiplied into ticks by this module: [`Self::poses`] takes the caller's
+/// tick rate as its own statement.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordPlayback {
+    duration_time: f32,
+    sequences: Vec<PlaybackSequence>,
+}
+
+impl RecordPlayback {
+    /// Builds a playback from decoded blocks, measuring the duration.
+    #[must_use]
+    pub fn new(sequences: Vec<PlaybackSequence>) -> Self {
+        let duration_time = sequences
+            .iter()
+            .map(PlaybackSequence::duration_time)
+            .fold(0.0_f32, f32::max);
+        Self {
+            duration_time,
+            sequences,
+        }
+    }
+
+    /// The largest `end_time` over the record's decoded events, in the
+    /// original's stored time unit. Measured from the payloads: `START_TIME`
+    /// at word `0` plus `RUN_TIME` at the last word where the opcode's
+    /// position is value-matched.
+    #[must_use]
+    pub const fn duration_time(&self) -> f32 {
+        self.duration_time
+    }
+
+    /// The record's decoded blocks, in stored order.
+    #[must_use]
+    pub fn sequences(&self) -> &[PlaybackSequence] {
+        &self.sequences
+    }
+
+    /// Every decoded event of every block, in stored order.
+    pub fn events(&self) -> impl Iterator<Item = &DecodedEvent> {
+        self.sequences.iter().flat_map(|sequence| &sequence.events)
+    }
+
+    /// The record's **per-tick pose report**: one row per tick of the caller's
+    /// timeline, listing every statement the record has *started* by that tick
+    /// — its measured configuration at that moment — each keeping its own
+    /// `[start_time, end_time]` span.
+    ///
+    /// What this is, exactly: the event stream stores **statements** — an
+    /// opcode, its authored target fields and its timing — and no keyframes
+    /// (measured over all 56 994 retail blocks). So a row here is the record's
+    /// measured activity at that tick, with the installation's own statement
+    /// spelling, and **not** a transform: no `PoseSample` is produced from an
+    /// event, because the stored unit (#436), the original's animation tick
+    /// rate and the interpolation of a motion statement are all unmeasured.
+    ///
+    /// The caller states the tick rate: `ticks_per_second` is the caller's own
+    /// timeline, not a measurement of the original's (see
+    /// `f20-anim.tick-rate-unmeasured`). A rate of zero samples nothing and
+    /// returns an empty report.
+    #[must_use]
+    pub fn poses(&self, ticks_per_second: u32) -> Vec<TickPose> {
+        if ticks_per_second == 0 {
+            return Vec::new();
+        }
+        let rate = ticks_per_second as f32;
+        let last = (self.duration_time * rate).ceil();
+        let last = if last.is_finite() && last >= 0.0 {
+            last as u64
+        } else {
+            0
+        };
+        (0..=last)
+            .map(|tick| {
+                let time = tick as f32 / rate;
+                let statements = self
+                    .events()
+                    .filter(|event| event.start_time() <= time)
+                    .map(PoseStatement::of)
+                    .collect();
+                TickPose { tick, statements }
+            })
+            .collect()
+    }
+}
+
+/// One statement a [`TickPose`] row holds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PoseStatement {
+    /// The opcode byte.
+    pub opcode: u8,
+    /// The installation's own statement spelling.
+    pub statement: &'static str,
+    /// This project's class of that spelling.
+    pub class: EventClass,
+    /// When the statement starts, in the original's stored time unit.
+    pub start_time: f32,
+    /// When it ends, in the original's stored time unit.
+    pub end_time: f32,
+}
+
+impl PoseStatement {
+    /// Reads one decoded event into a pose row's statement.
+    #[must_use]
+    pub fn of(event: &DecodedEvent) -> Self {
+        Self {
+            opcode: event.opcode,
+            statement: event.statement,
+            class: event.class,
+            start_time: event.start_time(),
+            end_time: event.end_time(),
+        }
+    }
+}
+
+/// The record's decoded activity at one tick of the caller's timeline.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TickPose {
+    /// The tick, counting from the record's start.
+    pub tick: u64,
+    /// Every statement whose span covers this tick, in stored order.
+    pub statements: Vec<PoseStatement>,
+}
+
+impl TickPose {
+    /// The tick, counting from the record's start.
+    #[must_use]
+    pub const fn tick(&self) -> u64 {
+        self.tick
+    }
+
+    /// Every statement whose span covers this tick, in stored order.
+    #[must_use]
+    pub fn statements(&self) -> &[PoseStatement] {
+        &self.statements
+    }
 }
 
 /// One animation record of a carrier payload, owned and measured.
 ///
 /// Every field here is read verbatim out of the original bytes. The flag word's
-/// bits, the status / activation / priority bytes' meanings, the bodies of the
-/// table entries after their names and the event streams are **unmeasured**,
-/// and the finding names each of them.
+/// bits, the status / activation / priority bytes' meanings and the bodies of
+/// the table entries after their names are **unmeasured**; the sequence blocks'
+/// events are decoded by [`super::events`] and each block keeps whether that
+/// happened ([`SequenceEvents`]), and the finding names what stays open.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationRecordFacts {
     /// Which carrier holds the record.
@@ -445,6 +874,63 @@ impl AnimationRecordFacts {
     pub fn sequence(&self, kind: AnimationRecordSequenceKind) -> Option<&RecordSequence> {
         self.sequences.iter().find(|block| block.kind == kind)
     }
+
+    /// The record's playback: its decoded blocks and the duration their
+    /// measured timing gives, in the original's stored time unit.
+    ///
+    /// # Errors
+    ///
+    /// The [`PlaybackGap`] that keeps this record from a playback: bytes this
+    /// consumer does not hold, a stream that is not the measured event shape,
+    /// an opcode no declaration joins, or a `RUN_TIME` position that was never
+    /// value-matched. **One** gap refuses the whole record: partial decoding
+    /// never becomes a partial playback.
+    pub fn playback(&self) -> Result<RecordPlayback, PlaybackGap> {
+        let mut sequences = Vec::with_capacity(self.sequences.len());
+        for block in &self.sequences {
+            let SequenceEvents::Decoded(events) = &block.events else {
+                return Err(block
+                    .events
+                    .gap()
+                    .expect("a refused block always states its gap"));
+            };
+            // A decoded stream can still carry a statement whose timing was
+            // never value-matched (opcode 5): that gap refuses the record
+            // before any duration is read, never a shortened duration.
+            for event in events {
+                let info = opcode_info(event.opcode)
+                    .expect("a decoded event's opcode is in the stored table");
+                if let Some(claim_id) = info.timing_gap_claim() {
+                    let reason = info
+                        .timing_gap_reason()
+                        .expect("a gap claim always travels with its reason");
+                    let offset = event.offset;
+                    let opcode = event.opcode;
+                    return Err(if claim_id == RUN_TIME_NOT_MEASURED_CLAIM {
+                        PlaybackGap::TimingNotDecoded {
+                            opcode,
+                            reason,
+                            offset,
+                            claim_id,
+                        }
+                    } else {
+                        PlaybackGap::OpcodeNotDecoded {
+                            opcode,
+                            reason,
+                            offset,
+                            claim_id,
+                        }
+                    });
+                }
+            }
+            sequences.push(PlaybackSequence {
+                kind: block.kind,
+                name: block.name.clone(),
+                events: events.clone(),
+            });
+        }
+        Ok(RecordPlayback::new(sequences))
+    }
 }
 
 /// Where a startup identity's payload record was found.
@@ -604,6 +1090,14 @@ impl AnimationTarget {
 }
 
 /// Why one startup animation is not played.
+///
+/// The first six are disagreements or content nobody stored: the record's own
+/// halves do not match, or no member declares the name. The three event
+/// refusals are about the record's sequence blocks: this consumer holds no
+/// bytes for them, the bytes are not the measured event shape, an opcode joins
+/// no statement of the installation, or a statement's `RUN_TIME` position was
+/// never value-matched. Each keeps its claim and its byte offset, so F20
+/// behavior 2's source locator is never dropped.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayRefusal {
     /// No member of the closure declares this animation name.
@@ -645,13 +1139,40 @@ pub enum PlayRefusal {
         /// The record's ordinary sequence block names, verbatim.
         stored: Vec<String>,
     },
-    /// The record is walked and both name agreements hold, but its events are
-    /// not decoded.
+    /// The record is walked and both name agreements hold, but one of its
+    /// blocks is not the measured event shape (or holds no bytes here).
     EventsNotDecoded {
-        /// [`EVENTS_NOT_DECODED_REASON`], verbatim.
+        /// [`EVENTS_NOT_DECODED_REASON`] or the walk's own reason, verbatim.
         reason: &'static str,
         /// [`EVENTS_NOT_DECODED_CLAIM`].
         claim_id: ClaimId,
+        /// The byte offset the refusal was found at, when the walk named one.
+        offset: Option<u64>,
+    },
+    /// The record is walked, but one of its events carries an opcode no
+    /// declaration of the installation joins to a statement.
+    EventOpcodeUndecoded {
+        /// [`super::events::OPCODE_NOT_MEASURED_REASON`], verbatim.
+        reason: &'static str,
+        /// [`OPCODE_NOT_MEASURED_CLAIM`].
+        claim_id: ClaimId,
+        /// The stored opcode that was refused.
+        opcode: u8,
+        /// The byte offset the refusal was found at inside the block.
+        offset: u64,
+    },
+    /// The record is walked and every opcode joins a statement, but one of
+    /// them states a `RUN_TIME` whose payload position has not been
+    /// value-matched, so a duration could only be guessed.
+    EventTimingUndecoded {
+        /// [`super::events::RUN_TIME_NOT_MEASURED_REASON`], verbatim.
+        reason: &'static str,
+        /// [`RUN_TIME_NOT_MEASURED_CLAIM`].
+        claim_id: ClaimId,
+        /// The stored opcode whose timing is unmeasured.
+        opcode: u8,
+        /// The byte offset the refusal was found at inside the block.
+        offset: u64,
     },
 }
 
@@ -666,6 +1187,8 @@ impl PlayRefusal {
             Self::ObjectNameDisagrees { .. } => "object_name_disagrees",
             Self::SequenceNamesDisagree { .. } => "sequence_names_disagree",
             Self::EventsNotDecoded { .. } => "events_not_decoded",
+            Self::EventOpcodeUndecoded { .. } => "event_opcode_undecoded",
+            Self::EventTimingUndecoded { .. } => "event_timing_undecoded",
         }
     }
 
@@ -678,17 +1201,45 @@ impl PlayRefusal {
             | Self::NoRecord { reason, .. }
             | Self::ObjectNameDisagrees { reason, .. }
             | Self::SequenceNamesDisagree { reason, .. }
-            | Self::EventsNotDecoded { reason, .. } => reason,
+            | Self::EventsNotDecoded { reason, .. }
+            | Self::EventOpcodeUndecoded { reason, .. }
+            | Self::EventTimingUndecoded { reason, .. } => reason,
         }
     }
 
-    /// The claim the refusal is recorded under, when it has one. Only the
-    /// event-stream gap carries one: the others describe content that was read
-    /// and does not match, or content nobody stored.
+    /// The claim the refusal is recorded under, when it has one. The three
+    /// event refusals carry one each — the stream's shape, an opcode nobody
+    /// joins, and a `RUN_TIME` position nobody value-matched — the others
+    /// describe content that was read and does not match, or content nobody
+    /// stored.
     #[must_use]
     pub const fn claim_id(&self) -> Option<&ClaimId> {
         match self {
-            Self::EventsNotDecoded { claim_id, .. } => Some(claim_id),
+            Self::EventsNotDecoded { claim_id, .. }
+            | Self::EventOpcodeUndecoded { claim_id, .. }
+            | Self::EventTimingUndecoded { claim_id, .. } => Some(claim_id),
+            _ => None,
+        }
+    }
+
+    /// The event the refusal names: the stored opcode for the two event gaps,
+    /// `None` for everything else.
+    #[must_use]
+    pub const fn event_opcode(&self) -> Option<u8> {
+        match self {
+            Self::EventOpcodeUndecoded { opcode, .. }
+            | Self::EventTimingUndecoded { opcode, .. } => Some(*opcode),
+            _ => None,
+        }
+    }
+
+    /// The byte offset the refusal was found at, for the three event refusals.
+    #[must_use]
+    pub const fn event_offset(&self) -> Option<u64> {
+        match self {
+            Self::EventsNotDecoded { offset, .. } => *offset,
+            Self::EventOpcodeUndecoded { offset, .. }
+            | Self::EventTimingUndecoded { offset, .. } => Some(*offset),
             _ => None,
         }
     }
@@ -720,9 +1271,29 @@ impl fmt::Display for PlayRefusal {
                 f,
                 "declared {declared:?} against the record's {stored:?}: {reason}"
             ),
-            Self::EventsNotDecoded { reason, claim_id } => {
+            Self::EventsNotDecoded {
+                reason, claim_id, ..
+            } => {
                 write!(f, "not played ({claim_id}): {reason}")
             }
+            Self::EventOpcodeUndecoded {
+                reason,
+                claim_id,
+                opcode,
+                offset,
+            } => write!(
+                f,
+                "event {opcode} at +{offset} not played ({claim_id}): {reason}"
+            ),
+            Self::EventTimingUndecoded {
+                reason,
+                claim_id,
+                opcode,
+                offset,
+            } => write!(
+                f,
+                "event {opcode} at +{offset} not played ({claim_id}): {reason}"
+            ),
         }
     }
 }
@@ -739,6 +1310,9 @@ pub struct StartupAnimation {
     /// Every name this animation addresses, in join order: the declaration's
     /// selectors, then the record's object, root and node-table entries.
     pub targets: Vec<AnimationTarget>,
+    /// The record's playback, when every sequence block decoded and every
+    /// opcode joined a statement. `None` exactly when a refusal says why.
+    pub playback: Option<RecordPlayback>,
     /// Every refusal, in the order the join found them. Empty means playable.
     pub refusals: Vec<PlayRefusal>,
 }
@@ -796,11 +1370,24 @@ impl StartupAnimation {
             .filter(|target| target.resolution.occurrences().is_some())
     }
 
-    /// Whether this animation can be played. `false` for every record the
-    /// installation holds today ([`EVENTS_NOT_DECODED_REASON`]).
+    /// Whether this animation can be played.
+    ///
+    /// `true` exactly when the join found no refusal: the two name agreements
+    /// hold **and** every sequence block decoded, so a duration and a per-tick
+    /// pose report exist ([`Self::playback`]). A record carrying an opcode no
+    /// declaration joins, or a `RUN_TIME` nobody value-matched, is refused
+    /// instead: partial decoding never yields a partial playback.
     #[must_use]
     pub fn is_playable(&self) -> bool {
         self.refusals.is_empty()
+    }
+
+    /// The record's playback — its duration and its per-tick pose report —
+    /// when every sequence block decoded. `None` exactly when a refusal says
+    /// why, so a caller can never read a duration out of a refused record.
+    #[must_use]
+    pub const fn playback(&self) -> Option<&RecordPlayback> {
+        self.playback.as_ref()
     }
 }
 
@@ -836,12 +1423,12 @@ pub fn join_startup_animation(
             });
         }
     }
+    let mut playback = None;
     match &record {
-        RecordResolution::Bound(_) => refusals.push(PlayRefusal::EventsNotDecoded {
-            reason: EVENTS_NOT_DECODED_REASON,
-            claim_id: ClaimId::new(EVENTS_NOT_DECODED_CLAIM)
-                .expect("the event-stream claim id is a static, validated constant"),
-        }),
+        RecordResolution::Bound(facts) => match facts.playback() {
+            Ok(decoded) => playback = Some(decoded),
+            Err(gap) => refusals.push(gap.refusal()),
+        },
         RecordResolution::Unbound { reason, matches } => {
             refusals.push(PlayRefusal::NoRecord {
                 reason,
@@ -880,6 +1467,7 @@ pub fn join_startup_animation(
         declaration,
         record,
         targets,
+        playback,
         refusals,
     }
 }
@@ -1617,6 +2205,10 @@ fn own_record(
                 kind: block.kind(),
                 name: text(block.name()),
                 event_bytes: block.events().len() as u64,
+                events: match super::events::decode_event_stream(block.events()) {
+                    Ok(decoded) => SequenceEvents::Decoded(decoded),
+                    Err(error) => SequenceEvents::refused(&error),
+                },
             })
             .collect(),
     })
@@ -1753,6 +2345,7 @@ mod tests {
                 format!("{identity}_node"),
                 None,
             )],
+            playback: None,
             refusals,
         }
     }

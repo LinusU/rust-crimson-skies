@@ -1,11 +1,14 @@
 //! Task #678 (`M01-LC-ACTOR-ANIM-PLAYBACK`): the mission animation consumer —
 //! one mission scope's startup world actors and animation records, joined and
-//! refused.
+//! refused, and (task #690, `F20-EVENT-GRAMMAR`) played once their event
+//! streams decode.
 //!
 //! Spec: `specs/F20-object-animation-and-authored-destruction-states.md`
 //! (`### F20-D`, non-negotiable behavior 2). Shared contract:
-//! `docs/contracts/IDENTITY-CONTENT.md`. Finding:
-//! `docs/findings/2026-10-05-m01-lc-actor-anim-playback.md`.
+//! `docs/contracts/IDENTITY-CONTENT.md`. Findings:
+//! `docs/findings/2026-10-05-m01-lc-actor-anim-playback.md` (#678, the join)
+//! and `docs/findings/2026-10-06-f20-event-grammar.md` (#690, the grammar,
+//! the census and the duration).
 //!
 //! These tests drive `cs_app::animation::mission` only. Every fixture below is
 //! newly authored synthetic data in the **measured shapes** the readers accept,
@@ -25,9 +28,9 @@ use cs_app::animation::mission::{
     AMBIGUOUS_DECLARATION_REASON, AnimationRecordFacts, AnimationTarget, DECLARATION_MATCH_CLAIM,
     EVENTS_NOT_DECODED_CLAIM, EVENTS_NOT_DECODED_REASON, OBJECT_NAME_DISAGREES_REASON,
     PLACEMENT_FIELDS_CLAIM, PLACEMENT_FIELDS_REASON, PlayRefusal, RecordResolution, RecordSequence,
-    SEQUENCE_NAMES_DISAGREE_REASON, StartupAnimation, TargetResolution, TargetSource,
-    UNDECLARED_REASON, UNREADABLE_TARGET_REASON, WorldActorPlacement, bind_mission_animation,
-    join_startup_animation,
+    SEQUENCE_NAMES_DISAGREE_REASON, SequenceEvents, StartupAnimation, TargetResolution,
+    TargetSource, UNDECLARED_REASON, UNREADABLE_TARGET_REASON, WorldActorPlacement,
+    bind_mission_animation, join_startup_animation,
 };
 use cs_app::animation::programs::{
     ANIMATION_DEFINITION_FIELD, ANIMATION_DEFINITIONS_RECORD, ANIMATION_LIST_FIELD,
@@ -207,6 +210,7 @@ fn record(spec: &RecordSpec<'_>, carrier: CarrierKind, index: usize) -> Animatio
                 kind: *kind,
                 name: (*name).to_owned(),
                 event_bytes: *event_bytes,
+                events: SequenceEvents::Absent,
             })
             .collect(),
     }
@@ -327,11 +331,20 @@ fn accept_m01_lc_actor_anim_playback_a_pair_is_joint_only_when_both_names_agree(
         1,
         "an agreeing pair is refused for exactly one reason: {joined:?}"
     );
-    let PlayRefusal::EventsNotDecoded { reason, claim_id } = joined.refusals[0].clone() else {
+    let PlayRefusal::EventsNotDecoded {
+        reason,
+        claim_id,
+        offset,
+    } = joined.refusals[0].clone()
+    else {
         panic!("the only refusal of an agreeing pair is the event gap: {joined:?}");
     };
     assert_eq!(reason, EVENTS_NOT_DECODED_REASON);
     assert_eq!(claim_id.as_str(), EVENTS_NOT_DECODED_CLAIM);
+    assert_eq!(
+        offset, None,
+        "bytes this consumer does not hold have no offset to quote"
+    );
 
     // The measured disagreement (`zbd/zrdr.zbd::autogyro_bus.zrd` declares
     // `agyrobus` over `agyro_rotors`, the record stores `autogyro`): reported
@@ -985,13 +998,16 @@ fn retail_root() -> std::path::PathBuf {
 
 const M01: &str = "zbd/c1c/m01";
 
-/// **M01's startup animations are joined and refused**: seven identities across
+/// **M01's startup animations are joined and played**: seven identities across
 /// two events, every one resolved to exactly one declaring member and exactly
 /// one carrier record, both name agreements holding for all seven, every world
-/// name resolving, and every row refused with its own reason and source span.
+/// name resolving, and every row playable with its decoded duration and its
+/// per-tick pose report (the refusal this row set carried before #690 measured
+/// the event grammar is gone because the bytes now decode, not because the
+/// check was relaxed).
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m01_lc_actor_anim_playback_retail_m01_startup_animations_are_joined_and_refused() {
+fn accept_m01_lc_actor_anim_playback_retail_m01_startup_animations_are_joined_and_played() {
     let binding = bind_mission_animation(&retail_root(), M01).expect("M01 binds");
 
     assert_eq!(binding.scope(), M01);
@@ -1046,8 +1062,12 @@ fn accept_m01_lc_actor_anim_playback_retail_m01_startup_animations_are_joined_an
     let new_game = binding.run(NEW_GAME_START);
     assert_eq!(new_game.event(), NEW_GAME_START);
     assert_eq!(new_game.len(), 6);
-    assert_eq!(new_game.playable().count(), 0);
-    assert_eq!(new_game.refused().count(), 6);
+    assert_eq!(
+        new_game.playable().count(),
+        6,
+        "every NEW_GAME_START row decoded"
+    );
+    assert_eq!(new_game.refused().count(), 0);
     assert_eq!(binding.run(LOAD_GAME_START).len(), 1);
     assert!(
         binding.run("NO_SUCH_EVENT").is_empty(),
@@ -1150,29 +1170,37 @@ fn accept_m01_lc_actor_anim_playback_retail_m01_startup_animations_are_joined_an
         ]
     );
 
-    // Both name agreements hold for all seven: the only refusal each row carries
-    // is the event gap, which is why nothing is played and why the refusal is
-    // the honest answer rather than a missing feature.
+    // Both name agreements hold for all seven, and every one of their event
+    // streams walks under the measured grammar (#690): all seven are playable,
+    // each with its own decoded duration and per-tick pose report.
     assert_eq!(
         binding.playable_count(),
-        0,
-        "no record's events are decoded, so nothing plays"
+        7,
+        "every joined record's events decode, so every row plays"
     );
-    assert_eq!(binding.refused_count(), 7);
+    assert_eq!(binding.refused_count(), 0);
     for row in binding.startup() {
-        assert_eq!(
-            row.refusals().len(),
-            1,
-            "{} is refused for exactly one reason: {row:?}",
+        assert!(
+            row.refusals().is_empty(),
+            "{} plays for exactly no reason: {row:?}",
             row.identity()
         );
-        let PlayRefusal::EventsNotDecoded { claim_id, .. } = &row.refusals()[0] else {
-            panic!(
-                "{}'s only refusal is the event gap: {row:?}",
-                row.identity()
-            );
-        };
-        assert_eq!(claim_id.as_str(), EVENTS_NOT_DECODED_CLAIM);
+        let playback = row.playback().expect("a playable row carries a playback");
+        assert!(
+            playback.duration_time() >= 0.0,
+            "{}: a measured duration is never negative",
+            row.identity()
+        );
+        assert!(
+            playback.events().next().is_some(),
+            "{}: the record states at least one statement",
+            row.identity()
+        );
+        assert!(
+            !playback.poses(30).is_empty(),
+            "{}: the per-tick report covers the record's own timeline",
+            row.identity()
+        );
     }
 
     // The refusals keep their source locator: every bound record's span points
@@ -1533,4 +1561,752 @@ fn header_bytes(bytes: &[u8]) -> &[u8] {
         .map_or(0, |rule| rule.required_bytes())
         .min(bytes.len());
     &bytes[..needed]
+}
+
+// ---------------------------------------------------------------------------
+// Task #690 (`F20-EVENT-GRAMMAR`, prefix `accept_f20_event_`): the measured
+// event grammar the refusal above was waiting for.
+//
+// The grammar is `cs_app::animation::events`: an eight-byte tag/length header
+// per event, an opcode table whose statement spellings come from the
+// installation's own declarations, `START_TIME` at payload word `0` and
+// `RUN_TIME` at the payload's last word where the position is value-matched.
+// These tests drive that decoder and the consumer half in `mission` together:
+// a decoded record reports a duration and a per-tick pose report, and an
+// opcode nobody joins — or a `RUN_TIME` nobody value-matched — refuses the
+// whole record.
+// ---------------------------------------------------------------------------
+
+use cs_app::animation::events::{
+    EVENT_HEADER_BYTES, EventClass, OPCODE_NOT_MEASURED_CLAIM, RUN_TIME_NOT_MEASURED_CLAIM,
+    STORED_OPCODES, decode_event_stream, opcode_info, sequence_duration, walk_event_stream,
+};
+use cs_app::animation::mission::{PlaybackGap, TickPose};
+
+/// The measured retail payload length of one opcode's event, so a synthetic
+/// event has the shape the corpus stores.
+const fn retail_payload(opcode: u8) -> usize {
+    match opcode {
+        5 => 104,
+        6 => 12,
+        11 => 136,
+        13 => 16,
+        24 => 72,
+        _ => 32,
+    }
+}
+
+/// One event's bytes: the measured header (tag word, then length word) and a
+/// payload whose word `0` is `start` and whose last word is `run`.
+fn synthetic_event(opcode: u8, group: u8, start: f32, run: f32) -> Vec<u8> {
+    let payload_len = retail_payload(opcode);
+    assert!(payload_len >= 8 && payload_len.is_multiple_of(4));
+    let mut bytes = (u32::from(opcode) | (u32::from(group) << 8))
+        .to_le_bytes()
+        .to_vec();
+    bytes.extend_from_slice(
+        &u32::try_from(EVENT_HEADER_BYTES + payload_len)
+            .expect("a small length")
+            .to_le_bytes(),
+    );
+    let words = payload_len / 4;
+    for index in 0..words {
+        let value = if index == 0 {
+            start
+        } else if index + 1 == words {
+            run
+        } else {
+            0.0
+        };
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
+/// Concatenates events into one block's stream.
+fn stream(events: &[Vec<u8>]) -> Vec<u8> {
+    events.concat()
+}
+
+/// One synthetic record whose sequences are decoded by the **production**
+/// decoder, exactly as `mission::own_record` does for a walked carrier.
+fn event_facts(
+    anim: &str,
+    sequences: &[(&str, AnimationRecordSequenceKind, Vec<u8>)],
+) -> AnimationRecordFacts {
+    let spec = RecordSpec {
+        anim_name: anim,
+        object_name: "piratezep",
+        root_name: "piratezep",
+        objects: &[],
+        nodes: &[],
+        animation_refs: &[],
+        sequences: Vec::new(),
+    };
+    let mut facts = record(&spec, CarrierKind::Mission, 36);
+    facts.sequences = sequences
+        .iter()
+        .map(|(name, kind, bytes)| RecordSequence {
+            kind: *kind,
+            name: (*name).to_owned(),
+            event_bytes: bytes.len() as u64,
+            events: match decode_event_stream(bytes) {
+                Ok(decoded) => SequenceEvents::Decoded(decoded),
+                Err(error) => SequenceEvents::refused(&error),
+            },
+        })
+        .collect();
+    facts
+}
+
+/// Joins a declaration over a record built by [`event_facts`].
+fn joined_over(
+    identity: &str,
+    sequences: &[&str],
+    facts: AnimationRecordFacts,
+) -> StartupAnimation {
+    let site = site(
+        "zbd/zrdr.zbd",
+        "pirate_zep_nacelles.zrd",
+        identity,
+        vec!["piratezep"],
+        sequences.iter().map(|name| Some(*name)).collect(),
+    );
+    join_startup_animation(
+        declaration(
+            NEW_GAME_START,
+            identity,
+            BindingResolution::Single(Box::new(site)),
+        ),
+        bound(facts),
+        None,
+    )
+}
+
+/// The walk and the decode read the same eight bytes: a tag word whose low
+/// byte is the opcode and whose second byte is the measured `1..=3`, then the
+/// event's own length including that header.
+#[test]
+fn accept_f20_event_a_stream_walks_into_tag_and_length_records() {
+    let bytes = stream(&[
+        synthetic_event(24, 1, 1.5, 0.0),
+        synthetic_event(11, 3, 2.0, 4.0),
+    ]);
+
+    let walked = walk_event_stream(&bytes).expect("the measured shape walks");
+    assert_eq!(walked.len(), 2);
+    assert_eq!(walked[0].offset, 0);
+    assert_eq!(walked[0].opcode, 24);
+    assert_eq!(walked[0].group, 1);
+    assert_eq!(
+        walked[0].length as usize,
+        EVENT_HEADER_BYTES + retail_payload(24),
+        "the length word steps over header and payload"
+    );
+    assert_eq!(walked[1].offset, u64::from(walked[0].length));
+    assert_eq!(walked[1].opcode, 11);
+    assert_eq!(walked[1].group, 3);
+    assert_eq!(walked[1].payload_len() as usize, retail_payload(11));
+
+    let decoded = decode_event_stream(&bytes).expect("both opcodes join a statement");
+    assert_eq!(decoded[0].statement, "CALL_ANIMATION");
+    assert_eq!(decoded[0].class, EventClass::Control);
+    assert_eq!(decoded[0].start_time(), 1.5, "word 0 is START_TIME");
+    assert_eq!(
+        decoded[0].run_time(),
+        None,
+        "CALL_ANIMATION states no RUN_TIME"
+    );
+    assert_eq!(decoded[0].end_time(), 1.5);
+    assert_eq!(decoded[1].statement, "OBJECT_MOTION_FROM_TO");
+    assert_eq!(decoded[1].class, EventClass::Motion);
+    assert_eq!(decoded[1].start_time(), 2.0);
+    assert_eq!(
+        decoded[1].run_time(),
+        Some(4.0),
+        "the last word is RUN_TIME where the position is value-matched"
+    );
+    assert_eq!(decoded[1].end_time(), 6.0);
+
+    // Every way the bytes are not the measured shape is a named refusal with
+    // its own offset, never a silent partial walk.
+    let truncated = walk_event_stream(&bytes[..6]).expect_err("a header needs eight bytes");
+    assert_eq!(truncated.code(), "truncated_header");
+    assert_eq!(truncated.offset(), 0);
+
+    let mut bad_length = synthetic_event(24, 1, 0.0, 0.0);
+    bad_length[4..8].copy_from_slice(&6_u32.to_le_bytes());
+    let refusal = walk_event_stream(&bad_length).expect_err("six is below the header");
+    assert_eq!(refusal.code(), "bad_length");
+    assert_eq!(refusal.offset(), 0);
+
+    let mut bad_tag = synthetic_event(24, 1, 0.0, 0.0);
+    bad_tag[0..4].copy_from_slice(&0x0001_0000_u32.to_le_bytes());
+    let refusal = walk_event_stream(&bad_tag).expect_err("the high half is zero");
+    assert_eq!(refusal.code(), "bad_tag");
+
+    let short = synthetic_event(24, 1, 0.0, 0.0);
+    let refusal = walk_event_stream(&short[..short.len() - 4]).expect_err("payload cut short");
+    assert_eq!(refusal.code(), "short_stream");
+    assert_eq!(
+        refusal.claim_id(),
+        "f20-anim.sequence-event-stream-not-decoded"
+    );
+
+    let mut unjoined = synthetic_event(24, 1, 0.0, 0.0);
+    unjoined[0] = 13;
+    let refusal = decode_event_stream(&unjoined).expect_err("opcode 13 joins no statement");
+    assert!(
+        walk_event_stream(&unjoined).is_ok(),
+        "the walk is structural; the vocabulary is what refuses"
+    );
+    assert_eq!(refusal.code(), "unknown_opcode");
+    assert_eq!(refusal.opcode(), Some(13));
+    assert_eq!(refusal.claim_id(), OPCODE_NOT_MEASURED_CLAIM);
+    assert_eq!(refusal.offset(), 0);
+}
+
+/// **The observable failure this suite exists to prevent**: a duration that is
+/// a constant rather than a reading of the payloads. The same decoder reads
+/// three streams whose stored words differ, and each duration must equal the
+/// arithmetic of its own bytes.
+#[test]
+fn accept_f20_event_a_decoded_duration_is_read_from_the_payloads() {
+    // op 6 (start 0.5, no run time), op 24 (start 1.25), op 11 (start 2.0,
+    // run 3.5): the record's duration is the largest end time it states.
+    let facts = event_facts(
+        "pzep_engines_start",
+        &[(
+            "call_eachengine",
+            AnimationRecordSequenceKind::Sequence,
+            stream(&[
+                synthetic_event(6, 1, 0.5, 0.0),
+                synthetic_event(24, 1, 1.25, 0.0),
+                synthetic_event(11, 1, 2.0, 3.5),
+            ]),
+        )],
+    );
+    let playback = facts.playback().expect("every opcode joins a statement");
+    assert_eq!(
+        playback.duration_time(),
+        5.5,
+        "2.0 + 3.5, read from the bytes"
+    );
+
+    // The same block with a different stored RUN_TIME gives a different
+    // duration: nothing here is a constant.
+    let moved = event_facts(
+        "pzep_engines_start",
+        &[(
+            "call_eachengine",
+            AnimationRecordSequenceKind::Sequence,
+            stream(&[
+                synthetic_event(6, 1, 0.5, 0.0),
+                synthetic_event(24, 1, 1.25, 0.0),
+                synthetic_event(11, 1, 2.0, 7.0),
+            ]),
+        )],
+    );
+    let moved = moved.playback().expect("decoded");
+    assert_eq!(moved.duration_time(), 9.0, "2.0 + 7.0");
+    assert_ne!(
+        moved.duration_time(),
+        playback.duration_time(),
+        "two stored words must not produce one duration"
+    );
+
+    // And a record whose statements all start together measures zero, which is
+    // a reading rather than an absence: the same stream with a later start
+    // measures that start.
+    let all_at_once = event_facts(
+        "wvzep_engines_start",
+        &[(
+            "",
+            AnimationRecordSequenceKind::Sequence,
+            stream(&[synthetic_event(24, 1, 0.0, 0.0)]),
+        )],
+    );
+    assert_eq!(
+        all_at_once.playback().expect("decoded").duration_time(),
+        0.0
+    );
+    let later = event_facts(
+        "wvzep_engines_start",
+        &[(
+            "",
+            AnimationRecordSequenceKind::Sequence,
+            stream(&[synthetic_event(24, 1, 2.5, 0.0)]),
+        )],
+    );
+    assert_eq!(later.playback().expect("decoded").duration_time(), 2.5);
+
+    // The production one-block entry point reads the same words.
+    let bytes = stream(&[synthetic_event(11, 1, 2.0, 3.5)]);
+    assert_eq!(sequence_duration(&bytes).expect("decoded"), 5.5);
+}
+
+/// An opcode no declaration of the installation joins refuses the **whole**
+/// record: the block before it decoded, and none of that reaches a playback.
+#[test]
+fn accept_f20_event_an_undecoded_opcode_refuses_the_whole_record() {
+    let good = synthetic_event(24, 1, 0.0, 0.0);
+    let unjoined = synthetic_event(13, 1, 0.0, 0.0);
+    let offset = u64::try_from(good.len()).expect("fits");
+    let facts = event_facts(
+        "player_setup",
+        &[(
+            "setup",
+            AnimationRecordSequenceKind::Sequence,
+            stream(&[good, unjoined]),
+        )],
+    );
+    let SequenceEvents::Refused {
+        code,
+        reason,
+        offset: stream_offset,
+        claim_id: stream_claim,
+        opcode: stream_opcode,
+    } = facts.sequences()[0].events()
+    else {
+        panic!("opcode 13 refuses the block");
+    };
+    assert_eq!(*code, "unknown_opcode");
+    assert_eq!(
+        *stream_offset, offset,
+        "the refusal names its byte in the stream"
+    );
+    assert_eq!(*stream_claim, OPCODE_NOT_MEASURED_CLAIM);
+    assert_eq!(*stream_opcode, Some(13));
+    assert_eq!(*reason, opcode_refusal_reason());
+    let gap = facts.playback().expect_err("opcode 13 is unmeasured");
+    assert_eq!(gap.label(), "event_opcode_not_decoded");
+    assert_eq!(gap.claim_id(), OPCODE_NOT_MEASURED_CLAIM);
+    assert_eq!(gap.opcode(), Some(13));
+    assert_eq!(gap.offset(), Some(offset));
+
+    let joined = joined_over("player_setup", &["setup"], facts);
+    assert!(
+        !joined.is_playable(),
+        "no partial playback from a decoded half"
+    );
+    assert!(
+        joined.playback().is_none(),
+        "a refused record reports no duration"
+    );
+    assert_eq!(joined.refusals().len(), 1);
+    let PlayRefusal::EventOpcodeUndecoded {
+        reason,
+        claim_id,
+        opcode,
+        offset: refusal_offset,
+    } = &joined.refusals()[0]
+    else {
+        panic!("the refusal is the unjoined opcode: {joined:?}");
+    };
+    assert_eq!(*opcode, 13);
+    assert_eq!(*refusal_offset, offset, "the refusal names its byte");
+    assert_eq!(claim_id.as_str(), OPCODE_NOT_MEASURED_CLAIM);
+    assert_eq!(*reason, opcode_refusal_reason());
+    assert_eq!(joined.refusals()[0].label(), "event_opcode_undecoded");
+}
+
+/// The measured vocabulary's one open timing gap: opcode 5's statement states
+/// a `RUN_TIME` whose payload position was never value-matched, so a duration
+/// for such a record could only be guessed. It is refused instead.
+#[test]
+fn accept_f20_event_an_unmatched_run_time_refuses_the_whole_record() {
+    let info = opcode_info(5).expect("opcode 5 is stored by the corpus");
+    assert_eq!(info.statement, "LIGHT_ANIMATION");
+    assert!(!info.timing_measured());
+    assert_eq!(info.timing_gap_claim(), Some(RUN_TIME_NOT_MEASURED_CLAIM));
+
+    let facts = event_facts(
+        "lboat_destruction11",
+        &[(
+            "light_seq",
+            AnimationRecordSequenceKind::Sequence,
+            stream(&[synthetic_event(5, 1, 1.0, 2.0)]),
+        )],
+    );
+    // The stream itself walked: this is a timing gap, not a shape failure.
+    assert!(matches!(
+        facts.sequences()[0].events(),
+        SequenceEvents::Decoded(events) if events.len() == 1
+    ));
+    let PlaybackGap::TimingNotDecoded {
+        opcode,
+        reason,
+        offset,
+        claim_id,
+    } = facts
+        .playback()
+        .expect_err("RUN_TIME is unmatched for opcode 5")
+    else {
+        panic!("opcode 5 is a timing gap");
+    };
+    assert_eq!(opcode, 5);
+    assert_eq!(claim_id, RUN_TIME_NOT_MEASURED_CLAIM);
+    assert_eq!(offset, 0);
+    assert_eq!(reason, run_time_refusal_reason());
+}
+
+/// The census half of acceptance criterion 2, on the table itself: 35 stored
+/// opcodes, 31 joined statements, four named unknowns, and a class on every
+/// entry so a report can never drop one.
+#[test]
+fn accept_f20_event_every_stored_opcode_is_classed_and_the_unknowns_named() {
+    assert_eq!(
+        STORED_OPCODES.len(),
+        35,
+        "every stored opcode, nothing more"
+    );
+    let mut classes = std::collections::BTreeSet::new();
+    let mut unknowns = Vec::new();
+    for info in STORED_OPCODES {
+        classes.insert(info.class);
+        if info.class == EventClass::Unknown {
+            unknowns.push(info.opcode);
+            assert!(info.statement.is_empty(), "{info:?}");
+            assert_eq!(
+                info.timing_gap_claim(),
+                Some(OPCODE_NOT_MEASURED_CLAIM),
+                "{info:?}"
+            );
+            assert!(!info.timing_measured(), "{info:?}");
+        } else {
+            assert!(!info.statement.is_empty(), "{info:?}");
+            assert_ne!(info.class, EventClass::Unknown, "{info:?}");
+            assert_eq!(
+                opcode_info(info.opcode),
+                Some(info),
+                "one table, one answer"
+            );
+        }
+    }
+    assert_eq!(unknowns, vec![13, 17, 26, 28], "the four unjoined opcodes");
+    assert_eq!(
+        classes,
+        EventClass::ALL
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        "every class appears, so no class can vanish from a census"
+    );
+    // The measured spellings, by opcode, as the installation writes them.
+    assert_eq!(
+        opcode_info(11).expect("stored").statement,
+        "OBJECT_MOTION_FROM_TO"
+    );
+    assert_eq!(opcode_info(24).expect("stored").statement, "CALL_ANIMATION");
+    assert_eq!(
+        opcode_info(41).expect("stored").statement,
+        "DETONATE_WEAPON"
+    );
+    assert_eq!(opcode_info(41).expect("stored").class, EventClass::Marker);
+    // A code no retail carrier stores is not invented to fill a table.
+    for absent in [0_u8, 3, 43, 48, 255] {
+        assert!(
+            opcode_info(absent).is_none(),
+            "opcode {absent} is not stored"
+        );
+    }
+    // The two timing evidences that make a duration readable, and the one
+    // that refuses it.
+    assert_eq!(
+        opcode_info(10).expect("stored").run_time.label(),
+        "value_match"
+    );
+    assert_eq!(opcode_info(6).expect("stored").run_time.label(), "absent");
+    assert_eq!(
+        opcode_info(5).expect("stored").run_time.label(),
+        "unmatched"
+    );
+    assert_eq!(
+        opcode_info(13).expect("stored").start_time.label(),
+        "unmeasured"
+    );
+}
+
+/// The per-tick report is built from the measured timing alone: which
+/// statements cover which tick of the **caller's** timeline.
+#[test]
+fn accept_f20_event_the_per_tick_report_follows_the_measured_timing() {
+    let facts = event_facts(
+        "generic_intro",
+        &[(
+            "gi_scene1",
+            AnimationRecordSequenceKind::Sequence,
+            stream(&[
+                synthetic_event(6, 1, 0.0, 0.0),
+                synthetic_event(24, 1, 2.0, 0.0),
+            ]),
+        )],
+    );
+    let playback = facts.playback().expect("decoded");
+    assert_eq!(playback.duration_time(), 2.0);
+    assert_eq!(playback.sequences().len(), 1);
+    assert_eq!(playback.events().count(), 2);
+
+    let poses = playback.poses(2);
+    assert_eq!(
+        poses.len(),
+        5,
+        "ticks 0..=4 cover a duration of 2.0 at 2 Hz"
+    );
+    let statements = |pose: &TickPose| {
+        pose.statements()
+            .iter()
+            .map(|statement| (statement.opcode, statement.statement, statement.start_time))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        statements(&poses[0]),
+        vec![(6_u8, "OBJECT_ACTIVE_STATE", 0.0)],
+        "the statement with no run time starts the record"
+    );
+    assert_eq!(
+        statements(&poses[1]),
+        vec![(6, "OBJECT_ACTIVE_STATE", 0.0)],
+        "a started statement stays in the record's configuration"
+    );
+    assert_eq!(
+        statements(&poses[3]),
+        vec![(6, "OBJECT_ACTIVE_STATE", 0.0)],
+        "before the later statement starts, only the first has fired"
+    );
+    assert_eq!(
+        statements(&poses[4]),
+        vec![(6, "OBJECT_ACTIVE_STATE", 0.0), (24, "CALL_ANIMATION", 2.0)],
+        "the later statement joins the configuration at its own start time"
+    );
+    assert!(
+        playback.poses(0).is_empty(),
+        "a rate of zero samples nothing instead of inventing a timeline"
+    );
+}
+
+/// The measured reason text travels with the refusal, so a report and its
+/// finding cannot drift apart.
+fn opcode_refusal_reason() -> &'static str {
+    cs_app::animation::events::OPCODE_NOT_MEASURED_REASON
+}
+
+fn run_time_refusal_reason() -> &'static str {
+    cs_app::animation::events::RUN_TIME_NOT_MEASURED_REASON
+}
+
+/// The retail half of acceptance criterion 1: **every** event stream of every
+/// block of every record in the installation walks with the two-word header,
+/// and the opcode census over all of them is the measured one — including the
+/// four opcodes no declaration joins, which are counted rather than dropped.
+#[test]
+#[ignore = "requires CS_GAME_DIR: the original installation is needed"]
+fn accept_f20_event_retail_every_event_stream_walks_and_is_censused() {
+    /// The measured opcode census of the installation, opcode → events.
+    const CENSUS: &[(u8, u64)] = &[
+        (1, 6_398),
+        (2, 1_244),
+        (4, 1_468),
+        (5, 535),
+        (6, 68_109),
+        (7, 1_143),
+        (8, 2_209),
+        (9, 6_610),
+        (10, 7_458),
+        (11, 9_421),
+        (12, 845),
+        (13, 340),
+        (14, 9_917),
+        (15, 1_163),
+        (16, 263),
+        (17, 144),
+        (20, 10),
+        (22, 22_391),
+        (23, 1_143),
+        (24, 56_750),
+        (25, 7_928),
+        (26, 11),
+        (27, 6_618),
+        (28, 1),
+        (30, 3_475),
+        (31, 5_468),
+        (32, 4_680),
+        (33, 5_727),
+        (34, 5_468),
+        (35, 736),
+        (36, 155),
+        (41, 3),
+        (42, 4_535),
+        (46, 3),
+        (47, 22),
+    ];
+    /// The measured class totals over those same events.
+    const CLASSES: &[(&str, u64)] = &[
+        ("control", 119_648),
+        ("marker", 739),
+        ("motion", 37_625),
+        ("sound", 7_645),
+        ("state", 76_238),
+        ("unknown", 496),
+    ];
+
+    let root = retail_root();
+    let found = install::discover(&root).expect("production discovery reads the installation");
+    let mut blocks = 0_usize;
+    let mut events = 0_usize;
+    let mut bytes = 0_usize;
+    let mut refused_blocks = 0_usize;
+    let mut census = std::collections::BTreeMap::new();
+    for file in &found.manifest.files {
+        let key = file.relative_spelling.logical_key();
+        if !(key.ends_with("/mis_anim.zbd") || key.ends_with("/cam_anim.zbd")) {
+            continue;
+        }
+        let data = std::fs::read(root.join(file.relative_spelling.as_str())).expect("read carrier");
+        let path =
+            RelativePath::new(&file.relative_spelling.as_str().to_lowercase()).expect("a path");
+        let mut context = ParseContext::with_defaults(&key);
+        let decision = dispatch(ZbdProbe::new(&key, &path, &data[..8]))
+            .expect("a carrier is an animation container");
+        let index = read_animation_index(&mut context, decision, &data).expect("the index reads");
+        let payload = index.payload().expect("the payload header reads");
+        let walk = payload.records().expect("the records walk");
+        for record in walk.iter() {
+            for block in record.sequences() {
+                blocks += 1;
+                bytes += block.events().len();
+                let walked = walk_event_stream(block.events())
+                    .unwrap_or_else(|error| panic!("{key} record {}: {error}", record.index()));
+                let stepped: usize = walked.iter().map(|event| event.length as usize).sum();
+                assert_eq!(
+                    stepped,
+                    block.events().len(),
+                    "{key} record {}: the walk consumes the block exactly",
+                    record.index()
+                );
+                events += walked.len();
+                for event in &walked {
+                    *census.entry(event.opcode).or_insert(0_u64) += 1;
+                }
+                if decode_event_stream(block.events()).is_err() {
+                    refused_blocks += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(blocks, 56_994, "reset, damage and ordinary blocks");
+    assert_eq!(events, 242_391, "every event of every block");
+    assert_eq!(bytes, 16_132_948, "every stored event byte");
+    assert_eq!(
+        census.iter().map(|(op, n)| (*op, *n)).collect::<Vec<_>>(),
+        CENSUS.to_vec(),
+        "the opcode census is the measured one, unknowns included"
+    );
+    assert_eq!(
+        refused_blocks, 389,
+        "only blocks carrying an unjoined opcode (13, 17, 26, 28) refuse to decode"
+    );
+
+    let mut by_class = std::collections::BTreeMap::new();
+    for (opcode, count) in &census {
+        let info = opcode_info(*opcode).expect("a stored opcode is in the table");
+        *by_class.entry(info.class.label()).or_insert(0_u64) += count;
+    }
+    assert_eq!(
+        by_class.iter().map(|(k, v)| (*k, *v)).collect::<Vec<_>>(),
+        CLASSES.to_vec(),
+        "every event is classed exactly once, and the unknowns are their own class"
+    );
+    assert_eq!(
+        by_class.get("unknown"),
+        Some(&496),
+        "the four unjoined opcodes are counted, not dropped"
+    );
+}
+
+/// The retail half of acceptance criterion 3: M01's seven startup records are
+/// playable, each with the duration its own payloads state. These numbers are
+/// read from the bytes on every run, so a duration replaced by a guess fails
+/// here.
+#[test]
+#[ignore = "requires CS_GAME_DIR: the original installation is needed"]
+fn accept_f20_event_retail_m01_startup_records_play_with_measured_durations() {
+    /// identity → (measured duration, decoded events), from the retail bytes.
+    const M01: &[(&str, f32, usize)] = &[
+        ("pzep_engines_start", 0.0, 12),
+        ("wvzep_engines_start", 0.0, 18),
+        ("bszep_engines_start", 0.0, 14),
+        ("wv_hookup_state", 5.0, 3),
+        ("generic_intro", 15.9, 46),
+        ("call_add_jack", 0.2, 1),
+        ("player_setup", 0.0, 11),
+    ];
+    let binding =
+        bind_mission_animation(&retail_root(), "zbd/c1c/m01").expect("M01 binds in production");
+    assert_eq!(binding.playable_count(), 7, "every joined record decodes");
+    assert_eq!(binding.refused_count(), 0);
+
+    let mut seen = std::collections::BTreeSet::new();
+    for row in binding.startup() {
+        let (_, expected_duration, expected_events) = M01
+            .iter()
+            .find(|(identity, _, _)| *identity == row.identity())
+            .unwrap_or_else(|| panic!("{} is one of M01's seven", row.identity()));
+        assert!(
+            row.refusals().is_empty(),
+            "{} plays for no reason: {row:?}",
+            row.identity()
+        );
+        let playback = row.playback().expect("a playable row carries a playback");
+        assert!(
+            (playback.duration_time() - expected_duration).abs() < 1e-6,
+            "{}: measured {} instead of {}",
+            row.identity(),
+            playback.duration_time(),
+            expected_duration
+        );
+        assert_eq!(
+            playback.events().count(),
+            *expected_events,
+            "{}",
+            row.identity()
+        );
+        for event in playback.events() {
+            assert!(
+                !event.statement.is_empty(),
+                "{}: every decoded event carries the installation's own spelling",
+                row.identity()
+            );
+            assert_ne!(
+                event.class,
+                EventClass::Unknown,
+                "{}: an unknown opcode never reaches a playback",
+                row.identity()
+            );
+        }
+        assert!(
+            !playback.poses(10).is_empty(),
+            "{}: the per-tick report covers the record's own timeline",
+            row.identity()
+        );
+        seen.insert(row.identity());
+    }
+    assert_eq!(seen.len(), M01.len(), "all seven, each once");
+
+    // A statement that starts after tick zero is not in the first row: the
+    // report reads its own timing rather than showing everything everywhere.
+    let call_add_jack = binding
+        .startup()
+        .iter()
+        .find(|row| row.identity() == "call_add_jack")
+        .expect("the row");
+    let poses = call_add_jack.playback().expect("decoded").poses(10);
+    assert!(
+        poses[0].statements().is_empty(),
+        "at 10 Hz tick zero is before the statement's measured start of 0.2"
+    );
+    assert_eq!(
+        poses[2].statements().len(),
+        1,
+        "by tick two (0.2) the statement has started"
+    );
 }
