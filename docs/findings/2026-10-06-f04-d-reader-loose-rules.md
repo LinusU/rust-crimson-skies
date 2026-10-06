@@ -56,8 +56,24 @@ refuse, because reading the host clock would answer one and refuse the other.
 * Every registered directory is probed and reported in the trace, in search
   order, with one of: `absent` (the directory does not exist — the original
   counts only existing directories), `miss` (it exists and holds no such file),
-  `not_regular` (an entry of that name is a link or not a regular file),
-  `selected`, `shadowed`, `undecidable_shadow`.
+  `not_a_directory` (the **declared directory** is not one, or sits below
+  something that is not one), `not_regular` (the entry of that name *inside* a
+  real directory is a link or not a regular file), `unreadable` (an I/O failure
+  after a candidate was already found), `selected`, `shadowed`,
+  `undecidable_shadow`.
+* **A probe failure refuses the lookup only while no candidate exists.** Until
+  the pass holds the file the original would open, the answer still depends on
+  the directory being probed, so an I/O failure there is
+  `ReaderLookupError::LooseUnreadable`. Once a candidate exists the answer no
+  longer depends on any lower-priority directory, so the failure is recorded as
+  `unreadable` and the search continues: an I/O error in a directory that holds
+  nothing must not un-decide a lookup the original decides from the file already
+  found. The candidate's **own** bytes are still read under that rule, so a
+  candidate that cannot be read coherently refuses rather than being reported.
+* `original_loose_reader_directories(None, Some(mission))` is **refused**
+  (`ReaderLooseError::MissionWithoutWorld`), not silently answered with the
+  startup list: the original spells a mission directory below its world
+  directory, so dropping it would answer a different lookup than the one asked.
 * `ReaderMounts::read` re-reads a loose resolution from the host and checks it
   against the digest the resolution recorded (`loose_digest_mismatch`,
   `unknown_loose_directory`, `stale_resolution`, `loose_origin`). A loose file
@@ -99,7 +115,7 @@ stronger: the fallback is code-derived and synthetic-pinned, not observed here.
 
 Recorded in the evidence report's `unknowns` array, **not** dropped
 (`docs/findings/evidence/T700.json` is validated **without** `--require-pass`),
-each naming the affected content and what would resolve it:
+each naming the affected content and what would resolve it. Seven items:
 
 1. the loose-file override is not modelled and the lookup that would need it is
    refused — the archive-side timestamp is unknown (**#692**);
@@ -113,9 +129,14 @@ each naming the affected content and what would resolve it:
    the caller's case — needs a host whose loose directories exist;
 4. the never-followed-link and never-serve-a-non-regular-entry guards are this
    engine's decisions, not measured original behaviour;
-5. the loose directories belong to a context by the caller's declaration only —
+5. when a loose directory cannot be probed decides the lookup and when it does
+   not (`LooseUnreadable` before any candidate, the `unreadable` outcome after
+   one), and the split between `not_a_directory` and `not_regular` — these are
+   **this engine's** refusal rules, not claims about the original, which has no
+   measured behaviour here;
+6. the loose directories belong to a context by the caller's declaration only —
    they carry no `MountScope`, so the mission binding stays with **#687**;
-6. both orders are code-derived: `READER_LOOSE_ORDER_STATUS` is `inferred`,
+7. both orders are code-derived: `READER_LOOSE_ORDER_STATUS` is `inferred`,
    `READER_LOOSE_OVERRIDE_STATUS` is `unknown`, `PRECEDENCE_ORDER_STATUS` stays
    `designed`. Settling them needs owner-supplied capture (**#358**).
 
@@ -144,6 +165,15 @@ refused; `not_found` listing every directory and what each held; a non-regular
 entry reported and never served (and never shadowing an archive member); a
 symbolic link never followed; and a changed file, a stale extent, an
 unregistered directory and a loose origin read through an archive all refused.
+
+Also from review (2026-10-06, `bunny-alpha-1`, four defects the implementer's
+suite did not reach): a declared loose directory that is not one — or sits below
+something that is not one — reported apart from a non-regular entry, and a real
+file elsewhere still served; an I/O failure in a directory the answer no longer
+depends on recorded rather than refused, and the same failure **before** any
+candidate refusing; a mission named without a world refused with
+`MissionWithoutWorld`, registering nothing; and a broken sibling directory in the
+test tree not being able to make an intact directory unservable.
 
 Retail (`--include-ignored`, needs `CS_GAME_DIR`): no registered loose directory
 holds any declared member name, in both spellings, with only `zbd` existing; and
@@ -180,8 +210,14 @@ not.
 
 ## G. Review
 
-Implementer `bunny-alpha-1/bunny-alpha-1` (Rally #700 implement claim). No
-reviewer has run this branch yet; the review that merged #685 was performed by
-the same agent instance that implemented it and is recorded as such there. The
-owner policy asks for a different agent instance or model for format and mission
-semantics, and this is that kind of work.
+Implementer `bunny-alpha-1/bunny-alpha-1` (Rally #700 implement claim). Reviewer
+`bunny-alpha-1/bunny-alpha-1` (Rally #700 review claim, 2026-10-06) — the **same
+agent instance** as the implementer, so this is **not independent review** and
+must not be read as such. It found and fixed four real defects (section E) that
+the implementer's suite did not reach; the ownership decision, the evidence
+report and the limitation list are unchanged and were verified rather than
+rewritten.
+
+The owner policy asks for a different agent instance or model for format and
+mission semantics, and this is that kind of work. Nothing here claims otherwise:
+no original run, no owner capture, no `verified_original`.

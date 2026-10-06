@@ -204,7 +204,10 @@ pub const READER_ROOT_DIRECTORY: &str = "zbd";
 /// path nobody measured.
 ///
 /// `world = None` yields the two startup directories only; `mission = None`
-/// with a world yields the four directories a world load adds.
+/// with a world yields the four directories a world load adds. A `mission` with
+/// no `world` is refused ([`ReaderLooseError::MissionWithoutWorld`]) rather than
+/// dropped, because the original spells a mission directory below its world
+/// directory.
 pub fn original_loose_reader_directories(
     world: Option<&str>,
     mission: Option<&str>,
@@ -229,6 +232,15 @@ pub fn original_loose_reader_directories(
         RelativePath::new("data/common/zrdr").map_err(ReaderLooseError::Spelling)?,
     ];
     let Some(world) = world else {
+        // A mission directory is spelled below its world directory, so a mission
+        // without a world cannot be placed in the list. It is refused rather than
+        // dropped, because silently returning a list without the mission the
+        // caller asked for would answer a different lookup than the one requested.
+        if let Some(mission) = mission {
+            return Err(ReaderLooseError::MissionWithoutWorld {
+                mission: mission.to_owned(),
+            });
+        }
         return Ok(directories);
     };
     // World/mission load `0x463cb0` appends `common`, `<w>`, `<w>\nets` and
@@ -257,6 +269,11 @@ pub enum ReaderLooseError {
         /// The component that was refused.
         spelling: String,
     },
+    /// A mission was named without a world, so its directory cannot be spelled.
+    MissionWithoutWorld {
+        /// The mission that could not be placed.
+        mission: String,
+    },
 }
 
 impl ReaderLooseError {
@@ -265,6 +282,7 @@ impl ReaderLooseError {
         match self {
             Self::Spelling(_) => "spelling",
             Self::NotADirectoryName { .. } => "not_a_directory_name",
+            Self::MissionWithoutWorld { .. } => "mission_without_world",
         }
     }
 }
@@ -284,6 +302,11 @@ impl fmt::Display for ReaderLooseError {
                  pass the world/mission directory name (c1c, mp1), not a world-group spelling \
                  (zbd/c1c)"
             ),
+            Self::MissionWithoutWorld { mission } => write!(
+                f,
+                "mission {mission:?} was named without a world, so its loose reader directory \
+                 cannot be spelled; the original places `<w>\\<m>` below its world directory"
+            ),
         }
     }
 }
@@ -292,7 +315,7 @@ impl std::error::Error for ReaderLooseError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Spelling(reason) => Some(reason),
-            Self::NotADirectoryName { .. } => None,
+            Self::NotADirectoryName { .. } | Self::MissionWithoutWorld { .. } => None,
         }
     }
 }
@@ -729,14 +752,16 @@ impl ReaderMounts {
         self.loose.iter().rev()
     }
 
-    /// How many archives are mounted. Loose reader directories are not
-    /// archives and are counted by [`Self::len`] alone; see
-    /// [`Self::loose_directories`].
+    /// How many archives are mounted. A loose reader directory is not an archive,
+    /// so it is not counted here; [`Self::loose_directories`] counts those.
     pub fn len(&self) -> usize {
         self.archives.len()
     }
 
-    /// Whether no archive is mounted.
+    /// Whether no **archive** is mounted. This says nothing about loose reader
+    /// directories: a set with none of them mounted still consults the original's
+    /// loose pass. Use [`Self::len`] and [`Self::loose_directories`] together for
+    /// what a set holds.
     pub fn is_empty(&self) -> bool {
         self.archives.is_empty()
     }
@@ -1032,6 +1057,20 @@ impl ReaderMounts {
     /// regular file, cannot be read or changes under the read is refused rather
     /// than skipped, because a lower-priority directory's copy is not the
     /// original's answer.
+    ///
+    /// # When a probe failure refuses the lookup
+    ///
+    /// A directory that cannot be probed is refused with
+    /// [`ReaderLookupError::LooseUnreadable`] only while **no** candidate has been
+    /// found, because then the answer depends on that directory: the original
+    /// searches this one before any lower-priority one, and skipping it could
+    /// skip the file the original would have opened. Once a candidate exists the
+    /// answer no longer depends on any later directory, so a probe failure there
+    /// is **recorded** ([`ReaderLooseOutcome::Unreadable`]) and the pass
+    /// continues: an I/O failure in a directory that holds nothing cannot un-decide
+    /// a lookup the original decides from a file already found. The candidate's
+    /// **own** bytes are still read under that rule, so a candidate that cannot be
+    /// read coherently refuses rather than being reported.
     fn loose_pass(
         &self,
         mode: LoosePassMode,
@@ -1040,62 +1079,76 @@ impl ReaderMounts {
     ) -> Result<LoosePass, ReaderLookupError> {
         let mut pass = LoosePass::default();
         for directory in self.loose_search_order() {
-            let unreadable = |source| ReaderLookupError::LooseUnreadable {
+            let spelling = directory.spelling().to_owned();
+            let refuse = |source: LooseFileError| ReaderLookupError::LooseUnreadable {
                 requested: Box::new(requested.clone()),
                 basename: basename.to_owned(),
-                directory: directory.spelling().to_owned(),
+                directory: spelling.clone(),
                 source: Box::new(source),
             };
-            // The original counts only existing directories, so an absent one is
-            // reported as absent and never descended into.
+            // A **probe** failure refuses the lookup only while no candidate
+            // exists, because only then does the answer still depend on this
+            // directory. Once a candidate exists the answer is already decided, so
+            // the failure is recorded and the pass keeps searching: an I/O error in
+            // a directory the answer no longer depends on must not un-decide it.
+            // The candidate's own **bytes** are a different matter: they are the
+            // answer, so a candidate that cannot be read coherently refuses.
             let host_directory = directory.host_path();
             let host_path = host_directory.join(basename);
-            let outcome = match probe_loose_directory(&host_directory).map_err(unreadable)? {
-                LooseDirectoryProbe::Absent => ReaderLooseOutcome::Absent,
-                LooseDirectoryProbe::NotADirectory => ReaderLooseOutcome::NotRegular,
-                LooseDirectoryProbe::Directory => {
-                    match probe_loose(&host_path).map_err(unreadable)? {
-                        LooseProbe::Miss => ReaderLooseOutcome::Miss,
-                        LooseProbe::NotRegular => ReaderLooseOutcome::NotRegular,
-                        LooseProbe::Regular { size_bytes } => match mode {
-                            LoosePassMode::Fallback if pass.candidate.is_some() => {
-                                ReaderLooseOutcome::Shadowed { size_bytes }
+            let outcome = match probe_loose_directory(&host_directory) {
+                Err(source) if pass.candidate.is_some() => ReaderLooseOutcome::Unreadable {
+                    source: Box::new(source),
+                },
+                Err(source) => return Err(refuse(source)),
+                // The original counts only existing directories, so an absent one is
+                // reported as absent and never descended into.
+                Ok(LooseDirectoryProbe::Absent) => ReaderLooseOutcome::Absent,
+                Ok(LooseDirectoryProbe::NotADirectory) => ReaderLooseOutcome::NotADirectory,
+                Ok(LooseDirectoryProbe::Directory) => match probe_loose(&host_path) {
+                    Err(source) if pass.candidate.is_some() => ReaderLooseOutcome::Unreadable {
+                        source: Box::new(source),
+                    },
+                    Err(source) => return Err(refuse(source)),
+                    Ok(LooseProbe::Miss) => ReaderLooseOutcome::Miss,
+                    Ok(LooseProbe::NotRegular) => ReaderLooseOutcome::NotRegular,
+                    Ok(LooseProbe::Regular { size_bytes }) => match mode {
+                        LoosePassMode::Fallback if pass.candidate.is_some() => {
+                            ReaderLooseOutcome::Shadowed { size_bytes }
+                        }
+                        LoosePassMode::Fallback => {
+                            let bytes = read_loose_file(&host_path).map_err(refuse)?;
+                            let digest = sha256(&bytes);
+                            pass.candidate = Some(LooseCandidate {
+                                directory: spelling.clone(),
+                                host_path: host_path.clone(),
+                                size_bytes,
+                                sha256: Some(digest),
+                            });
+                            ReaderLooseOutcome::Selected {
+                                size_bytes,
+                                sha256: digest,
                             }
-                            LoosePassMode::Fallback => {
-                                let bytes = read_loose_file(&host_path).map_err(unreadable)?;
-                                let digest = sha256(&bytes);
-                                pass.candidate = Some(LooseCandidate {
-                                    directory: directory.spelling().to_owned(),
-                                    host_path: host_path.clone(),
-                                    size_bytes,
-                                    sha256: Some(digest),
-                                });
-                                ReaderLooseOutcome::Selected {
-                                    size_bytes,
-                                    sha256: digest,
-                                }
-                            }
-                            LoosePassMode::Override => {
-                                // The original would compare this file with the
-                                // archive copy by time; production cannot, so
-                                // the candidate is recorded and the lookup is
-                                // refused. The file's own modification time is
-                                // never read here: it is not the original's
-                                // comparison argument.
-                                pass.candidate.get_or_insert(LooseCandidate {
-                                    directory: directory.spelling().to_owned(),
-                                    host_path: host_path.clone(),
-                                    size_bytes,
-                                    sha256: None,
-                                });
-                                ReaderLooseOutcome::UndecidableShadow { size_bytes }
-                            }
-                        },
-                    }
-                }
+                        }
+                        LoosePassMode::Override => {
+                            // The original would compare this file with the
+                            // archive copy by time; production cannot, so
+                            // the candidate is recorded and the lookup is
+                            // refused. The file's own modification time is
+                            // never read here: it is not the original's
+                            // comparison argument.
+                            pass.candidate.get_or_insert(LooseCandidate {
+                                directory: spelling.clone(),
+                                host_path: host_path.clone(),
+                                size_bytes,
+                                sha256: None,
+                            });
+                            ReaderLooseOutcome::UndecidableShadow { size_bytes }
+                        }
+                    },
+                },
             };
             pass.attempts.push(ReaderLooseAttempt {
-                directory: directory.spelling().to_owned(),
+                directory: spelling,
                 host_path,
                 outcome,
             });
@@ -1292,6 +1345,14 @@ fn probe_loose_directory(path: &Path) -> Result<LooseDirectoryProbe, LooseFileEr
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
             return Ok(LooseDirectoryProbe::Absent);
         }
+        // A component above this path is not a directory, so this path cannot be
+        // one either. That is a statement about the host's shape, like
+        // [`LooseDirectoryProbe::NotADirectory`] and not an I/O failure: reporting
+        // it as one would refuse a lookup over a spelling the host can never
+        // satisfy, and would report a readable file elsewhere as unusable.
+        Err(source) if source.kind() == io::ErrorKind::NotADirectory => {
+            return Ok(LooseDirectoryProbe::NotADirectory);
+        }
         Err(source) => return Err(LooseFileError::io(path, &source)),
     };
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -1474,6 +1535,23 @@ pub enum ReaderLooseOutcome {
     Absent,
     /// The directory exists and holds no file of this basename.
     Miss,
+    /// The **declared directory itself** is not a directory on this host, or is a
+    /// symbolic link, so it was never searched. This is a different fact from
+    /// [`Self::NotRegular`], which is about the entry of the requested basename
+    /// *inside* a directory that does exist: conflating them would report a
+    /// readable file as unusable because its parent is not a directory.
+    NotADirectory,
+    /// The directory or the entry could not be probed because of an I/O failure.
+    ///
+    /// This is **recorded, not fatal**, once the pass holds a candidate: the answer
+    /// no longer depends on this directory, so a failure to inspect it cannot
+    /// change it. Before any candidate exists the same failure refuses the lookup
+    /// ([`ReaderLookupError::LooseUnreadable`]), because the answer would then
+    /// depend on a directory this engine could not look at.
+    Unreadable {
+        /// What the operating system refused with, and on which path.
+        source: Box<LooseFileError>,
+    },
     /// An entry of this name exists but is not a regular file, or is a symbolic
     /// link. This engine never follows a link out of an installation and never
     /// serves a directory (the same guard as [`crate::vfs::mount_directory`]),
@@ -1511,6 +1589,8 @@ impl ReaderLooseOutcome {
         match self {
             Self::Absent => "absent",
             Self::Miss => "miss",
+            Self::NotADirectory => "not_a_directory",
+            Self::Unreadable { .. } => "unreadable",
             Self::NotRegular => "not_regular",
             Self::Selected { .. } => "selected",
             Self::UndecidableShadow { .. } => "undecidable_shadow",
@@ -1524,6 +1604,8 @@ impl fmt::Display for ReaderLooseOutcome {
         match self {
             Self::Absent => f.write_str("absent"),
             Self::Miss => f.write_str("miss"),
+            Self::NotADirectory => f.write_str("not_a_directory"),
+            Self::Unreadable { source } => write!(f, "unreadable({source})"),
             Self::NotRegular => f.write_str("not_regular"),
             Self::Selected { size_bytes, .. } => write!(f, "selected({size_bytes} B)"),
             Self::UndecidableShadow { size_bytes } => {

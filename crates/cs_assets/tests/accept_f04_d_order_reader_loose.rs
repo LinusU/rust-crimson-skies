@@ -51,6 +51,9 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use common::TempTree;
 use cs_assets::install::{self, Discovery, sha256};
 use cs_assets::vfs::{
@@ -688,6 +691,42 @@ fn accept_f04_d_order_reader_loose_the_original_directory_list_is_in_its_append_
         }),
         "the loose path names a world directory, not a world group"
     );
+    // A mission is spelled below its world, so it cannot be placed without one.
+    // Silently returning the startup list would answer a different lookup than
+    // the caller asked for.
+    assert_eq!(
+        original_loose_reader_directories(None, Some("mp1")),
+        Err(ReaderLooseError::MissionWithoutWorld {
+            mission: "mp1".to_owned()
+        }),
+        "a mission without a world is refused, not dropped"
+    );
+    assert_eq!(
+        ReaderLooseError::MissionWithoutWorld {
+            mission: "mp1".to_owned()
+        }
+        .code(),
+        "mission_without_world"
+    );
+    // A loose set that refuses its directory list registers nothing, so it can
+    // never serve a lookup from a partial list.
+    let tree = TempTree::new("reader-loose-mission-without-world");
+    let mut refused = ReaderMounts::new();
+    assert!(
+        refused
+            .add_original_loose_directories(tree.root(), None, Some("mp1"))
+            .is_err(),
+        "the mission without a world refuses"
+    );
+    assert!(
+        refused.loose_directories().is_empty(),
+        "nothing is registered when the list cannot be built: {:?}",
+        refused
+            .loose_directories()
+            .iter()
+            .map(ReaderLooseDirectory::spelling)
+            .collect::<Vec<_>>()
+    );
     assert_eq!(
         ReaderLooseDirectory::declare(Path::new("/tmp"), "../escape"),
         Err(ReaderLooseError::Spelling(
@@ -798,6 +837,154 @@ fn accept_f04_d_order_reader_loose_a_non_regular_entry_is_reported_and_never_ser
             .collect::<Vec<_>>(),
         vec![("data/common", "not_regular".to_owned())],
         "the non-regular entry is reported, and the archive still serves"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn accept_f04_d_order_reader_loose_a_loose_directory_that_is_not_a_directory_is_reported_apart() {
+    // A declared loose directory that exists but is not a directory is a
+    // different fact from a non-regular entry inside a real directory. Reporting
+    // the first as the second would say a readable file is unusable because its
+    // parent is not a directory.
+    let tree = TempTree::new("reader-loose-dir-not-a-directory");
+    let mut mounts = ReaderMounts::new();
+    mounts
+        .add_original_loose_directories(tree.root(), Some("c1c"), Some("mp1"))
+        .expect("the original's loose directories declare");
+    // `data/common` exists as a regular file, so it is never descended into.
+    tree.write("data/common", b"not a directory");
+
+    let error = mounts
+        .resolve(&fixture_context("mp1"), &key("targets.zrd"))
+        .expect_err("a file is not a loose reader directory");
+    let ReaderLookupError::NotFound { trace, .. } = &error else {
+        panic!("a non-directory loose directory is not searched: {error}");
+    };
+    assert_eq!(
+        loose_trace(&trace.loose)
+            .into_iter()
+            .filter(|(_, outcome)| outcome == "not_a_directory" || outcome == "not_regular")
+            .collect::<Vec<_>>(),
+        vec![
+            ("data/common", "not_a_directory".to_owned()),
+            // `data/common/zrdr` sits below the broken `data/common`, so it cannot
+            // be a directory either and is reported the same way rather than as an
+            // I/O failure.
+            ("data/common/zrdr", "not_a_directory".to_owned()),
+        ],
+        "the unusable DIRECTORY is reported as not_a_directory, not as a non-regular entry"
+    );
+
+    // A real file of that name directly under `zbd` is still served: the broken
+    // sibling directory does not affect a directory the answer does come from.
+    tree.write("zbd/targets.zrd", b"loose targets");
+    let resolution = mounts
+        .resolve(&fixture_context("mp1"), &key("targets.zrd"))
+        .expect("the default reader directory holds the name");
+    assert!(
+        matches!(
+            &resolution.origin,
+            ReaderOrigin::Loose { directory, .. } if directory == READER_ROOT_DIRECTORY
+        ),
+        "the intact directory still serves: {:?}",
+        resolution.origin
+    );
+    assert_eq!(mounts.read(&resolution).expect("reads"), b"loose targets");
+}
+
+#[cfg(unix)]
+#[test]
+fn accept_f04_d_order_reader_loose_a_directory_unreadable_after_the_candidate_is_recorded() {
+    // The original's loose pass stops at the first file it finds, so once this
+    // engine holds that file the answer no longer depends on any lower-priority
+    // directory. An I/O failure in one of those must therefore be reported in the
+    // trace, not turned into a refusal of a lookup the original decides from the
+    // file already found.
+    let tree = TempTree::new("reader-loose-unreadable-after-candidate");
+    let mut mounts = ReaderMounts::new();
+    mounts
+        .add_original_loose_directories(tree.root(), Some("c1c"), Some("mp1"))
+        .expect("the original's loose directories declare");
+    tree.write("data/c1c/mp1/targets.zrd", b"mission loose targets");
+    // `data/common` exists but cannot be listed: it is searched after the mission
+    // directory, so the answer is already decided when the failure happens.
+    let blocked = tree.root().join("data/common");
+    fs::create_dir_all(&blocked).expect("the blocked directory is created");
+    fs::write(blocked.join("other.zrd"), b"another name").expect("a fixture file is written");
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000))
+        .expect("the directory is closed");
+
+    let outcome = mounts.resolve(&fixture_context("mp1"), &key("targets.zrd"));
+    // Restored before any assertion, so a failing expectation cannot leave a
+    // read-only directory behind for the next test.
+    let restored = fs::set_permissions(&blocked, fs::Permissions::from_mode(0o755));
+    assert!(
+        restored.is_ok(),
+        "the directory permissions are restored: {:?}",
+        restored.err()
+    );
+
+    let resolution = outcome
+        .expect("a candidate already found makes a later directory's failure un-deciding nothing");
+    assert!(
+        matches!(
+            &resolution.origin,
+            ReaderOrigin::Loose { directory, .. } if directory == "data/c1c/mp1"
+        ),
+        "the most recently added directory that holds the file serves it: {:?}",
+        resolution.origin
+    );
+    assert_eq!(
+        mounts.read(&resolution).expect("reads"),
+        b"mission loose targets"
+    );
+    assert!(
+        resolution
+            .trace
+            .loose
+            .iter()
+            .any(|attempt| attempt.outcome.label() == "unreadable"),
+        "the directory that could not be probed is reported, not hidden: {:?}",
+        resolution.trace.loose
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn accept_f04_d_order_reader_loose_a_directory_unreadable_before_any_candidate_refuses() {
+    // The mirror image: while no candidate exists, the answer still depends on
+    // this directory, so an I/O failure there refuses the lookup instead of
+    // skipping past a file the original would have opened.
+    let tree = TempTree::new("reader-loose-unreadable-no-candidate");
+    let mut mounts = ReaderMounts::new();
+    mounts
+        .add_original_loose_directories(tree.root(), Some("c1c"), Some("mp1"))
+        .expect("the original's loose directories declare");
+    let blocked = tree.root().join("data/c1c/mp1");
+    fs::create_dir_all(&blocked).expect("the blocked directory is created");
+    fs::write(blocked.join("targets.zrd"), b"unreachable loose targets")
+        .expect("the fixture file is written");
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000))
+        .expect("the directory is closed");
+
+    let outcome = mounts.resolve(&fixture_context("mp1"), &key("targets.zrd"));
+    let restored = fs::set_permissions(&blocked, fs::Permissions::from_mode(0o755));
+    assert!(
+        restored.is_ok(),
+        "the directory permissions are restored: {:?}",
+        restored.err()
+    );
+
+    let error = outcome.expect_err(
+        "while no candidate exists, a directory that cannot be probed decides the lookup",
+    );
+    let ReaderLookupError::LooseUnreadable { directory, .. } = &error else {
+        panic!("the lookup is refused, not answered: {error}");
+    };
+    assert_eq!(
+        directory, "data/c1c/mp1",
+        "the refusal names the directory that could not be probed"
     );
 }
 
@@ -1886,7 +2073,7 @@ fn iso_utc_now() -> String {
 
 /// The paths this task leaves unresolved, each naming the affected content and
 /// the task or evidence that owns it. They are recorded, never dropped.
-const UNKNOWNS: [&str; 6] = [
+const UNKNOWNS: [&str; 7] = [
     "The original's loose-file override is NOT modelled and the lookup that would have to apply \
      it is refused (ReaderLookupError::LooseOverrideUndecided): the rule exists (CompareFileTime \
      >= 1 against the archive copy) but its archive side needs the index entry's trailing u64, \
@@ -1913,6 +2100,15 @@ const UNKNOWNS: [&str; 6] = [
      it. Affected content: installations that ship loose reader files through links. Resolving \
      task: none filed; the guard is a deliberate engine decision, recorded here rather than \
      claimed as the original's behaviour.",
+    "A loose reader directory that cannot be probed before the pass holds a candidate refuses the \
+     lookup (ReaderLookupError::LooseUnreadable), because the answer still depends on that \
+     directory; the same I/O failure after a candidate exists is recorded as the `unreadable` \
+     outcome and the search continues, because the original's pass stops at the file it found. \
+     A declared directory that is not a directory (or sits below something that is not one) is \
+     reported as `not_a_directory`, apart from a non-regular entry inside a real directory. \
+     Affected content: every loose pass, on any host whose loose directories are not all \
+     readable. Resolving task: none filed; these are the engine's rules for its own refusals, \
+     not claims about the original.",
     "Which loose directories belong to a context is the caller's declaration: \
      ReaderMounts::add_original_loose_directories registers them without a MountScope, so a set \
      registered for one mission is not refused for another. Affected content: every reader \
