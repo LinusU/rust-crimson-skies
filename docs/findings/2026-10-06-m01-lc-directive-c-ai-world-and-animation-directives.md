@@ -28,6 +28,22 @@ each key. This stage took those fields forward into the update-time consumers
 and, for every consumer, into the world object it touches. Every claim below
 names the address that carries it.
 
+### Provenance of this text: who wrote it and who checked it
+
+| Role | Identity | Context |
+| --- | --- | --- |
+| Implementer | `bunny-2` | fresh session, no prior context on this task |
+| Reviewer | `bunny-2` (same agent identity, another session) | fresh session; re-derived every claim whose wording changed below straight from the executable, and spot-checked the rest of the cited handlers against it |
+
+The review is recorded here because `AGENTS.md` requires it and because it is
+**not** independent evidence: a review by the agent that wrote the text is not a
+second opinion, and no agent review replaces the owner's human review. What the
+review did buy is that the eight corrections in "Corrections made in review"
+below are measurements the reviewer re-derived from the executable rather than
+inherited from the draft — the draft's `TRAVELERS` subject-mode analysis was
+wrong, and it was wrong in a direction that would have made stage `E` implement
+a directive that almost always completes.
+
 ### The registries these directives reach (measured, once)
 
 | Global | What it is | Found by |
@@ -35,7 +51,7 @@ names the address that carries it.
 | `0x71dab8` | vehicle registry | `0x4aff10(0x71dab8, name)`, handle form `0x4afee0` |
 | `0x71df80` | zeppelin registry | `0x4bd3e0(0x71df80, name)` |
 | `0x71d910` | turret registry, name-keyed | `0x4a97b0` (mission wildcard), `0x4a9840` (name), `0x4a9890` (id) |
-| `0x71dabc` | the vehicle list the `TRAVELERS` counter walks (`[+4]` count, `[+8]` array) | `0x465d7a` |
+| `0x71dabc` | the vehicle list the `TRAVELERS` counter walks (circular list: `[+0]` next, `[+8]` the vehicle, terminating on the head) | `0x465d7a` |
 | `0x71c120` | named-node list (`{name, next}`) | `0x465e30(name)`; a miss **creates** a node through `0x4d0280(name, 7)` and links it |
 | `0x9fd14c` | animation table, entries of `0x110` bytes, name inline at `+0`, state byte at `+0xa0` | `0x523820(name)` |
 | `0x654170` | generator registry (`[+4]`..`[+8]`, entries whose `+8` is the name) | `0x451720(0x654170, name)` |
@@ -186,11 +202,20 @@ Consumed at `0x469c3f`: the name is resolved lazily through
 ```
 
 `generator+0x80` is a **remaining-units counter**, measured from the generator's
-own update: `0x4526f0` compares it against a time delta before spawning, and on
-each spawn `0x4527ad`..`0x4527cd` decrements `+0x80`, increments `+0x88`, zeroes
-`+0x90` and increments the global `0x6541c4`. The spawn itself (`0x451bf0`)
-builds an instance name from the node's model path by truncating at the last
-`_` (`strrchr(name, '_')`, `0x451c28`).
+own update. `0x4526cc`..`0x4526de` computes the allowance
+`eax = [+0x94] − [+0x98]` — an integer count, not a time delta — and `0x4526f0`
+`cmp [esi + 0x80], eax` then skips the spawn with `jb 0x45281c` unless the
+backlog is at least that allowance. Two earlier tests skip it too:
+`0x4526e4` bails when `([+0x94] − [+0x98]) + [+0x88] > [+0x84]`, and `0x4526fc`
+bails when `bl` is set, `bl` being raised at `0x4526ca` only when the second
+float `0x4cf200` writes for the node the generator holds at `[+8]` is
+below `[+4]`. On each spawn `0x4527ad`..`0x4527cd` decrements `+0x80`,
+increments `+0x88`, zeroes `+0x90` and increments the global `0x6541c4`, then
+`0x4527d3`..`0x4527e4` increments `+0x98`: while it stays below the limit
+`+0x94` the update stores `+0x8c = +0xa0` (`0x45280a`), and on reaching `+0x94`
+it wraps `+0x98` back to 0 and stores `+0x8c = +0xa0 + +0x9c` (`0x4527ec`).
+The spawn itself (`0x451bf0`) builds an instance name from the node's model
+path by truncating at the last `_` (`strrchr(name, '_')`, `0x451c28`).
 
 **Effect: give the named generator N more units to produce.**
 
@@ -229,13 +254,16 @@ Consumed in the completion pass at `0x46aa4f`:
   the position into the vehicle's history list at `+0x6a4`;
 * then, **only when `vehicle->[+0xcc] == 0`** (not AI-driven, `0x46aadd`): the
   code compares `world->[+0x1e8]` with `vehicle->[+0x668]`, keeps the smaller
-  one, negates it, and writes the vector `(0, 0, −z) ⊙ [+0x198, +0x19c, +0x1a0]`
-  into `vehicle+0x924`, with `+0x930` = |v|² and `+0x934` = |v|
-  (`0x46aaf4`..`0x46ab73`).
+  one, negates it, and multiplies that one scalar by each of the three floats
+  `[+0x198]`, `[+0x19c]`, `[+0x1a0]`, writing the three products into
+  `vehicle+0x924`, `+0x928`, `+0x92c`, with `+0x930` = |v|² and `+0x934` = |v|
+  (`0x46aaf4`..`0x46ab73`). So all three components carry the same sign and the
+  factors, not a literal `(0, 0, −z)`.
 
 **Effect: teleport the vehicle to one of its warp points, chosen at random, and
-give it a downward velocity proportional to its altitude**; an AI-driven vehicle
-is left to its AI instead.
+add a velocity whose three components are one shared scalar times three
+per-vehicle factors** — the scalar being the negated smaller of the world's
+altitude and the vehicle's own — while an AI-driven vehicle is left to its AI.
 
 ### `SET_AI_TEAM` — write the actor's team
 
@@ -244,10 +272,13 @@ spells it. Consumed in the completion pass at `0x46ab79`, one call per record to
 **`0x469e20`** — the function that follows the wake handler, which A did not
 name:
 
-* `0x4aff10(0x71dab8, name)`. On a vehicle: `0x453740(&slot, team)` then the
-  base-class virtual at `vtable+8`, which is `0x441b80` (`this->[+8] = *slot`), so
-  the **base team field** becomes the integer; if `vehicle->[+0x948]` is set it
-  is released through its virtual `+0x48(1)` and cleared. Logs
+* `0x4aff10(0x71dab8, name)`. On a vehicle: `0x453740(&slot, team)` returns a
+  pointer, and the base-class virtual at `vtable+8` is called with it
+  (`0x469e6d`); that entry is `0x441b80` in the vtable the vehicle constructor
+  installs at `0x4b0020` (`0x608b58`, whose third slot is `0x441b80` at
+  `0x608b60`), and it stores `this->[+8] = *slot`, so the **base team field**
+  becomes the integer; if `vehicle->[+0x948]` is set it is released through its
+  virtual `+0x48(1)` and cleared. Logs
   `SET_AI_TEAM: setting vehicle %s to team %d` (`mission.cpp:0x11cf`, 4559).
 * else `0x4bd3e0(0x71df80, name)`. On a zeppelin: `zeppelin+0xdc = 1`,
   `zeppelin+0xe0 = team`, `0x4bf030(zeppelin)`. Logs
@@ -356,16 +387,22 @@ The evaluator is `0x465b40`, called from the tick gate at `0x46a8c9`, and it has
 * the target position is `0x4cf200(+0x5a0)` or the literal
   `+0x5a4/+0x5a8/+0x5ac`;
 * `d² = |subject − target|²` is compared with `+0x5b0`;
-* the function returns **1** when `d² < r²` (`0x465c9a` falls through to
-  `0x465d37`) and also when `d² > r²` (`0x465cf5`), and returns **0** only when
-  `d² == r²` exactly (`0x465cec`'s `test ah,0x41` jumps to `0x465e19`, which is
-  `xor eax, eax; ret`);
+* **`+0x59c` selects which side counts**, by the same idiom as the count mode:
+  `0x465c85` loads `+0x59c` into `eax`, `0x465c8b` compares it with `0`,
+  `0x465c8d` stores the FPU status word with `fnstsw ax` — which writes `AX` and
+  **does not touch `EFLAGS`** — and `0x465c8f`'s `je 0x465cec` therefore tests
+  the *comparison*, so the `APPROACHING` flag does reach the outcome;
+* with `APPROACHING` (`+0x59c != 0`): `0x465c91`'s `test ah,1` tests `C0`, i.e.
+  `d² < r²`, and returns **1** only then (`0x465c9a` deletes or falls through to
+  `0x465d37`), returning **0** at `0x465e19` when `d² >= r²`;
+* without it (`+0x59c == 0`, the `0x465cec` path): `test ah,0x41` tests `C0` or
+  `C3` and returns **0** at `0x465e19` for `d² <= r²`, so it returns **1** only
+  for `d² > r²` (`0x465cf5`);
+* in both polarities the **exact-equality case returns 0**: with `APPROACHING`
+  because `C0` is clear, without it because `C3` is set;
 * with `DELETE_ON_SUCCESS` set it first removes the subject: a vehicle
   (`0x4afee0`) through `0x47bab0(vehicle)`, any other node through
-  `0x4cca30(node, 0)`;
-* **`+0x59c` has no effect in this mode**: it is loaded at `0x465c85` into `eax`
-  and clobbered by `fnstsw ax` at `0x465c8d`, and the `cmp eax,edi` flags
-  computed one instruction earlier are discarded by the same store.
+  `0x4cca30(node, 0)`.
 
 **Count mode** — every other case, and only when `+0x598 >= 0`
 (`0x465d43`):
@@ -375,9 +412,12 @@ The evaluator is `0x465b40`, called from the tick gate at `0x46a8c9`, and it has
 * every vehicle in the list at `0x71dabc` is tested by `0x4659b0(vehicle)`:
   skipped when `vehicle->[+0x91d]` is set (asleep — the byte the sleep/wake
   calls write), skipped unless `vehicle->[+0x388] == +0x598` (the AI **group**),
-  then `|vehicle->[+0x204] − target|²` against `+0x5b0` decides: counted when
-  the distance is **inside** the radius if `+0x59c != 0`, and when it is
-  **outside** the radius otherwise (`0x465a4d` vs `0x465a5f`);
+  then `|vehicle->[+0x204] − target|²` against `+0x5b0` decides. `0x465a43`
+  loads `+0x59c`, `0x465a49`'s `test ecx,ecx` sets `ZF`, `0x465a4b`'s `fnstsw ax`
+  leaves `EFLAGS` alone, so `0x465a4d`'s `je 0x465a5f` is the polarity switch:
+  with `+0x59c != 0` the site reads `C0` at `0x465a4f` and counts the vehicle when
+  it is **inside** the radius, and with `+0x59c == 0` it takes `0x465a5f`'s
+  `test ah,0x41` and counts it when it is **outside**;
 * the tally is added to `+0x5b8` (`0x465da4`), and the objective completes when
   `+0x5b8 >= +0x5b4` (`0x465df9`), clearing `+0x5b8`;
 * with `DELETE_ON_SUCCESS` the matching vehicles are deleted as they are found
@@ -385,15 +425,18 @@ The evaluator is `0x465b40`, called from the tick gate at `0x46a8c9`, and it has
 
 The two `fcomp` flag readings used here — `fnstsw ax` bit 8 (CF) is `C0`
 ("less than") and bit 14 (ZF) is `C3` ("exactly equal"), so `test ah,0x41` is
-"less than or exactly equal" — are pinned by three other sites in the same
-file that use the same idiom for a "> 0" duration test (`+0x5e0` at
-`0x469d14`, `+0x5d4` at `0x46a677`, `+0x5d8` at `0x46a702`), all of which skip
-when the value is `<= 0` and act when it is `> 0`.
+"less than or exactly equal" — are pinned by three other sites in the same file
+that read the same status word: `+0x5e0` at `0x469d14` and `+0x5d4` at `0x46a677`
+both `test ah,0x41` against `0.0` (`0x6032c8`) and so skip when the duration is
+`<= 0` and act when it is `> 0`, while `+0x5d8` at `0x46a702` tests `ah,1` alone
+and so skips when the duration is `< 0` and acts when it is `>= 0`. All three
+read the same `fnstsw` bits the two `TRAVELERS` tests read.
 
 **Effect:** the count mode waits until *N* actors of a given AI group are
 inside (or, without `APPROACHING`, outside) a radius around a position, and can
 delete them on success; the subject mode watches one named actor against the same
-radius.
+radius with the same polarity — inside when `APPROACHING` was spelled, outside
+otherwise — and never completes on exact equality.
 
 ### `WAKE_ANIM` — start a named animation on wake
 
@@ -421,21 +464,27 @@ never spells it.
 pass's on-complete lists: the completion pass (`0x46a94c`..`0x46ae86`, read in
 full) contains **no reference** to either field. The only runtime consumer of
 either in the mission region is `0x46b183`, inside the objective
-**state-transition** function `0x46b160`, immediately after it sets `+0xc = 0`,
-`+0x5c8 = mode` and `+0x5cc = 0`:
+**state-transition** function `0x46b160`, which reads the anim name first and
+then sets `+0xc = 0`, `+0x5c8 = mode` and `+0x5cc = 0` before starting it:
 
 ```
 0x46b181  mov eax, [esi + 0x544]     ; the anim name
+0x46b189  mov dword [esi + 0xc], 0    ; inactive
+0x46b190  mov dword [esi + 0x5c8], ecx ; the new mode
+0x46b196  mov dword [esi + 0x5cc], 0
 0x46b1a5  call 0x523820              ; resolve (skips state-5 entries)
 0x46b1b3  mov esi, [esi + 0x548]     ; the node name
 0x46b1be  call 0x465e30              ; resolve; a miss skips the start
 0x46b1d4  call 0x4edda0              ; anim, node, 0, 0, 0
 ```
 
-A search of the whole image for the `0x544` and `0x548` displacements returns, in
-the mission region, only those two, the record destructor that `free`s both
-strings and zeroes them (`0x466943`..`0x46696f`, alongside `+0x53c`/`+0x540`), and
-unrelated code in other classes. Nothing else in the image reads either field.
+An image-wide search for the `0x544` and `0x548` displacements returns, inside
+the mission region, exactly three kinds of site and nothing else: the parse
+(`0x4689ef`/`0x468a26` zero and `strdup` into `+0x544`, `0x4689f5`/`0x468a44` into
+`+0x548`), the record destructor that `free`s both strings and zeroes them
+(`0x466943`..`0x46696f`, alongside `+0x53c`/`+0x540`), and the transition reader
+above. Nothing else in the image reads either field; the remaining hits are
+unrelated code in other classes.
 
 **Effect: play the named animation when the objective transitions** — and since
 `0x46b160` is what the nap (mode 2), kill (mode 3) and completion paths all go
@@ -457,9 +506,10 @@ with 12-byte records `{strdup(name), anim handle, state}`:
 * a pair is appended only when **both** the handle and the state are non-zero,
   and `required` is incremented once per appended pair (`0x469325`);
 * after the walk it reads a sibling **`COMPLETION_COUNT`** through `0x57a1b0`
-  into `required` itself — the out-parameter pushed at `0x4693ae` is the header's
-  first field — so a record's `COMPLETION_COUNT` lowers how many pairs must
-  match.
+  (`0x4693b5`), whose out-parameter is the value pushed at `0x4693ae` — a
+  pointer to the header's first field — so the sibling's integer **overwrites**
+  `required`: it can lower it or raise it, and it is ignored when the key is
+  absent (`0x57a1b0` writes nothing on a miss).
 
 The evaluator `0x4697a0` (tick gate, `0x46a894`) counts, over the records, those
 whose `0x4ed530(anim)` equals the wanted state and returns
@@ -486,7 +536,7 @@ pair: `wv_drop_copilot`/`RUNNING` (OBJECTIVE11),
 
 **Effect: complete the objective once at least `required` of the listed
 animations are in the requested state**, where `required` defaults to the number
-of listed pairs and a sibling `COMPLETION_COUNT` can lower it.
+of listed pairs and a sibling `COMPLETION_COUNT`, when spelled, replaces it.
 
 ## Corrections and additions to stage A
 
@@ -513,6 +563,56 @@ of listed pairs and a sibling `COMPLETION_COUNT` can lower it.
    ZeppelinList keyword table (`0x62b660`) inside the executable, which name
    `netids`, `team`, `group`, `attack_rad`, `deactivated` and `taxiPath` — the
    original's own words for several fields these directives write.
+8. **`+0x59c`'s role is resolved, which closes A's unknown 2.** A recorded that
+   `+0x59c` is set iff child 1 spells `APPROACHING` and left the polarity inside
+   `0x465b40`. Both evaluator modes read it through the same idiom, and `fnstsw`
+   does not disturb the `EFLAGS` the polarity test's `je` depends on: with the
+   token the comparison completes on the *inside* of the radius, without it on
+   the *outside*, in the subject mode and in the count mode alike.
+9. **A's `TRAVELERS` child-2 row lists two of the three reals.** A's table says
+   "grandchildren 0,1 as reals → `+0x5a4`,`+0x5a8`"; the parse reads a third,
+   at `0x467c3a`..`0x467c55`, into `+0x5ac`, and `0x465bba`..`0x465bce` loads
+   all three back as the literal target position. The row above in this document
+   is the complete one.
+
+## Corrections made in review (2026-10-06)
+
+The reviewer re-disassembled every cited handler instead of trusting the draft
+and found eight wrong statements in it. They are corrected in place above; this
+section exists so the owner can see what the draft had wrong, because the draft
+was already pushed to this task's branch.
+
+1. **`TRAVELERS`' subject mode is polarity-dependent** (the substantive one).
+   The draft said `+0x59c` "has no effect in this mode" — it observed that
+   `fnstsw ax` overwrites `eax`, and concluded that the flags were lost too.
+   They are not: `fnstsw` writes only `AX`, so `0x465c8f`'s `je` still tests the
+   `cmp eax, edi` from `0x465c8b`, and `+0x59c` selects the *inside* of the
+   radius when set and the *outside* when clear — in the subject mode and in the
+   count mode alike. The draft's version would have told stage `E` to build a
+   directive that completes for any distance except the exact boundary.
+2. **The `0x71dabc` list is circular**, not `{count, array}`: `0x465d7a` walks
+   `[+0]` as the next pointer, reads the vehicle from `[+8]` and stops when it
+   reaches the head again.
+3. **`WAKEUP_GENERATOR`'s spawn gate is an integer allowance**, not a time
+   delta, and it has two further skips (`0x4526e4`, `0x4526fc`) plus measured
+   wrap arithmetic (`+0x98`, `+0x8c`, `+0x9c`, `+0xa0`) the draft did not have.
+4. **`WARP_VEHICLE`'s velocity is three products**, each
+   `−min(world+[+0x1e8], vehicle+[+0x668])` times a different float at
+   `[+0x198]`/`[+0x19c]`/`[+0x1a0]` — not a literal `(0, 0, −z)` scaled by them.
+5. **`SET_AI_TEAM`'s setter chain is now pinned to its instructions**:
+   `0x453740(&slot, team)` writes `team` into the slot and returns its address,
+   and the virtual at `vtable+8` is `0x441b80` (`this->[+8] = *slot`) in the
+   vtable `0x4b0020` installs at `0x608b58`.
+6. **The third `fcomp` pinning site reads a different bit**: `0x46a702` tests
+   `ah,1` (`C0` alone), so it acts when the duration is `>= 0`, not `> 0` like
+   the two `test ah,0x41` sites.
+7. **`SLEEP_ANIM`'s transition reads before it writes**: `0x46b181` loads the
+   anim name first, then `+0xc`/`+0x5c8`/`+0x5cc` are set, and the image-wide
+   displacement search for `+0x544`/`+0x548` returns exactly three kinds of site
+   in the mission region (parse, destructor, transition reader).
+8. **`ANIM_STATE`'s `COMPLETION_COUNT` overwrites `required`** — it can raise it
+   as well as lower it — and the out-parameter pushed at `0x4693ae` is a pointer
+   to the header's first field, not merely "the header's first field".
 
 ## Unknowns (each with its evidence)
 
@@ -524,9 +624,10 @@ of listed pairs and a sibling `COMPLETION_COUNT` can lower it.
    each is — and whether `+0x318`..`+0x320` is the `active_rad` triple — is not
    resolved; the comment gives the order, not the semantics.
 3. **The three per-axis factors and the world field in `WARP_VEHICLE`'s
-   velocity.** Measured: `(0, 0, −min(vehicle+0x668, world+0x1e8)) ⊙ [+0x198,
-   +0x19c, +0x1a0]`. What those three floats are (rate limits, per-axis gains,
-   orientation-dependent terms) is unknown.
+   velocity.** Measured: each of `+0x924/+0x928/+0x92c` is
+   `−min(vehicle+0x668, world+0x1e8)` times `[+0x198]`, `[+0x19c]`, `[+0x1a0]`
+   respectively. What those three floats are (rate limits, per-axis gains,
+   orientation-dependent terms) is unknown, and so is `world+0x1e8`'s own name.
 4. **The `*` rule in `WAKEUP_TURRETS`.** Measured: one `*` consumes exactly one
    character and that character must be a digit. No mission in M01 spells the
    key, and no campaign mission was surveyed for it in this stage, so nothing
@@ -535,10 +636,11 @@ of listed pairs and a sibling `COMPLETION_COUNT` can lower it.
    requires `subject->[+0x24] & 4`; whether the node M01's `"player"` resolves
    to has that bit set is a runtime property of the world build, not of the
    executable.
-6. **`TRAVELERS`' subject-mode comparison.** Measured as written: it returns 1
-   for `d² < r²` **and** for `d² > r²`, and 0 only for exact equality. Whether
-   the original intended `<=` is not recoverable from the code; this document
-   records the behaviour, not a rationalisation of it.
+6. **`TRAVELERS`' unspelled polarity.** Measured: `+0x59c` is 1 exactly when
+   child 1 spells `APPROACHING`, and in both evaluator modes that flag is what
+   selects the *inside* of the radius, while its default 0 selects the *outside*.
+   The original's own word for the `0` case is unknown: the parser reads no other
+   token there, so `APPROACHING` names one pole and the other is unnamed.
 7. **`+0x598`'s meaning when it is 0.** With a string child 0 the count mode
    compares AI group 0; nothing measured here says which group 0 is or whether
    the mode is reachable in practice for M01's spelling.
@@ -563,7 +665,7 @@ spells, and the shipped arguments for every one of their sites are pinned by
 written against measured behaviour rather than against key names.
 
 What stage E must **not** do on this evidence: treat the wake guards, the
-`WAKEUP_TURRETS` digit wildcard, the `TRAVELERS` subject-mode comparison or the
+`WAKEUP_TURRETS` digit wildcard, the `TRAVELERS` exact-equality case or the
 `ANIM_STATE` count override as details to tidy. Each is a measured part of the
 original's behaviour, and three of them are the difference between a directive
 that works and one that silently does nothing.

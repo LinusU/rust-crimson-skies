@@ -104,9 +104,10 @@ fn review_method(
          (3) WARP_VEHICLE's per-axis velocity factors and world+0x1e8 are measured as an \
          expression, not named; (4) the WAKEUP_TURRETS wildcard is measured as 'a * consumes \
          exactly one character and that character must be a digit' and no mission constrains its \
-         intent; (5) TRAVELERS' subject-mode comparison returns 1 for a distance below the radius \
-         and also for one above it, and returns 0 only on exact equality - recorded as measured, \
-         not rationalised; (6) whether M01's TRAVELERS spelling takes the subject or the count mode \
+         intent; (5) TRAVELERS' polarity: the record field +0x59c, which is set only when child 1 \
+         spells APPROACHING, selects the inside of the radius in both evaluator modes and its \
+         absence selects the outside, and the parser reads no token naming that other pole; \
+         (6) whether M01's TRAVELERS spelling takes the subject or the count mode \
          depends on a runtime node flag bit that the executable does not fix; (7) the anim state \
          enum is named up to 6 (UNDEFINED, DORMANT, RUNNING, EXECUTED, INVALID, CORRUPT, \
          INVALID_AND_RUNNING) from the engine's own debug table, and states outside it were not \
