@@ -320,8 +320,6 @@ fn accept_playtest_prop_spin_rate_curve_is_claimed_idle_positive_and_monotonic()
         0.0
     );
     // Engine on: idle and full are the declared endpoints, both positive, and
-    // the curve never runs backwards between them.
-    // Engine on: idle and full are the declared endpoints, both positive, and
     // the curve never runs backwards between them. The endpoints are read back
     // out of the production function — the one the spin system calls — so this
     // measures the curve rather than restating its literals.
