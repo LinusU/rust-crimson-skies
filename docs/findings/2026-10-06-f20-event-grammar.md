@@ -285,6 +285,22 @@ of the seven except `generic_intro` and `player_setup` carries one.
 | `retail_every_event_stream_walks_and_is_censused` *(retail)* | 61 carriers, 56 994 blocks, 242 391 events, 16 132 948 bytes, the full opcode census and the six class totals, and 389 refused blocks | any number moves, or an unknown opcode is dropped from the census |
 | `retail_m01_startup_records_play_with_measured_durations` *(retail)* | `playable_count() == 7`, each row's measured duration (15.9, 5.0, 0.2 and four zeros), each event's spelling and class, and `call_add_jack`'s first statement appearing only at tick 2 of a 10 Hz report | a duration becomes a guess, a row stops playing, or an unknown opcode reaches a playback |
 
+## Sensitivity
+
+Three mutations were applied to the implementation and the non-retail
+selection re-run with the source restored afterwards. Every one is killed by a
+test CI can run:
+
+| mutation | killed by |
+| --- | --- |
+| the decoded duration replaced by a constant (`RecordPlayback::new` returns `0.0`) | `a_decoded_duration_is_read_from_the_payloads`, `the_per_tick_report_follows_the_measured_timing` |
+| the unjoined-opcode check removed from `read_event`, so opcode 13 decodes | `an_undecoded_opcode_refuses_the_whole_record`, `a_stream_walks_into_tag_and_length_records` |
+| `RUN_TIME` read from word `0` instead of the last word | `a_decoded_duration_is_read_from_the_payloads`, `a_stream_walks_into_tag_and_length_records` |
+
+The two retail cases add what only the installation can check: the corpus
+counts and the seven durations, both re-measured from `$CS_GAME_DIR` on every
+run rather than copied from this document.
+
 ## Evidence classes
 
 | claim | class | why |
