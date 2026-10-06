@@ -194,6 +194,11 @@ what is not (zero direction, handedness).
   M01 member, the `Fury` assignment of `ia.zrd`, and M01's stored pose in
   metres. Run with
   `cargo test -p cs_app --test campaign -- accept_m01_lc_player_airframe_source_ --include-ignored`.
+* `crates/cs_app/tests/evidence_report_m01_lc_player_airframe_source.rs`: the
+  evidence-report harness described in section 7 (not an acceptance test; it
+  fails loudly when its inputs are missing).
+* `docs/findings/evidence/M01-LC-PLAYER-AIRFRAME-SOURCE.json`: the committed
+  acceptance report.
 
 ## 6. Unknowns, affected content and resolving work
 
@@ -205,7 +210,31 @@ what is not (zero direction, handedness).
 | What the table's `p…`/`r…`/`w…`/second-base pointers select, and why row 5's is the literal `wingman` | AI and wingmate node naming | a follow-up of F11/F33 over the same table |
 | Whether the mission program moves the aircraft before launch | the whole start pose | F13-B/C, F38 |
 
-No evidence report (`docs/findings/evidence/*.json`) was produced for this task:
-the M01-LC measurement series (#634, #676, #677, #678) ships its evidence as
-the finding plus the retail acceptance test, which re-derives every claim from
-`$CS_GAME_DIR` on each run. Nothing in this document is `verified_original`.
+## 7. Evidence
+
+`crates/cs_app/tests/evidence_report_m01_lc_player_airframe_source.rs` writes
+the acceptance report (`docs/contracts/CLI-EVIDENCE.md`, schema
+`schemas/evidence.schema.json`), following the sibling M01-LC reports:
+
+```sh
+cargo test --workspace --locked -- accept_m01_lc_player_airframe_source \
+  --include-ignored 2>&1 | tee \
+  private/evidence/M01-LC-PLAYER-AIRFRAME-SOURCE/cargo-test.log
+# then CS_EVIDENCE_DIR / CS_CANDIDATE_TREE / CS_EVIDENCE_ARGV /
+# CS_EVIDENCE_EXIT_CODE / CS_EVIDENCE_REVIEWER into
+#   cargo test --locked -p cs_app \
+#     --test evidence_report_m01_lc_player_airframe_source -- --ignored
+python3 tools/validate_evidence.py \
+  private/evidence/M01-LC-PLAYER-AIRFRAME-SOURCE/acceptance.json \
+  --artifact-root private/evidence/M01-LC-PLAYER-AIRFRAME-SOURCE --require-pass
+```
+
+The committed copy is `docs/findings/evidence/M01-LC-PLAYER-AIRFRAME-SOURCE.json`.
+Besides the recorded test log its second artifact, `airframe-source.json`, is a
+second production run: every reader archive of the installation walked, every
+member decoded, the `player_plane` key read where it occurs, M01's start
+configuration re-read, and the table as this crate binds it — counts, member
+names, airframe names and digests only, never original bytes. Its `claim` is
+`implemented`, never `checked` or `verified_original`; the product unknowns
+above are limits on that claim, recorded here and in `review.method` rather
+than dropped from the machine-readable report.
