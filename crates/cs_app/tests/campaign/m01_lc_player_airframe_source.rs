@@ -55,6 +55,19 @@ fn accept_m01_lc_player_airframe_source_table_is_pinned_in_index_order() {
         .collect();
     assert_eq!(names, DISPLAY_NAMES, "the executable's own row order");
 
+    // `airframe_index` answers with `position`, i.e. the *first* row that
+    // matches, while the original's `0x426d80` answers `11` (none) for a name
+    // two rows match. The two only agree while the display names are distinct,
+    // so the invariant the lookup's semantics rest on is pinned here.
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for entry in &AIRFRAME_TABLE {
+        assert!(
+            seen.insert(entry.display_name.to_ascii_lowercase()),
+            "the table's display names must be distinct: {:?}",
+            entry.display_name
+        );
+    }
+
     // Row 3's display name and scene root differ (`bloodhawk` / `player_bhawk`),
     // and row 5's do too (`Devastator` / `player_pfighter` → `piratefighter`):
     // a table keyed on one name alone would be a guess.
