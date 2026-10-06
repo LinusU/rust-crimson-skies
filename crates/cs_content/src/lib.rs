@@ -24,6 +24,12 @@
 //! the measured rule that picks which of a world's `texture.zbd` /
 //! `rtexture*.zbd` tiers a world load opens.
 //!
+//! [`detail`] is the detail-settings half of that stage (task #688): the
+//! surface that owns the `TextureMemory_HW`/`TextureMemory_SW` members and the
+//! video panel's texture dropdown with their measured conversions, authored as
+//! [`ClaimStatus::Designed`](cs_types::evidence::ClaimStatus) until the
+//! `detail.zrd` member is bound by a measured task.
+//!
 //! [`livery`] is the F09 paint composition
 //! (`specs/F09-bm-multilayer-liveries-and-paint-composition.md`): the three
 //! mask colors of a BM livery, the deterministic cache key of a composed
@@ -530,6 +536,7 @@ pub mod config;
 pub mod construction;
 pub mod coordinates;
 pub mod damage;
+pub mod detail;
 pub mod environment;
 pub mod flight_tuning;
 pub mod hud;
