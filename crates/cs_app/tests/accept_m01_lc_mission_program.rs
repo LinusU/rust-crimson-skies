@@ -20,10 +20,12 @@
 //! # What is measured and what is not
 //!
 //! Every figure the retail tests assert is re-derived from `$CS_GAME_DIR` on each
-//! run, so a stale constant fails rather than passes. What a directive key *does*
-//! is unmeasured: no original executable has been run, and `INSTANTWIN` naming a
-//! win is a reading of a spelling. The two outcome keys are therefore the only
-//! directives the engine may act on, and the campaign gate stays closed.
+//! run, so a stale constant fails rather than passes. The keys the stage-B/C/D
+//! findings cover carry a **measured** effect now — the operation the original
+//! performs, with its residual unknowns — and the keys no finding covers are
+//! still refused `Unmeasured`; a measured effect is not an implementation, so
+//! the two outcome keys are still the only directives the engine may act on and
+//! the campaign gate stays closed.
 //!
 //! Every value the synthetic tests use is newly authored `.zrd` bytes built here
 //! tag by tag — no original game data is committed, and the synthetic records
@@ -313,9 +315,12 @@ fn accept_m01_lc_a_bare_directive_is_not_read_as_carrying_the_next_key() {
     );
 }
 
-/// A nested argument list is measured as nested, and it is refused by name
-/// because `cs_script::ir::Value` has no list variant. Flattening it into a
-/// positional `Vec<Value>` would be a format change presented as a binding.
+/// A nested argument list is measured as nested, and it is named by the
+/// lowering accounting because `cs_script::ir::Value` has no list variant.
+/// Flattening it into a positional `Vec<Value>` would be a format change
+/// presented as a binding — so the key's *measured* effect does not launder the
+/// shape: the disposition says what the original does and the lowering row
+/// still says the shape cannot be carried.
 #[test]
 fn accept_m01_lc_a_nested_argument_shape_is_named_and_never_flattened() {
     // `ANIM_STATE`'s measured M01 shape: one name beside a nested descriptor.
@@ -346,26 +351,48 @@ fn accept_m01_lc_a_nested_argument_shape_is_named_and_never_flattened() {
     );
 
     match key.disposition() {
-        DirectiveDisposition::Unmeasured {
-            reason: UnmeasuredReason::ArgumentShapeHasNoValue { shape },
-        } => {
+        DirectiveDisposition::Measured(directive) => {
             assert_eq!(
-                shape.label(),
-                "[text,[text]]",
-                "the refusal names the shape"
+                directive.operation,
+                cs_content::mission_control::DirectiveOperation::AnimationStates,
+                "ANIM_STATE's effect is measured: an animation-state evaluator"
+            );
+            assert!(
+                !key.disposition().is_implemented(),
+                "a measured effect is not an engine operation"
             );
         }
-        other => panic!("a nested shape must be refused by name, got {other:?}"),
+        other => panic!("a measured key is Measured, got {other:?}"),
     }
+    // And the shape defect is named, on the row that owns it: ANIM_STATE is a
+    // completion evaluator, so the condition row carries it.
+    let lowering = record.lowering();
+    let condition = lowering
+        .requirements()
+        .iter()
+        .find(|row| row.kind == LoweringRequirementKind::ObjectiveCondition)
+        .expect("the condition row exists");
+    assert!(
+        condition
+            .unmeasured_fields
+            .iter()
+            .any(|field| field.contains("ANIM_STATE") && field.contains("cannot carry")),
+        "the condition row names the shape the IR cannot carry: {:?}",
+        condition.unmeasured_fields
+    );
     assert!(!record.is_complete());
 }
 
-/// Sites that disagree about a key's argument shape are both kept, and the key is
-/// refused as disagreeing rather than resolved to the majority shape.
+/// Sites that disagree about a key's argument shape are both kept, and the
+/// disagreement is named by the lowering accounting rather than resolved to the
+/// majority shape.
 ///
 /// The witness is the measured `INACTIVE1` disagreement: ten sites spell a node,
-/// a part and a part-state; two spell a node alone. A reader that picked the
-/// majority would be inventing a rule the original does not state.
+/// a part and a part-state; two spell a node alone. Both forms are measured
+/// forms of the same mechanism — the resolver takes one to three names — so the
+/// key's *effect* is measured; what the disagreement blocks is the single call
+/// signature a lowering would need, and the condition row says so. A reader
+/// that picked the majority would still be inventing a rule.
 #[test]
 fn accept_m01_lc_disagreeing_argument_shapes_are_both_kept_and_refused() {
     let document = control_record(vec![
@@ -405,11 +432,31 @@ fn accept_m01_lc_disagreeing_argument_shapes_are_both_kept_and_refused() {
         "disagreeing sites have no agreed shape"
     );
     match key.disposition() {
-        DirectiveDisposition::Unmeasured {
-            reason: UnmeasuredReason::DisagreeingArgumentShape { shapes },
-        } => assert_eq!(shapes, 2),
-        other => panic!("disagreeing sites must be refused, got {other:?}"),
+        DirectiveDisposition::Measured(directive) => {
+            assert_eq!(
+                directive.operation,
+                cs_content::mission_control::DirectiveOperation::InactiveMembers,
+                "both shapes are measured forms of the one inactive-members mechanism"
+            );
+        }
+        other => panic!("a key the findings measure is Measured, got {other:?}"),
     }
+    // The disagreement itself is still named — on the row that owns it — so a
+    // lowering could never pick one shape silently.
+    let lowering = record.lowering();
+    let condition = lowering
+        .requirements()
+        .iter()
+        .find(|row| row.kind == LoweringRequirementKind::ObjectiveCondition)
+        .expect("the condition row exists");
+    assert!(
+        condition
+            .unmeasured_fields
+            .iter()
+            .any(|field| field.contains("INACTIVE1") && field.contains("distinct argument shapes")),
+        "the disagreement is named by the row that owns it: {:?}",
+        condition.unmeasured_fields
+    );
 }
 
 /// A block the walk cannot read is a refusal naming the block and the child, not a
@@ -640,6 +687,12 @@ fn accept_m01_lc_a_bare_key_that_is_not_a_measured_outcome_key_is_refused() {
 
 /// The two outcome keys are the only directives the engine may act on, and the
 /// reading is named as a reading of a spelling rather than an observation.
+///
+/// The fixture spells one of each kind: an outcome key, a key whose effect a
+/// stage-B/C/D finding measures (`WAKE_ANIM`), and a key no finding covers
+/// (`WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` — spelled in the corpus at
+/// `zbd/c1b/m03`, whose handler was never located). The three sets must
+/// partition the vocabulary without overlap.
 #[test]
 fn accept_m01_lc_only_an_outcome_key_reaches_an_engine_operation() {
     let document = control_record(vec![block(
@@ -647,6 +700,7 @@ fn accept_m01_lc_only_an_outcome_key_reaches_an_engine_operation() {
         vec![
             directive("INSTANTWIN", Vec::new()),
             directive("WAKE_ANIM", vec![zrd_text("x")]),
+            directive("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE", vec![zrd_int(3)]),
         ],
     )]);
     let record = measure_control_record(&document);
@@ -661,6 +715,27 @@ fn accept_m01_lc_only_an_outcome_key_reaches_an_engine_operation() {
         "the bare outcome key is the one directive with an engine operation"
     );
 
+    // The measured set: the effect is known, the engine operation is not.
+    let measured: Vec<&str> = record
+        .measured()
+        .iter()
+        .map(|(key, _)| key.key.as_str())
+        .collect();
+    assert_eq!(
+        measured,
+        ["WAKE_ANIM"],
+        "the findings-covered key reports its measured effect"
+    );
+    assert!(
+        !record
+            .key("WAKE_ANIM")
+            .expect("measured")
+            .disposition()
+            .is_implemented(),
+        "measured is not implemented"
+    );
+
+    // The unmeasured set: a spelled key no finding covers is refused by name.
     let unmeasured: Vec<(&str, UnmeasuredReason)> = record
         .unmeasured()
         .iter()
@@ -672,12 +747,12 @@ fn accept_m01_lc_only_an_outcome_key_reaches_an_engine_operation() {
         })
         .collect();
     assert_eq!(unmeasured.len(), 1);
-    assert_eq!(unmeasured[0].0, "WAKE_ANIM");
+    assert_eq!(unmeasured[0].0, "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE");
     assert_eq!(
         unmeasured[0].1,
         UnmeasuredReason::MeaningNotMeasured,
-        "a keyed directive with an IR-carriable shape is still refused: what it \
-         does is unmeasured, not its argument list"
+        "a keyed directive whose effect no finding measured is still refused: \
+         the key exists, what it does is unmeasured"
     );
 
     // The outcome vocabulary cannot drift from the one F39-D measured.
@@ -703,7 +778,9 @@ fn accept_m01_lc_only_an_outcome_key_reaches_an_engine_operation() {
 // ---------------------------------------------------------------------------
 
 /// The accounting is requirement-by-requirement and fails closed: the mission id
-/// is met (it comes from the path, not the member), and the other three name
+/// is met (it comes from the path, not the member) and the objective identity is
+/// met (each block's authored `OBJECTIVE<N>` key is its identity, and stage B
+/// measured `IDENTITY` as presentation data) — the condition and the calls name
 /// their unmeasured fields. An unmet row with nothing named would be the failure
 /// this accounting exists to prevent.
 #[test]
@@ -732,7 +809,7 @@ fn accept_m01_lc_the_lowering_accounting_names_what_each_unmet_requirement_lacks
         rows,
         [
             (&LoweringRequirementKind::MissionIdentity, true),
-            (&LoweringRequirementKind::ObjectiveIdentity, false),
+            (&LoweringRequirementKind::ObjectiveIdentity, true),
             (&LoweringRequirementKind::ObjectiveCondition, false),
             (&LoweringRequirementKind::CallArguments, false),
         ],
@@ -749,22 +826,17 @@ fn accept_m01_lc_the_lowering_accounting_names_what_each_unmet_requirement_lacks
     let fields = lowering.unmeasured_fields();
     assert!(
         fields.iter().any(|field| field.contains("IDENTITY")),
-        "the identity row names the integer it cannot read: {fields:?}"
-    );
-    assert!(
-        fields
-            .iter()
-            .any(|field| field.contains("INACTIVE_COMPLETION_COUNT")),
-        "the condition row names the threshold it cannot read: {fields:?}"
+        "the calls row names the `IDENTITY` child the measured parse never \
+         reads: {fields:?}"
     );
     assert!(
         !lowering.complete(),
-        "a record with unmeasured directives is never complete"
+        "a record whose condition and calls cannot be lowered is never complete"
     );
     assert_eq!(
         lowering.unmet().count(),
-        3,
-        "three of the four requirements are unmet on a record that spells directives"
+        2,
+        "two of the four requirements are unmet: the condition and the calls"
     );
 
     // The measurement text carries the counted numbers behind each verdict.
@@ -1001,7 +1073,8 @@ fn accept_m01_lc_the_longest_member_is_not_the_control_program() {
 }
 
 /// What the engine may honour, measured: the two outcome keys and nothing else,
-/// with every other key named by its refusal reason.
+/// while every other M01 key carries the measured disposition its finding
+/// supplies — understood, named, and still not runnable.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_lc_every_directive_m01_spells_is_measured_and_only_outcomes_run() {
@@ -1024,65 +1097,53 @@ fn accept_m01_lc_every_directive_m01_spells_is_measured_and_only_outcomes_run() 
          the reading its spelling names"
     );
 
-    // Every other key carries a named refusal, and the reasons partition the
-    // vocabulary: a key cannot be in none of the three categories.
-    let by_reason = record.unmeasured().iter().fold(
-        std::collections::BTreeMap::<&str, Vec<&str>>::new(),
-        |mut counts, (key, disposition)| {
-            let reason = disposition
-                .refusal()
-                .expect("an unmeasured disposition carries a reason");
-            counts
-                .entry(reason.code())
-                .or_default()
-                .push(key.key.as_str());
-            counts
-        },
-    );
-    let refused: usize = by_reason.values().map(Vec::len).sum();
+    // The findings cover every other key M01 spells: each carries a measured
+    // operation, the evidence it came from and its residual unknowns — and none
+    // is implemented, because a measured effect is not a host binding.
+    let measured = record.measured();
     assert_eq!(
-        refused + implemented.len(),
-        record.vocabulary() as usize,
-        "every key is either implemented or refused by a named reason: {:?}",
-        by_reason
+        measured.len(),
+        41,
+        "all 41 non-outcome keys M01 spells are covered by the stage A–D \
+         findings: {:?}",
+        record.unmeasured()
     );
-    for (code, keys) in &by_reason {
+    for (key, directive) in &measured {
         assert!(
-            matches!(
-                *code,
-                "meaning_not_measured"
-                    | "disagreeing_argument_shape"
-                    | "argument_shape_has_no_value"
-            ),
-            "the refusal codes are the three declared ones, got {code}"
+            !directive.summary.is_empty()
+                && !directive.evidence.is_empty()
+                && !directive.operation.code().is_empty(),
+            "{}: a measured disposition names the operation, the effect and the \
+             evidence",
+            key.key
         );
-        assert!(!keys.is_empty(), "{code} has keys");
+        assert!(
+            !key.disposition().is_implemented(),
+            "{}: measured is not implemented",
+            key.key
+        );
     }
-    // The split the finding quotes, measured per record: a disposition is a
-    // property of one archive's sites, so it is counted here and not corpus-wide.
-    assert_eq!(
-        (
-            by_reason.get("meaning_not_measured").map_or(0, Vec::len),
-            by_reason
-                .get("disagreeing_argument_shape")
-                .map_or(0, Vec::len),
-            by_reason
-                .get("argument_shape_has_no_value")
-                .map_or(0, Vec::len),
-            implemented.len()
-        ),
-        (30, 9, 2, 2),
-        "M01's 43 keys split into 30 unmeasured-of-meaning, 9 disagreeing, 2 with a \
-         nested agreed shape and the 2 outcome keys: {by_reason:?}"
-    );
+
+    // And the partition is exact: no key sits in two sets or in none.
     assert!(
-        by_reason.contains_key("meaning_not_measured"),
-        "most keys are refused for want of a measured meaning, which is the \
-         honest reading of a spelling: {by_reason:?}"
+        record.unmeasured().is_empty(),
+        "every key M01 spells is measured or an outcome: {:?}",
+        record
+            .unmeasured()
+            .iter()
+            .map(|(key, _)| key.key.as_str())
+            .collect::<Vec<_>>()
     );
+    assert_eq!(
+        measured.len() + implemented.len(),
+        record.vocabulary() as usize,
+        "measured + implemented partitions M01's vocabulary"
+    );
+    assert_eq!(record.vocabulary(), 43, "M01 spells 43 distinct keys");
     assert!(
         !record.is_complete(),
-        "M01 is not complete: its record declares directives the engine cannot honour"
+        "M01 is not complete: the lowering rows its directives cannot satisfy \
+         keep it refused"
     );
 
     // A bare key in M01 is not automatically an outcome key. The measured corpus
@@ -1181,8 +1242,9 @@ fn accept_m01_lc_every_mission_is_measured_and_none_is_campaign_ready() {
             record.refusals()
         );
         assert!(
-            row.lowering().expect("measured").unmet().count() >= 3,
-            "{}: at least three of lower_program's four requirements are unmet",
+            row.lowering().expect("measured").unmet().count() >= 2,
+            "{}: the condition and the calls are unmet on every measured \
+             control program",
             row.mission()
         );
     }
@@ -1223,7 +1285,6 @@ fn accept_m01_lc_every_mission_is_measured_and_none_is_campaign_ready() {
     // The corpus-wide accounting: which requirement blocks which missions.
     let unmet = census.unmet_by_requirement();
     for kind in [
-        LoweringRequirementKind::ObjectiveIdentity,
         LoweringRequirementKind::ObjectiveCondition,
         LoweringRequirementKind::CallArguments,
     ] {
@@ -1238,11 +1299,18 @@ fn accept_m01_lc_every_mission_is_measured_and_none_is_campaign_ready() {
             kind.code()
         );
     }
-    assert!(
-        !unmet.contains_key(LoweringRequirementKind::MissionIdentity.code()),
-        "the mission id is not an unmet requirement: it comes from the mission path, \
-         not from the control member"
-    );
+    for kind in [
+        LoweringRequirementKind::MissionIdentity,
+        LoweringRequirementKind::ObjectiveIdentity,
+    ] {
+        assert!(
+            !unmet.contains_key(kind.code()),
+            "{} is met on every measured control program: the mission id comes \
+             from the path, and each block's authored `OBJECTIVE<N>` key is its \
+             identity",
+            kind.code()
+        );
+    }
     assert!(
         !census.vocabulary().is_empty()
             && census.vocabulary().len() >= census.directive_keys().len(),

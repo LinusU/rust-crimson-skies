@@ -1,31 +1,32 @@
-//! Evidence-report harness for task `M01-LC-DIRECTIVE-A` (#679):
+//! Evidence-report harness for task `M01-LC-DIRECTIVE-E` (#683):
 //! `docs/contracts/CLI-EVIDENCE.md`, schema `schemas/evidence.schema.json`.
-//! Not named `accept_m01_lc_directive_a_*`: it is not part of the acceptance
+//! Not named `accept_m01_lc_directive_e_*`: it is not part of the acceptance
 //! suite and fails loudly when its inputs are missing.
 //!
-//! 1. `cargo test --workspace --locked -- accept_m01_lc_directive_a_ --include-ignored 2>&1 |
-//!    tee private/evidence/M01-LC-DIRECTIVE-A/cargo-test.log` (note the exit
+//! 1. `cargo test --workspace --locked -- accept_m01_lc_directive_e_ --include-ignored 2>&1 |
+//!    tee private/evidence/M01-LC-DIRECTIVE-E/cargo-test.log` (note the exit
 //!    status)
 //! 2. ```sh
-//!    CS_EVIDENCE_DIR=private/evidence/M01-LC-DIRECTIVE-A \
+//!    CS_EVIDENCE_DIR=private/evidence/M01-LC-DIRECTIVE-E \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_m01_lc_directive_a_ --include-ignored" \
+//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_m01_lc_directive_e_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
-//!      cargo test --locked -p cs_app --test evidence_report_m01_lc_directive_a -- --ignored
+//!      cargo test --locked -p cs_app --test evidence_report_m01_lc_directive_e -- --ignored
 //!    ```
 //! 3. `python3 tools/validate_evidence.py
-//!    private/evidence/M01-LC-DIRECTIVE-A/acceptance.json
-//!    --artifact-root private/evidence/M01-LC-DIRECTIVE-A --require-pass`
-//! 4. Commit a copy as `docs/findings/evidence/M01-LC-DIRECTIVE-A.json`.
+//!    private/evidence/M01-LC-DIRECTIVE-E/acceptance.json
+//!    --artifact-root private/evidence/M01-LC-DIRECTIVE-E --require-pass`
+//! 4. Commit a copy as `docs/findings/evidence/M01-LC-DIRECTIVE-E.json`.
 //!
 //! Every field is derived from the recorded log, the environment, production
 //! discovery of `$CS_GAME_DIR` and `Cargo.lock`. The second artifact is a
 //! **second production observation**: the harness re-runs
-//! [`survey_mission_control_programs`] and records M01's measured control
-//! record — the directive-key census whose 43 spellings the findings document
-//! maps — as JSON. That is a real production run over the owner's
-//! installation, not a paraphrase of the acceptance assertions, and it carries
-//! no original bytes: ids, digests, byte extents, shapes and dispositions only.
+//! [`survey_mission_control_programs`] over the installation and records, for
+//! every mission row, each directive key's disposition — terminal, measured
+//! (with the operation, role, evidence and residual unknowns) or unmeasured —
+//! and each record's lowering accounting. That is a real production run over
+//! the owner's installation, not a paraphrase of the acceptance assertions, and
+//! it carries no original bytes: keys, digests, dispositions and counts only.
 
 use std::collections::VecDeque;
 use std::fs;
@@ -35,53 +36,51 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cs_app::mission_control::survey_mission_control_programs;
 use cs_assets::install::{content_fingerprint, discover, fingerprint};
-use cs_content::mission_control::MeasuredControlRecord;
+use cs_content::mission_control::{DirectiveDisposition, MeasuredControlRecord};
 
 /// Every acceptance test the report must see pass.
-const ACCEPTANCE_PREFIX: &str = "accept_m01_lc_directive_a_";
-
-/// The measured key vocabulary this task's findings document maps — asserted
-/// verbatim by `accept_m01_lc_directive_a_` tests, so a report regenerated on
-/// an installation whose census disagrees can never be written.
-const M01_KEY_VOCABULARY: usize = 43;
+const ACCEPTANCE_PREFIX: &str = "accept_m01_lc_directive_e_";
 
 /// How this run was reviewed, with every measured number **derived** from the
 /// census this same run produced rather than written down.
-fn review_method(key_count: usize, site_count: u32, block_count: u32, own_tests: usize) -> String {
+fn review_method(
+    measured_keys: usize,
+    unmeasured_keys: usize,
+    m01_measured: usize,
+    unmet_rows: usize,
+    own_tests: usize,
+) -> String {
     format!(
         "Acceptance suite run locally with the retail capability; this harness derives every field \
          from the recorded log, production discovery of $CS_GAME_DIR, and a second production run \
          of cs_app::mission_control::survey_mission_control_programs over the installation \
-         (directive-census.json). Claim is implemented only. MEASURED: the findings document \
-         docs/findings/2026-10-06-m01-lc-directive-a-objective-directive-parser.md maps the native \
-         CZMission objective-directive parser in $CS_GAME_DIR/crimson.decrypted.exe (sha256 \
-         43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75) for every key M01 spells, \
-         and the production census reports that vocabulary as {key_count} distinct directive keys \
-         across {site_count} sites in {block_count} numbered objective blocks - the acceptance \
-         suite asserts the map's key set and argument shapes key for key against that census, so a \
-         drift between the document and the data fails the run. The native-side evidence is \
-         STATIC CODE EVIDENCE ONLY: parse sites, node layout, argument arity and tag checks, record \
-         field offsets and the update-time consumers were read out of the executable with r2/objdump \
-         and no original program was run, so nothing here is verified_original runtime behaviour. \
-         LIMITS OF WHAT WAS MEASURED, each recorded in the findings document's Unknowns section: \
-         (1) field SEMANTICS are stage B/C/D work - this stage measures which fields each key \
-         writes and which update-time helpers read them, not what a DEDG pair, a travelers subject \
-         or an INACTIVE member flag means in game terms; (2) IDENTITY's third argument (the MSG_* \
-         label M01 spells at 4 of 5 sites) is never read by the measured parse - whether the \
-         retained document is re-read for it is unknown; (3) several parsers read child payloads \
-         as char* without a tag check, so a malformed non-string child is a latent runtime \
-         hazard, observed but not exercised; (4) the native error paths log and continue rather \
-         than aborting, so a wrong-typed argument leaves a stack scratch value in the field. \
-         `unknowns` is empty because every key M01 spells reached a measured handler: no spelled \
-         key is unresolved. TEST-SELECTION NOTE: the prefix accept_m01_lc_directive_a_ is unique \
-         to this task, so the {own_tests} discovered assertions are exactly this task's tests. \
+         (directive-disposition-census.json). Claim is implemented only. MEASURED: each directive \
+         key's disposition now reports the measured effect a stage A/B/C/D findings document \
+         supplies (operation, role, evidence and residual unknowns): the census records \
+         {measured_keys} measured corpus key(s) and {unmeasured_keys} refused unmeasured one(s), \
+         {m01_measured} of M01's 41 non-outcome keys measured, and {unmet_rows} unmet lowering \
+         rows corpus-wide - mission and objective identity are met on every measured record while \
+         the condition and the calls stay unmet. The disposition is STATIC CODE EVIDENCE ONLY: the \
+         findings' measurements were read out of crimson.decrypted.exe (sha256 \
+         43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75, the same binary stage \
+         A read) and no original program was run, so nothing here is verified_original runtime \
+         behaviour and a measured disposition is not a host binding - no directive key is \
+         implemented beyond the two outcome spellings, and no mission reports complete. LIMITS OF \
+         WHAT WAS MEASURED: every residual unknown the findings recorded is carried per key in the \
+         disposition and named again on the lowering row that owns it (IDENTITY's third child, the \
+         in-play flag's writers, DEDG's member-field rewrites, TRAVELERS' unspelled polarity, the \
+         sound-group handles, the animation call's trailing arguments and the rest); keys whose \
+         argument shapes disagree or nest lists the IR cannot carry are named by the lowering \
+         accounting rather than flattened; and every corpus key no finding covers stays refused \
+         `Unmeasured`. TEST-SELECTION NOTE: the prefix accept_m01_lc_directive_e_ is unique to \
+         this task, so the {own_tests} discovered assertions are exactly this task's tests. \
          Validated with tools/validate_evidence.py --require-pass.",
     )
 }
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
-fn evidence_report_m01_lc_directive_a_writes_the_acceptance_report() {
+fn evidence_report_m01_lc_directive_e_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
     let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
@@ -119,29 +118,51 @@ fn evidence_report_m01_lc_directive_a_writes_the_acceptance_report() {
     let install_sha256 = fingerprint(&found.manifest).to_hex();
     let content_sha256 = content_fingerprint(&found.manifest).to_hex();
 
-    // The second production observation: M01's measured control record — the
-    // exact key census the findings document maps, with every site's argument
-    // shapes and dispositions.
+    // The second production observation: the corpus census of dispositions and
+    // lowering rows this task introduces.
     let census = survey_mission_control_programs(&game_dir).expect("the census surveys");
-    let record = census
+    let measured_rows: Vec<&MeasuredControlRecord> = census
+        .measured_rows()
+        .map(|row| row.record().expect("a measured row carries a record"))
+        .collect();
+    let measured_keys: usize = measured_rows
+        .iter()
+        .flat_map(|record| record.keys().iter())
+        .filter(|key| matches!(key.disposition(), DirectiveDisposition::Measured(_)))
+        .count();
+    let unmeasured_keys: usize = measured_rows
+        .iter()
+        .flat_map(|record| record.keys().iter())
+        .filter(|key| matches!(key.disposition(), DirectiveDisposition::Unmeasured { .. }))
+        .count();
+    let m01_record = census
         .row("zbd/c1c/m01")
         .expect("M01 is present")
         .record()
         .expect("M01 declares a control program");
+    let m01_measured = m01_record.measured().len();
+    let unmet_rows: usize = measured_rows
+        .iter()
+        .map(|record| record.lowering().unmet().count())
+        .sum();
     assert_eq!(
-        record.keys().len(),
-        M01_KEY_VOCABULARY,
-        "the census no longer reports the vocabulary the document maps"
+        m01_measured, 41,
+        "the census no longer reports the disposition counts this task measures"
     );
-    let census_path = evidence_dir.join("directive-census.json");
+    assert!(
+        measured_keys > 0 && unmeasured_keys > 0 && unmet_rows > 0,
+        "the census must measure all three populations"
+    );
+
+    let census_path = evidence_dir.join("directive-disposition-census.json");
     fs::write(
         &census_path,
         format!(
             "{}\n",
-            render_directive_census(record, &install_sha256, &candidate_tree)
+            render_disposition_census(&census, &install_sha256, &candidate_tree)
         ),
     )
-    .expect("write directive-census.json");
+    .expect("write directive-disposition-census.json");
 
     let artifacts = vec![
         artifact(&log_path, "log", &evidence_dir),
@@ -153,7 +174,7 @@ fn evidence_report_m01_lc_directive_a_writes_the_acceptance_report() {
         avian: locked_version("avian3d"),
     };
     let report = format!(
-        "{{\n \"schema_version\": 1,\n \"task_id\": \"M01-LC-DIRECTIVE-A\",\n \"candidate_tree\": {},\n \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \"capabilities\": [\"retail\", \"synthetic\"],\n \"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": [],\n \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
+        "{{\n \"schema_version\": 1,\n \"task_id\": \"M01-LC-DIRECTIVE-E\",\n \"candidate_tree\": {},\n \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \"capabilities\": [\"retail\", \"synthetic\"],\n \"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": [],\n \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
         jstr(&candidate_tree),
         engine_json(&engine),
         jstr(&iso_utc_now()),
@@ -171,9 +192,10 @@ fn evidence_report_m01_lc_directive_a_writes_the_acceptance_report() {
         artifact_array(&artifacts),
         jstr(&reviewer),
         jstr(&review_method(
-            record.keys().len(),
-            record.sites(),
-            record.blocks(),
+            measured_keys,
+            unmeasured_keys,
+            m01_measured,
+            unmet_rows,
             suite.discovered as usize,
         )),
     );
@@ -187,15 +209,52 @@ fn evidence_report_m01_lc_directive_a_writes_the_acceptance_report() {
     println!("wrote {}", out.display());
 }
 
-/// M01's measured control record as JSON: every directive key with its
-/// measured argument shapes, sites and disposition, the record-level fields,
-/// the block refusals and the lowering accounting. No original bytes.
-fn render_directive_census(
-    record: &MeasuredControlRecord,
+/// The whole corpus census as JSON: per mission row, every directive key with
+/// its shapes and its disposition — terminal, measured (operation, role,
+/// evidence, residual unknowns) or unmeasured — plus the record's lowering
+/// rows, so the supported/not-supported accounting is re-derived from the
+/// installation rather than from this task's own assertions.
+fn render_disposition_census(
+    census: &cs_app::mission_control::RetailControlCensus,
     install_sha256: &str,
     candidate_tree: &str,
 ) -> String {
-    let keys: Vec<String> = record
+    let rows: Vec<String> = census
+        .rows()
+        .iter()
+        .map(|row| {
+            let record = row.record();
+            let keys = record.map_or_else(Vec::new, render_record_keys);
+            let lowering = record.map_or_else(Vec::new, render_lowering_rows);
+            format!(
+                "{{\"mission\": {}, \"measured\": {}, \"complete\": {}, \"blocks\": {}, \
+                 \"sites\": {}, \"keys\": [{}], \"lowering\": [{}]}}",
+                jstr(row.mission()),
+                row.is_measured(),
+                row.is_complete(),
+                record.map_or(0, MeasuredControlRecord::blocks),
+                record.map_or(0, MeasuredControlRecord::sites),
+                keys.join(", "),
+                lowering.join(", "),
+            )
+        })
+        .collect();
+    format!(
+        "{{\"install_sha256\": {}, \"candidate_tree\": {}, \"missions\": {}, \"measured\": {}, \
+         \"complete\": {}, \"campaign_ready\": {}, \"rows\": [{}]}}",
+        jstr(install_sha256),
+        jstr(candidate_tree),
+        census.len(),
+        census.measured_len(),
+        census.complete_missions().len(),
+        census.campaign_ready(),
+        rows.join(", "),
+    )
+}
+
+/// Every directive key of one record: its measured shapes and its disposition.
+fn render_record_keys(record: &MeasuredControlRecord) -> Vec<String> {
+    record
         .keys()
         .iter()
         .map(|key| {
@@ -207,13 +266,10 @@ fn render_directive_census(
                 })
                 .collect();
             let disposition = match key.disposition() {
-                cs_content::mission_control::DirectiveDisposition::TerminalOutcome { outcome } => {
-                    format!(
-                        "{{\"kind\": \"terminal_outcome\", \"outcome\": {}}}",
-                        jstr(outcome.label())
-                    )
+                DirectiveDisposition::TerminalOutcome { outcome } => {
+                    format!("{{\"kind\": \"terminal_outcome\", \"outcome\": {}}}", jstr(outcome.label()))
                 }
-                cs_content::mission_control::DirectiveDisposition::Measured(directive) => {
+                DirectiveDisposition::Measured(directive) => {
                     let evidence: Vec<String> =
                         directive.evidence.iter().map(|doc| jstr(doc)).collect();
                     let unknowns: Vec<String> =
@@ -228,7 +284,7 @@ fn render_directive_census(
                         unknowns.join(", "),
                     )
                 }
-                cs_content::mission_control::DirectiveDisposition::Unmeasured { reason } => format!(
+                DirectiveDisposition::Unmeasured { reason } => format!(
                     "{{\"kind\": \"unmeasured\", \"reason\": {}, \"detail\": {}}}",
                     jstr(reason.code()),
                     jstr(&reason.detail())
@@ -243,50 +299,31 @@ fn render_directive_census(
                 disposition,
             )
         })
-        .collect();
-    let fields: Vec<String> = record
-        .record_fields()
+        .collect()
+}
+
+/// A record's lowering rows as JSON: each requirement, its verdict and the
+/// fields it still names.
+fn render_lowering_rows(record: &MeasuredControlRecord) -> Vec<String> {
+    record
+        .lowering()
+        .requirements()
         .iter()
-        .map(|(field, sites)| {
+        .map(|row| {
+            let fields: Vec<String> = row
+                .unmeasured_fields
+                .iter()
+                .map(|field| jstr(field))
+                .collect();
             format!(
-                "{{\"key\": {}, \"sites\": {sites}, \"support\": {}}}",
-                jstr(field.key()),
-                jstr(field.support().label())
+                "{{\"requirement\": {}, \"met\": {}, \"measurement\": {}, \"unmeasured_fields\": [{}]}}",
+                jstr(row.kind.code()),
+                row.met,
+                jstr(&row.measurement),
+                fields.join(", "),
             )
         })
-        .collect();
-    let unclassified: Vec<String> = record
-        .unclassified_record_keys()
-        .iter()
-        .map(|key| jstr(key))
-        .collect();
-    let refusals: Vec<String> = record
-        .refusals()
-        .iter()
-        .map(|refusal| {
-            format!(
-                "{{\"code\": {}, \"detail\": {}}}",
-                jstr(refusal.code()),
-                jstr(&refusal.to_string())
-            )
-        })
-        .collect();
-    format!(
-        "{{\"install_sha256\": {}, \"candidate_tree\": {}, \"member\": \"zbd/c1c/m01 \
-         objectives.zrd\", \"blocks\": {}, \"sites\": {}, \"vocabulary\": {}, \"complete\": {}, \
-         \"record_fields\": [{}], \"unclassified_record_keys\": [{}], \"block_refusals\": [{}], \
-         \"keys\": [{}]}}",
-        jstr(install_sha256),
-        jstr(candidate_tree),
-        record.blocks(),
-        record.sites(),
-        record.vocabulary(),
-        record.is_complete(),
-        fields.join(", "),
-        unclassified.join(", "),
-        refusals.join(", "),
-        keys.join(", "),
-    )
+        .collect()
 }
 
 // ---------------------------------------------------------------- inputs ---
@@ -295,13 +332,13 @@ fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
         panic!(
             "{name} is not set: this harness only runs through the sequence in its module doc \
-             (crates/cs_app/tests/evidence_report_m01_lc_directive_a.rs)"
+             (crates/cs_app/tests/evidence_report_m01_lc_directive_e.rs)"
         )
     })
 }
 
 /// Cargo runs a test binary with its working directory set to the *package*
-/// root, so a path like `private/evidence/M01-LC-DIRECTIVE-A` written relative
+/// root, so a path like `private/evidence/M01-LC-DIRECTIVE-E` written relative
 /// to the workspace root in the module doc must be re-anchored here.
 fn workspace_path(as_described: &str) -> PathBuf {
     let path = PathBuf::from(as_described);
@@ -408,7 +445,7 @@ struct Suite {
     assertions: Vec<(String, &'static str)>,
 }
 
-/// Extracts the per-test results of the `accept_m01_lc_directive_a_` tests from
+/// Extracts the per-test results of the `accept_m01_lc_directive_e_` tests from
 /// a recorded `cargo test` output.
 ///
 /// The counts come from the **prefixed test lines**, not from the `test result:`
@@ -541,7 +578,7 @@ fn assertion_array(assertions: &[(String, &'static str)]) -> String {
         .map(|(name, status)| {
             format!(
                 "{{\"id\": {}, \"status\": {status:?}, \"evidence\": [\"cargo-test.log\", \
-                 \"directive-census.json\"]}}",
+                 \"directive-disposition-census.json\"]}}",
                 jstr(name)
             )
         })

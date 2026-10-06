@@ -122,13 +122,15 @@
 //! decoded record declares numbered `OBJECTIVE<N>` blocks, not the one with the
 //! longest or the most suggestive name — every directive key its blocks spell
 //! with that key's measured argument shape, and a
-//! [`mission_control::DirectiveDisposition`] per key that either names the one
-//! mission-IR action the key can reach or refuses it with a named
-//! [`mission_control::UnmeasuredReason`]. [`mission_control::ControlLowering`]
-//! then accounts, requirement by requirement, for what
-//! `cs_script::bindings::lower_program` would still need before any of it could
-//! become a `MissionProgram`. What any spelling *does* stays unmeasured: no
-//! original executable has been run.
+//! [`mission_control::DirectiveDisposition`] per key: the one mission-IR action
+//! a key can reach, the measured effect a stage A/B/C/D finding supplies
+//! ([`mission_control::measured_directive`], residual unknowns included), or a
+//! refusal with a named [`mission_control::UnmeasuredReason`].
+//! [`mission_control::ControlLowering`] then accounts, requirement by
+//! requirement, for what `cs_script::bindings::lower_program` would still need
+//! before any of it could become a `MissionProgram`. Measured is not support:
+//! a key whose effect is known still has no host binding, and no original
+//! executable has been run.
 //!
 //! [`coordinates`] holds source coordinate conventions and their adapters
 //! into canonical space (`specs/F16-coordinates-units-origin-management-and-

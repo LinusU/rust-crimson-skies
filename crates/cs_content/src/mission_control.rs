@@ -31,6 +31,11 @@
 //! * [`DirectiveDisposition::TerminalOutcome`] — the mission IR has an action for
 //!   it ([`crate::objectives::FAILURE_KEY_VOCABULARY`], whose two spellings the
 //!   installation writes beside no argument list);
+//! * [`DirectiveDisposition::Measured`] — a stage B/C/D finding measured the
+//!   key's **effect**: the operation the original performs is named, with the
+//!   evidence for the measurement and the residual unknowns it leaves. Measured
+//!   is not support: the key still has no engine operation, and the lowering
+//!   accounting names the argument shapes and bindings it still lacks;
 //! * [`DirectiveDisposition::Unmeasured`] with a named
 //!   [`UnmeasuredReason`] — the spelling is measured and its **effect** is not,
 //!   either because no original observation states what the key does
@@ -50,15 +55,15 @@
 //! [`MeasuredControlRecord::lowering`] is the honest accounting. `lower_program`
 //! (`cs_script::bindings`) takes a `RawProgram` whose objectives each carry a
 //! `ContentId` and a `Condition`, and whose calls carry a flat
-//! `Vec<cs_script::ir::Value>`. The control record spells **none** of those four
-//! things, and the reasons are measured, not stylistic:
+//! `Vec<cs_script::ir::Value>`. The control record meets **two** of those four
+//! requirements and fails the other two on measured grounds:
 //!
 //! | What `lower_program` needs | What the record spells | Verdict |
 //! | --- | --- | --- |
 //! | the mission's `ContentId` | nothing; the member is mission-scoped by *path* | supplied outside the member (`missions/bindings/M01.json`, M01-A) |
-//! | an objective `ContentId` per block | `IDENTITY` writes a role spelling, a bare integer and an optional briefing label | [`LoweringRequirement::ObjectiveIdentity`], unmeasured |
-//! | a `Condition` per block | nothing that reads as a predicate; the closest keys are the `INACTIVE<n>` stages beside `INACTIVE_COMPLETION_COUNT` (F39-E4 measured their *names*, not their meaning) and `BEGIN_DORMANT`'s unnamed number | [`LoweringRequirement::ObjectiveCondition`], unmeasured |
-//! | a flat `Vec<Value>` per call | 43 measured keys whose argument lists are frequently **nested** (`[[text,text]]`, `[text,[text,[text],text,[text]]]`) and whose `KILL_/WAKE_OBJECTIVE_WHEN_I_COMPLETE` sites carry up to 12 integers corpus-wide | [`LoweringRequirement::CallArguments`], unmeasured |
+//! | an objective `ContentId` per block | each block is authored under its own `OBJECTIVE<N>` key, and every cross-objective directive addresses a block by its zero-based index (measured); `IDENTITY` is measured to supply the presentation class and HUD ordinal, not the identity | [`LoweringRequirement::ObjectiveIdentity`], **met** |
+//! | a `Condition` per block | measured evaluators that read live world state — member handles, registry bytes, animation states, the named counters — several with side effects during evaluation; none is the side-effect-free `Condition` the field needs | [`LoweringRequirement::ObjectiveCondition`], unmeasured |
+//! | a flat `Vec<Value>` per call | measured operations — lifecycle writes, evaluator arming, ordered pipeline effects — none of which is a `cs_script::bindings::Lowering` variant; plus sites that disagree about shape and nested shapes the IR cannot carry | [`LoweringRequirement::CallArguments`], unmeasured |
 //!
 //! Each row is reported as a [`LoweringRequirement`] carrying the measured
 //! numbers behind it and the fields that remain unknown, so the reader can see
@@ -84,7 +89,7 @@ use std::fmt;
 
 use crate::objectives::{
     OBJECTIVE_DORMANT_KEY, OBJECTIVE_IDENTITY_KEY, OBJECTIVE_INACTIVE_COUNT_KEY,
-    is_objective_inactive_stage, objective_block_number,
+    OBJECTIVE_INACTIVE_STAGE_PREFIX, is_objective_inactive_stage, objective_block_number,
 };
 use crate::stunts::{ZrdValue, objective_record, zrd_flat_fields};
 
@@ -419,10 +424,21 @@ impl MeasuredDirectiveKey {
     }
 
     /// What the engine may do with this key.
+    ///
+    /// The effect question is asked **before** the shape question: a key whose
+    /// semantics a finding measured is [`DirectiveDisposition::Measured`] even
+    /// when its own sites disagree about their shape (`INACTIVE1`) or spell a
+    /// shape the IR cannot carry (`ANIM_STATE`) — the shape defect belongs to
+    /// the lowering accounting, which names it per site, not to the
+    /// disposition, which would otherwise report a measured key as *unknown*.
+    /// Shape refusals remain, for the keys no finding covers.
     #[must_use]
     pub fn disposition(&self) -> DirectiveDisposition {
         if let Some(outcome) = terminal_outcome_of(&self.key) {
             return DirectiveDisposition::TerminalOutcome { outcome };
+        }
+        if let Some(measured) = measured_directive(&self.key) {
+            return DirectiveDisposition::Measured(measured);
         }
         if self.shapes.len() > 1 {
             return DirectiveDisposition::Unmeasured {
@@ -548,6 +564,800 @@ impl fmt::Display for UnmeasuredReason {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The measured dispositions
+// ---------------------------------------------------------------------------
+
+/// The findings documents the measured dispositions come from.
+const FINDING_A: &str = "2026-10-04-m01-lc-mission-program";
+const FINDING_B: &str = "2026-10-06-m01-lc-directive-b-objective-lifecycle-target-semantics";
+const FINDING_C: &str = "2026-10-06-m01-lc-directive-c-ai-world-and-animation-directives";
+const FINDING_D: &str = "2026-10-06-m01-lc-directive-d-sound-help-timer-directives";
+
+/// Which stage of an objective's life a measured directive feeds — where the
+/// original consumes the fields the directive's arguments are parsed into.
+///
+/// The role is measured, not a guess: each variant is the pipeline stage a
+/// findings document located the fields' consumer at. A directive's role
+/// decides which lowering requirement its residual unknowns count against —
+/// evaluators against the objective's condition, everything else against its
+/// calls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DirectiveRole {
+    /// The block's completion predicate: evaluated every tick while the block
+    /// is awake, and its truth is what completes the objective.
+    CompletionCondition,
+    /// A field of the objective record the lifecycle itself reads — initial
+    /// dormant state, the awake gate, the presentation class and ordinal.
+    ObjectiveRecord,
+    /// Runs inside the completion pipeline, in its measured order, when the
+    /// objective completes.
+    CompletionEffect,
+    /// Runs inside the wake transition.
+    WakeEffect,
+    /// Runs on a nap or done state transition of the same objective.
+    TransitionEffect,
+    /// Feeds the mission-outcome aggregation rather than firing a call.
+    OutcomeAggregation,
+}
+
+impl DirectiveRole {
+    /// The stable identifier a report carries.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::CompletionCondition => "completion_condition",
+            Self::ObjectiveRecord => "objective_record",
+            Self::CompletionEffect => "completion_effect",
+            Self::WakeEffect => "wake_effect",
+            Self::TransitionEffect => "transition_effect",
+            Self::OutcomeAggregation => "outcome_aggregation",
+        }
+    }
+}
+
+/// The measured operation one directive key performs — what a findings document
+/// established the parser writes and the consumer reads, stated as an operation
+/// rather than a name.
+///
+/// One variant per measured mechanism, not one per key: keys that share a
+/// handler (`WAKE_OBJECTIVE` and `WAKE_OBJECTIVE_WHEN_I_COMPLETE`; the hundred
+/// `INACTIVE<n>` spellings) share a variant, and the key-level table is
+/// [`measured_directive`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DirectiveOperation {
+    /// `INACTIVE<n>`: each listed name resolves through a chained member lookup
+    /// into a handle; the block completes when at least the threshold of them
+    /// no longer carry the in-play bit.
+    InactiveMembers,
+    /// `INACTIVE_COMPLETION_COUNT`: the count of cleared members the
+    /// inactive-members evaluator needs.
+    InactiveThreshold,
+    /// `DANGER_ZONES_COMPLETED`: completes when at least the stored threshold
+    /// of the recorded zone flag bytes are nonzero.
+    DangerZoneFlags,
+    /// `DANGER_ZONES_COMPLETION_COUNT`: that threshold.
+    DangerZoneThreshold,
+    /// `DEDG`: completes when the named enemy group has at most the spelled
+    /// count of members still in play, plus whatever its generator still owes;
+    /// evaluating it also rewrites three member fields.
+    EnemyGroupDepletion,
+    /// `ANIM_STATE`: completes when at least the required count of the listed
+    /// animations are in the named state.
+    AnimationStates,
+    /// `TRAVELERS`: completes when the named subject crosses the radius about
+    /// the anchor — or, in the counting mode, when the cumulative group count
+    /// reaches the required number.
+    Travelers,
+    /// `COUNTER`: the block's named-counter triples over the global integer
+    /// registry — wake and complete writes plus a per-tick test.
+    NamedCounters,
+    /// `BEGIN_DORMANT`: the block starts dormant; its first child is the
+    /// mission-clock second at which it wakes itself, and the next children
+    /// arm the awake, nap and done timers.
+    DormantStart,
+    /// `TICK_DEPENDS_ON_OBJ`: the dependent runs no timers and evaluates no
+    /// conditions while the objective at the stored index is not awake.
+    DependencyGate,
+    /// `IDENTITY`: the class spelling selects the completion sound channel and
+    /// HUD class; the integer is the HUD slot ordinal.
+    PresentationIdentity,
+    /// `WAKE_OBJECTIVE` / `WAKE_OBJECTIVE_WHEN_I_COMPLETE`: at completion, wake
+    /// each listed index in order — killed and already-completed records are
+    /// skipped, an already-awake one ends the list, at most 15 entries are
+    /// processed.
+    WakeObjectives,
+    /// `SLEEP_OBJECTIVE_WHEN_I_COMPLETE`: at completion, put each listed index
+    /// to sleep through the shared transition.
+    SleepObjectives,
+    /// `KILL_OBJECTIVE_WHEN_I_COMPLETE`: at completion, kill each listed index —
+    /// it stops ticking and never counts in the outcome aggregation.
+    KillObjectives,
+    /// `NAP_OBJECTIVE_WHEN_I_COMPLETE`: at completion, put the target to nap
+    /// and re-wake it after the spelled seconds, clearing its completed flag.
+    NapObjective,
+    /// `ADD`/`REMOVE` `_OBJECTIVE`/`_OTHER` `_TARGET`: at completion, resolve
+    /// each name chain to one object and set or clear its target flag.
+    SetTargetFlag {
+        /// `true` for the objective-target flag, `false` for the other-target
+        /// flag.
+        objective: bool,
+        /// `true` to set the flag, `false` to clear it.
+        set: bool,
+    },
+    /// `COMPLETED_STOPPOINT`: forward the `{int, bool}` pair to the named
+    /// stoppoint's two-step advance/select handler.
+    AdvanceStopPoint,
+    /// `COMPLETED_ZEPCANNONS`: store the byte at the resolved zeppelin's field.
+    ZeppelinCannons,
+    /// `SET_AI_NET`: point the named vehicle or zeppelin at the named entry of
+    /// the global node list.
+    AssignNet,
+    /// `SET_AI_TEAM`: write the named actor's team field.
+    AssignTeam,
+    /// `SET_AI_ATTACK_RADIUS`: write the vehicle's radius triple
+    /// `r²`, `-r`, `r`.
+    SetAttackRadius,
+    /// `START_TAXI`: clear the vehicle's AI hold-off byte.
+    ReleaseTaxi,
+    /// `SET_HELP_LABEL`: give the resolved object the localized label id and
+    /// text.
+    SetHelpLabel,
+    /// `STOP_QUEUED_SOUNDS`: flag each matching queued-sound entry and schedule
+    /// its removal a fixed time later.
+    StopQueuedSounds,
+    /// `COMPLETED_SOUND_GROUP`: play the sound-group handle through the
+    /// completed channel.
+    CompletedSoundGroup,
+    /// `TIMER_ADJUST` / `ADJUST_TIMER_WHEN_I_COMPLETE`: set or adjust the
+    /// mission timer by the spelled seconds at completion.
+    AdjustMissionTimer,
+    /// `END_TIMER`: stop the mission timer at completion.
+    EndMissionTimer,
+    /// `WARP_VEHICLE`: teleport the vehicle to a randomly chosen listed point
+    /// and add the shared-scalar velocity unless AI-driven.
+    WarpVehicle,
+    /// `WAKEUP_ENEMIES`: on wake, wake only the named actors that are asleep.
+    WakeEnemies,
+    /// `WAKEUP_TURRETS`: on wake, set the live byte of every turret entry whose
+    /// name matches, `*` consuming exactly one digit.
+    WakeTurrets,
+    /// `WAKEUP_ZEP_TURRETS`: on wake, activate the named zeppelin-turret node
+    /// and all its children.
+    WakeZeppelinTurrets,
+    /// `WAKEUP_GENERATOR`: on wake, add the spelled count to the named
+    /// generator's pending-spawn counter.
+    FeedGenerator,
+    /// `WAKE_ANIM`: on wake, execute the named animation on the named or
+    /// defaulted target.
+    WakeAnimation,
+    /// `WAKEUP_SOUND_GROUP`: on wake, play the sound-group handle through the
+    /// woken channel.
+    WakeSoundGroup,
+    /// `RESET_TIMER`: on a dormant wake, set and start the mission timer at the
+    /// spelled seconds.
+    ResetMissionTimer,
+    /// `HIDE_OBJ`: on a dormant wake, mark the named objective completed with
+    /// no outcome class.
+    HideObjective,
+    /// `SLEEP_ANIM`: on a nap or done transition, execute the named animation
+    /// on the named target.
+    TransitionAnimation,
+    /// `WAKE_OBJECTIVE_WHEN_I_SLEEP`: wake the listed indices when this
+    /// objective auto-naps or auto-dones on its own timers.
+    WakeObjectivesOnTransition,
+    /// `WON` / `LOST`: the block's outcome class — the mission resolves when
+    /// every block of a class completes; the class block itself does not fire
+    /// on its own completion.
+    OutcomeClass {
+        /// `true` for `WON`, `false` for `LOST`.
+        won: bool,
+    },
+}
+
+impl DirectiveOperation {
+    /// Which stage of an objective's life this operation feeds.
+    #[must_use]
+    pub const fn role(self) -> DirectiveRole {
+        match self {
+            Self::InactiveMembers
+            | Self::InactiveThreshold
+            | Self::DangerZoneFlags
+            | Self::DangerZoneThreshold
+            | Self::EnemyGroupDepletion
+            | Self::AnimationStates
+            | Self::Travelers
+            | Self::NamedCounters => DirectiveRole::CompletionCondition,
+            Self::DormantStart | Self::DependencyGate | Self::PresentationIdentity => {
+                DirectiveRole::ObjectiveRecord
+            }
+            Self::WakeObjectives
+            | Self::SleepObjectives
+            | Self::KillObjectives
+            | Self::NapObjective
+            | Self::SetTargetFlag { .. }
+            | Self::AdvanceStopPoint
+            | Self::ZeppelinCannons
+            | Self::AssignNet
+            | Self::AssignTeam
+            | Self::SetAttackRadius
+            | Self::ReleaseTaxi
+            | Self::SetHelpLabel
+            | Self::StopQueuedSounds
+            | Self::CompletedSoundGroup
+            | Self::AdjustMissionTimer
+            | Self::EndMissionTimer
+            | Self::WarpVehicle => DirectiveRole::CompletionEffect,
+            Self::WakeEnemies
+            | Self::WakeTurrets
+            | Self::WakeZeppelinTurrets
+            | Self::FeedGenerator
+            | Self::WakeAnimation
+            | Self::WakeSoundGroup
+            | Self::ResetMissionTimer
+            | Self::HideObjective => DirectiveRole::WakeEffect,
+            Self::TransitionAnimation | Self::WakeObjectivesOnTransition => {
+                DirectiveRole::TransitionEffect
+            }
+            Self::OutcomeClass { .. } => DirectiveRole::OutcomeAggregation,
+        }
+    }
+
+    /// The stable identifier a report carries.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::InactiveMembers => "inactive_members",
+            Self::InactiveThreshold => "inactive_threshold",
+            Self::DangerZoneFlags => "danger_zone_flags",
+            Self::DangerZoneThreshold => "danger_zone_threshold",
+            Self::EnemyGroupDepletion => "enemy_group_depletion",
+            Self::AnimationStates => "animation_states",
+            Self::Travelers => "travelers",
+            Self::NamedCounters => "named_counters",
+            Self::DormantStart => "dormant_start",
+            Self::DependencyGate => "dependency_gate",
+            Self::PresentationIdentity => "presentation_identity",
+            Self::WakeObjectives => "wake_objectives",
+            Self::SleepObjectives => "sleep_objectives",
+            Self::KillObjectives => "kill_objectives",
+            Self::NapObjective => "nap_objective",
+            Self::SetTargetFlag {
+                objective: true,
+                set: true,
+            } => "add_objective_target",
+            Self::SetTargetFlag {
+                objective: true,
+                set: false,
+            } => "remove_objective_target",
+            Self::SetTargetFlag {
+                objective: false,
+                set: true,
+            } => "add_other_target",
+            Self::SetTargetFlag {
+                objective: false,
+                set: false,
+            } => "remove_other_target",
+            Self::AdvanceStopPoint => "advance_stop_point",
+            Self::ZeppelinCannons => "zeppelin_cannons",
+            Self::AssignNet => "assign_net",
+            Self::AssignTeam => "assign_team",
+            Self::SetAttackRadius => "set_attack_radius",
+            Self::ReleaseTaxi => "release_taxi",
+            Self::SetHelpLabel => "set_help_label",
+            Self::StopQueuedSounds => "stop_queued_sounds",
+            Self::CompletedSoundGroup => "completed_sound_group",
+            Self::AdjustMissionTimer => "adjust_mission_timer",
+            Self::EndMissionTimer => "end_mission_timer",
+            Self::WarpVehicle => "warp_vehicle",
+            Self::WakeEnemies => "wake_enemies",
+            Self::WakeTurrets => "wake_turrets",
+            Self::WakeZeppelinTurrets => "wake_zeppelin_turrets",
+            Self::FeedGenerator => "feed_generator",
+            Self::WakeAnimation => "wake_animation",
+            Self::WakeSoundGroup => "wake_sound_group",
+            Self::ResetMissionTimer => "reset_mission_timer",
+            Self::HideObjective => "hide_objective",
+            Self::TransitionAnimation => "transition_animation",
+            Self::WakeObjectivesOnTransition => "wake_objectives_on_transition",
+            Self::OutcomeClass { won: true } => "outcome_won",
+            Self::OutcomeClass { won: false } => "outcome_lost",
+        }
+    }
+}
+
+/// The measured effect of one directive key, as a stage A/B/C/D findings
+/// document established it.
+///
+/// A measured disposition is **not** support: it names the operation the
+/// original performs, with the evidence for the measurement and the residual
+/// unknowns the measurement leaves. The engine still cannot honour it —
+/// [`DirectiveDisposition::is_implemented`] stays `false` — and
+/// [`ControlLowering`]'s rows name the argument shapes the IR cannot carry and
+/// the bindings the operation still lacks, per key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeasuredDirective {
+    /// The measured operation.
+    pub operation: DirectiveOperation,
+    /// The measured effect in one line — what the parser stores and which
+    /// consumer reads it.
+    pub summary: &'static str,
+    /// The findings documents the measurement comes from.
+    pub evidence: &'static [&'static str],
+    /// What the measurement still leaves unknown about this key's own arguments
+    /// or its world-side consumption. Carried, never dropped: *measured* is not
+    /// *fully known*.
+    pub unknowns: &'static [&'static str],
+}
+
+/// Whether `key` spells one of the measured `INACTIVE<n>` member-count keys —
+/// the parser's `sprintf("INACTIVE%d")` loop, `d` in `1..=100`
+/// ([`FINDING_A`]/[`FINDING_B`]).
+fn measured_inactive_stage(key: &str) -> bool {
+    let Some(digits) = key.strip_prefix(OBJECTIVE_INACTIVE_STAGE_PREFIX) else {
+        return false;
+    };
+    let Ok(stage) = digits.parse::<u32>() else {
+        return false;
+    };
+    (1..=100).contains(&stage) && stage.to_string() == digits
+}
+
+/// The measured disposition of a directive key, or `None` when no findings
+/// document states what the key does.
+///
+/// The table is exactly the vocabulary the findings measure — every entry is a
+/// handler whose argument consumption and consumer were located in the
+/// original, and every key the findings do **not** cover stays `None` here:
+/// `SET_AI_`, `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`, `OBJECTIVE_HD_a`,
+/// `OBJECTIVE_HD_b`, `TEST_COMPLETE`, `COMPLETION_COUNT`, `WIN_ANIM`,
+/// `LOSS_ANIM`, `DELETE_ON_SUCCESS`, the stray English words the corpus spells
+/// (`Change`, `to`, `mobile`, `net`) and the record-level keys
+/// (`MISSION_TIMER`, `PLAYER_INIT`, the animation lists) are each refused
+/// [`UnmeasuredReason::MeaningNotMeasured`] — a name alone is not evidence.
+#[must_use]
+pub fn measured_directive(key: &str) -> Option<MeasuredDirective> {
+    let directive = match key {
+        // Objective-record fields (finding B).
+        "BEGIN_DORMANT" => MeasuredDirective {
+            operation: DirectiveOperation::DormantStart,
+            summary: "presence starts the block dormant (its awake flag and active flag cleared); \
+                      child0 is the mission-clock second at which the objective wakes itself — \
+                      below zero disables the timed wake — and children 1..3 arm the awake, nap \
+                      and done timers",
+            evidence: &[FINDING_B],
+            unknowns: &[],
+        },
+        "TICK_DEPENDS_ON_OBJ" => MeasuredDirective {
+            operation: DirectiveOperation::DependencyGate,
+            summary: "the objective runs no timers and evaluates no conditions while the block at \
+                      child0−1 is not currently awake; a completed dependency freezes it \
+                      permanently",
+            evidence: &[FINDING_B],
+            unknowns: &[],
+        },
+        "IDENTITY" => MeasuredDirective {
+            operation: DirectiveOperation::PresentationIdentity,
+            summary: "child0's class spelling (PRIMARY/SECONDARY/TERTIARY → 1/2/3) picks the \
+                      completion sound channel and the HUD class; child1 is the HUD slot ordinal \
+                      the completion and save/load posts carry",
+            evidence: &[FINDING_B],
+            unknowns: &[
+                "whether `IDENTITY` child2 — the `MSG_*` text at 4 of 5 M01 sites — is ever \
+                 re-read from the retained document: the measured parse never reads it and no \
+                 consumer was found",
+            ],
+        },
+
+        // Completion-condition evaluators and their thresholds.
+        "INACTIVE_COMPLETION_COUNT" => MeasuredDirective {
+            operation: DirectiveOperation::InactiveThreshold,
+            summary: "the count of cleared members the inactive-members evaluator needs; absent, \
+                      the threshold defaults to all the block's listed members",
+            evidence: &[FINDING_B],
+            unknowns: &[],
+        },
+        "DANGER_ZONES_COMPLETED" => MeasuredDirective {
+            operation: DirectiveOperation::DangerZoneFlags,
+            summary: "completes when at least the completion-count threshold of the stored \
+                      danger-zone flag bytes are nonzero",
+            evidence: &[FINDING_A, FINDING_B],
+            unknowns: &[
+                "the +0x570 field beside the count and the flag array — parser-side storage \
+                 whose use is untraced",
+            ],
+        },
+        "DANGER_ZONES_COMPLETION_COUNT" => MeasuredDirective {
+            operation: DirectiveOperation::DangerZoneThreshold,
+            summary: "the flag-count threshold the danger-zones evaluator compares the nonzero \
+                      flag bytes against",
+            evidence: &[FINDING_A],
+            unknowns: &[],
+        },
+        "DEDG" => MeasuredDirective {
+            operation: DirectiveOperation::EnemyGroupDepletion,
+            summary: "completes when the group at child0 has child1 or fewer members still in \
+                      play, plus whatever the optionally-named generator still owes; evaluating \
+                      it also rewrites three member fields on every counted member",
+            evidence: &[FINDING_B],
+            unknowns: &[
+                "what the three member fields the `DEDG` evaluator rewrites on every counted \
+                 member (+0x318/+0x31c/+0x320) feed — untraced world state",
+            ],
+        },
+        "TRAVELERS" => MeasuredDirective {
+            operation: DirectiveOperation::Travelers,
+            summary: "completes when the named subject is inside the radius about the anchor when \
+                      child1 spells `APPROACHING` and outside it otherwise (exact equality never \
+                      fires) — or, with a non-string child0, when the cumulative count of \
+                      matching group members reaches the required number; `DELETE_ON_SUCCESS` \
+                      deletes the subject on firing",
+            evidence: &[FINDING_B, FINDING_C],
+            unknowns: &[
+                "the token naming `TRAVELERS`' unspelled polarity — only `APPROACHING` is a \
+                 measured spelling; the outside case's word is unknown",
+                "which of the two modes M01's site takes is a runtime property of the world \
+                 build, not of the spelling",
+                "what group id 0 means in the counting mode",
+            ],
+        },
+        "ANIM_STATE" => MeasuredDirective {
+            operation: DirectiveOperation::AnimationStates,
+            summary: "completes when at least `required` listed animations are in the wanted state \
+                      (RUNNING/EXECUTED/INVALID → 2/3/4); `required` defaults to the listed pair \
+                      count and a sibling COMPLETION_COUNT overrides it",
+            evidence: &[FINDING_C],
+            unknowns: &[
+                "the animation-state enum above 6 indexes past the engine's name table — \
+                 unexercised by M01, unexplored",
+            ],
+        },
+        "COUNTER" => MeasuredDirective {
+            operation: DirectiveOperation::NamedCounters,
+            summary: "the block's ON_WAKEUP/ON_COMPLETE/TEST_COMPLETE counter triples over the \
+                      named global integer registry — writes run at wake and complete, tests run \
+                      every tick (`TEST_LE` measured to evaluate as `TEST_GE`)",
+            evidence: &[FINDING_B],
+            unknowns: &[],
+        },
+
+        // Completion effects (findings B, C, D).
+        "WAKE_OBJECTIVE" | "WAKE_OBJECTIVE_WHEN_I_COMPLETE" => MeasuredDirective {
+            operation: DirectiveOperation::WakeObjectives,
+            summary: "at this objective's completion the listed zero-based block indices are woken \
+                      in order — killed and already-completed records are skipped, an \
+                      already-awake one ends the list, at most 15 processed entries",
+            evidence: &[FINDING_B],
+            unknowns: &[],
+        },
+        "SLEEP_OBJECTIVE_WHEN_I_COMPLETE" => MeasuredDirective {
+            operation: DirectiveOperation::SleepObjectives,
+            summary: "at this objective's completion each listed index is put to state 3 through \
+                      the shared transition, which also plays the target's `SLEEP_ANIM`",
+            evidence: &[FINDING_B],
+            unknowns: &[],
+        },
+        "KILL_OBJECTIVE_WHEN_I_COMPLETE" => MeasuredDirective {
+            operation: DirectiveOperation::KillObjectives,
+            summary: "at this objective's completion each listed index is killed — it stops \
+                      ticking and never counts in the outcome aggregation, irreversibly",
+            evidence: &[FINDING_B],
+            unknowns: &[],
+        },
+        "NAP_OBJECTIVE_WHEN_I_COMPLETE" => MeasuredDirective {
+            operation: DirectiveOperation::NapObjective,
+            summary: "at this objective's completion the listed index is put to state 2 and \
+                      re-wakes child1 seconds later (a missing child1 measures ≈0.3s and logs); \
+                      the nap clears the target's completed flag so it can complete again",
+            evidence: &[FINDING_B],
+            unknowns: &[],
+        },
+        "WAKE_OBJECTIVE_WHEN_I_SLEEP" => MeasuredDirective {
+            operation: DirectiveOperation::WakeObjectivesOnTransition,
+            summary: "the listed indices are woken when this objective auto-naps or auto-dones on \
+                      its own timers — not when another objective sleeps it and not at its \
+                      completion",
+            evidence: &[FINDING_B],
+            unknowns: &[],
+        },
+        "ADD_OBJECTIVE_TARGET" => MeasuredDirective {
+            operation: DirectiveOperation::SetTargetFlag {
+                objective: true,
+                set: true,
+            },
+            summary: "at completion each spelled name resolves lazily through the vehicle, turret \
+                      and object registries and the leaf object's +0x4d objective-target flag is \
+                      set",
+            evidence: &[FINDING_B],
+            unknowns: &[
+                "which icon or label the target-info layer draws from the target flag — \
+                 presentation code, untraced",
+            ],
+        },
+        "REMOVE_OBJECTIVE_TARGET" => MeasuredDirective {
+            operation: DirectiveOperation::SetTargetFlag {
+                objective: true,
+                set: false,
+            },
+            summary: "at completion each spelled name resolves lazily through the vehicle, turret \
+                      and object registries and the leaf object's +0x4d objective-target flag is \
+                      cleared",
+            evidence: &[FINDING_B],
+            unknowns: &[
+                "which icon or label the target-info layer draws from the target flag — \
+                 presentation code, untraced",
+            ],
+        },
+        "ADD_OTHER_TARGET" => MeasuredDirective {
+            operation: DirectiveOperation::SetTargetFlag {
+                objective: false,
+                set: true,
+            },
+            summary: "at completion each spelled name resolves lazily through the vehicle, turret \
+                      and object registries and the leaf object's +0x4c other-target flag is set",
+            evidence: &[FINDING_B],
+            unknowns: &[
+                "which icon or label the target-info layer draws from the target flag — \
+                 presentation code, untraced",
+            ],
+        },
+        "REMOVE_OTHER_TARGET" => MeasuredDirective {
+            operation: DirectiveOperation::SetTargetFlag {
+                objective: false,
+                set: false,
+            },
+            summary: "at completion each spelled name resolves lazily through the vehicle, turret \
+                      and object registries and the leaf object's +0x4c other-target flag is \
+                      cleared",
+            evidence: &[FINDING_B],
+            unknowns: &[
+                "which icon or label the target-info layer draws from the target flag — \
+                 presentation code, untraced",
+            ],
+        },
+        "COMPLETED_ZEPCANNONS" => MeasuredDirective {
+            operation: DirectiveOperation::ZeppelinCannons,
+            summary: "at completion each `{name, byte}` record resolves the name in the zeppelin \
+                      registry and stores the byte at the zeppelin's +0xc",
+            evidence: &[FINDING_B],
+            unknowns: &[
+                "what the zeppelin's +0xc byte drives — the write is measured, the field's \
+                 consumers are not traced",
+            ],
+        },
+        "COMPLETED_STOPPOINT" => MeasuredDirective {
+            operation: DirectiveOperation::AdvanceStopPoint,
+            summary: "at completion each `{name, int, bool}` record forwards the pair to the named \
+                      stoppoint's two-step advance/select handler when the int is positive",
+            evidence: &[FINDING_B],
+            unknowns: &[
+                "what the forwarded pair means to a stoppoint — its code is outside the measured \
+                 bound",
+            ],
+        },
+        "SET_AI_NET" => MeasuredDirective {
+            operation: DirectiveOperation::AssignNet,
+            summary: "at completion each `{actor, net}` pair resolves the named vehicle or \
+                      zeppelin and points it at the named entry of the global node list — the \
+                      same field the vehicle wake path restores a position from",
+            evidence: &[FINDING_B, FINDING_C],
+            unknowns: &[
+                "what a re-seed copies out of the node-list entry — the setter's internals are \
+                 not traced",
+            ],
+        },
+        "SET_AI_TEAM" => MeasuredDirective {
+            operation: DirectiveOperation::AssignTeam,
+            summary: "at completion each `{name, team}` pair writes the named actor's team — a \
+                      vehicle's base team field through its vtable setter, a zeppelin's \
+                      +0xdc/+0xe0 pair",
+            evidence: &[FINDING_B, FINDING_C],
+            unknowns: &[
+                "the object a vehicle holds at +0x948, released through a virtual call on the \
+                 write — unidentified",
+            ],
+        },
+        "SET_AI_ATTACK_RADIUS" => MeasuredDirective {
+            operation: DirectiveOperation::SetAttackRadius,
+            summary: "at completion each `{name, radius}` record writes the vehicle's radius \
+                      triple +0x328=r², +0x32c=−r, +0x330=r — vehicles only",
+            evidence: &[FINDING_B, FINDING_C],
+            unknowns: &[
+                "which of the three written fields is the original's attack_rad, attack_u or \
+                 attack_l — its own comment gives the order, not the semantics",
+            ],
+        },
+        "START_TAXI" => MeasuredDirective {
+            operation: DirectiveOperation::ReleaseTaxi,
+            summary: "at completion each name clears the vehicle's AI hold-off byte — the flag \
+                      the AI think reads first and the spawn path sets on a parked vehicle",
+            evidence: &[FINDING_B, FINDING_C, FINDING_D],
+            unknowns: &[
+                "the original name of the vehicle's +0xd4 hold-off flag — measured as a flag; \
+                 the AI-node comment's `taxiPath` is consistent, not proof",
+            ],
+        },
+        "SET_HELP_LABEL" => MeasuredDirective {
+            operation: DirectiveOperation::SetHelpLabel,
+            summary: "at completion the node names resolve to one world object, which receives \
+                      the localized label id and its label text; M01's two sites both label a \
+                      single space",
+            evidence: &[FINDING_B, FINDING_D],
+            unknowns: &[
+                "which HUD element displays the label — the assignment is measured, the UI \
+                 consumer untraced",
+            ],
+        },
+        "STOP_QUEUED_SOUNDS" => MeasuredDirective {
+            operation: DirectiveOperation::StopQueuedSounds,
+            summary: "at completion each name — at most ten — flags the matching queued-sound \
+                      entry and schedules its removal 10.0 time units later",
+            evidence: &[FINDING_B, FINDING_D],
+            unknowns: &[
+                "no reader of the queued entry's flag was traced — the measured effect is a \
+                 scheduled removal, not a measured audible stop",
+            ],
+        },
+        "COMPLETED_SOUND_GROUP" => MeasuredDirective {
+            operation: DirectiveOperation::CompletedSoundGroup,
+            summary: "at completion the sound-group handle resolved at parse is played through \
+                      the completed channel; the built-in `music_*_sg` names are the engine's \
+                      music state requests",
+            evidence: &[FINDING_B, FINDING_D],
+            unknowns: &[
+                "what sound a group name resolves to — the handle's identity is runtime state, \
+                 not shipped data",
+                "which groups occupy the sound manager's four routing slots at runtime",
+            ],
+        },
+        "TIMER_ADJUST" => MeasuredDirective {
+            operation: DirectiveOperation::AdjustMissionTimer,
+            summary: "at completion the mission timer is adjusted by the spelled seconds",
+            evidence: &[FINDING_B, FINDING_D],
+            unknowns: &[],
+        },
+        "ADJUST_TIMER_WHEN_I_COMPLETE" => MeasuredDirective {
+            operation: DirectiveOperation::AdjustMissionTimer,
+            summary: "at completion the mission timer is set to the spelled seconds when child0 \
+                      spells `SET`, adjusted by them when it spells `ADJUST`",
+            evidence: &[FINDING_B, FINDING_D],
+            unknowns: &[],
+        },
+        "END_TIMER" => MeasuredDirective {
+            operation: DirectiveOperation::EndMissionTimer,
+            summary: "at completion the mission timer is stopped",
+            evidence: &[FINDING_B, FINDING_D],
+            unknowns: &[],
+        },
+        "WARP_VEHICLE" => MeasuredDirective {
+            operation: DirectiveOperation::WarpVehicle,
+            summary: "at completion the named vehicle teleports to one of its listed warp points \
+                      chosen at random — the point's angle is spelled in degrees — and, unless \
+                      AI-driven, gains a velocity of one shared scalar times three per-vehicle \
+                      factors",
+            evidence: &[FINDING_C],
+            unknowns: &[
+                "the three per-axis factors and the world field the shared scalar is taken \
+                 from — what they are is unknown",
+            ],
+        },
+        "HIDE_OBJ" => MeasuredDirective {
+            operation: DirectiveOperation::HideObjective,
+            summary: "when this objective wakes from dormant, the named objective is marked \
+                      completed with no outcome class, hiding it from the outcome aggregation — \
+                      the effect does not fire on a nap or done wake",
+            evidence: &[FINDING_B],
+            unknowns: &[],
+        },
+
+        // Wake and transition effects (findings B, C, D).
+        "WAKEUP_ENEMIES" => MeasuredDirective {
+            operation: DirectiveOperation::WakeEnemies,
+            summary: "on wake each name resolves as a vehicle — woken only if its asleep byte is \
+                      set — else as a zeppelin, woken only if its dormant byte is set; a name \
+                      for something already awake does nothing",
+            evidence: &[FINDING_B, FINDING_C],
+            unknowns: &[],
+        },
+        "WAKEUP_TURRETS" => MeasuredDirective {
+            operation: DirectiveOperation::WakeTurrets,
+            summary: "on wake each name sets the live byte of every turret-registry entry whose \
+                      name matches, a `*` in the spelled name consuming exactly one digit of the \
+                      entry's name",
+            evidence: &[FINDING_C],
+            unknowns: &[
+                "the `*` wildcard's intent — the one-digit consuming rule is measured; no M01 \
+                 site exercises it",
+            ],
+        },
+        "WAKEUP_ZEP_TURRETS" => MeasuredDirective {
+            operation: DirectiveOperation::WakeZeppelinTurrets,
+            summary: "on wake each name resolves a zeppelin-turret node and sets the live byte of \
+                      its registry entry, recursing over the node's children",
+            evidence: &[FINDING_B, FINDING_C],
+            unknowns: &[],
+        },
+        "WAKEUP_GENERATOR" => MeasuredDirective {
+            operation: DirectiveOperation::FeedGenerator,
+            summary: "on wake the named generator's pending-spawn counter increases by the \
+                      spelled count — the units it may still produce",
+            evidence: &[FINDING_B, FINDING_C],
+            unknowns: &[],
+        },
+        "WAKE_ANIM" => MeasuredDirective {
+            operation: DirectiveOperation::WakeAnimation,
+            summary: "on wake the named animation executes on the named or defaulted target \
+                      object",
+            evidence: &[FINDING_B, FINDING_C],
+            unknowns: &[
+                "the animation call's three trailing arguments — the mission always passes \
+                 0,0,0 and other callers' defaults are unmeasured",
+            ],
+        },
+        "WAKEUP_SOUND_GROUP" => MeasuredDirective {
+            operation: DirectiveOperation::WakeSoundGroup,
+            summary: "on wake the sound-group handle resolved at parse is played through the \
+                      woken channel; the built-in `music_*_sg` names are music state requests",
+            evidence: &[FINDING_B, FINDING_D],
+            unknowns: &[
+                "what sound a group name resolves to — the handle's identity is runtime state, \
+                 not shipped data",
+                "which groups occupy the sound manager's four routing slots at runtime",
+            ],
+        },
+        "RESET_TIMER" => MeasuredDirective {
+            operation: DirectiveOperation::ResetMissionTimer,
+            summary: "on a dormant wake the mission timer is set to the spelled seconds and \
+                      started — the effect does not fire on a nap or done wake",
+            evidence: &[FINDING_B, FINDING_D],
+            unknowns: &[],
+        },
+        "SLEEP_ANIM" => MeasuredDirective {
+            operation: DirectiveOperation::TransitionAnimation,
+            summary: "when this objective is put to nap or done — by its own timers or another \
+                      objective's `SLEEP` list — the named animation executes on the named \
+                      target; it is not a completion effect",
+            evidence: &[FINDING_B, FINDING_C],
+            unknowns: &[
+                "the animation call's three trailing arguments — the mission always passes \
+                 0,0,0 and other callers' defaults are unmeasured",
+            ],
+        },
+
+        // The outcome classes (finding B).
+        "WON" => MeasuredDirective {
+            operation: DirectiveOperation::OutcomeClass { won: true },
+            summary: "the block's outcome class: the mission resolves to won when every WON-class \
+                      block completes; a class block does not fire on its own completion",
+            evidence: &[FINDING_B],
+            unknowns: &[],
+        },
+        "LOST" => MeasuredDirective {
+            operation: DirectiveOperation::OutcomeClass { won: false },
+            summary: "the block's outcome class: the mission resolves to lost when every \
+                      LOST-class block completes; a class block does not fire on its own \
+                      completion",
+            evidence: &[FINDING_B],
+            unknowns: &[],
+        },
+
+        // The hundred INACTIVE<n> spellings are one measured mechanism.
+        _ if measured_inactive_stage(key) => MeasuredDirective {
+            operation: DirectiveOperation::InactiveMembers,
+            summary: "each listed name resolves through a chained member lookup into a handle; \
+                      the block completes when at least `INACTIVE_COMPLETION_COUNT` of them no \
+                      longer carry the in-play bit",
+            evidence: &[FINDING_B],
+            unknowns: &[
+                "the world code that sets and clears a member's in-play bit (+0x24 bit 4): every \
+                 consumer of it is measured, its spawn and despawn writers are not traced",
+            ],
+        },
+        _ => return None,
+    };
+    Some(directive)
+}
+
 /// What became of one measured directive key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DirectiveDisposition {
@@ -556,6 +1366,18 @@ pub enum DirectiveDisposition {
         /// The outcome the key's **spelling** names.
         outcome: TerminalOutcome,
     },
+    /// A stage A/B/C/D finding measured the key's **effect**: the operation the
+    /// original performs is named, with the evidence for the measurement and
+    /// the residual unknowns it leaves.
+    ///
+    /// **Measured is not support.** The disposition says what the key does, not
+    /// that the engine can do it: the key still has no
+    /// `cs_script::bindings` operation — [`Self::is_implemented`] stays
+    /// `false` — and the lowering accounting ([`ControlLowering`]) names the
+    /// per-site argument shapes the mission IR cannot carry and every residual
+    /// unknown the finding recorded, so a measured key can never be silently
+    /// read as either *implemented* or *unknown*.
+    Measured(MeasuredDirective),
     /// Measured, counted and refused before flight. Never replaced by a stub
     /// that reports success (contract "Host interface": a binding with no
     /// measured meaning is not bound to a convenient operation).
@@ -567,16 +1389,23 @@ pub enum DirectiveDisposition {
 
 impl DirectiveDisposition {
     /// Whether the engine may act on this key.
+    ///
+    /// Only a terminal outcome reaches an engine operation today: a
+    /// [`Self::Measured`] key's semantics are known but there is no host
+    /// binding that runs them, so it is **not** implemented — measured is a
+    /// statement about the original, not a license.
     #[must_use]
     pub const fn is_implemented(&self) -> bool {
         matches!(self, Self::TerminalOutcome { .. })
     }
 
-    /// The refusal, or `None` for an implemented disposition.
+    /// The refusal, or `None` for a disposition that carries none — an
+    /// implemented outcome, or a measured key (whose remaining gaps are the
+    /// lowering accounting's to name, not this refusal's).
     #[must_use]
     pub const fn refusal(&self) -> Option<&UnmeasuredReason> {
         match self {
-            Self::TerminalOutcome { .. } => None,
+            Self::TerminalOutcome { .. } | Self::Measured(_) => None,
             Self::Unmeasured { reason } => Some(reason),
         }
     }
@@ -839,13 +1668,40 @@ impl MeasuredControlRecord {
         &self.refusals
     }
 
-    /// The measured keys whose effect is not implemented, in key order.
+    /// The keys whose **effect** is unmeasured — no finding states what they
+    /// do — each with its refusal, in key order.
+    ///
+    /// A *measured* key is not here: [`Self::measured`] lists the keys a
+    /// finding measures the effect of, and [`Self::implemented`] the ones the
+    /// engine can act on. The three sets partition the vocabulary.
     #[must_use]
     pub fn unmeasured(&self) -> Vec<(&MeasuredDirectiveKey, DirectiveDisposition)> {
         self.keys
             .iter()
-            .filter(|measured| !measured.disposition().is_implemented())
+            .filter(|measured| {
+                matches!(
+                    measured.disposition(),
+                    DirectiveDisposition::Unmeasured { .. }
+                )
+            })
             .map(|measured| (measured, measured.disposition()))
+            .collect()
+    }
+
+    /// The keys a finding measures the **effect** of, in key order.
+    ///
+    /// *Measured is not support*: none of these is implemented, and the
+    /// lowering accounting names the argument shapes and residual unknowns
+    /// each still carries. This list is what a census reports as *understood
+    /// but not runnable*.
+    #[must_use]
+    pub fn measured(&self) -> Vec<(&MeasuredDirectiveKey, MeasuredDirective)> {
+        self.keys
+            .iter()
+            .filter_map(|key| match key.disposition() {
+                DirectiveDisposition::Measured(directive) => Some((key, directive)),
+                _ => None,
+            })
             .collect()
     }
 
@@ -856,7 +1712,7 @@ impl MeasuredControlRecord {
             .iter()
             .filter_map(|measured| match measured.disposition() {
                 DirectiveDisposition::TerminalOutcome { outcome } => Some((measured, outcome)),
-                DirectiveDisposition::Unmeasured { .. } => None,
+                DirectiveDisposition::Measured(_) | DirectiveDisposition::Unmeasured { .. } => None,
             })
             .collect()
     }
@@ -867,8 +1723,9 @@ impl MeasuredControlRecord {
         self.keys.len() as u32
     }
 
-    /// Whether every directive of the record has an implemented disposition and
-    /// every block was read.
+    /// Whether every directive of the record is measured, every block was
+    /// read, and every lowering requirement is met — the whole of what
+    /// "Supported" means.
     ///
     /// `false` for every measured retail record, and that is the correct reading
     /// rather than a missing one: a mission may not be launched off a record whose
@@ -877,7 +1734,10 @@ impl MeasuredControlRecord {
     /// report itself complete.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        !self.keys.is_empty() && self.refusals.is_empty() && self.unmeasured().is_empty()
+        !self.keys.is_empty()
+            && self.refusals.is_empty()
+            && self.unmeasured().is_empty()
+            && self.lowering().complete()
     }
 
     /// The honest accounting of what this record would still need before
@@ -1186,27 +2046,53 @@ impl ControlLowering {
              and the canonical id comes from the campaign binding record (M01-A)",
         );
 
-        // The per-block identity the record *does* spell: `IDENTITY` sites.
+        // The per-block identity is derivable now that the stage-B measurement
+        // is in: every block is authored under its own `OBJECTIVE<N>` key at a
+        // distinct position in the record, every cross-objective directive
+        // addresses a block by its zero-based index, and `IDENTITY` is
+        // measured to be presentation data — class channel plus HUD ordinal —
+        // not an identity. A record with no blocks spells no program at all,
+        // so the row stays unmet there rather than vacuously met.
         let identity_sites = keys
             .iter()
             .filter(|key| key.key == OBJECTIVE_IDENTITY_KEY)
             .map(|key| key.sites)
             .sum::<u32>();
-        let objective_identity = LoweringRequirement::unmet(
-            LoweringRequirementKind::ObjectiveIdentity,
-            format!(
-                "{blocks} numbered block(s); {identity_sites} `{OBJECTIVE_IDENTITY_KEY}` site(s) \
-                 spell a role spelling, a bare integer and an optional briefing label, and no block \
-                 spells a content id"
-            ),
-            vec![
-                "the meaning of the integer an IDENTITY site carries".to_owned(),
-                "whether the role spelling indexes an objective or a label".to_owned(),
-                format!("a stable objective ContentId for each of the {blocks} block(s)"),
-            ],
-        );
+        let objective_identity = if blocks > 0 {
+            LoweringRequirement::met(
+                LoweringRequirementKind::ObjectiveIdentity,
+                format!(
+                    "{blocks} numbered block(s); each is authored under its own `OBJECTIVE<N>` key \
+                     at a distinct position in the record, and every cross-objective directive \
+                     addresses a block by its zero-based index (measured), so one stable objective \
+                     ContentId per block is derivable; {identity_sites} `{OBJECTIVE_IDENTITY_KEY}` \
+                     site(s) supply the presentation class and HUD ordinal the completion and \
+                     save/load paths read, which is measured presentation data rather than identity"
+                ),
+            )
+        } else {
+            LoweringRequirement::unmet(
+                LoweringRequirementKind::ObjectiveIdentity,
+                "0 numbered block(s); the record declares no objective program at all",
+                vec!["one numbered block authored under an `OBJECTIVE<N>` key".to_owned()],
+            )
+        };
 
-        // The closest thing to a predicate, counted rather than described.
+        // The completion-condition evaluators: measured where the findings
+        // cover them — they read live world state (member handles, registry
+        // bytes, animation states, the named counters) and several perform
+        // measured side effects during evaluation — so none is the
+        // side-effect-free `Condition` `RawObjective::condition` requires,
+        // whatever its shape. A block with no evaluator completes when awake:
+        // a lifecycle state, not a predicate.
+        let condition_keys: Vec<&MeasuredDirectiveKey> = keys
+            .iter()
+            .filter(|key| {
+                matches!(key.disposition(), DirectiveDisposition::Measured(directive)
+                    if directive.operation.role() == DirectiveRole::CompletionCondition)
+            })
+            .collect();
+        let evaluator_sites: u32 = condition_keys.iter().map(|key| key.sites).sum();
         let stage_sites: u32 = keys
             .iter()
             .filter(|key| is_objective_inactive_stage(&key.key))
@@ -1222,28 +2108,68 @@ impl ControlLowering {
             .filter(|key| key.key == OBJECTIVE_DORMANT_KEY)
             .map(|key| key.sites)
             .sum();
-        let condition = LoweringRequirement::unmet(
-            LoweringRequirementKind::ObjectiveCondition,
-            format!(
-                "{stage_sites} inactive-stage site(s) beside {threshold_sites} completion-count \
-                 threshold(s) and {dormant_sites} dormant marker(s); F39-E4 measured the stages' \
-                 names, not the rule they state, and no block spells a predicate"
-            ),
-            vec![
-                "the rule an INACTIVE stage states when its count is met".to_owned(),
-                "what an INACTIVE_COMPLETION_COUNT threshold is counted over".to_owned(),
-                "what the number a BEGIN_DORMANT site carries means".to_owned(),
-                format!("one side-effect-free condition for each of the {blocks} block(s)"),
-            ],
-        );
+        let condition = if blocks == 0 {
+            LoweringRequirement::unmet(
+                LoweringRequirementKind::ObjectiveCondition,
+                "0 numbered block(s); the record declares no objective program at all",
+                vec!["one numbered block whose condition could be lowered".to_owned()],
+            )
+        } else {
+            let mut fields = residual_unknowns(&condition_keys);
+            let gaps = shape_gaps(&condition_keys);
+            let condition_gaps = gaps.len();
+            fields.extend(gaps);
+            fields.push(format!(
+                "one side-effect-free `Condition` for each of the {blocks} block(s)"
+            ));
+            LoweringRequirement::unmet(
+                LoweringRequirementKind::ObjectiveCondition,
+                format!(
+                    "{evaluator_sites} completion-evaluator site(s) over {} measured key(s) — \
+                     {stage_sites} inactive-stage site(s) beside {threshold_sites} \
+                     completion-count threshold(s) and {dormant_sites} dormant marker(s); \
+                     {condition_gaps} evaluator key(s) spell no single `Value`-carriable \
+                     signature; the evaluators are measured to read live world state and several \
+                     write during evaluation, so none is the side-effect-free `Condition` \
+                     `RawObjective::condition` requires",
+                    condition_keys.len(),
+                ),
+                fields,
+            )
+        };
 
-        // The calls: how many keys, how many sites, and which of them have an
-        // argument shape the IR cannot carry.
-        let nested = keys
+        // The calls: every non-condition directive needs a host call, and none
+        // has one — the measured operations are lifecycle writes, evaluator
+        // arming and ordered pipeline effects, none of which is a
+        // `cs_script::bindings::Lowering` variant. Measured keys still name
+        // their residual unknowns and their shape gaps; unmeasured keys name
+        // their reason.
+        let call_keys: Vec<&MeasuredDirectiveKey> = keys
             .iter()
             .filter(|key| {
-                key.agreed_shape()
-                    .is_some_and(|shape| !shape.is_ir_carriable())
+                !matches!(
+                    key.disposition(),
+                    DirectiveDisposition::TerminalOutcome { .. }
+                ) && !matches!(key.disposition(), DirectiveDisposition::Measured(directive)
+                    if directive.operation.role() == DirectiveRole::CompletionCondition)
+            })
+            .collect();
+        let measured_calls = call_keys
+            .iter()
+            .filter(|key| matches!(key.disposition(), DirectiveDisposition::Measured(_)))
+            .count();
+        let unmeasured_calls: Vec<&MeasuredDirectiveKey> = call_keys
+            .iter()
+            .copied()
+            .filter(|key| matches!(key.disposition(), DirectiveDisposition::Unmeasured { .. }))
+            .collect();
+        let shape_blocked = call_keys
+            .iter()
+            .filter(|key| {
+                key.shapes.len() > 1
+                    || key
+                        .agreed_shape()
+                        .is_some_and(|shape| !shape.is_ir_carriable())
             })
             .count();
         let widest = keys
@@ -1252,25 +2178,99 @@ impl ControlLowering {
             .map(DirectiveShape::arity)
             .max()
             .unwrap_or(0);
-        let calls = LoweringRequirement::unmet(
-            LoweringRequirementKind::CallArguments,
-            format!(
-                "{} directive key(s) over {} site(s); {nested} key(s) whose agreed shape nests a \
-                 list, which cs_script::ir::Value cannot carry; widest agreed arity {widest}",
-                record.vocabulary(),
-                record.sites()
-            ),
-            vec![
-                "the effect of every directive key that is not an outcome key".to_owned(),
-                "the meaning of every number a directive carries".to_owned(),
-                "the order and the meaning of the parts of every nested argument list".to_owned(),
-            ],
-        );
+        let calls = if keys.is_empty() {
+            LoweringRequirement::unmet(
+                LoweringRequirementKind::CallArguments,
+                "0 directive key(s); the record declares no directive to lower",
+                vec!["a directive whose measured operation could be bound".to_owned()],
+            )
+        } else {
+            let mut fields: Vec<String> = unmeasured_calls
+                .iter()
+                .map(|key| {
+                    let disposition = key.disposition();
+                    let reason = disposition
+                        .refusal()
+                        .expect("an unmeasured disposition carries a reason");
+                    format!("`{}`: {}", key.key, reason)
+                })
+                .collect();
+            fields.extend(residual_unknowns(&call_keys));
+            fields.extend(shape_gaps(&call_keys));
+            fields.push(
+                "one bound host call per directive site — no `cs_script::bindings::Lowering` \
+                 variant carries the measured directive operations"
+                    .to_owned(),
+            );
+            LoweringRequirement::unmet(
+                LoweringRequirementKind::CallArguments,
+                format!(
+                    "{} directive key(s) over {} site(s); {measured_calls} measured non-condition \
+                     key(s) and {} unmeasured one(s) would each need a host call; \
+                     {shape_blocked} of them spell no single `Value`-carriable signature; widest \
+                     agreed arity {widest}; the measured dispositions are lifecycle writes, \
+                     evaluator arming and ordered pipeline effects — no \
+                     `cs_script::bindings::Lowering` variant exists for them",
+                    record.vocabulary(),
+                    record.sites(),
+                    unmeasured_calls.len(),
+                ),
+                fields,
+            )
+        };
 
         Self {
             requirements: vec![mission, objective_identity, condition, calls],
         }
     }
+}
+
+/// The residual unknowns the measured keys in `keys` still carry, grouped by
+/// the unknown so each names every key it applies to once.
+fn residual_unknowns(keys: &[&MeasuredDirectiveKey]) -> Vec<String> {
+    let mut by_unknown: BTreeMap<&'static str, Vec<&str>> = BTreeMap::new();
+    for key in keys {
+        if let DirectiveDisposition::Measured(directive) = key.disposition() {
+            for unknown in directive.unknowns {
+                by_unknown
+                    .entry(unknown)
+                    .or_default()
+                    .push(key.key.as_str());
+            }
+        }
+    }
+    by_unknown
+        .into_iter()
+        .map(|(unknown, spelled)| format!("{unknown} (spelled by {})", spelled.join(", ")))
+        .collect()
+}
+
+/// The argument-shape gaps `lower_program` would hit for `keys`, one line per
+/// spelled defect — the refusal a per-key disposition no longer carries now
+/// that the key's *effect* may be measured.
+fn shape_gaps(keys: &[&MeasuredDirectiveKey]) -> Vec<String> {
+    let mut gaps = Vec::new();
+    for key in keys {
+        match key.shapes.len() {
+            0 => {}
+            1 => {
+                if let Some(shape) = key.agreed_shape()
+                    && !shape.is_ir_carriable()
+                {
+                    gaps.push(format!(
+                        "`{}`: every site spells {}, which `cs_script::ir::Value` cannot carry",
+                        key.key,
+                        shape.label()
+                    ));
+                }
+            }
+            count => gaps.push(format!(
+                "`{}`: {count} distinct argument shapes across its sites — no single call signature",
+                key.key
+            )),
+        }
+    }
+    gaps
 }
 
 impl fmt::Display for ControlLowering {

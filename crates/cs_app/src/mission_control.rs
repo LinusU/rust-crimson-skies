@@ -26,14 +26,18 @@
 //! What it does **not** claim:
 //!
 //! * No original executable has been run. Every directive key is a **spelling**;
-//!   what it does is unmeasured, and the two outcome keys are recorded as a
-//!   reading of their names (`cs_content::mission_control::terminal_outcome_of`),
-//!   not as an observation of behaviour.
+//!   a stage A/B/C/D finding gives the covered keys their measured effect
+//!   ([`cs_content::mission_control::measured_directive`], with its residual
+//!   unknowns carried beside it), a key no finding covers is refused
+//!   `Unmeasured`, and the two outcome keys are recorded as a reading of their
+//!   names (`cs_content::mission_control::terminal_outcome_of`) — none of it is
+//!   an observation of runtime behaviour.
 //! * A mission is **not** playable because this census measured it.
 //!   [`RetailControlRow::is_complete`] is `false` for every measured row and
 //!   [`RetailControlCensus::campaign_ready`] is `false` while any row is
-//!   incomplete: the record declares directives the engine cannot honour, and a
-//!   contract's "the mission remains Unsupported" is the only honest reading.
+//!   incomplete: the record declares directives the engine cannot honour — a
+//!   measured disposition is not a host binding — and a contract's "the mission
+//!   remains Unsupported" is the only honest reading.
 //! * A member that fails to decode is a **refusal**
 //!   ([`ControlCensusError::Decode`]) and fails the whole census, so a
 //!   mission cannot vanish from the denominator by having one unreadable member.
@@ -240,8 +244,9 @@ impl RetailControlRow {
         self.program.is_measured()
     }
 
-    /// Whether every directive of this archive's control program has an
-    /// implemented disposition and every block was read.
+    /// Whether every directive of this archive's control program is measured,
+    /// every block was read, and every lowering requirement is met — the whole
+    /// of what "Supported" means.
     ///
     /// `false` for every measured retail row. See the module documentation for
     /// why that is the correct reading rather than a gap.

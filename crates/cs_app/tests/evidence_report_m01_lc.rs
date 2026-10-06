@@ -416,6 +416,21 @@ fn render_record(record: &MeasuredControlRecord) -> String {
                 cs_content::mission_control::DirectiveDisposition::TerminalOutcome { outcome } => {
                     format!("{{\"kind\": \"terminal_outcome\", \"outcome\": {}}}", jstr(outcome.label()))
                 }
+                cs_content::mission_control::DirectiveDisposition::Measured(directive) => {
+                    let evidence: Vec<String> =
+                        directive.evidence.iter().map(|doc| jstr(doc)).collect();
+                    let unknowns: Vec<String> =
+                        directive.unknowns.iter().map(|u| jstr(u)).collect();
+                    format!(
+                        "{{\"kind\": \"measured\", \"operation\": {}, \"role\": {}, \
+                         \"summary\": {}, \"evidence\": [{}], \"unknowns\": [{}]}}",
+                        jstr(directive.operation.code()),
+                        jstr(directive.operation.role().code()),
+                        jstr(directive.summary),
+                        evidence.join(", "),
+                        unknowns.join(", "),
+                    )
+                }
                 cs_content::mission_control::DirectiveDisposition::Unmeasured { reason } => format!(
                     "{{\"kind\": \"unmeasured\", \"reason\": {}, \"detail\": {}}}",
                     jstr(reason.code()),
