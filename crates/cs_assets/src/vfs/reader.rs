@@ -65,8 +65,8 @@ use std::path::{Path, PathBuf};
 
 use cs_formats::ParseContext;
 use cs_formats::zbd::{
-    IndexError, MemberStatus, ReaderError, ZbdDispatchError, ZbdProbe, dispatch,
-    read_reader_archive, read_version_one_index,
+    IndexError, ReaderError, ZbdDispatchError, ZbdProbe, dispatch, read_reader_archive,
+    read_version_one_index,
 };
 use cs_types::asset_id::{
     AssetKey, AssetKeyError, MountId, MountNamespace, ResolveContext, SourceSpan,
@@ -216,7 +216,9 @@ impl ReaderMember {
         self.unreachable.is_none()
     }
 
-    /// The member's name as a lookup spells it, when the entry is reachable.
+    /// The member's name, or `None` when the archive spelled it in bytes that
+    /// are not UTF-8. An entry can be named and still be unreachable — see
+    /// [`Self::unreachable`] — so this is the name, not the answer.
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }
@@ -475,14 +477,7 @@ impl ReaderMounts {
                 .map_err(|error| ReaderLookupError::UnspellableBasename {
                     requested: Box::new(requested.clone()),
                     basename: basename.to_owned(),
-                    reason: match error {
-                        AssetKeyError::Path(reason) => reason,
-                        // The namespace is the constant above and the variant came
-                        // from a validated key, so neither can be the failing part.
-                        AssetKeyError::Namespace(_) | AssetKeyError::Variant(_) => {
-                            RelativePathError::Empty
-                        }
-                    },
+                    error,
                 })?;
 
         let mut order: Vec<usize> = (0..self.archives.len()).collect();
@@ -716,14 +711,16 @@ pub enum ReaderLookupError {
         requested: Box<AssetKey>,
     },
     /// The reduced basename cannot be spelled as a key. Unreachable for a key
-    /// built by [`AssetKey::from_spelling`]; kept so the reduction is total.
+    /// built by [`AssetKey::from_spelling`], whose logical key comes from a
+    /// validated [`RelativePath`]; kept so the reduction is total rather than
+    /// panicking, and carrying the real refusal rather than a substituted one.
     UnspellableBasename {
         /// The key that was asked for.
         requested: Box<AssetKey>,
         /// The basename the request reduced to.
         basename: String,
-        /// Which path rule refused it.
-        reason: RelativePathError,
+        /// The refusal the key construction itself reported.
+        error: AssetKeyError,
     },
     /// No mounted archive the context admits holds the name.
     NotFound {
@@ -753,10 +750,10 @@ impl fmt::Display for ReaderLookupError {
             Self::UnspellableBasename {
                 requested,
                 basename,
-                reason,
+                error,
             } => write!(
                 f,
-                "{requested} reduces to {basename:?}, which cannot be spelled as a key: {reason}"
+                "{requested} reduces to {basename:?}, which cannot be spelled as a key: {error}"
             ),
             Self::NotFound {
                 requested,
@@ -770,7 +767,14 @@ impl fmt::Display for ReaderLookupError {
     }
 }
 
-impl std::error::Error for ReaderLookupError {}
+impl std::error::Error for ReaderLookupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnspellableBasename { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// Why a reader archive could not be mounted.
 ///
@@ -1135,31 +1139,46 @@ pub fn mount_reader_archive(
             let entry_index = row.index();
             let offset = row.span().offset;
             let length = row.span().length;
-            let readable = row.status() == MemberStatus::Readable;
             let content = listing.member_bytes(entry_index);
             let digest = content.map(sha256);
             let name = std::str::from_utf8(row.name()).ok().map(str::to_owned);
-            let folded = name
-                .as_deref()
-                .map(|declared| declared.to_ascii_lowercase())
-                .unwrap_or_default();
 
-            let unreachable = if !readable || content.is_none() {
+            // The three refusals are ordered by how much they depend on: the
+            // listing's bounds check first (an entry with no bytes has no
+            // name to serve), then the spelling, then the first-hit rule.
+            let spellable = match name.as_deref() {
+                None => Err(Unreachable::NonUtf8Name),
+                Some(declared) => RelativePath::new(declared)
+                    .map(|_| ())
+                    .map_err(|_| Unreachable::InvalidName),
+            };
+            let unreachable = if content.is_none() {
                 Some(Unreachable::FailedBounds)
-            } else if name.is_none() {
-                Some(Unreachable::NonUtf8Name)
-            } else if RelativePath::new(name.as_deref().unwrap_or_default()).is_err() {
-                Some(Unreachable::InvalidName)
             } else {
-                served
-                    .get(&folded)
-                    .map(|first| Unreachable::DuplicateName { served_by: *first })
+                match spellable {
+                    Err(reason) => Some(reason),
+                    Ok(()) => {
+                        let folded = name
+                            .as_deref()
+                            .expect("a spellable entry has a name")
+                            .to_ascii_lowercase();
+                        // The original's scan serves the **first** entry whose
+                        // name matches case-insensitively, so a later entry of
+                        // one name is unreachable by name and stays a row.
+                        let first = served.entry(folded).or_insert(entry_index);
+                        (*first != entry_index)
+                            .then_some(Unreachable::DuplicateName { served_by: *first })
+                    }
+                }
             };
             if unreachable.is_none() {
-                served.insert(folded, entry_index);
-                let declared = name.as_deref().expect("a named entry has a name");
                 builder
-                    .add_member(declared, length, offset, digest)
+                    .add_member(
+                        name.as_deref().expect("a reachable entry has a name"),
+                        length,
+                        offset,
+                        digest,
+                    )
                     .map_err(|source| ReaderMountError::Member {
                         container: container.clone().into_boxed_str(),
                         source: Box::new(source),

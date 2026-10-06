@@ -524,6 +524,86 @@ fn accept_f04_d_order_reader_a_name_that_is_no_key_is_archived_unreachable() {
 }
 
 #[test]
+fn accept_f04_d_order_reader_an_unreadable_or_unspellable_entry_stays_a_row() {
+    // Two more ways a declared entry cannot be served, neither of which retail
+    // shows: an extent that leaves the container (the listing's bounds check
+    // refuses it, so the row has no digest) and a name that is not UTF-8 (no
+    // key spelling could match it). Both must stay inventory rows with their
+    // reason, and must not stop their siblings from being mounted.
+    let bytes = {
+        let first = b"soils".to_vec();
+        let mut data = first.clone();
+        let good = data.len() as u32;
+        data.extend_from_slice(b"out of bounds");
+        let mut entries = vec![member(0, "soils.zrd", &first)];
+        // An extent that runs past the end of the data region.
+        entries.push(Entry {
+            start: 4_000,
+            length: 64,
+            name: b"beyond.zrd".to_vec(),
+        });
+        // A name that is not UTF-8 at all.
+        entries.push(Entry {
+            start: good,
+            length: 0,
+            name: vec![0xff, 0xfe, b'.', b'z', b'r', b'd'],
+        });
+        archive(&data, &entries)
+    };
+    let mut mounts = ReaderMounts::new();
+    mounts.push(mount(
+        &tree_of("reader-unreadable"),
+        "zbd/zrdr.zbd",
+        ReaderLevel::Root,
+        fixture_builder("reader-root", "zbd/zrdr.zbd", None),
+        &bytes,
+    ));
+    let archive = &mounts.archives()[0];
+
+    assert_eq!(archive.len(), 3, "every declared entry is a row");
+    assert_eq!(
+        archive.mount().member_count(),
+        1,
+        "only soils.zrd is servable"
+    );
+    let reasons: Vec<(usize, Unreachable)> = archive
+        .unreachable()
+        .map(|member| (member.entry_index, member.unreachable.expect("a reason")))
+        .collect();
+    assert_eq!(
+        reasons,
+        vec![
+            (1, Unreachable::FailedBounds),
+            (2, Unreachable::NonUtf8Name),
+        ],
+        "each refusal keeps the entry with the reason it was refused"
+    );
+    let beyond = archive.member_at(1).expect("entry 1 is a row");
+    assert_eq!(beyond.name.as_deref(), Some("beyond.zrd"));
+    assert_eq!(
+        beyond.sha256, None,
+        "an extent outside the archive has no bytes to hash"
+    );
+    assert!(!beyond.reachable_by_name());
+    assert_eq!(
+        archive.member("beyond.zrd"),
+        None,
+        "a member with no bytes is never served"
+    );
+    assert!(
+        mounts
+            .resolve(&fixture_context("mp1"), &key("soils.zrd"))
+            .is_ok(),
+        "the valid sibling is still mounted and served"
+    );
+}
+
+/// A fresh fixture tree; each test owns one so no two share a host path.
+fn tree_of(label: &str) -> TempTree {
+    TempTree::new(label)
+}
+
+#[test]
 fn accept_f04_d_order_reader_a_skipped_archive_is_reported_and_the_next_one_serves() {
     let tree = TempTree::new("reader-skip-order");
     // The mission archive belongs to `mp1`; a `mp3` context does not admit it,
