@@ -164,6 +164,32 @@ AC03 (`accept_f08_c_same_name_texture_in_two_chapter_archives_resolves_per_world
 the upload boundary, the stale-state refusal, the failed-row and family
 refusals are all unchanged and still pass.
 
+## What this breaks outside this task's owner paths
+
+`cargo test --workspace --locked` is **not** green on this branch. Exactly one
+test fails, and it is in `crates/cs_content/src/mesh.rs`, which is F10's owner
+path (`specs/F10-gamez-mesh-topology-and-material-records.md`), not this task's:
+
+```
+mesh::tests::accept_f10_c_02_audit_reports_a_missing_texture_with_its_exact_name_and_archive
+panicked at crates/cs_content/src/mesh.rs:5041: the second archive stores `Sky1.tif`
+```
+
+Its fixture stores a mixed-case `Sky1.tif` and then asserts that
+`resolve("Sky1.tif")` succeeds against it. Under the measured rule that
+assertion is false of the original as well as of this crate: the request folds
+to `sky1.tif`, which the archive does not store, so no spelling of that request
+reaches the stored `Sky1.tif` (`0x531280` reads the table verbatim). The
+sibling test `accept_f10_c_02_audit_neither_folds_case_nor_strips_an_extension`
+still passes and keeps its meaning.
+
+This is filed as **#702**, which owns the fix and the now-incorrect "byte
+equality" prose at `mesh.rs:1596`. It depends on this task, so it becomes
+ready once #689 lands. This task does not touch that file: doing so would mean
+editing another feature's owner path and its acceptance test, which is out of
+scope here, and the conflict is a consequence of the measurement rather than a
+defect in this change.
+
 ## Recorded unknowns and limitations
 
 * **The loose-file names are built from the folded spelling here, and from the
@@ -231,7 +257,8 @@ accept_f08_c_case_fold` run, and the file restored:
 | --- | --- |
 | `cargo fmt --all -- --check` | clean |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | clean |
-| `cargo test --workspace --locked` | see the handover summary |
+| `cargo test --workspace --locked` | **one pre-existing F10-C test fails** — `mesh::tests::accept_f10_c_02_audit_reports_a_missing_texture_with_its_exact_name_and_archive`. Everything else passes (232 passed, 1 failed, 33 ignored in `cs_content`'s lib; the rest of the workspace green). See "What this breaks outside this task's owner paths" and #702 |
+| `cargo test --workspace --locked -- --skip <that one test>` | the rest of the workspace is green |
 | `cargo test --workspace --locked -- accept_f08_c_case_fold --include-ignored` | 4 passed, 0 failed (3 synthetic + the retail one) |
 | `cargo test -p cs_content --locked --lib -- accept_f08_c` | 16 passed, 0 failed, 3 ignored — every F08-C test, including the one whose case assertion changed |
 | `env -u CS_GAME_DIR cargo test -p cs_content --locked --lib -- accept_f08_c_case_fold --include-ignored` | the retail test **fails** with "CS_GAME_DIR must point at the original installation for this test"; the three synthetic ones pass |
