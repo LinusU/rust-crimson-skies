@@ -25,8 +25,10 @@ the 2000 engine behaved.
   beside the existing `EventsNotDecoded`.
 - `crates/cs_app/src/animation/mod.rs` (wiring only): `pub mod events;` and the
   re-exports.
-- `crates/cs_app/tests/accept_m01_lc_actor_anim_playback.rs`: the eight
-  `accept_f20_event_` tests (six synthetic, two retail).
+- `crates/cs_app/tests/accept_m01_lc_actor_anim_playback.rs`: the nine
+  `accept_f20_event_` tests (six synthetic, three retail — the third,
+  `retail_every_opcode_spelling_is_read_from_a_declaration`, was added in
+  review; see the review section below).
 - `crates/cs_app/tests/accept_f20_d_validation.rs`: #690's evidence harness
   (`evidence_report_f20_event_grammar_writes_the_acceptance_report` and
   `f20e_census_json`), beside the harnesses #633 and #650 already used. The
@@ -283,6 +285,7 @@ of the seven except `generic_intro` and `player_setup` carries one.
 | `every_stored_opcode_is_classed_and_the_unknowns_named` | 35 stored opcodes, the four unknowns by code, every class present, the measured spellings, and `None` for codes no carrier stores | an opcode or a class vanishes from the table |
 | `the_per_tick_report_follows_the_measured_timing` | the report at 2 Hz over a 2.0 record: which rows hold which statements, and a zero rate sampling nothing | the report ignores its timing or invents a timeline |
 | `retail_every_event_stream_walks_and_is_censused` *(retail)* | 61 carriers, 56 994 blocks, 242 391 events, 16 132 948 bytes, the full opcode census and the six class totals, and 389 refused blocks | any number moves, or an unknown opcode is dropped from the census |
+| `retail_every_opcode_spelling_is_read_from_a_declaration` *(retail, added in review)* | the naming claim itself: every `zrdr.zbd` declaration and every carrier record read through production readers, 477 unique-identity pairs, 1 440 aligned sequences, 5 340 events whose opcode's table spelling is asserted **against the declaration's own statement kind**, zero conflicts, and the joined set equal to the table's 31 joined entries | a spelling in `STORED_OPCODES` stops matching the installation's text, or the `ACTIVATION` alignment rule stops holding |
 | `retail_m01_startup_records_play_with_measured_durations` *(retail)* | `playable_count() == 7`, each row's measured duration (15.9, 5.0, 0.2 and four zeros), each event's spelling and class, and `call_add_jack`'s first statement appearing only at tick 2 of a 10 Hz report | a duration becomes a guess, a row stops playing, or an unknown opcode reaches a playback |
 
 ## Sensitivity
@@ -297,9 +300,10 @@ test CI can run:
 | the unjoined-opcode check removed from `read_event`, so opcode 13 decodes | `an_undecoded_opcode_refuses_the_whole_record`, `a_stream_walks_into_tag_and_length_records` |
 | `RUN_TIME` read from word `0` instead of the last word | `a_decoded_duration_is_read_from_the_payloads`, `a_stream_walks_into_tag_and_length_records` |
 
-The two retail cases add what only the installation can check: the corpus
-counts and the seven durations, both re-measured from `$CS_GAME_DIR` on every
-run rather than copied from this document.
+The three retail cases add what only the installation can check: the corpus
+counts, the declaration join behind every opcode's spelling, and the seven
+durations, all re-measured from `$CS_GAME_DIR` on every run rather than copied
+from this document.
 
 ## Evidence classes
 
@@ -310,6 +314,37 @@ run rather than copied from this document.
 | `START_TIME` at word 0, `RUN_TIME` at the last word | `ObservedTool` | 70 and 109 joined statements with exact value matches, zero contradictions, plus the corpus-wide correlations above |
 | the four unjoined opcodes, opcode 5's position, payload bodies, the tag's second byte, the time unit | **unknown** | named above with their claim ids and affected content |
 | what the original engine did with any of it | **unknown** | no original run |
+
+## Review (2026-10-06)
+
+Reviewer: **bunny-alpha-2/bunny-alpha-2 — the same agent identity as the
+implementer**, in a session that started from the implementer's hand-over
+summary and read the branch diff from there. The context was therefore **not
+fresh**, this is a self-review rather than independent evidence, and `checked`
+is its ceiling; it cannot stand in for a fresh-context agent or for the owner's
+human approval. What the review changed:
+
+* **The naming claim became a test.** The opcode → statement join was measured
+  during implementation (477 pairs) but no committed test re-derived it, so
+  `STORED_OPCODES`' spellings were only ever asserted against themselves. The
+  reviewer first reproduced the join independently from the implementer's
+  private dump (1 055 sequences aligning directly, 385 after dropping the
+  leading `ACTIVATION`, zero conflicts, the same 31 opcodes with the same
+  spellings), then committed the measurement as
+  `accept_f20_event_retail_every_opcode_spelling_is_read_from_a_declaration`,
+  which reads the installation through the production readers and asserts each
+  table spelling against the declaration's own statement kind — 477 pairs,
+  1 440 sequences, 5 340 events. The finding's central claim is now checked
+  rather than reported.
+* **Three documentation statements corrected**, none of them a behaviour
+  change: `TickPose::statements` said a row holds "every statement whose span
+  covers this tick" while the measured behaviour (and its test) is "started by
+  that tick"; `StartupAnimation::playback` said `None` "exactly when a refusal
+  says why", which is not true for a row refused for a *name* disagreement;
+  and `carrier` / `AnimationRecordFacts::animation_refs` still said the event
+  streams and the call statements were not decoded, which #690 ended.
+* **Evidence regenerated** on the reviewed commit: the report now lists nine
+  `accept_f20_event_` tests and this review's identity and method.
 
 ## Commands run
 

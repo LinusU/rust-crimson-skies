@@ -2310,3 +2310,271 @@ fn accept_f20_event_retail_m01_startup_records_play_with_measured_durations() {
         "by tick two (0.2) the statement has started"
     );
 }
+
+/// **The naming claim, re-derived from the installation.** Every other test of
+/// `STORED_OPCODES` checks that table against itself: the census test counts
+/// the events it holds, the synthetic tests read the spellings it states. This
+/// one checks the spellings against the **files**: every `zrdr.zbd` declaration
+/// that names an animation is read through
+/// [`read_animation_definition_member`], every carrier record through
+/// [`read_animation_index`], the two are paired by the one identity that
+/// matches exactly one record (#678's rule), and each declaration sequence's
+/// statement kinds are aligned position by position with its record's ordinary
+/// block's decoded events. The installation's own text is the expectation, so
+/// a spelling, an alignment rule or the table itself that stops matching the
+/// files fails here — over all 477 pairs, not the first few.
+#[test]
+#[ignore = "requires CS_GAME_DIR: the original installation is needed"]
+fn accept_f20_event_retail_every_opcode_spelling_is_read_from_a_declaration() {
+    /// One declared sequence: its stored name (absent is stored as empty) and
+    /// its statement kinds in stored order.
+    struct DeclaredSequence {
+        name: Option<String>,
+        kinds: Vec<String>,
+    }
+
+    /// One definition of one declaring member, as the reader states it.
+    struct Declaration {
+        archive: String,
+        member: String,
+        animation: String,
+        sequences: Vec<DeclaredSequence>,
+    }
+
+    /// One stored ordinary block of one record.
+    struct StoredBlock {
+        name: String,
+        events: Vec<u8>,
+    }
+
+    /// One walked record of one carrier.
+    struct StoredRecord {
+        carrier: String,
+        index: usize,
+        animation: String,
+        blocks: Vec<StoredBlock>,
+    }
+
+    let root = retail_root();
+    let found = install::discover(&root).expect("production discovery reads the installation");
+
+    // Every declaring archive of the installation, and every member of it that
+    // is an `ANIMATION_DEFINITIONS` record naming an animation.
+    let mut declarations: Vec<Declaration> = Vec::new();
+    for file in &found.manifest.files {
+        let key = file.relative_spelling.logical_key();
+        if !key.ends_with("/zrdr.zbd") {
+            continue;
+        }
+        let bytes =
+            std::fs::read(root.join(file.relative_spelling.as_str())).expect("read the archive");
+        let path =
+            RelativePath::new(&file.relative_spelling.as_str().to_lowercase()).expect("a path");
+        for program in discover_container(&key, &path, &bytes).programs() {
+            let Some(member) = program.locator().member().map(str::to_owned) else {
+                continue;
+            };
+            let Ok(read) = read_animation_definition_member(&member, program.bytes()) else {
+                continue;
+            };
+            for definition in read.definitions() {
+                let Some(animation) = definition.animation_name() else {
+                    continue;
+                };
+                declarations.push(Declaration {
+                    archive: key.clone(),
+                    member: member.clone(),
+                    animation: animation.to_owned(),
+                    sequences: definition
+                        .sequences()
+                        .iter()
+                        .map(|sequence| DeclaredSequence {
+                            name: sequence.name().map(str::to_owned),
+                            kinds: sequence
+                                .entries()
+                                .iter()
+                                .map(|entry| entry.kind().to_owned())
+                                .collect(),
+                        })
+                        .collect(),
+                });
+            }
+        }
+    }
+    assert!(
+        !declarations.is_empty(),
+        "the installation declares animations the join can be read against"
+    );
+
+    // Every record of every carrier, with its ordinary blocks' event bytes.
+    let mut records: Vec<StoredRecord> = Vec::new();
+    for file in &found.manifest.files {
+        let key = file.relative_spelling.logical_key();
+        if !(key.ends_with("/mis_anim.zbd") || key.ends_with("/cam_anim.zbd")) {
+            continue;
+        }
+        let bytes =
+            std::fs::read(root.join(file.relative_spelling.as_str())).expect("read the carrier");
+        let path =
+            RelativePath::new(&file.relative_spelling.as_str().to_lowercase()).expect("a path");
+        let mut context = ParseContext::with_defaults(&key);
+        let decision = dispatch(ZbdProbe::new(&key, &path, &bytes[..8]))
+            .expect("a carrier is an animation container");
+        let index = read_animation_index(&mut context, decision, &bytes).expect("the index reads");
+        let payload = index.payload().expect("the payload header reads");
+        let walk = payload.records().expect("the records walk");
+        for record in walk.iter() {
+            records.push(StoredRecord {
+                carrier: key.clone(),
+                index: record.index(),
+                animation: String::from_utf8_lossy(record.anim_name()).into_owned(),
+                blocks: record
+                    .sequences()
+                    .iter()
+                    .filter(|block| block.kind() == AnimationRecordSequenceKind::Sequence)
+                    .map(|block| StoredBlock {
+                        name: String::from_utf8_lossy(block.name()).into_owned(),
+                        events: block.events().to_vec(),
+                    })
+                    .collect(),
+            });
+        }
+    }
+    assert!(!records.is_empty(), "the carriers hold records to join");
+
+    // The join: a declaration pairs with the record its identity names exactly
+    // once; an identity with no record or several is not a pair, as in #678's
+    // census. Every paired sequence is then aligned, the declaration's leading
+    // `ACTIVATION` — which the payload never stores as an event — dropped when
+    // it is there.
+    let mut pairs = 0_usize;
+    let mut sequences = 0_usize;
+    let mut events = 0_usize;
+    let mut joined: std::collections::BTreeMap<u8, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    let mut unpaired_shapes: Vec<String> = Vec::new();
+    let mut name_disagreements: Vec<String> = Vec::new();
+    for declaration in &declarations {
+        let matches: Vec<&StoredRecord> = records
+            .iter()
+            .filter(|record| record.animation == declaration.animation)
+            .collect();
+        let [record] = matches.as_slice() else {
+            continue;
+        };
+        pairs += 1;
+        if declaration.sequences.len() != record.blocks.len() {
+            unpaired_shapes.push(format!(
+                "{}::{} declares {} sequences, {} record {} stores {}",
+                declaration.archive,
+                declaration.member,
+                declaration.sequences.len(),
+                record.carrier,
+                record.index,
+                record.blocks.len(),
+            ));
+            continue;
+        }
+        for (declared, block) in declaration.sequences.iter().zip(&record.blocks) {
+            if declared.name != ((!block.name.is_empty()).then(|| block.name.clone())) {
+                name_disagreements.push(format!(
+                    "{}::{} / {} record {}: {:?} against {:?}",
+                    declaration.archive,
+                    declaration.member,
+                    record.carrier,
+                    record.index,
+                    declared.name,
+                    block.name,
+                ));
+                continue;
+            }
+            let decoded = decode_event_stream(&block.events).unwrap_or_else(|error| {
+                panic!(
+                    "{} record {} sequence {:?}: {error}",
+                    record.carrier, record.index, block.name
+                )
+            });
+            let kinds: &[String] = if declared.kinds.len() == decoded.len() {
+                &declared.kinds
+            } else if declared.kinds.len() == decoded.len() + 1 && declared.kinds[0] == "ACTIVATION"
+            {
+                &declared.kinds[1..]
+            } else {
+                unpaired_shapes.push(format!(
+                    "{}::{} / {} record {} sequence {:?}: {} statements against {} events",
+                    declaration.archive,
+                    declaration.member,
+                    record.carrier,
+                    record.index,
+                    block.name,
+                    declared.kinds.len(),
+                    decoded.len(),
+                ));
+                continue;
+            };
+            sequences += 1;
+            events += decoded.len();
+            for (kind, event) in kinds.iter().zip(&decoded) {
+                let info = opcode_info(event.opcode).expect("a stored opcode");
+                assert_eq!(
+                    info.statement,
+                    kind,
+                    "{} record {} opcode {} at +{}: the table says {:?}, {}::{} says {:?}",
+                    record.carrier,
+                    record.index,
+                    event.opcode,
+                    event.offset,
+                    info.statement,
+                    declaration.archive,
+                    declaration.member,
+                    kind,
+                );
+                joined
+                    .entry(event.opcode)
+                    .or_default()
+                    .insert((*kind).clone());
+            }
+        }
+    }
+
+    assert!(
+        unpaired_shapes.is_empty(),
+        "every pair aligns statement for statement: {unpaired_shapes:#?}"
+    );
+    assert!(
+        name_disagreements.is_empty(),
+        "every pair agrees on its sequence names: {name_disagreements:#?}"
+    );
+    assert_eq!(
+        pairs, 477,
+        "477 declaration/record pairs over the installation's carriers"
+    );
+    assert_eq!(sequences, 1_440, "every aligned sequence of every pair");
+    assert_eq!(
+        events, 5_340,
+        "every event whose opcode a declaration statement names"
+    );
+
+    let conflicted: Vec<u8> = joined
+        .iter()
+        .filter(|(_, kinds)| kinds.len() > 1)
+        .map(|(opcode, _)| *opcode)
+        .collect();
+    assert!(
+        conflicted.is_empty(),
+        "an opcode joined two declaration spellings: {conflicted:?}"
+    );
+    let table: std::collections::BTreeSet<u8> = STORED_OPCODES
+        .iter()
+        .filter(|info| info.class != EventClass::Unknown)
+        .map(|info| info.opcode)
+        .collect();
+    assert_eq!(
+        joined
+            .keys()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        table,
+        "the joined opcodes are exactly the table's joined entries, spellings and all"
+    );
+}

@@ -3435,10 +3435,10 @@ fn m01lc_write_report(spec: &M01lcReport) {
 
     let method = format!(
         "acceptance suite run locally with the `retail` capability: `cargo test --workspace \
-         --locked -- {} --include-ignored`, every task test passing (the \
-         implementer's run is in the recorded log); this harness derives every field from that \
-         log, from production discovery of $CS_GAME_DIR, and from the production binding survey \
-         re-run over that installation (cs_app::animation::survey_animation_bindings over \
+         --locked -- {} --include-ignored`, every task test passing (the run this report derives \
+         from is the one recorded in the log, whoever ran it); this harness derives every field \
+         from that log, from production discovery of $CS_GAME_DIR, and from the production binding \
+         survey re-run over that installation (cs_app::animation::survey_animation_bindings over \
          cs_formats::zbd::anim::read_animation_index), validated with \
          tools/validate_evidence.py --require-pass. gpu and audio were available and UNUSED: \
          nothing was rendered or played. {}",
@@ -4104,9 +4104,11 @@ fn m01lc_artifact_array(artifacts: &[(String, String, String)]) -> String {
 // test, `private/evidence/F20-EVENT-GRAMMAR` as the directory, and the copy
 // committed as `docs/findings/evidence/F20-EVENT-GRAMMAR.json`.
 
-/// The retail half of #690's suite: the corpus walk and M01's seven durations.
+/// The retail half of #690's suite: the corpus walk, the naming claim re-read
+/// from the declarations, and M01's seven durations.
 const F20E_CAPABILITY_TESTS: &[&str] = &[
     "accept_f20_event_retail_every_event_stream_walks_and_is_censused",
+    "accept_f20_event_retail_every_opcode_spelling_is_read_from_a_declaration",
     "accept_f20_event_retail_m01_startup_records_play_with_measured_durations",
 ];
 
@@ -4142,13 +4144,20 @@ const F20E_OPEN_STATE: &str = "OPEN, and not this task's blocker: (1) OPCODES 13
      mission-facing animation claim (VS-M01-RUNTIME #359, F20-D family validation, M01-B).";
 
 const F20E_REVIEW: &str = "implementer: bunny-alpha-2/bunny-alpha-2 (Rally task #690, session of \
-     2026-10-06); reviewer: none yet — the reviewer's identity and whether their context was fresh \
-     are recorded in the complete_review notes, and an event grammar that decides what a playable \
-     mission means wants a reviewer other than the implementer. The implementer measured the layout \
-     over the whole corpus and joined every opcode to the installation's own statement spellings \
-     with zero conflicts, but that is not independent review and not independent original-reference \
-     evidence; the claim stays at level `implemented`, and no agent review replaces the owner's \
-     human approval";
+     2026-10-06). reviewer: bunny-alpha-2/bunny-alpha-2 — the SAME agent identity as the implementer, \
+     in a session that started from the implementer's hand-over summary and read the branch diff \
+     from there, so the context was NOT fresh, this is a self-review and NOT independent \
+     original-reference evidence: `checked` is its ceiling, an event grammar that decides what a \
+     playable mission means wants a reviewer other than the implementer, and no agent review \
+     replaces the owner's human approval. What the review added is in the finding's review \
+     section: a ninth task test, accept_f20_event_retail_every_opcode_spelling_is_read_from_a_declaration, \
+     which re-derives the opcode-to-statement join from the installation through the production \
+     readers (477 declaration/record pairs, 1440 aligned sequences, 5340 events, zero conflicts) \
+     so the table's spellings are asserted against the declarations' own text rather than against \
+     themselves; three documentation statements corrected (a row of the per-tick report holds the \
+     statements started by that tick, a name-refused row may still carry a decoded playback, and \
+     the event streams are decoded by this task); and this report regenerated on the reviewed \
+     commit";
 
 const F20E_CENSUS_ARTIFACT: &str = "event-grammar.json";
 
@@ -4165,7 +4174,7 @@ const F20E_REPORT: M01lcReport = M01lcReport {
         "OPCODES 13, 17, 26 AND 28 JOIN NO DECLARATION",
         "OPCODE 5",
         "NO TRANSFORM POSE",
-        "reviewer: none yet",
+        "SAME agent identity",
     ],
 };
 
