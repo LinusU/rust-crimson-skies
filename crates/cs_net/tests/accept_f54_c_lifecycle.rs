@@ -141,6 +141,18 @@ fn loopback() -> MutexGuard<'static, ()> {
 /// sent it.
 const HANGUP_ROUNDS: usize = 64;
 
+/// How many exchange rounds the abusive peer gets to be cut off in.
+///
+/// The verdict itself is not timed: the host decides the moment it receives a
+/// hostile payload, and the peer keeps firing one payload per round for the
+/// whole budget. What the budget bounds is *delivery*: every payload travels
+/// the droppable channel, so each round is one more independent attempt for
+/// one of them to reach the host on a machine whose loopback drops datagrams
+/// under load (F54-X2 and F54-X10 measured that loss). It is a number of
+/// attempts, not a sleep and not a deadline for a decision the host has
+/// already made.
+const HOSTILE_ROUNDS: usize = 64;
+
 /// A live loopback pair: one bound host session and one connecting client
 /// session, plus every notice each side produced.
 struct Link {
@@ -179,6 +191,10 @@ impl Link {
     }
 
     /// A link whose handshake completed and whose client holds a grant.
+    ///
+    /// This is [`Self::try_joined`] for a test that treats a fixture which
+    /// never came up as a failure in itself; the scenario that rebuilds its
+    /// fixture keeps the two in step.
     fn joined(session: SessionId) -> Self {
         let mut link = Self::new(session, synthetic_parameters(), synthetic_hello());
         link.pump_until_joined();
@@ -188,6 +204,31 @@ impl Link {
             link.client_notices
         );
         link
+    }
+
+    /// The same fixture, as an option: `None` when the loopback never carried
+    /// the handshake inside [`MAX_ROUNDS`].
+    ///
+    /// No expectation is dropped by asking this way — the caller either
+    /// rebuilds the fixture or reports that it never came up — but a test
+    /// that retries its fixture needs the difference between "the loopback
+    /// could not deliver" and "the session answered".
+    fn try_joined(session: SessionId) -> Result<Self, Vec<ClientNotice>> {
+        let mut link = Self::new(session, synthetic_parameters(), synthetic_hello());
+        for _ in 0..MAX_ROUNDS {
+            if link.client.grant().is_some() {
+                return Ok(link);
+            }
+            if link.client.phase().closure().is_some() {
+                break; // A verdict that is not a grant: no round will change it.
+            }
+            link.round();
+        }
+        if link.client.grant().is_some() {
+            Ok(link)
+        } else {
+            Err(link.client_notices)
+        }
     }
 
     /// One exchange round: the client pumps (emitting its packets), then the
@@ -302,6 +343,7 @@ impl Link {
                 LOOPBACK_WINDOW,
             )
             .expect("the raw client socket binds"),
+            events: Vec::new(),
         }
     }
 }
@@ -309,19 +351,37 @@ impl Link {
 /// A handshake-complete peer with no lifecycle owner.
 struct RawPeer {
     transport: ClientTransport,
+    /// Every event this peer produced since it was built.
+    ///
+    /// The peer has no lifecycle owner to hold its notices, so without this
+    /// a failed expectation could not tell "the host cut me off" apart from
+    /// "my side stopped being able to talk at all" — which is the difference
+    /// between a session decision and a transport fault.
+    events: Vec<ClientEvent>,
 }
 
 impl RawPeer {
     /// Drives this peer to its grant, pumping `host` alongside it.
+    ///
+    /// This is [`Self::try_handshake`] for a caller that treats a peer that
+    /// never came up as a failure in itself.
     fn handshake(&mut self, host: &mut ServerSession) -> PeerId {
+        self.try_handshake(host)
+            .expect("the raw peer never received a grant")
+    }
+
+    /// The same handshake, as an option: `None` when the loopback never
+    /// carried it inside [`MAX_ROUNDS`], which is a delivery failure of the
+    /// fixture rather than anything the host decided.
+    fn try_handshake(&mut self, host: &mut ServerSession) -> Option<PeerId> {
         for _ in 0..MAX_ROUNDS {
             if let Some(grant) = self.transport.grant() {
-                return grant.peer;
+                return Some(grant.peer);
             }
-            self.transport.update(STEP);
+            self.events.extend(self.transport.update(STEP));
             host.pump(STEP);
         }
-        panic!("the raw peer never received a grant");
+        None
     }
 
     /// Puts `bytes` on `channel` verbatim.
@@ -331,13 +391,43 @@ impl RawPeer {
 
     /// Pumps this peer once.
     fn pump(&mut self) -> Vec<ClientEvent> {
-        self.transport.update(STEP)
+        let events = self.transport.update(STEP);
+        self.events.extend(events.iter().cloned());
+        events
     }
 
     /// Pumps this peer and the host together.
     fn round(&mut self, host: &mut ServerSession) -> Vec<ServerNotice> {
-        self.transport.update(STEP);
+        self.events.extend(self.transport.update(STEP));
         host.pump(STEP)
+    }
+
+    /// This peer's transport state, in the form a failing assertion prints:
+    /// whether the connection is still up, why it went down if it did, and
+    /// what its event stream has said since it was built.
+    fn status(&self) -> String {
+        let mut counts: Vec<(&str, usize)> = Vec::new();
+        for event in &self.events {
+            let kind = match event {
+                ClientEvent::Connected => "connected",
+                ClientEvent::Granted { .. } => "granted",
+                ClientEvent::Rejected { .. } => "rejected",
+                ClientEvent::Server(_) => "server packet",
+                ClientEvent::Disconnected { .. } => "disconnected",
+                ClientEvent::PacketDropped { .. } => "undecodable reply",
+                ClientEvent::TransportFault { .. } => "transport fault",
+            };
+            match counts.iter_mut().find(|(name, _)| *name == kind) {
+                Some((_, seen)) => *seen += 1,
+                None => counts.push((kind, 1)),
+            }
+        }
+        format!(
+            "the abusive peer's transport: connected {}, reason {:?}, events {:?}",
+            self.transport.is_connected(),
+            self.transport.disconnect_reason(),
+            counts
+        )
     }
 }
 
@@ -345,6 +435,166 @@ impl RawPeer {
 fn fire_bytes(session: SessionId, tick: Tick, sequence: u32) -> Vec<u8> {
     encode_client_message(&fuzz::fire_message(session, tick, sequence))
         .expect("a fire packet encodes")
+}
+
+/// Whether the host has cut `peer` off: it is no longer one of its members.
+fn cut_off(link: &Link, peer: PeerId) -> bool {
+    link.host.members().all(|member| member != peer)
+}
+
+/// How many fixtures the hostile-peer scenario may build before it gives up.
+///
+/// F54-X10 measured loopback sockets that stop being reachable while they are
+/// still in use, when other processes churn the kernel's socket table. A
+/// fixture carrying such a path can never show a cut-off: neither handshake
+/// completes, or not one hostile payload reaches the host, so the session
+/// never gets the chance to decide. Rebuilding costs three sockets and a few
+/// milliseconds, and it is spent only on a run in which the host saw *nothing
+/// at all* — the verdict itself is never retried. Every attempt failing is
+/// still a failure: the test then says what the last one saw.
+///
+/// The measurement behind this number is in
+/// `docs/findings/2026-10-06-f54-c-hostile-peer-flake-loopback-path.md`.
+const DEAD_PATH_ATTEMPTS: usize = 6;
+
+/// One run of the hostile-peer scenario: a fresh fixture, the flood, and the
+/// wait for the verdict.
+struct Attempt {
+    /// The fixture the run used: the host, the honest client and every notice.
+    link: Link,
+    /// The peer that flooded the host.
+    hostile: RawPeer,
+    /// The id the host allocated to that peer.
+    hostile_peer: PeerId,
+    /// Whether the host processed any traffic from that peer.
+    arrived: bool,
+}
+
+impl Attempt {
+    /// The loopback carried nothing from the abusive peer, so no verdict was
+    /// observable: the fixture failed, not the session.
+    fn quiet(&self) -> bool {
+        !self.arrived && !cut_off(&self.link, self.hostile_peer)
+    }
+}
+
+/// Whether the host processed anything `peer` sent: admitted input, a refusal
+/// or the cut-off itself. A peer that joined and then produced none of these
+/// never reached the host's receive path at all.
+fn hostile_traffic(notices: &[ServerNotice], peer: PeerId) -> bool {
+    notices.iter().any(|notice| match notice {
+        ServerNotice::Admitted(input) => input.peer == peer,
+        ServerNotice::Dropped {
+            peer: Some(seen), ..
+        }
+        | ServerNotice::CutOff {
+            peer: Some(seen), ..
+        } => *seen == peer,
+        _ => false,
+    })
+}
+
+/// Builds a fresh fixture, floods the host from a second peer and waits for
+/// the verdict the session owes.
+///
+/// `Err` means the fixture never came up — the loopback did not carry one of
+/// the two handshakes inside [`MAX_ROUNDS`] — and describes which, so a
+/// caller that rebuilds can still say what it saw when every attempt failed.
+fn abusive_peer_attempt() -> Result<Attempt, String> {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut link = Link::try_joined(session)
+        .map_err(|notices| format!("the honest client never got a grant: {notices:?}"))?;
+    let good_peer = link.client.grant().expect("a grant exists").peer;
+    link.host
+        .gate_mut()
+        .ownership_mut()
+        .bind(good_peer, ActorId { session, serial: 1 })
+        .expect("the host binds an aircraft");
+
+    // A second peer that handshakes and then floods the host with the
+    // malformed and oversized shapes from the corpus.
+    let mut hostile = link.raw_peer(0xC8);
+    let hostile_peer = hostile
+        .try_handshake(&mut link.host)
+        .ok_or_else(|| format!("the abusive peer never got a grant: {}", hostile.status()))?;
+    assert_ne!(hostile_peer, good_peer, "the two peers are distinct");
+
+    // Small shapes keep the loopback socket honest.
+    let cases: Vec<Vec<u8>> = fuzz::corpus(fuzz::SEEDS[0])
+        .into_iter()
+        .filter(|case| case.bytes.len() <= 512)
+        .map(|case| case.bytes)
+        .collect();
+    assert!(!cases.is_empty(), "the corpus carries small hostile shapes");
+
+    // One burst of the whole corpus, sixteen payloads between exchange rounds.
+    let mut sent = 0usize;
+    for case in &cases {
+        hostile.inject(CHANNEL_SEQUENCED, case);
+        sent += 1;
+        if sent.is_multiple_of(16) {
+            link.host_notices.extend(hostile.round(&mut link.host));
+        }
+    }
+
+    // And then the peer keeps abusing the host while the verdict is waited
+    // for: the flood travels the droppable channel, so a datagram the
+    // loopback drops (F54-X2/X10 measured real loss on this host) is gone for
+    // good, and a wait that sends nothing more can only ever observe a
+    // cut-off that one particular delivery already triggered. One hostile
+    // payload per round keeps the expectation on the session's answer — the
+    // abusive peer is cut off — instead of on which datagrams survived.
+    let mut rounds = 0usize;
+    while rounds < HOSTILE_ROUNDS && !cut_off(&link, hostile_peer) {
+        hostile.inject(CHANNEL_SEQUENCED, &cases[rounds % cases.len()]);
+        link.host_notices.extend(hostile.round(&mut link.host));
+        rounds += 1;
+    }
+
+    let arrived = hostile_traffic(&link.host_notices, hostile_peer);
+    Ok(Attempt {
+        link,
+        hostile,
+        hostile_peer,
+        arrived,
+    })
+}
+
+/// What a missing verdict looks like from both ends of the link.
+///
+/// Reached only when the abusive peer was not cut off, so a passing run pumps
+/// nothing extra. It reports what the host saw before this message was built,
+/// the abusive peer's own transport state, how many connections the host
+/// still holds, and — by letting the honest peer speak — whether the host
+/// hears *anybody*. The last two separate a session that declined to cut the
+/// peer off from a loopback path that carried nothing at all.
+fn diagnose_silence(link: &mut Link, hostile: &RawPeer, hostile_peer: PeerId) -> String {
+    let seen = link.host_notices.len();
+    let reached = hostile_traffic(&link.host_notices[..seen], hostile_peer);
+
+    link.host.drain_work();
+    let mut heard = false;
+    if link
+        .client
+        .submit_edge(FlightCommand::FirePrimary, Tick(1000))
+        .is_ok()
+    {
+        for _ in 0..MAX_ROUNDS {
+            if link.host.queued() > 0 {
+                heard = true;
+                break;
+            }
+            link.round();
+        }
+    }
+    format!(
+        "the host saw {:?}; {}; the host holds {} client(s); the abusive peer's traffic reached the host: {reached}; the honest peer still reaches the host: {heard}",
+        &link.host_notices[..seen],
+        hostile.status(),
+        link.host.connected_clients(),
+    )
 }
 
 // --------------------------------------------------------------- lifecycle --
@@ -1732,6 +1982,7 @@ fn accept_f54_c_a_handshake_answer_that_cannot_be_sent_is_reported_not_swallowed
             LOOPBACK_WINDOW,
         )
         .expect("the client socket binds"),
+        events: Vec::new(),
     };
     let mut reported = false;
     for _ in 0..MAX_ROUNDS {
@@ -2064,55 +2315,74 @@ fn assert_named(reason: &str, label: &str, direction: &str) {
 
 #[test]
 fn accept_f54_c_a_hostile_peer_is_cut_off_without_disturbing_the_others() {
-    let session = SessionAllocator::new()
-        .allocate()
-        .expect("an epoch allocates");
-    let mut link = Link::joined(session);
+    // The verdict is never retried: an attempt in which the host saw the
+    // abusive peer's traffic is reported exactly as it happened. What may be
+    // rebuilt is a fixture whose loopback path carried *nothing* — neither a
+    // handshake nor a single hostile payload — because such a fixture never
+    // gave the session the chance to decide. See [`DEAD_PATH_ATTEMPTS`].
+    let mut last: Option<Attempt> = None;
+    let mut history: Vec<String> = Vec::new();
+    let mut tries = 0usize;
+    while tries < DEAD_PATH_ATTEMPTS {
+        tries += 1;
+        // A fixture holds the loopback lock for as long as it lives, so the
+        // previous one has to go before a new one can bind — keeping a quiet
+        // attempt around while building the next would deadlock on it.
+        last = None;
+        match abusive_peer_attempt() {
+            Ok(attempt) => {
+                let quiet = attempt.quiet();
+                history.push(if quiet {
+                    format!("{tries}: the host saw nothing from the abusive peer")
+                } else {
+                    format!("{tries}: the host answered")
+                });
+                last = Some(attempt);
+                if !quiet {
+                    break;
+                }
+            }
+            Err(reason) => history.push(format!("{tries}: {reason}")),
+        }
+    }
+    let attempts = history.join("; ");
+    let Some(Attempt {
+        mut link,
+        hostile,
+        hostile_peer,
+        arrived: _,
+    }) = last
+    else {
+        panic!("the loopback never carried this fixture: {attempts}");
+    };
     let good_peer = link.client.grant().expect("a grant exists").peer;
-    link.host
-        .gate_mut()
-        .ownership_mut()
-        .bind(good_peer, ActorId { session, serial: 1 })
-        .expect("the host binds an aircraft");
 
-    // A second peer that handshakes and then floods the host with the
-    // malformed and oversized shapes from the corpus.
-    let mut hostile = link.raw_peer(0xC8);
-    let hostile_peer = hostile.handshake(&mut link.host);
-    assert_ne!(hostile_peer, good_peer, "the two peers are distinct");
-
-    let mut sent = 0usize;
-    for case in fuzz::corpus(fuzz::SEEDS[0]) {
-        if case.bytes.len() > 512 {
-            continue; // Small shapes keep the loopback socket honest.
-        }
-        hostile.inject(CHANNEL_SEQUENCED, &case.bytes);
-        sent += 1;
-        if sent.is_multiple_of(16) {
-            link.host_notices.extend(hostile.round(&mut link.host));
-        }
-    }
-    for _ in 0..64 {
-        link.host_notices.extend(hostile.round(&mut link.host));
-        if link.host.members().all(|member| member != hostile_peer) {
-            break;
-        }
-    }
-
-    // The abusive peer is gone; the honest one is untouched.
+    // The abusive peer is gone; the honest one is untouched. When no verdict
+    // ever came, say what both ends of the link can see — including whether
+    // the host still hears the honest peer, which separates a session that
+    // did not cut the peer off from a path that carried nothing at all.
+    let diagnosis = if cut_off(&link, hostile_peer) {
+        String::new()
+    } else {
+        diagnose_silence(&mut link, &hostile, hostile_peer)
+    };
     assert!(
-        link.host.members().all(|member| member != hostile_peer),
-        "the abusive peer was cut off; the host saw {:?}",
-        link.host_notices
+        cut_off(&link, hostile_peer),
+        "the abusive peer was cut off; {diagnosis}; attempts: {attempts}",
+    );
+    let state = format!(
+        "{}, the host holds {} client(s)",
+        hostile.status(),
+        link.host.connected_clients()
     );
     assert!(
         link.host.members().any(|member| member == good_peer),
-        "the honest peer survived; the host saw {:?}",
+        "the honest peer survived; the host saw {:?} ({state})",
         link.host_notices
     );
     assert!(
         link.host_has(|notice| matches!(notice, ServerNotice::CutOff { .. })),
-        "the cut-off is declared, not silent; the host saw {:?}",
+        "the cut-off is declared, not silent; the host saw {:?} ({state})",
         link.host_notices
     );
 
@@ -2435,6 +2705,7 @@ fn accept_f54_c_a_retry_tells_a_returning_client_its_verdict() {
             LOOPBACK_WINDOW,
         )
         .expect("the refused client socket binds"),
+        events: Vec::new(),
     };
     let mut told = false;
     for _ in 0..MAX_ROUNDS {
