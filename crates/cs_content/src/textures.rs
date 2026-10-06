@@ -4508,4 +4508,139 @@ mod tests {
              requests reached the stored entry"
         );
     }
+
+    // --- the T352 finding's two amended bullets (task #705) ------------------
+
+    /// The two sentences task #705 corrects in
+    /// `docs/findings/2026-10-05-t352-texture-archive-selection-rule.md`,
+    /// asserted against this crate's behaviour rather than against the prose:
+    /// since #703 only `TextureCatalog::resolve` folds — wherever a name is
+    /// searched inside an archive — while `texture_lookup_order` folds nothing;
+    /// and the file probe compares exactly, so the archive candidates the walk
+    /// generates are still lower case while a loose candidate carries the
+    /// request's own spelling and a mixed-case loose request is decided by
+    /// that spelling alone.
+    #[test]
+    fn accept_f08_c_stale_fold_only_resolve_folds_and_the_file_probe_is_exact() {
+        // The first amended bullet: the fold belongs to the in-archive search,
+        // so the same request is folded by `resolve` and handed to the loose
+        // probes whole.
+        let tree = mixed_case_tree();
+        let (session, catalog) = mixed_case_catalog(&tree);
+        let loose_listing = TextureFiles::new_with([
+            TextureDirectory::world(
+                "zbd/c1",
+                vec![WORLD_ARCHIVE_FILE.to_owned(), "sky.tif".to_owned()],
+            ),
+            TextureDirectory::global(vec![IMAGE_ARCHIVE_FILE.to_owned()]),
+        ]);
+        for (request, reached) in [("sky", true), ("SKY", false), ("Sky", false)] {
+            assert_eq!(
+                searched_name(&catalog, &session, request),
+                folded_texture_name(request),
+                "{request}: `TextureCatalog::resolve` is the one that folds"
+            );
+            let names: Vec<String> =
+                texture_lookup_order(request, &loose_listing, WORLD_ARCHIVE_FILE)
+                    .iter()
+                    .map(|source| source.file().name().to_owned())
+                    .collect();
+            let mut expected = vec![WORLD_ARCHIVE_FILE.to_owned(), IMAGE_ARCHIVE_FILE.to_owned()];
+            if reached {
+                expected.push("sky.tif".to_owned());
+            }
+            assert_eq!(
+                names, expected,
+                "{request}: `texture_lookup_order` folds nothing, so only `resolve` folds"
+            );
+        }
+
+        // The second amended bullet, archive half: the candidates are generated
+        // lower case and compared exactly, so a tier the listing spells in
+        // another case is not the candidate this crate walks and no archive is
+        // opened — which is as far as this crate's own behaviour decides the
+        // recorded unknown.
+        let tiered = TextureFiles::world_and_global(tier_names(15), Vec::new());
+        let chosen = select_world_archive(
+            &tiered,
+            &WorldTextureLoad::with_setting(
+                RendererMode::Hardware {
+                    total_texture_mib: Some(16),
+                },
+                TextureMemory::MAX,
+            ),
+        );
+        assert_eq!(chosen.opened_name(), Some("rtexture15.zbd"));
+        assert!(
+            chosen
+                .probes()
+                .iter()
+                .all(|probe| probe.file.bytes().all(|byte| !byte.is_ascii_uppercase())),
+            "every archive candidate the walk generates is lower case: {:?}",
+            probed(&chosen)
+        );
+        assert!(tiered.find("rtexture15.zbd").is_some());
+        assert!(
+            tiered.find("RTEXTURE15.ZBD").is_none(),
+            "another case is another name: the comparison is exact"
+        );
+
+        let other_case = TextureFiles::world_and_global(
+            vec!["TEXTURE.ZBD".to_owned(), "RTEXTURE15.ZBD".to_owned()],
+            Vec::new(),
+        );
+        let missed = select_world_archive(
+            &other_case,
+            &WorldTextureLoad::with_setting(
+                RendererMode::Hardware {
+                    total_texture_mib: Some(16),
+                },
+                TextureMemory::MAX,
+            ),
+        );
+        assert_eq!(
+            probed(&missed),
+            vec!["rtexture.zbd".to_owned(), WORLD_ARCHIVE_FILE.to_owned()],
+            "the walk spells its own candidates lower case whatever the listing spells"
+        );
+        assert!(
+            !missed.is_open(),
+            "a listing that spells a tier in another case is not matched"
+        );
+
+        // The second amended bullet, loose half: the candidate is built from
+        // the request, so the same exact comparison decides it in both
+        // directions.
+        for (listing, request, reached) in [
+            ("sky.tif", "SKY", false),
+            ("sky.tif", "sky", true),
+            ("SKY.tif", "SKY", true),
+            ("SKY.tif", "sky", false),
+        ] {
+            let files = TextureFiles::new_with([
+                TextureDirectory::world(
+                    "zbd/c1",
+                    vec![WORLD_ARCHIVE_FILE.to_owned(), listing.to_owned()],
+                ),
+                TextureDirectory::global(Vec::new()),
+            ]);
+            let names: Vec<String> = texture_lookup_order(request, &files, WORLD_ARCHIVE_FILE)
+                .iter()
+                .map(|source| source.file().name().to_owned())
+                .collect();
+            let mut expected = vec![WORLD_ARCHIVE_FILE.to_owned()];
+            if reached {
+                expected.push(format!("{request}.tif"));
+            }
+            assert_eq!(
+                names, expected,
+                "the listing holds {listing}: the request {request} is decided by its own spelling"
+            );
+            assert_eq!(
+                files.find(&format!("{request}.tif")).is_some(),
+                reached,
+                "the same comparison, made directly"
+            );
+        }
+    }
 }
