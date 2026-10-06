@@ -235,16 +235,27 @@ impl ExePathOrigin {
     /// the path answers by checking it.
     ///
     /// The existence check is the one retail fact this module reads by
-    /// itself, and it reads it from the read-only installation.
+    /// itself, and it reads it from the read-only installation. It resolves
+    /// each directory component case-insensitively (see
+    /// [`resolve_container`]): the installation spells them `GOSDATA` and
+    /// `ASSETS` while the original asks for `GOSDATA` and `Assets`, so
+    /// asking a case-sensitive host for the original's spelling alone would
+    /// report "no patch container" for a container that is present — a wrong
+    /// answer about the installation, not a missing file.
     pub fn inspect_registry(exe_path: &Path) -> Self {
-        if Self::patch_container(exe_path).is_file() {
+        if resolve_container(exe_path, "crimptch.rof").is_file() {
             Self::RegistryWithPatch(exe_path.to_path_buf())
         } else {
             Self::RegistryWithoutPatch(exe_path.to_path_buf())
         }
     }
 
-    /// `<EXE Path>\GOSDATA\Assets\crimptch.rof`.
+    /// `<EXE Path>\GOSDATA\Assets\crimptch.rof`, spelled the way the original
+    /// spells it.
+    ///
+    /// This is the path the original *asks for*, so it is what a report names
+    /// as where the original looked. Whether that is the file on disk is a
+    /// host question, which is what [`resolve_container`] answers.
     pub fn patch_container(exe_path: &Path) -> PathBuf {
         let mut path = exe_path.to_path_buf();
         path.push("GOSDATA");
@@ -277,10 +288,17 @@ pub enum PatchRegistration {
 
 impl PatchRegistration {
     /// The outcome for a stated [`ExePathOrigin`].
+    ///
+    /// A registered patch records the container **as the host spells it**,
+    /// because that is the file the chain mounts and reads; `ContainerAbsent`
+    /// records where the *original* looked, which is the literal
+    /// [`ExePathOrigin::patch_container`] path. The two answers name
+    /// different things on purpose: one is what was read, the other is where
+    /// the original would have looked.
     fn of(origin: &ExePathOrigin) -> Self {
         match origin {
             ExePathOrigin::RegistryWithPatch(path) => Self::Registered {
-                container: ExePathOrigin::patch_container(path),
+                container: resolve_container(path, "crimptch.rof"),
             },
             ExePathOrigin::RegistryWithoutPatch(path) => Self::ContainerAbsent {
                 searched: ExePathOrigin::patch_container(path),
@@ -784,12 +802,23 @@ fn found_child(parent: &Path, name: &str) -> PathBuf {
     requested
 }
 
-/// `<UIAssetPath>/Assets/<name>`.
+/// `<exe>/GOSDATA/Assets/<name>`, each directory component resolved as the
+/// host spells it.
+///
+/// The original asks for `GOSDATA` then `Assets`; the installation spells
+/// them `GOSDATA` and `ASSETS`. A case-sensitive host therefore needs the
+/// case-insensitive walk [`found_child`] performs, exactly as `<UIAssetPath>`
+/// already needed it — without it a chain cannot be mounted at all on such a
+/// host, and [`ExePathOrigin::inspect_registry`] would conclude the patch
+/// container is absent when it is present.
+fn resolve_container(exe_path: &Path, name: &str) -> PathBuf {
+    found_child(&found_child(exe_path, "GOSDATA"), "Assets").join(name)
+}
+
+/// `<UIAssetPath>/Assets/<name>`, the `Assets` component resolved as the host
+/// spells it for the same reason as [`resolve_container`].
 fn assets_container(ui_assets: &Path, name: &str) -> PathBuf {
-    let mut path = ui_assets.to_path_buf();
-    path.push("Assets");
-    path.push(name);
-    path
+    found_child(ui_assets, "Assets").join(name)
 }
 
 /// The container label of a GOS container: its installation-relative

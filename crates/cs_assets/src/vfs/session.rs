@@ -365,12 +365,7 @@ impl SessionBuilder {
         let mounted = source::mount_directory(builder, root)?;
         let members = mounted.mount.member_count();
         let mount_id = mounted.mount.id().clone();
-        self.vfs.mount(mounted.mount).map_err(|error| match error {
-            MountError::DuplicateMountId { .. } | MountError::ConflictingGosNameMatch { .. } => {
-                SourceError::Mount(error)
-            }
-            other => SourceError::Mount(other),
-        })?;
+        self.vfs.mount(mounted.mount).map_err(SourceError::Mount)?;
         self.rejected
             .extend(mounted.rejected.into_iter().map(|entry| SessionRejection {
                 mount: mount_id.clone(),

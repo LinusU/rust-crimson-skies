@@ -37,7 +37,7 @@ use cs_types::asset_id::{
 use cs_types::evidence::{ClaimStatus, ContentHash};
 
 use crate::vfs::mount::MountScope;
-use crate::vfs::resolve::{ConflictOrigin, ResolveError, Vfs};
+use crate::vfs::resolve::{ConflictOrigin, LookupOrder, LookupOrderStatus, ResolveError, Vfs};
 
 /// One mounted member that shares its file name with another.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,6 +190,17 @@ pub struct MemberLookup {
     pub context: usize,
     /// What the lookup produced.
     pub outcome: LookupOutcome,
+    /// The order that decides this lookup, and how well it is known.
+    ///
+    /// A collision is grouped by file name across *every* mounted key space,
+    /// so one comparison can hold members the designed precedence order
+    /// competes and members the GOS registration order serves in turn (task
+    /// #686). [`CollisionReport::precedence_status`] cannot describe both, so
+    /// each lookup carries its own: `precedence`/`designed` for an
+    /// installation, world or reader member, `gos_registration`/`inferred` for
+    /// a GOS one. Without it a reader would take a GOS verdict for a product
+    /// of the *designed* order, which is the opposite of what decided it.
+    pub order: LookupOrderStatus,
 }
 
 /// How one collision is resolved across all compared contexts.
@@ -239,9 +250,14 @@ pub struct CollisionReport {
     pub contexts: Vec<ResolveContext>,
     /// One comparison per collision, by file name.
     pub comparisons: Vec<CollisionComparison>,
-    /// How well the precedence order behind these lookups is known. It is
-    /// [`PRECEDENCE_ORDER_STATUS`]: this report compares the VFS with
-    /// itself across contexts, never with measured original behavior.
+    /// How well the **precedence** order behind these lookups is known. It is
+    /// [`PRECEDENCE_ORDER_STATUS`]: this report compares the VFS with itself
+    /// across contexts, never with measured original behavior.
+    ///
+    /// It describes the precedence order only. A comparison in the GOS key
+    /// space is decided by the GOS registration order instead (task #686), and
+    /// each [`MemberLookup`] carries its own deciding order and status; do not
+    /// read a GOS lookup's verdict as a product of this field.
     pub precedence_status: ClaimStatus,
 }
 
@@ -292,6 +308,7 @@ fn compare_one(
                 member: member_index,
                 context: context_index,
                 outcome,
+                order: LookupOrderStatus::of(LookupOrder::for_namespace(&member.namespace)),
             });
         }
     }

@@ -480,6 +480,11 @@ pub struct Vfs {
     /// sources — and the original registers all of them together. It is
     /// `AsciiInsensitive` until a chain states otherwise, because that is
     /// the rule every other legacy lookup here applies.
+    ///
+    /// It applies to the [`GOS_NAMESPACE`] key space **only**; see
+    /// [`Vfs::matching_for`]. A session that also holds `install`, `reader`
+    /// or `world` mounts keeps folding case in those key spaces whatever a
+    /// GOS chain states.
     gos_name_match: GosNameMatch,
 }
 
@@ -554,12 +559,29 @@ impl Vfs {
             .any(|mount| mount.namespace().as_str() == GOS_NAMESPACE)
     }
 
-    /// The member of `mount` that serves `key` under `order`'s matching
-    /// rule.
+    /// The name-matching rule that answers `key`.
     ///
-    /// Every key space folds ASCII case and separators except a chain that
-    /// states [`GosNameMatch::ExactSpelling`], which is the one unmeasured
-    /// rule (#693) and therefore only ever applies where a caller said so.
+    /// Only the [`GOS_NAMESPACE`] key space answers under the stated GOS
+    /// rule. **Every other key space folds ASCII case and separators**
+    /// ([`Mount::member`]), which is spec F04 non-negotiable behavior 1 and
+    /// what `install`, `reader` and `world` mounts have always done.
+    ///
+    /// Scoping matters because [`Vfs::gos_name_match`] is a property of the
+    /// VFS: a session that mounts an installation *and* a GOS chain holds
+    /// both key spaces at once. Without this scope, a chain that states the
+    /// unmeasured [`GosNameMatch::ExactSpelling`] rule (#693) would silently
+    /// stop case folding in the installation's own key space too — a change
+    /// to an unrelated key space that no caller asked for and no trace
+    /// records.
+    fn matching_for(&self, key: &AssetKey) -> GosNameMatch {
+        if key.namespace().as_str() == GOS_NAMESPACE {
+            self.gos_name_match
+        } else {
+            GosNameMatch::AsciiInsensitive
+        }
+    }
+
+    /// The member of `mount` that serves `key` under `matching`.
     fn serving_member<'m>(
         &self,
         mount: &'m Mount,
@@ -585,6 +607,7 @@ impl Vfs {
         key: &AssetKey,
     ) -> Result<ResolvedAsset, ResolveError> {
         let order = LookupOrder::for_namespace(key.namespace());
+        let matching = self.matching_for(key);
         let mut considered: Vec<Considered<'_>> = Vec::new();
         for (index, mount) in self.mounts().enumerate() {
             if mount.namespace() != key.namespace() {
@@ -594,11 +617,7 @@ impl Vfs {
             }
             let outcome = match mount.scope().admit(context) {
                 Err(reason) => AttemptOutcome::Skipped(reason),
-                Ok(())
-                    if self
-                        .serving_member(mount, key, self.gos_name_match)
-                        .is_some() =>
-                {
+                Ok(()) if self.serving_member(mount, key, matching).is_some() => {
                     AttemptOutcome::Candidate
                 }
                 Ok(()) => AttemptOutcome::Miss,
@@ -634,9 +653,7 @@ impl Vfs {
                     _ => {
                         let candidates: Vec<ConflictOrigin> = winners
                             .iter()
-                            .map(|index| {
-                                origin_of(considered[*index].mount, key, self.gos_name_match)
-                            })
+                            .map(|index| origin_of(considered[*index].mount, key, matching))
                             .collect();
                         let trace = trace_of(considered, None, order);
                         return Err(ResolveError::Ambiguous {
@@ -672,7 +689,7 @@ impl Vfs {
 
         let mount = &self.mounts[index];
         let member = self
-            .serving_member(mount, key, self.gos_name_match)
+            .serving_member(mount, key, matching)
             .expect("the selected mount holds the key under the matching rule");
         let span = SourceSpan::new(
             context.installation,
@@ -729,6 +746,7 @@ impl Vfs {
         if resolved.trace.order.order == LookupOrder::GosRegistration {
             return Ok(resolved);
         }
+        let matching = self.matching_for(key);
         let mount = self
             .mounts()
             .find(|mount| *mount.id() == resolved.mount)
@@ -747,7 +765,7 @@ impl Vfs {
             .filter(|attempt| attempt.outcome == AttemptOutcome::Candidate)
             .filter_map(|attempt| self.mounts().find(|other| *other.id() == attempt.mount))
             .filter(|other| other.is_retail() && other.precedence() != PrecedenceClass::Mod)
-            .map(|other| origin_of(other, key, self.gos_name_match))
+            .map(|other| origin_of(other, key, matching))
             .filter(|origin| selected_sha256.is_none() || origin.sha256 != selected_sha256)
             .collect();
         if shadowed.is_empty() {
@@ -755,7 +773,7 @@ impl Vfs {
         }
         Err(ResolveError::UnmeasuredOrder {
             key: Box::new(key.clone()),
-            selected: Box::new(origin_of(mount, key, self.gos_name_match)),
+            selected: Box::new(origin_of(mount, key, matching)),
             shadowed,
             trace: Box::new(resolved.trace),
         })

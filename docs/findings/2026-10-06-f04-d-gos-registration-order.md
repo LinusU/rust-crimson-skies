@@ -122,13 +122,34 @@ under either.
   refuse every GOS answer over a status the order does not depend on. The
   answer is served and reports `inferred`, and raising that needs an original
   run, not this task.
-* **Collisions stay consistent.** The existing F04 collision machinery compares
-  a member under each context through the same `resolve_blocking_unmeasured`
-  the session uses, so a GOS collision is reported as served by the earlier
-  registration (`other_different_bytes`) rather than as blocked. The
-  `accept_f04_d_rof_member_collisions` verdicts for the *installation*
-  namespace are unchanged: those mounts are still decided by precedence and
-  still blocked.
+* **The unmeasured matching rule is scoped to the `gos` key space.** `GosNameMatch`
+  is a property of the VFS, because `MetaOpenFile` is the one lookup that walks
+  every registered source — but it applies **only** to keys of the `gos`
+  namespace. A session that also holds `install`, `reader` or `world` mounts
+  keeps folding ASCII case in those key spaces (spec F04 non-negotiable
+  behavior 1) whatever a GOS chain states, so an unmeasured rule for one key
+  space cannot quietly change another. `Vfs::matching_for` is where that scope
+  lives.
+* **Container paths resolve as the host spells them.** The original asks for
+  `GOSDATA` then `Assets`; the installation spells them `GOSDATA` and `ASSETS`.
+  Both components are therefore resolved case-insensitively, the way
+  `<UIAssetPath>` already had to be. Without that a case-sensitive host cannot
+  mount a chain at all, and `ExePathOrigin::inspect_registry` would report "no
+  patch container" for a container that is present — a wrong answer about the
+  installation rather than a missing file. `ExePathOrigin::patch_container`
+  still returns the *original's* spelling, because that is the path the original
+  asks for and what a report should name as where it looked.
+* **Collisions stay consistent, and name the order that decided them.** The
+  existing F04 collision machinery compares a member under each context through
+  the same `resolve_blocking_unmeasured` the session uses, so a GOS collision is
+  reported as served by the earlier registration (`other_different_bytes`)
+  rather than as blocked. Because a collision is grouped by file name across
+  *every* key space, each `MemberLookup` now carries the order and status that
+  decided **it**: the report's own `precedence_status` can only describe the
+  precedence order, and a reader must not take a GOS verdict for a product of
+  the designed one. The `accept_f04_d_rof_member_collisions` verdicts for the
+  *installation* namespace are unchanged: those mounts are still decided by
+  precedence and still blocked.
 * **A container member is read through the container reader.** A ROF `Mount`
   indexes its members' locations and digests but has no host backing, so
   `ContentSession::read_all` refuses it with `ReadError::NoBacking`;
@@ -147,11 +168,12 @@ under either.
 ## Test
 
 `crates/cs_assets/tests/accept_f04_d_gos_registration_order.rs`, prefix
-`accept_f04_d_gos_registration_order_`. Ten synthetic tests pin the four-step
+`accept_f04_d_gos_registration_order_`. Eleven synthetic tests pin the four-step
 order, both registry-present cases and both absent ones, the shadowed
 candidate in the trace, steps 3 before 4, an unregistered step 4, the two name
-matching rules and their disagreement, the isolation of the `gos` namespace
-from `install`, the collision report's verdict for a GOS collision, and a
+matching rules and their disagreement, that the matching rule does not leak out
+of the `gos` key space, the isolation of the `gos` namespace from `install`,
+the collision report's verdict and deciding order for a GOS collision, and a
 missing `crimson.rof` naming its step. Two retail tests
 (`#[ignore = "requires CS_GAME_DIR"]`) pin section B's measurements and read
 the member each registry case chose.

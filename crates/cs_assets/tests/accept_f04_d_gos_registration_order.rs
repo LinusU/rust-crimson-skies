@@ -47,11 +47,13 @@ use cs_assets::install::{self, content_fingerprint, fingerprint, sha256};
 use cs_assets::vfs::{
     AttemptOutcome, CURRENT_DIRECTORY_MOUNT_ID, CollisionReport, ContentSession, ExePathOrigin,
     GOS_NAMESPACE, GOS_ORDER_STATUS, GosChain, GosInstall, GosNameMatch, GosSource, LOOSE_MOUNT_ID,
-    LookupOrder, LookupOrderStatus, MAIN_MOUNT_ID, PATCH_MOUNT_ID, ResolveError, SessionBuilder,
-    gos_key,
+    LookupOrder, LookupOrderStatus, MAIN_MOUNT_ID, MountBuilder, PATCH_MOUNT_ID, ResolveError,
+    SessionBuilder, gos_key,
 };
 use cs_formats::{DIRECTORY_HEADER_BYTES, FLAG_COMPRESSED, FLAG_DIRECTORY, RECORD_BYTES};
-use cs_types::asset_id::{AssetKey, PrecedenceClass, ResolveContext};
+use cs_types::asset_id::{
+    AssetKey, MountId, MountNamespace, PRECEDENCE_ORDER_STATUS, PrecedenceClass, ResolveContext,
+};
 use cs_types::evidence::{ClaimStatus, ContentHash};
 
 /// The acceptance prefix of this task.
@@ -903,6 +905,104 @@ fn accept_f04_d_gos_registration_order_leaves_other_namespaces_on_precedence() {
     );
 }
 
+/// The GOS name-matching rule is scoped to the GOS key space, so stating the
+/// unmeasured exact-spelling rule for a GOS chain changes nothing about the
+/// `install` key space that shares the VFS.
+///
+/// Two things are pinned, because both were wrong when the rule was a VFS-wide
+/// flag applied to every key: an `install` key still finds a member whose
+/// spelling differs only in case (spec F04 non-negotiable behavior 1), and the
+/// same patch/shared pair mounted in `install` is still **blocked** as decided
+/// by the designed order rather than served by registration. A VFS that holds
+/// both key spaces at once is the normal shape of a real session, so the
+/// regression a VFS-wide flag causes is not hypothetical.
+#[test]
+fn accept_f04_d_gos_registration_order_name_rule_does_not_leak_into_install() {
+    let install = Installation::new(
+        "t686-scope",
+        &nested_container(
+            "ASSETS",
+            "SCRIPTS",
+            &[Entry::plain("AIRFRAME.SCRIPT", b"patched")],
+        ),
+        &nested_container(
+            "ASSETS",
+            "SCRIPTS",
+            &[Entry::plain("AIRFRAME.SCRIPT", b"main")],
+        ),
+        &[],
+    );
+    let request = install
+        .with_registry()
+        .with_name_match(GosNameMatch::ExactSpelling);
+
+    // Two `install`-namespace retail mounts holding one key with different
+    // bytes, so a precedence answer has something to be unmeasured about.
+    let patch_tree = TempTree::new("t686-scope-patch");
+    patch_tree.write("hud/alert.tga", b"the patch's copy");
+    let shared_tree = TempTree::new("t686-scope-shared");
+    shared_tree.write("hud/alert.tga", b"the shared copy");
+
+    let mut builder = SessionBuilder::new(install_context(&request));
+    for (id, class, root) in [
+        ("install-patch", PrecedenceClass::Patch, patch_tree.root()),
+        (
+            "install-shared",
+            PrecedenceClass::Shared,
+            shared_tree.root(),
+        ),
+    ] {
+        builder
+            .mount_directory(
+                MountBuilder::new(
+                    MountId::new(id).expect("a valid mount label"),
+                    MountNamespace::new("install").expect("a valid namespace label"),
+                    class,
+                    id,
+                )
+                .retail(),
+                root,
+            )
+            .expect("the install mounts join");
+    }
+    let chain = builder
+        .mount_gos_chain(&request)
+        .expect("the GOS chain mounts into the same VFS");
+    let session = builder.open();
+
+    // The GOS chain really did state the rule, so this is not a vacuous test.
+    assert_eq!(
+        chain.name_match(),
+        GosNameMatch::ExactSpelling,
+        "the chain's rule is the one under test"
+    );
+
+    // The install key space still folds ASCII case: `HUD/ALERT.TGA` finds the
+    // member stored as `hud/alert.tga`.
+    let folded = AssetKey::from_spelling("install", "HUD/ALERT.TGA", "default").expect("a key");
+    let blocked = session.resolve(&folded);
+    let Err(ResolveError::UnmeasuredOrder {
+        selected, trace, ..
+    }) = blocked
+    else {
+        panic!(
+            "an install conflict decided by the designed order must still block, got {blocked:?}"
+        )
+    };
+    assert_eq!(
+        selected.member_spelling, "hud/alert.tga",
+        "the install key space still folds case to find its member"
+    );
+    assert_eq!(
+        trace.order,
+        LookupOrderStatus {
+            order: LookupOrder::Precedence,
+            status: PRECEDENCE_ORDER_STATUS,
+        },
+        "and the install key space is still decided by precedence, not registration"
+    );
+}
+
 /// The ROF member collision report stays consistent with the order it now
 /// implements: the patch-over-main pair is a collision whose verdict follows
 /// the GOS lookup (which serves the patch) rather than the old
@@ -966,6 +1066,20 @@ fn accept_f04_d_gos_registration_order_member_collisions_follow_the_gos_order() 
             .iter()
             .all(|lookup| lookup.outcome.label() != "blocked_unmeasured_order"),
         "a GOS collision is not blocked: {:?}",
+        airframe.lookups
+    );
+    // The report names, per lookup, which order decided it: the report's own
+    // `precedence_status` field can only describe the precedence order, and a
+    // reader must not take this verdict for a product of the designed one.
+    assert!(
+        airframe.lookups.iter().all(|lookup| {
+            lookup.order
+                == LookupOrderStatus {
+                    order: LookupOrder::GosRegistration,
+                    status: GOS_ORDER_STATUS,
+                }
+        }),
+        "every GOS lookup names the registration order: {:?}",
         airframe.lookups
     );
 
@@ -1090,6 +1204,28 @@ fn main_members(chain: &Chain) -> BTreeMap<String, (String, u64, ContentHash)> {
     members
 }
 
+/// Every member of the loose `<UIAssetPath>` directory a chain registered,
+/// keyed by its source-relative logical path, as the production mount indexes
+/// it. Shared with the evidence harness so the report's key-space figure and
+/// the acceptance test's union come from one implementation.
+fn loose_members(chain: &Chain) -> BTreeSet<String> {
+    let step = chain
+        .chain
+        .step_of(GosSource::LooseUiAssets)
+        .expect("the loose directory is registered");
+    chain
+        .session
+        .mounts()
+        .find(|mount| mount.id() == &step.mount)
+        .map(|mount| {
+            mount
+                .members()
+                .map(|(_, member)| member.spelling().logical_key())
+                .collect()
+        })
+        .expect("the loose directory is registered")
+}
+
 /// On the original installation: the member sets the order is computed over,
 /// and the answers the order then implies.
 ///
@@ -1125,6 +1261,15 @@ fn accept_f04_d_gos_registration_order_retail_order_over_the_measured_members() 
             .members,
         846,
         "crimson.rof holds 846 members, installation {install_sha256}"
+    );
+    assert_eq!(
+        registered
+            .chain
+            .step_of(GosSource::LooseUiAssets)
+            .expect("the loose directory is registered")
+            .members,
+        18,
+        "the loose GOSDATA tree holds 18 files, installation {install_sha256}"
     );
     assert_eq!(
         registered.chain.order(),
@@ -1298,21 +1443,7 @@ fn accept_f04_d_gos_registration_order_retail_order_over_the_measured_members() 
     // it, and the whole key space of the chain is the union of its members
     // and the loose files' — so the order is exercised over every member,
     // not only the two named cases.
-    let loose_step = registered
-        .chain
-        .step_of(GosSource::LooseUiAssets)
-        .expect("the loose directory is registered");
-    let loose: BTreeSet<String> = registered
-        .session
-        .mounts()
-        .find(|mount| mount.id() == &loose_step.mount)
-        .map(|mount| {
-            mount
-                .members()
-                .map(|(_, member)| member.spelling().logical_key())
-                .collect()
-        })
-        .expect("the loose directory is registered");
+    let loose = loose_members(&registered);
 
     let mut union: BTreeSet<String> = members.keys().cloned().collect();
     union.extend(loose.iter().cloned());
@@ -1427,8 +1558,16 @@ fn accept_f04_d_gos_registration_order_retail_reads_the_patch_the_order_chose() 
 ///    ```
 /// 3. ```sh
 ///    python3 tools/validate_evidence.py private/evidence/T686/acceptance.json \
-///      --artifact-root private/evidence/T686 --require-pass
+///      --artifact-root private/evidence/T686
 ///    ```
+///    **Without** `--require-pass`: that flag rejects any report carrying an
+///    unresolved issue, and this report's `unknowns` are the task's own
+///    pinned limitations (`MetaOpenFile`'s case rule, the registry key, and
+///    the order's code-derived provenance), not failed assertions. Deleting
+///    them to satisfy the flag would state that this task knows things it does
+///    not; `docs/contracts/CLI-EVIDENCE.md` requires an unresolved issue to
+///    stay recorded. The acceptance run itself is still green and that is
+///    checked in the report's `tests` block.
 /// 4. Commit a copy of `acceptance.json` as `docs/findings/evidence/T686.json`.
 ///
 /// Every field is derived from real inputs: the recorded log, production
@@ -1658,6 +1797,15 @@ fn registration_order_json(candidate_tree: &str, retail: &Retail) -> String {
     };
 
     let members = main_members(&retail.registered);
+    // The chain's key space is the union of its sources' keys, computed from
+    // the mounted members rather than asserted: a number typed in here would
+    // be a claim about the installation that nothing in this harness measured.
+    let loose = loose_members(&retail.registered);
+    let chain_keys = {
+        let mut union: BTreeSet<&str> = members.keys().map(String::as_str).collect();
+        union.extend(loose.iter().map(String::as_str));
+        union.len()
+    };
     let mut keys: BTreeMap<&str, (String, u64, String)> = BTreeMap::new();
     for key in [
         "assets/scripts/airframe.script",
@@ -1700,7 +1848,7 @@ fn registration_order_json(candidate_tree: &str, retail: &Retail) -> String {
         jstr(&iso_utc_now()),
         jstr(&retail.install_sha256),
         members.len(),
-        members.len() + 16,
+        chain_keys,
         members_json.join(",\n  "),
         case(&retail.registered),
         case(&retail.without_registry),
