@@ -24,7 +24,7 @@
 //! | end | what it is |
 //! | --- | --- |
 //! | producer | [`AnimationLog`](crate::animation::AnimationLog): the fixed-tick playback publishes every marker crossing into the log and nothing reads it |
-//! | hand-off | [`MissionMarkerConsumer::drain`]: takes the whole published batch through [`AnimationLog::drain`](crate::animation::AnimationLog::drain), the seam F20-C named |
+//! | hand-off | [`MissionMarkerConsumer::drain`]: takes the marker records through [`AnimationLog::take_markers`](crate::animation::AnimationLog::take_markers) and leaves the other kinds for their consumers |
 //! | binding | [`MissionMarkerBindings`]: the mission host's **declared** cue → mission-signal table, supplied by the caller |
 //! | consumer | [`step_mission_with_markers`]: raises the delivered signals into a real [`ObjectiveSession`] step, where the program's own declared rules decide what a signal means |
 //! | trace | [`MarkerDelivery`]: every marker applied, every refusal named, every presentation cue counted and not applied |
@@ -80,7 +80,7 @@
 //!
 //! # A refused tick hands its batch back
 //!
-//! [`step_mission_with_markers`] drains the log first and steps the objective
+//! [`step_mission_with_markers`] takes the markers first and steps the objective
 //! session second, because the log is drained whether or not the step is
 //! accepted. [`ObjectiveSession::step`] refuses a non-advancing tick and a
 //! refused movement *after* the input is built, so a refusal loses nothing and
@@ -539,24 +539,16 @@ pub enum MarkerAdmission {
 /// [`MissionMarkerConsumer::applied`].
 ///
 /// The playback's log holds more than markers — blocked *track* references and
-/// attachment transitions are in it too — so the delivery counts those rather
-/// than letting them disappear without a word
-/// ([`Self::tracks_blocked`], [`Self::attachments`]). Be clear about what that
-/// count is: this layer is the log's **only** drainer today, so those records
-/// leave the log with the batch and the count is the whole of what survives
-/// here. They are the render and collision consumers' diagnostics, this layer
-/// neither applies nor resolves them, and a mission reading a pass can at least
-/// see that the batch carried them. A second consumer of the same log will need
-/// a partial drain on `AnimationLog` itself, which is outside this module; the
-/// hazard is recorded in
-/// `docs/findings/2026-10-05-f20-c-mission-marker-consumer.md`.
+/// attachment transitions are in it too — but they belong to the render and
+/// collision consumers, so this layer takes only the marker records
+/// ([`AnimationLog::take_markers`](crate::animation::AnimationLog::take_markers))
+/// and leaves those in the log. The decision is recorded in
+/// `docs/findings/2026-10-06-f20-c-animation-log-multi-consumer-seam.md`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MarkerDelivery {
     raised: Vec<RaisedMarker>,
     refusals: Vec<MarkerRefusal>,
     presentation: usize,
-    tracks_blocked: usize,
-    attachments: usize,
     drained: usize,
 }
 
@@ -588,24 +580,9 @@ impl MarkerDelivery {
         self.presentation
     }
 
-    /// How many track applications the batch reported blocked by an unknown
-    /// reference, and this layer neither applied nor resolved.
-    #[must_use]
-    pub const fn tracks_blocked(&self) -> usize {
-        self.tracks_blocked
-    }
-
-    /// How many attachment transitions the batch carried, and this layer
-    /// neither applied nor resolved.
-    #[must_use]
-    pub const fn attachments(&self) -> usize {
-        self.attachments
-    }
-
-    /// How many entries the drained batch held in total, whatever kind: the
-    /// raised and refused markers, the ignored presentation cues, the blocked
-    /// effects, the held advances, the blocked tracks and the attachment
-    /// records.
+    /// How many marker records the taken batch held in total: the raised and
+    /// refused markers, the ignored presentation cues, the blocked effects and
+    /// the held advances.
     #[must_use]
     pub const fn drained(&self) -> usize {
         self.drained
@@ -781,9 +758,9 @@ impl MissionMarkerConsumer {
 
     /// Takes everything the playback published and applies it to this layer.
     ///
-    /// The whole batch is handed over through
-    /// [`AnimationLog::drain`](crate::animation::AnimationLog::drain), so a
-    /// long session accumulates nothing: a world with no
+    /// The marker records are handed over through
+    /// [`AnimationLog::take_markers`](crate::animation::AnimationLog::take_markers),
+    /// so a long session accumulates no markers: a world with no
     /// [`AnimationLog`](crate::animation::AnimationLog) resource drains
     /// nothing and reports nothing, which is the same "no producer, no
     /// consumer" rule the rest of the playback follows.
@@ -793,23 +770,15 @@ impl MissionMarkerConsumer {
     /// it expected was gated by an unknown — or that a rewind published nothing
     /// at all — rather than finding a silence where the marker should have been.
     ///
-    /// The log holds more than markers: the blocked **track** references and the
-    /// attachment transitions the render and collision consumers published are
-    /// counted here ([`MarkerDelivery::tracks_blocked`],
-    /// [`MarkerDelivery::attachments`]) rather than dropped without a word. This
-    /// layer is the log's only drainer, so those records leave the log with the
-    /// batch and the count is all that is left of them — see
-    /// [`MarkerDelivery`]'s own note on what a second consumer of this log
-    /// would need.
+    /// The blocked track references and attachment transitions stay in the log
+    /// for the consumers that own them; this layer neither reads nor counts them.
     pub fn drain(&mut self, world: &mut World) -> MarkerDelivery {
         let batch = match world.get_resource_mut::<AnimationLog>() {
-            Some(mut log) => log.drain(),
+            Some(mut log) => log.take_markers(),
             None => AnimationLog::new(),
         };
         let mut delivery = MarkerDelivery {
             drained: batch.len(),
-            tracks_blocked: batch.blocked_tracks().len(),
-            attachments: batch.attachments().len(),
             ..MarkerDelivery::default()
         };
         for blocked in batch.blocked_markers() {

@@ -19,8 +19,8 @@
 //!   installed through its `configure` seam, and the production spawn entry
 //!   [`bind_animated_node`](cs_app::animation::bind_animated_node), so the
 //!   marker is produced by the wired path rather than injected;
-//! * [`MissionMarkerConsumer`], which takes the batch through
-//!   [`AnimationLog::drain`](cs_app::animation::AnimationLog::drain), and
+//! * [`MissionMarkerConsumer`], which takes the marker records through
+//!   [`AnimationLog::take_markers`](cs_app::animation::AnimationLog::take_markers), and
 //!   [`step_mission_with_markers`], which raises the delivered signals into a
 //!   real [`ObjectiveSession`](cs_app::objectives::ObjectiveSession) launched
 //!   from the F39-C lowering of
@@ -57,7 +57,7 @@ use cs_app::scene::{NodeVisualTransform, SceneGeneration, SceneNodeBinding};
 use cs_content::animation::{
     AnimationChannel, AnimationClip, EventMarker, Interpolation, LoopMode, SYNTHETIC_DOOR_MARKER,
     SYNTHETIC_DOOR_OPEN_TICK, SYNTHETIC_PROPELLER_DURATION, SYNTHETIC_PROPELLER_GAMEPLAY_MARKER,
-    SYNTHETIC_PROPELLER_GAMEPLAY_TICK, SYNTHETIC_PROPELLER_NODE,
+    MaterialChannel, MaterialKey, SYNTHETIC_PROPELLER_GAMEPLAY_TICK, SYNTHETIC_PROPELLER_NODE,
     SYNTHETIC_PROPELLER_PRESENTATION_MARKER, TransformChannel, TransformKey, TransformSample,
     declared_synthetic_door_clip, declared_synthetic_propeller_clip,
 };
@@ -388,11 +388,6 @@ fn accept_f20_c_marker_consumer_a_fired_gameplay_marker_drives_the_mission_exact
         1,
         "the batch held exactly the one fired marker: {:?}",
         step.markers
-    );
-    assert_eq!(
-        (step.markers.tracks_blocked(), step.markers.attachments()),
-        (0, 0),
-        "the render and collision consumers' records are counted, not dropped without a word"
     );
     assert!(
         step.markers.refusals().is_empty(),
@@ -1364,4 +1359,82 @@ fn crossed_door(
         "the fixture crossed exactly one gameplay marker"
     );
     (scene, fired)
+}
+
+// ------------------------------------------- a second consumer of the same log ---
+
+/// A clip whose material track names an unknown reference: the playback blocks
+/// it once and publishes a `BlockedTrack`, which is the render consumer's.
+fn declared_unknown_material_clip() -> AnimationClip {
+    AnimationClip::try_new(
+        content_id(ContentKind::AnimationTrack, "synthetic.unknown_material"),
+        Origin::SyntheticFixture,
+        8,
+        LoopMode::Once,
+        vec![AnimationChannel::Material(MaterialChannel {
+            target: cs_content::scene::SceneNodeId::from_content_id(node("synthetic.panel"))
+                .expect("the fixture key names a scene node"),
+            keys: vec![MaterialKey {
+                tick: 1,
+                material: Resolved::unknown(
+                    ClaimId::new("f20c.panel-material").expect("a valid claim id"),
+                    "the material slot is undecoded",
+                )
+                .expect("a nonempty reason"),
+            }],
+        })],
+        Vec::new(),
+        Provenance::designed(ClaimId::new("f20c.log-seam").expect("a valid claim id")),
+    )
+    .expect("the declared clip is valid")
+}
+
+/// #671: the mission consumer takes the marker records and only those, so a
+/// render consumer draining the same log on the same tick still finds its
+/// blocked tracks, and nothing is published again by either one.
+#[test]
+fn accept_f20_c_marker_consumer_leaves_the_other_record_kinds_for_their_consumers() {
+    let generation = SceneGeneration::default().next();
+    let (mut scene, _) = crossed_door(61, generation);
+    {
+        let world = scene.world_mut().expect("the session is active");
+        bind_clip(
+            world,
+            &declared_unknown_material_clip(),
+            "synthetic.panel",
+            instance(2),
+            generation,
+            Tick(0),
+        );
+    }
+    advance_animation(
+        scene.world_mut().expect("the session is active"),
+        Tick(SYNTHETIC_DOOR_OPEN_TICK + 21),
+    );
+    let before = scene
+        .world()
+        .expect("the session is active")
+        .resource::<AnimationLog>()
+        .blocked_tracks()
+        .to_vec();
+    assert_eq!(before.len(), 1, "the unknown material is blocked once");
+
+    let mut consumer = MissionMarkerConsumer::new(session(61), bound_cues(REACHED_WRECK));
+    let delivery = consumer.drain(scene.world_mut().expect("the session is active"));
+    assert_eq!(delivery.raised().len(), 1, "the marker reached the mission");
+    assert_eq!(delivery.drained(), 1, "the mission took the marker record only");
+
+    // The second consumer, later on the same tick, still has its records.
+    let world = scene.world_mut().expect("the session is active");
+    let log = world.resource::<AnimationLog>();
+    assert!(log.events().is_empty(), "the markers were the mission's");
+    assert_eq!(log.blocked_tracks(), before.as_slice());
+    let taken = world.resource_mut::<AnimationLog>().take_blocked_tracks();
+    assert_eq!(taken, before, "the render consumer got what it owns");
+    assert!(world.resource::<AnimationLog>().is_empty());
+
+    // Neither take publishes anything: later ticks add no record, so nothing is
+    // recorded once per tick.
+    advance_animation(world, Tick(SYNTHETIC_DOOR_OPEN_TICK + 22));
+    assert!(world.resource::<AnimationLog>().is_empty());
 }

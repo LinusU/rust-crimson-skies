@@ -267,8 +267,13 @@ pub enum AnimationRefusal {
 /// and a release before a despawn caused. It grows with the number of
 /// *published entries* — never one per tick, and never one per teardown pass
 /// that changed nothing — and is meant to be drained by the layer that
-/// consumes them (the mission marker consumer is F20-C's wiring), so
-/// [`Self::drain`] is how that consumer takes its batch.
+/// consumes them. The kinds have different owners — the mission marker
+/// consumer takes the marker records ([`Self::take_markers`]), the render
+/// consumer the blocked tracks ([`Self::take_blocked_tracks`]) and the
+/// collision/attachment consumer the attachment records
+/// ([`Self::take_attachments`]) — so each takes its own kind and leaves the
+/// others for their owner. [`Self::drain`] is the total take, for a host that
+/// is the only consumer.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct AnimationLog {
     events: Vec<AnimationEvent>,
@@ -339,6 +344,35 @@ impl AnimationLog {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Takes the marker records — fired events, effect-blocked crossings and
+    /// refused advances — leaving the blocked tracks and the attachment records
+    /// in place for their own consumers.
+    ///
+    /// The returned log holds only those three kinds.
+    #[must_use]
+    pub fn take_markers(&mut self) -> Self {
+        Self {
+            events: std::mem::take(&mut self.events),
+            blocked_markers: std::mem::take(&mut self.blocked_markers),
+            refused: std::mem::take(&mut self.refused),
+            ..Self::default()
+        }
+    }
+
+    /// Takes the tracks blocked by an unknown reference (the render consumer's
+    /// diagnostics), leaving every other kind in place.
+    #[must_use]
+    pub fn take_blocked_tracks(&mut self) -> Vec<BlockedTrack> {
+        std::mem::take(&mut self.blocked_tracks)
+    }
+
+    /// Takes the attachment records (the collision/attachment consumer's
+    /// diagnostics), leaving every other kind in place.
+    #[must_use]
+    pub fn take_attachments(&mut self) -> Vec<AttachmentRecord> {
+        std::mem::take(&mut self.attachments)
     }
 
     /// Takes everything published so far, leaving the log empty.
