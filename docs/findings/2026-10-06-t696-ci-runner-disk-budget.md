@@ -21,11 +21,14 @@ margin, with the before/after numbers recorded. Both are in the logs:
 | 37386273061 | `73f84b1c` | 2026-10-05 23:03 | 105 GB | **450 MB** (100% used) |
 | 37394319899 | `385160c2` | 2026-10-06 00:29 | 124 GB | **20 GB** (87% used) |
 
-Both `df` lines are verbatim from the logs:
+Both `df` lines are verbatim from the logs (the first run's two steps are
+unnamed in its own log, so only the numbers are quoted for it):
 
 ```
-37386273061  rust  Disk after tests  /dev/root  145G  144G  450M 100% /
-37394319899  rust  Disk after tests  /dev/root  145G  125G   20G  87% /
+37386273061  rust  <unnamed>  /dev/root  145G   41G  105G  28% /   (before cargo test)
+37386273061  rust  <unnamed>  /dev/root  145G  144G  450M 100% /   (after cargo test)
+37394319899  rust  Free runner disk space  /dev/root  145G   21G  124G  15% /
+37394319899  rust  Disk after tests        /dev/root  145G  125G   20G  87% /
 ```
 
 `385160c2` ("Free the runner's remaining unused toolchains before the CI
@@ -57,10 +60,11 @@ Cache Size: ~1082 MB (1135019483 B)
 `cache-all-crates: false` is already the default. The write is the build.
 
 The build is dominated by the test binaries. The plan is countable from the
-tree: **376 test binaries** (366 integration test files plus 10 enabled unit
-test harnesses; `tools/cs_xtask` sets `test = false` on both of its targets per
-task #610, so they are out). Measured locally with `cs_xtask report-test-disk`
-(this task's tool, see below), against this workspace's own `target/`:
+tree: **376 test binaries** before this task's own suite (365 integration test
+files plus 11 enabled unit test harnesses; `tools/cs_xtask` sets
+`test = false` on both of its targets per task #610, so they are out). Measured
+locally with `cs_xtask report-test-disk` (this task's tool, see below), against
+this workspace's own `target/`:
 
 | member | planned | measured bytes |
 |---|---|---|
@@ -84,7 +88,8 @@ dependency rlib, which is most of the rest.)
 
 **138 of the 377 are engine-linked**, and the split is unambiguous on the
 measured tree: the engine-linked binaries are 104.8 MB to 233.3 MB, everything
-else is 1.1 MB to 20.5 MB, and nothing lands between 20.5 MB and 104.8 MB. So:
+else is 1.0 MB to 20.8 MB (the largest of the small group is `cs_content`'s own
+unit-test harness), and nothing lands between 20.8 MB and 104.8 MB. So:
 
 * **one more `cs_app` test file costs about 107 MB** locally (the median of the
   engine-linked group; the largest is `crates/cs_app/tests/world/main.rs` at
@@ -132,7 +137,7 @@ $ cargo run -q -p cs_xtask -- report-test-disk
 report-test-disk: crates/cs_app       138 planned,  138 measured,  15742281488 measured
 …
 report-test-disk: 377 test binaries in the plan (366 integration, 11 unit harnesses); 377 measured here
-report-test-disk: 138 engine-linked (>= 50000000 bytes) and 239 smaller; 16888970360 measured in total
+report-test-disk: 138 engine-linked (>= 50000000 bytes) and 239 smaller; 16889287368 measured in total (the largest binary of each source; a bin target cargo links twice is counted once)
 report-test-disk: one more engine-linked test file costs about 107113240 bytes (median); the largest is crates/cs_app/tests/world/main.rs at 233258952 bytes
 report-test-disk: doc-test binaries are not counted (rustdoc links one per doc code block), so the measured total is a floor
 ```
@@ -158,10 +163,48 @@ Design points that are load-bearing, each pinned by an `accept_t696_` test in
   prints that the marginal cost is "unknown rather than zero" and exits 0: not
   built here is not a finding about the workspace, and the report is not a gate.
 
+## Cross-checks run over this finding (review pass, 2026-10-06)
+
+Everything above was re-derived from the same commits by someone reading the
+logs and the tool's output rather than the numbers above (the review pass ran
+under the same agent identity as the implementation, so this is a second pass,
+not an independent one).
+
+* The two acceptance numbers, read again from the runs: 450 MB after tests on
+  `73f84b1c` (run 37386273061) and 20 GB on `385160c2` (run 37394319899, green),
+  plus 6.8 GB / 6.1 GB / 3.4 GB / 1.9 GB for the four earlier sampled runs. All
+  reproduce exactly.
+* The plan was checked against **cargo's own view** rather than against the
+  tool: `cargo metadata --no-deps --locked` reports **366** targets of kind
+  `test` across the ten members, which is exactly the plan's 366 integration
+  targets; adding the 11 enabled unit-test harnesses gives the 377 the tool
+  prints. Per member it agrees everywhere (`cs_app` 136+2, `cs_content` 68+1,
+  `cs_formats` 26+1, `cs_net` 9+1, `cs_script` 11+1, `cs_sim` 48+1,
+  `cs_types` 5+1, `cs_inspect` 23+2, `cs_xtask` 14+0).
+* The size split was re-measured with an independent script that reads cargo's
+  `.d` sidecars itself and does not call the tool: 139 attributed sources (the
+  plan's 377 plus two it correctly refuses), 104.8 MB–233.3 MB engine-linked,
+  1.0 MB–20.8 MB small, median 107,113,240, total 17.02 GB. The two extra
+  attributions are `tools/cs_xtask/src/main.rs` (the `cs_xtask` binary itself,
+  which `test = false` keeps out of the plan) and
+  `crates/cs_app/tests/accept_f29_c_propulsion_gate.rs`, whose `.d` and binary
+  are still in the local target directory although the test file is gone. A
+  stale artifact for a deleted file is not part of the plan, which is right:
+  `cargo test` links nothing for it.
+* Two `accept_t696_` tests failed under a member-scoped
+  `cargo test -p cs_xtask` in a fresh per-worktree target directory (task
+  #383), because they demanded a workspace-wide build's coverage and its
+  marginal cost. Both now say what holds under either invocation: whatever the
+  directory holds is measured and non-zero, a target it holds nothing for stays
+  unknown, full coverage is asserted when and only when every member has a
+  binary, and the unknown-marginal-cost path is now asserted against a
+  directory that provably holds nothing, which is deterministic. Both mutants
+  were confirmed to fail the fixed suite.
+
 ## What is left to the owner
 
 `.github/` stays protected and untouched by this task. If the margin keeps
-shrinking — the six main runs sampled on 2026-10-05 went 6.8 GB (08:32Z), 6.1 GB
+shrinking — the five main runs sampled on 2026-10-05 went 6.8 GB (08:32Z), 6.1 GB
 (17:14Z), 3.4 GB (19:00Z), 1.9 GB (21:20Z), 450 MB (23:03Z) — the options that
 are *not* the workspace's to take, in the order I would measure them:
 
@@ -191,7 +234,18 @@ cargo test --workspace --locked
 cargo test --workspace --locked -- accept_t696_ --include-ignored
 ```
 
-Exit codes are in the handover summary on task #696.
+The review pass added, on top of the four checks:
+
+```
+gh run view <run id> --log | grep '/dev/root 145G'   # the acceptance numbers, re-read
+cargo metadata --no-deps --locked --format-version 1 # cargo's own test-target list
+cargo run -q --locked -p cs_xtask -- report-test-disk # the report's output
+python3 <independent .d-sidecar measurement>          # the size split, without the tool
+CARGO_TARGET_DIR=target/review-t696-partial \
+  cargo test -p cs_xtask --test accept_t696_test_disk_footprint --locked
+```
+
+Exit codes are in the handover and the review notes on task #696.
 
 ## Related findings
 

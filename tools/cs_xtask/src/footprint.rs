@@ -49,8 +49,10 @@ use crate::transient;
 ///
 /// Measured on this workspace (macOS aarch64, `dev` profile, full DWARF): a
 /// test binary that links the Bevy graph is 104.8 MB to 233.3 MB, and one that
-/// does not is 1.1 MB to 9.0 MB. Nothing lands between those groups, so
-/// [`ENGINE_LINKED_FLOOR`] separates them on the measured tree.
+/// does not is 1.0 MB to 20.8 MB (the largest of those is `cs_content`'s unit
+/// harness). Nothing lands between those groups, so [`ENGINE_LINKED_FLOOR`]
+/// separates them on the measured tree, and both group sizes are printed so a
+/// tree that stops fitting this pattern shows it.
 pub const ENGINE_LINKED_FLOOR: u64 = 50_000_000;
 
 /// Which test target a measured binary belongs to.
@@ -154,16 +156,19 @@ impl Footprint {
         small
     }
 
-    /// Sum of every measured binary. Reports only the binaries it measured;
-    /// [`unmeasured`](Self::unmeasured) carries the rest, so this is a floor
-    /// for the tree and never a total for an unbuilt target.
+    /// Sum of every measured target's largest binary. A source `cargo test`
+    /// links twice — a `src/main.rs` bin target, as the plain binary and as
+    /// its own harness — contributes only the larger of the two here, so this
+    /// is a floor for the tree and not the runner's whole write.
+    /// [`unmeasured`](Self::unmeasured) carries the rest.
     pub fn measured_bytes(&self) -> u64 {
         self.measured().map(|t| t.bytes.unwrap_or_default()).sum()
     }
 
     /// What one more engine-linked test file costs: the median of the measured
-    /// engine-linked binaries. `None` when nothing engine-linked has been
-    /// measured, which is reported as unknown rather than as zero.
+    /// engine-linked binaries, taken as the upper median of an even-sized
+    /// group. `None` when nothing engine-linked has been measured, which is
+    /// reported as unknown rather than as zero.
     pub fn marginal_bytes(&self) -> Option<u64> {
         let heavy = self.engine_linked();
         if heavy.is_empty() {
@@ -572,6 +577,12 @@ fn unquote(value: &str) -> &str {
 /// The target directory a local build of `workspace_root` used, honouring
 /// `CARGO_TARGET_DIR` and falling back to `<root>/target`. Returns
 /// `<target dir>/debug/deps`, where cargo puts the test binaries.
+///
+/// A *relative* `CARGO_TARGET_DIR` is taken as relative to `workspace_root`,
+/// which is the directory this report defaults to, rather than to the current
+/// directory cargo would resolve it against: a report that measured a
+/// different tree than it names would be a guess, and `--target-dir` says
+/// which tree to measure explicitly.
 pub fn default_deps_dir(workspace_root: &Path) -> PathBuf {
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)

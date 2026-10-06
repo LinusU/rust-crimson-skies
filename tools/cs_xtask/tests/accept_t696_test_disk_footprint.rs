@@ -21,7 +21,17 @@
 //!   and a tree with nothing measured reports no marginal cost rather than
 //!   zero, so "not built here" can never be read as "free";
 //! * `test = false` on `[lib]` / `[[bin]]` keeps a harness out of the plan,
-//!   the way `tools/cs_xtask/Cargo.toml` uses it (task #610).
+//!   the way `tools/cs_xtask/Cargo.toml` uses it (task #610);
+//! * the report reached through the command line prints the measurement, and
+//!   asked about a target directory holding nothing it says the marginal cost
+//!   is unknown rather than printing a zero.
+//!
+//! The suite reads whichever target directory this build used, so it says what
+//! holds under any invocation: a member-scoped `cargo test -p cs_xtask` in a
+//! fresh per-worktree target directory (task #383) measures only what it built,
+//! and a workspace-wide run (`cargo test --workspace`, CI, `cs_xtask
+//! test-select`) additionally has to measure every target in the plan.
+//! Nothing here depends on which of the two it is.
 //!
 //! Nothing here weakens a check and nothing here is a gate: the report is a
 //! measurement, and this suite fails when the measurement stops being one.
@@ -176,31 +186,68 @@ fn accept_t696_the_workspaces_test_binaries_are_measured_not_guessed() {
         );
     }
 
-    // This target directory holds a build of the tree, so every target in the
-    // plan is measured and the marginal cost is that measurement.
-    assert_eq!(
-        report.unmeasured().count(),
-        0,
-        "a target directory holding this build must measure every target in the plan"
-    );
-    let marginal = report
-        .marginal_bytes()
-        .expect("a measured engine-linked group must report a marginal cost");
+    // The measurement has to come from this target directory, and it has to be
+    // a real one: cargo's `.d` sidecar, not a fixture's, is what names a
+    // binary's source. Whatever this directory holds must be measured, and a
+    // target it holds nothing for must stay unknown rather than become zero.
     assert!(
-        marginal >= ENGINE_LINKED_FLOOR,
-        "the marginal cost {marginal} must come from the engine-linked group"
+        report.measured().count() > 0,
+        "a target directory holding this build must measure at least one of the {} planned \
+         test binaries",
+        report.planned()
     );
+    for target in report.measured() {
+        assert!(
+            target.bytes.unwrap_or_default() > 0 && target.binaries >= 1,
+            "{} is measured, so it must have a real binary: {} bytes in {} binaries",
+            target.source,
+            target.bytes.unwrap_or_default(),
+            target.binaries
+        );
+    }
     assert!(
-        report.measured_bytes() > marginal,
-        "the measured total must exceed one binary, or the plan is not measured"
+        report.unmeasured().all(|target| target.bytes.is_none()),
+        "a target with no binary in this directory is unknown, never zero"
     );
-    let largest = report
-        .largest()
-        .expect("a measured tree has a largest binary");
-    assert!(
-        largest.bytes.unwrap_or_default() >= marginal,
-        "the largest measured binary must not be below the median"
-    );
+
+    // Full coverage is a claim about a *workspace-wide* build, which is what
+    // every sanctioned run is: `cargo test --workspace --locked`, CI, and
+    // `cs_xtask test-select` (which runs `--workspace`). A member-scoped build
+    // in a fresh target dir — the per-worktree target directory of task #383 —
+    // leaves the other members' binaries absent, and there the claim is the
+    // weaker one above plus "the marginal cost is not invented".
+    let members = report.by_member();
+    if members.iter().all(|member| member.measured > 0) {
+        assert_eq!(
+            report.unmeasured().count(),
+            0,
+            "a workspace-wide build must measure every target in the plan"
+        );
+        let marginal = report
+            .marginal_bytes()
+            .expect("a measured engine-linked group must report a marginal cost");
+        assert!(
+            marginal >= ENGINE_LINKED_FLOOR,
+            "the marginal cost {marginal} must come from the engine-linked group"
+        );
+        assert!(
+            report.measured_bytes() > marginal,
+            "the measured total must exceed one binary, or the plan is not measured"
+        );
+        let largest = report
+            .largest()
+            .expect("a measured tree has a largest binary");
+        assert!(
+            largest.bytes.unwrap_or_default() >= marginal,
+            "the largest measured binary must not be below the median"
+        );
+    } else if report.engine_linked().is_empty() {
+        assert_eq!(
+            report.marginal_bytes(),
+            None,
+            "with no engine-linked binary measured the marginal cost is unknown, not zero"
+        );
+    }
 }
 
 /// The plan is this tree's real test files, one binary each, and it drops
@@ -498,16 +545,21 @@ fn accept_t696_a_bin_target_is_linked_twice_and_the_larger_size_is_kept() {
     );
 }
 
-/// The command the report is reached through prints the measurement, and says
-/// plainly that doc-test binaries are outside it.
+/// The command the report is reached through prints the measurement, says
+/// plainly that doc-test binaries are outside it, and — asked about a target
+/// directory holding nothing — says the marginal cost is unknown rather than
+/// printing a zero. That second half is deterministic, which is why it is
+/// asked of an empty directory instead of of whatever this build happens to
+/// hold.
 #[test]
 fn accept_t696_the_report_command_prints_the_measured_footprint() {
     let bin = env!("CARGO_BIN_EXE_cs_xtask");
+    let root = workspace_root();
     let output = transient::command_output(
         Command::new(bin)
             .arg("report-test-disk")
             .arg("--workspace-root")
-            .arg(workspace_root()),
+            .arg(&root),
     )
     .expect("cs_xtask report-test-disk must run");
     assert!(
@@ -521,15 +573,52 @@ fn accept_t696_the_report_command_prints_the_measured_footprint() {
         "engine-linked",
         "measured in total",
         "doc-test binaries are not counted",
+        "crates/cs_app",
     ] {
         assert!(
             text.contains(expected),
             "the report must state {expected:?}:\n{text}"
         );
     }
-    // A number that was measured, not a placeholder.
+    // The marginal cost is a measurement wherever this target directory holds
+    // an engine-linked binary, and is reported as unknown where it holds none.
+    let measured = footprint::measure_workspace(&root, &footprint::default_deps_dir(&root))
+        .expect("the workspace's test plan must be readable");
+    if measured.engine_linked().is_empty() {
+        assert!(
+            text.contains("marginal cost of another test file is unknown"),
+            "no engine-linked binary is measured here, so the marginal cost must say so:\n{text}"
+        );
+    } else {
+        assert!(
+            text.contains("one more engine-linked test file costs about"),
+            "this target directory holds engine-linked binaries, so the marginal cost must be \
+             measured, not skipped:\n{text}"
+        );
+    }
+
+    // Asked about a target directory that holds nothing, the report says every
+    // target is unmeasured and prices nothing — "unknown rather than zero" —
+    // and still exits 0.
+    let empty = scratch("report-empty");
+    let output = transient::command_output(
+        Command::new(bin)
+            .arg("report-test-disk")
+            .arg("--workspace-root")
+            .arg(&root)
+            .arg("--target-dir")
+            .arg(&empty),
+    )
+    .expect("cs_xtask report-test-disk must run against an empty target dir");
     assert!(
-        !text.contains("marginal cost of another test file is unknown"),
-        "this target directory holds a build, so the marginal cost must be measured:\n{text}"
+        output.status.success(),
+        "nothing built here is not a finding about the workspace, so it must exit 0"
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("unmeasured: crates/cs_app/")
+            && text.contains("marginal cost of another test file is unknown"),
+        "an unbuilt target dir must print its unmeasured targets and an unknown marginal \
+         cost:\n{text}"
     );
 }

@@ -415,7 +415,8 @@ fn run_report_test_disk(args: &[String]) -> ExitCode {
             );
             println!(
                 "report-test-disk: {} engine-linked (>= {} bytes) and {} smaller; \
-                 {} measured in total",
+                 {} measured in total (the largest binary of each source; a bin target \
+                 cargo links twice is counted once)",
                 heavy.len(),
                 footprint::ENGINE_LINKED_FLOOR,
                 small.len(),
