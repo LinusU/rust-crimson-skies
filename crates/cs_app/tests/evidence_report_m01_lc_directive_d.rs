@@ -80,9 +80,12 @@ fn review_method(
          names, {completed_names} distinct COMPLETED_SOUND_GROUP names and {stopped_names} \
          STOP_QUEUED_SOUNDS names over 44 measured sites, of which {music_sites} name one of the \
          executable's seven built-in music sound groups - the acceptance suite asserts the \
-         document's key census, vocabularies, per-block name map, SET_HELP_LABEL sites and \
-         MISSION_TIMER value key for key against that census, so a drift between the document and \
-         the data fails the run. The native-side evidence is STATIC CODE EVIDENCE ONLY: parse \
+         document's block/site/key census, its IDENTITY classes, key census, vocabularies, \
+         per-block name map, SET_HELP_LABEL sites and MISSION_TIMER value key for key against \
+         production reads of the installation, so a change in the measured data fails the run. The \
+         suite reads the installation and never the markdown, so those pinned figures are the \
+         document's figures: an edit to the document alone is caught by review of them rather than \
+         by the run itself. The native-side evidence is STATIC CODE EVIDENCE ONLY: parse \
          sites, record field offsets, play and timer call graphs and the mission-timer start rule \
          (value > 0.0f) were read out of the executable with r2 and no original program was run, so \
          nothing here is verified_original runtime behaviour and no handle a sound-group name \

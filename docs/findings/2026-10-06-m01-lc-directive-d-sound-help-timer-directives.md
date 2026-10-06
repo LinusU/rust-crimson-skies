@@ -29,7 +29,7 @@ be reduced from the code alone it is recorded as **unknown**, not guessed
 | Mission object | global `0x71b480` (set at `0x47e167`: `mov ecx, 0x71b480; call 0x4696f0`) |
 | Mission sound manager | global `0x71b438` |
 | Mission timer | global `0x71b468` (constructor/reset `0x46c4f0`, called from the parser at `0x466bba`) |
-| Sound engine | `zsnd_play.cpp` (strings at `0x63a3ac`: `Playing: %s`, `%s: queued sound is also looped.`) |
+| Sound engine | `zsnd_play.cpp` (string cluster at `0x63a3ac`: the source path `D:\zipper\gamez\zSound\zsnd_play.cpp` at `0x63a3ac`, then `Playing: %s` at `0x63a3d4` and `%s: queued sound is also looped.` at `0x63a3e0`) |
 | Sound archives named by the engine | `soundsL.zbd`, `soundsM.zbd` (`0x63a544`, `0x63a550`) |
 | Tools | `r2` `aaa` + a linear `pD` sweep of `.text` (`0x401000`, 0x202000 bytes) into a private scratch listing; `python3` for byte/string reads; `grep` on that listing |
 | M01 data read | production `cs_app::mission_control::survey_mission_control_programs` and `cs_content::objectives::measure_dormant_declarations` over `zbd/c1c/m01` |
@@ -38,6 +38,30 @@ Stage A's parse model is used as given: an objective record is `0x5e4` bytes,
 value tags are `1` int / `2` real / `3` string / `4` list, and record offsets
 are relative to the record pointer (`esi`/`edi`/`ebp` in the parse, `esi` in the
 tick).
+
+## Reviewer spot-check (2026-10-06)
+
+Re-read from the same bytes by the reviewing session — a PE section-table walk
+with `python3`, read-only, no original run. The reviewing session is the same
+agent id as the implementer (`bunny-alpha-2`) in a fresh context, so this is a
+second reading of the code, **not** independent original-run evidence.
+
+| Claim here | Result |
+| --- | --- |
+| Provenance SHA-256 `43540fc9…` | verified, file is 2 580 480 bytes |
+| Seven `music_*_sg` names, in the stated order | verified, at `0x63a4a8`, `0x63a4c0`, `0x63a4d8`, `0x63a4f0`, `0x63a504`, `0x63a51c`, `0x63a530` — this row's table extent was corrected from `0x63a538` to `0x63a540` |
+| `Playing: %s` / `%s: queued sound is also looped.` | string cluster verified; both addresses were corrected (`0x63a3d4`, `0x63a3e0`; `0x63a3ac` holds the `zsnd_play.cpp` source path) |
+| `soundsL.zbd` `0x63a544`, `soundsM.zbd` `0x63a550`, `DELETE_ON_SUCCESS` `0x626350` | verified byte for byte |
+| `NOLOSS` string exists | verified, one occurrence, `0x625fbc` |
+| constants: `0.0f` at `0x6032c8`, `-1.0f` at `0x6034e8`, `1000.0` at `0x603464`, `10.0` at `0x603390` | verified as IEEE-754 values |
+| start rule `0x469741` | verified: `fcomp dword ptr [0x6032c8]` at `0x469746`, then `fnstsw ax` / `test ah,0x41` / `jne`, then `mov ecx, 0x71b468` and the start call |
+| `Update` calls `0x46c5f0` at `0x46a4d8` and `0x46c640` at `0x46a4e2` | verified from both relative-call targets |
+| `STOP_QUEUED_SOUNDS` cap of 10 | `cmp esi, 0xa` (`83 fe 0a`) at `0x4688bc`, `jg` over the copy, inside the routine whose first argument address is the `STOP_QUEUED_SOUNDS` string `0x626778` |
+| `Expecting real value, found string %s`, `MISSION_WON_SOUND`, `OBJECTIVES_WON_SOUND` strings | verified at `0x625f28`, `0x626040`, `0x626010` |
+
+The remaining rows of the tables below are the implementer's reading and were
+not re-derived line by line; they stay static code evidence either way, and the
+**Unknowns** section still governs what is not measured.
 
 ## The sound handle a `*_SOUND_GROUP` name becomes
 
@@ -61,12 +85,15 @@ tick).
   `0x46ca50` (the sound manager's reset, called at mission reset `0x46972d`)
   clears to null. **Which groups occupy them at runtime is not measured here**;
   the routing *shape* is.
-* The engine's own string table (`0x63a4a8..0x63a538`) holds exactly seven
+* The engine's own string table (`0x63a4a8..0x63a540`: the seventh name
+  `music_battle_sg` ends at `0x63a53f`) holds exactly seven
   built-in music sound-group names — `music_battlesuccess_sg`,
   `music_missionsuccess_sg`, `music_tertiaryobj_sg`, `music_primaryobj_sg`,
   `music_secondaryobj_sg`, `music_prebattle_sg`, `music_battle_sg` — each
-  spelled next to the `.wav` it names (`music_primaryobj.wav`, …) and to the
-  archives `soundsL.zbd` / `soundsM.zbd`. `0x5954f0(name)` is the dispatcher
+  spelled in the same string cluster as the `.wav` it names
+  (`music_primaryobj.wav`, …, in the cluster `0x63a404..0x63a490`, in a
+  different order) and immediately before the archives `soundsL.zbd`
+  (`0x63a544`) / `soundsM.zbd` (`0x63a550`). `0x5954f0(name)` is the dispatcher
   that compares an incoming name against those spellings (byte compares, in the
   order prebattle, secondary, primary, …) and selects the music state; it is
   called once per music request from `0x595140`.

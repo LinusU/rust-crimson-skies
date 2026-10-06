@@ -7,10 +7,15 @@
 //! start rule `value > 0.0f`, the two localized ids the timeout asks for) are
 //! **static code evidence** and cannot be re-derived by a test. What these
 //! tests do pin is every claim the document makes about **M01's own data** —
-//! the spellings, the counts, the sound-group vocabularies, the two
-//! `SET_HELP_LABEL` sites, the `MISSION_TIMER` value and the names M01 spells
-//! in both roles — each read out of the owner's installation by production
-//! code, so a document that drifts from the data fails the run.
+//! the block/site/key census, the spellings, the counts, the sound-group
+//! vocabularies, the two `SET_HELP_LABEL` sites, the `MISSION_TIMER` value,
+//! the `IDENTITY` roles and the names M01 spells in both roles — each read
+//! out of the owner's installation by production code.
+//!
+//! The pinned values below *are* the document's figures, so a change in the
+//! data fails the run and a document edited away from its own figures fails
+//! review: the suite reads the installation, never the markdown, and does not
+//! notice the document alone changing.
 //!
 //! Every test needs `CS_GAME_DIR`.
 
@@ -118,9 +123,12 @@ const M01_AUDIO_UI_KEYS: &[(&str, u32, u32, &[&str])] = &[
 ];
 
 /// The keys of these families the document measures as **not** spelled by M01:
-/// the seven mission-level `*_SOUND` record keys, the three timer keys and
+/// the seven mission-level `*_SOUND` record keys, the four timer keys and
 /// `START_TAXI`. `DELETE_ON_SUCCESS` is in the list because the document
-/// measures it as a `TRAVELERS` argument token rather than a directive key.
+/// measures it as a `TRAVELERS` argument token rather than a directive key,
+/// and `SLEEP_ANIM` because it is the one stage-A sibling in the same
+/// not-spelled list that belongs to no family this document measures — it is
+/// pinned here so the vocabulary walk keeps excluding it.
 const NOT_SPELLED_BY_M01: &[&str] = &[
     "ADJUST_TIMER_WHEN_I_COMPLETE",
     "DELETE_ON_SUCCESS",
@@ -417,7 +425,7 @@ fn accept_m01_lc_directive_d_the_music_groups_m01_spells_are_the_engines_seven_b
     let document = m01_control_document(&game_dir());
     let (wakeup, _completed, _stopped) = m01_sound_groups(&document);
 
-    // The seven names the executable's own table carries (0x63a4a8..0x63a538),
+    // The seven names the executable's own table carries (0x63a4a8..0x63a540),
     // which is what makes a `*_SOUND_GROUP` naming one of them a music state
     // request rather than an ordinary cue.
     let built_in = [
@@ -469,4 +477,42 @@ fn accept_m01_lc_directive_d_the_music_groups_m01_spells_are_the_engines_seven_b
             assert!(dormant, "{block} names {name} and begins dormant");
         }
     }
+}
+
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_lc_directive_d_the_block_site_key_census_and_identity_classes_match_the_document() {
+    let census = survey_mission_control_programs(&game_dir()).expect("census runs on the install");
+    let record = census
+        .row("zbd/c1c/m01")
+        .expect("M01 is present")
+        .record()
+        .expect("M01 declares a control program");
+
+    // "58 numbered objective blocks, 353 directive sites, 43 distinct keys" —
+    // the census sentence the document measures M01's whole control record by.
+    assert_eq!(
+        (record.blocks(), record.sites(), record.vocabulary()),
+        (58, 353, 43),
+        "the document's block, site and vocabulary census of M01's control record"
+    );
+
+    // "M01's `IDENTITY` classes are `PRIMARY` (4 sites) and `SECONDARY` (1)" —
+    // the classes whose completion sound the executable dispatches on, so M01's
+    // class-sound claim is pinned with the record's own declarations.
+    let mut roles: BTreeMap<String, u32> = BTreeMap::new();
+    let mut declarations = 0;
+    let document = m01_control_document(&game_dir());
+    for block in measure_dormant_declarations(&document).expect("every M01 block reads") {
+        for identity in &block.identities {
+            *roles.entry(identity.role.clone()).or_default() += 1;
+            declarations += 1;
+        }
+    }
+    assert_eq!(declarations, 5, "M01 makes five IDENTITY declarations");
+    assert_eq!(
+        roles,
+        BTreeMap::from([("PRIMARY".to_owned(), 4), ("SECONDARY".to_owned(), 1)]),
+        "the document's IDENTITY classes: PRIMARY at 4 sites, SECONDARY at 1"
+    );
 }
