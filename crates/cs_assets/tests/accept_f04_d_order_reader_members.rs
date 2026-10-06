@@ -765,6 +765,59 @@ fn accept_f04_d_order_reader_read_refuses_a_stale_or_foreign_resolution() {
 }
 
 #[test]
+fn accept_f04_d_order_reader_a_row_that_does_not_describe_the_bytes_is_refused() {
+    // `read_entry` takes a row and returns the bytes that row describes. A row
+    // from somewhere else — another archive, a tampered digest, an extent
+    // outside the container — must not be read as if it were this archive's,
+    // so the guard is checked rather than assumed.
+    let tree = TempTree::new("reader-row-guard");
+    let mut mounts = ReaderMounts::new();
+    mounts.push(mount(
+        &tree,
+        "zbd/zrdr.zbd",
+        ReaderLevel::Root,
+        fixture_builder("reader-root", "zbd/zrdr.zbd", None),
+        &reader_archive(&[("targets.zrd", b"root targets")]),
+    ));
+    let archive = &mounts.archives()[0];
+    let member = archive.members()[0].clone();
+    assert_eq!(
+        archive.read_entry(&member).expect("the real row reads"),
+        b"root targets"
+    );
+
+    let mut wrong_digest = member.clone();
+    wrong_digest.sha256 = Some(sha256(b"different bytes"));
+    assert_eq!(
+        archive
+            .read_entry(&wrong_digest)
+            .expect_err("a digest the stored bytes do not have is refused")
+            .code(),
+        "digest_mismatch"
+    );
+
+    let mut beyond = member.clone();
+    beyond.offset = 1 << 40;
+    assert_eq!(
+        archive
+            .read_entry(&beyond)
+            .expect_err("an extent outside the archive is refused")
+            .code(),
+        "out_of_bounds"
+    );
+
+    let mut overflowing = member.clone();
+    overflowing.offset = u64::MAX - 1;
+    assert_eq!(
+        archive
+            .read_entry(&overflowing)
+            .expect_err("an extent that overflows the 64-bit range is refused")
+            .code(),
+        "out_of_bounds"
+    );
+}
+
+#[test]
 fn accept_f04_d_order_reader_a_key_of_another_namespace_is_not_a_reader_lookup() {
     let tree = TempTree::new("reader-wrong-key");
     let mut mounts = ReaderMounts::new();
