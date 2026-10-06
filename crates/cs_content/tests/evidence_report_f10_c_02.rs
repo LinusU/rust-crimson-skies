@@ -239,6 +239,10 @@ fn evidence_report_f10_c_02_writes_the_acceptance_report() {
                     catalog: &catalog,
                     origin: None,
                     container: relative,
+                    // The harness audits the world's own archive exactly, so
+                    // the measured fallthrough stays off here; the consumer
+                    // that wires it is `cs_app::world::retail` (task #688).
+                    lookup: None,
                 },
             );
             // F10-B's deferred item 1, for this archive.

@@ -225,7 +225,8 @@ use cs_types::evidence::{ClaimStatus, ContentHash};
 use cs_types::install::{ParseState, RelativePath};
 
 use crate::textures::{
-    TextureArchive, TextureAttempt, TextureCatalog, TextureId, TextureRef, TextureResolveError,
+    ResolvedTexture, TextureArchive, TextureAttempt, TextureCatalog, TextureId, TextureLookup,
+    TextureLookupSource, TextureRef, TextureResolveError, texture_lookup_order,
 };
 
 /// A `(polygon, corner)` location in the stored [`RawMesh`].
@@ -1341,6 +1342,12 @@ pub struct DependencyContext<'a> {
     pub origin: Option<SourceSpan>,
     /// A provenance label for the container, never a path that gets joined.
     pub container: &'a str,
+    /// The measured fallthrough a name the world's archive missed follows
+    /// ([`texture_lookup_order`], F08-C): the shared `rimage.zbd`, then loose
+    /// files. `None` keeps the audit a single-archive instrument — the contract
+    /// the F10-C.02 harnesses and their tests pin — and a consumer wires it in
+    /// only when the load actually owns the image list (task #688).
+    pub lookup: Option<TextureLookup<'a>>,
 }
 
 /// The catalog's own verdict on the caller's archive: `None` when it opened.
@@ -1374,6 +1381,67 @@ fn archive_state(context: &DependencyContext<'_>) -> Option<MaterialState> {
         });
     }
     None
+}
+
+/// What the measured lookup order answered for one stored name the world's
+/// archive did not hold.
+struct LookupFollow {
+    /// The first archive source past the world archive that answered for the
+    /// name: its own key and verdict — a resolution, or that source's own
+    /// refusal (a duplicate there is still a duplicate, not a miss).
+    verdict: Option<(AssetKey, Result<ResolvedTexture, TextureResolveError>)>,
+    /// The loose `.tif`/`.bmp` files the order listed before any verdict.
+    /// They exist, but no loose-file reader is bound (recorded in the F08-C
+    /// finding), so they can only be reported, never served.
+    loose: Vec<AssetKey>,
+}
+
+/// Follows `name` through [`texture_lookup_order`] after `context.archive`
+/// missed it: the shared image archive, then the loose files.
+///
+/// The world-archive entry the order lists first is skipped — the caller's
+/// resolve of `name` against `context.catalog` is that step, and it already
+/// missed. When `context.lookup` is `None` — the single-archive audit the
+/// F10-C.02 contract pins — nothing is followed and every caller-visible
+/// verdict is the primary archive's own.
+fn follow_lookup(context: &DependencyContext<'_>, name: &str) -> LookupFollow {
+    let mut follow = LookupFollow {
+        verdict: None,
+        loose: Vec::new(),
+    };
+    let Some(lookup) = context.lookup else {
+        return follow;
+    };
+    for source in texture_lookup_order(name, lookup.files, lookup.world_archive) {
+        match source {
+            TextureLookupSource::WorldArchive { .. } => {}
+            TextureLookupSource::ImageArchive { file } => {
+                let Some(images) = lookup.images else {
+                    continue;
+                };
+                match images.resolve(context.session, &TextureRef::new(file.key().clone(), name)) {
+                    Ok(resolved) => {
+                        follow.verdict = Some((file.key().clone(), Ok(resolved)));
+                        break;
+                    }
+                    // The image list answers "not here": the order moves on to
+                    // the loose files.
+                    Err(error) if error.code() == "texture_not_found" => continue,
+                    // The image list's own verdict — a duplicate there, a
+                    // failed archive, a foreign session — is reported against
+                    // that archive, not re-filed under the world's.
+                    Err(error) => {
+                        follow.verdict = Some((file.key().clone(), Err(error)));
+                        break;
+                    }
+                }
+            }
+            TextureLookupSource::LooseTiff { file } | TextureLookupSource::LooseBmp { file } => {
+                follow.loose.push(file.key().clone());
+            }
+        }
+    }
+    follow
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1460,7 +1528,30 @@ fn audit_material(
         return finish(row, true, state.clone(), reasons, details);
     }
     let reference = TextureRef::new(context.archive.clone(), &texture.name);
-    match context.catalog.resolve(context.session, &reference) {
+    // The world's archive is asked first, as the measured order says. Only a
+    // miss there is followed through `rimage.zbd` and the loose files — and
+    // only when the caller wired that order in (`context.lookup`). Every other
+    // verdict of the world's archive stands on its own.
+    let mut searched = context.archive.clone();
+    let resolved = match context.catalog.resolve(context.session, &reference) {
+        Err(primary) if primary.code() == "texture_not_found" => {
+            let follow = follow_lookup(context, &texture.name);
+            for file in &follow.loose {
+                details.push(format!(
+                    "the measured order also lists loose file `{file}`, which no loose-file texture reader is bound to (F08-C)"
+                ));
+            }
+            match follow.verdict {
+                Some((source, outcome)) => {
+                    searched = source;
+                    outcome
+                }
+                None => Err(primary),
+            }
+        }
+        other => other,
+    };
+    match resolved {
         Ok(resolved) => {
             let state = MaterialState::Resolved {
                 texture: resolved.id().clone(),
@@ -1480,7 +1571,7 @@ fn audit_material(
                     }
                     MaterialState::DuplicateTexture {
                         name: texture.name.clone(),
-                        archive: context.archive.clone(),
+                        archive: searched,
                         entries,
                     }
                 }
@@ -1489,7 +1580,7 @@ fn audit_material(
                     archive: context.archive.clone(),
                 },
                 other => MaterialState::ArchiveUnavailable {
-                    archive: context.archive.clone(),
+                    archive: searched,
                     code: other.code().to_owned(),
                 },
             };
@@ -2784,6 +2875,11 @@ pub struct MeshDependencies<'a> {
     pub archive: &'a AssetKey,
     /// The catalog that answers the name lookups.
     pub textures: &'a TextureCatalog,
+    /// The measured fallthrough a name the archive missed follows
+    /// ([`texture_lookup_order`], F08-C). `None` is the single-archive audit
+    /// every F10-C.02 caller and harness keeps; a world load that registered
+    /// the image list passes `Some`.
+    pub lookup: Option<TextureLookup<'a>>,
 }
 
 /// One GameZ container read through a content session: the container's owned
@@ -2926,6 +3022,7 @@ impl MeshContainer {
                 catalog: dependencies.textures,
                 origin: Some(span),
                 container: container.path().as_str(),
+                lookup: dependencies.lookup,
             },
         );
 
@@ -4538,7 +4635,7 @@ mod tests {
     use cs_types::asset_id::{AssetKey, ResolveContext, WorldGroup};
     use cs_types::install::ParseState;
 
-    use crate::textures::TextureCatalog;
+    use crate::textures::{TextureCatalog, TextureFiles, TextureLookup};
 
     /// The texture-archive layout's own numbers, spelled here so the fixture
     /// writer does not borrow the reader's constants: a 24-byte header, then one
@@ -4895,6 +4992,7 @@ mod tests {
             catalog,
             origin: None,
             container: "fixture",
+            lookup: None,
         }
     }
 
@@ -5049,6 +5147,212 @@ mod tests {
             catalog
                 .resolve(&session, &TextureRef::new(key.clone(), "sky1"))
                 .is_err()
+        );
+    }
+
+    // ------------------------------ F08-C: the measured lookup order -------
+
+    /// The world's texture search list as the consumer (`cs_app::world::retail`,
+    /// task #688) builds it: the world's own directory first, the global `zbd`
+    /// directory last. `world`/`global` are each directory's listing, exactly
+    /// the manifest's file names.
+    fn lookup_files(world: &[&str], global: &[&str]) -> TextureFiles {
+        TextureFiles::world_and_global(
+            world
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>(),
+            global
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// The shared image archive's key, as the consumer spells it: the global
+    /// `zbd` directory under the installation namespace.
+    fn image_key() -> AssetKey {
+        AssetKey::from_spelling(INSTALL_NAMESPACE, "zbd/rimage.zbd", "default").expect("valid key")
+    }
+
+    /// The fixture context with the measured lookup wired in: `files` is the
+    /// world's search list, `world_archive` the file name of `key`'s archive,
+    /// `images` the catalog `rimage.zbd` opened in.
+    fn lookup_context<'a>(
+        session: &'a ContentSession,
+        catalog: &'a TextureCatalog,
+        key: &'a AssetKey,
+        files: &'a TextureFiles,
+        images: Option<&'a TextureCatalog>,
+    ) -> DependencyContext<'a> {
+        DependencyContext {
+            archive: key,
+            session,
+            catalog,
+            origin: None,
+            container: "fixture",
+            lookup: Some(TextureLookup {
+                files,
+                world_archive: "texture.zbd",
+                images,
+            }),
+        }
+    }
+
+    /// **F08-C AC: the measured order.** A name the world's archive does not
+    /// hold is followed to the shared `rimage.zbd` — a second catalog, exactly
+    /// as the original registers the image list — and resolves to *its* entry,
+    /// while the row's dependency stays the world's own archive. A name in
+    /// neither stays `MissingTexture` against the world's archive.
+    #[test]
+    fn accept_f08_c_renderer_audit_follows_the_measured_order_to_the_image_list() {
+        let tree = Tree::world(&["sky"], &["hud"]);
+        tree.write("ZBD/rimage.zbd", &package(&["hud"]));
+        let session = world_session(&tree.0, "ZBD/c1");
+        let key = texture_key();
+        let catalog = TextureCatalog::open(&session, std::slice::from_ref(&key));
+        assert_eq!(catalog.failures().count(), 0, "the fixture archive opens");
+        let images = TextureCatalog::open(&session, std::slice::from_ref(&image_key()));
+        assert_eq!(images.failures().count(), 0, "the image archive opens");
+
+        let files = lookup_files(&["texture.zbd"], &["rimage.zbd"]);
+        let meshes = container(vec![container_mesh(0, &[0, 1, 2], &[])]);
+        let materials = tables(
+            &["sky", "hud", "absent"],
+            vec![
+                material(0, 0, true),
+                material(1, 1, true),
+                material(2, 2, true),
+            ],
+        );
+        let audit = MeshDependencyAudit::build(
+            &meshes,
+            &materials,
+            &lookup_context(&session, &catalog, &key, &files, Some(&images)),
+        );
+
+        assert_eq!(audit.rows.len(), 3);
+        assert_eq!(
+            audit.resolved, 2,
+            "sky in the world's archive, hud in the image list"
+        );
+        let MaterialState::Resolved { texture } = &audit.rows[0].state else {
+            panic!("sky resolves: {:?}", audit.rows[0].state);
+        };
+        assert!(
+            texture.archive.as_str().ends_with("c1/texture.zbd"),
+            "sky came from {texture}, not the world's archive"
+        );
+        let MaterialState::Resolved { texture } = &audit.rows[1].state else {
+            panic!("hud resolves: {:?}", audit.rows[1].state);
+        };
+        assert_eq!(
+            texture.archive.as_str(),
+            "ZBD/rimage.zbd",
+            "hud came from the image list, not the world's archive"
+        );
+        assert_eq!(
+            audit.rows[1].dependencies,
+            vec![key.clone()],
+            "the row's archive is still the caller's"
+        );
+        assert_eq!(
+            audit.rows[2].state,
+            MaterialState::MissingTexture {
+                name: "absent".to_owned(),
+                archive: key.clone(),
+            },
+            "a name in neither archive is missing against the world's"
+        );
+    }
+
+    /// **The fallthrough is the consumer's, not the audit's default.** The same
+    /// container audited without a lookup — the contract every F10-C.02 caller
+    /// keeps — reports `hud` missing even though `rimage.zbd` holds it.
+    #[test]
+    fn accept_f08_c_renderer_audit_without_lookup_stays_a_single_archive() {
+        let tree = Tree::world(&["sky"], &["hud"]);
+        tree.write("ZBD/rimage.zbd", &package(&["hud"]));
+        let (session, catalog, key) = catalog(&tree);
+        let images = TextureCatalog::open(&session, std::slice::from_ref(&image_key()));
+        assert_eq!(images.failures().count(), 0, "the image archive opens");
+        assert!(
+            images
+                .resolve(&session, &TextureRef::new(image_key(), "hud"))
+                .is_ok(),
+            "the name really is in the image list"
+        );
+
+        let meshes = container(vec![container_mesh(0, &[0, 1], &[])]);
+        let materials = tables(
+            &["sky", "hud"],
+            vec![material(0, 0, true), material(1, 1, true)],
+        );
+        let audit =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+
+        assert_eq!(audit.resolved, 1, "only the world's own archive serves");
+        assert_eq!(
+            audit.rows[1].state,
+            MaterialState::MissingTexture {
+                name: "hud".to_owned(),
+                archive: key.clone(),
+            },
+            "no fallthrough without a lookup"
+        );
+    }
+
+    /// **The loose sources are walked and reported, never served.** `decal`
+    /// is listed as `decal.tif` in the world's directory, so the measured order
+    /// names it; no loose-file reader is bound, so the row is still
+    /// `MissingTexture` and the detail line says why. A name duplicated in
+    /// `rimage.zbd` keeps *that* archive's verdict rather than being re-filed
+    /// under the world's.
+    #[test]
+    fn accept_f08_c_renderer_audit_walks_loose_files_and_keeps_the_sources_verdict() {
+        let tree = Tree::world(&["sky"], &[]);
+        tree.write("ZBD/rimage.zbd", &package(&["dup", "dup"]));
+        let session = world_session(&tree.0, "ZBD/c1");
+        let key = texture_key();
+        let catalog = TextureCatalog::open(&session, std::slice::from_ref(&key));
+        let images = TextureCatalog::open(&session, std::slice::from_ref(&image_key()));
+
+        let files = lookup_files(&["texture.zbd", "decal.tif"], &["rimage.zbd"]);
+        let meshes = container(vec![container_mesh(0, &[0, 1], &[])]);
+        let materials = tables(
+            &["decal", "dup"],
+            vec![material(0, 0, true), material(1, 1, true)],
+        );
+        let audit = MeshDependencyAudit::build(
+            &meshes,
+            &materials,
+            &lookup_context(&session, &catalog, &key, &files, Some(&images)),
+        );
+
+        let row = &audit.rows[0];
+        assert_eq!(
+            row.state,
+            MaterialState::MissingTexture {
+                name: "decal".to_owned(),
+                archive: key.clone(),
+            },
+            "a loose file cannot serve"
+        );
+        assert!(
+            row.reason_details
+                .iter()
+                .any(|detail| detail.contains("decal.tif")),
+            "the loose source the order walked is reported: {:?}",
+            row.reason_details
+        );
+        assert_eq!(
+            audit.rows[1].state,
+            MaterialState::DuplicateTexture {
+                name: "dup".to_owned(),
+                archive: image_key(),
+                entries: vec![0, 1],
+            },
+            "the image list's own verdict, on its own archive"
         );
     }
 
@@ -5429,6 +5733,7 @@ mod tests {
                 catalog: &catalog,
                 origin: None,
                 container: relative,
+                lookup: None,
             },
         );
 
@@ -6637,7 +6942,11 @@ mod tests {
         textures: &'a TextureCatalog,
         archive: &'a AssetKey,
     ) -> MeshDependencies<'a> {
-        MeshDependencies { archive, textures }
+        MeshDependencies {
+            archive,
+            textures,
+            lookup: None,
+        }
     }
 
     /// The UVs a render triangle samples, by its source polygon, in drawing
