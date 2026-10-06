@@ -69,7 +69,10 @@ use cs_content::mesh::{
     ResolvedMesh,
 };
 use cs_content::scene::{GameZSceneError, MeshSlot};
-use cs_content::textures::TextureCatalog;
+use cs_content::textures::{
+    IMAGE_ARCHIVE_FILE, TextureCatalog, TextureDirectory, TextureFiles, TextureLookup,
+    WorldArchiveChoice, WorldTextureLoad,
+};
 use cs_content::world::{
     ImportedWorld, WorldDefinition, WorldId, WorldIdError, WorldImportError, WorldPartitionGrid,
 };
@@ -78,6 +81,7 @@ use cs_formats::io::ParseContext;
 use cs_types::asset_id::{AssetKey, ResolveContext, SourceSpan, WorldGroup};
 use cs_types::content::{ContentId, ContentIdError, ContentKind, Origin, Provenance};
 use cs_types::evidence::{ClaimId, ClaimStatus};
+use cs_types::install::RelativePath;
 
 use super::audit::GEOMETRY_CONTAINER_FILE;
 use super::meshes::{WorldMeshBuildError, WorldMeshes};
@@ -327,6 +331,10 @@ pub struct RetailWorldContainer {
     slots: Vec<MeshSlot>,
     session: ContentSession,
     catalog: MeshCatalog,
+    /// Which archive the load's texture rule chose for this world, and every
+    /// candidate it walked — kept so a consumer can see the measured walk, not
+    /// just its result.
+    texture_choice: WorldArchiveChoice,
     /// Each present mesh's catalog id and its resolution, so a definition's mesh
     /// reference reaches the catalog's upload without re-parsing the id.
     resolved: BTreeMap<ContentId, ResolvedMesh>,
@@ -397,6 +405,17 @@ impl RetailWorldContainer {
     #[must_use]
     pub const fn mesh_catalog(&self) -> &MeshCatalog {
         &self.catalog
+    }
+
+    /// The texture archive this container's world load opened: the measured
+    /// rule's own report — the budget the descriptor registered, every candidate
+    /// file the probe walked and the one that exists
+    /// ([`WorldArchiveChoice::opened`]). The archive's key is also the mesh
+    /// catalog's [`MeshCatalog::archive`]; this accessor is for a caller that
+    /// wants the walk, not just the winner.
+    #[must_use]
+    pub const fn texture_archive(&self) -> &WorldArchiveChoice {
+        &self.texture_choice
     }
 
     /// The content session the mesh catalog was read in.
@@ -665,15 +684,30 @@ impl RetailWorldContainers {
     /// slot the array holds so a record's stored `mesh_index` resolves without a
     /// second guess.
     ///
+    /// `load` is the world's texture descriptor — what the renderer and the
+    /// detail settings together register for this load
+    /// ([`cs_content::detail::DetailSettings::world_load`]). The measured rule
+    /// opens the one texture archive it selects — a `texture*.zbd` /
+    /// `rtexture*.zbd` tier of the world's own directory or the global `zbd` —
+    /// and material names it does not hold fall through to the shared
+    /// `rimage.zbd` the way the measured lookup order walks it. A load with no
+    /// archive anywhere is refused [`RetailWorldError::Catalog`] rather than
+    /// silently texturing nothing.
+    ///
     /// # Errors
     ///
     /// [`RetailWorldError::Absent`] when the installation holds no such
     /// container, [`RetailWorldError::Read`] when the file cannot be read,
     /// [`RetailWorldError::Catalog`] when the container's mesh catalog does not
-    /// open, and [`RetailWorldError::Nodes`] / [`RetailWorldError::Meshes`] when
-    /// a section does not decode. A refusal here aborts rather than importing a
-    /// container the readers could only partly read.
-    pub fn container(&self, group: &str) -> Result<RetailWorldContainer, RetailWorldError> {
+    /// open or no texture archive exists, and [`RetailWorldError::Nodes`] /
+    /// [`RetailWorldError::Meshes`] when a section does not decode. A refusal
+    /// here aborts rather than importing a container the readers could only
+    /// partly read.
+    pub fn container(
+        &self,
+        group: &str,
+        load: &WorldTextureLoad,
+    ) -> Result<RetailWorldContainer, RetailWorldError> {
         let install_root = self.install_root.as_path();
         let found = &self.found;
         let container_key = format!(
@@ -729,8 +763,8 @@ impl RetailWorldContainers {
             reason: format!("the container's source span is not recordable: {error}"),
         })?;
 
-        let (session, catalog, group_key) =
-            open_catalog(install_root, found, group, &container_key)?;
+        let (session, catalog, group_key, texture_choice) =
+            open_catalog(install_root, found, group, &container_key, load)?;
         let Some(opened) = catalog.containers().next() else {
             let reason = catalog
                 .failures()
@@ -786,6 +820,7 @@ impl RetailWorldContainers {
             slots,
             session,
             catalog,
+            texture_choice,
             resolved,
         })
     }
@@ -825,21 +860,67 @@ pub fn read_world_containers(
 /// [`RetailWorldError::Discovery`] when the installation cannot be inventoried,
 /// and every [`RetailWorldContainers::container`] refusal for a container that
 /// cannot be read or decoded.
+///
+/// `load` is the world's texture descriptor — [`RetailWorldContainers::container`]
+/// takes the same one.
 pub fn read_world_container(
     install_root: &Path,
     group: &str,
+    load: &WorldTextureLoad,
 ) -> Result<RetailWorldContainer, RetailWorldError> {
-    read_world_containers(install_root)?.container(group)
+    read_world_containers(install_root)?.container(group, load)
 }
 
-/// Opens a content session on the installation scoped to `group`, and the mesh
-/// catalog over the group's `gamez.zbd` in it.
+/// The texture search list of one world group, from the installation's
+/// manifest: the group's own `zbd/<group>` directory first, the global `zbd`
+/// directory last — the order the original's file probe walks its search list
+/// (the most recently added directory first, falling back to `zbd`).
+///
+/// The listing is the manifest's own `logical_key`s — the names the files are
+/// inventoried under — because the probe only ever asks "is `<name>` in this
+/// directory": a file below a deeper directory is not a candidate, and a name
+/// no key can spell is filtered by [`TextureDirectory`]'s own construction.
+fn texture_files(found: &install::Discovery, world_group: &RelativePath) -> TextureFiles {
+    let world_dir = format!("{}/", world_group.logical_key());
+    let mut world_files = Vec::new();
+    let mut global_files = Vec::new();
+    for record in &found.manifest.files {
+        let key = record.relative_spelling.logical_key();
+        if let Some(rest) = key.strip_prefix(&world_dir)
+            && !rest.contains('/')
+        {
+            world_files.push(rest.to_owned());
+        } else if let Some(rest) = key.strip_prefix("zbd/")
+            && !rest.contains('/')
+        {
+            global_files.push(rest.to_owned());
+        }
+    }
+    TextureFiles::new_with([
+        TextureDirectory::world(world_group.as_str(), world_files),
+        TextureDirectory::global(global_files),
+    ])
+}
+
+/// Opens a content session on the installation scoped to `group`, the texture
+/// archive the measured rule selects for `load`, and the mesh catalog over the
+/// group's `gamez.zbd` in it.
+///
+/// The texture archive is [`TextureCatalog::open_world`]'s choice over the
+/// manifest's own listing: `zbd\<group>` first, the global `zbd` last — never a
+/// name this module spells. The catalog the audit looks a stored name up in is
+/// that choice's archive; a name it misses is followed through the measured
+/// order (`texture_lookup_order`), which means the shared `rimage.zbd` — the
+/// image list the original registers separately, opened here as its own
+/// catalog — and then the loose files the order lists, which no reader is
+/// bound to.
 fn open_catalog(
     install_root: &Path,
     found: &install::Discovery,
     group: &str,
     container_key: &str,
-) -> Result<(ContentSession, MeshCatalog, AssetKey), RetailWorldError> {
+    load: &WorldTextureLoad,
+) -> Result<(ContentSession, MeshCatalog, AssetKey, WorldArchiveChoice), RetailWorldError> {
     let fail = |reason: String| RetailWorldError::Catalog {
         container: container_key.to_owned(),
         reason,
@@ -853,7 +934,7 @@ fn open_catalog(
         .ok_or_else(|| fail("discovery names no such world group".to_owned()))?
         .clone();
     let context = ResolveContext::new(install::fingerprint(&found.manifest))
-        .with_world_group(WorldGroup::from_relative(world_group));
+        .with_world_group(WorldGroup::from_relative(world_group.clone()));
     let mut builder = SessionBuilder::new(context);
     builder
         .mount_installation(install_root, &found.diagnosis)
@@ -864,17 +945,34 @@ fn open_catalog(
             .map_err(|error| fail(error.to_string()))
     };
     let geometry = key(GEOMETRY_CONTAINER_FILE)?;
-    let archive = key("texture.zbd")?;
-    let textures = TextureCatalog::open(&session, std::slice::from_ref(&archive));
+
+    let files = texture_files(found, &world_group);
+    let (textures, choice) = TextureCatalog::open_world(&session, &files, load)
+        .map_err(|error| fail(error.to_string()))?;
+    let opened = choice
+        .opened()
+        .expect("open_world returned a choice with an opened file")
+        .clone();
+    let archive = opened.key().clone();
+    // The shared image archive is the original's second list: catalogued on
+    // its own, when the installation lists it.
+    let images = files
+        .find(IMAGE_ARCHIVE_FILE)
+        .map(|file| TextureCatalog::open(&session, std::slice::from_ref(file.key())));
     let catalog = MeshCatalog::open(
         &session,
         std::slice::from_ref(&geometry),
         &MeshDependencies {
             archive: &archive,
             textures: &textures,
+            lookup: Some(TextureLookup {
+                files: &files,
+                world_archive: opened.name(),
+                images: images.as_ref(),
+            }),
         },
     );
-    Ok((session, catalog, geometry))
+    Ok((session, catalog, geometry, choice))
 }
 
 /// The claim the partition grid's role in the imported definition is recorded

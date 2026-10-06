@@ -55,6 +55,7 @@ use cs_app::world::{
 use cs_content::coordinates::SourceAdapter;
 use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_content::scene::MeshSlot;
+use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
     INDEXED_RECORD_IS_STATIC, ImportedWorld, OBJECT_ID_IS_THE_NODE_SLOT, OBJECT_STORES_NO_MESH,
     PARTITION_GRID_IS_THE_SECTOR_INDEX, UNINDEXED_RECORD_STORES_NO_GEOMETRY,
@@ -915,8 +916,12 @@ struct Retail {
 
 fn retail() -> Retail {
     let root = std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set for the retail tests");
-    let container = read_world_container(std::path::Path::new(&root), RETAIL_GROUP)
-        .expect("the world's geometry container reads");
+    let container = read_world_container(
+        std::path::Path::new(&root),
+        RETAIL_GROUP,
+        &WorldTextureLoad::project_default(),
+    )
+    .expect("the world's geometry container reads");
     let origin = Origin::Installation {
         source: container.span().clone(),
     };

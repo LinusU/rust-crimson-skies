@@ -54,6 +54,7 @@ use cs_app::world::{
     SkipReason, instance_placement, read_world_containers, spawn_world, world_app,
 };
 use cs_content::coordinates::{CoordinateSource, SourceAdapter};
+use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{UNINDEXED_ROLE_UNMEASURED, WORLD_SURFACE_UNMEASURED, WorldPartitionGrid};
 use cs_types::content::{Origin, Resolved};
 use cs_types::evidence::ClaimStatus;
@@ -379,7 +380,7 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
     let mut imported_groups: Vec<String> = Vec::new();
     for measured in &MEASURED {
         let container = found
-            .container(measured.group)
+            .container(measured.group, &WorldTextureLoad::project_default())
             .unwrap_or_else(|error| panic!("{}: the container reads: {error}", measured.group));
         assert_eq!(
             container.container_key(),
@@ -720,7 +721,7 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
     let mut spawned_groups: Vec<String> = Vec::new();
     for measured in &MEASURED {
         let container = found
-            .container(measured.group)
+            .container(measured.group, &WorldTextureLoad::project_default())
             .unwrap_or_else(|error| panic!("{}: the container reads: {error}", measured.group));
         let imported = container
             .definition(origin(&container), &adapter(&container))
@@ -905,7 +906,7 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
 fn accept_f18_world_units_containers_a_mesh_the_store_holds_no_geometry_for_is_a_gap() {
     let found = retail();
     let container = found
-        .container("C5")
+        .container("C5", &WorldTextureLoad::project_default())
         .expect("the c5 geometry container reads");
     let imported = container
         .definition(origin(&container), &adapter(&container))
@@ -1088,7 +1089,7 @@ fn accept_f18_world_units_containers_the_settle_blocker_is_named_not_hidden() {
     // number here.
     const C3_BLOCKING_SLOT: u32 = 447;
     let container = found
-        .container("C3")
+        .container("C3", &WorldTextureLoad::project_default())
         .expect("the c3 geometry container reads");
     let slot = container
         .meshes()
@@ -1122,7 +1123,7 @@ fn accept_f18_world_units_containers_the_settle_blocker_is_named_not_hidden() {
     let mut blockers: Vec<String> = Vec::new();
     for measured in &MEASURED {
         let group_container = found
-            .container(measured.group)
+            .container(measured.group, &WorldTextureLoad::project_default())
             .unwrap_or_else(|error| panic!("{}: the container reads: {error}", measured.group));
         let imported = group_container
             .definition(origin(&group_container), &adapter(&group_container))
@@ -1236,7 +1237,7 @@ fn accept_f18_world_units_containers_every_stored_transform_places_exactly() {
     let mut with_transform = 0usize;
     for measured in &MEASURED {
         let container = found
-            .container(measured.group)
+            .container(measured.group, &WorldTextureLoad::project_default())
             .unwrap_or_else(|error| panic!("{}: the container reads: {error}", measured.group));
         let imported = container
             .definition(origin(&container), &adapter(&container))
