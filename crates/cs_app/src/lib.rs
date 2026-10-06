@@ -215,6 +215,19 @@
 //! [`physics::collider`], so the clip's half of the verdict now reaches the
 //! simulation and the animation path still writes nothing but its own record.
 //!
+//! Task #718 (`M01-LC-ACTOR-ANIM-CONSUMERS`) adds [`mission_animations`], the
+//! mission session's other animation consumer. It is the consumer the member →
+//! actor binding (#632), the join (#678) and the event grammar (#690) were
+//! measured for and never had: [`mission_animations::MissionAnimationPlayer`]
+//! starts one mission scope's own `mis_anim.zbd` / `cam_anim.zbd` startup
+//! rows, advances them once per committed tick and reports the statements they
+//! reach — with the archive and member that declares each one — while every
+//! row the join refused keeps its refusal and is never started;
+//! [`mission_animations::step_mission_animations`] is the composed tick that
+//! runs that record half beside the marker half above, so one call carries the
+//! animation log into [`objectives::ObjectiveSession`] and advances the
+//! mission's own animation records for the same committed tick.
+//!
 //! [`camera`] is the F21-A/F21-B/F21-C camera boundary
 //! (`specs/F21-cameras-cockpit-views-and-spyglass.md`, stages `### F21-A`,
 //! `### F21-B` and `### F21-C`):
@@ -614,6 +627,7 @@ pub mod input;
 pub mod interaction;
 pub mod livery;
 pub mod loading;
+pub mod mission_animations;
 pub mod mission_control;
 pub mod mission_markers;
 pub mod mission_start;
