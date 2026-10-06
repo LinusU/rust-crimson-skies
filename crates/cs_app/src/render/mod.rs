@@ -85,6 +85,12 @@
 //!   ranks nothing of its own and reports every row it kept off the screen in
 //!   [`sync::FrameSync::visibility`].
 //!
+//! [`detail`] is the F08-C renderer-side surface (task #688): which renderer a
+//! run drives and the texture-memory total its device reports — the designed
+//! [`cs_content::textures::PROJECT_HARDWARE_TEXTURE_MIB`] until a device query
+//! exists — which is the input the measured texture-archive rule reads instead
+//! of the detail settings when the device answers.
+//!
 //! # Acceptance tests
 //!
 //! The `accept_f17_c_` selection in `crates/cs_app/tests/render/profiles.rs`
@@ -144,6 +150,7 @@ pub mod bevy_image;
 pub mod bevy_mesh;
 pub mod bevy_state;
 pub mod capture;
+pub mod detail;
 pub mod golden;
 pub mod material;
 pub mod paint;
