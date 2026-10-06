@@ -108,6 +108,17 @@
 //! | camera views | [`camera_poses`], three of them, derived from the measured bounds | [`PLAYTEST_VIEWS_ARE_DESIGNED`] |
 //! | material | one neutral development material | [`PLAYTEST_NEUTRAL_MATERIAL`] |
 //!
+//! One row of that table is measured rather than chosen: **which stored axis is
+//! an airframe's nose** is [`STORED_AIRCRAFT_NOSE_AXIS`], `−Z`, read from the
+//! container's own tail surfaces composing aft of its cockpit node in all
+//! eleven scene airframes (task #709; the earlier reading took the
+//! propeller's position for the nose and so drew the `bloodhawk` — a
+//! rear-propeller layout — tail first). [`nose_mapping`] then lands that end on
+//! the runtime's forward axis, which for `−Z` is the identity, and that mapping
+//! is the designed decision [`PLAYTEST_AIRCRAFT_POSE_IS_DESIGNED`] records.
+//! Neither is `verified_original`: no original run has confirmed how the 2000
+//! engine itself oriented an airframe.
+//!
 //! What stays **unknown**, and is recorded as unknown rather than decided here:
 //!
 //! * **the original's world-vertex unit and coordinate handedness** (task #436,
@@ -127,12 +138,6 @@
 //!   the source ids it covers. Drawing a stored texture is the immediate next
 //!   step; PLAYTEST-RETAIL-HANDOFF should take it rather than mistake this
 //!   stage's flat shading for a property of the original.
-//! * **which stored axis is an airframe's nose.**
-//!   [`PLAYTEST_AIRCRAFT_POSE_IS_DESIGNED`] maps the measured hint (the
-//!   propeller disc lies in the stored `x`/`y` plane and its node sits at
-//!   `z = +4.80`, the fuselage mesh's own maximum) onto the runtime's forward
-//!   axis. The mapping is a designed presentation choice; the hint is what the
-//!   bytes say.
 //!
 //! # What this module does not claim
 //!
@@ -234,7 +239,10 @@ pub const PLAYTEST_UNIT_IS_DESIGNED: &str = "playtest-retail.stored-unit-is-one-
 pub const PLAYTEST_COLLISION_IS_THE_DRAWN_MESH: &str =
     "playtest-retail.collision-is-derived-from-the-drawn-mesh";
 
-/// The aircraft's pose and its nose-axis mapping.
+/// The aircraft's pose and its nose-axis mapping: the placement (where the
+/// spawn is) and *where* the nose goes — [`nose_mapping`] lands it on the
+/// runtime's forward axis — are designed; which stored axis is the nose
+/// ([`STORED_AIRCRAFT_NOSE_AXIS`]) is measured (#709).
 pub const PLAYTEST_AIRCRAFT_POSE_IS_DESIGNED: &str = "playtest-retail.aircraft-pose-is-designed";
 
 /// The camera views a capture drives.
@@ -283,9 +291,11 @@ pub const PLAYTEST_AIRCRAFT_INTACT_NODE_NAME: &str = "healthy";
 /// Measured: `dontmove` holds six propeller meshes (`staticprop1`, `prop1`,
 /// `prop1b`, `prop2`, `prop2b`, `nitroprop1`); which of them the original shows
 /// when is unmeasured (the node flag bits are), so exactly one is drawn — the one
-/// whose authored name says it is the static propeller (16 triangles at the nose,
-/// `z = +4.5`) — and the rest are listed as undrawn. This is a **name** read, a
-/// designed development choice, and it is why the propeller is provisional.
+/// whose authored name says it is the static propeller (16 triangles, whose
+/// mesh sits at `z ≈ +4.5`, behind the rudder at `z = +3.03`: this airframe's
+/// **tail**, not its nose — #709) — and the rest are listed as undrawn. This is
+/// a **name** read, a designed development choice, and it is why the propeller
+/// is provisional.
 pub const PLAYTEST_AIRCRAFT_PROP_NODE_SLOT: u32 = 2541;
 
 /// The authored name the pinned propeller node stores.
@@ -311,15 +321,78 @@ pub const SPAWN_FRACTION_Y: f64 = 0.55;
 /// amidships.
 pub const SPAWN_FRACTION_Z: f64 = 0.5;
 
-/// The aircraft's nose mapping: a half turn about the vertical axis.
+/// Which stored axis an airframe's nose is on: **`−Z`**, one rule for every
+/// airframe of `ZBD/planes.zbd`.
 ///
-/// The stored airframe's nose is `+Z` — measured: the propeller disc lies in the
-/// stored `x`/`y` plane and its node sits at `z = +4.80`, the fuselage mesh's own
-/// maximum — and the runtime's forward axis is `−Z`, so the scene's aircraft
-/// carries one half turn about `+Y`. The turn is a **designed** presentation
-/// choice; the hint it follows is what the bytes say. See
-/// [`PLAYTEST_AIRCRAFT_POSE_IS_DESIGNED`].
-pub const AIRCRAFT_NOSE_AXIS: [f32; 3] = [0.0, 1.0, 0.0];
+/// Measured with the production readers over all eleven scene airframes of
+/// `ZBD/planes.zbd`, from nodes whose meaning does not depend on where the
+/// propeller is: in every one, the **tail surfaces** — what the container's own
+/// authored `tail` node groups, or the rudder / horizontal tail where the
+/// modeler parented them elsewhere — compose **aft** of the authored cockpit
+/// node (`pilot` / `pilot_pos` / `pf_canopy` / `canopy`). `bloodhawk`: the
+/// `tail`-grouped rudder at `z = +3.03` against a canopy at `z = −1.16`;
+/// `warhawk`: the `tail`-grouped elevators at `z = +9.13` against a pilot at
+/// `z = +5.01`. Same sign for the other nine.
+///
+/// The **propeller is deliberately not evidence**. Its position is a property of
+/// the airframe's layout, not of its orientation: its composed `z` runs from
+/// −4.59 to +5.14 across the eleven, and `bloodhawk` is a rear-propeller layout
+/// whose disc sits at `z = +4.80`, behind its own rudder — reading that as the
+/// nose is exactly the mistake that made the drawn aircraft travel tail first
+/// (task #709, owner playtest feedback). See
+/// `docs/findings/2026-10-06-t709-airframe-nose-mapping.md` for the whole table.
+///
+/// The choice of *where* to put that nose — [`nose_mapping`] lands it on the
+/// runtime's forward axis — is the designed presentation decision recorded under
+/// [`PLAYTEST_AIRCRAFT_POSE_IS_DESIGNED`]; that the stored nose is `−Z` is
+/// measured.
+pub const STORED_AIRCRAFT_NOSE_AXIS: [f32; 3] = [0.0, 0.0, -1.0];
+
+/// The nose mapping: the **yaw** that carries an airframe's stored nose axis
+/// onto the runtime's forward axis (`cs_sim::flight::BODY_FORWARD`, `[0, 0, −1]`).
+///
+/// One rule for every airframe, not a per-aircraft constant: whatever axis the
+/// container's own layout puts the nose on, the drawn aircraft ends up with that
+/// end leading. Applied once per aircraft, to the composed transform of every
+/// drawn part (see [`AircraftPartAsset::oriented`]).
+///
+/// It is a yaw and nothing else: the mapping may turn the airframe about the
+/// vertical axis but never pitch or roll it, so it cannot change the aircraft's
+/// altitude or its handedness — a **rotation**, never a mirror. A stored nose
+/// axis that is not finite, or that has no horizontal component to turn, is
+/// refused rather than mapped by a guess.
+///
+/// # Errors
+///
+/// [`PlaytestError::NoseAxis`] when the axis is non-finite or vertical.
+pub fn nose_mapping(stored_nose: [f32; 3]) -> Result<bevy::math::Quat, PlaytestError> {
+    let [x, y, z] = stored_nose;
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return Err(PlaytestError::NoseAxis { axis: stored_nose });
+    }
+    // The yaw acts on the horizontal projection; the vertical component of a nose
+    // axis is not something a yaw can carry onto the forward axis.
+    let horizontal = bevy::math::Vec3::new(x, 0.0, z);
+    let length = horizontal.length();
+    // `x` and `z` are finite above, so this length is finite and non-negative.
+    if length <= f32::EPSILON {
+        return Err(PlaytestError::NoseAxis { axis: stored_nose });
+    }
+    let horizontal = horizontal / length;
+    // `BODY_FORWARD` is the body frame's own forward (`[0, 0, −1]`): in that
+    // frame the up axis is `+Y`, so a yaw about `+Y` is exactly "turn the
+    // airframe about its own vertical axis".
+    let [fx, _, fz] = cs_sim::flight::BODY_FORWARD;
+    let forward = bevy::math::Vec3::new(fx as f32, 0.0, fz as f32);
+    // The signed angle about `+Y`: `atan2` of the cross product's up component
+    // against the dot product, so `+Z → −Z` is exactly the half turn about `+Y`
+    // the stage used before, and the measured `−Z → −Z` is the identity.
+    let angle = horizontal.cross(forward).y.atan2(horizontal.dot(forward));
+    Ok(bevy::math::Quat::from_axis_angle(
+        bevy::math::Vec3::Y,
+        angle,
+    ))
+}
 
 /// The capture frame's width, in pixels.
 pub const CAPTURE_WIDTH: u32 = 640;
@@ -502,6 +575,13 @@ pub enum PlaytestError {
         /// How many of them bind a mesh.
         mesh_records: usize,
     },
+    /// A stored nose axis cannot be carried onto the runtime's forward axis by a
+    /// yaw: it is not finite, or it is vertical and so has no horizontal
+    /// component to turn.
+    NoseAxis {
+        /// The axis the caller asked for.
+        axis: [f32; 3],
+    },
     /// The area's geometry has no extent on any axis, so there is no scene to
     /// frame.
     DegenerateArea {
@@ -584,6 +664,11 @@ impl fmt::Display for PlaytestError {
                 f,
                 "the area's composed extent is {extent:?}, so every corner is one point and \
                  there is no scene to frame"
+            ),
+            Self::NoseAxis { axis } => write!(
+                f,
+                "the stored nose axis {axis:?} is not finite or has no horizontal component, \
+                 so no yaw can put it on the runtime's forward axis"
             ),
             Self::Capture(error) => write!(f, "{error}"),
             Self::Textures(error) => write!(f, "{error}"),
@@ -1763,15 +1848,19 @@ pub fn camera_poses(
 /// The position is a declared fraction ([`SPAWN_FRACTION_X`],
 /// [`SPAWN_FRACTION_Y`], [`SPAWN_FRACTION_Z`]) of the area's own **measured**
 /// extent, so a different area gets a different and still finite pose; the
-/// rotation is the declared half turn about [`AIRCRAFT_NOSE_AXIS`] that maps the
-/// measured stored nose (`+Z`) onto the runtime's forward axis (`−Z`). Both are
-/// design, recorded under [`PLAYTEST_AIRCRAFT_POSE_IS_DESIGNED`].
+/// rotation is [`nose_mapping`] applied to the measured stored nose
+/// ([`STORED_AIRCRAFT_NOSE_AXIS`], `−Z`), which lands that end on the runtime's
+/// forward axis (`−Z`) as the identity — the airframe is already stored
+/// nose-forward, so nothing is turned. The placement and the mapping are design,
+/// recorded under [`PLAYTEST_AIRCRAFT_POSE_IS_DESIGNED`]; which axis is the nose
+/// is measured.
 ///
 /// # Errors
 ///
-/// [`PlaytestError::NonFinite`] when the bounds are finite but the pose they
-/// produce is not, and [`PlaytestError::DegenerateArea`] when the area has no
-/// extent on any axis.
+/// [`PlaytestError::NoseAxis`] when [`STORED_AIRCRAFT_NOSE_AXIS`] cannot be
+/// carried onto the forward axis by a yaw, [`PlaytestError::NonFinite`] when the
+/// bounds are finite but the pose they produce is not, and
+/// [`PlaytestError::DegenerateArea`] when the area has no extent on any axis.
 pub fn spawn_pose(bounds: &Aabb) -> Result<([f32; 3], bevy::math::Quat), PlaytestError> {
     let extent = [
         bounds.max()[0] - bounds.min()[0],
@@ -1791,11 +1880,8 @@ pub fn spawn_pose(bounds: &Aabb) -> Result<([f32; 3], bevy::math::Quat), Playtes
             what: "the spawn pose",
         });
     }
-    let axis = bevy::math::Vec3::from(AIRCRAFT_NOSE_AXIS).normalize();
-    Ok((
-        pose,
-        bevy::math::Quat::from_axis_angle(axis, std::f32::consts::PI),
-    ))
+    let rotation = nose_mapping(STORED_AIRCRAFT_NOSE_AXIS)?;
+    Ok((pose, rotation))
 }
 
 // --------------------------------------------------------------- the material --
@@ -2483,8 +2569,10 @@ pub struct AircraftPartAsset {
 
 impl AircraftPartAsset {
     /// The placement under a body whose forward axis is the stored nose turned by
-    /// `rotation` (the designed half turn, [`PlaytestContent::rotation`]): the
-    /// nose mapping applied once, to the composed transform.
+    /// `rotation` (the nose mapping, [`PlaytestContent::rotation`]: the yaw
+    /// [`nose_mapping`] lands the measured stored nose on, the identity for the
+    /// measured `−Z` convention): the nose mapping applied once, to the composed
+    /// transform.
     #[must_use]
     pub fn oriented(&self, rotation: bevy::math::Quat) -> Transform {
         Transform::from_rotation(rotation) * self.local
@@ -2545,7 +2633,8 @@ pub struct PlaytestContent {
     pub world_meshes: usize,
     /// The designed spawn position (see [`spawn_pose`]), in metres.
     pub spawn: [f32; 3],
-    /// The designed half turn mapping the stored nose onto forward.
+    /// The designed nose mapping: the yaw that lands the measured stored nose on
+    /// forward (see [`nose_mapping`]; the identity for [`STORED_AIRCRAFT_NOSE_AXIS`]).
     pub rotation: bevy::math::Quat,
     /// The coordinate source the geometry was read under.
     pub adapter: SourceAdapter,

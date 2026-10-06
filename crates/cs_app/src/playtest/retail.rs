@@ -118,7 +118,9 @@ pub struct RetailContent {
     /// Half extents of the aircraft's collider: half the composed extent of the
     /// drawn set.
     pub half_extents_m: [f32; 3],
-    /// The half turn that maps the stored nose onto the flight body's forward.
+    /// The nose mapping that lands the stored nose on the flight body's forward
+    /// (the yaw of [`crate::playtest_retail::nose_mapping`]; the identity for the
+    /// measured `−Z` stored nose).
     pub visual_rotation: Quat,
     /// The aircraft's drawn bindings, each with its composed placement in the
     /// airframe and its pieces textured from the flown world's archive.

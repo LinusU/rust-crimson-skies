@@ -44,6 +44,11 @@
 #[path = "playtest_retail/textures.rs"]
 mod textures;
 
+// Task #709's tests (prefix `accept_playtest_nose_`) share this binary for the
+// same reason.
+#[path = "playtest_retail/nose.rs"]
+mod nose;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -56,9 +61,9 @@ use cs_app::playtest_retail::{
     PLAYTEST_AIRCRAFT_POSE_IS_DESIGNED, PLAYTEST_AIRCRAFT_ROOT_NAME, PLAYTEST_AREA_IS_DESIGNED,
     PLAYTEST_AREA_NODE_NAME, PLAYTEST_AREA_NODE_SLOT, PLAYTEST_COLLISION_IS_THE_DRAWN_MESH,
     PLAYTEST_LABEL, PLAYTEST_NEUTRAL_MATERIAL, PLAYTEST_UNIT_IS_DESIGNED,
-    PLAYTEST_VIEWS_ARE_DESIGNED, PLAYTEST_WORLD_GROUP, PlaytestConfig, PlaytestError, VIEW_COUNT,
-    camera_poses, playtest_adapter, read_playtest_sources, spawn_playtest_scene, spawn_pose,
-    teardown_playtest_scene,
+    PLAYTEST_VIEWS_ARE_DESIGNED, PLAYTEST_WORLD_GROUP, PlaytestConfig, PlaytestError,
+    STORED_AIRCRAFT_NOSE_AXIS, VIEW_COUNT, camera_poses, nose_mapping, playtest_adapter,
+    read_playtest_sources, spawn_playtest_scene, spawn_pose, teardown_playtest_scene,
 };
 use cs_app::world::WorldMeshAssets;
 use cs_content::world::{Aabb, WorldCollisionShape};
@@ -238,8 +243,9 @@ const MEASURED_AIRCRAFT_EXTENT: [f32; 3] = [2.111_164_6, 1.492_971_9, 10.233_251
 /// Checked against the **measured** composed extent rather than a made-up box:
 /// the spawn must be off the area's own side (so there is air to fly into), inside
 /// its height range (so it is not above or below the geometry), and amidships, and
-/// the rotation must be a half turn about the vertical axis — which is what maps
-/// the measured stored nose (`+Z`) onto the runtime's forward axis (`−Z`).
+/// the rotation must be `nose_mapping` applied to the measured stored nose
+/// (`−Z`, `STORED_AIRCRAFT_NOSE_AXIS`) — which carries that end onto the
+/// runtime's forward axis (`−Z`) without pitching or rolling the airframe.
 #[test]
 fn accept_playtest_retail_the_spawn_is_outside_the_measured_area_and_facing_forward() {
     let bounds = measured_bounds();
@@ -271,13 +277,21 @@ fn accept_playtest_retail_the_spawn_is_outside_the_measured_area_and_facing_forw
          {to_area} m"
     );
 
-    // A half turn about +Y maps the stored +Z nose onto the runtime's -Z.
-    let stored_nose = bevy::math::Vec3::Z;
+    // The measured stored nose is -Z, and the mapping is the yaw that carries it
+    // onto the runtime's forward axis (-Z). For this convention that is the
+    // identity — the airframe is stored nose-forward — and never a pitch, a roll
+    // or a mirror.
+    let stored_nose = bevy::math::Vec3::NEG_Z;
     let rotated = rotation * stored_nose;
     assert!(
-        (rotated + bevy::math::Vec3::Z).length() < 1e-5,
-        "the declared rotation must map the measured stored nose (+Z) onto the runtime's \
+        (rotated - bevy::math::Vec3::NEG_Z).length() < 1e-5,
+        "the declared rotation must map the measured stored nose (-Z) onto the runtime's \
          forward axis (-Z), got {rotated:?}"
+    );
+    assert_eq!(
+        rotation,
+        nose_mapping(STORED_AIRCRAFT_NOSE_AXIS).expect("the measured nose axis maps"),
+        "the spawn pose is the one measured nose-mapping rule, not a constant of its own"
     );
     assert!(
         (rotation * bevy::math::Vec3::Y - bevy::math::Vec3::Y).length() < 1e-5,
