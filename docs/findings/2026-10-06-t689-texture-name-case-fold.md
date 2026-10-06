@@ -164,31 +164,77 @@ AC03 (`accept_f08_c_same_name_texture_in_two_chapter_archives_resolves_per_world
 the upload boundary, the stale-state refusal, the failed-row and family
 refusals are all unchanged and still pass.
 
-## What this breaks outside this task's owner paths
+## The consequence in F10-C, and the owner's decision to absorb it
 
-`cargo test --workspace --locked` is **not** green on this branch. Exactly one
-test fails, and it is in `crates/cs_content/src/mesh.rs`, which is F10's owner
-path (`specs/F10-gamez-mesh-topology-and-material-records.md`), not this task's:
+Adopting the fold made exactly one workspace test false:
+`mesh::tests::accept_f10_c_02_audit_reports_a_missing_texture_with_its_exact_name_and_archive`
+(`crates/cs_content/src/mesh.rs`, F10's owner path). Its fixture stored a
+mixed-case `Sky1.tif` in a second archive and then asserted
+`resolve("Sky1.tif")` succeeds against it — false under the measured rule, of
+the original as much as of this crate: the request folds to `sky1.tif`, which
+that archive does not store, and `0x531280` reads the stored table verbatim, so
+no spelling of the request reaches a stored `Sky1.tif`.
 
-```
-mesh::tests::accept_f10_c_02_audit_reports_a_missing_texture_with_its_exact_name_and_archive
-panicked at crates/cs_content/src/mesh.rs:5041: the second archive stores `Sky1.tif`
-```
+**Owner decision 2026-10-06 (Linus / Claude M3), option (b):** this task may
+edit `crates/cs_content/src/mesh.rs` and the F10 finding, so the fold and its
+consequence land as one green commit. #702 was cancelled as absorbed. The
+scope was the failing test, the prose that contradicted the fold, and the F10
+finding's byte-equality sentences — nothing else.
 
-Its fixture stores a mixed-case `Sky1.tif` and then asserts that
-`resolve("Sky1.tif")` succeeds against it. Under the measured rule that
-assertion is false of the original as well as of this crate: the request folds
-to `sky1.tif`, which the archive does not store, so no spelling of that request
-reaches the stored `Sky1.tif` (`0x531280` reads the table verbatim). The
-sibling test `accept_f10_c_02_audit_neither_folds_case_nor_strips_an_extension`
-still passes and keeps its meaning.
+What changed there, and why each edit was required:
 
-This is filed as **#702**, which owns the fix and the now-incorrect "byte
-equality" prose at `mesh.rs:1596`. It depends on this task, so it becomes
-ready once #689 lands. This task does not touch that file: doing so would mean
-editing another feature's owner path and its acceptance test, which is out of
-scope here, and the conflict is a consequence of the measurement rather than a
-defect in this change.
+| Edit | Why the measurement forces it |
+| --- | --- |
+| the second fixture archive stores `sky1.tif` (the folded spelling) and keeps `Sky1.tif` verbatim | the test's purpose is that a fallback must not happen; the folded spelling is now the one a fallback would find, so it is the stronger fixture. The stored `Sky1.tif` stays to pin that a mixed-case **stored** name is unreachable |
+| the three-spelling loop asserts the resolved `TextureId` name is `sky1.tif` | proves the fold in force in F10's path and that identity is the archive's spelling, not the request's |
+| module doc, `MissingTexture`, `TextureNameRule` and the two test docs no longer say "no case folding" / "byte equality" | those sentences are now false; the rule folds the request and still strips no extension |
+| `accept_f10_c_02_audit_neither_folds_case_nor_strips_an_extension` keeps its name and every assertion | the owner required it to pass with its meaning intact, and it does — see below |
+
+That last test needed no assertion change, and it is worth being precise about
+why. Its fixture stores `sky1` and `ground` and requests `Sky1.tif`, `sky1`,
+`ground`, expecting `missing, resolved, resolved`. Under the fold `Sky1.tif`
+becomes `sky1.tif`, which the archive does not store — the archive holds a bare
+stem — so the row is still missing and the expectations are untouched. Its name
+is now half a historical artifact: the fold *is* applied, and the extension is
+what the fold cannot rescue. The doc comment says so, and the test's own
+assertions carry the weight it always did.
+
+### The fold changes no retail F10-C number
+
+The F10-C finding reports that the exact rule resolves **10 of 3 543** audit
+rows. That number is unchanged, and it was worth measuring rather than
+assuming, because a fold that quietly resolved rows would have made the
+headline wrong.
+
+Measured with the production readers only
+(`read_gamez_materials` + `TextureCatalog::resolve` over each world's own
+`texture.zbd`, comparing every distinct name a textured material references
+against its archive as stored and against its ASCII-folded spelling):
+
+| World | distinct names used | resolve as stored | resolve folded | newly resolved |
+| --- | --- | --- | --- | --- |
+| `ZBD/C1` | 551 | 0 | 0 | 0 |
+| `ZBD/C1B` | 309 | 0 | 0 | 0 |
+| `ZBD/C1C` | 275 | 0 | 0 | 0 |
+| `ZBD/C2` | 479 | 5 | 5 | 0 |
+| `ZBD/C2B` | 266 | 0 | 0 | 0 |
+| `ZBD/C3` | 443 | 5 | 5 | 0 |
+| `ZBD/C4` | 635 | 0 | 0 | 0 |
+| `ZBD/C5` | 563 | 0 | 0 | 0 |
+| **sum** | **3 521** | **10** | **10** | **0** |
+
+The per-world distinct counts reproduce F10-C's table exactly, which is the
+check that the measurement is the same one. **The fold newly resolves nothing**,
+because every container name that differs in case also carries an extension the
+archive does not store: folding `Sky1.tif` yields `sky1.tif`, never `sky1`. The
+resolution needs an extension stripped, which the original does not do here and
+neither does this crate. So the fold is a fidelity gain with **no** effect on
+the audit's retail output — the 3 481 `missing_texture` rows stay missing, and
+the ten that resolve are the extension-less lower-case names F10-C already
+identified.
+
+This also bounds the divergence: adopting the fold cannot have introduced a
+wrong retail resolution, because it introduced no retail resolution at all.
 
 ## Recorded unknowns and limitations
 
@@ -227,6 +273,13 @@ defect in this change.
 | `accept_f08_c_case_fold_a_stored_name_is_never_merged_by_the_fold` | identity keeps all five stored spellings (`Sky`, `sky`, `Mixed`, `dup`, `dup`) as five ids; `Sky` and `sky` stay distinct; a name stored twice is still `duplicate_texture_name` naming both entries for `dup`/`DUP`/`Dup`; the catalog rows are unchanged by the fold |
 | `accept_f08_c_case_fold_retail_stored_names_are_already_folded` (ignored) | the census on the real installation, all 49 archives: every stored name is already the folded spelling, no two fold onto one, every table is sorted; 64 mixed-case requests per archive reach the same entry, id and upload as the lower-case request |
 
+The F10-C audit path is pinned by `accept_f10_c_02_audit_reports_a_missing_texture_with_its_exact_name_and_archive`
+(`crates/cs_content/src/mesh.rs`): the row is `missing_texture` naming the
+container's exact stored name and the exact archive, while the second archive
+of the same world stores the folded spelling `sky1.tif` — so a fallback would
+succeed and must not be taken — and every spelling of the request resolves to
+the stored `sky1.tif` rather than to the stored `Sky1.tif`.
+
 The three synthetic fixtures are newly authored bytes built in the test
 module; the retail test reads `$CS_GAME_DIR` only and commits nothing from it.
 
@@ -251,17 +304,40 @@ accept_f08_c_case_fold` run, and the file restored:
 | `texture_lookup_order` folds through `str::to_lowercase` again | 1 fails |
 | the fold made into an alias that falls back to another archive | 2 fail |
 
+Re-probed on the reviewed tree with the selection
+`accept_f10_c_02 accept_f08_c_case_fold` (11 tests, 2 retail-ignored), after the
+F10-C fixture was corrected. Each mutation was applied to
+`crates/cs_content/src/textures.rs`, run, and the file restored from a copy:
+
+| Mutation | Selection | F10-C test alone |
+| --- | --- | --- |
+| `resolve` compares the request exactly again | 5 fail | fails |
+| `resolve` folds the stored names too | 5 fail | fails |
+| `resolve` uses `eq_ignore_ascii_case` on both sides | 5 fail | fails |
+| `folded_texture_name` uses Unicode `to_lowercase` | 2 fail | passes (F08-C only) |
+
+The first three are now caught by the F10-C fixture as well as by F08-C's, which
+is the point of strengthening it: the audit path is a real consumer of the fold,
+so it witnesses it. The fourth is caught by the fold's own ASCII tests and is
+not observable through the audit, whose fixture names are ASCII.
+
 ## Checks run on this branch (2026-10-06)
 
 | Command | Result |
 | --- | --- |
 | `cargo fmt --all -- --check` | clean |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | clean |
-| `cargo test --workspace --locked` | **one pre-existing F10-C test fails** — `mesh::tests::accept_f10_c_02_audit_reports_a_missing_texture_with_its_exact_name_and_archive`. Everything else passes (232 passed, 1 failed, 33 ignored in `cs_content`'s lib; the rest of the workspace green). See "What this breaks outside this task's owner paths" and #702 |
-| `cargo test --workspace --locked -- --skip <that one test>` | the rest of the workspace is green |
-| `cargo test --workspace --locked -- accept_f08_c_case_fold --include-ignored` | 4 passed, 0 failed (3 synthetic + the retail one) |
-| `cargo test -p cs_content --locked --lib -- accept_f08_c` | 16 passed, 0 failed, 3 ignored — every F08-C test, including the one whose case assertion changed |
-| `env -u CS_GAME_DIR cargo test -p cs_content --locked --lib -- accept_f08_c_case_fold --include-ignored` | the retail test **fails** with "CS_GAME_DIR must point at the original installation for this test"; the three synthetic ones pass |
+| `cargo test --workspace --locked` | **green: 395 suites, 0 failed, 462 ignored.** This is the check that was red before the F10-C fix; the fold and its consequence now land as one green commit |
+| `cargo test --workspace --locked -- accept_f08_c_case_fold --include-ignored` | 4 passed, 0 failed (3 synthetic + the retail one, 49 archives / 37 004 names) |
+| `cargo test -p cs_content --locked --lib -- accept_f10_c_02 --include-ignored` | 9 passed, 0 failed — all nine F10-C.02 tests including the retail one and the corrected fixture |
+| `cargo test -p cs_content --locked --lib -- accept_f08_c` | every F08-C test passes, including the one whose case assertion changed |
+| `env -u CS_GAME_DIR cargo test --workspace --locked -- accept_f08_c_case_fold --include-ignored` | **fails loudly** (exit 101) with "CS_GAME_DIR must point at the original installation for this test"; the three synthetic ones pass |
+
+Implementer for this revision: bunny-alpha-1/bunny-alpha-1, resuming the branch
+after bunny-2/bunny-2's implementation and the owner's option-(b)
+authorization. The `0x531930` disassembly and the 49-archive census were
+re-derived on this machine rather than taken on trust; the retail F10-C row
+counts are new measurements (see above).
 
 No evidence report: this task's retail use is a header and name-table census a
 test observes, following F08-C, F08-B and T352's precedent. The fingerprinted
