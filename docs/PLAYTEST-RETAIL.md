@@ -28,7 +28,7 @@ test asserts it verbatim and asserts that it never contains `M01`, `faithful`,
 | area | the node subtree of stored node slot **517**, authored name `piratezep` | a record of the world node's own stored child list; measured 793 nodes, 401 of them binding a mesh, **8 673 stored triangles**, composed extent 106.3 × 217.7 × 839.5 canonical m |
 | aircraft container | `ZBD/planes.zbd` | the shared aircraft archive |
 | aircraft airframe | the root named **`bloodhawk`**, found by name through the production `SceneGraph::root` | F11's identity rule: an airframe references a root in PLANES.ZBD, never a mesh-array position |
-| aircraft meshes | the **whole intact airframe** (#665): the subtree of node slot **2296** `healthy`, one LOD band (`nearest`, slot 2299) selected by the F11-B rule, plus the static propeller node slot **2541** `staticprop1` | measured 16 mesh bindings, 927 triangles, composed extent about 11.6 × 2.7 × 10.6 units; 24 of the airframe's 40 bindings are listed as undrawn |
+| aircraft meshes | the **whole intact airframe** (#665): the subtree of node slot **2296** `healthy`, one LOD band (`nearest`, slot 2299) selected by the F11-B rule, plus the propeller node slot **2541** `staticprop1`, drawn and spun about its measured hub (#710) | measured 16 mesh bindings, 927 triangles, composed extent about 11.6 × 2.7 × 10.6 units; 24 of the airframe's 40 bindings are listed as undrawn |
 
 The **same** area cannot be had from the partition-grid import, and that is the
 gap this stage closes. Measured over `ZBD/C1C/gamez.zbd`:
@@ -67,6 +67,8 @@ a constant in `playtest_retail.rs`.
 | world boundary | an explicit **unknown**; no invisible wall | #629's claim |
 | spawn | `min + (−0.6·width, 0.55·height, 0.5·depth)` of the measured extent → `(−116.97, −40.85, 196.86)` | `playtest-retail.aircraft-pose-is-designed` |
 | aircraft nose | `nose_mapping`'s yaw landing the **measured** stored nose (`−Z`, `STORED_AIRCRAFT_NOSE_AXIS`: the container's tail surfaces compose aft of the cockpit in all eleven scene airframes) onto the runtime's forward axis (`−Z`) — the identity, so nothing is turned. Measured axis, designed mapping (#709) | same |
+| propeller spin rate | 1 rev/s at idle rising linearly to 6 rev/s at full throttle, read from the flight model's **engine spool**; `0` while the engine is stopped, frozen while paused; only the propeller child's own local `Transform` is written, never the flight body's pose (#710) | `playtest-retail.propeller-spin-rate-is-designed` |
+| propeller spin sense | the measured disc normal oriented **aft** (away from the measured `−Z` nose) with the right-hand rule about it. The axis and pivot themselves are **measured** from the disc's own 16 triangles, not chosen: see "The propeller spin" below (#710) | `playtest-retail.propeller-spin-sense-is-designed` |
 | camera views | three, derived from the measured bounds and the aircraft's own extent (see below) | `playtest-retail.camera-views-are-designed` |
 | lighting | key `3.2` lux, fill `0.45 ×` the key, both aimed at the view's target | `playtest-retail.camera-views-are-designed` |
 | clear sky | opaque `(0.36, 0.52, 0.72)`, declared, not a claim about the original's sky | same |
@@ -84,6 +86,39 @@ as metres, so the framing holds for a different aircraft:
 | `chase` | `(−1.8·length, +0.7·height, +0.6·length)` = `(−135.39, −39.80, 203.00)` | the spawn | **abeam, outboard.** Behind the aircraft it would show a 2 m cross-section (measured: 807 aircraft pixels); outboard, because an inboard eye puts the *camera* between the aircraft and the area and frames only sky (measured: refused as `NoEnvironment`) |
 | `quarter` | `(−1.4·length, +1.2·height, −1.6·length)` = `(−131.30, −39.06, 180.48)` | the spawn | the same placement from higher and further forward, so the second aircraft frame is a different angle rather than the same one twice |
 | `overview` | `centre + (−0.42·span_x, +0.36·span_y + 3·height, +0.5·span_z)` = `(−44.66, 31.13, 616.61)` | the area's centre | frames the **area**: the whole airship with the aircraft a measured speck in front of it |
+
+### The propeller spin (task #710, `PLAYTEST-PROP-SPIN`)
+
+The one drawn disc (`staticprop1`, slot 2541) turns with the engine. Its **hub
+is measured, not chosen**: `measure_propeller_hub` takes the area-weighted
+normal of the disc's own 16 triangles — sign-aligned to the largest triangle's
+winding first, because a stored mesh's winding is a rendering convention — and
+the area-weighted centroid of them, orients the normal aft, and refuses a
+surface thicker than it is wide rather than inventing a plane for it. Measured on
+the pinned pair:
+
+| quantity | value |
+| --- | --- |
+| axis (mesh frame, unit, aft) | `[1.43e-9, −3.91e-10, 1.0]`, i.e. the body's `Z` once the node composes it |
+| pivot (mesh frame) | `[2.23e-8, −0.019357, 4.681585]` canonical metres, composed unchanged by the node |
+| radius / thickness | `1.2529 m` / `0.1680 m` |
+| triangles | 16 |
+
+The **rate** is designed (`playtest-retail.propeller-spin-rate-is-designed`):
+1 rev/s at idle rising linearly to 6 rev/s at full throttle, read from the
+flight model's engine spool, `0` while the engine is stopped, frozen while
+paused, and exactly one entity survives an `R` reset. Which stored propeller
+state the original showed at which speed is unmeasured, so **no** blur-disc
+swap rule is adopted: only `staticprop1` is drawn and spun, while `prop1`,
+`prop1b`, `prop2`, `prop2b` and `nitroprop1` stay listed in `aircraft_undrawn`.
+The startup `playtest sources` line and the smoke `report.json` carry the whole
+rule, both claim ids, the shown mesh and the measured hub under
+`propeller_spin`.
+
+```sh
+CS_GAME_DIR="$CS_GAME_DIR" cargo test -p cs_app --test playtest_retail -- \
+  accept_playtest_prop_spin_ --include-ignored
+```
 
 ## The captures
 
@@ -166,6 +201,8 @@ the digests above.
 | the original's world-vertex unit and coordinate handedness | every metre in this document is "stored units × a declared factor" | #436 (blocked) |
 | the original's collision classification | the area's records are declared solid; whether the original collided a panel the same way is unmeasured | — |
 | how the 2000 engine oriented an airframe | which stored axis is the nose is now measured from the container's own authored names (`−Z`: the tail surfaces compose aft of the cockpit in all eleven scene airframes, #709 and `docs/findings/2026-10-06-t709-airframe-nose-mapping.md`), and the mapping onto the runtime's forward axis is a designed choice; that the original engine read its own airframes the same way is still unmeasured | an original run |
+| how fast and which way the 2000 engine turned a propeller | the hub **axis and pivot** are measured from the disc's own triangles (#710), but the rate curve and the spin sense are designed claims (`playtest-retail.propeller-spin-rate-is-designed`, `playtest-retail.propeller-spin-sense-is-designed`) | an original run |
+| which stored propeller state the original showed at which speed | only `staticprop1` is drawn and spun; `prop1`, `prop1b`, `prop2`, `prop2b` and `nitroprop1` are listed undrawn rather than swapped in at a guessed throttle (#710) | an original run |
 | the container-wide `c1c` hierarchy is inconsistent (node 642 names parent slot 0, which the world record's child list does not name back), so the scene graph is built over the documented subtree through the **same** production validator | one production rule, a narrower node set | the `scene_node` id blocker in `docs/findings/2026-10-04-m01-lc-world-import.md` |
 | the mesh identity is per-container (`c1c.mesh-<n>`, `planes.mesh-<n>`) | two containers can hold the same mesh under different ids | #638 |
 | the original's lighting, sky, weather and audio | this stage declares its own | — |

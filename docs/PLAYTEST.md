@@ -22,7 +22,8 @@ cargo run --locked -p cs_app --bin cs -- --playtest --cs-path "$CS_GAME_DIR" --w
 Window title and banner: **ORIGINAL ASSETS / DEVELOPMENT FREE FLIGHT /
 PROVISIONAL TUNING**. You fly the whole intact original `bloodhawk`
 (`ZBD/planes.zbd`: 16 mesh bindings, 927 triangles: fuselage, wings, ailerons,
-elevators, rudder, canopy, pilot and a static propeller) beside one original airship
+elevators, rudder, canopy, pilot and the propeller disc, which spins with the
+engine) beside one original airship
 of `ZBD/C1C/gamez.zbd` (subtree `piratezep`, 401 mesh records, 8 673
 triangles). The controls below are the same. The airship's colliders are derived
 from the triangles it draws: fly into it and the HUD counts an obstacle
@@ -47,19 +48,35 @@ What is provisional (all labelled, none original behaviour):
 * The aircraft's collider is **one box** measured from the composed extent of the
   drawn set (wingspan included), centred on the flight body; the parts do not
   collide individually.
-* The propeller is **static** (`staticprop1` only, picked by its authored name;
-  the other five propeller meshes, whose use is unmeasured, are not drawn), no
-  control surface moves, and the engine-detail band `l12`, the shadow and the wreck
-  pieces are not drawn. The drawn LOD band (`nearest`) is selected at a designed
-  20 m viewer distance and never changes in flight. Every undrawn binding is listed
-  with its reason in the `playtest sources` line and the smoke `report.json`
-  (`aircraft_undrawn`), next to `aircraft_mesh_bindings`, `aircraft_triangles` and
-  `aircraft_selection`. Measured (#709): that propeller is at the **tail** — its
-  `dontmove` siblings `prop1`/`prop1b` compose at `z = +4.80` and
-  `prop2`/`prop2b`/`nitroprop1` at `z = +4.56`, behind the rudder at
-  `z = +3.03`, and the drawn disc's own 16 triangles sit at `z ≈ +4.5` — so
-  spinning it (PLAYTEST-PROP-SPIN) means the body's `Z` axis at that rear pivot,
-  not a nose-mounted hub.
+* The propeller **spins with the engine** (#710, still provisional). The one
+  drawn disc is `staticprop1` (picked by its authored name; the other five
+  propeller meshes, whose use is unmeasured, are not drawn), and its hub is
+  **measured from its own 16 triangles**: the area-weighted normal and centroid
+  of the disc, with the normal's sign oriented aft. Measured: axis `[0, 0, 1]`,
+  pivot `x ≈ 2.2e-8, y ≈ −0.0194, z ≈ +4.682`, radius `1.253 m`, thickness
+  `0.168 m` — so it turns about the body's own `Z` axis at that rear pivot, and
+  it sits under `propeller_spin.hub` in the `playtest sources` line and the
+  smoke `report.json`. The rate is a **designed** curve, not a measurement
+  (`playtest-retail.propeller-spin-rate-is-designed`): 1 rev/s at idle rising
+  linearly to 6 rev/s at full throttle, driven by the flight model's engine
+  **spool**, so it spools up and down instead of jumping. A stopped engine stops
+  it, a pause freezes it, `R` reset leaves exactly one of them, and only the
+  propeller child's own local `Transform` is written — the flight body's pose is
+  never touched. Provisional in both directions: which mesh the original shows at
+  which speed is unmeasured (no blur-disc swap rule is adopted — only
+  `staticprop1` is drawn and spun), and which way it turns is a designed
+  convention too (`playtest-retail.propeller-spin-sense-is-designed`).
+* No control surface moves, and the engine-detail band `l12`, the shadow and the
+  wreck pieces are not drawn. The drawn LOD band (`nearest`) is selected at a
+  designed 20 m viewer distance and never changes in flight. Every undrawn binding
+  is listed with its reason in the `playtest sources` line and the smoke
+  `report.json` (`aircraft_undrawn`), next to `aircraft_mesh_bindings`,
+  `aircraft_triangles` and `aircraft_selection`. Measured (#709): that propeller
+  is at the **tail** — its `dontmove` siblings `prop1`/`prop1b` compose at
+  `z = +4.80` and `prop2`/`prop2b`/`nitroprop1` at `z = +4.56`, behind the rudder
+  at `z = +3.03`, and the drawn disc's own 16 triangles sit at `z ≈ +4.5` — which
+  is why the spin axis is measured from the disc rather than assumed to be a
+  nose-mounted hub.
 * Nose direction (#709): the drawn airframe leads with its nose. The stored nose
   is the **measured** `−Z` — the container's own tail surfaces compose aft of
   the cockpit node in all eleven scene airframes — and
@@ -129,6 +146,9 @@ pause state and collisions, all read from the simulated aircraft.
 * Flight: the production F24 fixed-wing model through `spawn_flight_body` and
   `FlightForcesPlugin`, in the F23 Avian adapter at 120 Hz. Nothing writes the
   aircraft's `Transform`.
+* Propeller: presentation only — `playtest::propeller` reads the same F24
+  engine state the forces read and writes the disc child's own local
+  `Transform` about its measured hub. It never writes the flight body's pose.
 * Input: Bevy keyboard, F22 `BevyInputPlugin`, `InputSession` policy.
 * Camera: the F21 chase `CameraRig`, resolved from the authoritative pose.
 * Collision: Avian contacts with the tower and the ground.
