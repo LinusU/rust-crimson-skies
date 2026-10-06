@@ -1118,10 +1118,16 @@ impl ClientTransport {
     /// hang-up and one the pinned layer had already refused are no longer the
     /// same `Ok` to a session owner (F54-C error propagation).
     pub fn disconnect(&mut self) -> Result<(), TransportError> {
+        // `RenetClient::get_packets_to_send` answers nothing for a client
+        // already marked disconnected, so whatever the caller queued last (the
+        // farewell of `ClientSession::leave`) must reach the socket *before*
+        // the mark. The second flush then lets the netcode layer send its own
+        // disconnect packet. Either refusal is this hang-up's verdict; the
+        // hang-up itself happens regardless.
+        let flushed = self.transport.send_packets(&mut self.client);
         self.client.disconnect();
-        self.transport
-            .send_packets(&mut self.client)
-            .map_err(TransportError::from)
+        let hung_up = self.transport.send_packets(&mut self.client);
+        flushed.and(hung_up).map_err(TransportError::from)
     }
 
     /// Advances the connection layers, sends the hello once the connection

@@ -2316,6 +2316,38 @@ fn accept_f54_c_the_client_leaves_reliably_and_the_host_departs_it() {
 }
 
 #[test]
+fn accept_f54_c_the_farewell_reaches_the_host_without_another_client_pump() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    live_fixture(|| {
+        let mut link =
+            Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))?;
+        let peer = link.client.grant().expect("a grant exists").peer;
+
+        link.client.leave().expect("the farewell sends");
+        // The client is never pumped again: only what `leave` itself wrote to
+        // the socket can tell the host. A few rounds is the bound on purpose —
+        // the connection layer's own silence timeout would also depart the
+        // peer, but only after seconds of simulated time, which is not the
+        // farewell.
+        for _ in 0..8 {
+            link.host_notices.extend(link.host.pump(STEP));
+            if link.host_has(|notice| matches!(notice, ServerNotice::PeerLeft { .. })) {
+                break;
+            }
+        }
+        assert!(
+            link.host_has(|notice| matches!(notice, ServerNotice::PeerLeft { .. })),
+            "the host acted on the farewell alone: {:?}",
+            link.host_notices
+        );
+        assert!(!link.host.members().any(|member| member == peer));
+        Ok(())
+    });
+}
+
+#[test]
 fn accept_f54_c_a_refused_client_is_told_why_and_then_hung_up_on() {
     let _loopback = loopback();
 
