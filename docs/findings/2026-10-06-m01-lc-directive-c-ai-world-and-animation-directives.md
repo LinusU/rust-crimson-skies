@@ -38,7 +38,7 @@ names the address that carries it.
 The review is recorded here because `AGENTS.md` requires it and because it is
 **not** independent evidence: a review by the agent that wrote the text is not a
 second opinion, and no agent review replaces the owner's human review. What the
-review did buy is that the eight corrections in "Corrections made in review"
+review did buy is that the nine corrections in "Corrections made in review"
 below are measurements the reviewer re-derived from the executable rather than
 inherited from the draft — the draft's `TRAVELERS` subject-mode analysis was
 wrong, and it was wrong in a direction that would have made stage `E` implement
@@ -513,7 +513,8 @@ with 12-byte records `{strdup(name), anim handle, state}`:
 
 The evaluator `0x4697a0` (tick gate, `0x46a894`) counts, over the records, those
 whose `0x4ed530(anim)` equals the wanted state and returns
-`matches >= required` (`cmp ebp, [edx]; setge al`, `0x4697f6`).
+`matches >= required` (the required count is `[edx]`, loaded into `ecx` at
+`0x4697f1`; `cmp ebp, ecx` at `0x4697f6` and `setge al` at `0x4697f9`).
 
 `0x4ed530(anim)` returns the byte `anim->[0xa0]`, and the debug-name table the
 engine builds at `0x4ed550` (24-byte entries at `0x727f20`) names that enum:
@@ -577,10 +578,10 @@ of listed pairs and a sibling `COMPLETION_COUNT`, when spelled, replaces it.
 
 ## Corrections made in review (2026-10-06)
 
-The reviewer re-disassembled every cited handler instead of trusting the draft
-and found eight wrong statements in it. They are corrected in place above; this
-section exists so the owner can see what the draft had wrong, because the draft
-was already pushed to this task's branch.
+The reviewer re-derived each corrected claim from the executable instead of
+trusting the draft, and found nine wrong statements in it. They are corrected
+in place above; this section exists so the owner can see what the draft had
+wrong, because the draft was already pushed to this task's branch.
 
 1. **`TRAVELERS`' subject mode is polarity-dependent** (the substantive one).
    The draft said `+0x59c` "has no effect in this mode" — it observed that
@@ -613,6 +614,9 @@ was already pushed to this task's branch.
 8. **`ANIM_STATE`'s `COMPLETION_COUNT` overwrites `required`** — it can raise it
    as well as lower it — and the out-parameter pushed at `0x4693ae` is a pointer
    to the header's first field, not merely "the header's first field".
+9. **The `ANIM_STATE` evaluator's final compare was quoted one operand off**:
+   `0x4697f6` is `cmp ebp, ecx` (with `ecx` loaded from `[edx]` at `0x4697f1`)
+   and `setge al` sits at `0x4697f9`, not `cmp ebp, [edx]` at `0x4697f6`.
 
 ## Unknowns (each with its evidence)
 
@@ -665,7 +669,8 @@ spells, and the shipped arguments for every one of their sites are pinned by
 written against measured behaviour rather than against key names.
 
 What stage E must **not** do on this evidence: treat the wake guards, the
-`WAKEUP_TURRETS` digit wildcard, the `TRAVELERS` exact-equality case or the
-`ANIM_STATE` count override as details to tidy. Each is a measured part of the
-original's behaviour, and three of them are the difference between a directive
-that works and one that silently does nothing.
+`WAKEUP_TURRETS` digit wildcard, the `TRAVELERS` polarity and its
+exact-equality case, or the `ANIM_STATE` count override as details to tidy.
+Each is a measured part of the original's behaviour, and the wake guards, the
+wildcard and the polarity are each the difference between a directive that
+works and one that silently does nothing.
