@@ -146,11 +146,31 @@ fn evidence_report_m01_lc_fvol_roles_writes_the_acceptance_report() {
         bevy: locked_version("bevy"),
         avian: locked_version("avian3d"),
     };
+    // The timestamp is a measured instant, not a shape: the calendar maths
+    // behind it is asserted here so a broken conversion can never write a
+    // report the validator has to reject later.
+    let created_at = iso_utc_now();
+    assert_eq!(
+        (
+            created_at.len(),
+            created_at.as_bytes()[4],
+            created_at.as_bytes()[7],
+            created_at.as_bytes()[10]
+        ),
+        (20, b'-', b'-', b'T'),
+        "the report's timestamp must be an ISO-8601 instant: {created_at}"
+    );
+    let year: i64 = created_at[..4].parse().expect("the year is four digits");
+    assert!(
+        (2000..2100).contains(&year),
+        "the report's year is plausible for this run: {created_at}"
+    );
+
     let report = format!(
         "{{\n \"schema_version\": 1,\n \"task_id\": \"M01-LC-FVOL-ROLES\",\n \"candidate_tree\": {},\n \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \"capabilities\": [\"retail\", \"synthetic\"],\n \"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": [],\n \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
         jstr(&candidate_tree),
         engine_json(&engine),
-        jstr(&iso_utc_now()),
+        jstr(&created_at),
         str_array(&argv),
         jstr(&git(&["rev-parse", "--show-toplevel"])),
         exit_code,
@@ -401,9 +421,9 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let shifted = days + 719_468;
     let era = shifted.div_euclid(146_097);
     let day_of_era = shifted.rem_euclid(146_097);
-    let year = day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096;
-    let year = year + era * 400;
-    let day_of_year = day_of_era - (365 * year + year / 4 - year / 100);
+    let year_of_era = day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let shifted = (day_of_year * 5 + 2) / 153;
     let day = (day_of_year - (shifted * 153 + 2) / 5 + 1) as u32;
     let month = if shifted < 10 {
