@@ -1127,22 +1127,22 @@ fn survey() -> Survey {
         if !relative.to_ascii_lowercase().ends_with("/zrdr.zbd") {
             continue;
         }
-        let level = if relative.eq_ignore_ascii_case("ZBD/zrdr.zbd") {
-            ReaderLevel::Root
-        } else if relative.split('/').count() == 3 {
-            ReaderLevel::World
-        } else {
-            ReaderLevel::Mission
+        // `ZBD/zrdr.zbd` is the root archive, `ZBD/<group>/zrdr.zbd` the
+        // world's and `ZBD/<group>/<mission>/zrdr.zbd` the mission's; the
+        // original mounts no other reader archive (finding section A).
+        let components: Vec<&str> = relative.split('/').collect();
+        let level = match components.as_slice() {
+            ["ZBD", "zrdr.zbd"] => ReaderLevel::Root,
+            ["ZBD", _, "zrdr.zbd"] => ReaderLevel::World,
+            ["ZBD", _, _, "zrdr.zbd"] => ReaderLevel::Mission,
+            other => panic!("{relative} is not a reader archive path: {other:?}"),
         };
-        let world_group = relative.split('/').nth(1).map(|group| {
-            WorldGroup::new(&format!("zbd/{group}"))
+        let world_group = (level != ReaderLevel::Root).then(|| {
+            WorldGroup::new(&format!("zbd/{}", components[1]))
                 .expect("a valid world group")
                 .logical_key()
         });
-        let mission = relative
-            .split('/')
-            .nth(2)
-            .map(|mission| mission.to_ascii_lowercase());
+        let mission = (level == ReaderLevel::Mission).then(|| components[2].to_ascii_lowercase());
         let archive = retail(
             &format!("reader-{}", archives.len()),
             relative,
