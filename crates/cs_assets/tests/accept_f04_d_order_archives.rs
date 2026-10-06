@@ -45,6 +45,7 @@
 
 mod common;
 
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -65,6 +66,11 @@ use cs_types::install::RelativePath;
 
 /// The acceptance prefix of this task.
 const PREFIX: &str = "accept_f04_d_order_archives_";
+
+/// How many acceptance tests this suite holds: eleven synthetic and four
+/// retail ones. The evidence harness checks the recorded run reports exactly
+/// this many task tests, so a test renamed or dropped cannot pass unnoticed.
+const TASK_TESTS: usize = 15;
 
 // -------------------------------------------------------------- fixtures ---
 
@@ -1201,36 +1207,93 @@ fn retail_discovery() -> &'static install::Discovery {
 
 // ------------------------------------------------------- evidence harness ---
 
-/// A parsed result line of the acceptance run.
+/// What the recorded acceptance run reported about the task's own tests.
+#[derive(Debug, Default)]
 struct Suite {
+    /// Tests that ran and passed.
     passed: usize,
-    assertions: Vec<(String, String)>,
+    /// Tests that ran and failed.
+    failed: usize,
+    /// Tests that were discovered but ignored (they were not run).
+    ignored: usize,
+    /// Tests that ran at all.
+    executed: usize,
+    /// Tests the run discovered.
+    discovered: usize,
+    /// Each task test and its status, `pass` or `fail`.
+    assertions: Vec<(String, &'static str)>,
 }
 
-/// Reads the task-prefixed test results out of the recorded run's log.
-fn parse_suite(log: &str) -> Suite {
-    let mut suite = Suite {
-        passed: 0,
-        assertions: Vec::new(),
-    };
-    for line in log.lines() {
-        let Some(rest) = line.trim().strip_prefix("test ") else {
-            continue;
-        };
-        let Some(rest) = rest.strip_suffix(" ... ") else {
-            continue;
-        };
-        let Some((name, status)) = rest.rsplit_once("... ") else {
-            continue;
-        };
-        if !name.starts_with(PREFIX) {
-            continue;
-        }
-        if status == "ok" {
-            suite.passed += 1;
-        }
-        suite.assertions.push((name.to_owned(), status.to_owned()));
+/// The `N ignored` of one `test result:` summary line.
+fn ignored_count(summary: &str) -> Option<usize> {
+    summary.split(';').find_map(|segment| {
+        let words: Vec<&str> = segment.split_whitespace().collect();
+        words
+            .windows(2)
+            .find_map(|pair| (pair[1] == "ignored").then(|| pair[0].parse::<usize>().ok())?)
+    })
+}
+
+fn record(suite: &mut Suite, name: &str, status: &'static str) {
+    if status == "pass" {
+        suite.passed += 1;
+    } else {
+        suite.failed += 1;
     }
+    suite.assertions.push((name.to_owned(), status));
+}
+
+/// Reads the task-prefixed results out of the recorded run's log.
+///
+/// Both cargo layouts are understood: the `test <name> ... ok` lines of a
+/// default run and the same lines **wrapped onto the next line** when a test
+/// takes longer than the harness's progress threshold (this suite's retail
+/// tests do), plus the `test result:` summaries, which is where the ignored
+/// tests come from — a run without `--include-ignored` lists them as ignored.
+fn parse_suite(log: &str) -> Suite {
+    let mut suite = Suite::default();
+    let mut pending: VecDeque<String> = VecDeque::new();
+    for line in log.lines() {
+        let trimmed = line.trim_start();
+        // The `test result:` summaries are read for the **ignored** count only:
+        // a run without `--include-ignored` lists a task test there and nowhere
+        // else, and the executed counts come from the per-test lines, which
+        // would otherwise be counted twice.
+        if let Some(summary) = trimmed.strip_prefix("test result:") {
+            if let Some(count) = ignored_count(summary) {
+                suite.ignored += count;
+            }
+            continue;
+        }
+        if !pending.is_empty() && (trimmed == "ok" || trimmed == "FAILED") {
+            let name = pending.pop_front().expect("a pending task test");
+            record(
+                &mut suite,
+                &name,
+                if trimmed == "ok" { "pass" } else { "fail" },
+            );
+            continue;
+        }
+        let mut cursor = trimmed;
+        while let Some(position) = cursor.find("test ") {
+            let after = &cursor[position + 5..];
+            let Some(separator) = after.find(" ... ") else {
+                break;
+            };
+            let name = after[..separator].to_owned();
+            cursor = &after[separator + 5..];
+            if !name.starts_with(PREFIX) {
+                continue;
+            }
+            match cursor.split_whitespace().next() {
+                Some("ok") => record(&mut suite, &name, "pass"),
+                Some("FAILED") => record(&mut suite, &name, "fail"),
+                _ => pending.push_back(name),
+            }
+        }
+    }
+    suite.executed = suite.passed + suite.failed;
+    suite.discovered = suite.assertions.len() + suite.ignored;
     suite
 }
 
@@ -1299,10 +1362,15 @@ fn evidence_report_t687_writes_the_acceptance_report() {
     let log = fs::read_to_string(&log_path)
         .unwrap_or_else(|error| panic!("read {}: {error}", log_path.display()));
     let suite = parse_suite(&log);
-    assert!(
-        suite.passed > 0 && suite.assertions.len() >= suite.passed,
-        "no `{PREFIX}` results were understood in {}",
+    assert_eq!(
+        suite.assertions.len(),
+        TASK_TESTS,
+        "every task test of this suite must appear exactly once in {}: {suite:?}",
         log_path.display()
+    );
+    assert_eq!(
+        suite.failed, 0,
+        "every task test must have passed: {suite:?}",
     );
     for retail_test in [
         format!("{PREFIX}retail_world_groups_bind_the_measured_archives"),
@@ -1315,8 +1383,8 @@ fn evidence_report_t687_writes_the_acceptance_report() {
                 .assertions
                 .iter()
                 .find(|(name, _)| *name == retail_test)
-                .map(|(_, status)| status.as_str()),
-            Some("ok"),
+                .map(|(_, status)| *status),
+            Some("pass"),
             "{retail_test} must have run and passed (step 1 needs --include-ignored and \
              CS_GAME_DIR)"
         );
@@ -1365,7 +1433,7 @@ fn evidence_report_t687_writes_the_acceptance_report() {
         json(&candidate_tree),
         json(&rustc_version()),
         json(&pinned("bevy")),
-        json(&pinned("avian")),
+        json(&pinned("avian3d")),
         json(&now()),
         argv.iter()
             .map(|word| json(word))
@@ -1375,9 +1443,9 @@ fn evidence_report_t687_writes_the_acceptance_report() {
         exit_code,
         json(&fingerprints(&retail_root()).0),
         json(&fingerprints(&retail_root()).1),
+        suite.executed,
         suite.passed,
-        suite.passed,
-        suite.assertions.len() - suite.passed,
+        suite.failed,
         artifacts
             .iter()
             .map(|entry| format!("\n    {entry}"))
@@ -1389,7 +1457,7 @@ fn evidence_report_t687_writes_the_acceptance_report() {
             .collect::<Vec<_>>()
             .join(", "),
         json(&reviewer),
-        if suite.assertions.len() == suite.passed {
+        if suite.failed == 0 && suite.passed > 0 {
             "checked"
         } else {
             "failed"
@@ -1551,7 +1619,8 @@ fn rustc_version() -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
-/// One dependency's pinned version out of the workspace `Cargo.lock`.
+/// One dependency's pinned version out of the workspace `Cargo.lock`, under
+/// the name the lock file spells it with.
 fn pinned(crate_name: &str) -> String {
     let lock = fs::read_to_string(workspace_path("Cargo.lock")).expect("Cargo.lock is readable");
     let mut lines = lock.lines();
