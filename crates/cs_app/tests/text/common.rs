@@ -12,9 +12,10 @@
 
 use bevy::math::Rect;
 pub use cs_app::text::layout::{LayoutRequest, RequiredControl};
+use cs_app::text::original_font::UNUSED_FONT_TGA_REASON;
 use cs_app::text::{
     GlyphEvidence, LocalizationAudit, LocalizationAuditRequest, MediaSource, StringImageSource,
-    audit_localization, synthetic_monospace,
+    audit_localization, measure_rimage_bitmap_fonts, synthetic_monospace,
 };
 use cs_content::config::StringRow;
 use cs_content::localization::{
@@ -174,11 +175,19 @@ pub const RETAIL_STRING_IMAGES: &[&str] = &[
     "GOSDATA/ASSETS/BINARIES/language.dll",
 ];
 
-/// The two original bitmap-font files F51 audits as media, in a fixed order.
+/// The two loose TGA files F51 audits as media, in a fixed order.
+///
+/// The owner's static analysis of the decrypted executable (Rally #466 owner
+/// note, 2026-10-05) measured that the original **never reads either as a
+/// font**, so both carry [`GlyphEvidence::UnusedByOriginal`] with that
+/// evidence instead of the former `GlyphEvidence::Unmeasured` verdict.
 pub const RETAIL_FONT_MEDIA: &[&str] = &[
     "GOSDATA/ASSETS/GRAPHICS/font.tga",
     "GOSDATA/ASSETS/GRAPHICS/arial8.tga",
 ];
+
+/// The shared image archive the ten `fonts.zrd` bitmap fonts live in.
+pub const RETAIL_RIMAGE: &str = "ZBD/rimage.zbd";
 
 /// The read-only original installation root, or a loud failure: a retail test
 /// must fail, not pass, when `CS_GAME_DIR` is absent.
@@ -245,7 +254,9 @@ pub fn retail_language_map() -> LanguageMap {
 
 /// The F51-D audit of the original installation: all three routed string
 /// images, each read through the production reader and audited in isolation,
-/// plus the two original bitmap fonts with their **unmeasured** glyph coverage.
+/// plus the original's font media — the two loose TGAs with the measured
+/// verdict that the original never reads them as fonts, and `rimage.zbd`
+/// with the ten bitmap fonts measured by the production cell-rule scan.
 ///
 /// The returned audit owns every count and digest; no original bytes or text
 /// escape this function.
@@ -290,7 +301,7 @@ pub fn retail_audit(dir: &std::path::Path) -> LocalizationAudit {
         .iter()
         .map(|spelling| retail_file(dir, spelling))
         .collect();
-    let media: Vec<MediaSource<'_>> = RETAIL_FONT_MEDIA
+    let mut media: Vec<MediaSource<'_>> = RETAIL_FONT_MEDIA
         .iter()
         .zip(&font_bytes)
         .map(|(spelling, bytes)| {
@@ -302,13 +313,36 @@ pub fn retail_audit(dir: &std::path::Path) -> LocalizationAudit {
                 provenance: FontProvenance::OriginalPrivate {
                     span: Box::new(span),
                 },
-                glyphs: GlyphEvidence::Unmeasured {
-                    reason: "the original bitmap font's cell-to-character mapping is unmeasured"
-                        .to_owned(),
+                glyphs: GlyphEvidence::UnusedByOriginal {
+                    reason: UNUSED_FONT_TGA_REASON.to_owned(),
                 },
             }
         })
         .collect();
+
+    // The real bitmap fonts live inside `rimage.zbd`: the production scan
+    // measures every one of them with the colour-key cell rule, so the audit
+    // carries a per-font coverage rather than an unknown.
+    let rimage_bytes = retail_file(dir, RETAIL_RIMAGE);
+    let rimage_span = SourceSpan::new(
+        install_hash,
+        RETAIL_RIMAGE,
+        None,
+        0,
+        rimage_bytes.len() as u64,
+        None,
+    )
+    .expect("the retail image-archive span is valid");
+    let fonts =
+        measure_rimage_bitmap_fonts(&rimage_bytes).expect("the retail fonts are measurable");
+    media.push(MediaSource {
+        path: RETAIL_RIMAGE,
+        bytes: &rimage_bytes,
+        provenance: FontProvenance::OriginalPrivate {
+            span: Box::new(rimage_span),
+        },
+        glyphs: GlyphEvidence::BitmapFonts { fonts },
+    });
 
     audit_localization(&LocalizationAuditRequest {
         images: &images,

@@ -35,17 +35,29 @@
 //!   a required control is counted separately, because that is AC01 failing, not
 //!   merely a long translation.
 //! * **Media**, per file: its length, digest, provenance and whether the release
-//!   may distribute it, plus its [`GlyphEvidence`]. The original bitmap-font
-//!   cell-to-character mapping is **unmeasured**, so a caller that cannot supply
-//!   a `GlyphCoverage` supplies [`GlyphEvidence::Unmeasured`] and the audit
-//!   reports that as a blocker rather than guessing a coverage.
+//!   may distribute it, plus its [`GlyphEvidence`]. Every media carries a
+//!   *measured* verdict: a coverage a caller declared, the per-font coverage
+//!   [`crate::text::original_font`] derives from `rimage.zbd` with the colour-key
+//!   cell rule, or the recorded verdict that the original never reads the file
+//!   as a font. Only a media nobody could measure stays
+//!   [`GlyphEvidence::Unmeasured`] and becomes an
+//!   [`AuditBlocker::UnmeasuredGlyphs`]; a font whose scan left a character
+//!   unmapped or a cell unaddressed becomes a named
+//!   [`AuditBlocker::BitmapFontUnmapped`] / [`AuditBlocker::BitmapFontStrayCell`],
+//!   and a declared font the archive does not hold becomes
+//!   [`AuditBlocker::BitmapFontMissing`], so nothing unknown is claimed covered.
 //! * **Accounting**: a row in a language the map does not declare, a row whose
 //!   code units did not decode, a duplicated `(id, locale)` pair and an
 //!   undeclared catalog locale are each a named [`AuditBlocker`], never dropped.
 //!
-//! [`LocalizationAudit::is_complete`] is therefore `false` whenever anything was
-//! not measured — including the retail case, where the font mapping is unknown.
-//! That is the honest verdict, and it is what the F51-D acceptance tests pin.
+//! [`LocalizationAudit::is_complete`] is therefore `false` whenever anything
+//! was not measured — on the original installation that is, today, the
+//! overflow the audit counts against declared development metrics and any font
+//! cell the scan could not map. Every such reason is named in
+//! [`LocalizationAudit::blockers`], and a measured verdict (a coverage, a
+//! per-font scan or "the original never reads this file as a font") is never
+//! reported as an unknown. That is the honest verdict, and it is what the
+//! F51-D acceptance tests pin.
 
 use std::fmt;
 
@@ -62,6 +74,7 @@ use cs_types::evidence::ContentHash;
 
 use super::layout::{LayoutRequest, RequiredControl, layout_text};
 use super::metrics::TextMetrics;
+use super::original_font::RimageBitmapFonts;
 
 /// The glyph-coverage evidence for one media file.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,28 +87,76 @@ pub enum GlyphEvidence {
     },
     /// The coverage could not be measured, with why.
     ///
-    /// This is the honest state of the original bitmap fonts: their glyphs are
-    /// images whose cell-to-character mapping is unmeasured, so a coverage
-    /// asserted from the file would be a guess.
+    /// This is the honest state of a media nobody could measure: a coverage
+    /// asserted from it would be a guess, so the audit reports
+    /// [`AuditBlocker::UnmeasuredGlyphs`] for it rather than passing.
     Unmeasured {
         /// Why the coverage is not measurable.
         reason: String,
     },
+    /// Measured: the original never reads this media as a font, with the
+    /// evidence that says so.
+    ///
+    /// There is no coverage to measure because there is no font here, so this
+    /// is a measured verdict rather than an unknown and it produces no
+    /// blocker — the two loose TGAs of the original installation are
+    /// classified this way ([`crate::text::original_font::UNUSED_FONT_TGA_REASON`]).
+    UnusedByOriginal {
+        /// Why the original does not read this media as a font, with its
+        /// evidence.
+        reason: String,
+    },
+    /// Measured: the original's bitmap fonts, each scanned out of this
+    /// package with the colour-key cell rule.
+    ///
+    /// The coverage of each font is in
+    /// [`MeasuredBitmapFont::coverage`](crate::text::original_font::MeasuredBitmapFont::coverage),
+    /// built only from cells the scan actually found; a character with no
+    /// cell stays uncovered and becomes [`AuditBlocker::BitmapFontUnmapped`].
+    BitmapFonts {
+        /// The per-font measurements, and any declared font the package does
+        /// not hold.
+        fonts: RimageBitmapFonts,
+    },
 }
 
 impl GlyphEvidence {
-    /// Whether the media's coverage was actually measured.
+    /// Whether the media's glyph question was answered by measurement: a
+    /// declared coverage, a scan of its fonts, or the verdict that it is not
+    /// a font in the original at all.
     #[must_use]
     pub fn is_measured(&self) -> bool {
-        matches!(self, Self::Declared { .. })
+        !matches!(self, Self::Unmeasured { .. })
     }
 
-    /// The declared coverage, if there is one.
+    /// The declared coverage, if this media declares one.
+    ///
+    /// [`Self::BitmapFonts`] carries one coverage *per font*; ask
+    /// [`Self::bitmap_fonts`] for those.
     #[must_use]
     pub fn coverage(&self) -> Option<&GlyphCoverage> {
         match self {
             Self::Declared { coverage } => Some(coverage),
-            Self::Unmeasured { .. } => None,
+            _ => None,
+        }
+    }
+
+    /// The recorded reason this media is not a font in the original, if that
+    /// is its verdict.
+    #[must_use]
+    pub fn unused_reason(&self) -> Option<&str> {
+        match self {
+            Self::UnusedByOriginal { reason } => Some(reason),
+            _ => None,
+        }
+    }
+
+    /// The measured bitmap fonts this package holds, if it is one.
+    #[must_use]
+    pub fn bitmap_fonts(&self) -> Option<&RimageBitmapFonts> {
+        match self {
+            Self::BitmapFonts { fonts } => Some(fonts),
+            _ => None,
         }
     }
 }
@@ -243,6 +304,34 @@ pub enum AuditBlocker {
         /// The media path.
         path: String,
     },
+    /// A declared bitmap font the package does not hold, so nothing about it
+    /// was measured.
+    BitmapFontMissing {
+        /// The package path.
+        path: String,
+        /// The declared font name.
+        font: String,
+    },
+    /// Characters of one bitmap font whose cell the scan did not find. The
+    /// original draws `'!'` for them; they are never claimed covered.
+    BitmapFontUnmapped {
+        /// The package path.
+        path: String,
+        /// The font.
+        font: String,
+        /// How many characters have no cell.
+        chars: usize,
+    },
+    /// Cells one bitmap font stores that no character of the original's
+    /// `c - 0x21` bound maps to, so their character is unknown.
+    BitmapFontStrayCell {
+        /// The package path.
+        path: String,
+        /// The font.
+        font: String,
+        /// How many cells.
+        cells: usize,
+    },
     /// A locale's translation has to scroll in the panel.
     Overflow {
         /// The image.
@@ -274,6 +363,9 @@ impl AuditBlocker {
             Self::UndecodableRow { .. } => "undecodable_row",
             Self::DuplicateRow { .. } => "duplicate_row",
             Self::UnmeasuredGlyphs { .. } => "unmeasured_glyphs",
+            Self::BitmapFontMissing { .. } => "bitmap_font_missing",
+            Self::BitmapFontUnmapped { .. } => "bitmap_font_unmapped",
+            Self::BitmapFontStrayCell { .. } => "bitmap_font_stray_cell",
             Self::Overflow { .. } => "overflow",
             Self::CoversControl { .. } => "covers_control",
         }
@@ -317,6 +409,20 @@ impl fmt::Display for AuditBlocker {
                     "the glyph coverage of media {path} could not be measured"
                 )
             }
+            Self::BitmapFontMissing { path, font } => {
+                write!(
+                    f,
+                    "the package {path} does not hold the declared font {font}"
+                )
+            }
+            Self::BitmapFontUnmapped { path, font, chars } => write!(
+                f,
+                "the font {font} in {path} has no measured cell for {chars} character(s)"
+            ),
+            Self::BitmapFontStrayCell { path, font, cells } => write!(
+                f,
+                "the font {font} in {path} stores {cells} cell(s) no character maps to"
+            ),
             Self::Overflow {
                 image,
                 locale,
@@ -449,11 +555,7 @@ pub fn audit_localization(request: &LocalizationAuditRequest<'_>) -> Localizatio
         })
         .collect();
     for audit in &media {
-        if !audit.glyphs.is_measured() {
-            blockers.push(AuditBlocker::UnmeasuredGlyphs {
-                path: audit.path.clone(),
-            });
-        }
+        blockers.extend(media_blockers(audit));
     }
 
     LocalizationAudit {
@@ -547,6 +649,50 @@ fn audit_image(
         undecodable_ids: decode.undecodable_ids().to_vec(),
         duplicates: decode.duplicates().to_vec(),
     }
+}
+
+/// The named reasons one media file's glyph evidence leaves something
+/// unmeasured.
+///
+/// A declared coverage and the verdict "the original never reads this file as
+/// a font" are answers, not gaps; an unmeasured coverage, a declared font the
+/// package does not hold, a character whose cell was not found and a cell no
+/// character maps to are each one named blocker.
+fn media_blockers(audit: &MediaAudit) -> Vec<AuditBlocker> {
+    let mut blockers: Vec<AuditBlocker> = Vec::new();
+    match &audit.glyphs {
+        GlyphEvidence::Unmeasured { .. } => {
+            blockers.push(AuditBlocker::UnmeasuredGlyphs {
+                path: audit.path.clone(),
+            });
+        }
+        GlyphEvidence::BitmapFonts { fonts } => {
+            for font in &fonts.missing {
+                blockers.push(AuditBlocker::BitmapFontMissing {
+                    path: audit.path.clone(),
+                    font: font.clone(),
+                });
+            }
+            for font in &fonts.fonts {
+                if !font.unresolved.is_empty() {
+                    blockers.push(AuditBlocker::BitmapFontUnmapped {
+                        path: audit.path.clone(),
+                        font: font.name.clone(),
+                        chars: font.unresolved.len(),
+                    });
+                }
+                if font.stray_cells > 0 {
+                    blockers.push(AuditBlocker::BitmapFontStrayCell {
+                        path: audit.path.clone(),
+                        font: font.name.clone(),
+                        cells: font.stray_cells,
+                    });
+                }
+            }
+        }
+        GlyphEvidence::Declared { .. } | GlyphEvidence::UnusedByOriginal { .. } => {}
+    }
+    blockers
 }
 
 /// The named reasons one image's audit is not complete.
