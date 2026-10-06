@@ -2,7 +2,8 @@
 //! `TextureMemory_HW` and `TextureMemory_SW` members and the texture dropdown
 //! of the video-options panel (task #688, `F08-C-renderer-texture-settings`).
 //!
-//! Spec: `specs/F08-textures-and-material-pipeline.md`. The measured rule this
+//! Spec: `specs/F08-texture-archives-and-conventional-image-decoding.md`. The
+//! measured rule this
 //! surface feeds is in
 //! `docs/findings/2026-10-05-t352-texture-archive-selection-rule.md`.
 //!
