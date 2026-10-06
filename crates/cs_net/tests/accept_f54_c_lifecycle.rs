@@ -2537,9 +2537,14 @@ fn accept_f54_c_a_client_send_that_never_left_is_reported_not_swallowed() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut link = Link::joined(session);
-    let mut peer = link.raw_peer(0xC8);
-    peer.handshake(&mut link.host);
+    let (_link, mut peer) = live_fixture(|| {
+        let mut link =
+            Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))?;
+        let mut peer = link.raw_peer(0xC8);
+        peer.try_handshake(&mut link.host)
+            .ok_or_else(|| ungranted_peer(&peer, "the raw peer's handshake"))?;
+        Ok((link, peer))
+    });
 
     // Leave the socket quiet first, so the round under test has only its own
     // verdict to report. Sixteen steps is a bound, not a wait: the host is
@@ -2599,7 +2604,9 @@ fn accept_f54_c_a_refused_send_reaches_the_session_owner_as_a_notice() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut link = Link::joined(session);
+    let mut link = live_fixture(|| {
+        Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))
+    });
 
     // Same round as `accept_f54_c_a_client_send_that_never_left_is_reported_not_swallowed`,
     // through the session owner an app actually drives.
@@ -2642,7 +2649,9 @@ fn accept_f54_c_leaving_after_the_layer_gave_up_reports_the_hang_up() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut link = Link::joined(session);
+    let mut link = live_fixture(|| {
+        Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))
+    });
 
     let notices = quiet_then_overdue(&mut link);
     assert!(
