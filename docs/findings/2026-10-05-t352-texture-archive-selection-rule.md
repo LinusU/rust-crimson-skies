@@ -285,17 +285,28 @@ is equivalent.
   **Settled by task #689** (`docs/findings/2026-10-06-t689-texture-name-case-fold.md`,
   2026-10-06): the fold is adopted. `TextureCatalog::resolve` folds the request
   through `folded_texture_name` and compares the folded spelling against the
-  archive's stored spellings byte for byte, which is what `0x531930` does; both
-  it and `texture_lookup_order` fold through that one function, and
+  archive's stored spellings byte for byte, which is what `0x531930` does; ~~both
+  it and `texture_lookup_order` fold through that one function, and~~
+  **Amended 2026-10-06 by task #705, recording task #703's change**
+  (`docs/findings/2026-10-06-t703-loose-file-name-folding.md`): only
+  `TextureCatalog::resolve` folds, and only where a name is searched inside an
+  archive — `texture_lookup_order` folds nothing at all, because the original's
+  two loose-file probes receive the request unfolded (`0x534cf0`'s
+  `sprintf(buf, "%s.tif", name)` and `0x534060`'s `%s.bmp`, re-derived there).
   `TextureId`/the catalog rows keep the archive's own spelling. The census it
   rests on covers every texture-family archive in the installation (49
   archives, 37 004 stored names): all are already the folded spelling, no two
   fold onto each other, and every name table is sorted.
 * **The file probe's case handling is not established.** The original probes
-  the host file system, whose names it folds without regard to case. Every
+  the host file system, whose names it folds without regard to case. ~~Every
   candidate this crate generates is lower case, so the comparison is
-  equivalent here, but no claim is made about a listing that spells a tier in
-  another case.
+  equivalent here, but~~ **Amended 2026-10-06 by task #705, recording task
+  #703's change:** the archive candidates this crate generates are still lower
+  case, but a loose candidate now carries the request's own spelling, so
+  `TextureFiles::find`'s exact comparison decides a mixed-case loose request
+  here. No claim is made about a listing that spells a tier in another case,
+  and no retail content reaches the loose probes (0 loose `.tif`/`.bmp` files
+  under `ZBD`, listed 2026-10-06).
 * **The dropdown's out-of-enum branch is not covered.** `TextureDetailRow::for_setting`
   implements the measured mapping for the enum's whole value domain (0..=6); a
   value outside it is only reachable from a hand-edited profile and is reported
