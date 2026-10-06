@@ -21,6 +21,7 @@ mod t340;
 mod t343;
 mod t344;
 mod t444;
+mod t692;
 
 use cs_formats::zbd::{
     CONTENT_ROOT, DispatchBasis, GAMEZ_SIGNATURE, GAMEZ_VERSION, HeaderStatus, INTERP_SIGNATURE,

@@ -140,7 +140,11 @@ Two things stay **unknown** and are not claimed here:
 
 `ZBD/soundsh.zbd` and `ZBD/soundsl.zbd` carry the same 148-byte geometry and the same name copy at
 the same offsets, but the word at 64 is *not* constant there, so nothing is claimed about it and
-production keeps labelling all 76 bytes unexplained. Settled by #692.
+production keeps labelling all 76 bytes unexplained. **Settled by #692**
+(`docs/findings/2026-10-06-t692-zbd-version-one-index-entry-tail.md`): the override compares the
+archive *file's* own last-write time, not the stored stamp; the region is `{u32 flags-word;
+u8 comment/name_again[64]; u64 FILETIME}` per the archiver's documentation, the word's semantics and
+the `soundsl` series stay unknown, and `UnexplainedBytes` now exposes the three slots raw.
 
 ## G. Comparison with the designed layout
 
@@ -167,7 +171,7 @@ any kind. The texture archives are likewise mounted member-by-member only in tes
 | loose `GOSDATA` file and ROF member are different keys, no order | ROF registered before loose directory | mismatch for GOS requests |
 | texture archives per world with `rtexture*` as `shared`; order blocked | one archive per world by renderer/memory rule | see #352 |
 | `gamez.zbd` per world (`cs_content::catalog::baseline::GEOMETRY_CONTAINER_PATTERN`), plus `ZBD/planes.zbd` | per world only, plus the ZBD root | consistent |
-| no production reader of the 148-byte index entry beyond `start`/`length`/`name` | `word` and `timestamp` also carry bytes | mismatch: 76 bytes unmodelled, #692 |
+| no production reader of the 148-byte index entry beyond `start`/`length`/`name` | `word` and `timestamp` also carry bytes | consistent: the original reads no more either (#692); the slots are now exposed raw and uninterpreted |
 
 `PRECEDENCE_ORDER_STATUS` stays `designed`: the evidence is static code analysis of one executable,
 not a measured retail run, and the VFS does not yet implement the measured order; changing the

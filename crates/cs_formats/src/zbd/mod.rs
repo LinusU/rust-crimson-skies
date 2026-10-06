@@ -134,6 +134,7 @@ pub use sound_sample::{
 };
 pub use trailer::{
     EntryAnomaly, INDEX_ENTRY_BYTES, INDEX_NAME_BYTES, INDEX_ROW_BYTES, INDEX_UNEXPLAINED_BYTES,
+    INDEX_UNEXPLAINED_NAME_BYTES, INDEX_UNEXPLAINED_STAMP_BYTES, INDEX_UNEXPLAINED_WORD_BYTES,
     IndexEntry, IndexError, MEMBER_EXTENT_BYTES, TRAILER_BYTES, TRAILER_ENTRYPOINT,
     TRAILER_VERSION_ONE, UNEXPLAINED_REASON, UnexplainedBytes, VersionOneIndex, indexed_by_trailer,
     read_version_one_index,

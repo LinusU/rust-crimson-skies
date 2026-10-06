@@ -9,7 +9,9 @@
 //! * the last 8 bytes are the trailer: u32 version (`1`) and u32 member count;
 //! * immediately before the trailer sit `count` entries of 148 bytes each:
 //!   u32 start, u32 length, a 64-byte NUL-padded name and 76 bytes the source
-//!   reads as `garbage` without explaining them;
+//!   reads as `garbage` without explaining them (the same author's format
+//!   documentation describes them as `u32 flags; u8 comment[64]; u64 time`
+//!   — see [`UnexplainedBytes`] for what task #692 measured);
 //! * the source requires every member to satisfy
 //!   `start < start + length <= table_start`.
 //!
@@ -27,7 +29,10 @@
 //!
 //! * the 76 unexplained bytes of every entry are retained verbatim as
 //!   [`UnexplainedBytes`], labelled [`ClaimStatus::Unknown`] — nothing reads a
-//!   meaning into them;
+//!   meaning into them. Task #692 measured their shape on every retail
+//!   sound and reader archive and exposed the three measured subfields raw
+//!   ([`UnexplainedBytes::word`], [`UnexplainedBytes::name_again`],
+//!   [`UnexplainedBytes::stamp`]); their *meanings* stay unknown;
 //! * names are the bytes before the first NUL, never decoded or normalized,
 //!   and duplicate names stay separate entries (spec F06 non-negotiable #3);
 //! * what the pinned source *asserts* about an entry (non-empty extent, a
@@ -74,6 +79,18 @@ pub const INDEX_NAME_BYTES: usize = 64;
 /// Bytes after the name the pinned source reads without explaining them.
 pub const INDEX_UNEXPLAINED_BYTES: usize = 76;
 
+/// Leading bytes of the unexplained region: a little-endian u32 the archiver
+/// documentation names `flags` ([`UnexplainedBytes::word`]).
+pub const INDEX_UNEXPLAINED_WORD_BYTES: usize = 4;
+
+/// Bytes after the word: a second 64-byte field the archiver documentation
+/// names `comment` ([`UnexplainedBytes::name_again`]).
+pub const INDEX_UNEXPLAINED_NAME_BYTES: usize = 64;
+
+/// Trailing bytes of the unexplained region: a little-endian u64 the
+/// archiver documentation names `time` ([`UnexplainedBytes::stamp`]).
+pub const INDEX_UNEXPLAINED_STAMP_BYTES: usize = 8;
+
 /// Bytes one parsed [`IndexEntry`] occupies, charged per declared member.
 pub const INDEX_ROW_BYTES: u64 = size_of::<IndexEntry<'static>>() as u64;
 
@@ -82,9 +99,22 @@ pub const MEMBER_EXTENT_BYTES: u64 = size_of::<MemberExtent<'static>>() as u64;
 
 /// Why the 76 trailing bytes of an entry are not interpreted.
 pub const UNEXPLAINED_REASON: &str = "the pinned mech3ax v0.6.0 source reads these 76 bytes of every \
-     version-one index entry as `garbage` and assigns them no meaning; they are kept verbatim";
+     version-one index entry as `garbage` and assigns them no meaning; they are kept verbatim, \
+     with the measured word/name-again/stamp subfields exposed raw and uninterpreted (task #692)";
 
 /// One stretch of bytes the index carries but no source explains.
+///
+/// The *shape* is measured, the *meaning* is not. Task #692
+/// (`docs/findings/2026-10-06-t692-zbd-version-one-index-entry-tail.md`)
+/// read all 6,334 entries of the 64 retail archives indexed this way and the
+/// region always splits as `u32 word` / `u8 name_again[64]` / `u64 stamp`.
+/// The same author's format documentation (`terranmechworks.com/mech3doc`,
+/// "archive files") says those slots were intended as `flags`, a `comment`
+/// and a `FILETIME` — and warns some files hold unzeroed memory there. The
+/// static analysis of the decrypted executable done for #692 found no
+/// reader of any of the three: the original's index code uses `start`,
+/// `length` and `name` only, so the region is carried verbatim and labelled
+/// [`ClaimStatus::Unknown`] while the measured fields stay readable raw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnexplainedBytes<'a> {
     bytes: &'a [u8],
@@ -110,6 +140,45 @@ impl<'a> UnexplainedBytes<'a> {
     /// Why the bytes are not interpreted.
     pub const fn reason(&self) -> &'static str {
         UNEXPLAINED_REASON
+    }
+
+    /// Bytes 0..4 of the region as a little-endian u32: the slot the
+    /// archiver documentation names `flags`. What its values mean is **not
+    /// established** — `2` in every retail reader entry, `62` in `soundsh`
+    /// and most of `soundsl`, and an unexplained increasing series on
+    /// `soundsl`'s IMA-ADPCM members — and the original engine never reads
+    /// it (task #692 findings).
+    pub fn word(&self) -> u32 {
+        debug_assert_eq!(self.bytes.len(), INDEX_UNEXPLAINED_BYTES);
+        u32::from_le_bytes(
+            self.bytes[..INDEX_UNEXPLAINED_WORD_BYTES]
+                .try_into()
+                .expect("the unexplained region always begins with the word"),
+        )
+    }
+
+    /// Bytes 4..68: the slot the archiver documentation names `comment`.
+    /// On every retail entry task #692 measured it holds the entry's name
+    /// field byte for byte, padding included — returned raw, never
+    /// interpreted.
+    pub fn name_again(&self) -> &'a [u8] {
+        debug_assert_eq!(self.bytes.len(), INDEX_UNEXPLAINED_BYTES);
+        &self.bytes[INDEX_UNEXPLAINED_WORD_BYTES
+            ..INDEX_UNEXPLAINED_WORD_BYTES + INDEX_UNEXPLAINED_NAME_BYTES]
+    }
+
+    /// Bytes 68..76 as a little-endian u64: the slot the archiver
+    /// documentation names `time`. On every retail entry it is a nonzero
+    /// Windows `FILETIME` (task #692 findings). The original engine never
+    /// reads it: its loose-file override compares the loose file's time
+    /// against the archive *file's* own last-write time, not this stamp.
+    pub fn stamp(&self) -> u64 {
+        debug_assert_eq!(self.bytes.len(), INDEX_UNEXPLAINED_BYTES);
+        u64::from_le_bytes(
+            self.bytes[INDEX_UNEXPLAINED_BYTES - INDEX_UNEXPLAINED_STAMP_BYTES..]
+                .try_into()
+                .expect("the unexplained region always ends with the stamp"),
+        )
     }
 }
 
