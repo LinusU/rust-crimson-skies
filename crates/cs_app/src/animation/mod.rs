@@ -144,9 +144,18 @@
 //! declaration's selectors, and the declaration's sequence names are the
 //! record's ordinary sequence block names in order), resolves every name the
 //! animation addresses against the group's world container, carries the
-//! `ON_STARTUP` placements of the mission's own archive as its world actors, and
-//! **refuses every record with its source locator** because a record's sequence
-//! blocks are still raw bytes ([`mission::EVENTS_NOT_DECODED_CLAIM`]).
+//! `ON_STARTUP` placements of the mission's own archive as its world actors,
+//! and decides per animation — with a source locator — whether it can be
+//! played.
+//!
+//! Task #690 (`F20-EVENT-GRAMMAR`) adds [`events`], the grammar those records'
+//! sequence blocks were missing: an eight-byte tag/length header per event, an
+//! opcode table whose statement spellings come from the installation's own
+//! declarations, and two measured timing fields. With it, [`mission`] reports a
+//! record **playable** with its duration and its per-tick pose report, and
+//! keeps a refusal — with its byte offset and its claim — for the four opcodes
+//! no declaration joins and for the one `RUN_TIME` position nobody
+//! value-matched.
 
 use std::fmt;
 
@@ -159,6 +168,7 @@ pub mod attachment;
 pub mod binding;
 pub mod capture;
 pub mod carrier;
+pub mod events;
 pub mod lower;
 pub mod mission;
 pub mod playback;
@@ -188,6 +198,11 @@ pub use carrier::{
     UNRESOLVED_REASON_NO_MEMBER, UNRESOLVED_REASON_NO_RECORD_NAMES, bind_animation_carrier,
     bind_installation, bind_startup_identities, carrier_name, document_member,
     survey_animation_bindings,
+};
+pub use events::{
+    DecodedEvent, EVENT_GRAMMAR_CLAIM, EVENT_HEADER_BYTES, EVENT_STREAM_NOT_DECODED_CLAIM,
+    EventClass, EventStreamError, OPCODE_NOT_MEASURED_CLAIM, RUN_TIME_NOT_MEASURED_CLAIM,
+    STORED_OPCODES, decode_event_stream, opcode_info, sequence_duration, walk_event_stream,
 };
 pub use mission::{
     AMBIGUOUS_DECLARATION_REASON, AnimationRecordFacts, AnimationTarget, CarrierFact,
