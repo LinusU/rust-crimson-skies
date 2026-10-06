@@ -39,6 +39,15 @@
 //!   classifying it as distinct by path, shadowed by identical bytes or
 //!   conflicting (F04-D).
 //!
+//! * [`reader`] is the one lookup whose order is **not** the designed one:
+//!   a reader archive (`zrdr.zbd`) member is reached by its **basename** from
+//!   the archives mounted as [root, mission, world], the first archive that
+//!   holds the name serving it ([`ReaderMounts::resolve`]). That order comes
+//!   from the original executable's code, not from a runtime capture, and
+//!   [`reader::READER_LOOKUP_ORDER_STATUS`] says so; the designed
+//!   [`PRECEDENCE_ORDER_STATUS`] is untouched and a reader lookup never
+//!   consults it.
+//!
 //! Mounting archive members needs the archive readers of the format tasks.
 //! Original lookup behavior is unmeasured (F04-D findings), so the
 //! precedence order stays `designed` and content sessions refuse a retail
@@ -48,6 +57,7 @@
 pub mod collision;
 pub mod export;
 pub mod mount;
+pub mod reader;
 pub mod resolve;
 pub mod session;
 pub mod source;
@@ -60,6 +70,12 @@ pub use export::{
     ExportDirectory, ExportError, ExportedFile, UnsafeName, export_asset, export_components,
 };
 pub use mount::{MemberRecord, Mount, MountBuilder, MountError, MountScope, SkipReason};
+pub use reader::{
+    READER_LOOKUP_ORDER_STATUS, READER_NAMESPACE, ReaderArchive, ReaderAttempt,
+    ReaderAttemptOutcome, ReaderLevel, ReaderLookupError, ReaderMember, ReaderMountError,
+    ReaderMounts, ReaderReadError, ReaderResolution, ReaderTrace, Unreachable,
+    mount_reader_archive,
+};
 pub use resolve::{
     AttemptOutcome, ConflictOrigin, ResolutionAttempt, ResolutionTrace, ResolveError,
     ResolvedAsset, Vfs,

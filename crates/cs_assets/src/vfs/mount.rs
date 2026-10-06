@@ -242,6 +242,22 @@ impl fmt::Display for MountError {
     }
 }
 
+impl MountError {
+    /// Stable lowercase identifier for reports and structured diagnostics.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidMemberPath { .. } => "invalid_member_path",
+            Self::SpanOverflow { .. } => "span_overflow",
+            Self::DuplicateMember { .. } => "duplicate_member",
+            Self::EmptyContainer => "empty_container",
+            Self::ContainerNul => "container_nul",
+            Self::ModClassWithoutBinding { .. } => "mod_class_without_binding",
+            Self::BindingWithoutModClass { .. } => "binding_without_mod_class",
+            Self::DuplicateMountId { .. } => "duplicate_mount_id",
+        }
+    }
+}
+
 impl std::error::Error for MountError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -563,6 +579,11 @@ impl MountBuilder {
     /// The id the mount will be registered under.
     pub(crate) fn id(&self) -> &MountId {
         &self.id
+    }
+
+    /// The key space the mount will serve.
+    pub(crate) fn namespace(&self) -> &MountNamespace {
+        &self.namespace
     }
 
     /// The container label every span of this mount will record.
