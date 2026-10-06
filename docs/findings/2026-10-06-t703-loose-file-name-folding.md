@@ -110,7 +110,21 @@ them, is still open, and nothing in this task changes that.
   `TextureFiles::find` say whose spelling the candidate carries; the
   `accept_f08_c_selection_…` mixed-case assertion changed and
   `accept_f08_c_loose_name_…` is new.
-- Wiring: none outside that file.
+- Also in that file, adapting to #689, which merged onto `main` while this
+  branch was being written: the module doc and `folded_texture_name`'s doc no
+  longer say `texture_lookup_order` folds, and
+  `accept_f08_c_case_fold_folds_the_request_and_not_the_stored_name` now
+  asserts the split the original has — `resolve` searches the folded spelling,
+  the loose probes take the request verbatim — instead of asserting the two
+  agree. Its `İ` block now proves `SKYİ` misses the listed `skyİ.tif` (which
+  is what the original does) rather than that `texture_lookup_order` folds
+  ASCII-only.
+- `docs/findings/2026-10-06-t689-texture-name-case-fold.md` (owner path):
+  the three places that said both functions fold through `folded_texture_name`
+  are struck and amended, the "Recorded unknowns" bullet the task names is
+  retired as **Closed by task #703**, and the file-probe bullet now says which
+  candidates still carry a lower-case spelling.
+- Wiring: none outside those two files.
 
 ## Tests
 
@@ -118,50 +132,60 @@ them, is still open, and nothing in this task changes that.
 | --- | --- |
 | `accept_f08_c_loose_name_the_loose_file_name_is_the_request_verbatim` | a listing holding `SKY.tif`/`SKY.bmp` is reached by the request `SKY` and **not** by `sky`; a listing holding `sky.tif` is not reached by `SKY`; a `.bmp`-only directory is probed under the request's spelling; `SKYİ` reaches a listed `SKYİ.tif` while `skyİ` does not (no fold of any kind, ASCII or Unicode); the two archives a request does not address are listed identically for `sky`/`SKY`/`Sky`/`SKYİ` |
 | `accept_f08_c_selection_the_lookup_order_is_world_archive_image_archive_then_loose_files` | the four-source order, the key of each source, the `.bmp` fallback and the order following the selected archive — plus the changed assertion: `SKY` against a listing holding `sky.tif` yields the two archives alone, "the request is not folded into the loose probe" |
+| `accept_f08_c_case_fold_folds_the_request_and_not_the_stored_name` (#689's test, adapted) | the split the original has: `resolve` searches the folded spelling for every request, while the loose probes carry the request itself — `sky` reaches the listed `sky.tif`, `SKY`/`Sky` reach nothing loose, and `SKYİ` misses the listed `skyİ.tif` that only the request `skyİ` reaches |
 
-Both keep proving something discriminating: the second one's mixed-case
+All three keep proving something discriminating: the second one's mixed-case
 assertion used to prove the fold and now proves its absence against the same
-`0x534cf0` reading.
+`0x534cf0` reading, and the third used to prove that the catalog's fold and the
+loose probes shared one spelling — it now proves they do not, which is what the
+original does.
 
 ## Mutation probes
 
 Each mutation was applied to `crates/cs_content/src/textures.rs`, the
-selection run, and the file restored from a copy:
+selection run (`accept_f08_c accept_f10_c_02` in `cs_content`'s lib), and the
+file restored from a copy:
 
 | Mutation | Result |
 | --- | --- |
-| re-fold the loose names (`name.to_lowercase()` in both `format!` calls — the pre-task code) | **2 fail**: both tests above |
+| re-fold the loose names (`name.to_lowercase()` in both `format!` calls — the pre-task code) | **3 fail**: `accept_f08_c_loose_name_…`, `accept_f08_c_selection_…`, and #689's `accept_f08_c_case_fold_folds_the_request_and_not_the_stored_name` |
+| drop both loose probes entirely | **4 fail**: the three above plus `mesh::tests::accept_f08_c_renderer_audit_walks_loose_files_and_keeps_the_sources_verdict` |
 
-## Checks run on this branch (2026-10-06)
+## Checks run on this branch (2026-10-06, on the head that was pushed)
 
 | Command | Result |
 | --- | --- |
 | `cargo fmt --all -- --check` | clean |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | clean |
-| `cargo test --workspace --locked` | green |
-| `cargo test --workspace --locked -- accept_f08_c_loose_name --include-ignored` | 400 suites ok, 0 failed; 1 test matched and passed (`textures::tests::accept_f08_c_loose_name_the_loose_file_name_is_the_request_verbatim`) |
+| `cargo test --workspace --locked` | green: 404 suites, 0 failed |
+| `cargo test --workspace --locked -- accept_f08_c_loose_name --include-ignored` | green: 404 suites ok, 1 test matched and passed (`textures::tests::accept_f08_c_loose_name_the_loose_file_name_is_the_request_verbatim`) |
+| `cargo test -p cs_content --locked -- accept_f08_c accept_f10_c --include-ignored` | green: 76 passed, 0 failed, 0 ignored — every F08-C and F10-C test including the retail ones (the 49-archive case-fold census, the retail world-group selection and the F10-C world audit), because this branch also adapts #689's case-fold test |
 
 ## What still names the old behaviour
 
-Two findings on `main` state that the loose names are built from the folded
-spelling. Both become false the moment this lands:
+The paragraph this task was told to retire was not on `main` when the branch
+was cut — #689 was still in review — so it was amended here once #689 landed:
 
-* `docs/findings/2026-10-06-t689-texture-name-case-fold.md`, "Recorded
-  unknowns and limitations", first bullet — **this is the paragraph the task
-  names**. It was not on `main` when this branch was cut: it lands with #689,
-  which was still in review. It must be retired or rewritten when #689 merges,
-  together with #689's own assertions that "`resolve` and `texture_lookup_order`
-  fold through that one function, so the loose name is built from the same
-  fold" and that `texture_lookup_order` folds ASCII-only.
-* `docs/findings/2026-10-05-t352-texture-archive-selection-rule.md`,
-  "Recorded unknowns", first bullet ("`texture_lookup_order` folds it and
-  builds the loose file names from the folded spelling") and its test table row
-  ("case folding"). That file is not this task's owner path, so it is recorded
-  here rather than edited; the correction is one sentence and the task's
-  handover names it.
+* `docs/findings/2026-10-06-t689-texture-name-case-fold.md` — **retired**:
+  the "Recorded unknowns and limitations" first bullet is struck and marked
+  **Closed by task #703**, and the two other sentences that said `resolve` and
+  `texture_lookup_order` fold through one function are struck and amended the
+  same way. Its mutation-probe row for the now-removed fold is annotated
+  rather than deleted, because those probes are a record of a run.
+* `docs/findings/2026-10-05-t352-texture-archive-selection-rule.md` — **not
+  edited**: its "Settled by task #689" bullet still says "both it and
+  `texture_lookup_order` fold through that one function", and its next bullet
+  still says "Every candidate this crate generates is lower case". Both are
+  false now. That file is not this task's owner path, so the correction is
+  recorded here and handed over instead of made: two sentences, and #689
+  edited the same file when its own change invalidated the same bullet, so a
+  follow-up is a one-line job.
 
-The two claims that stay true are unchanged: the in-archive search folds
-(`TextureCatalog::resolve` does, or will once #689 lands), and the file
+Everything else that names the old behaviour is a historical record of a run
+or of what #689 changed at the time, and stays as written.
+
+The two claims that survive are unchanged: the in-archive search folds
+(`TextureCatalog::resolve` does, through `folded_texture_name`), and the file
 probe's own case handling is unestablished — what this task changes is only
 which spelling is handed to that probe.
 
