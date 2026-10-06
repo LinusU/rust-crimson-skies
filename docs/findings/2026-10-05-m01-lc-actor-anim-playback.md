@@ -17,12 +17,14 @@ original run happened, so nothing here is `verified_original`.
   `AnimationRecordFacts`, `RecordSequence`, `RecordResolution`, `AnimationTarget`,
   `TargetSource`, `TargetResolution`, `PlayRefusal`, `WorldActorPlacement`,
   `CarrierFact`, `MissionAnimationError`, the four reason constants and the
-  three claim ids.
+  three claim ids — plus the in-module `accept_m01_lc_actor_anim_playback_`
+  test that covers `run`, the one seam the integration file cannot reach
+  without an installation (the binding's fields stay private).
 - `crates/cs_app/src/animation/mod.rs` (wiring only): `pub mod mission;`, the
   re-exports and the module-documentation paragraph.
 - `crates/cs_app/tests/accept_m01_lc_actor_anim_playback.rs` (new, an F20 owner
-  path): the nine `accept_m01_lc_actor_anim_playback_` tests, seven synthetic
-  and two retail.
+  path): nine `accept_m01_lc_actor_anim_playback_` tests, seven synthetic and
+  two retail — ten with the in-module one.
 - This file.
 
 **No reader refusal was weakened.** `git diff` touches no line of
@@ -202,7 +204,8 @@ consumer that widened it would report actors that are not this mission's.
 | `every_name_keeps_its_source_and_its_resolution` | all four `TargetSource` values in join order; the six collected names of one row; the three real names resolving to one record each; the empty zero entry kept as `Unreadable`; no container meaning `Unreadable`, never zero | a name loses its source, an entry is dropped, or "no container" becomes "nothing there" |
 | `a_wildcard_reports_its_reach_and_a_narrowing_suffix_reports_none` | `lbroad*` counting three records; `lbroad*1` reported with **no** count; a literal counting one | a narrowing suffix is applied as a prefix and over-selects silently |
 | `a_placement_names_its_world_actor_and_refuses_to_place_it` | the placement record's identity, member, definition index, three resolved selectors, its claim id and its refusal reason | a placement starts spawning, or its identity stops being measured |
-| `a_run_answers_one_startup_event_in_stored_order` | the startup table read through the production reader; one run's identities in stored order; refusal counts 1 / 2 / 2; the bound row's carrier and record index | identities lose their event order, or a joined row and an unjoined row are indistinguishable |
+| `the_rows_keep_their_events_in_stored_order` | the startup table read through the production reader; the joined rows' identities in stored order; refusal counts 1 / 2 / 2; the bound row's carrier and record index | identities lose their event order, or a joined row and an unjoined row are indistinguishable |
+| `a_run_filters_one_event_and_reports_its_rows` (in-module) | `MissionAnimationBinding::run`: one event's rows in stored order, `playable`/`refused` split, an undeclared event an empty run; `startup_of`, `world_targets`, `playable_count`, `refused_count` | `run` drops its event filter, a refused row reports playable, or `world_targets` loses or re-pairs a target |
 | `retail_m01_startup_animations_are_joined_and_refused` (retail) | M01's three archives, world container, both carriers walked with their declared counts, the seven identities and their exact member/carrier/record, seven single refusals, every record's span naming its own carrier, every world name resolving, `generic_intro`'s node and animation-reference tables and its six agreeing sequence names, the three placements | a binding stops resolving, a member or record moves, a refusal count changes, or a placement is lost |
 | `retail_the_closure_has_one_object_disagreement` (retail) | 896 definition sites, 395 named declarations, 880 records, 280 pairs, 0 ambiguous, 280 sequence agreements, 279 object agreements and `agyro_rotors` named as the single disagreement | a measured count moves, or the disagreement is repaired into an agreement |
 
@@ -219,7 +222,7 @@ time. **All seven are killed by a test CI can run**, so none relies on the
 | the two name failures are collapsed into one label | `the_four_failures_stay_distinct` |
 | the empty zero entry is dropped instead of kept | `every_name_keeps_its_source_and_its_resolution` |
 | a target resolved with no world counts as zero | the same test's no-container arm |
-| `is_playable()` ignores the refusals | `a_run_answers_one_startup_event_in_stored_order` |
+| `is_playable()` ignores the refusals | `the_rows_keep_their_events_in_stored_order` |
 
 The behaviours only the retail cases check are the corpus counts themselves
 (896 / 395 / 880 / 280 / 279), M01's seven member-carrier-record rows, the two
@@ -255,7 +258,7 @@ spans; every **rule** above is covered without the installation.
   nothing converts it into ticks.
 - **Evidence class.** The layouts, counts and relations above are
   `ObservedTool` + measurement: read out of the original bytes by the production
-  readers. Every **rule** carries its own claim id, and the two claim ids are
+  readers. Every **rule** carries its own claim id, and the three claim ids are
   `ClaimStatus::ObservedTool`, never `verified_original`. No original
   executable was run: `retail` is file access, not evidence of runtime
   behaviour.
@@ -296,6 +299,6 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --locked
 cargo test --workspace --locked -- accept_m01_lc_actor_anim_playback_ --include-ignored
-#   9 tests: 7 run and pass, 2 retail run and pass (about 75 seconds; each does
-#   one production discovery pass over the installation)
+#   10 tests: 8 run and pass (one in-module), 2 retail run and pass (about 75
+#   seconds; each does production discovery passes over the installation)
 ```
