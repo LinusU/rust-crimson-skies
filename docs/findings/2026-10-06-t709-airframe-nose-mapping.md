@@ -172,12 +172,16 @@ mirrored**, and the fix mirrors nothing.
 
 ## For PLAYTEST-PROP-SPIN (#710)
 
-The drawn propeller is not at the nose. Measured: `bloodhawk`'s `staticprop1`
-node composes to `(0, −0.019, +4.802)`, behind `lrudder1` at `+3.032`. A spin
-therefore has to be about the body's `Z` axis **at that rear pivot** — the disc
-turns in place at the tail — and not about a nose-mounted hub. The spin axis
-direction (which way the blade turns) is unmeasured and still needs its own
-evidence; this finding fixes only where the disc is.
+The drawn propeller is not at the nose. Measured: `bloodhawk`'s propeller group
+is at the tail — the `dontmove` siblings `prop1`/`prop1b` compose to
+`(0, −0.019, +4.802)` and `prop2`/`prop2b`/`nitroprop1` to `(0, −0.019, +4.561)`,
+all behind `lrudder1` at `+3.032`, and the drawn `staticprop1`'s own 16-triangle
+disc sits at `z ≈ +4.5` (#648's mesh measurement; its node is at the airframe
+origin). A spin therefore has to be about the body's `Z` axis **at that rear
+pivot**, ~4.5 m aft of the body origin — the disc turns in place at the tail —
+and not about a nose-mounted hub. The spin axis direction (which way the blade
+turns) is unmeasured and still needs its own evidence; this finding fixes only
+where the disc is.
 
 ## Not claimed
 

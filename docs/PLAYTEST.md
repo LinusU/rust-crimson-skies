@@ -54,10 +54,12 @@ What is provisional (all labelled, none original behaviour):
   20 m viewer distance and never changes in flight. Every undrawn binding is listed
   with its reason in the `playtest sources` line and the smoke `report.json`
   (`aircraft_undrawn`), next to `aircraft_mesh_bindings`, `aircraft_triangles` and
-  `aircraft_selection`. Measured (#709): that propeller sits at the **tail**
-  (`z = +4.80`, behind the rudder at `z = +3.03`), so spinning it
-  (PLAYTEST-PROP-SPIN) means the body's `Z` axis at that rear pivot, not a
-  nose-mounted disc.
+  `aircraft_selection`. Measured (#709): that propeller is at the **tail** — its
+  `dontmove` siblings `prop1`/`prop1b` compose at `z = +4.80` and
+  `prop2`/`prop2b`/`nitroprop1` at `z = +4.56`, behind the rudder at
+  `z = +3.03`, and the drawn disc's own 16 triangles sit at `z ≈ +4.5` — so
+  spinning it (PLAYTEST-PROP-SPIN) means the body's `Z` axis at that rear pivot,
+  not a nose-mounted hub.
 * Nose direction (#709): the drawn airframe leads with its nose. The stored nose
   is the **measured** `−Z` — the container's own tail surfaces compose aft of
   the cockpit node in all eleven scene airframes — and
