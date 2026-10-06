@@ -22,8 +22,10 @@
 //! * **the role follows the index, and everything else is named.** An indexed
 //!   record is `Solid` + `FromMesh`; an unindexed record that stores no
 //!   collision geometry resolves to `None` (task #677's measured split); an
-//!   unindexed record that does carries an explicit unknown with a claim id, as
-//!   does every gameplay surface and the world's boundary. Nothing is silently
+//!   unindexed record whose name carries the measured `fvol` prefix resolves
+//!   to `None` as a fog volume (task #716); an unindexed record that stores
+//!   geometry and carries no measured prefix carries an explicit unknown with
+//!   a claim id, as does every gameplay surface and the world's boundary. Nothing is silently
 //!   defaulted, so a consumer can enumerate the gaps instead of discovering
 //!   them in flight.
 //! * **the identity is the node slot, the mesh reference is the caller's table,
@@ -80,31 +82,31 @@ const NODES_OFFSET: u32 = 52;
 const SLOT: usize = 212;
 
 /// The fixture's node slots.
-const WORLD: u32 = 0;
-const TILE_A: u32 = 1;
-const SLAB: u32 = 2;
-const TILE_B: u32 = 3;
-const MARKER: u32 = 4;
+pub(crate) const WORLD: u32 = 0;
+pub(crate) const TILE_A: u32 = 1;
+pub(crate) const SLAB: u32 = 2;
+pub(crate) const TILE_B: u32 = 3;
+pub(crate) const MARKER: u32 = 4;
 /// An unindexed record that **does** carry geometry: the role the container
 /// leaves unmeasured (task #677's split).
-const VOLUME: u32 = 5;
+pub(crate) const VOLUME: u32 = 5;
 
 /// The fixture's grid: two cells along the second axis, one along the first.
 const GRID_X: u32 = 1;
 const GRID_Y: u32 = 2;
 
 /// The mesh slots the fixture's records name.
-const MESH_TILE_A: i32 = 7;
-const MESH_SLAB: i32 = 6;
-const MESH_TILE_B: i32 = 8;
+pub(crate) const MESH_TILE_A: i32 = 7;
+pub(crate) const MESH_SLAB: i32 = 6;
+pub(crate) const MESH_TILE_B: i32 = 8;
 /// How many slots the fixture's mesh table holds.
 const MESH_SLOTS: usize = 10;
 
 /// One object record the fixture writes.
 #[derive(Clone)]
-struct ObjectSpec {
-    name: &'static str,
-    mesh: i32,
+pub(crate) struct ObjectSpec {
+    pub(crate) name: &'static str,
+    pub(crate) mesh: i32,
     /// The stored world-space bounding box's minimum, in stored units.
     box_min: [f32; 3],
     /// The stored world-space bounding box's maximum, in stored units.
@@ -116,7 +118,7 @@ struct ObjectSpec {
 }
 
 impl ObjectSpec {
-    const fn new(name: &'static str, mesh: i32) -> Self {
+    pub(crate) const fn new(name: &'static str, mesh: i32) -> Self {
         Self {
             name,
             mesh,
@@ -127,7 +129,7 @@ impl ObjectSpec {
         }
     }
 
-    const fn extent(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
+    pub(crate) const fn extent(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
         self.box_min = min;
         self.box_max = max;
         self
@@ -135,13 +137,13 @@ impl ObjectSpec {
 }
 
 /// How the fixture's world record is arranged.
-struct Fixture {
-    grid: Vec<Vec<u32>>,
-    stored_children: Vec<u32>,
-    objects: Vec<ObjectSpec>,
+pub(crate) struct Fixture {
+    pub(crate) grid: Vec<Vec<u32>>,
+    pub(crate) stored_children: Vec<u32>,
+    pub(crate) objects: Vec<ObjectSpec>,
     /// An extra record that names the world node but is in neither the grid nor
     /// the stored child list, which is how the ownership cross-check is broken.
-    unlisted_extra: bool,
+    pub(crate) unlisted_extra: bool,
 }
 
 impl Default for Fixture {
@@ -161,8 +163,10 @@ impl Default for Fixture {
                 // measured anchor class, resolved to `None` (task #677).
                 ObjectSpec::new("marker", -1),
                 // A world-owned record with a mesh **and** an extent that the
-                // grid does not name: the measured volume class, whose role the
-                // container leaves unmeasured.
+                // grid does not name and whose name carries no measured prefix:
+                // the class whose role the container leaves unmeasured. It is
+                // spelled `volume`, deliberately not `fvol*`: task #716's rule
+                // keys on the four bytes the image compares.
                 ObjectSpec::new("volume", 5).extent([2.0, 0.0, 2.0], [3.0, 1.0, 3.0]),
             ],
             unlisted_extra: false,
@@ -176,7 +180,7 @@ impl Default for Fixture {
 /// the format worksheet's field offsets, independently of the reader, and the
 /// container ends exactly where the data section ends — which is one of the
 /// checks `read_gamez_nodes` makes.
-fn write_container(fixture: &Fixture) -> Vec<u8> {
+pub(crate) fn write_container(fixture: &Fixture) -> Vec<u8> {
     let mut nodes: Vec<ObjectSpec> = fixture.objects.clone();
     if fixture.unlisted_extra {
         nodes.push(ObjectSpec::new("stray", -1));
@@ -306,13 +310,13 @@ fn write_container(fixture: &Fixture) -> Vec<u8> {
 }
 
 /// The production reader's view of the fixture container.
-fn read(bytes: &[u8]) -> cs_formats::gamez::GameZNodes {
+pub(crate) fn read(bytes: &[u8]) -> cs_formats::gamez::GameZNodes {
     let mut context = ParseContext::with_defaults("fixture.world-import");
     read_gamez_nodes(&mut context, bytes).expect("the fixture container reads")
 }
 
 /// The caller's mesh-slot table: one catalog element per stored mesh slot.
-fn mesh_slots() -> Vec<MeshSlot> {
+pub(crate) fn mesh_slots() -> Vec<MeshSlot> {
     (0..MESH_SLOTS)
         .map(|index| {
             MeshSlot::new(
@@ -326,7 +330,7 @@ fn mesh_slots() -> Vec<MeshSlot> {
 }
 
 /// The provenance every fixture value carries.
-fn provenance() -> Provenance {
+pub(crate) fn provenance() -> Provenance {
     Provenance::new(
         ClaimId::new("fixture.world-import").expect("the fixture claim id is valid"),
         ClaimStatus::Designed,
@@ -337,7 +341,7 @@ fn provenance() -> Provenance {
 
 /// The conversion the fixture is imported through: the canonical convention,
 /// declared, with the unit evidence class its own `UnitCalibration` reports.
-fn adapter() -> SourceAdapter {
+pub(crate) fn adapter() -> SourceAdapter {
     SourceAdapter::declared()
         .into_iter()
         .find(|adapter| adapter.source().label() == "canonical")
@@ -355,7 +359,7 @@ fn retail_adapter(container: &RetailWorldContainer) -> SourceAdapter {
 }
 
 /// The fixture imported, through production code.
-fn imported(bytes: &[u8]) -> ImportedWorld {
+pub(crate) fn imported(bytes: &[u8]) -> ImportedWorld {
     let records = read(bytes);
     import_world_container(
         cs_content::world::WorldId::from_key("fixture").expect("the fixture world key is valid"),
@@ -975,30 +979,43 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
     assert_eq!(report.sectors(), 144);
     assert_eq!(report.sectors_without_extent(), 0);
 
-    // Task #677's measured split of the 53 unindexed records: the 36 that bind
-    // no mesh and store no extent — the `horizon`, the `g27816` transform
-    // groups and the zeppelin anchors — resolve to `None` because the store
-    // gives them nothing a collider could be built from; the 17 `fvol*` fog
-    // volumes bind a mesh and an extent, and the container says nothing about
-    // what the engine did with them, so they stay an explicit unknown.
+    // Task #677's measured split of the 53 unindexed records, as task #716
+    // resolves it: the 36 that bind no mesh and store no extent — the
+    // `horizon`, the `g27816` transform groups and the zeppelin anchors —
+    // resolve to `None` because the store gives them nothing a collider could
+    // be built from; the 17 `fvol*` records bind a mesh and an extent and are
+    // fog volumes — the image's only name-keyed consumer of that prefix is its
+    // fog routine — so they are presented and never block either, while their
+    // meshes stay known; and nothing else in this container stores geometry
+    // without a measured prefix, so the unmeasured class is empty here.
     assert_eq!(
         report.objects_unindexed_none(),
         36,
         "the anchors, transform groups and horizon resolve to a deliberate `None`"
     );
     assert_eq!(
-        report.objects_unindexed_unresolved(),
+        report.objects_unindexed_fog(),
         17,
-        "the fvol* volumes keep the role the container does not state"
+        "the fvol* volumes are fog volumes: presented, never blocking"
+    );
+    assert_eq!(
+        report.objects_unindexed_unresolved(),
+        0,
+        "c1c holds no unindexed record that stores geometry without a measured prefix"
+    );
+    assert_eq!(
+        report.partition_records_fog_volume(),
+        4,
+        "four of c1c's fvol* records are named by the partition grid as well, and the \
+         disagreement between the two rules is counted rather than settled"
     );
 
     // Everything the container does not state is an explicit unknown, and the
     // definition's own accessors report every one of them.
     assert_eq!(report.matrix_disagreements(), 0);
     assert!(
-        world.unresolved_collision().len() == 17,
-        "exactly the unindexed records that store collision geometry have no \
-         measured role: {}",
+        world.unresolved_collision().is_empty(),
+        "no c1c record stores collision geometry without a measured role any more: {}",
         world.unresolved_collision().len()
     );
     assert_eq!(
@@ -1119,22 +1136,22 @@ fn accept_m01_lc_world_import_retail_spawn_world_runs_on_the_imported_c1c_defini
     assert_eq!(
         reasons,
         BTreeMap::from([
-            // The 17 fvol* volumes: unindexed and mesh-bearing, so the role the
-            // container never states is the gap (task #677's measured split).
-            ("unknown_collision_role", 17),
             // The one indexed record that stores no mesh index: it is in the
             // world's spatial index and draws nothing, so it is reported rather
             // than given substitute geometry.
             ("unknown_mesh", 1),
         ]),
-        "the spawn reports exactly the two gaps the container's own bytes imply"
+        "the 17 fvol* volumes are no longer a gap — they resolve as fog volumes \
+         (task #716) — so the spawn reports exactly the one gap c1c's own bytes imply"
     );
-    // The 36 anchors are a *deliberate* `None`: presented, never blocking, and
-    // not in the skip list — a resolved record does not read as a gap.
+    // The 36 anchors and the 17 fog volumes are a *deliberate* `None`:
+    // presented, never blocking, and not in the skip list — a resolved record
+    // does not read as a gap.
     assert_eq!(
         spawned.non_colliding().len(),
-        36,
-        "the anchors and horizon are presented with no collider by their own answer"
+        53,
+        "the anchors, horizon and fog volumes are presented with no collider by \
+         their own answer"
     );
     assert_eq!(
         spawned.presentation_gap_count(),

@@ -95,11 +95,15 @@ struct Measured {
     resident: usize,
     /// How many unindexed records resolve to `None` — the anchors, transform
     /// groups and dummies that store no geometry of their own (task #677's
-    /// measured split: `anchors + unresolved_roles == child_list`).
+    /// measured split: `anchors + fog + unresolved_roles == child_list`).
     anchors: usize,
+    /// How many unindexed records resolve to `None` because their name carries
+    /// the measured `fvol` prefix: fog volumes, presented and never blocking
+    /// (task #716's measurement).
+    fog: usize,
     /// How many unindexed records still carry an explicit unknown — the ones
-    /// that store a mesh, an extent or both with no class saying what the
-    /// engine did with it.
+    /// that store a mesh, an extent or both and whose name carries no
+    /// measured prefix.
     unresolved_roles: usize,
     /// How many of this container's records store a transform that is not the
     /// identity, so the affine path is exercised on retail data.
@@ -136,7 +140,8 @@ const MEASURED: [Measured; 8] = [
         elsewhere: 3671,
         resident: 66,
         anchors: 56,
-        unresolved_roles: 10,
+        fog: 9,
+        unresolved_roles: 1,
         transformed: 72,
         settles: true,
     },
@@ -157,6 +162,7 @@ const MEASURED: [Measured; 8] = [
         elsewhere: 3346,
         resident: 93,
         anchors: 78,
+        fog: 0,
         unresolved_roles: 0,
         transformed: 79,
         settles: true,
@@ -176,7 +182,8 @@ const MEASURED: [Measured; 8] = [
         elsewhere: 3045,
         resident: 53,
         anchors: 36,
-        unresolved_roles: 17,
+        fog: 17,
+        unresolved_roles: 0,
         transformed: 30,
         settles: true,
     },
@@ -195,6 +202,7 @@ const MEASURED: [Measured; 8] = [
         elsewhere: 2372,
         resident: 24,
         anchors: 24,
+        fog: 0,
         unresolved_roles: 0,
         transformed: 30,
         settles: true,
@@ -214,7 +222,8 @@ const MEASURED: [Measured; 8] = [
         elsewhere: 2741,
         resident: 48,
         anchors: 39,
-        unresolved_roles: 9,
+        fog: 9,
+        unresolved_roles: 0,
         transformed: 34,
         settles: true,
     },
@@ -234,6 +243,7 @@ const MEASURED: [Measured; 8] = [
         elsewhere: 2494,
         resident: 19,
         anchors: 14,
+        fog: 0,
         unresolved_roles: 0,
         transformed: 17,
         settles: false,
@@ -253,7 +263,8 @@ const MEASURED: [Measured; 8] = [
         elsewhere: 4613,
         resident: 51,
         anchors: 38,
-        unresolved_roles: 13,
+        fog: 9,
+        unresolved_roles: 4,
         transformed: 57,
         settles: true,
     },
@@ -275,7 +286,8 @@ const MEASURED: [Measured; 8] = [
         elsewhere: 5551,
         resident: 108,
         anchors: 20,
-        unresolved_roles: 85,
+        fog: 15,
+        unresolved_roles: 70,
         // The group whose stored mesh slots include sixteen the store holds no
         // geometry for; see
         // [`accept_f18_world_units_containers_a_mesh_the_store_holds_no_geometry_for_is_a_gap`].
@@ -590,15 +602,21 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
             measured.group
         );
         assert_eq!(
-            report.objects_unindexed_unresolved(),
-            measured.unresolved_roles,
-            "{}: the unindexed records that store geometry keep an unknown role",
+            report.objects_unindexed_fog(),
+            measured.fog,
+            "{}: the unindexed records carrying the measured `fvol` prefix are fog              volumes, presented and never blocking",
             measured.group
         );
         assert_eq!(
-            measured.anchors + measured.unresolved_roles,
+            report.objects_unindexed_unresolved(),
+            measured.unresolved_roles,
+            "{}: the unindexed records that store geometry and carry no measured              prefix keep an unknown role",
+            measured.group
+        );
+        assert_eq!(
+            measured.anchors + measured.fog + measured.unresolved_roles,
             measured.child_list,
-            "{}: and the two classes partition the unindexed records exactly",
+            "{}: and the three classes partition the unindexed records exactly",
             measured.group
         );
 
@@ -606,7 +624,7 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
         assert_eq!(
             world.unresolved_collision().len(),
             measured.unresolved_roles,
-            "{}: exactly the geometry-bearing unindexed records have no measured role",
+            "{}: exactly the unindexed records that store geometry and carry no              measured prefix have no measured role",
             measured.group
         );
         for object in world.unresolved_collision() {
@@ -846,13 +864,14 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
             "{}: no other gap reason appears",
             measured.group
         );
-        // The anchors are a *deliberate* `None` (task #677): presented, never
-        // blocking, and not in the skip list — a resolved record is not a gap.
+        // The anchors (task #677) and the fog volumes (task #716) are a
+        // *deliberate* `None`: presented, never blocking, and not in the skip
+        // list — a resolved record is not a gap.
         assert_eq!(
             spawned.non_colliding().len(),
-            measured.anchors,
-            "{}: the unindexed records that store no geometry are presented \
-             with no collider by their own answer",
+            measured.anchors + measured.fog,
+            "{}: the records that store no geometry and the `fvol*` records are \
+             presented with no collider by their own answer",
             measured.group
         );
         assert_eq!(

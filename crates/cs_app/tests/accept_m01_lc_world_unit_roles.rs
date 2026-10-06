@@ -9,27 +9,34 @@
 //!
 //! Two claims are pinned, and they are two different strengths:
 //!
-//! * **The scale is measured; the convention is not.** The GameZ landmark
-//!   census — the `-9.8` gravity word all 61 animation containers store, the
-//!   pilot-figure and airframe extents, the LOD switch bands and the world
-//!   bounds — pins [`CalibratedQuantity::Scale`] to **one stored unit per
-//!   metre** at `observed_tool`. The axis map, handedness and angle unit were
-//!   never observed, so the source's whole-calibration status stays `Unknown`
-//!   and its gap list names them. The non-retail half of this file asserts both
-//!   halves of that sentence, because a source that reported `verified_original`
-//!   — or a factor that silently reached a definition — would be a false claim,
-//!   not a measurement.
-//! * **The 53 unindexed c1c records are two measured classes, not one guess.**
-//!   Every record the partition grid omits stores *either* a mesh index and a
-//!   non-zero bounding box *or* neither of them, in all eight containers — the
-//!   corpus has no third shape. The no-geometry half (the `horizon`, the
-//!   `g*` transform groups, the zeppelin anchors) resolves to
+//! * **The scale is measured; the source's other quantities carry no landmark.**
+//!   The GameZ landmark census — the `-9.8` gravity word all 61 animation
+//!   containers store, the pilot-figure and airframe extents, the LOD switch
+//!   bands and the world bounds — pins [`CalibratedQuantity::Scale`] to **one
+//!   stored unit per metre** at `observed_tool`. The axis map, handedness and
+//!   angle unit carry no landmark on this source, so its whole-calibration
+//!   status stays `Unknown` and its gap list names them; the axis convention
+//!   itself was measured separately, by static analysis of the decrypted image
+//!   (task #436), and task #716 binds it into `import_world_container`'s own
+//!   report, where it is reported at `observed_tool` with its own claim id.
+//!   The non-retail half of this file asserts both halves of that sentence,
+//!   because a source that reported `verified_original` — or a factor that
+//!   silently reached a definition — would be a false claim, not a
+//!   measurement.
+//! * **The 53 unindexed c1c records are three measured classes, not one
+//!   guess.** Every record the partition grid omits stores *either* a mesh
+//!   index and a non-zero bounding box *or* neither of them, in all eight
+//!   containers — the corpus has no third shape. The no-geometry half (the
+//!   `horizon`, the `g*` transform groups, the zeppelin anchors) resolves to
 //!   [`WorldCollisionRole::None`], because the store gives *this* record
-//!   nothing a collider could be built from. The geometry-bearing half — the
-//!   `fvol*` volumes — keeps an explicit `Unknown` role, because the container
-//!   never says whether the original engine collided with it. The retail half
-//!   asserts the split per container, the per-object consequences on the
-//!   definition, and the spawn report the split produces.
+//!   nothing a collider could be built from. The geometry-bearing half splits
+//!   by task #716's measurement: a record whose name carries the `fvol` prefix
+//!   is a fog volume and resolves to `None` under
+//!   [`FOG_VOLUME_RECORD_NEVER_BLOCKS`], while a record no measured prefix
+//!   names keeps an explicit `Unknown` role, because the container never says
+//!   whether the original engine collided with it. The retail half asserts the
+//!   split per container, the per-object consequences on the definition, and
+//!   the spawn report the split produces.
 //!
 //! **What this file does not claim.** `retail` is file access: every number
 //! here was read out of the owner's bytes by the production readers, and no
@@ -48,8 +55,8 @@ use cs_content::coordinates::{
 use cs_content::scene::{BindingMap, MeshSlot, scene_graph_from_gamez};
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
-    OBJECT_STORES_NO_MESH, UNINDEXED_RECORD_STORES_NO_GEOMETRY, UNINDEXED_ROLE_UNMEASURED,
-    WorldCollisionRole,
+    FOG_VOLUME_RECORD_NEVER_BLOCKS, OBJECT_STORES_NO_MESH, UNINDEXED_RECORD_STORES_NO_GEOMETRY,
+    UNINDEXED_ROLE_UNMEASURED, WorldCollisionRole,
 };
 use cs_formats::gamez::read_gamez_nodes;
 use cs_formats::io::ParseContext;
@@ -60,11 +67,13 @@ use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 use cs_types::install::RelativePath;
 
-/// The measured unindexed split of one world container (task #677's census).
+/// The measured unindexed split of one world container (task #677's census,
+/// with task #716's fog-volume measurement applied to its geometry-bearing
+/// half).
 ///
-/// `anchors + volumes == unindexed` in every row, and the census test asserts
-/// that relation: the corpus holds no unindexed record carrying only one of a
-/// mesh index and a bounding box.
+/// `anchors + fog + volumes == unindexed` in every row, and the census test
+/// asserts that relation: the corpus holds no unindexed record carrying only
+/// one of a mesh index and a bounding box.
 struct Split {
     /// The group's directory spelling, as production discovery spells it.
     group: &'static str,
@@ -72,10 +81,14 @@ struct Split {
     /// `None`, because the record itself has nothing a collider could be built
     /// from.
     anchors: usize,
-    /// How many unindexed records store geometry: they keep the role the
-    /// container never states.
+    /// How many unindexed records carry the measured `fvol` prefix: fog
+    /// volumes, presented and never blocking (task #716).
+    fog: usize,
+    /// How many unindexed records store geometry and carry no measured prefix:
+    /// they keep the role the container never states.
     volumes: usize,
-    /// `anchors + volumes`, checked against the report's own child-list count.
+    /// `anchors + fog + volumes`, checked against the report's own child-list
+    /// count.
     unindexed: usize,
 }
 
@@ -86,49 +99,57 @@ const SPLITS: [Split; 8] = [
     Split {
         group: "C1",
         anchors: 56,
-        volumes: 10,
+        fog: 9,
+        volumes: 1,
         unindexed: 66,
     },
     Split {
         group: "C1B",
         anchors: 78,
+        fog: 0,
         volumes: 0,
         unindexed: 78,
     },
     Split {
         group: "C1C",
         anchors: 36,
-        volumes: 17,
+        fog: 17,
+        volumes: 0,
         unindexed: 53,
     },
     Split {
         group: "C2",
         anchors: 24,
+        fog: 0,
         volumes: 0,
         unindexed: 24,
     },
     Split {
         group: "C2B",
         anchors: 39,
-        volumes: 9,
+        fog: 9,
+        volumes: 0,
         unindexed: 48,
     },
     Split {
         group: "C3",
         anchors: 14,
+        fog: 0,
         volumes: 0,
         unindexed: 14,
     },
     Split {
         group: "C4",
         anchors: 38,
-        volumes: 13,
+        fog: 9,
+        volumes: 4,
         unindexed: 51,
     },
     Split {
         group: "C5",
         anchors: 20,
-        volumes: 85,
+        fog: 15,
+        volumes: 70,
         unindexed: 105,
     },
 ];
@@ -592,12 +613,14 @@ fn accept_m01_lc_world_unit_roles_a_declared_source_stays_unmeasured() {
 }
 
 /// **All eight containers show the same split: every unindexed record either
-/// stores no geometry (resolved `None`) or stores some (measured unknown).**
+/// stores no geometry (resolved `None`), carries the measured `fvol` prefix
+/// (resolved `None` as a fog volume), or stores geometry no measured prefix
+/// names (measured unknown).**
 ///
 /// The per-group numbers are the census, and the object-level cross-check is
-/// the discriminator: a `None` role on a mesh-bearing record — or a `Solid`
-/// guessed onto an `fvol` — fails here, as does any unindexed record that is
-/// neither.
+/// the discriminator: a `None` role that is neither of the two measured
+/// classes — or a `Solid` guessed onto an unindexed `fvol` — fails here, as
+/// does any unindexed record that is neither.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() {
@@ -627,41 +650,62 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
             split.group
         );
         assert_eq!(
-            report.objects_unindexed_unresolved(),
-            split.volumes,
-            "{}: the unindexed records that store geometry stay unknown",
+            report.objects_unindexed_fog(),
+            split.fog,
+            "{}: the unindexed records carrying the measured `fvol` prefix are fog \
+             volumes",
             split.group
         );
         assert_eq!(
-            split.anchors + split.volumes,
+            report.objects_unindexed_unresolved(),
+            split.volumes,
+            "{}: the unindexed records that store geometry and carry no measured \
+             prefix stay unknown",
+            split.group
+        );
+        assert_eq!(
+            split.anchors + split.fog + split.volumes,
             split.unindexed,
-            "{}: the two classes partition the unindexed records exactly — no \
-             third shape exists in the corpus",
+            "{}: the three classes partition the unindexed records exactly — no \
+             fourth shape exists in the corpus",
             split.group
         );
 
         // The object-level consequence, checked per record rather than as a
-        // count: `None` is answered only by a record whose own store holds no
-        // geometry, and the role the container owes is asked only of one that
-        // does.
+        // count: an `None` role is answered either by a record whose own store
+        // holds no geometry (shape claim `UNINDEXED_RECORD_STORES_NO_GEOMETRY`)
+        // or by a fog volume whose measured consumer is the fog system (shape
+        // claim `FOG_VOLUME_RECORD_NEVER_BLOCKS`, mesh kept), and the role the
+        // container owes is asked only of a record no measured prefix names.
         for object in world.objects() {
             match object.known_collision() {
                 Some(WorldCollisionRole::None) => {
-                    assert!(
-                        !object.mesh().is_known(),
-                        "{}: {} resolved to `None` but names a mesh — the store \
-                         holds geometry the role denies",
-                        split.group,
-                        object.id().as_str()
-                    );
                     let Resolved::Unknown { claim_id, .. } = object.shape() else {
                         panic!(
-                            "{}: {} has no geometry to take a shape from",
+                            "{}: {} resolved to `None` but its shape is known — a \\
+                             non-colliding record builds no collider",
                             split.group,
                             object.id().as_str()
                         );
                     };
+                    if claim_id.as_str() == FOG_VOLUME_RECORD_NEVER_BLOCKS {
+                        assert!(
+                            object.mesh().is_known(),
+                            "{}: {} is a fog volume — resolved, but still drawn, so \\
+                             its mesh stays a known reference",
+                            split.group,
+                            object.id().as_str()
+                        );
+                        continue;
+                    }
                     assert_eq!(claim_id.as_str(), UNINDEXED_RECORD_STORES_NO_GEOMETRY);
+                    assert!(
+                        !object.mesh().is_known(),
+                        "{}: {} resolved to `None` but names a mesh — the store \\
+                         holds geometry the role denies",
+                        split.group,
+                        object.id().as_str()
+                    );
                     let Resolved::Unknown { claim_id, .. } = object.mesh() else {
                         panic!(
                             "{}: {} binds no mesh, and says so",
@@ -730,11 +774,14 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
 }
 
 /// **On c1c, the 53 records the task asked about land as 36 presented anchors
-/// and 17 still-unresolved `fvol` volumes, and the spawn says so.** (retail)
+/// and 17 fog volumes, and the spawn reports no missing role at all.** (retail)
 ///
 /// This is the number the `world_geometry` blocker was waiting on: the
 /// definition imported from `ZBD/C1C/gamez.zbd` carries no invented roles, and
 /// the spawn report shows exactly which records block and which never could.
+/// Task #716 resolved the 17 `fvol*` volumes as fog volumes, so the only gap
+/// left in this container is the one indexed record the store binds no mesh
+/// for.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_lc_world_unit_roles_the_c1c_spawn_reports_the_measured_split() {
@@ -768,15 +815,15 @@ fn accept_m01_lc_world_unit_roles_the_c1c_spawn_reports_the_measured_split() {
     }
     assert_eq!(
         reasons,
-        BTreeMap::from([("unknown_collision_role", 17), ("unknown_mesh", 1),]),
-        "exactly the 17 geometry-bearing unindexed records report the missing \
-         role, and the one mesh-less indexed record reports its own gap"
+        BTreeMap::from([("unknown_mesh", 1),]),
+        "the 17 `fvol*` volumes are no longer a gap: they resolve as fog volumes, so \
+         only the one mesh-less indexed record reports a gap"
     );
     assert_eq!(
         spawned.non_colliding().len(),
-        36,
-        "the 36 anchors are presented and deliberately never block: a resolved \
-         `None` is not a skip"
+        53,
+        "the 36 anchors and the 17 fog volumes are presented and deliberately never \
+         block: a resolved `None` is not a skip"
     );
     assert_eq!(spawned.presentation_gap_count(), 0);
 }
