@@ -50,10 +50,12 @@ use cs_content::stunts::{
 /// Every acceptance test the report must see pass.
 const ACCEPTANCE_PREFIX: &str = "accept_m01_lc_directive_d_";
 
-/// How many sites this task's findings document measures M01 spelling. Asserted
-/// from the census this same run produced, so a report regenerated on an
-/// installation whose census disagrees can never be written.
-const M01_AUDIO_UI_SITES: usize = 46;
+/// How many sound-group sites this task's findings document measures M01
+/// spelling: 18 `WAKEUP_SOUND_GROUP` + 23 `COMPLETED_SOUND_GROUP` + 3
+/// `STOP_QUEUED_SOUNDS`. Asserted from the census this same run produced, so a
+/// report regenerated on an installation whose census disagrees can never be
+/// written.
+const M01_AUDIO_UI_SITES: usize = 44;
 
 /// How this run was reviewed, with every measured number **derived** from the
 /// census this same run produced rather than written down.
@@ -76,7 +78,7 @@ fn review_method(
          43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75, the same binary stage \
          A read), and the production census reports {wakeup_names} distinct WAKEUP_SOUND_GROUP \
          names, {completed_names} distinct COMPLETED_SOUND_GROUP names and {stopped_names} \
-         STOP_QUEUED_SOUNDS names over 46 measured sites, of which {music_sites} name one of the \
+         STOP_QUEUED_SOUNDS names over 44 measured sites, of which {music_sites} name one of the \
          executable's seven built-in music sound groups - the acceptance suite asserts the \
          document's key census, vocabularies, per-block name map, SET_HELP_LABEL sites and \
          MISSION_TIMER value key for key against that census, so a drift between the document and \
