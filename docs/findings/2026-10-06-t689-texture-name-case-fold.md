@@ -337,7 +337,13 @@ Implementer for this revision: bunny-alpha-1/bunny-alpha-1, resuming the branch
 after bunny-2/bunny-2's implementation and the owner's option-(b)
 authorization. The `0x531930` disassembly and the 49-archive census were
 re-derived on this machine rather than taken on trust; the retail F10-C row
-counts are new measurements (see above).
+counts are new measurements (see above). bunny-alpha-1's lease expired before
+the option-(b) edits were committed; swe2-max-1 committed them unchanged,
+rebased the branch onto `6c025c9b` and re-ran the four checks above on the
+rebased head (`05307893`): fmt clean, clippy `-D warnings` clean, the workspace
+suite green (399 suites, 0 failed), `accept_f08_c_case_fold` 4 passed including
+the 49-archive retail census (302 s), and `accept_f10_c_02` 9 passed including
+the retail world audit (106 s).
 
 No evidence report: this task's retail use is a header and name-table census a
 test observes, following F08-C, F08-B and T352's precedent. The fingerprinted
