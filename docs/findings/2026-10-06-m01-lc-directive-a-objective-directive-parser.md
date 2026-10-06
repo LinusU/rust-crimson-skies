@@ -38,10 +38,26 @@ itself a flat key/value stream of directive pairs.
 
 ### In-memory node model (measured)
 
-* Field lookup **`0x57a090(container_node, "KEY")`** scans the container's
-  children for a `Text` element equal to the key (case-sensitive; a few sites
-  use `_stricmp` variants `0x57a0f0`/`0x57a1b0`) and returns **the `List` node
-  that follows the key** — the value list. `0` when absent.
+* Field lookup **`0x57a090(container_node, "KEY")`** is `0x579ff0(container,
+  "KEY", 1)`: it scans the container's children from record 1 for a `Text`
+  element equal to the key. The compare is a case-sensitive inline `strcmp`,
+  and a `List` child is searched **recursively** (depth-first), so a key
+  nested inside a value list is also found. On a match it returns **the
+  record immediately after the matched `Text`** — the value list for a
+  `Text,List` pair — whatever its tag. `0` when absent.
+* Two value-extractor variants share the idiom. **`0x57a0f0(container,
+  "KEY", start)`** runs the same case-sensitive compare through `0x579f70`
+  but over a **flat** scan (no recursion into `List` children) and returns a
+  `char*`: found tag `3` → its payload; found tag `4` → the first child's
+  payload when that child is tag `3`; else `0`. The `NAME`/`STATE` queries
+  inside `ANIM_STATE` spec records use it (e.g. `0x46927c`, called
+  `(spec, "NAME", 1)`). **`0x57a1b0(container, "KEY", out*)`** reuses
+  `0x57a090` and writes an integer through `out`: found tag `1` →
+  `*out = payload`; found tag `4` → `*out =` the first child's payload when
+  it is tag `1`; returns `1`/`0`. `COMPLETION_COUNT` uses it (`0x4693b5`).
+  `_stricmp` appears in this parser only on **value** strings (IDENTITY's
+  `PRIMARY`/`SECONDARY`/`TERTIARY`, ANIM_STATE's `RUNNING`/`EXECUTED`/
+  `INVALID`, TRAVELERS tokens use `repe cmpsb`), never on key names.
 * A node is `{tag@+0, aux@+4}`: tag `4` marks a list and `aux` is the element
   vector `V`. Several sites assert `[found+0]==4`.
 * `V` is a vector of 8-byte `{tag@+0, payload@+4}` records at stride 8 from
@@ -240,10 +256,10 @@ consumed by `repe cmpsb`, not looked up).
 7. **Error-path field values**: real-arg type mismatches log an error but the
    code then stores a stack scratch value into the field — the value stored
    after a logged error is **not** a meaningful default.
-8. **`0x57a0f0`/`0x57a1b0` vs `0x57a090`**: variant lookups used inside spec
-   records (`NAME`, `STATE`, `COMPLETION_COUNT`); measured call sites, but
-   their exact return shape differs from `0x57a090` (string out vs node out)
-   and was read contextually.
+8. **`0x57a090` recursion reach**: the key scan descends into nested `List`
+   children (the `0x57a0f0` flat variant does not). No M01 spelling depends on
+   it, but a directive key spelled *inside* a value list would satisfy a
+   top-level lookup — measured in `0x579ff0`, unexercised by M01.
 9. **Consumers of `SET_AI_NET`/`COMPLETED_STOPPOINT`/`STOP_QUEUED_SOUNDS` /
    `WAKEUP_*` fields**: storage is fully mapped; the world-side consumers are
    other `CZMission` methods and were not traced in this stage (stages B/C/D).
