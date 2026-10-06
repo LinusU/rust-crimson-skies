@@ -25,17 +25,20 @@
 //! `tests/accept_f29_c_propulsion_gate.rs`, its own integration-test target,
 //! and the CI `cargo test` step then died of the runner's disk on two
 //! consecutive runs of this branch — `No space left on device`, with no test
-//! failure in the step at all, against a runner measured at 1.91 GiB free in
-//! `docs/findings/2026-09-30-t432-ci-disk-verification.md`. This target alone
-//! was a **123.5 MB** binary (measured with the committed
-//! `[profile.dev] debug = "line-tables-only"`), and Bevy/Avian is already
-//! linked by `tests/flight/`, so every byte of it was budget the runner did
-//! not have. It is therefore compiled into the F29-C damage-consumer binary by
-//! `tests/accept_f29_c_damage_consumers.rs`, which already covers this stage's
-//! other consumer — the same `mod`-per-file shape `tests/world/`,
-//! `tests/physics/` and `tests/campaign/` use. Nothing is lost: the seven
-//! tests keep their names, their `accept_f29_c_propulsion_` prefix and their
-//! production path; the target list is one binary shorter.
+//! failure in the step at all. This target alone was a **123.5 MB** binary
+//! (measured with the committed `[profile.dev] debug = "line-tables-only"`),
+//! and Bevy/Avian is already linked by `tests/flight/`, so every byte of it
+//! was budget the runner did not have: the same green run finishes `cargo test`
+//! with 428 MB free of a 145 GB disk, and this branch's first two CI runs died
+//! of the 123.5 MB. It is therefore compiled into the F29-C damage-consumer
+//! binary by `tests/accept_f29_c_damage_consumers.rs`, which already covers
+//! this stage's other consumer — one `mod`-per-file instead of one binary per
+//! file, the shape `tests/world/`, `tests/physics/` and `tests/campaign/` use,
+//! included with the `#[path]` the `cs_content` tests already use for a support
+//! directory. Nothing is lost: the seven tests keep their names, their
+//! `accept_f29_c_propulsion_` prefix and their production path; the target list
+//! is one binary shorter. Measured margin and limits:
+//! `docs/findings/2026-10-05-f29-c1-propulsion-consumer.md`.
 
 use bevy::prelude::Entity;
 use cs_app::damage::{

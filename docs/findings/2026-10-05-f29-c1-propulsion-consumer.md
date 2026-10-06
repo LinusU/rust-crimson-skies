@@ -14,7 +14,9 @@ ordinary build/test only — no `CS_GAME_DIR` read, no render, no audio, so no
   `DamageConsumerEvent::ThrustCut` / `ThrustRestored` events and the
   `DamageConsumerReport::thrust_cut` / `thrust_restored` counters; module
   docs updated.
-- `crates/cs_app/tests/accept_f29_c_propulsion_gate.rs` (**new**): 7
+- `crates/cs_app/tests/damage/propulsion_gate.rs` (**new**, compiled into the
+  F29-C damage-consumer binary as a module rather than as a target of its own —
+  see "The first two landing attempts died of the runner's disk"): 7
   `accept_f29_c_propulsion_` tests.
 - This file.
 
@@ -140,13 +142,14 @@ are not dead weight: the second probe shows each of them failing when the
 `Damaged`/`Enabled` distinction is removed, so all seven tests are pinned by
 production code and none of them passes vacuously.
 
-## The first landing attempt died of the runner's disk, not of a test
+## The first two landing attempts died of the runner's disk, not of a test
 
 Worth recording, because it looks like a red branch and is not one. Rally
 rebased this stage onto `main` as `ff317657a` and its landing attempt 1 of 3
-failed (Rally event `landing.failed`, 2026-10-05T22:38Z). The `rust` job's
-`cargo test` step has **no test failure in it at all**: the job's only
-`failure`-level annotation is the runner itself,
+failed (Rally event `landing.failed`, 2026-10-05T22:38Z), and the re-push as
+`f44319ff` failed the same way. The `rust` job's `cargo test` step has **no
+test failure in it at all**, in either run: the job's only `failure`-level
+annotation is the runner itself,
 
 ```
 Unhandled exception. System.IO.IOException: No space left on device :
@@ -161,15 +164,48 @@ the same minute. This is the fault measured and diagnosed in
 content), still unfixed on the owner's side because every lever it names is a
 `.github/` change.
 
-One number from this stage, for whoever budgets that disk: the new
-`crates/cs_app/tests/accept_f29_c_propulsion_gate.rs` target is a
-**123.5 MB** test binary on this machine, measured with the committed
-`[profile.dev] debug = "line-tables-only"` — against a runner that
-`docs/findings/2026-09-30-t432-ci-disk-verification.md` measured at 1.91 GiB
-free with `cargo test` running. That is one more binary the budget has to hold,
-and it is why `docs/findings/2026-09-30-t432-ci-disk-verification.md`'s unmet
-criterion 2 ("a branch adding one new `cs_app` test target is green") is now
-answered: on this runner, sometimes it is not.
+It was not bad luck either: the branch failed the same way **twice**, and the
+one thing it added to every `cargo test` run was its own test target.
+`crates/cs_app/tests/accept_f29_c_propulsion_gate.rs` was a **123.5 MB** test
+binary on this machine, measured with the committed `[profile.dev] debug =
+"line-tables-only"`, and Bevy/Avian is already linked by `tests/flight/`, so
+every byte of it was budget the runner did not have. The fix inside this task's
+owner paths was to compile those same seven tests into the F29-C damage-consumer
+binary as a module (`tests/damage/propulsion_gate.rs`, `mod`-per-file like
+`tests/world/`, `tests/physics/` and `tests/campaign/`). Same test names, same
+`accept_f29_c_propulsion_` prefix, same production path, one binary fewer — and
+CI run **37391915689** on the resulting `a7af5746` is green.
+
+### The margin, measured
+
+That green run also answers the one thing
+`docs/findings/2026-09-30-t432-ci-disk-verification.md` lists as unmet
+criterion 4 ("the `df` margin is unmeasured"): the workflow's own `df -h /`
+steps are in its log, and they were never readable before because the failing
+runs died before reaching them.
+
+| when | `Filesystem` line from run 37391915689 |
+| --- | --- |
+| after the workflow's "Free runner disk space" step, before the build | `/dev/root 145G 41G 105G 28% /` |
+| after `cargo test` | `/dev/root 145G 144G 428M 100% /` |
+
+So the job's own footprint is **~104.6 GB** of a 145 GB runner, and it finishes
+with **428 MB — 0.29% of the disk — of headroom, at 100% used**. The 123.5 MB
+this branch added is ~29% of what was left. That is the whole mechanism: not a
+defect in the code, a budget with nothing in it.
+
+Two limits on what that table proves, stated rather than glossed:
+
+* `df` is sampled before the build and after the tests, never during, so the
+  **peak** is still unmeasured and the 428 MB is an end-of-job figure, not the
+  figure the largest link actually ran against.
+* 428 MB was the margin *on this run, on this runner image, with a ~1082 MB
+  restored `rust-cache`*. It is one observation, not a distribution, and
+  `docs/findings/2026-09-30-t430-rust-lld-sigbus-in-ci.md` records that the
+  same tree, cache key and step both pass and fail. What it does establish is
+  the order of magnitude: this repository now needs roughly 105 GB of the
+  runner's 145 GB to be green, and there is no room left in it for one more
+  100 MB test binary.
 
 ## Evidence
 
