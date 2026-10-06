@@ -1355,7 +1355,13 @@ fn survey() -> LooseSurvey {
         .iter()
         .filter_map(|member| member.name.clone())
         .collect();
-    let context = retail_context(&format!("zbd/{probe_world}"), &probe_mission);
+    // A mission scope is a validated lower-case label, so the context names the
+    // mission that way while the loose directories keep the installation's own
+    // spelling (see `both_spellings`).
+    let context = retail_context(
+        &format!("zbd/{probe_world}"),
+        &probe_mission.to_ascii_lowercase(),
+    );
     let mut from_archive = 0;
     let mut with_root = ReaderMounts::new();
     with_root.push(root);
