@@ -66,7 +66,7 @@ a constant in `playtest_retail.rs`.
 | gameplay surface | an explicit **unknown** carrying `cs_content::world::WORLD_SURFACE_UNMEASURED` | #629's claim |
 | world boundary | an explicit **unknown**; no invisible wall | #629's claim |
 | spawn | `min + (−0.6·width, 0.55·height, 0.5·depth)` of the measured extent → `(−116.97, −40.85, 196.86)` | `playtest-retail.aircraft-pose-is-designed` |
-| aircraft nose | one half turn about `+Y`, mapping the **measured** stored nose (`+Z`) onto the runtime's forward axis (`−Z`) | same |
+| aircraft nose | `nose_mapping`'s yaw landing the **measured** stored nose (`−Z`, `STORED_AIRCRAFT_NOSE_AXIS`: the container's tail surfaces compose aft of the cockpit in all eleven scene airframes) onto the runtime's forward axis (`−Z`) — the identity, so nothing is turned. Measured axis, designed mapping (#709) | same |
 | camera views | three, derived from the measured bounds and the aircraft's own extent (see below) | `playtest-retail.camera-views-are-designed` |
 | lighting | key `3.2` lux, fill `0.45 ×` the key, both aimed at the view's target | `playtest-retail.camera-views-are-designed` |
 | clear sky | opaque `(0.36, 0.52, 0.72)`, declared, not a claim about the original's sky | same |
@@ -165,7 +165,7 @@ the digests above.
 | --- | --- | --- |
 | the original's world-vertex unit and coordinate handedness | every metre in this document is "stored units × a declared factor" | #436 (blocked) |
 | the original's collision classification | the area's records are declared solid; whether the original collided a panel the same way is unmeasured | — |
-| which stored axis is an airframe's nose | the half turn follows a measured hint (the propeller disc's plane), and the mapping is a designed choice | an original run |
+| how the 2000 engine oriented an airframe | which stored axis is the nose is now measured from the container's own authored names (`−Z`: the tail surfaces compose aft of the cockpit in all eleven scene airframes, #709 and `docs/findings/2026-10-06-t709-airframe-nose-mapping.md`), and the mapping onto the runtime's forward axis is a designed choice; that the original engine read its own airframes the same way is still unmeasured | an original run |
 | the container-wide `c1c` hierarchy is inconsistent (node 642 names parent slot 0, which the world record's child list does not name back), so the scene graph is built over the documented subtree through the **same** production validator | one production rule, a narrower node set | the `scene_node` id blocker in `docs/findings/2026-10-04-m01-lc-world-import.md` |
 | the mesh identity is per-container (`c1c.mesh-<n>`, `planes.mesh-<n>`) | two containers can hold the same mesh under different ids | #638 |
 | the original's lighting, sky, weather and audio | this stage declares its own | — |

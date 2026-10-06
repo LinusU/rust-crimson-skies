@@ -5,6 +5,12 @@ bloodhawk seemed to be missing its wings". Capabilities: **`retail`** and **`gpu
 (`Apple M3 Pro`, Metal). Render evidence only, not `verified_original`; the frame is
 under `private/evidence/PLAYTEST-FULL-AIRCRAFT/` and nothing original is committed.
 
+> **Superseded (2026-10-06, #709):** "the designed nose half turn" below is gone:
+> the propeller is at `bloodhawk`'s tail, the measured stored nose is `−Z`, and the
+> nose mapping is now the identity. See
+> `docs/findings/2026-10-06-t709-airframe-nose-mapping.md`. The selection rule and
+> every count here stand.
+
 ## What the airframe holds (measured, production readers)
 
 `bloodhawk` (root slot 2363) has 40 mesh bindings in these subtrees:

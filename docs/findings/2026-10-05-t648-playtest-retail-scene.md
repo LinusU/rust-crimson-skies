@@ -10,6 +10,12 @@ sheets: `specs/F18-world-geometry-terrain-water-and-traversable-interiors.md`
 `docs/contracts/CLI-EVIDENCE.md`. Capabilities used: **`retail`** (read-only
 `$CS_GAME_DIR`) and **`gpu`** (one real renderer, `Apple M3 Pro` on Metal).
 
+> **Superseded (2026-10-06, #709):** the "measured nose hint" below — the
+> propeller's position read as the airframe's nose — is wrong: the propeller sits
+> at the tail of `bloodhawk`, and the measured stored nose is `−Z`. See
+> `docs/findings/2026-10-06-t709-airframe-nose-mapping.md`. Everything else here
+> (counts, composition, selection, captures) stands.
+
 **This is render evidence, not `verified_original`.** No original run happened;
 `retail` is file access. Every count below is measured from the original bytes by
 the production readers (`ObservedTool`), and every tuning value is `Designed`.

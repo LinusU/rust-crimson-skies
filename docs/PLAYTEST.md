@@ -54,7 +54,18 @@ What is provisional (all labelled, none original behaviour):
   20 m viewer distance and never changes in flight. Every undrawn binding is listed
   with its reason in the `playtest sources` line and the smoke `report.json`
   (`aircraft_undrawn`), next to `aircraft_mesh_bindings`, `aircraft_triangles` and
-  `aircraft_selection`.
+  `aircraft_selection`. Measured (#709): that propeller sits at the **tail**
+  (`z = +4.80`, behind the rudder at `z = +3.03`), so spinning it
+  (PLAYTEST-PROP-SPIN) means the body's `Z` axis at that rear pivot, not a
+  nose-mounted disc.
+* Nose direction (#709): the drawn airframe leads with its nose. The stored nose
+  is the **measured** `−Z` — the container's own tail surfaces compose aft of
+  the cockpit node in all eleven scene airframes — and
+  `playtest_retail::nose_mapping` is the yaw that lands it on the body's forward
+  axis, which for `−Z` is the identity, so nothing is turned. The earlier reading
+  took the propeller's position for the nose (its disc composes behind the rudder
+  here) and drew the aircraft tail first; see
+  `docs/findings/2026-10-06-t709-airframe-nose-mapping.md`.
 * Spawn: 0.6 area-widths off the airship's port side, 55 % up its height,
   amidships, heading -Z (designed, `playtest_retail::spawn_pose`).
 * Textures are the original ones, bound by a **designed** rule (task #666): the
