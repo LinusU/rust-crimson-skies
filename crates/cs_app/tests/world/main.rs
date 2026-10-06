@@ -113,10 +113,20 @@
 //! hold — on a synthetic installation and, ignored under `CS_GAME_DIR`, on
 //! the real one.
 
+//! **#716** (`accept_m01_lc_fvol_roles_`) binds the two measurements #677 left
+//! open into the same production import: an `fvol*` record is a fog volume
+//! (the image's only name-keyed consumer of that four-byte prefix is its fog
+//! routine), so an unindexed one resolves to `None` while its mesh stays a
+//! known reference; and the axis convention the conversion applied is reported
+//! with its own evidence class — `observed_tool` over original bytes,
+//! `contradicted` when an installation-backed source applied another map.
+//! `fvol_roles` owns it.
+
 mod audit;
 mod common;
 mod crossing;
 mod failed_load;
+mod fvol_roles;
 mod hierarchy;
 mod import;
 mod import_retail;

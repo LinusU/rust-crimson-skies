@@ -105,7 +105,7 @@ use cs_types::content::{
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 use cs_types::space::SpaceError;
 
-use crate::coordinates::{CalibratedQuantity, SourceAdapter};
+use crate::coordinates::{AngleUnit, CalibratedQuantity, RotationSense, SourceAdapter};
 use crate::scene::{
     BindingMap, CanonicalTransform, GameZSceneError, MeshSlot, ParsedNode, SceneError, SceneGraph,
     parsed_nodes_from_gamez,
@@ -4667,14 +4667,84 @@ pub const INDEXED_RECORD_IS_STATIC: &str = "f18-world.indexed-record-is-static";
 /// The **unit** is measured: task #677 pinned one stored GameZ unit to the
 /// metre over five independent landmark censuses
 /// ([`crate::coordinates::GAMEZ_VERTEX_UNIT_IS_THE_METRE`], at
-/// `observed_tool`). What remains unmeasured under this claim is the rest of
-/// the convention — the container family stores no handedness, axis-order or
-/// angle-unit declaration anyone has tied to an original behavior. The import
-/// takes its conversion from the caller's [`SourceAdapter`] and reports both
-/// the factor it used and that quantity's own evidence class, so a consumer
-/// always knows which number turned stored units into numbers and how strong
-/// its evidence is.
+/// `observed_tool`). The **axis convention** is measured too, by static
+/// analysis of the owner-supplied decrypted image (task #436's owner note of
+/// 2026-10-05): identity axis map, `+Y` up, right-handed, radians in GameZ
+/// binaries — see [`WORLD_AXIS_CONVENTION_MEASURED`], which is what the import
+/// reports through [`WorldImportReport::axis_class`] for the quantities this
+/// conversion applies. The container family itself still stores no handedness,
+/// axis-order or angle-unit declaration anyone has tied to an original
+/// behavior: both measurements are code-derived, never observed in a run. The
+/// import takes its conversion from the caller's [`SourceAdapter`] and reports
+/// the factor it used, the axis map it applied and each quantity's own
+/// evidence class, so a consumer always knows which numbers turned stored
+/// units into canonical ones and how strong their evidence is.
 pub const WORLD_UNIT_UNMEASURED: &str = "f18-world.unit-unmeasured";
+
+/// The original's world axis convention, measured by static analysis of the
+/// owner-supplied decrypted image (task #436's owner note, 2026-10-05).
+///
+/// **Code-derived, never `VerifiedOriginal`.** The landmarks the owner recorded
+/// on `$CS_GAME_DIR/crimson.decrypted.exe` (sha256
+/// `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`) say the
+/// stored GameZ frame and the project's canonical frame are the **same** frame:
+///
+/// * the atmosphere is evaluated on `position.y` and gravity acts on `−y`
+///   (VA `0x48fc40`, `0x48ff88`), so `+Y` is up and X/Z are horizontal;
+/// * the matrix→Euler decomposition (VA `0x53df30`) takes yaw from the x/z
+///   components and pitch from the y component of the local z axis, and the
+///   view matrix (VA `0x53afc0`) is a proper rotation whose camera looks along
+///   `−Z`, so the frame is right-handed with no mirror anywhere between
+///   content and screen;
+/// * GameZ node euler triples are radians (corpus maximum exactly π, composed
+///   raw), `.zrd` text angles are degrees (π/180 at VA `0x6040e8`).
+///
+/// So the axis map this conversion applies to GameZ content **is** the
+/// original's, at `observed_tool` — the strongest class a static analysis of
+/// the bytes can reach. It never becomes `VerifiedOriginal`: no original
+/// executable ran, and no behavior landmark exists until #358 supplies a run.
+/// The evidence class for the applied map is reported per import through
+/// [`WorldImportReport::axis_class`]; an installation-backed source that
+/// applies something other than that identity map reports `Contradicted`,
+/// because the measurement and the applied map disagree.
+pub const WORLD_AXIS_CONVENTION_MEASURED: &str = "f18-world.world-axis-convention-measured";
+
+/// An `fvol*` record is a fog volume: presented, never blocking, never
+/// reporting a contact.
+///
+/// **Measured consumer, designed resolution.** Two facts, each measured:
+///
+/// * the decrypted image references the four-byte prefix `fvol` **exactly
+///   once** (VA `0x6249f4` holds the bytes; the single instruction that
+///   references them is `push 0x6249f4` at VA `0x44e087`, the middle argument
+///   of a `strncmp(name, "fvol", 4)` over a name read from each record of a
+///   global list — the name is the record's first field, as it is in the
+///   store's own info slot), inside the routine at VA `0x44d9d0` that also
+///   opens `fogvol.zrd` and reads its fog keys (`fog_zone`, `distance`,
+///   `fog_fade_dist`, `interior_fog_fade_dist`, `fog_color`) and its `clutter`
+///   groups. The caller of that routine compares the value it returns against
+///   the fog distance globals the routine itself initializes — a fade
+///   computation, not a contact test. So the only name-keyed consumer of an
+///   `fvol*` record in the image is the fog system;
+/// * `fogvol.zrd` exists in **every** group's `zrdr.zbd`, and no `.zrd` member
+///   anywhere in the installation spells `fvol` (1 293 members scanned), so
+///   nothing else — mission, objective or script document — names these
+///   records either.
+///
+/// The records the partition grid omits therefore resolve to
+/// [`WorldCollisionRole::None`]: the store draws them (their mesh stays a
+/// known mesh reference) and nothing measured reports a contact for them. This
+/// is a **designed resolution over a measured fact**, the same shape as
+/// [`UNINDEXED_RECORD_STORES_NO_GEOMETRY`], and it is a claim about this
+/// conversion — not a claim that the 2000 engine never intersected a fog box.
+///
+/// The claim does **not** reach the `fvol*` records the partition grid *does*
+/// name: for those the index rule ([`INDEXED_RECORD_IS_STATIC`]) still says
+/// `Solid`, and the disagreement is counted by
+/// [`WorldImportReport::partition_records_fog_volume`] rather than settled
+/// here, because no measurement in this task says how the original engine
+/// collided with a record its spatial index names.
+pub const FOG_VOLUME_RECORD_NEVER_BLOCKS: &str = "f18-world.fog-volume-record-never-blocks";
 
 /// The original's world floor, ceiling and lateral rules.
 ///
@@ -4694,16 +4764,19 @@ pub const WORLD_SURFACE_UNMEASURED: &str = "f18-world.surface-unmeasured";
 ///
 /// Unmeasured: the container indexes only the world's spatial geometry and
 /// states nothing about the rest of its mesh-binding records — the effect
-/// hierarchies, the fog volumes, the aircraft. Those records become world
-/// objects (they are the world node's own children) with this claim id on their
-/// collision role, so a consumer sees "the container did not say" instead of a
-/// world in which every effect blocks a plane.
+/// hierarchies, the vegetation groups, the aircraft. Those records become
+/// world objects (they are the world node's own children) with this claim id
+/// on their collision role, so a consumer sees "the container did not say"
+/// instead of a world in which every effect blocks a plane.
 ///
 /// The claim is kept for the records that still need it — an unindexed record
 /// that **does** store collision geometry (a mesh, an extent or both) could be
-/// a wall, a sensor or a decoration and the container does not say which. An
-/// unindexed record that stores *neither* resolves to `None` under
-/// [`UNINDEXED_RECORD_STORES_NO_GEOMETRY`].
+/// a wall, a sensor or a decoration and the container does not say which. Two
+/// classes leave it: an unindexed record that stores *neither* field resolves
+/// to `None` under [`UNINDEXED_RECORD_STORES_NO_GEOMETRY`], and a record whose
+/// name carries the measured `fvol` prefix resolves to `None` under
+/// [`FOG_VOLUME_RECORD_NEVER_BLOCKS`], because the image's only name-keyed
+/// consumer of that prefix is its fog system (task #716).
 pub const UNINDEXED_ROLE_UNMEASURED: &str = "f18-world.unindexed-collision-role-unmeasured";
 
 /// An unindexed record that binds no mesh and stores no extent carries no
@@ -5238,13 +5311,20 @@ pub struct WorldImportReport {
     objects_resident: usize,
     objects_solid: usize,
     objects_unindexed_none: usize,
+    objects_unindexed_fog: usize,
     objects_unindexed_unresolved: usize,
+    partition_records_fog_volume: usize,
     sectors: usize,
     sectors_without_extent: usize,
     mesh_binding_records_elsewhere: usize,
     matrix_disagreements: usize,
     meters_per_unit: f64,
     unit_class: ClaimStatus,
+    axis_map: String,
+    axis_map_preserves_orientation: bool,
+    angle_unit: AngleUnit,
+    rotation_sense: RotationSense,
+    axis_class: ClaimStatus,
 }
 
 impl WorldImportReport {
@@ -5335,13 +5415,47 @@ impl WorldImportReport {
         self.objects_unindexed_none
     }
 
+    /// How many unindexed records resolve to `None` because they are fog
+    /// volumes — the `fvol*` records whose only measured consumer is the
+    /// engine's fog system ([`FOG_VOLUME_RECORD_NEVER_BLOCKS`], task #716).
+    ///
+    /// Unlike [`Self::objects_unindexed_none`] these records **do** store a
+    /// mesh and an extent: the store draws them, and what the measurement
+    /// settled is that nothing measured reports a contact for them. Their mesh
+    /// stays a known mesh reference, so a consumer can tell "no collider
+    /// because the store states no geometry" from "no collider because the
+    /// record is a fog volume" by the object's shape claim.
+    #[must_use]
+    pub const fn objects_unindexed_fog(&self) -> usize {
+        self.objects_unindexed_fog
+    }
+
     /// How many unindexed records still carry `Unknown` — the ones that store
     /// collision geometry (a mesh, an extent or both) without a class saying
     /// what the engine did with it ([`UNINDEXED_ROLE_UNMEASURED`], task #677's
-    /// `fvol*` census).
+    /// census, narrowed by task #716: the `fvol*` half left for the fog-volume
+    /// measurement, and what remains here is every mesh-bearing record whose
+    /// name carries no measured prefix and about which the container still
+    /// says nothing).
     #[must_use]
     pub const fn objects_unindexed_unresolved(&self) -> usize {
         self.objects_unindexed_unresolved
+    }
+
+    /// How many records the partition grid names **and** whose name carries the
+    /// `fvol` prefix ([`FOG_VOLUME_RECORD_NEVER_BLOCKS`]).
+    ///
+    /// **A measured disagreement, reported rather than settled.** Task #716
+    /// measured that `fvol*` records are consumed by the fog system, while
+    /// [`INDEXED_RECORD_IS_STATIC`] resolves a grid-named record to `Solid`.
+    /// Both statements hold for this measured handful (six records over the
+    /// eight retail containers), so this conversion keeps the index rule — it
+    /// has no measurement of how the original collided with a record its
+    /// spatial index names — and counts the overlap here instead of hiding it
+    /// in either count.
+    #[must_use]
+    pub const fn partition_records_fog_volume(&self) -> usize {
+        self.partition_records_fog_volume
     }
 
     /// How many sectors the definition declares.
@@ -5402,6 +5516,59 @@ impl WorldImportReport {
     pub const fn unit_class(&self) -> ClaimStatus {
         self.unit_class
     }
+
+    /// The axis map this import applied, spelled one entry per canonical axis.
+    ///
+    /// `"identity"` is the measured GameZ map ([`WORLD_AXIS_CONVENTION_MEASURED`]):
+    /// every stored component feeds its own canonical axis with a positive sign.
+    /// Anything else is spelled out as `"[z, -x, y]"` — canonical x is fed by
+    /// stored `+z`, canonical y by stored `−x`, canonical z by stored `+y` — so
+    /// a reader of an imported definition never has to infer which frame its
+    /// positions came from.
+    #[must_use]
+    pub fn axis_map(&self) -> &str {
+        &self.axis_map
+    }
+
+    /// Whether the applied axis map preserves orientation (its determinant is
+    /// `+1`), i.e. whether stored content and canonical content are the same
+    /// handedness.
+    #[must_use]
+    pub const fn axis_map_preserves_orientation(&self) -> bool {
+        self.axis_map_preserves_orientation
+    }
+
+    /// The angle unit the source convention this import converted through
+    /// carries, as the import did **not** convert angles: `.zrd` documents and
+    /// GameZ nodes keep their own units, and this is the source's own answer
+    /// for the GameZ side (`Radians` for `retail.gamez`).
+    #[must_use]
+    pub const fn angle_unit(&self) -> AngleUnit {
+        self.angle_unit
+    }
+
+    /// The rotation sense the source convention carries
+    /// ([`RotationSense::RightHandRule`] for the measured GameZ source).
+    #[must_use]
+    pub const fn rotation_sense(&self) -> RotationSense {
+        self.rotation_sense
+    }
+
+    /// How strong the evidence is that the axis map, handedness and angle unit
+    /// this import applied **are the original's**.
+    ///
+    /// `ObservedTool` when an installation-backed source applied exactly the
+    /// map the owner's static analysis measured ([`WORLD_AXIS_CONVENTION_MEASURED`],
+    /// task #436) — code-derived evidence over the decrypted image, never a
+    /// run, so it never reaches [`ClaimStatus::VerifiedOriginal`].
+    /// `Contradicted` when an installation-backed source applied anything
+    /// else, because the measurement and the applied map disagree.
+    /// `Unknown` for every designed or synthetic source: nothing about those
+    /// conventions was measured ([`WORLD_UNIT_UNMEASURED`]).
+    #[must_use]
+    pub const fn axis_class(&self) -> ClaimStatus {
+        self.axis_class
+    }
 }
 
 /// One world container imported: the definition the runtime consumes and the
@@ -5444,6 +5611,21 @@ fn object_key(slot: u32) -> String {
 /// The stable identity of one imported sector: its cell's grid coordinates.
 fn sector_key(cell: &WorldPartitionCell) -> String {
     format!("partition-{:02}-{:02}", cell.grid_x(), cell.grid_y())
+}
+
+/// Whether a record's stored display name carries the engine's `fvol` prefix.
+///
+/// **The engine's own rule, mirrored.** The decrypted image compares names
+/// with `strncmp(name, "fvol", 4)` — one reference in the whole image, inside
+/// the routine that pairs those records with `fogvol.zrd`'s fog keys — so the
+/// prefix, and only the prefix, is what the original keys on. Four bytes is
+/// deliberately the same length the image compares: a record named `fvol` or
+/// `fvol17` matches, a record named `volume` or `ffvol` does not.
+///
+/// See [`FOG_VOLUME_RECORD_NEVER_BLOCKS`] for the measurement and for what the
+/// classification does and does not decide.
+fn is_fog_volume(name: &str) -> bool {
+    name.starts_with("fvol")
 }
 
 /// The record's stored world-space bounding box (`unk140`), in stored units.
@@ -5533,7 +5715,9 @@ fn canonical_transform(
 /// * every object's gameplay surface ([`WORLD_SURFACE_UNMEASURED`]);
 /// * the collision role of an unindexed record that stores collision
 ///   geometry — a mesh, an extent or both — but no class saying what the
-///   engine did with it ([`UNINDEXED_ROLE_UNMEASURED`]);
+///   engine did with it ([`UNINDEXED_ROLE_UNMEASURED`]), and with one
+///   measured exception: a record whose name carries the `fvol` prefix is a
+///   fog volume and resolves to `None` ([`FOG_VOLUME_RECORD_NEVER_BLOCKS`]);
 /// * the length unit, which the caller's [`SourceAdapter`] supplies and the
 ///   report names ([`WORLD_UNIT_UNMEASURED`], or a measured claim id when the
 ///   adapter's source has one).
@@ -5544,8 +5728,20 @@ fn canonical_transform(
 /// binds no mesh and stores no extent is the store saying this record has no
 /// geometry, so its role resolves to `None`
 /// ([`UNINDEXED_RECORD_STORES_NO_GEOMETRY`]) — measured to be exactly the
-/// anchors, transform groups and dummies. Its id is its node slot
+/// anchors, transform groups and dummies. An unindexed object whose stored
+/// name carries the `fvol` prefix resolves to `None` under
+/// [`FOG_VOLUME_RECORD_NEVER_BLOCKS`], because the image's only name-keyed
+/// consumer of that prefix is its fog system. Its id is its node slot
 /// ([`OBJECT_ID_IS_THE_NODE_SLOT`]).
+///
+/// **The axis convention is bound, not assumed.** The report states the axis
+/// map this conversion applied, whether it preserves orientation, the source
+/// convention's angle unit and rotation sense, and how strong the evidence is
+/// that those are the original's ([`WorldImportReport::axis_map`],
+/// [`WorldImportReport::axis_class`], [`WORLD_AXIS_CONVENTION_MEASURED`]): an
+/// installation-backed source that applied the measured identity map reports
+/// `ObservedTool`, one that applied anything else reports `Contradicted`, and
+/// a designed source reports `Unknown`.
 ///
 /// `meshes` is the caller's mesh-slot table, exactly as
 /// [`world_hierarchy_from_gamez`] takes it: which catalog element a stored
@@ -5641,9 +5837,11 @@ pub fn import_world_container(
     let mut objects_resident = 0usize;
     let mut objects_solid = 0usize;
     let mut objects_unindexed_none = 0usize;
+    let mut objects_unindexed_fog = 0usize;
     let mut objects_unindexed_unresolved = 0usize;
     let mut matrix_disagreements = 0usize;
     let mut partition_records_with_mesh = 0usize;
+    let mut partition_records_fog_volume = 0usize;
     for record in records
         .nodes
         .iter()
@@ -5683,6 +5881,13 @@ pub fn import_world_container(
             Resolved::Known(Known::new(slot.id().clone(), provenance.clone()))
         };
         let (collision, shape) = if indexed_record {
+            if is_fog_volume(&record.name) {
+                // Measured (task #716): the grid names some `fvol*` records as
+                // well. The index rule below still says `Solid` for them — this
+                // conversion does not settle a disagreement it cannot measure —
+                // so the overlap is counted and reported instead of hidden.
+                partition_records_fog_volume += 1;
+            }
             objects_solid += 1;
             (
                 Resolved::Known(Known::new(WorldCollisionRole::Solid, provenance.clone())),
@@ -5690,6 +5895,24 @@ pub fn import_world_container(
                     WorldCollisionShape::FromMesh,
                     provenance.clone(),
                 )),
+            )
+        } else if is_fog_volume(&record.name) {
+            // Measured (task #716): the image's only name-keyed consumer of the
+            // `fvol` prefix is the fog system, so this record is presented and
+            // never blocks — while its mesh stays a known mesh reference, the
+            // box it draws is still drawn.
+            objects_unindexed_fog += 1;
+            (
+                Resolved::Known(Known::new(WorldCollisionRole::None, provenance.clone())),
+                Resolved::Unknown {
+                    claim_id: claim(FOG_VOLUME_RECORD_NEVER_BLOCKS),
+                    reason: format!(
+                        "node slot {} carries the measured `fvol` prefix, so its only \
+                         measured consumer is the engine's fog system: the record is \
+                         drawn and nothing measured reports a contact for it",
+                        record.index
+                    ),
+                },
             )
         } else if record.mesh_index() < 0 && stored_extent(record)?.is_none() {
             // Measured (task #677): the partition grid omits either both of a
@@ -5783,7 +6006,9 @@ pub fn import_world_container(
         objects_resident,
         objects_solid,
         objects_unindexed_none,
+        objects_unindexed_fog,
         objects_unindexed_unresolved,
+        partition_records_fog_volume,
         sectors: definition.sectors().len(),
         sectors_without_extent,
         mesh_binding_records_elsewhere,
@@ -5793,8 +6018,63 @@ pub fn import_world_container(
             .source()
             .calibration()
             .quantity_status(CalibratedQuantity::Scale),
+        axis_map: axis_map_label(adapter),
+        axis_map_preserves_orientation: adapter.source().convention().is_orientation_preserving(),
+        angle_unit: adapter.source().convention().angle_unit(),
+        rotation_sense: adapter.source().convention().rotation_sense(),
+        axis_class: axis_class(adapter),
     };
     Ok(ImportedWorld { definition, report })
+}
+
+/// The axis map [`import_world_container`] applied, as the report states it.
+///
+/// `"identity"` when every stored component feeds its own canonical axis with a
+/// positive sign — the map task #436 measured the original to use — and the
+/// spelled-out permutation otherwise, so a reader never infers the frame.
+fn axis_map_label(adapter: &SourceAdapter) -> String {
+    let axes = adapter.source().convention().axes();
+    let identity = axes
+        .iter()
+        .enumerate()
+        .all(|(index, source)| source.axis.index() == index && !source.sign.is_negative());
+    if identity {
+        return "identity".to_owned();
+    }
+    let spelled: Vec<String> = axes
+        .iter()
+        .map(|source| {
+            format!(
+                "{}{}",
+                if source.sign.is_negative() { "-" } else { "+" },
+                source.axis.label()
+            )
+        })
+        .collect();
+    format!("[{}]", spelled.join(", "))
+}
+
+/// The evidence class for "the axis convention this import applied **is** the
+/// original's", as [`WorldImportReport::axis_class`] documents it.
+fn axis_class(adapter: &SourceAdapter) -> ClaimStatus {
+    let Origin::Installation { .. } = adapter.source().origin() else {
+        // Designed or synthetic content declares its own convention; nothing
+        // about the original was measured through it.
+        return ClaimStatus::Unknown;
+    };
+    let axes = adapter.source().convention().axes();
+    let identity = axes
+        .iter()
+        .enumerate()
+        .all(|(index, source)| source.axis.index() == index && !source.sign.is_negative());
+    if identity {
+        ClaimStatus::ObservedTool
+    } else {
+        // The measurement (task #436) says identity; this source applied
+        // something else over original bytes. The two disagree, and the report
+        // says so rather than quietly trusting one of them.
+        ClaimStatus::Contradicted
+    }
 }
 
 // ------------------------------------------------------------------- tests ---
