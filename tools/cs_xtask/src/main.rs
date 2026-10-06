@@ -16,6 +16,9 @@
 //! * `verify-ci-budget` checks that the profiles CI builds under do not emit
 //!   full DWARF, the footprint that ran the runner out of disk (task #430,
 //!   [`budget`]).
+//! * `report-test-disk` measures the test binaries this workspace asks the CI
+//!   runner to link and what one more of them costs
+//!   ([`footprint`], task #696).
 //! * `verify-target-dir` checks that the effective `CARGO_TARGET_DIR` is
 //!   private to this worktree ([`target_dir`]), so concurrent agent builds
 //!   cannot reuse each other's artifacts (task #383); that it no longer holds
@@ -40,6 +43,7 @@ use cs_xtask::bootstrap;
 use cs_xtask::budget;
 use cs_xtask::ci;
 use cs_xtask::corpus;
+use cs_xtask::footprint;
 use cs_xtask::package;
 use cs_xtask::target_dir;
 use cs_xtask::test_select;
@@ -77,6 +81,13 @@ COMMANDS
         emit full DWARF. Full DWARF for the Bevy dependency graph is the
         footprint that ran the runner out of disk and killed the cs_app
         doctest link with SIGBUS (task #430).
+    report-test-disk [--workspace-root <dir>] [--target-dir <dir>]
+        Report the test binaries this workspace asks the CI runner to link:
+        how many are in the plan, how many this target dir holds a binary
+        for, their measured sizes split into engine-linked and small ones,
+        and what one more engine-linked test file costs. Targets with no
+        binary here are reported as unmeasured, never as zero bytes, and
+        doc-test binaries are not counted (task #696).
     verify-target-dir [--workspace-root <dir>]
         Check that the effective CARGO_TARGET_DIR is private to this
         worktree and free of artifacts another checkout left behind: a
@@ -108,6 +119,9 @@ COMMANDS
 OPTIONS
     --prefix <prefix>       Task test prefix, e.g. accept_f00_c_
     --workspace-root <dir>  Workspace to run in (default: current directory)
+    --target-dir <dir>      report-test-disk only: the target directory whose
+                            debug/deps holds the built test binaries (default:
+                            $CARGO_TARGET_DIR or <workspace root>/target)
     --manifest <file>       verify-package only: candidate release manifest
                             to scan
     --private-root <dir>    corpus audit only: private corpus root,
@@ -121,6 +135,7 @@ struct Options {
     prefix: Option<String>,
     workspace_root: PathBuf,
     manifest: Option<PathBuf>,
+    target_dir: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -143,6 +158,7 @@ fn main() -> ExitCode {
         "verify-ci" => run_verify_ci(&args[1..]),
         "verify-bootstrap" => run_verify_bootstrap(&args[1..]),
         "verify-ci-budget" => run_verify_ci_budget(&args[1..]),
+        "report-test-disk" => run_report_test_disk(&args[1..]),
         "verify-target-dir" => run_verify_target_dir(&args[1..]),
         "verify-package" => run_verify_package(&args[1..]),
         "corpus" => run_corpus(&args[1..]),
@@ -154,17 +170,20 @@ fn main() -> ExitCode {
     }
 }
 
-/// Parses `--prefix`, `--workspace-root`, `--manifest` and rejects anything
-/// else. `allow_prefix` gates `--prefix` to `test-select` alone, so a typo
-/// aimed at another subcommand is an error rather than a silently ignored flag.
+/// Parses `--prefix`, `--workspace-root`, `--manifest`, `--target-dir` and
+/// rejects anything else. The three booleans gate `--prefix`, `--manifest` and
+/// `--target-dir` to the one subcommand each belongs to, so a typo aimed at
+/// another subcommand is an error rather than a silently ignored flag.
 fn parse_options(
     args: &[String],
     allow_prefix: bool,
     allow_manifest: bool,
+    allow_target_dir: bool,
 ) -> Result<Options, String> {
     let mut prefix = None;
     let mut workspace_root = PathBuf::from(".");
     let mut manifest = None;
+    let mut target_dir = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -188,6 +207,16 @@ fn parse_options(
                 manifest = Some(PathBuf::from(value));
                 index += 2;
             }
+            "--target-dir" if allow_target_dir => {
+                if target_dir.is_some() {
+                    return Err("--target-dir was given twice".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--target-dir needs a value".to_string());
+                };
+                target_dir = Some(PathBuf::from(value));
+                index += 2;
+            }
             "--workspace-root" => {
                 let Some(value) = args.get(index + 1) else {
                     return Err("--workspace-root needs a value".to_string());
@@ -202,6 +231,7 @@ fn parse_options(
         prefix,
         workspace_root,
         manifest,
+        target_dir,
     })
 }
 
@@ -218,7 +248,7 @@ fn require_workspace(root: &Path) -> Result<(), String> {
 }
 
 fn run_test_select(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, true, false) {
+    let options = match parse_options(args, true, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -254,7 +284,7 @@ fn run_test_select(args: &[String]) -> ExitCode {
 }
 
 fn run_verify_ci(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false, false) {
+    let options = match parse_options(args, false, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -278,7 +308,7 @@ fn run_verify_ci(args: &[String]) -> ExitCode {
 /// Runs the platform bootstrap gate: required workspace members with real
 /// manifests, frozen pins, intact CI gates — all four checks must pass.
 fn run_verify_bootstrap(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false, false) {
+    let options = match parse_options(args, false, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -315,7 +345,7 @@ fn run_verify_bootstrap(args: &[String]) -> ExitCode {
 /// Runs the CI build-footprint gate (task #430): the profiles CI links under
 /// must not emit full DWARF.
 fn run_verify_ci_budget(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false, false) {
+    let options = match parse_options(args, false, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -336,9 +366,90 @@ does not emit full DWARF for CI's dev, test and bench profiles",
     }
 }
 
+/// Runs the test-binary footprint report (task #696): the workspace's own
+/// share of the CI runner's disk.
+///
+/// Nothing here gates: the report says how many test binaries the plan holds,
+/// how many this target directory has binaries for, what they measure and what
+/// one more engine-linked test file costs. An unmeasured target is printed as
+/// unmeasured and the exit code stays 0, because "not built here" is not a
+/// finding about the workspace.
+fn run_report_test_disk(args: &[String]) -> ExitCode {
+    let options = match parse_options(args, false, false, true) {
+        Ok(options) => options,
+        Err(error) => return usage_error(&error),
+    };
+    if let Err(error) = require_workspace(&options.workspace_root) {
+        return gate_failed(&error);
+    }
+
+    let deps = options.target_dir.map_or_else(
+        || footprint::default_deps_dir(&options.workspace_root),
+        |target| target.join("debug").join("deps"),
+    );
+    match footprint::measure_workspace(&options.workspace_root, &deps) {
+        Ok(report) => {
+            for member in report.by_member() {
+                println!(
+                    "report-test-disk: {:<18} {:>4} planned, {:>4} measured, {:>10} measured",
+                    member.member, member.planned, member.measured, member.measured_bytes
+                );
+            }
+            let heavy = report.engine_linked();
+            let small = report.small();
+            println!(
+                "report-test-disk: {} test binaries in the plan ({} integration, {} unit \
+                 harnesses); {} measured here",
+                report.planned(),
+                report
+                    .targets
+                    .iter()
+                    .filter(|t| t.kind == footprint::TargetKind::Integration)
+                    .count(),
+                report
+                    .targets
+                    .iter()
+                    .filter(|t| t.kind == footprint::TargetKind::UnitHarness)
+                    .count(),
+                report.measured().count()
+            );
+            println!(
+                "report-test-disk: {} engine-linked (>= {} bytes) and {} smaller; \
+                 {} measured in total",
+                heavy.len(),
+                footprint::ENGINE_LINKED_FLOOR,
+                small.len(),
+                report.measured_bytes()
+            );
+            match (report.largest(), report.marginal_bytes()) {
+                (Some(largest), Some(marginal)) => println!(
+                    "report-test-disk: one more engine-linked test file costs about {marginal} \
+                     bytes (median); the largest is {} at {} bytes",
+                    largest.source,
+                    largest.bytes.unwrap_or_default()
+                ),
+                _ => println!(
+                    "report-test-disk: no engine-linked binary measured in {}, so the marginal \
+                     cost of another test file is unknown rather than zero",
+                    deps.display()
+                ),
+            }
+            for target in report.unmeasured() {
+                println!("report-test-disk: unmeasured: {}", target.source);
+            }
+            println!(
+                "report-test-disk: doc-test binaries are not counted (rustdoc links one per doc \
+                 code block), so the measured total is a floor"
+            );
+            ExitCode::from(EXIT_OK)
+        }
+        Err(error) => gate_failed(&error.to_string()),
+    }
+}
+
 /// Runs the per-worktree target-directory gate (task #383).
 fn run_verify_target_dir(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false, false) {
+    let options = match parse_options(args, false, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -472,7 +583,7 @@ fn usage_error(message: &str) -> ExitCode {
 /// Runs the release-contents gate (F61-A): read a candidate manifest and fail
 /// when it may not be released.
 fn run_verify_package(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false, true) {
+    let options = match parse_options(args, false, true, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
