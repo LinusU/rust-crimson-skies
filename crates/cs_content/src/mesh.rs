@@ -131,9 +131,12 @@
 //! * the archive to search is the caller's, through [`DependencyContext`]. The
 //!   audit never picks one, never tries a second and never substitutes a
 //!   default;
-//! * the name is compared exactly — no case folding, no extension stripping, no
-//!   alias, per the IDENTITY-CONTENT lookup contract's "no filename guessing"
-//!   rule;
+//! * the name is looked up **case-folded** — the original folds the requested
+//!   name before searching an archive's directory (`0x531930`), and
+//!   [`crate::textures::folded_texture_name`] is the one fold both this audit
+//!   and `TextureCatalog::resolve` use — but no extension is stripped, no alias
+//!   is invented and no other archive is searched, per the IDENTITY-CONTENT
+//!   lookup contract's "no filename guessing" rule;
 //! * a material index outside the material table is **reported**, never clamped
 //!   to the last record and never wrapped;
 //! * every row is kept, including the failures (IDENTITY-CONTENT: "collections
@@ -162,12 +165,18 @@
 //! The design is in
 //! `docs/findings/2026-09-29-f10-c-integration-and-reason-codes.md`.
 //!
-//! The measured consequence of the exact-name rule is in
+//! The measured consequence of that rule is in
 //! `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md`: a GameZ
 //! container spells a texture `Sky1.tif` while the world's texture archive
-//! stores `sky1`, so the row is `MissingTexture`. That is the honest answer for
-//! the rule as written, and the rule is not quietly relaxed here to make the
-//! number smaller.
+//! stores `sky1`, so the row is `MissingTexture`. The fold does not change that
+//! — `Sky1.tif` folds to `sky1.tif`, and the archive stores a bare stem — and
+//! the census in
+//! `docs/findings/2026-10-06-t689-texture-name-case-fold.md` measures why: the
+//! fold newly resolves **none** of the 3 521 distinct names a world's textured
+//! materials use, because every name the container spells in another case also
+//! carries the extension the archive does not. So the rule is not relaxed here
+//! to make the number smaller, and adopting the measured fold did not make it
+//! larger either.
 //!
 //! # Degenerate triangles
 //!
@@ -1007,10 +1016,14 @@ pub enum MaterialState {
         /// The one texture the name reached.
         texture: TextureId,
     },
-    /// The material names a texture, and the named archive does not store that
-    /// name. The row carries the **exact** stored name and the **exact** archive
-    /// that was searched. No other archive is searched, no case is folded, no
-    /// extension is stripped and no default is substituted.
+    /// The material names a texture, and the named archive does not store the
+    /// name **after the measured ASCII case fold** ([`folded_texture_name`]).
+    /// The row carries the container's name **exactly as stored** and the
+    /// archive that was searched, exactly. No other archive is searched, no
+    /// extension is stripped, no alias is invented and no default is
+    /// substituted.
+    ///
+    /// [`folded_texture_name`]: crate::textures::folded_texture_name
     MissingTexture {
         /// The name the container stores, exactly.
         name: String,
@@ -1684,15 +1697,16 @@ fn material_bytes(material: &RawMaterial) -> Vec<u8> {
 ///
 /// # None of these is a lookup rule
 ///
-/// [`MeshDependencyAudit`] resolves a name by byte equality, against the one
-/// archive its caller named, and nothing in this module changes that: the
-/// readings exist so that a **measurement** of the corpus can be *reported*, one
-/// number per reading, instead of a rule being quietly widened so that a count
-/// looks better. The contract's lookup rule is the exact one
-/// (`docs/contracts/IDENTITY-CONTENT.md`, "Lookup contract"), and the only way
-/// past it is an evidence-backed alias record with scope and test coverage —
-/// which needs an independent reference or an original-run capture, neither of
-/// which exists.
+/// [`MeshDependencyAudit`] resolves a name by comparing the **case-folded**
+/// request against the stored spelling byte for byte, in the one archive its
+/// caller named, and nothing in this module changes that: the readings exist so
+/// that a **measurement** of the corpus can be *reported*, one number per
+/// reading, instead of a rule being quietly widened so that a count looks
+/// better. The contract's lookup rule is that one
+/// (`docs/contracts/IDENTITY-CONTENT.md`, "Lookup contract" — no filename
+/// guessing, evidence-backed aliases only), and the only way past it is an
+/// evidence-backed alias record with scope and test coverage — which needs an
+/// independent reference or an original-run capture, neither of which exists.
 ///
 /// Why several readings: the container's name field holds a name **and** an
 /// extension in one 20-byte field, while a ZBD texture package's name field
@@ -1701,8 +1715,9 @@ fn material_bytes(material: &RawMaterial) -> Vec<u8> {
 /// claim about that engine, not about these files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TextureNameRule {
-    /// The container's stored name, byte for byte. This is the rule
-    /// [`MeshDependencyAudit`] looks up with and the contract's own.
+    /// The container's stored name with no change at all. This is the rule
+    /// [`MeshDependencyAudit`] looked up with before task #689, and it is the
+    /// one the **counts in the F10-C finding** were measured under.
     Exact,
     /// The stored name with everything from its **last** `.` removed, so
     /// `Sky1.tif` and `buildingspotlighted.` both read as their stem. A name
@@ -5076,16 +5091,31 @@ mod tests {
     /// **The discriminating case.** A polygon whose material names a texture that
     /// is absent from its world's archive appears in the audit as
     /// `missing_texture`, with the exact stored name and the exact archive. It
-    /// does **not** resolve to another archive of the same world, to a
-    /// case-folded spelling, to an extension-stripped one, and not to a default.
+    /// does **not** resolve to another archive of the same world — not even one
+    /// that stores the very spelling the request folds to — not to an
+    /// extension-stripped one, and not to a default.
+    ///
+    /// The request is case-folded before the search, because the original folds
+    /// it (`0x531930`; `docs/findings/2026-10-06-t689-texture-name-case-fold.md`).
+    /// That is what makes this fixture discriminating under the measured rule
+    /// rather than under the superseded exact one: the second archive holds
+    /// `sky1.tif`, which `Sky1.tif` folds to, so a fallback search would
+    /// **succeed** here and must still not happen. It also holds `Sky1.tif`
+    /// verbatim, which is the fact the superseded fixture got wrong: a stored
+    /// mixed-case name is never what a request reaches, because the fold is a
+    /// fold of the request and the stored table is compared byte for byte.
     #[test]
     fn accept_f10_c_02_audit_reports_a_missing_texture_with_its_exact_name_and_archive() {
         // The world's `texture.zbd` stores `sky` and `smoke`. A **second archive
-        // of the same world** stores `Sky1.tif`, `sky1` and `c2only`, so a
-        // fallback search would have somewhere to go. It must not be taken, and
-        // the catalog is opened over both archives to prove the audit used only
-        // the one it was given.
-        let tree = Tree::world(&["sky", "smoke"], &["Sky1.tif", "sky1", "c2only"]);
+        // of the same world** stores `sky1.tif` (what `Sky1.tif` folds to),
+        // `Sky1.tif` itself, `sky1` (what the name would be if the extension
+        // were stripped) and `c2only`, so a fallback search would have
+        // somewhere to go. It must not be taken, and the catalog is opened over
+        // both archives to prove the audit used only the one it was given.
+        let tree = Tree::world(
+            &["sky", "smoke"],
+            &["Sky1.tif", "sky1.tif", "sky1", "c2only"],
+        );
         let session = world_session(&tree.0, "ZBD/c1");
         let key = texture_key();
         let other = world_key("rtexture2.zbd");
@@ -5133,21 +5163,42 @@ mod tests {
         assert!(text.contains("Sky1.tif"), "{text}");
         assert!(text.contains("texture.zbd"), "{text}");
 
-        // The other archive really does hold both spellings, so the row is a
-        // choice of archive and a choice of spelling, not a missing file.
-        for spelling in ["Sky1.tif", "sky1"] {
-            assert!(
+        // The other archive really does store what the request folds to, so the
+        // row is a choice of archive, not a missing file — and the fold is what
+        // reaches it, from every spelling of the request. It stores `Sky1.tif`
+        // verbatim too, and **no** spelling reaches that one: the fold is a fold
+        // of the request, and the stored table is compared byte for byte, so a
+        // stored mixed-case name is unreachable rather than matched
+        // case-insensitively. That is the measured consequence the superseded
+        // fixture asserted the opposite of, and it keeps `Sky1.tif` and
+        // `sky1.tif` two entries rather than one.
+        for spelling in ["Sky1.tif", "SKY1.TIF", "sky1.tif"] {
+            assert_eq!(
                 catalog
                     .resolve(&session, &TextureRef::new(other.clone(), spelling))
-                    .is_ok(),
-                "the second archive stores `{spelling}`"
+                    .expect("the second archive stores the folded spelling")
+                    .id()
+                    .name,
+                "sky1.tif",
+                "`{spelling}` folds to the stored `sky1.tif`"
             );
         }
         assert!(
             catalog
-                .resolve(&session, &TextureRef::new(key.clone(), "sky1"))
-                .is_err()
+                .resolve(&session, &TextureRef::new(other.clone(), "sky1"))
+                .is_ok(),
+            "the second archive stores the extension-stripped stem as well"
         );
+        // The world's own archive — the one the audit was given — stores none of
+        // them, so this is a naming difference and not a missing archive.
+        for spelling in ["Sky1.tif", "sky1.tif", "sky1"] {
+            assert!(
+                catalog
+                    .resolve(&session, &TextureRef::new(key.clone(), spelling))
+                    .is_err(),
+                "the world's own archive stores `{spelling}`"
+            );
+        }
     }
 
     // ------------------------------ F08-C: the measured lookup order -------
@@ -5356,9 +5407,19 @@ mod tests {
         );
     }
 
-    /// The exact-name rule is not relaxed to make a number smaller: a name that
-    /// differs only in case, and one that differs only by its extension, are both
-    /// missing. Neither is folded, stripped or aliased.
+    /// The rule is not relaxed to make a number smaller: a name carrying an
+    /// extension the archive does not store is missing however its case is
+    /// spelled. Task #689 measured that the original case-folds the request
+    /// (`0x531930`), and this fixture is what that fold does **not** rescue:
+    /// `Sky1.tif` folds to `sky1.tif`, the archive stores the bare stem `sky1`,
+    /// and no extension is stripped. The test name keeps its pre-#689 wording —
+    /// it is F10-C's inventory name — but what it pins is unchanged and is now
+    /// sharper: `sky1` and `ground`, spelled exactly as stored, resolve.
+    ///
+    /// The fold itself is pinned by `accept_f08_c_case_fold_*` in
+    /// `crate::textures`, and its retail consequence by the census in
+    /// `docs/findings/2026-10-06-t689-texture-name-case-fold.md`: it newly
+    /// resolves none of the 3 521 names a world's textured materials use.
     #[test]
     fn accept_f10_c_02_audit_neither_folds_case_nor_strips_an_extension() {
         let tree = Tree::world(&["sky1", "ground"], &["tier"]);
@@ -5751,7 +5812,7 @@ mod tests {
             "the world stores material references"
         );
 
-        // No row resolved to anything but an exact stored name, and every
+        // No row resolved to anything but a stored spelling, and every
         // resolved row names the world's own archive.
         for row in audit.resolved_rows() {
             let MaterialState::Resolved { texture } = &row.state else {
@@ -5770,8 +5831,10 @@ mod tests {
                 .expect("a resolved row names a stored texture");
             assert_eq!(&texture.name, &stored.name, "the name was altered");
         }
-        // The exact-name rule is visible on real data: this world spells a texture
-        // `Sky1.tif` in its GameZ container and stores `sky1`.
+        // The naming rule is visible on real data: this world spells a texture
+        // `Sky1.tif` in its GameZ container and stores `sky1`. The fold does
+        // not bridge that pair — it folds to `sky1.tif`, and the archive stores
+        // a bare stem — which is why this row is still missing under #689.
         let differing = audit
             .rows
             .iter()
