@@ -20,12 +20,16 @@
 //! The three declared sources ([`CoordinateSource::declared`]) are **designed
 //! declarations**, not measurements: an identity self-map plus two synthetic
 //! fixtures that exercise every branch of the machinery. No original
-//! handedness, axis order, scale or angle unit has been measured here, and
-//! this module claims none. A test asserts that no declared source claims
-//! `Origin::Installation`, and [`CoordinateSource::calibration`] hands every
-//! one of them an empty [`UnitCalibration`] whose
-//! [`claim_status`](UnitCalibration::claim_status) is
+//! handedness, axis order, scale or angle unit was measured *there*, and a
+//! test asserts that no declared source claims `Origin::Installation` and that
+//! [`CoordinateSource::calibration`] hands every one of them an empty
+//! [`UnitCalibration`] whose [`claim_status`](UnitCalibration::claim_status) is
 //! [`ClaimStatus::Unknown`].
+//!
+//! The measured sources are separate: [`CoordinateSource::retail_gamez`] and
+//! [`CoordinateSource::retail_zrd`] carry `Origin::Installation` and the
+//! calibration the measurement produced, which is where the next section's
+//! rule is answered per source.
 //!
 //! # F16-D: the calibration rule, checkable instead of remembered
 //!
@@ -41,8 +45,39 @@
 //! [`claim_status`](UnitCalibration::claim_status) the recorded evidence
 //! supports. Nothing in this module can manufacture a measurement: only an
 //! [`EvidenceRecord`] that itself
-//! [`verifies_original`](EvidenceRecord::verifies_original) can raise the
-//! claim, and no such record exists in this tree.
+//! [`verifies_original`](EvidenceRecord::verifies_original) **and** sits in a
+//! calibration the rule calls complete can raise the claim that far. F16-E's
+//! static-analysis records do verify the original bytes they inspected, but no
+//! calibration in this tree is complete — no [`LandmarkKind::Behavior`] has
+//! ever been observed — so the whole-convention claim every measured source
+//! makes here is `unknown`, never `verified_original`.
+//!
+//! # F16-E: what the static analysis measured, and which source it belongs to
+//!
+//! [`CoordinateSource::retail_gamez`] (GameZ meshes and nodes) and
+//! [`CoordinateSource::retail_zrd`] (`.zrd` text documents) are the declared
+//! sources for the real formats this project reads. Each carries
+//! `Origin::Installation` plus a [`UnitCalibration`] of **artifact landmarks**
+//! — [`LandmarkKind::Artifact`], every one a static-analysis observation of
+//! the owner's decrypted executable (`ORIGINAL_IMAGE_SHA256`) or of a retail
+//! file (`ZRD_READER_ARCHIVE_SHA256`), located by virtual address or member
+//! span, written up in
+//! `docs/findings/2026-10-06-f16-e-original-unit-calibration-landmarks.md`.
+//! The convention each source declares is a **hand-transcription** of those
+//! measured values, pinned by the `accept_f16_e_` acceptance tests; nothing in
+//! the module derives a convention from a landmark's free-text description.
+//!
+//! The quantities' landmark rule is deliberately **not** satisfied here:
+//! no [`LandmarkKind::Behavior`] landmark is recorded, because a behavior is
+//! what the *running original* does and no original run exists yet (the
+//! requirement stays open at #358). So [`UnitCalibration::gaps`] reports
+//! exactly the missing behavior landmark for every quantity that has its three
+//! artifacts, [`UnitCalibration::is_complete`] is false, and
+//! [`UnitCalibration::claim_status`] is [`ClaimStatus::Unknown`] — never
+//! `verified_original`. A calibration is about one source, and
+//! [`CoordinateSource::with_calibration`] refuses one whose `source()` is not
+//! the label it is attached to, so source A's evidence can never be reported
+//! as source B's gaps.
 //!
 //! # Derivations
 //!
@@ -79,7 +114,8 @@ use std::f64::consts::PI;
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{Origin, Provenance};
 use cs_types::evidence::{
-    ClaimId, ClaimStatus, EvidenceRecord, EvidenceSource, ObservationLocator, ObservationMethod,
+    ClaimId, ClaimStatus, ContentHash, EvidenceRecord, EvidenceSource, Fingerprint,
+    FingerprintKind, ObservationLocator, ObservationMethod, SourceSpan as EvidenceSpan,
 };
 use cs_types::space::{Meters, Quaternion, Radians, SpaceError, UnitVec3, Winding, WorldPosition};
 
@@ -277,6 +313,15 @@ pub enum SourceError {
         /// The axis that actually feeds canonical Z.
         feeds_canonical_z: Axis,
     },
+    /// A calibration was attached to a source it is not about: its
+    /// [`UnitCalibration::source`] is not this source's label, so its gaps
+    /// and claim would be reported against the wrong format.
+    CalibrationSourceMismatch {
+        /// The label of the source the calibration was attached to.
+        label: String,
+        /// The source the calibration says it is about.
+        calibration_source: String,
+    },
 }
 
 impl std::fmt::Display for SourceError {
@@ -300,6 +345,14 @@ impl std::fmt::Display for SourceError {
                 "winding reference axis {} does not feed canonical z ({} does)",
                 declared.label(),
                 feeds_canonical_z.label()
+            ),
+            Self::CalibrationSourceMismatch {
+                label,
+                calibration_source,
+            } => write!(
+                f,
+                "calibration is about {calibration_source:?}, but it was attached to the source \
+                 {label:?}"
             ),
         }
     }
@@ -468,18 +521,22 @@ impl SourceConvention {
 /// `origin` and `provenance` come from the F14-A records
 /// (`cs_types::content`), so a declaration can never be mistaken for a
 /// measurement: `Origin::Installation` is reserved for a convention backed
-/// by a source span, which is F16-D's work.
+/// by a source span, which is F16-D's census and F16-E's static analysis.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CoordinateSource {
     label: String,
     convention: SourceConvention,
     origin: Origin,
     provenance: Provenance,
-    landmarks: Vec<Landmark>,
+    calibration: UnitCalibration,
 }
 
 impl CoordinateSource {
     /// Validates a source declaration together with its identity.
+    ///
+    /// The source starts with an **empty** [`UnitCalibration`]: a declaration
+    /// is not a measurement. A source built from a measurement attaches its
+    /// record through [`Self::with_calibration`].
     ///
     /// # Errors
     ///
@@ -495,12 +552,53 @@ impl CoordinateSource {
         if label.is_empty() {
             return Err(SourceError::EmptyLabel);
         }
+        let calibration = UnitCalibration::empty(label.clone());
         Ok(Self {
             label,
             convention,
             origin,
             provenance,
-            landmarks: Vec::new(),
+            calibration,
+        })
+    }
+
+    /// Validates a source declaration together with its identity **and** the
+    /// calibration record the measurement produced for it.
+    ///
+    /// The calibration must be about this source: a record whose
+    /// [`UnitCalibration::source`] is another label would report another
+    /// format's landmarks, gaps and claim status under this one's name, so it
+    /// is refused at the boundary instead of surfacing as a wrong gaps list
+    /// later.
+    ///
+    /// # Errors
+    ///
+    /// [`SourceError::EmptyLabel`] for an empty label, or
+    /// [`SourceError::CalibrationSourceMismatch`] when `calibration` names a
+    /// different source.
+    pub fn with_calibration(
+        label: impl Into<String>,
+        convention: SourceConvention,
+        origin: Origin,
+        provenance: Provenance,
+        calibration: UnitCalibration,
+    ) -> Result<Self, SourceError> {
+        let label = label.into();
+        if label.is_empty() {
+            return Err(SourceError::EmptyLabel);
+        }
+        if calibration.source() != label {
+            return Err(SourceError::CalibrationSourceMismatch {
+                calibration_source: calibration.source().to_owned(),
+                label,
+            });
+        }
+        Ok(Self {
+            label,
+            convention,
+            origin,
+            provenance,
+            calibration,
         })
     }
 
@@ -539,34 +637,27 @@ impl CoordinateSource {
     /// [`CalibrationError::RepeatedDescription`] or
     /// [`CalibrationError::RepeatedObservation`].
     pub fn record_landmark(&mut self, landmark: Landmark) -> Result<(), CalibrationError> {
-        let mut check = self.calibration();
-        check.record(landmark.clone())?;
-        self.landmarks.push(landmark);
-        Ok(())
+        self.calibration.record(landmark)
     }
 
     /// This source's calibration record under `F16` non-negotiable behavior 1.
     ///
-    /// Every declared source starts with an **empty** calibration: no original
-    /// handedness, axis order, scale or angle unit has been measured yet, and
-    /// a caller that asks gets [`ClaimStatus::Unknown`] until someone records
-    /// landmarks together with the evidence for them. A source built from a
-    /// measurement — [`Self::retail_gamez`] is the first — replays the
-    /// landmarks it recorded, and its gaps report is the *per-quantity* answer:
-    /// an incompletely calibrated source can have the quantity it measured
-    /// satisfied while the rest stay open, which is what
-    /// `Unknown` looks like partway through. Returning the record rather than
-    /// a "is calibrated" boolean is the point: the gaps are reportable, so an
-    /// uncalibrated source cannot be mistaken for a calibrated one.
+    /// Every source built by [`Self::new`] starts with an **empty**
+    /// calibration: no original handedness, axis order, scale or angle unit
+    /// has been measured yet, and a caller that asks gets
+    /// [`ClaimStatus::Unknown`] until someone records landmarks together with
+    /// the evidence for them. A source built from a measurement —
+    /// [`Self::retail_gamez`] and [`Self::retail_zrd`] — reports the record it
+    /// was attached with through [`Self::with_calibration`], and its gaps
+    /// report is the *per-quantity* answer: an incompletely calibrated source
+    /// can have the quantity it measured satisfied while the rest stay open,
+    /// which is what `Unknown` looks like partway through. Returning the
+    /// record rather than a "is calibrated" boolean is the point: the gaps are
+    /// reportable, so an uncalibrated source cannot be mistaken for a
+    /// calibrated one.
     #[must_use]
     pub fn calibration(&self) -> UnitCalibration {
-        let mut calibration = UnitCalibration::empty(self.label.clone());
-        for landmark in &self.landmarks {
-            calibration
-                .record(landmark.clone())
-                .expect("a source's landmarks were validated when recorded");
-        }
-        calibration
+        self.calibration.clone()
     }
 
     /// Every source declared at F16-A.
@@ -584,20 +675,26 @@ impl CoordinateSource {
     }
 
     /// The coordinate convention of the original's GameZ containers, with its
-    /// length scale measured (task #677).
+    /// length scale measured (task #677) and the rest of the convention
+    /// measured by static analysis (task F16-E, #390).
     ///
-    /// **One quantity measured, the rest declared.** The landmark census —
-    /// recorded on this source's [`calibration`](Self::calibration) and
-    /// written up in `docs/findings/2026-10-05-m01-lc-world-unit-roles.md` —
-    /// pins [`CalibratedQuantity::Scale`] to **one stored unit per metre**:
-    /// every animation container stores the Earth's gravitational acceleration
-    /// in its payload header, and the human-scale and airframe meshes measure
-    /// their known real sizes only under that unit. The axis map, rotation
-    /// sense, angle unit and front-face rule are the **same identity
-    /// declaration** the world import already applies: they are *not*
-    /// measured, and the calibration's gap list says so, so this source is
-    /// honestly `Unknown` at the whole-convention level while the scale is
-    /// pinned.
+    /// The landmark census — recorded on this source's
+    /// [`calibration`](Self::calibration) and written up in
+    /// `docs/findings/2026-10-05-m01-lc-world-unit-roles.md` — pins
+    /// [`CalibratedQuantity::Scale`] to **one stored unit per metre**: every
+    /// animation container stores the Earth's gravitational acceleration in
+    /// its payload header, and the human-scale and airframe meshes measure
+    /// their known real sizes only under that unit. F16-E added the
+    /// static-analysis landmarks for the remaining three quantities — axis
+    /// map, rotation sense and angle unit — from the owner's decrypted
+    /// executable (`gamez_static_analysis_landmarks`), so the identity
+    /// declaration below is measured rather than assumed.
+    ///
+    /// What the source still does **not** have is a behavior landmark: nothing
+    /// here was observed running, so the gap list still names one missing
+    /// behavior per quantity it has three artifacts for, `is_complete()` stays
+    /// false and the whole-convention claim stays `Unknown`. See
+    /// `docs/findings/2026-10-06-f16-e-original-unit-calibration-landmarks.md`.
     ///
     /// `source` is the installation span of a GameZ container the measurement
     /// ran over — the convention's provenance points at original bytes, which
@@ -606,8 +703,18 @@ impl CoordinateSource {
     /// self-map and its fixtures, and a measured source is built where its
     /// span exists.
     pub fn retail_gamez(source: SourceSpan) -> Self {
-        let mut built = Self::new(
-            "retail.gamez",
+        let mut calibration =
+            UnitCalibration::new(GAMEZ_SOURCE_LABEL).expect("the GameZ source label is not empty");
+        for landmark in gamez_scale_landmarks()
+            .into_iter()
+            .chain(gamez_static_analysis_landmarks())
+        {
+            calibration
+                .record(landmark)
+                .expect("the recorded GameZ landmarks are independent observations");
+        }
+        Self::with_calibration(
+            GAMEZ_SOURCE_LABEL,
             SourceConvention::new(
                 [
                     SourceAxis::positive(Axis::X),
@@ -631,14 +738,70 @@ impl CoordinateSource {
                 Some(source),
             )
             .expect("an observed_tool declaration with a span is valid"),
+            calibration,
         )
-        .expect("the measured GameZ source is a valid declaration");
-        for landmark in gamez_scale_landmarks() {
-            built
-                .record_landmark(landmark)
-                .expect("the measured scale landmarks are independent");
+        .expect("the GameZ calibration is about retail.gamez")
+    }
+
+    /// The coordinate convention of the original's `.zrd` text documents, as
+    /// measured by static analysis (task F16-E, #390).
+    ///
+    /// `.zrd` documents are the text members the project reads out of the
+    /// reader archives (`ZBD/<group>/zrdr.zbd`, the shared `ZBD/zrdr.zbd`,
+    /// `mis_anim.zbd`, …): animation definitions, weather, objectives, turret
+    /// keys. The measured convention is the same world frame GameZ stores —
+    /// one unit to the metre, +Y up, right-handed with no mirror, identity
+    /// axis map — with **degrees** where the document text spells an angle,
+    /// which is the one quantity this format spells differently from the
+    /// GameZ binaries (the engine converts `.zrd` angles through π/180 once,
+    /// on the way in).
+    ///
+    /// `source` is the installation span of a reader archive the measurement
+    /// ran over, which is what [`Origin::Installation`] is for. Its
+    /// [`calibration`](Self::calibration) holds the static-analysis landmarks
+    /// behind every one of those quantities, each with its own
+    /// [`EvidenceRecord`], and its gaps report the one thing no static
+    /// analysis can supply: an observed [`LandmarkKind::Behavior`] (#358).
+    ///
+    /// Like [`Self::retail_gamez`], it is deliberately **not** a member of
+    /// [`Self::declared`]: the declared registry is the designed self-map and
+    /// its fixtures, and a measured source is built where its span exists.
+    pub fn retail_zrd(source: SourceSpan) -> Self {
+        let mut calibration =
+            UnitCalibration::new(ZRD_SOURCE_LABEL).expect("the .zrd source label is not empty");
+        for landmark in zrd_static_analysis_landmarks() {
+            calibration
+                .record(landmark)
+                .expect("the recorded .zrd landmarks are independent observations");
         }
-        built
+        Self::with_calibration(
+            ZRD_SOURCE_LABEL,
+            SourceConvention::new(
+                [
+                    SourceAxis::positive(Axis::X),
+                    SourceAxis::positive(Axis::Y),
+                    SourceAxis::positive(Axis::Z),
+                ],
+                Axis::Z,
+                1.0,
+                AngleUnit::Degrees,
+                RotationSense::RightHandRule,
+                Winding::CounterClockwise,
+            )
+            .expect("the measured .zrd convention is a valid declaration"),
+            Origin::Installation {
+                source: source.clone(),
+            },
+            Provenance::new(
+                ClaimId::new(ZRD_DOCUMENT_CONVENTION_IS_MEASURED)
+                    .expect("the .zrd convention claim id is valid"),
+                ClaimStatus::ObservedTool,
+                Some(source),
+            )
+            .expect("an observed_tool declaration with a span is valid"),
+            calibration,
+        )
+        .expect("the .zrd calibration is about retail.zrd")
     }
 
     /// The canonical convention itself, as a source: mapping through it is
@@ -840,6 +1003,346 @@ fn gamez_scale_landmarks() -> Vec<Landmark> {
     .into_iter()
     .collect::<Result<Vec<_>, _>>()
     .expect("the declared landmarks are described")
+}
+
+// ---------------------------------------------------------------------------
+// F16-E: the static-analysis landmarks the two measured sources rest on
+// ---------------------------------------------------------------------------
+
+/// The stable label of the measured GameZ source.
+pub const GAMEZ_SOURCE_LABEL: &str = "retail.gamez";
+
+/// The stable label of the measured `.zrd` source.
+pub const ZRD_SOURCE_LABEL: &str = "retail.zrd";
+
+/// The claim [`CoordinateSource::retail_zrd`]'s declaration stands on: its
+/// world frame and its angle unit were measured by static analysis of the
+/// owner's decrypted executable and of the retail reader archives — never
+/// observed running, so the class is `observed_tool`, never
+/// `verified_original`.
+pub const ZRD_DOCUMENT_CONVENTION_IS_MEASURED: &str = "f16-e.zrd-document-world-convention";
+
+/// SHA-256 of `$CS_GAME_DIR/crimson.decrypted.exe`: the owner-supplied
+/// decrypted executable (a decryption of `crimson.icd`) every F16-E code
+/// landmark was measured in.
+///
+/// The digest comes from the owner's note on task #390 and the retail
+/// acceptance test re-hashes the file, so a drifted image fails there instead
+/// of silently backing evidence about different bytes.
+pub const ORIGINAL_IMAGE_SHA256: &str =
+    "43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75";
+
+/// The retail reader archive the one `.zrd` **data** landmark was measured in.
+pub const ZRD_READER_ARCHIVE: &str = "ZBD/zrdr.zbd";
+
+/// The member of [`ZRD_READER_ARCHIVE`] whose animation definitions the data
+/// landmark reads: the `ANIMATION_DEFINITIONS/GRAVITY` node lives in it (the
+/// retail acceptance test checks that the member's own span covers the value
+/// below).
+pub const ZRD_ANIMATION_MEMBER: &str = "anim.zrd";
+
+/// SHA-256 of [`ZRD_READER_ARCHIVE`] on the owner's installation: the retail
+/// file digest behind the data landmark's fingerprint.
+pub const ZRD_READER_ARCHIVE_SHA256: &str =
+    "76b510d821edd2268040d2ccb18c462ec07ad580cdba571b3066228e2cf592dd";
+
+/// Byte offset of the `ANIMATION_DEFINITIONS/GRAVITY` f32 inside
+/// [`ZRD_READER_ARCHIVE`], and that field's length: the exact bytes the data
+/// landmark observed (`-9.8f`, bits `0xC11CCCCD`).
+pub const ZRD_GRAVITY_VALUE_OFFSET: u64 = 28_703;
+/// Length in bytes of the field at [`ZRD_GRAVITY_VALUE_OFFSET`] (one `f32`).
+pub const ZRD_GRAVITY_VALUE_LENGTH: u64 = 4;
+
+/// Evidence for one F16-E **code** landmark: the owner-supplied decrypted
+/// executable, located by the virtual address the measurement was taken at.
+///
+/// Below VA `0x643000` the owner's `.text`/`.rdata`/`.data` file offset is
+/// `VA − 0x400000`, which is how each address below was checked against the
+/// image's bytes before it was recorded.
+fn image_evidence(va: &str) -> EvidenceRecord {
+    EvidenceRecord {
+        source: EvidenceSource::OriginalInstallation,
+        fingerprint: Some(Fingerprint {
+            kind: FingerprintKind::Installation,
+            sha256: ContentHash::from_hex(ORIGINAL_IMAGE_SHA256)
+                .expect("the recorded image digest is valid hexadecimal"),
+        }),
+        locator: Some(ObservationLocator {
+            container: format!("crimson.decrypted.exe VA {va}"),
+            span: None,
+        }),
+        method: ObservationMethod::ByteInspection,
+        limitations: vec![
+            "static analysis — disassembly cross-checked against the retail data files — of the \
+             owner-supplied decrypted executable; no original executable ran, so this is an \
+             artifact observation and never an observed behaviour"
+                .to_owned(),
+        ],
+    }
+}
+
+/// Evidence for the one F16-E **data** landmark: a retail file digest and the
+/// member span the value lives in, read from the installation read-only.
+fn retail_member_evidence() -> EvidenceRecord {
+    EvidenceRecord {
+        source: EvidenceSource::OriginalInstallation,
+        fingerprint: Some(Fingerprint {
+            kind: FingerprintKind::Installation,
+            sha256: ContentHash::from_hex(ZRD_READER_ARCHIVE_SHA256)
+                .expect("the recorded retail archive digest is valid hexadecimal"),
+        }),
+        locator: Some(ObservationLocator {
+            container: format!("{ZRD_READER_ARCHIVE} member {ZRD_ANIMATION_MEMBER}"),
+            span: Some(EvidenceSpan {
+                offset: ZRD_GRAVITY_VALUE_OFFSET,
+                length: ZRD_GRAVITY_VALUE_LENGTH,
+            }),
+        }),
+        method: ObservationMethod::ByteInspection,
+        limitations: vec![
+            "static byte inspection of a retail file: the document's own stored value, not an \
+             observation of what the running original did with it"
+                .to_owned(),
+        ],
+    }
+}
+
+/// One static-analysis artifact landmark: what the image says at `va`, in the
+/// recorder's words. No behavior landmark is ever built here — a behaviour is
+/// what the running original does, and no original run exists (#358).
+fn code_landmark(quantity: CalibratedQuantity, va: &str, description: &str) -> Landmark {
+    Landmark::new(
+        quantity,
+        LandmarkKind::Artifact,
+        description,
+        image_evidence(va),
+    )
+    .expect("a static-analysis landmark describes what it observed")
+}
+
+/// The F16-E landmarks for [`CoordinateSource::retail_gamez`]: three
+/// independent artifact landmarks for each quantity the GameZ declaration
+/// claims, every one a different code path in the decrypted image.
+///
+/// The scale quantity also carries #677's landmark census
+/// ([`gamez_scale_landmarks`]), so this source reaches the three-artifact
+/// minimum on all four quantities while still recording **no** behavior
+/// landmark of its own.
+///
+/// Write-up of every address: `docs/findings/2026-10-06-f16-e-original-unit-calibration-landmarks.md`.
+fn gamez_static_analysis_landmarks() -> Vec<Landmark> {
+    vec![
+        // ---- scale: the engine's world unit is the metre ----
+        code_landmark(
+            CalibratedQuantity::Scale,
+            "0x48fc40",
+            "aerodynamics converts world altitude — position.y, `[plane+0x208]`, the middle word \
+             of the position vector at `[plane+0x204]` — and airspeed `|v|` (`[plane+0x934]`) to \
+             feet by ×3.2808399 (constant VA 0x60813c), feeding the two-band atmosphere model and \
+             the ½ρv² dynamic pressure: the world unit, the unit GameZ node translations are \
+             stored in, is the metre",
+        ),
+        code_landmark(
+            CalibratedQuantity::Scale,
+            "0x453aa2",
+            "the HUD airspeed converts m/s to mph by ×2.2369363 (constant VA 0x6076e4), and the \
+             needle constant VA 0x6076e8 is −0.02811017 rad per (m/s) = 2π/500 × 2.2369363, so \
+             the dial turns once per 500 mph: a metric world speed read out in imperial units",
+        ),
+        code_landmark(
+            CalibratedQuantity::Scale,
+            "0x453d3b",
+            "the HUD altimeter converts the world altitude to feet by ×3.2808399 (constant VA \
+             0x6076f0), the same metre-to-foot factor the flight model uses: an altitude stored \
+             in GameZ units is metres",
+        ),
+        // ---- axis order: +Y is up, X/Z are horizontal ----
+        code_landmark(
+            CalibratedQuantity::AxisOrder,
+            "0x491fd8",
+            "the atmosphere is evaluated at position **y**: VA 0x491fd8 copies the three-float \
+             position vector out of `[plane+0x204]` and altitude is its middle word \
+             `[plane+0x208]`, so +Y is up and X/Z are the horizontal plane",
+        ),
+        code_landmark(
+            CalibratedQuantity::AxisOrder,
+            "0x48ff88",
+            "weight acts on **−y**: the flight model at VA 0x48ff88–0x48ff9d does \
+             `force.y −= (gravity/9.82)·[plane+0x674]`, touching only the +4 component of the \
+             force vector",
+        ),
+        code_landmark(
+            CalibratedQuantity::AxisOrder,
+            "0x53df30",
+            "the matrix→Euler decomposition at VA 0x53df30 reads y as vertical — pitch = asin(m7), \
+             yaw = atan2(m6, m8) from x/z, roll = atan2(m1, m4) from the y components of the local \
+             x and y axes — over 3×4 float matrices whose rows are the images of local x, y and z \
+             (the layout the software path uses at VA 0x552915)",
+        ),
+        // ---- handedness: right-handed, no mirror anywhere ----
+        code_landmark(
+            CalibratedQuantity::Handedness,
+            "0x53afc0",
+            "the view matrix at VA 0x53afc0 is inverse(R_camera · diag(1,−1,−1)), a proper \
+             rotation (det +1), and the projection at VA 0x53d880 is sx = Cx + Kx·x/z, \
+             sy = Cy + Ky·y/z with Kx = (W/2)·cot(fovx/2) > 0 and Ky = (H/2)·cot(fovy/2) > 0 (the \
+             cot table at VA 0x4d2b21–0x4d2b7d); the near clip at VA 0x540fa0 keeps z ≥ near, so \
+             camera space is x right, y down, z into the screen — right-handed as displayed — and \
+             the camera node looks along its local −Z with +Y up (VA 0x4d3010)",
+        ),
+        code_landmark(
+            CalibratedQuantity::Handedness,
+            "0x552915",
+            "back faces are the ones whose camera-space normal points at the eye — front iff \
+             ((P1−P0)×(P2−P0))·P0 < −tol, software path VA 0x552915 and D3D path VA 0x554bf7 — a \
+             right-hand normal rule that agrees with retail mesh winding only when content → \
+             screen carries no mirror (the owner's census over the nine GameZ archives: stored \
+             corner winding agrees with stored vertex normals in 29,957 of 31,269 outline faces \
+             and 21,264 of 21,985 strips; 224 of 229 closed meshes have positive signed volume)",
+        ),
+        code_landmark(
+            CalibratedQuantity::Handedness,
+            "0x557381",
+            "hardware strips are drawn with `D3DRENDERSTATE_CULLMODE = D3DCULL_CW` (VA 0x557381 → \
+             VA 0x5a0de0, SetRenderState 22), culling clockwise screen triangles — the same side \
+             rule as the software path, so the rasteriser and the data agree on which way round a \
+             front face winds",
+        ),
+        // ---- angle unit: radians in the GameZ binaries ----
+        code_landmark(
+            CalibratedQuantity::AngleUnit,
+            "0x53b9a0",
+            "the Euler view builder at VA 0x53b9a0 passes stored angles straight to fsin/fcos — \
+             forward = (−sinβ·cosα, sinα, −cosβ·cosα), so zero angles look along world −Z — \
+             which makes stored rotations radians, the argument fsin/fcos take",
+        ),
+        code_landmark(
+            CalibratedQuantity::AngleUnit,
+            "0x4d2b31",
+            "the camera FOV half-angle goes into FPTAN at VA 0x4d2b31–0x4d2b7d with no degree \
+             conversion anywhere on the path: the engine's native angle unit is radians",
+        ),
+        code_landmark(
+            CalibratedQuantity::AngleUnit,
+            "0x604100",
+            "the 180/π double at VA 0x604100 is used only to produce degrees for display, while \
+             the π/180 double at VA 0x6040e8 converts the other way for `.zrd` text: GameZ node \
+             euler triples are never converted, so they are stored in radians (the owner's corpus \
+             check: the maximum is exactly π)",
+        ),
+    ]
+}
+
+/// The F16-E landmarks for [`CoordinateSource::retail_zrd`]: three independent
+/// artifact landmarks per quantity, one retail data observation plus code
+/// paths in the decrypted image.
+///
+/// The document format stores the same world frame GameZ does, so the frame's
+/// axis order and handedness rest on the engine code that reads and renders
+/// those values; the two quantities this format spells differently — the metre
+/// and the degree — are pinned by the document's own bytes and by the
+/// conversion the `.zrd` reader performs.
+///
+/// Write-up of every address: `docs/findings/2026-10-06-f16-e-original-unit-calibration-landmarks.md`.
+fn zrd_static_analysis_landmarks() -> Vec<Landmark> {
+    vec![
+        // ---- scale: the document's own SI gravity, and the code that reads it ----
+        Landmark::new(
+            CalibratedQuantity::Scale,
+            LandmarkKind::Artifact,
+            "the installation's `ZBD/zrdr.zbd` stores `ANIMATION_DEFINITIONS/GRAVITY` as the f32 \
+             −9.8 (bits 0xC11CCCCD) at the recorded span inside the `anim.zrd` member: Earth's \
+             gravitational acceleration in m/s², an SI value that only reads as SI when the \
+             document's length unit is the metre",
+            retail_member_evidence(),
+        )
+        .expect("the retail data landmark describes what it observed"),
+        code_landmark(
+            CalibratedQuantity::Scale,
+            "0x520420",
+            "the `.zrd` reader at VA 0x520420 parses `ANIMATION_DEFINITIONS/GRAVITY` straight into \
+             the engine's gravity variable at 0x9fd164: the document's number lands in the \
+             physics state unconverted",
+        ),
+        code_landmark(
+            CalibratedQuantity::Scale,
+            "0x4ee406",
+            "the compiled default for that same variable is −9.8f (`MOV [0x9fd164], 0xc11ccccd` \
+             at VA 0x4ee406): the engine starts at the same SI acceleration when no document is \
+             read, so the file's −9.8 is the default, not a unit convention of its own",
+        ),
+        // ---- axis order: the frame the document's values are read into ----
+        code_landmark(
+            CalibratedQuantity::AxisOrder,
+            "0x491fd8",
+            "the frame a `.zrd` position is read into is +Y up: VA 0x491fd8 copies the three-float \
+             position vector out of `[plane+0x204]` and altitude is its middle word \
+             `[plane+0x208]`, with X/Z horizontal",
+        ),
+        code_landmark(
+            CalibratedQuantity::AxisOrder,
+            "0x48ff88",
+            "the same frame puts weight on **−y**: the flight model at VA 0x48ff88–0x48ff9d does \
+             `force.y −= (gravity/9.82)·[plane+0x674]`, touching only the +4 component of the \
+             force vector",
+        ),
+        code_landmark(
+            CalibratedQuantity::AxisOrder,
+            "0x53df30",
+            "orientations are read in that frame too: the matrix→Euler decomposition at VA \
+             0x53df30 treats y as vertical — pitch = asin(m7), yaw = atan2(m6, m8) from x/z, roll \
+             = atan2(m1, m4) — over 3×4 float matrices whose rows are the images of local x, y \
+             and z",
+        ),
+        // ---- handedness: right-handed, no mirror anywhere ----
+        code_landmark(
+            CalibratedQuantity::Handedness,
+            "0x53afc0",
+            "the view matrix at VA 0x53afc0 is inverse(R_camera · diag(1,−1,−1)), a proper \
+             rotation (det +1), and the projection at VA 0x53d880 is sx = Cx + Kx·x/z, \
+             sy = Cy + Ky·y/z with Kx = (W/2)·cot(fovx/2) > 0 and Ky = (H/2)·cot(fovy/2) > 0 (the \
+             cot table at VA 0x4d2b21–0x4d2b7d); the near clip at VA 0x540fa0 keeps z ≥ near, so \
+             camera space is x right, y down, z into the screen — right-handed as displayed — and \
+             the camera node looks along its local −Z with +Y up (VA 0x4d3010)",
+        ),
+        code_landmark(
+            CalibratedQuantity::Handedness,
+            "0x552915",
+            "back faces are the ones whose camera-space normal points at the eye — front iff \
+             ((P1−P0)×(P2−P0))·P0 < −tol, software path VA 0x552915 and D3D path VA 0x554bf7 — \
+             and content renders outside-out under that rule only when content → screen carries no \
+             mirror, so the frame a `.zrd` value is read into is right-handed",
+        ),
+        code_landmark(
+            CalibratedQuantity::Handedness,
+            "0x557381",
+            "hardware strips are drawn with `D3DRENDERSTATE_CULLMODE = D3DCULL_CW` (VA 0x557381 → \
+             VA 0x5a0de0, SetRenderState 22), culling clockwise screen triangles — the same \
+             right-hand side rule the software path uses",
+        ),
+        // ---- angle unit: degrees in the document text ----
+        code_landmark(
+            CalibratedQuantity::AngleUnit,
+            "0x6040e8",
+            "every `.zrd` angle field is multiplied by the π/180 double at VA 0x6040e8 (123 \
+             references): the document text stores degrees, and the engine converts exactly once, \
+             on the way in",
+        ),
+        code_landmark(
+            CalibratedQuantity::AngleUnit,
+            "0x4aa705",
+            "the turret keys INACCURACY, PITCH and YAW are converted through that π/180 factor at \
+             VA 0x4aa705 / 0x4aa72c / 0x4aa73e: named `.zrd` angle fields, degrees in the file and \
+             radians in the engine",
+        ),
+        code_landmark(
+            CalibratedQuantity::AngleUnit,
+            "0x4d2b31",
+            "after the conversion the engine's own trig takes radians — the camera FOV half-angle \
+             goes into FPTAN at VA 0x4d2b31–0x4d2b7d — so a `.zrd` angle only lands correctly if \
+             its text was degrees",
+        ),
+    ]
 }
 
 /// Converts values from one declared source convention into canonical space,
