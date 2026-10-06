@@ -43,9 +43,12 @@ production reader chain (`dispatch` → `read_version_one_index` →
 the ones every other ZBD container goes through. Then:
 
 * every declared entry becomes a [`ReaderMember`] row — offset, length,
-  SHA-256 of exactly those bytes — **including** entries no name can reach,
-  with the reason recorded ([`Unreachable`]: `failed_bounds`,
-  `non_utf8_name`, `invalid_name`, `duplicate_name`);
+  SHA-256 of exactly those bytes where the listing could hand them out —
+  **including** entries no name can reach, with the reason recorded
+  ([`Unreachable`]: `failed_bounds`, `non_utf8_name`, `invalid_name`,
+  `duplicate_name`). The refusals are ordered by how much they depend on: the
+  bounds check first (an entry with no bytes has no name to serve), then the
+  spelling, then the first-hit rule;
 * an entry a name **can** reach also becomes a mount member, spelled with the
   name the archive declares, keyed by its case-folded form — which is the
   **basename keying** the original does, because the member's name is a bare
@@ -153,13 +156,25 @@ Unchanged by this task, and unchanged by the new code:
 Synthetic (CI runs them): root-first order under a world-first registration
 order; mission over world when the root misses; basename reduction of a
 requested spelling with directories; case-insensitive first-entry matching and
-the duplicate row; a name no key can spell archived as `invalid_name`; a
-scope-mismatched archive reported `skipped` with the next archive serving, and
-the same mount list answering differently under the admitted context; an
-archive of another world never searched; `not_found` listing every archive it
-searched; a mount outside the reader namespace refused; an empty archive; a
-foreign / stale / moved-span read refused; a key of another namespace refused;
-and the designed precedence status untouched.
+the duplicate row; a name no key can spell archived as `invalid_name`; an
+extent outside the archive and a non-UTF-8 name archived as `failed_bounds` /
+`non_utf8_name` without hiding their siblings; a scope-mismatched archive
+reported `skipped` with the next archive serving, and the same mount list
+answering differently under the admitted context; an archive of another world
+never searched; `not_found` listing every archive it searched; a mount outside
+the reader namespace refused; an empty archive; a foreign / stale / moved-span
+read refused; a row that does not describe the archive's bytes refused by the
+read guard; a key of another namespace refused; and the designed precedence
+status untouched.
+
+Sensitivity was checked by mutation, not asserted: reversing
+`ReaderLevel::rank` fails three tests; dropping the basename reduction fails
+the basename test; ignoring `MountScope::admit` fails the two scope tests;
+short-circuiting the digest check fails the read-guard test; and clearing
+`Unreachable::FailedBounds` fails the unreadable-entry test. A `.rev()` in
+`ReaderArchive::member` does **not** fail anything, because the duplicate entry
+is already marked unreachable before the scan — which is the intended
+structure, not a gap.
 
 Retail (`--include-ignored`, needs `CS_GAME_DIR`): the five shadowing cases
 with their digests, and the root `player.zrd` duplicate with both entries,
