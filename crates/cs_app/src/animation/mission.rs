@@ -669,7 +669,10 @@ impl PoseStatement {
 pub struct TickPose {
     /// The tick, counting from the record's start.
     pub tick: u64,
-    /// Every statement whose span covers this tick, in stored order.
+    /// Every statement the record had **started** by this tick, in stored
+    /// order. A statement that has already ended stays in the row: the report
+    /// is the record's accumulated configuration, not a filter on end times
+    /// (see [`RecordPlayback::poses`]).
     pub statements: Vec<PoseStatement>,
 }
 
@@ -680,7 +683,9 @@ impl TickPose {
         self.tick
     }
 
-    /// Every statement whose span covers this tick, in stored order.
+    /// Every statement the record had **started** by this tick, in stored
+    /// order; each one keeps its own `[start_time, end_time]` span, so a
+    /// caller can tell a statement that is running from one that has ended.
     #[must_use]
     pub fn statements(&self) -> &[PoseStatement] {
         &self.statements
@@ -736,7 +741,10 @@ pub struct AnimationRecordFacts {
     /// The node-reference table's names, verbatim and in stored order.
     pub nodes: Vec<String>,
     /// The animation-reference table's names: the animations this record
-    /// calls. The statements that make those calls are not decoded.
+    /// calls. The `CALL_ANIMATION` statements that make those calls are decoded
+    /// as far as their spelling and their timing ([`super::events`]), but no
+    /// payload field is read out of an event, so no statement can yet be tied
+    /// to one of these names.
     pub animation_refs: Vec<String>,
     /// The record's sequence blocks, in stored order: the reset and damage
     /// blocks first, then the ordinary ones.
@@ -848,7 +856,10 @@ impl AnimationRecordFacts {
     }
 
     /// The animation-reference table's names: the animations this record
-    /// calls. The statements that make those calls are not decoded.
+    /// calls. The `CALL_ANIMATION` statements that make those calls are decoded
+    /// as far as their spelling and their timing ([`super::events`]), but no
+    /// payload field is read out of an event, so no statement can yet be tied
+    /// to one of these names.
     #[must_use]
     pub fn animation_refs(&self) -> &[String] {
         &self.animation_refs
@@ -1311,7 +1322,11 @@ pub struct StartupAnimation {
     /// selectors, then the record's object, root and node-table entries.
     pub targets: Vec<AnimationTarget>,
     /// The record's playback, when every sequence block decoded and every
-    /// opcode joined a statement. `None` exactly when a refusal says why.
+    /// opcode joined a statement. `None` when the record holds no bytes or one
+    /// of its blocks refused to decode, in which case a refusal says which and
+    /// where. A `Some` can stand beside a refusal of the *name* agreements, so
+    /// [`StartupAnimation::is_playable`] — not `playback().is_some()` — is the
+    /// play decision.
     pub playback: Option<RecordPlayback>,
     /// Every refusal, in the order the join found them. Empty means playable.
     pub refusals: Vec<PlayRefusal>,
@@ -1383,8 +1398,13 @@ impl StartupAnimation {
     }
 
     /// The record's playback — its duration and its per-tick pose report —
-    /// when every sequence block decoded. `None` exactly when a refusal says
-    /// why, so a caller can never read a duration out of a refused record.
+    /// when every sequence block decoded. `None` when no record is bound or any
+    /// block refused to decode, so a caller can never read a duration out of a
+    /// record whose events are unknown.
+    ///
+    /// It can be `Some` for a row that is still **not** playable: a name
+    /// disagreement refuses the join, not the decoding. Ask
+    /// [`Self::is_playable`] before playing.
     #[must_use]
     pub const fn playback(&self) -> Option<&RecordPlayback> {
         self.playback.as_ref()

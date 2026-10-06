@@ -49,7 +49,10 @@
 //! (`cs_formats::zbd::AnimationPayload::records`, task #650,
 //! `docs/findings/2026-10-05-m01-lc-anim-records.md`), and [`PayloadFacts`]
 //! keeps each record's identity (`anim_name`) in carrier order. What is *inside*
-//! a record — the event streams, the pointer words — is still not decoded.
+//! a record — the pointer words, the meaning of the table entries' id words — is
+//! still not decoded **here**: the sequence blocks' event streams travel raw out
+//! of [`PayloadFacts`] and are decoded by [`super::events`] (task #690), which
+//! is where an event is read.
 //!
 //! `startanims.zrd` names animation identities, and [`bind_startup_identities`]
 //! binds one only when its text equals **exactly one** record's `anim_name`
@@ -226,7 +229,10 @@ pub struct PayloadFacts {
     pub record_table_offset: u64,
     /// The payload's **first** record name, exactly as stored (record 0).
     pub first_record_name: Vec<u8>,
-    /// Why the content inside the records is not decoded.
+    /// Why the reader layer leaves the content inside the records undecoded:
+    /// `cs_formats`' own reason, passed through. The sequence blocks' event
+    /// streams it names are decoded downstream by [`super::events`] (task
+    /// #690), not by the reader.
     pub records_not_decoded_reason: &'static str,
     /// The walked records, when the walk succeeded. A failed walk is a
     /// [`BindingBlocker::RecordsRefused`], never an empty list.
