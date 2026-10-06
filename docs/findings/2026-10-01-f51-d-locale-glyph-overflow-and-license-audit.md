@@ -125,6 +125,9 @@ and honestly so, for one measured reason and one unmeasured one:
   for them without guessing. Each is recorded as
   `GlyphEvidence::Unmeasured` and is a named `unmeasured_glyphs` blocker;
   neither is distributable (provenance `OriginalPrivate`).
+  *(Superseded 2026-10-06 by task #466, which measured the rule from the
+  owner's static analysis and reclassified both files as unused by the
+  original; the first reason above still blocks.)*
 
 ## The design decisions a reviewer should check
 
@@ -268,6 +271,14 @@ claims above rather than left without a resolving task:
 - `#466 F51-FONTCELL` — decode the original bitmap-font cell-to-character
   mapping (`font.tga`, `arial8.tga`) so the audit can report measured glyph
   coverage instead of `GlyphEvidence::Unmeasured`.
+  **Closed 2026-10-06 by #466**: the owner's static analysis of the decrypted
+  executable (Rally #466 owner note, 2026-10-05) established that neither TGA
+  is read as a font at all, and that the game's bitmap fonts are the ten
+  `fonts.zrd` images in `ZBD/rimage.zbd`, whose cell rule is now measured by
+  production code. Both TGAs carry a `unused_in_original` verdict with the
+  cited addresses, `rimage.zbd` carries ten measured coverages (94 cells
+  each), and the audit emits no `unmeasured_glyphs` blocker any more. See
+  `docs/findings/2026-10-06-f51-fontcell-bitmap-font-coverage.md`.
 - `#467 F51-LOCALE-SET` — measure the original supported-locale set and verify
   localized-installation id stability (F12-D AC04); it needs a second localized
   installation or owner-supplied reference material.
