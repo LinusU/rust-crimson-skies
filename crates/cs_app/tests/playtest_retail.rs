@@ -39,6 +39,11 @@
 //! installation read-only, writes its frames under `private/`, and commits no
 //! original bytes and no screenshots.
 
+// Task #666's tests (prefix `accept_playtest_textures_`) share this binary rather
+// than linking another copy of the engine: CI's runner disk is nearly full.
+#[path = "playtest_retail/textures.rs"]
+mod textures;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -648,7 +653,7 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
     assert_eq!(scene.views().len(), VIEW_COUNT);
     // The neutral development material is now only the **fallback** for a material
     // whose texture does not resolve; the textured decision (task #666) is reported
-    // by `scene.textures()` and tested in `playtest_textures.rs`.
+    // by `scene.textures()` and tested in `playtest_retail/textures.rs`.
     assert_eq!(scene.material().claim, PLAYTEST_NEUTRAL_MATERIAL);
     assert_eq!(
         scene.material().covered.len(),

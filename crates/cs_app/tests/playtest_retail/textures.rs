@@ -1,5 +1,5 @@
 //! Task #666 (`PLAYTEST-TEXTURES`) acceptance tests. Prefix:
-//! `accept_playtest_textures_`.
+//! `accept_playtest_textures_`. A module of the `playtest_retail` test binary.
 //!
 //! The retail half spawns the owner's `c1c` area and `bloodhawk` airframe through the
 //! production readers and checks that both draw with materials whose base-colour

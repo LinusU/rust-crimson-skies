@@ -242,7 +242,7 @@ The frames are under `private/evidence/PLAYTEST-TEXTURES/{neutral,textured}/`
 (Git-ignored; nothing original is committed). Reproduce:
 
 ```sh
-CS_GAME_DIR="$CS_GAME_DIR" cargo test -p cs_app --test playtest_textures -- \
+CS_GAME_DIR="$CS_GAME_DIR" cargo test -p cs_app --test playtest_retail -- \
   accept_playtest_textures_ --include-ignored
 ```
 
