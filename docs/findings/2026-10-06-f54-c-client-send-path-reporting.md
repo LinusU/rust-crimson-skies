@@ -107,9 +107,9 @@ All of it inside the F54 owner paths; no behaviour other than reporting changed.
   phase: teardown still comes from the connection layer's own verdict on the
   following round, so reporting a refused send closes nothing early and hides
   nothing.
-* **Tests**, both with the stage prefix and both failing when the change is
-  removed (verified by mutation: reverting the push makes both fail with an
-  empty event list):
+* **Tests**, all three with the stage prefix, each driving production code and
+  each failing when the part of the change it covers is removed (the runs are
+  recorded under *Mutation runs* below):
   * `accept_f54_c_a_client_send_that_never_left_is_reported_not_swallowed` —
     transport level: the silent round reports exactly `[SendFault]`, the next
     round reports `[TransportFault, Disconnected]`, and the hang-up returns an
@@ -117,6 +117,11 @@ All of it inside the F54 owner paths; no behaviour other than reporting changed.
   * `accept_f54_c_a_refused_send_reaches_the_session_owner_as_a_notice` — the
     same round through `ClientSession::pump`: one named notice, phase still
     open, and the layer's verdict still closes it one round later.
+  * `accept_f54_c_leaving_after_the_layer_gave_up_reports_the_hang_up` — the
+    farewell half: `leave()` in that same round returns
+    `Err(ClientFault::Transport)` carrying the layer's verdict instead of the
+    `Ok` it used to return, the phase still becomes
+    `Closed(LeftVoluntarily)`, and a later `leave()` stays refused.
   * `RawPeer::status` learned a `SendFault` label and the F54-B disconnect test
     learned to handle the hang-up's `Result`; neither assertion changed.
 
@@ -152,6 +157,26 @@ task changes no behaviour without a spec-backed reason (AGENTS rules 1 and 4).
   raw per-round error should remove that filter knowingly — it exists to keep
   one death from being reported every round, not to hide a class of failure.
 
+## Mutation runs
+
+Two separate mutations, each applied to the working tree, run with
+`cargo test -p cs_net --test accept_f54_c_lifecycle`, then reverted with
+`git checkout --` (both files were clean afterwards, and the branch was
+re-checked before committing):
+
+1. **The push is removed again** — `if let Some(reason) = refused { events.push(
+   ClientEvent::SendFault { .. }) }` replaced by `let _ = refused;`:
+   `31 passed; 3 failed`. All three tests of this change failed, the first with
+   "the refused send is reported and nothing else happened this round: []" —
+   the exact empty event list the swallowed `let _ =` produced.
+2. **Only the farewell's verdict is discarded again** — `ClientSession::leave`
+   returning `Ok(())` instead of its `farewell` result:
+   `33 passed; 1 failed`. Only
+   `accept_f54_c_leaving_after_the_layer_gave_up_reports_the_hang_up` failed,
+   with "the hang-up carries the layer's verdict instead of discarding it:
+   Ok(())" — so the third test covers the `leave` half on its own, and the two
+   earlier tests do not.
+
 ## Sources
 
 * Task Rally #708 (question, acceptance criteria) and its description's pointer
@@ -162,5 +187,5 @@ task changes no behaviour without a spec-backed reason (AGENTS rules 1 and 4).
 * `docs/contracts/UI-NETWORK.md`, "Reliability and prediction".
 * `renet2 =0.16.1`, `renet2_netcode =0.16.1`, `renetcode2 =0.16.1` sources as
   read from the frozen Cargo registry (line references above).
-* `crates/cs_net/tests/accept_f54_c_lifecycle.rs` — the two tests added here
-  and the mutation run that proved they fail without the change.
+* `crates/cs_net/tests/accept_f54_c_lifecycle.rs` — the three tests added here
+  and the mutation runs that proved they fail without the change.

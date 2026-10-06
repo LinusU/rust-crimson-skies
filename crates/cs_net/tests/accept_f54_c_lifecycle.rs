@@ -2030,6 +2030,32 @@ fn overdue_round() -> Duration {
     Duration::from_secs(window + 1)
 }
 
+/// The round every session-level send-path test below shares: pump `link`'s
+/// client until it has nothing left to report, then hand it one
+/// [`overdue_round`], whose refusal of the round's send is that round's only
+/// report and leaves the session open.
+///
+/// The quiet rounds' notices are kept on `link` the way [`Link::round`] keeps
+/// them, so a failing assertion still prints the whole history rather than the
+/// round it happened to stop on.
+fn quiet_then_overdue(link: &mut Link) -> Vec<ClientNotice> {
+    let mut quiet = Vec::new();
+    for _ in 0..16 {
+        quiet = link.client.pump(STEP);
+        if quiet.is_empty() {
+            break;
+        }
+        link.client_notices.extend(quiet.iter().cloned());
+    }
+    assert!(
+        quiet.is_empty(),
+        "the fixture went quiet before the round under test: {quiet:?}"
+    );
+    let notices = link.client.pump(overdue_round());
+    link.client_notices.extend(notices.iter().cloned());
+    notices
+}
+
 #[test]
 fn accept_f54_c_a_client_send_that_never_left_is_reported_not_swallowed() {
     let session = SessionAllocator::new()
@@ -2101,20 +2127,7 @@ fn accept_f54_c_a_refused_send_reaches_the_session_owner_as_a_notice() {
 
     // Same round as `accept_f54_c_a_client_send_that_never_left_is_reported_not_swallowed`,
     // through the session owner an app actually drives.
-    let mut quiet = Vec::new();
-    for _ in 0..16 {
-        quiet = link.client.pump(STEP);
-        if quiet.is_empty() {
-            break;
-        }
-        link.client_notices.extend(quiet.iter().cloned());
-    }
-    assert!(
-        quiet.is_empty(),
-        "the fixture went quiet before the round under test: {quiet:?}"
-    );
-
-    let notices = link.client.pump(overdue_round());
+    let notices = quiet_then_overdue(&mut link);
     assert!(
         matches!(
             notices.as_slice(),
@@ -2129,7 +2142,6 @@ fn accept_f54_c_a_refused_send_reaches_the_session_owner_as_a_notice() {
         "a report is not a session decision: the phase is {:?}",
         link.client.phase()
     );
-    link.client_notices.extend(notices.iter().cloned());
 
     // Teardown still comes from the connection layer's own verdict, on the
     // round after — reporting the send did not close anything early and did
@@ -2142,6 +2154,53 @@ fn accept_f54_c_a_refused_send_reaches_the_session_owner_as_a_notice() {
         ),
         "the layer's verdict still closes the session: {:?}",
         link.client_notices
+    );
+}
+
+/// The farewell's own report: [`ClientSession::leave`] used to discard the
+/// pinned layer's verdict on the hang-up, so a caller could not tell a clean
+/// hang-up from one the layer had already refused — and this is the round in
+/// which that verdict exists while the session is still open.
+#[test]
+fn accept_f54_c_leaving_after_the_layer_gave_up_reports_the_hang_up() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    let mut link = Link::joined(session);
+
+    let notices = quiet_then_overdue(&mut link);
+    assert!(
+        matches!(notices.as_slice(), [ClientNotice::Dropped { .. }]),
+        "the round under test reported the send path: {notices:?}"
+    );
+    assert!(
+        link.client.phase().open(),
+        "the session is still open before the farewell: {:?}",
+        link.client.phase()
+    );
+
+    // The farewell queues what renet has already stopped carrying and then
+    // hangs up; the layer's own answer to that hang-up is this call's error.
+    let verdict = link.client.leave();
+    assert!(
+        matches!(
+            &verdict,
+            Err(ClientFault::Transport(reason)) if reason.contains("connection timed out")
+        ),
+        "the hang-up carries the layer's verdict instead of discarding it: {verdict:?}"
+    );
+    assert!(
+        matches!(
+            link.client.phase(),
+            ClientPhase::Closed(ClientClosure::LeftVoluntarily)
+        ),
+        "and a failed report never leaves the session open: {:?}",
+        link.client.phase()
+    );
+    assert!(
+        matches!(link.client.leave(), Err(ClientFault::Closed { .. })),
+        "so the session is over for every later call too: {:?}",
+        link.client.phase()
     );
 }
 
