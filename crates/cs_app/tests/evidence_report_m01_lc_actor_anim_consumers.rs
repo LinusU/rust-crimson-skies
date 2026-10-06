@@ -240,14 +240,14 @@ fn observe(
 
     for finished in player.finished() {
         rows.push(format!(
-            "{{\"identity\": {}, \"event\": {}, \"archive\": {}, \"member\": {}, \"carrier\": {:?}, \
+            "{{\"identity\": {}, \"event\": {}, \"archive\": {}, \"member\": {}, \"carrier\": {}, \
              \"record_index\": {}, \"duration_time\": {}, \"statements\": {}, \"finished_at_tick\": \
              {}, \"container\": {}}}",
             jstr(finished.identity()),
             jstr(finished.event()),
             jstr(finished.archive()),
             jstr(finished.member()),
-            finished.carrier(),
+            jstr(finished.carrier().label()),
             finished.record_index(),
             finished.duration_time(),
             finished.statements(),
@@ -301,7 +301,7 @@ fn observe(
         ));
     }
 
-    format!(
+    let observation = format!(
         "{{\"install_sha256\": {}, \"content_sha256\": {}, \"candidate_tree\": {}, \"scope\": {}, \
          \"world_container\": {}, \"ticks_per_second\": {}, \"started\": {}, \"refused\": {}, \
          \"finished\": {}, \"events\": [{}], \"rows\": [{}], \"placements\": [{}]}}\n",
@@ -317,7 +317,37 @@ fn observe(
         totals.join(", "),
         rows.join(", "),
         placements.join(", "),
-    )
+    );
+    assert_json_values_are_quoted(&observation);
+    observation
+}
+
+/// A canary for this hand-rendered artifact: every value that follows a key
+/// must start with a quote, a digit, a sign, `{` or `[`.
+///
+/// The validator hashes artifacts without parsing them, so an unquoted value —
+/// which an earlier draft of this file rendered for the carrier label — would
+/// ship as a broken file that still validates. This check runs before the
+/// bytes are written.
+fn assert_json_values_are_quoted(observation: &str) {
+    let bytes = observation.as_bytes();
+    assert!(
+        bytes.starts_with(b"{\"install_sha256\": \"") && observation.trim_end().ends_with('}'),
+        "the observation must be one object: {}",
+        &observation[..observation.len().min(80)]
+    );
+    let mut index = 0;
+    while index + 3 < bytes.len() {
+        if bytes[index] == b'"' && bytes[index + 1] == b':' && bytes[index + 2] == b' ' {
+            let next = bytes[index + 3];
+            assert!(
+                matches!(next, b'"' | b'{' | b'[' | b'-' | b'0'..=b'9'),
+                "an unquoted JSON value at byte {index}: {}",
+                String::from_utf8_lossy(&bytes[index..bytes.len().min(index + 72)])
+            );
+        }
+        index += 1;
+    }
 }
 
 // ---------------------------------------------------------------- inputs ---
