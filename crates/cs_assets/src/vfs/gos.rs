@@ -47,14 +47,18 @@
 //!   produced it, and the registry condition of step 1 is not measurable
 //!   here.
 //! * How `MetaOpenFile` matches a request's name against a registered name
-//!   is **unmeasured** (#693): `crimson.rof` stores
-//!   `ASSETS/GRAPHICS/ARIAL8.TGA` while the loose tree holds
-//!   `assets/graphics/arial8.tga`, and which of the two a GOS request gets
-//!   depends on that rule. It is an explicit input too ([`GosNameMatch`]),
-//!   with the case-insensitive fold as the documented default, never
-//!   assumed silently. `crimptch.rof` shadows `crimson.rof` for
-//!   `ASSETS/SCRIPTS/AIRFRAME.SCRIPT` under either rule, so that part of the
-//!   order does not depend on it.
+//!   **was settled by #693**
+//!   (`docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`): a
+//!   container request is upper-cased and compared byte for byte against the
+//!   stored name, which is never folded, and a loose request reaches
+//!   `CreateFileA` unfolded, so the host decides it. On this installation
+//!   that answers `crimson.rof`'s `ASSETS/GRAPHICS/ARIAL8.TGA` against the
+//!   loose tree's `ASSETS/GRAPHICS/arial8.tga` from the **container**, under
+//!   every casing of the request. It is still an explicit input
+//!   ([`GosNameMatch`]), with the case-insensitive fold as the documented
+//!   default, never assumed silently. `crimptch.rof` shadows `crimson.rof`
+//!   for `ASSETS/SCRIPTS/AIRFRAME.SCRIPT` under either rule, so that part of
+//!   the order does not depend on it.
 //!
 //! Mounting a chain reads the two containers and walks the loose directories
 //! read-only and writes nothing anywhere, exactly as the rest of the VFS
@@ -167,17 +171,25 @@ impl fmt::Display for GosSource {
 /// How a GOS request's name is matched against a registered source's names.
 ///
 /// Which of the original's two spellings of the same image a request gets
-/// depends on this rule, and **the rule is unmeasured** (#693). It is an
-/// explicit input rather than an assumption, so a caller states it and the
-/// rule it chose is recorded with the chain and reported on every lookup.
+/// depends on this rule. #693 settled what the original does
+/// (`docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`): it
+/// upper-cases the request and compares it byte for byte against the stored
+/// name, so a container whose names are all uppercase — this installation's,
+/// measured — is answered the way [`GosNameMatch::AsciiInsensitive`] answers
+/// it, and [`GosNameMatch::ExactSpelling`] is **not** what it does. The rule
+/// is still an explicit input rather than an assumption, so a caller states
+/// it and the rule it chose is recorded with the chain and reported on every
+/// lookup.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum GosNameMatch {
     /// Fold ASCII case and separators, like every other legacy lookup in
     /// this VFS.
     ///
     /// The documented default, because it is the rule the rest of the VFS
-    /// applies to legacy spellings. It is *not* claimed to be
-    /// `MetaOpenFile`'s own rule.
+    /// applies to legacy spellings. On this installation it agrees with
+    /// `MetaOpenFile`'s own rule on **case** (every container name is
+    /// uppercase, #693), not on the separator dimension: the original splits
+    /// a request only on `\`.
     #[default]
     AsciiInsensitive,
     /// A source answers only when its stored spelling equals the request's
@@ -489,7 +501,7 @@ pub struct GosStep {
 /// A chain is the record of a registration: [`steps`] is in the order
 /// `AddNewROFDirectory` pushed the sources, which is the order
 /// `MetaOpenFile` walks them. [`patch`] says which registry case this chain
-/// is and [`name_match`] the unmeasured rule its lookups answer with, so
+/// is and [`name_match`] the rule its lookups answer with, so
 /// nothing about a chain has to be recalled from the code that built it.
 #[derive(Debug)]
 pub struct GosChain {

@@ -18,8 +18,9 @@
 //!   the registry-key-absent case skips it and starts at `crimson.rof`;
 //! * that the shadowed origins stay visible in the trace, so a GOS answer is
 //!   never a silent first-wins map (spec F04 non-negotiable behavior 3);
-//! * that the unmeasured name-matching rule (#693) is an input, so the
-//!   `ARIAL8.TGA` case that depends on it is *not* silently decided here;
+//! * that the name-matching rule (#693 settled what the original does with a
+//!   request) is an input, so the `ARIAL8.TGA` case that depends on it is
+//!   *not* silently decided here;
 //! * and, on the original installation, that the measured member sets agree
 //!   with what the order then implies.
 //!
@@ -747,12 +748,14 @@ fn accept_f04_d_gos_registration_order_current_directory_may_be_left_unregistere
     );
 }
 
-/// The unmeasured name-matching rule (#693) is an input, and it changes the
+/// The name-matching rule (#693 settled what the original does with a
+/// request: `docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`)
+/// is an input, and it changes the
 /// answer for the case that depends on it: `crimson.rof` stores
 /// `ASSETS/GRAPHICS/ARIAL8.TGA` while the loose tree holds
-/// `assets/graphics/arial8.tga`, so which of the two a request gets is not
-/// decided here. Both rules are implemented, both are stated by the caller,
-/// and the one this VFS defaults to is visible.
+/// `assets/graphics/arial8.tga`, so which of the two a request gets is
+/// decided by the rule stated here. Both rules are implemented, both are
+/// stated by the caller, and the one this VFS defaults to is visible.
 #[test]
 fn accept_f04_d_gos_registration_order_name_matching_is_an_explicit_input() {
     let install = Installation::new(
@@ -1472,8 +1475,8 @@ fn accept_f04_d_gos_registration_order_retail_order_over_the_measured_members() 
     // and `FONT.TGA` with an uppercase file name, the loose tree stores the
     // same two images with a lowercase one. Both spellings are measured to
     // exist on this installation, so this is the case that depends on the
-    // unmeasured matching rule (#693): the two rules are both exercised and
-    // neither is presented as the original's.
+    // matching rule (#693 records which one the original applies): the two
+    // rules are both exercised here, and neither is claimed by this task.
     let exact_root = game_dir();
     let exact = mount_with(
         &bare_context(),

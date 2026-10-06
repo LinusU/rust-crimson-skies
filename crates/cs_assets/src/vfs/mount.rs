@@ -477,11 +477,14 @@ impl Mount {
     /// [`Mount::member`] compares the *logical* form, so `Alert.TGA` finds
     /// `alert.tga`. That folding is right for every key space whose matching
     /// rule is the legacy case-insensitive one, and wrong to assume for the
-    /// GOS space, where the original's own matching rule is **unmeasured**
-    /// (`MetaOpenFile`, task #693): `crimson.rof` stores
-    /// `ASSETS/GRAPHICS/ARIAL8.TGA` while the loose tree holds
-    /// `assets/graphics/arial8.tga`, and which of the two a request gets
-    /// depends on that rule. This lookup is the exact-spelling candidate: it
+    /// GOS space, where the original's own matching rule folds **only the
+    /// request** (`MetaOpenFile`, task #693,
+    /// `docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`): it
+    /// upper-cases the request and compares it byte for byte against the
+    /// stored name, so `crimson.rof`'s `ASSETS/GRAPHICS/ARIAL8.TGA` answers
+    /// the loose tree's `ASSETS/GRAPHICS/arial8.tga` under every casing,
+    /// while a stored name holding a lowercase letter could never be
+    /// answered. This lookup is the exact-spelling candidate: it
     /// reports a member only when the two spellings are identical, so a
     /// caller can offer both rules instead of assuming one.
     ///

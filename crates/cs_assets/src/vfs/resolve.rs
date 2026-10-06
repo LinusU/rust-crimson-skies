@@ -528,8 +528,9 @@ impl Vfs {
     ///
     /// [`GosNameMatch::AsciiInsensitive`] until a
     /// [`crate::vfs::gos::SessionBuilder::mount_gos_chain`] states the rule
-    /// for its chain, which is what makes the unmeasured matching rule
-    /// (#693) an explicit input instead of an assumption.
+    /// for its chain, which is what makes the matching rule (#693 settled
+    /// what the original does with a request) an explicit input instead of
+    /// an assumption.
     pub fn gos_name_match(&self) -> GosNameMatch {
         self.gos_name_match
     }
@@ -569,7 +570,8 @@ impl Vfs {
     /// Scoping matters because [`Vfs::gos_name_match`] is a property of the
     /// VFS: a session that mounts an installation *and* a GOS chain holds
     /// both key spaces at once. Without this scope, a chain that states the
-    /// unmeasured [`GosNameMatch::ExactSpelling`] rule (#693) would silently
+    /// [`GosNameMatch::ExactSpelling`] rule (#693 showed it is not the
+    /// original's) would silently
     /// stop case folding in the installation's own key space too — a change
     /// to an unrelated key space that no caller asked for and no trace
     /// records.
