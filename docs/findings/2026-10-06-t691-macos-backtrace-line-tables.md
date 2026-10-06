@@ -1,4 +1,4 @@
-# #691: why macOS backtraces lost `file:line`, and the setting that keeps it
+# #691: why a backtrace lost `file:line`, and what the test now reports about it
 
 Date: 2026-10-06. Task: #691 "cs_xtask T430 backtrace test fails on macOS
 hosts: frames print no file:line". Capabilities used: ordinary build/test
@@ -8,6 +8,16 @@ build host described in `2026-10-04-t617-cargo-test-enoent-is-external.md`.
 
 This is a finding about the project's own test gate on one host. It says
 nothing about the original game.
+
+The reported failure is reproduced by an environment variable,
+`CARGO_PROFILE_DEV_DEBUG=0`, which overrides the committed
+`[profile.dev] debug = "line-tables-only"` and reproduces the reporter's five
+frames exactly ("The reported cause, reproduced" below). The macOS mechanism
+the implementer first investigated — a binary whose debug-map objects are
+removed from the target directory after the link — is a real second condition
+but does not explain the report, because it leaves `std` frames located. Both
+are covered: the test fails under either, and the failure now says which one it
+is.
 
 ## Where a macOS test binary keeps its line tables
 
@@ -47,12 +57,16 @@ the objects put back, the same binary prints
 On this host, the owner's `disk-prune` (`prune-stale-bins.sh --delete …/target/debug/deps`,
 captured in the #617 finding) removes files from agents' target directories
 after they are built. A long-lived target directory whose objects were pruned
-after the link gives exactly this output. The report also shows frames 0
-and 1 (`std`, `core`) without a location, which means the rustup rlib paths
-were unreadable from that process too; which deletion or move caused that in
-the reporter's checkout (`bunny-alpha-2`, own `CARGO_TARGET_DIR`) was not
-observed here and stays **unknown**. Both halves have the same cause: line
-tables the binary only points at.
+after the link gives the frames 2 to 4 above. That is a real and independent
+condition; whether it has occurred here is **unknown** — a sweep of every test
+binary in one target directory found no binary missing an object (see the
+change section), so it is not established that it ever has.
+
+Note what this account does *not* explain about the report: frames 0 and 1
+(`std`, `core`) carried no location either, and a binary that lost only its own
+objects still resolves those from the rustup rlibs, as the reproduction above
+shows. The next section reproduces all five frames, and attributes the report to
+the environment instead.
 
 The test passed on this host before the change only because frames 0 and 1
 resolved from the rustup rlibs. Those frames say nothing about this
@@ -85,32 +99,114 @@ from a cold rustflags change (every macOS target directory is invalidated by
 it once). This is recorded so the option is not re-tried blind; the owner may
 still prefer it (or a prune that removes a binary and its objects together).
 
+## The reported cause, reproduced: an overriding `CARGO_PROFILE_DEV_DEBUG`
+
+The owner's note of 2026-10-06 is the one that reproduces the report, and it
+reproduces it frame for frame. Measured here on an `origin/main` tree with
+`CARGO_PROFILE_DEV_DEBUG=0` exported and its own target directory:
+
+```
+$ CARGO_PROFILE_DEV_DEBUG=0 cargo test -p cs_xtask --test accept_t430_ci_disk_budget
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: accept_t430_ci_disk_budget::cs_xtask_t430_panic_helper
+   3: accept_t430_ci_disk_budget::cs_xtask_t430_panic_helper::{closure#0}
+   4: <…::{closure#0} as core::ops::FnOnce<()>>::call_once
+```
+
+That is the reporter's five frames exactly, including frames 0 and 1 without a
+location, which the debug-map account above could not explain and this does:
+with `debug = 0` rustc emits no line program at all, so the binary has no
+debug map to point anywhere and `std` cannot locate anything. Cargo's
+environment overrides `[profile.dev] debug` from `Cargo.toml`, so the committed
+setting was in force in the repository and not in the build. The shared agent
+environment on this Mac exported `CARGO_PROFILE_DEV_DEBUG=0` between
+2026-10-05 10:29 and 23:31 CEST, which covers the report.
+
+Two independent conditions therefore existed, and the report had both:
+
+| Condition | Frames affected | Caused by |
+| --- | --- | --- |
+| `CARGO_PROFILE_DEV_DEBUG=0` | every frame, `std` included | an environment override, invisible in the manifest |
+| objects removed after the link | this crate's frames only | a deletion in the target directory (#617) |
+
+The first is the reported failure. The second is real — moving the objects
+aside produces it — but it is not what was reported: a binary that loses only
+its own objects still prints `at …/panicking.rs` for frames 0 and 1, which the
+report did not.
+
 ## The change
 
-* The tests keep rustc's default. `accept_t430_a_panic_backtrace_names_the_file_and_line`
-  first reads its own binary's Mach-O debug map (`N_OSO` entries of the
-  `LC_SYMTAB` symbol table). If any object of its own crate that the map names
-  no longer exists, it prints `… NOT RUN on this host …` with the missing paths
-  and this finding's name, and returns: no backtrace from that binary can name
-  a line whatever the profile says. The check is compiled for macOS only; on
-  every other host, and on macOS when the objects are there, the test runs in
-  full and fails when the line tables are missing.
-* The test now requires a frame located in its own file, not any `.rs:`
-  location, so `std` frames can no longer satisfy it.
-* `accept_t430_debug_map_reader_lists_only_object_paths` checks the reader on
-  a synthetic image; `accept_t430_macos_guard_reads_this_binarys_debug_map`
-  checks that on macOS it finds this binary's objects, so the guard cannot
-  silently read nothing.
+* **The test no longer passes vacuously on a `std` frame.** It requires a
+  frame located in `accept_t430_ci_disk_budget.rs` itself. Those frames resolve
+  from the toolchain's prebuilt rlibs whatever this workspace's profile says,
+  so before this change the test passed on a build with no line tables of its
+  own at all. The tightened assertion fails under both conditions above, which
+  is what makes it worth having.
+* **A failure now names its cause instead of guessing.** The message reports
+  the environment that produced the binary (`CARGO_PROFILE_DEV_DEBUG`,
+  `CARGO_PROFILE_TEST_DEBUG`, `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, and
+  their absence), and on macOS reads the binary's own `N_OSO` debug map to say
+  whether it keeps its line tables in the object files beside it, how many it
+  names, and which of them are gone. Measured under the reported condition:
 
-Verified on this host: with the binary's own objects moved aside, the test
-prints the `NOT RUN` reason and passes; with them restored it runs the
-backtrace and passes; an unpacked build with the objects moved aside fails
-the tightened assertion when the guard is not in the way (measured before the
-guard was added).
+  ```
+  no backtrace frame named a line of accept_t430_ci_disk_budget.rs, …
+  How the binary that just failed was built:
+  CARGO_PROFILE_DEV_DEBUG="0" is set and cargo's environment overrides the committed [profile.dev] debug, so the binaries carry that level
+  this binary's debug map names no object of its own crate, so it can locate a frame only through DWARF inside the binary itself: …
+  ```
+
+  and with the objects removed instead:
+
+  ```
+  CARGO_PROFILE_DEV_DEBUG="line-tables-only" is set and cargo's environment overrides the committed [profile.dev] debug, so the binaries carry that level
+  this binary keeps the line tables of its own crate outside itself …: its debug map names 2 object(s) of this crate, of which 2 no longer exist
+    gone: …/accept_t430_ci_disk_budget-cfddf8c8….accept_t430_ci_disk_budget.….rcgu.o
+    gone: …/accept_t430_ci_disk_budget-cfddf8c8….accept_t430_ci_disk_budget.….rcgu.o
+  ```
+
+  This is deliberately a failure message and not a skip. The implementer's
+  first attempt at this task excused the check on macOS when its own objects
+  were missing, on the reading that a host file deletion is not the profile's
+  fault. Review rejected that: it turns a real defect into a green result on
+  the platform where it occurs, and no such deletion was observed on this
+  host. A sweep of every test binary in one target directory — reading each
+  one's debug map and checking each loose object it names — found 0 binaries
+  with a missing object, out of 1269 loose objects named. AGENTS.md rule 6
+  forbids skipping a test to reach green, and there is no measured occurrence
+  to excuse. The diagnosis instead tells whoever hits it that the files are
+  gone and that rebuilding the binary brings them back.
+* **The object selector does not use the binary's name.** rustc truncates a
+  long crate name in an object file name, so
+  `accept_f02_b_one_byte_edit_fingerprint_and_cache-d009daec0120588f` is named
+  by `f2a9df64c40d13f7-yte_edit_fingerprint….rcgu.o`, which shares no prefix
+  with it: a `starts_with(<binary name>)` rule matches 0 of that binary's 2
+  objects. `own_crate_objects` selects on the directory and the `.rcgu.o`
+  suffix, and excludes the `archive(member)` references into a dependency's
+  rlib, which are not paths at all.
+
+New tests: `accept_t430_only_this_files_frames_count_as_located` (the matcher),
+`accept_t430_debug_map_reader_lists_only_object_paths` (the reader on a
+synthetic image, and that it reports a truncated or foreign image instead of
+quietly returning nothing),
+`accept_t430_own_objects_exclude_dependency_members_and_other_directories`,
+`accept_t430_line_table_report_names_the_objects_that_are_gone`,
+`accept_t430_line_table_diagnosis_names_the_environment`, and on macOS
+`accept_t430_macos_report_accounts_for_every_object_it_finds`.
+
+Verified on this host: with the objects restored the backtrace check runs and
+passes; with them moved aside it fails and names them; with
+`CARGO_PROFILE_DEV_DEBUG=0` in a separate target directory it fails and names
+the override.
 
 ## Not covered
 
 * Linux behaviour is unchanged; nothing here was run on Linux except by CI.
-* On a pruned macOS host the backtrace check does not run. It says so in the
-  test output, and running it there needs a rebuild of that binary.
+* The diagnosis is a message, not a repair. Nothing here rebuilds a binary
+  whose objects were removed, and nothing unsets an environment variable for a
+  parent process.
 * What removed the rustup rlib paths in the reporter's process stays unknown.
+  With `CARGO_PROFILE_DEV_DEBUG=0` the report is fully accounted for, but that
+  path is only opened by the rustup tree being unreadable from that process.
