@@ -125,22 +125,6 @@ fn loopback() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// How many rounds a retry's hang-up gets to reach the peer-less client.
-///
-/// The refused client only ever learns of the retry through the connection
-/// layer's own hang-up packet: `HostTransport::reopen` runs the pinned
-/// layer's `disconnect_all`, which sends one `Packet::Disconnect` to every
-/// connection it still holds, and the client honors it on its next update.
-/// With both sides at [`STEP`] that is two rounds, and the packet is never
-/// retransmitted, so a lost one fails this test rather than being retried.
-///
-/// [`STEP`] is 16 ms, so this budget is about a second of connection-layer time
-/// while the client's own disconnect window — [`LOOPBACK_WINDOW`] seconds of
-/// `timeout_seconds` — is still far away. A connection that dies inside this
-/// budget died by hang-up, and the reason assertion below names which party
-/// sent it.
-const HANGUP_ROUNDS: usize = 64;
-
 /// How many exchange rounds the abusive peer gets to be cut off in.
 ///
 /// The verdict itself is not timed: the host decides the moment it receives a
@@ -152,6 +136,172 @@ const HANGUP_ROUNDS: usize = 64;
 /// attempts, not a sleep and not a deadline for a decision the host has
 /// already made.
 const HOSTILE_ROUNDS: usize = 64;
+
+/// How many times a fixture may be rebuilt when the loopback underneath it
+/// died before the awaited thing could ever be observed.
+///
+/// F54-X10 measured loopback sockets that stop being reachable while they
+/// are still in use, when other processes churn the kernel's socket table
+/// (`dropped due to no socket`): a fixture on such a path can never produce
+/// the awaited observation — no handshake completes, no payload arrives —
+/// so the session never gets the chance to decide. Rebuilding costs fresh
+/// sockets and a few milliseconds, and is spent only on an attempt whose own
+/// waits found the path already declared dead. A delivered answer is a
+/// verdict: it is reported exactly as it happened and never retried. Every
+/// attempt dying is still a failure, and the report then says what the dead
+/// ends saw rather than any session verdict.
+///
+/// The count is sized against the churn driver, not a quiet host: under
+/// `f54x10_fleet`'s measured worst shape roughly half of fresh socket pairs
+/// come up orphaned, and a pass of this file chains about fifteen live-path
+/// fixtures. `(0.5)^24` puts one fixture's chance of never once binding a
+/// live pair at ~6e-8 — a run then fails only when the loopback truly
+/// cannot be had, which is the failure to report, not to hide.
+///
+/// The measurement behind the dead-path signature is in
+/// `docs/findings/2026-10-06-f54-c-hostile-peer-flake-loopback-path.md`, and
+/// the count's evidence in
+/// `docs/findings/2026-10-06-f54-c-loopback-dead-path-verdicts.md`.
+const DEAD_PATH_ATTEMPTS: usize = 24;
+
+/// A wait whose condition could never have been observed on this fixture:
+/// the loopback path underneath it died, so nothing the scenario asked was
+/// ever delivered. [`live_fixture`] rebuilds it; every other end — a
+/// refusal, a hang-up, a budget spent while the path stayed up — is a
+/// verdict and is reported, not retried.
+struct DeadPath(String);
+
+/// Runs `attempt` until one fixture's loopback stays alive for its whole
+/// scenario, bounded by [`DEAD_PATH_ATTEMPTS`].
+///
+/// `Err(DeadPath)` is the only outcome that rebuilds: the attempt's waits
+/// found the connection layer had already ended the path, so no session
+/// answer was ever observable on it. A verdict is never rebuilt — a wrong
+/// answer fails inside `attempt` itself and that panic leaves this loop
+/// directly. When every attempt dies, the report names the dead ends it
+/// saw, which is a claim about this host's sockets and not about the
+/// session.
+fn live_fixture<T>(mut attempt: impl FnMut() -> Result<T, DeadPath>) -> T {
+    let mut history = Vec::new();
+    for tries in 1..=DEAD_PATH_ATTEMPTS {
+        match attempt() {
+            Ok(done) => return done,
+            // The dead attempt's fixture is already dropped here: a `Link`
+            // holds the `LOOPBACK` guard for as long as its sockets live,
+            // so keeping it around while the next attempt binds would
+            // deadlock — the measurement that rule comes from is in the
+            // F54-C hostile-peer findings note. And the rebind is deliberately
+            // not immediate: a stillborn pair burns only a few milliseconds,
+            // so a churn burst can outlive a dozen back-to-back attempts —
+            // spacing the sequence spreads it across the bursts rather than
+            // racing the same dead patch twenty-four times. The pause is
+            // between fixtures, never inside one: it changes which wall-clock
+            // the sockets bind into, not what the session answered.
+            Err(DeadPath(reason)) => {
+                history.push(format!("{tries}: {reason}"));
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    panic!(
+        "the loopback never carried this fixture: {}",
+        history.join("; ")
+    );
+}
+
+/// `None` when the session's verdict was delivered and the caller's own
+/// assertions judge it. `Some` — the rebuildable [`DeadPath`] — for every
+/// end where no verdict could have arrived: the layer declaring the path
+/// dead, the connection gone without a reason, the `TransportLost` closure
+/// the layer reports, or a connection still nominally up after the whole
+/// window. The last is the shape the churn driver leaves behind: the
+/// pinned stack holds a connection open for `timeout_seconds` after the
+/// *last received packet*, so keepalives that still trickle in keep a dead
+/// path's connection marked up indefinitely while nothing the session owes
+/// can land.
+fn silent_client(client: &ClientSession, what: &str) -> Option<DeadPath> {
+    match client.phase().closure() {
+        Some(ClientClosure::TransportLost(_)) | None => Some(DeadPath(format!(
+            "{what}: the path carried no verdict (client phase {}, connected {}, reason {:?})",
+            client.phase(),
+            client.transport().is_connected(),
+            client.transport().disconnect_reason()
+        ))),
+        Some(_) => None,
+    }
+}
+
+/// The shared read of a grantless handshake end for bare clients and,
+/// through [`Link::ungranted`], for whole links: a delivered closure that
+/// is not the layer's own `TransportLost` is the session's answer and
+/// fails the caller that needed the grant on the spot. Every other end is
+/// the loopback's [`DeadPath`] — including a connection still marked up,
+/// which under churn only proves stray keepalives keep resetting its
+/// timeout while no session packet ever lands (see [`silent_client`]).
+fn ungranted_client(client: &ClientSession, what: &str) -> DeadPath {
+    if let Some(closure) = client.phase().closure() {
+        assert!(
+            matches!(closure, ClientClosure::TransportLost(_)),
+            "{what}: the session answered {closure}, not a grant"
+        );
+    }
+    DeadPath(format!(
+        "{what}: the handshake's answer never arrived (client phase {}, connected {}, reason {:?})",
+        client.phase(),
+        client.transport().is_connected(),
+        client.transport().disconnect_reason()
+    ))
+}
+
+/// The connection layer's own read of whether a raw peer's path is dead:
+/// every reason but a hang-up the host sent. `DisconnectedByServer` is the
+/// host *acting* — a session verdict in transport clothing — so it is not a
+/// dead path, and a peer still connected is simply alive.
+fn peer_path_dead(peer: &RawPeer) -> bool {
+    matches!(
+        peer.transport.disconnect_reason(),
+        Some(reason) if reason != renetcode2::DisconnectReason::DisconnectedByServer
+    )
+}
+
+/// The loopback read of a wait on `peer`'s traffic that ran out. A
+/// hang-up the host sent is the session acting — a verdict — so it fails
+/// on the spot with what the host did see. Every other end is the
+/// rebuildable [`DeadPath`]: a peer the host never got back to saw its
+/// awaited observation never exist, and a peer still nominally connected
+/// only proves the host's keepalives still trickle in one way — nothing
+/// says the peer's own packets ever made the return trip.
+fn peer_delivery(peer: &RawPeer, what: &str, notices: &[ServerNotice]) -> DeadPath {
+    match peer.transport.disconnect_reason() {
+        Some(renetcode2::DisconnectReason::DisconnectedByServer) => panic!(
+            "{what}: the host hung the peer up instead of answering; the host saw {notices:?} ({})",
+            peer.status()
+        ),
+        Some(reason) => DeadPath(format!(
+            "{what}: the connection layer ended the peer's path ({reason:?}); {}",
+            peer.status()
+        )),
+        None => DeadPath(format!(
+            "{what}: the peer's path carried nothing observable (connected {}); {}",
+            peer.transport.is_connected(),
+            peer.status()
+        )),
+    }
+}
+
+/// The grantless end of a raw peer's handshake: a delivered refusal is the
+/// session's verdict and fails the caller that needed the grant on the
+/// spot. Everything else is the loopback's [`DeadPath`] — a connection
+/// the layer ended, a hang-up that arrived ahead of the reliable refusal
+/// it was meant to follow, or a connection still nominally up, which under
+/// churn only says stray keepalives still land one way (see
+/// [`silent_client`]).
+fn ungranted_peer(peer: &RawPeer, what: &str) -> DeadPath {
+    if let Some(reason) = peer.transport.rejection() {
+        panic!("{what}: the session refused the peer: {reason}");
+    }
+    DeadPath(format!("{what}: {}", peer.status()))
+}
 
 /// A live loopback pair: one bound host session and one connecting client
 /// session, plus every notice each side produced.
@@ -190,30 +340,16 @@ impl Link {
         }
     }
 
-    /// A link whose handshake completed and whose client holds a grant.
-    ///
-    /// This is [`Self::try_joined`] for a test that treats a fixture which
-    /// never came up as a failure in itself; the scenario that rebuilds its
-    /// fixture keeps the two in step.
-    fn joined(session: SessionId) -> Self {
-        let mut link = Self::new(session, synthetic_parameters(), synthetic_hello());
-        link.pump_until_joined();
-        assert!(
-            link.client.grant().is_some(),
-            "the handshake granted a session: {:?}",
-            link.client_notices
-        );
-        link
-    }
-
-    /// The same fixture, as an option: `None` when the loopback never carried
-    /// the handshake inside [`MAX_ROUNDS`].
+    /// A link whose handshake completed and whose client holds a grant, as
+    /// an outcome: `Err` hands the unfinished link back so the caller can
+    /// read which side owned the wait's end — a `Refused` closure is the
+    /// session's verdict, everything else is the loopback's.
     ///
     /// No expectation is dropped by asking this way — the caller either
     /// rebuilds the fixture or reports that it never came up — but a test
     /// that retries its fixture needs the difference between "the loopback
     /// could not deliver" and "the session answered".
-    fn try_joined(session: SessionId) -> Result<Self, Vec<ClientNotice>> {
+    fn try_joined(session: SessionId) -> Result<Self, Box<Self>> {
         let mut link = Self::new(session, synthetic_parameters(), synthetic_hello());
         for _ in 0..MAX_ROUNDS {
             if link.client.grant().is_some() {
@@ -227,8 +363,14 @@ impl Link {
         if link.client.grant().is_some() {
             Ok(link)
         } else {
-            Err(link.client_notices)
+            Err(Box::new(link))
         }
+    }
+
+    /// What [`Self::try_joined`]'s `Err` means for a scenario that needed
+    /// the grant, settled by [`ungranted_client`].
+    fn ungranted(&self, what: &str) -> DeadPath {
+        ungranted_client(&self.client, what)
     }
 
     /// One exchange round: the client pumps (emitting its packets), then the
@@ -248,7 +390,14 @@ impl Link {
         self.client_notices.extend(self.client.pump(STEP));
     }
 
-    /// Pumps until `done` holds, or fails with `what` after [`MAX_ROUNDS`].
+    /// Pumps until `done` holds, as an outcome.
+    ///
+    /// `Err` when [`MAX_ROUNDS`] ran out and the awaited condition was
+    /// never deliverable on this fixture: the connection layer ended the
+    /// path, or — the shape the churn driver leaves — the connection is
+    /// still nominally up on stray keepalives while nothing the session
+    /// owed could land. Only delivered verdicts still panic: the host's
+    /// own hang-up, or a session closure that is not the transport's fault.
     ///
     /// Every exchange here is over a real socket, so how many rounds a
     /// delivery takes is the transport's business, not the test's: an
@@ -256,31 +405,93 @@ impl Link {
     /// lose and resend it. Waiting on the *condition* keeps every expectation
     /// below exactly as strict as a fixed wait, without turning a slow round
     /// trip into a failure.
-    fn pump_until(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
+    fn try_pump_until(&mut self, what: &str, done: impl Fn(&Self) -> bool) -> Result<(), DeadPath> {
         for _ in 0..MAX_ROUNDS {
             if done(self) {
-                return;
+                return Ok(());
+            }
+            // Once the layer has ended the connection no further round can
+            // deliver anything; which of its ends — the host's hang-up, a
+            // missed window, a fault — is for the tail of this wait to
+            // classify. A session closure alone is *not* a stop: waits whose
+            // condition rides the transport itself (a teardown's hang-up is
+            // still in flight when `ServerClosed` lands) must see the
+            // connection out. Nor is the netcode reason alone a stop: it
+            // appears the round the `Disconnect` packet decodes, while the
+            // renet-level `is_connected` and the `Disconnected` notice land
+            // one pump later, so the break waits until both layers agree the
+            // end is real.
+            if self.client.transport().disconnect_reason().is_some()
+                && !self.client.transport().is_connected()
+            {
+                break;
             }
             self.round();
         }
-        panic!(
-            "{what} within {MAX_ROUNDS} rounds; the host saw {:?} and the client saw {:?}",
-            self.host_notices, self.client_notices
-        );
+        if done(self) {
+            return Ok(());
+        }
+        // A delivered verdict stands: the host's own hang-up, or a session
+        // closure that is not the transport's fault. Every other end is a
+        // fixture that carried nothing the condition could ride on — the
+        // layer-declared dead path, or the nominally-up-but-silent one the
+        // churn leaves behind (see [`silent_client`]) — so it is rebuilt.
+        match self.client.transport().disconnect_reason() {
+            Some(renetcode2::DisconnectReason::DisconnectedByServer) => panic!(
+                "{what}: the host hung up instead of the awaited observation; the host saw {:?} and the client saw {:?}",
+                self.host_notices, self.client_notices
+            ),
+            Some(_) => {}
+            None => {
+                if let Some(closure) = self.client.phase().closure() {
+                    assert!(
+                        matches!(closure, ClientClosure::TransportLost(_)),
+                        "{what}: the session answered {closure} instead of the awaited observation; the host saw {:?} and the client saw {:?}",
+                        self.host_notices,
+                        self.client_notices
+                    );
+                }
+            }
+        }
+        Err(DeadPath(format!(
+            "{what}: the path carried nothing observable (client phase {}, connected {}, reason {:?}); the host saw {:?} and the client saw {:?}",
+            self.client.phase(),
+            self.client.transport().is_connected(),
+            self.client.transport().disconnect_reason(),
+            self.host_notices,
+            self.client_notices
+        )))
     }
 
-    /// Pumps until the client holds a grant or was refused.
-    fn pump_until_joined(&mut self) {
-        self.pump_until("the handshake never settled", |link| {
+    /// Pumps until the handshake settles: the client holds a grant or a
+    /// closure.
+    ///
+    /// `Err` when the closure is `TransportLost` or the budget ran out on a
+    /// dead path — the connection layer's report, not the session's, so the
+    /// handshake's answer never existed to be observed. A `Refused` closure
+    /// is the session's verdict and returns `Ok` for the caller's
+    /// assertions to judge.
+    fn try_pump_until_joined(&mut self) -> Result<(), DeadPath> {
+        self.try_pump_until("the handshake never settled", |link| {
             link.client.grant().is_some() || link.client.phase().closure().is_some()
-        });
+        })?;
+        if matches!(
+            self.client.phase().closure(),
+            Some(ClientClosure::TransportLost(_))
+        ) {
+            return Err(DeadPath(format!(
+                "the handshake's answer never arrived; the client saw {:?}",
+                self.client_notices
+            )));
+        }
+        Ok(())
     }
 
     /// Pumps until the client applied the host's `Launched`.
-    fn pump_until_live(&mut self) {
-        self.pump_until("the session never launched", |link| {
+    fn try_pump_until_live(&mut self) -> Result<(), DeadPath> {
+        self.try_pump_until("the session never launched", |link| {
             matches!(link.client.phase(), ClientPhase::Live { .. })
-        });
+        })
     }
 
     /// Pumps `rounds` further rounds.
@@ -291,29 +502,84 @@ impl Link {
     }
 
     /// Pumps until the host has at least one queued work item.
-    fn pump_until_work(&mut self) {
-        self.pump_until("no admitted input ever arrived", |link| {
+    fn try_pump_until_work(&mut self) -> Result<(), DeadPath> {
+        self.try_pump_until("no admitted input ever arrived", |link| {
             link.host.queued() > 0
-        });
+        })
     }
 
     /// Pumps until the host acknowledges input up to `through`.
-    fn pump_until_acked(&mut self, through: u32) {
-        self.pump_until(
+    fn try_pump_until_acked(&mut self, through: u32) -> Result<(), DeadPath> {
+        self.try_pump_until(
             &format!("input was never acknowledged through {through}"),
             |link| {
                 link.client
                     .acked_through()
                     .is_some_and(|held| held >= through)
             },
-        );
+        )
     }
 
-    /// Pumps until the client session is no longer open.
-    fn pump_until_closed(&mut self) {
-        self.pump_until("the client never observed the teardown", |link| {
-            !link.client.phase().open()
-        });
+    /// Pumps until the client session is closed *and* its transport
+    /// connection is down.
+    ///
+    /// A teardown observation is only as delivered as its last leg: the
+    /// client seeing `ServerClosed` while its connection lingers is half an
+    /// observation, so the wait also covers the hang-up. A connection that
+    /// then died by anything but the host's hang-up — the client missing
+    /// its own window, a fault — means the teardown never arrived, which is
+    /// the rebuildable [`DeadPath`], not a verdict.
+    fn try_pump_until_closed(&mut self) -> Result<(), DeadPath> {
+        self.try_pump_until("the client never observed the teardown", |link| {
+            !link.client.phase().open() && !link.client.transport().is_connected()
+        })?;
+        if !matches!(
+            self.client.transport().disconnect_reason(),
+            Some(renetcode2::DisconnectReason::DisconnectedByServer)
+        ) {
+            return Err(DeadPath(format!(
+                "the teardown's hang-up never arrived; the connection died by itself ({:?}); the client saw {:?}",
+                self.client.transport().disconnect_reason(),
+                self.client_notices
+            )));
+        }
+        Ok(())
+    }
+
+    /// Pumps `peer` and the host until `done` holds, refiring `payload`'s
+    /// sender each round, as an outcome.
+    ///
+    /// Every injection travels the droppable channel, so a wait that sent
+    /// once and then watched could only ever observe the one delivery it
+    /// happened to get; refiring keeps the expectation on the session's
+    /// answer, not on which datagram survived. `Err(DeadPath)` — settled by
+    /// [`peer_delivery`] — is the connection layer declaring the peer's own
+    /// path dead; a hang-up the host sent is its answer and panics as the
+    /// verdict it is, as does a peer whose path held for the whole window.
+    fn try_pump_peer_until(
+        &mut self,
+        peer: &mut RawPeer,
+        what: &str,
+        mut refire: impl FnMut(&mut RawPeer),
+        done: impl Fn(&Self) -> bool,
+    ) -> Result<(), DeadPath> {
+        for _ in 0..MAX_ROUNDS {
+            if done(self) {
+                return Ok(());
+            }
+            // Once the layer ends the connection no refired payload can ever
+            // be delivered; which end — the host's own hang-up or the layer's
+            // dead path — is for [`peer_delivery`] below to classify.
+            if peer.transport.disconnect_reason().is_some() {
+                break;
+            }
+            refire(peer);
+            self.host_notices.extend(peer.round(&mut self.host));
+        }
+        if done(self) {
+            return Ok(());
+        }
+        Err(peer_delivery(peer, what, &self.host_notices))
     }
 
     /// Whether the host produced a notice matching `wanted`.
@@ -361,27 +627,30 @@ struct RawPeer {
 }
 
 impl RawPeer {
-    /// Drives this peer to its grant, pumping `host` alongside it.
+    /// Drives this peer to its grant, pumping `host` alongside it, as an
+    /// outcome: `None` when the loopback never carried the handshake inside
+    /// [`MAX_ROUNDS`] — or when the connection's own verdict (a refusal the
+    /// host sent, or the layer's own disconnect) arrived first — which is a
+    /// delivery failure of the fixture, not anything the host decided.
     ///
-    /// This is [`Self::try_handshake`] for a caller that treats a peer that
-    /// never came up as a failure in itself.
-    fn handshake(&mut self, host: &mut ServerSession) -> PeerId {
-        self.try_handshake(host)
-            .expect("the raw peer never received a grant")
-    }
-
-    /// The same handshake, as an option: `None` when the loopback never
-    /// carried it inside [`MAX_ROUNDS`], which is a delivery failure of the
-    /// fixture rather than anything the host decided.
+    /// A caller that needed the grant hands a `None` to [`ungranted_peer`],
+    /// which reads the peer's own state to separate the session's answer
+    /// from the loopback's dead path.
     fn try_handshake(&mut self, host: &mut ServerSession) -> Option<PeerId> {
         for _ in 0..MAX_ROUNDS {
             if let Some(grant) = self.transport.grant() {
                 return Some(grant.peer);
             }
+            // A rejection is the session's verdict and a disconnect is the
+            // connection layer's; no further round can produce a grant.
+            if self.transport.rejection().is_some() || self.transport.disconnect_reason().is_some()
+            {
+                break;
+            }
             self.events.extend(self.transport.update(STEP));
             host.pump(STEP);
         }
-        None
+        self.transport.grant().map(|grant| grant.peer)
     }
 
     /// Puts `bytes` on `channel` verbatim.
@@ -443,21 +712,6 @@ fn cut_off(link: &Link, peer: PeerId) -> bool {
     link.host.members().all(|member| member != peer)
 }
 
-/// How many fixtures the hostile-peer scenario may build before it gives up.
-///
-/// F54-X10 measured loopback sockets that stop being reachable while they are
-/// still in use, when other processes churn the kernel's socket table. A
-/// fixture carrying such a path can never show a cut-off: neither handshake
-/// completes, or not one hostile payload reaches the host, so the session
-/// never gets the chance to decide. Rebuilding costs three sockets and a few
-/// milliseconds, and it is spent only on a run in which the host saw *nothing
-/// at all* — the verdict itself is never retried. Every attempt failing is
-/// still a failure: the test then says what the last one saw.
-///
-/// The measurement behind this number is in
-/// `docs/findings/2026-10-06-f54-c-hostile-peer-flake-loopback-path.md`.
-const DEAD_PATH_ATTEMPTS: usize = 6;
-
 /// One run of the hostile-peer scenario: a fresh fixture, the flood, and the
 /// wait for the verdict.
 struct Attempt {
@@ -469,6 +723,8 @@ struct Attempt {
     hostile_peer: PeerId,
     /// Whether the host processed any traffic from that peer.
     arrived: bool,
+    /// Whether the honest peer's probe input reached the consumer afterwards.
+    honest_reached: bool,
 }
 
 impl Attempt {
@@ -479,34 +735,44 @@ impl Attempt {
     }
 }
 
+/// How many packets from `peer` the host has classified so far — admitted
+/// input, a refusal or the cut-off — one count per arrival.
+fn peer_arrivals(notices: &[ServerNotice], peer: PeerId) -> usize {
+    notices
+        .iter()
+        .filter(|notice| match notice {
+            ServerNotice::Admitted(input) => input.peer == peer,
+            ServerNotice::Dropped {
+                peer: Some(seen), ..
+            }
+            | ServerNotice::CutOff {
+                peer: Some(seen), ..
+            } => *seen == peer,
+            _ => false,
+        })
+        .count()
+}
+
 /// Whether the host processed anything `peer` sent: admitted input, a refusal
 /// or the cut-off itself. A peer that joined and then produced none of these
 /// never reached the host's receive path at all.
 fn hostile_traffic(notices: &[ServerNotice], peer: PeerId) -> bool {
-    notices.iter().any(|notice| match notice {
-        ServerNotice::Admitted(input) => input.peer == peer,
-        ServerNotice::Dropped {
-            peer: Some(seen), ..
-        }
-        | ServerNotice::CutOff {
-            peer: Some(seen), ..
-        } => *seen == peer,
-        _ => false,
-    })
+    peer_arrivals(notices, peer) > 0
 }
 
 /// Builds a fresh fixture, floods the host from a second peer and waits for
 /// the verdict the session owes.
 ///
-/// `Err` means the fixture never came up — the loopback did not carry one of
-/// the two handshakes inside [`MAX_ROUNDS`] — and describes which, so a
-/// caller that rebuilds can still say what it saw when every attempt failed.
-fn abusive_peer_attempt() -> Result<Attempt, String> {
+/// `Err(DeadPath)` means the fixture never came up — the loopback did not
+/// carry one of the two handshakes inside [`MAX_ROUNDS`] — and describes
+/// which end died, so a caller that rebuilds can still say what it saw when
+/// every attempt failed.
+fn abusive_peer_attempt() -> Result<Attempt, DeadPath> {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
     let mut link = Link::try_joined(session)
-        .map_err(|notices| format!("the honest client never got a grant: {notices:?}"))?;
+        .map_err(|link| link.ungranted("the honest client's handshake"))?;
     let good_peer = link.client.grant().expect("a grant exists").peer;
     link.host
         .gate_mut()
@@ -519,7 +785,7 @@ fn abusive_peer_attempt() -> Result<Attempt, String> {
     let mut hostile = link.raw_peer(0xC8);
     let hostile_peer = hostile
         .try_handshake(&mut link.host)
-        .ok_or_else(|| format!("the abusive peer never got a grant: {}", hostile.status()))?;
+        .ok_or_else(|| ungranted_peer(&hostile, "the abusive peer's handshake"))?;
     assert_ne!(hostile_peer, good_peer, "the two peers are distinct");
 
     // Small shapes keep the loopback socket honest.
@@ -555,11 +821,46 @@ fn abusive_peer_attempt() -> Result<Attempt, String> {
     }
 
     let arrived = hostile_traffic(&link.host_notices, hostile_peer);
+
+    // A peer the connection layer ended mid-flood can no longer produce the
+    // traffic the verdict is owed for, so the wait's end is the loopback's
+    // again — unless the end is the hang-up the host sent, which is the
+    // session's own verdict whether or not the notice was read yet.
+    if !cut_off(&link, hostile_peer) && peer_path_dead(&hostile) {
+        return Err(peer_delivery(
+            &hostile,
+            "the abusive peer's path died before the verdict",
+            &link.host_notices,
+        ));
+    }
+
+    // The scenario's other half — the honest peer keeps a working session —
+    // needs the honest path alive too, and its socket can have died under the
+    // same churn, so it is probed here where a dead one is still rebuildable.
+    // The wait is for the honest peer's own admission, not the queue's depth:
+    // the flood may still be queuing its own packets, and the edge rides the
+    // droppable channel whose loss the client's own retransmission covers.
+    link.host.drain_work();
+    link.client
+        .submit_edge(FlightCommand::FirePrimary, Tick(1000))
+        .expect("an edge queues");
+    link.try_pump_until("the honest peer's probe was never admitted", |link| {
+        link.host_has(
+            |notice| matches!(notice, ServerNotice::Admitted(input) if input.peer == good_peer),
+        )
+    })?;
+    let honest_reached = link
+        .host
+        .drain_work()
+        .iter()
+        .any(|input| input.peer == good_peer);
+
     Ok(Attempt {
         link,
         hostile,
         hostile_peer,
         arrived,
+        honest_reached,
     })
 }
 
@@ -630,33 +931,39 @@ fn accept_f54_c_the_connect_window_is_a_fixture_parameter_over_the_default() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("the first epoch allocates");
-    let mut host = ServerSession::bind(
-        session,
-        synthetic_parameters(),
-        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-        Duration::ZERO,
-    )
-    .expect("the host socket binds");
-    let addr = host.local_addr().expect("the bound host has an address");
-    let mut client = ClientSession::connect_with_window(
-        synthetic_hello(),
-        addr,
-        0xCE,
-        Duration::ZERO,
-        ConnectWindow::new(120),
-    )
-    .expect("the client socket binds");
-
-    let mut joined = false;
-    for _ in 0..MAX_ROUNDS {
-        client.pump(STEP);
-        host.pump(STEP);
-        if client.grant().is_some() {
-            joined = true;
-            break;
+    let (host, client) = live_fixture(|| {
+        let mut host = ServerSession::bind(
+            session,
+            synthetic_parameters(),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Duration::ZERO,
+        )
+        .expect("the host socket binds");
+        let addr = host.local_addr().expect("the bound host has an address");
+        let mut client = ClientSession::connect_with_window(
+            synthetic_hello(),
+            addr,
+            0xCE,
+            Duration::ZERO,
+            ConnectWindow::new(120),
+        )
+        .expect("the client socket binds");
+        for _ in 0..MAX_ROUNDS {
+            if client.grant().is_some()
+                || client.phase().closure().is_some()
+                || client.transport().disconnect_reason().is_some()
+            {
+                break;
+            }
+            client.pump(STEP);
+            host.pump(STEP);
         }
-    }
-    assert!(joined, "a widened window still completes the handshake");
+        if client.grant().is_some() {
+            Ok((host, client))
+        } else {
+            Err(ungranted_client(&client, "the widened-window handshake"))
+        }
+    });
     let grant = client.grant().expect("the handshake granted a session");
     assert_eq!(
         grant.session, session,
@@ -666,48 +973,67 @@ fn accept_f54_c_the_connect_window_is_a_fixture_parameter_over_the_default() {
 
     // ...and still refuses the same offers the same way. The window is a
     // timeout, not a way around the compatibility gate.
-    let mut refused = ServerSession::bind(
-        session,
-        synthetic_parameters(),
-        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-        Duration::ZERO,
-    )
-    .expect("a second host binds");
-    let refused_addr = refused
-        .local_addr()
-        .expect("the second host has an address");
-    let mut wrong = synthetic_hello();
-    wrong.protocol = ProtocolVersion::new(9).expect("nine is nonzero");
-    let mut second = ClientSession::connect_with_window(
-        wrong,
-        refused_addr,
-        0xCF,
-        Duration::ZERO,
-        ConnectWindow::new(120),
-    )
-    .expect("the second client socket binds");
-    let mut reason = None;
-    for _ in 0..MAX_ROUNDS {
-        second.pump(STEP);
-        if let Some(rejected) = refused
-            .pump(STEP)
-            .into_iter()
-            .find_map(|notice| match notice {
-                ServerNotice::PeerRefused { reason } => Some(reason),
-                _ => None,
-            })
-        {
-            reason = Some(rejected);
-            break;
+    let reason = live_fixture(|| {
+        let mut refused = ServerSession::bind(
+            session,
+            synthetic_parameters(),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Duration::ZERO,
+        )
+        .expect("a second host binds");
+        let refused_addr = refused
+            .local_addr()
+            .expect("the second host has an address");
+        let mut wrong = synthetic_hello();
+        wrong.protocol = ProtocolVersion::new(9).expect("nine is nonzero");
+        let mut second = ClientSession::connect_with_window(
+            wrong,
+            refused_addr,
+            0xCF,
+            Duration::ZERO,
+            ConnectWindow::new(120),
+        )
+        .expect("the second client socket binds");
+        let mut reason = None;
+        for _ in 0..MAX_ROUNDS {
+            second.pump(STEP);
+            if let Some(rejected) = refused
+                .pump(STEP)
+                .into_iter()
+                .find_map(|notice| match notice {
+                    ServerNotice::PeerRefused { reason } => Some(reason),
+                    _ => None,
+                })
+            {
+                reason = Some(rejected);
+                break;
+            }
+            if second.transport().disconnect_reason().is_some() {
+                break;
+            }
         }
-    }
+        match reason {
+            Some(reason) => Ok(reason),
+            // The refusal is produced the round the host decodes the hello,
+            // so `reason` staying empty means the host never saw it — and a
+            // connection still nominally up says no more than that stray
+            // keepalives keep resetting its timeout while nothing the
+            // session owes can land (see [`silent_client`]).
+            None => Err(DeadPath(format!(
+                "the refused handshake never reached the host (client phase {:?}, connected {}, reason {:?})",
+                second.phase(),
+                second.transport().is_connected(),
+                second.transport().disconnect_reason()
+            ))),
+        }
+    });
     assert!(
         matches!(
             reason,
-            Some(HandshakeReject::UnsupportedProtocol {
+            HandshakeReject::UnsupportedProtocol {
                 offered,
                 supported,
-            }) if offered.get() == 9 && supported == PROTOCOL_VERSION
+            } if offered.get() == 9 && supported == PROTOCOL_VERSION
         ),
         "the widened window changed nothing about admission: {reason:?}"
     );
@@ -721,48 +1047,60 @@ fn accept_f54_c_the_connect_window_is_a_fixture_parameter_over_the_default() {
         (ConnectWindow::new(1), 256usize, false),
         (LOOPBACK_WINDOW, 256, true),
     ] {
-        let epoch = SessionAllocator::new()
-            .allocate()
-            .expect("an epoch allocates");
-        let mut quiet = ServerSession::bind(
-            epoch,
-            synthetic_parameters(),
-            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-            Duration::ZERO,
-        )
-        .expect("the host socket binds");
-        let quiet_addr = quiet.local_addr().expect("the bound host has an address");
-        let mut speaker = ClientSession::connect_with_window(
-            synthetic_hello(),
-            quiet_addr,
-            0xD0,
-            Duration::ZERO,
-            window,
-        )
-        .expect("the client socket binds");
+        live_fixture(|| {
+            let epoch = SessionAllocator::new()
+                .allocate()
+                .expect("an epoch allocates");
+            let mut quiet = ServerSession::bind(
+                epoch,
+                synthetic_parameters(),
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+                Duration::ZERO,
+            )
+            .expect("the host socket binds");
+            let quiet_addr = quiet.local_addr().expect("the bound host has an address");
+            let mut speaker = ClientSession::connect_with_window(
+                synthetic_hello(),
+                quiet_addr,
+                0xD0,
+                Duration::ZERO,
+                window,
+            )
+            .expect("the client socket binds");
 
-        let mut established = false;
-        for _ in 0..MAX_ROUNDS {
-            speaker.pump(STEP);
-            quiet.pump(STEP);
-            if speaker.grant().is_some() {
-                established = true;
-                break;
+            for _ in 0..MAX_ROUNDS {
+                speaker.pump(STEP);
+                quiet.pump(STEP);
+                if speaker.grant().is_some() || speaker.transport().disconnect_reason().is_some() {
+                    break;
+                }
             }
-        }
-        assert!(established, "the {window:?} handshake completed");
+            if speaker.grant().is_none() {
+                return Err(ungranted_client(&speaker, "the quiet-window handshake"));
+            }
 
-        // The host goes quiet: it is never pumped again, so it stops sending
-        // and the connection layer's own silence window is what runs.
-        for _ in 0..rounds {
-            speaker.pump(STEP);
-        }
-        assert_eq!(
-            speaker.transport().is_connected(),
-            still_connected,
-            "after {rounds} silent rounds ({:?} window) the connection layer's verdict is the window's",
-            window
-        );
+            // The host goes quiet: it is never pumped again, so it stops
+            // sending and the connection layer's own silence window is what
+            // runs.
+            for _ in 0..rounds {
+                speaker.pump(STEP);
+            }
+            if speaker.transport().is_connected() == still_connected {
+                return Ok(());
+            }
+            // A connection still standing past its own one-second window is
+            // the window arithmetic under test failing — a verdict. A
+            // connection that went *down* inside a two-minute window cannot
+            // be the window, so the path underneath is what died.
+            assert!(
+                still_connected,
+                "after {rounds} silent rounds ({window:?} window) the connection layer's verdict is the window's"
+            );
+            Err(DeadPath(format!(
+                "the {window:?} fixture's connection died underneath the quiet wait ({:?})",
+                speaker.transport().disconnect_reason()
+            )))
+        });
     }
 }
 
@@ -771,133 +1109,145 @@ fn accept_f54_c_the_session_runs_connect_launch_finish_and_disconnect() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("the first epoch allocates");
-    let mut link = Link::joined(session);
+    live_fixture(|| {
+        // Every `?` here is a wait the loopback had to carry; an `Err` rebuilds
+        // the fixture, while a delivered-but-wrong answer panics and is never
+        // retried.
+        let mut link =
+            Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))?;
 
-    // connect: the handshake completed and both sides agree on the identity.
-    let grant = link
-        .client
-        .grant()
-        .expect("the handshake granted a session");
-    assert_eq!(grant.session, session);
-    assert_eq!(link.host.phase(), ServerPhase::Gathering);
-    assert_eq!(*link.client.phase(), ClientPhase::Joined);
-    assert!(
-        link.host_has(
-            |notice| matches!(notice, ServerNotice::PeerJoined { peer } if *peer == grant.peer)
-        ),
-        "the host saw the join: {:?}",
-        link.host_notices
-    );
+        // connect: the handshake completed and both sides agree on the
+        // identity.
+        let grant = link
+            .client
+            .grant()
+            .expect("the handshake granted a session");
+        assert_eq!(grant.session, session);
+        assert_eq!(link.host.phase(), ServerPhase::Gathering);
+        assert_eq!(*link.client.phase(), ClientPhase::Joined);
+        assert!(
+            link.host_has(
+                |notice| matches!(notice, ServerNotice::PeerJoined { peer } if *peer == grant.peer)
+            ),
+            "the host saw the join: {:?}",
+            link.host_notices
+        );
 
-    // launch: the host publishes `Launched` and the client applies it.
-    link.host
-        .launch(Tick(100))
-        .expect("a gathering session launches");
-    assert_eq!(
-        link.host.phase(),
-        ServerPhase::Live {
-            start_tick: Tick(100)
-        }
-    );
-    link.pump_until_live();
-    assert_eq!(
-        *link.client.phase(),
-        ClientPhase::Live {
-            start_tick: Tick(100)
-        }
-    );
+        // launch: the host publishes `Launched` and the client applies it.
+        link.host
+            .launch(Tick(100))
+            .expect("a gathering session launches");
+        assert_eq!(
+            link.host.phase(),
+            ServerPhase::Live {
+                start_tick: Tick(100)
+            }
+        );
+        link.try_pump_until_live()?;
+        assert_eq!(
+            *link.client.phase(),
+            ClientPhase::Live {
+                start_tick: Tick(100)
+            }
+        );
 
-    // in flight: the client's local samples reach the simulation as admitted
-    // input, once, with the fire request the gate authorized.
-    let peer = grant.peer;
-    let actor = ActorId { session, serial: 7 };
-    link.host
-        .gate_mut()
-        .ownership_mut()
-        .bind(peer, actor)
-        .expect("the host binds the client's aircraft");
-    link.client
-        .submit_sample(FlightCommand::Throttle, 0.75, Tick(101))
-        .expect("a finite throttle sample queues");
-    link.client
-        .submit_edge(FlightCommand::FirePrimary, Tick(102))
-        .expect("a fire edge queues");
-    assert_eq!(link.client.pending(), 2, "two frames are queued");
-    link.pump_until_work();
+        // in flight: the client's local samples reach the simulation as
+        // admitted input, once, with the fire request the gate authorized.
+        let peer = grant.peer;
+        let actor = ActorId { session, serial: 7 };
+        link.host
+            .gate_mut()
+            .ownership_mut()
+            .bind(peer, actor)
+            .expect("the host binds the client's aircraft");
+        link.client
+            .submit_sample(FlightCommand::Throttle, 0.75, Tick(101))
+            .expect("a finite throttle sample queues");
+        link.client
+            .submit_edge(FlightCommand::FirePrimary, Tick(102))
+            .expect("a fire edge queues");
+        assert_eq!(link.client.pending(), 2, "two frames are queued");
+        link.try_pump_until_work()?;
 
-    let work: Vec<PeerInput> = link.host.drain_work();
-    assert_eq!(work.len(), 1, "one admitted packet reached the consumer");
-    assert_eq!(work[0].peer, peer);
-    assert_eq!(work[0].frames.frames.len(), 2);
-    assert_eq!(
-        work[0].fires.len(),
-        1,
-        "the gate authorized exactly the one fire edge"
-    );
-    assert_eq!(work[0].fires[0].actor, actor);
-    assert_eq!(work[0].fires[0].tick, Tick(102));
-    assert!(
-        link.host.queued() <= MAX_WORK_PER_PUMP,
-        "the work queue stays inside its cap"
-    );
+        let work: Vec<PeerInput> = link.host.drain_work();
+        assert_eq!(work.len(), 1, "one admitted packet reached the consumer");
+        assert_eq!(work[0].peer, peer);
+        assert_eq!(work[0].frames.frames.len(), 2);
+        assert_eq!(
+            work[0].fires.len(),
+            1,
+            "the gate authorized exactly the one fire edge"
+        );
+        assert_eq!(work[0].fires[0].actor, actor);
+        assert_eq!(work[0].fires[0].tick, Tick(102));
+        assert!(
+            link.host.queued() <= MAX_WORK_PER_PUMP,
+            "the work queue stays inside its cap"
+        );
 
-    // The host acknowledges the input it consumed and the client retires it.
-    link.host
-        .acknowledge_input(peer, work[0].sequence)
-        .expect("the ack encodes");
-    link.pump_until_acked(work[0].sequence);
-    assert_eq!(link.client.acked_through(), Some(work[0].sequence));
-    assert_eq!(link.client.unacked(), 0, "the acked packet was retired");
+        // The host acknowledges the input it consumed and the client retires
+        // it.
+        link.host
+            .acknowledge_input(peer, work[0].sequence)
+            .expect("the ack encodes");
+        link.try_pump_until_acked(work[0].sequence)?;
+        assert_eq!(link.client.acked_through(), Some(work[0].sequence));
+        assert_eq!(link.client.unacked(), 0, "the acked packet was retired");
 
-    // finish: the host publishes `Finished` and the client applies it.
-    link.host
-        .finish(Tick(140), FinishReason::Completed)
-        .expect("a live session finishes");
-    assert_eq!(
-        link.host.phase(),
-        ServerPhase::Finished {
-            reason: FinishReason::Completed
-        }
-    );
-    link.pump_until("the client never applied the finish", |link| {
-        matches!(link.client.phase(), ClientPhase::Finished { .. })
+        // finish: the host publishes `Finished` and the client applies it.
+        link.host
+            .finish(Tick(140), FinishReason::Completed)
+            .expect("a live session finishes");
+        assert_eq!(
+            link.host.phase(),
+            ServerPhase::Finished {
+                reason: FinishReason::Completed
+            }
+        );
+        link.try_pump_until("the client never applied the finish", |link| {
+            matches!(link.client.phase(), ClientPhase::Finished { .. })
+        })?;
+        assert_eq!(
+            *link.client.phase(),
+            ClientPhase::Finished {
+                reason: FinishReason::Completed
+            }
+        );
+
+        // disconnect: the host tears the session down and the client observes
+        // it.
+        let hung_up = link
+            .host
+            .close(DisconnectReason::SessionEnded)
+            .expect("teardown runs");
+        assert_eq!(hung_up, 1, "the one member was hung up");
+        assert_eq!(link.host.phase(), ServerPhase::Closed);
+        assert!(link.host.members().next().is_none());
+        link.try_pump_until_closed()?;
+        assert!(
+            matches!(
+                link.client.phase().closure(),
+                Some(ClientClosure::ServerClosed(DisconnectReason::SessionEnded))
+                    | Some(ClientClosure::TransportLost(_))
+            ),
+            "the client observed the teardown: {:?}",
+            link.client_notices
+        );
+        assert!(
+            !link.client.phase().open(),
+            "a closed client session sends nothing more"
+        );
+        assert!(
+            link.client_has(|notice| matches!(notice, ClientNotice::Disconnected { .. }))
+                || link.client_has(|notice| matches!(
+                    notice,
+                    ClientNotice::Phase(ClientPhase::Closed(_))
+                )),
+            "the close is reported, not silent: {:?}",
+            link.client_notices
+        );
+        Ok(())
     });
-    assert_eq!(
-        *link.client.phase(),
-        ClientPhase::Finished {
-            reason: FinishReason::Completed
-        }
-    );
-
-    // disconnect: the host tears the session down and the client observes it.
-    let hung_up = link
-        .host
-        .close(DisconnectReason::SessionEnded)
-        .expect("teardown runs");
-    assert_eq!(hung_up, 1, "the one member was hung up");
-    assert_eq!(link.host.phase(), ServerPhase::Closed);
-    assert!(link.host.members().next().is_none());
-    link.pump_until_closed();
-    assert!(
-        matches!(
-            link.client.phase().closure(),
-            Some(ClientClosure::ServerClosed(DisconnectReason::SessionEnded))
-                | Some(ClientClosure::TransportLost(_))
-        ),
-        "the client observed the teardown: {:?}",
-        link.client_notices
-    );
-    assert!(
-        !link.client.phase().open(),
-        "a closed client session sends nothing more"
-    );
-    assert!(
-        link.client_has(|notice| matches!(notice, ClientNotice::Disconnected { .. }))
-            || link
-                .client_has(|notice| matches!(notice, ClientNotice::Phase(ClientPhase::Closed(_)))),
-        "the close is reported, not silent: {:?}",
-        link.client_notices
-    );
 }
 
 #[test]
@@ -905,58 +1255,67 @@ fn accept_f54_c_a_duplicate_packet_reaches_the_consumer_exactly_once() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut link = Link::joined(session);
-    let mut raw = link.raw_peer(0xC2);
-    let peer = raw.handshake(&mut link.host);
-    let actor = ActorId { session, serial: 1 };
-    link.host
-        .gate_mut()
-        .ownership_mut()
-        .bind(peer, actor)
-        .expect("the host binds an aircraft");
+    live_fixture(|| {
+        let mut link =
+            Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))?;
+        let mut raw = link.raw_peer(0xC2);
+        let peer = raw
+            .try_handshake(&mut link.host)
+            .ok_or_else(|| ungranted_peer(&raw, "the replaying peer's handshake"))?;
+        let actor = ActorId { session, serial: 1 };
+        link.host
+            .gate_mut()
+            .ownership_mut()
+            .bind(peer, actor)
+            .expect("the host binds an aircraft");
 
-    // The exact same bytes three times: the replay the contract's "reliable
-    // delivery does not replace application idempotency" exists for. They go
-    // on the sequenced channel on purpose — the reliable channel deduplicates
-    // at its own layer, which is exactly why application-level idempotency
-    // still has to exist for the direction that does not.
-    let bytes = fire_bytes(session, Tick(20), 0);
-    for _ in 0..3 {
-        raw.inject(CHANNEL_SEQUENCED, &bytes);
-    }
-    for _ in 0..200 {
-        link.host_notices.extend(raw.round(&mut link.host));
-        if link.host.queued() > 0 {
-            break;
+        // The exact same bytes three times: the replay the contract's
+        // "reliable delivery does not replace application idempotency" exists
+        // for. They go on the sequenced channel on purpose — the reliable
+        // channel deduplicates at its own layer, which is exactly why
+        // application-level idempotency still has to exist for the direction
+        // that does not. Every copy is a droppable datagram, so the wait
+        // refires the same bytes until all three were accounted for; each
+        // extra arrival is only ever another named replay refusal.
+        let bytes = fire_bytes(session, Tick(20), 0);
+        for _ in 0..3 {
+            raw.inject(CHANNEL_SEQUENCED, &bytes);
         }
-    }
-    link.pump(4);
+        link.try_pump_peer_until(
+            &mut raw,
+            "the host never accounted for all three copies",
+            |peer| peer.inject(CHANNEL_SEQUENCED, &bytes),
+            |link| peer_arrivals(&link.host_notices, peer) >= 3,
+        )?;
+        link.pump(4);
 
-    let work = link.host.drain_work();
-    assert_eq!(
-        work.len(),
-        1,
-        "a replayed packet is applied once, however often it arrives"
-    );
-    assert_eq!(work[0].fires.len(), 1, "and it fires exactly once");
-    assert_eq!(work[0].fires[0].sequence, 0, "under its first sequence");
-    assert!(
-        link.host_has(|notice| matches!(
-            notice,
-            ServerNotice::Dropped {
-                reason: DropReason::Refused(violation),
-                ..
-            } if violation.label() == "replayed_request"
-        )),
-        "both replays were refused and named: {:?}",
-        link.host_notices
-    );
-    let admitted = link
-        .host_notices
-        .iter()
-        .filter(|notice| matches!(notice, ServerNotice::Admitted(_)))
-        .count();
-    assert_eq!(admitted, 1, "exactly one delivery produced work");
+        let work = link.host.drain_work();
+        assert_eq!(
+            work.len(),
+            1,
+            "a replayed packet is applied once, however often it arrives"
+        );
+        assert_eq!(work[0].fires.len(), 1, "and it fires exactly once");
+        assert_eq!(work[0].fires[0].sequence, 0, "under its first sequence");
+        assert!(
+            link.host_has(|notice| matches!(
+                notice,
+                ServerNotice::Dropped {
+                    reason: DropReason::Refused(violation),
+                    ..
+                } if violation.label() == "replayed_request"
+            )),
+            "the replays were refused and named: {:?}",
+            link.host_notices
+        );
+        let admitted = link
+            .host_notices
+            .iter()
+            .filter(|notice| matches!(notice, ServerNotice::Admitted(_)))
+            .count();
+        assert_eq!(admitted, 1, "exactly one delivery produced work");
+        Ok(())
+    });
 }
 
 #[test]
@@ -1035,67 +1394,80 @@ fn accept_f54_c_a_retry_runs_on_a_fresh_epoch_and_the_old_one_is_stale() {
     let first = allocator.allocate().expect("the first epoch allocates");
     let second = allocator.allocate().expect("the second epoch allocates");
 
-    let mut link = Link::joined(first);
-    link.host
-        .launch(Tick(10))
-        .expect("the first epoch launches");
-    link.pump_until_live();
+    live_fixture(|| {
+        let mut link = Link::try_joined(first)
+            .map_err(|link| link.ungranted("the first client's handshake"))?;
+        link.host
+            .launch(Tick(10))
+            .expect("the first epoch launches");
+        link.try_pump_until_live()?;
 
-    // The retry: a fresh epoch on the same address. Everything stamped with the
-    // first epoch is stale by construction afterwards.
-    link.host
-        .reopen(second)
-        .expect("the retry binds a fresh epoch");
-    assert_eq!(link.host.session(), second);
-    assert_eq!(link.host.phase(), ServerPhase::Gathering);
-    assert!(
-        link.host.members().next().is_none(),
-        "the retry starts with an empty membership"
-    );
+        // The retry: a fresh epoch on the same address. Everything stamped
+        // with the first epoch is stale by construction afterwards.
+        link.host
+            .reopen(second)
+            .expect("the retry binds a fresh epoch");
+        assert_eq!(link.host.session(), second);
+        assert_eq!(link.host.phase(), ServerPhase::Gathering);
+        assert!(
+            link.host.members().next().is_none(),
+            "the retry starts with an empty membership"
+        );
 
-    // A new client joins the new epoch and its grant names it.
-    let mut returning = link.raw_peer(0xC3);
-    let peer = returning.handshake(&mut link.host);
-    assert!(
-        link.host.members().any(|member| member == peer),
-        "the returning client is a member of the new epoch"
-    );
+        // A new client joins the new epoch and its grant names it.
+        let mut returning = link.raw_peer(0xC3);
+        let peer = returning
+            .try_handshake(&mut link.host)
+            .ok_or_else(|| ungranted_peer(&returning, "the returning client's handshake"))?;
+        assert!(
+            link.host.members().any(|member| member == peer),
+            "the returning client is a member of the new epoch"
+        );
 
-    // The prior connection's packet, replayed verbatim against the new epoch.
-    // The host must absorb it: the sequence is new to this epoch's window, so
-    // only the epoch check can refuse it.
-    let stale = fire_bytes(first, Tick(11), 0);
-    returning.inject(CHANNEL_SEQUENCED, &stale);
-    for _ in 0..200 {
-        link.host_notices.extend(returning.round(&mut link.host));
-        if link.host_has(|notice| matches!(notice, ServerNotice::Dropped { .. })) {
-            break;
-        }
-    }
-    assert_eq!(
-        link.host.drain_work().len(),
-        0,
-        "a packet stamped with the prior epoch applies to nothing"
-    );
-    assert!(
-        link.host_has(|notice| matches!(notice, ServerNotice::Dropped { .. })),
-        "the stale traffic was refused and named: {:?}",
-        link.host_notices
-    );
+        // The prior connection's packet, replayed verbatim against the new
+        // epoch. The host must absorb it: the sequence is new to this epoch's
+        // window, so only the epoch check can refuse it. The packet rides the
+        // droppable channel, so the wait refires it until the refusal is
+        // observable.
+        let stale = fire_bytes(first, Tick(11), 0);
+        returning.inject(CHANNEL_SEQUENCED, &stale);
+        link.try_pump_peer_until(
+            &mut returning,
+            "the stale packet was never refused",
+            |peer| peer.inject(CHANNEL_SEQUENCED, &stale),
+            |link| {
+                link.host_has(|notice| {
+                    matches!(
+                        notice,
+                        ServerNotice::Dropped {
+                            reason: DropReason::Refused(violation),
+                            ..
+                        } if violation.label() == "stale_session"
+                    )
+                })
+            },
+        )?;
+        assert_eq!(
+            link.host.drain_work().len(),
+            0,
+            "a packet stamped with the prior epoch applies to nothing"
+        );
 
-    // The retry hung up on the connection the first epoch was serving, so the
-    // client that was live a moment ago observes the teardown rather than
-    // waiting forever on a session nobody is serving.
-    link.pump_until_closed();
-    assert!(
-        link.client.phase().closure().is_some(),
-        "the prior client observed the retry's teardown: {:?}",
-        link.client_notices
-    );
-    assert!(
-        !link.client.transport().is_connected(),
-        "and its connection is down"
-    );
+        // The retry hung up on the connection the first epoch was serving, so
+        // the client that was live a moment ago observes the teardown rather
+        // than waiting forever on a session nobody is serving.
+        link.try_pump_until_closed()?;
+        assert!(
+            link.client.phase().closure().is_some(),
+            "the prior client observed the retry's teardown: {:?}",
+            link.client_notices
+        );
+        assert!(
+            !link.client.transport().is_connected(),
+            "and its connection is down"
+        );
+        Ok(())
+    });
 }
 
 #[test]
@@ -1103,44 +1475,49 @@ fn accept_f54_c_the_retransmit_window_is_bounded_and_resends_the_exact_bytes() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut link = Link::joined(session);
+    live_fixture(|| {
+        let mut link =
+            Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))?;
 
-    // Sample input every round while the host is never pumped: nothing is
-    // acknowledged, so the retransmit window is the only bound that holds.
-    for index in 0..(MAX_UNACKED_PACKETS * 3) as u64 {
-        link.client
-            .submit_edge(FlightCommand::FirePrimary, Tick(200 + index))
-            .expect("an edge queues");
-        link.client.pump(STEP);
-        assert!(
-            link.client.unacked() <= MAX_UNACKED_PACKETS,
-            "the retransmit window is bounded at {MAX_UNACKED_PACKETS}, saw {}",
-            link.client.unacked()
+        // Sample input every round while the host is never pumped: nothing is
+        // acknowledged, so the retransmit window is the only bound that holds.
+        for index in 0..(MAX_UNACKED_PACKETS * 3) as u64 {
+            link.client
+                .submit_edge(FlightCommand::FirePrimary, Tick(200 + index))
+                .expect("an edge queues");
+            link.client.pump(STEP);
+            assert!(
+                link.client.unacked() <= MAX_UNACKED_PACKETS,
+                "the retransmit window is bounded at {MAX_UNACKED_PACKETS}, saw {}",
+                link.client.unacked()
+            );
+        }
+        assert_eq!(
+            link.client.unacked(),
+            MAX_UNACKED_PACKETS,
+            "and it fills to exactly its cap rather than past it"
         );
-    }
-    assert_eq!(
-        link.client.unacked(),
-        MAX_UNACKED_PACKETS,
-        "and it fills to exactly its cap rather than past it"
-    );
-    assert!(
-        link.client.acked_through().is_none(),
-        "the host acknowledged nothing"
-    );
+        assert!(
+            link.client.acked_through().is_none(),
+            "the host acknowledged nothing"
+        );
 
-    // An acknowledgment retires the window. Twenty-four packets went out, so an
-    // acknowledgment through 24 covers every one the window still holds.
-    let peer = link.client.grant().expect("a grant exists").peer;
-    link.host
-        .acknowledge_input(peer, 24)
-        .expect("the ack encodes");
-    link.pump_until_acked(24);
-    assert_eq!(link.client.acked_through(), Some(24));
-    assert_eq!(
-        link.client.unacked(),
-        0,
-        "acknowledgment retired the covered packets"
-    );
+        // An acknowledgment retires the window. Twenty-four packets went out,
+        // so an acknowledgment through 24 covers every one the window still
+        // holds.
+        let peer = link.client.grant().expect("a grant exists").peer;
+        link.host
+            .acknowledge_input(peer, 24)
+            .expect("the ack encodes");
+        link.try_pump_until_acked(24)?;
+        assert_eq!(link.client.acked_through(), Some(24));
+        assert_eq!(
+            link.client.unacked(),
+            0,
+            "acknowledgment retired the covered packets"
+        );
+        Ok(())
+    });
 }
 
 #[test]
@@ -1148,54 +1525,61 @@ fn accept_f54_c_a_lost_input_packet_is_retransmitted_verbatim() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut link = Link::joined(session);
-    link.host
-        .gate_mut()
-        .ownership_mut()
-        .bind(
-            link.client.grant().expect("a grant exists").peer,
-            ActorId { session, serial: 1 },
-        )
-        .expect("the host binds an aircraft");
+    live_fixture(|| {
+        let mut link =
+            Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))?;
+        link.host
+            .gate_mut()
+            .ownership_mut()
+            .bind(
+                link.client.grant().expect("a grant exists").peer,
+                ActorId { session, serial: 1 },
+            )
+            .expect("the host binds an aircraft");
 
-    link.client
-        .submit_edge(FlightCommand::FirePrimary, Tick(300))
-        .expect("an edge queues");
-    // Pump the client alone so the host never sees the packet: it is "lost".
-    link.client.pump(STEP);
-    assert_eq!(link.client.unacked(), 1, "one packet is unacknowledged");
-    assert_eq!(link.host.queued(), 0, "the host has not applied it");
+        link.client
+            .submit_edge(FlightCommand::FirePrimary, Tick(300))
+            .expect("an edge queues");
+        // Pump the client alone so the host never sees the packet: it is
+        // "lost".
+        link.client.pump(STEP);
+        assert_eq!(link.client.unacked(), 1, "one packet is unacknowledged");
+        assert_eq!(link.host.queued(), 0, "the host has not applied it");
 
-    // With nothing newer to send, the client resends after the retry window.
-    let mut retried = None;
-    for _ in 0..64 {
-        let notices = link.client.pump(INPUT_RETRY_INTERVAL);
-        if let Some(sequence) = notices.iter().find_map(|notice| match notice {
-            ClientNotice::Retried { sequence } => Some(*sequence),
-            _ => None,
-        }) {
-            retried = Some(sequence);
-            break;
+        // With nothing newer to send, the client resends after the retry
+        // window. These client-only rounds ask nothing of the loopback.
+        let mut retried = None;
+        for _ in 0..64 {
+            let notices = link.client.pump(INPUT_RETRY_INTERVAL);
+            if let Some(sequence) = notices.iter().find_map(|notice| match notice {
+                ClientNotice::Retried { sequence } => Some(*sequence),
+                _ => None,
+            }) {
+                retried = Some(sequence);
+                break;
+            }
         }
-    }
-    assert_eq!(retried, Some(0), "the lost packet was retransmitted");
+        assert_eq!(retried, Some(0), "the lost packet was retransmitted");
 
-    // The host applies it once, under the sequence it was first stamped with,
-    // so a further retransmission of the same bytes is still identifiable as a
-    // replay.
-    link.pump_until_work();
-    link.pump(4);
-    let work = link.host.drain_work();
-    assert_eq!(work.len(), 1, "the retry reached the consumer");
-    assert_eq!(
-        work[0].sequence, 0,
-        "the retry kept its sequence, so a replay is still identifiable"
-    );
-    assert_eq!(
-        work[0].fires.len(),
-        1,
-        "and it authorizes its one fire edge"
-    );
+        // The host applies it once, under the sequence it was first stamped
+        // with, so a further retransmission of the same bytes is still
+        // identifiable as a replay. The retry is retransmitted by the client
+        // itself, so the wait needs no refire.
+        link.try_pump_until_work()?;
+        link.pump(4);
+        let work = link.host.drain_work();
+        assert_eq!(work.len(), 1, "the retry reached the consumer");
+        assert_eq!(
+            work[0].sequence, 0,
+            "the retry kept its sequence, so a replay is still identifiable"
+        );
+        assert_eq!(
+            work[0].fires.len(),
+            1,
+            "and it authorizes its one fire edge"
+        );
+        Ok(())
+    });
 }
 
 #[test]
@@ -1203,70 +1587,85 @@ fn accept_f54_c_the_work_queue_refuses_the_surplus_and_cuts_the_abusive_peer() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut link = Link::joined(session);
-    let mut raw = link.raw_peer(0xC4);
-    let peer = raw.handshake(&mut link.host);
-    link.host
-        .gate_mut()
-        .ownership_mut()
-        .bind(peer, ActorId { session, serial: 1 })
-        .expect("the host binds an aircraft");
+    live_fixture(|| {
+        let mut link =
+            Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))?;
+        let mut raw = link.raw_peer(0xC4);
+        let peer = raw
+            .try_handshake(&mut link.host)
+            .ok_or_else(|| ungranted_peer(&raw, "the flooding peer's handshake"))?;
+        link.host
+            .gate_mut()
+            .ownership_mut()
+            .bind(peer, ActorId { session, serial: 1 })
+            .expect("the host binds an aircraft");
 
-    // One packet more than the queue can hold, all delivered inside a single
-    // host pump.
-    for sequence in 0..=MAX_WORK_PER_PUMP as u32 {
-        raw.inject(
-            CHANNEL_SEQUENCED,
-            &fire_bytes(session, Tick(400 + u64::from(sequence)), sequence),
-        );
-    }
-    for _ in 0..200 {
-        link.host_notices.extend(raw.round(&mut link.host));
-        if link.host.overflowed() > 0 {
-            break;
-        }
-    }
-
-    assert_eq!(
-        link.host.queued(),
-        MAX_WORK_PER_PUMP,
-        "the queue never grows past its cap"
-    );
-    assert!(
-        link.host.overflowed() > 0,
-        "the surplus was refused, not queued"
-    );
-    assert!(
-        link.host_has(|notice| matches!(
-            notice,
-            ServerNotice::Dropped {
-                reason: DropReason::QueueOverflow { limit },
-                ..
-            } if *limit == MAX_WORK_PER_PUMP
-        )),
-        "the refusal is named: {:?}",
-        link.host_notices
-    );
-    assert!(
-        link.host_has(|notice| matches!(
-            notice,
-            ServerNotice::CutOff {
-                threat: ThreatCase::ResourceExhaustion,
-                ..
+        // One packet more than the queue can hold, all delivered inside a
+        // single host pump. The queue is never drained, so arrivals
+        // accumulate across pumps: the overflow fires on the cap+1-th packet
+        // to land whenever that is. The channel drops datagrams, so the wait
+        // refires a fresh burst — fresh sequences, since a repeated one is a
+        // named replay that cannot queue — until the surplus is observable.
+        let mut next = 0u32;
+        let mut burst = |peer: &mut RawPeer| {
+            for _ in 0..=MAX_WORK_PER_PUMP {
+                peer.inject(
+                    CHANNEL_SEQUENCED,
+                    &fire_bytes(session, Tick(400 + u64::from(next)), next),
+                );
+                next = next.wrapping_add(1);
             }
-        )),
-        "the abusive peer was cut off: {:?}",
-        link.host_notices
-    );
-    assert!(
-        link.host.members().all(|member| member != peer),
-        "the cut-off peer is no longer a member"
-    );
-    assert_eq!(
-        link.host.drain_work().len(),
-        MAX_WORK_PER_PUMP,
-        "exactly the capped number of packets were handed over"
-    );
+        };
+        burst(&mut raw);
+        link.try_pump_peer_until(
+            &mut raw,
+            "the queue never overflowed",
+            |peer| burst(peer),
+            |link| link.host.overflowed() > 0,
+        )?;
+
+        assert_eq!(
+            link.host.queued(),
+            MAX_WORK_PER_PUMP,
+            "the queue never grows past its cap"
+        );
+        assert!(
+            link.host.overflowed() > 0,
+            "the surplus was refused, not queued"
+        );
+        assert!(
+            link.host_has(|notice| matches!(
+                notice,
+                ServerNotice::Dropped {
+                    reason: DropReason::QueueOverflow { limit },
+                    ..
+                } if *limit == MAX_WORK_PER_PUMP
+            )),
+            "the refusal is named: {:?}",
+            link.host_notices
+        );
+        assert!(
+            link.host_has(|notice| matches!(
+                notice,
+                ServerNotice::CutOff {
+                    threat: ThreatCase::ResourceExhaustion,
+                    ..
+                }
+            )),
+            "the abusive peer was cut off: {:?}",
+            link.host_notices
+        );
+        assert!(
+            link.host.members().all(|member| member != peer),
+            "the cut-off peer is no longer a member"
+        );
+        assert_eq!(
+            link.host.drain_work().len(),
+            MAX_WORK_PER_PUMP,
+            "exactly the capped number of packets were handed over"
+        );
+        Ok(())
+    });
 }
 
 // ----------------------------------------------------------- client accept --
@@ -1274,28 +1673,45 @@ fn accept_f54_c_the_work_queue_refuses_the_surplus_and_cuts_the_abusive_peer() {
 /// Builds a client that already holds a grant, without keeping the host: the
 /// consumer is a pure function of the decoded message, so the adversarial
 /// corpus can drive it directly.
+///
+/// The handshake is the only delivery this fixture needs: once the grant is
+/// in, the host is dropped and `accept` drives the client without another
+/// packet. A handshake the loopback never carried is rebuilt by
+/// [`live_fixture`]; a delivered verdict still panics on the spot.
 fn granted_client(session: SessionId) -> (ClientSession, MutexGuard<'static, ()>) {
-    let loopback = loopback();
-    let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let mut host = ServerSession::bind(session, synthetic_parameters(), bind, Duration::ZERO)
-        .expect("the host socket binds");
-    let addr = host.local_addr().expect("the bound host has an address");
-    let mut client = ClientSession::connect_with_window(
-        synthetic_hello(),
-        addr,
-        0xC5,
-        Duration::ZERO,
-        LOOPBACK_WINDOW,
-    )
-    .expect("the client socket binds");
-    for _ in 0..MAX_ROUNDS {
-        if client.grant().is_some() {
-            return (client, loopback);
+    live_fixture(|| {
+        let loopback = loopback();
+        let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let mut host = ServerSession::bind(session, synthetic_parameters(), bind, Duration::ZERO)
+            .expect("the host socket binds");
+        let addr = host.local_addr().expect("the bound host has an address");
+        let mut client = ClientSession::connect_with_window(
+            synthetic_hello(),
+            addr,
+            0xC5,
+            Duration::ZERO,
+            LOOPBACK_WINDOW,
+        )
+        .expect("the client socket binds");
+        for _ in 0..MAX_ROUNDS {
+            if client.grant().is_some() {
+                return Ok((client, loopback));
+            }
+            // A settled answer or a declared dead end can only ever stay so.
+            if client.phase().closure().is_some()
+                || client.transport().disconnect_reason().is_some()
+            {
+                break;
+            }
+            client.pump(STEP);
+            host.pump(STEP);
         }
-        client.pump(STEP);
-        host.pump(STEP);
-    }
-    panic!("the grant never arrived");
+        if client.grant().is_some() {
+            Ok((client, loopback))
+        } else {
+            Err(ungranted_client(&client, "the consumer's handshake"))
+        }
+    })
 }
 
 #[test]
@@ -1723,68 +2139,73 @@ fn accept_f54_c_a_local_sample_that_is_not_finite_never_becomes_a_packet() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut link = Link::joined(session);
+    live_fixture(|| {
+        let mut link =
+            Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))?;
 
-    // Every non-finite f32 the corpus uses, driven straight into the producer.
-    for value in [
-        f32::NAN,
-        -f32::NAN,
-        f32::INFINITY,
-        f32::NEG_INFINITY,
-        f32::from_bits(0x7FA0_0000),
-        f32::from_bits(0xFFC0_0000),
-    ] {
-        let outcome = link
-            .client
-            .submit_sample(FlightCommand::Throttle, value, Tick(900));
-        assert!(
-            matches!(
-                outcome,
-                Err(ClientFault::Axis(AxisValueError::NonFinite { .. }))
-            ),
-            "a non-finite sample must be refused, got {outcome:?}"
+        // Every non-finite f32 the corpus uses, driven straight into the
+        // producer.
+        for value in [
+            f32::NAN,
+            -f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::from_bits(0x7FA0_0000),
+            f32::from_bits(0xFFC0_0000),
+        ] {
+            let outcome = link
+                .client
+                .submit_sample(FlightCommand::Throttle, value, Tick(900));
+            assert!(
+                matches!(
+                    outcome,
+                    Err(ClientFault::Axis(AxisValueError::NonFinite { .. }))
+                ),
+                "a non-finite sample must be refused, got {outcome:?}"
+            );
+        }
+        // Out of the normalized range is refused too, not clamped silently.
+        assert!(matches!(
+            link.client
+                .submit_sample(FlightCommand::Throttle, 1.5, Tick(901)),
+            Err(ClientFault::Axis(AxisValueError::OutOfRange { .. }))
+        ));
+        // An edge command is not an axis.
+        assert!(matches!(
+            ClientSession::sample_axis(FlightCommand::FirePrimary, 0.0),
+            Err(ClientFault::Axis(AxisValueError::NotContinuous { .. }))
+        ));
+
+        assert_eq!(
+            link.client.pending(),
+            0,
+            "no refused sample was queued, so none can reach the wire"
         );
-    }
-    // Out of the normalized range is refused too, not clamped silently.
-    assert!(matches!(
+        link.pump(4);
+        assert_eq!(
+            link.host.drain_work().len(),
+            0,
+            "and nothing arrived at the host"
+        );
+
+        // A finite sample still works, so the check is not a blanket refusal.
         link.client
-            .submit_sample(FlightCommand::Throttle, 1.5, Tick(901)),
-        Err(ClientFault::Axis(AxisValueError::OutOfRange { .. }))
-    ));
-    // An edge command is not an axis.
-    assert!(matches!(
-        ClientSession::sample_axis(FlightCommand::FirePrimary, 0.0),
-        Err(ClientFault::Axis(AxisValueError::NotContinuous { .. }))
-    ));
-
-    assert_eq!(
-        link.client.pending(),
-        0,
-        "no refused sample was queued, so none can reach the wire"
-    );
-    link.pump(4);
-    assert_eq!(
-        link.host.drain_work().len(),
-        0,
-        "and nothing arrived at the host"
-    );
-
-    // A finite sample still works, so the check is not a blanket refusal.
-    link.client
-        .submit_sample(FlightCommand::Throttle, 0.5, Tick(902))
-        .expect("a finite sample queues");
-    link.pump_until_work();
-    let work = link.host.drain_work();
-    assert_eq!(work.len(), 1, "the finite sample reached the consumer");
-    let axis = work[0].frames.frames[0]
-        .axis(FlightCommand::Throttle)
-        .expect("the throttle sample crossed the wire");
-    assert!(axis.as_unit().is_finite(), "the wire value is finite");
-    assert!(
-        (axis.as_unit() - 0.5).abs() < 0.001,
-        "and it kept its value: {}",
-        axis.as_unit()
-    );
+            .submit_sample(FlightCommand::Throttle, 0.5, Tick(902))
+            .expect("a finite sample queues");
+        link.try_pump_until_work()?;
+        let work = link.host.drain_work();
+        assert_eq!(work.len(), 1, "the finite sample reached the consumer");
+        let axis = work[0].frames.frames[0]
+            .axis(FlightCommand::Throttle)
+            .expect("the throttle sample crossed the wire");
+        assert!(axis.as_unit().is_finite(), "the wire value is finite");
+        assert!(
+            (axis.as_unit() - 0.5).abs() < 0.001,
+            "and it kept its value: {}",
+            axis.as_unit()
+        );
+        Ok(())
+    });
 }
 
 #[test]
@@ -1833,45 +2254,65 @@ fn accept_f54_c_the_client_leaves_reliably_and_the_host_departs_it() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
-    let mut link = Link::joined(session);
-    let peer = link.client.grant().expect("a grant exists").peer;
+    live_fixture(|| {
+        let mut link =
+            Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))?;
+        let peer = link.client.grant().expect("a grant exists").peer;
 
-    link.client.leave().expect("the farewell sends");
-    assert!(matches!(
-        *link.client.phase(),
-        ClientPhase::Closed(ClientClosure::LeftVoluntarily)
-    ));
-    // A second farewell is refused, not sent twice.
-    assert!(matches!(
-        link.client.leave(),
-        Err(ClientFault::Closed { .. })
-    ));
-    // And no input is accepted after the farewell.
-    assert!(matches!(
-        link.client.submit_edge(FlightCommand::FirePrimary, Tick(1)),
-        Err(ClientFault::Closed { .. })
-    ));
+        link.client.leave().expect("the farewell sends");
+        assert!(matches!(
+            *link.client.phase(),
+            ClientPhase::Closed(ClientClosure::LeftVoluntarily)
+        ));
+        // A second farewell is refused, not sent twice.
+        assert!(matches!(
+            link.client.leave(),
+            Err(ClientFault::Closed { .. })
+        ));
+        // And no input is accepted after the farewell.
+        assert!(matches!(
+            link.client.submit_edge(FlightCommand::FirePrimary, Tick(1)),
+            Err(ClientFault::Closed { .. })
+        ));
 
-    for _ in 0..200 {
-        link.round();
-        if !link.host.members().any(|member| member == peer) {
-            break;
+        // The departure has to arrive before the host's own netcode window
+        // would retire the connection anyway — a `PeerLeft` produced by the
+        // window says nothing about the farewell — so the budget stays far
+        // short of it. On expiry the client's connection is down by its own
+        // leave(), so a member still standing means nothing was delivered.
+        for _ in 0..200 {
+            link.round();
+            if !link.host.members().any(|member| member == peer) {
+                break;
+            }
         }
-    }
-    assert!(
-        link.host.members().next().is_none(),
-        "the host departed the peer that left: {:?}",
-        link.host_notices
-    );
-    assert!(
-        link.host_has(|notice| matches!(notice, ServerNotice::PeerLeft { .. })),
-        "the departure is reported: {:?}",
-        link.host_notices
-    );
-    assert!(
-        !link.host.gate().is_member(peer),
-        "and its replay window died with it"
-    );
+        if link.host.members().any(|member| member == peer) {
+            assert!(
+                !link.client.transport().is_connected(),
+                "the host keeps a member whose connection is still up: {:?}",
+                link.host_notices
+            );
+            return Err(DeadPath(format!(
+                "the client's connection is down but its farewell never reached the host: {:?}",
+                link.host_notices
+            )));
+        }
+        assert!(
+            link.host.members().next().is_none(),
+            "the host departed the peer that left: {:?}",
+            link.host_notices
+        );
+        assert!(
+            link.host_has(|notice| matches!(notice, ServerNotice::PeerLeft { .. })),
+            "the departure is reported: {:?}",
+            link.host_notices
+        );
+        assert!(
+            !link.host.gate().is_member(peer),
+            "and its replay window died with it"
+        );
+        Ok(())
+    });
 }
 
 #[test]
@@ -1883,22 +2324,37 @@ fn accept_f54_c_a_refused_client_is_told_why_and_then_hung_up_on() {
         .expect("an epoch allocates");
     let mut hello = synthetic_hello();
     hello.compatibility.rules_sha256 = ContentHash::from_bytes([0x00; 32]);
-    let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let mut host = ServerSession::bind(session, synthetic_parameters(), bind, Duration::ZERO)
-        .expect("the host socket binds");
-    let addr = host.local_addr().expect("the bound host has an address");
-    let mut client =
-        ClientSession::connect_with_window(hello, addr, 0xC6, Duration::ZERO, LOOPBACK_WINDOW)
-            .expect("the client socket binds");
-    let mut seen: Vec<ServerNotice> = Vec::new();
+    let (mut host, mut client, mut seen) = live_fixture(|| {
+        let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let mut host = ServerSession::bind(session, synthetic_parameters(), bind, Duration::ZERO)
+            .expect("the host socket binds");
+        let addr = host.local_addr().expect("the bound host has an address");
+        let mut client = ClientSession::connect_with_window(
+            hello.clone(),
+            addr,
+            0xC6,
+            Duration::ZERO,
+            LOOPBACK_WINDOW,
+        )
+        .expect("the client socket binds");
+        let mut seen: Vec<ServerNotice> = Vec::new();
 
-    for _ in 0..MAX_ROUNDS {
-        if client.phase().closure().is_some() {
-            break;
+        for _ in 0..MAX_ROUNDS {
+            if client.phase().closure().is_some() {
+                break;
+            }
+            client.pump(STEP);
+            seen.extend(host.pump(STEP));
         }
-        client.pump(STEP);
-        seen.extend(host.pump(STEP));
-    }
+        // The refusal is a delivered verdict and the assert below is its only
+        // judge; what may be rebuilt is a handshake whose answer the loopback
+        // never carried — which `silent_client` proves from the connection
+        // layer's own state.
+        if let Some(dead) = silent_client(&client, "the refused handshake") {
+            return Err(dead);
+        }
+        Ok((host, client, seen))
+    });
     assert!(
         matches!(
             client.phase().closure(),
@@ -1916,7 +2372,9 @@ fn accept_f54_c_a_refused_client_is_told_why_and_then_hung_up_on() {
     );
 
     // The host hangs up on the refused connection: it holds no peer id, so it
-    // must not keep occupying one of the session's netcode slots.
+    // must not keep occupying one of the session's netcode slots. The refusal
+    // itself is already observed, so everything the host does next is its own
+    // bookkeeping — this wait asks nothing more of the loopback.
     for _ in 0..MAX_ROUNDS {
         seen.extend(host.pump(STEP));
         if seen
@@ -1959,9 +2417,6 @@ fn accept_f54_c_a_handshake_answer_that_cannot_be_sent_is_reported_not_swallowed
         },
     };
     let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let mut host =
-        ServerSession::bind(session, params, bind, Duration::ZERO).expect("the host socket binds");
-    let addr = host.local_addr().expect("the bound host has an address");
 
     // The client's own hello stays inside the packet cap; only the *reply*
     // cannot.
@@ -1974,33 +2429,54 @@ fn accept_f54_c_a_handshake_answer_that_cannot_be_sent_is_reported_not_swallowed
         "the hello must be sendable, or the test proves nothing"
     );
 
-    let mut raw = RawPeer {
-        transport: ClientTransport::connect_with_window(
-            hello,
-            addr,
-            0xC7,
-            Duration::ZERO,
-            LOOPBACK_WINDOW,
-        )
-        .expect("the client socket binds"),
-        events: Vec::new(),
-    };
-    let mut reported = false;
-    for _ in 0..MAX_ROUNDS {
-        let notices = host.pump(STEP);
-        if notices.iter().any(|notice| {
-            matches!(notice, ServerNotice::TransportFault { reason } if reason.contains("is") && reason.contains("bytes, max is"))
-        }) {
-            reported = true;
+    let (host, raw, reported) = live_fixture(|| {
+        let mut host = ServerSession::bind(session, params.clone(), bind, Duration::ZERO)
+            .expect("the host socket binds");
+        let addr = host.local_addr().expect("the bound host has an address");
+        let mut raw = RawPeer {
+            transport: ClientTransport::connect_with_window(
+                hello.clone(),
+                addr,
+                0xC7,
+                Duration::ZERO,
+                LOOPBACK_WINDOW,
+            )
+            .expect("the client socket binds"),
+            events: Vec::new(),
+        };
+        let mut reported = false;
+        let mut seen: Vec<ServerNotice> = Vec::new();
+        for _ in 0..MAX_ROUNDS {
+            let notices = host.pump(STEP);
+            if notices.iter().any(|notice| {
+                matches!(notice, ServerNotice::TransportFault { reason } if reason.contains("is") && reason.contains("bytes, max is"))
+            }) {
+                reported = true;
+            }
+            let hung_up = notices
+                .iter()
+                .any(|notice| matches!(notice, ServerNotice::HungUp { .. }));
+            seen.extend(notices);
+            if hung_up {
+                break;
+            }
+            if peer_path_dead(&raw) {
+                break;
+            }
+            raw.pump();
         }
-        if notices
+        if !seen
             .iter()
             .any(|notice| matches!(notice, ServerNotice::HungUp { .. }))
         {
-            break;
+            return Err(peer_delivery(
+                &raw,
+                "the unencodable answer's hang-up",
+                &seen,
+            ));
         }
-        raw.pump();
-    }
+        Ok((host, raw, reported))
+    });
     assert!(
         reported,
         "an unencodable handshake answer is reported, not swallowed; the host saw {host:?}"
@@ -2510,41 +2986,18 @@ fn accept_f54_c_a_hostile_peer_is_cut_off_without_disturbing_the_others() {
     // rebuilt is a fixture whose loopback path carried *nothing* — neither a
     // handshake nor a single hostile payload — because such a fixture never
     // gave the session the chance to decide. See [`DEAD_PATH_ATTEMPTS`].
-    let mut last: Option<Attempt> = None;
-    let mut history: Vec<String> = Vec::new();
-    let mut tries = 0usize;
-    while tries < DEAD_PATH_ATTEMPTS {
-        tries += 1;
-        // A fixture holds the loopback lock for as long as it lives, so the
-        // previous one has to go before a new one can bind — keeping a quiet
-        // attempt around while building the next would deadlock on it.
-        last = None;
-        match abusive_peer_attempt() {
-            Ok(attempt) => {
-                let quiet = attempt.quiet();
-                history.push(if quiet {
-                    format!("{tries}: the host saw nothing from the abusive peer")
-                } else {
-                    format!("{tries}: the host answered")
-                });
-                last = Some(attempt);
-                if !quiet {
-                    break;
-                }
-            }
-            Err(reason) => history.push(format!("{tries}: {reason}")),
-        }
-    }
-    let attempts = history.join("; ");
-    let Some(Attempt {
+    let Attempt {
         mut link,
         hostile,
         hostile_peer,
-        arrived: _,
-    }) = last
-    else {
-        panic!("the loopback never carried this fixture: {attempts}");
-    };
+        honest_reached,
+        ..
+    } = live_fixture(|| match abusive_peer_attempt() {
+        Ok(attempt) if attempt.quiet() => Err(DeadPath(
+            "the host saw nothing from the abusive peer".to_string(),
+        )),
+        done => done,
+    });
     let good_peer = link.client.grant().expect("a grant exists").peer;
 
     // The abusive peer is gone; the honest one is untouched. When no verdict
@@ -2558,7 +3011,7 @@ fn accept_f54_c_a_hostile_peer_is_cut_off_without_disturbing_the_others() {
     };
     assert!(
         cut_off(&link, hostile_peer),
-        "the abusive peer was cut off; {diagnosis}; attempts: {attempts}",
+        "the abusive peer was cut off; {diagnosis}",
     );
     let state = format!(
         "{}, the host holds {} client(s)",
@@ -2576,17 +3029,13 @@ fn accept_f54_c_a_hostile_peer_is_cut_off_without_disturbing_the_others() {
         link.host_notices
     );
 
-    // And the honest peer still has a working session. The flood may have left
-    // some of its own (admitted) packets queued, so the check is per peer.
-    link.host.drain_work();
-    link.client
-        .submit_edge(FlightCommand::FirePrimary, Tick(1000))
-        .expect("an edge queues");
-    link.pump_until_work();
-    let work = link.host.drain_work();
+    // And the honest peer still has a working session: the probe ran inside
+    // the attempt, so a dead path rebuilt the fixture and the verdict here is
+    // as delivered.
     assert!(
-        work.iter().any(|input| input.peer == good_peer),
-        "the honest peer still reaches the consumer: {work:?}"
+        honest_reached,
+        "the honest peer still reaches the consumer; the host saw {:?} ({state})",
+        link.host_notices
     );
 }
 
@@ -2672,9 +3121,13 @@ fn accept_f54_c_a_wrong_protocol_revision_is_refused_through_the_lifecycle() {
     let offered = cs_net::compat::ProtocolVersion::new(2).expect("two is nonzero");
     hello.protocol = offered;
     let hello_offered = hello.protocol;
-    let mut link = Link::new(session, synthetic_parameters(), hello);
-
-    link.pump_until_joined();
+    // The handshake's answer is the verdict under test: a `Refused` closure
+    // the client actually holds is asserted exactly as delivered, and only a
+    // path that died before carrying it is rebuilt.
+    let mut link = live_fixture(|| {
+        let mut link = Link::new(session, synthetic_parameters(), hello.clone());
+        link.try_pump_until_joined().map(|()| link)
+    });
 
     assert!(
         matches!(
@@ -2718,109 +3171,130 @@ fn accept_f54_c_a_retry_hangs_up_the_connections_that_hold_no_peer() {
     let second = allocator.allocate().expect("the retry epoch allocates");
     let mut hello = synthetic_hello();
     hello.compatibility.rules_sha256 = ContentHash::from_bytes([0x00; 32]);
-    let mut link = Link::new(first, synthetic_parameters(), hello);
+    live_fixture(|| {
+        let mut link = Link::new(first, synthetic_parameters(), hello.clone());
 
-    // Both sides are driven by the same [`STEP`], which is the clock every pump
-    // here takes: the pinned connection layer times its own 250 ms keep-alive
-    // and its [`LOOPBACK_WINDOW`] disconnect window off the duration each pump
-    // is handed, so a round that advances one side by a second races that
-    // window instead of the handshake.
-    let mut refused = false;
-    for _ in 0..MAX_ROUNDS {
-        link.host_notices.extend(link.host.pump(STEP));
-        if link.host_has(|notice| matches!(notice, ServerNotice::PeerRefused { .. })) {
-            refused = true;
-            break;
-        }
-        link.client_round();
-    }
-    assert!(
-        refused,
-        "the handshake was never refused; the host saw {:?}",
-        link.host_notices
-    );
-
-    // The client still has to read the verdict, and only its own rounds may run
-    // to do it: the host hangs up on a refused client one round later, on
-    // purpose, so that renet can flush the refusal first — and the retry below
-    // is what has to hang this connection up, so it has to start from one the
-    // host still holds.
-    for _ in 0..MAX_ROUNDS {
-        if link.client.phase().closure().is_some() {
-            break;
-        }
-        link.client_round();
-    }
-    assert!(
-        link.client.phase().closure().is_some(),
-        "the client never applied the refusal; it saw {:?}",
-        link.client_notices
-    );
-    assert!(
-        link.client_has(|notice| matches!(
-            notice,
-            ClientNotice::Refused {
-                reason: HandshakeReject::RulesMismatch { .. }
+        // Both sides are driven by the same [`STEP`], which is the clock every
+        // pump here takes: the pinned connection layer times its own 250 ms
+        // keep-alive and its [`LOOPBACK_WINDOW`] disconnect window off the
+        // duration each pump is handed, so a round that advances one side by a
+        // second races that window instead of the handshake.
+        let mut refused = false;
+        for _ in 0..MAX_ROUNDS {
+            link.host_notices.extend(link.host.pump(STEP));
+            if link.host_has(|notice| matches!(notice, ServerNotice::PeerRefused { .. })) {
+                refused = true;
+                break;
             }
-        )),
-        "the client holds the named refusal: {:?}",
-        link.client_notices
-    );
-    assert!(
-        link.client.transport().is_connected(),
-        "the refused client still holds a connection, and the host has only recorded the hang-up"
-    );
-    assert!(link.client.grant().is_none(), "and it never became a peer");
-    assert_eq!(
-        link.host.connected_clients(),
-        1,
-        "and that connection still holds one netcode slot"
-    );
-    assert!(
-        link.host.members().next().is_none(),
-        "the host has no member for it, so a teardown has nothing to reach"
-    );
+            if link.client.transport().disconnect_reason().is_some() {
+                break;
+            }
+            link.client_round();
+        }
+        if !refused {
+            if let Some(dead) = silent_client(&link.client, "the refused handshake") {
+                return Err(dead);
+            }
+            panic!(
+                "the handshake was never refused; the host saw {:?}",
+                link.host_notices
+            );
+        }
 
-    // The retry's decision, with no clock in it at all: it hung up on the
-    // connection that holds no peer id, and the new epoch keeps no slot for it.
-    assert_eq!(
-        link.host
-            .reopen(second)
-            .expect("the retry binds a fresh epoch"),
-        1,
-        "the retry hung up on the connection that held no peer id"
-    );
-    assert_eq!(link.host.session(), second);
-    assert_eq!(
-        link.host.connected_clients(),
-        0,
-        "the fresh epoch holds no connection for it"
-    );
+        // The client still has to read the verdict, and only its own rounds
+        // may run to do it: the host hangs up on a refused client one round
+        // later, on purpose, so that renet can flush the refusal first — and
+        // the retry below is what has to hang this connection up, so it has
+        // to start from one the host still holds.
+        for _ in 0..MAX_ROUNDS {
+            if link.client.phase().closure().is_some() {
+                break;
+            }
+            link.client_round();
+        }
+        if let Some(dead) = silent_client(&link.client, "the refusal's delivery") {
+            return Err(dead);
+        }
+        assert!(
+            link.client.phase().closure().is_some(),
+            "the client never applied the refusal; it saw {:?}",
+            link.client_notices
+        );
+        assert!(
+            link.client_has(|notice| matches!(
+                notice,
+                ClientNotice::Refused {
+                    reason: HandshakeReject::RulesMismatch { .. }
+                }
+            )),
+            "the client holds the named refusal: {:?}",
+            link.client_notices
+        );
+        // The retry's precondition is this connection still standing: the
+        // host's own hang-up is deferred, so a connection down at this point
+        // died without the host acting on it — nothing it could be retried
+        // for ever arrived.
+        if !link.client.transport().is_connected() || link.host.connected_clients() == 0 {
+            return Err(DeadPath(format!(
+                "the refused connection died before the retry could hang it up; the client saw {:?}",
+                link.client_notices
+            )));
+        }
+        assert!(link.client.grant().is_none(), "and it never became a peer");
+        assert_eq!(
+            link.host.connected_clients(),
+            1,
+            "and that connection still holds one netcode slot"
+        );
+        assert!(
+            link.host.members().next().is_none(),
+            "the host has no member for it, so a teardown has nothing to reach"
+        );
 
-    // The refused client stays silent while both sides keep pumping, so the only
-    // thing that can take its connection down is the host's hang-up.
-    let mut rounds = 0;
-    while rounds < HANGUP_ROUNDS && link.client.transport().is_connected() {
-        link.round();
-        rounds += 1;
-    }
-    assert!(
-        !link.client.transport().is_connected(),
-        "the retry hung up on the connection that held no peer id within {HANGUP_ROUNDS} rounds; the host saw {:?} and the client saw {:?}",
-        link.host_notices,
-        link.client_notices
-    );
-    assert_eq!(
-        link.client.transport().disconnect_reason(),
-        Some(renetcode2::DisconnectReason::DisconnectedByServer),
-        "the connection died because the host hung up, not because the client missed its window"
-    );
-    assert!(
-        !link.host_has(|notice| matches!(notice, ServerNotice::HungUp { .. })),
-        "the retry hung up on that connection as one decision, so the fresh epoch does not report \
-         it again as a per-connection hang-up of the spent epoch: {:?}",
-        link.host_notices
-    );
+        // The retry's decision, with no clock in it at all: it hung up on the
+        // connection that holds no peer id, and the new epoch keeps no slot
+        // for it.
+        assert_eq!(
+            link.host
+                .reopen(second)
+                .expect("the retry binds a fresh epoch"),
+            1,
+            "the retry hung up on the connection that held no peer id"
+        );
+        assert_eq!(link.host.session(), second);
+        assert_eq!(
+            link.host.connected_clients(),
+            0,
+            "the fresh epoch holds no connection for it"
+        );
+
+        // The refused client stays silent while both sides keep pumping, so
+        // the only thing that can take its connection down is the host's
+        // hang-up. The wait runs the full window because the packet is never
+        // retransmitted: a connection that goes down for any other reason is
+        // proof the hang-up never arrived, which is a dead path, while a
+        // connection the host's own packet ended is the verdict.
+        link.try_pump_until("the retry's hang-up never reached the client", |link| {
+            !link.client.transport().is_connected()
+        })?;
+        if !matches!(
+            link.client.transport().disconnect_reason(),
+            Some(renetcode2::DisconnectReason::DisconnectedByServer)
+        ) {
+            return Err(DeadPath(format!(
+                "the retry's hang-up never arrived; the connection died by itself ({:?}); the client saw {:?}",
+                link.client.transport().disconnect_reason(),
+                link.client_notices
+            )));
+        }
+        assert!(
+            !link.host_has(|notice| matches!(notice, ServerNotice::HungUp { .. })),
+            "the retry hung up on that connection as one decision, so the fresh epoch does not report \
+             it again as a per-connection hang-up of the spent epoch: {:?}",
+            link.host_notices
+        );
+        Ok(())
+    });
 }
 
 #[test]
@@ -2836,115 +3310,148 @@ fn accept_f54_c_a_retry_tells_a_returning_client_its_verdict() {
     let mut allocator = SessionAllocator::new();
     let first = allocator.allocate().expect("the first epoch allocates");
     let second = allocator.allocate().expect("the retry epoch allocates");
-    let mut link = Link::joined(first);
-    let mut second_member = link.raw_peer(0xC2);
-    second_member.handshake(&mut link.host);
-    assert_eq!(
-        link.host.members().count(),
-        2,
-        "two members held connection-layer slots in the spent epoch"
-    );
+    live_fixture(|| {
+        let mut link = Link::try_joined(first)
+            .map_err(|link| link.ungranted("the first client's handshake"))?;
+        let mut second_member = link.raw_peer(0xC2);
+        second_member
+            .try_handshake(&mut link.host)
+            .ok_or_else(|| ungranted_peer(&second_member, "the second member's handshake"))?;
+        assert_eq!(
+            link.host.members().count(),
+            2,
+            "two members held connection-layer slots in the spent epoch"
+        );
 
-    // `close` condemns the members at the reliable layer, but only the retry
-    // releases the slots they still occupy at the connection layer — so its
-    // count is every connection it hung up there, not just the peer-less
-    // connections the session's own bookkeeping still knew about.
-    assert_eq!(
-        link.host
-            .reopen(second)
-            .expect("the retry binds a fresh epoch"),
-        2,
-        "the retry hung up both connections the spent epoch still held"
-    );
-    assert_eq!(link.host.session(), second);
-    assert_eq!(
-        link.host.connected_clients(),
-        0,
-        "no spent-era slot survives at the connection layer"
-    );
-
-    // The same connection-layer id returns on a fresh socket and is told the
-    // new epoch's grant — the stale slot that would have denied it is gone.
-    let mut returning = link.raw_peer(0xC1);
-    let peer = returning.handshake(&mut link.host);
-    assert_eq!(
-        returning
-            .transport
-            .grant()
-            .expect("the returning client is told its grant")
-            .session,
-        second,
-        "the grant is the new epoch's"
-    );
-    assert!(
-        link.host.members().any(|member| member == peer),
-        "and the returning client is a member of it"
-    );
-
-    // The same id with a hello the admission gate refuses is told the named
-    // reason rather than left waiting for an answer that cannot come.
-    let mut refused_hello = synthetic_hello();
-    refused_hello.compatibility.rules_sha256 = ContentHash::from_bytes([0x00; 32]);
-    let addr = link.host.local_addr().expect("the host has an address");
-    let mut refused = RawPeer {
-        transport: ClientTransport::connect_with_window(
-            refused_hello,
-            addr,
-            0xC2,
-            Duration::ZERO,
-            LOOPBACK_WINDOW,
-        )
-        .expect("the refused client socket binds"),
-        events: Vec::new(),
-    };
-    let mut told = false;
-    for _ in 0..MAX_ROUNDS {
-        if refused.transport.rejection().is_some() {
-            told = true;
-            break;
+        // The retry's count is only observable if both connections are still
+        // standing when it runs: a slot the loopback already killed leaves the
+        // retry nothing to hang up, which is the fixture's failure, not the
+        // session's answer.
+        if !link.client.transport().is_connected()
+            || !second_member.transport.is_connected()
+            || link.host.connected_clients() != 2
+        {
+            return Err(DeadPath(format!(
+                "a spent-era connection died before the retry could hang it up: client {}, second member {}",
+                link.client.transport().disconnect_reason().is_some(),
+                second_member.status()
+            )));
         }
-        link.host_notices.extend(refused.round(&mut link.host));
-    }
-    assert!(
-        told,
-        "the refused client was never told its reason; the host saw {:?}",
-        link.host_notices
-    );
-    assert!(
-        matches!(
-            refused.transport.rejection(),
-            Some(HandshakeReject::RulesMismatch { .. })
-        ),
-        "the refused client holds the named reason: {:?}",
-        refused.transport.rejection()
-    );
 
-    // The spent epoch stays stale: the returning client's packet stamped
-    // with the first epoch is still refused by the gate.
-    let stale = fire_bytes(first, Tick(11), 0);
-    returning.inject(CHANNEL_SEQUENCED, &stale);
-    for _ in 0..200 {
-        link.host_notices.extend(returning.round(&mut link.host));
-        if link.host_has(|notice| matches!(notice, ServerNotice::Dropped { .. })) {
-            break;
+        // `close` condemns the members at the reliable layer, but only the
+        // retry releases the slots they still occupy at the connection layer —
+        // so its count is every connection it hung up there, not just the
+        // peer-less connections the session's own bookkeeping still knew
+        // about.
+        assert_eq!(
+            link.host
+                .reopen(second)
+                .expect("the retry binds a fresh epoch"),
+            2,
+            "the retry hung up both connections the spent epoch still held"
+        );
+        assert_eq!(link.host.session(), second);
+        assert_eq!(
+            link.host.connected_clients(),
+            0,
+            "no spent-era slot survives at the connection layer"
+        );
+
+        // The same connection-layer id returns on a fresh socket and is told
+        // the new epoch's grant — the stale slot that would have denied it is
+        // gone.
+        let mut returning = link.raw_peer(0xC1);
+        let peer = returning
+            .try_handshake(&mut link.host)
+            .ok_or_else(|| ungranted_peer(&returning, "the returning client's handshake"))?;
+        assert_eq!(
+            returning
+                .transport
+                .grant()
+                .expect("the returning client is told its grant")
+                .session,
+            second,
+            "the grant is the new epoch's"
+        );
+        assert!(
+            link.host.members().any(|member| member == peer),
+            "and the returning client is a member of it"
+        );
+
+        // The same id with a hello the admission gate refuses is told the
+        // named reason rather than left waiting for an answer that cannot
+        // come.
+        let mut refused_hello = synthetic_hello();
+        refused_hello.compatibility.rules_sha256 = ContentHash::from_bytes([0x00; 32]);
+        let addr = link.host.local_addr().expect("the host has an address");
+        let mut refused = RawPeer {
+            transport: ClientTransport::connect_with_window(
+                refused_hello,
+                addr,
+                0xC2,
+                Duration::ZERO,
+                LOOPBACK_WINDOW,
+            )
+            .expect("the refused client socket binds"),
+            events: Vec::new(),
+        };
+        let mut told = false;
+        for _ in 0..MAX_ROUNDS {
+            if refused.transport.rejection().is_some() {
+                told = true;
+                break;
+            }
+            if peer_path_dead(&refused) {
+                break;
+            }
+            link.host_notices.extend(refused.round(&mut link.host));
         }
-    }
-    assert_eq!(
-        link.host.drain_work().len(),
-        0,
-        "a packet stamped with the prior epoch applies to nothing"
-    );
-    assert!(
-        link.host_has(|notice| matches!(
-            notice,
-            ServerNotice::Dropped {
-                reason: DropReason::Refused(violation),
-                ..
-            } if violation.label() == "stale_session"
-        )),
-        "the stale traffic was refused and named: {:?}",
-        link.host_notices
-    );
+        if !told {
+            // A hang-up that outran the reliable refusal left the answer
+            // undelivered, which is the path's failure, not the session's.
+            return Err(peer_delivery(
+                &refused,
+                "the refused client was never told its reason",
+                &link.host_notices,
+            ));
+        }
+        assert!(
+            matches!(
+                refused.transport.rejection(),
+                Some(HandshakeReject::RulesMismatch { .. })
+            ),
+            "the refused client holds the named reason: {:?}",
+            refused.transport.rejection()
+        );
+
+        // The spent epoch stays stale: the returning client's packet stamped
+        // with the first epoch is still refused by the gate. The refire keeps
+        // the expectation on the refusal rather than one datagram surviving.
+        let stale = fire_bytes(first, Tick(11), 0);
+        returning.inject(CHANNEL_SEQUENCED, &stale);
+        link.try_pump_peer_until(
+            &mut returning,
+            "the stale packet was never refused",
+            |peer| peer.inject(CHANNEL_SEQUENCED, &stale),
+            |link| {
+                link.host_has(|notice| {
+                    matches!(
+                        notice,
+                        ServerNotice::Dropped {
+                            reason: DropReason::Refused(violation),
+                            ..
+                        } if violation.label() == "stale_session"
+                    )
+                })
+            },
+        )?;
+        assert_eq!(
+            link.host.drain_work().len(),
+            0,
+            "a packet stamped with the prior epoch applies to nothing"
+        );
+        Ok(())
+    });
 }
 
 #[test]
