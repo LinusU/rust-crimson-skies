@@ -1463,10 +1463,11 @@ pub fn bind_mission_animation(
                         });
                     let Some((key, payload_offset, walked)) = walk else {
                         return Err(MissionAnimationError::Carrier {
-                                container: format!("a bound {} carrier has no walk", carrier.label()),
-                                reason: "the carrier's own binding published a record index                                          this consumer cannot look up"
-                                    .to_owned(),
-                            });
+                            container: format!("a bound {} carrier has no walk", carrier.label()),
+                            reason: "the carrier's own binding published a record index this \
+                                     consumer cannot look up"
+                                .to_owned(),
+                        });
                     };
                     let walked = match walked {
                         Ok(walked) => walked,
