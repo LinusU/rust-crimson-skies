@@ -374,8 +374,9 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --locked
 cargo test --workspace --locked -- accept_f20_event_ --include-ignored
-#   8 tests: 6 synthetic run unignored, 2 retail run with CS_GAME_DIR
-#   (about 75 seconds; the corpus walk re-measures every count from $CS_GAME_DIR)
+#   9 tests: 6 synthetic run unignored, 3 retail run with CS_GAME_DIR
+#   (about 75 seconds; the corpus walk, the declaration join and M01's
+#   seven durations are re-measured from $CS_GAME_DIR on every run)
 python3 tools/validate_evidence.py private/evidence/F20-EVENT-GRAMMAR/acceptance.json \
   --artifact-root private/evidence/F20-EVENT-GRAMMAR --require-pass
 ```
