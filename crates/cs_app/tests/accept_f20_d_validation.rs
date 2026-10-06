@@ -3337,7 +3337,7 @@ struct M01lcReport {
     capability_tests: &'static [&'static str],
     synthetic_tests: &'static [&'static str],
     census_artifact: &'static str,
-    census: fn(&cs_app::animation::AnimationBindingSurvey) -> String,
+    census: fn(&cs_app::animation::AnimationBindingSurvey, &Path) -> String,
     open_state: &'static str,
     review: &'static str,
     open_needles: &'static [&'static str],
@@ -3425,7 +3425,7 @@ fn m01lc_write_report(spec: &M01lcReport) {
     // not a transcription of a test message.
     let survey = survey_animation_bindings(&game_dir).expect("the binding survey runs");
     let census_path = evidence_dir.join(spec.census_artifact);
-    std::fs::write(&census_path, (spec.census)(&survey))
+    std::fs::write(&census_path, (spec.census)(&survey, &game_dir))
         .unwrap_or_else(|error| panic!("write {}: {error}", census_path.display()));
 
     let artifacts = vec![
@@ -3596,7 +3596,10 @@ fn evidence_report_m01_lc_anim_records_writes_the_acceptance_report() {
 /// The derived record census: per carrier the declared and walked counts, the
 /// region after the last record, and the startup identities' dispositions.
 /// Counts, offsets and identity spellings only — never record bytes.
-fn m01lcr_census_json(survey: &cs_app::animation::AnimationBindingSurvey) -> String {
+fn m01lcr_census_json(
+    survey: &cs_app::animation::AnimationBindingSurvey,
+    _game_dir: &Path,
+) -> String {
     let carriers = survey
         .carriers
         .iter()
@@ -3658,7 +3661,10 @@ fn m01lcr_census_json(survey: &cs_app::animation::AnimationBindingSurvey) -> Str
 /// The derived census of every carrier the installation declares: keys, member
 /// rows with their stamps and spans, the payload header's measured words, the
 /// document's references and their dispositions, and the startup identities.
-fn m01lc_census_json(survey: &cs_app::animation::AnimationBindingSurvey) -> String {
+fn m01lc_census_json(
+    survey: &cs_app::animation::AnimationBindingSurvey,
+    _game_dir: &Path,
+) -> String {
     let rows = survey
         .carriers
         .iter()
@@ -4088,4 +4094,189 @@ fn m01lc_artifact_array(artifacts: &[(String, String, String)]) -> String {
         })
         .collect::<Vec<_>>()
         .join(",")
+}
+
+// ------------------- task #690: its evidence report ---------------------------
+//
+// The same harness, with the event grammar's own constants. Run exactly as for
+// #633 above, with `accept_f20_event_` as the prefix,
+// `evidence_report_f20_event_grammar_writes_the_acceptance_report` as the
+// test, `private/evidence/F20-EVENT-GRAMMAR` as the directory, and the copy
+// committed as `docs/findings/evidence/F20-EVENT-GRAMMAR.json`.
+
+/// The retail half of #690's suite: the corpus walk and M01's seven durations.
+const F20E_CAPABILITY_TESTS: &[&str] = &[
+    "accept_f20_event_retail_every_event_stream_walks_and_is_censused",
+    "accept_f20_event_retail_m01_startup_records_play_with_measured_durations",
+];
+
+/// The synthetic half of #690's suite.
+const F20E_SYNTHETIC_TESTS: &[&str] = &[
+    "accept_f20_event_a_stream_walks_into_tag_and_length_records",
+    "accept_f20_event_a_decoded_duration_is_read_from_the_payloads",
+    "accept_f20_event_an_undecoded_opcode_refuses_the_whole_record",
+    "accept_f20_event_an_unmatched_run_time_refuses_the_whole_record",
+    "accept_f20_event_every_stored_opcode_is_classed_and_the_unknowns_named",
+    "accept_f20_event_the_per_tick_report_follows_the_measured_timing",
+];
+
+/// What the report states is still open after this task, in its own words.
+const F20E_OPEN_STATE: &str = "OPEN, and not this task's blocker: (1) OPCODES 13, 17, 26 AND 28 JOIN NO \
+     DECLARATION (496 of the 242 391 retail events, in 389 of the 56 994 blocks and 347 records): \
+     their class, timing and effect are unmeasured, records carrying them stay refused under \
+     f20-anim.event-opcode-not-measured, and affected content is every record that uses them — \
+     resolving task: an owner-supplied original run or the original's own source; (2) OPCODE 5 \
+     (LIGHT_ANIMATION, 535 events in 182 blocks and 158 records) states a RUN_TIME whose payload \
+     position is never value-matched, so those records' durations are refused under \
+     f20-anim.event-run-time-position-unmeasured rather than guessed — affected content: their \
+     duration and per-tick report; (3) PAYLOAD BODIES BEYOND THE TWO TIMING FIELDS ARE NOT DECODED: \
+     no name field, node index or colour is read out of an event, so NO TRANSFORM POSE is produced \
+     from one — the stored unit (#436), the original's animation tick rate \
+     (f20-anim.tick-rate-unmeasured) and a motion statement's interpolation are all unmeasured, and \
+     the per-tick report says which statements the record has started, not what it looks like; \
+     (4) THE EVENT TAG'S SECOND BYTE (1, 2 or 3) is measured as a value and unmeasured as a \
+     meaning; (5) the original's time unit for START_TIME/RUN_TIME is unmeasured (seconds is \
+     plausible, unverified), so durations are reported in the original's own unit and never \
+     converted to ticks here; (6) NO ORIGINAL EXECUTABLE WAS RUN: retail is file access, nothing \
+     is verified_original, and gpu/audio were available and UNUSED. Affected content: every \
+     mission-facing animation claim (VS-M01-RUNTIME #359, F20-D family validation, M01-B).";
+
+const F20E_REVIEW: &str = "implementer: bunny-alpha-2/bunny-alpha-2 (Rally task #690, session of \
+     2026-10-06); reviewer: none yet — the reviewer's identity and whether their context was fresh \
+     are recorded in the complete_review notes, and an event grammar that decides what a playable \
+     mission means wants a reviewer other than the implementer. The implementer measured the layout \
+     over the whole corpus and joined every opcode to the installation's own statement spellings \
+     with zero conflicts, but that is not independent review and not independent original-reference \
+     evidence; the claim stays at level `implemented`, and no agent review replaces the owner's \
+     human approval";
+
+const F20E_CENSUS_ARTIFACT: &str = "event-grammar.json";
+
+const F20E_REPORT: M01lcReport = M01lcReport {
+    task_id: "F20-EVENT-GRAMMAR",
+    prefix: "accept_f20_event_",
+    capability_tests: F20E_CAPABILITY_TESTS,
+    synthetic_tests: F20E_SYNTHETIC_TESTS,
+    census_artifact: F20E_CENSUS_ARTIFACT,
+    census: f20e_census_json,
+    open_state: F20E_OPEN_STATE,
+    review: F20E_REVIEW,
+    open_needles: &[
+        "OPCODES 13, 17, 26 AND 28 JOIN NO DECLARATION",
+        "OPCODE 5",
+        "NO TRANSFORM POSE",
+        "reviewer: none yet",
+    ],
+};
+
+#[test]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+fn evidence_report_f20_event_grammar_writes_the_acceptance_report() {
+    m01lc_write_report(&F20E_REPORT);
+}
+
+/// The derived event-grammar census: every carrier's block, event and byte
+/// counts, the opcode table with its measured classes and timing evidences, the
+/// class totals, and M01's seven decoded durations. Counts and names only —
+/// never event bytes.
+///
+/// Every number below is read through the production readers on this run: the
+/// walk (`cs_formats::zbd::AnimationPayload::records`), the grammar
+/// (`cs_app::animation::events`) and the consumer
+/// (`cs_app::animation::mission::bind_mission_animation`).
+fn f20e_census_json(
+    _survey: &cs_app::animation::AnimationBindingSurvey,
+    game_dir: &Path,
+) -> String {
+    use cs_app::animation::events::{STORED_OPCODES, decode_event_stream, walk_event_stream};
+    use cs_app::animation::mission::bind_mission_animation;
+
+    let found = cs_assets::install::discover(game_dir).expect("discovery reads the installation");
+    let mut carriers = 0_usize;
+    let mut blocks = 0_usize;
+    let mut events = 0_usize;
+    let mut event_bytes = 0_usize;
+    let mut refused_blocks = 0_usize;
+    let mut census = std::collections::BTreeMap::new();
+    for file in &found.manifest.files {
+        let key = file.relative_spelling.logical_key();
+        if !(key.ends_with("/mis_anim.zbd") || key.ends_with("/cam_anim.zbd")) {
+            continue;
+        }
+        carriers += 1;
+        let data = std::fs::read(game_dir.join(file.relative_spelling.as_str())).expect("read");
+        let path = RelativePath::new(&file.relative_spelling.as_str().to_lowercase())
+            .expect("a relative path");
+        let mut context = ParseContext::with_defaults(&key);
+        let decision = dispatch(ZbdProbe::new(&key, &path, &data[..8])).expect("a carrier");
+        let index = read_animation_index(&mut context, decision, &data).expect("the index");
+        let payload = index.payload().expect("the payload");
+        let walk = payload.records().expect("the records walk");
+        for record in walk.iter() {
+            for block in record.sequences() {
+                blocks += 1;
+                event_bytes += block.events().len();
+                let walked = walk_event_stream(block.events()).expect("every stream walks");
+                events += walked.len();
+                for event in &walked {
+                    *census.entry(event.opcode).or_insert(0_u64) += 1;
+                }
+                if decode_event_stream(block.events()).is_err() {
+                    refused_blocks += 1;
+                }
+            }
+        }
+    }
+    let opcodes = STORED_OPCODES
+        .iter()
+        .map(|info| {
+            let count = census.get(&info.opcode).copied().unwrap_or(0);
+            format!(
+                "{{\"opcode\":{},\"statement\":{},\"class\":{},\"events\":{},\
+                  \"start_time\":{},\"run_time\":{},\"timing_measured\":{}}}",
+                info.opcode,
+                m01lc_json(info.statement),
+                m01lc_json(info.class.label()),
+                count,
+                m01lc_json(info.start_time.label()),
+                m01lc_json(info.run_time.label()),
+                info.timing_measured(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n  ");
+    let mut by_class = std::collections::BTreeMap::new();
+    for (opcode, count) in &census {
+        let info = cs_app::animation::events::opcode_info(*opcode).expect("a stored opcode");
+        *by_class.entry(info.class.label()).or_insert(0_u64) += count;
+    }
+    let classes = by_class
+        .iter()
+        .map(|(label, count)| format!("{}: {count}", m01lc_json(label)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let binding = bind_mission_animation(game_dir, "zbd/c1c/m01").expect("M01 binds");
+    let m01 = binding
+        .startup()
+        .iter()
+        .map(|row| {
+            format!(
+                "{{\"identity\":{},\"playable\":{},\"duration\":{},\"events\":{}}}",
+                m01lc_json(row.identity()),
+                row.is_playable(),
+                row.playback().map_or_else(
+                    || "null".to_owned(),
+                    |playback| { format!("{}", playback.duration_time()) }
+                ),
+                row.playback()
+                    .map_or(0, |playback| playback.events().count()),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n  ");
+    format!(
+        "{{\n \"carriers\": {carriers},\n \"blocks\": {blocks},\n \"events\": {events},\n \
+         \"event_bytes\": {event_bytes},\n \"refused_blocks\": {refused_blocks},\n \
+         \"opcodes\": [\n  {opcodes}\n ],\n \"classes\": {{{classes}}},\n \"m01\": [\n  {m01}\n ]\n}}\n"
+    )
 }
