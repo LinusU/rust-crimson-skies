@@ -179,6 +179,9 @@ pub const READER_ROOT_DIRECTORY: &str = "zbd";
 /// | 5 | `data/<w>/nets` | world/mission load |
 /// | 6 | `data/<w>/<m>` | world/mission load |
 ///
+/// A world/mission load adds the last four; a startup-only list is the first
+/// two.
+///
 /// The loose pass searches this list **backwards** — the most recently added
 /// directory first, `zbd` last (section A: "searches the most recently added
 /// directory first, then `zbd`").
@@ -212,15 +215,19 @@ pub fn original_loose_reader_directories(
         RelativePath::new(&spelling).map_err(ReaderLooseError::Spelling)
     };
 
+    // Startup `0x4a6ff0`: the default directory list gets `zbd`, and the loose
+    // reader path is `..\data\common\zrdr`.
     let mut directories = vec![
         RelativePath::new(READER_ROOT_DIRECTORY).map_err(ReaderLooseError::Spelling)?,
         RelativePath::new("data/common/zrdr").map_err(ReaderLooseError::Spelling)?,
-        RelativePath::new("data/common").map_err(ReaderLooseError::Spelling)?,
     ];
     let Some(world) = world else {
         return Ok(directories);
     };
+    // World/mission load `0x463cb0` appends `common`, `<w>`, `<w>\nets` and
+    // `<w>\<m>` below `..\data`.
     let world = directory_name(world)?;
+    directories.push(RelativePath::new("data/common").map_err(ReaderLooseError::Spelling)?);
     directories.push(joined("data", world.as_str())?);
     directories.push(joined(&format!("data/{world}"), "nets")?);
     if let Some(mission) = mission {
@@ -306,7 +313,7 @@ impl ReaderLooseDirectory {
     /// ([`ReaderLooseOutcome::Absent`]).
     pub fn declare(root: &Path, spelling: &str) -> Result<Self, ReaderLooseError> {
         let spelling =
-            RelativePath::new(spelling).map_err(|reason| ReaderLooseError::Spelling(reason))?;
+            RelativePath::new(spelling).map_err(ReaderLooseError::Spelling)?;
         Ok(Self {
             spelling,
             host_root: root.to_path_buf(),
@@ -1027,50 +1034,59 @@ impl ReaderMounts {
     ) -> Result<LoosePass, ReaderLookupError> {
         let mut pass = LoosePass::default();
         for directory in self.loose_search_order() {
-            let host_path = directory.candidate_path(basename);
             let unreadable = |source| ReaderLookupError::LooseUnreadable {
                 requested: Box::new(requested.clone()),
                 basename: basename.to_owned(),
                 directory: directory.spelling().to_owned(),
                 source: Box::new(source),
             };
-            let probe = probe_loose(&host_path).map_err(unreadable)?;
-            let outcome = match probe {
-                LooseProbe::Absent => ReaderLooseOutcome::Absent,
-                LooseProbe::NotRegular => ReaderLooseOutcome::NotRegular,
-                LooseProbe::Regular { size_bytes } => match mode {
-                    LoosePassMode::Fallback if pass.candidate.is_some() => {
-                        ReaderLooseOutcome::Shadowed { size_bytes }
+            // The original counts only existing directories, so an absent one is
+            // reported as absent and never descended into.
+            let host_directory = directory.host_path();
+            let host_path = host_directory.join(basename);
+            let outcome = match probe_loose_directory(&host_directory).map_err(unreadable)? {
+                LooseDirectoryProbe::Absent => ReaderLooseOutcome::Absent,
+                LooseDirectoryProbe::NotADirectory => ReaderLooseOutcome::NotRegular,
+                LooseDirectoryProbe::Directory => {
+                    match probe_loose(&host_path).map_err(unreadable)? {
+                        LooseProbe::Miss => ReaderLooseOutcome::Miss,
+                        LooseProbe::NotRegular => ReaderLooseOutcome::NotRegular,
+                        LooseProbe::Regular { size_bytes } => match mode {
+                            LoosePassMode::Fallback if pass.candidate.is_some() => {
+                                ReaderLooseOutcome::Shadowed { size_bytes }
+                            }
+                            LoosePassMode::Fallback => {
+                                let bytes = read_loose_file(&host_path).map_err(unreadable)?;
+                                let digest = sha256(&bytes);
+                                pass.candidate = Some(LooseCandidate {
+                                    directory: directory.spelling().to_owned(),
+                                    host_path: host_path.clone(),
+                                    size_bytes,
+                                    sha256: Some(digest),
+                                });
+                                ReaderLooseOutcome::Selected {
+                                    size_bytes,
+                                    sha256: digest,
+                                }
+                            }
+                            LoosePassMode::Override => {
+                                // The original would compare this file with the
+                                // archive copy by time; production cannot, so
+                                // the candidate is recorded and the lookup is
+                                // refused. The file's own modification time is
+                                // never read here: it is not the original's
+                                // comparison argument.
+                                pass.candidate.get_or_insert(LooseCandidate {
+                                    directory: directory.spelling().to_owned(),
+                                    host_path: host_path.clone(),
+                                    size_bytes,
+                                    sha256: None,
+                                });
+                                ReaderLooseOutcome::UndecidableShadow { size_bytes }
+                            }
+                        },
                     }
-                    LoosePassMode::Fallback => {
-                        let bytes = read_loose_file(&host_path).map_err(unreadable)?;
-                        let digest = sha256(&bytes);
-                        pass.candidate = Some(LooseCandidate {
-                            directory: directory.spelling().to_owned(),
-                            host_path: host_path.clone(),
-                            size_bytes,
-                            sha256: Some(digest),
-                        });
-                        ReaderLooseOutcome::Selected {
-                            size_bytes,
-                            sha256: digest,
-                        }
-                    }
-                    LoosePassMode::Override => {
-                        // The original would compare this file with the archive
-                        // copy by time; production cannot, so the candidate is
-                        // recorded and the lookup is refused. The file's own
-                        // modification time is never read here: it is not the
-                        // original's comparison argument.
-                        pass.candidate.get_or_insert(LooseCandidate {
-                            directory: directory.spelling().to_owned(),
-                            host_path: host_path.clone(),
-                            size_bytes,
-                            sha256: None,
-                        });
-                        ReaderLooseOutcome::UndecidableShadow { size_bytes }
-                    }
-                },
+                }
             };
             pass.attempts.push(ReaderLooseAttempt {
                 directory: directory.spelling().to_owned(),
@@ -1156,7 +1172,7 @@ impl ReaderMounts {
             && resolved.span.offset() == 0
             && resolved.span.length() == size_bytes
             && resolved.span.member_sha256() == Some(recorded)
-            && host_path == &expected_host_path;
+            && host_path == expected_host_path;
         if !describes_file {
             return Err(ReaderReadError::StaleResolution {
                 origin: expected_container,
@@ -1227,11 +1243,11 @@ fn reader_trace(attempts: Vec<ReaderAttempt>, loose: Vec<ReaderLooseAttempt>) ->
     }
 }
 
-/// What a loose candidate path holds, without reading it.
+/// What a loose candidate **file** holds, without reading it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LooseProbe {
-    /// Nothing of that name exists here.
-    Absent,
+    /// The directory holds nothing of that name.
+    Miss,
     /// Something of that name exists but is not a regular file, or is a symbolic
     /// link. Links are never followed, exactly as in
     /// [`crate::vfs::mount_directory`], so no target outside the installation
@@ -1244,16 +1260,51 @@ enum LooseProbe {
     },
 }
 
-/// What one loose candidate path holds on this host.
+/// What the loose reader **directory** at a declared spelling holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LooseDirectoryProbe {
+    /// The directory does not exist on this host, so the original never adds it
+    /// and it cannot hold anything. This is the state of every loose reader
+    /// directory below `data` in the owner's installation.
+    Absent,
+    /// The path exists but is not a directory, or is a symbolic link, which is
+    /// never followed.
+    NotADirectory,
+    /// A real directory, which the pass searches.
+    Directory,
+}
+
+/// Whether the loose reader directory at `path` counts at all.
 ///
-/// A `NotFound` (the common case: the original's loose directories do not
-/// exist in retail) is [`LooseProbe::Absent`]; every other failure is reported
-/// rather than read as an absence, because "the directory is not there" and
-/// "the directory could not be asked about" are different facts.
+/// The original counts only existing directories (section A), so a directory
+/// that is not there is [`LooseDirectoryProbe::Absent`] and never reports a
+/// miss: "the original never added it" and "it was added and holds no such file"
+/// are different facts, and the trace keeps them apart.
+fn probe_loose_directory(path: &Path) -> Result<LooseDirectoryProbe, LooseFileError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            return Ok(LooseDirectoryProbe::Absent);
+        }
+        Err(source) => return Err(LooseFileError::io(path, &source)),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(LooseDirectoryProbe::NotADirectory);
+    }
+    Ok(LooseDirectoryProbe::Directory)
+}
+
+/// What a loose candidate file holds on this host, inside a directory that
+/// exists.
+///
+/// A `NotFound` is [`LooseProbe::Miss`] — the directory is there and holds no
+/// such file — while every other failure is reported rather than read as an
+/// absence, because "there is no such file" and "the file could not be asked
+/// about" are different facts.
 fn probe_loose(path: &Path) -> Result<LooseProbe, LooseFileError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(LooseProbe::Absent),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(LooseProbe::Miss),
         Err(source) => return Err(LooseFileError::io(path, &source)),
     };
     if metadata.file_type().is_symlink() || !metadata.is_file() {
