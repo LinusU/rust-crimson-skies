@@ -74,8 +74,10 @@
 //!   that exists. There is no tier-to-tier fallback for a single texture.
 //! * [`texture_lookup_order`] is the order one texture **name** is looked up
 //!   in: the world's archive, then the shared `rimage.zbd`, then a loose
-//!   `<name>.tif` and `<name>.bmp`. It folds the request through the same
-//!   [`folded_texture_name`] as [`TextureCatalog::resolve`].
+//!   `<name>.tif` and `<name>.bmp`, both spelled from the request as its
+//!   caller passed it — the fold is the in-archive search's
+//!   ([`folded_texture_name`], as [`TextureCatalog::resolve`] applies it),
+//!   and this order matches no name inside an archive.
 //!
 //! [`TextureCatalog::open_world`] runs the selection and opens the chosen
 //! archive, so no caller has to name a tier itself.
@@ -152,8 +154,11 @@ impl fmt::Display for TextureId {
 ///   `0x531280` copies the table verbatim into the directory the search walks —
 ///   so a name stored as `Sky` is still not found by `Sky` or `sky`.
 ///
-/// Both [`TextureCatalog::resolve`] and [`texture_lookup_order`] fold through
-/// this one function, so the two agree about the spelling they look up.
+/// [`TextureCatalog::resolve`] folds through this one function, so every
+/// archive search looks up the same spelling. The loose-file probes of
+/// [`texture_lookup_order`] deliberately do **not**: the original hands them
+/// the request as it arrived (`0x534cf0`'s `sprintf(buf, "%s.tif", name)`),
+/// and that difference is measured rather than harmonized.
 ///
 /// ```
 /// use cs_content::textures::folded_texture_name;
@@ -1666,9 +1671,12 @@ impl TextureFiles {
     ///
     /// Candidate names are compared against the listing exactly. The original
     /// probes the host file system, whose names it folds without regard to
-    /// case; every candidate this crate generates is lowercase, and retail
-    /// spells every archive that way, so the comparison decides the same files
-    /// here (recorded in the finding).
+    /// case; the archive candidates this crate generates are lower case and
+    /// retail spells every archive that way, so the comparison decides the
+    /// same files there (recorded in the finding). A loose-file candidate is
+    /// built from the caller's own request, as `0x534cf0`'s `%s.tif` is, so it
+    /// carries the request's spelling and matches only a listing that spells
+    /// it the same way — a mixed-case request probes `SKY.tif`, not `sky.tif`.
     ///
     /// A listing entry that is not a usable key spelling is not a candidate:
     /// nothing could resolve it, so reporting it as found would promise an
@@ -1854,12 +1862,14 @@ pub enum TextureLookupSource {
         /// Where the file probe found it.
         file: FoundFile,
     },
-    /// A loose `<name>.tif` in a texture directory.
+    /// A loose `<name>.tif` in a texture directory, `name` spelled exactly as
+    /// the caller requested it (`0x534cf0`'s `%s.tif`).
     LooseTiff {
         /// Where the file probe found it.
         file: FoundFile,
     },
-    /// A loose `<name>.bmp` in a texture directory.
+    /// A loose `<name>.bmp` in a texture directory, `name` spelled exactly as
+    /// the caller requested it (`0x534060`'s `%s.bmp`).
     LooseBmp {
         /// Where the file probe found it.
         file: FoundFile,
@@ -1887,16 +1897,23 @@ impl TextureLookupSource {
 /// Only sources that exist are listed, so the first entry is the original's
 /// answer.
 ///
-/// The in-archive search folds the request with [`folded_texture_name`] — the
-/// measured fold of `0x531930`, the same one [`TextureCatalog::resolve`]
-/// applies, so the two agree about the spelling a name is searched under. The
-/// loose file names are built from that folded spelling here, whereas the
-/// original builds them from the request as its caller passed it
-/// (`sprintf(buf, "%s.tif", name)` at `0x534cf0`) and lets the host file
-/// probe, which folds case, match it. The two cannot differ on a host file
-/// system that folds case unless the same directory holds both `sky.tif` and
-/// `SKY.tif`; retail ships no loose texture file at all, and the file probe's
-/// own case handling is already recorded as not established.
+/// The fold belongs to the in-archive search — `0x531930`, applied through
+/// [`folded_texture_name`], the same one [`TextureCatalog::resolve`] applies
+/// to the request it compares. This order reaches that search through the
+/// source list only: it matches nothing inside an archive, so it folds
+/// nothing. The loose file names are built from the **unfolded** request,
+/// which is what the original does — the name reaches `0x534cf0` and
+/// `0x534060` unchanged from `0x531b60`, which pushes that same pointer to
+/// both, so `0x534cf0` is `sprintf(buf, "%s.tif", name)` on the caller's own
+/// string (the format literal sits at `0x635578`) and `0x534060` is
+/// `sprintf(buf, "%s.bmp", name)` from `0x6353b0`, while `0x531930` folds a
+/// private copy and leaves the caller's buffer alone. A mixed-case request is
+/// therefore probed as `SKY.tif`, the spelling the original probes, and
+/// searched in the catalog under the folded one. The two loose spellings
+/// cannot differ on a host file system that folds case unless one directory
+/// holds both `sky.tif` and `SKY.tif`; retail ships no loose texture file at
+/// all, and the file probe's own case handling is already recorded as not
+/// established.
 ///
 /// The original also keeps a toggle that starts each search in whichever of
 /// the two archive lists it names — the world's first — and flips it when a
@@ -1908,7 +1925,6 @@ pub fn texture_lookup_order(
     files: &TextureFiles,
     world_archive: &str,
 ) -> Vec<TextureLookupSource> {
-    let folded = folded_texture_name(name);
     let mut sources = Vec::new();
     if let Some(file) = files.find(world_archive) {
         sources.push(TextureLookupSource::WorldArchive { file });
@@ -1916,10 +1932,10 @@ pub fn texture_lookup_order(
     if let Some(file) = files.find(IMAGE_ARCHIVE_FILE) {
         sources.push(TextureLookupSource::ImageArchive { file });
     }
-    if let Some(file) = files.find(&format!("{folded}.tif")) {
+    if let Some(file) = files.find(&format!("{name}.tif")) {
         sources.push(TextureLookupSource::LooseTiff { file });
     }
-    if let Some(file) = files.find(&format!("{folded}.bmp")) {
+    if let Some(file) = files.find(&format!("{name}.bmp")) {
         sources.push(TextureLookupSource::LooseBmp { file });
     }
     sources
@@ -3381,7 +3397,8 @@ mod tests {
     }
 
     /// The order one texture name is looked up in: the world's archive, then
-    /// `rimage.zbd`, then a loose `.tif` and `.bmp`.
+    /// `rimage.zbd`, then a loose `.tif` and `.bmp` named after the request
+    /// itself.
     #[test]
     fn accept_f08_c_selection_the_lookup_order_is_world_archive_image_archive_then_loose_files() {
         let files = TextureFiles::new_with([
@@ -3427,11 +3444,16 @@ mod tests {
             "world/default/texture.zbd"
         );
 
-        // A mixed-case request is folded, so it finds the lower-case name in
-        // the archive search and in the loose file names.
+        // The loose file names are built from the request itself, exactly as
+        // `0x534cf0` does `sprintf(buf, "%s.tif", name)` on the caller's own
+        // string (format literal at `0x635578`) and `0x534060` the same for
+        // `.bmp`: nothing folds the request before those two probes, so `SKY`
+        // probes `SKY.tif` and this listing — which holds `sky.tif` — does not
+        // answer it. The two archives do not depend on the name and stay.
         assert_eq!(
             texture_lookup_order("SKY", &files, WORLD_ARCHIVE_FILE),
-            sources
+            sources[..2].to_vec(),
+            "the request is not folded into the loose probe"
         );
 
         // A `.bmp` with no `.tif` beside it is still searched, after the two
@@ -3468,6 +3490,131 @@ mod tests {
             &absent[0],
             TextureLookupSource::ImageArchive { .. }
         ));
+    }
+
+    /// The loose probes are spelled from the request byte for byte: that is
+    /// what `0x534cf0` does with `sprintf(buf, "%s.tif", name)` (the format
+    /// literal sits at `0x635578`) and `0x534060` with `%s.bmp`, both on the
+    /// pointer `0x531b60` handed them unchanged. The fold lives in
+    /// `0x531930`, on a private copy inside the in-archive search, and never
+    /// reaches those two. So a listing's `SKY.tif` is reached by the request
+    /// `SKY` and not by `sky`, and a listing's `sky.tif` is not reached by
+    /// `SKY`.
+    #[test]
+    fn accept_f08_c_loose_name_the_loose_file_name_is_the_request_verbatim() {
+        let names = |files: &TextureFiles, request: &str| -> Vec<String> {
+            texture_lookup_order(request, files, WORLD_ARCHIVE_FILE)
+                .iter()
+                .map(|source| source.file().name().to_owned())
+                .collect()
+        };
+
+        // A directory that lists the upper-case spellings: the request `SKY`
+        // reaches both loose files — `0x534060` takes the same string
+        // `0x534cf0` does — and the `.tif` comes first.
+        let mixed = TextureFiles::new_with([
+            TextureDirectory::world(
+                "zbd/c1",
+                vec![
+                    WORLD_ARCHIVE_FILE.to_owned(),
+                    "SKY.tif".to_owned(),
+                    "SKY.bmp".to_owned(),
+                ],
+            ),
+            TextureDirectory::global(Vec::new()),
+        ]);
+        let requested = texture_lookup_order("SKY", &mixed, WORLD_ARCHIVE_FILE);
+        assert_eq!(
+            requested
+                .iter()
+                .map(|source| source.file().name().to_owned())
+                .collect::<Vec<_>>(),
+            vec![
+                WORLD_ARCHIVE_FILE.to_owned(),
+                "SKY.tif".to_owned(),
+                "SKY.bmp".to_owned(),
+            ],
+            "0x534cf0's %s.tif and 0x534060's %s.bmp take the caller's string as it is"
+        );
+        assert!(matches!(
+            requested[1],
+            TextureLookupSource::LooseTiff { .. }
+        ));
+        assert!(matches!(requested[2], TextureLookupSource::LooseBmp { .. }));
+        assert_eq!(
+            names(&mixed, "sky"),
+            vec![WORLD_ARCHIVE_FILE.to_owned()],
+            "the folded spelling is a different probe, so it reaches neither loose file"
+        );
+
+        // A `.bmp` with no `.tif` beside it is still probed, under the
+        // request's own spelling and after the `.tif` slot has missed.
+        let bmp_only = TextureFiles::new_with([
+            TextureDirectory::world(
+                "zbd/c1",
+                vec![WORLD_ARCHIVE_FILE.to_owned(), "SKY.bmp".to_owned()],
+            ),
+            TextureDirectory::global(Vec::new()),
+        ]);
+        assert_eq!(
+            names(&bmp_only, "SKY"),
+            vec![WORLD_ARCHIVE_FILE.to_owned(), "SKY.bmp".to_owned()],
+            "0x534060's %s.bmp takes the caller's string too"
+        );
+        assert_eq!(names(&bmp_only, "sky"), vec![WORLD_ARCHIVE_FILE.to_owned()]);
+
+        // The other direction, on the lower-case listing the first test uses.
+        let lower = TextureFiles::new_with([
+            TextureDirectory::world(
+                "zbd/c1",
+                vec![WORLD_ARCHIVE_FILE.to_owned(), "sky.tif".to_owned()],
+            ),
+            TextureDirectory::global(vec![IMAGE_ARCHIVE_FILE.to_owned()]),
+        ]);
+        assert_eq!(
+            names(&lower, "sky"),
+            vec![
+                WORLD_ARCHIVE_FILE.to_owned(),
+                IMAGE_ARCHIVE_FILE.to_owned(),
+                "sky.tif".to_owned(),
+            ]
+        );
+        assert_eq!(
+            names(&lower, "SKY"),
+            vec![WORLD_ARCHIVE_FILE.to_owned(), IMAGE_ARCHIVE_FILE.to_owned()],
+            "no fold of any kind: `SKY` never becomes `sky.tif`"
+        );
+
+        // Not even a byte the C runtime's `tolower` would leave alone is
+        // rewritten before the probe: the request arrives at `%s.tif` whole.
+        let unicode = TextureFiles::new_with([
+            TextureDirectory::world(
+                "zbd/c1",
+                vec![WORLD_ARCHIVE_FILE.to_owned(), "SKYİ.tif".to_owned()],
+            ),
+            TextureDirectory::global(Vec::new()),
+        ]);
+        assert_eq!(
+            names(&unicode, "SKYİ"),
+            vec![WORLD_ARCHIVE_FILE.to_owned(), "SKYİ.tif".to_owned()],
+            "the caller's bytes reach %s.tif unchanged"
+        );
+        assert_eq!(
+            names(&unicode, "skyİ"),
+            vec![WORLD_ARCHIVE_FILE.to_owned()],
+            "a differently spelled request is a different probe"
+        );
+
+        // The archives a request does not address are listed the same way
+        // whatever the request spells, because the fold belongs to the search
+        // inside them and not to this order.
+        for request in ["sky", "SKY", "Sky", "SKYİ"] {
+            assert_eq!(
+                names(&lower, request)[..2].to_vec(),
+                vec![WORLD_ARCHIVE_FILE.to_owned(), IMAGE_ARCHIVE_FILE.to_owned(),],
+                "{request}: the two archives do not depend on the name"
+            );
+        }
     }
 
     /// The rule reaches the catalog: `open_world` opens the archive the
@@ -4050,8 +4197,11 @@ mod tests {
         assert_eq!(folded_texture_name("ẞ"), "ẞ");
         assert_eq!(folded_texture_name("A1_-."), "a1_-.");
 
-        // `resolve` and `texture_lookup_order` fold through that one function,
-        // so the two agree about the spelling a name is searched under.
+        // `resolve` folds the request through that one function; the loose
+        // probes do not fold at all — `0x534cf0` takes the request as its
+        // caller spelled it (#703), so `sky` reaches the listed `sky.tif` and
+        // `SKY`/`Sky` reach no loose file while still searching the archives
+        // under the folded spelling.
         let files = TextureFiles::new_with([
             TextureDirectory::world(
                 "zbd/c1",
@@ -4069,21 +4219,25 @@ mod tests {
                 .iter()
                 .map(|source| source.file().name().to_owned())
                 .collect();
+            let mut expected = vec![
+                WORLD_ARCHIVE_FILE.to_owned(),
+                IMAGE_ARCHIVE_FILE.to_owned(),
+            ];
+            if request == "sky" {
+                expected.push("sky.tif".to_owned());
+            }
             assert_eq!(
-                loose,
-                vec![
-                    WORLD_ARCHIVE_FILE.to_owned(),
-                    IMAGE_ARCHIVE_FILE.to_owned(),
-                    format!("{}.tif", folded_texture_name(request)),
-                ],
-                "{request}: the loose name is built from the same fold"
+                loose, expected,
+                "{request}: the loose probe is the request verbatim, not the fold"
             );
         }
 
-        // Both paths fold alike down to the bytes, not merely alike on ASCII.
-        // A directory that lists `skyİ.tif` is reached by the request `SKYİ`
-        // only under the ASCII fold: a Unicode lower-casing rewrites `İ` to
-        // `i` + a combining dot and probes a name that is not listed.
+        // The fold and the loose probe are therefore two different spellings
+        // of one request: the catalog searches the ASCII-folded `skyİ`, while
+        // `0x534cf0` receives `SKYİ` and probes `SKYİ.tif`, which this
+        // directory does not list. A differently spelled request — `skyİ`
+        // itself — is what reaches `skyİ.tif`, and a Unicode lower-casing
+        // would have rewritten `İ` to `i` + a combining dot instead.
         const NON_ASCII: &str = "SKYİ";
         assert_eq!(
             folded_texture_name(NON_ASCII),
@@ -4104,10 +4258,18 @@ mod tests {
         ]);
         assert_eq!(
             texture_lookup_order(NON_ASCII, &unicode, WORLD_ARCHIVE_FILE)
+                .iter()
+                .map(|source| source.file().name().to_owned())
+                .collect::<Vec<_>>(),
+            vec![WORLD_ARCHIVE_FILE.to_owned()],
+            "`SKYİ` probes `SKYİ.tif`, which is not what the fold would have spelled"
+        );
+        assert_eq!(
+            texture_lookup_order("skyİ", &unicode, WORLD_ARCHIVE_FILE)
                 .last()
                 .map(|source| source.file().name().to_owned()),
             Some("skyİ.tif".to_owned()),
-            "`texture_lookup_order` folds ASCII-only, like `resolve`"
+            "the folded spelling is a different request, and only it is listed"
         );
         assert_eq!(
             searched_name(&catalog, &session, NON_ASCII),
