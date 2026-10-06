@@ -92,6 +92,7 @@ use std::path::Path;
 
 use cs_assets::install::{self, Discovery};
 use cs_content::stunts::{ZrdValue, decode_zrd};
+use cs_content::textures::WorldTextureLoad;
 use cs_formats::io::ParseContext;
 use cs_formats::script_raw::discover_container;
 use cs_formats::zbd::{
@@ -1259,10 +1260,12 @@ pub fn bind_mission_animation(
         .map_err(|error| MissionAnimationError::Discovery(error.to_string()))?;
     let install_sha256 = install::fingerprint(&found.manifest);
 
-    // The world container the object selectors resolve against.
+    // The world container the object selectors resolve against. The binding
+    // reads the container's `gamez.zbd` node names only, so the texture
+    // archive the container opens is the project default's selection.
     let world_container_key = format!("zbd/{group}/{WORLD_CONTAINER}");
     let container = read_world_containers(install_root)
-        .and_then(|containers| containers.container(&group))
+        .and_then(|containers| containers.container(&group, &WorldTextureLoad::project_default()))
         .map_err(|error| MissionAnimationError::World {
             group: group.clone(),
             reason: error.to_string(),
