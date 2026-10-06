@@ -345,7 +345,9 @@ impl fmt::Display for BoundArchive {
 /// belongs to the measured budget-and-tier rule of task #352 in
 /// `cs_content::textures`, which cannot be called from here (that crate depends
 /// on this one), so a binding holds the file that rule selected and refuses a
-/// second one — exactly one archive per world.
+/// second one — exactly one archive per world — and refuses one that is not in
+/// the two directories searched, because the original never looks in another
+/// world's directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextureBinding {
     directories: Vec<RelativePath>,
@@ -384,15 +386,41 @@ impl TextureBinding {
     ///
     /// # Errors
     ///
-    /// [`BindingError::TextureArchiveAlreadyBound`] when a file is already
-    /// bound: the original opens exactly one texture archive per world, so a
-    /// second one is refused rather than stored as a fallback the original does
-    /// not have (there is no tier-to-tier fallback for a name).
+    /// * [`BindingError::TextureArchiveAlreadyBound`] when a file is already
+    ///   bound: the original opens exactly one texture archive per world, so a
+    ///   second one is refused rather than stored as a fallback the original
+    ///   does not have (there is no tier-to-tier fallback for a name).
+    /// * [`BindingError::TextureArchiveOutsideSearch`] when the file is not in
+    ///   one of the directories this world searches: the original looks the
+    ///   archive up in the world's own directory and then the shared one, and
+    ///   **never** in another world's (finding section C), so a name from
+    ///   anywhere else is one the original could not have opened.
     pub fn bind(&mut self, archive: RelativePath) -> Result<&mut Self, BindingError> {
         if let Some(bound) = &self.archive {
             return Err(BindingError::TextureArchiveAlreadyBound {
                 bound: bound.as_str().to_owned(),
                 second: archive.as_str().to_owned(),
+            });
+        }
+        // The archive is looked up **in** a searched directory, so its own
+        // directory is what decides; compared by logical key, as a mount
+        // compares members.
+        let archive_directory = archive
+            .logical_key()
+            .rsplit_once('/')
+            .map(|(directory, _)| directory.to_owned());
+        let searched: Vec<String> = self.directories.iter().map(|d| d.logical_key()).collect();
+        if !archive_directory
+            .as_ref()
+            .is_some_and(|directory| searched.iter().any(|known| known == directory))
+        {
+            return Err(BindingError::TextureArchiveOutsideSearch {
+                archive: archive.as_str().to_owned(),
+                searched: self
+                    .directories
+                    .iter()
+                    .map(|directory| directory.as_str().to_owned())
+                    .collect(),
             });
         }
         self.archive = Some(archive);
@@ -435,6 +463,20 @@ pub enum BindingError {
         /// The archive a caller tried to add.
         second: String,
     },
+    /// A texture archive was bound that is not inside one of the directories
+    /// this world searches — in particular one from **another** world's
+    /// directory, which the original never looks in (finding section C).
+    ///
+    /// The comparison is the case-folded logical key of the archive's own
+    /// directory against the search's, exactly as a mount compares members, so
+    /// `ZBD\C1C\RTexture15.zbd` binds for `zbd/c1c` while `zbd/c1/rtexture2.zbd`
+    /// is refused.
+    TextureArchiveOutsideSearch {
+        /// The archive a caller tried to bind.
+        archive: String,
+        /// The directories this world searches, in its order.
+        searched: Vec<String>,
+    },
 }
 
 impl BindingError {
@@ -444,6 +486,7 @@ impl BindingError {
             Self::NoWorldGroup { .. } => "no_world_group",
             Self::ContainerSpelling { .. } => "container_spelling",
             Self::TextureArchiveAlreadyBound { .. } => "texture_archive_already_bound",
+            Self::TextureArchiveOutsideSearch { .. } => "texture_archive_outside_search",
         }
     }
 }
@@ -475,6 +518,13 @@ impl fmt::Display for BindingError {
                 f,
                 "this world already binds the texture archive {bound:?}, so {second:?} cannot be \
                  added; the original opens exactly one texture archive per world"
+            ),
+            Self::TextureArchiveOutsideSearch { archive, searched } => write!(
+                f,
+                "the texture archive {archive:?} is not in this world's search ({}): the original \
+                 looks the archive up in the world's own directory and then the shared one, never in \
+                 another world",
+                searched.join(", ")
             ),
         }
     }
@@ -622,17 +672,25 @@ impl WorldLayout {
     /// The installation-relative spellings this load binds that do not exist
     /// under `root`; empty when the installation holds every one of them.
     ///
-    /// This is a **host listing** of the read-only installation: it never reads
-    /// a byte of an archive and never writes. It exists so a consumer (and the
-    /// acceptance tests) sees a binding this installation does not ship instead
-    /// of opening it later and failing — so a layout naming an archive retail
-    /// does not have is visible rather than silent.
+    /// That covers the named archives, the texture archive the selection rule
+    /// has bound ([`TextureBinding::archive`], when the rule has run) and the
+    /// two directories the texture search walks. It is a **host listing** of
+    /// the read-only installation: it never reads a byte of an archive and
+    /// never writes. It exists so a consumer (and the acceptance tests) sees a
+    /// binding this installation does not ship instead of opening it later and
+    /// failing — so a layout naming an archive retail does not have is visible
+    /// rather than silent.
     pub fn missing(&self, root: &Path) -> Vec<String> {
         let mut missing = Vec::new();
         for archive in &self.archives {
             if !root.join(archive.container().as_str()).is_file() {
                 missing.push(archive.container().as_str().to_owned());
             }
+        }
+        if let Some(archive) = &self.texture.archive
+            && !root.join(archive.as_str()).is_file()
+        {
+            missing.push(archive.as_str().to_owned());
         }
         for directory in self.texture.directories() {
             if !root.join(directory.as_str()).is_dir() {

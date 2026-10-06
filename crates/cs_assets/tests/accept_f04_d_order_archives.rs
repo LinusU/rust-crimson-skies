@@ -55,11 +55,12 @@ use common::TempTree;
 use cs_assets::install::{self, Diagnosis, sha256};
 use cs_assets::vfs::{
     ArchiveFamily, AttemptOutcome, BINDING_ORDER_STATUS, BindingError, BindingLevel, BindingRole,
-    BoundArchive, MISSION_NAMESPACE, MissionDirectory, ResolveError, SessionBuilder, SkipReason,
-    TextureBinding, WorldLayout, mission_directories,
+    BoundArchive, MISSION_NAMESPACE, MissionDirectory, ResolveError, SessionBuilder, SessionError,
+    SkipReason, TextureBinding, WorldLayout, mission_directories,
 };
 use cs_types::asset_id::{
-    AssetKey, AssetVariant, MissionScope, PRECEDENCE_ORDER_STATUS, ResolveContext, WorldGroup,
+    AssetKey, AssetVariant, LabelError, MissionScope, PRECEDENCE_ORDER_STATUS, PrecedenceClass,
+    ResolveContext, WorldGroup,
 };
 use cs_types::evidence::{ClaimStatus, ContentHash};
 use cs_types::install::RelativePath;
@@ -67,10 +68,10 @@ use cs_types::install::RelativePath;
 /// The acceptance prefix of this task.
 const PREFIX: &str = "accept_f04_d_order_archives_";
 
-/// How many acceptance tests this suite holds: eleven synthetic and four
+/// How many acceptance tests this suite holds: twelve synthetic and four
 /// retail ones. The evidence harness checks the recorded run reports exactly
 /// this many task tests, so a test renamed or dropped cannot pass unnoticed.
-const TASK_TESTS: usize = 15;
+const TASK_TESTS: usize = 16;
 
 // -------------------------------------------------------------- fixtures ---
 
@@ -450,6 +451,61 @@ fn accept_f04_d_order_archives_one_texture_archive_is_bound_per_world() {
         Some("zbd/c1c/texture.zbd"),
         "which tier binds is the selection rule's call (#352), recorded here"
     );
+
+    // The file the rule names must come from one of the two directories this
+    // world searches: the original looks the archive up in the world's own
+    // directory and then the shared one, never in another world's, so a name
+    // from anywhere else is one it could not have opened. Compared by logical
+    // key, so the installation's own spelling passes and another world's does
+    // not.
+    let mut search = TextureBinding::new(
+        RelativePath::new("zbd/c1c").expect("a valid world directory"),
+        RelativePath::new("zbd").expect("a valid shared directory"),
+    );
+    search
+        .bind(RelativePath::new("zbd/RImage.zbd").expect("a valid archive"))
+        .expect("the shared fallback directory is searched too, whatever the spelling");
+    assert_eq!(
+        search.archive().map(|archive| archive.as_str()),
+        Some("zbd/RImage.zbd"),
+        "the search decides by logical key, exactly as a mount compares members"
+    );
+
+    let mut foreign = TextureBinding::new(
+        RelativePath::new("zbd/c1c").expect("a valid world directory"),
+        RelativePath::new("zbd").expect("a valid shared directory"),
+    );
+    assert_eq!(
+        foreign.bind(RelativePath::new("zbd/c1/rtexture2.zbd").expect("a valid archive")),
+        Err(BindingError::TextureArchiveOutsideSearch {
+            archive: "zbd/c1/rtexture2.zbd".to_owned(),
+            searched: vec!["zbd/c1c".to_owned(), "zbd".to_owned()],
+        }),
+        "another world's texture archive is not in this world's search: the original never looks \
+         there"
+    );
+    assert_eq!(
+        foreign.archive().map(|archive| archive.as_str()),
+        None,
+        "the refused archive is not bound either"
+    );
+    assert_eq!(
+        foreign.bind(RelativePath::new("zbd/c1c/rtexture10.zbd/sub.zbd").expect("a valid archive")),
+        Err(BindingError::TextureArchiveOutsideSearch {
+            archive: "zbd/c1c/rtexture10.zbd/sub.zbd".to_owned(),
+            searched: vec!["zbd/c1c".to_owned(), "zbd".to_owned()],
+        }),
+        "the archive is looked up *in* a searched directory, so a name below one is not either"
+    );
+    assert_eq!(
+        BindingError::TextureArchiveOutsideSearch {
+            archive: "zbd/c1/rtexture2.zbd".to_owned(),
+            searched: vec!["zbd/c1c".to_owned()],
+        }
+        .code(),
+        "texture_archive_outside_search",
+        "reports name a stable code"
+    );
 }
 
 /// The roles are the whole set, and each one is reachable by its stable label —
@@ -580,6 +636,33 @@ fn accept_f04_d_order_archives_a_binding_this_installation_lacks_is_listed() {
         2,
         "the fixture installation has two world groups, so `missing` ran against a real one"
     );
+
+    // The texture archive the selection rule bound is a binding this load holds
+    // too, so it is listed when the installation does not ship it and stays out
+    // of the listing when it does.
+    tree.write("zbd/c1c/texture.zbd", b"tex");
+    let mut with_texture =
+        WorldLayout::for_context(&context(Some("m01")), &shared()).expect("bound");
+    with_texture
+        .texture_mut()
+        .bind(RelativePath::new("zbd/c1c/texture.zbd").expect("a valid archive"))
+        .expect("the shipped archive binds");
+    assert_eq!(
+        with_texture.missing(tree.root()),
+        Vec::<String>::new(),
+        "the fixture installation holds the bound texture archive too"
+    );
+    let mut unshipped = WorldLayout::for_context(&context(Some("m01")), &shared()).expect("bound");
+    unshipped
+        .texture_mut()
+        .bind(RelativePath::new("zbd/c1c/rtexture99.zbd").expect("a valid archive"))
+        .expect("the rule's choice binds");
+    assert_eq!(
+        unshipped.missing(tree.root()),
+        vec!["zbd/c1c/rtexture99.zbd".to_owned()],
+        "an archive the rule selected that this installation does not ship is named, so the load \
+         fails here rather than at open time"
+    );
 }
 
 // ---------------------------------------------------------- mission level ---
@@ -596,11 +679,19 @@ fn accept_f04_d_order_archives_mission_directories_come_from_discovery_not_a_nam
     // own spelling is what the rows carry.
     tree.write("zbd/c1c/M01/mis_anim.zbd", b"mis");
     // A mission directory the campaign mission tables (m01..m05, mp1..mp5,
-    // ia1) do not name, plus an empty one and a directory one level too deep.
+    // ia1) do not name, one that carries no regular file at all, and a
+    // directory one level too deep.
     tree.write("zbd/c1c/ZZ9/mis_anim.zbd", b"mis");
-    tree.write("zbd/c1c/EMPTY/.keep", b"");
+    fs::create_dir_all(tree.root().join("zbd/c1c/EMPTY")).expect("an empty mission directory");
     tree.write("zbd/c1c/M01/nets/deep.zbd", b"deep");
     let found = install::discover(tree.root()).expect("the fixture installation is discovered");
+    assert!(
+        fs::read_dir(tree.root().join("zbd/c1c/EMPTY"))
+            .expect("the empty mission directory is listed")
+            .next()
+            .is_none(),
+        "EMPTY really holds nothing, so the walk below saw a directory with no regular file"
+    );
 
     let missions = mission_directories(&found.diagnosis);
     let spelled: Vec<&str> = missions
@@ -611,8 +702,8 @@ fn accept_f04_d_order_archives_mission_directories_come_from_discovery_not_a_nam
         spelled,
         vec!["zbd/c1c/EMPTY", "zbd/c1c/M01", "zbd/c1c/ZZ9"],
         "every directory directly below a world group is a mission directory, in logical \
-         order; a directory two levels deeper is not, and a table that omits zz9 does not \
-         remove it"
+         order; a directory two levels deeper is not, a table that omits zz9 does not remove it, \
+         and one whose archives were all removed is still reportable"
     );
 
     let m01 = &missions[1];
@@ -663,6 +754,27 @@ fn accept_f04_d_order_archives_the_mission_level_is_mounted_for_its_own_mission(
         vec!["zbd/c1c/m01".to_owned()],
         "the mission directory is mounted under the mission namespace"
     );
+
+    // A mission mount is a retail source at the mission/world precedence class:
+    // it holds mission-specific content (so it must not be classed as shared),
+    // and it is retail (so a lookup two retail mounts decide is still refused
+    // while the precedence order is only `designed` — F04 non-negotiable 2).
+    let mission_mounts: Vec<_> = session
+        .mounts()
+        .filter(|mount| mount.namespace().as_str() == MISSION_NAMESPACE)
+        .collect();
+    assert_eq!(mission_mounts.len(), 1, "{mission_mounts:?}");
+    for mount in &mission_mounts {
+        assert_eq!(
+            mount.precedence(),
+            PrecedenceClass::MissionWorld,
+            "a mission archive is mission-specific content, not a shared source"
+        );
+        assert!(
+            mount.is_retail(),
+            "a mission mount is a retail source, so an unmeasured retail decision stays blocked"
+        );
+    }
 
     let key = |name: &str| {
         AssetKey::from_spelling(MISSION_NAMESPACE, name, AssetVariant::default().as_str())
@@ -738,6 +850,100 @@ fn accept_f04_d_order_archives_the_mission_level_is_mounted_for_its_own_mission(
     assert_eq!(
         session.read_all(&world_asset).expect("read"),
         b"gamez".to_vec()
+    );
+}
+
+/// A mission directory whose own name cannot be a mission scope label is
+/// **refused**, naming the directory in the installation's spelling: no context
+/// could ever be admitted to such a mount, so mounting it would produce a mount
+/// nothing can reach.
+///
+/// This is the defensive path, not a measured one — no retail mission directory
+/// has such a name — and the refusal is real: `M01.2` folds to `m01.2`, which
+/// **is** a valid label, so a directory that merely looks unusual must still
+/// mount.
+#[test]
+fn accept_f04_d_order_archives_a_mission_directory_that_is_no_scope_label_is_refused() {
+    let tree = TempTree::new("archives-mission-scope");
+    tree.write("zbd/c1c/gamez.zbd", b"gamez");
+    // A leading separator is not a legal first character of a label. It sorts
+    // before `m01.2`, so it is the directory the level refuses first.
+    tree.write("zbd/c1c/_wip/mis_anim.zbd", b"mis");
+    // A dot *inside* a name is legal, so this directory mounts on its own.
+    tree.write("zbd/c1c/M01.2/mis_anim.zbd", b"mis");
+    let found = install::discover(tree.root()).expect("the fixture installation is discovered");
+
+    let mut builder = SessionBuilder::new(context(Some("m01")));
+    let refused = match builder.mount_installation_missions(tree.root(), &found.diagnosis) {
+        Ok(_) => panic!("a mission directory that is no scope label cannot be mounted"),
+        Err(error) => error,
+    };
+    match refused {
+        SessionError::MissionScope {
+            mount,
+            directory,
+            reason,
+        } => {
+            assert_eq!(mount.as_str(), "mission-0", "{mount}");
+            assert_eq!(
+                directory, "zbd/c1c/_wip",
+                "the directory is carried in the installation's own spelling"
+            );
+            assert_eq!(
+                reason,
+                LabelError::BadFirst {
+                    label: "mission scope",
+                    ch: '_'
+                }
+            );
+        }
+        other => panic!("a refused mission scope is not {other:?}"),
+    }
+    assert_eq!(
+        builder.len(),
+        0,
+        "the refusal is immediate: the refused directory is the first one walked, so no mount \
+         joins the session"
+    );
+
+    // The name that only *looks* unusual is still a valid label, so a tree
+    // holding only that directory mounts it like any other mission's.
+    let dotted = TempTree::new("archives-mission-scope-dotted");
+    dotted.write("zbd/c1c/M01.2/mis_anim.zbd", b"mis");
+    let dotted_found =
+        install::discover(dotted.root()).expect("the fixture installation is discovered");
+    let mut builder = SessionBuilder::new(context(Some("m01")));
+    builder
+        .mount_installation_missions(dotted.root(), &dotted_found.diagnosis)
+        .map_err(|error| panic!("M01.2 folds to a valid label: {error}"))
+        .expect("the mission level mounts");
+    let session = builder.open();
+    let mounted: Vec<String> = session
+        .mounts()
+        .filter(|mount| mount.namespace().as_str() == MISSION_NAMESPACE)
+        .map(|mount| mount.container().to_owned())
+        .collect();
+    assert_eq!(
+        mounted,
+        vec!["zbd/c1c/M01.2".to_owned()],
+        "a dotted mission directory is an ordinary mission directory, and its mount carries the \
+         installation's own spelling"
+    );
+    let scope = session
+        .mounts()
+        .find(|mount| mount.namespace().as_str() == MISSION_NAMESPACE)
+        .expect("the one mission mount")
+        .scope()
+        .clone();
+    assert_eq!(
+        scope.mission.as_ref().map(MissionScope::as_str),
+        Some("m01.2"),
+        "the mission's own scope is its directory name folded to a label"
+    );
+    assert_eq!(
+        scope.world_group.as_ref().map(WorldGroup::as_relative),
+        Some(&RelativePath::new("zbd/c1c").expect("a valid world group")),
+        "bound to the world group it was found under"
     );
 }
 

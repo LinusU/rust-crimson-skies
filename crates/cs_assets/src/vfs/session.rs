@@ -57,12 +57,16 @@ pub const WORLD_NAMESPACE: &str = "world";
 ///
 /// This is the **mission level** the original's layout has (`ZBD/<world
 /// group>/<mission>`, F04-D task #687). It is a namespace of its own rather
-/// than more of [`WORLD_NAMESPACE`] because the original opens a mission's
-/// archives by an explicit path that no world group's directory contains, and
-/// because two mounts in one namespace holding the same member name would be
-/// an equal-priority collision the designed order cannot decide (F04
-/// non-negotiable behavior 3) — where the original instead has an explicit
-/// [root, mission, world] reader order ([`crate::vfs::reader`]).
+/// than more of [`WORLD_NAMESPACE`] because a mission archive is keyed by the
+/// member name of its **own** directory — `mission/default/mis_anim.zbd` — the
+/// way the original opens it, while inside a world group's mount the same file
+/// is spelled `M01/mis_anim.zbd`; keeping the levels apart means no lookup has
+/// to decide between two levels of the installation by precedence class, which
+/// is the *designed* order the original does not use (F04 non-negotiable
+/// behavior 2). The original decides reader members by **mount order** —
+/// root, then mission, then world — which is [`crate::vfs::reader`]'s job, and
+/// each mission mount is bound to its own world and mission, so a sibling
+/// mission is skipped rather than tied.
 pub const MISSION_NAMESPACE: &str = "mission";
 
 /// The next generation handed out; generations start at 1.
@@ -105,9 +109,12 @@ pub enum SessionError {
     /// context could ever be admitted to its mount.
     ///
     /// The directory is carried in the installation's own spelling, because
-    /// that is the name the walk found: a mission directory called e.g.
-    /// `M01.2` cannot be a label ([`MissionScope`] allows only lower-case
-    /// alphanumerics and `.`, `_`, `-`, and may not begin with a separator).
+    /// that is the name the walk found. A mission directory called e.g. `_wip`
+    /// cannot be a label ([`MissionScope`] allows only ASCII lower-case
+    /// alphanumerics and `.`, `_`, `-` after the first character, so a leading
+    /// separator, a space or a non-ASCII character is refused), and no retail
+    /// mission directory has such a name — this is the defensive path, not a
+    /// measured one.
     MissionScope {
         /// The mount that would have carried the directory.
         mount: MountId,
@@ -272,6 +279,14 @@ impl SessionBuilder {
     /// [`READER_LOOKUP_ORDER_STATUS`](crate::vfs::reader::READER_LOOKUP_ORDER_STATUS)
     /// reports that order as code-derived while the designed
     /// [`PRECEDENCE_ORDER_STATUS`] stays `designed`.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::MissionScope`] for a mission directory whose own name is
+    /// not a valid mission scope label, which no retail installation has. The
+    /// refusal is immediate and names that directory; the mounts added before
+    /// it stay, as for any other mount failure, so a caller can drop the
+    /// directory or mount the rest itself.
     pub fn mount_installation_missions(
         &mut self,
         host_root: &Path,
