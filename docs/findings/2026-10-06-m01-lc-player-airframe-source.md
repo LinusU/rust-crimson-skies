@@ -247,3 +247,73 @@ names, airframe names and digests only, never original bytes. Its `claim` is
 `implemented`, never `checked` or `verified_original`; the product unknowns
 above are limits on that claim, recorded here and in `review.method` rather
 than dropped from the machine-readable report.
+
+## 8. Review
+
+**Identities** (AGENTS.md's review section): the *implementer* was `bunny-2`
+in the session of 2026-10-06 (fresh context); the *reviewer* is `bunny-2` in a
+separate review session of 2026-10-06, also fresh — no earlier conversation
+about this branch — but the same agent name and model as the implementer, so
+this is **not** an independent instance, and Rally does not enforce reviewer
+assignment. Nothing here is `verified_original`: no original executable ran,
+and no owner approval is claimed.
+
+The branch was rebased onto `origin/main` at `d1f660a0` before review; the
+rebase applied cleanly, the commits it brought in touch no `Cargo.toml`,
+`Cargo.lock` or file this branch changes, and the review added commits of its
+own, so the full four checks (not the owner directive's lighter re-push set)
+were run.
+
+### Two problems found, fixed in review
+
+* **A report field was written instead of measured.** `airframe-source.json`'s
+  `measured_mission.player_plane_carried` was the literal `false` in the
+  harness's format string. The walk now derives it: any of M01's members
+  carrying `player_plane` sets it to `true`. On this installation it derives
+  `false`, so the report's meaning is unchanged — but the field is now an
+  observation of this run rather than an assertion the run could not contradict.
+* **The index lookup's equivalence was asserted, not pinned.** `airframe_index`
+  answers with `position` (first row that matches) while `0x426d80` answers
+  `11` (none) for a name two rows match; the two agree only while the display
+  names are distinct. The table test now pins that invariant (distinct after
+  case folding, as the original's `tolower` compares).
+
+### Mutation probes (each reverted; `git status --porcelain` empty afterwards)
+
+| probe | result |
+| --- | --- |
+| `airframe_index` returning `None` | 3 of the 5 `accept_m01_lc_player_airframe_source_*` tests fail: lookup, both `.zrd` shapes, retail |
+| `scenario_player_airframe` returning `None` | 2 fail: both `.zrd` shapes, retail |
+
+### Evidence regenerated on the rebased commit
+
+`docs/contracts/CLI-EVIDENCE.md` requires the reviewer to regenerate the report
+on the rebased commit. Run again on `candidate_tree` `a1a6788c…` (the tree the
+code under review was tested at; the report itself is committed on top of it),
+with the same commands as above: **62** reader archives walked, **1293**
+members decoded, **7** `player_plane` assignments (one `ia.zrd` per chapter
+except `ZBD/C2B/IA1`), 0 decode failures, **5/5** assertions — identical to the
+implementer's run — and `python3 tools/validate_evidence.py … --require-pass`
+→ `{"structurally_valid": true, "artifact_count": 2}`.
+
+### Commands run in review (exit codes)
+
+```text
+cargo fmt --all -- --check                                                   → 0
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings → 0
+cargo test --workspace --locked                                              → 0
+cargo test --workspace --locked -- accept_m01_lc_player_airframe_source \
+  --include-ignored                                                          → 0 (5 discovered, 5 executed, 5 passed)
+python3 tools/validate_evidence.py <acceptance.json> --artifact-root … \
+  --require-pass                                                             → 0
+```
+
+### Evidence convention kept
+
+`unknowns` stays `[]` and the report stays `--require-pass`-green, following
+the sibling M01-LC and F39 reports: every unresolved item above is recorded
+machine-readably in `review.method` in full and here in section 6 with its
+affected content and resolving task, and the report's own acceptance run has
+nothing unresolved in it. The report does **not** drop an open question to go
+green: the campaign airframe source, the heading's zero direction, the frame
+relation and the table's unused pointers remain open and are named above.
