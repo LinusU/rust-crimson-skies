@@ -55,11 +55,11 @@ use cs_app::objectives::{ObjectiveSession, SessionTick, lower_program};
 use cs_app::physics::PhysicsSession;
 use cs_app::scene::{NodeVisualTransform, SceneGeneration, SceneNodeBinding};
 use cs_content::animation::{
-    AnimationChannel, AnimationClip, EventMarker, Interpolation, LoopMode, SYNTHETIC_DOOR_MARKER,
-    SYNTHETIC_DOOR_OPEN_TICK, SYNTHETIC_PROPELLER_DURATION, SYNTHETIC_PROPELLER_GAMEPLAY_MARKER,
-    MaterialChannel, MaterialKey, SYNTHETIC_PROPELLER_GAMEPLAY_TICK, SYNTHETIC_PROPELLER_NODE,
-    SYNTHETIC_PROPELLER_PRESENTATION_MARKER, TransformChannel, TransformKey, TransformSample,
-    declared_synthetic_door_clip, declared_synthetic_propeller_clip,
+    AnimationChannel, AnimationClip, EventMarker, Interpolation, LoopMode, MaterialChannel,
+    MaterialKey, SYNTHETIC_DOOR_MARKER, SYNTHETIC_DOOR_OPEN_TICK, SYNTHETIC_PROPELLER_DURATION,
+    SYNTHETIC_PROPELLER_GAMEPLAY_MARKER, SYNTHETIC_PROPELLER_GAMEPLAY_TICK,
+    SYNTHETIC_PROPELLER_NODE, SYNTHETIC_PROPELLER_PRESENTATION_MARKER, TransformChannel,
+    TransformKey, TransformSample, declared_synthetic_door_clip, declared_synthetic_propeller_clip,
 };
 use cs_content::objectives::{
     SYNTHETIC_REACHED_WRECK, SYNTHETIC_SECONDARY, declared_synthetic_objectives,
@@ -1422,7 +1422,11 @@ fn accept_f20_c_marker_consumer_leaves_the_other_record_kinds_for_their_consumer
     let mut consumer = MissionMarkerConsumer::new(session(61), bound_cues(REACHED_WRECK));
     let delivery = consumer.drain(scene.world_mut().expect("the session is active"));
     assert_eq!(delivery.raised().len(), 1, "the marker reached the mission");
-    assert_eq!(delivery.drained(), 1, "the mission took the marker record only");
+    assert_eq!(
+        delivery.drained(),
+        1,
+        "the mission took the marker record only"
+    );
 
     // The second consumer, later on the same tick, still has its records.
     let world = scene.world_mut().expect("the session is active");
