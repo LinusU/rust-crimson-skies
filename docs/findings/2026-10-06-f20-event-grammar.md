@@ -239,6 +239,18 @@ of the seven except `generic_intro` and `player_setup` carries one.
   has started by that tick*, with the installation's own spelling and its
   measured span — not what the scene looks like. That is stated on
   `RecordPlayback::poses` itself so no caller can mistake it.
+
+  **Claim: `f20-anim.event-pose-transform-not-decoded`** (owner ruling,
+  2026-10-06, recorded here and in the evidence report). Acceptance criterion
+  3's *per-tick poses* is delivered **as statements, not as transforms**: the
+  report is the record's measured statement configuration per tick, and it is
+  not yet a transform pose. The claim id is a code constant
+  (`cs_app::animation::events::POSE_TRANSFORM_NOT_DECODED_CLAIM`, asserted by
+  `accept_f20_event_the_per_tick_report_follows_the_measured_timing`), so the
+  finding, the report and the API cannot drift on what the report still is
+  not. Nothing is split off by that ruling: this task keeps its full scope,
+  and the transform half stays an open, named gap whose resolving evidence is
+  an original run or the original's own source.
 * **The tag's second byte** (`1`, `2`, `3`) is measured as a value and
   unmeasured as a meaning; it travels on every `DecodedEvent` as `group`.
 * **The time unit** of `START_TIME` / `RUN_TIME` is unmeasured, so a duration
@@ -312,7 +324,7 @@ from this document.
 | the two-word event header, the walk, the corpus counts | `ObservedTool` | derived and checked over all 56 994 retail blocks by this repository |
 | the opcode → statement join and the class mapping's inputs | `ObservedTool` | 477 declaration/record pairs, 1 440 sequences, zero conflicts; the statements' spellings are the installation's own text |
 | `START_TIME` at word 0, `RUN_TIME` at the last word | `ObservedTool` | 70 and 109 joined statements with exact value matches, zero contradictions, plus the corpus-wide correlations above |
-| the four unjoined opcodes, opcode 5's position, payload bodies, the tag's second byte, the time unit | **unknown** | named above with their claim ids and affected content |
+| the four unjoined opcodes, opcode 5's position, payload bodies (and therefore transform poses: `f20-anim.event-pose-transform-not-decoded`), the tag's second byte, the time unit | **unknown** | named above with their claim ids and affected content |
 | what the original engine did with any of it | **unknown** | no original run |
 
 ## Review (2026-10-06)
@@ -343,6 +355,15 @@ human approval. What the review changed:
   says why", which is not true for a row refused for a *name* disagreement;
   and `carrier` / `AnimationRecordFacts::animation_refs` still said the event
   streams and the call statements were not decoded, which #690 ended.
+* **The owner's AC3 ruling (2026-10-06) is recorded, not silently applied.**
+  A pending `split_task` draft proposed splitting the transform half of
+  acceptance criterion 3 into its own subtask; the owner's ruling is to keep
+  this task's full scope through the review instead. The ruling therefore goes
+  into the finding and the evidence report, with its claim id
+  `f20-anim.event-pose-transform-not-decoded`: the per-tick report is delivered
+  **as statements, not as transforms**, it is not yet a transform pose, and the
+  claim id is a code constant the task's test asserts, so the three places
+  cannot drift apart. Nothing was split and no criterion was narrowed.
 * **Evidence regenerated** on the reviewed commit: the report now lists nine
   `accept_f20_event_` tests and this review's identity and method.
 

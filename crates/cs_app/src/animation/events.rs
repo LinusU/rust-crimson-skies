@@ -49,7 +49,11 @@
 //!   [`RUN_TIME_NOT_MEASURED_CLAIM`] instead.
 //! * **Payload bodies beyond those two timing fields stay raw.** A name field,
 //!   a node index or a colour is not read here, so no transform, no unit and
-//!   no pose is recovered from an event.
+//!   no pose is recovered from an event. What a caller gets per tick is
+//!   therefore the record's **statement configuration**, not a transform: the
+//!   owner's ruling of 2026-10-06 records that under
+//!   [`POSE_TRANSFORM_NOT_DECODED_CLAIM`], and that claim — not a guessed
+//!   transform — is what stands between this module and a real pose.
 //! * **Nothing says what the 2000 engine did** with any of it. `retail` is
 //!   file access, not an original run: every measurement here is
 //!   [`ClaimStatus::ObservedTool`] and never `verified_original`.
@@ -75,6 +79,18 @@ pub const RUN_TIME_NOT_MEASURED_CLAIM: &str = "f20-anim.event-run-time-position-
 
 /// The claim a stream that does not walk carries.
 pub const EVENT_STREAM_NOT_DECODED_CLAIM: &str = "f20-anim.sequence-event-stream-not-decoded";
+
+/// The claim a per-tick report carries instead of a transform (owner ruling,
+/// 2026-10-06, task #690's AC3).
+///
+/// A record's per-tick report is its **statement configuration** — which
+/// statements the record had started by that tick, with their measured spans —
+/// and **not** yet a transform pose: no payload field, no stored unit (#436),
+/// no original tick rate and no motion interpolation are measured, so no
+/// transform can be read out of an event. The claim id is
+/// machine-readable so a consumer, a report and the finding cannot drift apart
+/// on what the report still is not.
+pub const POSE_TRANSFORM_NOT_DECODED_CLAIM: &str = "f20-anim.event-pose-transform-not-decoded";
 
 /// Why a record containing an unmeasured opcode is refused.
 pub const OPCODE_NOT_MEASURED_REASON: &str = "the block carries an opcode no declaration of the installation joins to a statement, so its \

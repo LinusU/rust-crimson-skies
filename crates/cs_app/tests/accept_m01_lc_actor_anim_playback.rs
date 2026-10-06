@@ -2082,6 +2082,23 @@ fn accept_f20_event_the_per_tick_report_follows_the_measured_timing() {
         playback.poses(0).is_empty(),
         "a rate of zero samples nothing instead of inventing a timeline"
     );
+
+    // The owner's AC3 ruling of 2026-10-06 travels as a claim id, so a caller
+    // cannot mistake a row of this report for a transform: each row holds the
+    // installation's own statement spellings with their measured spans, and
+    // the gap between that and a transform is named, not guessed.
+    assert_eq!(
+        cs_app::animation::events::POSE_TRANSFORM_NOT_DECODED_CLAIM,
+        "f20-anim.event-pose-transform-not-decoded"
+    );
+    assert!(
+        poses.iter().all(|pose| {
+            pose.statements().iter().all(|statement| {
+                !statement.statement.is_empty() && statement.end_time >= statement.start_time
+            })
+        }),
+        "every row holds measured statements with their spans: statements, not transforms"
+    );
 }
 
 /// The measured reason text travels with the refusal, so a report and its

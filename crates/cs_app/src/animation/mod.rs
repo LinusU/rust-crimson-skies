@@ -201,8 +201,9 @@ pub use carrier::{
 };
 pub use events::{
     DecodedEvent, EVENT_GRAMMAR_CLAIM, EVENT_HEADER_BYTES, EVENT_STREAM_NOT_DECODED_CLAIM,
-    EventClass, EventStreamError, OPCODE_NOT_MEASURED_CLAIM, RUN_TIME_NOT_MEASURED_CLAIM,
-    STORED_OPCODES, decode_event_stream, opcode_info, sequence_duration, walk_event_stream,
+    EventClass, EventStreamError, OPCODE_NOT_MEASURED_CLAIM, POSE_TRANSFORM_NOT_DECODED_CLAIM,
+    RUN_TIME_NOT_MEASURED_CLAIM, STORED_OPCODES, decode_event_stream, opcode_info,
+    sequence_duration, walk_event_stream,
 };
 pub use mission::{
     AMBIGUOUS_DECLARATION_REASON, AnimationRecordFacts, AnimationTarget, CarrierFact,

@@ -4135,7 +4135,11 @@ const F20E_OPEN_STATE: &str = "OPEN, and not this task's blocker: (1) OPCODES 13
      no name field, node index or colour is read out of an event, so NO TRANSFORM POSE is produced \
      from one — the stored unit (#436), the original's animation tick rate \
      (f20-anim.tick-rate-unmeasured) and a motion statement's interpolation are all unmeasured, and \
-     the per-tick report says which statements the record has started, not what it looks like; \
+     the per-tick report says which statements the record has started, not what it looks like — \
+     recorded under the claim id f20-anim.event-pose-transform-not-decoded (owner ruling, \
+     2026-10-06): AC3's PER-TICK POSES IS DELIVERED AS STATEMENTS, NOT AS TRANSFORM POSES, the \
+     report is not yet a transform pose, nothing is split off by that ruling and the task keeps its \
+     full scope; \
      (4) THE EVENT TAG'S SECOND BYTE (1, 2 or 3) is measured as a value and unmeasured as a \
      meaning; (5) the original's time unit for START_TIME/RUN_TIME is unmeasured (seconds is \
      plausible, unverified), so durations are reported in the original's own unit and never \
@@ -4174,6 +4178,7 @@ const F20E_REPORT: M01lcReport = M01lcReport {
         "OPCODES 13, 17, 26 AND 28 JOIN NO DECLARATION",
         "OPCODE 5",
         "NO TRANSFORM POSE",
+        "f20-anim.event-pose-transform-not-decoded",
         "SAME agent identity",
     ],
 };

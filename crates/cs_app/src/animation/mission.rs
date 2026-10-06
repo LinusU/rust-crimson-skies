@@ -604,6 +604,10 @@ impl RecordPlayback {
     /// spelling, and **not** a transform: no `PoseSample` is produced from an
     /// event, because the stored unit (#436), the original's animation tick
     /// rate and the interpolation of a motion statement are all unmeasured.
+    /// That gap has its own claim id,
+    /// [`super::events::POSE_TRANSFORM_NOT_DECODED_CLAIM`] (owner ruling,
+    /// 2026-10-06): a caller that needs a transform must be told this is
+    /// statements, not transforms, rather than handed a guess.
     ///
     /// The caller states the tick rate: `ticks_per_second` is the caller's own
     /// timeline, not a measurement of the original's (see
