@@ -22,7 +22,9 @@
 //! `### F08-C`): texture archives resolved through a content session, the
 //! image catalog they populate, the handoff to the GPU upload boundary, and
 //! the measured rule that picks which of a world's `texture.zbd` /
-//! `rtexture*.zbd` tiers a world load opens.
+//! `rtexture*.zbd` tiers a world load opens, and the measured fold a requested
+//! texture name is searched under
+//! ([`textures::folded_texture_name`]).
 //!
 //! [`detail`] is the detail-settings half of that stage (task #688): the
 //! surface that owns the `TextureMemory_HW`/`TextureMemory_SW` members and the

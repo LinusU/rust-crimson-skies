@@ -18,7 +18,10 @@
 //! * **the lookup contract.** [`TextureCatalog::resolve`] takes a
 //!   [`TextureRef`] — archive key plus stored name — and returns one exact
 //!   origin with its ordered attempts: the VFS trace that chose the archive,
-//!   then the entries that hold the name. There is no search across other
+//!   then the entries that hold the name. The request is folded the measured
+//!   way first ([`folded_texture_name`], `0x531930`) and the folded spelling
+//!   is compared against the archive's stored spellings exactly; the stored
+//!   spellings are never folded. There is no search across other
 //!   archives: a name the archive does not hold is
 //!   [`TextureResolveError::NotFound`], and a name it holds twice is
 //!   [`TextureResolveError::Duplicate`] with both entry indices.
@@ -71,7 +74,8 @@
 //!   that exists. There is no tier-to-tier fallback for a single texture.
 //! * [`texture_lookup_order`] is the order one texture **name** is looked up
 //!   in: the world's archive, then the shared `rimage.zbd`, then a loose
-//!   `<name>.tif` and `<name>.bmp`.
+//!   `<name>.tif` and `<name>.bmp`. It folds the request through the same
+//!   [`folded_texture_name`] as [`TextureCatalog::resolve`].
 //!
 //! [`TextureCatalog::open_world`] runs the selection and opens the chosen
 //! archive, so no caller has to name a tier itself.
@@ -79,8 +83,10 @@
 //! Only the ZBD texture package is catalogued here; the conventional BMP and
 //! TGA readers have no archive-member role yet. Design decisions and
 //! unknowns: `docs/findings/2026-09-28-f08-c-texture-catalog-and-upload-boundary.md`,
-//! and for the selection rule
-//! `docs/findings/2026-10-05-t352-texture-archive-selection-rule.md`.
+//! for the selection rule
+//! `docs/findings/2026-10-05-t352-texture-archive-selection-rule.md`, and for
+//! the name fold
+//! `docs/findings/2026-10-06-t689-texture-name-case-fold.md`.
 
 use std::fmt;
 use std::ops::Range;
@@ -127,13 +133,51 @@ impl fmt::Display for TextureId {
     }
 }
 
+/// The spelling one texture name is searched under, folded the way the
+/// original folds it (`0x531930`).
+///
+/// Measured: `0x531930` copies the requested name into its own 256-byte
+/// buffer (`0x53195d`–`0x53196c`) and runs the C runtime's `strlwr` loop over
+/// the copy — for every byte but the terminator, `if isupper(c) then c =
+/// tolower(c)` through `MSVCRT.dll!isupper` (`0xa201a0`) and
+/// `MSVCRT.dll!tolower` (`0xa201cc`), in the C locale (`0x531993`–`0x5319c9`).
+/// It then binary-searches the archive's directory, comparing the **stored**
+/// spelling byte for byte (`0x5319f7`: an inline two-bytes-at-a-time `strcmp`).
+///
+/// Two consequences this function exists to make impossible to get apart:
+///
+/// * the fold is ASCII-only, because `isupper`/`tolower` in the C locale are:
+///   `to_ascii_lowercase`, not Rust's Unicode-aware [`str::to_lowercase`];
+/// * it is applied to the **request** only. A stored name is never folded —
+///   `0x531280` copies the table verbatim into the directory the search walks —
+///   so a name stored as `Sky` is still not found by `Sky` or `sky`.
+///
+/// Both [`TextureCatalog::resolve`] and [`texture_lookup_order`] fold through
+/// this one function, so the two agree about the spelling they look up.
+///
+/// ```
+/// use cs_content::textures::folded_texture_name;
+///
+/// assert_eq!(folded_texture_name("SKY"), "sky");
+/// // ASCII only: a byte `isupper` does not know is left alone.
+/// assert_eq!(folded_texture_name("Straße"), "straße");
+/// assert_eq!(folded_texture_name("İ"), "İ");
+/// ```
+pub fn folded_texture_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
 /// What a caller asks for: the texture stored as `name` in the archive
 /// `archive` resolves to under the session's context.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TextureRef {
     /// The archive key, e.g. `world/default/texture.zbd`.
     pub archive: AssetKey,
-    /// The stored name, compared exactly (no case folding, no aliases).
+    /// The name to look for. The request is folded with
+    /// [`folded_texture_name`] before the archive's directory is searched —
+    /// the fold the original applies (`0x531930`) — and then compared against
+    /// the stored spelling exactly. No aliases, no fallback to another
+    /// archive.
     pub name: String,
 }
 
@@ -346,9 +390,11 @@ pub enum TextureAttempt {
         /// The VFS attempts.
         trace: ResolutionTrace,
     },
-    /// The archive's table was searched for the exact stored name.
+    /// The archive's table was searched for the folded name: the request as
+    /// [`folded_texture_name`] spells it, compared against the stored
+    /// spellings byte for byte.
     Name {
-        /// The name searched for.
+        /// The name searched for, folded.
         name: String,
         /// Every entry that stores it, in table order.
         entries: Vec<usize>,
@@ -893,14 +939,21 @@ impl TextureCatalog {
 
     /// Resolves `reference` to exactly one stored texture.
     ///
+    /// The request is folded with [`folded_texture_name`] and the folded
+    /// spelling is compared against the archive's **stored** spellings
+    /// exactly, which is what the original does (`0x531930`): it folds the
+    /// requested name and byte-compares the result against the directory it
+    /// read verbatim. So `"SKY"` finds a stored `sky`, and a stored `Sky` is
+    /// found by neither `Sky` nor `sky`.
+    ///
     /// # Errors
     ///
     /// [`TextureResolveError::ForeignSession`] for another session,
     /// [`TextureResolveError::ArchiveNotCatalogued`] or
     /// [`TextureResolveError::ArchiveFailed`] when the archive is not
-    /// available, [`TextureResolveError::NotFound`] when it does not store
-    /// the name and [`TextureResolveError::Duplicate`] when it stores it more
-    /// than once.
+    /// available, [`TextureResolveError::NotFound`] when no entry stores the
+    /// folded name and [`TextureResolveError::Duplicate`] when more than one
+    /// does.
     pub fn resolve(
         &self,
         session: &ContentSession,
@@ -908,10 +961,11 @@ impl TextureCatalog {
     ) -> Result<ResolvedTexture, TextureResolveError> {
         self.require_session(session)?;
         let archive = self.archive(&reference.archive)?;
+        let folded = folded_texture_name(&reference.name);
         let entries: Vec<usize> = archive
             .entries
             .iter()
-            .filter(|entry| entry.id.name == reference.name)
+            .filter(|entry| entry.id.name == folded)
             .map(|entry| entry.id.entry_index)
             .collect();
         let attempts = vec![
@@ -921,7 +975,7 @@ impl TextureCatalog {
                 trace: archive.trace.clone(),
             },
             TextureAttempt::Name {
-                name: reference.name.clone(),
+                name: folded,
                 entries: entries.clone(),
             },
         ];
@@ -1833,9 +1887,16 @@ impl TextureLookupSource {
 /// Only sources that exist are listed, so the first entry is the original's
 /// answer.
 ///
-/// The name is folded to lower case first, because the in-archive search
-/// (`0x531930`) folds it, and the folded spelling is the one the loose file
-/// names are built from.
+/// The in-archive search folds the request with [`folded_texture_name`] — the
+/// measured fold of `0x531930`, the same one [`TextureCatalog::resolve`]
+/// applies, so the two agree about the spelling a name is searched under. The
+/// loose file names are built from that folded spelling here, whereas the
+/// original builds them from the request as its caller passed it
+/// (`sprintf(buf, "%s.tif", name)` at `0x534cf0`) and lets the host file
+/// probe, which folds case, match it. The two cannot differ on a host file
+/// system that folds case unless the same directory holds both `sky.tif` and
+/// `SKY.tif`; retail ships no loose texture file at all, and the file probe's
+/// own case handling is already recorded as not established.
 ///
 /// The original also keeps a toggle that starts each search in whichever of
 /// the two archive lists it names — the world's first — and flips it when a
@@ -1847,7 +1908,7 @@ pub fn texture_lookup_order(
     files: &TextureFiles,
     world_archive: &str,
 ) -> Vec<TextureLookupSource> {
-    let folded = name.to_lowercase();
+    let folded = folded_texture_name(name);
     let mut sources = Vec::new();
     if let Some(file) = files.find(world_archive) {
         sources.push(TextureLookupSource::WorldArchive { file });
@@ -2273,11 +2334,14 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
-        // Stored names are compared exactly.
+        // The fold is not a fallback: world one stores no `smoke` in any
+        // case, so a mixed-case request still fails visibly here instead of
+        // reaching world two's archive. The fold itself is settled by the
+        // `accept_f08_c_case_fold_` tests.
         assert_eq!(
             catalog
-                .resolve(&session, &texture_ref("SKY"))
-                .expect_err("no case folding")
+                .resolve(&session, &texture_ref("SmOkE"))
+                .expect_err("world one stores no smoke in any case")
                 .code(),
             "texture_not_found"
         );
@@ -3818,16 +3882,469 @@ mod tests {
 
         // The two namespaces are disjoint, so the lookup order cannot change an
         // answer: every world archive name is absent from `rimage.zbd`.
-        let world_names: std::collections::BTreeSet<String> =
-            archive.ids().map(|id| id.name.to_lowercase()).collect();
+        let world_names: std::collections::BTreeSet<String> = archive
+            .ids()
+            .map(|id| folded_texture_name(&id.name))
+            .collect();
         let shared = image
             .ids()
-            .filter(|id| world_names.contains(&id.name.to_lowercase()))
+            .filter(|id| world_names.contains(&folded_texture_name(&id.name)))
             .count();
         assert_eq!(shared, 0, "no name is in both archives");
         eprintln!(
             "F08-C selection: 8 world groups, top tiers 9-15, software renderer and every dropdown row select {}",
             WORLD_ARCHIVE_FILE
+        );
+    }
+
+    // --- the texture-name case fold (task #689) ------------------------------
+
+    /// One world archive whose table holds names the fold decides between:
+    /// `Sky` and `sky` fold onto one key but are two distinct stored
+    /// spellings, `Mixed` is stored in a case no request can fold onto, and
+    /// `dup` is stored twice under one spelling.
+    fn mixed_case_archive() -> Vec<u8> {
+        package(&[
+            Tex::direct("Sky", OPAQUE, 1, 1, &[MAGENTA]),
+            Tex::direct("sky", OPAQUE, 3, 2, &SKY_C1),
+            Tex::direct("Mixed", OPAQUE, 1, 1, &[WHITE]),
+            Tex::direct("dup", OPAQUE, 1, 1, &[RED]),
+            Tex::direct("dup", OPAQUE, 1, 1, &[BLUE]),
+        ])
+    }
+
+    /// A one-world installation whose world archive is [`mixed_case_archive`].
+    fn mixed_case_tree() -> Tree {
+        let tree = Tree::new();
+        tree.write("ZBD/c1/texture.zbd", &mixed_case_archive());
+        tree
+    }
+
+    /// The session and catalog over [`mixed_case_tree`], with the one archive
+    /// opened.
+    fn mixed_case_catalog(tree: &Tree) -> (ContentSession, TextureCatalog) {
+        let session = world_session(&tree.0, "ZBD/c1");
+        let catalog = TextureCatalog::open(&session, &[archive_key(WORLD_ARCHIVE_FILE)]);
+        assert_eq!(catalog.failures().count(), 0, "the archive opens");
+        assert_eq!(catalog.archives().count(), 1);
+        (session, catalog)
+    }
+
+    /// The requested spelling a `resolve` reported in its name attempt.
+    fn searched_name(catalog: &TextureCatalog, session: &ContentSession, request: &str) -> String {
+        let reference = TextureRef::new(archive_key(WORLD_ARCHIVE_FILE), request);
+        match catalog.resolve(session, &reference) {
+            Ok(resolved) => match resolved.attempts().last() {
+                Some(TextureAttempt::Name { name, .. }) => name.clone(),
+                other => panic!("unexpected attempts {other:?}"),
+            },
+            Err(TextureResolveError::NotFound { attempts, .. })
+            | Err(TextureResolveError::Duplicate { attempts, .. }) => match attempts.last() {
+                Some(TextureAttempt::Name { name, .. }) => name.clone(),
+                other => panic!("unexpected attempts {other:?}"),
+            },
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// The measured fold of `0x531930` is in force: a mixed-case request
+    /// resolves to the entry that stores the lower-case name, the attempt
+    /// records the folded spelling that was searched, and the identity keeps
+    /// the archive's own spelling.
+    #[test]
+    fn accept_f08_c_case_fold_a_mixed_case_request_resolves_the_folded_stored_name() {
+        let tree = mixed_case_tree();
+        let (session, catalog) = mixed_case_catalog(&tree);
+
+        // Every spelling reaches the stored `sky`, never the neighbouring
+        // `Sky` entry this archive also holds.
+        for request in ["sky", "SKY", "Sky", "sKy"] {
+            let resolved = catalog
+                .resolve(
+                    &session,
+                    &TextureRef::new(archive_key(WORLD_ARCHIVE_FILE), request),
+                )
+                .unwrap_or_else(|error| panic!("{request} resolves: {error}"));
+            assert_eq!(
+                resolved.id().entry_index,
+                1,
+                "{request} finds the stored sky"
+            );
+            assert_eq!(
+                resolved.id().name,
+                "sky",
+                "{request}: identity keeps the archive's spelling"
+            );
+            assert_eq!(
+                resolved.id().archive.as_str(),
+                "ZBD/c1/texture.zbd",
+                "{request}: the same archive, not another"
+            );
+            assert!(matches!(
+                &resolved.attempts()[1],
+                TextureAttempt::Name { name, entries } if name == "sky" && entries == &vec![1]
+            ));
+            assert_eq!(
+                words(
+                    &catalog
+                        .prepare_upload(&session, &resolved)
+                        .expect("uploads")
+                ),
+                SKY_C1.to_vec(),
+                "{request} decodes the stored texels"
+            );
+        }
+
+        // Every spelling of the request reaches the same texture.
+        let ids: std::collections::BTreeSet<_> = ["sky", "SKY", "Sky", "sKy"]
+            .iter()
+            .map(|request| {
+                catalog
+                    .resolve(
+                        &session,
+                        &TextureRef::new(archive_key(WORLD_ARCHIVE_FILE), request),
+                    )
+                    .expect("resolves")
+                    .id()
+                    .clone()
+            })
+            .collect();
+        assert_eq!(ids.len(), 1, "one texture, four spellings: {ids:?}");
+    }
+
+    /// The fold is applied to the request only, as the original does: it folds
+    /// with the C locale's `isupper`/`tolower`, and it compares the folded
+    /// spelling against the stored bytes without folding them. A stored name in
+    /// another case is therefore unreachable by any spelling of the request,
+    /// which is what separates this from a case-insensitive comparison.
+    #[test]
+    fn accept_f08_c_case_fold_folds_the_request_and_not_the_stored_name() {
+        let tree = mixed_case_tree();
+        let (session, catalog) = mixed_case_catalog(&tree);
+
+        for request in ["Mixed", "mixed", "MIXED", "mIxEd"] {
+            let error = catalog
+                .resolve(
+                    &session,
+                    &TextureRef::new(archive_key(WORLD_ARCHIVE_FILE), request),
+                )
+                .expect_err("the stored spelling is `Mixed`, which no request folds onto");
+            assert_eq!(error.code(), "texture_not_found", "{request}");
+            match &error {
+                TextureResolveError::NotFound { attempts, .. } => assert!(matches!(
+                    &attempts[1],
+                    TextureAttempt::Name { name, entries }
+                        if name == "mixed" && entries.is_empty()
+                )),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+
+        // The fold is ASCII, because `isupper`/`tolower` in the C locale are:
+        // bytes outside `A..=Z` are left alone, which is not what a Unicode
+        // lower-casing would do (`İ` would become `i̇`, `ẞ` would become `ß`).
+        assert_eq!(folded_texture_name("SKY"), "sky");
+        assert_eq!(folded_texture_name("Straße"), "straße");
+        assert_eq!(folded_texture_name("İ"), "İ");
+        assert_eq!(folded_texture_name("ÀÉÎ"), "ÀÉÎ");
+        assert_eq!(folded_texture_name("ẞ"), "ẞ");
+        assert_eq!(folded_texture_name("A1_-."), "a1_-.");
+
+        // `resolve` and `texture_lookup_order` fold through that one function,
+        // so the two agree about the spelling a name is searched under.
+        let files = TextureFiles::new_with([
+            TextureDirectory::world(
+                "zbd/c1",
+                vec![WORLD_ARCHIVE_FILE.to_owned(), "sky.tif".to_owned()],
+            ),
+            TextureDirectory::global(vec![IMAGE_ARCHIVE_FILE.to_owned()]),
+        ]);
+        for request in ["sky", "SKY", "Sky"] {
+            assert_eq!(
+                searched_name(&catalog, &session, request),
+                folded_texture_name(request),
+                "{request}: the catalog searches the folded spelling"
+            );
+            let loose: Vec<String> = texture_lookup_order(request, &files, WORLD_ARCHIVE_FILE)
+                .iter()
+                .map(|source| source.file().name().to_owned())
+                .collect();
+            assert_eq!(
+                loose,
+                vec![
+                    WORLD_ARCHIVE_FILE.to_owned(),
+                    IMAGE_ARCHIVE_FILE.to_owned(),
+                    format!("{}.tif", folded_texture_name(request)),
+                ],
+                "{request}: the loose name is built from the same fold"
+            );
+        }
+
+        // Both paths fold alike down to the bytes, not merely alike on ASCII.
+        // A directory that lists `skyİ.tif` is reached by the request `SKYİ`
+        // only under the ASCII fold: a Unicode lower-casing rewrites `İ` to
+        // `i` + a combining dot and probes a name that is not listed.
+        const NON_ASCII: &str = "SKYİ";
+        assert_eq!(
+            folded_texture_name(NON_ASCII),
+            "skyİ",
+            "the measured fold keeps the byte `isupper` does not know"
+        );
+        assert_ne!(
+            folded_texture_name(NON_ASCII),
+            NON_ASCII.to_lowercase(),
+            "which is what a Unicode fold would have produced"
+        );
+        let unicode = TextureFiles::new_with([
+            TextureDirectory::world(
+                "zbd/c1",
+                vec![WORLD_ARCHIVE_FILE.to_owned(), "skyİ.tif".to_owned()],
+            ),
+            TextureDirectory::global(Vec::new()),
+        ]);
+        assert_eq!(
+            texture_lookup_order(NON_ASCII, &unicode, WORLD_ARCHIVE_FILE)
+                .last()
+                .map(|source| source.file().name().to_owned()),
+            Some("skyİ.tif".to_owned()),
+            "`texture_lookup_order` folds ASCII-only, like `resolve`"
+        );
+        assert_eq!(
+            searched_name(&catalog, &session, NON_ASCII),
+            "skyİ",
+            "`resolve` searched the ASCII-folded spelling, not the Unicode one"
+        );
+    }
+
+    /// The fold never merges two stored spellings and never invents a
+    /// candidate: identity keeps the archive's spelling, a name stored twice
+    /// under one spelling is still refused as a duplicate, and a stored `Sky`
+    /// is not silently chosen between with the stored `sky`.
+    #[test]
+    fn accept_f08_c_case_fold_a_stored_name_is_never_merged_by_the_fold() {
+        let tree = mixed_case_tree();
+        let (session, catalog) = mixed_case_catalog(&tree);
+
+        // Two stored spellings that fold onto one key stay two ids, and the
+        // request reaches only the lower-case one.
+        let archive = catalog.archives().next().expect("one archive");
+        let names: Vec<&str> = archive.ids().map(|id| id.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Sky", "sky", "Mixed", "dup", "dup"],
+            "identity keeps every stored spelling, folded or not"
+        );
+        let resolved = catalog
+            .resolve(
+                &session,
+                &TextureRef::new(archive_key(WORLD_ARCHIVE_FILE), "sky"),
+            )
+            .expect("the lower-case entry resolves");
+        assert_eq!(resolved.id().entry_index, 1);
+        assert_ne!(
+            resolved.id(),
+            archive
+                .ids()
+                .find(|id| id.entry_index == 0)
+                .expect("the stored `Sky` entry"),
+            "`Sky` and `sky` keep distinct identities"
+        );
+
+        // A name stored twice under one spelling is still a visible duplicate,
+        // whichever case the request is in, and it names both entries.
+        for request in ["dup", "DUP", "Dup"] {
+            match catalog.resolve(
+                &session,
+                &TextureRef::new(archive_key(WORLD_ARCHIVE_FILE), request),
+            ) {
+                Err(TextureResolveError::Duplicate { attempts, .. }) => assert!(
+                    matches!(
+                        &attempts[1],
+                        TextureAttempt::Name { name, entries }
+                            if name == "dup" && entries == &vec![3, 4]
+                    ),
+                    "{request}"
+                ),
+                other => panic!("expected a duplicate for {request}, got {other:?}"),
+            }
+        }
+
+        // The catalog rows are unchanged by the fold: every stored entry is a
+        // row under its own spelling.
+        let rows: Vec<(usize, String)> = catalog
+            .records()
+            .iter()
+            .filter_map(|record| {
+                record
+                    .id
+                    .as_ref()
+                    .map(|id| (id.entry_index, id.name.clone()))
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (0, "Sky".to_owned()),
+                (1, "sky".to_owned()),
+                (2, "Mixed".to_owned()),
+                (3, "dup".to_owned()),
+                (4, "dup".to_owned()),
+            ]
+        );
+    }
+
+    /// The census the fold decision rests on, run over one archive: every
+    /// stored name is already the folded spelling, no two names fold onto each
+    /// other, and the directory is sorted the way the original's binary search
+    /// needs. Returns the name count.
+    ///
+    /// Together these say the fold cannot change which entry the byte
+    /// comparison finds for retail data, and that it merges no two candidates
+    /// into a duplicate.
+    fn fold_census(archive: &TextureArchive) -> usize {
+        let stored: Vec<String> = archive.ids().map(|id| id.name.clone()).collect();
+        let not_folded: Vec<&String> = stored
+            .iter()
+            .filter(|name| *name != &folded_texture_name(name))
+            .collect();
+        assert!(
+            not_folded.is_empty(),
+            "{}: every stored name is already the folded spelling, but \
+             {not_folded:?} are not",
+            archive.path()
+        );
+        let folded: std::collections::BTreeSet<String> = stored
+            .iter()
+            .map(|name| folded_texture_name(name))
+            .collect();
+        assert_eq!(
+            folded.len(),
+            stored.len(),
+            "{}: no two stored names fold onto one",
+            archive.path()
+        );
+        let mut sorted = stored.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            stored,
+            "{}: the stored directory is sorted, so a linear scan reaches \
+             the entry the binary search reaches",
+            archive.path()
+        );
+        stored.len()
+    }
+
+    /// Asks every name of `catalog`'s archives for in upper case and checks it
+    /// reaches the entry that stores the lower-case spelling, with the same id
+    /// and the same upload. Returns how many names were asked for.
+    fn mixed_case_round_trip(
+        catalog: &TextureCatalog,
+        session: &ContentSession,
+        limit: usize,
+    ) -> usize {
+        let mut asked = 0usize;
+        for archive in catalog.archives() {
+            let key = archive.key().clone();
+            for id in archive.ids().take(limit) {
+                let request = id.name.to_ascii_uppercase();
+                assert_ne!(request, id.name, "{}: the request is mixed case", id.name);
+                let reference = |name: &str| TextureRef::new(key.clone(), name);
+                let mixed = catalog
+                    .resolve(session, &reference(&request))
+                    .unwrap_or_else(|error| panic!("{request} in {}: {error}", archive.path()));
+                let lower = catalog
+                    .resolve(session, &reference(&id.name))
+                    .unwrap_or_else(|error| panic!("{} in {}: {error}", id.name, archive.path()));
+                assert_eq!(mixed.id(), id, "{request} finds the stored entry");
+                assert_eq!(mixed.id(), lower.id());
+                assert_eq!(
+                    catalog
+                        .prepare_upload(session, &mixed)
+                        .expect("the mixed-case request uploads"),
+                    catalog
+                        .prepare_upload(session, &lower)
+                        .expect("the lower-case request uploads"),
+                    "{request} uploads the stored texture of {}",
+                    archive.path()
+                );
+                asked += 1;
+            }
+        }
+        asked
+    }
+
+    /// Retail: every stored name of every texture archive is already the
+    /// folded spelling and no two fold onto each other, so adopting the fold
+    /// cannot change an answer for retail data; and a mixed-case request then
+    /// reaches the same entry, and the same texels, as the lower-case one.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f08_c_case_fold_retail_stored_names_are_already_folded() {
+        let dir = std::env::var_os("CS_GAME_DIR")
+            .expect("CS_GAME_DIR must point at the original installation for this test");
+        let root = PathBuf::from(dir);
+        assert!(
+            root.is_dir(),
+            "CS_GAME_DIR {} is not a directory",
+            root.display()
+        );
+        let found = install::discover(&root).expect("installation is discovered");
+
+        let mut archives = 0usize;
+        let mut names = 0usize;
+        let mut asked = 0usize;
+        for group in [
+            "ZBD/C1", "ZBD/C1B", "ZBD/C1C", "ZBD/C2", "ZBD/C2B", "ZBD/C3", "ZBD/C4", "ZBD/C5",
+        ] {
+            // Every archive the world group ships, so the census covers the
+            // whole texture family and not only the tier a load selects.
+            let keys: Vec<AssetKey> = search_list(&root, group)
+                .directory(0)
+                .expect("the world directory")
+                .files()
+                .iter()
+                .filter(|name| {
+                    name.as_str() == WORLD_ARCHIVE_FILE || tier_number(name.as_str()).is_some()
+                })
+                .map(|name| archive_key(name))
+                .collect();
+            assert!(
+                !keys.is_empty(),
+                "{group} ships the unnumbered archive and its tiers"
+            );
+            let session = session_of(&root, &found, group);
+            let catalog = TextureCatalog::open(&session, &keys);
+            assert_eq!(
+                catalog.failures().count(),
+                0,
+                "{group}: every texture archive opens"
+            );
+            archives += catalog.archives().count();
+            for archive in catalog.archives() {
+                names += fold_census(archive);
+            }
+            asked += mixed_case_round_trip(&catalog, &session, 64);
+        }
+
+        // The shared image archive is the other namespace the original
+        // searches, and it answers under the same rule.
+        let session = session_of(&root, &found, "ZBD/C1");
+        let image_key =
+            AssetKey::from_spelling(INSTALL_NAMESPACE, "zbd/rimage.zbd", TEXTURE_ARCHIVE_VARIANT)
+                .expect("the image archive key is valid");
+        let image_catalog = TextureCatalog::open(&session, std::slice::from_ref(&image_key));
+        assert_eq!(image_catalog.failures().count(), 0, "rimage.zbd opens");
+        archives += image_catalog.archives().count();
+        for archive in image_catalog.archives() {
+            names += fold_census(archive);
+        }
+        asked += mixed_case_round_trip(&image_catalog, &session, 64);
+
+        eprintln!(
+            "T689 case fold: {archives} retail texture archives, {names} stored names, all \
+             already the folded spelling and pairwise distinct under it; {asked} mixed-case \
+             requests reached the stored entry"
         );
     }
 }

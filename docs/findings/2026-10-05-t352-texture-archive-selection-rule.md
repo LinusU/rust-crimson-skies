@@ -281,15 +281,16 @@ is equivalent.
 
 ## Recorded unknowns and limitations
 
-* **The name lookup folds case; `TextureCatalog::resolve` does not.** The
-  in-archive search lower-cases the requested name (`0x531930`).
-  `texture_lookup_order` folds it and builds the loose file names from the
-  folded spelling. `TextureCatalog::resolve` still compares stored names
-  exactly — F08-C's deliberate "no case folding, no aliases" decision, which its
-  own `accept_f08_c_missing_or_duplicate_name_fails_visibly_without_fallback`
-  test asserts. Every retail stored name is lower case, so the two agree for a
-  lower-case request; a mixed-case request would differ. Whether to adopt the
-  fold in `resolve` is filed as its own task (#689).
+* ~~**The name lookup folds case; `TextureCatalog::resolve` does not.**~~
+  **Settled by task #689** (`docs/findings/2026-10-06-t689-texture-name-case-fold.md`,
+  2026-10-06): the fold is adopted. `TextureCatalog::resolve` folds the request
+  through `folded_texture_name` and compares the folded spelling against the
+  archive's stored spellings byte for byte, which is what `0x531930` does; both
+  it and `texture_lookup_order` fold through that one function, and
+  `TextureId`/the catalog rows keep the archive's own spelling. The census it
+  rests on covers every texture-family archive in the installation (49
+  archives, 37 004 stored names): all are already the folded spelling, no two
+  fold onto each other, and every name table is sorted.
 * **The file probe's case handling is not established.** The original probes
   the host file system, whose names it folds without regard to case. Every
   candidate this crate generates is lower case, so the comparison is
@@ -408,4 +409,6 @@ fingerprinted decode audit against a pinned reference is F08-D.
   the video-options dropdown, build the world's `TextureFiles` from the
   installation, report the texture budget, and call
   `TextureCatalog::open_world` where a world loads its textures.
-* #689 — decide whether `TextureCatalog::resolve` adopts the measured case fold.
+* #689 — decide whether `TextureCatalog::resolve` adopts the measured case
+  fold. **Done** 2026-10-06: the fold is adopted, see
+  `docs/findings/2026-10-06-t689-texture-name-case-fold.md`.

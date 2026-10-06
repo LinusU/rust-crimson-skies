@@ -51,11 +51,19 @@ fails.
   archive path + serving mount + key variant + entry index + stored name.
   The same name in two chapter archives gives two unequal ids.
 - **Lookup** (contract "Lookup contract"): a `TextureRef` is an archive key
-  plus an exact stored name. The world is chosen by the session's context
-  through the VFS (F04's designed mount layout); the name is looked up only
-  in that one archive. Not stored: `texture_not_found`; stored twice:
-  `duplicate_texture_name` with both entry indices. No case folding, no
-  aliases, no fallback to `rtexture*.zbd`, `rimage.zbd` or another world.
+  plus a name. The world is chosen by the session's context through the VFS
+  (F04's designed mount layout); the name is looked up only in that one
+  archive. Not stored: `texture_not_found`; stored twice:
+  `duplicate_texture_name` with both entry indices. No aliases, no fallback to
+  `rtexture*.zbd`, `rimage.zbd` or another world. **Superseded in part by
+  task #689** (`docs/findings/2026-10-06-t689-texture-name-case-fold.md`): the
+  request is now folded the way the original folds it (`0x531930`,
+  `folded_texture_name`) before it is compared against the archive's stored
+  spellings, which are still never folded. This file's earlier "no case
+  folding, no aliases" decision, and the case assertion it made in
+  `accept_f08_c_missing_or_duplicate_name_fails_visibly_without_fallback`, were
+  an unmeasured choice; the measurement overrules them. That test now proves
+  that the fold is not a cross-archive fallback instead.
   The result carries the ordered attempts: the VFS trace (with the other
   world's mount skipped) and the name lookup.
 - **Catalog rows:** one per texture (`kind` `image`, archive origin span,
@@ -100,7 +108,7 @@ installation hashing.
 | Test | Covers |
 | --- | --- |
 | `accept_f08_c_same_name_texture_in_two_chapter_archives_resolves_per_world` | AC03: two worlds, same key and name, own origin, entry, trace, texels; distinct ids |
-| `accept_f08_c_missing_or_duplicate_name_fails_visibly_without_fallback` | no fallback to the other world, exact names, duplicate entries, uncatalogued archive |
+| `accept_f08_c_missing_or_duplicate_name_fails_visibly_without_fallback` | no fallback to the other world, duplicate entries, uncatalogued archive; and, since #689, that the measured fold is not a fallback either (a mixed-case request for a name only the other world stores still fails visibly) |
 | `accept_f08_c_upload_keeps_alpha_and_indices_and_lists_presentation_unknowns` | upload layout, alpha plane, palette indices, unknown list |
 | `accept_f08_c_world_switch_refuses_stale_catalog_and_resolution` | foreign session, foreign catalog, upload after close |
 | `accept_f08_c_failed_archive_is_a_catalog_row_and_recovers_after_remount` | failed rows (trailing byte, unresolvable key, non-package), retry, remount, texture rows |
