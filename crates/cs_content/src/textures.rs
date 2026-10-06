@@ -2730,12 +2730,38 @@ mod tests {
         names
     }
 
+    /// The listing of the global texture directory, which the original spells
+    /// `zbd` and the installation spells `ZBD`. The session compares the two
+    /// without regard to case, but a host file system need not, so the listing
+    /// is read from the directory as it is actually spelled on disk.
+    fn global_listing(root: &Path) -> Vec<String> {
+        let spelled = fs::read_dir(root)
+            .unwrap_or_else(|error| panic!("{} is listed: {error}", root.display()))
+            .map(|entry| {
+                entry
+                    .unwrap_or_else(|error| {
+                        panic!("directory entry of {}: {error}", root.display())
+                    })
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .find(|name| name.eq_ignore_ascii_case(GLOBAL_TEXTURE_DIRECTORY))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} holds a {GLOBAL_TEXTURE_DIRECTORY} directory",
+                    root.display()
+                )
+            });
+        directory_listing(&root.join(spelled))
+    }
+
     /// The search list a world group load sees: its own directory, then the
     /// global `zbd` directory.
     fn search_list(root: &Path, group: &str) -> TextureFiles {
         TextureFiles::new_with([
             TextureDirectory::world(group, directory_listing(&root.join(group))),
-            TextureDirectory::global(directory_listing(&root.join(GLOBAL_TEXTURE_DIRECTORY))),
+            TextureDirectory::global(global_listing(root)),
         ])
     }
 
@@ -3376,15 +3402,33 @@ mod tests {
             &package(&[Tex::direct("hud_mark", OPAQUE, 1, 1, &[WHITE])]),
         );
 
+        // The search list's fallback directory is the installation's own shared
+        // directory, whatever case the host spells it in: the original names it
+        // `zbd` and the installation spells it `ZBD`, and a case-sensitive file
+        // system must not turn the shared image archive into a missing file.
+        let listed = search_list(&tree.0, "ZBD/c1");
+        let fallback = listed.directory(1).expect("the global fallback");
+        assert_eq!(fallback.label(), GLOBAL_TEXTURE_DIRECTORY);
+        assert_eq!(
+            fallback.files(),
+            directory_listing(&tree.0.join("ZBD")).as_slice(),
+            "the fallback listing is the installation's shared directory"
+        );
+        assert!(
+            fallback
+                .files()
+                .iter()
+                .any(|name| name == IMAGE_ARCHIVE_FILE),
+            "which is where the shared image archive is: {:?}",
+            fallback.files()
+        );
+
         // The project's own load picks world one's top tier, and the texture
         // comes out of that tier.
         let session = world_session(&tree.0, "ZBD/c1");
-        let (catalog, choice) = TextureCatalog::open_world(
-            &session,
-            &search_list(&tree.0, "ZBD/c1"),
-            &WorldTextureLoad::project_default(),
-        )
-        .expect("the selected archive opens");
+        let (catalog, choice) =
+            TextureCatalog::open_world(&session, &listed, &WorldTextureLoad::project_default())
+                .expect("the selected archive opens");
         assert_eq!(choice.opened_name(), Some("rtexture15.zbd"));
         assert_eq!(
             choice.budget(),

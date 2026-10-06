@@ -1,6 +1,7 @@
 # Task #352: the measured texture-archive selection rule
 
-Date: 2026-10-05. Task: #352 (`F08-C-texture-archive-selection`), the
+Date: 2026-10-05, reviewed and corrected 2026-10-06. Task: #352
+(`F08-C-texture-archive-selection`), the
 follow-up that closed F08-C's recorded unknown "which texture archives a
 mission actually uses"
 (`docs/findings/2026-09-28-f08-c-texture-catalog-and-upload-boundary.md`,
@@ -337,6 +338,31 @@ all eight groups match §3 exactly, world one's project default opens
 The test takes about 52 seconds in a debug build, almost all of it the
 installation walk.
 
+## The retail case of the global directory's spelling
+
+The original's default texture directory is spelled `zbd`; the installation
+spells the same directory `ZBD`, and so do these tests' fixtures. The session
+resolves the two without regard to case — `cs_assets::vfs` indexes every mount
+member by the case-folded `logical_key` — so the key `install/default/zbd/<file>`
+that [`TextureDirectory::global`] builds opens `ZBD/<file>` on any host. That is
+production behaviour, verified by the retail test above.
+
+A **test** that reads the directory off the host file system has no such
+protection: joining the literal `zbd` finds `ZBD` on a case-insensitive file
+system and fails on a case-sensitive one. Both `accept_f08_c_selection_missing_tiers_walk_down_to_the_unnumbered_name`
+and `accept_f08_c_selection_open_world_catalogs_the_archive_the_rule_selects`
+were green on the case-insensitive macOS host and **failed in CI on Linux**
+(`/…/zbd is listed: No such file or directory`) for exactly that reason. The
+helpers now resolve the fallback directory by comparing the root's entries
+without regard to case, and
+`accept_f08_c_selection_open_world_catalogs_the_archive_the_rule_selects`
+asserts that the fallback listing is the installation's shared directory and
+holds `rimage.zbd`, so the search list cannot silently degrade into an empty one
+on a case-sensitive host. Retail measurements were re-checked by reading the
+three package headers directly: C1 `texture.zbd` and `rtexture15.zbd` are
+version 1, 881 entries, 0 palettes; `rimage.zbd` is 254 entries; every stored
+name is lower case; and the two namespaces share no name.
+
 Mutation probes (each applied, `cargo test -p cs_content --locked --
 accept_f08_c_selection` run, then reverted; the file is restored after every
 one):
@@ -356,17 +382,21 @@ one):
 | `TextureFiles::find` panicking on an unspellable name (the pre-review code) | 1 fails |
 | `TextureDirectory::new` accepting a namespace or prefix that cannot spell a key | 1 fails |
 
+The three probe rows above were run by the reviewer. The first six were the
+implementer's, run before the review fixes and re-verified by the reviewer where
+the fix touched the same code.
+
 ## Checks run on this branch (2026-10-05)
 
 | Command | Result |
 | --- | --- |
 | `cargo fmt --all -- --check` | clean |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | clean |
-| `cargo test --workspace --locked` | one pre-existing failure, `cs_xtask --test accept_t430_ci_disk_budget::accept_t430_a_panic_backtrace_names_the_file_and_line`, reproduced on a clean `origin/main` worktree on this macOS host (frames print no `file:line`); filed as task #691. CI on `main` is green. |
-| `cargo test --workspace --locked --no-fail-fast` | 381 test binaries ok, that one target failed; nothing else failed |
-| `cargo test --workspace --locked -- accept_f08_c_selection --include-ignored` | 7 passed, 0 failed (6 synthetic + the retail one, 54 s) |
-| each of the seven with `--exact`, alone | 1 passed each |
-| `env -u CS_GAME_DIR cargo test -p cs_content --locked -- accept_f08_c_selection --include-ignored` | the retail test **fails** with "CS_GAME_DIR must point at the original installation for this test", the six synthetic ones pass |
+| `cargo test --workspace --locked` | 386 test binaries ok, none failed (2026-10-06, reviewer run on this branch). The implementer's 2026-10-05 run reported one failure, `cs_xtask --test accept_t430_ci_disk_budget::accept_t430_a_panic_backtrace_names_the_file_and_line`, reproduced then on a clean `origin/main` worktree; filed as task #691 and **not reproducible** on 2026-10-06, when that test alone and the whole suite both passed. It is neither this branch's defect nor a proven environment fault. |
+| `cargo test --workspace --locked -- accept_f08_c_selection --include-ignored` | 8 passed, 0 failed (7 synthetic + the retail one, ~53 s) |
+| each of the eight with `--exact`, alone | 1 passed each |
+| `env -u CS_GAME_DIR cargo test -p cs_content --locked -- accept_f08_c_selection --include-ignored` | the retail test **fails** with "CS_GAME_DIR must point at the original installation for this test", the seven synthetic ones pass |
+| CI (Linux, `ubuntu-latest`) | **failed on the implementer's pushed commits and passed only after the review fixes.** Two of this task's own tests failed there for the case-sensitive-file-system reason above; that is what found it. |
 
 No evidence report: this task's retail use is the census and the per-world
 selection a test observes, following F08-C and F08-B's precedent, and the
