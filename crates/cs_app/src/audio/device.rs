@@ -463,7 +463,7 @@ pub fn sound_member_pcm(
 ///
 /// The library is shared: the plugin hands the same object to the device and
 /// to the world, and the population pass of the delivered load
-/// ([`super::samples::populate`]) fills it *after* the device holds it. So a
+/// (`super::samples::populate`) fills it *after* the device holds it. So a
 /// lookup cannot borrow the map — it returns an owned [`PcmAudio`] handle,
 /// which shares the samples behind an `Arc` and costs no copy of the decoded
 /// member — and filling goes through [`SampleLibrary::replace_samples`], which

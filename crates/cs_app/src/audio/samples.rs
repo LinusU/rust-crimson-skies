@@ -16,7 +16,7 @@
 //! load declared — and the device, plugin and mixer are real (task #635). What
 //! nothing did was fill the library the audible device reads: a `VoiceStart`
 //! naming a delivered asset was refused with `sample_unavailable` because no
-//! loader had put its samples anywhere. [`populate`] is that half of the same
+//! loader had put its samples anywhere. `populate` is that half of the same
 //! pass: the same [`LoadedItemBinding`](crate::loading::LoadedItemBinding)
 //! entities, the same declared catalog, the same install, one call later.
 //!
