@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cs_types::asset_id::{
-    AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, WorldGroup,
+    AssetKey, LabelError, MountId, MountNamespace, PrecedenceClass, ResolveContext, WorldGroup,
 };
 
 use crate::install::Diagnosis;
@@ -50,6 +50,20 @@ pub const INSTALL_NAMESPACE: &str = "install";
 /// The namespace [`SessionBuilder::mount_installation`] mounts each world
 /// group directory under: keys are spellings relative to the group.
 pub const WORLD_NAMESPACE: &str = "world";
+
+/// The namespace [`SessionBuilder::mount_installation_missions`] mounts each
+/// mission directory under: keys are spellings relative to the mission
+/// directory.
+///
+/// This is the **mission level** the original's layout has (`ZBD/<world
+/// group>/<mission>`, F04-D task #687). It is a namespace of its own rather
+/// than more of [`WORLD_NAMESPACE`] because the original opens a mission's
+/// archives by an explicit path that no world group's directory contains, and
+/// because two mounts in one namespace holding the same member name would be
+/// an equal-priority collision the designed order cannot decide (F04
+/// non-negotiable behavior 3) — where the original instead has an explicit
+/// [root, mission, world] reader order ([`crate::vfs::reader`]).
+pub const MISSION_NAMESPACE: &str = "mission";
 
 /// The next generation handed out; generations start at 1.
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -87,6 +101,21 @@ pub enum SessionError {
     },
     /// A mount was refused by the VFS (a repeated mount id).
     Mount(MountError),
+    /// A mission directory's own name cannot be a mission scope label, so no
+    /// context could ever be admitted to its mount.
+    ///
+    /// The directory is carried in the installation's own spelling, because
+    /// that is the name the walk found: a mission directory called e.g.
+    /// `M01.2` cannot be a label ([`MissionScope`] allows only lower-case
+    /// alphanumerics and `.`, `_`, `-`, and may not begin with a separator).
+    MissionScope {
+        /// The mount that would have carried the directory.
+        mount: MountId,
+        /// The directory, as the installation spells it.
+        directory: String,
+        /// Which label rule refused the mission name.
+        reason: LabelError,
+    },
 }
 
 impl fmt::Display for SessionError {
@@ -94,6 +123,15 @@ impl fmt::Display for SessionError {
         match self {
             Self::Source { mount, error } => write!(f, "cannot mount {mount}: {error}"),
             Self::Mount(error) => write!(f, "{error}"),
+            Self::MissionScope {
+                mount,
+                directory,
+                reason,
+            } => write!(
+                f,
+                "cannot mount {mount}: the mission directory {directory:?} has no valid mission \
+                 scope label: {reason}"
+            ),
         }
     }
 }
@@ -103,6 +141,7 @@ impl std::error::Error for SessionError {
         match self {
             Self::Source { error, .. } => Some(error),
             Self::Mount(error) => Some(error),
+            Self::MissionScope { reason, .. } => Some(reason),
         }
     }
 }
@@ -176,6 +215,14 @@ impl SessionBuilder {
     /// `texture.zbd`, and two worlds never share one. Which retail sources
     /// the original engine really binds to a world is unmeasured (F04-D);
     /// this layout is recorded as designed in `docs/findings/`.
+    ///
+    /// This mounts the **world level only**. The original's layout also has a
+    /// mission level (`ZBD/<world group>/<mission>`, holding `mis_anim.zbd`
+    /// and the mission's own `zrdr.zbd`), which this method deliberately does
+    /// not guess at: call [`Self::mount_installation_missions`] for it, which
+    /// mounts the mission directories discovery actually observed, and
+    /// [`crate::vfs::binding::WorldLayout`] for the archives the original
+    /// binds at each level.
     pub fn mount_installation(
         &mut self,
         host_root: &Path,
@@ -201,6 +248,59 @@ impl SessionBuilder {
             let mut root = host_root.to_path_buf();
             root.extend(group.as_str().split(['/', '\\']));
             self.mount_directory(world, &root)?;
+        }
+        Ok(self)
+    }
+
+    /// Mounts the **mission level** of the same installation: every mission
+    /// directory [`crate::vfs::binding::mission_directories`] observed below a
+    /// world group (`ZBD/<world group>/<mission>`), in that order, each bound
+    /// to its world group **and** its own mission ([`PrecedenceClass::MissionWorld`],
+    /// namespace [`MISSION_NAMESPACE`], container label the directory's
+    /// spelling).
+    ///
+    /// A context that selects that world group and that mission then resolves
+    /// a mission archive — `mis_anim.zbd`, the mission's own `zrdr.zbd` — as
+    /// `mission/<default>/<member>`, and a context of another world or another
+    /// mission is refused it (`SkipReason::ScopeMismatch`), so a mission's
+    /// archives cannot leak into a sibling mission.
+    ///
+    /// This carries the level the original's layout has; it does **not** decide
+    /// which of two levels a lookup prefers when both hold one name. The
+    /// original's answer for reader members is mount order — root, then
+    /// mission, then world — implemented by [`crate::vfs::reader`], whose
+    /// [`READER_LOOKUP_ORDER_STATUS`](crate::vfs::reader::READER_LOOKUP_ORDER_STATUS)
+    /// reports that order as code-derived while the designed
+    /// [`PRECEDENCE_ORDER_STATUS`] stays `designed`.
+    pub fn mount_installation_missions(
+        &mut self,
+        host_root: &Path,
+        diagnosis: &Diagnosis,
+    ) -> Result<&mut Self, SessionError> {
+        for (index, mission) in crate::vfs::binding::mission_directories(diagnosis)
+            .iter()
+            .enumerate()
+        {
+            let scope = mission
+                .scope()
+                .map_err(|reason| SessionError::MissionScope {
+                    mount: MountId::new(&format!("mission-{index}")).expect("a valid label"),
+                    directory: mission.directory.as_str().to_owned(),
+                    reason,
+                })?;
+            let world = mission.world();
+            let mount = MountBuilder::new(
+                MountId::new(&format!("mission-{index}")).expect("a valid label"),
+                MountNamespace::new(MISSION_NAMESPACE).expect("a valid label"),
+                PrecedenceClass::MissionWorld,
+                mission.directory.as_str(),
+            )
+            .with_world_group(world)
+            .with_mission(scope)
+            .retail();
+            let mut root = host_root.to_path_buf();
+            root.extend(mission.directory.as_str().split(['/', '\\']));
+            self.mount_directory(mount, &root)?;
         }
         Ok(self)
     }

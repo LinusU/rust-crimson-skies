@@ -165,6 +165,7 @@ impl RofMountError {
             Self::Session(error) => match error {
                 SessionError::Source { mount, .. } => mount.as_str(),
                 SessionError::Mount(error) => mount_error_container(error),
+                SessionError::MissionScope { mount, .. } => mount.as_str(),
             },
         }
     }

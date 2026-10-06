@@ -39,6 +39,16 @@
 //!   classifying it as distinct by path, shadowed by identical bytes or
 //!   conflicting (F04-D).
 //!
+//! * [`binding`] records which archives one world/mission load opens and at
+//!   which level — `gamez.zbd` per world group, `planes.zbd` from the ZBD
+//!   root, the world's `cam_anim.zbd` then the mission's `mis_anim.zbd` with no
+//!   fallback, and the world's one texture archive
+//!   ([`WorldLayout`], [`TextureBinding`]). That is the **mission level** the
+//!   designed file layout had no mount for. Which texture *file* a world opens
+//!   is task #352's measured rule in `cs_content::textures`, so a binding
+//!   records where the search happens and the file that rule selected;
+//!   [`binding::BINDING_ORDER_STATUS`] says the names are code-derived.
+//!
 //! * [`reader`] is the one lookup whose order is **not** the designed one:
 //!   a reader archive (`zrdr.zbd`) member is reached by its **basename** from
 //!   the archives mounted as [root, mission, world], the first archive that
@@ -54,6 +64,7 @@
 //! answer that order alone decided. Nothing here writes to the original
 //! installation.
 
+pub mod binding;
 pub mod collision;
 pub mod export;
 pub mod mount;
@@ -62,6 +73,10 @@ pub mod resolve;
 pub mod session;
 pub mod source;
 
+pub use binding::{
+    ArchiveFamily, BINDING_ORDER_STATUS, BindingError, BindingLevel, BindingRole, BoundArchive,
+    MissionDirectory, TextureBinding, WorldLayout, mission_directories,
+};
 pub use collision::{
     Collision, CollisionComparison, CollisionMember, CollisionReport, CollisionVerdict,
     LookupOutcome, MemberLookup, compare_collisions, observe_collisions,
@@ -81,9 +96,9 @@ pub use resolve::{
     ResolvedAsset, Vfs,
 };
 pub use session::{
-    CompletedRead, ContentSession, INSTALL_NAMESPACE, PENDING_READ_CHUNK, PendingRead, ReadCancel,
-    ReadProgress, SessionAsset, SessionBuilder, SessionError, SessionGeneration, SessionRejection,
-    SessionTeardown, WORLD_NAMESPACE,
+    CompletedRead, ContentSession, INSTALL_NAMESPACE, MISSION_NAMESPACE, PENDING_READ_CHUNK,
+    PendingRead, ReadCancel, ReadProgress, SessionAsset, SessionBuilder, SessionError,
+    SessionGeneration, SessionRejection, SessionTeardown, WORLD_NAMESPACE,
 };
 pub use source::{
     MountedDirectory, ReadError, RejectReason, RejectedEntry, SourceError, mount_directory,
