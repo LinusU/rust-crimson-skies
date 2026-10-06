@@ -22,10 +22,19 @@ recorded here with its reason:
 | **2. build the loose names from the unfolded request** | **the faithful option, and the only one whose assertion the reading supports** |
 | 3. do nothing until the loose-file interface is established | the interface being unestablished bounds the *consequence*, not the reading: the divergence is measured, small, and closed at the same cost as option 1 |
 
-Retail never reaches the path either way (0 loose `.tif`/`.bmp`, below), and
-every host the original ran on folds case, so options 1 and 2 differ only when
-one directory holds both `sky.tif` and `SKY.tif`. Option 2 was chosen because
-it is what the code does, not because retail needs it.
+Retail never reaches the path either way (0 loose `.tif`/`.bmp`, below). In
+the **original** the two probe spellings reach the same file on every host it
+ran on — those fold case — unless one directory holds both `sky.tif` and
+`SKY.tif`. In **this crate** they differ more widely, because
+`TextureFiles::find` compares the candidate against the listing exactly: the
+request `SKY` is answered by the listing `sky.tif` under option 1 and by no
+loose file under option 2. What the original answers for that pair depends on
+the file probe's own case handling, which stays recorded as unestablished
+(T352; `TextureFiles::find`'s doc records that the host file system folds
+case). Option 2 therefore buys a measured probe string with an unestablished
+match — the trade is bounded and recorded, not hidden: retail ships no loose
+`.tif`/`.bmp`, and the loose-file interface is still unestablished. It was
+chosen because it is what the code does, not because retail needs it.
 
 ## Sources
 

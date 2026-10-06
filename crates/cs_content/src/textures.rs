@@ -1909,11 +1909,13 @@ impl TextureLookupSource {
 /// `sprintf(buf, "%s.bmp", name)` from `0x6353b0`, while `0x531930` folds a
 /// private copy and leaves the caller's buffer alone. A mixed-case request is
 /// therefore probed as `SKY.tif`, the spelling the original probes, and
-/// searched in the catalog under the folded one. The two loose spellings
-/// cannot differ on a host file system that folds case unless one directory
-/// holds both `sky.tif` and `SKY.tif`; retail ships no loose texture file at
-/// all, and the file probe's own case handling is already recorded as not
-/// established.
+/// searched in the catalog under the folded one. In the original the two
+/// loose spellings cannot differ on a host file system that folds case unless
+/// one directory holds both `sky.tif` and `SKY.tif`; this order hands the
+/// probe to [`TextureFiles::find`], which compares exactly, so a listing
+/// spelled in another case is **not** reached here. Retail ships no loose
+/// texture file at all, and the file probe's own case handling is already
+/// recorded as not established.
 ///
 /// The original also keeps a toggle that starts each search in whichever of
 /// the two archive lists it names — the world's first — and flips it when a
