@@ -208,6 +208,14 @@ impl Installation {
     /// member's own spelling is the same on a
     /// case-sensitive host and a case-insensitive one, and a case-only
     /// collision with a container member is genuinely a case-only one.
+    ///
+    /// The loose spellings deliberately start with `Assets/`, `SCRIPTS`,
+    /// `GRAPHICS` in the installation's own case and never with a
+    /// case-only variant of a directory the containers live in: a fixture
+    /// that created both `GOSDATA/Assets` and `GOSDATA/assets` would make the
+    /// tree's own shape ambiguous on a case-sensitive host, and one such
+    /// spelling shipped in this fixture once made the chain resolve to
+    /// whichever of the two `read_dir` happened to return first.
     fn new(label: &str, patch: &[u8], main: &[u8], loose: &[(&str, &[u8])]) -> Self {
         let tree = TempTree::new(label);
         tree.write("GOSDATA/Assets/crimptch.rof", patch);
@@ -328,7 +336,7 @@ fn accept_f04_d_gos_registration_order_registers_four_sources_in_order() {
             "SCRIPTS",
             &[Entry::plain("AIRFRAME.SCRIPT", b"main")],
         ),
-        &[("assets/scripts/main_only.script", b"loose")],
+        &[("Assets/SCRIPTS/main_only.script", b"loose")],
     );
     let chain = mount(&install.with_registry());
 
@@ -903,6 +911,97 @@ fn accept_f04_d_gos_registration_order_leaves_other_namespaces_on_precedence() {
         LookupOrder::Precedence,
         "a GOS key is not decided by precedence"
     );
+}
+
+/// The case-insensitive path fallback must not make the chain depend on
+/// `read_dir` order: when a directory holds two entries differing only in
+/// case, the entry spelled exactly as the original asks for wins.
+///
+/// **This test only has full discriminating power on a case-sensitive host.**
+/// On one that folds case (macOS, Windows) the two spellings name the same
+/// directory, so the fixture below cannot build the ambiguous shape and the
+/// test passes either way; it is CI, on a case-sensitive runner, that
+/// exercises it fully. The defect was found there: `found_child` accepted the
+/// first case-insensitive match, and with two spellings present the chain
+/// mounted whichever `read_dir` returned first, so a local run could not see
+/// it at all. The path assertion below still checks the rule on every host,
+/// and the byte assertion adapts because the folded host has one file, not
+/// two. The loop repeats because an order-dependent implementation passes
+/// some iterations and fails others.
+///
+/// On a case-sensitive host the fixture is genuinely two directories holding
+/// two different containers, so resolving the wrong one serves the sibling's
+/// bytes for a name the original resolves elsewhere.
+#[test]
+fn accept_f04_d_gos_registration_order_exact_container_spelling_wins_over_a_case_only_sibling() {
+    let tree = TempTree::new("t686-case-order");
+    fs::create_dir_all(tree.root().join("GOSDATA/Assets")).expect("the exact dir is created");
+    fs::create_dir_all(tree.root().join("GOSDATA/assets")).expect("the folded dir is created");
+    let main = nested_container(
+        "ASSETS",
+        "SCRIPTS",
+        &[Entry::plain(
+            "AIRFRAME.SCRIPT",
+            b"the container the original asks for",
+        )],
+    );
+    // The same path spelled differently, with different bytes, so a chain that
+    // resolved the wrong one is visibly wrong rather than merely different.
+    let sibling = nested_container(
+        "ASSETS",
+        "SCRIPTS",
+        &[Entry::plain("AIRFRAME.SCRIPT", b"a case-only sibling")],
+    );
+    for (spelling, bytes) in [
+        ("GOSDATA/Assets/crimson.rof", &main),
+        ("GOSDATA/assets/crimson.rof", &sibling),
+    ] {
+        tree.write(spelling, bytes);
+    }
+    // On a host that folds case the two spellings name one file, so the
+    // second write replaced the first and nothing distinguishes the two
+    // containers: the path assertion below still holds and still checks the
+    // rule, but there is no second byte string to tell the resolutions apart.
+    // It is skipped there rather than compared against a value the host has
+    // already overwritten.
+    let distinguishs_bytes = fs::read(tree.root().join("GOSDATA/Assets/crimson.rof"))
+        .expect("the exact container is readable")
+        != fs::read(tree.root().join("GOSDATA/assets/crimson.rof"))
+            .expect("the folded container is readable");
+
+    for _ in 0..16 {
+        let request = GosInstall::new(tree.root(), ExePathOrigin::RegistryKeyAbsent);
+        let chain = mount(&request);
+        let step = chain
+            .chain
+            .step_of(GosSource::MainContainer)
+            .expect("the main container is registered");
+        assert!(
+            step.container.ends_with("GOSDATA/Assets/crimson.rof"),
+            "the exact spelling wins every time, not read_dir order: {}",
+            step.container.display()
+        );
+        // And it is the original's bytes that answer, not the sibling's: the
+        // two containers hold the same member name with different content.
+        let served = chain
+            .session
+            .resolve(&gos_key("ASSETS/SCRIPTS/AIRFRAME.SCRIPT").expect("a key"))
+            .expect("the main container serves the request");
+        assert_eq!(served.resolved().mount.as_str(), MAIN_MOUNT_ID);
+        let read = chain
+            .chain
+            .read(&chain.session, &served)
+            .expect("the served member reads");
+        assert_eq!(
+            read,
+            if distinguishs_bytes {
+                b"the container the original asks for".as_slice()
+            } else {
+                b"a case-only sibling"
+            },
+            "the served bytes are the exact spelling's, not the case-only sibling's"
+        );
+    }
 }
 
 /// The GOS name-matching rule is scoped to the GOS key space, so stating the

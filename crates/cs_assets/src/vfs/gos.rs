@@ -783,23 +783,33 @@ impl SessionBuilder {
 }
 
 /// `name` inside `parent` as the host spells it, falling back to the
-/// requested spelling when no entry differs from it only in case — the mount
-/// then fails at that path with the refusal that says why.
+/// requested spelling when there is no such entry — the mount then fails at
+/// that path with the refusal that says why.
+///
+/// An **exact** spelling wins over one differing only in case, and the
+/// case-insensitive match is a fallback rather than the rule. That ordering
+/// is not cosmetic: a directory can hold two entries differing only in case
+/// (a case-sensitive host permits it), and `read_dir` returns them in an
+/// unspecified order, so a rule that accepted either one would resolve a
+/// chain differently from run to run. The exact entry is always the one the
+/// original asked for; the fold only rescues a host that spells it
+/// differently.
 fn found_child(parent: &Path, name: &str) -> PathBuf {
     let requested = parent.join(name);
     let Ok(entries) = std::fs::read_dir(parent) else {
         return requested;
     };
+    let mut folded = None;
     for entry in entries.flatten() {
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .eq_ignore_ascii_case(name)
-        {
+        let entry_name = entry.file_name();
+        if entry_name.as_os_str() == name {
             return entry.path();
         }
+        if folded.is_none() && entry_name.to_string_lossy().eq_ignore_ascii_case(name) {
+            folded = Some(entry.path());
+        }
     }
-    requested
+    folded.unwrap_or(requested)
 }
 
 /// `<exe>/GOSDATA/Assets/<name>`, each directory component resolved as the
