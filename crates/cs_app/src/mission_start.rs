@@ -41,11 +41,12 @@
 //! * the **only** document key the executable reads to name the player's
 //!   airframe is [`PLAYER_PLANE_KEY`], read once (`0x4593e5`) by the
 //!   instant-action setup routine, which also opens `ia.zrd` (`0x45a15b`).
-//!   Retail: the key is present in the eight `ZBD/<chapter>/IA1/zrdr.zbd`
-//!   archives and in no campaign mission archive — M01's members carry it
-//!   zero times. [`scenario_player_airframe`] reads that assignment where a
-//!   document has it, and [`airframe_index`] resolves the name the way the
-//!   original does;
+//!   Retail: the key is carried by the `ia.zrd` of **seven of the eight**
+//!   `ZBD/<chapter>/IA1/zrdr.zbd` archives — `ZBD/C2B/IA1`'s scenario names
+//!   four `enemy_plane` values and no player plane at all — and by no campaign
+//!   mission archive; M01's members carry it zero times.
+//!   [`scenario_player_airframe`] reads that assignment where a document has
+//!   it, and [`airframe_index`] resolves the name the way the original does;
 //! * no profile or hangar file exists in the installation, so where a
 //!   **campaign** mission gets its player's airframe is still unmeasured and
 //!   stays unknown (AGENTS.md rule 4).
@@ -128,9 +129,11 @@ pub const STORED_POSITION_METRES_PER_UNIT: f32 = 1.0;
 ///
 /// Measured: the key is read exactly once in the decrypted executable
 /// (`0x4593e5`, inside the instant-action setup routine that opens `ia.zrd` at
-/// `0x45a15b`), and the retail archives carry it only in
-/// `ZBD/<chapter>/IA1/zrdr.zbd`. Its value is a **display name** from
-/// [`AIRFRAME_TABLE`] (`ZBD/C1C/IA1/zrdr.zbd` spells `Fury`), not a node name.
+/// `0x45a15b`), and the retail archives carry it only in the `ia.zrd` of seven
+/// of the eight `ZBD/<chapter>/IA1/zrdr.zbd` — `ZBD/C2B/IA1`'s scenario has no
+/// player plane — never in a campaign mission archive. Its value is a
+/// **display name** from [`AIRFRAME_TABLE`] (`ZBD/C1C/IA1/zrdr.zbd` spells
+/// `Fury`), not a node name.
 pub const PLAYER_PLANE_KEY: &str = "player_plane";
 
 /// One row of the original's airframe table.

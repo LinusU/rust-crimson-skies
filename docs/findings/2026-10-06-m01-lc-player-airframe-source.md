@@ -95,19 +95,28 @@ read time, not an index stored in the data.
 **Retail check of where the key lives.** `grep` over the whole installation:
 
 ```
-ZBD/C1/IA1/zrdr.zbd   ZBD/C1B/IA1/zrdr.zbd  ZBD/C1C/IA1/zrdr.zbd
-ZBD/C2/IA1/zrdr.zbd   ZBD/C2B/IA1/zrdr.zbd  ZBD/C3/IA1/zrdr.zbd
-ZBD/C4/IA1/zrdr.zbd   ZBD/C5/IA1/zrdr.zbd   (+ ZBD/zrdr.zbd, which carries
-                                              only the unrelated member names
-                                              `player_plane_destruct.zrd`)
+ZBD/C1/IA1/zrdr.zbd    ZBD/C1B/IA1/zrdr.zbd   ZBD/C1C/IA1/zrdr.zbd
+ZBD/C2/IA1/zrdr.zbd    ZBD/C3/IA1/zrdr.zbd    ZBD/C4/IA1/zrdr.zbd
+ZBD/C5/IA1/zrdr.zbd    (+ ZBD/zrdr.zbd, which carries only the unrelated
+                        member names `player_plane_destruct.zrd`, and
+                        ZBD/interp.zbd, which carries `%player_plane%`)
 ```
 
-and **no campaign mission archive**. `ZBD/C1C/IA1/zrdr.zbd` holds an `ia.zrd`
-member whose record reads `mission_type = "zeppelin_run"`, `zeppelin_type =
-"cargo"`, **`player_plane = "Fury"`**, `num_wingmen`, `enemy_name`,
-`enemy_plane = "Firebrand"`, `enemy_skill = "novice"`. M01 (`ZBD/C1C/M01`) has
-no `ia.zrd` member at all, and **every one of its reader-archive members decodes
-without the key** — asserted for each member by
+— **seven of the eight** `IA1` archives: `ZBD/C2B/IA1/zrdr.zbd` contains no
+`player_plane` byte sequence at all, although its `ia.zrd` has `mission_type =
+"zeppelin_run"`, `zeppelin_type = "cargo"` and four `enemy_plane` groups
+(`Firebrand`, `Kestrel`, `Bloodhawk`, …) plus `spawn_points`. So even an
+instant-action scenario can leave the player's airframe unstated in the data.
+The production walk behind the evidence report agrees independently: 62 reader
+archives, 1293 members decoded, 0 decode failures, the key in **7** members —
+all of them `ia.zrd`, one per chapter except `C2B` — and **no campaign mission
+archive**. `ZBD/C1C/IA1/zrdr.zbd`'s `ia.zrd` reads `mission_type =
+"zeppelin_run"`, `zeppelin_type = "cargo"`, **`player_plane = "Fury"`**,
+`num_wingmen`, `enemy_name`, `enemy_plane = "Firebrand"`, `enemy_skill =
+"novice"`. M01 (`ZBD/C1C/M01`) has no `ia.zrd` member at all — its twelve are
+`aiv`, `egen`, `location`, `map`, `mis_anim`, `net`, `objectives`,
+`startanims`, `weather`, `zeppelins`, `placezeps`, `wv_tailhook` — and **every
+one of them decodes without the key**, asserted member by member by
 `accept_m01_lc_player_airframe_source_retail_m01_has_no_airframe_key_and_the_scenario_does`,
 which also pins `Fury → (7, player_fury, fury)` for the chapter's scenario.
 
