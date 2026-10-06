@@ -20,7 +20,7 @@ from the code alone it is recorded as **unknown** rather than guessed.
 | Format | PE32 executable, image base `0x400000` |
 | SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` |
 | Address convention used below | virtual address (VA); for the region studied `VA = file offset + 0x400000` |
-| Directive string table | file offsets `0x226040..0x2268c0` (VA `0x626040..0x6268c0`), `MISSION_WON_SOUND..NAP_OBJECTIVE_WHEN_I_COMPLETE` |
+| Directive string table | task-given extent: file offsets `0x226040..0x2268c0` (VA `0x626040..0x6268c0`). Measured: `MISSION_WON_SOUND` is at `0x626040`; `NAP_OBJECTIVE_WHEN_I_COMPLETE` is at `0x6268b0` and ends at `0x6268ce`; sibling key strings `OBJECTIVES_WON_SOUND`/`OBJECTIVES_LOST_SOUND` sit just below the quoted start at `0x626010`/`0x626028` |
 | Error/assert logger | `0x415330(message, line, file, 0x200)`; `file` resolves to `D:\zipper\Crimson\mission.cpp`; observed line numbers `0x8fc..0xff3` (decimal `2300..4083`) |
 | Tools | `r2`/`rabin2`/`objdump` on a read-only copy; Kuna v1.692 for orientation |
 
