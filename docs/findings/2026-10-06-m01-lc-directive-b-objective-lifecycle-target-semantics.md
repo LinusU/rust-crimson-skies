@@ -27,12 +27,12 @@ from the code alone it is recorded as **unknown** rather than guessed.
 
 | Address | Role |
 | --- | --- |
-| `0x46a490` | `CZMission::Update` — mission clock advance and early-out |
+| `0x46a490` | `CZMission::Update` — mission-timer expiry, clock advance and early-out |
 | `0x46a5ce..0x46a7d6` | Update pass 1 — per-objective lifecycle timers |
 | `0x46a7dc..0x46af43` | Update pass 2 — per-objective condition evaluation and completion |
 | `0x46a94c` (inline in pass 2) | the ordered completion-effect pipeline |
 | `0x46ae98..0x46b07a` | post-pass mission-outcome aggregation and end-of-tick work |
-| `0x469af0` | wake an objective from a `−1`-terminated index array (cap 15) |
+| `0x469af0` | wake an objective from a `−1`-terminated index array (cap 15; returns `−1` on exhaustion, else the truncating index) |
 | `0x46b130` | kill one objective by index |
 | `0x46b160` | force one objective to a lifecycle state by index |
 | `0x469a60` | `INACTIVE` condition evaluator |
@@ -138,10 +138,30 @@ PRIMARY/SECONDARY/TERTIARY complete sounds; `this+0xc70`/`+0xc74` and
 ## The update structure (`CZMission::Update`, `0x46a490`)
 
 ```
+if [0x71c50c] == 0: return 0                 ; mission update disabled
+0x46cdf0(0x71b438)                           ; housekeeping on the +0x71b438
+                                             ;   sound list (per-node 0x46c900)
+0x46c870(0x71b408)                           ; sibling record tick (lazily
+                                             ;   resolves +0xc via 0x71b438)
+if [0x71c4e0] != 0: 0x480d60()               ; conditional, untraced
+0x46c5f0(0x71b468)                           ; mission timer tick: +0x0 += dt,
+                                             ;   +0x4 -= dt while running
+if 0x46c640(0x71b468):                       ; expired: running && +0x4 <= 0
+    if !0x440ad0() && !0x463c00()            ;   && timer+0x14 report-gate clear
+       && 0x46c580(0x71b468) > -1.0:         ; remaining > -1.0 s (fresh expiry)
+        0x463c30(1, 3.0f)                    ; end sequence — the loss sound
+                                             ;   (+0xc7c) while +0xc58 unset
+        post text-id 0x1772 (0x59ce40 -> 0x4587d0)
+        if !0x440ad0() && !0x4639b0(): post text-id 0x89
+        0x46c5c0(0x71b468)                   ; stop the mission timer
 this+0x6f0 += frame_dt                       ; mission clock, seconds
 if (this+0xc54) return 1                     ; mission ended: nothing runs
 0x4639b0() && 0x45b9d0()                     ; pre-step (not traced further)
 ```
+
+So a mission timer that runs past zero ends the mission through the same
+`0x463c30` end sequence the LOST path uses — measured; expiry is what
+`MISSION_TIMER`/`RESET_TIMER` arm and `END_TIMER`/`0x46c5c0` forestall.
 
 **Pass 1 — lifecycle timers**, per objective `i` (`0x46a5ce`):
 
@@ -157,23 +177,26 @@ switch (rec->+0x5c8):
       if +0x5d4 > 0:
           +0x5cc += dt
           if +0x5cc >= +0x5d4:
-              +0x5c8 = 2
-              0x469af0(objs, &rec->+0xdc)                  ; wake when-I-sleep list
-              0x46b160(objs, i, 2)                         ; formal nap transition
+              +0x5c8 = 2                                   ; set before the wake call
+              r = +0xdc[0] != -1 ? 0x469af0(objs, &rec->+0xdc) : -1
+              if r != i: 0x46b160(objs, i, 2)              ; formal nap transition
   case 2 napping:                                          ; 0x46a702
-      if +0x5d8 > 0:
+      if +0x5d8 >= 0:                                      ; CF-only test, vs +0x5d4's > 0
           +0x5cc += dt
           if +0x5cc >= +0x5d8 -> 0x469af0(objs, {i,-1})    ; auto re-wake
   case 3 done: -> next                                     ; 0x46a7c1
 end-check at 0x46a758 (states 0/1/2 fall through here):
   if +0x5c8 == 1 && +0x5dc >= 0 && clock >= +0x5dc:
       0x46b160(objs, i, 3)                                 ; force "done"
-      0x469af0(objs, &rec->+0xdc)                          ; wake when-I-sleep list
+      if +0xdc[0] != -1: 0x469af0(objs, &rec->+0xdc)       ; wake when-I-sleep list
 ```
 
 `+0x5d0` and `+0x5dc` compare against the absolute mission clock; `+0x5d4` and
 `+0x5d8` are per-state durations measured against `+0x5cc` (reset to `0` on
-every transition, `+0x5cc += frame_dt` only while in that state).
+every transition, `+0x5cc += frame_dt` only while in that state). The arm
+tests differ by measured comparison mask: `+0x5d4` arms only when `> 0`, while
+`+0x5d8` arms when `>= 0` — a `+0x5d8` of exactly `0` still re-wakes, on the
+first napping tick once `+0x5cc` has accumulated a frame.
 
 **Pass 2 — condition evaluation and completion**, per objective starting at a
 global start index `0x71c128` (normalized `mod count` each tick and never
@@ -218,12 +241,15 @@ completes".
 2. Play `+0x550` `COMPLETED_SOUND_GROUP` (`0x46cc50`).
 3. Play the mission-level class sound: `+0x0==1` → `this+0xc64`, `2` → `+0xc68`,
    `3` → `+0xc6c` (the `PRIMARY/SECONDARY/TERTIARY_COMPLETE_SOUND` fields).
-4. If mission not ended (`0x463c00` → `+0xc54`): if `+0x558` pending, call
-   `0x4a2350(0x71d2a0, +0x0, +0x4)` (post to HUD by class+ordinal) and
-   `0x4ad240(+0x4)`; clear `+0x558`.
-5. `+0x554 == 3` (INSTANTWIN) → `0x463c10(1)` mission WON, byte flag for the
-   instant (0.1 s) end delay. `+0x554 == 4` (INSTANTLOSS) → `0x463c20(1)`
-   mission LOST, same.
+4. If mission not ended (`0x463c00` → `+0xc54`): if `+0x558` pending, when
+   `+0x0 != 0` call `0x4a2350(0x71d2a0, +0x0, +0x4)` (post to HUD by
+   class+ordinal) and `0x4ad240(+0x4)`; `+0x558` is cleared either way — a
+   class-0 record's pending flag drops silently. Then `+0x554 == 3`
+   (INSTANTWIN) → `0x463c10(1)` mission WON, byte flag for the instant
+   (0.1 s) end delay — this check is **inside** the not-ended guard.
+5. `+0x554 == 4` (INSTANTLOSS) → `0x463c20(1)` mission LOST, same — measured
+   outside the guard, so it still fires on an already-ended mission while an
+   INSTANTWIN at the same point would be skipped.
 6. `COUNTER` `ON_COMPLETE` triple (`+0x57c+4` deref) → `0x469dc0` write op.
 7. `+0x1c` wake array → `0x469af0` (`WAKE_OBJECTIVE_WHEN_I_COMPLETE` effects).
 8. `WARP_VEHICLE` (`+0x154 > 0`): pick `+0x170[rand() % +0x154]`, resolve it
@@ -253,7 +279,8 @@ completes".
 
 **Post-pass** (`0x46ae98`), only when an objective completed this tick: every
 objective's pending `+0x558` on an already-`+0x14` record is flushed to the HUD
-(`0x4a2350`/`0x4ad240`), then count `+0x554 == 2` (WON-class) and
+(`0x4a2350`/`0x4ad240`, with the same `+0x0 != 0` guard — the flag is cleared
+regardless), then count `+0x554 == 2` (WON-class) and
 `+0x554 == 1` (LOST-class) records and how many carry `+0x14`. If any WON-class
 records exist and **all** are completed → `0x463c10(1)`; if any LOST-class
 records exist and all are completed → `0x463c20(1)`. (Measured: a mission
@@ -264,9 +291,11 @@ snapshots the clock to `+0xc3c`, sets `+0xc54 = 1`, plays `+0xc7c` (loss
 sound) — plus `+0xc74` played separately, `0x46c5c0` stops the mission timer;
 delay is `0.1f` when the instant flag was set, `3.0f` otherwise. Else if
 `+0xc58` (won) → same shape with `+0xc78`/`+0xc70`. Finally a once-only check:
-`this+0xc44 == 0` and the player object `[0x71c298]->+0x934` below a float
-constant → format `"%s%s"` from `0x463a50`/`0x4639d0` results and post it via
-`0x598680`/`0x598710` (the player-destroyed banner), set `+0xc44 = 1`.
+`this+0xc44 == 0` and the player object `[0x71c298]->+0x934` **strictly above**
+the double constant `5.1446` (`0x607c20`) → format `"%s%s"` from
+`0x463a50`/`0x4639d0` results and post it via `0x598680`/`0x598710` (the
+player-destroyed banner), set `+0xc44 = 1`. What `+0x934` measures on the
+player object is untraced.
 
 ## Per-directive measured semantics
 
@@ -339,10 +368,19 @@ the directive string table — `WAKE_OBJECTIVE` alone exists as a bare alias.
 parser-supported but unspelled in M01.
 
 The wake call `0x469af0(objs, idx_array)` walks a `−1`-terminated index array,
-**cap 15 entries**. Per index it skips records that are killed (`+0x8 == 0`)
-or already completed (`+0x14 != 0`). A record already awake (`+0x5c8 == 1`)
-only gets `+0x5cc = 0` — re-waking an awake objective resets its state
-accumulator. Otherwise the record is woken:
+**cap 15 processed entries** (skipped entries count toward the cap). Per index
+it skips records that are killed (`+0x8 == 0`) or already completed
+(`+0x14 != 0`). A record already awake (`+0x5c8 == 1`) gets `+0x5cc = 0` and
+**terminates the walk**: the function returns that index immediately, leaving
+later list entries unprocessed — re-waking an awake objective resets its state
+accumulator and ends the list. The return value is `−1` when the list is
+exhausted normally, the last fully-woken index when the 15-entry cap is hit,
+or the early-terminated index above; only the auto-nap call site reads it
+(`0x46a6e8`), skipping the `0x46b160` transition when it equals the
+objective's own index — so a `WAKE_OBJECTIVE_WHEN_I_SLEEP` list whose walk
+ends on the objective itself (e.g. a duplicated self-entry the first
+occurrence re-woke) leaves the objective awake rather than napping. Otherwise
+the record is woken:
 
 * `+0xc = 1`, `+0x5c8 = 1`, `+0x5cc = 0`.
 * `WAKEUP_ENEMIES` names (`+0x124`/`+0x128`, cap 10): resolve each in the
@@ -432,6 +470,13 @@ generator, resolve it through `0x451720(0x654170, name)` and add
 Unresolved generator names are freed once (with the `Cannot find generator
 %s` log) so the error is not repeated.
 
+The per-member predicate `0x465850` is not read-only: on every counted
+member it also performs conditional constant stores — `member->+0x318 :=
+81000000.0f` when it is below that constant (`0x607c18`), `member->+0x31c :=
+−9000.0f` when it is above `−9000.0f` (`0x607c14`), `member->+0x320 :=
++9000.0f` when it is below `+9000.0f` (`0x607c10`). What those member fields
+feed is untraced world state; the writes themselves are measured.
+
 Measured: `DEDG [group, remaining]` completes the objective when the
 designated enemy group has `remaining` or fewer members still in play (plus
 anything its named generator still owes). The acronym expansion is a reading
@@ -447,7 +492,8 @@ point `+0x5a4`/`+0x5a8` (third component `+0x5ac` unwritten, stays `0`). child3
 → `+0x5b0`, **squared** at parse. child4 (optional) → `+0x5b4` (required
 count, default 1). child5 `DELETE_ON_SUCCESS` (18-byte cmpsb) → `+0x5bc = 1`.
 
-Evaluator `0x465b40`: gates on `+0x594 || +0x58c || +0x598 < 0` else `false`.
+Evaluator `0x465b40`: gates on `+0x594 || +0x58c || +0x598 >= 0` else `false`
+(a nonnegative `+0x598` alone arms the counting mode).
 
 * Anchor is resolved lazily every call: `+0x590` → `0x465e30` → `+0x5a0`
   (name freed once resolved). Position: `0x4cf200(anchor_obj, &vec3)` if an
@@ -456,7 +502,8 @@ Evaluator `0x465b40`: gates on `+0x594 || +0x58c || +0x598 < 0` else `false`.
 * **Subject active** (`+0x594` set and `subj->+0x24` bit 4 set): `dist² =
   |subj_pos − anchor|²` (subjects' positions via `0x4cf200`). `+0x59c == 1`
   (APPROACHING): fire iff `dist² < +0x5b0`; `+0x59c == 0` (any other
-  spelling): fire iff `dist² >= +0x5b0`. On firing, `+0x5bc` deletes the
+  spelling): fire iff `dist² > +0x5b0` — strict; equality does not fire.
+  On firing, `+0x5bc` deletes the
   subject: `0x4afee0` vehicle hit → `0x47bab0(veh)` (registry removal); else
   `0x4cca30(subj, 0)`.
 * **Subject absent or inactive**: falls to the counting path — `+0x598 < 0`
@@ -585,10 +632,15 @@ bound.
 
 ### Timer keys
 
-The mission countdown timer (`0x71b468`) holds **milliseconds** (`+0x8`
-remaining, `+0x4` total seconds, `+0xc` `GetTickCount` anchor, `+0x10`
-running flag): `0x46c510(s)` sets `remaining = s·1000`, `0x46c550(s)` adds
-`s·1000` and `s` to remaining/total, `0x46c5a0` starts, `0x46c5c0` stops.
+The mission countdown timer (`0x71b468`) holds **milliseconds** in `+0x8`
+(remaining, resynced from `GetTickCount` deltas by `0x46c610`) and **seconds**
+in `+0x4` (a countdown `0x46c5f0` decrements by frame dt while running;
+expiry at `<= 0`), with `+0xc` the `GetTickCount` anchor, `+0x10` the running
+flag and `+0x14` an expiry-report gate (set → `0x46c640` clamps `+0x4` to 0
+instead of reporting). `0x46c510(s)` sets `+0x8 = s·1000` and `+0x4 = s`,
+`0x46c550(s)` adds `s·1000`/`s` to them, `0x46c5a0` starts, `0x46c5c0` stops.
+On expiry the Update preamble ends the mission via `0x463c30(1, 3.0f)` and
+posts text ids `0x1772`/`0x89` — measured above.
 Consumers measured: `MISSION_TIMER` (record field, `0x46c510`+`0x46c5a0`);
 `TIMER_ADJUST`/`ADJUST_TIMER_WHEN_I_COMPLETE` (`+0x5c0` mode 1/2 → set/adjust
 by `+0x5c4` seconds, at completion); `END_TIMER` (`+0x18` → `0x46c5c0` at
@@ -667,6 +719,11 @@ above as the same handle-chain mechanism with arities 1 and 3.
    at several sites (e.g. `DEDG` children as raw payloads, index arrays as
    `dec`'d payloads); a non-integer child produces a pointer value, not a
    diagnosed error — observed, not exercised.
+9. **DEDG member-field writes**: `0x465850` normalizes `+0x318`/`+0x31c`/
+   `+0x320` on every counted group member during evaluation (constants
+   `81000000.0f`/`−9000.0f`/`+9000.0f`); what those fields feed is untraced
+   world state, and the player object's `+0x934` gating the end-of-tick
+   banner is likewise untraced.
 
 ## Reconciliation with F39-D / F39-E1..E7
 
