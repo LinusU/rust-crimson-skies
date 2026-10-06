@@ -4,16 +4,18 @@
 //! its scene swapped for the content `PLAYTEST-RETAIL-SCENE` (#648) prepared:
 //! one documented area of the original `c1c` world, spawned as world records
 //! whose colliders are derived from the triangles they draw, and the whole intact
-//! original `bloodhawk` airframe (every mesh binding of one LOD band, plus a static
-//! propeller) as the player aircraft's visual.
+//! original `bloodhawk` airframe (every mesh binding of one LOD band, plus the
+//! propeller disc that spins with the engine) as the player aircraft's visual.
 //!
 //! Nothing here is `verified_original`, and the label says so
 //! ([`RETAIL_LABEL`]). The airframe's tuning is still the synthetic fixed-wing,
 //! the aircraft's collider is one box measured from the composed extent of the
-//! whole drawn set, the propeller is static, the spawn is [`crate::playtest_retail::spawn_pose`]'s
-//! designed fraction of the area's extent, and the area has no ground, so flying
-//! off the area keeps falling or flying until `R`. Every one of those is a
-//! development choice recorded in `docs/PLAYTEST.md`.
+//! whole drawn set, the drawn propeller turns about a hub measured from its own
+//! geometry at a designed rate (#710), the spawn is
+//! [`crate::playtest_retail::spawn_pose`]'s designed fraction of the area's
+//! extent, and the area has no ground, so flying off the area keeps falling or
+//! flying until `R`. Every one of those is a development choice recorded in
+//! `docs/PLAYTEST.md`.
 //!
 //! An explicit `--cs-path` that cannot be read **fails** with the reason; it never
 //! falls back to the synthetic scene.
@@ -26,9 +28,10 @@ use bevy::image::Image;
 use bevy::prelude::{App, Component, Entity, Quat, Resource, StandardMaterial};
 
 use super::PlaytestError;
+use crate::playtest::propeller::propeller_spin_json;
 use crate::playtest_retail::{
     self as scene_source, AircraftPartAsset, PLAYTEST_AIRCRAFT_ROOT_NAME, PLAYTEST_WORLD_GROUP,
-    PlaytestAircraftReport, PlaytestAreaReport, PlaytestConfig, PlaytestSources,
+    PlaytestAircraftReport, PlaytestAreaReport, PlaytestConfig, PlaytestSources, PropellerSpinSpec,
 };
 use crate::playtest_textures::PlaytestTextureReport;
 
@@ -125,13 +128,19 @@ pub struct RetailContent {
     /// The aircraft's drawn bindings, each with its composed placement in the
     /// airframe and its pieces textured from the flown world's archive.
     pub parts: Vec<AircraftPartAsset>,
+    /// The drawn propeller, with the hub **measured from its own triangles**:
+    /// what `spawn_aircraft` puts [`PropellerSpin`](crate::playtest::propeller::PropellerSpin)
+    /// on, and what the `propeller_spin` object of [`Self::manifest_json`]
+    /// reports.
+    pub propeller: Option<PropellerSpinSpec>,
     /// What the area's and the aircraft's materials resolved to.
     pub textures: PlaytestTextureReport,
 }
 
 impl RetailContent {
     /// The source manifest as one JSON object: which installation and which
-    /// containers (by digest) the flown content came from.
+    /// containers (by digest) the flown content came from, what the area and
+    /// the aircraft read, and the propeller spin rule with its claims.
     #[must_use]
     pub fn manifest_json(&self) -> String {
         let containers = self
@@ -143,13 +152,14 @@ impl RetailContent {
         format!(
             "{{\"label\":\"{RETAIL_LABEL}\",\"installation\":\"{}\",\"containers\":[{containers}],\
 \"area_node\":\"{}\",\"area_mesh_records\":{},\"area_triangles\":{},\"area_colliders\":{},\
-{},\"textures\":{}}}",
+{},{},\"textures\":{}}}",
             self.installation,
             self.area.node_name,
             self.area.mesh_records,
             self.area.triangles,
             self.area.colliders(),
             self.aircraft.json_fields(),
+            propeller_spin_json(self.propeller.as_ref()),
             self.textures.json(),
         )
     }
@@ -233,6 +243,7 @@ pub fn install(
         half_extents_m,
         visual_rotation: content.rotation,
         parts: content.aircraft_parts,
+        propeller: content.propeller,
         textures: content.textures,
     });
     Ok(())

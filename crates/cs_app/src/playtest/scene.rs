@@ -8,6 +8,7 @@ use bevy::prelude::{Component, Entity, World};
 use cs_sim::collision::CollisionLayer;
 use cs_sim::flight::{EngineState, FlightModel, synthetic_fixed_wing};
 
+use super::propeller::PropellerSpin;
 use super::retail::RetailContent;
 use crate::physics::{
     BodyError, BodyMode, BodySpec, FlightSpawnError, FlightSpawnSpec, spawn_body, spawn_flight_body,
@@ -147,13 +148,26 @@ pub fn spawn_aircraft(world: &mut World) -> Result<Entity, SceneError> {
 /// applied once) and one drawn grandchild per stored material group, so the whole
 /// aircraft moves as the one rigid body whose pose the flight path owns. A child carries no body, no collider and no pose of its own;
 /// despawning the body (reset) despawns every part with it.
+///
+/// The one drawn propeller additionally carries [`PropellerSpin`], built from
+/// the hub **measured from its own triangles**, so `R` reset re-spawns exactly
+/// one spinning propeller with the fresh body and never leaves two.
 fn spawn_retail_parts(world: &mut World, body: Entity) {
     let Some(retail) = world.get_resource::<RetailContent>() else {
         return;
     };
     let rotation = retail.visual_rotation;
     let parts = retail.parts.clone();
+    let propeller = retail.propeller.clone();
     for part in &parts {
-        part.spawn(world, body, part.oriented(rotation));
+        let base = part.oriented(rotation);
+        let entity = part.spawn(world, body, base);
+        if let Some(spec) = &propeller
+            && spec.node_slot == part.node_slot
+        {
+            world
+                .entity_mut(entity)
+                .insert(PropellerSpin::from_hub(&spec.hub, base));
+        }
     }
 }

@@ -21,7 +21,7 @@
 //!   401 mesh bindings / 8 673 triangles; a pinned slot holding a different record
 //!   is refused by name rather than substituted.
 //! * **the aircraft is the whole intact `bloodhawk` airframe** (task #665): every
-//!   mesh binding of one selected LOD band plus the static propeller, each part's
+//!   mesh binding of one selected LOD band plus the propeller disc, each part's
 //!   triangle count measured from the container; the full-aircraft checks live in
 //!   `tests/playtest_full_aircraft.rs`.
 //! * **visual and collider geometry are one value.** Every area record presents
@@ -48,6 +48,12 @@ mod textures;
 // same reason.
 #[path = "playtest_retail/nose.rs"]
 mod nose;
+
+// Task #710's tests (prefix `accept_playtest_prop_spin_`) share this binary for
+// the same reason: CI's runner disk is nearly full, and the retail half of this
+// task needs the same installation the rest of this binary reads.
+#[path = "playtest_retail/prop_spin.rs"]
+mod prop_spin;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

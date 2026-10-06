@@ -67,7 +67,9 @@
 //!   its intact-state node (slot [`PLAYTEST_AIRCRAFT_INTACT_NODE_SLOT`],
 //!   [`PLAYTEST_AIRCRAFT_INTACT_NODE_NAME`]), with **one** LOD band chosen by
 //!   [`select_lod_variant`] at [`PLAYTEST_AIRCRAFT_LOD_DISTANCE_M`], plus the one
-//!   static propeller node [`PLAYTEST_AIRCRAFT_PROP_NODE_SLOT`]. Every mesh
+//!   propeller node [`PLAYTEST_AIRCRAFT_PROP_NODE_SLOT`], whose hub is measured
+//!   from its own geometry by [`measure_propeller_hub`] and which the free-flight
+//!   playtest spins (#710). Every mesh
 //!   binding of that set is drawn at its own composed transform; every binding
 //!   that is not drawn (the other LOD bands, the shadow, the wreck pieces, the
 //!   other propeller states, a binding that will not build) is **listed** in
@@ -251,6 +253,25 @@ pub const PLAYTEST_VIEWS_ARE_DESIGNED: &str = "playtest-retail.camera-views-are-
 /// The neutral development material every drawn surface uses.
 pub const PLAYTEST_NEUTRAL_MATERIAL: &str = "playtest-retail.neutral-development-material";
 
+/// The claim id the propeller's **spin sense** is filed under: which way the
+/// disc turns is a designed convention, not a measurement.
+///
+/// The hub axis itself is measured from the disc's own geometry by
+/// [`measure_propeller_hub`], but a stored mesh's triangle winding is a
+/// rendering convention and says nothing about which way the original turned a
+/// propeller — and no original run has ever been watched. The measured normal
+/// is therefore oriented **aft** (away from [`STORED_AIRCRAFT_NOSE_AXIS`], the
+/// measured nose of #709) and the right-hand rule about that axis gives the
+/// sense; both halves of the sense are designed.
+pub const PLAYTEST_PROP_SPIN_SENSE_IS_DESIGNED: &str =
+    "playtest-retail.propeller-spin-sense-is-designed";
+
+/// How [`measure_propeller_hub`] reads a hub out of a mesh, verbatim, so the
+/// startup `playtest sources` line and the smoke `report.json` can carry the
+/// measurement rule next to the numbers it produced.
+pub const PLAYTEST_PROP_HUB_MEASUREMENT: &str = "area-weighted centroid of the drawn disc's own triangles (the pivot) and \
+     area-weighted normal of those triangles (the axis), sign oriented aft";
+
 // -------------------------------------------------------- the pinned choices --
 
 /// The world group this scene renders: `ZBD/C1C/gamez.zbd`.
@@ -286,7 +307,7 @@ pub const PLAYTEST_AIRCRAFT_INTACT_NODE_SLOT: u32 = 2296;
 /// The authored name the pinned intact-state node stores.
 pub const PLAYTEST_AIRCRAFT_INTACT_NODE_NAME: &str = "healthy";
 
-/// The stored node slot of the one propeller mesh drawn, static.
+/// The stored node slot of the one propeller mesh drawn **and spun**.
 ///
 /// Measured: `dontmove` holds six propeller meshes (`staticprop1`, `prop1`,
 /// `prop1b`, `prop2`, `prop2b`, `nitroprop1`); which of them the original shows
@@ -296,6 +317,11 @@ pub const PLAYTEST_AIRCRAFT_INTACT_NODE_NAME: &str = "healthy";
 /// **tail**, not its nose — #709) — and the rest are listed as undrawn. This is
 /// a **name** read, a designed development choice, and it is why the propeller
 /// is provisional.
+///
+/// The disc's hub — the axis it turns about and the point it turns around — is
+/// **measured** from those 16 triangles by [`measure_propeller_hub`] (#710), so
+/// what the free-flight playtest spins about comes from the mesh and not from a
+/// constant here.
 pub const PLAYTEST_AIRCRAFT_PROP_NODE_SLOT: u32 = 2541;
 
 /// The authored name the pinned propeller node stores.
@@ -398,6 +424,326 @@ pub fn nose_mapping(stored_nose: [f32; 3]) -> Result<bevy::math::Quat, PlaytestE
 pub const CAPTURE_WIDTH: u32 = 640;
 /// The capture frame's height, in pixels.
 pub const CAPTURE_HEIGHT: u32 = 480;
+
+// ------------------------------------------------------- the propeller hub --
+
+/// The hub of one drawn propeller disc, **measured from that mesh's own
+/// geometry** in the mesh's own frame (the frame [`grow`] puts the stored
+/// vertices in, before the node's composed transform places them).
+///
+/// Nothing here is a hard-coded axis or an offset read off another node: the
+/// numbers come out of the drawn disc's triangles, so an airframe that stored
+/// its propeller somewhere else — or facing the other way — measures a
+/// different hub instead of spinning about the wrong one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PropellerHub {
+    /// The disc's normal, unit length, oriented **aft** by the designed rule
+    /// [`PLAYTEST_PROP_SPIN_SENSE_IS_DESIGNED`] names.
+    pub axis: [f32; 3],
+    /// The disc's area centroid — its hub — where the spin pivot sits.
+    pub pivot: [f32; 3],
+    /// The disc's radius: the furthest vertex from the pivot, measured in the
+    /// disc's own plane, in canonical metres.
+    pub radius_m: f32,
+    /// The disc's thickness: how far the furthest vertex stands out of that
+    /// plane, in canonical metres. Small against [`Self::radius_m`] is what
+    /// makes the measured surface a **disc**.
+    pub thickness_m: f32,
+}
+
+/// Why a mesh has no measurable propeller hub. Each variant is a property of
+/// the stored geometry itself, never a value this stage filled in.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PropellerError {
+    /// The mesh stores no usable triangle: none at all, or all degenerate.
+    Empty {
+        /// How many triangles the render mesh holds.
+        triangles: usize,
+    },
+    /// A corner index is out of range, so the mesh the caller handed over does
+    /// not describe itself consistently.
+    Index {
+        /// The corner index that was out of range.
+        index: usize,
+        /// How many vertices the mesh holds.
+        vertices: usize,
+    },
+    /// A position is not finite, so a centroid or a normal would be undefined.
+    NonFinite {
+        /// What was not finite.
+        what: &'static str,
+    },
+    /// The triangles' weighted normals cancel, so the surface has no plane to
+    /// spin about.
+    Degenerate {
+        /// The surface area the triangles did add up to, in square metres.
+        area_m2: f64,
+    },
+    /// The measured extent along the disc's own normal is larger than the
+    /// disc's radius, so the surface is a blob rather than a propeller disc and
+    /// a "hub plane" through it would be a guess.
+    NotADisc {
+        /// The measured thickness, in canonical metres.
+        thickness_m: f32,
+        /// The measured radius, in canonical metres.
+        radius_m: f32,
+    },
+}
+
+impl fmt::Display for PropellerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty { triangles } => {
+                write!(f, "the mesh holds no usable triangle among its {triangles}")
+            }
+            Self::Index { index, vertices } => {
+                write!(
+                    f,
+                    "corner index {index} is outside the mesh's {vertices} vertices"
+                )
+            }
+            Self::NonFinite { what } => write!(f, "{what} is not finite"),
+            Self::Degenerate { area_m2 } => write!(
+                f,
+                "the triangles' normals cancel over {area_m2} m² of surface, so the mesh has no \
+                 disc plane"
+            ),
+            Self::NotADisc {
+                thickness_m,
+                radius_m,
+            } => write!(
+                f,
+                "the mesh is {thickness_m} m thick against a {radius_m} m radius, so it is not a \
+                 disc to spin about"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PropellerError {}
+
+/// Measures a propeller disc's hub — its **axis and pivot** — out of the mesh's
+/// own triangles.
+///
+/// The rule, in order, and nothing else:
+///
+/// 1. every non-degenerate triangle contributes its **area-weighted unit
+///    normal**; a triangle whose winding disagrees with the largest triangle's
+///    is sign-aligned first, because a disc has one normal line and a stored
+///    mesh's winding is a rendering convention;
+/// 2. the pivot is the **area-weighted centroid** of the triangle centroids;
+/// 3. the radius is the furthest vertex from that pivot *in the measured
+///    plane*, and the thickness is the furthest vertex *out* of it;
+/// 4. the normal's sign is oriented **aft** — away from
+///    [`STORED_AIRCRAFT_NOSE_AXIS`] — which is the designed sense
+///    [`PLAYTEST_PROP_SPIN_SENSE_IS_DESIGNED`] records, since no measurement
+///    says which way the original turned a propeller;
+/// 5. a surface thicker than it is wide is refused by name
+///    ([`PropellerError::NotADisc`]) rather than given a hub plane it does not
+///    have.
+///
+/// # Errors
+///
+/// [`PropellerError::Empty`] when no triangle survives, [`PropellerError::Index`]
+/// / [`PropellerError::NonFinite`] when the mesh does not describe itself
+/// consistently, [`PropellerError::Degenerate`] when the normals cancel and
+/// [`PropellerError::NotADisc`] when the surface is not a disc.
+pub fn measure_propeller_hub(
+    mesh: &cs_content::mesh::RenderMesh,
+) -> Result<PropellerHub, PropellerError> {
+    let vertices = mesh.vertices();
+    // (normal, area, centroid, corner positions) of every usable triangle.
+    let mut faces: Vec<([f32; 3], f64, [f32; 3])> = Vec::new();
+    let mut corners: Vec<[f32; 3]> = Vec::new();
+    for triangle in mesh.triangles() {
+        let corner =
+            |slot: usize| -> Result<[f32; 3], PropellerError> {
+                let index = triangle.vertices[slot] as usize;
+                let position = vertices.get(index).map(|vertex| vertex.position).ok_or(
+                    PropellerError::Index {
+                        index,
+                        vertices: vertices.len(),
+                    },
+                )?;
+                if !position.iter().all(|value| value.is_finite()) {
+                    return Err(PropellerError::NonFinite {
+                        what: "a stored propeller vertex",
+                    });
+                }
+                Ok(position)
+            };
+        let [a, b, c] = [corner(0)?, corner(1)?, corner(2)?];
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let cross = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        ];
+        // `|cross|` is twice the triangle's area; a zero cross is a degenerate
+        // corner and carries no direction to vote with.
+        let area = 0.5
+            * f64::from(cross[0])
+                .hypot(f64::from(cross[1]))
+                .hypot(f64::from(cross[2]));
+        if area <= 1.0e-12 || !area.is_finite() {
+            continue;
+        }
+        let length = (2.0 * area) as f32;
+        let unit = [cross[0] / length, cross[1] / length, cross[2] / length];
+        faces.push((
+            unit,
+            area,
+            [
+                (a[0] + b[0] + c[0]) / 3.0,
+                (a[1] + b[1] + c[1]) / 3.0,
+                (a[2] + b[2] + c[2]) / 3.0,
+            ],
+        ));
+        corners.extend([a, b, c]);
+    }
+    if faces.is_empty() {
+        return Err(PropellerError::Empty {
+            triangles: mesh.triangles().len(),
+        });
+    }
+
+    // 1. the area-weighted normal, sign-aligned to the largest triangle.
+    let reference = faces
+        .iter()
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .map(|face| face.0)
+        .expect("faces is not empty");
+    let mut normal = [0.0f64; 3];
+    let mut area_total = 0.0f64;
+    for (unit, area, _) in &faces {
+        let sign = if unit[0] * reference[0] + unit[1] * reference[1] + unit[2] * reference[2] < 0.0
+        {
+            -1.0
+        } else {
+            1.0
+        };
+        for axis in 0..3 {
+            normal[axis] += sign * f64::from(unit[axis]) * *area;
+        }
+        area_total += *area;
+    }
+    let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+    if length <= 0.0 || !length.is_finite() {
+        return Err(PropellerError::Degenerate {
+            area_m2: area_total,
+        });
+    }
+    // The axis is carried in f64 through the accumulation and handed out as a
+    // unit f32 triple, renormalised so a consumer never sees a rounding drift.
+    let axis = [
+        (normal[0] / length) as f32,
+        (normal[1] / length) as f32,
+        (normal[2] / length) as f32,
+    ];
+    let axis_length = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    if axis_length <= 0.0 || !axis_length.is_finite() {
+        return Err(PropellerError::Degenerate {
+            area_m2: area_total,
+        });
+    }
+    let mut axis = [
+        axis[0] / axis_length,
+        axis[1] / axis_length,
+        axis[2] / axis_length,
+    ];
+
+    // 2. the area-weighted centroid of the triangle centroids.
+    let mut pivot = [0.0f64; 3];
+    for (_, area, centroid) in &faces {
+        for component in 0..3 {
+            pivot[component] += *area * f64::from(centroid[component]);
+        }
+    }
+    let pivot = {
+        let mut value = [0.0f32; 3];
+        for component in 0..3 {
+            let scaled = pivot[component] / area_total;
+            if !scaled.is_finite() {
+                return Err(PropellerError::NonFinite {
+                    what: "the disc's centroid",
+                });
+            }
+            value[component] = scaled as f32;
+        }
+        value
+    };
+
+    // 3. radius in the plane, thickness out of it, over the used corners.
+    let mut radius_m = 0.0f32;
+    let mut thickness_m = 0.0f32;
+    for corner in &corners {
+        let offset = [
+            f64::from(corner[0] - pivot[0]),
+            f64::from(corner[1] - pivot[1]),
+            f64::from(corner[2] - pivot[2]),
+        ];
+        let along = (0..3).map(|c| offset[c] * f64::from(axis[c])).sum::<f64>();
+        let mut across = [0.0f64; 3];
+        for c in 0..3 {
+            across[c] = offset[c] - along * f64::from(axis[c]);
+        }
+        let in_plane =
+            (across[0] * across[0] + across[1] * across[1] + across[2] * across[2]).sqrt();
+        radius_m = radius_m.max(in_plane as f32);
+        thickness_m = thickness_m.max(along.abs() as f32);
+    }
+    if !radius_m.is_finite() || !thickness_m.is_finite() {
+        return Err(PropellerError::NonFinite {
+            what: "the disc's radius or thickness",
+        });
+    }
+    if thickness_m > radius_m {
+        return Err(PropellerError::NotADisc {
+            thickness_m,
+            radius_m,
+        });
+    }
+
+    // 4. the designed sign: the axis points aft, away from the measured nose.
+    let aft = [
+        -STORED_AIRCRAFT_NOSE_AXIS[0],
+        -STORED_AIRCRAFT_NOSE_AXIS[1],
+        -STORED_AIRCRAFT_NOSE_AXIS[2],
+    ];
+    if axis[0] * aft[0] + axis[1] * aft[1] + axis[2] * aft[2] < 0.0 {
+        axis = [-axis[0], -axis[1], -axis[2]];
+    }
+    if !axis.iter().all(|value| value.is_finite()) {
+        return Err(PropellerError::NonFinite {
+            what: "the disc's axis",
+        });
+    }
+
+    Ok(PropellerHub {
+        axis,
+        pivot,
+        radius_m,
+        thickness_m,
+    })
+}
+
+/// The drawn propeller the playtest spins, and the hub **measured from its own
+/// geometry**: everything the spin presentation needs that comes from the
+/// container rather than from a designed rate curve.
+///
+/// The rate curve itself is not here on purpose — it is a designed development
+/// value with its own claim (see
+/// [`crate::playtest::propeller::PLAYTEST_PROP_SPIN_RATE_IS_DESIGNED`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PropellerSpinSpec {
+    /// The stored slot of the drawn propeller binding.
+    pub node_slot: u32,
+    /// The authored name that node stores (the drawn `staticprop1`).
+    pub node_name: String,
+    /// The hub, measured from that binding's own triangles, in the mesh frame.
+    pub hub: PropellerHub,
+}
 
 /// How many views a capture drives. Three: two that frame the aircraft and one
 /// that frames the area.
@@ -588,6 +934,9 @@ pub enum PlaytestError {
         /// The composed extent that came out.
         extent: [f64; 3],
     },
+    /// The drawn propeller's hub could not be measured from its own geometry,
+    /// so no axis and no pivot exist to spin it about.
+    Propeller(PropellerError),
     /// A capture could not be produced.
     Capture(CaptureError),
     /// The original textures could not be set up.
@@ -672,6 +1021,10 @@ impl fmt::Display for PlaytestError {
             ),
             Self::Capture(error) => write!(f, "{error}"),
             Self::Textures(error) => write!(f, "{error}"),
+            Self::Propeller(error) => write!(
+                f,
+                "the drawn propeller's hub cannot be measured from its own mesh: {error}"
+            ),
         }
     }
 }
@@ -688,8 +1041,15 @@ impl std::error::Error for PlaytestError {
             Self::Spawn(error) => Some(error),
             Self::Capture(error) => Some(error),
             Self::Textures(error) => Some(error),
+            Self::Propeller(error) => Some(error),
             _ => None,
         }
+    }
+}
+
+impl From<PropellerError> for PlaytestError {
+    fn from(error: PropellerError) -> Self {
+        Self::Propeller(error)
     }
 }
 
@@ -1196,7 +1556,8 @@ struct AircraftSelection<'g> {
 ///    siblings would pick the tightest band, the engine overlay, and draw no wings;
 /// 4. every mesh binding under the chosen band, plus any outside every band, is
 ///    drawn; every binding under another band is hidden with that band;
-/// 5. the one pinned static propeller is added.
+/// 5. the one pinned propeller is added, and its hub is measured from its own
+///    triangles (see [`measure_propeller_hub`]).
 ///
 /// A mesh the container cannot build is not decided here: the caller reports it
 /// as undrawn rather than failing the aircraft.
@@ -1437,7 +1798,7 @@ pub struct PlaytestConfig {
     pub aircraft_intact_node_slot: u32,
     /// The authored name that node must store.
     pub aircraft_intact_node_name: String,
-    /// The stored node slot of the one static propeller mesh.
+    /// The stored node slot of the one propeller mesh that is drawn and spun.
     pub aircraft_prop_node_slot: u32,
     /// The authored name that node must store.
     pub aircraft_prop_node_name: String,
@@ -1689,7 +2050,7 @@ impl PlaytestAircraftReport {
 }
 
 /// Escapes the two characters a quoted JSON string cannot hold raw.
-fn json_escape(text: &str) -> String {
+pub(crate) fn json_escape(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
@@ -2239,8 +2600,10 @@ pub fn spawn_playtest_content(
     let selection = select_aircraft_parts(&planes, airframe, config)?;
     let mut undrawn = selection.undrawn;
     let mut aircraft_meshes = WorldMeshes::new();
-    // (node, mesh id, render mesh) of every binding that builds.
+    // (node, mesh id) of every binding that builds.
     let mut built = Vec::new();
+    // The drawn propeller's measured hub, filled in while the bindings build.
+    let mut propeller: Option<PropellerSpinSpec> = None;
     let mut aircraft_min = [f64::INFINITY; 3];
     let mut aircraft_max = [f64::NEG_INFINITY; 3];
     for node in &selection.draw {
@@ -2278,6 +2641,17 @@ pub fn spawn_playtest_content(
             &render,
             node.world_transform(),
         )?;
+        if node.index() == config.aircraft_prop_node_slot {
+            // The spin axis and pivot come out of this mesh's own triangles,
+            // measured here where the mesh is in hand (see
+            // [`measure_propeller_hub`]); a disc that yields no hub stops the
+            // scene by name rather than leaving a propeller that cannot spin.
+            propeller = Some(PropellerSpinSpec {
+                node_slot: node.index(),
+                node_name: node.name().to_owned(),
+                hub: measure_propeller_hub(&render)?,
+            });
+        }
         built.push((*node, id));
     }
     if built.is_empty() {
@@ -2532,6 +2906,7 @@ pub fn spawn_playtest_content(
         report,
         aircraft,
         aircraft_parts,
+        propeller,
         textures,
         world_meshes: meshes.len(),
         spawn,
@@ -2627,6 +3002,10 @@ pub struct PlaytestContent {
     /// The aircraft's engine meshes, one per drawn binding, each with its
     /// textured (or neutral) pieces.
     pub aircraft_parts: Vec<AircraftPartAsset>,
+    /// The drawn propeller and the hub measured from its own geometry, when the
+    /// drawn set holds one. The free-flight playtest spins it; the capture
+    /// scene draws it where the spawn put it.
+    pub propeller: Option<PropellerSpinSpec>,
     /// What the area's and the aircraft's materials resolved to.
     pub textures: PlaytestTextureReport,
     /// How many distinct area meshes were uploaded (the aircraft's is not one).
@@ -2655,6 +3034,9 @@ fn place_capture_scene(
         report,
         aircraft,
         aircraft_parts,
+        // The hub goes to the free-flight playtest, which owns the engine state
+        // a spin needs; this capture scene has no flight loop to read one from.
+        propeller: _,
         textures,
         world_meshes,
         spawn,

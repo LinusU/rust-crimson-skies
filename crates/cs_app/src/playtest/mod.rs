@@ -28,6 +28,7 @@
 //! deterministic run. [`run_playtest`] is what `cs --playtest` calls.
 
 pub mod command;
+pub mod propeller;
 pub mod retail;
 pub mod scene;
 pub mod smoke;
@@ -290,6 +291,9 @@ impl Plugin for PlaytestPlugin {
                     meta_controls,
                     perform_reset,
                     sync_pause,
+                    // After `sync_pause`: a pause that begins in a frame
+                    // freezes the drawn propeller in that same frame.
+                    propeller::spin_propellers,
                     update_telemetry,
                     follow_camera,
                 )
