@@ -36,10 +36,11 @@ build", pushed by the owner) is what moved it: it extended the cleanup step to
 `/opt/hostedtoolcache`, `~/.ghcup`, boost, swift, powershell, chromium,
 node_modules, `/opt/microsoft`, `/opt/google`, `/opt/az`, the JVMs and
 miniconda, and pruned docker images. Its own `df` pair shows 87 GB free before
-the cleanup and 124 GB after, so **37 GB** of the margin is the extended
-removal and the rest is the same test plan writing less. The job writes about
-**104 GB** in both runs: `73f84b1c` had 105 GB to spend and finished with 450 MB,
-`385160c2` had 124 GB and finished with 20 GB.
+the cleanup and 124 GB after, so the extended removal is 37 GB — and 124 GB
+minus the 105 GB the previous commit's cleanup left is the whole 19 GB
+difference in the outcome. The job writes about **104 GB** in both runs:
+`73f84b1c` had 105 GB to spend and finished with 450 MB, `385160c2` had 124 GB
+and finished with 20 GB.
 
 So the acceptance criterion is met with 20 GB free, an order of magnitude more
 than the 450 MB that made #666 fail, and the run is green (`37394319899`
@@ -56,8 +57,9 @@ Cache Size: ~1082 MB (1135019483 B)
 ```
 
 1.08 GB, a full key match. The task asked whether stale artifacts inflate
-`target/`; they do not — there is almost nothing cached to inflate it, and
-`cache-all-crates: false` is already the default. The write is the build.
+`target/`; they do not — there is almost nothing cached to inflate it, and the
+workflow sets none of the action's cache-scope options, so that ~1 GB is the
+whole cache. The write is the build.
 
 The build is dominated by the test binaries. The plan is countable from the
 tree: **376 test binaries** before this task's own suite (365 integration test
@@ -193,6 +195,11 @@ not an independent one).
   17.02 GB in total, against the tool's 138/239, median 107,113,240 and 16.89 GB:
   the same split, the extra 0.13 GB being the stale 129.5 MB `cs_app` binary and
   the `cs_xtask` binary itself.
+* Every `src/lib.rs` in the tree has exactly **one** binary here whose `.d`
+  sidecar names it, and each of the two `src/main.rs` bins has two (cs_app
+  104.7 MB and 228.7 MB, cs_inspect 1.0 MB and 13.4 MB). A doc-test binary
+  leaves no such sidecar, so the report's "doc-test binaries are not counted"
+  and the "linked twice" note both hold as stated on this tree.
 * Two `accept_t696_` tests failed under a member-scoped
   `cargo test -p cs_xtask` in a fresh per-worktree target directory (task
   #383), because they demanded a workspace-wide build's coverage and its
