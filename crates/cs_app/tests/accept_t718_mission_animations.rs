@@ -24,9 +24,9 @@ use bevy::math::Mat4;
 use bevy::prelude::{GlobalTransform, Vec3};
 use cs_app::animation::events::{EVENT_HEADER_BYTES, EventClass, decode_event_stream};
 use cs_app::animation::mission::{
-    AnimationRecordFacts, DECLARATION_MATCH_CLAIM, EVENTS_NOT_DECODED_CLAIM,
+    AnimationRecordFacts, AnimationTarget, DECLARATION_MATCH_CLAIM, EVENTS_NOT_DECODED_CLAIM,
     PLACEMENT_FIELDS_CLAIM, PLACEMENT_FIELDS_REASON, RecordResolution, RecordSequence,
-    SequenceEvents, StartupAnimation, bind_mission_animation, join_startup_animation,
+    SequenceEvents, StartupAnimation, TargetSource, bind_mission_animation, join_startup_animation,
 };
 use cs_app::animation::programs::{
     ANIMATION_DEFINITION_FIELD, ANIMATION_DEFINITIONS_RECORD, ANIMATION_LIST_FIELD,
@@ -330,6 +330,15 @@ fn joined_over(
     )
 }
 
+/// The declaration's object selectors of one row — the names the declaring
+/// member drives (#632's table's actor column), in join order.
+fn declared_actors(targets: &[AnimationTarget]) -> Vec<&AnimationTarget> {
+    targets
+        .iter()
+        .filter(|target| target.source() == TargetSource::DeclaredSelector)
+        .collect()
+}
+
 /// The one synthetic row the timeline tests play: a motion statement at stored
 /// time `0.5` that runs to `2.5`, and a call statement at `1.5`.
 fn playable_row(identity: &str) -> StartupAnimation {
@@ -503,6 +512,26 @@ fn accept_t718_a_playable_record_starts_advances_once_and_finishes() {
     assert_eq!(running.reached_time(), None);
     assert_eq!(running.statements(), 0);
 
+    // The actor half of the binding travels with the member half: the
+    // declaring member's object selector is the name this animation drives,
+    // and the fixture's world container is empty, so the join keeps the name
+    // unread rather than counting it as selecting nothing.
+    let actors = declared_actors(running.targets());
+    assert_eq!(
+        actors
+            .iter()
+            .copied()
+            .map(AnimationTarget::stored)
+            .collect::<Vec<_>>(),
+        vec!["piratezep"],
+        "the declaring member's object selector names the actor it drives"
+    );
+    assert!(
+        actors[0].resolution().is_unmeasured(),
+        "no world container was offered, so the selection is unread, not zero: {:?}",
+        actors[0].resolution()
+    );
+
     // The first committed tick reaches stored time 0: nothing has started yet.
     let first = player.advance(Tick(100)).expect("the first tick advances");
     assert_eq!(first.tick(), Tick(100));
@@ -573,6 +602,14 @@ fn accept_t718_a_playable_record_starts_advances_once_and_finishes() {
     assert_eq!(finished.started_at(), Tick(100));
     assert_eq!(finished.finished_at(), Tick(260));
     assert_eq!(finished.statements(), 2);
+    assert_eq!(
+        declared_actors(finished.targets())
+            .into_iter()
+            .map(AnimationTarget::stored)
+            .collect::<Vec<_>>(),
+        vec!["piratezep"],
+        "the member → actor binding stays readable after the finish"
+    );
     assert_eq!(player.running().count(), 0);
     assert_eq!(player.finished().count(), 1);
 
@@ -703,6 +740,78 @@ fn accept_t718_a_row_the_join_refused_is_never_started() {
     }
     assert_eq!(player.running().count(), 0);
     assert_eq!(player.refused().count(), 2);
+}
+
+/// The refusal ledger holds the join's **current** verdict for an identity: a
+/// row refused on one `start` and played by a later one is running, not
+/// refused, so an identity is never refused and running at the same time.
+#[test]
+fn accept_t718_a_later_playable_start_supersedes_an_earlier_refusal() {
+    // The same identity, refused here because the record's stored object name
+    // is not one of the declaration's selectors.
+    let refused_row = joined_over(
+        "same_identity",
+        &["call_eachengine"],
+        facts_with(
+            "same_identity",
+            "blackswanzep",
+            &[(
+                "call_eachengine",
+                AnimationRecordSequenceKind::Sequence,
+                stream(&[synthetic_event(11, 1, 0.5, 2.0)]),
+            )],
+        ),
+    );
+    assert!(!refused_row.is_playable());
+    // …and the same identity playable, with the declaring member's own
+    // selector and the record agreeing on the object name.
+    let playable_row = playable_row("same_identity");
+    assert!(playable_row.is_playable());
+
+    let mut player = MissionAnimationPlayer::new(session(75), 64).expect("a usable rate");
+    let first = player.start(NEW_GAME_START, Tick(0), &[refused_row]);
+    assert_eq!(
+        first
+            .refused()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["same_identity"]
+    );
+    assert_eq!(player.refused_count(), 1);
+    assert_eq!(player.running_count(), 0);
+
+    let second = player.start(NEW_GAME_START, Tick(0), std::slice::from_ref(&playable_row));
+    assert_eq!(
+        second
+            .started()
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["same_identity"],
+        "the playable row starts"
+    );
+    assert!(second.refused().is_empty());
+    assert_eq!(player.running_count(), 1);
+    assert_eq!(
+        player.refused_count(),
+        0,
+        "the playable start supersedes the earlier refusal, so no identity is \
+         refused and running at once: {:?}",
+        player.refused().collect::<Vec<_>>()
+    );
+    assert!(player.refused_record("same_identity").is_none());
+    let running = player
+        .running_record("same_identity")
+        .expect("the playable row is running");
+    assert_eq!(running.archive(), "zbd/zrdr.zbd");
+    assert_eq!(
+        declared_actors(running.targets())
+            .into_iter()
+            .map(AnimationTarget::stored)
+            .collect::<Vec<_>>(),
+        vec!["piratezep"]
+    );
 }
 
 /// The two host-contract refusals: a player that could never advance, and a
@@ -997,6 +1106,30 @@ fn accept_t718_retail_m01_startup_animations_play_in_the_mission_session() {
         "M01 starts rows of both carriers: {mission_carrier} mission, {camera_carrier} camera"
     );
 
+    // The actor half of the binding, read off the running session: every
+    // declaring member's object selector selected exactly one world record of
+    // the mission's own container, so member → actor is here, not only in
+    // #632's table.
+    for record in player.running() {
+        let actors = declared_actors(record.targets());
+        assert!(
+            !actors.is_empty(),
+            "{} is declared by a member that names at least one object: {:#?}",
+            record.identity(),
+            record.targets()
+        );
+        for actor in actors {
+            assert_eq!(
+                actor.resolution().occurrences(),
+                Some(1),
+                "{}'s selector {} selected exactly one world record: {:#?}",
+                record.identity(),
+                actor.stored(),
+                actor.resolution()
+            );
+        }
+    }
+
     // Advance the whole closure until every row reached the end of its own
     // measured duration.
     let mut published: BTreeSet<String> = BTreeSet::new();
@@ -1027,6 +1160,12 @@ fn accept_t718_retail_m01_startup_animations_play_in_the_mission_session() {
                     .expect("a started row decoded")
                     .duration_time(),
                 "the finished duration is the record's own measured duration"
+            );
+            assert_eq!(
+                finished.targets(),
+                row.targets(),
+                "the finished record keeps the binding its row joined, member → actor \
+                 included"
             );
         }
         tick += 1;

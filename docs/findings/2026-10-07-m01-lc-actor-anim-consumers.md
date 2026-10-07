@@ -21,8 +21,8 @@ nothing here is `verified_original`.
   `MissionAnimationStepRefusal` and `MissionTickRefusal`.
 - `crates/cs_app/src/lib.rs` (wiring only): `pub mod mission_animations;` and
   the module-documentation paragraph beside `mission_markers`.
-- `crates/cs_app/tests/accept_t718_mission_animations.rs` (new): the seven
-  `accept_t718_*` tests — six synthetic, one `#[ignore = "requires CS_GAME_DIR"]`
+- `crates/cs_app/tests/accept_t718_mission_animations.rs` (new): the eight
+  `accept_t718_*` tests — seven synthetic, one `#[ignore = "requires CS_GAME_DIR"]`
   retail.
 - `crates/cs_app/tests/evidence_report_m01_lc_actor_anim_consumers.rs` (new):
   the `CLI-EVIDENCE` harness (see **Evidence** below); not named with the
@@ -74,6 +74,16 @@ record's statements are not converted into `MarkerEffect`s either: a cue label
 nobody authored would be an invented mission symbol, which `mission_markers`
 refuses even for the designed vocabulary.
 
+**The actor half travels too.** `RunningRecord` and `FinishedRecord` carry the
+row's `targets` — the declaring member's object selectors first (M01's
+`piratezep`, `workersvoyagezep`, `blackswanzep`, …), each with what it
+selected in the mission's `gamez.zbd`, then the record's own object, root and
+node-table names — so a running or finished row reads member → archive → actor
+in one place instead of a join the host has to redo. The retail case asserts
+that **every** declaring selector of every started row selected exactly one
+world record, which is #632's table asserted through this consumer, and that a
+finished record keeps exactly the targets its row joined.
+
 ## The composed step and its two refusals
 
 `step_mission_animations(world, player, markers, objectives, facts)` advances
@@ -109,6 +119,11 @@ non-negotiable behavior 5).
   a fresh activation (a fresh timeline, the finished row still on record).
   `retry(served)` refuses the generation already served and leaves the live
   timeline untouched, exactly like `MissionMarkerConsumer::retry`.
+- **The refusal ledger is the join's current verdict, never stale.** A row
+  refused on one `start` and playable on a later one leaves the ledger when it
+  starts, so no identity is refused and running at once; a `start` that finds
+  the identity already running records neither a second activation nor a new
+  refusal (it reports `StartupReport::already_running`).
 - **A refused row keeps every refusal and its span.** `RefusedRecord` carries
   the `PlayRefusal` list verbatim, the record's `SourceSpan` when a record was
   bound, and the claim ids the refusals carry — a content mismatch carries
@@ -125,19 +140,29 @@ non-negotiable behavior 5).
 
 | `accept_t718_` test | Covers | Fails when |
 | --- | --- | --- |
-| `a_playable_record_starts_advances_once_and_finishes` | **the observable failure**: a played record's declaring archive/member/carrier/index/span, the measured 2.5 duration, statements at stored times 0.5 and 1.5 on the exact ticks that reach them, one publication per statement, a repeated tick refused with nothing published, finishing **after** its last statement, a restart after a finish, a repeated start not becoming a second activation | a record starts without its binding, a statement is published twice or on the wrong tick, a record never finishes (or finishes before its statements), a repeated start silently replaces a live timeline |
+| `a_playable_record_starts_advances_once_and_finishes` | **the observable failure**: a played record's declaring archive/member/carrier/index/span, its object selector `piratezep` as the actor the member drives (on the running **and** the finished record), the measured 2.5 duration, statements at stored times 0.5 and 1.5 on the exact ticks that reach them, one publication per statement, a repeated tick refused with nothing published, finishing **after** its last statement, a restart after a finish, a repeated start not becoming a second activation | a record starts without its binding, the actor half of the binding goes missing, a statement is published twice or on the wrong tick, a record never finishes (or finishes before its statements), a repeated start silently replaces a live timeline |
 | `a_row_the_join_refused_is_never_started` | both refusal shapes — an undecoded event stream with `f20-anim.sequence-event-stream-not-decoded` and its source span, and an object-name disagreement with **no** claim id — kept in stored order, and 64 advancing ticks publishing nothing for them | a refused row is started, the refusals or their claim ids are dropped, or a refused row's bytes reach the timeline |
 | `a_zero_tick_rate_and_a_repeated_generation_are_refused` | `PlayerError::ZeroTickRate`, `PlayerError::SameSession` leaving the live timeline untouched, `PlayerTeardown`'s counts and the new generation's timeline starting over | a zero rate builds a player, or a retry re-arms the generation it already serves |
+| `a_later_playable_start_supersedes_an_earlier_refusal` | the refusal ledger is the join's **current** verdict: the same identity refused once (object-name disagreement) and playable on a later `start` ends up running with `refused_count() == 0`, its `zbd/zrdr.zbd` :: `piratezep` binding carried | a refused identity stays in the ledger after it starts (an identity refused **and** running), or a later playable start is dropped |
 | `the_composed_step_raises_the_animation_log_and_advances_the_records` | one call doing both halves: the fired door marker drained once into a real `ObjectiveSession` (the fixture program's reveal rule fires), the log empty afterwards, and the record's statement arriving on the tick that reaches stored time 0.5 | either half stops running in the composed step, or the log is drained twice |
 | `a_refused_mission_tick_carries_the_record_report` | the **order**: the mission half refuses a tick it already stepped, and `advanced_through == Some(Tick(1))` proves the record half ran first; the carried report and the already-drained log | the halves are reordered, or the record report is lost when the mission refuses |
 | `a_player_ahead_of_the_mission_refuses_before_the_mission_runs` | the other refusal: `Records(NotAfter)` before the mission runs, the log still holding its marker and no marker admitted | a refused tick still drains the log |
-| `retail_m01_startup_animations_play_in_the_mission_session` (retail, `#[ignore]`) | M01's six `NEW_GAME_START` rows all start and all finish; the declaring archive/member of `pzep_engines_start` (`zbd/zrdr.zbd` :: `pirate_zep_nacelles.zrd`) and of `wv_hookup_state` (`zbd/c1c/m01/zrdr.zbd` :: `wv_tailhook.zrd`); both carriers represented; every statement stamped with the session and a member; every finished duration equal to the record's own measured duration; `LOAD_GAME_START`'s single `player_setup` row; and the three `placezeps.zrd` placements still refused to place under their claim | a member moves, a row stops decoding, a duration is read from somewhere else, or a placement starts being spawned |
+| `retail_m01_startup_animations_play_in_the_mission_session` (retail, `#[ignore]`) | M01's six `NEW_GAME_START` rows all start and all finish; the declaring archive/member of `pzep_engines_start` (`zbd/zrdr.zbd` :: `pirate_zep_nacelles.zrd`) and of `wv_hookup_state` (`zbd/c1c/m01/zrdr.zbd` :: `wv_tailhook.zrd`); both carriers represented; **every declaring object selector of every started
+row selected exactly one world record** (the member → actor binding asserted
+through the consumer, on the running rows); every finished record keeping
+exactly the targets its row joined; every statement stamped with the session
+and a member; every finished duration equal to the record's own measured
+duration; `LOAD_GAME_START`'s single `player_setup` row; and the three
+`placezeps.zrd` placements still refused to place under their claim | a member
+moves, an actor name stops resolving to one world record, a row stops
+decoding, a duration is read from somewhere else, or a placement starts being
+spawned |
 
 ## Sensitivity
 
-Four mutations were applied to `mission_animations.rs` and the synthetic
+Six mutations were applied to `mission_animations.rs` and the synthetic
 selection (`-- --skip retail`) re-run with the source restored afterwards. All
-four are killed by a test CI can run, so none relies on the `#[ignore]`d case:
+six are killed by a test CI can run, so none relies on the `#[ignore]`d case:
 
 | mutation | killed by |
 | --- | --- |
@@ -145,12 +170,16 @@ four are killed by a test CI can run, so none relies on the `#[ignore]`d case:
 | `if !row.is_playable()` is never taken, so a refused row is started | `a_row_the_join_refused_is_never_started` (a started row and a missing refusal) |
 | the completion test becomes strict (`time > duration`), so a record never finishes | `a_playable_record_starts_advances_once_and_finishes` (nothing is finished) |
 | the composed step runs the mission half first | `a_refused_mission_tick_carries_the_record_report` (the player never advanced) **and** `a_player_ahead_of_the_mission_refuses_before_the_mission_runs` (the log is drained by a refused tick) |
+| a successful start no longer clears the identity's earlier refusal (`self.refused.remove(&identity)` dropped) | `a_later_playable_start_supersedes_an_earlier_refusal` (`refused_count()` stays 1, so an identity is refused **and** running) |
+| a started record keeps no targets (`targets: Vec::new()`) | `a_playable_record_starts_advances_once_and_finishes` and `a_later_playable_start_supersedes_an_earlier_refusal` (both read `[]` where `piratezep` must be) |
 
 The behaviours only the retail case checks are M01's own numbers: the six
 `NEW_GAME_START` rows, the two declaring archive/member pairs, both carriers,
-every finished duration equal to the record's measured duration, and the three
-`placezeps.zrd` placements under their claim; every **rule** above is covered
-without the installation.
+every declaring object selector resolving to exactly one world record, every
+finished record keeping the targets its row joined, every finished duration
+equal to the record's measured duration, and the three `placezeps.zrd`
+placements under their claim; every **rule** above is covered without the
+installation.
 
 ## Unknowns and limitations (recorded, not guessed)
 
@@ -160,14 +189,16 @@ without the installation.
   anything on screen. **Resolving task:** the pose-transform half of #690's
   AC3, which needs an original run or the original's own source.
 - **`DeclaredWorldActorProgram` still has no original encoding.** The member →
-  actor *binding* is measured (#632, #678) and this stage consumes it, but the
-  declared world-actor schema still has no measured source for motion, socket,
-  pickup, tick rate or faction, and the placement member's
+  actor *binding* is measured (#632, #678), consumed here and asserted by the
+  retail case (every declaring selector resolving to exactly one world
+  record), but the declared world-actor schema still has no measured source
+  for motion, socket, pickup, tick rate or faction, and the placement member's
   `node`/`position`/`yaw`/`pitch`/`max_speed`/`max_accel` fields stay
   `UnmeasuredFieldFamily::PlacementRecords`
   (`f20-anim.placement-member-fields-undecoded`). **Affected content:** the
-  `world_actors` launch surface of `MissionLaunchPlan`, and every placed
-  actor's pose and route in M01. **Resolving tasks:** #574 (decode the
+  `world_actors` launch surface of #359's mission launch path
+  (`crates/cs_app/src/mission_launch.rs`), and every placed actor's pose and
+  route in M01. **Resolving tasks:** #574 (decode the
   mission-scoped `zeppelins.zrd` placed-traffic carrier) and the seventeen
   field families #632 named.
 - **The original's tick rate and the stored time unit stay unmeasured**
@@ -184,7 +215,7 @@ without the installation.
 - **No production mission host owns this yet.** The composed step is a function
   the mission host calls; `VS-M01-RUNTIME` (#359) owns the windowed mission
   session (`crates/cs_app/src/mission_session/`) that will call it, and the
-  `--mission` runner stays gated on `MissionLaunchPlan::launchable`.
+  `--mission` runner stays gated on #359's launch plan until it lands.
 - **No original run.** Every number above is read out of the original bytes by
   the production readers: `ClaimStatus::ObservedTool`, never
   `verified_original`. `retail` is file access, not evidence of runtime
@@ -201,9 +232,10 @@ install and content fingerprints from production discovery, and performs a
 **second production observation** — it binds M01 through
 `bind_mission_animation`, starts every startup row in `MissionAnimationPlayer`
 and advances the timeline to its measured end, recording per row the declaring
-archive and member, the carrier and record index, the measured duration, the
-statements published and the finished tick, plus the three placements with
-their claim (`private/evidence/M01-LC-ACTOR-ANIM-CONSUMERS/actor-anim-consumers.json`).
+archive and member, every joined target as `<source>:<stored>:<world records
+selected>` (the member → actor half, `declared_selector` first), the carrier
+and record index, the measured duration, the statements published and the
+finished tick, plus the three placements with their claim (`private/evidence/M01-LC-ACTOR-ANIM-CONSUMERS/actor-anim-consumers.json`).
 The report is `private/evidence/M01-LC-ACTOR-ANIM-CONSUMERS/acceptance.json`,
 validated with `tools/validate_evidence.py --require-pass`, and its committed
 copy is `docs/findings/evidence/M01-LC-ACTOR-ANIM-CONSUMERS.json`. The claim

@@ -25,10 +25,11 @@
 //! is a **second production observation**: the harness binds M01 through
 //! [`bind_mission_animation`], starts every startup row in
 //! [`MissionAnimationPlayer`] and advances the timeline to its measured end,
-//! recording per row the declaring archive and member, the carrier and record
-//! index, the measured duration, the statements published and the tick the row
-//! finished on — plus the mission's `placezeps.zrd` placements with their
-//! claim. That is a real production run over the owner's installation through
+//! recording per row the declaring archive and member, every name the row
+//! addresses with how many world records each selected (the member → actor
+//! binding), the carrier and record index, the measured duration, the
+//! statements published and the tick the row finished on — plus the mission's
+//! `placezeps.zrd` placements with their claim. That is a real production run over the owner's installation through
 //! the consumer this task adds, not a paraphrase of the acceptance assertions,
 //! and it carries no original bytes: names, counts, timings and claim labels
 //! only.
@@ -38,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cs_app::animation::mission::bind_mission_animation;
+use cs_app::animation::mission::{AnimationTarget, bind_mission_animation};
 use cs_app::mission_animations::MissionAnimationPlayer;
 use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 use cs_types::Tick;
@@ -71,7 +72,9 @@ const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capabi
      MissionAnimationPlayer starts every row of NEW_GAME_START and LOAD_GAME_START and advances \
      them once per committed tick to the end of their measured durations. Claim is implemented \
      only. OBSERVED: every startup row joined to exactly one declaring zrdr member and one carrier \
-     record, every row's decoded duration reached and its statements published with the session \
+     record, and every declaring member's object selector selected exactly one world record of the \
+     mission's container (the member-to-actor binding, recorded per row in targets), every row's \
+     decoded duration reached and its statements published with the session \
      stamp, and every placezeps.zrd placement still refused under \
      f20-anim.placement-member-fields-undecoded — the consumer starts no record and spawns no actor \
      for a placement. LIMITS OF WHAT WAS MEASURED, each recorded in \
@@ -240,13 +243,14 @@ fn observe(
 
     for finished in player.finished() {
         rows.push(format!(
-            "{{\"identity\": {}, \"event\": {}, \"archive\": {}, \"member\": {}, \"carrier\": {}, \
-             \"record_index\": {}, \"duration_time\": {}, \"statements\": {}, \"finished_at_tick\": \
-             {}, \"container\": {}}}",
+            "{{\"identity\": {}, \"event\": {}, \"archive\": {}, \"member\": {}, \"targets\": [{}], \
+             \"carrier\": {}, \"record_index\": {}, \"duration_time\": {}, \"statements\": {}, \
+             \"finished_at_tick\": {}, \"container\": {}}}",
             jstr(finished.identity()),
             jstr(finished.event()),
             jstr(finished.archive()),
             jstr(finished.member()),
+            render_targets(finished.targets()),
             jstr(finished.carrier().label()),
             finished.record_index(),
             finished.duration_time(),
@@ -320,6 +324,31 @@ fn observe(
     );
     assert_json_values_are_quoted(&observation);
     observation
+}
+
+/// One row's joined targets, rendered as `<source>:<stored>:<records>`
+/// strings: the half of the join the name came from (`declared_selector` is
+/// the declaring member's object selector — the actor it drives), the name
+/// exactly as stored, and how many world records it selected (`-` when the
+/// name was kept unread because no world container was offered, never an
+/// invented zero). Strings only, so the canary below sees nothing unquoted.
+fn render_targets(targets: &[AnimationTarget]) -> String {
+    targets
+        .iter()
+        .map(|target| {
+            let selected = target
+                .resolution()
+                .occurrences()
+                .map_or_else(|| "-".to_owned(), |count| count.to_string());
+            format!(
+                "{}:{}:{}",
+                target.source().label(),
+                target.stored(),
+                selected
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A canary for this hand-rendered artifact: every value that follows a key

@@ -221,8 +221,9 @@
 //! measured for and never had: [`mission_animations::MissionAnimationPlayer`]
 //! starts one mission scope's own `mis_anim.zbd` / `cam_anim.zbd` startup
 //! rows, advances them once per committed tick and reports the statements they
-//! reach — with the archive and member that declares each one — while every
-//! row the join refused keeps its refusal and is never started;
+//! reach — with the archive and member that declares each one, and with the
+//! object selectors that name the world records those members drive — while
+//! every row the join refused keeps its refusal and is never started;
 //! [`mission_animations::step_mission_animations`] is the composed tick that
 //! runs that record half beside the marker half above, so one call carries the
 //! animation log into [`objectives::ObjectiveSession`] and advances the

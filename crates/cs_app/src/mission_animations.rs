@@ -33,8 +33,10 @@
 //!
 //! * [`MissionAnimationPlayer`] starts the rows of one startup event, advances
 //!   them **once per committed tick**, and reports the statements each record
-//!   starts — with the declaring archive and member, so the report *is* the
-//!   measured member → actor binding in motion.
+//!   starts — with the declaring archive and member, and with every name the
+//!   row addresses (the declaring member's object selectors first, so the
+//!   world record each selector selected travels with it), so the report *is*
+//!   the measured member → actor binding in motion.
 //! * [`step_mission_animations`] is the composed step: it advances the record
 //!   player for a committed tick and then steps the mission session with the
 //!   animation log's markers through
@@ -90,7 +92,9 @@ use cs_types::asset_id::SourceSpan;
 use cs_types::net::SessionId;
 
 use crate::animation::events::EventClass;
-use crate::animation::mission::{PlayRefusal, PlaybackGap, RecordPlayback, StartupAnimation};
+use crate::animation::mission::{
+    AnimationTarget, PlayRefusal, PlaybackGap, RecordPlayback, StartupAnimation,
+};
 use crate::animation::survey::CarrierKind;
 use crate::mission_markers::{
     MissionMarkerConsumer, MissionStep, MissionStepRefusal, step_mission_with_markers,
@@ -137,8 +141,10 @@ impl std::error::Error for PlayerError {}
 ///
 /// Everything except the timeline is read verbatim out of the original bytes
 /// by the join: the declaring archive and member are the `.zrd` site that
-/// declared the animation, the carrier and index are the record that stored
-/// it, and the span is those bytes as a reviewer can read them.
+/// declared the animation, the targets are the names that site and the record
+/// address (with what each selected in the mission's world container), the
+/// carrier and index are the record that stored it, and the span is those
+/// bytes as a reviewer can read them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunningRecord {
     /// The startup identity (`pzep_engines_start`).
@@ -149,6 +155,12 @@ pub struct RunningRecord {
     archive: String,
     /// The member that declares it (`pirate_zep_nacelles.zrd`).
     member: String,
+    /// Every name this row addresses, in join order: the declaring member's
+    /// object selectors first — the actors #632's table names — then the
+    /// record's own object, root and node-table names, each keeping what it
+    /// selected in the mission's world container. This is the actor half of
+    /// the binding, carried with the member half.
+    targets: Vec<AnimationTarget>,
     /// Which carrier stores the record.
     carrier: CarrierKind,
     /// The record's index inside that carrier.
@@ -196,6 +208,15 @@ impl RunningRecord {
     #[must_use]
     pub fn member(&self) -> &str {
         &self.member
+    }
+
+    /// Every name this record's row addresses, in join order — the declaring
+    /// member's object selectors first, so a running session reads the member
+    /// → actor binding (`#632`'s table) straight off the record: member,
+    /// archive, and the world record each selector selected.
+    #[must_use]
+    pub fn targets(&self) -> &[AnimationTarget] {
+        &self.targets
     }
 
     /// Which carrier stores the record.
@@ -295,6 +316,7 @@ pub struct FinishedRecord {
     event: String,
     archive: String,
     member: String,
+    targets: Vec<AnimationTarget>,
     carrier: CarrierKind,
     record_index: usize,
     span: SourceSpan,
@@ -327,6 +349,13 @@ impl FinishedRecord {
     #[must_use]
     pub fn member(&self) -> &str {
         &self.member
+    }
+
+    /// Every name this record's row addressed, in join order — kept after the
+    /// finish so the binding stays readable once the timeline has ended.
+    #[must_use]
+    pub fn targets(&self) -> &[AnimationTarget] {
+        &self.targets
     }
 
     /// Which carrier stores the record.
@@ -666,7 +695,15 @@ impl MissionAnimationPlayer {
         self.running.values()
     }
 
-    /// The rows this player refused to start, in identity order.
+    /// The rows this player refused to start and has not since started, in
+    /// identity order.
+    ///
+    /// The ledger holds the join's **current** verdict for an identity: a row
+    /// refused on one `start` and played by a later one clears the entry (it
+    /// is no longer refused), so an identity is never refused and running at
+    /// once. A `start` that finds the identity already running leaves both
+    /// ledgers as they are — the live activation is the verdict — and records
+    /// that in [`StartupReport::already_running`].
     pub fn refused(&self) -> impl Iterator<Item = &RefusedRecord> {
         self.refused.values()
     }
@@ -802,6 +839,11 @@ impl MissionAnimationPlayer {
                 }
             };
             let statements = playback.events().count();
+            // The row's most recent verdict supersedes an earlier refusal of
+            // the same identity: an identity is never refused and running at
+            // once, so a host that re-offers a playable row clears the ledger
+            // entry the join refused before.
+            self.refused.remove(&identity);
             report.started.push(identity.clone());
             self.running.insert(
                 identity.clone(),
@@ -810,6 +852,7 @@ impl MissionAnimationPlayer {
                     event: row.event().to_owned(),
                     archive,
                     member,
+                    targets: row.targets().to_vec(),
                     carrier: facts.carrier,
                     record_index: facts.index,
                     span: facts.span.clone(),
@@ -920,6 +963,7 @@ impl MissionAnimationPlayer {
                     event: record.event,
                     archive: record.archive,
                     member: record.member,
+                    targets: record.targets,
                     carrier: record.carrier,
                     record_index: record.record_index,
                     span: record.span,
