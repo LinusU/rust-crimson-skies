@@ -82,18 +82,20 @@ differs, a machine-readable limitation:
   `SyntheticConservative` is kept and still selectable through the save record
   (the contract allows a designed policy "for synthetic tests only until
   verified" — it has been verified, so it is no longer the default).
-* Five `f37.d.limit.*` entries record what this runtime does not follow or
+* Four `f37.d.limit.*` entries record what this runtime does not follow or
   what the evidence cannot settle; each names the affected content and what
   resolves it. Three follow-up tasks were filed with this stage:
   `F37-D-FU3` (`#729`), `F37-D-FU4` (`#730`), `F37-D-FU5` (`#731`) — and
   `F37-D-FU4` has since closed its entry
   (`f37.d.limit.mission_countdown_preemption` →
-  `f37.d.limit.mission_countdown_producer`, see the update below), which is
-  why the count stayed at five. F37-D-FU6 then closed the producer entry
-  and replaced it with three narrower ones
+  `f37.d.limit.mission_countdown_producer`, see the update above).
+  `F37-D-FU3` closed `f37.d.limit.one_completion_per_tick` (see "Closed
+  since" at the end of this entry), `F37-D-FU5` closed
+  `terminal_branch_delay_and_sound` and `F37-D-FU6` then closed the producer
+  entry and replaced it with three narrower ones
   (`mission_countdown_tick_dt`, `mission_countdown_end_guards`,
-  `mission_countdown_spec_sourcing`), and `F37-D-FU5` closed
-  `terminal_branch_delay_and_sound` in between, so the count is now six.
+  `mission_countdown_spec_sourcing`), so `RULE_LIMITATIONS` now holds five
+  entries.
 
 ## Provenance
 
@@ -288,7 +290,7 @@ live with that stage:
 
 | Limitation | What is open | Affected content | Resolving task |
 | --- | --- | --- | --- |
-| `f37.d.limit.one_completion_per_tick` | The original completes at most one objective per tick; `MissionState::step` completes every satisfied objective in declaration order on the same tick. | Every program run through `MissionState::step` with two or more objectives satisfied on one tick — today the F37-D corpus and the AC01 probe, from F38/F39 on every campaign mission lowered into this IR (starting with M01): per-tick completions, event sequence and same-tick write conflicts differ by one tick per extra completion. | `F37-D-FU3` (`#729`) |
+| `f37.d.limit.one_completion_per_tick` (**closed** by `F37-D-FU3` (`#729`), 2026-10-07 — removed from `RULE_LIMITATIONS`, see "Closed since"; the row stays as the record of what was open) | The original completes at most one objective per tick; `MissionState::step` completed every satisfied objective in declaration order on the same tick. | Every program run through `MissionState::step` with two or more objectives satisfied on one tick — today the F37-D corpus and the AC01 probe, from F38/F39 on every campaign mission lowered into this IR (starting with M01): per-tick completions, event sequence and same-tick write conflicts differ by one tick per extra completion. | `F37-D-FU3` (`#729`) |
 | `f37.d.limit.mission_countdown_preemption` | **CLOSED by F37-D-FU4 (`#730`), 2026-10-07.** The entry read "the countdown expiry path does not exist here … a tick carries no timeout input". That is false now: `MissionState::step_with_countdown` takes the input and pre-empts the tick's objectives, pinned by `accept_f37_d_fu4_*`. Kept here as history; the entry itself is gone from `RULE_LIMITATIONS` and may not come back while that behaviour stands (asserted by `accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does`). | — (was: every campaign mission with a time limit) | `F37-D-FU4` (`#730`), done |
 | `f37.d.limit.mission_countdown_producer` | **CLOSED by F37-D-FU6 (`#737`), 2026-10-07.** The entry read "nothing in this tree produces its input … no real mission can end by timeout yet". That is false now: `cs_sim::mission::Countdown` arms (from `CountdownSpec`, the caller-declared `MISSION_TIMER` field and session mode), ticks and reports the countdown into `MissionState::step_with_countdown` on every `MissionSession` path, and consumes the timer directives — pinned by `accept_f37_d_fu6_*`. Kept here as history; the entry itself is gone from `RULE_LIMITATIONS` and may not come back while that behaviour stands (asserted by `accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does`). What the closure could not settle — the decrement quantum, the end-path guards and the spec sourcing — moved into the three entries below rather than being dropped. | — (was: every mission that sets a mission countdown) | `F37-D-FU6` (`#737`), done |
 | `f37.d.limit.mission_countdown_tick_dt` | The countdown producer decrements by the session's declared fixed tick dt (`CountdownSpec::rate`), while the original decrements `[+4]` by the *variable* per-frame game dt (`0x46c5f0`) — clamped at 0.125 s, doubled under the 2x speed-up, frozen while paused. In game-time seconds both count the same interval; in wall-clock time the tick a countdown expires on can differ — the standing F16-F divergences, now reached through the countdown. | The wall-clock time (and, at a host rate not matched to the original's frame dt, the tick) at which a countdown expires, for every `MISSION_TIMER`-armed mission under the project's designed fixed rate versus the original's variable dt. | `F16-F-CAP` (`#721`) and `F16-F-SPEEDUP` (`#722`) hold the dt divergences; `VS-M01-RUNTIME` (`#359`) is where a wired session's real rate is sourced |
@@ -318,9 +320,11 @@ all calling production code:
    latched; the explicitly selected designed policy still records the failure;
    an abort request still wins and its limitation exists.
 2. `..._completion_scan_runs_in_declaration_index_order` — at the work-budget
-   floor the objective declared first (symbol 9) is the one admitted first
-   (symbol 3's own reward follows next tick), so the scan is index order and
-   not symbol order.
+   floor the objective declared first (symbol 9) is the one that completes on
+   tick 1 and symbol 3 stays *unfired* until the next tick, where its own
+   reward follows, so the scan is index order and not symbol order (wording
+   updated by `F37-D-FU3`, which made one completion per tick the rule; see
+   "Closed since").
 3. `..._both_rules_carry_a_source_label_and_their_evidence` — both labels are
    `measured-from-original` / `inferred` / never `verified_original`, each
    cites the findings entry, the image sha256 and the addresses; the
@@ -331,14 +335,15 @@ all calling production code:
    limitations reference each other exactly; the four owner-note answers are
    recorded; the implemented fact carries no divergence; the findings entry
    exists in the tree and quotes the image sha256.
-5. `..._recorded_divergences_match_what_the_runtime_does` — the runtime really
-   completes two objectives on one tick (`f37.d.limit.one_completion_per_tick`,
-   still open), and on the default path really cannot end by timeout
-   (`f37.d.limit.mission_countdown_producer`, the reachability gap that remains
-   now that the pre-emption exists behind `step_with_countdown`), so the
-   limitations that record those divergences cannot drift from the behaviour.
-   It also asserts that the closed `f37.d.limit.mission_countdown_preemption`
-   does not come back.
+5. `..._recorded_divergences_match_what_the_runtime_does` — both halves of each
+   closed entry are pinned together: the runtime completes at most one
+   objective per tick (`f37.d.limit.one_completion_per_tick` gone, see
+   "Closed since" below), and the closed
+   `f37.d.limit.mission_countdown_preemption` does not come back while
+   `accept_f37_d_fu4_*` passes. The still-open reachability gap stays recorded
+   too: on the default path the runtime really cannot end by timeout
+   (`f37.d.limit.mission_countdown_producer`), so that limitation cannot drift
+   from the behaviour either.
 
 F37-D-FU4 (`#730`) added `accept_f37_d_fu4_*`, 5 tests in
 `crates/cs_script/tests/accept_f37_d_fu4.rs`: the acceptance sentence (expiry
@@ -356,9 +361,92 @@ fails `accept_f37_d_fu2_measured_precedence_records_success_iff_won`,
 (`crates/cs_sim/src/mission.rs`); changing `TERMINAL_PRECEDENCE_RULE`'s source
 to `designed-and-unmeasured` fails
 `accept_f37_d_fu2_both_rules_carry_a_source_label_and_their_evidence`, and
-emptying `f37.d.limit.one_completion_per_tick`'s `resolving_task` fails
-`accept_f37_d_fu2_every_limitation_names_affected_content_and_a_resolving_task`.
+emptying `f37.d.limit.one_completion_per_tick`'s `resolving_task` failed
+`accept_f37_d_fu2_every_limitation_names_affected_content_and_a_resolving_task`
+(before `F37-D-FU3` removed the entry; since that closure, re-adding the entry
+fails that test — no fact gates it any more — and
+`accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does`).
 Each mutation was reverted and the tree re-verified clean and green.
+
+## Closed since: `f37.d.limit.one_completion_per_tick`, by `F37-D-FU3` (`#729`)
+
+`MissionState::step` (`crates/cs_script/src/runtime.rs`) now evaluates every
+condition against the start-of-tick state and admits **one** objective — the
+lowest declaration index whose condition holds — so the recreated evaluator
+follows the measured scan (`0x46a490`, flag `0x46a94c`). The satisfied
+objectives that lost the scan stay *unfired*: nothing latches them, and each is
+evaluated again on every later tick, completing only while its condition still
+holds.
+
+What changed with it, all in the same change as the behaviour:
+
+* The entry is removed from `RULE_LIMITATIONS`;
+  `f37.rule.terminal_precedence.one_completion_per_tick` and
+  `f37.rule.tick_ordering.per_tick_order` no longer name it, because a fact
+  this runtime follows carries no open divergence. The other four entries —
+  among them `f37.d.limit.mission_countdown_producer`, which
+  `F37-D-FU4` (`#730`) had already renamed from
+  `f37.d.limit.mission_countdown_preemption` — are untouched by this change
+  and still open.
+* Three new tests, `accept_f37_d_fu3_*`
+  (`crates/cs_script/tests/accept_f37_d_fu3.rs`), pin the rule on the
+  production path: one completion per tick in declaration index order with
+  every reward exactly once; a satisfied objective that waits is re-evaluated
+  (its condition goes false and true again across ticks and it completes only
+  on a tick where it holds); and the measured consequence that through
+  objectives success and failure cannot be requested on one tick.
+* Probes the rule changed were **repaired, never weakened** — each still pins
+  what it was written for:
+  * AC01 `accept_f37_a_two_objectives_one_tick_have_stable_order` reads the
+    stable order over the two ticks the two now-sequential completions need,
+    and asserts one completion per tick on each;
+  * the F37-D reference-order probe
+    `accept_f37_d_emitted_order_is_the_reference_key_order_and_independent_of_declaration`
+    runs one tick per objective with each objective's queued item landing
+    behind the next completion, so ticks still carry two sources whose
+    execution order and key order disagree — the recomputed reference order
+    still discriminates, and the reward-exactly-once check was added;
+  * `accept_f37_d_simultaneous_writes_follow_execution_order_events_follow_key_order`
+    keeps its writes genuinely simultaneous by pairing each objective's write
+    with its own queued write: the write that survives is never the source the
+    report shows;
+  * `accept_f37_d_the_work_budget_is_part_of_the_sessions_determinism` moves
+    its tight budget to `MIN_WORK_PER_TICK` and shows the deferral in the
+    state each tick leaves behind (`Draw` emits no event, so the event streams
+    are no longer where a deferral shows);
+  * the two FU2 probes (`..._completion_scan_runs_in_declaration_index_order`,
+    `..._recorded_divergences_match_what_the_runtime_does`) now assert the
+    closure in both directions — the behaviour *and* the absence of the entry —
+    and `..._measured_precedence_records_success_iff_won` builds its conflict
+    from a queued `Finish` draining on the tick a second objective completes,
+    because two objectives can no longer both ask;
+  * the F38-B differential trace, the M01 directive-log order probe and the
+    two `cs_sim` mission tests (the session that records one outcome and tears
+    down, and the host's reference-key order) follow the same rule.
+  The F37-D corpus replay, exactly-once and save/restore traces needed no
+  change: they pass as written.
+* Mutation check for this change (restore iterating every satisfied objective
+  instead of the first, run, revert): the three `accept_f37_d_fu3_*` tests all
+  fail, and so do AC01, the three `accept_f37_d_*` probes above, all three
+  behaviour-asserting FU2 tests, the F38-B differential, the M01 directive-log
+  probe, both `cs_sim` mission tests and the two `cs_sim` acceptance probes
+  repaired below (`accept_f37_e1_facts_populate_every_tick_from_the_authoritative_record`
+  and `accept_m01_lc_lowering_conditions_lifecycle_gates_are_represented`, which
+  each fail their one-completion-per-tick assertions under the mutation).
+  Re-adding the entry fails
+  `accept_f37_d_fu2_every_limitation_names_affected_content_and_a_resolving_task`
+  and `accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does`.
+* Two `cs_sim` acceptance probes outside the original owner paths failed the
+  measured rule and were repaired under the owner's decision of 2026-10-07,
+  which extended this task's owner paths to exactly those two files:
+  `crates/cs_sim/tests/accept_f37_e1_mission_actor_facts.rs::accept_f37_e1_facts_populate_every_tick_from_the_authoritative_record`
+  moves objective 2's reward from tick 1 to tick 2 (it still asserts the fact
+  map holds both actors' states on tick 1, from the record, and now asserts
+  exactly one completion per tick in declaration order), and
+  `crates/cs_sim/tests/accept_m01_lc_lowering_conditions_lifecycle.rs::accept_m01_lc_lowering_conditions_lifecycle_gates_are_represented`
+  moves the dependent's completion from tick 3 to tick 4, asserting that only
+  the lower-index dependency completes on tick 3. Neither test lost an
+  assertion: both gained the one-per-tick ones.
 
 ## Evidence class
 
