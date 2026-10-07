@@ -153,7 +153,7 @@ task's acceptance criteria are about growth per cycle, which is now flat.
 shape, same reason: what #514 closes is the *growth per release*, and a
 cross-spawn dedup of canonical uploads (they are identical only when the
 surface, the addressing and the bytes are identical, which the batch key already
-digestests) is that follow-up's business.
+digests) is that follow-up's business.
 
 **An owner dropped without a release leaks an image too** — unchanged from
 #512's note: `teardown` releases through `BatchEntities`, and the owner counts in
