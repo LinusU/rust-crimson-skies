@@ -19,3 +19,10 @@ cs_types.workspace = true
 # `cs_sim` edge.
 cs_assets.workspace = true
 cs_formats.workspace = true
+# The M01-LC lowering acceptance test checks that
+# `cs_script::ir::DirectiveOperation` publishes a variant for every operation
+# code `cs_content::mission_control::DirectiveOperation::code()` measures, so
+# the two copies of the measured vocabulary cannot drift apart — the same
+# test-only edge `cs_content` uses for `cs_net` and `cs_sim`. `cs_script`
+# does not link `cs_content`.
+cs_content.workspace = true
