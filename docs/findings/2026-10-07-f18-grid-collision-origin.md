@@ -313,9 +313,9 @@ reports exactly its gaps).
 `schemas/evidence.schema.json`, written by
 `crates/cs_app/tests/evidence_report_f18_grid_collision_origin.rs` and
 validated with `tools/validate_evidence.py … --require-pass` (exit 0,
-`structurally_valid: true`). Capabilities `retail` + `synthetic`; candidate tree
-`358b457634a91be53e8fe03a6adfdb8daabe8bfa` (the tree the acceptance run
-tested); 2 tests discovered, executed and passed; claim `implemented`. Its
+`structurally_valid: true`). Capabilities `retail` + `synthetic`; the candidate tree recorded in the JSON
+is the tree of the commit the acceptance run tested; 2 tests discovered,
+executed and passed; claim `implemented`. Its
 second artifact, `grid-collision-origin-census.json`, is a **second production
 observation** — one discovery over the installation and one import per
 container — recording each group's grid size, fog counter, solid count and the
@@ -360,4 +360,6 @@ cargo test -p cs_app --test accept_m01_lc_world_unit_roles -- --include-ignored 
 cargo test --locked -p cs_app --test evidence_report_f18_grid_collision_origin -- --ignored  # exit 0
 python3 tools/validate_evidence.py docs/findings/evidence/F18-GRID-COLLISION-ORIGIN.json \
   --artifact-root private/evidence/F18-GRID-COLLISION-ORIGIN --require-pass  # exit 0
+# every check above was re-run on the rebased branch head after main moved with
+# Cargo.toml/Cargo.lock changes; the report was regenerated on that tree.
 ```
