@@ -63,7 +63,11 @@ is ambiguous, and each such reading is a decision somebody can review:
 The run-time exemption itself stays unlisted: `runtime_identity_expectation`
 derives it from the committed reports, so a new runtime harness has to be a
 decision the reader and that derivation agree on rather than a line somebody
-remembered to edit.
+remembered to edit.  The two harnesses this task (#523) asks about are the
+case: `F22-H` reads `CS_EVIDENCE_REVIEWER` and `F11-D2` reads
+`CS_EVIDENCE_REVIEW`, neither spells a `review.identity` literal, so both are
+legitimately runtime harnesses - which is the decision recorded here, and the
+derivation above is what fails if one of them ever stops being one.
 
 Run with:
 
@@ -116,10 +120,12 @@ REVIEW_MARKER = r'\"review\": {{\"identity\": {}, \"method\": {}}}'
 # path (`cs_inspect`'s harnesses call `super::jstr`).  Every harness encodes a
 # string into the JSON report through a helper, and the helpers are not all
 # spelled `jstr`: F04-D-order-archives encodes with `json(&reviewer)` and the
-# m01lc family with `m01lc_json(...)`.  The helper's *name* decides nothing
-# here - the argument does - so a helper this list does not spell out falls
-# through to `unknown` only when its argument resolves to nothing; it is never
-# rejected for its name alone, and never trusted for it either.
+# m01lc family with `m01lc_json(...)`.  Within this family the helper's *name*
+# decides nothing here - the argument does - so the shape never comes from the
+# name of the encoder, only from what its argument resolves to.  A helper this
+# list does not spell out matches nothing and reads as `unknown`, which
+# `review_problems` reports as a harness the reader cannot parse; it is never
+# guessed at and never trusted for its name either.
 ENCODING_CALL = re.compile(r'\A\s*(?:\w+::)*(?:jstr|(?:\w+_)?json)\s*\(')
 # The argument of such a call: either a literal, `&review_identity()`, or
 # `&review`.
