@@ -423,6 +423,13 @@ Re-run on this branch head by the reviewer:
 * The evidence report was regenerated on the tested tree with
   `CS_EVIDENCE_REVIEWER` naming both identities, and re-validated with
   `tools/validate_evidence.py … --require-pass` (exit 0).
+* `main` moved twice during the review (first #716, then four unrelated
+  image-store/findings commits). Both rebases applied without conflicts, and
+  the second one's commits touch no file this branch changes and no
+  `Cargo.toml`/`Cargo.lock` (`git diff --name-only <merge-base> origin/main`
+  ∩ this branch's files is empty), so the counts above still describe the
+  pushed head — where the four checks and the evidence report were re-run one
+  final time after that rebase.
 
 Documentation corrections made during review: the claim-id census row of
 `docs/findings/2026-10-04-m01-lc-world-import.md` (this task moved that
