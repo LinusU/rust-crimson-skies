@@ -35,6 +35,8 @@
 //! original executable ran, and every number is a count or a relation read out
 //! of the owner's bytes.
 
+use std::collections::BTreeSet;
+
 use cs_content::coordinates::{
     AngleUnit, CoordinateSource, RotationSense, SourceAdapter, SourceAxis, SourceConvention,
 };
@@ -443,9 +445,20 @@ fn accept_m01_lc_fvol_roles_every_container_fog_split_is_measured() {
         assert_eq!(
             report.objects_solid(),
             report.partition_records() - report.partition_records_fog_volume(),
-            "{}: the index rule resolves every grid-named record but the fog volumes              (task #727 settles what this task deferred)",
+            "{}: the index rule resolves every grid-named record but the fog \
+             volumes (task #727 settles what this task deferred)",
             split.group
         );
+
+        // Which records the partition grid names, so the walk below can tell
+        // the container's own silence (an unindexed record, #677's class) from
+        // a grid-named fog volume (#727's claim).
+        let indexed: BTreeSet<u32> = container
+            .partition_grid()
+            .expect("the container's own grid reads")
+            .indexed_slots()
+            .into_iter()
+            .collect();
 
         // Object level: every fog volume is presented and keeps its mesh, and
         // every record still unknown carries the unknown's own claim.
@@ -470,10 +483,21 @@ fn accept_m01_lc_fvol_roles_every_container_fog_split_is_measured() {
             let Resolved::Unknown { claim_id, .. } = object.collision() else {
                 panic!("an unresolved role must be an explicit unknown");
             };
+            let grid_named = object
+                .id()
+                .as_str()
+                .strip_prefix("node-")
+                .and_then(|slot| slot.parse::<u32>().ok())
+                .is_some_and(|slot| indexed.contains(&slot));
             assert_eq!(
                 claim_id.as_str(),
-                UNINDEXED_ROLE_UNMEASURED,
-                "{}: what is left unknown is the unmeasured class",
+                if grid_named {
+                    GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED
+                } else {
+                    UNINDEXED_ROLE_UNMEASURED
+                },
+                "{}: what is left unknown is either the unmeasured class or, for a \
+                 record the grid names, #727's fog-volume claim",
                 split.group
             );
             assert!(
@@ -484,8 +508,9 @@ fn accept_m01_lc_fvol_roles_every_container_fog_split_is_measured() {
         }
         assert_eq!(
             world.unresolved_collision().len(),
-            split.unresolved,
-            "{}: the report's unresolved count is the definition's",
+            split.unresolved + split.indexed_fog,
+            "{}: the report's unresolved count is the definition's — the \
+             unmeasured class plus the grid-named fog volumes (#727)",
             split.group
         );
 
