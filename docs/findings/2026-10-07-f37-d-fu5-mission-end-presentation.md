@@ -111,10 +111,9 @@ What is **not** closed by this entry, recorded so it cannot be lost:
   ending) has no terminal producer in this layer, and the countdown-expiry
   ending is `F37-D-FU4` (`#730`)'s. No content in this tree reaches it today —
   M01 ends through `INSTANTWIN`/`INSTANTLOSS` — so no `f37.d.limit.*` entry
-  gates it; the gap is filed as its own task and named here
-  (`F37-D-FU6`, see the Rally queue). Until it exists, a lowering that ends a
-  mission by class aggregation would select the instant delay, and that
-  statement must be revisited with it.
+  gates it; the gap is filed as `F37-D-FU7` (`#739`), which depends on this
+  task. Until it exists, a lowering that ends a mission by class aggregation
+  would select the instant delay, and that statement must be revisited with it.
 
 ## Acceptance
 
@@ -145,13 +144,17 @@ all calling production code (`MissionState::new`/`step`/`abort`/`snapshot`/
    and this entry exists and quotes the addresses, the image sha256 and the
    limitation id.
 
-Mutation check, run against this commit: swapping the branch test in
-`MissionEndPresentation::new` to WON-first fails tests 1 and 3 (the loss branch
-would not run when both flags are set); deleting the `MissionState::presentation`
-assignment in `step` fails 1–5; computing `mission_cue`/`animation` from
-`result` instead of the WON flag fails test 2; dropping the restore consistency
-check fails 5; removing the limitation only (without this entry) fails 6. Each
-mutation was reverted and the tree re-verified clean and green.
+Mutation check, run against this commit; each mutation was applied, the
+`accept_f37_d_fu5_` selection run, and the file reverted (the tree was
+re-verified clean and green afterwards):
+
+| Mutation | Result |
+| --- | --- |
+| branch test swapped to WON-first in `MissionEndPresentation::new` | fails `..._loss_branch_runs_while_the_recorded_result_is_success` and `..._cues_follow_the_won_flag_not_the_recorded_result`; against `cs_sim` alone it also fails `..._session_tick_carries_the_mission_end_presentation` (cargo stops at the first failing target, so the two runs are reported separately) |
+| `MissionState::presentation` no longer set in `step` | fails five of the six cs_script tests — only the findings/limitation test survives |
+| `mission_cue`/`animation` computed from `result` instead of the WON flag | fails `..._cues_follow_the_won_flag_not_the_recorded_result` |
+| restore consistency check removed | fails `..._presentation_latches_and_survives_save_and_restore` |
+| the limitation entry put back (fact re-referencing it) | fails `..._terminal_branch_limitation_is_closed_with_the_finding` |
 
 `f37.d.limit.terminal_branch_delay_and_sound` is closed by exactly those tests
 and this finding: the branch, the delay, the sounds and the animation selection
