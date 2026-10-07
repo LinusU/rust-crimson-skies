@@ -21,7 +21,7 @@ fn spec(name: &str, args: Vec<ArgDomain>, lowering: Lowering) -> BindingSpec {
     BindingSpec {
         name: name.to_owned(),
         family: HostFamily::MissionState,
-        args,
+        signatures: vec![args],
         lowering,
         repeatability: Repeatability::Once,
         provenance: BindingProvenance::Synthetic {
@@ -163,10 +163,10 @@ fn accept_f38_a_bad_arguments_report_location_without_panic() {
     assert!(matches!(
         one(call("synth_win", vec![Value::Int(1)], 0x40)),
         BindingError::ArityMismatch {
-            expected: 0,
+            expected,
             found: 1,
             ..
-        }
+        } if expected == [0]
     ));
     let e = one(call(
         "synth_set",

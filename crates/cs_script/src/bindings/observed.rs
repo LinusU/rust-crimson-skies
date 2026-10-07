@@ -722,7 +722,7 @@ pub fn register_measured(
     let spec = BindingSpec {
         name: call.spelling(),
         family,
-        args,
+        signatures: vec![args],
         lowering,
         repeatability,
         provenance: BindingProvenance::Observed {

@@ -27,8 +27,8 @@ use std::fmt;
 use cs_types::content::{ContentId, ContentKind};
 
 use crate::ir::{
-    Action, Condition, IR_VERSION, MissionProgram, Objective, Outcome, Phase, SourceSpan, SymbolId,
-    Value, ValueType, Variable,
+    Action, Condition, DirectiveOperation, IR_VERSION, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS,
+    MissionProgram, Objective, Outcome, Phase, SourceSpan, SymbolId, Value, ValueType, Variable,
 };
 
 /// Longest call name accepted.
@@ -63,13 +63,29 @@ pub enum Repeatability {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ArgDomain {
     Bool,
-    IntRange { min: i32, max: i32 },
-    FloatRange { min: f64, max: f64 },
-    Str { max_bytes: usize },
+    IntRange {
+        min: i32,
+        max: i32,
+    },
+    FloatRange {
+        min: f64,
+        max: f64,
+    },
+    Str {
+        max_bytes: usize,
+    },
     Content(ContentKind),
     Actor,
     Vector,
     OptActor,
+    /// An original argument-**list** node — one list as it appears inside a
+    /// call's argument list, not a flattening of its children into
+    /// positional arguments. `COMPLETED_STOPPOINT`'s `[[text,int,int]]` and
+    /// `ANIM_STATE`'s `[text,[text,[text],text,[text]]]` each carry one;
+    /// `children` is the domain of each child in order, so the structure the
+    /// site spelled is checked field for field, nested lists included. An
+    /// empty `children` is the measured empty list (`MeasuredArg::Empty`).
+    List(Vec<ArgDomain>),
 }
 
 impl ArgDomain {
@@ -83,10 +99,28 @@ impl ArgDomain {
             Self::Actor => ValueType::Actor,
             Self::Vector => ValueType::Vector,
             Self::OptActor => ValueType::OptActor,
+            Self::List(_) => ValueType::List,
+        }
+    }
+
+    /// Whether some IR [`Value`] can lie in this domain — the domain's own
+    /// bound check, at `depth` enclosing `List`s. A `List` domain deeper or
+    /// wider than a value can be matches nothing, so registering it would
+    /// declare a signature no call can satisfy.
+    fn is_carriable(&self, depth: usize) -> bool {
+        match self {
+            Self::List(children) => {
+                depth < MAX_VALUE_DEPTH
+                    && children.len() <= MAX_VALUE_ITEMS
+                    && children.iter().all(|c| c.is_carriable(depth + 1))
+            }
+            _ => true,
         }
     }
 
     /// `Err(reason)` when `value` is the right type but outside the domain.
+    /// For a `List` domain the "range" is the structure itself: child count,
+    /// child types and child domains, reported against the child's position.
     fn check_range(&self, value: &Value) -> Result<(), String> {
         match (self, value) {
             (Self::IntRange { min, max }, Value::Int(v)) if v < min || v > max => {
@@ -106,6 +140,28 @@ impl ArgDomain {
             (Self::Content(kind), Value::Content(id)) if id.kind() != *kind => {
                 Err(format!("id is not a {} id", kind.label()))
             }
+            (Self::List(children), Value::List(items)) => {
+                if items.len() != children.len() {
+                    return Err(format!(
+                        "{} list items, expected {}",
+                        items.len(),
+                        children.len()
+                    ));
+                }
+                for (index, (child, item)) in children.iter().zip(items).enumerate() {
+                    if child.value_type() != item.value_type() {
+                        return Err(format!(
+                            "child {index}: expected {:?}, found {:?}",
+                            child.value_type(),
+                            item.value_type()
+                        ));
+                    }
+                    if let Err(reason) = child.check_range(item) {
+                        return Err(format!("child {index}: {reason}"));
+                    }
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -121,6 +177,15 @@ pub enum Lowering {
     Finish(Outcome),
     /// One `Content` arg: a reward intent.
     GrantReward,
+    /// A measured directive operation, handed to the host with the bound
+    /// call's own arguments — the arguments the site spelled, structure
+    /// intact, never reordered and never flattened. Any well-formed
+    /// signature fits: the registry verifies the domains, not the
+    /// operation↔shape correspondence, which is the declaring adapter's
+    /// measured claim. Binding produces [`Action::Directive`], which the
+    /// runtime executes as a documented host effect
+    /// ([`crate::runtime::MissionState::directives`]); it is never a no-op.
+    Directive(DirectiveOperation),
 }
 
 /// Where a binding's signature comes from. Never `verified_original` here
@@ -138,7 +203,14 @@ pub enum BindingProvenance {
 pub struct BindingSpec {
     pub name: String,
     pub family: HostFamily,
-    pub args: Vec<ArgDomain>,
+    /// Every measured argument signature this name accepts, in declared
+    /// order. One signature is the common case; several is how a directive
+    /// key whose sites disagree is carried — M01's `SET_HELP_LABEL` spells
+    /// `[text,text]` at one site and `[[text,text],text]` at another, and
+    /// **both** are represented: no signature is chosen, none is rejected
+    /// for disagreeing with another, and declaration order privileges
+    /// nothing beyond which refusal a call that fits none reports.
+    pub signatures: Vec<Vec<ArgDomain>>,
     pub lowering: Lowering,
     pub repeatability: Repeatability,
     pub provenance: BindingProvenance,
@@ -150,16 +222,22 @@ impl BindingSpec {
         match self.lowering {
             Lowering::SetVariable => Phase::State,
             Lowering::Finish(_) => Phase::Terminal,
-            Lowering::GrantReward => Phase::Host,
+            Lowering::GrantReward | Lowering::Directive(_) => Phase::Host,
         }
     }
 
-    /// The argument domains the lowering requires, as types.
-    fn lowering_signature(&self) -> &'static [ValueType] {
+    /// Whether `declared`'s types satisfy the lowering — total, derived from
+    /// the variant so a spec cannot disagree with its own operation. A
+    /// directive lowering carries the call's own arguments, so its only
+    /// requirement is that every domain be carriable (checked separately by
+    /// [`ArgDomain::is_carriable`]); the lowering places no shape of its own.
+    fn signature_fits(&self, declared: &[ValueType]) -> bool {
         match self.lowering {
-            Lowering::SetVariable => &[ValueType::Int],
-            Lowering::Finish(_) => &[],
-            Lowering::GrantReward => &[ValueType::Content],
+            // The value after the variable symbol may be any type.
+            Lowering::SetVariable => declared.len() == 2 && declared[0] == ValueType::Int,
+            Lowering::Finish(_) => declared.is_empty(),
+            Lowering::GrantReward => declared == [ValueType::Content],
+            Lowering::Directive(_) => true,
         }
     }
 }
@@ -300,7 +378,10 @@ pub enum BindingError {
     ArityMismatch {
         at: CallSite,
         name: String,
-        expected: usize,
+        /// Every argument count the name's signatures accept, ascending with
+        /// duplicates removed — several for a key whose measured sites
+        /// disagree, so the refusal does not pretend one count was expected.
+        expected: Vec<usize>,
         found: usize,
     },
     ArgumentType {
@@ -348,7 +429,15 @@ impl fmt::Display for BindingError {
                 name,
                 expected,
                 found,
-            } => write!(f, "{at}: `{name}` takes {expected} arguments, got {found}"),
+            } => write!(
+                f,
+                "{at}: `{name}` takes {} arguments, got {found}",
+                expected
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            ),
             Self::ArgumentType {
                 at,
                 name,
@@ -397,18 +486,22 @@ impl HostBindingRegistry {
         {
             return Err(RegistryError::BadName { name });
         }
-        if spec.args.len() > MAX_CALL_ARGS {
-            return Err(RegistryError::TooManyArgs { name });
-        }
-        let required = spec.lowering_signature();
-        let declared: Vec<ValueType> = spec.args.iter().map(ArgDomain::value_type).collect();
-        let fits = match spec.lowering {
-            // The value after the variable symbol may be any type.
-            Lowering::SetVariable => declared.len() == 2 && declared[..1] == *required,
-            _ => declared == required,
-        };
-        if !fits {
+        if spec.signatures.is_empty() {
             return Err(RegistryError::SignatureMismatch { name });
+        }
+        // Every declared signature is checked — accepting a name means
+        // accepting every measured shape it was registered with, so one
+        // unfit signature makes the spec unfit rather than quietly
+        // narrowing what the name accepts.
+        for signature in &spec.signatures {
+            if signature.len() > MAX_CALL_ARGS {
+                return Err(RegistryError::TooManyArgs { name });
+            }
+            let declared: Vec<ValueType> = signature.iter().map(ArgDomain::value_type).collect();
+            let carriable = signature.iter().all(|d| d.is_carriable(0));
+            if !carriable || !spec.signature_fits(&declared) {
+                return Err(RegistryError::SignatureMismatch { name });
+            }
         }
         if self.specs.contains_key(&name) {
             return Err(RegistryError::Duplicate { name });
@@ -452,33 +545,75 @@ impl HostBindingRegistry {
                 name,
             });
         };
-        if call.args.len() != spec.args.len() {
-            return Err(BindingError::ArityMismatch {
-                at: at.clone(),
-                name,
-                expected: spec.args.len(),
-                found: call.args.len(),
-            });
-        }
-        for (index, (domain, value)) in spec.args.iter().zip(&call.args).enumerate() {
-            if domain.value_type() != value.value_type() {
-                return Err(BindingError::ArgumentType {
-                    at: at.clone(),
-                    name: name.clone(),
-                    index,
-                    expected: domain.value_type(),
-                    found: value.value_type(),
-                });
+        // Every declared signature is tried: a call binds when it satisfies
+        // one of the shapes the name was measured to spell, and no signature
+        // is chosen over another. When none fits, the refusal is the first
+        // arity-matching signature's — a more informative error than an
+        // arity report — or an `ArityMismatch` naming every accepted count
+        // when no signature's count matched at all.
+        let mut arity_error: Option<BindingError> = None;
+        for signature in &spec.signatures {
+            if call.args.len() != signature.len() {
+                continue;
             }
-            if let Err(reason) = domain.check_range(value) {
-                return Err(BindingError::ArgumentRange {
-                    at: at.clone(),
-                    name: name.clone(),
-                    index,
-                    reason,
-                });
+            let mut signature_error: Option<BindingError> = None;
+            for (index, (domain, value)) in signature.iter().zip(&call.args).enumerate() {
+                if domain.value_type() != value.value_type() {
+                    signature_error = Some(BindingError::ArgumentType {
+                        at: at.clone(),
+                        name: name.clone(),
+                        index,
+                        expected: domain.value_type(),
+                        found: value.value_type(),
+                    });
+                    break;
+                }
+                if let Err(reason) = domain.check_range(value) {
+                    signature_error = Some(BindingError::ArgumentRange {
+                        at: at.clone(),
+                        name: name.clone(),
+                        index,
+                        reason,
+                    });
+                    break;
+                }
+            }
+            match signature_error {
+                None => {
+                    return Self::lower_bound_call(spec, call, at, name);
+                }
+                Some(error) => {
+                    arity_error.get_or_insert(error);
+                }
             }
         }
+        if let Some(error) = arity_error {
+            // At least one signature had the right count; its refusal is the
+            // one that reports what actually failed.
+            return Err(error);
+        }
+        let mut expected: Vec<usize> = spec.signatures.iter().map(Vec::len).collect();
+        expected.sort_unstable();
+        expected.dedup();
+        Err(BindingError::ArityMismatch {
+            at: at.clone(),
+            name,
+            expected,
+            found: call.args.len(),
+        })
+    }
+
+    /// The [`Action`] a call that satisfied one of `spec`'s signatures
+    /// becomes. The final match on the call's own argument shape is what
+    /// `signature_fits` guaranteed at registration; a spec that reached the
+    /// registry cannot fall through here, but the code fails closed rather
+    /// than trusting that — never a no-op, never `Action::Unknown`.
+    fn lower_bound_call(
+        spec: &BindingSpec,
+        call: &RawCall,
+        at: &CallSite,
+        name: String,
+    ) -> Result<Action, BindingError> {
         Ok(match (spec.lowering, call.args.as_slice()) {
             (Lowering::SetVariable, [Value::Int(symbol), value]) => Action::SetVariable {
                 // A negative symbol is excluded by the declared domain only
@@ -500,12 +635,18 @@ impl HostBindingRegistry {
             (Lowering::GrantReward, [Value::Content(reward)]) => Action::GrantReward {
                 reward: reward.clone(),
             },
+            // The directive carries the call's own argument list — nested
+            // lists stay nested, exactly as the site spelled them.
+            (Lowering::Directive(operation), _) => Action::Directive {
+                operation,
+                args: call.args.clone(),
+            },
             // Unreachable after the checks above; fail closed, never a no-op.
             _ => {
                 return Err(BindingError::ArityMismatch {
                     at: at.clone(),
                     name,
-                    expected: spec.args.len(),
+                    expected: spec.signatures.iter().map(Vec::len).collect(),
                     found: call.args.len(),
                 });
             }
