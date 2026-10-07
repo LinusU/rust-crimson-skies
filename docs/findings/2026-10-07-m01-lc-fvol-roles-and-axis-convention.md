@@ -254,5 +254,26 @@ Evidence: `docs/findings/evidence/M01-LC-FVOL-ROLES.json` (the harness's
 second artifact, `world-fvol-roles-census.json`, is the production re-run of
 the import over all eight containers and stays in `private/`).
 
-Reviewed by a separate agent instance before merge; no agent review replaces
-the owner's approval, and nothing here is `verified_original`.
+## Review
+
+The review pass was performed by **`bunny-alpha-2`** — the same Rally agent
+identity that implemented this branch, in a fresh session whose only context
+was the task history, because Rally assigned the review back to that identity.
+Per AGENTS.md's review policy that is recorded here rather than papered over:
+a same-identity review is not independent evidence, it does not make any claim
+stronger, and no agent review replaces the owner's approval. Nothing here is
+`verified_original`.
+
+What the review re-derived independently before touching the text: the image's
+sha256 (`43540fc9…c37d75`), the single occurrence of `fvol` in the whole file
+(file offset `0x2249f4` = VA `0x6249f4`, immediately before `fogvol.zrd`), the
+instruction bytes at VA `0x44e085` (`6a 04` `68 f4 49 62 00` `57` `ff 15 48 03
+a2 00` = `push 4`, `push 0x6249f4`, `push edi`, `call dword ptr [0xa20348]`),
+the PE import directory (that IAT slot is MSVCRT.dll's entry 113, `strncmp`),
+the 62 `zrdr.zbd` archives (no `fvol` anywhere in any of them; `fogvol.zrd` in
+each of the eight world groups' archive), and the `π/180` f64 at VA `0x6040e8`.
+Review fixes: the `WorldImportReport::axis_map` doc's non-identity example now
+spells what the code prints (`"[+z, -x, +y]"`), three assertion messages in
+`world_units.rs` that had been joined into runs of spaces are line-continued
+properly, a comment typo is corrected, and this section replaces a sentence
+that claimed a separate reviewing instance.

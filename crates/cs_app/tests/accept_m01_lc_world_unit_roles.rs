@@ -672,7 +672,7 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
         );
 
         // The object-level consequence, checked per record rather than as a
-        // count: an `None` role is answered either by a record whose own store
+        // count: a `None` role is answered either by a record whose own store
         // holds no geometry (shape claim `UNINDEXED_RECORD_STORES_NO_GEOMETRY`)
         // or by a fog volume whose measured consumer is the fog system (shape
         // claim `FOG_VOLUME_RECORD_NEVER_BLOCKS`, mesh kept), and the role the

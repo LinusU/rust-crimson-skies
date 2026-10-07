@@ -604,13 +604,15 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
         assert_eq!(
             report.objects_unindexed_fog(),
             measured.fog,
-            "{}: the unindexed records carrying the measured `fvol` prefix are fog              volumes, presented and never blocking",
+            "{}: the unindexed records carrying the measured `fvol` prefix are fog \
+             volumes, presented and never blocking",
             measured.group
         );
         assert_eq!(
             report.objects_unindexed_unresolved(),
             measured.unresolved_roles,
-            "{}: the unindexed records that store geometry and carry no measured              prefix keep an unknown role",
+            "{}: the unindexed records that store geometry and carry no measured \
+             prefix keep an unknown role",
             measured.group
         );
         assert_eq!(
@@ -624,7 +626,8 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
         assert_eq!(
             world.unresolved_collision().len(),
             measured.unresolved_roles,
-            "{}: exactly the unindexed records that store geometry and carry no              measured prefix have no measured role",
+            "{}: exactly the unindexed records that store geometry and carry no \
+             measured prefix have no measured role",
             measured.group
         );
         for object in world.unresolved_collision() {

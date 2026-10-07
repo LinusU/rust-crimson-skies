@@ -5521,7 +5521,7 @@ impl WorldImportReport {
     ///
     /// `"identity"` is the measured GameZ map ([`WORLD_AXIS_CONVENTION_MEASURED`]):
     /// every stored component feeds its own canonical axis with a positive sign.
-    /// Anything else is spelled out as `"[z, -x, y]"` — canonical x is fed by
+    /// Anything else is spelled out as `"[+z, -x, +y]"` — canonical x is fed by
     /// stored `+z`, canonical y by stored `−x`, canonical z by stored `+y` — so
     /// a reader of an imported definition never has to infer which frame its
     /// positions came from.
