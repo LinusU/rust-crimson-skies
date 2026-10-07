@@ -288,3 +288,20 @@ frames are compared against. Teardown releases every material, image and mesh th
 scene created (tested over three spawn/teardown rounds). The `playtest sources`
 line and the smoke `report.json` carry the chosen archive and the textured and
 neutral counts.
+
+## The airship draws one intact variant of each part (#753)
+
+Provisional. The `piratezep` subtree stores 401 mesh bindings, and #648 drew all
+of them, so the scorched `burnpanels` (a `burn…` copy of every `panel…` mesh)
+were drawn over the same hull plane as the light `panels`, and the `…d` damaged
+halves beside the `…h` healthy ones: the dark jagged patches that flickered. The
+area now uses the airframe's selection machinery (`choose_lod_band`, the F11-B
+`select_lod_variant`, at a **designed** 300 m viewer distance,
+`PLAYTEST_AREA_LOD_DISTANCE_M`): one LOD band per sibling group, `burnpanels`
+hidden beside `panels`, `<stem>d` hidden beside `<stem>h`, and the running
+`spin`/`counterspin` hidden beside `propstill`. These are **name reads**; the
+original's damage-state rule is unmeasured. Every hidden binding is listed with
+its reason in the `playtest sources` line and the smoke `report.json`
+(`area_undrawn`, `area_selection`, `area_stored_bindings`), and colliders follow
+the drawn set. No depth bias is applied: after the selection the measured
+flank views are stable (see `docs/findings/2026-10-07-playtest-area-flicker.md`).
