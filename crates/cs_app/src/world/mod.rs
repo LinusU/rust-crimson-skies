@@ -89,6 +89,10 @@
 //!   stored mesh on the real renderer, offscreen, and writes a PNG — refusing a
 //!   blank frame and deleting the file on every refusal, so an artifact on disk
 //!   is evidence the geometry was drawn rather than a decoration.
+//! * [`textured_capture`] is the F17-E variant: it draws one mesh with the
+//!   materials the world group's own texture archive binds through the
+//!   production `TextureBinder` path — and refuses, rather than draws a
+//!   neutral stand-in, when a named texture does not resolve.
 //!
 //! What is **not** claimed here: original world data has been read, counted and
 //! placed (the GameZ node array is decoded, and the stored vertex unit is the
@@ -115,6 +119,7 @@ pub mod overlays;
 pub mod residency;
 pub mod retail;
 pub mod spawn;
+pub mod textured_capture;
 pub mod triggers;
 pub mod visibility;
 
@@ -174,6 +179,10 @@ pub use spawn::{
     SpawnedCollider, SpawnedObject, SpawnedWorld, WorldMeshAssets, WorldSpawnError, avian_layers,
     canonical_matrix, instance_placement, instance_placements, spawn_object, spawn_world,
     static_world_layer, static_world_membership,
+};
+pub use textured_capture::{
+    MissingTexture, PartOutcome, TexturedCapture, TexturedCaptureError, TexturedCaptureRequest,
+    capture_subject_textured, missing_textures, part_outcomes,
 };
 pub use triggers::{
     TriggerVolumeSurveyError, ZONE_PREFIX, survey_retail_trigger_volumes, zone_box_field,

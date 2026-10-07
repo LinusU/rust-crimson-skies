@@ -142,7 +142,7 @@ pub const CAPTURE_VIEW_DIRECTION: [f64; 3] = [0.5, 0.6, 0.62];
 /// Chosen dark and **not** equal to the material's colour, so a frame that drew
 /// nothing and a frame that drew something are distinguishable by
 /// [`GpuCapture::covered_pixels`].
-const CLEAR_COLOR: [f32; 4] = [0.043, 0.055, 0.075, 1.0];
+pub(super) const CLEAR_COLOR: [f32; 4] = [0.043, 0.055, 0.075, 1.0];
 
 /// The flat colour the captured mesh is presented with.
 ///
@@ -150,13 +150,13 @@ const CLEAR_COLOR: [f32; 4] = [0.043, 0.055, 0.075, 1.0];
 /// measures whether the stored geometry is drawable, and a stored texture or
 /// material would make the artifact depend on a second unmeasured subsystem
 /// (F17's presentation unknowns).
-const MESH_COLOR: [f32; 4] = [0.78, 0.74, 0.66, 1.0];
+pub(super) const MESH_COLOR: [f32; 4] = [0.78, 0.74, 0.66, 1.0];
 
 /// The key light's illuminance, in lux, and its direction relative to the camera.
 ///
 /// Declared: the capture is a geometry witness, so the light exists to make a
 /// surface visible and its value is not a claim about the original's lighting.
-const KEY_LIGHT_ILLUMINANCE: f32 = 12_000.0;
+pub(super) const KEY_LIGHT_ILLUMINANCE: f32 = 12_000.0;
 
 /// How many frames the capture waits before asking for the screenshot.
 ///
@@ -165,7 +165,7 @@ const KEY_LIGHT_ILLUMINANCE: f32 = 12_000.0;
 /// sufficiency on the pinned pair, not a guess: the spike this was built from
 /// drew a mesh correctly from the fifth update onwards and produced a uniform
 /// frame before that.
-const WARMUP_FRAMES: u32 = 4;
+pub(super) const WARMUP_FRAMES: u32 = 4;
 
 /// The bound on how many updates one capture may drive.
 ///
@@ -174,7 +174,7 @@ const WARMUP_FRAMES: u32 = 4;
 /// Apple M3 Pro) the frame arrives on the update after the fourth following the
 /// request; the bound is generous, so a slower driver still has room and a driver
 /// that never answers is refused by name.
-const MAX_CAPTURE_UPDATES: u32 = 24;
+pub(super) const MAX_CAPTURE_UPDATES: u32 = 24;
 
 /// What one capture produced, all of it measured from the frame that came back.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -363,21 +363,21 @@ pub struct CaptureRequest<'a> {
 
 /// The frame the capture app renders into, handed to the driver loop.
 #[derive(Resource, Clone)]
-struct CaptureTarget {
-    image: Handle<Image>,
+pub(super) struct CaptureTarget {
+    pub(super) image: Handle<Image>,
 }
 
 /// What the observer recorded about the frame that came back.
 #[derive(Resource, Default)]
-struct CapturedFrame(Mutex<Option<FrameFacts>>);
+pub(super) struct CapturedFrame(pub(super) Mutex<Option<FrameFacts>>);
 
 /// The measured facts about one frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FrameFacts {
-    width: u32,
-    height: u32,
-    distinct_luminance: usize,
-    covered_pixels: usize,
+pub(super) struct FrameFacts {
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) distinct_luminance: usize,
+    pub(super) covered_pixels: usize,
 }
 
 /// Renders one stored world mesh on the real GPU and writes its PNG.
@@ -427,7 +427,7 @@ pub fn capture_world_mesh(request: &CaptureRequest<'_>) -> Result<GpuCapture, Gp
     app.cleanup();
 
     let target = spawn_scene(&mut app, &uploads, request);
-    drive_capture(&mut app, target, request)?;
+    drive_capture(&mut app, target, request.png)?;
 
     // Every refusal from here on **removes the PNG the renderer already wrote**.
     // The screenshot observer saves the frame the moment it arrives, before this
@@ -637,7 +637,7 @@ fn spawn_scene(app: &mut App, uploads: &[Mesh], request: &CaptureRequest<'_>) ->
 }
 
 /// The render target the frame is drawn into and read back from.
-fn capture_image() -> Image {
+pub(super) fn capture_image() -> Image {
     let size = Extent3d {
         width: CAPTURE_WIDTH,
         height: CAPTURE_HEIGHT,
@@ -673,7 +673,7 @@ fn capture_image() -> Image {
 /// capture would then measure a frame that says nothing about the mesh. The
 /// clamp is why [`GpuCaptureError::DegenerateBounds`] is checked *before* the
 /// scene is spawned, from the raw corners.
-fn stored_bounds(render: &RenderMesh) -> ([f64; 3], [f64; 3]) {
+pub(super) fn stored_bounds(render: &RenderMesh) -> ([f64; 3], [f64; 3]) {
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
     for vertex in render.vertices() {
@@ -707,12 +707,12 @@ fn stored_bounds(render: &RenderMesh) -> ([f64; 3], [f64; 3]) {
 /// moment the frame arrives and only uses [`MAX_CAPTURE_UPDATES`] as the bound
 /// that turns a driver that never answers into
 /// [`GpuCaptureError::NoScreenshotCaptured`].
-fn drive_capture(
+pub(super) fn drive_capture(
     app: &mut App,
     target: CaptureTarget,
-    request: &CaptureRequest<'_>,
+    png: &Path,
 ) -> Result<(), GpuCaptureError> {
-    let png = request.png.to_path_buf();
+    let png = png.to_path_buf();
     let observer = move |captured: On<ScreenshotCaptured>, frame: Res<CapturedFrame>| {
         if captured.image.data.is_some() {
             let image = captured.image.clone();
@@ -747,13 +747,13 @@ fn drive_capture(
 ///
 /// A missing file is not an error to report: the point is that there is nothing
 /// left, and a `remove_file` that finds nothing has achieved that.
-fn discard_capture(png: &Path) {
+pub(super) fn discard_capture(png: &Path) {
     let _ = std::fs::remove_file(png);
 }
 
 /// The measured facts of one frame: its size, how many distinct luminance
 /// levels it holds and how many pixels differ from the background.
-fn measure(image: &Image) -> FrameFacts {
+pub(super) fn measure(image: &Image) -> FrameFacts {
     let data = image.data.as_ref().expect("a captured frame has data");
     let clear = [
         (CLEAR_COLOR[0] * 255.0).round() as u8,
@@ -783,7 +783,7 @@ fn measure(image: &Image) -> FrameFacts {
 }
 
 /// Coverage as a permille of the frame, rounded down.
-fn covered_permille(covered: usize, width: u32, height: u32) -> u32 {
+pub(super) fn covered_permille(covered: usize, width: u32, height: u32) -> u32 {
     let total = u64::from(width) * u64::from(height);
     if total == 0 {
         return 0;
@@ -798,7 +798,7 @@ fn covered_permille(covered: usize, width: u32, height: u32) -> u32 {
 /// `"no adapter reported"` when the resource is absent, which cannot happen for
 /// a capture that exists (a frame only comes back from an adapter) and says so
 /// rather than inventing a device.
-fn adapter_name(app: &App) -> String {
+pub(super) fn adapter_name(app: &App) -> String {
     app.world()
         .get_resource::<bevy::render::renderer::RenderAdapterInfo>()
         .map(|info| {
