@@ -334,10 +334,7 @@ fn ordnance_rows(
 /// The target display's gather: the published HUD readout, only while the
 /// consumers are bound to this observer — another aircraft's views are
 /// never drawn.
-fn target_view(
-    targets: Option<&TargetConsumers>,
-    actor: ActorId,
-) -> Option<&HudTargetReadout> {
+fn target_view(targets: Option<&TargetConsumers>, actor: ActorId) -> Option<&HudTargetReadout> {
     let consumers = targets?;
     match consumers.bound() {
         Some(bound) if bound.observer == actor => consumers.hud(),
