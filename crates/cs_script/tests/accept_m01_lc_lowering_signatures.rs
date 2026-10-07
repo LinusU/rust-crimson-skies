@@ -249,6 +249,36 @@ fn accept_m01_lc_lowering_signatures_every_measured_shape_binds() {
                 "{name} shape {n} binds to its measured operation with its own arguments"
             );
         }
+        // And the literal witness: `lower_program` binds one objective
+        // spelling the key once per measured shape, and every bound action
+        // keeps its own site's arguments.
+        let calls: Vec<RawCall> = signatures
+            .iter()
+            .map(|signature| call(name, arguments_of(signature)))
+            .collect();
+        let expected: Vec<Action> = signatures
+            .iter()
+            .map(|signature| Action::Directive {
+                operation,
+                args: arguments_of(signature),
+            })
+            .collect();
+        let program = lower_program(
+            &registry,
+            RawProgram {
+                mission: cid(ContentKind::Mission, "m01"),
+                variables: vec![],
+                objectives: vec![RawObjective {
+                    id: SymbolId(2),
+                    content: cid(ContentKind::Objective, "block"),
+                    condition: Condition::Const(true),
+                    calls,
+                    span: None,
+                }],
+            },
+        )
+        .unwrap_or_else(|e| panic!("{name} sites must lower: {e:?}"));
+        assert_eq!(program.objectives[0].actions, expected);
     }
 }
 
