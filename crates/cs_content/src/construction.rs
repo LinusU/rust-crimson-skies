@@ -763,16 +763,7 @@ impl AircraftBlueprint {
             ordnance.iter().map(|fitment| fitment.hardpoint().clone()),
             ConstructionSlot::Hardpoint,
         )?;
-        let mut equipment_seen: Vec<ContentId> = Vec::with_capacity(equipment.len());
-        for item in &equipment {
-            require_kind(item, ContentKind::HardpointEquipment)?;
-            if equipment_seen.contains(item) {
-                return Err(ConstructionSchemaError::DuplicateEquipment {
-                    component: item.clone(),
-                });
-            }
-            equipment_seen.push(item.clone());
-        }
+        check_equipment(&equipment)?;
         Ok(Self {
             id,
             airframe,
@@ -906,6 +897,46 @@ impl AircraftBlueprint {
         self.airframe = airframe;
         Ok(self)
     }
+
+    /// The blueprint with a different engine fitted.
+    ///
+    /// # Errors
+    ///
+    /// [`ConstructionSchemaError::WrongKind`] when `engine` is not an `engine`
+    /// id.
+    pub fn with_engine(mut self, engine: ContentId) -> Result<Self, ConstructionSchemaError> {
+        require_kind(&engine, ContentKind::Engine)?;
+        self.engine = engine;
+        Ok(self)
+    }
+
+    /// The blueprint with its equipment list replaced.
+    ///
+    /// # Errors
+    ///
+    /// [`ConstructionSchemaError::WrongKind`] when an item is not a
+    /// `hardpoint_equipment` id, or
+    /// [`ConstructionSchemaError::DuplicateEquipment`] when one is listed
+    /// twice.
+    pub fn with_equipment(
+        mut self,
+        equipment: Vec<ContentId>,
+    ) -> Result<Self, ConstructionSchemaError> {
+        check_equipment(&equipment)?;
+        self.equipment = equipment;
+        Ok(self)
+    }
+
+    /// The blueprint with a different paint and decal selection.
+    ///
+    /// [`PaintSelection`] already holds only kind-checked catalog references,
+    /// so the swap cannot fail; nothing textured is copied here — the mask and
+    /// decal ids are the whole of what is carried.
+    #[must_use]
+    pub fn with_paint(mut self, paint: PaintSelection) -> Self {
+        self.paint = paint;
+        self
+    }
 }
 
 /// Which damage-graph slot a repeated node would collide in.
@@ -943,6 +974,21 @@ fn require_kind(id: &ContentId, expected: ContentKind) -> Result<(), Constructio
             expected,
         })
     }
+}
+
+/// Every equipment id is a `hardpoint_equipment` and listed at most once.
+fn check_equipment(equipment: &[ContentId]) -> Result<(), ConstructionSchemaError> {
+    let mut seen: Vec<&ContentId> = Vec::with_capacity(equipment.len());
+    for item in equipment {
+        require_kind(item, ContentKind::HardpointEquipment)?;
+        if seen.contains(&item) {
+            return Err(ConstructionSchemaError::DuplicateEquipment {
+                component: item.clone(),
+            });
+        }
+        seen.push(item);
+    }
+    Ok(())
 }
 
 fn reject_repeated<T: PartialEq>(
