@@ -340,24 +340,29 @@ fn render_targets(targets: &[AnimationTarget]) -> String {
                 .resolution()
                 .occurrences()
                 .map_or_else(|| "-".to_owned(), |count| count.to_string());
-            format!(
+            jstr(&format!(
                 "{}:{}:{}",
                 target.source().label(),
                 target.stored(),
                 selected
-            )
+            ))
         })
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-/// A canary for this hand-rendered artifact: every value that follows a key
-/// must start with a quote, a digit, a sign, `{` or `[`.
+/// A canary for this hand-rendered artifact: every value — an object's or an
+/// array's alike — must start with a quote, a digit, a sign, `{` or `[`.
 ///
-/// The validator hashes artifacts without parsing them, so an unquoted value —
-/// which an earlier draft of this file rendered for the carrier label — would
-/// ship as a broken file that still validates. This check runs before the
-/// bytes are written.
+/// The validator hashes artifacts without parsing them, so an unquoted value
+/// ships as a broken file that still validates, and two drafts of this file
+/// have produced one: the carrier label that followed `": "`, and a
+/// `targets` list whose elements were rendered bare inside `[...]`, which the
+/// `": "`-only rule could not see. So this walks the document once with a
+/// container stack: after `[`, after a `,` inside an array, and after `:`,
+/// the next non-space byte must be a value start; strings are skipped whole,
+/// so a bracket or a colon inside one is never mistaken for structure. The
+/// check runs before the bytes are written.
 fn assert_json_values_are_quoted(observation: &str) {
     let bytes = observation.as_bytes();
     assert!(
@@ -365,18 +370,68 @@ fn assert_json_values_are_quoted(observation: &str) {
         "the observation must be one object: {}",
         &observation[..observation.len().min(80)]
     );
+    let mut stack: Vec<u8> = Vec::new();
+    let mut expect_value = false;
     let mut index = 0;
-    while index + 3 < bytes.len() {
-        if bytes[index] == b'"' && bytes[index + 1] == b':' && bytes[index + 2] == b' ' {
-            let next = bytes[index + 3];
-            assert!(
-                matches!(next, b'"' | b'{' | b'[' | b'-' | b'0'..=b'9'),
-                "an unquoted JSON value at byte {index}: {}",
-                String::from_utf8_lossy(&bytes[index..bytes.len().min(index + 72)])
-            );
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                index = skip_string(bytes, index);
+                expect_value = false;
+                continue;
+            }
+            b'{' => {
+                stack.push(b'{');
+                expect_value = false;
+            }
+            b'[' => {
+                stack.push(b'[');
+                expect_value = true;
+            }
+            b'}' | b']' => {
+                stack.pop();
+                expect_value = false;
+            }
+            b',' => expect_value = stack.last() == Some(&b'['),
+            b':' => expect_value = true,
+            b' ' | b'\n' | b'\t' => {}
+            _ => {
+                if expect_value {
+                    assert!(
+                        matches!(bytes[index], b'"' | b'{' | b'[' | b'-' | b'0'..=b'9'),
+                        "an unquoted JSON value at byte {index}: {}",
+                        String::from_utf8_lossy(&bytes[index..bytes.len().min(index + 72)])
+                    );
+                    expect_value = false;
+                }
+            }
         }
         index += 1;
     }
+    assert!(
+        stack.is_empty(),
+        "the observation closes every container it opened: {stack:?}"
+    );
+}
+
+/// The index just past the string whose opening quote is at `open`.
+fn skip_string(bytes: &[u8], open: usize) -> usize {
+    let mut index = open + 1;
+    while index < bytes.len() && bytes[index] != b'"' {
+        index += if bytes[index] == b'\\' { 2 } else { 1 };
+    }
+    assert!(index < bytes.len(), "an unterminated string at byte {open}");
+    index + 1
+}
+
+/// The canary has to bite: an array element rendered without its quotes is a
+/// broken artifact the hash-only validator still accepts, so this harness
+/// refuses to write it. (The `": "`-only rule this replaced could not see
+/// inside an array, and a `targets` draft of exactly that shape passed it.)
+#[test]
+#[should_panic(expected = "an unquoted JSON value")]
+fn an_unquoted_array_element_is_refused_before_the_bytes_are_written() {
+    assert_json_values_are_quoted("{\"install_sha256\": \"aa\", \"rows\": [bare]}");
 }
 
 // ---------------------------------------------------------------- inputs ---
