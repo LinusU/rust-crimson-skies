@@ -73,31 +73,47 @@
 //!   ([`CoordinateSource::retail_gamez`], task #677, `observed_tool`, with the
 //!   axis convention code-derived per task #436's owner note), read from the
 //!   convention rather than spelled as a literal. Never `verified_original`.
-//! * *Traversal routes and stunt openings* are **still not stated**. Both facts
-//!   above exist, but no measured rule says what a tunnel, arch, building
-//!   opening, hangar or stunt passage is in placed geometry, and inventing one
-//!   from node names would be a guess. The audit reports one
-//!   [`WorldAuditGap::NoRouteMeasured`] per group and leaves all five classes
-//!   unlocated.
+//! * *One opening class is located from measured evidence.* A **stunt passage**
+//!   is located wherever the group's instant-action scenario declares a
+//!   fly-through danger-zone target: the scenario's `ia.zrd` binds the
+//!   objective's label to a world node (F42-D / task #463), the node's own
+//!   stored box is the one task #427 measured, and the box's narrowest extent
+//!   times this container's measured unit is the opening's clearance. The
+//!   classification comes from the objective's own `category_label`/
+//!   `help_label` pair and from nowhere else — never from a node name.
+//! * *The other four classes, and every traversal route, are measured to be
+//!   **absent** rather than left unsaid.* The container stores no field that
+//!   names a tunnel, an arch, a building opening or a hangar, and the
+//!   decrypted image's only name-keyed consumer of a world record is the
+//!   four-byte `fvol` prefix, so the corpus holds none of those four and a
+//!   node-name match would be a guess. The container stores no path either:
+//!   the corpus's only route carrier is a mission reader's `aiv.zrd`, whose
+//!   encoding is unmeasured (task #455, `F31-ROUTE-ENCODING`). Each class and
+//!   each group therefore reports what was searched and what the corpus holds
+//!   ([`UnlocatedOpening`], [`cs_content::world::WorldAuditGap::NoRouteInMeasuredCorpus`]),
+//!   never a silent zero and never the old shortfall gap.
 //!
 //! # What is deliberately not here
 //!
-//! No format reader, no collision-role classification, no
-//! boundary rule and no route search. The unknowns F18-A/B/C recorded are still
-//! unknowns, and this file measures what can be measured and names the rest.
+//! No format reader, no collision-role classification, no boundary rule and no
+//! route search. The unknowns F18-A/B/C recorded are still unknowns, and this
+//! file measures what can be measured and names the rest.
 
 use std::fmt;
 use std::path::Path;
 
 use crate::render::bevy_mesh::MeshAdapterError;
+use crate::stunts::survey_retail_stunt_encoding;
 use cs_assets::install::{self, Discovery};
 use cs_content::campaign_bindings::campaign_layout;
 use cs_content::coordinates::CoordinateSource;
 use cs_content::mesh::RenderMesh;
+use cs_content::stunts::RetailStuntEncodingSurvey;
 use cs_content::world::UploadVerdict;
 use cs_content::world::{
-    GroupFacts, PlacementSource, RepresentativeGeometry, WorldAuditError, WorldGroupAudit,
-    WorldGroupAuditReport, WorldGroupBlocker, WorldGroupCensus, WorldGroupRef, WorldId,
+    GroupFacts, OpeningClass, PlacementSource, RepresentativeGeometry, RouteSearch, StuntOpening,
+    UnlocatedOpening, WorldAuditError, WorldGroupAudit, WorldGroupAuditReport, WorldGroupBlocker,
+    WorldGroupCensus, WorldGroupRef, WorldId,
 };
 use cs_formats::gamez::{
     FaceCensus, GameZMaterials, GameZMeshes, NodeMeshBindings, read_gamez_materials,
@@ -142,6 +158,122 @@ pub const PRESENTABLE_PROBE_MESHES: usize = 64;
 /// retail corpus stays a bounded amount of work. The choice is a **declared**
 /// budget, not a measured fact about the original.
 pub const REPRESENTATIVE_MESHES: usize = 3;
+
+/// The measured reason a world group gives for four of its five opening
+/// classes: tunnel, arch, building opening and hangar.
+///
+/// **A measurement, not a default.** It is produced by [`class_absent`] over
+/// three measurements this workspace already took and this task bound together:
+///
+/// * what the container stores per record — `read_gamez_nodes` decodes a name,
+///   flags, a mesh binding, a hierarchy slot, an area partition and three
+///   stored bounding boxes, and none of them states an opening
+///   (`docs/findings/2026-10-02-gamez-node-array-layout.md`);
+/// * what the owner-supplied decrypted image (`crimson.decrypted.exe`, sha256
+///   `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`) does
+///   with a world record's name: its only name-keyed consumer of one is the
+///   four-byte `fvol` prefix (`strncmp` at VA `0x44e087`, inside the fog
+///   routine — tasks #716 and #727, `docs/findings/2026-10-07-f18-grid-collision-origin.md`);
+/// * what the corpus declares about its zones: the eight instant-action
+///   scenarios' `ia.zrd`/`targets.zrd` pairs, surveyed end to end by F42-D
+///   (task #463), declare fly-through danger-zone objectives and nothing that
+///   states one of these four classes.
+///
+/// So for these four classes the corpus **holds none** in a world group, and a
+/// match against an authored node name (`hangerdoors`, `gate1`, …) would be
+/// exactly the guess AGENTS rule 4 forbids. Evidence class `observed_tool`;
+/// never `verified_original`.
+pub const OPENING_CLASS_ABSENT_FROM_THE_CORPUS: &str = "the container stores no field that states this class (`read_gamez_nodes` decodes, per \
+     record, a name, flags, a mesh binding, a hierarchy slot, an area partition and three stored \
+     bounding boxes, none of which is an opening), the owner-supplied decrypted image's only \
+     name-keyed consumer of a world record is the four-byte `fvol` prefix (`strncmp` at VA \
+     0x44e087, tasks #716/#727) and it matches no name of this class, and no instant-action \
+     scenario objective declares one (F42-D's survey of all eight `ia.zrd`/`targets.zrd` pairs); \
+     so the corpus holds none of this class in this group, and classifying one from an authored \
+     node name alone would be a guess (AGENTS rule 4)";
+
+/// The measured reason a world group gives for stating no traversal route.
+///
+/// **A measurement, not a default.** Two measurements, together exhaustive over
+/// what this workspace has read:
+///
+/// * the world container stores no path — `read_gamez_nodes` decodes a name,
+///   flags, a mesh binding, a hierarchy slot, an area partition and three
+///   stored bounding boxes per record, and the world record's partition grid
+///   is a broad-phase candidate index (task #727, `docs/findings/2026-10-07-f18-grid-collision-origin.md`),
+///   never a path;
+/// * the corpus's only route carrier is a mission reader's `aiv.zrd`,
+///   measured present in every mission of every mission type by F31-D, and its
+///   encoding is **unmeasured** — task #455 (`F31-ROUTE-ENCODING`,
+///   `docs/findings/2026-10-01-f31-d-route-coverage-in-every-mission-type.md`).
+///
+/// So no authored sequence of a group's geometry can be stated without
+/// guessing, and this is what replaces the shortfall gap for every group the
+/// opening rule covered. Evidence class `observed_tool`; never
+/// `verified_original`.
+pub const ROUTE_ABSENT_FROM_THE_CORPUS: &str = "the world container stores no path (`read_gamez_nodes` decodes, per record, a name, flags, \
+     a mesh binding, a hierarchy slot, an area partition and three stored bounding boxes, and the \
+     world record's partition grid is a broad-phase candidate index, never a path), and the \
+     corpus's only route carrier is a mission reader's `aiv.zrd`, present in every mission of \
+     every mission type (F31-D) whose encoding is unmeasured (task #455, F31-ROUTE-ENCODING), \
+     so no authored sequence of this group's geometry can be stated without guessing (AGENTS \
+     rule 4)";
+
+/// Why one world group locates no opening of `class`.
+///
+/// The measured statement quoted in [`OPENING_CLASS_ABSENT_FROM_THE_CORPUS`],
+/// with the class named so a reader sees which of the five was searched. Only
+/// the four classes the corpus states nothing about reach this; a stunt passage
+/// is located from the scenario's own declarations instead (or reports why that
+/// measurement found none here).
+#[must_use]
+pub fn class_absent(class: OpeningClass) -> String {
+    format!(
+        "searched for a {class} in this group's placed records and in the corpus's own \
+         declarations: {}",
+        OPENING_CLASS_ABSENT_FROM_THE_CORPUS
+    )
+}
+
+/// Why one world group states no traversal route.
+///
+/// See [`ROUTE_ABSENT_FROM_THE_CORPUS`]; the group is named so the text can be
+/// read on its own in a report row.
+#[must_use]
+pub fn route_absent(world: &WorldId) -> String {
+    format!("{world}: {}", ROUTE_ABSENT_FROM_THE_CORPUS)
+}
+
+/// Why one world group locates no stunt passage, given what its instant-action
+/// scenario declared and how much of it resolved to a measured world box.
+///
+/// Both halves are measurements: the declared count is F42-D's decode of the
+/// group's own `targets.zrd`, and the resolved count is that survey's join to
+/// task #427's boxes. A group that declared none therefore says **the corpus
+/// holds none of this class here** — which is the honest answer for `c1c` and
+/// `c2b`, the two of the eight groups that author no fly-through objective —
+/// rather than reporting a bare unlocated class.
+#[must_use]
+pub fn stunt_passage_absent(container: &str, declared: usize, resolved: usize) -> String {
+    format!(
+        "searched for a stunt passage in this group's own declarations: the instant-action \
+         scenario {container} declares {declared} fly-through danger-zone target(s) over its \
+         `targets.zrd` (F42-D measured 54 across six of the eight groups, every one resolved to \
+         a `dzpath<N>` box task #427 measured) and {resolved} of them resolved to a measured \
+         world box here, so the corpus holds none of this class in this group; the campaign's \
+         `dzones.zrd` members are framed but their meaning is unmeasured (task #513)"
+    )
+}
+
+/// Why a stunt passage could not be located at all: the measurement that would
+/// have located one did not run.
+#[must_use]
+pub fn stunt_passage_unmeasured(reason: &str) -> String {
+    format!(
+        "the stunt-encoding measurement this class is located from could not be taken, so \
+         nothing searched for a stunt passage in this group: {reason}"
+    )
+}
 
 /// Why a world-group survey could not be produced at all.
 #[derive(Debug)]
@@ -304,6 +436,17 @@ pub struct WorldGroupSurvey {
     /// installation, and the lead list is explicitly *not* the authoritative
     /// mission list.
     pub absent_reference_groups: Vec<String>,
+    /// The instant-action stunt encoding F42-D measured, which is where a
+    /// **stunt passage** is located from, or the reason it could not be taken.
+    ///
+    /// One survey for all eight groups rather than one per group: the encoding
+    /// lives in the scenarios' `ia.zrd`/`targets.zrd` members and joins to the
+    /// world nodes those scenarios name, so the measurement is naturally
+    /// corpus-wide. A failure is kept as its message instead of aborting the
+    /// world survey — every unlocated class then carries the message as its
+    /// measured reason ([`stunt_passage_unmeasured`]), so the shortfall is
+    /// visible in every affected row rather than lost.
+    stunts: Result<RetailStuntEncodingSurvey, String>,
 }
 
 impl WorldGroupSurvey {
@@ -325,6 +468,12 @@ impl WorldGroupSurvey {
     pub fn is_empty(&self) -> bool {
         self.groups.is_empty()
     }
+
+    /// The instant-action stunt encoding this survey measured — the evidence a
+    /// **stunt passage** is located from — or the reason it could not be taken.
+    pub fn stunts(&self) -> Result<&RetailStuntEncodingSurvey, &str> {
+        self.stunts.as_ref().map_err(String::as_str)
+    }
 }
 
 /// Surveys every discovered world group of the installation at `install_root`.
@@ -345,6 +494,10 @@ pub fn survey_world_groups(install_root: &Path) -> Result<WorldGroupSurvey, Worl
     // production campaign walk. A group the campaign does not mention is still
     // surveyed; it simply reports no mission.
     let missions_by_group = mission_labels_by_group(install_root)?;
+    // The stunt encoding, measured once for the whole corpus: this is what
+    // locates a **stunt passage**, so it is taken before the per-group loop and
+    // kept — including its failure, which every affected row will quote.
+    let stunts = survey_retail_stunt_encoding(install_root).map_err(|error| error.to_string());
 
     let mut groups = Vec::with_capacity(discovered.len());
     for directory in &discovered {
@@ -380,6 +533,7 @@ pub fn survey_world_groups(install_root: &Path) -> Result<WorldGroupSurvey, Worl
     Ok(WorldGroupSurvey {
         groups,
         absent_reference_groups: found.diagnosis.absent_reference_groups.clone(),
+        stunts,
     })
 }
 
@@ -730,13 +884,17 @@ pub fn declared_rows(survey: &WorldGroupSurvey) -> Result<Vec<WorldGroupRef>, Wo
 /// Runs the whole F18-D audit over an installation: survey every discovered
 /// world group, then visit each one with the content layer's audit.
 ///
-/// The report is the acceptance scenario's object. Its `is_complete()` is false
-/// over the retail installation even though every group's placement is decoded
-/// and the unit is the measured metre: no measured rule yet says what an
-/// opening or a traversal route *is* in placed geometry, so the traversal half
-/// of "compare representative geometry **and** traversal routes" reports one
-/// [`cs_content::world::WorldAuditGap::NoRouteMeasured`] per group rather than a
-/// pass (task #732).
+/// The report is the acceptance scenario's object. Its `is_complete()` stays
+/// false over the retail installation, and now for a *measured* reason: the
+/// placement is decoded, the unit is the measured metre, a **stunt passage** is
+/// located in six of the eight groups from F42-D's own declarations, and the
+/// other four opening classes plus every traversal route are measured to be
+/// **absent** from the corpus rather than left unsaid. The traversal half of
+/// "compare representative geometry **and** traversal routes" therefore reports
+/// one [`cs_content::world::WorldAuditGap::NoRouteInMeasuredCorpus`] per group
+/// — naming what was searched, why the corpus holds no route and which missions
+/// the absence affects — and every unlocated class carries the measurement that
+/// says so (task #732).
 pub fn audit_world_groups(
     install_root: &Path,
 ) -> Result<WorldGroupAuditReport, WorldGroupSurveyError> {
@@ -780,15 +938,42 @@ fn census_for(
         container,
         row.geometry_container(),
         surveyed.container_sha256(),
+        survey.stunts(),
+        &scenario_key_for(row.geometry_container()),
     )
 }
 
+/// The instant-action scenario archive a world group's stunt encoding lives in,
+/// derived from the group's own measured geometry-container key.
+///
+/// The container key (`zbd/c1c/gamez.zbd`) already carries the directory
+/// production discovery spelled, so this only appends the two components F42-D
+/// measured (`ia1/zrdr.zbd`) instead of re-spelling the group's path a second
+/// time and risking the two disagreeing about case.
+fn scenario_key_for(geometry_container: &str) -> String {
+    let prefix = geometry_container
+        .strip_suffix(GEOMETRY_CONTAINER_FILE)
+        .unwrap_or(geometry_container);
+    format!("{prefix}{INSTANT_ACTION_DIR}/{SCENARIO_ARCHIVE}")
+}
+
+/// The two components of the instant-action scenario archive, as F42-D measured
+/// them (`ZBD/<group>/ia1/zrdr.zbd`). Stated here because this module may not
+/// edit `cs_app::stunts`, where the same two strings live; the retail test pins
+/// the key this produces against the installation.
+const INSTANT_ACTION_DIR: &str = "ia1";
+/// See [`INSTANT_ACTION_DIR`].
+const SCENARIO_ARCHIVE: &str = "zrdr.zbd";
+
 /// Measures one container into one census.
+#[allow(clippy::too_many_arguments)]
 fn census_of(
     world: WorldId,
     container: &SurveyedContainer,
     container_key: &str,
     container_sha256: &str,
+    stunts: Result<&RetailStuntEncodingSurvey, &str>,
+    scenario_key: &str,
 ) -> Result<WorldGroupCensus, WorldGroupBlocker> {
     let faces = &container.faces;
     // `multi_material_group_polygons` is not in the container-wide census, so it
@@ -857,6 +1042,12 @@ fn census_of(
             slots: facts.mesh_slots,
         });
     }
+    // The openings the measured rule located, the measured reason each class it
+    // did not locate carries, and the verdict about routes. The route side is
+    // always [`RouteSearch::Unstated`]: this function has just read the whole
+    // container and the container states no path, which is the measurement.
+    let (openings, unlocated, route_search) =
+        traversal_evidence(&world, container, stunts, scenario_key);
     WorldGroupCensus::new(
         world.clone(),
         facts,
@@ -868,14 +1059,146 @@ fn census_of(
         // observed by tool; never `verified_original`.
         Some(container.vertex_scale_to_m),
         candidates,
+        // **No route is stated.** See `ROUTE_ABSENT_FROM_THE_CORPUS`: the
+        // container stores no path, and the corpus's only route carrier is a
+        // mission reader's `aiv.zrd` whose encoding is unmeasured (task #455).
+        // Saying so through [`RouteSearch::Unstated`] is what replaces the old
+        // shortfall gap with a measurement that names affected content.
         Vec::new(),
-        Vec::new(),
+        openings,
+        unlocated,
+        route_search,
     )
     .map_err(|error| WorldGroupBlocker::GeometryUnreadable {
         world,
         container: container_key.to_owned(),
         reason: error.to_string(),
     })
+}
+
+/// The stunt passages one group's measured evidence locates.
+///
+/// This is the **classification** half of the F18 opening rule, and it is a
+/// public production function because it is the one thing a caller must be able
+/// to check against its own evidence: it takes F42-D's measured survey (task
+/// #463), the group it is about, and the group's own measured
+/// `vertex_scale_to_m`, and returns one [`StuntOpening`] per fly-through
+/// danger-zone target of that group that resolved to a measured world box.
+///
+/// # What the classification rests on
+///
+/// A chain of four measurements, none of them a node name:
+///
+/// * the scenario's `targets.zrd` declares a fly-through danger-zone
+///   objective, selected by its own `category_label`/`help_label` pair
+///   (`MSG_OBJ_DZ`/`MSG_OBJ_FLYTHROUGH`);
+/// * the scenario's `ia.zrd` `dzones` binds that objective's label to a world
+///   node — the label direction F42-D measured;
+/// * the node's own stored box and mesh binding are the ones task #427 read
+///   out of the container;
+/// * the box's **narrowest stored extent** times `vertex_scale_to_m` is the
+///   opening's clearance in canonical metres, so the clearance and the factor
+///   that produced it come from the same two measurements the census carries.
+///
+/// A target whose label bound no world node, or whose node carries no measured
+/// box, contributes nothing here — it stays a reported gap in F42-D's own
+/// survey rather than an opening this audit invented.
+///
+/// # Errors
+///
+/// None: a survey that could not be taken at all never reaches this function
+/// (its message is carried as the measured reason instead), and a group it has
+/// no rows for simply locates nothing.
+#[must_use]
+pub fn locate_stunt_passages(
+    world: &WorldId,
+    stunts: &RetailStuntEncodingSurvey,
+    vertex_scale_to_m: f64,
+) -> Vec<StuntOpening> {
+    stunts
+        .gates()
+        .iter()
+        .filter(|gate| gate.world() == world)
+        .filter_map(|gate| {
+            let geometry = gate.geometry()?;
+            let mesh_index = u32::try_from(geometry.mesh_index()?).ok()?;
+            let clearance = geometry.volume().thinnest_extent() * vertex_scale_to_m;
+            clearance.is_finite().then_some(StuntOpening {
+                class: OpeningClass::StuntPassage,
+                mesh_index,
+                clearance_m: Some(clearance),
+            })
+        })
+        .collect()
+}
+
+/// The measured traversal evidence for one group: the openings the rule
+/// located, the measured reason for every class it did not, and the verdict
+/// about routes.
+///
+/// # What locates an opening here
+///
+/// One class only, and by [`locate_stunt_passages`] — never by a node name.
+/// The other four classes are reported absent with [`class_absent`], and no
+/// route is stated: see [`route_absent`].
+fn traversal_evidence(
+    world: &WorldId,
+    container: &SurveyedContainer,
+    stunts: Result<&RetailStuntEncodingSurvey, &str>,
+    scenario_key: &str,
+) -> (Vec<StuntOpening>, Vec<UnlocatedOpening>, RouteSearch) {
+    let mut openings = Vec::new();
+    let mut declared = 0_usize;
+    let mut resolved = 0_usize;
+    match stunts {
+        Ok(survey) => {
+            declared = survey
+                .gates()
+                .iter()
+                .filter(|gate| gate.world() == world)
+                .count();
+            // The clearance is the zone box's own narrowest stored extent
+            // converted by **this container's** measured unit — the same
+            // `vertex_scale_to_m` the census carries, so the number a reader
+            // sees and the factor that produced it cannot disagree.
+            openings = locate_stunt_passages(world, survey, container.vertex_scale_to_m);
+            resolved = openings.len();
+        }
+        Err(reason) => {
+            // The measurement itself did not run. Every row below says so by
+            // name rather than reporting the class as quietly absent.
+            debug_assert!(
+                !reason.trim().is_empty(),
+                "a failed stunt survey always carries its error"
+            );
+        }
+    }
+
+    let mut unlocated = Vec::with_capacity(OpeningClass::ALL.len());
+    for class in OpeningClass::ALL {
+        if openings.iter().any(|opening| opening.class == class) {
+            continue;
+        }
+        let measured = match (class, stunts) {
+            (OpeningClass::StuntPassage, Ok(_)) => {
+                stunt_passage_absent(scenario_key, declared, resolved)
+            }
+            (OpeningClass::StuntPassage, Err(reason)) => stunt_passage_unmeasured(reason),
+            (_, _) => class_absent(class),
+        };
+        unlocated.push(
+            UnlocatedOpening::new(class, measured)
+                .expect("every measured reason here is non-empty"),
+        );
+    }
+
+    (
+        openings,
+        unlocated,
+        RouteSearch::Unstated {
+            measured: route_absent(world),
+        },
+    )
 }
 
 /// The stored-unit bounds of one render mesh, as

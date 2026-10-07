@@ -120,9 +120,11 @@ pub mod visibility;
 
 pub use affine::{AffinePlacement, AffinePlacementError, bake_shape, shear_residual};
 pub use audit::{
-    GEOMETRY_CONTAINER_FILE, PRESENTABLE_PROBE_MESHES, REPRESENTATIVE_MESHES, SurveyedContainer,
-    SurveyedWorldGroup, TEXTURE_ARCHIVE_FILE, WorldGroupSurvey, WorldGroupSurveyError,
-    audit_survey, audit_world_groups, declared_rows, survey_world_groups, upload_verdict,
+    GEOMETRY_CONTAINER_FILE, OPENING_CLASS_ABSENT_FROM_THE_CORPUS, PRESENTABLE_PROBE_MESHES,
+    REPRESENTATIVE_MESHES, ROUTE_ABSENT_FROM_THE_CORPUS, SurveyedContainer, SurveyedWorldGroup,
+    TEXTURE_ARCHIVE_FILE, WorldGroupSurvey, WorldGroupSurveyError, audit_survey,
+    audit_world_groups, class_absent, declared_rows, locate_stunt_passages, route_absent,
+    stunt_passage_absent, survey_world_groups, upload_verdict,
 };
 pub use contacts::{
     WorldColliderInstance, WorldContact, WorldContacts, WorldObjectBinding, WorldPlugin,
