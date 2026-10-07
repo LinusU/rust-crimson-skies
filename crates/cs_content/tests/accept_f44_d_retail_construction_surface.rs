@@ -23,11 +23,11 @@ mod support;
 use std::collections::{BTreeMap, BTreeSet};
 
 use cs_content::construction::{
-    BudgetCategory, BudgetVocabularyGap, ORIGINAL_ARMOR_ZONES, ORIGINAL_ARMOR_ZONE_COUNT,
-    ORIGINAL_BUDGET_ROWS, ORIGINAL_BUDGET_TOTALS, ORIGINAL_CONSTRUCTION_FIELDS,
-    ORIGINAL_GUN_SLOTS, ORIGINAL_HARDPOINT_POINTS, ORIGINAL_PLANE_SLOTS,
-    ORIGINAL_PURCHASE_REFUSALS, ORIGINAL_ROCKET_SLOTS, normalized_budget_word,
-    original_budget_vocabulary_gaps, original_budget_words,
+    BudgetCategory, BudgetVocabularyGap, ORIGINAL_ARMOR_ZONE_COUNT, ORIGINAL_ARMOR_ZONES,
+    ORIGINAL_BUDGET_ROWS, ORIGINAL_BUDGET_TOTALS, ORIGINAL_CONSTRUCTION_FIELDS, ORIGINAL_GUN_SLOTS,
+    ORIGINAL_HARDPOINT_POINTS, ORIGINAL_PLANE_SLOTS, ORIGINAL_PURCHASE_REFUSALS,
+    ORIGINAL_ROCKET_SLOTS, normalized_budget_word, original_budget_vocabulary_gaps,
+    original_budget_words,
 };
 use support::{
     ARMOR, COUNT_BOUNDS, GUNS, HARDPOINTS, ORDINANCE_LAYOUT, PLANE_CONSTRUCTION, PURCHASE,
@@ -261,43 +261,37 @@ fn accept_f44_d_retail_every_slot_count_is_remeasured_from_the_screens() {
             source.contains(literal),
             "{member} must still contain {literal}: {what}"
         );
-        let bound = bracket_count(literal).unwrap_or_else(|| panic!("{literal} must spell a count"));
+        let bound =
+            bracket_count(literal).unwrap_or_else(|| panic!("{literal} must spell a count"));
         measured.insert(what, bound);
     }
 
     assert_eq!(
-        measured["the gun page's four gun-position dropdowns"],
-        ORIGINAL_GUN_SLOTS,
+        measured["the gun page's four gun-position dropdowns"], ORIGINAL_GUN_SLOTS,
         "the gun page's positions are the crate's gun slots"
     );
     assert_eq!(
-        measured["the ordnance layout's four gun-ammo dropdowns"],
-        ORIGINAL_GUN_SLOTS,
+        measured["the ordnance layout's four gun-ammo dropdowns"], ORIGINAL_GUN_SLOTS,
         "the ordnance layout agrees with the gun page"
     );
     assert_eq!(
-        measured["the ordnance layout's eight rocket dropdowns"],
-        ORIGINAL_ROCKET_SLOTS,
+        measured["the ordnance layout's eight rocket dropdowns"], ORIGINAL_ROCKET_SLOTS,
         "the rocket slots are re-measured"
     );
     assert_eq!(
-        measured["the hardpoint page's two point dropdowns"],
-        ORIGINAL_HARDPOINT_POINTS,
+        measured["the hardpoint page's two point dropdowns"], ORIGINAL_HARDPOINT_POINTS,
         "the hardpoint points are re-measured"
     );
     assert_eq!(
-        measured["the armor page's four armor-point dropdowns"],
-        ORIGINAL_ARMOR_ZONE_COUNT,
+        measured["the armor page's four armor-point dropdowns"], ORIGINAL_ARMOR_ZONE_COUNT,
         "the armor page's zones are re-measured"
     );
     assert_eq!(
-        measured["the loop that fills the four armor points"],
-        ORIGINAL_ARMOR_ZONE_COUNT,
+        measured["the loop that fills the four armor points"], ORIGINAL_ARMOR_ZONE_COUNT,
         "the armor loop agrees with the array"
     );
     assert_eq!(
-        measured["the construction screen's four saved-plane slots"],
-        ORIGINAL_PLANE_SLOTS,
+        measured["the construction screen's four saved-plane slots"], ORIGINAL_PLANE_SLOTS,
         "the plane slots are re-measured"
     );
 }

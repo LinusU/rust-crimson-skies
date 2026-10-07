@@ -236,7 +236,7 @@ fn declared_gun_at(mount: &str) -> DeclaredGunDefinition {
         fixture.origin().clone(),
         DamageNodeKey::new(mount).expect("a valid mount key"),
         fixture.mount_kind(),
-        fixture.scene_binding().clone().cloned(),
+        fixture.scene_binding().cloned(),
         fixture.caliber().clone(),
         fixture.ammunition().clone(),
         fixture.rate().clone(),
