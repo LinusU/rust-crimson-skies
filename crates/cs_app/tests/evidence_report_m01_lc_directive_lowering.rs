@@ -5,13 +5,14 @@
 //! missing.
 //!
 //! 1. `cargo test --workspace --locked -- accept_m01_lc_lowering_adapter_
-//!    --include-ignored 2>&1 | tee
+//!    accept_m01_lc_directive_lowering_ --include-ignored 2>&1 | tee
 //!    private/evidence/M01-LC-DIRECTIVE-LOWERING/cargo-test.log` (note the exit
-//!    status)
+//!    status; libtest ORs the two filters, and both prefixes are unique to this
+//!    task — stage `.03`'s adapter suite and the parent's own integration suite)
 //! 2. ```sh
 //!    CS_EVIDENCE_DIR=private/evidence/M01-LC-DIRECTIVE-LOWERING \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_m01_lc_lowering_adapter_ --include-ignored" \
+//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_m01_lc_lowering_adapter_ accept_m01_lc_directive_lowering_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
 //!      cargo test --locked -p cs_app --test evidence_report_m01_lc_directive_lowering -- --ignored
 //!    ```
@@ -43,8 +44,14 @@ use cs_assets::install::{content_fingerprint, discover, fingerprint};
 use cs_content::mission_control::{DirectiveDisposition, MeasuredControlRecord};
 use cs_script::bindings::Lowering;
 
-/// Every acceptance test the report must see pass.
-const ACCEPTANCE_PREFIX: &str = "accept_m01_lc_lowering_adapter_";
+/// Every acceptance test the report must see pass: the prefixes are unique to
+/// this task — stage `.03`'s adapter suite and the parent's own integration
+/// suite (`M01-LC-DIRECTIVE-LOWERING`, #717) — so the report can claim the
+/// selected assertions are exactly this task's tests.
+const ACCEPTANCE_PREFIXES: [&str; 2] = [
+    "accept_m01_lc_lowering_adapter_",
+    "accept_m01_lc_directive_lowering_",
+];
 
 /// The findings documents this task's vocabulary and disposition chain rest
 /// on, one entry per slug, so the artifact records which of them the candidate
@@ -135,9 +142,9 @@ fn review_method(observed: &Observed) -> String {
          FAIL-CLOSED WITNESSES: an unmeasured key, a block the condition lowering refused, a \
          scalar beside its key, an unreadable block, an empty record and a record whose attempt \
          produced no program all still refuse by name with their rows unmet. TEST-SELECTION NOTE: \
-         the prefix {ACCEPTANCE_PREFIX} is unique to this task, so the {own_tests} discovered \
-         assertions are exactly this task's tests. Validated with tools/validate_evidence.py \
-         --require-pass.",
+         the prefixes accept_m01_lc_lowering_adapter_ and accept_m01_lc_directive_lowering_ are \
+         unique to this task, so the {own_tests} discovered assertions are exactly this task's \
+         tests. Validated with tools/validate_evidence.py --require-pass.",
     )
 }
 
@@ -675,9 +682,11 @@ fn parse_suite(log: &str) -> Suite {
 /// name instead would silently drop every in-module acceptance test from
 /// `discovered`, from the assertion list and from the log.
 fn carries_prefix(name: &str) -> bool {
-    name.rsplit("::")
-        .next()
-        .is_some_and(|segment| segment.starts_with(ACCEPTANCE_PREFIX))
+    name.rsplit("::").next().is_some_and(|segment| {
+        ACCEPTANCE_PREFIXES
+            .iter()
+            .any(|prefix| segment.starts_with(prefix))
+    })
 }
 
 /// The libtest result word at the head of a test's tail line.

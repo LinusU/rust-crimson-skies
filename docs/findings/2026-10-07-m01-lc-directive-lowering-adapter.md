@@ -189,12 +189,17 @@ reconciliation.
 
 ## How to re-derive every number here
 
+The report is the parent task's (`M01-LC-DIRECTIVE-LOWERING`, #717), so since
+the integration step it selects **both** prefixes unique to that task — this
+stage's adapter suite and the parent's own `accept_m01_lc_directive_lowering_`
+suite (libtest ORs the two filters):
+
 ```sh
-cargo test --workspace --locked -- accept_m01_lc_lowering_adapter_ --include-ignored   # 12 tests, 3 retail
+cargo test --workspace --locked -- accept_m01_lc_lowering_adapter_ accept_m01_lc_directive_lowering_ --include-ignored   # 14 tests, 4 retail
 
 CS_EVIDENCE_DIR=private/evidence/M01-LC-DIRECTIVE-LOWERING \
 CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_m01_lc_lowering_adapter_ --include-ignored" \
+CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_m01_lc_lowering_adapter_ accept_m01_lc_directive_lowering_ --include-ignored" \
 CS_EVIDENCE_EXIT_CODE=0 CS_EVIDENCE_REVIEWER=<identity> \
   cargo test --locked -p cs_app --test evidence_report_m01_lc_directive_lowering -- --ignored
 
