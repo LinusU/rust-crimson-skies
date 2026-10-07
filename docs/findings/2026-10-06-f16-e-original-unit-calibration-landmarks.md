@@ -38,7 +38,8 @@ observed running, and nothing here is `verified_original`.
   how the addresses could be checked against the image's own bytes.
 * Cross-checks on the retail data files were read-only; nothing was written
   into `$CS_GAME_DIR`, and no executable bytes, decompiled code or game
-  content are committed — only digests, addresses, counts and claim labels.
+  content are committed — only digests, addresses, constants, instruction
+  mnemonics, counts and claim labels.
 * Method on every landmark is `ObservationMethod::ByteInspection` — the
   schema's word for inspecting stored bytes directly, i.e. static analysis.
   `EvidenceSource::OriginalInstallation` says where the bytes came from and the
@@ -59,13 +60,13 @@ image at `VA − 0x400000` before recording. All of them matched:
 | gravity normaliser `9.82` at VA `0x6080d4` | f32 bits `0x411D1EB8` |
 | π/180 double at VA `0x6040e8` | f64 `0x3F91DF46A2529983` = 0.01745329251994 |
 | 180/π double at VA `0x604100` | f64 `0x404CA5DC1A63C0B1` = 57.29577951308 |
-| gravity default at VA `0x4ee406` | bytes `C7 05 64 D1 9F 00 CD CC 1C C1` = `MOV [0x9fd164], 0xc11ccccd` = −9.8f |
-| altitude load at VA `0x48fc40` | `D9 86 08 02 00 00` = `FLD [esi+0x208]`, the position's middle word |
-| weight application at VA `0x48ff88` | `FLD [ecx+0xc4]`, `FDIV [0x6080d4]` (9.82), `FMUL [esi+0x674]`, `FSUB [edi+4]` — the `+4` (y) component only |
+| gravity default at VA `0x4ee406` | `MOV [0x9fd164], 0xc11ccccd` — the immediate dword is `0xC11CCCCD` = −9.8f |
+| altitude load in the function the owner cites at VA `0x48fc40` | `FLD [esi+0x208]` at VA `0x48fc51`, immediately after that function's prologue, then `FMUL [0x60813c]` — the position's middle word |
+| weight application at VA `0x48ff88`–`0x48ff9d` | `FLD [ecx+0xc4]`, `FDIV [0x6080d4]` (9.82), `FMUL [esi+0x674]`, `FSUB [edi+4]` — the `+4` (y) component only |
 | position copy at VA `0x491fd8` | `LEA EAX,[esi+0x204]` then three dwords copied — the three-float vector |
-| `.zrd` angle conversion at VA `0x4aa705` | `FMUL QWORD [0x6040e8]`, the π/180 double |
-| cull mode at VA `0x557381` → `0x5a0de0` | `PUSH 0x16` — `SetRenderState(22, …)`, `D3DRENDERSTATE_CULLMODE` |
-| `ANIMATION_DEFINITIONS/GRAVITY = −9.8` in `ZBD/zrdr.zbd` | key at byte 28684, f32 `CD CC 1C C1` at byte 28703, inside the `anim.zrd` member (offset 28623, length 8335) |
+| `.zrd` angle conversion in the key block the owner cites at VA `0x4aa705` | `FMUL QWORD [0x6040e8]` at VA `0x4aa708` (and at `0x4aa72c`, `0x4aa73e`), the π/180 double |
+| cull mode, caller at VA `0x557381` | `push` + `call 0x5a0de0` at VA `0x55739a`–`0x55739f`, and the callee pushes `0x16` (= 22, `D3DRENDERSTATE_CULLMODE`) at VA `0x5a0df1` before the vtable call |
+| `ANIMATION_DEFINITIONS/GRAVITY = −9.8` in `ZBD/zrdr.zbd` | key at byte 28684, f32 bits `0xC11CCCCD` at byte 28703, inside the `anim.zrd` member (offset 28623, length 8335) |
 
 The owner's GameZ-wide data census (nine archives: 29,957 of 31,269 outline
 faces and 21,264 of 21,985 strips agree in winding sign, 224 of 229 closed
@@ -93,10 +94,14 @@ GameZ, `f16-e.zrd-document-world-convention` for `.zrd`).
 
 ## 3. Landmarks
 
-Every landmark below is `LandmarkKind::Artifact`. **No behavior landmark was
-recorded** — owner decision 1: a behavior is what the running original does,
-and no original run exists (#358). Each evidence record fingerprints the image
-(or the retail file) and locates one address (or one member span).
+Every landmark **F16-E recorded** below is `LandmarkKind::Artifact`. **No
+behavior landmark was recorded** — owner decision 1: a behavior is what the
+running original does, and no original run exists (#358). Each of those
+evidence records fingerprints the image (or the retail file) and locates one
+address (or one member span). The one row that is not F16-E's own work says so:
+`retail.gamez` additionally carries #677's five scale-census records (two
+artifacts and three `LandmarkKind::Behavior` records from that tool-run
+census), which is what closes its scale quantity; F16-E added nothing to them.
 
 ### `retail.gamez`
 

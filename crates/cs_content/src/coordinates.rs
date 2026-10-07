@@ -48,31 +48,34 @@
 //! [`verifies_original`](EvidenceRecord::verifies_original) **and** sits in a
 //! calibration the rule calls complete can raise the claim that far. F16-E's
 //! static-analysis records do verify the original bytes they inspected, but no
-//! calibration in this tree is complete — no [`LandmarkKind::Behavior`] has
-//! ever been observed — so the whole-convention claim every measured source
-//! makes here is `unknown`, never `verified_original`.
+//! [`CoordinateSource`] in this module carries a complete calibration: each
+//! measured source still lacks a [`LandmarkKind::Behavior`] landmark for at
+//! least one quantity, because no original run exists (#358). Its
+//! whole-convention claim is therefore `unknown`, never `verified_original`.
 //!
 //! # F16-E: what the static analysis measured, and which source it belongs to
 //!
 //! [`CoordinateSource::retail_gamez`] (GameZ meshes and nodes) and
 //! [`CoordinateSource::retail_zrd`] (`.zrd` text documents) are the declared
 //! sources for the real formats this project reads. Each carries
-//! `Origin::Installation` plus a [`UnitCalibration`] of **artifact landmarks**
-//! — [`LandmarkKind::Artifact`], every one a static-analysis observation of
+//! `Origin::Installation` plus the [`UnitCalibration`] the measurement
+//! produced, whose F16-E landmarks are **artifact** landmarks
+//! ([`LandmarkKind::Artifact`]): every one a static-analysis observation of
 //! the owner's decrypted executable (`ORIGINAL_IMAGE_SHA256`) or of a retail
 //! file (`ZRD_READER_ARCHIVE_SHA256`), located by virtual address or member
 //! span, written up in
 //! `docs/findings/2026-10-06-f16-e-original-unit-calibration-landmarks.md`.
-//! The convention each source declares is a **hand-transcription** of those
-//! measured values, pinned by the `accept_f16_e_` acceptance tests; nothing in
-//! the module derives a convention from a landmark's free-text description.
+//! `retail.gamez` additionally keeps #677's scale census and the behaviors
+//! that census recorded. The convention each source declares is a
+//! **hand-transcription** of the measured values, pinned by the `accept_f16_e_`
+//! acceptance tests; nothing in the module derives a convention from a
+//! landmark's free-text description.
 //!
-//! The quantities' landmark rule is deliberately **not** satisfied here:
-//! no [`LandmarkKind::Behavior`] landmark is recorded, because a behavior is
-//! what the *running original* does and no original run exists yet (the
-//! requirement stays open at #358). So [`UnitCalibration::gaps`] reports
+//! F16-E records **no** [`LandmarkKind::Behavior`] landmark of its own: a
+//! behavior is what the *running original* does and no original run exists yet
+//! (the requirement stays open at #358). So [`UnitCalibration::gaps`] reports
 //! exactly the missing behavior landmark for every quantity that has its three
-//! artifacts, [`UnitCalibration::is_complete`] is false, and
+//! artifacts, [`UnitCalibration::is_complete`] is false for both sources, and
 //! [`UnitCalibration::claim_status`] is [`ClaimStatus::Unknown`] — never
 //! `verified_original`. A calibration is about one source, and
 //! [`CoordinateSource::with_calibration`] refuses one whose `source()` is not
