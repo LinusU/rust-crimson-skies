@@ -23,6 +23,7 @@ use cs_types::evidence::ClaimId;
 
 mod mementos;
 mod pages;
+mod persistence;
 mod records;
 mod validation;
 

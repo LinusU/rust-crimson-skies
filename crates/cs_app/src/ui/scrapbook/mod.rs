@@ -23,6 +23,13 @@
 //! * [`choose_memento`] validates the cabin choice against the unlocked
 //!   mementos.
 //!
+//! Stage `### F47-B` persists all of that in the selected profile:
+//! [`persist_mission`], [`persist_stunt`] and [`persist_memento`] each load the
+//! stored scrapbook, apply the one change and write one whole profile revision
+//! through [`ProfileSession::commit_with`], replacing only the `scrapbook.`
+//! extra fields. A replayed result or repeated choice writes nothing, and
+//! campaign progression is never rewritten.
+//!
 //! The synthetic catalog and records this stage is tested with prove the
 //! projection only, never an original scrapbook rule.
 
@@ -34,9 +41,13 @@ use cs_content::scrapbook::{
 };
 use cs_sim::campaign::{DifficultyId, Outcome, OutcomeId};
 use cs_sim::records::{
-    Fact, FactKind, MementoError, RecordError, RecordReceipt, RecordRule, ScrapbookRecords,
+    FIELD_PREFIX, Fact, FactKind, MementoError, RecordError, RecordReceipt, RecordRule,
+    RestoreError, ScrapbookRecords,
 };
 use cs_types::content::ContentId;
+use cs_types::profile::{ExtraField, ProfileDocument};
+
+use crate::profile::{ChangeRefusal, ChangeRefusalReason, ProfileSession, SessionError};
 
 fn fact_kind(kind: UnlockFactKind) -> FactKind {
     match kind {
@@ -239,4 +250,185 @@ pub fn choose_memento(
         .memento
         .choose(memento, &unlocked)
         .map_err(ScrapbookActionError::Memento)
+}
+
+/// Why a scrapbook change could not be persisted.
+#[derive(Debug)]
+pub enum PersistError {
+    /// The stored scrapbook fields could not be read back. Nothing is written
+    /// over them.
+    Restore(RestoreError),
+    /// The record submission was refused.
+    Record(RecordError),
+    /// The memento choice was refused.
+    Action(ScrapbookActionError),
+    /// The profile session failed or refused the write.
+    Session(SessionError),
+}
+
+impl fmt::Display for PersistError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Restore(error) => write!(f, "stored scrapbook is unreadable: {error}"),
+            Self::Record(error) => error.fmt(f),
+            Self::Action(error) => error.fmt(f),
+            Self::Session(error) => write!(f, "scrapbook was not saved: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for PersistError {}
+
+/// What a persisting call did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Persisted<T> {
+    /// The change was applied and written as one whole profile revision.
+    Written(T),
+    /// The change was already part of the stored scrapbook; nothing was
+    /// written, which is what makes replaying a result after a crash safe.
+    AlreadyApplied,
+}
+
+/// Reads the scrapbook out of a profile document. A profile that never saved
+/// one yields an empty scrapbook.
+///
+/// # Errors
+///
+/// [`RestoreError`].
+pub fn load(document: &ProfileDocument) -> Result<ScrapbookRecords, RestoreError> {
+    ScrapbookRecords::from_fields(
+        document
+            .extra
+            .iter()
+            .map(|field| (field.key.as_str(), field.value.as_str())),
+    )
+}
+
+/// The scrapbook stored in the session's selected profile.
+///
+/// # Errors
+///
+/// [`PersistError`].
+pub fn stored(session: &ProfileSession) -> Result<ScrapbookRecords, PersistError> {
+    let document = session
+        .document()
+        .ok_or(PersistError::Session(SessionError::NoProfileSelected))?;
+    load(document).map_err(PersistError::Restore)
+}
+
+fn refuse(error: PersistError, slot: &mut Option<PersistError>, subject: &str) -> ChangeRefusal {
+    *slot = Some(error);
+    ChangeRefusal {
+        subject: subject.to_owned(),
+        reason: ChangeRefusalReason::Malformed("scrapbook change refused".to_owned()),
+    }
+}
+
+/// Applies `change` to the scrapbook stored in the profile and writes the
+/// result as one whole revision. Only the `scrapbook.` extra fields are
+/// replaced; campaign progression and every other field are read, not
+/// rewritten. A conflicting revision re-applies `change` to the stored one.
+///
+/// `change` answers `Ok(Some(value))` for a change, `Ok(None)` when it was
+/// already applied (nothing is written).
+fn persist<T>(
+    session: &mut ProfileSession,
+    subject: &str,
+    mut change: impl FnMut(&mut ScrapbookRecords) -> Result<Option<T>, PersistError>,
+) -> Result<Persisted<T>, PersistError> {
+    let mut failure = None;
+    let mut answer = None;
+    let written = session.commit_with(|document| {
+        let mut records = load(document)
+            .map_err(|error| refuse(PersistError::Restore(error), &mut failure, subject))?;
+        match change(&mut records) {
+            Err(error) => return Err(refuse(error, &mut failure, subject)),
+            Ok(None) => {
+                answer = None;
+                return Err(ChangeRefusal {
+                    subject: subject.to_owned(),
+                    reason: ChangeRefusalReason::AlreadyApplied,
+                });
+            }
+            Ok(Some(value)) => answer = Some(value),
+        }
+        document
+            .extra
+            .retain(|field| !field.key.starts_with(FIELD_PREFIX));
+        document.extra.extend(
+            records
+                .to_fields()
+                .into_iter()
+                .map(|(key, value)| ExtraField { key, value }),
+        );
+        Ok(())
+    });
+    match written {
+        Ok(_) => Ok(Persisted::Written(
+            answer.expect("a written change has an answer"),
+        )),
+        Err(SessionError::Refused(refusal)) => match failure {
+            Some(error) => Err(error),
+            None if refusal.reason == ChangeRefusalReason::AlreadyApplied => {
+                Ok(Persisted::AlreadyApplied)
+            }
+            None => Err(PersistError::Session(SessionError::Refused(refusal))),
+        },
+        Err(error) => Err(PersistError::Session(error)),
+    }
+}
+
+/// Persists one finished mission: [`record_mission`], written atomically.
+/// A replayed [`MissionResult::outcome_id`] writes nothing.
+///
+/// # Errors
+///
+/// [`PersistError`]; the stored scrapbook is unchanged.
+pub fn persist_mission(
+    session: &mut ProfileSession,
+    result: &MissionResult,
+) -> Result<Persisted<RecordReceipt>, PersistError> {
+    persist(
+        session,
+        result.mission.as_str(),
+        |records| match record_mission(records, result).map_err(PersistError::Record)? {
+            RecordReceipt::AlreadyApplied => Ok(None),
+            receipt => Ok(Some(receipt)),
+        },
+    )
+}
+
+/// Persists one completed stunt. Completing it again writes nothing.
+///
+/// # Errors
+///
+/// [`PersistError`].
+pub fn persist_stunt(
+    session: &mut ProfileSession,
+    stunt: &ContentId,
+) -> Result<Persisted<()>, PersistError> {
+    persist(session, stunt.as_str(), |records| {
+        Ok(record_stunt(records, stunt).then_some(()))
+    })
+}
+
+/// Persists the cabin memento choice, which is checked against the mementos
+/// the stored facts unlock. Choosing the memento already chosen writes nothing.
+///
+/// # Errors
+///
+/// [`PersistError`]; the stored choice is unchanged.
+pub fn persist_memento(
+    session: &mut ProfileSession,
+    catalog: &ScrapbookCatalog,
+    memento: &ContentId,
+) -> Result<Persisted<()>, PersistError> {
+    persist(session, memento.as_str(), |records| {
+        if records.memento.chosen() == Some(memento) {
+            return Ok(None);
+        }
+        choose_memento(catalog, records, memento)
+            .map(Some)
+            .map_err(PersistError::Action)
+    })
 }
