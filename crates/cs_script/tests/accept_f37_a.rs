@@ -75,6 +75,7 @@ fn dead(actors: &[u32]) -> MissionFacts {
             .iter()
             .map(|a| (ActorId(*a), ActorState::Dead))
             .collect(),
+        ..MissionFacts::default()
     }
 }
 

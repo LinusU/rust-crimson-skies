@@ -175,7 +175,110 @@ pub enum CompareOp {
     Ge,
 }
 
+/// One named world member, spelled exactly as the record spells it: the
+/// resolved **name chain** `[base]` or `[base, part, sub]`.
+///
+/// Measured: an `INACTIVE<n>` site resolves its first string through the
+/// memoized name resolver and each subsequent string through a chained member
+/// lookup on the previous result, so the arguments are one hierarchy — the
+/// node/part/part-state triple F39-E4 measured — and never independent names
+/// (finding B). It is `MissionFacts::members`' key space, kept as the chain
+/// itself so no separator has to be invented.
+pub type MemberName = Vec<String>;
+
+/// Where a [`Condition::Travelers`] anchor comes from — the record spells
+/// **either** a name **or** a point, never both (finding B: a text child2
+/// resolves through the name resolver, a list child2 stores the three reals
+/// of an explicit point).
+#[derive(Clone, Debug, PartialEq)]
+pub enum TravelersAnchor {
+    /// The anchor is an object named by the chain; its position comes from
+    /// `MissionFacts::members`.
+    Object(MemberName),
+    /// The anchor is the explicit point the site spelled, in world units.
+    Point([f64; 3]),
+}
+
+/// The animation states a record's own `ANIM_STATE` token selects (finding C:
+/// the parser's `_stricmp` maps `RUNNING` → 2, `EXECUTED` → 3, `INVALID` → 4,
+/// and any other token leaves the state 0, which drops the pair).
+///
+/// Only these three tokens are measured spellings. A site that names anything
+/// else is a refusal, never a fourth invented state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AnimationState {
+    Running,
+    Executed,
+    Invalid,
+}
+
+impl AnimationState {
+    /// The state value the original stores for a token — the measured
+    /// `_stricmp` mapping, case-insensitive as `_stricmp` is. `None` for a
+    /// token outside the measured vocabulary.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        if token.eq_ignore_ascii_case("RUNNING") {
+            Some(Self::Running)
+        } else if token.eq_ignore_ascii_case("EXECUTED") {
+            Some(Self::Executed)
+        } else if token.eq_ignore_ascii_case("INVALID") {
+            Some(Self::Invalid)
+        } else {
+            None
+        }
+    }
+
+    /// The value as the original stores it: 2, 3 or 4. It is compared against
+    /// the engine animation's current state byte
+    /// (`MissionFacts::animations`), whose measured name table runs
+    /// `UNDEFINED` 0, `DORMANT` 1, `RUNNING` 2, `EXECUTED` 3, `INVALID` 4,
+    /// `CORRUPT` 5, `INVALID_AND_RUNNING` 6.
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Running => 2,
+            Self::Executed => 3,
+            Self::Invalid => 4,
+        }
+    }
+}
+
+/// The residual unknown `INACTIVE<n>` carries into
+/// [`Condition::InactiveMembers`]: what *writes* the in-play bit the
+/// evaluator reads is world code outside the measured bound, while every
+/// consumer is measured.
+///
+/// Carried, never dropped, and deliberately **not** a refusal: the unknown is
+/// about the producer of a world fact, not about what "complete" means, so
+/// the predicate itself is fully measured (finding B).
+pub const IN_PLAY_BIT_WRITERS_UNTRACED: &str = "the writers of the in-play bit the inactive-members evaluator reads (+0x24 bit 4) are \
+     vehicle/zeppelin spawn and despawn code outside the measured bound — every consumer of the \
+     bit is measured, the producers are not";
+
+/// The residual unknown `DEDG` carries into
+/// [`Condition::EnemyGroupDepletion`]: the original's evaluator is not
+/// read-only.
+///
+/// On every counted member it normalizes three member fields
+/// (`+0x318`/`+0x31c`/`+0x320` against the constants `81000000.0f`,
+/// `-9000.0f`, `+9000.0f`), and what those fields feed is untraced world
+/// state (finding B). The count test is measured and lives in the condition;
+/// the rewrite is a **host effect with this named residual unknown** and
+/// never sits inside evaluation (task `M01-LC-DIRECTIVE-LOWERING.02`, AC2).
+pub const DEDG_MEMBER_FIELD_REWRITES: &str = "the original's DEDG evaluator rewrites three member fields (+0x318/+0x31c/+0x320) on every \
+     counted member during evaluation; what they feed is untraced world state, so the rewrite is \
+     a host effect with its own residual unknown and is never part of this condition";
+
 /// A side-effect-free boolean expression.
+///
+/// Evaluation reads only its own operands and the [`crate::runtime::MissionFacts`]
+/// it is handed — both through shared references — so no condition can write
+/// program state or world state. The world-shaped variants below
+/// ([`Self::InactiveMembers`], [`Self::EnemyGroupDepletion`],
+/// [`Self::Travelers`], [`Self::AnimationStates`]) lower the original's
+/// measured completion evaluators (`M01-LC-DIRECTIVE-LOWERING.02`); each
+/// carries the operands the record actually spells as data.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Condition {
     Const(bool),
@@ -190,6 +293,96 @@ pub enum Condition {
         actor: ActorId,
         state: ActorState,
     },
+    /// True while the numbered block at this zero-based record index is in the
+    /// measured `Awake` lifecycle state (`MissionFacts::objectives`).
+    ///
+    /// This is the original's pass-2 gate: a block that is dormant, napping or
+    /// done evaluates nothing and completes nothing (finding B). A block that
+    /// starts dormant therefore cannot latch at tick 0, and a dependent block
+    /// names its dependency's index here so `TICK_DEPENDS_ON_OBJ`'s gate is
+    /// represented rather than dropped. An index the facts do not carry is not
+    /// awake, so an unpopulated fact table completes nothing.
+    ObjectiveAwake {
+        /// The block's zero-based position in the record — the index every
+        /// cross-objective directive spells (measured: `TICK_DEPENDS_ON_OBJ`
+        /// stores `child0 - 1`).
+        index: u32,
+    },
+    /// `INACTIVE<n>` with its `INACTIVE_COMPLETION_COUNT`: true when at least
+    /// `threshold` of the named members exist **and no longer carry the
+    /// in-play bit**.
+    ///
+    /// Measured (finding B): the evaluator counts the listed handles whose
+    /// object exists and whose in-play bit is clear, and fires at
+    /// `count >= threshold`; an absent `INACTIVE_COMPLETION_COUNT` makes the
+    /// threshold the block's own member count, which is what the lowering
+    /// writes here. An empty member list is the unarmed evaluator —
+    /// `+0x560 == 0` — which never fires and never blocks the fallthrough
+    /// gate, so this condition answers `false` for it.
+    InactiveMembers {
+        /// The member chains, in the order the block spelled them.
+        members: Vec<MemberName>,
+        /// The count of cleared members the block needs.
+        threshold: u32,
+    },
+    /// `DEDG [group, remaining]`: true when the designated group has at most
+    /// `remaining` members still in play, plus whatever the optionally-named
+    /// generator still owes.
+    ///
+    /// Measured (finding B): living registry members of the group (not
+    /// despawned) plus the generator's pending-spawn count, compared with
+    /// `<=`. The generator's *pending* count is `0` when the name does not
+    /// resolve — measured — while an **unrecorded group** is unknown rather
+    /// than empty and answers `false`, because the evaluator never invents
+    /// world state.
+    EnemyGroupDepletion {
+        /// The group id the site spelled.
+        group: i32,
+        /// The largest living count that still completes the block.
+        remaining: i32,
+        /// The generator whose pending spawns still count, when the site
+        /// spells child2 (never spelled in M01) — a single table name, the
+        /// way the original resolves it.
+        generator: Option<String>,
+    },
+    /// `TRAVELERS [subject, polarity, anchor, radius, count]`: true when the
+    /// named subject is inside the radius about the anchor when the site
+    /// spells `APPROACHING`, and outside it otherwise — strict, so equality
+    /// never fires.
+    ///
+    /// Measured (findings B and C): subject mode requires the subject to
+    /// exist **and** carry the in-play bit; when it does not, the original
+    /// falls through to its counting path, which with a string child0 has an
+    /// unarmed group and returns `false` forever. So an absent or inactive
+    /// subject answers `false` here, exactly as the original never completes
+    /// through `TRAVELERS` for such a spelling. The polarity is the measured
+    /// token: only `APPROACHING` is a spelling the original stores as `1`.
+    Travelers {
+        /// The named subject, as spelled.
+        subject: MemberName,
+        /// Where the anchor comes from.
+        anchor: TravelersAnchor,
+        /// The radius in world units as the site spelled it — the original
+        /// squares it at parse, this condition squares it when it compares.
+        radius: f64,
+        /// `true` when the site spelled `APPROACHING` (inside the radius),
+        /// `false` for the unnamed outside pole the parser also stores.
+        approaching: bool,
+    },
+    /// `ANIM_STATE`: true when at least `required` of the listed animations
+    /// are in their wanted state.
+    ///
+    /// Measured (finding C): `required` is the number of appended pairs and a
+    /// sibling `COMPLETION_COUNT` overwrites it; this condition carries the
+    /// pair count, and a block that spells the (unmeasured) sibling is
+    /// refused instead. An animation the facts do not carry is not in the
+    /// wanted state — fail-closed for completion.
+    AnimationStates {
+        /// How many listed animations must match.
+        required: u32,
+        /// The animations and the state each one wants, in declaration order.
+        animations: Vec<(String, AnimationState)>,
+    },
     Not(Box<Condition>),
     All(Vec<Condition>),
     Any(Vec<Condition>),
@@ -197,6 +390,44 @@ pub enum Condition {
     Unknown {
         instruction: String,
     },
+}
+
+impl Condition {
+    /// The residual unknowns this condition still carries — named, never
+    /// dropped, and never a refusal.
+    ///
+    /// A residual unknown here is one that does **not** change what
+    /// "complete" means: the predicate is fully measured while its producers
+    /// or its side effects elsewhere in the original are not. A residual that
+    /// *would* change the predicate never reaches a condition at all — the
+    /// lowering refuses that block by name
+    /// ([`crate::conditions::ConditionRefusal`]).
+    #[must_use]
+    pub fn residual_unknowns(&self) -> Vec<&'static str> {
+        let mut unknowns = Vec::new();
+        match self {
+            Self::InactiveMembers { .. } => unknowns.push(IN_PLAY_BIT_WRITERS_UNTRACED),
+            Self::EnemyGroupDepletion { .. } => unknowns.push(DEDG_MEMBER_FIELD_REWRITES),
+            Self::Travelers { .. } | Self::AnimationStates { .. } | Self::ObjectiveAwake { .. } => {
+            }
+            Self::Const(_)
+            | Self::Compare { .. }
+            | Self::ActorIs { .. }
+            | Self::Not(_)
+            | Self::All(_)
+            | Self::Any(_)
+            | Self::Unknown { .. } => {}
+        }
+        if let Self::All(items) | Self::Any(items) = self {
+            for item in items {
+                unknowns.extend(item.residual_unknowns());
+            }
+        }
+        if let Self::Not(inner) = self {
+            unknowns.extend(inner.residual_unknowns());
+        }
+        unknowns
+    }
 }
 
 /// How a mission ends. Mirrors the contract's terminal vocabulary minus
@@ -691,6 +922,14 @@ pub enum ValidationError {
         at: ProgramLocator,
         count: usize,
     },
+    /// A world-shaped condition carrying more operands than
+    /// [`MAX_VALUE_ITEMS`] — a member list, an animation list or one name
+    /// chain. The same bound a list value carries, so a condition cannot hold
+    /// more data than the IR's own list cap admits.
+    TooManyConditionOperands {
+        at: ProgramLocator,
+        count: usize,
+    },
     /// A `Draw` whose `min` exceeds its `max`.
     InvalidRange {
         at: ProgramLocator,
@@ -747,6 +986,12 @@ impl fmt::Display for ValidationError {
             }
             Self::TooManyValueItems { at, count } => {
                 write!(f, "{at}: {count} list items exceeds {MAX_VALUE_ITEMS}")
+            }
+            Self::TooManyConditionOperands { at, count } => {
+                write!(
+                    f,
+                    "{at}: {count} condition operands exceeds {MAX_VALUE_ITEMS}"
+                )
             }
             Self::InvalidRange { at } => write!(f, "{at}: draw min exceeds max"),
             Self::TooManyActions { at, count } => {
@@ -843,6 +1088,26 @@ impl Ctx<'_> {
         }
     }
 
+    /// The [`MAX_VALUE_ITEMS`] bound over one world-shaped condition's
+    /// operand collections — the same cap a list value carries, applied to
+    /// the member chains and animation lists a condition holds as data, so a
+    /// condition cannot carry more than an IR list may.
+    fn condition_operands(
+        &self,
+        sizes: impl IntoIterator<Item = usize>,
+        trace: &[&str],
+    ) -> Result<(), ValidationError> {
+        for size in sizes {
+            if size > MAX_VALUE_ITEMS {
+                return Err(ValidationError::TooManyConditionOperands {
+                    at: self.at(trace),
+                    count: size,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn condition(
         &self,
         c: &Condition,
@@ -854,6 +1119,7 @@ impl Ctx<'_> {
         }
         match c {
             Condition::Const(_) | Condition::ActorIs { .. } => Ok(()),
+            Condition::ObjectiveAwake { .. } => Ok(()),
             Condition::Unknown { instruction } => Err(ValidationError::UnsupportedInstruction {
                 at: self.at(trace),
                 instruction: instruction.clone(),
@@ -862,6 +1128,33 @@ impl Ctx<'_> {
             Condition::All(items) | Condition::Any(items) => items
                 .iter()
                 .try_for_each(|i| self.condition(i, depth + 1, trace)),
+            Condition::InactiveMembers { members, .. } => {
+                self.condition_operands(members.iter().map(MemberName::len), trace)
+            }
+            Condition::AnimationStates { animations, .. } => {
+                self.condition_operands(animations.iter().map(|(name, _)| name.len()), trace)
+            }
+            Condition::EnemyGroupDepletion { .. } => Ok(()),
+            Condition::Travelers {
+                subject,
+                anchor,
+                radius,
+                ..
+            } => {
+                if !radius.is_finite() {
+                    return Err(ValidationError::NonFiniteValue { at: self.at(trace) });
+                }
+                let chains = match anchor {
+                    TravelersAnchor::Object(chain) => vec![subject.len(), chain.len()],
+                    TravelersAnchor::Point(point) => {
+                        if point.iter().any(|component| !component.is_finite()) {
+                            return Err(ValidationError::NonFiniteValue { at: self.at(trace) });
+                        }
+                        vec![subject.len()]
+                    }
+                };
+                self.condition_operands(chains, trace)
+            }
             Condition::Compare {
                 variable,
                 op,

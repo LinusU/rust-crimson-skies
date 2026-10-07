@@ -56,8 +56,8 @@ use cs_types::random::SplitMix64;
 
 use crate::ir::{
     Action, ActorId, ActorState, CompareOp, Condition, DirectiveOperation,
-    MAX_ACTIONS_PER_OBJECTIVE, Outcome, ProgramLocator, SymbolId, ValidatedProgram,
-    ValidationError, Value, ValueType,
+    MAX_ACTIONS_PER_OBJECTIVE, MemberName, Outcome, ProgramLocator, SymbolId, TravelersAnchor,
+    ValidatedProgram, ValidationError, Value, ValueType,
 };
 
 /// SplitMix64 domain separating the mission evaluator's stream from every
@@ -206,9 +206,111 @@ impl PrecedencePolicy {
 /// registration writes [`ActorState::Alive`], a measured lifecycle
 /// transition writes `Dead`, `Captured` or `Despawned`, and a state with no
 /// measured producer is refused by name rather than written.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// The world-shaped conditions
+/// ([`Condition::InactiveMembers`], [`Condition::EnemyGroupDepletion`],
+/// [`Condition::Travelers`], [`Condition::AnimationStates`]) read the other
+/// maps here, each keyed exactly as the record spells its operands:
+///
+/// * `objectives` — the numbered block's measured lifecycle state
+///   ([`ObjectiveLifecycle`]), written by `cs_sim`'s block-lifecycle table
+///   from the record's own `BEGIN_DORMANT` spelling and the mission clock;
+/// * `members` — a named member chain ([`crate::ir::MemberName`]) with its
+///   in-play presence and world position;
+/// * `groups` / `generators` — the living count of an AI group and the
+///   pending-spawn count a named generator still owes;
+/// * `animations` — an animation name's current state byte, the measured
+///   `UNDEFINED` 0 … `INVALID_AND_RUNNING` 6 table (finding C).
+///
+/// Absence is always "not observed", never a default: an unpopulated map
+/// makes its conditions answer `false`, so a session whose facts nobody
+/// populated completes nothing instead of completing everything.
+///
+/// `PartialEq` only, not `Eq`: [`MemberFact`] carries a world position, and
+/// a float position is not an equivalence relation.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct MissionFacts {
     pub actors: BTreeMap<ActorId, ActorState>,
+    /// Each numbered block's lifecycle state, keyed by its zero-based record
+    /// index — the index `TICK_DEPENDS_ON_OBJ` stores.
+    pub objectives: BTreeMap<u32, ObjectiveLifecycle>,
+    /// The named world members the record's operands resolve to, keyed by
+    /// the chain exactly as spelled.
+    pub members: BTreeMap<MemberName, MemberFact>,
+    /// Group id → how many of its members are still in play (not despawned).
+    /// A group nobody recorded is unknown, not empty.
+    pub groups: BTreeMap<i32, u32>,
+    /// Generator name → its pending-spawn count. A name that does not
+    /// resolve owes **0** — measured: the original logs `Cannot find
+    /// generator %s` and adds nothing.
+    pub generators: BTreeMap<String, u32>,
+    /// Animation name → its current state byte (measured table: `UNDEFINED`
+    /// 0, `DORMANT` 1, `RUNNING` 2, `EXECUTED` 3, `INVALID` 4, `CORRUPT` 5,
+    /// `INVALID_AND_RUNNING` 6).
+    pub animations: BTreeMap<String, u32>,
+}
+
+impl MissionFacts {
+    /// Folds one fact table into another, field by field: `other` wins on a
+    /// key both carry, since it is the later observation.
+    ///
+    /// This is how several writers compose — the actor-fact table, the
+    /// block-lifecycle table and the world-side member/group/animation
+    /// tables each build their own [`MissionFacts`] and a caller folds them
+    /// before advancing a tick. The key spaces are distinct, so a collision
+    /// means two writers disagree about one key and the later one stands.
+    pub fn absorb(&mut self, other: MissionFacts) {
+        self.actors.extend(other.actors);
+        self.objectives.extend(other.objectives);
+        self.members.extend(other.members);
+        self.groups.extend(other.groups);
+        self.generators.extend(other.generators);
+        self.animations.extend(other.animations);
+    }
+}
+
+/// The measured lifecycle state of one numbered block — the original's
+/// `+0x5c8` vocabulary, all four values (finding B): 0 dormant, 1 awake,
+/// 2 napping, 3 done.
+///
+/// Only `Awake` is what [`Condition::ObjectiveAwake`] reads: the pass-2 gate
+/// admits a block exactly while it is awake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ObjectiveLifecycle {
+    Dormant,
+    Awake,
+    Napping,
+    Done,
+}
+
+/// Whether a named world member exists and carries the in-play bit.
+///
+/// The original tests one flag for both questions: an `INACTIVE<n>` row is
+/// counted when its object **exists** (`!= 0`) and its `+0x24` bit 4 is
+/// **clear**, and a `TRAVELERS` subject is tested only when its object
+/// exists and the bit is **set** (finding B). Three states keep "the name did
+/// not resolve" apart from "it resolved and is out of play", which is the
+/// distinction both evaluators turn on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MemberPresence {
+    /// The name did not resolve to an object.
+    Missing,
+    /// The object exists and is in play (bit set).
+    InPlay,
+    /// The object exists and is no longer in play (bit clear).
+    OutOfPlay,
+}
+
+/// One named world member's observed row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MemberFact {
+    /// Whether the name resolved and whether it is in play.
+    pub presence: MemberPresence,
+    /// The member's world position, for the radius comparisons. Only
+    /// [`Condition::Travelers`] reads it; a member recorded without a
+    /// meaningful position should be recorded with `[0.0; 3]`, which is
+    /// what the original's zeroed record holds for an absent anchor.
+    pub position: [f64; 3],
 }
 
 /// What an emitted event is.
@@ -1509,10 +1611,122 @@ impl MissionState {
         }
     }
 
-    fn holds(&self, condition: &Condition, facts: &MissionFacts) -> bool {
+    /// Evaluates one condition against `facts`: the whole of the mission's
+    /// per-tick predicate evaluation.
+    ///
+    /// **Side-effect-free by construction** (contract, "Objective event
+    /// ordering"; task `M01-LC-DIRECTIVE-LOWERING.02`, AC2): the receiver is
+    /// `&self` and the facts are `&MissionFacts`, so evaluation cannot write
+    /// program state, cannot write world state and cannot run an action. The
+    /// original's `DEDG` evaluation-time member-field rewrites therefore do
+    /// not live here — they are a host effect carrying their own named
+    /// residual unknown ([`crate::ir::DEDG_MEMBER_FIELD_REWRITES`]), never
+    /// part of the predicate.
+    ///
+    /// A fact nobody populated is **not** a default: every world-shaped arm
+    /// answers `false` when the map it reads does not hold the key, so an
+    /// unpopulated [`MissionFacts`] completes nothing.
+    pub fn holds(&self, condition: &Condition, facts: &MissionFacts) -> bool {
         match condition {
             Condition::Const(b) => *b,
             Condition::ActorIs { actor, state } => facts.actors.get(actor) == Some(state),
+            Condition::ObjectiveAwake { index } => {
+                facts.objectives.get(index) == Some(&ObjectiveLifecycle::Awake)
+            }
+            Condition::InactiveMembers { members, threshold } => {
+                // Measured: the unarmed evaluator (`+0x560 == 0`, no member
+                // row at all) never fires, so an empty list answers `false`
+                // rather than the vacuous `0 >= threshold`.
+                if members.is_empty() {
+                    return false;
+                }
+                let cleared = members
+                    .iter()
+                    .filter(|chain| {
+                        facts
+                            .members
+                            .get(*chain)
+                            .is_some_and(|row| row.presence == MemberPresence::OutOfPlay)
+                    })
+                    .count();
+                cleared as u32 >= *threshold
+            }
+            Condition::EnemyGroupDepletion {
+                group,
+                remaining,
+                generator,
+            } => {
+                let Some(living) = facts.groups.get(group) else {
+                    // An unrecorded group is unknown, not an empty one.
+                    return false;
+                };
+                // A generator the name does not resolve owes nothing —
+                // measured: the original logs and adds no pending spawns.
+                let pending = generator
+                    .as_ref()
+                    .map_or(0, |name| facts.generators.get(name).copied().unwrap_or(0));
+                let Ok(remaining) = u32::try_from(*remaining) else {
+                    // A negative remaining threshold is the record's
+                    // "unarmed" spelling; nothing living can satisfy it.
+                    return false;
+                };
+                u64::from(*living) + u64::from(pending) <= u64::from(remaining)
+            }
+            Condition::Travelers {
+                subject,
+                anchor,
+                radius,
+                approaching,
+            } => {
+                let Some(subject_row) = facts.members.get(subject) else {
+                    return false;
+                };
+                if subject_row.presence != MemberPresence::InPlay {
+                    // Subject absent or inactive: the original falls through
+                    // to its counting path, which with a string subject has
+                    // no armed group and returns false forever.
+                    return false;
+                }
+                let anchor_point = match anchor {
+                    TravelersAnchor::Object(chain) => {
+                        facts.members.get(chain).map(|row| row.position)
+                    }
+                    TravelersAnchor::Point(point) => Some(*point),
+                };
+                let Some(anchor_point) = anchor_point else {
+                    // No anchor the facts carry: no distance may be computed
+                    // from a world nobody described.
+                    return false;
+                };
+                let distance_squared: f64 = subject_row
+                    .position
+                    .iter()
+                    .zip(anchor_point)
+                    .map(|(here, there)| (here - there) * (here - there))
+                    .sum();
+                let limit = radius * radius;
+                // Strict both ways: equality never fires (finding B).
+                if *approaching {
+                    distance_squared < limit
+                } else {
+                    distance_squared > limit
+                }
+            }
+            Condition::AnimationStates {
+                required,
+                animations,
+            } => {
+                animations
+                    .iter()
+                    .filter(|(name, state)| {
+                        facts
+                            .animations
+                            .get(name)
+                            .is_some_and(|current| *current == state.code())
+                    })
+                    .count() as u32
+                    >= *required
+            }
             Condition::Not(c) => !self.holds(c, facts),
             Condition::All(cs) => cs.iter().all(|c| self.holds(c, facts)),
             Condition::Any(cs) => cs.iter().any(|c| self.holds(c, facts)),
