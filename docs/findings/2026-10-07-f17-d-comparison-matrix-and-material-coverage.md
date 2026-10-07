@@ -87,10 +87,11 @@ to every subject. It is a drawn-geometry rule rather than an extent one, and
 that difference was measured: the first version of this stage ranked by stored
 bounding-box **volume** and it picked `g371` for `cockpit` — a needle-shaped
 mesh (393.7 × 11.8 × 106.0 stored units, 80 triangles, two material groups)
-that won by being long, while the cockpit's actual assembly (`g366`, 231
-triangles, six material groups) is ten times smaller in volume. The rule was
-changed to triangles and every subject re-measured (commit
-`1657fa40`); the retail and GPU tests were re-run on the new rule.
+that won by being long, while the mesh that draws the cockpit's most geometry
+(`g366`, 231 triangles, six material groups) is an order of magnitude smaller
+in volume. The
+rule was changed to triangles and every subject re-measured; the retail and
+GPU tests were re-run on the new rule (the branch's second commit).
 
 ## What the retail run measured
 
@@ -234,9 +235,16 @@ All from the workspace root on branch
 
 * `private/evidence/F17-D/acceptance.json` — schema
   `schemas/evidence.schema.json`, candidate tree
-  `e67d899019eb09a8b01a0ae213c05d8f76065193` (commit `1657fa40`),
-  capabilities `["retail", "gpu", "synthetic"]`, 9 discovered / 9 executed /
+  `49335d6f80ce46d541140d71e65b23b9e8e565f9` (commit `c583fc13`), capabilities
+  `["retail", "gpu", "synthetic"]`, 9 discovered / 9 executed /
   9 passed, `unknowns: []`, claim `implemented`.
+* The branch was rebased onto `origin/main` (19 commits, no conflicts; none of
+  them touched this branch's files or any `Cargo.toml`/`Cargo.lock`), all four
+  checks were re-run green on the rebased head, and the report was
+  **regenerated there** — an earlier report for the pre-rebase tree was
+  discarded rather than reused. The only delta after that regeneration is this
+  finding's own text and the committed evidence copy, whose bytes are that
+  file.
 * Installation `c14a876f4457d8710dee7986333ab636122c9549cf72b646fd69cbe7e72c5352`,
   content
   `148a24b7b0506812e8f1ee13d8d3137a05926abebbe10161994e8c4cd300c35e`,
