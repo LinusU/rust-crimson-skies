@@ -32,9 +32,14 @@
 //! — cockpit, skyline, vegetation, night effects and close-up aircraft —
 //! resolved to the owner's stored meshes through the production readers and
 //! reported with the coverage of the material records each one references.
-//! Its retail and GPU halves are `#[ignore]`d (they need `$CS_GAME_DIR` and an
-//! adapter); `evidence.rs` is the stage's evidence-report harness and is
-//! deliberately not named with the task prefix.
+//! `matrix_wide.rs` is stage F17-E: the same five subjects resolved in **every**
+//! discovered world group through `resolve_wide`, with a group's read refusal
+//! kept as a named row rather than a skipped entry, and each resolved world
+//! subject drawn textured through the production `TextureBinder` path — where a
+//! texture that does not resolve is the `missing_texture` refusal, never a
+//! neutral stand-in. The retail and GPU halves are `#[ignore]`d (they need
+//! `$CS_GAME_DIR` and an adapter); `evidence.rs` is the stages'
+//! evidence-report harness and is deliberately not named with a task prefix.
 
 mod adapters;
 mod additive_material;
@@ -44,6 +49,7 @@ mod fixture;
 mod frame_capture;
 mod golden_scene;
 mod matrix;
+mod matrix_wide;
 mod paint;
 mod profiles;
 mod release_assets;
