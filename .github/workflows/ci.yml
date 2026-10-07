@@ -16,13 +16,13 @@ env:
 jobs:
   rust:
     runs-on: ubuntu-latest
-    # Lint and test run on separate runners: on one runner, clippy's check artifacts plus every
-    # engine-linked test binary left main with 521 MB free after `cargo test` on 2026-10-07, and
-    # branches adding one test file ran out of disk.
+    # Lint and the tests run on separate runners, and cs_app's tests (138 of ~380 engine-linked test
+    # binaries) on a runner of their own: on one runner `cargo test --workspace` left main with
+    # 521 MB free on 2026-10-07, and with lint split off still only 4.5 GB.
     strategy:
       fail-fast: false
       matrix:
-        check: [lint, test]
+        check: [lint, test-app, test-rest]
     name: rust (${{ matrix.check }})
     env:
       # The workspace's test binaries no longer fit the runner's disk with full debug info: the
@@ -77,9 +77,13 @@ jobs:
         if: steps.workspace.outputs.present == 'true' && matrix.check == 'lint'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-      - name: cargo test
-        if: steps.workspace.outputs.present == 'true' && matrix.check == 'test'
-        run: cargo test --workspace --locked
+      - name: cargo test (cs_app)
+        if: steps.workspace.outputs.present == 'true' && matrix.check == 'test-app'
+        run: cargo test -p cs_app --locked
+
+      - name: cargo test (every other member)
+        if: steps.workspace.outputs.present == 'true' && matrix.check == 'test-rest'
+        run: cargo test --workspace --locked --exclude cs_app
 
       - name: Disk after the checks
         if: always()
