@@ -234,10 +234,13 @@ All from the workspace root on branch
 ## Evidence
 
 * `private/evidence/F17-D/acceptance.json` — schema
-  `schemas/evidence.schema.json`, candidate tree
-  `49335d6f80ce46d541140d71e65b23b9e8e565f9` (commit `c583fc13`), capabilities
-  `["retail", "gpu", "synthetic"]`, 9 discovered / 9 executed /
-  9 passed, `unknowns: []`, claim `implemented`.
+  `schemas/evidence.schema.json`, capabilities `["retail", "gpu", "synthetic"]`,
+  9 discovered / 9 executed / 9 passed, `unknowns: []`, claim `implemented`.
+  The committed copy `docs/findings/evidence/F17-D.json` carries the
+  **reviewer's** regeneration on the rebased head `0dd7885b` (tree
+  `59b13b51f9dfe1ff1677027796981cf207d8d10f`); it reproduces the implementer's
+  report for tree `49335d6f80ce46d541140d71e65b23b9e8e565f9` (commit
+  `c583fc13`) field by field — see *Reviewer verification* below.
 * The branch was rebased onto `origin/main` (19 commits, no conflicts; none of
   them touched this branch's files or any `Cargo.toml`/`Cargo.lock`), all four
   checks were re-run green on the rebased head, and the report was
@@ -258,6 +261,39 @@ All from the workspace root on branch
   materials classified, no original run, one world group — is the matrix's
   asserted verdict, pinned by its tests and written out here. It is not
   dropped to satisfy the validator.
+
+## Reviewer verification (2026-10-07, `bunny-alpha-1`)
+
+Independent review of this branch (Rally #72). Implementer: `bunny-alpha-2`
+(opencode). Reviewer: `bunny-alpha-1` (opencode), a different agent instance
+with a fresh context, so this is an independent re-run rather than a
+re-reading of the implementer's numbers. No agent review replaces the owner's
+human approval, and nothing here is `verified_original`.
+
+* Rebased onto `origin/main` (3 incoming commits, no conflicts; none touched
+  this branch's files and none touched a `Cargo.toml`/`Cargo.lock`).
+* `cargo fmt --all -- --check` → 0; `cargo clippy --workspace --all-targets
+  --all-features --locked -- -D warnings` → 0; `cargo test --workspace --locked`
+  → 0 (422 suites, 3 912 passed, 0 failed, 515 ignored);
+  `cargo test --workspace --locked -- accept_f17_d_ --include-ignored` → 0
+  (9 of 9, including the two `#[ignore]`d retail tests and the GPU capture
+  test, run with `CS_GAME_DIR` set and a real adapter).
+* Evidence **regenerated on the rebased head** `0dd7885b` (tree `59b13b51…`)
+  and validated with
+  `python3 tools/validate_evidence.py private/evidence/F17-D/acceptance.json
+  --artifact-root private/evidence/F17-D --require-pass` → 0
+  (`structurally_valid: true`, 7 artifacts). `comparison-matrix.json` and all
+  five `subject-*.png` digests are **byte-identical** to the implementer's
+  report, as are `install_sha256`, `content_sha256`, the engine versions and
+  all nine assertions; only `cargo-test.log` (a different invocation) and the
+  run metadata (`candidate_tree`, `cwd`, `created_at`) differ. The committed
+  copy now holds this reviewer run.
+* **Mutation check:** deleting `ComparisonMatrix::build`'s subject validation
+  makes
+  `accept_f17_d_a_set_missing_or_duplicating_a_required_subject_is_refused`
+  fail (exit 101, four rows accepted). The source was restored byte-for-byte
+  and all four checks re-run green afterwards, so the branch as pushed carries
+  no mutation.
 
 ## Wiring edits (outside owner paths, logic-free)
 
