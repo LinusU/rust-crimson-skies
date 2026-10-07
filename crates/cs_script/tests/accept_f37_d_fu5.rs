@@ -88,7 +88,10 @@ fn tick(state: &mut MissionState, program: &ValidatedProgram, at: u64) -> TickRe
 
 /// **Branch before result, pinned on the production path.**
 ///
-/// Both outcomes are requested on one tick. The measured policy records the
+/// Both outcomes are requested on one tick. Since F37-D-FU3 admits one
+/// objective per tick, the objective declared first queues its win request
+/// and the queued `Finish` drains on the tick the second objective completes,
+/// so that tick carries both requests. The measured policy records the
 /// success (success iff WON, `0x4194e0`) while the terminal check's **loss
 /// branch** is the branch that ran (LOST tested first, `0x46af7a` before
 /// `0x46afad`): `OBJECTIVES_LOST_SOUND` is the slot that plays, the end delay
@@ -97,7 +100,13 @@ fn tick(state: &mut MissionState, program: &ValidatedProgram, at: u64) -> TickRe
 #[test]
 fn accept_f37_d_fu5_loss_branch_runs_while_the_recorded_result_is_success() {
     let program = validated(vec![
-        objective(10, vec![Action::Finish(Outcome::Succeeded)]),
+        objective(
+            10,
+            vec![Action::Schedule {
+                delay_ticks: 1,
+                actions: vec![Action::Finish(Outcome::Succeeded)],
+            }],
+        ),
         objective(3, vec![Action::Finish(Outcome::Failed)]),
     ]);
     let mut state = MissionState::new(&program, SESSION);
@@ -107,7 +116,32 @@ fn accept_f37_d_fu5_loss_branch_runs_while_the_recorded_result_is_success() {
         "a running mission has selected no end presentation yet"
     );
 
-    let result = tick(&mut state, &program, 1);
+    // Tick 1 admits the lower declaration index only: it queues the win
+    // request for the next tick and asks for nothing itself.
+    let first = tick(&mut state, &program, 1);
+    assert_eq!(
+        first.terminal,
+        TerminalState::Running,
+        "the queued win request cannot end the mission before it runs: {:?}",
+        first.events
+    );
+
+    // Tick 2 admits the second objective — its loss request — and the queued
+    // win request drains behind it: one tick, both outcomes requested.
+    let result = tick(&mut state, &program, 2);
+    let requests: Vec<Outcome> = result
+        .events
+        .iter()
+        .filter_map(|event| match event.kind {
+            EventKind::TerminalRequested(outcome) => Some(outcome),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        requests.len(),
+        2,
+        "both outcomes are requested on this tick: {requests:?}"
+    );
 
     // The recorded result is the success: success iff WON.
     assert_eq!(result.terminal, TerminalState::Succeeded);
@@ -142,22 +176,33 @@ fn accept_f37_d_fu5_loss_branch_runs_while_the_recorded_result_is_success() {
 
 /// **The cues follow the WON flag, not the recorded result.**
 ///
-/// The designed policy is selected through the save record, so this tick
-/// records the *failure* while both flags were requested. The mission sound
-/// and the animation still answer the WON flag (`0x463c30`, `0x46ba10`): a
-/// policy that changes the recorded result cannot repaint the end screen, and
-/// the branch still runs loss-first.
+/// The designed policy is selected through the save record, so the tick that
+/// carries both requests records the *failure* while both flags were set —
+/// both requests land on one tick because the win side is queued behind the
+/// objective the one-completion-per-tick scan admits first (F37-D-FU3). The
+/// mission sound and the animation still answer the WON flag (`0x463c30`,
+/// `0x46ba10`): a policy that changes the recorded result cannot repaint the
+/// end screen, and the branch still runs loss-first.
 #[test]
 fn accept_f37_d_fu5_cues_follow_the_won_flag_not_the_recorded_result() {
     let program = validated(vec![
-        objective(10, vec![Action::Finish(Outcome::Succeeded)]),
+        objective(
+            10,
+            vec![Action::Schedule {
+                delay_ticks: 1,
+                actions: vec![Action::Finish(Outcome::Succeeded)],
+            }],
+        ),
         objective(3, vec![Action::Finish(Outcome::Failed)]),
     ]);
     let mut record = MissionState::new(&program, SESSION).snapshot(&program);
     record.policy = PrecedencePolicy::SyntheticConservative;
     let mut designed = MissionState::restore(&program, record).unwrap();
 
-    let result = tick(&mut designed, &program, 1);
+    // Tick 1 only queues the win request; tick 2 runs the loss request and
+    // drains the queued one, so the designed policy has both to order.
+    tick(&mut designed, &program, 1);
+    let result = tick(&mut designed, &program, 2);
     assert_eq!(
         result.terminal,
         TerminalState::Failed,
