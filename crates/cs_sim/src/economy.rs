@@ -89,6 +89,28 @@ impl ConstructionDraft {
     pub const fn expected_revision(&self) -> u64 {
         self.expected_revision
     }
+
+    /// The weight verdict the draft was written with.
+    #[must_use]
+    pub const fn weight(&self) -> &LoadoutWeight {
+        &self.weight
+    }
+
+    /// The staged purchases, in the order they were declared.
+    ///
+    /// [`commit`] is still the only place they are applied; reading them is how
+    /// the construction screen's preview shows exactly what a commit would
+    /// charge before it is attempted.
+    #[must_use]
+    pub fn buys(&self) -> &[BuyLine] {
+        &self.buys
+    }
+
+    /// The staged sales, in the order they were declared.
+    #[must_use]
+    pub fn sells(&self) -> &[ContentId] {
+        &self.sells
+    }
 }
 
 /// Why a draft was refused. The state is untouched in every case.
