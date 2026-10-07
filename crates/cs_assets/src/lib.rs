@@ -16,13 +16,19 @@
 //! decoder. [`cache`] is the F15-A contract layer of the private
 //! derived-asset cache: the [`cache::CacheKey`] identity (installation,
 //! source spans, decoder/IR version, conversion options), the stored-entry
-//! integrity gate and the private-location/budget bounds. Allowed
+//! integrity gate and the private-location/budget bounds. [`mods`] is the
+//! F53-B root join: one mod's host directory walked, indexed and hashed as
+//! a mod-precedence, mod-scoped mount ([`mods::ModRoot`]), a declared source
+//! resolved against that root with its spelling re-validated at the join and
+//! a symbolic link never followed, and the member read back against the
+//! digest the walk recorded. Allowed
 //! dependencies:
 //! [`cs_types`] and [`cs_formats`]. The original installation at
 //! `$CS_GAME_DIR` is read-only and nothing derived from it is committed to
 //! Git.
 //!
 //! [`install`]: install
+//! [`mods`]: mods
 //! [`vfs`]: vfs
 //! [`zbd`]: zbd
 //! [`rof`]: rof
@@ -31,6 +37,7 @@
 
 pub mod cache;
 pub mod install;
+pub mod mods;
 pub mod rof;
 pub mod vfs;
 pub mod zbd;
