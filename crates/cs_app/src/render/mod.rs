@@ -91,6 +91,19 @@
 //! exists — which is the input the measured texture-archive rule reads instead
 //! of the detail settings when the device answers.
 //!
+//! # Original-data comparison set (F17-D)
+//!
+//! [`matrix`] is this stage's evidence surface: the five subjects AC04 names
+//! — cockpit, skyline, vegetation, night effects and close-up aircraft —
+//! each anchored to a stored name of the owner's installation, each resolved
+//! to one mesh through the production readers, and each carrying the coverage
+//! of the stored material records it references. A subject that cannot be
+//! resolved is a row carrying its refusal, never a subject missing from the
+//! set, and a material whose facts establish no class is never counted as
+//! opaque. [`matrix::MATRIX_WORLD_GROUP`] pins the one world container the
+//! world-side anchors are read from; the airframe side is the shared
+//! `ZBD/planes.zbd`.
+
 //! # Acceptance tests
 //!
 //! The `accept_f17_c_` selection in `crates/cs_app/tests/render/profiles.rs`
@@ -153,6 +166,7 @@ pub mod capture;
 pub mod detail;
 pub mod golden;
 pub mod material;
+pub mod matrix;
 pub mod paint;
 pub mod plan;
 pub mod profile;

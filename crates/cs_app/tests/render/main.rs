@@ -27,13 +27,23 @@
 //! `released_image.rs` is the third entry of the same rule (Rally #514): the
 //! image a spawn binds, which is shared between batches and named from inside
 //! the material entry, and comes back only when nothing live names it.
+//!
+//! `matrix.rs` is stage F17-D: the original-data comparison set AC04 asks for
+//! — cockpit, skyline, vegetation, night effects and close-up aircraft —
+//! resolved to the owner's stored meshes through the production readers and
+//! reported with the coverage of the material records each one references.
+//! Its retail and GPU halves are `#[ignore]`d (they need `$CS_GAME_DIR` and an
+//! adapter); `evidence.rs` is the stage's evidence-report harness and is
+//! deliberately not named with the task prefix.
 
 mod adapters;
 mod additive_material;
 mod classification;
+mod evidence;
 mod fixture;
 mod frame_capture;
 mod golden_scene;
+mod matrix;
 mod paint;
 mod profiles;
 mod release_assets;
