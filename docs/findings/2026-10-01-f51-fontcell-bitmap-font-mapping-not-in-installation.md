@@ -1,5 +1,39 @@
 # F51-FONTCELL: the bitmap-font cell-to-character mapping is not in the installation
 
+> **Superseded, 2026-10-07 (owner handover, Rally #466).** This file is kept
+> as the record of the stage that ended blocked on 2026-10-01. Its
+> *measurement* still stands; its *conclusion* does not.
+>
+> - **What stands:** nothing in the installation binds a character code to a
+>   cell of `font.tga` or `arial8.tga`. The searches above were real and their
+>   result is unchanged: a TGA stores pixels, `crimson.rof` holds no companion,
+>   `zrdr.zbd` declares only GDI faces, no script or data file carries a
+>   character-order table.
+> - **What was wrong:** the premise that either TGA is a font of the original.
+>   The owner's static analysis of the decrypted image (owner note of
+>   2026-10-05) shows `gos_LoadFont` (`0x5ce9e0`) passes only the *base name*
+>   of `font3d "…arial8.tga"` to `0x530700` and never opens the path, that
+>   `0x530700` resolves the name through the `fonts.zrd` `WINDOWS_FONTS`
+>   registry (`0x7581e0`) to `CreateFontIndirectA` (`0x530360`), and that
+>   neither `font.tga` nor `arial8` occurs anywhere in the executable. They are
+>   unused data in this build, so "no mapping exists for them" means "they are
+>   not fonts", not "the task is blocked".
+> - **The conclusion the evidence supports:** the original's bitmap fonts are
+>   the ten `fonts.zrd` `FONTS` images of `ZBD/rimage.zbd`, and their cell rule
+>   was measured from the executable (colour-key separator columns, cell
+>   `c - 0x21`, `CELL_COUNT` = 94 cells, `'!'` drawn for anything outside
+>   `[0x21, 0x7f]`). Retail data confirms it independently: the production scan
+>   finds exactly 94 cells in each of the ten fonts of three different widths,
+>   which is the count the original requires before it stops logging
+>   `Only found %d characters in font %s` (`0x5f` = 94 cells + the cell-less
+>   space). If the rule were wrong, ten fonts of six different layouts could
+>   not all land on that number.
+> - **"What would unblock the task", item 3, is the path that was taken.**
+>   Successor record: `docs/findings/2026-10-06-f51-fontcell-bitmap-font-coverage.md`
+>   and `crates/cs_app/src/text/original_font.rs`; the verdict the F51-D audit
+>   now records for both TGAs is `unused_in_original`, with the addresses above
+>   as its reason.
+
 Date: 2026-10-01. Task: F51-FONTCELL "#466 Decode the original bitmap-font
 cell-to-character mapping (`font.tga`, `arial8.tga`)". Follow-up from F51-D
 (`specs/F51-localization-fonts-text-layout-and-original-media-ids.md`, section
@@ -14,9 +48,9 @@ Authored by `deepseek-1/deepseek-1`. This file is the implementer's record of a
 content is committed; every original-data operation below was read-only and its
 derived bytes were kept under `private/` (Git-ignored).
 
-## Result
+## Result (the state of 2026-10-01, superseded by the banner above)
 
-**The task is blocked: the cell-to-character mapping of `font.tga` and
+**The task was blocked: the cell-to-character mapping of `font.tga` and
 `arial8.tga` is not declared anywhere in the available installation.** The two
 files are conventional Truevision TGA images with no font semantics; the glyph
 images are only *visually* legible, and no descriptor, metrics table, script or
