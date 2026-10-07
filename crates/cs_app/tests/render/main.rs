@@ -23,7 +23,10 @@
 //! adds. The `accept_f17_c_reused_` selection in the same file extends that rule
 //! (Rally #516) to a reused batch whose material component went missing: it is
 //! released and respawned rather than given a replacement entry no owner record
-//! names, so neither material store grows.
+//! names, so neither material store grows. The `accept_t514_` selection in
+//! `released_image.rs` is the third entry of the same rule (Rally #514): the
+//! image a spawn binds, which is shared between batches and named from inside
+//! the material entry, and comes back only when nothing live names it.
 
 mod adapters;
 mod additive_material;
@@ -34,4 +37,5 @@ mod golden_scene;
 mod paint;
 mod profiles;
 mod release_assets;
+mod released_image;
 mod visibility_consumer;

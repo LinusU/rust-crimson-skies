@@ -13,13 +13,18 @@
 //! again when the rows come back, so a clip that hides a whole batch, or damage
 //! and repair cycling over every row of one, reaches the leak every few ticks.
 //!
-//! The rule under test, from `sync.rs`: a batch entity **owns** the two store
-//! entries its spawn added, and its placements **borrow** those two handles. A
-//! release despawns the entity and its placements first and only then hands an
-//! unowned entry back, so a handle a live entity still draws with is never pulled
-//! out from under it, and an entry is handed back exactly once. Together with the
-//! reuse guard that already existed — a frame that reuses every batch adds no
-//! material — neither path grows a store.
+//! The rule under test, from `sync.rs`: a batch entity **owns** the store
+//! entries its spawn added, and its placements **borrow** the mesh and material
+//! handles. A release despawns the entity and its placements first and only
+//! then hands an unowned entry back, so a handle a live entity still draws with
+//! is never pulled out from under it, and an entry is handed back exactly once.
+//! Together with the reuse guard that already existed — a frame that reuses
+//! every batch adds no material — neither path grows a store.
+//!
+//! The fixture binds **no image**, so `images` is asserted as `0` everywhere
+//! here: the third entry a spawn can add, `Assets<Image>`, has its own rule
+//! (shared between batches, and named from inside the material entry) and its
+//! own file, `released_image.rs`, Rally #514.
 //!
 //! The `accept_f17_c_reused_` selection extends the same rule to the one path
 //! #512 left unfinished (Rally #516): a **reused** batch entity whose material
@@ -227,6 +232,7 @@ fn accept_t512_a_released_batch_hands_its_mesh_and_material_back_to_the_stores()
                 meshes: 1,
                 materials: 1,
                 additive_materials: 0,
+                images: 0,
             },
             "cycle {cycle}: exactly the two entries the batch added, once each"
         );
@@ -288,6 +294,7 @@ fn accept_t512_a_released_batch_hands_its_mesh_and_material_back_to_the_stores()
             meshes: 1,
             materials: 1,
             additive_materials: 0,
+            images: 0,
         },
         "the teardown hands back what the last batch owned"
     );
@@ -351,6 +358,7 @@ fn accept_t512_the_additive_classes_material_is_handed_back_by_the_same_release(
                 meshes: 1,
                 materials: 0,
                 additive_materials: 1,
+                images: 0,
             },
             "cycle {cycle}: the additive entry came out of its own store"
         );
@@ -427,6 +435,7 @@ fn accept_t512_the_repair_of_a_damaged_batch_entity_hands_back_what_the_dead_one
                 meshes: 1,
                 materials: 1,
                 additive_materials: 0,
+                images: 0,
             },
             "cycle {cycle}: what the dead entity owned went back before the respawn"
         );
@@ -518,6 +527,7 @@ fn accept_f17_c_reused_a_damaged_material_component_is_released_not_orphaned() {
                 meshes: 1,
                 materials: 1,
                 additive_materials: 0,
+                images: 0,
             },
             "cycle {cycle}: exactly the entries the damaged entity owned went back"
         );
@@ -562,6 +572,7 @@ fn accept_f17_c_reused_a_damaged_material_component_is_released_not_orphaned() {
             meshes: 1,
             materials: 1,
             additive_materials: 0,
+            images: 0,
         },
         "the last spawned batch owned exactly the entries it added"
     );
@@ -621,6 +632,7 @@ fn accept_f17_c_reused_the_additive_classes_damaged_material_is_released_not_orp
                 meshes: 1,
                 materials: 0,
                 additive_materials: 1,
+                images: 0,
             },
             "cycle {cycle}: the additive entry went back to its own store"
         );
@@ -647,6 +659,7 @@ fn accept_f17_c_reused_the_additive_classes_damaged_material_is_released_not_orp
             meshes: 1,
             materials: 0,
             additive_materials: 1,
+            images: 0,
         }
     );
     assert_eq!(meshes(&world), 0);

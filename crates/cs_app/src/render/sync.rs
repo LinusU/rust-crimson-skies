@@ -61,15 +61,25 @@
 //!    one: a verdict that withholds *every* row of a batch releases that batch,
 //!    and a verdict that starts drawing them again spawns it.
 //! 7. **A released batch takes its assets back with it.** A batch entity
-//!    *owns* the two store entries this module added for it: the
-//!    [`Assets<Mesh>`] entry the spawn uploaded and the material entry
-//!    [`add_material`] created. Its per-instance entities *borrow* those
-//!    two handles ([`BatchAssets`]). Releasing the batch despawns the entity
-//!    and its placements first and only then hands each owned entry back to
-//!    its store, and hands back only an entry no live batch still names
-//!    ([`BatchAssetRefs`]), so one entry is returned once and a handle some
-//!    live entity still draws with is left in place
+//!    *owns* the store entries this module added for it: the
+//!    [`Assets<Mesh>`] entry the spawn uploaded, the material entry
+//!    [`add_material`] created and the [`Assets<Image>`] entry that binds the
+//!    batch's texture (the composed paint, or the canonical image). Its
+//!    per-instance entities *borrow* the mesh and the material handles
+//!    ([`BatchAssets`]). Releasing the batch despawns the entity and its
+//!    placements first and only then hands each owned entry back to its store,
+//!    and hands back only an entry no live batch and no live material entry
+//!    still names ([`BatchAssetRefs`]), so one entry is returned once and a
+//!    handle some live entity still draws with is left in place
 //!    ([`FrameSync::reclaimed`]).
+//!
+//!    The image is the one entry that is named from **two** directions: it is
+//!    shared — every spawn of the same paint fingerprint in one frame binds the
+//!    one texture — and it is referenced from *inside* the material entry
+//!    (`base_color_texture`), which Bevy's `Assets::remove` does not cascade.
+//!    So an image goes back only when its owner count reaches zero *and* no
+//!    material entry in either store still samples it, and the material of the
+//!    batch being released is removed before that question is asked.
 //!
 //!    An entity that no longer carries the material component of its own kind
 //!    is not reused at all: [`reuse_batch`] releases it through the same
@@ -80,9 +90,9 @@
 //!
 //!    Rules 3 and 7 together are what keep a frame path that releases and
 //!    respawns a batch every other tick: rule 6's own release path. Without
-//!    rule 7 that path would leave one mesh and one material in their stores
-//!    on each pass, the way a reused batch would leave one material per frame
-//!    if [`add_material`] had no reuse guard either.
+//!    rule 7 that path would leave one mesh, one material and one image in
+//!    their stores on each pass, the way a reused batch would leave one
+//!    material per frame if [`add_material`] had no reuse guard either.
 //!
 //! # What the presentation reaches, and what it does not
 //!
@@ -351,18 +361,27 @@ impl BatchDraw {
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 struct BatchEntities(BTreeMap<[u8; 32], Entity>);
 
-/// Component: the two store entries this batch added, and is answerable for.
+/// Component: the store entries this batch added, and is answerable for.
 ///
 /// The ownership rule in one place. A batch entity **owns** the
-/// [`Assets<Mesh>`] entry [`sync_frame`] added when it spawned the batch and the
-/// material entry [`add_material`] created for it, and nothing else owns them:
-/// this module adds both and puts them on the entity that draws them. Its
-/// per-instance entities **borrow** the very same two handles, and the batch's
-/// despawn is recursive, so every borrow ends with the owner.
+/// [`Assets<Mesh>`] entry [`sync_frame`] added when it spawned the batch, the
+/// material entry [`add_material`] created for it and the [`Assets<Image>`]
+/// entry that binds its texture, and nothing else owns them: this module adds
+/// all three and puts them on the entity that draws them. Its per-instance
+/// entities **borrow** the mesh and material handles, and the batch's despawn
+/// is recursive, so every borrow ends with the owner.
+///
+/// The image is recorded as an id beside the two, and it is `None` for a batch
+/// that samples no image. It follows the same "recorded by the spawn that
+/// added it" rule for a different reason from the other two: a shared image is
+/// not the batch's alone (the same texture is bound by every spawn of that
+/// paint fingerprint in a frame), so what the record gives the release path is
+/// *one owner's name* to drop — [`BatchAssetRefs`] holds the count that says
+/// whether any batch is left — plus the id to ask the material stores about.
 ///
 /// Recorded on the entity rather than kept beside it because the release path
 /// reads it *there*, before the despawn that takes it away: an entry is looked up
-/// by the id its owner recorded, so a released batch hands back exactly the two
+/// by the id its owner recorded, so a released batch hands back exactly the
 /// entries it added and cannot hand back the same entry twice.
 ///
 /// An entity found under a batch key that carries no such record owns nothing —
@@ -372,6 +391,8 @@ struct BatchEntities(BTreeMap<[u8; 32], Entity>);
 struct BatchAssets {
     mesh: AssetId<Mesh>,
     material: OwnedMaterial,
+    /// The image this spawn bound, when the batch samples one.
+    image: Option<AssetId<Image>>,
 }
 
 /// The material store entry a batch owns.
@@ -398,24 +419,37 @@ enum OwnedMaterial {
 /// only when that was the last one — which is what "a still-referenced handle is
 /// not removed" means here.
 ///
-/// One owner is the ordinary case, because a spawn adds a fresh mesh and a fresh
-/// material for every batch it creates. The count is per id rather than per
-/// batch so that the two-owner case is a decision the code makes rather than an
-/// assumption it documents: if a future change hands one entry to two batches —
-/// the mesh path sharing by geometry fingerprint, the way the image path already
-/// shares by paint fingerprint — the first release to end does not pull the
-/// entry out from under the other.
+/// One owner is the ordinary case for a mesh and a material, because a spawn
+/// adds a fresh one of each for every batch it creates — but it is **not**
+/// the case for an image: `paint_handles` hands one texture to every spawn of
+/// the same paint fingerprint in a frame, and the canonical path could be made
+/// to share the same way. The count is per id rather than per batch so that the
+/// two-owner case is a decision the code makes rather than an assumption it
+/// documents: the first release to end does not pull the entry out from under
+/// the other live batch, and the image of a batch still drawing it is left in
+/// its store.
+///
+/// The image count is necessary but not sufficient, and the difference is
+/// exactly the case this task exists for: an image is also named from inside a
+/// material entry (`base_color_texture`), which the owner count of *batches*
+/// says nothing about. [`reclaim_store_entries`] therefore asks both questions
+/// — no owner left **and** no material entry still sampling it — before an
+/// image is removed.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 struct BatchAssetRefs {
     meshes: BTreeMap<AssetId<Mesh>, usize>,
     materials: BTreeMap<OwnedMaterial, usize>,
+    images: BTreeMap<AssetId<Image>, usize>,
 }
 
 impl BatchAssetRefs {
-    /// Registers one new owner of the two entries a spawn added.
+    /// Registers one new owner of the entries a spawn added.
     fn own(&mut self, owned: BatchAssets) {
         *self.meshes.entry(owned.mesh).or_default() += 1;
         *self.materials.entry(owned.material).or_default() += 1;
+        if let Some(image) = owned.image {
+            *self.images.entry(image).or_default() += 1;
+        }
     }
 
     /// Drops one owner of a mesh entry and reports whether any owner is left.
@@ -426,6 +460,16 @@ impl BatchAssetRefs {
     /// Drops one owner of a material entry and reports whether any owner is left.
     fn drop_material(&mut self, material: OwnedMaterial) -> bool {
         Self::drop_owner(&mut self.materials, material)
+    }
+
+    /// Drops one owner of an image entry and reports whether any owner is left.
+    ///
+    /// Called only for a spawn that bound an image; the caller checks
+    /// [`BatchAssets::image`] first, because an entry nobody registered is
+    /// reported unowned and this map says nothing about a batch that samples
+    /// no image at all.
+    fn drop_image(&mut self, image: AssetId<Image>) -> bool {
+        Self::drop_owner(&mut self.images, image)
     }
 
     /// Drops one owner and reports whether the entry is unowned.
@@ -507,6 +551,9 @@ pub struct ReclaimedAssets {
     pub materials: usize,
     /// `Assets<AdditiveMaterial>` entries a released batch owned.
     pub additive_materials: usize,
+    /// `Assets<Image>` entries a released batch bound and that no live batch
+    /// and no live material entry named any more.
+    pub images: usize,
 }
 
 impl ReclaimedAssets {
@@ -516,6 +563,7 @@ impl ReclaimedAssets {
         self.meshes += other.meshes;
         self.materials += other.materials;
         self.additive_materials += other.additive_materials;
+        self.images += other.images;
     }
 }
 
@@ -530,7 +578,8 @@ pub struct FrameSync {
     pub released: usize,
     /// Store entries the released batches owned and handed back: the other half
     /// of [`FrameSync::released`], and the count that keeps a frame path which
-    /// releases and respawns a batch from growing a store every other tick.
+    /// releases and respawns a batch from growing a store every other tick —
+    /// meshes, materials and the images the released batches bound.
     pub reclaimed: ReclaimedAssets,
     /// Per-instance entities the live batches carry. Equal to the frame's
     /// instance count when every row is placed, which is what makes "each
@@ -901,10 +950,11 @@ fn push_optional_hash(bytes: &mut Vec<u8>, hash: Option<ContentHash>) {
 /// batch that samples no image binds nothing for its paint — a material with
 /// no texture slot has no texels to paint.
 ///
-/// A batch this frame spawns records the mesh and material entries it added
-/// ([`BatchAssets`]), and a batch it releases hands them back
-/// ([`FrameSync::reclaimed`]). A frame that reuses every batch does neither, so
-/// neither the reuse path nor the release path grows a store: one asset per
+/// A batch this frame spawns records the mesh, material and image entries it
+/// added ([`BatchAssets`]), and a batch it releases hands them back
+/// ([`FrameSync::reclaimed`]) — the image only once no live batch owns it and
+/// no material entry samples it. A frame that reuses every batch does neither,
+/// so neither the reuse path nor the release path grows a store: one asset per
 /// batch per frame would be a leak only a store count sees.
 ///
 /// # Errors
@@ -1145,13 +1195,21 @@ pub fn sync_frame(
                     (material, Some(added))
                 }
             };
-        // The owner record, for the batch that added both entries. Paired
-        // rather than recorded field by field: a batch that owned half of what it
-        // added would hand back one entry and leak the other, so an owner record
-        // exists only when both exist.
+        // The owner record, for the batch that added the entries. Paired
+        // rather than recorded field by field: a batch that owned half of what
+        // it added would hand back one entry and leak the other, so an owner
+        // record exists only when both the mesh and the material exist. The
+        // image travels inside the same record because a spawn that bound one
+        // is the spawn that added it — the `reused` branches above only read
+        // the handle the entity already has — and a batch that samples no image
+        // records `None`, which the release path leaves alone.
         if let Some(owned) = added_mesh
             .zip(added_material)
-            .map(|(mesh, material)| BatchAssets { mesh, material })
+            .map(|(mesh, material)| BatchAssets {
+                mesh,
+                material,
+                image: image.as_ref().map(|handle| handle.id()),
+            })
         {
             world.entity_mut(entity).insert(owned);
             world
@@ -1394,6 +1452,12 @@ fn release_entity(entity: Entity, world: &mut World, released: &mut usize) -> Re
 /// recorded and is counted only when it removed something, so one entry is
 /// returned once however many releases pass through here.
 ///
+/// The image asks a second question, because it is the one entry named from
+/// two directions: no live batch owns it **and** no material entry samples it
+/// ([`material_binds_image`]). It is removed last, after this batch's own
+/// material entry is out of the store — `Assets::remove` does not cascade, so
+/// asking while the material is still there would keep every image forever.
+///
 /// A missing store is skipped rather than panicked on: a [`teardown`] of a world
 /// that never had one is a no-op, the same way it despawns nothing when nothing
 /// is live. [`sync_frame`] refuses a world without a store before it writes
@@ -1402,11 +1466,12 @@ fn release_entity(entity: Entity, world: &mut World, released: &mut usize) -> Re
 fn reclaim_store_entries(world: &mut World, owned: BatchAssets) -> ReclaimedAssets {
     // Scoped so the resource borrow ends before the stores are touched: the
     // counter and the assets are one transaction, not two overlapping ones.
-    let (mesh_unowned, material_unowned) = {
+    let (mesh_unowned, material_unowned, image_unowned) = {
         let mut refs = world.get_resource_or_insert_with(BatchAssetRefs::default);
         (
             refs.drop_mesh(owned.mesh),
             refs.drop_material(owned.material),
+            owned.image.is_none_or(|image| refs.drop_image(image)),
         )
     };
     let mut reclaimed = ReclaimedAssets::default();
@@ -1429,7 +1494,48 @@ fn reclaim_store_entries(world: &mut World, owned: BatchAssets) -> ReclaimedAsse
             }
         }
     }
+    // Last, and only when both questions are answered: nobody owns it any
+    // more, and — after this batch's material left the store above — no
+    // material in either store still samples it. A batch whose surface samples
+    // no image recorded `None` and never reaches this branch.
+    if let Some(image) = owned.image
+        && image_unowned
+        && !material_binds_image(world, image)
+        && let Some(mut images) = world.get_resource_mut::<Assets<Image>>()
+    {
+        reclaimed.images = usize::from(images.remove(image).is_some());
+    }
     reclaimed
+}
+
+/// Whether any material entry in `world` still samples `image`.
+///
+/// The image a spawn added is referenced from *inside* a material entry
+/// (`base_color_texture`), by the batch that added it and by any other batch
+/// that bound the same texture — and Bevy's `Assets::remove` does not cascade,
+/// so an image removed while a material still names it would leave that
+/// material sampling a handle that no longer resolves. Both stores are read
+/// because either class's material binds it, and every entry is read because
+/// the question is about *the store*, not about this batch: the material of
+/// the batch being released has to be removed before this is asked, which is
+/// the order [`reclaim_store_entries`] holds.
+fn material_binds_image(world: &World, image: AssetId<Image>) -> bool {
+    let samples =
+        |handle: Option<&Handle<Image>>| handle.is_some_and(|handle| handle.id() == image);
+    world
+        .get_resource::<Assets<StandardMaterial>>()
+        .is_some_and(|materials| {
+            materials
+                .iter()
+                .any(|(_, material)| samples(material.base_color_texture.as_ref()))
+        })
+        || world
+            .get_resource::<Assets<AdditiveMaterial>>()
+            .is_some_and(|materials| {
+                materials
+                    .iter()
+                    .any(|(_, material)| samples(material.base_color_texture.as_ref()))
+            })
 }
 
 /// The batch entity's visibility: never drawn.
@@ -1584,9 +1690,9 @@ fn apply_presentation(
 /// The despawn is recursive, so the per-instance entities under each batch go
 /// with it; a teardown that left them would strand geometry in the world with
 /// nothing tracking it, which is the one thing rule 3 above forbids. Each
-/// released entity also hands back the mesh and material entries it added
-/// ([`RenderTeardown::reclaimed`]), so a session that ends leaves no orphan in a
-/// store either.
+/// released entity also hands back the mesh, material and image entries it
+/// added ([`RenderTeardown::reclaimed`]), so a session that ends leaves no
+/// orphan in a store either.
 ///
 /// A no-op when nothing is live, so a repeated teardown, a teardown after a
 /// refused request and a teardown at shutdown are all safe. The owner counts in
@@ -1638,7 +1744,11 @@ mod tests {
     fn accept_t512_a_store_entry_two_live_batches_name_is_handed_back_once() {
         let mesh = test_id::<Mesh>(1);
         let material = OwnedMaterial::Standard(test_id::<StandardMaterial>(2));
-        let owned = BatchAssets { mesh, material };
+        let owned = BatchAssets {
+            mesh,
+            material,
+            image: None,
+        };
         let mut refs = BatchAssetRefs::default();
 
         refs.own(owned);
@@ -1670,14 +1780,17 @@ mod tests {
         refs.own(BatchAssets {
             mesh,
             material: additive,
+            image: None,
         });
         refs.own(BatchAssets {
             mesh,
             material: other,
+            image: None,
         });
         refs.own(BatchAssets {
             mesh,
             material: other,
+            image: None,
         });
         assert!(
             !refs.drop_material(other),
@@ -1700,5 +1813,120 @@ mod tests {
         assert!(!refs.drop_mesh(mesh), "and then one");
         assert!(refs.drop_mesh(mesh));
         assert!(refs.meshes.is_empty());
+    }
+
+    /// An image a live material entry still samples stays in its store, even
+    /// when no batch owns it any more — and it goes back once that material
+    /// does.
+    ///
+    /// The owner count answers "does a live batch bind this texture"; the
+    /// material stores answer a different question only they can answer, because
+    /// the image is named from *inside* `base_color_texture` and Bevy's
+    /// `Assets::remove` does not cascade. `sync_frame` cannot reach the case
+    /// today — every spawn that binds an image records an owner for it, so the
+    /// count and the store agree — which is why this is checked on the release
+    /// path itself, against a material entry this module never added: the shape a
+    /// change that shares one texture between a material and an unrecorded
+    /// binding would produce, and the reason the removal asks both questions in
+    /// the order it does (the batch's own material first, then the image).
+    #[test]
+    fn accept_t514_an_image_a_live_material_entry_still_samples_stays_in_its_store() {
+        use bevy::asset::RenderAssetUsages;
+        use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+
+        /// A one-texel texture, big enough to be a valid image.
+        fn texture() -> Image {
+            Image::new(
+                Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                TextureDimension::D2,
+                vec![1, 2, 3, 4],
+                TextureFormat::Rgba8UnormSrgb,
+                RenderAssetUsages::default(),
+            )
+        }
+
+        let mut world = World::new();
+        world.insert_resource(Assets::<Image>::default());
+        world.insert_resource(Assets::<Mesh>::default());
+        world.insert_resource(Assets::<StandardMaterial>::default());
+        world.insert_resource(Assets::<AdditiveMaterial>::default());
+
+        // The texture, a material *another* batch draws with that samples it,
+        // and the batch's own material, which samples nothing.
+        let image = world.resource_mut::<Assets<Image>>().add(texture());
+        let foreign = {
+            let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
+            materials.add(StandardMaterial {
+                base_color_texture: Some(image.clone()),
+                ..StandardMaterial::default()
+            })
+        };
+        let own = world
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial::default());
+        // A mesh id for the record, never stored: the mesh is not what this
+        // case is about, and `AssetId::Uuid` ids remove as a lookup that misses.
+        let owned = BatchAssets {
+            mesh: test_id::<Mesh>(9),
+            material: OwnedMaterial::Standard(own.id()),
+            image: Some(image.id()),
+        };
+        world
+            .get_resource_or_insert_with(BatchAssetRefs::default)
+            .own(owned);
+
+        // The last owner goes, so the count alone would call the texture free —
+        // and the texture must stay, because a live material still samples it.
+        // The store is checked first: it is the observable fact, the report is
+        // its account.
+        let first = reclaim_store_entries(&mut world, owned);
+        assert_eq!(
+            world.resource::<Assets<Image>>().len(),
+            1,
+            "the image a live material samples is still in its store"
+        );
+        assert_eq!(
+            first,
+            ReclaimedAssets {
+                meshes: 0,
+                materials: 1,
+                additive_materials: 0,
+                images: 0,
+            },
+            "the batch's own material went back; the sampled texture did not"
+        );
+        assert!(
+            world
+                .resource::<Assets<StandardMaterial>>()
+                .get(foreign.id())
+                .is_some(),
+            "the material that samples it is untouched"
+        );
+
+        // Once that material is gone too, nothing names the texture and the
+        // release hands it back — a second pass over the same record, because
+        // the counter already reported the entry unowned.
+        world
+            .resource_mut::<Assets<StandardMaterial>>()
+            .remove(foreign.id());
+        let second = reclaim_store_entries(&mut world, owned);
+        assert!(
+            world.resource::<Assets<Image>>().is_empty(),
+            "and the store gives it back exactly once"
+        );
+        assert_eq!(
+            second,
+            ReclaimedAssets {
+                meshes: 0,
+                materials: 0,
+                additive_materials: 0,
+                images: 1,
+            },
+            "no batch owns it and no material samples it any more"
+        );
     }
 }
