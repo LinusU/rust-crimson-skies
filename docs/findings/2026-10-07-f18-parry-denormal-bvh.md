@@ -151,9 +151,9 @@ places the rule can hide.
   meshes whose centroid extents are normal, so they never panicked — and the
   upload canonicalised **55** emitted components, more than the stored count
   because the IR expands a stored position into a render vertex per distinct
-  corner tuple and material group. The census rows record every group's
-  stored count (`parry-denormal-census.json`). The footprint is measured, not
-  projected; the two domains are recorded, not reconciled.
+  corner tuple and material group. Every other group stores zero
+  (`parry-denormal-census.json`). The footprint is measured, not projected;
+  the two domains are recorded, not reconciled.
 - **Normals, UVs and colors stay bit-exact** — a subnormal in those attributes
   would upload verbatim. No measured consumer needs otherwise; adding one
   silently would be the fabrication the rule exists to avoid.
