@@ -1146,7 +1146,11 @@ pub struct MeasuredDamageRegion {
     pub parent: u32,
     /// The stored `zone_id` word, uninterpreted.
     pub zone_id: u32,
-    /// The stored record the name was read from.
+    /// The stored record the name was read from: the whole info-array slot
+    /// (`NODE_SLOT_BYTES`), because `cs_formats` publishes the record sizes
+    /// and table starts but not the name field's inner offset. The
+    /// acceptance test reads the name back out of this span, so a layout or
+    /// arithmetic drift fails loudly instead of pointing at the wrong byte.
     pub span: SourceSpan,
 }
 
@@ -1253,7 +1257,11 @@ pub struct MeasuredWreckMaterial {
     pub material_indices: Vec<u32>,
     /// The airframe subtrees binding it, in group order.
     pub bindings: Vec<WreckBinding>,
-    /// The stored record the texture name was read from.
+    /// The stored record the texture name was read from: the whole 44-byte
+    /// texture-name record, for the same reason as
+    /// [`MeasuredDamageRegion::span`] — the inner offset is not published by
+    /// `cs_formats`, and the acceptance test reads the stem back out of this
+    /// span against the container's bytes.
     pub span: SourceSpan,
 }
 
