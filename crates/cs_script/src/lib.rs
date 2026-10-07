@@ -9,7 +9,11 @@
 //! with its exact pending-timer restore (F37-C). Applying the effects a mission
 //! asks for is the simulation's job (`cs_sim::mission`). [`bindings`] is the
 //! F38-A host-binding registry that lowers an adapter's raw calls into the IR.
+//! [`conditions`] lowers one numbered control-record block's measured
+//! directives into a side-effect-free completion predicate
+//! (`M01-LC-DIRECTIVE-LOWERING.02`).
 
 pub mod bindings;
+pub mod conditions;
 pub mod ir;
 pub mod runtime;
