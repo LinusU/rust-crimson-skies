@@ -465,23 +465,40 @@ fn accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does() {
             .any(|limitation| limitation.id == "f37.d.limit.mission_countdown_preemption"),
         "the closed countdown entry must not come back: the pre-emption is implemented"
     );
-    // What still diverges is reachability: nothing in this tree feeds the
-    // input, so that entry stays recorded.
+    // F37-D-FU6 (#737) closed `f37.d.limit.mission_countdown_producer`:
+    // `cs_sim::mission::Countdown` arms, ticks and reports the countdown into
+    // `step_with_countdown` on every session path, pinned by
+    // `accept_f37_d_fu6_*`. A closed entry must not come back while the
+    // producer stands.
     assert!(
-        RULE_LIMITATIONS
+        !RULE_LIMITATIONS
             .iter()
             .any(|limitation| limitation.id == "f37.d.limit.mission_countdown_producer"),
-        "the countdown pre-emption's remaining divergence — no producer feeds it — \
-         stays recorded"
+        "the closed producer entry must not come back: the producer is implemented"
     );
+    // What the producer leaves open is recorded instead — each entry named
+    // exactly what stays unmeasured or unsourced.
+    for id in [
+        "f37.d.limit.mission_countdown_tick_dt",
+        "f37.d.limit.mission_countdown_end_guards",
+        "f37.d.limit.mission_countdown_spec_sourcing",
+    ] {
+        assert!(
+            RULE_LIMITATIONS
+                .iter()
+                .any(|limitation| limitation.id == id),
+            "the producer's residual divergence {id} must stay recorded"
+        );
+    }
     let p = program(vec![objective(1, vec![reward("r-only")])])
         .validate()
         .unwrap();
     let mut state = MissionState::new(&p, SESSION);
-    // Ten ordinary ticks on the path every current caller uses
-    // (`MissionState::step`, which passes `MissionCountdown::NONE`): the
-    // mission runs on, granting exactly its one reward, with no path that
-    // could have failed it on the way — the divergence the entry describes.
+    // Ten ordinary ticks through the evaluator's own `step` — the entry
+    // point for a caller that has no countdown, which still passes
+    // `MissionCountdown::NONE`. The mission runs on: with no producer fed
+    // in, nothing can end it by timeout — only a session's `Countdown`
+    // can, which is what the closed entry now means.
     for tick in 1..=10u64 {
         let result = state
             .step(&p, &MissionFacts::default(), Tick(tick))
@@ -491,6 +508,6 @@ fn accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does() {
     assert_eq!(
         state.terminal(),
         TerminalState::Running,
-        "nothing but a program request can end this mission on the default path"
+        "nothing but a program request can end this mission on the countdown-less path"
     );
 }

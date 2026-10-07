@@ -37,6 +37,24 @@ No new event kind, tick-result field or save-record field was added: the
 failure reaches the host through `TickResult::terminal`, which
 `cs_sim::mission::HostLedger::apply` settles even for a tick with no events.
 
+**Update — F37-D-FU6 (`#737`), 2026-10-07: the countdown's producer is
+implemented.** `cs_sim::mission::Countdown` is the recreation of the timer
+object at `0x71b468` and the producer of the `MissionCountdown` input: every
+`MissionSession` tick path (`advance`, `step`, `advance_observed`,
+`step_observed`) decrements it and polls it and hands the produced input to
+`MissionState::step_with_countdown`, so a real mission tick with a running
+countdown can now end the mission by timeout — pinned by `accept_f37_d_fu6_*`.
+`f37.d.limit.mission_countdown_producer` is therefore **closed**; what stays
+open is recorded as three narrower entries —
+`f37.d.limit.mission_countdown_tick_dt` (the decrement quantum),
+`f37.d.limit.mission_countdown_end_guards` (`0x440ad0()`'s byte and the
+`remaining < -1.0f` skip, resolving task F37-D-FU8 `#740`) and
+`f37.d.limit.mission_countdown_spec_sourcing` (nothing yet lowers a record's
+`MISSION_TIMER` field or a session's network mode into the spec). The expiry
+itself still reaches the host only as `TerminalState::Failed`: the original's
+end-path messages `0x1772`/`0x89` are presentation, which remains
+F37-D-FU5's `f37.d.limit.terminal_branch_delay_and_sound`.
+
 ## The short version
 
 The two rules F37-A deferred and F37-D could not resolve are settled by
@@ -71,7 +89,11 @@ differs, a machine-readable limitation:
   `F37-D-FU4` has since closed its entry
   (`f37.d.limit.mission_countdown_preemption` →
   `f37.d.limit.mission_countdown_producer`, see the update below), which is
-  why the count stays at five.
+  why the count stayed at five. F37-D-FU6 then closed the producer entry
+  and replaced it with three narrower ones
+  (`mission_countdown_tick_dt`, `mission_countdown_end_guards`,
+  `mission_countdown_spec_sourcing`), and `F37-D-FU5` closed
+  `terminal_branch_delay_and_sound` in between, so the count is now six.
 
 ## Provenance
 
@@ -158,6 +180,9 @@ about it is a claim about the original.
 | `crates/cs_script/tests/accept_f37_a.rs`, `accept_f37_d.rs`, `crates/cs_sim/src/mission.rs` | Existing expectations updated for the one behaviour that changed — see below. |
 | `crates/cs_script/src/runtime.rs` (F37-D-FU4, `#730`) | `MissionCountdown` (the tick's countdown input, carrying the two measured exclusions), `MissionState::step_with_countdown` and the phase-0 pre-emption that records `TerminalState::Failed` before the observe phase; `MissionState::step` delegates with `MissionCountdown::NONE`. In `RULE_LIMITATIONS`: `f37.d.limit.mission_countdown_preemption` closed, `f37.d.limit.mission_countdown_producer` added, and the two facts that gated the closed entry now gate the new one. |
 | `crates/cs_script/tests/accept_f37_d_fu4.rs` (F37-D-FU4) | The new acceptance tests for the pre-emption. |
+| `crates/cs_sim/src/mission.rs` (F37-D-FU6, `#737`) | `Countdown` — the producer, recreating the timer at `0x71b468` (`[+4]` seconds, `[+0x10]` running, `[+0x14]` NOLOSS, plus the session constants) — `CountdownSpec`, `CountdownTick`/`CountdownDirectiveOutcome`/`CountdownEffect`/`CountdownFault` and the `CountdownSnapshot`/`CountdownRestoreError` save record. `MissionSession` holds it; `launch_with_countdown` arms it; every tick path (`advance`, `step`, `advance_observed`, `step_observed`) ticks it and hands the produced input to `step_with_countdown`; the mission-timer directive emissions (`RESET_TIMER`/`END_TIMER`/`TIMER_ADJUST`/`ADJUST_TIMER_WHEN_I_COMPLETE`) apply after the step, exactly once by execution key; the session snapshot and restore carry it, checked rather than trusted. `MissionTick` and `ObservedStep` report the tick's produced input and directive outcomes. |
+| `crates/cs_script/src/runtime.rs` (F37-D-FU6) | `f37.d.limit.mission_countdown_producer` closed → `mission_countdown_tick_dt`, `mission_countdown_end_guards`, `mission_countdown_spec_sourcing`; the `countdown_preempts` and `per_tick_order` facts gate the new entries; the `MissionCountdown` doc names the producer. |
+| `crates/cs_sim/tests/accept_f37_d_fu6_mission_countdown_producer.rs` (F37-D-FU6) | The new acceptance tests for the producer. |
 
 ### The one behaviour change, and what it did to existing tests
 
@@ -188,6 +213,63 @@ policy):
 
 No test was deleted, skipped or made more tolerant.
 
+### The producer's decisions (F37-D-FU6)
+
+* **Layer.** The producer lives in `cs_sim::mission`, not `cs_script`: the
+  evaluator owns the *decision* (`MissionCountdown::preempts`), and the
+  session owns the *state* the decision is taken on — exactly the split
+  F37-A/F37-B drew between "what happened" and "what the world does about
+  it". The caller-facing surface is `MissionSession::launch_with_countdown`
+  and the per-tick `MissionTick::countdown` / `ObservedStep::countdown`
+  report; `cs_app` needs nothing — no `cs_app` code drives a
+  `MissionSession` today.
+* **Units — no conversion.** The countdown keeps seconds (`[+4]`), the same
+  unit the original arms, decrements and compares. One mission tick
+  decrements it by the session's declared fixed tick dt
+  (`CountdownSpec::rate` — `cs_sim::time::TickRate`), which is *the
+  simulation's own second*, not a seconds-to-ticks conversion: the original
+  decrements by the frame's game dt, the recreation by its fixed tick dt.
+  What genuinely diverges — variable dt, the 0.125 s cap, the 2x speed-up,
+  the pause freeze — is the standing F16-F set, recorded as
+  `f37.d.limit.mission_countdown_tick_dt`. The `[+8]` millisecond copy is
+  not modelled: it counts *wall* time (GetTickCount settle `0x46c610`) and
+  is read by neither the expiry poll nor display, so the seconds counter
+  is the whole expiry state.
+* **Measured semantics kept.** Mission start arms iff the spelled value is
+  `> 0.0f` (`0x469741`) — the *mission-start* rule; `RESET_TIMER` starts
+  unconditionally once its own `>= 0.0f` wake gate passes — a different
+  site, kept distinct. The poll reports the observation `running &&
+  remaining <= 0.0` in `expired` and carries `no_loss`/`network_game`
+  alongside, so `preempts()` stays the single place the end-decision is
+  taken; the poll's NOLOSS side effect (zero `[+4]`, report no expiry —
+  the countdown clamps at zero) is kept in the producer, skipped in a
+  network game because the whole check is. Directives apply after the step
+  that emitted them — the completion/wake effects run after the countdown
+  poll inside `0x46a490` — and exactly once by execution key, across ticks
+  and a save/restore; a malformed spelling or an arm with no declared rate
+  is refused *by name*, never a silent no-op.
+* **Order.** Per tick: decrement, poll, then `step_with_countdown` — the
+  measured "countdown before the objective passes". A tick that does not
+  advance costs the countdown no time (the refusal precedes the
+  decrement).
+* **Left open, recorded.** The two end-path guards — `0x440ad0()`'s byte
+  (unknown meaning, unsourced here) and the `remaining < -1.0f` skip —
+  stay unmodelled as `f37.d.limit.mission_countdown_end_guards`
+  (`F37-D-FU8`, `#740`). The skip is unreachable today because the report
+  and the end happen on the same tick; it is recorded so a deferred end
+  path (F37-D-FU7's delay) re-derives it rather than inherits a wrong
+  poll. Spec sourcing — a record's `MISSION_TIMER`/`NOLOSS` into
+  `CountdownSpec`, a session's network mode into `network_game`, and an
+  adapter actually spelling the timer directives — is
+  `f37.d.limit.mission_countdown_spec_sourcing`. And the expiry's
+  presentation (`0x1772`/`0x89`) is still F37-D-FU5's
+  `f37.d.limit.terminal_branch_delay_and_sound`: the producer ends the
+  mission as a plain `Failed`, it does not pretend the messages exist.
+* **M01 check.** M01's authored `MISSION_TIMER [0.0]` arms nothing under
+  the measured `> 0.0f` start rule, exactly as in the original — the
+  acceptance suite pins a zero-armed countdown reporting
+  `MissionCountdown::NONE` forever.
+
 ## What this runtime does not follow, and what stays open
 
 Machine-readable, in `RULE_LIMITATIONS` (`crates/cs_script/src/runtime.rs`);
@@ -202,7 +284,10 @@ live with that stage:
 | --- | --- | --- | --- |
 | `f37.d.limit.one_completion_per_tick` | The original completes at most one objective per tick; `MissionState::step` completes every satisfied objective in declaration order on the same tick. | Every program run through `MissionState::step` with two or more objectives satisfied on one tick — today the F37-D corpus and the AC01 probe, from F38/F39 on every campaign mission lowered into this IR (starting with M01): per-tick completions, event sequence and same-tick write conflicts differ by one tick per extra completion. | `F37-D-FU3` (`#729`) |
 | `f37.d.limit.mission_countdown_preemption` | **CLOSED by F37-D-FU4 (`#730`), 2026-10-07.** The entry read "the countdown expiry path does not exist here … a tick carries no timeout input". That is false now: `MissionState::step_with_countdown` takes the input and pre-empts the tick's objectives, pinned by `accept_f37_d_fu4_*`. Kept here as history; the entry itself is gone from `RULE_LIMITATIONS` and may not come back while that behaviour stands (asserted by `accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does`). | — (was: every campaign mission with a time limit) | `F37-D-FU4` (`#730`), done |
-| `f37.d.limit.mission_countdown_producer` | The pre-emption exists but nothing feeds it: no code in this tree arms, ticks or reports a mission countdown, so every current caller runs `MissionState::step` (`MissionCountdown::NONE`) and no real mission can end by timeout yet. The recreation's timer units are unmeasured — the original counts float seconds by frame dt (`0x46c5f0`, ms copy `0x46c610`), this project runs integer simulation ticks — so no seconds-to-ticks conversion may be guessed; the NOLOSS and network-game exclusions have no supplier either; and two guards of the original end path stay unmodelled (`0x440ad0()`'s global game-state byte, its meaning unknown, and the `remaining < -1.0f` skip). | Every mission that sets a mission countdown — the `MISSION_TIMER` record field and the `TIMER_ADJUST`/`END_TIMER`/`RESET_TIMER` sites the source adapter lowers (`cs_content::mission_control`), i.e. every campaign mission with a time limit: until a producer feeds `MissionState::step_with_countdown`, its timeout still neither fails the mission nor pre-empts an objective result of that tick, and the NOLOSS/network-game exclusions have no supplier. | `F37-D-FU6` (`#737`) |
+| `f37.d.limit.mission_countdown_producer` | **CLOSED by F37-D-FU6 (`#737`), 2026-10-07.** The entry read "nothing in this tree produces its input … no real mission can end by timeout yet". That is false now: `cs_sim::mission::Countdown` arms (from `CountdownSpec`, the caller-declared `MISSION_TIMER` field and session mode), ticks and reports the countdown into `MissionState::step_with_countdown` on every `MissionSession` path, and consumes the timer directives — pinned by `accept_f37_d_fu6_*`. Kept here as history; the entry itself is gone from `RULE_LIMITATIONS` and may not come back while that behaviour stands (asserted by `accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does`). What the closure could not settle — the decrement quantum, the end-path guards and the spec sourcing — moved into the three entries below rather than being dropped. | — (was: every mission that sets a mission countdown) | `F37-D-FU6` (`#737`), done |
+| `f37.d.limit.mission_countdown_tick_dt` | The countdown producer decrements by the session's declared fixed tick dt (`CountdownSpec::rate`), while the original decrements `[+4]` by the *variable* per-frame game dt (`0x46c5f0`) — clamped at 0.125 s, doubled under the 2x speed-up, frozen while paused. In game-time seconds both count the same interval; in wall-clock time the tick a countdown expires on can differ — the standing F16-F divergences, now reached through the countdown. | The wall-clock time (and, at a host rate not matched to the original's frame dt, the tick) at which a countdown expires, for every `MISSION_TIMER`-armed mission under the project's designed fixed rate versus the original's variable dt. | `F16-F-CAP` (`#721`) and `F16-F-SPEEDUP` (`#722`) hold the dt divergences; `VS-M01-RUNTIME` (`#359`) is where a wired session's real rate is sourced |
+| `f37.d.limit.mission_countdown_end_guards` | Two guards of the original's expiry path stay unmodelled: `0x440ad0()`'s global game-state byte (meaning unknown; nothing here can source it) and the `remaining < -1.0f` skip. The second is unreachable in this layering — the producer reports expiry on the first tick `remaining <= 0.0`, the consumer ends the mission on that same report and nothing defers it — but it stays recorded so a future deferring end path re-checks it. | Every mission countdown's expiry: whichever game states the byte gates may suppress or allow expiry in the original with no equivalent here; any future end path that defers the report past one tick (the 3.0 s end delay of F37-D-FU7) must re-derive the -1.0f skip. | `F37-D-FU8` (`#740`) |
+| `f37.d.limit.mission_countdown_spec_sourcing` | The producer's inputs are caller-declared, not yet sourced: nothing lowers a control record's `MISSION_TIMER` field — its seconds and its exact 7-byte `NOLOSS` second child — into `CountdownSpec`, and no networked mission session exists to source `network_game`. The timer directives are consumed, but no source adapter has yet been shown to spell `RESET_TIMER`/`TIMER_ADJUST`/`END_TIMER`/`ADJUST_TIMER_WHEN_I_COMPLETE` into `Action::Directive` emissions. | Every campaign mission whose control record spells `MISSION_TIMER` or `NOLOSS` (the record fields of every timed mission) and every networked mission session. | the M01-LC lowering line (`#726` and its stages) for the record field, `VS-M01-RUNTIME` (`#359`) for the session wiring, and the F56 mode line for a networked mission session |
 | ~~`f37.d.limit.terminal_branch_delay_and_sound`~~ | **Closed by `F37-D-FU5` (`#731`), 2026-10-07**: the branch, the end delay, the `OBJECTIVES_*_SOUND`/`MISSION_*_SOUND` selection and the `WIN_ANIM`/`LOSS_ANIM` selection now exist here as `cs_script::runtime::MissionEndPresentation`, produced on the terminal tick while the recorded result stays success iff WON, pinned by `accept_f37_d_fu5_*`. What that stage does *not* claim (playback, handle presence, a non-instant win/loss ending) is named in `docs/findings/2026-10-07-f37-d-fu5-mission-end-presentation.md`. | — (was: mission-end presentation for every campaign mission: end-screen delay, `OBJECTIVES_WON/LOST_SOUND`, `MISSION_WON/LOST_SOUND`, `WIN_ANIM`/`LOSS_ANIM` selection) | done — `F37-D-FU5` (`#731`) |
 | `f37.d.limit.aborted_outcome` | The original has no Aborted outcome, so no observation of its precedence can exist; the measured policy keeps the designed ordering (abort above the measured results) so a torn-down mission is never recorded as a result a program asked for. | Any program or teardown requesting `Outcome::Aborted` together with WON/LOST on one tick (`Finish(Aborted)` sites and `MissionState::abort`): the recorded result of such a tick is designed, never measured. | none possible — owner decision only; the state does not exist in the original |
 | `f37.d.limit.frame_phase_and_player_down` | The original's frame position of the mission update and its skip-while-player-down are caller behaviour; this runtime has no frame and no player-down input. | Every mission tick while the player is down and every mission's position in the frame, for the wired mission path that drives this session. | `VS-M01-RUNTIME` (`#359`), which wires the session into the application frame |

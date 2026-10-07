@@ -322,28 +322,62 @@ pub const RULE_LIMITATIONS: &[RuleLimitation] = &[
         resolving_task: "F37-D-FU3 (#729)",
     },
     RuleLimitation {
-        id: "f37.d.limit.mission_countdown_producer",
-        open: "The countdown pre-emption itself is implemented \
-               (`MissionState::step_with_countdown` records a failure before that \
-               tick's objective passes), but nothing in this tree produces its input: \
-               no code arms, ticks or reports a mission countdown, so every current \
-               caller runs `MissionState::step`, which passes `MissionCountdown::NONE`. \
-               The recreation's timer units are unmeasured — the original counts float \
-               seconds by frame dt (`0x46c5f0`, ms copy `0x46c610`) while this project \
-               runs integer simulation ticks, so no seconds-to-ticks conversion may be \
-               guessed — and the provenance of the two measured exclusions (NOLOSS, \
-               network game) belongs to that producer. Two guards of the original's \
-               end path stay unmodelled: `0x440ad0()`'s global game-state byte (its \
-               meaning is unknown) and the `remaining < -1.0f` skip.",
-        affected_content: "Every mission that sets a mission countdown — the \
-                           MISSION_TIMER record field and the TIMER_ADJUST/END_TIMER/\
-                           RESET_TIMER sites the source adapter lowers \
-                           (cs_content::mission_control), i.e. every campaign mission \
-                           with a time limit: until a producer feeds this layer, its \
-                           timeout still neither fails the mission nor pre-empts an \
-                           objective result of that tick, and the NOLOSS and \
-                           network-game exclusions have no supplier either.",
-        resolving_task: "F37-D-FU6 (#737)",
+        id: "f37.d.limit.mission_countdown_tick_dt",
+        open: "The countdown producer (`cs_sim::mission::Countdown`) decrements \
+               by the session's declared fixed tick dt — one mission tick is one \
+               `CountdownSpec::rate` dt — while the original decrements `[+4]` by \
+               the *variable* per-frame game dt (`0x46c5f0`), which is clamped at \
+               0.125 s, doubled under the 2x speed-up and frozen while paused. In \
+               game-time seconds both count the same interval; in wall-clock time \
+               the tick on which a countdown expires can differ — the standing \
+               F16-F divergences, now reached through the countdown.",
+        affected_content: "The wall-clock time (and so, at a rate the host did not \
+                           match to the original's frame dt, the tick) at which a \
+                           mission countdown expires, for every `MISSION_TIMER`-armed \
+                           mission run under the project's designed fixed rate versus \
+                           the original's variable frame dt — under frame pacing, the \
+                           125 ms cap and the speed-up.",
+        resolving_task: "F16-F-CAP (#721) and F16-F-SPEEDUP (#722) hold the dt \
+                         divergences; VS-M01-RUNTIME (#359) is where a wired \
+                         session's real rate is sourced",
+    },
+    RuleLimitation {
+        id: "f37.d.limit.mission_countdown_end_guards",
+        open: "Two guards of the original's expiry path stay unmodelled: \
+               `0x440ad0()`'s global game-state byte, whose meaning is unknown and \
+               which nothing in this tree can source, and the `remaining < -1.0f` \
+               skip. The second cannot be reached in this layering — the producer \
+               reports expiry the first tick `remaining <= 0.0`, the consumer ends \
+               the mission on that same report and nothing defers it — but it is \
+               recorded so a future deferring end path re-checks it rather than \
+               inheriting a wrong poll.",
+        affected_content: "Every mission countdown's expiry: whichever game states \
+                           the byte gates may suppress or allow expiry in the \
+                           original with no equivalent here, and any future end \
+                           path that defers the report past one tick (the 3.0 s \
+                           end delay F37-D-FU7 adds) must re-derive the -1.0f skip.",
+        resolving_task: "F37-D-FU8 (#740)",
+    },
+    RuleLimitation {
+        id: "f37.d.limit.mission_countdown_spec_sourcing",
+        open: "The producer exists but its inputs are caller-declared, not yet \
+               sourced: nothing lowers a control record's `MISSION_TIMER` field \
+               — its seconds and its exact 7-byte `NOLOSS` second child — into \
+               `cs_sim::mission::CountdownSpec`, so `no_loss` is as spelled rather \
+               than read from a record, and no networked mission session exists \
+               to source `network_game`. The timer directives are consumed by the \
+               countdown, but no source adapter has yet been shown to spell \
+               `RESET_TIMER`/`TIMER_ADJUST`/`END_TIMER`/`ADJUST_TIMER_WHEN_I_COMPLETE` \
+               into `Action::Directive` emissions.",
+        affected_content: "Every campaign mission whose control record spells \
+                           `MISSION_TIMER` or `NOLOSS` (the record fields of every \
+                           timed mission) and every networked mission session: \
+                           until the lowering and the mode wiring exist, their \
+                           countdowns run only where a caller declares the spec.",
+        resolving_task: "the M01-LC lowering line (control-record fields into the \
+                         IR; #726 and its stages) for the record field, \
+                         VS-M01-RUNTIME (#359) for the session wiring, and the \
+                         F56 mode line for a networked mission session",
     },
     RuleLimitation {
         id: "f37.d.limit.aborted_outcome",
@@ -441,7 +475,11 @@ pub const TERMINAL_PRECEDENCE_RULE: RuleLabel = RuleLabel {
             addresses: "countdown object 0x71b468; expiry check 0x46c640 (skipped with \
                         NOLOSS and in network games); end call 0x463c30(1, 3.0); result \
                         0x4194e0",
-            limitations: &["f37.d.limit.mission_countdown_producer"],
+            limitations: &[
+                "f37.d.limit.mission_countdown_tick_dt",
+                "f37.d.limit.mission_countdown_end_guards",
+                "f37.d.limit.mission_countdown_spec_sourcing",
+            ],
         },
         MeasuredFact {
             id: "f37.rule.terminal_precedence.one_completion_per_tick",
@@ -538,7 +576,9 @@ pub const TICK_ORDERING_RULE: RuleLabel = RuleLabel {
                         at 0x46a94c; completion effects 0x46a630; terminal check \
                         0x46af7a then 0x46afad",
             limitations: &[
-                "f37.d.limit.mission_countdown_producer",
+                "f37.d.limit.mission_countdown_tick_dt",
+                "f37.d.limit.mission_countdown_end_guards",
+                "f37.d.limit.mission_countdown_spec_sourcing",
                 "f37.d.limit.one_completion_per_tick",
             ],
         },
@@ -635,12 +675,11 @@ impl PrecedencePolicy {
 /// The original's countdown is a global object at `0x71b468`: while it runs
 /// (`[+0x10]`) `[+4]` holds remaining **seconds** and is decremented by the
 /// frame's dt (`0x46c5f0`), `[+0x14]` is the `NOLOSS` flag, and the poll
-/// `0x46c640` reports expiry iff remaining `<= 0.0f`. This layer has no
-/// countdown of its own — the recreation's timer units are **unmeasured**
-/// (float seconds by frame dt there, integer simulation ticks here), so
-/// nothing here arms, ticks or converts one, and no conversion may be
-/// guessed (`f37.d.limit.mission_countdown_producer`). What the F37 session
-/// owns is the *decision* the poll feeds: an expiry ends the mission at once
+/// `0x46c640` reports expiry iff remaining `<= 0.0f`. The producer is
+/// `cs_sim::mission::Countdown` — it keeps the seconds counter `[+4]` and
+/// decrements by the session's declared fixed tick dt, never a guessed
+/// conversion (`f37.d.limit.mission_countdown_tick_dt`); this layer owns
+/// only the *decision* the poll feeds: an expiry ends the mission at once
 /// as a failure, before that tick's objective passes
 /// (`f37.rule.terminal_precedence.countdown_preempts`, owner note on Rally
 /// #589 — static code evidence, never an original run).

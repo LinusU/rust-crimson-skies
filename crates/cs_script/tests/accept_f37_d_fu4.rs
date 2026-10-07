@@ -27,8 +27,8 @@
 //!   it affects and the task that resolves it.
 //! * `accept_f37_d_fu4_plain_step_passes_no_countdown_and_never_preempts` —
 //!   the `MissionState::step` path is unchanged: no countdown input, no
-//!   pre-emption, which is exactly the reachability gap
-//!   `f37.d.limit.mission_countdown_producer` records.
+//!   pre-emption — the produced input lives in the session layer
+//!   (`cs_sim::mission::Countdown`, `accept_f37_d_fu6_*`).
 
 use cs_script::ir::*;
 use cs_script::runtime::*;
@@ -349,39 +349,55 @@ fn accept_f37_d_fu4_noloss_and_network_games_exclude_the_expiry() {
     );
 }
 
-/// **The rule is recorded, and the closed limitation cannot come back.**
+/// **The rule is recorded, and the closed limitations cannot come back.**
 ///
-/// `f37.d.limit.mission_countdown_preemption` said "a tick carries no timeout
-/// input". That is false now, so the entry is gone — and it may only be gone
-/// while the behaviour stands: the same assertion that pins the closure also
-/// pins the fact that gates it, the finding that records both, and the entry
-/// that carries what is *still* open (nothing feeds the input; the units are
-/// unmeasured) with the content it affects and the task that resolves it.
+/// `f37.d.limit.mission_countdown_preemption` said "a tick carries no
+/// timeout input"; `f37.d.limit.mission_countdown_producer` said "nothing
+/// feeds it". F37-D-FU6's `cs_sim::mission::Countdown` makes both false —
+/// the entries are gone, and they may only stay gone while the behaviour
+/// stands: the same assertion that pins the closures also pins the fact
+/// that gates them, the finding that records all three, and the entries
+/// that carry what is *still* open (the tick dt, the end-path guards and
+/// the spec sourcing) with the content they affect and the tasks that
+/// resolve them.
 #[test]
 fn accept_f37_d_fu4_the_measured_preemption_is_recorded_and_the_closed_limitation_is_gone() {
-    assert!(
-        !RULE_LIMITATIONS
+    for closed in [
+        "f37.d.limit.mission_countdown_preemption",
+        "f37.d.limit.mission_countdown_producer",
+    ] {
+        assert!(
+            !RULE_LIMITATIONS
+                .iter()
+                .any(|limitation| limitation.id == closed),
+            "the closed entry {closed} must stay closed: what it denied is implemented"
+        );
+    }
+    for (id, task) in [
+        ("f37.d.limit.mission_countdown_tick_dt", "F16-F"),
+        ("f37.d.limit.mission_countdown_end_guards", "F37-D-FU8"),
+        (
+            "f37.d.limit.mission_countdown_spec_sourcing",
+            "VS-M01-RUNTIME",
+        ),
+    ] {
+        let open = RULE_LIMITATIONS
             .iter()
-            .any(|limitation| limitation.id == "f37.d.limit.mission_countdown_preemption"),
-        "the closed entry must stay closed: the pre-emption it denied is implemented"
-    );
-    let open = RULE_LIMITATIONS
-        .iter()
-        .find(|limitation| limitation.id == "f37.d.limit.mission_countdown_producer")
-        .expect("what remains open is still recorded");
-    assert!(
-        open.affected_content.contains("mission countdown"),
-        "the entry must name the affected content: {}",
-        open.affected_content
-    );
-    assert!(
-        open.resolving_task.contains("F37-D-FU6"),
-        "the entry must name the task that resolves it: {}",
-        open.resolving_task
-    );
+            .find(|limitation| limitation.id == id)
+            .unwrap_or_else(|| panic!("what remains open is still recorded: {id}"));
+        assert!(
+            !open.affected_content.is_empty(),
+            "{id} must name the affected content"
+        );
+        assert!(
+            open.resolving_task.contains(task),
+            "{id} must name the task that resolves it: {}",
+            open.resolving_task
+        );
+    }
 
-    // The measured fact it gates still cites the addresses that settle it and
-    // now points at the entry that really describes this runtime.
+    // The measured fact they gate still cites the addresses that settle it
+    // and now points at the entries that really describe this runtime.
     let fact = TERMINAL_PRECEDENCE_RULE
         .facts
         .iter()
@@ -389,16 +405,20 @@ fn accept_f37_d_fu4_the_measured_preemption_is_recorded_and_the_closed_limitatio
         .expect("the countdown fact is recorded");
     assert_eq!(
         fact.limitations,
-        ["f37.d.limit.mission_countdown_producer"],
-        "the fact's divergence must be an entry that exists and is open"
+        [
+            "f37.d.limit.mission_countdown_tick_dt",
+            "f37.d.limit.mission_countdown_end_guards",
+            "f37.d.limit.mission_countdown_spec_sourcing",
+        ],
+        "the fact's divergences must be entries that exist and are open"
     );
     assert!(
         fact.addresses.contains("0x46c640") && fact.addresses.contains("0x4194e0"),
         "the fact must keep citing the expiry check and the result"
     );
 
-    // The findings entry records the closure: same file, same image hash,
-    // and it names both the closed id and what replaced it.
+    // The findings entry records the closures: same file, same image hash,
+    // and it names both closed ids, what replaced them and the producer.
     let findings = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(TERMINAL_RULE_FINDINGS);
@@ -412,24 +432,27 @@ fn accept_f37_d_fu4_the_measured_preemption_is_recorded_and_the_closed_limitatio
     for needle in [
         "f37.d.limit.mission_countdown_preemption",
         "f37.d.limit.mission_countdown_producer",
+        "f37.d.limit.mission_countdown_tick_dt",
+        "f37.d.limit.mission_countdown_end_guards",
+        "f37.d.limit.mission_countdown_spec_sourcing",
         "step_with_countdown",
     ] {
         assert!(
             text.contains(needle),
-            "the findings entry must record {needle}: the closure and its replacement \
-             travel together"
+            "the findings entry must record {needle}: the closures and their \
+             replacements travel together"
         );
     }
 }
 
-/// **The old path is untouched: `step` carries no countdown at all.**
+/// **The countdown-less path is untouched: `step` carries no input at all.**
 ///
-/// Every current caller runs `MissionState::step`, which passes
-/// [`MissionCountdown::NONE`], so no tick of that path can end by timeout —
-/// the reachability gap `f37.d.limit.mission_countdown_producer` records, and
-/// the reason the closure above is honest rather than claimed. The two paths
-/// differ only in the countdown input: the same program ends `Succeeded`
-/// through `step` and `Failed` through the expiring input.
+/// `MissionState::step` is the entry point for a caller that has no
+/// countdown: it still passes [`MissionCountdown::NONE`], so no tick of
+/// that path can end by timeout — the produced input lives in the session
+/// (`cs_sim::mission::Countdown`), which `accept_f37_d_fu6_*` pins. The two
+/// paths differ only in the countdown input: the same program ends
+/// `Succeeded` through `step` and `Failed` through the expiring input.
 #[test]
 fn accept_f37_d_fu4_plain_step_passes_no_countdown_and_never_preempts() {
     let p = program(vec![always(1, vec![reward("r-only")])])
