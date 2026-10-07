@@ -51,9 +51,9 @@
 //! designed provenance; nothing in this module is evidence about the
 //! original game.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cs_assets::mods::ModMountError;
 use cs_assets::vfs::{
@@ -93,7 +93,7 @@ impl AvailableMod {
     }
 
     /// The directory the mod's payloads ship under.
-    pub fn root(&self) -> &PathBuf {
+    pub fn root(&self) -> &Path {
         &self.root
     }
 }
@@ -136,7 +136,7 @@ impl std::error::Error for SelectionError {}
 #[derive(Clone, Debug, Default)]
 pub struct ModSelection {
     available: BTreeMap<ModId, AvailableMod>,
-    enabled: BTreeMap<ModId, ()>,
+    enabled: BTreeSet<ModId>,
 }
 
 impl ModSelection {
@@ -179,13 +179,13 @@ impl ModSelection {
         if !self.available.contains_key(id) {
             return Err(SelectionError::UnknownMod { id: id.clone() });
         }
-        self.enabled.insert(id.clone(), ());
+        self.enabled.insert(id.clone());
         Ok(())
     }
 
     /// Disables one mod; returns whether it was enabled.
     pub fn disable(&mut self, id: &ModId) -> bool {
-        self.enabled.remove(id).is_some()
+        self.enabled.remove(id)
     }
 
     /// Disables every mod (the selection teardown).
@@ -205,12 +205,12 @@ impl ModSelection {
 
     /// Whether `id` is enabled.
     pub fn is_enabled(&self, id: &ModId) -> bool {
-        self.enabled.contains_key(id)
+        self.enabled.contains(id)
     }
 
     /// The enabled mod ids, in mod-id order.
     pub fn enabled(&self) -> impl Iterator<Item = &ModId> {
-        self.enabled.keys()
+        self.enabled.iter()
     }
 
     /// The [`ModSet`] the enabled mods form, exactly as [`mount_mods`]
@@ -218,7 +218,7 @@ impl ModSelection {
     pub fn enabled_set(&self) -> ModSet {
         ModSet::new(
             self.enabled
-                .keys()
+                .iter()
                 .map(|id| self.available[id].manifest.clone())
                 .collect(),
         )
@@ -229,7 +229,7 @@ impl ModSelection {
     /// meet a planned mod whose root was forgotten.
     pub fn environment<'a>(&self, base_fingerprint: ContentHash) -> MountEnvironment<'a> {
         let mut environment = MountEnvironment::new(base_fingerprint);
-        for id in self.enabled.keys() {
+        for id in &self.enabled {
             environment = environment.with_root(id.clone(), self.available[id].root.clone());
         }
         environment
