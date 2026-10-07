@@ -825,6 +825,9 @@ impl FlowDomain {
         self.committed = None;
         self.launch = None;
         self.mission_outcome = None;
+        // The applied outcome belonged to the campaign that just closed: the
+        // next profile this process opens must not report it as its own.
+        self.applied = None;
         self.teardown = Some(report);
         Ok(())
     }
