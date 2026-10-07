@@ -55,8 +55,9 @@
 //!
 //! # What is *not* claimed
 //!
-//! No original mesh was read to build this. The world-vertex unit scale and the
-//! coordinate handedness are still unmeasured (F18-D), and the per-object
+//! No original mesh was read to build this. The world-vertex unit scale is the
+//! measured metre (task #677) and the coordinate handedness is measured
+//! code-derived (task #436's owner note); the per-object
 //! material binding F17 owns is not built here: this module supplies geometry and
 //! its provenance, not a material. How a retail world node's `mesh_index` (and
 //! its variant) maps to a [`ContentId`] is F18-D's question, and whether two

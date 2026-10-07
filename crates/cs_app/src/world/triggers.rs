@@ -37,9 +37,12 @@
 //! What it does **not** do, deliberately:
 //!
 //! * it does not convert a stored extent to metres. The original's world-vertex
-//!   unit is unmeasured (task #436), so the survey reports
+//!   unit is measured now (the metre; tasks #677 and #436), but this survey
+//!   supplies no factor — the contract #427 pinned is that a stored extent is
+//!   never silently read as a length, so the survey reports
 //!   [`TriggerTickVerdict::UnitUnmeasured`](cs_content::world::TriggerTickVerdict::UnitUnmeasured)
-//!   with the **break-even factor** rather than a verdict;
+//!   with the **break-even factor** rather than a verdict. Whether the survey
+//!   *should* consume the measured unit is task #733;
 //! * it decodes the campaign's `dzones.zrd` **framing** (task #513: a list's
 //!   word is its child count plus one) but not its **meaning**: the survey
 //!   carries what each mission states under `disable`, `nosnapshot` and
@@ -305,9 +308,11 @@ fn widen(corner: [f32; 3]) -> [f64; 3] {
 ///
 /// One production discovery, and per group one read of that group's own geometry
 /// container through the production node reader. The survey's
-/// `vertex_scale_to_m` is **`None`**: nothing in this workspace has measured the
-/// original's world-vertex unit, and supplying a factor here would be the guess
-/// the whole stage exists to avoid. Every zone's container SHA-256 comes from the
+/// `vertex_scale_to_m` is **`None`**: this entry point supplies no factor even
+/// though the unit is measured (tasks #677 and #436), because the verdict this
+/// stage exists to state is the refusal-with-a-number — the break-even factor —
+/// not a converted length (task #427; consuming the measured unit is task #733).
+/// Every zone's container SHA-256 comes from the
 /// same discovery's manifest, so a rerun over a different installation reports
 /// different fingerprints instead of the same numbers.
 ///

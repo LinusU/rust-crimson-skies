@@ -65,16 +65,17 @@
 //!
 //! A stored mesh's vertex positions are in **stored** units
 //! (`cs_content::mesh` is explicit that it applies no scale), and the original's
-//! world-vertex scale is unmeasured. These fixtures author their geometry in
+//! world-vertex scale is the measured metre (tasks #677 and #436). These
+//! fixtures author their geometry in
 //! metres by construction, so a position and the object's authored transform
 //! speak the same unit; that is a property of the fixture, not a conversion this
 //! stage claims to perform. See
 //! `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md`.
 //!
 //! Everything here is newly authored synthetic fixture content
-//! (`Origin::SyntheticFixture`); it never claims to be original geometry.
-//! Which geometry the original worlds contain, and how they store sectors, is
-//! unmeasured — see
+//! (`Origin::SyntheticFixture`); it never claims to be original geometry. The
+//! original worlds' geometry is measured (the F18-D/F18-E census and node
+//! decode), but how they store sectors is unmeasured — see
 //! `docs/findings/2026-09-30-f18-a-world-instances-sectors-and-collision-roles.md`.
 
 use std::collections::BTreeSet;

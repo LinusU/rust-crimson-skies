@@ -33,10 +33,13 @@
 //! * **Not `verified_original`.** `retail` is read access to the owner's files.
 //!   No original run happened, so nothing here is evidence of how the 2000
 //!   engine loaded, streamed or collided with a world.
-//! * **The unit is measured for the scale only.** Task #677's landmark census
+//! * **The convention is measured, code-derived.** Task #677's landmark census
 //!   pins one stored GameZ unit to the metre at `observed_tool`
-//!   ([`cs_content::coordinates::CoordinateSource::retail_gamez`]); the rest of
-//!   the convention — axis map, handedness, angle unit — is still unmeasured.
+//!   ([`cs_content::coordinates::CoordinateSource::retail_gamez`]); the axis
+//!   map, handedness and angle unit are measured by static analysis of the
+//!   owner-supplied decrypted image (task #436's owner note,
+//!   [`cs_content::world::WORLD_AXIS_CONVENTION_MEASURED`]) — code-derived,
+//!   never `verified_original`.
 //!   `definition` therefore takes its conversion from the caller's
 //!   [`SourceAdapter`] and the import report names both the factor it used and
 //!   that quantity's own evidence class

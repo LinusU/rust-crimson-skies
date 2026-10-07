@@ -38,12 +38,14 @@
 //! passed.
 //!
 //! The report's `unknowns` are *this task's* blockers and are empty because the
-//! acceptance run passed. The product-incompleteness state F18-D measured — the
-//! undecoded world placement, the unmeasured stored vertex unit, the five
-//! unlocatable opening classes — is **not** dropped anywhere: it is the audit's
+//! acceptance run passed. The product-incompleteness state the audit measures —
+//! now the five unlocatable opening classes and the unmeasured traversal
+//! routes, since F18-E decoded the world placement and carries the measured
+//! stored vertex unit — is **not** dropped anywhere: it is the audit's
 //! asserted verdict (pinned by the acceptance tests) and it is written out in
-//! `docs/findings/2026-09-30-f18-d-world-group-audit-and-gpu-capture.md`, which
-//! is where the product-incompleteness state lives. The claim is `implemented`,
+//! `docs/findings/2026-09-30-f18-d-world-group-audit-and-gpu-capture.md` and
+//! `docs/findings/2026-10-07-f18-e-world-placement-and-scale.md`, which is
+//! where the product-incompleteness state lives. The claim is `implemented`,
 //! never `checked` or `verified_original`.
 
 use std::collections::VecDeque;
@@ -443,10 +445,11 @@ fn review_method() -> String {
          `cs_app::world::upload_verdict`, and the drawn geometry per world group, which is how the \
          shared mesh behind the three byte-identical captures was identified. The report's \
          `unknowns` are this task's own blockers and are empty because the acceptance run passed; \
-         the product incompleteness the audit measured — the undecoded GameZ node array, the \
-         unmeasured stored vertex unit and the five unlocatable opening classes — is the audit's \
-         asserted verdict and is written out in \
-         docs/findings/2026-09-30-f18-d-world-group-audit-and-gpu-capture.md, not dropped. `claim` \
+         the product incompleteness the audit measured — the five unlocatable opening classes and \
+         the unmeasured traversal routes, with the GameZ node array decoded and the stored vertex \
+         unit measured by F18-E — is the audit's asserted verdict and is written out in \
+         docs/findings/2026-09-30-f18-d-world-group-audit-and-gpu-capture.md and \
+         docs/findings/2026-10-07-f18-e-world-placement-and-scale.md, not dropped. `claim` \
          is `implemented` only. `candidate_tree` is the tree of the commit the suite ran on: the \
          only later delta is this report's own copy under docs/findings/evidence/, whose bytes are \
          that file",

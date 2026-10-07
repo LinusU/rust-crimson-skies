@@ -47,16 +47,18 @@
 //! **F18-D** (`accept_f18_d_`) is the evidence stage over the original
 //! installation: `audit` owns AC04 — every discovered world group visited, its
 //! representative geometry compared, and the traversal routes and stunt
-//! openings reported as the blocker they are while the world placement is
-//! undecoded — plus the real offscreen GPU capture that shows each group's
-//! stored geometry is drawable as stored.
+//! openings reported as unmeasured (F18-E decoded the placement and carried
+//! the measured unit; the opening/route rule is task #732) — plus the real
+//! offscreen GPU capture that shows each group's stored geometry is drawable
+//! as stored.
 //!
 //! **#427** (`accept_t427_`) measures the **original's** trigger volumes instead
 //! of the fixtures': `triggers` owns the survey that reads every world
 //! container's node array through the production node reader, and pins the
 //! contract that a stored extent is never read as a length in metres — the
-//! one-tick verdict refuses to decide while the stored-vertex unit is
-//! unmeasured and reports the factor at which it would flip.
+//! one-tick verdict refuses to decide while the survey carries no
+//! stored-unit factor (the unit itself is measured; whether the survey
+//! consumes it is task #733) and reports the factor at which it would flip.
 //!
 //! **F18-C** (`accept_f18_c_`) is the mission layer on top of that transaction:
 //! `overlays` owns AC03 — a body reaching a trigger volume opens an authored

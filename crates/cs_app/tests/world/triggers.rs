@@ -132,19 +132,21 @@ fn accept_t427_the_zone_name_rule_is_the_measured_one_and_nothing_else() {
 // ------------------------------------- a stored extent is not a length ---
 
 /// A stored extent is stored units, and the survey refuses to compare it with
-/// one tick of canonical travel while the unit is unmeasured — reporting the
-/// factor at which the answer would flip instead.
+/// one tick of canonical travel while the survey carries no stored-unit
+/// factor — reporting the factor at which the answer would flip instead.
 ///
 /// This is the whole of task #427's second acceptance criterion in its current
-/// state, and it is a refusal with a number in it: the break-even factor is
-/// what a later stage has to go and measure.
+/// state, and it is a refusal with a number in it: the factor itself is
+/// measured (task #677, one unit the metre), and whether this survey consumes
+/// it is task #733's decision.
 #[test]
 fn accept_t427_a_stored_extent_is_never_read_as_a_length() {
     let survey = synthetic_survey(None);
     assert_eq!(
         survey.vertex_scale_to_m(),
         None,
-        "no measurement in this workspace has established the original's world-vertex unit"
+        "this survey carries no factor, even though the GameZ unit is measured (tasks #677/#436); \
+         whether it should carry that factor is task #733"
     );
 
     let verdict = survey
@@ -157,7 +159,7 @@ fn accept_t427_a_stored_extent_is_never_read_as_a_length() {
     );
     assert!(
         !verdict.is_decided(),
-        "the survey must not claim an answer while the stored unit is unmeasured"
+        "the survey must not claim an answer while it carries no stored-unit factor"
     );
     match &verdict {
         TriggerTickVerdict::UnitUnmeasured {
@@ -1163,15 +1165,17 @@ fn accept_t427_retail_every_detection_zone_extent_is_measured_with_its_span() {
 /// The verdict task #427 asked for, over the measured corpus, stated the way
 /// the evidence supports it.
 ///
-/// The unit is unmeasured, so the survey refuses to answer and reports the
-/// factor at which it would change. That factor is the second acceptance
-/// criterion's answer: for the verdict to be "an original trigger is outrun by a
-/// tick", one stored unit would have to be worth more than
+/// This survey carries no stored-unit factor — deliberately, even though the
+/// GameZ unit is measured (tasks #677/#436; whether this survey consumes it is
+/// task #733) — so it refuses to answer and reports the factor at which the
+/// answer would change. That factor is the second acceptance criterion's
+/// answer: for the verdict to be "an original trigger is outrun by a tick",
+/// one stored unit would have to be worth more than
 /// `3.3333 m / 32 units ≈ 0.104 m` — roughly ten centimetres. A world whose
 /// trigger boxes are a tenth of a metre across in their own coordinate system
-/// would be a world whose *aircraft* are a tenth of a metre long, so the verdict
-/// is one the measurement effectively rules out, without this task having to
-/// guess the unit to say so.
+/// would be a world whose *aircraft* are a tenth of a metre long, so the
+/// verdict is one the measurement effectively rules out, without this task
+/// having to guess the unit to say so.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_t427_retail_the_thin_original_trigger_needs_a_tenth_of_a_metre_per_unit_to_be_outrun() {

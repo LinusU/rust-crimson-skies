@@ -78,12 +78,13 @@
 //! * **No claim is made that an original trigger is a thin authored box.** Over
 //!   the owner's installation the original's own detection zones are world nodes
 //!   (`dzpath<N>`) whose stored extent is **32 to 860 stored units** on their
-//!   thinnest axis and whose unit this workspace has not measured; they are
-//!   large regions of the world, not sheets a sample can step over. Which of
-//!   them a given mission uses, and what the original does when one is entered,
-//!   are unmeasured. [`super::triggers`] is the measurement, and
-//!   `docs/findings/2026-10-02-t427-retail-trigger-volume-thickness.md` is its
-//!   record.
+//!   thinnest axis — 32 to 860 metres at the measured GameZ unit (task #677),
+//!   though the trigger survey itself still carries no factor (task #733) —
+//!   so they are large regions of the world, not sheets a sample can step
+//!   over. Which of them a given mission uses, and what the original does when
+//!   one is entered, are unmeasured. [`super::triggers`] is the measurement,
+//!   and `docs/findings/2026-10-02-t427-retail-trigger-volume-thickness.md` is
+//!   its record.
 //!
 //! So the discretely-reported overlap this producer consumes is the mechanism
 //! **this project** uses for the volumes **this project** authors. Whether the

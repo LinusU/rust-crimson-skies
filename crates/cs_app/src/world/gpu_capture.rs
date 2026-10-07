@@ -19,13 +19,15 @@
 //!
 //! # What is **not** claimed
 //!
-//! * **Not a placement.** A world group's meshes have no position, orientation
-//!   or scale in world space (no production path decodes a GameZ node array), so
-//!   this renders one mesh at its own stored coordinates and nothing else. It is
-//!   evidence that the group's stored geometry is drawable as stored; it is not
-//!   evidence about a level.
-//! * **Not a metric.** The stored vertex unit is unmeasured, so the camera's
-//!   distances below are in *stored units* and the frame is not a measurement of
+//! * **Not a placement.** A world group's meshes are decoded with a position,
+//!   orientation and scale in world space (F18-E, `read_gamez_nodes`), and this
+//!   still renders one mesh at its own stored coordinates and nothing else: the
+//!   capture does not apply the node's transform. It is evidence that the
+//!   group's stored geometry is drawable as stored; it is not evidence about a
+//!   level.
+//! * **Not a metric.** The stored vertex unit is the measured metre (tasks #677
+//!   and #436), but the camera's distances below are in *stored units* — the
+//!   capture makes no use of the factor — and the frame is not a measurement of
 //!   anything's size.
 //! * **Not the original's appearance.** The material is a flat colour chosen
 //!   here, the lighting is a declared key light, and F17's presentation unknowns

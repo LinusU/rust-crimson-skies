@@ -1893,8 +1893,9 @@ impl MissionOverlay {
 /// This enum is those five nouns and nothing else. It is a **declared list to
 /// look for**, never a classifier: no code in this workspace may decide that a
 /// mesh is a tunnel, because a tunnel is a property of *placed* geometry
-/// between two spaces, and placement is not decoded (see
-/// [`TraversalBlocker::PlacementUndecoded`]). A class is either located by an
+/// between two spaces, and although placement is decoded and the unit measured
+/// (F18-E), no measured rule yet classifies one (task #732). A class is either
+/// located by an
 /// audit that had the facts, or it is [`StuntOpeningVerdict::Unlocated`] with
 /// the blocker that stopped it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -2055,8 +2056,8 @@ impl WorldGroupRef {
 /// confuse them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlacementSource {
-    /// No production path decoded the container's node array, so no stored mesh
-    /// has a position, orientation or scale in world space.
+    /// The survey produced no decoded placement for the container's node array,
+    /// so no stored mesh has a position, orientation or scale in world space.
     ///
     /// The numbers are the container header's own: how many stored node records
     /// it declares and where the array starts. They are quoted so a reader can
@@ -2154,10 +2155,11 @@ impl fmt::Display for UploadVerdict {
 
 /// One measured mesh of a world group, chosen by the audit's declared rule.
 ///
-/// The bounds are in the container's **stored units**, which are not metres
-/// and whose scale is unmeasured: `cs_content::mesh` applies no scale to
-/// stored positions and nothing in the workspace has established the original's
-/// world-vertex unit. A consumer must not read a number here as a length.
+/// The bounds are in the container's **stored units**: `cs_content::mesh`
+/// applies no scale to stored positions. The stored unit is measured — one
+/// unit is the metre (task #677, `observed_tool`; consumed by F18-E) — but
+/// this type deliberately carries the stored numbers, so a consumer must not
+/// read a number here as a converted length.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RepresentativeGeometry {
     /// The mesh's array index in the container.
@@ -2405,7 +2407,9 @@ impl WorldGroupCensus {
     }
 
     /// The factor from the container's stored vertex units to canonical metres,
-    /// or `None` while it is unmeasured.
+    /// or `None` when the survey carries none. The retail GameZ unit is
+    /// measured — one unit is the metre (task #677) — so an audit over the
+    /// owner's installation reports `Some(1.0)`.
     #[must_use]
     pub const fn vertex_scale_to_m(&self) -> Option<f64> {
         self.vertex_scale_to_m
@@ -3258,11 +3262,12 @@ impl std::error::Error for TriggerVolumeError {}
 
 /// One axis-aligned box a world node stores, in the container's **stored units**.
 ///
-/// The stored units are not metres and their scale is **unmeasured**: the same
-/// statement [`RepresentativeGeometry`] makes about a stored mesh extent. A
+/// The stored unit is measured — one unit is the metre (tasks #677 and #436) —
+/// and this type still carries the **stored** numbers, the same statement
+/// [`RepresentativeGeometry`] makes about a stored mesh extent. A
 /// consumer that needs a length in canonical metres must go through
-/// [`RetailTriggerVolumeSurvey::tick_verdict`], which refuses to compare at all
-/// while the scale is unknown — this type exists so a reader cannot reach a
+/// [`RetailTriggerVolumeSurvey::tick_verdict`], which refuses to compare while
+/// the survey supplies no scale — this type exists so a reader cannot reach a
 /// number and mistake it for one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoredVolume {
@@ -3442,7 +3447,10 @@ impl TriggerVolumeSpan {
 ///
 /// The volume is the box the node's own info record stores — not a box this
 /// workspace inferred, sized, or assumed. Its **unit is the container's stored
-/// vertex unit, which is unmeasured**, so nothing here is a length in metres.
+/// vertex unit** — measured, one unit the metre (tasks #677 and #436) — but
+/// this type still carries the stored numbers, and the survey supplies no
+/// factor of its own, so nothing read off it here is a stated length in
+/// metres.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RetailTriggerVolume {
     span: TriggerVolumeSpan,
@@ -3545,16 +3553,18 @@ impl RetailTriggerVolume {
 /// original's thinnest trigger volume".
 ///
 /// The three variants are the three honest states, and the survey never picks
-/// one it has not earned: with no stored-unit-to-metre factor established, the
-/// answer is [`Self::UnitUnmeasured`] carrying the **break-even factor** — the
-/// factor at which the verdict would flip — so the missing measurement is a
-/// number a later stage can go and get rather than a shrug.
+/// one it has not earned: while the survey carries no stored-unit-to-metre
+/// factor, the answer is [`Self::UnitUnmeasured`] carrying the **break-even
+/// factor** — the factor at which the verdict would flip — so the missing
+/// input is a number a later stage can supply rather than a shrug. The factor
+/// is measured (task #677, one unit the metre); this survey deliberately does
+/// not carry it — see `RetailTriggerVolumeSurvey::vertex_scale_to_m`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TriggerTickVerdict {
     /// The survey measured no zone, so there is nothing to compare.
     NoZones,
-    /// The stored-vertex unit is unmeasured, so a stored extent cannot be turned
-    /// into a length and the comparison cannot be made.
+    /// The survey carries no stored-unit-to-metre factor, so a stored extent
+    /// cannot be turned into a length and the comparison cannot be made.
     ///
     /// `break_even_meters_per_unit` is what one stored unit would have to be
     /// worth, in metres, for the thinnest measured zone to be **exactly** one
@@ -3851,9 +3861,11 @@ impl RetailTriggerVolumeSurvey {
     /// Assembles the survey from the zones a measurement produced.
     ///
     /// `vertex_scale_to_m` is the factor from the containers' stored vertex
-    /// units to canonical metres. It is `None` for every measurement this
-    /// workspace has made, and passing `None` is what makes
-    /// [`Self::tick_verdict`] refuse rather than guess.
+    /// units to canonical metres. The retail GameZ unit is measured — one
+    /// unit is the metre (tasks #677 and #436) — but whether this survey
+    /// should carry that factor is a separate decision (task #733), and
+    /// passing `None` is what makes [`Self::tick_verdict`] refuse rather than
+    /// guess.
     ///
     /// # Errors
     ///
@@ -3957,7 +3969,8 @@ impl RetailTriggerVolumeSurvey {
     }
 
     /// The factor from the containers' stored vertex units to canonical metres,
-    /// or `None` while it is unmeasured.
+    /// or `None` while the survey carries none — the unit itself is measured
+    /// (task #677); whether this survey consumes it is task #733.
     #[must_use]
     pub const fn vertex_scale_to_m(&self) -> Option<f64> {
         self.vertex_scale_to_m
@@ -4043,8 +4056,8 @@ impl RetailTriggerVolumeSurvey {
     /// The answer is a [`TriggerTickVerdict`], not a `bool`, because there are
     /// three states and the interesting one is currently
     /// [`TriggerTickVerdict::UnitUnmeasured`]. That variant carries the factor
-    /// at which the answer would change, so the unmeasured quantity is a number
-    /// a later stage can go and measure rather than an open question.
+    /// at which the answer would change, so the factor the survey does not
+    /// carry is a number a later stage can supply rather than an open question.
     ///
     /// # Errors
     ///

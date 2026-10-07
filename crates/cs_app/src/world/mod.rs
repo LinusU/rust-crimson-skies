@@ -65,10 +65,12 @@
 //!   production F11-A node reader and reports one measured detection-zone
 //!   extent per numbered `dzpath<N>` node, with the container key, the
 //!   container's SHA-256, the installation fingerprint and the node's own byte
-//!   span. It supplies **no** stored-unit-to-metre factor, because the
-//!   original's world-vertex unit is unmeasured, so the one-tick question comes
-//!   back as `UnitUnmeasured` carrying the factor at which it would flip rather
-//!   than as a verdict (task #427).
+//!   span. It supplies **no** stored-unit-to-metre factor by design — the
+//!   original's world-vertex unit is measured now (one stored unit is the
+//!   metre, tasks #677 and #436), and whether this survey consumes it is task
+//!   #733 — so the one-tick question still comes back as `UnitUnmeasured`
+//!   carrying the factor at which it would flip rather than as a verdict
+//!   (task #427).
 //! * [`visibility`] is the streaming policy: which sectors a focus holds, which
 //!   it holds *anyway* because gameplay requires an object in them, and what a
 //!   streamed-out sector's state is summarized as when it comes back.
@@ -79,25 +81,28 @@
 //!
 //! * [`audit`] is the F18-D evidence instrument: it discovers every world group
 //!   an installation declares, reads each group's own geometry container through
-//!   the production GameZ readers, and hands
+//!   the production GameZ readers — node array included (F18-E) — and hands
 //!   [`cs_content::world::WorldGroupAudit`] one measured census per group. What
-//!   it cannot establish — the world placement and the stored vertex unit — is
-//!   reported as the blocker it is, not filled in.
+//!   it cannot establish — a measured rule that says what a traversal route or
+//!   a stunt opening *is* — is reported as the gap it is, not filled in.
 //! * [`gpu_capture`] is the F18-D `gpu` half: it draws one group's **real**
 //!   stored mesh on the real renderer, offscreen, and writes a PNG — refusing a
 //!   blank frame and deleting the file on every refusal, so an artifact on disk
 //!   is evidence the geometry was drawn rather than a decoration.
 //!
-//! What is **not** claimed here: original world data has been read and counted,
-//! but **no traversal route and no stunt opening has been located in it**, because
-//! the GameZ node array is undecoded and the stored vertex unit is unmeasured; the
-//! original's sector layout is not reproduced, no simplification policy for retail
-//! geometry exists yet, and the original's own streaming rule is unmeasured. The
+//! What is **not** claimed here: original world data has been read, counted and
+//! placed (the GameZ node array is decoded, and the stored vertex unit is the
+//! measured metre), but **no traversal route and no stunt opening has been
+//! located in it**, because no measured rule says what an opening or a route is
+//! in placed geometry (task #732); the original's sector layout is not
+//! reproduced, no simplification policy for retail geometry exists yet, and the
+//! original's own streaming rule is unmeasured. The
 //! unknowns this feature met are recorded in
 //! `docs/findings/2026-09-30-f18-a-world-instances-sectors-and-collision-roles.md`,
 //! `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md`,
-//! `docs/findings/2026-09-30-f18-c-mission-overlays-and-visibility-streaming.md` and
-//! `docs/findings/2026-09-30-f18-d-world-group-audit-and-gpu-capture.md`.
+//! `docs/findings/2026-09-30-f18-c-mission-overlays-and-visibility-streaming.md`,
+//! `docs/findings/2026-09-30-f18-d-world-group-audit-and-gpu-capture.md` and
+//! `docs/findings/2026-10-07-f18-e-world-placement-and-scale.md`.
 
 pub mod affine;
 pub mod audit;

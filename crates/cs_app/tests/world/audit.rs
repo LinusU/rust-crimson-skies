@@ -43,10 +43,11 @@ use cs_types::evidence::ContentHash;
 /// The synthetic content every unignored test in this file is built from.
 ///
 /// All **authored** values: the group keys, the counts, the extents. The
-/// `PlacementSource::Undecoded` arm is the one the retail installation is
-/// actually in, so a fixture that claimed a decoded placement would test an
-/// arm no real installation reaches yet; the decoded arm is covered separately
-/// by [`decoded_census`].
+/// `PlacementSource::Undecoded` arm is not the retail installation's state —
+/// F18-E decodes the node array, so retail groups report `Decoded` — but it
+/// remains the arm that exercises the audit's blockers, which is what the
+/// negative tests below pin; the decoded arm is covered separately by
+/// [`decoded_census`].
 fn synthetic_group(key: &str) -> WorldGroupRef {
     WorldGroupRef::new(
         WorldId::from_key(key).expect("a valid world key"),

@@ -10,12 +10,14 @@ capture tests). No original run; nothing here is `verified_original`.
 `cs_app::world::audit` now reads each world group's node array with the
 production `read_gamez_nodes` (same parse context as the mesh and material
 readers) and reports `PlacementSource::Decoded { placed_objects }`, the number
-of node records that name a mesh. `vertex_scale_to_m` is `Some(1.0)`, read from
+of node records whose stored `mesh_index` resolves to a present mesh slot
+(`NodeMeshBindings::of(&nodes, &meshes).resolved`).
+`vertex_scale_to_m` is `Some(1.0)`, read from
 `CoordinateSource::retail_gamez(..).convention().meters_per_unit()` (task #677's
 measured unit, `observed_tool`; axis convention code-derived per the #436 owner
 note of 2026-10-05, never `verified_original`).
 
-| group | stored node records | mesh-naming nodes (`placed_objects`) |
+| group | stored node records | resolved mesh placements (`placed_objects`) |
 | --- | --- | --- |
 | c1 | 7 064 | 3 966 |
 | c1b | 5 603 | 3 485 |
@@ -45,8 +47,14 @@ by mesh shape would be a guess, which AGENTS rule 4 forbids.
 clearance in all eight world groups; F18's "preserve tunnels, arches, building
 openings, hangars and stunt passages" remains unmet for original data. This
 limitation gates every F18 world-geometry fidelity claim. **Resolving task:**
-a follow-up that measures an opening/route rule (needs evidence such as the
-original's own opening or flight-path data), filed with this stage.
+#732 (`F18-E.1`) — measure the original's traversal-opening and route rule,
+then locate openings and measure routes in this audit (needs evidence such as
+the original's own opening or flight-path data).
+
+The retail trigger-volume survey (`survey_retail_trigger_volumes`,
+`RetailTriggerVolumeSurvey`) still constructs with `vertex_scale_to_m: None`
+deliberately: whether that consumer should carry the now-measured factor is a
+separate decision, filed as #733 (`F18-E.2`).
 
 Also seen: the first run of `accept_f18_d_a_gpu_capture_...` once failed with
 `No such file or directory` creating `private/evidence/F18-D/` (two GPU tests
