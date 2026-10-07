@@ -250,7 +250,7 @@ fn evidence_report_f44_d_writes_the_acceptance_report() {
         unknowns.join(", "),
         jstr(&reviewer),
         jstr(&review_method(
-            ORIGINAL_BUDGET_ROWS.len() + 1,
+            ORIGINAL_BUDGET_ROWS.len(),
             gaps.len(),
             MEMBERS.len(),
         )),
