@@ -33,11 +33,11 @@ refused as *not shipped*, with the content id it claimed. A mount that
 resolved either of them, or that enabled a cyclic set after opening a root,
 fails this.
 
-Test count: 8 `accept_f53_b_*` tests — 3 unit tests in
+Test count: 9 `accept_f53_b_*` tests — 4 unit tests in
 `crates/cs_assets/src/mods.rs`, 5 in `crates/cs_content/src/mods/mount.rs` —
 selected by
 `cargo test --workspace --locked -- accept_f53_b_ --include-ignored`
-(exit 0, 8 executed, all passing).
+(exit 0, 9 executed, all passing).
 
 **Why unit tests inside the owner paths again** (as in F53-A): the owner
 paths of this task are `crates/cs_content/src/mods/`,
@@ -143,6 +143,9 @@ no package), so it was not created.
 - `cargo test --workspace --locked -- accept_f53_b_ --include-ignored`
   — 8 tests executed (3 in `cs_assets`, 5 in `cs_content`), all passing
 
+(Those four are the implementer's run of record. The review rerun is in
+"Review" below: 9 acceptance tests, 432 green `test result: ok` lines.)
+
 ## Sensitivity probes (run and reverted; none committed)
 
 Each probe removes one behavior and re-runs the `accept_f53_b_` selection.
@@ -163,3 +166,65 @@ Each probe removes one behavior and re-runs the `accept_f53_b_` selection.
 
 After every probe the file was restored and the selection re-run green
 (the final green run above is the run of record).
+
+## Review (2026-10-07): one defect found and fixed
+
+Reviewed by `bunny-2` (same agent name as the implementer; this session took
+the task through Rally's review handoff, so it is **not** an independent
+agent instance — recorded here rather than claimed as independent evidence).
+
+**Defect: `ModRoot::read` documented a digest re-check it did not perform.**
+Both the module header and the method doc promised that a file swapped after
+the walk is refused because "the bytes are re-hashed against the digest
+recorded at mount time". The body called `read_member_range`, which checks
+the length, every path component's link-ness and (on Unix) the inode, but
+never hashes. A **same-length** rewrite of a shipped file therefore came back
+to the caller as if it were the mounted bytes: the program gate would have
+validated bytes the compatibility signature does not cover, and the two could
+disagree.
+
+- **Fix (owner path `crates/cs_assets/src/mods.rs`):** `ModRoot::read` now
+  calls `crate::vfs::resolve::read_whole_member`, the same digest-checked
+  whole-member read every other read path in this crate uses; a mismatch is
+  refused as `ReadError::DigestMismatch`. The documented property is now the
+  implemented one, and the gate, the signature and the served bytes all
+  describe the same file.
+- **Test:** `accept_f53_b_a_payload_swapped_after_the_walk_is_refused`
+  (`crates/cs_assets/src/mods.rs`): mount, read, rewrite one byte in place
+  at the same length, read again → refused as `DigestMismatch`.
+  **Probe (run, then reverted):** with `read_member_range` restored, the
+  swapped bytes are returned and exactly this test fails.
+
+**Independent probes of the two safety-critical claims (run together, then
+reverted; exactly the two expected tests failed and nothing else):**
+
+1. roots opened before `plan_mods` →
+   `…a_cyclic_dependency_is_rejected_before_any_root_is_opened` fails
+   (`RootNotSupplied` instead of `plan_refused`, because the fixture declares
+   no roots);
+2. the sandboxed-program gate made fail-open →
+   `…mission_content_mounts_only_through_a_bounded_validator` fails.
+
+**Limitation recorded, not fixed here:** the mod-root *walk* itself (every
+file below a mod root is indexed and hashed) is not covered by any
+`MountLimits` budget — only the measured sizes of **declared** override
+sources are. A mod that declares a handful of small overrides and ships a
+huge undeclared directory is indexed in full. Deciding that bound is a spec
+decision (`MountLimits` fields are declared-size budgets and are folded into
+`ModPlan::hash` through `MountLimits::encode()`), so it is filed rather than
+guessed: **F53-B-FU2 (#745)**, affected content named there (every mod root
+mounted through `mount_mods`).
+
+**Deliberately left to F53-C:** `MountRequest::base_ids` — the F53-A note on
+the task says the stage that wires the mount "supplies it from the real
+catalog". F53-B has no in-tree caller; `cs_content::catalog::Catalog::sorted_ids()`
+is the input the wiring stage (F53-C, which owns producer and consumer) will
+build the request from. No base-id derivation was invented here.
+
+**Review rerun (all exit 0):**
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+- `cargo test --workspace --locked` — 432 `test result: ok` lines, 0 failures
+- `cargo test --workspace --locked -- accept_f53_b_ --include-ignored`
+  — 9 tests executed (4 in `cs_assets`, 5 in `cs_content`), all passing
