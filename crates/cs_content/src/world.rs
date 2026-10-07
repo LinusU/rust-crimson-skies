@@ -2613,7 +2613,11 @@ pub enum RouteSearch {
     },
     /// No measured route rule reached this census — the caller measured no
     /// rule, or the one it had could not be applied — so the audit keeps the
-    /// shortfall gap and this names what stopped it.
+    /// shortfall gap ([`WorldAuditGap::NoRouteMeasured`], whose text names the
+    /// two facts it is missing) instead of reporting a measured absence.
+    /// `measured` stays readable through [`WorldGroupCensus::route_search`] for
+    /// a caller that wants what stopped the search; the gap itself does not
+    /// quote it, because nothing here measured a reason worth quoting.
     Unsought {
         /// What stopped the route search, as measured; never empty.
         measured: String,

@@ -253,14 +253,31 @@ pub fn route_absent(world: &WorldId) -> String {
 /// holds none of this class here** — which is the honest answer for `c1c` and
 /// `c2b`, the two of the eight groups that author no fly-through objective —
 /// rather than reporting a bare unlocated class.
+///
+/// A group that *declared* targets none of which resolved gets the other
+/// answer: a **shortfall**, not an absence. An unbound label or a node with no
+/// measured box is an unknown (F42-D reports it as its own gap), and saying
+/// "the corpus holds none" about it would turn that unknown into a measured
+/// absence — the guess AGENTS rule 4 forbids. Over the owner's installation
+/// only the first shape occurs: all 54 declared targets resolved, and `c1c`
+/// and `c2b` declared none.
 #[must_use]
 pub fn stunt_passage_absent(container: &str, declared: usize, resolved: usize) -> String {
+    let verdict = if declared == 0 {
+        "so the corpus holds none of this class in this group".to_owned()
+    } else {
+        format!(
+            "so none of this group's {declared} declared target(s) could be located from measured \
+             evidence and this class stays unlocated with that shortfall stated, never as an \
+             absence"
+        )
+    };
     format!(
         "searched for a stunt passage in this group's own declarations: the instant-action \
          scenario {container} declares {declared} fly-through danger-zone target(s) over its \
          `targets.zrd` (F42-D measured 54 across six of the eight groups, every one resolved to \
          a `dzpath<N>` box task #427 measured) and {resolved} of them resolved to a measured \
-         world box here, so the corpus holds none of this class in this group; the campaign's \
+         world box here, {verdict}; the campaign's \
          `dzones.zrd` members are framed but their meaning is unmeasured (task #513)"
     )
 }

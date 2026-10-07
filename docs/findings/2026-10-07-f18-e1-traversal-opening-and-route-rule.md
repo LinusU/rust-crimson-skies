@@ -136,7 +136,7 @@ was renamed, reinterpreted or dropped.
 
 | test | covers | fails when |
 | --- | --- | --- |
-| `accept_f18_e1_a_located_stunt_passage_and_an_absent_route_carry_their_measurement` (synthetic, CI) | the production classification over authored gates (box → narrowest extent × caller unit → clearance, per-world, unresolved targets skipped); the `NoRouteInMeasuredCorpus` gap with affected content; `NoRouteMeasured` absent for a searched census and present for an unsearched one; `OPENING_SEARCH_UNSUPPLIED` for a census that searched nothing; `BlankOpeningReason` refused; `RouteWithoutFacts` still wins | the classification, the gap selection, the reason default or the blank-reason refusal is removed or weakened |
+| `accept_f18_e1_a_located_stunt_passage_and_an_absent_route_carry_their_measurement` (synthetic, CI) | the production classification over authored gates (box → narrowest extent × caller unit → clearance, per-world, unresolved targets skipped); the `NoRouteInMeasuredCorpus` gap with affected content; `NoRouteMeasured` absent for a searched census and present for an unsearched one; `OPENING_SEARCH_UNSUPPLIED` for a census that searched nothing; `BlankOpeningReason` refused; `RouteWithoutFacts` still wins; a declared-but-unresolved stunt passage reported as a **shortfall** and only a group that declared none as an absence | the classification, the gap selection, the reason default, the blank-reason refusal or the absence/shortfall distinction is removed or weakened |
 | `accept_f18_e1_retail_stunt_passages_are_located_and_every_absence_is_measured` (`#[ignore]`, retail) | one survey + one audit over all eight groups: the 5/5/0/9/0/4/14/17 split and the total 54; each located opening's mesh index resolves to a **stored** mesh of that group's own container and its clearance is finite and positive; every unlocated class carries a non-empty reason that is not `OPENING_SEARCH_UNSUPPLIED`, the four corpus-absent ones byte-identical to `class_absent`, the `c1c`/`c2b` ones naming their own scenario container; exactly one measured route gap per group, no shortfall gap anywhere | any count moves, a reason goes blank or turns generic, the wrong class is located, or `NoRouteMeasured` comes back |
 | re-pinned: `accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared`, `accept_f18_e_retail_placement_is_decoded_and_the_scale_is_the_measured_metre`, `accept_f18_d_an_unlocated_opening_or_route_is_reported_instead_of_assumed`, `accept_f18_d_the_audit_visits_every_group_and_compares_its_representative_geometry`, `accept_f18_d_world_group_records_refuse_contradictions_and_impossible_values` | the old verdicts, changed deliberately to the new one | the audit's verdict moves again without these being re-pinned |
 
@@ -147,6 +147,47 @@ RouteSearch::Unstated` → `Unsought` in `census_verdict`) made
 `accept_f18_e1_a_located_stunt_passage_and_an_absent_route_carry_their_measurement`
 **FAIL** on its own gap assertion; the tree was restored with `git checkout
 crates/cs_content/src/world.rs` and every check below re-run afterwards.
+
+Two more arms were run by the reviewer of this task (2026-10-07), each restored
+byte-for-byte from a saved copy afterwards (`shasum` verified):
+
+* `locate_stunt_passages` returning an empty vector — the synthetic
+  `accept_f18_e1_a_` **FAIL**s on its classification assertion (`left: []`);
+* the *wiring* of that function in `traversal_evidence` replaced by
+  `openings = Vec::new()` — the retail
+  `accept_f18_e1_retail_stunt_passages_are_located_and_every_absence_is_measured`
+  **FAIL**s at `world/c1`, because the census carries no located opening. The
+  synthetic arm does **not** see this one (it assembles its own census), so the
+  wiring is covered by the retail arm, which reviewers run with
+  `--include-ignored`.
+
+## Review (2026-10-07)
+
+Implementer: `bunny-alpha-2` (Rally session of 2026-10-07, the four commits this
+branch carries). Reviewer: `bunny-alpha-2` — the **same agent identity** in a
+fresh session, so this is *not* the independent fresh-instance review AGENTS.md
+prefers for fidelity claims; it is recorded here rather than glossed over, and
+the owner's human approval still stands. What the review changed:
+
+* `stunt_passage_absent` now separates the two states its two counts describe.
+  A group whose scenario declares fly-through targets none of which resolved to
+  a measured box used to read "so the corpus holds none of this class in this
+  group" — an **unknown** (an unbound label or a boxless node, which F42-D
+  reports as its own gap) stated as a measured absence, which AGENTS rule 4
+  forbids. It now states the shortfall; only `declared == 0` says the corpus
+  holds none. Over retail nothing changes: `c1c`/`c2b` declare 0 and the other
+  six groups locate the class, so no group reaches the new text.
+* The `RouteSearch::Unsought` doc said the audit surfaces `measured`; the audit
+  keeps the shortfall gap [`WorldAuditGap::NoRouteMeasured`] and does not quote
+  it. The doc now says that, and points at `WorldGroupCensus::route_search` for
+  the caller that wants the text.
+
+Review re-runs after those changes (all exit 0): `cargo fmt --all -- --check`;
+`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`;
+`cargo test --workspace --locked`;
+`cargo test --workspace --locked -- accept_f18_e1_ --include-ignored` (2
+passed); `cargo test -p cs_app --test world -- accept_f18_d_ accept_f18_e_
+--include-ignored` (9 passed).
 
 ## Commands run
 

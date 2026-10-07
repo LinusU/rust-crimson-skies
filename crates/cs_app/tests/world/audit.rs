@@ -27,7 +27,8 @@ use std::path::{Path, PathBuf};
 use cs_app::world::audit::{
     GEOMETRY_CONTAINER_FILE, OPENING_CLASS_ABSENT_FROM_THE_CORPUS, PRESENTABLE_PROBE_MESHES,
     REPRESENTATIVE_MESHES, ROUTE_ABSENT_FROM_THE_CORPUS, TEXTURE_ARCHIVE_FILE, audit_survey,
-    class_absent, locate_stunt_passages, route_absent, survey_world_groups, upload_verdict,
+    class_absent, locate_stunt_passages, route_absent, stunt_passage_absent, survey_world_groups,
+    upload_verdict,
 };
 use cs_app::world::gpu_capture::{CaptureRequest, capture_world_mesh};
 use cs_content::mesh::RenderMesh;
@@ -1881,7 +1882,11 @@ fn synthetic_fly_through_gate(
 /// 3. the **never-silent** property — a class the survey searched and found
 ///    nothing of carries the survey's own measurement, and a census that
 ///    searched for nothing still carries `OPENING_SEARCH_UNSUPPLIED` rather
-///    than an empty string; a blank measurement is refused at construction.
+///    than an empty string; a blank measurement is refused at construction;
+/// 4. the **unknown-is-not-an-absence** property — a group whose scenario
+///    declares fly-through targets that resolve to no measured box reports a
+///    shortfall, and only a group that declared none reports the corpus
+///    holding none.
 #[test]
 fn accept_f18_e1_a_located_stunt_passage_and_an_absent_route_carry_their_measurement() {
     // --- 1. the classification, over authored evidence -----------------------
@@ -2050,6 +2055,30 @@ fn accept_f18_e1_a_located_stunt_passage_and_an_absent_route_carry_their_measure
     assert!(
         UnlocatedOpening::new(OpeningClass::Hangar, class_absent(OpeningClass::Hangar)).is_ok(),
         "a real measurement is accepted"
+    );
+
+    // --- an unknown never becomes a measured absence ------------------------
+    // The stunt-passage reason has two shapes and they must not be confused:
+    // a group whose scenario declares **no** fly-through target says the corpus
+    // holds none (that is `c1c` and `c2b` over retail), while a group that
+    // declares targets none of which resolved to a measured box reports a
+    // **shortfall** — an unbound label or a boxless node is an unknown, and
+    // AGENTS rule 4 forbids rounding it up to an absence.
+    let absence = stunt_passage_absent("zbd/c9/ia1/zrdr.zbd", 0, 0);
+    assert!(
+        absence.contains("declares 0 fly-through")
+            && absence.contains("corpus holds none of this class"),
+        "a group that declared none reports the absence, got {absence:?}"
+    );
+    let shortfall = stunt_passage_absent("zbd/c9/ia1/zrdr.zbd", 3, 0);
+    assert!(
+        shortfall.contains("declares 3 fly-through") && shortfall.contains("0 of them resolved"),
+        "the shortfall states both measured counts, got {shortfall:?}"
+    );
+    assert!(
+        !shortfall.contains("corpus holds none"),
+        "three declared targets that resolved to nothing are an unknown, never a measured \
+         absence, got {shortfall:?}"
     );
 
     // --- the contradiction arm still wins -----------------------------------
