@@ -67,7 +67,8 @@
 //!
 //! * *Placement* is decoded (F18-E): `read_gamez_nodes` walks the node array on the
 //!   same parse context as the two section readers, and the survey reports
-//!   [`PlacementSource::Decoded`] with the number of node records that name a mesh.
+//!   [`PlacementSource::Decoded`] with the number of node records whose stored
+//!   `mesh_index` resolves to a present mesh ([`NodeMeshBindings::of`]).
 //! * *The stored vertex unit* is the measured metre
 //!   ([`CoordinateSource::retail_gamez`], task #677, `observed_tool`, with the
 //!   axis convention code-derived per task #436's owner note), read from the
@@ -99,8 +100,8 @@ use cs_content::world::{
     WorldGroupAuditReport, WorldGroupBlocker, WorldGroupCensus, WorldGroupRef, WorldId,
 };
 use cs_formats::gamez::{
-    FaceCensus, GameZMaterials, GameZMeshes, read_gamez_materials, read_gamez_meshes,
-    read_gamez_nodes,
+    FaceCensus, GameZMaterials, GameZMeshes, NodeMeshBindings, read_gamez_materials,
+    read_gamez_meshes, read_gamez_nodes,
 };
 use cs_formats::io::ParseContext;
 use cs_types::asset_id::SourceSpan;
@@ -199,8 +200,9 @@ pub struct SurveyedContainer {
     pub meshes: GameZMeshes,
     /// The material section, as `read_gamez_materials` produced it.
     pub materials: GameZMaterials,
-    /// How many stored node records name a mesh, as `read_gamez_nodes` decoded
-    /// them: the stored meshes a node places.
+    /// How many stored node records place a mesh: the nodes whose stored
+    /// `mesh_index` resolves to a present mesh slot
+    /// ([`NodeMeshBindings::of`]), as `read_gamez_nodes` decoded them.
     pub placed_objects: usize,
     /// Metres per stored vertex unit, read from the measured GameZ coordinate
     /// convention ([`CoordinateSource::retail_gamez`]) for this container's span.
@@ -515,11 +517,14 @@ fn survey_one(
             );
         }
     };
-    let placed_objects = nodes
-        .nodes
-        .iter()
-        .filter(|node| node.mesh_index() >= 0)
-        .count();
+    // `resolved`, not the raw `mesh_index >= 0` count: a node whose stored index
+    // names an absent or out-of-range slot places no mesh, so the placed-object
+    // count is the cross-checked one — the node array measured against the mesh
+    // array it indexes into, rather than the reference's assertion trusted. On
+    // the retail corpus the two are equal (every stored index resolves; see
+    // `docs/findings/2026-10-03-f10-c-05-node-mesh-index-cross-check.md`).
+    let placed_objects =
+        usize::try_from(NodeMeshBindings::of(&nodes, &meshes).resolved).unwrap_or(usize::MAX);
     // The unit is the measured one (task #677, `observed_tool`; task #436's
     // owner note adds the code-derived axis convention): the scale is read off
     // the measured convention rather than spelled here as a literal.
@@ -726,10 +731,12 @@ pub fn declared_rows(survey: &WorldGroupSurvey) -> Result<Vec<WorldGroupRef>, Wo
 /// world group, then visit each one with the content layer's audit.
 ///
 /// The report is the acceptance scenario's object. Its `is_complete()` is false
-/// over any installation whose world placement is not decoded, and that is the
-/// honest verdict rather than a failure of the audit: the traversal half of
-/// "compare representative geometry **and** traversal routes" is blocked, with
-/// the measured facts named, until a production path decodes the node array.
+/// over the retail installation even though every group's placement is decoded
+/// and the unit is the measured metre: no measured rule yet says what an
+/// opening or a traversal route *is* in placed geometry, so the traversal half
+/// of "compare representative geometry **and** traversal routes" reports one
+/// [`cs_content::world::WorldAuditGap::NoRouteMeasured`] per group rather than a
+/// pass (task #732).
 pub fn audit_world_groups(
     install_root: &Path,
 ) -> Result<WorldGroupAuditReport, WorldGroupSurveyError> {
