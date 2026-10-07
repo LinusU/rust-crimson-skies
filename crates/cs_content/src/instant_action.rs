@@ -838,6 +838,45 @@ impl CustomScenarioDraft {
         self
     }
 
+    /// The roster actors selected so far, when a roster has been set.
+    #[must_use]
+    pub fn roster(&self) -> Option<&[ScenarioActorSpec]> {
+        self.roster.as_deref()
+    }
+
+    /// Replaces the one actor that holds `actor`'s `(side, slot)`, leaving
+    /// every other actor and every other dimension untouched.
+    ///
+    /// This is the player changing one roster row: it never adds a slot and
+    /// never reorders the roster, so a slot change cannot silently become a
+    /// roster change.
+    ///
+    /// # Errors
+    ///
+    /// [`ScenarioSchemaError::NoSuchRosterSlot`] when no roster is set or no
+    /// actor holds that `(side, slot)`. The draft is consumed, so a caller that
+    /// wants to keep it on failure clones it first.
+    pub fn replace_roster_slot(
+        mut self,
+        actor: ScenarioActorSpec,
+    ) -> Result<Self, ScenarioSchemaError> {
+        let position = self.roster.as_ref().and_then(|roster| {
+            roster
+                .iter()
+                .position(|held| held.side() == actor.side() && held.slot() == actor.slot())
+        });
+        let Some(position) = position else {
+            return Err(ScenarioSchemaError::NoSuchRosterSlot {
+                side: actor.side(),
+                slot: actor.slot(),
+            });
+        };
+        if let Some(roster) = self.roster.as_mut() {
+            roster[position] = actor;
+        }
+        Ok(self)
+    }
+
     /// Sets the selected difficulty profile.
     #[must_use]
     pub fn with_difficulty(mut self, difficulty: DifficultyProfile) -> Self {
@@ -2127,6 +2166,14 @@ pub enum ScenarioSchemaError {
         /// The namespace the list requires.
         expected: ContentKind,
     },
+    /// A roster-slot replacement named a `(side, slot)` the draft's roster
+    /// does not hold.
+    NoSuchRosterSlot {
+        /// The side that was addressed.
+        side: ScenarioSide,
+        /// The slot that was addressed.
+        slot: RosterSlot,
+    },
     /// An option entry was held twice.
     DuplicateOption {
         /// Which list.
@@ -2192,6 +2239,9 @@ impl fmt::Display for ScenarioSchemaError {
             }
             Self::ScenarioKindMismatch { id } => {
                 write!(f, "scenario id {id} is not in the ia_scenario namespace")
+            }
+            Self::NoSuchRosterSlot { side, slot } => {
+                write!(f, "the roster holds no {side} actor in {slot} to replace",)
             }
             Self::SubjectKindMismatch { id } => {
                 write!(

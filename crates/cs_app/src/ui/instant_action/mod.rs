@@ -42,6 +42,8 @@
 //! unmeasured; see
 //! `docs/findings/2026-10-01-f49-a-instant-action-scenario-schemas.md`.
 
+mod normalize;
+
 use std::fmt;
 
 use cs_content::instant_action::{
@@ -55,6 +57,11 @@ use cs_sim::allies::{
 };
 use cs_types::content::{ContentId, Resolved};
 use cs_types::evidence::ClaimId;
+
+pub use normalize::{
+    ActorField, ScenarioChange, ScenarioOutcome, ScenarioResult, ScenarioSnapshot, diff_scenarios,
+    evaluate_outcome,
+};
 
 pub use cs_content::instant_action::{RespawnBudget, TieOutcome, VictoryCondition, VictoryRules};
 
