@@ -466,10 +466,11 @@
 //! [`settings::FidelityLabel`] replay metadata records and the strict
 //! persisted text form. The application side is `cs_app::accessibility`.
 //!
-//! [`mods`] is the F53-A mod manifest and mount-plan contract
+//! [`mods`] is the F53 mod manifest, mount-plan and mount contract
 //! (`specs/F53-mod-mounts-custom-content-and-compatibility-signatures.md`,
-//! stage `### F53-A`): the typed [`mods::ModManifest`] an F53-B manifest
-//! reader produces, the [`mods::ContentOverride`]s a mod claims with the two
+//! stages `### F53-A` and `### F53-B`): the typed [`mods::ModManifest`] a
+//! manifest source produces, the [`mods::ContentOverride`]s a mod claims
+//! with the two
 //! policies that classify them (an override's gameplay effect and which
 //! validator its payload must pass are both computed from the target's
 //! content kind, never asserted by the author), and the deterministic
@@ -478,9 +479,17 @@
 //! each contested content id, a gameplay/cosmetic verdict and a
 //! [`mods::PlanProblem`] list for every way a set can be refused. The load
 //! order is the same [`cs_types::asset_id::ModStack`] a resolve context opts
-//! into, so "the later mod wins" is one rule rather than two. It opens no
-//! archive, reads no byte and mounts nothing: F53-B is the mount, F53-C the
-//! selection UI and export tooling, F53-D the reproducibility evidence.
+//! into, so "the later mod wins" is one rule rather than two.
+//! [`mods::mount_mods`] is the F53-B half that touches bytes: it plans
+//! first, so a cycle or any other plan problem is refused before a root is
+//! opened, then walks each mod's root through [`cs_assets::mods::ModRoot`],
+//! re-validates every declared source at the join, refuses a payload only a
+//! symbolic link would satisfy, re-checks the byte budgets against the
+//! **measured** sizes, gates mission and script payloads behind the host's
+//! bounded [`mods::ProgramValidator`] (no validator, no mount) and returns
+//! a [`mods::MountedMods`] whose compatibility signature covers the
+//! resolved content bytes. F53-C is the selection UI and export tooling,
+//! F53-D the reproducibility evidence.
 //!
 //! [`multiplayer`] is the F56-A original multiplayer catalog
 //! (`specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stage

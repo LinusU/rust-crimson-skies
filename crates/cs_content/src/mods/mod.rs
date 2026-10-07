@@ -1,10 +1,12 @@
-//! Mod manifests, overrides and the deterministic mount plan (F53-A).
+//! Mod manifests, overrides and the deterministic mount plan (F53-A), and
+//! the measured mount built from them (F53-B).
 //!
 //! Spec: `specs/F53-mod-mounts-custom-content-and-compatibility-signatures.md`,
-//! stage `### F53-A`. Shared contract:
+//! stages `### F53-A` and `### F53-B`. Shared contract:
 //! `docs/contracts/IDENTITY-CONTENT.md`.
 //!
-//! This module is the **typed, side-effect-free half** of the mod system. It
+//! The records and the plan in this file, [`manifest`] and [`overrides`] are
+//! the **typed, side-effect-free half** of the mod system. It
 //! defines what a mod says about itself, what a mod claims about content, and
 //! what a set of mods means when they are all switched on together — and it
 //! refuses every set that is ambiguous, unsatisfiable, unsafe or over
@@ -14,6 +16,15 @@
 //! (selection, diagnostics and private export tooling) and `F53-D`
 //! (source protection, mod isolation and reproducible load order), and each of
 //! them consumes these records rather than redefining them.
+//!
+//! [`mount`] is F53-B's half of that: [`mount::mount_mods`] plans first, so
+//! a cycle or any other plan problem is refused before a root is opened,
+//! then walks each planned mod's root through
+//! [`cs_assets::mods::ModRoot`], re-validates every declared source at the
+//! root join, re-checks the byte budgets against the **measured** sizes,
+//! gates mission and script payloads behind the host's bounded
+//! [`mount::ProgramValidator`] — no validator, no mount — and computes the
+//! compatibility signature over the resolved content bytes.
 //!
 //! # Records
 //!
@@ -82,11 +93,15 @@ use cs_types::content::{ContentId, ContentKind, Provenance};
 use cs_types::evidence::{ClaimId, ContentHash};
 
 mod manifest;
+mod mount;
 mod overrides;
 
 pub use manifest::{
     DependencyStrength, EngineRange, MAX_MOD_NAME_BYTES, ManifestError, ModDependency, ModHeader,
     ModManifest, ModPayload, ModVersion, PayloadKind, VersionRange,
+};
+pub use mount::{
+    MountEnvironment, MountError, MountedMods, MountedPayload, ProgramValidator, mount_mods,
 };
 pub use overrides::{
     COSMETIC_CONTENT_KINDS, ContentOverride, ModModification, OverrideAction, OverrideEffect,
@@ -1576,6 +1591,34 @@ pub fn synthetic_cyclic_mods() -> (ModManifest, ModManifest) {
         Vec::new(),
     );
     (first, second)
+}
+
+/// A mod that *adds* a mission, so its payload is mission-program content
+/// and [`overrides::classify_validation`] classifies it
+/// [`OverrideValidation::SandboxedProgram`] (F53 non-negotiable 2).
+///
+/// It is the fixture F53-B's fail-closed gate is tested against: the
+/// manifest is structurally valid and plans cleanly, and only the mount
+/// decides whether the payload may be enabled.
+#[must_use]
+pub fn synthetic_mission_mod() -> ModManifest {
+    synthetic_manifest(
+        "synthetic.training-mission",
+        ModVersion::new(1, 0, 0),
+        false,
+        Vec::new(),
+        vec![ModPayload::new("missions/training.mis").expect("valid")],
+        vec![
+            ContentOverride::try_new(
+                ContentId::from_source(ContentKind::Mission, "synthetic.training")
+                    .expect("the synthetic mission id is valid"),
+                OverrideAction::Add,
+                "missions/training.mis",
+                512,
+            )
+            .expect("the synthetic mission override is valid"),
+        ],
+    )
 }
 
 #[cfg(test)]
