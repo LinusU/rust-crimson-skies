@@ -9,10 +9,12 @@
 //!
 //! The split is the contract's: `cs_script` decides *what* happened, this
 //! module decides *what the world does about it*. The producer is
-//! [`MissionState::step`], which emits events carrying exactly-once
-//! [`ExecutionKey`]s; the consumer is [`HostLedger::apply`], the only thing in
-//! the process that turns a reward intent into an authoritative grant and a
-//! resolved outcome into the session's one recorded result.
+//! [`MissionState::step_with_countdown`], fed each tick by the session's own
+//! [`Countdown`] — the recreation of the original's one mission timer — and
+//! emitting events carrying exactly-once [`ExecutionKey`]s; the consumer is
+//! [`HostLedger::apply`], the only thing in the process that turns a reward
+//! intent into an authoritative grant and a resolved outcome into the
+//! session's one recorded result.
 //!
 //! Three rules make the consumer authoritative:
 //!
@@ -59,17 +61,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_script::ir::{
-    ActorId, ActorState, MissionProgram, Outcome, ValidatedProgram, ValidationError,
+    ActorId, ActorState, DirectiveOperation, MissionProgram, Outcome, ValidatedProgram,
+    ValidationError, Value,
 };
 use cs_script::runtime::{
-    EventKind, ExecutionKey, MissionEndPresentation, MissionEvent, MissionFacts, MissionState,
-    MissionStateSnapshot, ObjectiveLifecycle, RestoreError, SNAPSHOT_VERSION, SessionGeneration,
-    StopReason, TerminalState, TickError, TickResult, WorkLimits,
+    DirectiveEmission, EventKind, ExecutionKey, MissionCountdown, MissionEndPresentation,
+    MissionEvent, MissionFacts, MissionState, MissionStateSnapshot, ObjectiveLifecycle,
+    RestoreError, SNAPSHOT_VERSION, SessionGeneration, StopReason, TerminalState, TickError,
+    TickResult, WorkLimits,
 };
 use cs_types::Tick;
 use cs_types::content::ContentId;
 
 use crate::damage::LifecycleKind;
+use crate::time::TickRate;
 
 /// Most refused effects a host may hold for a retry. A designed bound on the
 /// record's size and on the work one save carries, not a measured original
@@ -97,6 +102,11 @@ pub struct MissionSession {
     /// `Condition::ActorIs` reads. Empty at launch; actors enter play by
     /// registration.
     facts: ActorFactTable,
+    /// The session's mission countdown: the producer of the
+    /// [`MissionCountdown`] input every stepped tick derives before it
+    /// reaches [`MissionState::step_with_countdown`], and the consumer of
+    /// the mission-timer directives the evaluator emits.
+    countdown: Countdown,
 }
 
 /// A refused launch: the mission stays Unsupported.
@@ -114,6 +124,11 @@ impl MissionSession {
     /// applied. Nothing is inferred from an id's namespace — only what the
     /// caller declared is applicable.
     ///
+    /// The session launches with no countdown — the measured state of a
+    /// mission that spells no `MISSION_TIMER`, stopped at zero. A timer
+    /// directive can still arm it later; [`Self::launch_with_countdown`] is
+    /// the path whose record spelled one.
+    ///
     /// # Errors
     ///
     /// [`LaunchRefused`] with the precise validation trace.
@@ -121,6 +136,33 @@ impl MissionSession {
         program: MissionProgram,
         session: SessionGeneration,
         rewards: impl IntoIterator<Item = ContentId>,
+    ) -> Result<Self, LaunchRefused> {
+        Self::launch_inner(program, session, rewards, Countdown::unarmed())
+    }
+
+    /// [`Self::launch`] for a mission whose control record spelled a
+    /// `MISSION_TIMER` field: `spec` is that field and the session's own
+    /// declarations — the spelled seconds, the `NOLOSS` flag, the session's
+    /// network mode and the fixed gameplay rate the countdown decrements
+    /// against (see [`CountdownSpec`]).
+    ///
+    /// # Errors
+    ///
+    /// [`LaunchRefused`] with the precise validation trace.
+    pub fn launch_with_countdown(
+        program: MissionProgram,
+        session: SessionGeneration,
+        rewards: impl IntoIterator<Item = ContentId>,
+        spec: CountdownSpec,
+    ) -> Result<Self, LaunchRefused> {
+        Self::launch_inner(program, session, rewards, Countdown::armed(spec))
+    }
+
+    fn launch_inner(
+        program: MissionProgram,
+        session: SessionGeneration,
+        rewards: impl IntoIterator<Item = ContentId>,
+        countdown: Countdown,
     ) -> Result<Self, LaunchRefused> {
         let program = program.validate().map_err(|error| LaunchRefused {
             terminal: TerminalState::Unsupported,
@@ -132,15 +174,17 @@ impl MissionSession {
             host: HostLedger::new(session, rewards),
             state,
             facts: ActorFactTable::new(),
+            countdown,
         })
     }
 
     /// Advances one tick and applies the resulting host effects.
     ///
-    /// This is the consumer's path: [`MissionState::step`] is the producer, the
-    /// ledger is the consumer, and a session that reaches a terminal state is
-    /// torn down before the call returns — deferred work dropped, further
-    /// effects refused. The `MissionFacts` are the caller's: a session advanced
+    /// This is the consumer's path: [`MissionState::step_with_countdown`] is
+    /// the producer, fed by the session's [`Countdown`], and the ledger is
+    /// the consumer; a session that reaches a terminal state is torn down
+    /// before the call returns — deferred work dropped, further effects
+    /// refused. The `MissionFacts` are the caller's: a session advanced
     /// on a caller-built map keeps the evaluator's own contract that it never
     /// invents world state. [`Self::advance_observed`] is the path that
     /// populates the map from the session's authoritative [`ActorFactTable`].
@@ -149,7 +193,11 @@ impl MissionSession {
     ///
     /// [`TickError`] when the tick does not advance.
     pub fn advance(&mut self, facts: &MissionFacts, tick: Tick) -> Result<MissionTick, TickError> {
-        let result = self.state.step(&self.program, facts, tick)?;
+        let input = self.countdown.tick(tick, self.state.last_tick())?;
+        let result = self
+            .state
+            .step_with_countdown(&self.program, facts, tick, input)?;
+        let directives = self.countdown.apply_new(&self.state);
         let host = self.host.apply(&result);
         if result.terminal != TerminalState::Running {
             self.finish(tick);
@@ -160,6 +208,7 @@ impl MissionSession {
             stop: result.stop,
             terminal: result.terminal,
             presentation: self.state.terminal_presentation(),
+            countdown: CountdownTick { input, directives },
             host,
         })
     }
@@ -167,11 +216,20 @@ impl MissionSession {
     /// Advances one tick without applying any host effect, for a caller that
     /// only wants to evaluate the program.
     ///
+    /// The countdown behaves exactly as on [`Self::advance`]: it ticks and
+    /// polls before the step and consumes the timer directives the step
+    /// emitted, so the two paths never disagree about its state.
+    ///
     /// # Errors
     ///
     /// [`TickError`] when the tick does not advance.
     pub fn step(&mut self, facts: &MissionFacts, tick: Tick) -> Result<TickResult, TickError> {
-        self.state.step(&self.program, facts, tick)
+        let input = self.countdown.tick(tick, self.state.last_tick())?;
+        let result = self
+            .state
+            .step_with_countdown(&self.program, facts, tick, input)?;
+        self.countdown.apply_new(&self.state);
+        Ok(result)
     }
 
     /// The session's actor-fact table — the writer that maps the simulation's
@@ -251,12 +309,21 @@ impl MissionSession {
             .facts
             .observe_tick(input)
             .map_err(ObservedError::Facts)?;
+        let countdown = self
+            .countdown
+            .tick(tick, self.state.last_tick())
+            .map_err(ObservedError::Tick)?;
         let result = self
             .state
-            .step(&self.program, &self.facts.facts(), tick)
+            .step_with_countdown(&self.program, &self.facts.facts(), tick, countdown)
             .map_err(ObservedError::Tick)?;
+        let directives = self.countdown.apply_new(&self.state);
         Ok(ObservedStep {
             result,
+            countdown: CountdownTick {
+                input: countdown,
+                directives,
+            },
             facts: observed,
         })
     }
@@ -309,17 +376,26 @@ impl MissionSession {
         &mut self.host
     }
 
+    /// The session's mission countdown — the producer of every tick's
+    /// [`MissionCountdown`] input (see [`Countdown`]).
+    pub fn countdown(&self) -> &Countdown {
+        &self.countdown
+    }
+
     /// The session's save record: the evaluator state, the authoritative
-    /// host record and the actor-fact table together — a reward the host
-    /// already applied must not be applied again after the restore, and a
-    /// state an actor already reached must still be what an unfired
-    /// `Condition::ActorIs` observes.
+    /// host record, the actor-fact table and the mission countdown
+    /// together — a reward the host already applied must not be applied
+    /// again after the restore, a state an actor already reached must
+    /// still be what an unfired `Condition::ActorIs` observes, and a
+    /// countdown already ticking must not start over or re-fire a timer
+    /// directive it already consumed.
     pub fn snapshot(&self) -> MissionSessionSnapshot {
         MissionSessionSnapshot {
             version: SNAPSHOT_VERSION,
             state: self.state.snapshot(&self.program),
             host: self.host.snapshot(),
             facts: self.facts.snapshot(),
+            countdown: self.countdown.snapshot(),
         }
     }
 
@@ -348,6 +424,8 @@ impl MissionSession {
                 },
             ));
         }
+        let countdown = Countdown::restore(&snapshot.countdown, &snapshot.state)
+            .map_err(SessionRestoreError::Countdown)?;
         let state =
             MissionState::restore(&program, snapshot.state).map_err(SessionRestoreError::State)?;
         let host = HostLedger::restore(snapshot.host).map_err(SessionRestoreError::Host)?;
@@ -357,9 +435,656 @@ impl MissionSession {
             state,
             host,
             facts,
+            countdown,
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// The mission countdown: the producer of each tick's `MissionCountdown`
+// input — the original's one mission timer (the global at `0x71b468`).
+// ---------------------------------------------------------------------------
+
+/// The countdown a session launches with: `MISSION_TIMER`'s record field
+/// and the session's own declarations, as the caller sourced them.
+///
+/// Every field is an input with measured provenance, never a default: the
+/// seconds are `MISSION_TIMER`'s value, `no_loss` is its second child, the
+/// network flag is the session's own mode and `rate` is the fixed gameplay
+/// rate the session runs at. Nothing in this tree lowers a control record
+/// into this spec yet, and no networked mission session exists — that
+/// sourcing is `f37.d.limit.mission_countdown_spec_sourcing`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CountdownSpec {
+    remaining_seconds: f64,
+    no_loss: bool,
+    network_game: bool,
+    rate: TickRate,
+}
+
+/// Why a [`CountdownSpec`] could not be declared.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CountdownSpecError {
+    /// `remaining_seconds` is not finite: NaN fails the `> 0.0f` start rule
+    /// and infinity never reaches it, so a non-finite value is a producer
+    /// defect — the record's parse takes a real or an int, which is always
+    /// finite.
+    NonFiniteRemaining { seconds: f64 },
+}
+
+impl fmt::Display for CountdownSpecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFiniteRemaining { seconds } => {
+                write!(f, "MISSION_TIMER seconds must be finite, got {seconds}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CountdownSpecError {}
+
+impl CountdownSpec {
+    /// Declares the countdown `MISSION_TIMER`'s field spelled.
+    ///
+    /// `remaining_seconds` is `MISSION_TIMER`'s value — the parse stores it
+    /// as the timer's `[+4]` (`0x466c31` → `0x46c510`) and mission start
+    /// runs the countdown **iff it is `> 0.0f`** (`0x469741`), so zero and
+    /// negative values arm nothing — how M01's authored `MISSION_TIMER
+    /// [0.0]` never runs.
+    ///
+    /// `no_loss` is `true` iff the field's optional second child is exactly
+    /// the seven bytes `NOLOSS` (`cmpsb` at `0x466cd4` → `0x46c540` →
+    /// `[+0x14] = 1`); any other spelling leaves the flag clear.
+    ///
+    /// `network_game` is the session's own mode: the original skips the
+    /// expiry check in network games while the countdown keeps ticking
+    /// (owner note on Rally #589, F16-F).
+    ///
+    /// `rate` is the session's fixed gameplay rate: one mission tick
+    /// decrements the countdown by its dt — the recreation's `game_dt`.
+    /// The original decrements `[+4]` by the *variable* per-frame game dt
+    /// (`0x46c5f0`; the 0.125 s cap, the 2× speed-up and the pause freeze
+    /// are the standing F16-F divergences). In game-time seconds both count
+    /// the same interval; the wall-clock difference they can produce is
+    /// `f37.d.limit.mission_countdown_tick_dt`.
+    ///
+    /// # Errors
+    ///
+    /// [`CountdownSpecError::NonFiniteRemaining`] when `remaining_seconds`
+    /// is not finite.
+    pub fn new(
+        remaining_seconds: f64,
+        no_loss: bool,
+        network_game: bool,
+        rate: TickRate,
+    ) -> Result<Self, CountdownSpecError> {
+        if !remaining_seconds.is_finite() {
+            return Err(CountdownSpecError::NonFiniteRemaining {
+                seconds: remaining_seconds,
+            });
+        }
+        Ok(Self {
+            remaining_seconds,
+            no_loss,
+            network_game,
+            rate,
+        })
+    }
+
+    /// `MISSION_TIMER`'s seconds — the value armed at mission start.
+    pub fn remaining_seconds(self) -> f64 {
+        self.remaining_seconds
+    }
+
+    /// Whether the field's second child spelled `NOLOSS`.
+    pub fn no_loss(self) -> bool {
+        self.no_loss
+    }
+
+    /// The session's network mode the caller declared.
+    pub fn network_game(self) -> bool {
+        self.network_game
+    }
+
+    /// The session's fixed gameplay rate the countdown decrements against.
+    pub fn rate(self) -> TickRate {
+        self.rate
+    }
+}
+
+/// The session's mission countdown: the recreation of the original's one
+/// mission timer (global `0x71b468`, constructor/reset `0x46c4f0`) as the
+/// **producer** of the [`MissionCountdown`] input
+/// [`MissionState::step_with_countdown`] consumes.
+///
+/// It keeps the fields the original's expiry path reads — `[+4]` remaining
+/// game-time seconds, `[+0x10]` running, `[+0x14]` NOLOSS — plus the two
+/// session constants the measured exclusions and the decrement source
+/// (network game, the fixed tick rate). The original's millisecond copy
+/// `[+8]` is not modelled: it counts wall time and F16-F records it is
+/// used for neither the expiry poll nor display, so the seconds counter
+/// is the whole expiry state here.
+///
+/// One mission tick of it mirrors the measured order inside
+/// `CZMission::Update` (`0x46a490`): the decrement (`0x46c5f0`, `[+4] -=
+/// dt` while running) and then the expiry check (`0x46c640`), both before
+/// the objective passes the step runs. The exclusions are not folded into
+/// `expired`: the input reports the poll's observation together with both
+/// exclusion flags, so [`MissionCountdown::preempts`] stays the single
+/// place the end-decision is taken. The poll's one side effect is kept:
+/// under `NOLOSS` (and not in a network game, where the whole check is
+/// skipped) it zeroes `[+4]` and reports no expiry — the countdown is
+/// clamped at zero instead of ending the mission.
+///
+/// It is also the consumer of the mission-timer directives the evaluator
+/// emits — `RESET_TIMER`, `END_TIMER`, `TIMER_ADJUST` and
+/// `ADJUST_TIMER_WHEN_I_COMPLETE` — applied exactly once each by
+/// [`ExecutionKey`], after the step that emitted them, so a replayed tick
+/// or a restored session cannot arm or stop the timer twice.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Countdown {
+    /// `[+4]` — remaining game-time seconds. Never converted: seconds arm
+    /// it, seconds decrement it and seconds compare it; the tick coupling
+    /// is the session's own dt, not a seconds-to-ticks guess.
+    remaining_seconds: f64,
+    /// `[+0x10]` — whether the countdown is running.
+    running: bool,
+    /// `[+0x14]` — the record's `NOLOSS` flag.
+    no_loss: bool,
+    /// Session constant — the expiry check is skipped in network games.
+    network_game: bool,
+    /// The session's fixed rate. `None` on a session that declared none:
+    /// such a countdown can never run — `running` implies a rate to
+    /// decrement by — and a directive that would arm it is refused by
+    /// name ([`CountdownFault::NoDeclaredTickRate`]).
+    rate: Option<TickRate>,
+    /// Timer-directive execution keys already consumed — the exactly-once
+    /// set, kept across ticks and across a save/restore.
+    consumed: BTreeSet<ExecutionKey>,
+}
+
+impl Countdown {
+    /// A session launched with no countdown: the measured state of a
+    /// mission that spells no `MISSION_TIMER` — stopped at zero, reporting
+    /// [`MissionCountdown::NONE`] every tick. A timer directive can still
+    /// arm it if the session declared a rate.
+    fn unarmed() -> Self {
+        Self {
+            remaining_seconds: 0.0,
+            running: false,
+            no_loss: false,
+            network_game: false,
+            rate: None,
+            consumed: BTreeSet::new(),
+        }
+    }
+
+    /// Arms from `MISSION_TIMER`'s field: the parse stores the value
+    /// (`0x46c510`) and mission start starts the countdown iff it is
+    /// `> 0.0f` (`0x469741`) — the *mission-start* rule, which is a
+    /// different site from `RESET_TIMER`'s unconditional start.
+    fn armed(spec: CountdownSpec) -> Self {
+        Self {
+            remaining_seconds: spec.remaining_seconds,
+            running: spec.remaining_seconds > 0.0,
+            no_loss: spec.no_loss,
+            network_game: spec.network_game,
+            rate: Some(spec.rate),
+            consumed: BTreeSet::new(),
+        }
+    }
+
+    /// One mission tick of the countdown, then the measured poll — the
+    /// [`MissionCountdown`] input [`MissionState::step_with_countdown`]
+    /// consumes, in the order `0x46a490` runs them: the decrement first
+    /// (`0x46c5f0`, `[+4] -= dt` while running — the session's fixed tick
+    /// dt as `game_dt`), then the expiry check (`0x46c640`), before the
+    /// tick's objective passes.
+    ///
+    /// A tick that does not advance is refused exactly as the step is —
+    /// the countdown consumes no time for a tick that never ran.
+    ///
+    /// # Errors
+    ///
+    /// [`TickError::NotAdvancing`] when `tick` is not after `last`.
+    fn tick(&mut self, tick: Tick, last: Option<Tick>) -> Result<MissionCountdown, TickError> {
+        if let Some(last) = last
+            && tick <= last
+        {
+            return Err(TickError::NotAdvancing { last, given: tick });
+        }
+        if self.running {
+            // `running` implies `rate`: the only armed paths are `armed`,
+            // which requires the spec's rate, and a `RESET_TIMER`
+            // application, which refuses without one.
+            self.remaining_seconds -= self
+                .rate
+                .expect("a running countdown holds its session rate")
+                .dt_seconds();
+        }
+        // The poll's observation: running and at/past zero. Both measured
+        // exclusions stay out of `expired` — they are the input's own
+        // fields, and `MissionCountdown::preempts` is the single place the
+        // end-decision is taken. The poll's own side effect is kept here:
+        // under NOLOSS (with the check not skipped — a network game does
+        // not even compare) it zeroes `[+4]` instead of expiring, so the
+        // countdown clamps at zero rather than ending the mission.
+        let expired = self.running && self.remaining_seconds <= 0.0;
+        if expired && self.no_loss && !self.network_game {
+            self.remaining_seconds = 0.0;
+        }
+        Ok(MissionCountdown {
+            expired,
+            no_loss: self.no_loss,
+            network_game: self.network_game,
+        })
+    }
+
+    /// Applies every countdown directive in `state`'s log that this
+    /// countdown has not already consumed, exactly once per execution key,
+    /// and reports each outcome. `state` is the evaluator that just
+    /// stepped — the directives the tick emitted apply *after* the tick's
+    /// own poll, the order `0x46a490` runs the completion effects and the
+    /// countdown in.
+    fn apply_new(&mut self, state: &MissionState) -> Vec<CountdownDirectiveOutcome> {
+        let mut outcomes = Vec::new();
+        for emission in state.directives() {
+            if !matches!(
+                emission.operation,
+                DirectiveOperation::ResetMissionTimer
+                    | DirectiveOperation::AdjustMissionTimer
+                    | DirectiveOperation::EndMissionTimer
+            ) {
+                continue;
+            }
+            let key = emission.key.execution_key();
+            if !self.consumed.insert(key) {
+                continue;
+            }
+            outcomes.push(self.apply(emission, key));
+        }
+        outcomes
+    }
+
+    /// One timer directive, decoded the way the measured sites spell it —
+    /// never from a shape the parse could not produce.
+    fn apply(
+        &mut self,
+        emission: &DirectiveEmission,
+        key: ExecutionKey,
+    ) -> CountdownDirectiveOutcome {
+        let refused = |fault| CountdownDirectiveOutcome::Refused { key, fault };
+        let effect = match emission.operation {
+            // `RESET_TIMER`'s wake handler (`0x469d14`): only when the
+            // spelled value is `>= 0.0f` → set remaining (`0x46c510`) and
+            // start (`0x46c5a0`). The start here is unconditional — the
+            // `> 0.0f` rule belongs to the mission-start site, not to this
+            // one — so a spelled zero arms and expires on the next tick.
+            DirectiveOperation::ResetMissionTimer => match emission.args.as_slice() {
+                [value] => match directive_seconds(value) {
+                    Some(seconds) if seconds >= 0.0 => match self.rate {
+                        Some(_) => {
+                            self.remaining_seconds = seconds;
+                            self.running = true;
+                            CountdownEffect::Armed { seconds }
+                        }
+                        None => {
+                            return refused(CountdownFault::NoDeclaredTickRate);
+                        }
+                    },
+                    Some(seconds) => {
+                        return refused(CountdownFault::NegativeReset { seconds });
+                    }
+                    None => {
+                        return refused(CountdownFault::MalformedArgs {
+                            operation: emission.operation,
+                        });
+                    }
+                },
+                _ => {
+                    return refused(CountdownFault::MalformedArgs {
+                        operation: emission.operation,
+                    });
+                }
+            },
+            // `END_TIMER` is presence-only: the parse checks no tag and no
+            // child (`0x468ac8`), so its arguments — if a site spelled any —
+            // mean nothing, and the completion site stops the timer
+            // (`0x46ae75` → `0x46c5c0`, running cleared).
+            DirectiveOperation::EndMissionTimer => {
+                self.running = false;
+                CountdownEffect::Stopped
+            }
+            // `TIMER_ADJUST` always parses adjust (`+0x5c0 = 2`); the
+            // two-word `ADJUST_TIMER_WHEN_I_COMPLETE` spells the mode at
+            // child0 (`SET`/`ADJUST`; any other word: the parse writes no
+            // mode and the site does nothing) and the seconds at child1.
+            // The completion site then runs mode 1 → set (`0x46c510`) or
+            // mode 2 → add (`0x46c550`) — neither touches running, and the
+            // millisecond copy `[+8]` is the field they both settle into,
+            // which the seconds counter mirrors.
+            DirectiveOperation::AdjustMissionTimer => match adjust_mode(&emission.args) {
+                Ok(Adjust::Set(seconds)) => {
+                    self.remaining_seconds = seconds;
+                    CountdownEffect::Set { seconds }
+                }
+                Ok(Adjust::Adjusted { seconds }) => {
+                    self.remaining_seconds += seconds;
+                    CountdownEffect::Adjusted { seconds }
+                }
+                Err(fault) => return refused(fault),
+            },
+            // `apply_new` only hands countdown operations here.
+            _ => unreachable!("a non-countdown directive cannot reach Countdown::apply"),
+        };
+        CountdownDirectiveOutcome::Applied { key, effect }
+    }
+
+    /// `[+4]` — remaining game-time seconds.
+    pub fn remaining_seconds(&self) -> f64 {
+        self.remaining_seconds
+    }
+
+    /// `[+0x10]` — whether the countdown is running.
+    pub fn running(&self) -> bool {
+        self.running
+    }
+
+    /// `[+0x14]` — the record's `NOLOSS` flag.
+    pub fn no_loss(&self) -> bool {
+        self.no_loss
+    }
+
+    /// Whether the session is a network game — the expiry check's other
+    /// measured exclusion.
+    pub fn network_game(&self) -> bool {
+        self.network_game
+    }
+
+    /// The session's fixed rate the countdown decrements against, when one
+    /// was declared.
+    pub fn rate(&self) -> Option<TickRate> {
+        self.rate
+    }
+
+    /// The countdown's save record: the timer's fields and the
+    /// timer-directive keys already consumed, so a restored session keeps
+    /// both the countdown and its exactly-once set.
+    fn snapshot(&self) -> CountdownSnapshot {
+        CountdownSnapshot {
+            remaining_seconds: self.remaining_seconds,
+            running: self.running,
+            no_loss: self.no_loss,
+            network_game: self.network_game,
+            rate: self.rate,
+            consumed: self.consumed.iter().copied().collect(),
+        }
+    }
+
+    /// Rebuilds a countdown from a save record. The record is checked
+    /// rather than trusted: the seconds are finite, a running countdown
+    /// holds its rate, and every consumed key names a timer-directive
+    /// emission of this session — the same "could a live session have
+    /// written this" check the other records get.
+    ///
+    /// # Errors
+    ///
+    /// [`CountdownRestoreError`] on a record no live session could write.
+    fn restore(
+        snapshot: &CountdownSnapshot,
+        state: &MissionStateSnapshot,
+    ) -> Result<Self, CountdownRestoreError> {
+        if !snapshot.remaining_seconds.is_finite() {
+            return Err(CountdownRestoreError::NonFiniteRemaining {
+                seconds: snapshot.remaining_seconds,
+            });
+        }
+        if snapshot.running && snapshot.rate.is_none() {
+            return Err(CountdownRestoreError::RunningWithoutRate);
+        }
+        let mut consumed = BTreeSet::new();
+        for &key in &snapshot.consumed {
+            if key.session != state.session {
+                return Err(CountdownRestoreError::ForeignConsumed { key });
+            }
+            if !consumed.insert(key) {
+                return Err(CountdownRestoreError::DuplicateConsumed { key });
+            }
+            match state
+                .directives
+                .iter()
+                .find(|emission| emission.key.execution_key() == key)
+            {
+                Some(emission)
+                    if matches!(
+                        emission.operation,
+                        DirectiveOperation::ResetMissionTimer
+                            | DirectiveOperation::AdjustMissionTimer
+                            | DirectiveOperation::EndMissionTimer
+                    ) => {}
+                Some(_) => return Err(CountdownRestoreError::NonTimerConsumed { key }),
+                None => return Err(CountdownRestoreError::UnemittedConsumed { key }),
+            }
+        }
+        Ok(Self {
+            remaining_seconds: snapshot.remaining_seconds,
+            running: snapshot.running,
+            no_loss: snapshot.no_loss,
+            network_game: snapshot.network_game,
+            rate: snapshot.rate,
+            consumed,
+        })
+    }
+}
+
+/// The seconds one timer directive spells. The record sites take a real
+/// or an int child (the parse's own type checks, mission.cpp lines 3566 /
+/// 4083 / 4101 in the M01-LC findings), so both `Value::Float` and
+/// `Value::Int` decode; anything else is a shape the parse could not
+/// produce.
+fn directive_seconds(value: &Value) -> Option<f64> {
+    match value {
+        Value::Float(seconds) => Some(*seconds),
+        Value::Int(seconds) => Some(f64::from(*seconds)),
+        _ => None,
+    }
+}
+
+/// The mode an `AdjustMissionTimer` directive spells.
+enum Adjust {
+    /// `ADJUST_TIMER_WHEN_I_COMPLETE`'s `SET` word: remaining replaced.
+    Set(f64),
+    /// `TIMER_ADJUST` (which always parses adjust) or the `ADJUST` word:
+    /// seconds added to remaining.
+    Adjusted { seconds: f64 },
+}
+
+/// Decodes the adjust spelling: `[seconds]` is `TIMER_ADJUST` (always
+/// adjust), `["SET", seconds]` and `["ADJUST", seconds]` are the two-word
+/// key; a different first word is the parse's "no write" — reported, never
+/// guessed — and any other shape is malformed.
+fn adjust_mode(args: &[Value]) -> Result<Adjust, CountdownFault> {
+    match args {
+        [value] => directive_seconds(value)
+            .map(|seconds| Adjust::Adjusted { seconds })
+            .ok_or(CountdownFault::MalformedArgs {
+                operation: DirectiveOperation::AdjustMissionTimer,
+            }),
+        [Value::Str(mode), value] => match (mode.as_str(), directive_seconds(value)) {
+            ("SET", Some(seconds)) => Ok(Adjust::Set(seconds)),
+            ("ADJUST", Some(seconds)) => Ok(Adjust::Adjusted { seconds }),
+            ("SET" | "ADJUST", None) => Err(CountdownFault::MalformedArgs {
+                operation: DirectiveOperation::AdjustMissionTimer,
+            }),
+            _ => Err(CountdownFault::UnknownAdjustMode),
+        },
+        _ => Err(CountdownFault::MalformedArgs {
+            operation: DirectiveOperation::AdjustMissionTimer,
+        }),
+    }
+}
+
+/// What a consumed timer directive did to the countdown.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CountdownEffect {
+    /// `RESET_TIMER`: remaining set to the spelled seconds and the
+    /// countdown (re)started.
+    Armed { seconds: f64 },
+    /// A `SET` adjust: remaining replaced.
+    Set { seconds: f64 },
+    /// An `ADJUST` adjust — `TIMER_ADJUST` always parses this way:
+    /// seconds added to remaining.
+    Adjusted { seconds: f64 },
+    /// `END_TIMER`: the countdown stopped.
+    Stopped,
+}
+
+/// Why a timer directive did not run.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CountdownFault {
+    /// The session declared no tick rate, so there is no honest dt to
+    /// decrement an armed countdown by — the arm is refused, not guessed.
+    NoDeclaredTickRate,
+    /// `RESET_TIMER`'s spelled value is negative: the wake gate
+    /// (`+0x5e0 >= 0.0f`) declines it, so the set-and-start does not run.
+    NegativeReset { seconds: f64 },
+    /// `ADJUST_TIMER_WHEN_I_COMPLETE`'s mode word is neither `SET` nor
+    /// `ADJUST`: the parse writes no mode for it, so the site does nothing
+    /// — reported, not guessed.
+    UnknownAdjustMode,
+    /// The emission's arguments are a shape the measured parse could not
+    /// produce — a producer defect, never an effect.
+    MalformedArgs { operation: DirectiveOperation },
+}
+
+impl fmt::Display for CountdownFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoDeclaredTickRate => write!(
+                f,
+                "the session declared no tick rate, so an armed countdown has no dt"
+            ),
+            Self::NegativeReset { seconds } => {
+                write!(
+                    f,
+                    "RESET_TIMER spelled {seconds}s < 0, so the wake gate declines it"
+                )
+            }
+            Self::UnknownAdjustMode => write!(
+                f,
+                "ADJUST_TIMER_WHEN_I_COMPLETE's mode is neither SET nor ADJUST, so the site does nothing"
+            ),
+            Self::MalformedArgs { operation } => {
+                write!(f, "malformed args for {}", operation.code())
+            }
+        }
+    }
+}
+
+/// What one timer-directive emission did when the countdown consumed it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CountdownDirectiveOutcome {
+    /// The directive ran its measured effect.
+    Applied {
+        /// The emission's exactly-once identity.
+        key: ExecutionKey,
+        /// What it did to the countdown.
+        effect: CountdownEffect,
+    },
+    /// The directive did not run: the named reason it could not.
+    Refused {
+        /// The emission's exactly-once identity.
+        key: ExecutionKey,
+        /// Why it did not run.
+        fault: CountdownFault,
+    },
+}
+
+/// What the session's countdown did on one tick: the input it produced
+/// and the timer directives it consumed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CountdownTick {
+    /// The [`MissionCountdown`] [`MissionState::step_with_countdown`]
+    /// consumed this tick — `MissionCountdown::NONE` on a session with no
+    /// countdown.
+    pub input: MissionCountdown,
+    /// The timer directives consumed after the step, in directive-log
+    /// order — applied or refused by name.
+    pub directives: Vec<CountdownDirectiveOutcome>,
+}
+
+/// The countdown's save record.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CountdownSnapshot {
+    /// `[+4]` — remaining game-time seconds; finite or the record is a lie.
+    pub remaining_seconds: f64,
+    /// `[+0x10]` — whether the countdown is running.
+    pub running: bool,
+    /// `[+0x14]` — the record's `NOLOSS` flag.
+    pub no_loss: bool,
+    /// The session's network mode.
+    pub network_game: bool,
+    /// The session's fixed rate; `None` only on a countdown that cannot
+    /// run.
+    pub rate: Option<TickRate>,
+    /// The timer-directive execution keys the countdown already consumed.
+    pub consumed: Vec<ExecutionKey>,
+}
+
+/// Why a countdown save record was refused: a record no live session
+/// could write is a defect, not a state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CountdownRestoreError {
+    /// `remaining_seconds` is not finite.
+    NonFiniteRemaining { seconds: f64 },
+    /// The record claims a running countdown on a session that declared
+    /// no rate: nothing could have armed it.
+    RunningWithoutRate,
+    /// A consumed key belongs to another session.
+    ForeignConsumed { key: ExecutionKey },
+    /// A consumed key appears twice.
+    DuplicateConsumed { key: ExecutionKey },
+    /// A consumed key names an emission the evaluator's record does not
+    /// hold — the countdown cannot have consumed a directive that was
+    /// never emitted.
+    UnemittedConsumed { key: ExecutionKey },
+    /// A consumed key names an emission that is not a timer directive —
+    /// the countdown could not have consumed it.
+    NonTimerConsumed { key: ExecutionKey },
+}
+
+impl fmt::Display for CountdownRestoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFiniteRemaining { seconds } => {
+                write!(f, "countdown record's remaining {seconds} is not finite")
+            }
+            Self::RunningWithoutRate => write!(
+                f,
+                "countdown record claims running on a session with no declared rate"
+            ),
+            Self::ForeignConsumed { key } => write!(
+                f,
+                "countdown record consumed a key from session {}",
+                key.session.0
+            ),
+            Self::DuplicateConsumed { key } => {
+                write!(f, "countdown record lists consumed key {key:?} twice")
+            }
+            Self::UnemittedConsumed { key } => write!(
+                f,
+                "countdown record consumed {key:?}, which the evaluator never emitted"
+            ),
+            Self::NonTimerConsumed { key } => write!(
+                f,
+                "countdown record consumed {key:?}, which is not a timer directive"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CountdownRestoreError {}
 
 // ---------------------------------------------------------------------------
 // The actor-fact table: `MissionFacts` populated from authoritative state.
@@ -1323,6 +2048,9 @@ pub struct ObservedTick {
 pub struct ObservedStep {
     /// The tick result [`MissionSession::step`] produced.
     pub result: TickResult,
+    /// What the session's countdown did on the tick: the input it produced
+    /// and the timer directives it consumed.
+    pub countdown: CountdownTick,
     /// What each record in the input did.
     pub facts: Vec<FactObservation>,
 }
@@ -1363,6 +2091,10 @@ pub struct MissionTick {
     /// mission's sound slots and animation it selects — the selection the host
     /// drives the end screen from, not a playback.
     pub presentation: Option<MissionEndPresentation>,
+    /// What the session's countdown did on the tick: the input it produced
+    /// for [`MissionState::step_with_countdown`] and the timer directives
+    /// it consumed.
+    pub countdown: CountdownTick,
     /// What the host applied or refused for this tick.
     pub host: HostReport,
 }
@@ -1931,6 +2663,10 @@ pub struct MissionSessionSnapshot {
     /// `Condition::ActorIs` would observe is gameplay-relevant, so the
     /// table crosses the save beside the two other records.
     pub facts: ActorFactSnapshot,
+    /// The mission countdown's record: a ticking countdown's remaining
+    /// time and the timer directives it already consumed are
+    /// gameplay-relevant, so they cross the save beside the other records.
+    pub countdown: CountdownSnapshot,
 }
 
 /// Why a session could not be restored.
@@ -1945,6 +2681,8 @@ pub enum SessionRestoreError {
     Host(HostRestoreError),
     /// The actor-fact record is checked rather than trusted.
     Facts(FactRestoreError),
+    /// The countdown record is checked rather than trusted.
+    Countdown(CountdownRestoreError),
 }
 
 impl fmt::Display for SessionRestoreError {
@@ -1958,6 +2696,7 @@ impl fmt::Display for SessionRestoreError {
             Self::State(e) => write!(f, "evaluator record refused: {e}"),
             Self::Host(e) => write!(f, "host record refused: {e}"),
             Self::Facts(e) => write!(f, "actor-fact record refused: {e}"),
+            Self::Countdown(e) => write!(f, "countdown record refused: {e}"),
         }
     }
 }

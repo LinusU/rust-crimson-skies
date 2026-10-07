@@ -249,9 +249,13 @@
 //! `Condition::ActorIs` reads — measured or refused by name, never because
 //! the `ActorState` variant exists — and
 //! [`mission::MissionSession::advance_observed`] is the wired path over one
-//! tick's registrations and transitions. It also moves the evaluator state,
-//! that host record and the fact table together across a save. Native host
-//! bindings are F38.
+//! tick's registrations and transitions. Its [`mission::Countdown`] is the
+//! producer of the mission countdown — the recreation of the original's one
+//! mission timer, measured or refused by name — feeding every tick's
+//! `MissionState::step_with_countdown` call and consuming the timer
+//! directives the evaluator emits. It also moves the evaluator state,
+//! that host record, the fact table and the countdown together across a
+//! save. Native host bindings are F38.
 //!
 //! [`objectives`] is the F39 objective/trigger/spawn/timer runtime
 //! (`specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`):
