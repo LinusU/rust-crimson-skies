@@ -353,7 +353,10 @@ fn accept_m01_lc_lowering_adapter_the_census_reports_complete_rows_and_keeps_the
     );
     for mission in &unmeasured_rows {
         assert!(
-            !census.row(mission).expect("a measured row is a row").is_complete(),
+            !census
+                .row(mission)
+                .expect("a measured row is a row")
+                .is_complete(),
             "{mission}: a row whose directives include an unmeasured key stays \
              incomplete"
         );
