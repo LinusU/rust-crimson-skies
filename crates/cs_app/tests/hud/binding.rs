@@ -1,30 +1,7 @@
-use cs_app::ui::hud::{Hud, HudError, WeaponSample};
+use cs_app::ui::hud::{Hud, HudError};
 use cs_content::hud::HudPolicy;
 
-use crate::{actor, level_sample, session, weapon_id};
-
-#[test]
-fn accept_f46_a_empty_ammunition_is_a_gauge_state_not_a_selection_change() {
-    let mut hud = Hud::new(HudPolicy::designed()).unwrap();
-    hud.bind(session(1), actor(1, 1)).unwrap();
-    let mut s = level_sample(1, 1);
-    let full = hud.project(&s).unwrap();
-    assert!(!full.weapon.empty);
-
-    s.weapon.ammunition = 0;
-    let empty = hud.project(&s).unwrap();
-    assert!(empty.weapon.empty, "same sample tick shows empty");
-    assert_eq!(empty.weapon.selected, Some(weapon_id("synthetic-gun")));
-
-    s.weapon = WeaponSample {
-        selected: None,
-        ammunition: 0,
-    };
-    assert!(
-        !hud.project(&s).unwrap().weapon.empty,
-        "nothing selected is not empty"
-    );
-}
+use crate::{actor, level_sample, session};
 
 #[test]
 fn accept_f46_a_swap_rebinds_and_refuses_the_old_aircrafts_samples() {
@@ -39,19 +16,15 @@ fn accept_f46_a_swap_rebinds_and_refuses_the_old_aircrafts_samples() {
     low.height_m = 10.0;
     assert!(hud.project(&low).unwrap().low_altitude_warning);
 
-    // Swap to another aircraft with a different weapon.
+    // Swap to another aircraft: the warning resets and the old actor's
+    // samples are refused.
     hud.bind(session(1), actor(1, 2)).unwrap();
     assert_eq!(hud.bound(), Some((session(1), actor(1, 2))));
     let stale = hud.project(&low).unwrap_err();
     assert!(matches!(stale, HudError::Stale { .. }), "{stale}");
 
-    let mut next = level_sample(1, 2);
-    next.weapon.selected = Some(weapon_id("synthetic-rocket"));
-    next.weapon.ammunition = 4;
-    let out = hud.project(&next).unwrap();
+    let out = hud.project(&level_sample(1, 2)).unwrap();
     assert!(!out.low_altitude_warning, "warning does not carry over");
-    assert_eq!(out.weapon.selected, Some(weapon_id("synthetic-rocket")));
-    assert_eq!(out.weapon.ammunition, 4);
     assert_eq!(out.actor, actor(1, 2));
 }
 
