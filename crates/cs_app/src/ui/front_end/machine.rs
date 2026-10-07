@@ -176,6 +176,24 @@ pub struct Outcome {
     pub effects: Vec<Effect>,
 }
 
+/// What an action would do, decided **before** anything happens.
+///
+/// [`FrontEnd::plan`] runs the transition on a throwaway copy of the machine
+/// and reports the screens it would move between and the domain transaction it
+/// would ask for. That is what lets the F45-C wiring run the transaction
+/// first: a domain refusal is returned while the real machine is still exactly
+/// where it was, instead of after a screen that already advanced over a
+/// transaction that never happened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Plan {
+    /// The screen the action was offered on.
+    pub from: Screen,
+    /// The screen it leads to.
+    pub to: Screen,
+    /// The domain transaction it asks for, if any.
+    pub request: Option<Request>,
+}
+
 /// Why an action was refused. A refusal changes nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
@@ -534,6 +552,54 @@ impl FrontEnd {
     pub fn activate_focus(&mut self) -> Result<Outcome, Refusal> {
         let action = self.focus.ok_or(Refusal::NothingFocused)?;
         self.apply(action)
+    }
+
+    /// What applying `action` would do, with the machine untouched: the
+    /// screens it would move between and the request it would ask for.
+    ///
+    /// The plan is the transition itself, run on a copy, so it cannot drift
+    /// from what [`Self::apply`] would really do — including every refusal and
+    /// every guard.
+    ///
+    /// # Errors
+    ///
+    /// Exactly the [`Refusal`] [`Self::apply`] would return.
+    pub fn plan(&self, action: Action) -> Result<Plan, Refusal> {
+        let mut probe = self.clone();
+        Ok(Self::plan_of(&probe.apply(action)?))
+    }
+
+    /// What activating the focused button would do; as [`Self::plan`].
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::NothingFocused`] with no focus, otherwise as [`Self::plan`].
+    pub fn plan_focus(&self) -> Result<Plan, Refusal> {
+        let mut probe = self.clone();
+        Ok(Self::plan_of(&probe.activate_focus()?))
+    }
+
+    /// What answering the open discard prompt would do; as [`Self::plan`].
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::NoPendingDiscard`] with no prompt open, otherwise as
+    /// [`Self::plan`].
+    pub fn plan_pending(&self) -> Result<Plan, Refusal> {
+        let mut probe = self.clone();
+        Ok(Self::plan_of(&probe.confirm_discard()?))
+    }
+
+    fn plan_of(outcome: &Outcome) -> Plan {
+        let request = outcome.effects.iter().find_map(|effect| match effect {
+            Effect::Request(request) => Some(request.clone()),
+            _ => None,
+        });
+        Plan {
+            from: outcome.from,
+            to: outcome.to,
+            request,
+        }
     }
 
     fn reset_focus(&mut self) {

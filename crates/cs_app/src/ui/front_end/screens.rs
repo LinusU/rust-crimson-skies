@@ -458,6 +458,37 @@ impl ScreenSession {
         })
     }
 
+    /// The authored button under a surface point, without pressing it: the
+    /// same hit-test [`Self::click`] runs, exposed so a caller can *plan* a
+    /// click (decide what it would do) before anything moves.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::click`] for the lookup itself: [`ScreenSessionError::ScreenNotInDeck`],
+    /// [`ScreenSessionError::DegenerateSurface`] or
+    /// [`ScreenSessionError::NoButtonAt`].
+    pub fn action_at(
+        &self,
+        surface: (u32, u32),
+        x: u32,
+        y: u32,
+    ) -> Result<Action, ScreenSessionError> {
+        let screen = self.front_end.screen();
+        let assets = self
+            .deck
+            .assets(screen)
+            .ok_or(ScreenSessionError::ScreenNotInDeck { screen })?;
+        let fit = AspectFit::new(assets.image(), surface)
+            .ok_or(ScreenSessionError::DegenerateSurface { surface })?;
+        assets
+            .buttons()
+            .iter()
+            .rev()
+            .find(|button| fit.map_rect(button.rect).contains(x, y))
+            .map(|button| button.action)
+            .ok_or(ScreenSessionError::NoButtonAt { x, y })
+    }
+
     /// Presses the authored button under a surface point. A point outside the
     /// fitted image or on no hotspot hits nothing and changes nothing; a later
     /// button wins an overlap, exactly like [`ScreenLayout::hit_test`].
@@ -473,20 +504,7 @@ impl ScreenSession {
         x: u32,
         y: u32,
     ) -> Result<Outcome, ScreenSessionError> {
-        let screen = self.front_end.screen();
-        let assets = self
-            .deck
-            .assets(screen)
-            .ok_or(ScreenSessionError::ScreenNotInDeck { screen })?;
-        let fit = AspectFit::new(assets.image(), surface)
-            .ok_or(ScreenSessionError::DegenerateSurface { surface })?;
-        let action = assets
-            .buttons()
-            .iter()
-            .rev()
-            .find(|button| fit.map_rect(button.rect).contains(x, y))
-            .map(|button| button.action)
-            .ok_or(ScreenSessionError::NoButtonAt { x, y })?;
+        let action = self.action_at(surface, x, y)?;
         self.press(action)
     }
 
@@ -500,6 +518,22 @@ impl ScreenSession {
         let outcome = self
             .front_end
             .apply(action)
+            .map_err(ScreenSessionError::Refused)?;
+        self.entered(&outcome)?;
+        Ok(outcome)
+    }
+
+    /// Reports a failed load: back to the flight check with the draft intact,
+    /// through the machine's own `LoadFailed` row.
+    ///
+    /// # Errors
+    ///
+    /// [`ScreenSessionError::Refused`] when the machine is not on the loading
+    /// screen; the machine is unchanged.
+    pub fn report_load_failure(&mut self, reason: &str) -> Result<Outcome, ScreenSessionError> {
+        let outcome = self
+            .front_end
+            .report_load_failure(reason)
             .map_err(ScreenSessionError::Refused)?;
         self.entered(&outcome)?;
         Ok(outcome)

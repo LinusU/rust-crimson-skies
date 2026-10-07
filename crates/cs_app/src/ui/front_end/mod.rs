@@ -35,6 +35,7 @@
 //! Capture of the original flow is F45-D's. See
 //! `docs/findings/2026-10-01-f45-a-frontend-state-table.md` for F45-A's unknowns.
 
+mod flow;
 mod machine;
 mod screens;
 
@@ -42,9 +43,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cs_content::ui_layout::ScreenLayout;
 
+pub use flow::{
+    ConstructionInputs, FlowDomainView, FlowError, FlowSetup, FrontEndFlow, LoadError, LoadFlow,
+    LoadPlan, LoadVerdict, ResourceLedger, ResourceProblem,
+};
 pub use machine::{
     ConstructionDraft, Effect, FrontEnd, LoadFailure, Loadout, LoadoutProblem, MissionOutcome,
-    Outcome, ProfileIntent, Refusal, Request,
+    Outcome, Plan, ProfileIntent, Refusal, Request,
 };
 pub use screens::{
     Button, ButtonView, DeckError, ScreenAssetError, ScreenAssets, ScreenDeck, ScreenSession,
