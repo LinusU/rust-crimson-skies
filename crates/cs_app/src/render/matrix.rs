@@ -34,15 +34,20 @@
 //! | `close_up_aircraft` | aircraft | `healthy` under the root `bloodhawk` | `bloodhawk`/`healthy`, 29 mesh-bound descendants |
 //!
 //! **The ranking rule is one rule for every subject:** among the candidates
-//! whose stored mesh holds at least one position and one polygon, the largest
-//! stored bounding-box volume wins, ties broken by the lowest stored slot.
-//! Measured, that picks the 17 km horizon dome for `skyline`, the cockpit's
-//! largest interior mesh for `cockpit`, the first billboard of the vegetation
-//! instance for `vegetation` (every billboard is a flat quad of equal zero
-//! volume, so the tie rule decides), the `moon` for `night_effects` (its
-//! sibling `stars` stores no geometry at all) and the largest intact airframe
-//! part for `close_up_aircraft`. The rule is declared once and re-derived
-//! from the installation on every run: nothing here pins a mesh-array index.
+//! whose stored mesh holds at least one position and one polygon and builds
+//! through the production adapter, the one that draws the most triangles
+//! wins, ties broken by the lowest stored slot. Measured on this
+//! installation, that picks the horizon subtree's most detailed mesh for
+//! `skyline` (17 488 stored units wide), the cockpit assembly for `cockpit`
+//! (231 triangles, six material groups), the first billboard of the
+//! vegetation instance for `vegetation` (every billboard is a two-triangle
+//! quad, so the tie rule decides), the `moon` for `night_effects` (its
+//! sibling `stars` stores no geometry at all) and the most detailed part of
+//! the intact airframe for `close_up_aircraft` (251 triangles, seven
+//! material groups). The rule is declared once, it is a *drawn-geometry*
+//! rule rather than an extent one — a needle-shaped mesh cannot win by being
+//! long — and it is re-derived from the installation on every run: nothing
+//! here pins a mesh-array index.
 //!
 //! # What a row of this matrix is, and is not
 //!
@@ -448,7 +453,7 @@ pub struct ResolvedSubject {
     pub anchor_name: String,
     /// The candidate that was drawn.
     pub chosen: CandidateNode,
-    /// Candidates passed over or refused, each with its reason.
+    /// Candidates that could not be drawn, each with the reason.
     pub skipped: Vec<CandidateSkip>,
     /// Triangles the production render mesh holds for it.
     pub triangles: usize,
@@ -1038,22 +1043,24 @@ fn candidates(
         .collect()
 }
 
-/// One candidate's measured shape, before anything is uploaded.
-#[derive(Clone, Debug, PartialEq)]
-struct CandidateShape {
+/// One candidate that could be drawn, with the facts the ranking compares.
+#[derive(Debug)]
+struct DrawnCandidate {
     /// The candidate itself.
     candidate: CandidateNode,
-    /// The stored bounding-box volume, in stored units cubed.
-    volume: f64,
-    /// The stored extent, in stored units.
+    /// Triangles the production render mesh holds for it.
+    triangles: usize,
+    /// The stored extent of the mesh, in stored units.
     extent: [f32; 3],
+    /// The production render mesh itself.
+    render: RenderMesh,
 }
 
-/// The stored bounding box of one mesh and its volume, straight from the
-/// stored position array: `drawable`, `volume`, `extent`.
-fn shape(mesh: &GameZMesh) -> (bool, f64, [f32; 3]) {
+/// Whether a stored mesh has anything to draw, and its bounding box:
+/// `drawable`, `extent`.
+fn bounds(mesh: &GameZMesh) -> (bool, [f32; 3]) {
     if mesh.mesh.positions.is_empty() || mesh.mesh.polygons.is_empty() {
-        return (false, 0.0, [0.0; 3]);
+        return (false, [0.0; 3]);
     }
     let mut min = [f32::MAX; 3];
     let mut max = [f32::MIN; 3];
@@ -1067,30 +1074,25 @@ fn shape(mesh: &GameZMesh) -> (bool, f64, [f32; 3]) {
     for axis in 0..3 {
         extent[axis] = max[axis] - min[axis];
     }
-    if !extent.iter().all(|value| value.is_finite()) {
-        return (false, 0.0, extent);
-    }
-    let volume = f64::from(extent[0]) * f64::from(extent[1]) * f64::from(extent[2]);
-    (true, volume, extent)
+    (extent.iter().all(|value| value.is_finite()), extent)
 }
 
-/// Reads a subject's selection out of its container: ranks the candidates,
-/// uploads the first drawable one, and counts the coverage of the stored
-/// material records it references.
+/// Reads a subject's selection out of its container: builds every candidate
+/// the production adapter accepts, ranks them, and counts the coverage of the
+/// stored material records the winner references.
 ///
-/// The ranking is the module's one declared rule — largest stored
-/// bounding-box volume, ties to the lowest slot — applied to the candidates
-/// [`select`] produced. Every candidate that is not the one drawn is recorded
-/// in [`ResolvedSubject::skipped`] with the reason it was passed over.
+/// The ranking is the module's one declared rule — **most drawn triangles,
+/// ties to the lowest stored slot** — applied to the candidates [`select`]
+/// produced. Every candidate that could not be drawn at all is recorded in
+/// [`ResolvedSubject::skipped`] with the reason; the drawable candidates that
+/// simply ranked lower are alternatives of the same subject, not refusals.
 ///
 /// # Errors
 ///
 /// [`MatrixError::MeshAbsent`] for a mesh slot the container does not hold,
-/// [`MatrixError::NoDrawableCandidate`] when every candidate was refused
-/// (the count of refusals; each refusal's message is what the caller of this
-/// function loses, which is why [`ResolvedSubject`] carries the ones that
-/// happened before a success), and [`MatrixError::MaterialAbsent`] when the
-/// drawn mesh references a material record the table does not hold.
+/// [`MatrixError::NoDrawableCandidate`] when no candidate could be drawn (the
+/// count of refusals), and [`MatrixError::MaterialAbsent`] when the drawn mesh
+/// references a material record the table does not hold.
 pub fn load(
     container: &MatrixContainer<'_>,
     selection: &SubjectSelection,
@@ -1098,7 +1100,7 @@ pub fn load(
     let subject = selection.subject;
     let key = container.key.to_owned();
 
-    let mut shapes: Vec<CandidateShape> = Vec::new();
+    let mut drawn: Vec<DrawnCandidate> = Vec::new();
     let mut skipped: Vec<CandidateSkip> = Vec::new();
     for candidate in &selection.candidates {
         let Some(mesh) = container
@@ -1113,7 +1115,7 @@ pub fn load(
                 mesh_index: candidate.mesh_index,
             });
         };
-        let (drawable, volume, extent) = shape(mesh);
+        let (drawable, extent) = bounds(mesh);
         if !drawable {
             skipped.push(CandidateSkip {
                 slot: candidate.slot,
@@ -1124,70 +1126,61 @@ pub fn load(
             });
             continue;
         }
-        shapes.push(CandidateShape {
-            candidate: candidate.clone(),
-            volume,
-            extent,
-        });
-    }
-
-    shapes.sort_by(|left, right| {
-        right
-            .volume
-            .partial_cmp(&left.volume)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.candidate.slot.cmp(&right.candidate.slot))
-    });
-
-    let mut chosen: Option<(CandidateShape, RenderMesh)> = None;
-    for shape in &shapes {
-        let mesh = container
-            .meshes
-            .meshes
-            .get(shape.candidate.mesh_index as usize)
-            .and_then(Option::as_ref)
-            .expect("the mesh was read when its shape was measured");
         match RenderMesh::from_stored_groups(&mesh.mesh, &mesh.material_groups) {
-            Ok(render) if !render.triangles().is_empty() => {
-                chosen = Some((shape.clone(), render));
-                break;
-            }
+            Ok(render) if !render.triangles().is_empty() => drawn.push(DrawnCandidate {
+                candidate: candidate.clone(),
+                triangles: render.triangles().len(),
+                extent,
+                render,
+            }),
             Ok(render) => skipped.push(CandidateSkip {
-                slot: shape.candidate.slot,
-                name: shape.candidate.name.clone(),
+                slot: candidate.slot,
+                name: candidate.name.clone(),
                 reason: format!(
                     "the mesh builds but holds {} drawable triangles",
                     render.triangles().len()
                 ),
             }),
             Err(error) => skipped.push(CandidateSkip {
-                slot: shape.candidate.slot,
-                name: shape.candidate.name.clone(),
+                slot: candidate.slot,
+                name: candidate.name.clone(),
                 reason: error.to_string(),
             }),
         }
     }
 
-    let Some((shape, render)) = chosen else {
+    drawn.sort_by(|left, right| {
+        right
+            .triangles
+            .cmp(&left.triangles)
+            .then_with(|| left.candidate.slot.cmp(&right.candidate.slot))
+    });
+    let Some(chosen) = drawn.into_iter().next() else {
         return Err(MatrixError::NoDrawableCandidate {
             subject,
             container: key,
             refusals: skipped.len(),
         });
     };
+    let DrawnCandidate {
+        candidate,
+        triangles,
+        extent,
+        render,
+    } = chosen;
 
     let unknowns = stored_presentation_unknowns(&render);
-    let coverage = coverage_of(container, subject, &shape)?;
+    let coverage = coverage_of(container, subject, &candidate)?;
 
     Ok(ResolvedSubject {
         subject,
         container: container.key.to_owned(),
         anchor_slot: selection.anchor_slot,
         anchor_name: selection.anchor_name.clone(),
-        chosen: shape.candidate,
+        chosen: candidate,
         skipped,
-        triangles: render.triangles().len(),
-        extent: shape.extent,
+        triangles,
+        extent,
         unknowns,
         coverage,
         render,
@@ -1198,12 +1191,12 @@ pub fn load(
 fn coverage_of(
     container: &MatrixContainer<'_>,
     subject: ComparisonSubject,
-    shape: &CandidateShape,
+    candidate: &CandidateNode,
 ) -> Result<MaterialCoverage, MatrixError> {
     let mesh = container
         .meshes
         .meshes
-        .get(shape.candidate.mesh_index as usize)
+        .get(candidate.mesh_index as usize)
         .and_then(Option::as_ref)
         .expect("the mesh was read by the caller");
     let mut facts = Vec::with_capacity(mesh.materials.len());
