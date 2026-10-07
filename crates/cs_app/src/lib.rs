@@ -546,12 +546,16 @@
 //! for Back, and [`ui::front_end::FrontEnd`], which requests domain
 //! transactions and never edits campaign or profile fields itself.
 //!
-//! [`ui::hud`] is the F46-A instrument projection
-//! (`specs/F46-hud-instruments-mission-map-and-pause.md`, stage `### F46-A`):
-//! [`ui::hud::attitude`] turns an attitude quaternion into horizon and heading,
-//! and [`ui::hud::Hud`] converts an SI aircraft sample into gauge values under a
-//! `cs_content::hud::HudPolicy`, keeps the low-altitude warning, and refuses a
-//! sample of any session or aircraft it is not bound to.
+//! [`ui::hud`] is the F46 instrument projection
+//! (`specs/F46-hud-instruments-mission-map-and-pause.md`, stages `### F46-A`
+//! and `### F46-B`): [`ui::hud::attitude`] turns an attitude quaternion into
+//! horizon and heading, [`ui::hud::Hud`] converts an SI aircraft sample into
+//! gauge values under a `cs_content::hud::HudPolicy`, keeps the low-altitude
+//! warning, and refuses a sample of any session or aircraft it is not bound
+//! to — and [`ui::hud::Hud::frame`] projects the whole HUD (instruments, gun
+//! gauge, airframe panel, launcher cluster and target display) from the
+//! session's own weapon, ordnance, damage and target authorities, refusing a
+//! source stamped for another session generation.
 //!
 //! [`text`] is the F51-A text boundary
 //! (`specs/F51-localization-fonts-text-layout-and-original-media-ids.md`, stage
