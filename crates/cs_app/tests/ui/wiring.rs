@@ -33,8 +33,9 @@ use cs_app::construction::ConstructionScreen;
 use cs_app::loading::{Criticality, LoadItem, LoadTarget};
 use cs_app::profile::ProfileSession;
 use cs_app::ui::front_end::{
-    Action, ConstructionDraft, FlowError, FlowSetup, FrontEndFlow, LoadPlan, LoadVerdict, Loadout,
-    Resource, Screen, ScreenSessionError,
+    Action, AudioScope, ConstructionDraft, Effect, FlowError, FlowSetup, FrontEndFlow,
+    InputContext, LoadError, LoadPlan, LoadVerdict, Loadout, Resource, ResourceLedger,
+    ResourceProblem, Screen, ScreenSessionError,
 };
 use cs_assets::cache::{CacheBudget, CacheDirectory, CacheStore};
 use cs_assets::vfs::{ContentSession, MountBuilder, SessionBuilder};
@@ -903,6 +904,10 @@ fn accept_f45_c_the_return_flow_saves_the_outcome_and_reopens_the_profile_withou
     assert_eq!(flow.front_end().screen(), Screen::Cabin);
     assert_eq!(currency(&flow), before + GRANT, "the outcome survived");
     assert_eq!(revision(&flow), after_outcome, "and so did its revision");
+    assert!(
+        flow.domain().applied_outcome().is_none(),
+        "the closed profile's applied outcome is not reported as this one's"
+    );
 
     // The whole walk held exactly one input context at every step and left no
     // world behind; the cabin's escape closes the profile once more and the
@@ -984,4 +989,196 @@ fn accept_f45_c_the_ledger_and_the_machine_agree_on_every_held_resource() {
         "exactly one input context is bound, the menu's"
     );
     assert!(!flow.front_end().held().contains(&Resource::World));
+}
+
+// --- the refusal that keeps a load from starting at all ------------------
+
+/// The loading screen must be able to start its load **before** the machine
+/// moves: a launch with no declared closure, no content session or no private
+/// cache is refused while the player is still on the flight check — no load
+/// attempt, nothing committed, no world acquired, campaign untouched — and
+/// once the missing input is supplied the same flow launches in the same
+/// process. This is the other half of AC03: the failure that must not happen
+/// at all rather than the one that is recovered from.
+#[test]
+fn accept_f45_c_a_launch_without_a_usable_load_plan_is_refused_before_the_machine_moves() {
+    let fx = Fixture::new("no-plan", Some(GRANT));
+    let choice = loadout(pilotable());
+
+    // Nothing was supplied: the mission declares no dependency closure.
+    {
+        let mut flow = FrontEndFlow::new(preflight_deck(), fx.setup());
+        to_flight_check(&mut flow, &choice);
+        let before_currency = currency(&flow);
+        let before_revision = revision(&flow);
+        let refused = flow
+            .press(Action::Launch)
+            .expect_err("there is no load plan to enter Loading with");
+        assert!(
+            matches!(refused, FlowError::Load(LoadError::NoPlan)),
+            "the missing plan is named: {refused}"
+        );
+        assert_eq!(flow.front_end().screen(), Screen::FlightCheck);
+        assert_eq!(flow.load().attempts(), 0, "no load was started");
+        assert!(
+            flow.domain().committed_loadout().is_none(),
+            "nothing committed"
+        );
+        assert!(flow.domain().launch().is_none());
+        assert!(!flow.ledger().holds_world(), "no world was acquired");
+        assert_eq!(currency(&flow), before_currency, "no money moved");
+        assert_eq!(revision(&flow), before_revision, "no progress written");
+        assert_eq!(
+            &flow.ledger().resources(),
+            flow.front_end().held(),
+            "the refused launch left the two views agreeing"
+        );
+    }
+
+    // A plan and a cache, but no content session to resolve the reads through.
+    {
+        let mut flow = FrontEndFlow::new(preflight_deck(), fx.setup());
+        flow.set_load_plan(load_plan());
+        flow.set_cache_store(fx.store());
+        to_flight_check(&mut flow, &choice);
+        let refused = flow
+            .press(Action::Launch)
+            .expect_err("there is no content session to read through");
+        assert!(
+            matches!(refused, FlowError::Load(LoadError::NoContentSession)),
+            "the missing content session is named: {refused}"
+        );
+        assert_eq!(flow.front_end().screen(), Screen::FlightCheck);
+        assert_eq!(flow.load().attempts(), 0);
+    }
+
+    // A plan and a content session, but no private cache to load over. The
+    // cache is the only thing missing, so supplying it is all it takes.
+    let mut flow = FrontEndFlow::new(preflight_deck(), fx.setup());
+    flow.set_load_plan(load_plan());
+    flow.set_content_session(fx.session());
+    to_flight_check(&mut flow, &choice);
+    let refused = flow
+        .press(Action::Launch)
+        .expect_err("there is no cache to load over");
+    assert!(
+        matches!(refused, FlowError::Load(LoadError::NoCacheStore)),
+        "the missing cache is named: {refused}"
+    );
+    assert_eq!(flow.front_end().screen(), Screen::FlightCheck);
+    assert_eq!(flow.load().attempts(), 0);
+    assert!(flow.domain().committed_loadout().is_none());
+
+    flow.set_cache_store(fx.store());
+    flow.press(Action::Launch)
+        .expect("the mission launches once the load can start");
+    assert_eq!(flow.front_end().screen(), Screen::Loading);
+    assert_eq!(
+        flow.load().attempts(),
+        1,
+        "the first attempt starts only now"
+    );
+    assert_eq!(
+        flow.drive_load().expect("the load runs"),
+        LoadVerdict::Ready
+    );
+    assert_eq!(flow.front_end().screen(), Screen::Flight);
+}
+
+// --- the ledger's own refusal paths ---------------------------------------
+
+/// The ledger is fed the effect stream, so an impossible pair is an error
+/// instead of a silently lost teardown: releasing what nobody holds, taking a
+/// resource twice and binding a second input context while the first is still
+/// bound (the trigger on a button and a gun at once) are all refused, while
+/// the release-then-acquire switch a real transition emits is taken.
+#[test]
+fn accept_f45_c_the_ledger_refuses_an_impossible_resource_stream() {
+    let mut ledger = ResourceLedger::default();
+
+    let refused = ledger
+        .apply(&Effect::Release(Resource::World))
+        .expect_err("nothing holds the world");
+    assert_eq!(refused, ResourceProblem::ReleasedUnknown(Resource::World));
+    assert!(ledger.resources().is_empty(), "the refusal changed nothing");
+
+    ledger
+        .apply(&Effect::Acquire(Resource::Input(InputContext::Menu)))
+        .expect("the menu context binds");
+    assert_eq!(ledger.input(), Some(InputContext::Menu));
+
+    let refused = ledger
+        .apply(&Effect::Acquire(Resource::Input(InputContext::Menu)))
+        .expect_err("the same context cannot bind twice");
+    assert_eq!(
+        refused,
+        ResourceProblem::InputBoundTwice {
+            held: InputContext::Menu,
+            offered: InputContext::Menu,
+        }
+    );
+
+    let refused = ledger
+        .apply(&Effect::Acquire(Resource::Input(InputContext::Flight)))
+        .expect_err("the flight context cannot bind while the menu's is bound");
+    assert_eq!(
+        refused,
+        ResourceProblem::InputBoundTwice {
+            held: InputContext::Menu,
+            offered: InputContext::Flight,
+        }
+    );
+    assert_eq!(
+        ledger.input(),
+        Some(InputContext::Menu),
+        "the refused binding left the first one held"
+    );
+
+    ledger
+        .apply(&Effect::Acquire(Resource::Audio(AudioScope::FrontEnd)))
+        .expect("the front-end audio scope is taken");
+    let refused = ledger
+        .apply(&Effect::Acquire(Resource::Audio(AudioScope::FrontEnd)))
+        .expect_err("the same scope cannot be taken twice");
+    assert_eq!(
+        refused,
+        ResourceProblem::AcquiredTwice(Resource::Audio(AudioScope::FrontEnd))
+    );
+
+    ledger
+        .apply(&Effect::Acquire(Resource::World))
+        .expect("the world is acquired");
+    let refused = ledger
+        .apply(&Effect::Acquire(Resource::World))
+        .expect_err("the world cannot be acquired twice");
+    assert_eq!(refused, ResourceProblem::AcquiredTwice(Resource::World));
+
+    // What a real transition emits: release the held scope, then acquire the
+    // next one; the input context switches the same way.
+    ledger
+        .apply(&Effect::Release(Resource::Audio(AudioScope::FrontEnd)))
+        .expect("the old scope is released");
+    ledger
+        .apply(&Effect::Acquire(Resource::Audio(AudioScope::Flight)))
+        .expect("the new scope is acquired");
+    assert_eq!(ledger.audio(), Some(AudioScope::Flight));
+    ledger
+        .apply(&Effect::Release(Resource::Input(InputContext::Menu)))
+        .expect("the menu context is released");
+    ledger
+        .apply(&Effect::Acquire(Resource::Input(InputContext::Flight)))
+        .expect("the flight context binds once the menu's is gone");
+    assert_eq!(ledger.input(), Some(InputContext::Flight));
+
+    ledger
+        .apply_all([
+            &Effect::Release(Resource::Audio(AudioScope::Flight)),
+            &Effect::Release(Resource::World),
+            &Effect::Release(Resource::Input(InputContext::Flight)),
+        ])
+        .expect("the teardown releases everything that was held");
+    assert!(ledger.resources().is_empty());
+    assert_eq!(ledger.input(), None);
+    assert_eq!(ledger.audio(), None);
+    assert!(!ledger.holds_world());
 }
