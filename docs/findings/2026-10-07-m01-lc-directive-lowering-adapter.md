@@ -180,7 +180,10 @@ carry" — was rewritten during review to interpolate what the census measures
 (`{complete_rows}` of `{measured_rows}` rows lower completely, nested argument
 lists carried as nested values, one signature per disagreeing shape) instead of
 asserting what this stage made false; all six artifacts were then regenerated
-on the reviewed tree by their own harnesses, never edited by hand. No assertion
+on the reviewed tree by their own harnesses, never edited by hand — and, after
+the branch was rebased onto the moving `main`, once more on the rebased tree
+(`ef2bfd4a`, the tree of `75d7ed4a`), which is the tree every committed copy
+now records. No assertion
 was deleted, no test was skipped and no `#[ignore]` was added to dodge the
 reconciliation.
 
