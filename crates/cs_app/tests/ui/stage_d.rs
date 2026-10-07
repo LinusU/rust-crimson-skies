@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use cs_app::ui::front_end::{
-    Artwork, ConstructionDraft, FrontEndScreens, Loadout, MINIMUM_SCREEN_EXTENT, NavigationInputs,
-    Screen, ScreenSession, capture_artwork, capture_screen, review_navigation,
+    Action, Artwork, ConstructionDraft, FrontEndScreens, Loadout, MINIMUM_SCREEN_EXTENT,
+    NavigationInputs, Screen, ScreenSession, capture_artwork, capture_screen, review_navigation,
     review_navigation_with,
 };
 use cs_types::content::ContentKind;
@@ -114,6 +114,186 @@ fn fixture_art(key: &str, extent: (u32, u32)) -> Artwork {
         }
     }
     Artwork::new(extent.0, extent.1, rgba).expect("the fixture artwork is well formed")
+}
+
+/// Strictly parses `text` as exactly one JSON value (RFC 8259) and fails at
+/// the first byte that is not.
+///
+/// Written by hand because this workspace carries no JSON dependency: what is
+/// under test here is that the production artifacts ([`cs_app::ui::
+/// front_end::PathReview::json`], [`cs_app::ui::front_end::FrontEndInventory::
+/// json`]) are readable as JSON by any consumer, not that a JSON library
+/// works. A bare `START` or `MainMenu` where a string belongs is the failure
+/// this catches.
+fn assert_parses_as_json(text: &str) {
+    let bytes = text.as_bytes();
+    let mut cursor = 0;
+    if let Err(error) = json_value(bytes, &mut cursor) {
+        panic!("the artifact is not valid JSON at byte {cursor}: {error}; artifact: {text}");
+    }
+    json_space(bytes, &mut cursor);
+    assert_eq!(
+        cursor,
+        bytes.len(),
+        "the artifact has {} trailing bytes after its value; artifact: {text}",
+        bytes.len() - cursor
+    );
+}
+
+fn json_space(bytes: &[u8], cursor: &mut usize) {
+    while matches!(bytes.get(*cursor), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+        *cursor += 1;
+    }
+}
+
+fn json_value(bytes: &[u8], cursor: &mut usize) -> Result<(), String> {
+    json_space(bytes, cursor);
+    match bytes.get(*cursor) {
+        Some(b'{') => json_object(bytes, cursor),
+        Some(b'[') => json_array(bytes, cursor),
+        Some(b'"') => json_string(bytes, cursor),
+        Some(b't') => json_literal(bytes, cursor, "true"),
+        Some(b'f') => json_literal(bytes, cursor, "false"),
+        Some(b'n') => json_literal(bytes, cursor, "null"),
+        Some(byte) if byte.is_ascii_digit() || *byte == b'-' => json_number(bytes, cursor),
+        Some(byte) => Err(format!("unexpected byte {byte:#04x}")),
+        None => Err("the value is missing".to_owned()),
+    }
+}
+
+fn json_object(bytes: &[u8], cursor: &mut usize) -> Result<(), String> {
+    *cursor += 1; // `{`
+    json_space(bytes, cursor);
+    if bytes.get(*cursor) == Some(&b'}') {
+        *cursor += 1;
+        return Ok(());
+    }
+    loop {
+        json_space(bytes, cursor);
+        json_string(bytes, cursor)?;
+        json_space(bytes, cursor);
+        if bytes.get(*cursor) != Some(&b':') {
+            return Err("a member needs ':'".to_owned());
+        }
+        *cursor += 1;
+        json_value(bytes, cursor)?;
+        json_space(bytes, cursor);
+        match bytes.get(*cursor) {
+            Some(b',') => *cursor += 1,
+            Some(b'}') => {
+                *cursor += 1;
+                return Ok(());
+            }
+            _ => return Err("a member needs ',' or the object needs '}'".to_owned()),
+        }
+    }
+}
+
+fn json_array(bytes: &[u8], cursor: &mut usize) -> Result<(), String> {
+    *cursor += 1; // `[`
+    json_space(bytes, cursor);
+    if bytes.get(*cursor) == Some(&b']') {
+        *cursor += 1;
+        return Ok(());
+    }
+    loop {
+        json_value(bytes, cursor)?;
+        json_space(bytes, cursor);
+        match bytes.get(*cursor) {
+            Some(b',') => *cursor += 1,
+            Some(b']') => {
+                *cursor += 1;
+                return Ok(());
+            }
+            _ => return Err("an element needs ',' or the array needs ']'".to_owned()),
+        }
+    }
+}
+
+fn json_string(bytes: &[u8], cursor: &mut usize) -> Result<(), String> {
+    if bytes.get(*cursor) != Some(&b'"') {
+        return Err("a string must open with '\"'".to_owned());
+    }
+    *cursor += 1;
+    loop {
+        let byte = *bytes
+            .get(*cursor)
+            .ok_or_else(|| "the string is not closed".to_owned())?;
+        match byte {
+            b'"' => {
+                *cursor += 1;
+                return Ok(());
+            }
+            b'\\' => {
+                *cursor += 1;
+                let escape = *bytes
+                    .get(*cursor)
+                    .ok_or_else(|| "the escape is cut short".to_owned())?;
+                *cursor += 1;
+                match escape {
+                    b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
+                    b'u' => {
+                        for _ in 0..4 {
+                            let digit = *bytes
+                                .get(*cursor)
+                                .ok_or_else(|| "the escape is cut short".to_owned())?;
+                            *cursor += 1;
+                            if !digit.is_ascii_hexdigit() {
+                                return Err(format!("escape byte {digit:#04x} is not a hex digit"));
+                            }
+                        }
+                    }
+                    other => return Err(format!("unknown escape {other:#04x}")),
+                }
+            }
+            control if control < 0x20 => {
+                return Err(format!("raw control byte {control:#04x} inside a string"));
+            }
+            _ => *cursor += 1,
+        }
+    }
+}
+
+fn json_number(bytes: &[u8], cursor: &mut usize) -> Result<(), String> {
+    if bytes.get(*cursor) == Some(&b'-') {
+        *cursor += 1;
+    }
+    let digits = |bytes: &[u8], cursor: &mut usize| {
+        let start = *cursor;
+        while bytes.get(*cursor).is_some_and(u8::is_ascii_digit) {
+            *cursor += 1;
+        }
+        *cursor > start
+    };
+    if !digits(bytes, cursor) {
+        return Err("a number needs an integer part".to_owned());
+    }
+    if bytes.get(*cursor) == Some(&b'.') {
+        *cursor += 1;
+        if !digits(bytes, cursor) {
+            return Err("a fraction needs digits after '.'".to_owned());
+        }
+    }
+    if matches!(bytes.get(*cursor), Some(b'e' | b'E')) {
+        *cursor += 1;
+        if matches!(bytes.get(*cursor), Some(b'+' | b'-')) {
+            *cursor += 1;
+        }
+        if !digits(bytes, cursor) {
+            return Err("an exponent needs digits".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn json_literal(bytes: &[u8], cursor: &mut usize, literal: &str) -> Result<(), String> {
+    let word = literal.as_bytes();
+    if bytes.get(*cursor..*cursor + word.len()) == Some(word) {
+        *cursor += word.len();
+        Ok(())
+    } else {
+        Err(format!("expected {literal}"))
+    }
 }
 
 /// Reads a written PNG back as RGBA8 pixels, row-major from the top.
@@ -246,6 +426,68 @@ fn accept_f45_d_the_navigation_review_classifies_every_row_and_names_every_scree
         );
     }
 
+    // The complete paths `docs/contracts/UI-NETWORK.md` names for this
+    // feature, each leg checked against the row the walk applied: the review
+    // does not only count rows, it shows that the contract's own sequences
+    // exist end to end on the machine.
+    for (from, action, to) in [
+        // missing install -> choose install -> main
+        (
+            Screen::InstallSelect,
+            Action::InstallVerified,
+            Screen::MainMenu,
+        ),
+        // new profile -> cabin -> briefing -> flight check -> loading ->
+        // mission -> success -> scrapbook
+        (Screen::MainMenu, Action::NewProfile, Screen::ProfileSelect),
+        (Screen::ProfileSelect, Action::ConfirmProfile, Screen::Cabin),
+        (Screen::Cabin, Action::OpenBriefing, Screen::Briefing),
+        (
+            Screen::Briefing,
+            Action::ContinueToFlightCheck,
+            Screen::FlightCheck,
+        ),
+        (Screen::FlightCheck, Action::Launch, Screen::Loading),
+        (Screen::Loading, Action::LoadSucceeded, Screen::Flight),
+        (Screen::Flight, Action::MissionSucceeded, Screen::Results),
+        (Screen::Results, Action::OpenScrapbook, Screen::Scrapbook),
+        // construction edit -> cancel
+        (Screen::Construction, Action::Cancel, Screen::Cabin),
+        // mission failure -> retry
+        (Screen::Results, Action::Retry, Screen::Loading),
+        // pause -> settings -> resume
+        (Screen::Flight, Action::Pause, Screen::Pause),
+        (Screen::Pause, Action::OpenSettings, Screen::PauseSettings),
+        (Screen::PauseSettings, Action::Back, Screen::Pause),
+        (Screen::Pause, Action::Resume, Screen::Flight),
+        // missing content -> diagnosis -> selection
+        (
+            Screen::MainMenu,
+            Action::ContentMissing,
+            Screen::ContentDiagnosis,
+        ),
+        (
+            Screen::ContentDiagnosis,
+            Action::ChooseAnotherInstall,
+            Screen::InstallSelect,
+        ),
+    ] {
+        let step = review
+            .steps
+            .iter()
+            .find(|step| step.from == from && step.action == action)
+            .unwrap_or_else(|| panic!("{action:?} on {from:?} was never applied: {review}"));
+        assert_eq!(
+            step.to, to,
+            "{action:?} on {from:?} must lead to {to:?} (UI-NETWORK's named path)"
+        );
+        assert_ne!(
+            step.outcome,
+            cs_app::ui::front_end::StepOutcome::Refused,
+            "{action:?} on {from:?} is a path a player takes and must not be refused: {review}"
+        );
+    }
+
     // Back/Cancel from a dirty screen asks before discarding (F45
     // non-negotiable 1), and the walk answers it rather than stopping.
     assert!(
@@ -274,6 +516,26 @@ fn accept_f45_d_the_navigation_review_classifies_every_row_and_names_every_scree
         review.json().contains("\"complete\":true"),
         "the artifact states its own completeness: {}",
         review.json()
+    );
+    // The artifact is *readable* as JSON: every screen, action, outcome and
+    // refusal is a JSON string, never a bare word.
+    let artifact = review.json();
+    assert_parses_as_json(&artifact);
+    assert!(
+        artifact.contains("\"screens_reached\":[\"InstallSelect\""),
+        "the reached screens are quoted strings: {artifact}"
+    );
+    assert!(
+        artifact.contains("\"from\":\"FlightCheck\""),
+        "the row detail is quoted strings: {artifact}"
+    );
+    // With the player's own inputs no row is refused, so every visible button
+    // of the table has a functioning transition on some explored state
+    // (F45 non-negotiable 1), and the refusal list is not hiding a dead path.
+    assert!(
+        review.refusals().is_empty(),
+        "no row is refused once the player's inputs are supplied: {:?}",
+        review.refusals()
     );
     eprintln!("navigation review: {review}");
     eprintln!(
@@ -580,6 +842,11 @@ fn accept_f45_d_retail_the_original_front_end_screen_inventory_is_complete_and_m
         "the 800x600 backgrounds are in the selection"
     );
 
+    // The artifact every reader of this inventory consumes is parseable JSON,
+    // not a report that only looks like one.
+    let artifact = inventory.json();
+    assert_parses_as_json(&artifact);
+
     if let Ok(dir) = std::env::var("CS_EVIDENCE_DIR") {
         let dir = PathBuf::from(dir);
         let dir = if dir.is_absolute() {
@@ -589,7 +856,7 @@ fn accept_f45_d_retail_the_original_front_end_screen_inventory_is_complete_and_m
         };
         std::fs::create_dir_all(&dir).expect("the evidence directory is created");
         let path = dir.join("front-end-screens.json");
-        std::fs::write(&path, inventory.json()).expect("the inventory artifact is written");
+        std::fs::write(&path, &artifact).expect("the inventory artifact is written");
         assert!(path.is_file());
     }
 }

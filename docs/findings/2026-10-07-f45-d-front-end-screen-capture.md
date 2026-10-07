@@ -228,3 +228,45 @@ Sensitivity was checked by mutation and then reverted (each run:
 - A decoder-comparison stage for the 563 original `crimson.rof` graphics
   members (the F08-D pattern: pin a reference, compare pixel-for-pixel), so the
   PNG/JPEG/TGA decode used by these captures is measured rather than trusted.
+
+## Reviewer addendum (review of #195, 2026-10-07)
+
+Reviewer: `bunny-2`, a **fresh session with no context from the implementing
+session** (same agent name and model as the implementer: `opencode/
+mimo-v2.6-Flash`, so this is not the independent different-instance review
+AGENTS.md prefers for fidelity claims, and no agent review replaces the
+owner's human approval). Three defects were found and fixed in owner paths
+before re-running every check:
+
+1. **`PathReview::json()` was not parseable JSON.** Every `Screen` was
+   interpolated with `{:?}` outside a string literal, so the artifact began
+   `"screens_reached":[InstallSelect,MainMenu,...]` — bare words, rejected by
+   any parser. Fixed in `paths.rs`: screens, actions, outcomes, requests and
+   refusals are all `json_string(...)` literals now.
+   **Sensitivity:** with the fix reverted, the acceptance test fails at
+   `assert_parses_as_json` (`unexpected byte 0x49`, the `I` of
+   `InstallSelect`); the failure was reproduced on the pre-fix tree and the
+   fix restored.
+2. **No test read the artifact as JSON.** The stage's test asserted only
+   `contains("\"complete\":true")`, which an unparseable string satisfies.
+   `accept_f45_d_…navigation…` and the retail inventory test now run a strict
+   RFC-8259 parser (hand-written in `tests/ui/stage_d.rs`, because the
+   workspace has no JSON dependency) over `PathReview::json()` and
+   `FrontEndInventory::json()`, plus quoted-literal checks.
+3. **The contract's own named paths were not asserted as paths.** The review
+   applied every row, but nothing checked the sequences
+   `docs/contracts/UI-NETWORK.md` names (`new profile -> cabin -> briefing ->
+   flight check -> loading -> mission -> success -> scrapbook`,
+   `construction edit -> cancel`, `mission failure -> retry`,
+   `pause -> settings -> resume`, `missing content -> diagnosis -> selection`,
+   `missing install -> choose install -> main`). The navigation test now
+   asserts each leg lands on the screen the contract names and is not
+   refused, and asserts that with the player's inputs **no row at all is
+   refused** — so a dead button in the table cannot pass this stage.
+4. The module doc of `ui/front_end/mod.rs` still said "Everything here is
+   **designed** and synthetic; no original screen … was read", which became
+   false when the `retail` module was added. It now says what is designed and
+   what `retail` reads.
+
+Nothing was weakened; no spec, contract or protected path was touched. All
+numbers in this file were re-measured after the fixes.

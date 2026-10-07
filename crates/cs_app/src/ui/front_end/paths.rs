@@ -185,6 +185,11 @@ impl PathReview {
 
     /// The review as the artifact this task writes: measured counts plus the
     /// complete row-by-row and screen-by-screen account.
+    ///
+    /// The result is **parseable JSON**: every screen, action, outcome and
+    /// refusal is a JSON string literal, never a bare word, so a reader can
+    /// load this with any JSON parser instead of guessing at `START`,
+    /// `MainMenu` and friends.
     #[must_use]
     pub fn json(&self) -> String {
         let steps: Vec<String> = self
@@ -192,13 +197,13 @@ impl PathReview {
             .iter()
             .map(|step| {
                 format!(
-                    "{{\"from\":{:?},\"action\":{},\"to\":{:?},\"outcome\":\"{}\",\"request\":\
-                     \"{}\",\"refusal\":{}}}",
-                    step.from,
+                    "{{\"from\":{},\"action\":{},\"to\":{},\"outcome\":{},\"request\":\
+                     {},\"refusal\":{}}}",
+                    json_string(&format!("{:?}", step.from)),
                     json_string(step.action.key()),
-                    step.to,
-                    outcome_name(step.outcome),
-                    request_name(step.request),
+                    json_string(&format!("{:?}", step.to)),
+                    json_string(outcome_name(step.outcome)),
+                    json_string(request_name(step.request)),
                     json_string(step.refusal)
                 )
             })
@@ -206,29 +211,29 @@ impl PathReview {
         let reached: Vec<String> = self
             .reached
             .iter()
-            .map(|screen| format!("{screen:?}"))
+            .map(|screen| json_string(&format!("{screen:?}")))
             .collect();
         let missing: Vec<String> = self
             .not_reached
             .iter()
-            .map(|screen| format!("{screen:?}"))
+            .map(|screen| json_string(&format!("{screen:?}")))
             .collect();
         let inputs: Vec<String> = self
             .inputs
             .iter()
             .map(|input| {
                 format!(
-                    "{{\"screen\":\"{:?}\",\"input\":{}}}",
-                    input.screen,
+                    "{{\"screen\":{},\"input\":{}}}",
+                    json_string(&format!("{:?}", input.screen)),
                     json_string(input.input)
                 )
             })
             .collect();
         format!(
-            "{{\"start\":\"{:?}\",\"table_rows\":{},\"steps\":{},\"rows_on_reached_screens\":{},\
+            "{{\"start\":{},\"table_rows\":{},\"steps\":{},\"rows_on_reached_screens\":{},\
              \"rows_unreached\":{},\"screens_reached\":[{}],\"screens_not_reached\":[{}],\
              \"supplied_inputs\":[{}],\"complete\":{},\"steps_detail\":[{}]}}",
-            self.start,
+            json_string(&format!("{:?}", self.start)),
             super::TABLE.len(),
             self.steps.len(),
             self.rows_on_reached_screens,

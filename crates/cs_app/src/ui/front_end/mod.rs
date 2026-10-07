@@ -36,14 +36,19 @@
 //!   decode that feeds a capture. `retail` here is read access to the owner's
 //!   files, never a run of the original executable.
 //!
-//! Everything here is **designed** and synthetic; no original screen, hotspot
-//! or flow was read. The original screen list, art, hotspot coordinates and
-//! voice were F45-B's to import: no original front-end layout is decoded
-//! anywhere in this repository, so F45-B validates and presents whatever a
-//! loader supplies and refuses a screen it does not carry rather than showing
-//! a placeholder (see `docs/findings/2026-10-07-f45-b-original-asset-screen-decks.md`).
-//! Capture of the original flow is F45-D's. See
-//! `docs/findings/2026-10-01-f45-a-frontend-state-table.md` for F45-A's unknowns.
+//! The table, the machine, the authored presentation and the navigation walk
+//! are **designed**; no original screen list, hotspot coordinate or flow was
+//! read. [`FrontEndScreens`] (F45-D, `retail`) reads original **artwork** only
+//! — which original image belongs to which screen, and where the original puts
+//! a button, stays unread: no original front-end layout is decoded anywhere in
+//! this repository, so F45-B validates and presents whatever a loader supplies
+//! and refuses a screen it does not carry rather than showing a placeholder
+//! (see `docs/findings/2026-10-07-f45-b-original-asset-screen-decks.md`), and
+//! F45-D's captures are this renderer drawing decoded original pixels, never
+//! the original executable. See
+//! `docs/findings/2026-10-01-f45-a-frontend-state-table.md` for F45-A's
+//! unknowns and `docs/findings/2026-10-07-f45-d-front-end-screen-capture.md`
+//! for F45-D's.
 
 mod capture;
 mod flow;
