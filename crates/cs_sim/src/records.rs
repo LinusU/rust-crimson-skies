@@ -34,7 +34,11 @@ use std::fmt;
 
 use cs_types::content::ContentId;
 
-use crate::campaign::{DifficultyId, OutcomeId};
+use cs_types::Tick;
+
+use crate::campaign::{
+    CampaignRunId, DifficultyId, EventKey, OutcomeId, ProfileId, SessionGeneration, SymbolId,
+};
 
 /// Which direction of a score is better.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -361,4 +365,269 @@ pub struct ScrapbookRecords {
     pub facts: AchievementLedger,
     /// The cabin memento choice.
     pub memento: MementoSelection,
+}
+
+/// Every persisted field key starts with this, so the scrapbook can replace
+/// its own fields in a profile document without touching anyone else's.
+pub const FIELD_PREFIX: &str = "scrapbook.";
+
+/// Why persisted fields could not be restored. Nothing is guessed: a field the
+/// reader does not understand is refused rather than skipped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RestoreError {
+    /// A `scrapbook.` key this reader does not know.
+    UnknownField {
+        /// The key.
+        key: String,
+    },
+    /// A known key whose value does not parse.
+    Malformed {
+        /// The key.
+        key: String,
+        /// What is wrong with it.
+        reason: &'static str,
+    },
+    /// A slot names a subject that has no declared rule, or a rule is
+    /// declared twice.
+    Inconsistent {
+        /// The key.
+        key: String,
+    },
+}
+
+impl fmt::Display for RestoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownField { key } => write!(f, "unknown scrapbook field {key}"),
+            Self::Malformed { key, reason } => write!(f, "scrapbook field {key}: {reason}"),
+            Self::Inconsistent { key } => write!(f, "scrapbook field {key} contradicts the rest"),
+        }
+    }
+}
+
+impl std::error::Error for RestoreError {}
+
+fn fact_token(kind: FactKind) -> &'static str {
+    match kind {
+        FactKind::MissionSucceeded => "mission",
+        FactKind::StuntCompleted => "stunt",
+        FactKind::AceDefeated => "ace",
+    }
+}
+
+fn fact_from_token(token: &str) -> Option<FactKind> {
+    match token {
+        "mission" => Some(FactKind::MissionSucceeded),
+        "stunt" => Some(FactKind::StuntCompleted),
+        "ace" => Some(FactKind::AceDefeated),
+        _ => None,
+    }
+}
+
+/// `profile,run,session,event-session,tick,source,sequence`.
+fn outcome_text(outcome: &OutcomeId) -> String {
+    let key = &outcome.terminal_event;
+    format!(
+        "{},{},{},{},{},{},{}",
+        outcome.profile,
+        outcome.run,
+        outcome.session.0,
+        key.session.0,
+        key.tick.0,
+        key.source.0,
+        key.sequence
+    )
+}
+
+fn outcome_from_text(text: &str) -> Option<OutcomeId> {
+    let mut parts = text.split(',');
+    let profile = ProfileId::new(parts.next()?).ok()?;
+    let run = CampaignRunId::new(parts.next()?).ok()?;
+    let session = SessionGeneration(parts.next()?.parse().ok()?);
+    let event_session = SessionGeneration(parts.next()?.parse().ok()?);
+    let tick = Tick(parts.next()?.parse().ok()?);
+    let source = SymbolId(parts.next()?.parse().ok()?);
+    let sequence = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(OutcomeId {
+        profile,
+        run,
+        session,
+        terminal_event: EventKey {
+            session: event_session,
+            tick,
+            source,
+            sequence,
+        },
+    })
+}
+
+fn content(text: &str) -> Option<ContentId> {
+    ContentId::parse(text).ok()
+}
+
+fn run_text(run: &RunRecord) -> String {
+    format!("{} {}", run.score, outcome_text(&run.outcome))
+}
+
+impl ScrapbookRecords {
+    /// The persisted form: ordered `(key, value)` pairs, every key starting
+    /// with [`FIELD_PREFIX`]. Keys use `[a-z0-9.]`, values hold no control
+    /// character, and the same state always yields the same pairs, so writing
+    /// it twice is writing it once.
+    #[must_use]
+    pub fn to_fields(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for (index, fact) in self.facts.facts.iter().enumerate() {
+            out.push((
+                format!("{FIELD_PREFIX}fact.{index}"),
+                format!("{} {}", fact_token(fact.kind), fact.subject),
+            ));
+        }
+        for (index, (subject, rule)) in self.records.rules.iter().enumerate() {
+            let better = match rule.better {
+                BetterIs::Higher => "higher",
+                BetterIs::Lower => "lower",
+            };
+            let scope = match rule.scope {
+                DifficultyScope::AllDifficulties => "all",
+                DifficultyScope::PerDifficulty => "per",
+            };
+            out.push((
+                format!("{FIELD_PREFIX}rule.{index}"),
+                format!("{subject} {better} {scope}"),
+            ));
+        }
+        for (index, (key, slot)) in self.records.slots.iter().enumerate() {
+            let difficulty = key.difficulty.as_ref().map_or("-", DifficultyId::as_str);
+            out.push((
+                format!("{FIELD_PREFIX}slot.{index}"),
+                format!(
+                    "{} {difficulty} {} {}",
+                    key.subject,
+                    run_text(&slot.best),
+                    run_text(&slot.latest)
+                ),
+            ));
+        }
+        for (index, (outcome, subject)) in self.records.applied.iter().enumerate() {
+            out.push((
+                format!("{FIELD_PREFIX}applied.{index}"),
+                format!("{subject} {}", outcome_text(outcome)),
+            ));
+        }
+        if let Some(memento) = self.memento.chosen() {
+            out.push((format!("{FIELD_PREFIX}memento"), memento.to_string()));
+        }
+        out
+    }
+
+    /// Restores state from the pairs [`ScrapbookRecords::to_fields`] wrote.
+    /// Pairs whose key does not start with [`FIELD_PREFIX`] are not the
+    /// scrapbook's and are ignored.
+    ///
+    /// # Errors
+    ///
+    /// [`RestoreError`]; nothing partial is returned.
+    pub fn from_fields<'a>(
+        fields: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Result<Self, RestoreError> {
+        let mut state = Self::default();
+        let mut slots = Vec::new();
+        for (key, value) in fields {
+            let Some(name) = key.strip_prefix(FIELD_PREFIX) else {
+                continue;
+            };
+            let bad = |reason| RestoreError::Malformed {
+                key: key.to_owned(),
+                reason,
+            };
+            let parts: Vec<&str> = value.split(' ').collect();
+            let family = name.split('.').next().unwrap_or("");
+            match (family, parts.as_slice()) {
+                ("fact", [kind, subject]) => {
+                    let kind = fact_from_token(kind).ok_or_else(|| bad("unknown fact kind"))?;
+                    let subject = content(subject).ok_or_else(|| bad("bad subject id"))?;
+                    state.facts.facts.insert(Fact { kind, subject });
+                }
+                ("rule", [subject, better, scope]) => {
+                    let subject = content(subject).ok_or_else(|| bad("bad subject id"))?;
+                    let better = match *better {
+                        "higher" => BetterIs::Higher,
+                        "lower" => BetterIs::Lower,
+                        _ => return Err(bad("unknown direction")),
+                    };
+                    let scope = match *scope {
+                        "all" => DifficultyScope::AllDifficulties,
+                        "per" => DifficultyScope::PerDifficulty,
+                        _ => return Err(bad("unknown scope")),
+                    };
+                    if state
+                        .records
+                        .rules
+                        .insert(subject, RecordRule { better, scope })
+                        .is_some()
+                    {
+                        return Err(RestoreError::Inconsistent {
+                            key: key.to_owned(),
+                        });
+                    }
+                }
+                ("slot", [subject, difficulty, bs, bo, ls, lo]) => {
+                    let subject = content(subject).ok_or_else(|| bad("bad subject id"))?;
+                    let difficulty = match *difficulty {
+                        "-" => None,
+                        text => Some(DifficultyId::new(text).map_err(|_| bad("bad difficulty"))?),
+                    };
+                    let run = |score: &str, outcome: &str| {
+                        Some(RunRecord {
+                            outcome: outcome_from_text(outcome)?,
+                            score: score.parse().ok()?,
+                        })
+                    };
+                    let best = run(bs, bo).ok_or_else(|| bad("bad best run"))?;
+                    let latest = run(ls, lo).ok_or_else(|| bad("bad latest run"))?;
+                    slots.push((
+                        key,
+                        RecordKey {
+                            subject,
+                            difficulty,
+                        },
+                        Slot { best, latest },
+                    ));
+                }
+                ("applied", [subject, outcome]) => {
+                    let subject = content(subject).ok_or_else(|| bad("bad subject id"))?;
+                    let outcome = outcome_from_text(outcome).ok_or_else(|| bad("bad outcome"))?;
+                    state.records.applied.insert((outcome, subject));
+                }
+                ("memento", [memento]) if name == "memento" => {
+                    let memento = content(memento).ok_or_else(|| bad("bad memento id"))?;
+                    state.memento.chosen = Some(memento);
+                }
+                ("fact" | "rule" | "slot" | "applied" | "memento", _) => {
+                    return Err(bad("wrong number of parts"));
+                }
+                _ => {
+                    return Err(RestoreError::UnknownField {
+                        key: key.to_owned(),
+                    });
+                }
+            }
+        }
+        for (key, record_key, slot) in slots {
+            let rule = state.records.rules.get(&record_key.subject);
+            let scoped = rule.map(|rule| rule.scope == DifficultyScope::PerDifficulty);
+            if scoped != Some(record_key.difficulty.is_some())
+                || state.records.slots.insert(record_key, slot).is_some()
+            {
+                return Err(RestoreError::Inconsistent {
+                    key: key.to_owned(),
+                });
+            }
+        }
+        Ok(state)
+    }
 }
