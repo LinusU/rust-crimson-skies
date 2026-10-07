@@ -82,7 +82,7 @@ differs, a machine-readable limitation:
   `SyntheticConservative` is kept and still selectable through the save record
   (the contract allows a designed policy "for synthetic tests only until
   verified" — it has been verified, so it is no longer the default).
-* Four `f37.d.limit.*` entries record what this runtime does not follow or
+* Five `f37.d.limit.*` entries record what this runtime does not follow or
   what the evidence cannot settle; each names the affected content and what
   resolves it. Three follow-up tasks were filed with this stage:
   `F37-D-FU3` (`#729`), `F37-D-FU4` (`#730`), `F37-D-FU5` (`#731`) — and
@@ -383,11 +383,14 @@ What changed with it, all in the same change as the behaviour:
 * The entry is removed from `RULE_LIMITATIONS`;
   `f37.rule.terminal_precedence.one_completion_per_tick` and
   `f37.rule.tick_ordering.per_tick_order` no longer name it, because a fact
-  this runtime follows carries no open divergence. The other four entries —
-  among them `f37.d.limit.mission_countdown_producer`, which
-  `F37-D-FU4` (`#730`) had already renamed from
-  `f37.d.limit.mission_countdown_preemption` — are untouched by this change
-  and still open.
+  this runtime follows carries no open divergence. The entries it left behind
+  are untouched by this change and still open: `f37.d.limit.aborted_outcome`
+  and `f37.d.limit.frame_phase_and_player_down`, plus the three countdown
+  entries `F37-D-FU6` (`#737`) recorded when it closed
+  `f37.d.limit.mission_countdown_producer` (`mission_countdown_tick_dt`,
+  `mission_countdown_end_guards`, `mission_countdown_spec_sourcing`).
+  `f37.d.limit.terminal_branch_delay_and_sound` was closed the same day by
+  `F37-D-FU5` (`#731`), so `RULE_LIMITATIONS` holds five entries.
 * Three new tests, `accept_f37_d_fu3_*`
   (`crates/cs_script/tests/accept_f37_d_fu3.rs`), pin the rule on the
   production path: one completion per tick in declaration index order with
@@ -429,10 +432,12 @@ What changed with it, all in the same change as the behaviour:
   instead of the first, run, revert): the three `accept_f37_d_fu3_*` tests all
   fail, and so do AC01, the three `accept_f37_d_*` probes above, all three
   behaviour-asserting FU2 tests, the F38-B differential, the M01 directive-log
-  probe, both `cs_sim` mission tests and the two `cs_sim` acceptance probes
+  probe, both `cs_sim` mission tests, the two `cs_sim` acceptance probes
   repaired below (`accept_f37_e1_facts_populate_every_tick_from_the_authoritative_record`
-  and `accept_m01_lc_lowering_conditions_lifecycle_gates_are_represented`, which
-  each fail their one-completion-per-tick assertions under the mutation).
+  and `accept_m01_lc_lowering_conditions_lifecycle_gates_are_represented`) and
+  the F37-D-FU4 control probe
+  (`accept_f37_d_fu4_expired_countdown_fails_the_mission_before_that_ticks_objectives`)
+  — each fails its one-completion-per-tick assertions under the mutation.
   Re-adding the entry fails
   `accept_f37_d_fu2_every_limitation_names_affected_content_and_a_resolving_task`
   and `accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does`.
@@ -447,6 +452,14 @@ What changed with it, all in the same change as the behaviour:
   moves the dependent's completion from tick 3 to tick 4, asserting that only
   the lower-index dependency completes on tick 3. Neither test lost an
   assertion: both gained the one-per-tick ones.
+* The F37-D-FU4 control expectation moved with the rule
+  (`crates/cs_script/tests/accept_f37_d_fu4.rs`, inside this task's owner
+  paths): the unexpired tick of
+  `accept_f37_d_fu4_expired_countdown_fails_the_mission_before_that_ticks_objectives`
+  now completes the lowest declared index, grants that reward and records the
+  success — the second satisfied objective waits and never runs, because the
+  success ends the mission — while every assertion on the *expiring* tick (no
+  completion, no reward, no outcome request, the latched failure) is unchanged.
 
 ## Evidence class
 
