@@ -1,6 +1,6 @@
-//! The construction draft session (F44-B): where the shared validator of
-//! `cs_content::construction` meets the transactional economy of
-//! `cs_sim::economy`.
+//! The construction draft session (F44-B) and the construction screen that
+//! owns it (F44-C): where the shared validator of `cs_content::construction`
+//! meets the transactional economy of `cs_sim::economy` and the profile save.
 //!
 //! A [`ConstructionSession`] holds an *edited copy* of a blueprint. Editing,
 //! inspecting the verdict and cancelling never touch the profile;
@@ -9,8 +9,18 @@
 //! profile does not yet own, and hands one [`ConstructionDraft`] to
 //! [`cs_sim::economy::commit`].
 //!
-//! Persisting the committed state through `CampaignRun`'s profile session is
-//! the UI stage's wiring (F44-C); this module commits to a [`CampaignState`].
+//! [`screen`] is the F44-C wiring: the [`screen::ConstructionScreen`] a front
+//! end drives, which projects the draft as a [`screen::ConstructionView`],
+//! routes imported blueprints through the same validator and commits either to
+//! a bare [`CampaignState`] or through a [`ProfileSession`](crate::profile::ProfileSession)
+//! save as one revision.
+
+pub mod screen;
+
+pub use screen::{
+    ConstructionScreen, ConstructionView, ImportRejection, PendingTransaction, QuantityMeter,
+    ScreenSaveError,
+};
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -134,8 +144,24 @@ impl ConstructionSession {
         &self,
         ctx: &ConstructionContext<'_>,
     ) -> Result<BlueprintVerdict, ValidationRefusal> {
-        ctx.rules
-            .validate(&self.policy(ctx), &self.edited, ctx.book)
+        self.verdict_for(ctx, &self.edited)
+    }
+
+    /// The session's verdict on `blueprint`, which need not be the edited one.
+    ///
+    /// [`Self::verdict`]'s policy applied to another record — the import path
+    /// judges a foreign blueprint by exactly the rule a hand edit and a commit
+    /// face, so a blueprint that arrives from outside cannot meet a weaker one.
+    ///
+    /// # Errors
+    ///
+    /// [`ValidationRefusal`].
+    pub fn verdict_for(
+        &self,
+        ctx: &ConstructionContext<'_>,
+        blueprint: &AircraftBlueprint,
+    ) -> Result<BlueprintVerdict, ValidationRefusal> {
+        ctx.rules.validate(&self.policy(ctx), blueprint, ctx.book)
     }
 
     /// Abandons every edit. The profile was never touched.
@@ -157,26 +183,24 @@ impl ConstructionSession {
         )
     }
 
-    /// Validates, then commits purchases and sales as one profile revision.
+    /// The draft [`Self::commit`] would stage, built without mutating `state`.
     ///
-    /// The blueprint is judged by [`Self::policy`] — the same policy, and so
-    /// the same rule, the live preview drew. What still belongs to the profile
-    /// is priced against `state` itself, so the buy list is the truth at the
-    /// moment of the commit; a profile that changed since [`Self::begin`] is
-    /// then refused by [`economy::commit`] as a stale revision.
+    /// This is the preview of the transaction itself: the blueprint is
+    /// validated, the components the profile does not own are priced against
+    /// `state` as it is *now* (so the buy list is the truth at the moment it
+    /// is read), and the staged sales and kept references are listed — nothing
+    /// is applied.
     ///
     /// # Errors
     ///
-    /// [`ConstructionError`]; on any error `state` is unchanged.
-    pub fn commit(
-        self,
+    /// [`ConstructionError`]: the blueprint is invalid or a component the
+    /// draft must buy has no declared price.
+    pub fn commit_draft(
+        &self,
         ctx: &ConstructionContext<'_>,
-        state: &mut CampaignState,
-    ) -> Result<CommitReceipt, ConstructionError> {
-        let verdict = ctx
-            .rules
-            .validate(&self.policy(ctx), &self.edited, ctx.book)
-            .map_err(ConstructionError::Refused)?;
+        state: &CampaignState,
+    ) -> Result<ConstructionDraft, ConstructionError> {
+        let verdict = self.verdict(ctx).map_err(ConstructionError::Refused)?;
         if !verdict.is_valid() {
             return Err(ConstructionError::Invalid(Box::new(verdict)));
         }
@@ -205,8 +229,8 @@ impl ConstructionSession {
                 draft = draft.buy(component.clone(), price);
             }
         }
-        for item in self.sells {
-            draft = draft.sell(item);
+        for item in &self.sells {
+            draft = draft.sell(item.clone());
         }
         let referenced = self
             .edited
@@ -214,7 +238,26 @@ impl ConstructionSession {
             .into_iter()
             .chain(self.other_active.iter().flat_map(|b| b.components()))
             .map(|(_, component)| component.clone());
-        draft = draft.keep_referenced(referenced);
+        Ok(draft.keep_referenced(referenced))
+    }
+
+    /// Validates, then commits purchases and sales as one profile revision.
+    ///
+    /// The blueprint is judged by [`Self::policy`] — the same policy, and so
+    /// the same rule, the live preview drew. What still belongs to the profile
+    /// is priced against `state` itself, so the buy list is the truth at the
+    /// moment of the commit; a profile that changed since [`Self::begin`] is
+    /// then refused by [`economy::commit`] as a stale revision.
+    ///
+    /// # Errors
+    ///
+    /// [`ConstructionError`]; on any error `state` is unchanged.
+    pub fn commit(
+        self,
+        ctx: &ConstructionContext<'_>,
+        state: &mut CampaignState,
+    ) -> Result<CommitReceipt, ConstructionError> {
+        let draft = self.commit_draft(ctx, state)?;
         economy::commit(state, ctx.graph, &draft).map_err(ConstructionError::Economy)
     }
 }
