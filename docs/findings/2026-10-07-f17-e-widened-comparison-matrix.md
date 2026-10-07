@@ -79,24 +79,32 @@ own group's archive — 14 frames:
 
 | capture | textured parts | images bound | coverage |
 | --- | --- | --- | --- |
-| `c1 skyline` | 1/2 | `sky2` | 169‰ |
-| `c1 night_effects` | 1/1 | `moon1` | 192‰ |
-| `c1b skyline` | 1/1 | `sky1` | 111‰ |
-| `c1c skyline` | 1/1 | `sky1` | 111‰ |
+| `c1 skyline` | 1/2 | `sky2` | 167‰ |
+| `c1 night_effects` | 1/1 | `moon1` | 189‰ |
+| `c1b skyline` | 1/1 | `sky1` | 109‰ |
+| `c1c skyline` | 1/1 | `sky1` | 109‰ |
 | `c1c vegetation` | 1/1 | `cloud1` | 86‰ |
-| `c1c night_effects` | 1/1 | `moon1` | 192‰ |
-| `c2 skyline` | 1/1 | `sky1` | 110‰ |
+| `c1c night_effects` | 1/1 | `moon1` | 189‰ |
+| `c2 skyline` | 1/1 | `sky1` | 107‰ |
 | `c2 vegetation` | 1/1 | `cloud1` | 86‰ |
-| `c2b skyline` | 1/1 | `sky1` | 111‰ |
+| `c2b skyline` | 1/1 | `sky1` | 109‰ |
 | `c2b vegetation` | 1/1 | `cloud1` | 86‰ |
-| `c4 skyline` | 1/1 | `c4sky2` | 111‰ |
+| `c4 skyline` | 1/1 | `c4sky2` | 109‰ |
 | `c4 vegetation` | 1/1 | `cloud1` | 83‰ |
-| `c5 skyline` | 4/4 | `c5sky2`, `star1` | 186‰ |
-| `c5 night_effects` | 1/1 | `moon1` | 192‰ |
+| `c5 skyline` | 4/4 | `c5sky2`, `star1` | 184‰ |
+| `c5 night_effects` | 1/1 | `moon1` | 189‰ |
 
 The bound names differ per group (`sky1`, `sky2`, `c4sky2`, `c5sky2`,
 `cloud1`, `moon1`, `star1`) — evidence the group-local archive, not a shared
 one, is doing the binding.
+
+The frames above were drawn under the fixed comparison set **as camera
+components**, not merely recorded: `Camera` gains `Msaa::Sample4` and
+`Camera3d` gains `Tonemapping::TonyMcMapface` as Bevy required components, so
+the capture applies `msaa_for`/`bevy_tonemapping` explicitly (one sample per
+pixel, no tone curve — review fix on this branch). The coverage figures
+differ from the first submitted run by a few permille for exactly that
+reason: antialiased edge pixels no longer count as covered.
 
 **The `missing_texture` refusal was exercised for real**: `C3`'s skyline mesh
 (492) has two material groups naming `cloud1.tif` and `cloud2.tif`, which
