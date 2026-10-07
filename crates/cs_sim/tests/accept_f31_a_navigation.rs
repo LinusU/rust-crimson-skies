@@ -146,6 +146,7 @@ fn accept_f31_a_mandatory_marker_is_targeted_before_its_successor() {
     let mut state = NavState {
         position_m: [0.0, 0.0, 0.0],
         heading_rad: heading_from_direction(0.0, -1.0),
+        bank_rad: 0.0,
         speed_mps: 40.0,
         climb_mps: 0.0,
     };
@@ -204,6 +205,7 @@ fn accept_f31_a_arrival_is_swept_not_position_equality() {
     let fast = NavState {
         position_m: [0.0, 0.0, 0.0],
         heading_rad: 0.0, // forward -Z
+        bank_rad: 0.0,
         speed_mps: 3000.0,
         climb_mps: 0.0,
     };
@@ -262,6 +264,7 @@ fn accept_f31_a_blocked_step_holds_position_without_crossing() {
     let state = NavState {
         position_m: [0.0, 0.0, 0.0],
         heading_rad: heading_from_direction(1.0, 0.0),
+        bank_rad: 0.0,
         speed_mps: 40.0,
         climb_mps: 0.0,
     };
@@ -305,6 +308,7 @@ fn accept_f31_a_blocked_direct_step_deviates_within_the_envelope() {
     let state = NavState {
         position_m: [0.0, 0.0, 0.0],
         heading_rad: 0.0, // forward -Z, straight at the sphere
+        bank_rad: 0.0,
         speed_mps: 40.0,
         climb_mps: 0.0,
     };
@@ -354,6 +358,7 @@ fn accept_f31_a_completed_route_reports_arrived_and_holds() {
     let state = NavState {
         position_m: [0.0, 0.0, -10.0],
         heading_rad: 0.0,
+        bank_rad: 0.0,
         speed_mps: 40.0,
         climb_mps: 0.0,
     };
@@ -427,6 +432,7 @@ fn accept_f31_a_origin_shift_translates_state_and_frame_together() {
     let local = NavState {
         position_m: [0.0, 0.0, -30.0],
         heading_rad: heading_from_direction(60.0, 26.0),
+        bank_rad: 0.0,
         speed_mps: 40.0,
         climb_mps: 0.0,
     };
@@ -509,6 +515,7 @@ fn accept_f31_a_heading_step_is_bounded_by_the_envelope() {
     let state = NavState {
         position_m: [0.0, 0.0, 0.0],
         heading_rad: 0.0, // forward -Z; the target is 90 degrees to the left
+        bank_rad: 0.0,
         speed_mps: 40.0,
         climb_mps: 0.0,
     };

@@ -89,6 +89,7 @@ fn accept_f31_d_moving_waypoint_and_origin_shift_do_not_reset_progress_or_false_
                 // 300 m away under the displaced frame.
                 position_m: [0.0, 0.0, -200.0],
                 heading_rad: 0.0,
+                bank_rad: 0.0,
                 speed_mps: 120.0,
                 climb_mps: 0.0,
             },
@@ -163,6 +164,7 @@ fn accept_f31_d_a_mid_route_origin_shift_keeps_the_earned_progress() {
             start: NavState {
                 position_m: [0.0, 0.0, 0.0],
                 heading_rad: 0.0,
+                bank_rad: 0.0,
                 speed_mps: 120.0,
                 climb_mps: 0.0,
             },

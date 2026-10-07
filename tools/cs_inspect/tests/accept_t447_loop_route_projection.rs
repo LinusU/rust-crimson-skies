@@ -137,6 +137,7 @@ fn accept_t447_a_projected_loop_route_is_flown_for_several_laps() {
             start: NavState {
                 position_m: [0.0, 0.0, 0.0],
                 heading_rad: 0.0,
+                bank_rad: 0.0,
                 speed_mps: 40.0,
                 climb_mps: 0.0,
             },

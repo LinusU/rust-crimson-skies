@@ -95,6 +95,7 @@ fn fly(target_left: bool, flip_roll: bool) -> f64 {
         let state = NavState {
             position_m: position,
             heading_rad: heading,
+            bank_rad: 0.0,
             speed_mps: speed,
             climb_mps: velocity[1],
         };

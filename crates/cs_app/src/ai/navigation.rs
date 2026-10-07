@@ -695,12 +695,21 @@ fn sample_anchor(position: &Position, rotation: &Rotation) -> ReferenceFrameSamp
 /// The heading is the body forward axis about canonical `+Y`
 /// (`docs/contracts/FLIGHT-PHYSICS.md`); speed is the horizontal component and
 /// climb the vertical one, matching the step the follower commits.
+///
+/// The bank (#526) is measured about the body forward axis and carries the
+/// **right-wing-down** sign of `FlightInput.roll`: `atan2(right.Y, up.Y)` is
+/// positive left-wing-down, so it is negated. Wings level gives `right.Y = 0`
+/// and `up.Y = 1`, i.e. exactly zero, and the pitch axis drops out of both
+/// components, so this is the roll angle itself rather than an attitude mix.
 fn nav_state(position: &Position, rotation: &Rotation, velocity: &LinearVelocity) -> NavState {
     let forward = rotation.0 * Vec3::NEG_Z;
+    let right = rotation.0 * Vec3::X;
+    let up = rotation.0 * Vec3::Y;
     let v = velocity.0;
     NavState {
         position_m: position.0.to_array().map(f64::from),
         heading_rad: heading_from_direction(f64::from(forward.x), f64::from(forward.z)),
+        bank_rad: -(f64::from(right.y)).atan2(f64::from(up.y)),
         speed_mps: f64::from((v.x * v.x + v.z * v.z).sqrt()),
         climb_mps: f64::from(v.y),
     }

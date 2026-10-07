@@ -364,6 +364,7 @@ fn accept_f31_b_blocked_wall_holds_without_crossing_or_teleporting() {
     let state = NavState {
         position_m: [0.0, 0.0, 0.0],
         heading_rad: heading_from_direction(1.0, 0.0),
+        bank_rad: 0.0,
         speed_mps: 40.0,
         climb_mps: 0.0,
     };
@@ -446,6 +447,7 @@ fn accept_f31_b_displaced_actor_rejoins_before_the_next_mandatory_marker() {
     let displaced = NavState {
         position_m: [40.0, 0.0, -20.0],
         heading_rad: heading_from_direction(0.0, 1.0), // nose +Z, away from the route
+        bank_rad: 0.0,
         speed_mps: 40.0,
         climb_mps: 0.0,
     };
@@ -496,6 +498,7 @@ fn accept_f31_b_origin_shift_does_not_reset_progress_or_fire_arrival() {
     let state_before = NavState {
         position_m: before.decision.step.to_m,
         heading_rad: before.decision.step.heading_rad,
+        bank_rad: 0.0,
         speed_mps: before.decision.step.speed_mps,
         climb_mps: before.decision.step.climb_mps,
     };
@@ -598,6 +601,7 @@ fn accept_f31_b_moving_waypoint_does_not_reset_progress_or_fire_false_arrival() 
             *state = NavState {
                 position_m: decision.decision.step.to_m,
                 heading_rad: decision.decision.step.heading_rad,
+                bank_rad: 0.0,
                 speed_mps: decision.decision.step.speed_mps,
                 climb_mps: decision.decision.step.climb_mps,
             };

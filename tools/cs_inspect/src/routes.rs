@@ -886,6 +886,7 @@ fn build_follow_report() -> Result<BuiltFollowReport, String> {
     let displaced = NavState {
         position_m: [40.0, 0.0, -40.0],
         heading_rad: heading_from_direction(0.0, 1.0),
+        bank_rad: 0.0,
         speed_mps: 40.0,
         climb_mps: 0.0,
     };

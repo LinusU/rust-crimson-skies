@@ -78,7 +78,7 @@ use cs_types::net::SessionId;
 use cs_types::random::SplitMix64;
 
 use crate::damage::ActorId;
-use crate::flight::FlightInput;
+use crate::flight::{FlightEnvironment, FlightInput};
 
 /// Positions within this distance are treated as equal for heading selection,
 /// so a zero-length horizontal direction never produces a NaN heading. It is a
@@ -89,6 +89,47 @@ pub const DIRECTION_EPSILON_M: f64 = 1e-9;
 /// into a climb/dive rate, in seconds. A designed time constant, not a
 /// measured original rule.
 pub const CLIMB_APPROACH_S: f64 = 2.0;
+
+/// The outer heading loop's gain, in `turn rate (rad/s) per radian of heading
+/// error`, of the follower's bank cascade (task #526).
+///
+/// One radian of heading error demands one radian per second of turn rate; the
+/// demand is then bounded by the envelope's `max_yaw_rate_radps` and converted
+/// to a bank angle, so the whole heading loop still obeys spec non-negotiable
+/// behavior 2. The value is designed: with the bank-hold time constant the
+/// inner loop settles to, it puts the linearised heading loop near critical
+/// damping, so a displaced actor converges onto its marker instead of
+/// oscillating across the route.
+pub const HEADING_LOOP_GAIN_PER_S: f64 = 1.0;
+
+/// The climb-rate error, in meters per second, that commands full pitch
+/// authority in the follower's inner climb loop (task #526).
+///
+/// The outer vertical loop is unchanged: [`Navigator::decide`] turns the
+/// height error into the climb/dive rate the step commits
+/// ([`CLIMB_APPROACH_S`]). The inner loop closes the **measured** vertical
+/// speed against that commanded one, exactly as the bank loop closes the
+/// measured bank, because the pitch channel is a rate command with no
+/// attitude holding of its own. The attitude it integrates *is* the
+/// integrator that trims the airframe, so a steady climb-rate error vanishes
+/// and the aircraft holds the altitude the route flies at.
+///
+/// Before #526 the pitch command was proportional to the height error alone.
+/// That is three integrators in series with no damping term (height error ->
+/// pitch rate -> attitude -> climb -> height), and the measured trace of it is
+/// a growing oscillation: a level synthetic run swung from -3.6 m to +10 m to
+/// -21 m and kept growing, and a laterally displaced one sank 10 m before its
+/// marker and passed outside it.
+///
+/// The value is designed and then measured rather than fitted to one test: at
+/// 60 the inner loop is well damped but slow to arrest a banked sink (the
+/// probe sank 7.7 m before recovering); at 30 the same level run holds within
+/// 2 m, and every lateral displacement up to 20 m reaches its 10 m marker with
+/// about 5 m of altitude to spare, at the cost of ~20% overshoot on a full
+/// climb command.
+/// `crates/cs_sim/tests/accept_t526_bank_hold_and_envelope.rs` measures it
+/// through the production follower and the production flight model.
+pub const CLIMB_LOOP_FULL_SCALE_MPS: f64 = 30.0;
 
 /// How many bounded yaw offsets to try on each side when the direct step is
 /// blocked, in multiples of one tick's maximum yaw step.
@@ -960,6 +1001,14 @@ pub struct NavState {
     /// positive value turns nose-left, matching
     /// `docs/contracts/FLIGHT-PHYSICS.md`.
     pub heading_rad: f64,
+    /// Measured bank in radians; positive is **right-wing-down**, the sign of
+    /// `FlightInput.roll` (`docs/contracts/FLIGHT-PHYSICS.md`,
+    /// `accept_f24_a_control_axes_map_to_their_body_axes`).
+    ///
+    /// This is the follower's measured roll state (task #526): the bank-hold
+    /// inner loop closes the commanded bank against it, so the roll channel —
+    /// a rate command with no bank holding of its own — cannot run away.
+    pub bank_rad: f64,
     /// Forward speed, in meters per second.
     pub speed_mps: f64,
     /// Vertical speed, in meters per second (positive is climbing).
@@ -1292,7 +1341,7 @@ impl Navigator {
             progress = progress.advanced(route);
         }
 
-        let command = self.command_for(state, &step);
+        let command = self.command_for(state, heading_error_rad, &step);
         Ok(NavigationDecision {
             tick: request.tick,
             generation: request.generation,
@@ -1364,21 +1413,84 @@ impl Navigator {
         None
     }
 
-    fn command_for(&self, state: NavState, step: &RouteStep) -> FlightInput {
-        let max_yaw_step = self.envelope.max_yaw_rate_radps * step_dt(step);
-        let yaw_applied = wrap_pi(step.heading_rad - state.heading_rad);
-        let turn_fraction = if max_yaw_step > 0.0 {
-            (yaw_applied / max_yaw_step).clamp(-1.0, 1.0)
+    /// The bounded flight command for one committed step.
+    ///
+    /// The command is a **cascade** (task #526). An outer heading loop turns
+    /// the heading error into the turn rate a coordinated turn needs at the
+    /// measured speed, and so into the bank that produces it:
+    ///
+    /// ```text
+    /// omega = clamp(GAIN * heading_error, +/- max_yaw_rate)
+    /// bank  = clamp(atan(omega * V / g), +/- max_bank)   // nose-left positive
+    /// phi   = -bank                                      // right-wing-down
+    /// ```
+    ///
+    /// An inner bank loop then closes the **measured** bank
+    /// ([`NavState::bank_rad`]) against `phi` with a proportional roll-rate
+    /// command:
+    ///
+    /// ```text
+    /// roll = clamp((phi - bank) / (max_bank / 2), +/- 1)
+    /// ```
+    ///
+    /// The signs come from `docs/contracts/FLIGHT-PHYSICS.md`: a nose-left
+    /// turn (`omega > 0`, canonical `+Y`) is flown left-wing-down, while
+    /// `FlightInput.roll` is positive right-wing-down, so `phi` carries the
+    /// minus sign and the bank error is compared in the same right-wing-down
+    /// sign as the measured bank. Dropping the measured bank from that
+    /// comparison — or flipping it — banks the aircraft away from its target,
+    /// which is the #451 defect this replaces.
+    ///
+    /// Before #526 the heading error was mapped straight onto the roll *rate*
+    /// command. The F24 roll channel is a rate command with no bank holding,
+    /// so that loop was an undamped double integrator: the commanded bank grew
+    /// without bound and a laterally displaced actor never rejoined.
+    ///
+    /// `g` is the same sea-level gravity the flight model applies to the
+    /// airframe (`docs/contracts/FLIGHT-PHYSICS.md`, "Coordinate
+    /// convention"), so the coordinated-turn relation and the body it flies
+    /// are one model rather than two.
+    ///
+    /// The pitch channel is the same cascade one level down: the outer
+    /// vertical loop has already committed the climb/dive rate in
+    /// [`RouteStep::climb_mps`], and the inner loop closes the **measured**
+    /// vertical speed against it,
+    ///
+    /// ```text
+    /// pitch = clamp((step.climb - state.climb) / CLIMB_LOOP_FULL_SCALE_MPS, +/- 1)
+    /// ```
+    ///
+    /// so the attitude the pitch rate integrates is what trims the airframe
+    /// and the altitude the route flies at is actually held.
+    fn command_for(
+        &self,
+        state: NavState,
+        heading_error_rad: f64,
+        step: &RouteStep,
+    ) -> FlightInput {
+        let max_bank = self.envelope.max_bank_rad;
+        // A stationary step (blocked or held) asks for no turn and no climb,
+        // and what it must hold is exactly what it already has: both inner
+        // loops see zero error, so the roll and pitch commands are zero and
+        // the command stays neutral.
+        let stationary = step_dt(step) <= 0.0;
+        let desired_bank = if stationary {
+            state.bank_rad
         } else {
-            0.0
+            let turn_rate = (HEADING_LOOP_GAIN_PER_S * heading_error_rad).clamp(
+                -self.envelope.max_yaw_rate_radps,
+                self.envelope.max_yaw_rate_radps,
+            );
+            coordinated_bank_rad(&self.envelope, turn_rate, state.speed_mps)
         };
-        // A positive yaw step turns the nose left (canonical +Y, positive
-        // heading), which needs a left bank: `FlightInput.roll` is positive
-        // right-wing-down, so the bank that turns left is negative. See
-        // `docs/contracts/FLIGHT-PHYSICS.md` and
-        // `accept_f24_a_control_axes_map_to_their_body_axes`.
-        let roll = -turn_fraction * (self.envelope.max_bank_rad / std::f64::consts::FRAC_PI_2);
-        let pitch = (step.climb_mps / self.envelope.max_climb_rate_mps).clamp(-1.0, 1.0);
+        let roll = ((desired_bank - state.bank_rad) / (0.5 * max_bank)).clamp(-1.0, 1.0);
+        let desired_climb = if stationary {
+            state.climb_mps
+        } else {
+            step.climb_mps
+        };
+        let pitch =
+            ((desired_climb - state.climb_mps) / CLIMB_LOOP_FULL_SCALE_MPS).clamp(-1.0, 1.0);
         let throttle = (step.speed_mps / self.envelope.max_speed_mps).clamp(0.0, 1.0);
         FlightInput::try_new(pitch, roll, 0.0, throttle, false)
             .expect("every bounded command lies inside the declared input ranges")
@@ -1404,6 +1516,11 @@ impl Navigator {
         if !request.state.heading_rad.is_finite() {
             return Err(NavigationError::NonFinite {
                 field: "state.heading_rad",
+            });
+        }
+        if !request.state.bank_rad.is_finite() {
+            return Err(NavigationError::NonFinite {
+                field: "state.bank_rad",
             });
         }
         if !request.state.speed_mps.is_finite() {
@@ -1449,6 +1566,27 @@ fn clears(request: &NavigationRequest<'_>, step: &RouteStep) -> bool {
     !request.blockers.iter().any(|blocker| {
         blocker.segment_intersects_with_clearance(step.from_m, step.to_m, request.route.clearance_m)
     })
+}
+
+/// The bank (positive **right-wing-down**) that flies a coordinated turn of
+/// `turn_rate_radps` (positive nose-left) at `speed_mps`, bounded by the
+/// envelope's `max_bank_rad`.
+///
+/// The coordinated-turn relation `omega = g * tan(bank) / V` solved for the
+/// bank, then flipped into the right-wing-down sign
+/// `FlightInput.roll`/`NavState::bank_rad` use
+/// (`docs/contracts/FLIGHT-PHYSICS.md`). `g` is the same sea-level gravity
+/// the flight model applies to the airframe, so the relation and the body it
+/// describes are one model. At (or below) zero speed there is no turn to fly,
+/// so the answer is a level wing.
+fn coordinated_bank_rad(envelope: &ManeuverEnvelope, turn_rate_radps: f64, speed_mps: f64) -> f64 {
+    if speed_mps.is_finite() && speed_mps > 0.0 {
+        let gravity = FlightEnvironment::SEA_LEVEL.gravity_mps2;
+        let nose_left_bank = (turn_rate_radps * speed_mps / gravity).atan();
+        -nose_left_bank.clamp(-envelope.max_bank_rad, envelope.max_bank_rad)
+    } else {
+        0.0
+    }
 }
 
 fn step_for(
@@ -2155,11 +2293,25 @@ where
         };
         let decision = set.decide(&request)?;
         let blocked = matches!(decision.decision.avoidance, AvoidanceState::Blocked);
+        // The kinematic closure has no rigid body to bank, so it carries the
+        // bank its own committed heading change implies, in the same
+        // coordinated-turn relation the command cascade uses (#526). The
+        // bank-hold loop is then fed a state consistent with the step it just
+        // flew rather than a stale one, and a steady run commands no roll.
+        let step = &decision.decision.step;
+        let step_s = step_dt(step);
+        let turn_rate = if step_s > 0.0 {
+            wrap_pi(step.heading_rad - state.heading_rad) / step_s
+        } else {
+            0.0
+        };
+        let bank_rad = coordinated_bank_rad(set.navigator().envelope(), turn_rate, step.speed_mps);
         state = NavState {
-            position_m: decision.decision.step.to_m,
-            heading_rad: decision.decision.step.heading_rad,
-            speed_mps: decision.decision.step.speed_mps,
-            climb_mps: decision.decision.step.climb_mps,
+            position_m: step.to_m,
+            heading_rad: step.heading_rad,
+            bank_rad,
+            speed_mps: step.speed_mps,
+            climb_mps: step.climb_mps,
         };
         let finished = decision.state.is_complete(route);
         decisions.push(decision);
@@ -2198,25 +2350,51 @@ pub const SYNTHETIC_ARCH_START_SPEED_MPS: f64 = 40.0;
 ///
 /// Chosen so the 40 m turn radius at cruise is small relative to the route's
 /// node spacing, so the fixture is flyable rather than marginal. The values are
-/// the F31 follower's **designed command contract**, not a model of any
-/// particular airframe: every command the follower emits is bounded by them
-/// (spec non-negotiable behavior 2), and the kinematic `follow_route` probe
-/// flies exactly that bound.
+/// the F31 follower's **designed command contract**: every command the follower
+/// emits is bounded by them (spec non-negotiable behavior 2), and the kinematic
+/// `follow_route` probe flies exactly that bound.
 ///
-/// The F24 synthetic airframe (`cs_sim::flight::synthetic_fixed_wing`) is
-/// deliberately **not** this envelope's subject. That airframe is a fidelity
-/// model: its roll channel is a rate command with no bank holding, and it
-/// cannot hold altitude on a zero-pitch command without its cruise trim angle
-/// of attack. So a follower bounded by this envelope flies the *kinematic*
-/// route closure, not the F24 body; making the integrated Avian loop rejoin
-/// laterally needs new follower state (measured bank) or an assisted airframe.
+/// What the numbers mean for the airframe the follower is actually flown by is
+/// **measured**, not assumed (task #526,
+/// `docs/findings/2026-10-07-t526-follower-bank-hold.md`):
+///
+/// * `max_bank_rad` is a bank the F24 synthetic airframe holds only because the
+///   follower now closes the commanded bank against **measured** bank; its roll
+///   channel alone is a rate command with no bank holding (#451).
+/// * The turn that bank buys in a coordinated turn is
+///   `g * tan(bank) / V` = 9.80665 * tan(pi/3) / 40 = **0.424 rad/s** at the
+///   declared cruise, and that is the follower's *effective* turn bound: the
+///   bank clamp in the command cascade reaches it long before
+///   `max_yaw_rate_radps` does. The production airframe sustains 0.49 rad/s
+///   there (measured).
+/// * `max_yaw_rate_radps = 1.0` therefore **exceeds** what this airframe can
+///   fly. It stays as the kinematic command contract — it is what gives the
+///   arch fixture its 40 m turn radius — and the mismatch is recorded with
+///   measured evidence in that finding and pinned by
+///   `accept_t526_the_declared_turn_bound_is_the_turn_the_airframe_sustains`.
+///   Deriving it instead would widen the kinematic turn radius to 94 m, and
+///   the arch fixture then stops rejoining its marker (measured; see the
+///   finding).
+/// * `max_climb_rate_mps` and `max_dive_rate_mps` **are** reconciled: the
+///   airframe peaks at 16.6 m/s of climb and 35 m/s of dive at the cruise
+///   throttle the follower commands, so the declared 15 and 25 sit inside what
+///   it actually flies.
+///
 /// See `docs/findings/2026-10-02-t451-bank-sign-and-envelope-subject.md`
-/// (task #451) for the measured evidence and the filed follow-up, #526.
+/// (#451) for the defect these measurements frame.
 #[must_use]
 pub fn synthetic_maneuver_envelope() -> ManeuverEnvelope {
     ManeuverEnvelope {
         max_yaw_rate_radps: 1.0,
-        max_climb_rate_mps: 20.0,
+        // Reconciled with the airframe this envelope is flown by (#526): at
+        // the cruise throttle the follower commands, the synthetic airframe
+        // peaks at 16.6 m/s of climb and sustains ~16 m/s over a route leg,
+        // while it pulls 35 m/s out of a full dive. The declared bounds sit
+        // inside those measurements, so every climb and dive the follower can
+        // command is one the airframe actually flies. The measured numbers and
+        // the thrust-limited steady-state figure are in
+        // `docs/findings/2026-10-07-t526-follower-bank-hold.md`.
+        max_climb_rate_mps: 15.0,
         max_dive_rate_mps: 25.0,
         min_speed_mps: 20.0,
         max_speed_mps: 90.0,
@@ -2298,6 +2476,7 @@ pub fn synthetic_arch_start() -> NavState {
     NavState {
         position_m: [0.0, 0.0, -30.0],
         heading_rad: heading_from_direction(60.0, 26.0),
+        bank_rad: 0.0,
         speed_mps: SYNTHETIC_ARCH_START_SPEED_MPS,
         climb_mps: 0.0,
     }
@@ -2435,6 +2614,7 @@ pub fn synthetic_pursuit_start() -> NavState {
     NavState {
         position_m: [0.0, 0.0, 0.0],
         heading_rad: 0.0,
+        bank_rad: 0.0,
         speed_mps: SYNTHETIC_ARCH_START_SPEED_MPS,
         climb_mps: 0.0,
     }
@@ -2571,6 +2751,21 @@ impl SyntheticArchProbe {
                 });
             }
             let blocked = matches!(decision.avoidance, AvoidanceState::Blocked);
+            // The kinematic probe has no rigid body to bank either: it carries
+            // the bank its committed turn implies (#526), exactly as
+            // `follow_route` does, so the state the follower is fed stays
+            // consistent with the step it just flew.
+            let step_s = step_dt(&decision.step);
+            let turn_rate = if step_s > 0.0 {
+                wrap_pi(decision.step.heading_rad - self.state.heading_rad) / step_s
+            } else {
+                0.0
+            };
+            self.state.bank_rad = coordinated_bank_rad(
+                self.navigator.envelope(),
+                turn_rate,
+                decision.step.speed_mps,
+            );
             self.state.position_m = decision.step.to_m;
             self.state.heading_rad = decision.step.heading_rad;
             self.state.speed_mps = decision.step.speed_mps;
@@ -2934,6 +3129,7 @@ mod tests {
                     state: NavState {
                         position_m,
                         heading_rad: 0.0, // forward -Z
+                        bank_rad: 0.0,
                         speed_mps: 40.0,
                         climb_mps: 0.0,
                     },
@@ -2967,5 +3163,140 @@ mod tests {
         );
         assert!(left.command.roll.abs() <= 1.0);
         assert!(right.command.roll.abs() <= 1.0);
+    }
+
+    /// Task #526: the roll command is decided by the **measured** bank, so the
+    /// follower closes the bank it commands instead of winding the F24 roll
+    /// channel — a rate command with no bank holding — up without bound.
+    ///
+    /// The request is identical in every case (a marker to the left of an
+    /// actor at the origin's latitude), so only `state.bank_rad` differs.
+    /// Dropping the measured bank from the inner loop makes the command
+    /// independent of `state.bank_rad` (the #451 behaviour) and fails the
+    /// second and third groups; flipping its sign makes the follower roll
+    /// *into* the bank it already holds and fails the last two assertions.
+    #[test]
+    fn accept_t526_the_measured_bank_decides_the_roll_command() {
+        let navigator = Navigator::new(
+            synthetic_maneuver_envelope(),
+            NavigationCadence::designed_default(),
+        )
+        .expect("valid navigator");
+        let route = synthetic_pursuit_route();
+        let roll = |bank_rad: f64| {
+            navigator
+                .decide(&NavigationRequest {
+                    tick: Tick(0),
+                    generation: 1,
+                    state: NavState {
+                        position_m: [40.0, 0.0, 0.0],
+                        heading_rad: 0.0, // forward -Z; the marker is to the left
+                        bank_rad,
+                        speed_mps: 40.0,
+                        climb_mps: 0.0,
+                    },
+                    route: &route,
+                    progress: RouteProgress::reached_nodes(1),
+                    frame: ReferenceFrameSample::IDENTITY,
+                    blockers: &[],
+                    dt_s: SYNTHETIC_PURSUIT_DT_S,
+                })
+                .expect("valid request")
+                .command
+                .roll
+        };
+
+        // The marker is to the left: an aircraft that has not banked yet must
+        // be commanded into a left bank (`FlightInput.roll` is negative
+        // right-wing-down, `docs/contracts/FLIGHT-PHYSICS.md`).
+        let level = roll(0.0);
+        assert!(
+            level < 0.0,
+            "a left marker must command a left bank, got {level}"
+        );
+        assert!(level.abs() <= 1.0);
+
+        // Banking toward the marker leaves less roll to do...
+        let already = roll(-0.6);
+        assert!(
+            already < 0.0 && already.abs() < level.abs(),
+            "the measured bank must reduce the roll demand: got {already} against a level \
+             demand of {level}"
+        );
+
+        // ...and once the airframe has banked *past* what the turn needs, the
+        // follower must roll back out of it. A loop with no measured bank
+        // cannot do that at all: its command does not depend on `bank_rad`.
+        let past = roll(-1.4);
+        assert!(
+            past > 0.0,
+            "an over-banked aircraft must be rolled back toward level, got {past}"
+        );
+        let wrong_way = roll(1.4);
+        assert!(
+            wrong_way < 0.0,
+            "an aircraft banked away from the marker must be rolled further into the turn, \
+             got {wrong_way}"
+        );
+    }
+
+    /// Task #526, the vertical half: the pitch command is decided by the
+    /// **measured** vertical speed, so the follower holds the altitude its
+    /// route flies at instead of winding the F24 pitch channel up without
+    /// bound.
+    ///
+    /// The marker sits at the actor's own altitude, so the outer vertical
+    /// loop commands no climb and the entire pitch command comes from the
+    /// inner loop. The pre-#526 law was proportional to the height error
+    /// alone, which commands exactly zero pitch in all three cases here and
+    /// fails every assertion below; the measured trace of that law is in
+    /// `docs/findings/2026-10-07-t526-follower-bank-hold.md`.
+    #[test]
+    fn accept_t526_the_measured_climb_decides_the_pitch_command() {
+        let navigator = Navigator::new(
+            synthetic_maneuver_envelope(),
+            NavigationCadence::designed_default(),
+        )
+        .expect("valid navigator");
+        let route = synthetic_pursuit_route();
+        let pitch = |climb_mps: f64| {
+            navigator
+                .decide(&NavigationRequest {
+                    tick: Tick(0),
+                    generation: 1,
+                    state: NavState {
+                        position_m: [40.0, 0.0, 0.0],
+                        heading_rad: 0.0,
+                        bank_rad: 0.0,
+                        speed_mps: 40.0,
+                        climb_mps,
+                    },
+                    route: &route,
+                    progress: RouteProgress::reached_nodes(1),
+                    frame: ReferenceFrameSample::IDENTITY,
+                    blockers: &[],
+                    dt_s: SYNTHETIC_PURSUIT_DT_S,
+                })
+                .expect("valid request")
+                .command
+                .pitch
+        };
+
+        let climbing = pitch(5.0);
+        assert!(
+            climbing < 0.0,
+            "a climbing aircraft must be pitched back toward level, got {climbing}"
+        );
+        let descending = pitch(-5.0);
+        assert!(
+            descending > 0.0,
+            "a descending aircraft must be pitched back toward level, got {descending}"
+        );
+        let steady = pitch(0.0);
+        assert_eq!(
+            steady, 0.0,
+            "an aircraft already holding the commanded climb needs no pitch at all"
+        );
+        assert!(climbing.abs() <= 1.0 && descending.abs() <= 1.0);
     }
 }

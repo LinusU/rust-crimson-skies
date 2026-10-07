@@ -55,6 +55,7 @@ fn start_at_origin() -> NavState {
     NavState {
         position_m: [0.0, 0.0, 0.0],
         heading_rad: 0.0,
+        bank_rad: 0.0,
         speed_mps: 40.0,
         climb_mps: 0.0,
     }

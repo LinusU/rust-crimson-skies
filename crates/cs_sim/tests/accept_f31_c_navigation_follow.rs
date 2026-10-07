@@ -39,6 +39,7 @@ fn accept_f31_c_displaced_actor_rejoins_before_the_next_mandatory_marker() {
     let displaced = NavState {
         position_m: [40.0, 0.0, -20.0],
         heading_rad: heading_from_direction(0.0, 1.0),
+        bank_rad: 0.0,
         speed_mps: 40.0,
         climb_mps: 0.0,
     };
@@ -128,6 +129,7 @@ fn accept_f31_c_follow_route_samples_a_moving_frame_each_tick() {
             start: NavState {
                 position_m: [0.0, 0.0, 0.0],
                 heading_rad: 0.0,
+                bank_rad: 0.0,
                 speed_mps: 40.0,
                 climb_mps: 0.0,
             },
@@ -243,6 +245,7 @@ fn synthetic_pursuit_route_start() -> NavState {
     NavState {
         position_m: [0.0, 0.0, 0.0],
         heading_rad: 0.0,
+        bank_rad: 0.0,
         speed_mps: 40.0,
         climb_mps: 0.0,
     }
