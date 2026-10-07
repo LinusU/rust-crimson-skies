@@ -64,7 +64,7 @@ Same evidence as the rule it implements, not a new measurement:
 
 | File | Change |
 | --- | --- |
-| `crates/cs_script/src/runtime.rs` | `INSTANT_END_DELAY` (0.1 s) / `STANDARD_END_DELAY` (3.0 s); `TerminalBranch`, `ObjectivesCue`, `MissionCue`, `EndAnimation`, `EndDelay`, `MissionEndPresentation` with `new(lost, won, instant, result)` written loss-first; `MissionState` stores the selection, exposes `MissionState::terminal_presentation()`, sets it where `step` resolves a terminal request and where `abort` ends a session; the record carries it (`MissionStateSnapshot::presentation`), `SNAPSHOT_VERSION` 1 → 2, and `RestoreDefect::PresentationMismatch` refuses a record whose terminal state and presentation disagree; `f37.d.limit.terminal_branch_delay_and_sound` removed and the `loss_branch_before_win` fact now carries no limitation. |
+| `crates/cs_script/src/runtime.rs` | `INSTANT_END_DELAY` (0.1 s) / `STANDARD_END_DELAY` (3.0 s); `TerminalBranch`, `ObjectivesCue`, `MissionCue`, `EndAnimation`, `EndDelay`, `MissionEndPresentation` with `new(lost, won, instant, result)` written loss-first; `MissionState` stores the selection, exposes `MissionState::terminal_presentation()`, sets it on **every** transition that ends a session — where `step`/`step_with_countdown` resolves a terminal request, where the measured countdown pre-emption (F37-D-FU4, landed with this branch) ends the tick, and where `abort` ends a session — the record carries it (`MissionStateSnapshot::presentation`), `SNAPSHOT_VERSION` 1 → 2, and `RestoreDefect::PresentationMismatch` refuses a record whose terminal state and presentation disagree; `f37.d.limit.terminal_branch_delay_and_sound` removed and the `loss_branch_before_win` fact now carries no limitation. |
 | `crates/cs_script/src/ir.rs` | `Action::Finish`'s documentation records the mapping below and names the gap it leaves (a non-instant ending cannot be expressed). |
 | `crates/cs_sim/src/mission.rs` | `MissionTick::presentation`, filled by `MissionSession::advance` from the state, so the host reads the selection with the tick that ended the mission. |
 | `crates/cs_script/tests/accept_f37_d_fu5.rs` | The new acceptance tests. |
@@ -90,10 +90,16 @@ run at all, and the countdown-expiry path calls `0x463c30(1, 3.0)` directly:
 no `OBJECTIVES_*_SOUND`, the standard delay, and the loss side of the mission
 sound and animation because WON is clear. That is the shape a host teardown
 (`MissionState::abort`) and an `Action::Finish(Outcome::Aborted)` request get
-here. The **result** of those paths stays designed — the original has no
-Aborted state — which `f37.d.limit.aborted_outcome` still records and
-`accept_f37_d_fu2_measured_precedence_records_success_iff_won` still pins;
-this stage adds no claim about them beyond the structure above.
+here. It is also the shape F37-D-FU4's countdown pre-emption takes — that
+branch landed on this task's rebase and ends the tick with **no** flag set and
+no instant outcome, so its `MissionEndPresentation` is the same no-flag one,
+and the presentation is set there too; without that the terminal record an
+expiry writes would fail this stage's own restore-consistency check (the
+expiry's own **result** stays the measured failure — success iff WON, and the
+expiry sets no WON). The **result** of the abort paths stays designed — the
+original has no Aborted state — which `f37.d.limit.aborted_outcome` still
+records and `accept_f37_d_fu2_measured_precedence_records_success_iff_won`
+still pins; this stage adds no claim about them beyond the structure above.
 
 What is **not** closed by this entry, recorded so it cannot be lost:
 
@@ -117,11 +123,12 @@ What is **not** closed by this entry, recorded so it cannot be lost:
 
 ## Acceptance
 
-`accept_f37_d_fu5_*`, 6 tests in `crates/cs_script/tests/accept_f37_d_fu5.rs`,
-all calling production code (`MissionState::new`/`step`/`abort`/`snapshot`/
-`restore`), plus
+`accept_f37_d_fu5_*`, 7 tests in `crates/cs_script/tests/accept_f37_d_fu5.rs`
+plus
 `accept_f37_d_fu5_session_tick_carries_the_mission_end_presentation` in
-`crates/cs_sim/src/mission.rs`, which drives `MissionSession::advance`:
+`crates/cs_sim/src/mission.rs` — 8 in total, all calling production code
+(`MissionState::new`/`step`/`step_with_countdown`/`abort`/`snapshot`/
+`restore`; the `cs_sim` one drives `MissionSession::advance`):
 
 1. `..._loss_branch_runs_while_the_recorded_result_is_success` — both requests
    on one tick: recorded result `Succeeded`, branch `Loss`,
@@ -143,6 +150,11 @@ all calling production code (`MissionState::new`/`step`/`abort`/`snapshot`/
    limitation is gone from `RULE_LIMITATIONS`, the fact it gated carries none,
    and this entry exists and quotes the addresses, the image sha256 and the
    limitation id.
+7. `..._countdown_expiry_selects_the_no_flag_presentation` — F37-D-FU4's
+   pre-emption ends the tick with neither flag and no instant outcome, so it
+   selects `branch: None`, no `OBJECTIVES_*_SOUND`, `MISSION_LOST_SOUND`,
+   `LOSS_ANIM`, the standard 3.0 s delay, recorded result `Failed`, and the
+   record it writes still restores.
 
 Mutation check, run against this commit; each mutation was applied, the
 `accept_f37_d_fu5_` selection run, and the file reverted (the tree was

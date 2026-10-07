@@ -29,6 +29,10 @@
 //! * `..._end_delay_follows_the_measured_instant_rule` — 0.1 s when an instant
 //!   outcome fired on the terminal tick, 3.0 s when none did, with both halves
 //!   reachable on the production path.
+//! * `..._countdown_expiry_selects_the_no_flag_presentation` — the measured
+//!   countdown pre-emption (F37-D-FU4) ends the mission on its own tick with
+//!   neither flag set and no instant outcome, so it selects the no-flag shape
+//!   — standard delay, loss side — and its terminal record still restores.
 //! * `..._presentation_latches_and_survives_save_and_restore` — the terminal
 //!   tick's selection is latched, travels in the save record, and a record
 //!   whose terminal state and presentation disagree is refused.
@@ -281,6 +285,59 @@ fn accept_f37_d_fu5_end_delay_follows_the_measured_instant_rule() {
         Some(presentation),
         "the selection is latched with the terminal state"
     );
+}
+
+/// **The countdown-expiry ending carries the no-flag presentation too.**
+///
+/// The measured countdown pre-emption (F37-D-FU4) ends the mission on its
+/// own tick — before any objective runs, with neither WON nor LOST and no
+/// `INSTANTWIN`/`INSTANTLOSS` fired — so it is exactly the no-flag shape the
+/// countdown path hands `0x463c30(1, 3.0)`: no `OBJECTIVES_*_SOUND`, the
+/// standard 3.0 s delay, the loss side of the mission sound and of the
+/// animation, recorded result the failure. Every terminal transition selects
+/// a presentation on the tick that ends the session, so a save taken after an
+/// expiry still restores instead of being refused as a record that disagrees
+/// with itself.
+#[test]
+fn accept_f37_d_fu5_countdown_expiry_selects_the_no_flag_presentation() {
+    let program = validated(vec![objective(1, vec![Action::Finish(Outcome::Succeeded)])]);
+    let mut state = MissionState::new(&program, SESSION);
+    let expired = MissionCountdown {
+        expired: true,
+        ..MissionCountdown::NONE
+    };
+    let result = state
+        .step_with_countdown(&program, &MissionFacts::default(), Tick(1), expired)
+        .unwrap();
+
+    assert_eq!(result.terminal, TerminalState::Failed);
+    let presentation = state
+        .terminal_presentation()
+        .expect("the expiry's own tick selects a mission-end presentation");
+    assert_eq!(presentation.result, TerminalState::Failed);
+    assert_eq!(
+        presentation.branch, None,
+        "the expiry sets neither WON nor LOST, so no branch of the terminal check runs"
+    );
+    assert_eq!(presentation.objectives_cue(), None);
+    assert_eq!(
+        presentation.mission_cue,
+        MissionCue::MissionLostSound,
+        "WON is clear, so the end call picks MISSION_LOST_SOUND (+0xc7c)"
+    );
+    assert_eq!(presentation.animation, EndAnimation::LossAnim);
+    assert_eq!(
+        presentation.end_delay,
+        EndDelay::Standard,
+        "no instant outcome fired on this tick"
+    );
+    assert_eq!(presentation.end_delay.seconds(), STANDARD_END_DELAY);
+
+    // The record this live session writes must restore: without the
+    // presentation on the terminal record it would be refused as corrupt.
+    let record = state.snapshot(&program);
+    let restored = MissionState::restore(&program, record).unwrap();
+    assert_eq!(restored.terminal_presentation(), Some(presentation));
 }
 
 /// **Latched, saved, restored — and refused when forged.**

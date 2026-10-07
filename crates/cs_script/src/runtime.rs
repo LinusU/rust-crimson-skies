@@ -1977,6 +1977,21 @@ impl MissionState {
         // the input, not of this branch: see `MissionCountdown::preempts`.
         if countdown.preempts() {
             self.terminal = TerminalState::Failed;
+            // The presentation half of the same tick (F37-D-FU5), built from
+            // the shape this path really has: the expiry sets **no** flag
+            // (neither WON nor LOST), and no `INSTANTWIN`/`INSTANTLOSS`
+            // fired, so the terminal check takes its no-flag branch — no
+            // `OBJECTIVES_*_SOUND`, the standard 3.0 s delay `0x463c30(1,
+            // 3.0)` receives, and the loss side of the mission sound and the
+            // animation because WON is clear. Set with `terminal`, so a save
+            // taken after an expiry still restores
+            // ([`RestoreDefect::PresentationMismatch`]).
+            self.presentation = Some(MissionEndPresentation::new(
+                false,
+                false,
+                false,
+                self.terminal,
+            ));
             result.terminal = self.terminal;
             return Ok(result);
         }
