@@ -2264,23 +2264,33 @@ pub struct WorldGroupCensus {
     representative: Vec<RepresentativeGeometry>,
     routes: Vec<TraversalRoute>,
     openings: Vec<StuntOpening>,
+    unlocated_openings: Vec<UnlocatedOpening>,
+    route_search: RouteSearch,
 }
 
 impl WorldGroupCensus {
     /// Assembles one measured census from the counts a survey read and the facts
     /// it established.
     ///
-    /// `routes` and `openings` are **not** checked here: a census that claims a
-    /// route while the facts it needs are missing is a real state, and the
-    /// audit's job is to name it ([`WorldAuditGap::RouteWithoutFacts`]) rather
-    /// than to make it unconstructible.
+    /// `routes`, `openings` and `unlocated_openings` are **not** checked here:
+    /// a census that claims a route while the facts it needs are missing is a
+    /// real state, and the audit's job is to name it
+    /// ([`WorldAuditGap::RouteWithoutFacts`]) rather than to make it
+    /// unconstructible. What *is* refused is an unlocated class with no
+    /// measurement behind it ([`WorldAuditError::BlankOpeningReason`]), because
+    /// a reason-less unlocated class is the silent zero the audit exists to
+    /// prevent.
     ///
     /// # Errors
     ///
     /// [`WorldAuditError::NonFiniteVertexScale`] when a scale is NaN or
-    /// infinite, and [`WorldAuditError::NonFiniteStoredCorner`] when a
-    /// representative mesh carries a stored corner no render vertex can hold.
-    /// Both are values a reader would otherwise compare and find silently wrong.
+    /// infinite, [`WorldAuditError::NonFiniteStoredCorner`] when a
+    /// representative mesh carries a stored corner no render vertex can hold,
+    /// and [`WorldAuditError::BlankOpeningReason`] when one entry of
+    /// `unlocated_openings` carries no measurement.
+    /// The first two are values a reader would otherwise compare and find
+    /// silently wrong.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         world: WorldId,
         facts: GroupFacts,
@@ -2289,7 +2299,16 @@ impl WorldGroupCensus {
         representative: Vec<RepresentativeGeometry>,
         routes: Vec<TraversalRoute>,
         openings: Vec<StuntOpening>,
+        unlocated_openings: Vec<UnlocatedOpening>,
+        route_search: RouteSearch,
     ) -> Result<Self, WorldAuditError> {
+        for row in &unlocated_openings {
+            if row.measured().trim().is_empty() {
+                return Err(WorldAuditError::BlankOpeningReason {
+                    class: row.class().code().to_owned(),
+                });
+            }
+        }
         if let Some(scale) = vertex_scale_to_m
             && !scale.is_finite()
         {
@@ -2331,6 +2350,8 @@ impl WorldGroupCensus {
             representative,
             routes,
             openings,
+            unlocated_openings,
+            route_search,
         })
     }
 
@@ -2456,6 +2477,25 @@ impl WorldGroupCensus {
     pub fn openings(&self) -> &[StuntOpening] {
         &self.openings
     }
+
+    /// The measured reason each class the survey searched and did **not**
+    /// locate carries, one row per class it searched.
+    ///
+    /// A class that is not in this list and not in [`Self::openings`] was never
+    /// searched, and the audit reports [`OPENING_SEARCH_UNSUPPLIED`] for it
+    /// rather than nothing — an unlocated class always reaches a reader with a
+    /// reason.
+    #[must_use]
+    pub fn unlocated_openings(&self) -> &[UnlocatedOpening] {
+        &self.unlocated_openings
+    }
+
+    /// The measured verdict about traversal routes, consulted by the audit when
+    /// [`Self::routes`] is empty.
+    #[must_use]
+    pub const fn route_search(&self) -> &RouteSearch {
+        &self.route_search
+    }
 }
 
 /// One route through a world group, between two authored points.
@@ -2490,6 +2530,119 @@ pub struct StuntOpening {
     /// The opening's narrowest measured extent, in canonical metres, or `None`
     /// when nothing measured one.
     pub clearance_m: Option<f64>,
+}
+
+/// Why one opening class was **not** located in one world group, with the
+/// measurement that says so.
+///
+/// This is the audit's answer to "why is there no hangar here?", and it exists
+/// because the alternative — a class reported unlocated with no statement at
+/// all — is the silent zero the F18 sheet's acceptance criteria forbid. Two
+/// shapes of answer are both legitimate and both are carried verbatim in
+/// [`Self::measured`]:
+///
+/// * *the corpus holds none of this class*: the survey applied its measured
+///   rule and nothing matched, with the rule and what it searched named;
+/// * *the search itself could not be taken*: the measurement failed or was
+///   never applied here, with what stopped it named.
+///
+/// Either way the text is never empty, so a reader who sees the class
+/// unlocated sees a reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnlocatedOpening {
+    /// The class nothing located.
+    class: OpeningClass,
+    /// What was searched and what the corpus holds, as measured; never empty.
+    measured: String,
+}
+
+impl UnlocatedOpening {
+    /// Records one unlocated class with the measurement behind it.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldAuditError::BlankOpeningReason`] when `measured` is empty or only
+    /// whitespace: an unlocated class with no reason is exactly the silent
+    /// zero this record exists to prevent, so it is refused at the boundary
+    /// rather than printed later as an empty string.
+    pub fn new(class: OpeningClass, measured: impl Into<String>) -> Result<Self, WorldAuditError> {
+        let measured = measured.into();
+        if measured.trim().is_empty() {
+            return Err(WorldAuditError::BlankOpeningReason {
+                class: class.code().to_owned(),
+            });
+        }
+        Ok(Self { class, measured })
+    }
+
+    /// The class nothing located.
+    #[must_use]
+    pub const fn class(&self) -> OpeningClass {
+        self.class
+    }
+
+    /// The measurement that says why, verbatim and never empty.
+    pub fn measured(&self) -> &str {
+        &self.measured
+    }
+}
+
+/// The reason a class carries when the census that produced it carries no
+/// measured opening search at all.
+///
+/// Stated once so a test can assert against it rather than against a message
+/// it re-spelled: a caller that hands the audit a census without searching for
+/// openings must still get a reason per unlocated class, and this is the one
+/// that says the search never happened.
+pub const OPENING_SEARCH_UNSUPPLIED: &str = "this census carries no measured opening search, so no rule searched for this class and \
+     nothing measured says whether the corpus holds one";
+
+/// What the survey measured about traversal routes in one world group.
+///
+/// Consulted by the audit only when the census states **no** route: a census
+/// that stated one has answered the question whatever this says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RouteSearch {
+    /// The measured route rule was applied to this group and the corpus states
+    /// no route for it. `measured` cites what was searched and what the corpus
+    /// holds; the audit reports it as a gap that names the affected content
+    /// rather than as the old "measured for the wrong thing" shortfall.
+    Unstated {
+        /// What was searched and what the corpus holds, as measured.
+        measured: String,
+    },
+    /// No measured route rule reached this census — the caller measured no
+    /// rule, or the one it had could not be applied — so the audit keeps the
+    /// shortfall gap and this names what stopped it.
+    Unsought {
+        /// What stopped the route search, as measured; never empty.
+        measured: String,
+    },
+}
+
+impl Default for RouteSearch {
+    fn default() -> Self {
+        Self::Unsought {
+            measured: "this census carries no measured route search".to_owned(),
+        }
+    }
+}
+
+impl RouteSearch {
+    /// The measurement this verdict carries, whatever the verdict is.
+    pub fn measured(&self) -> &str {
+        match self {
+            Self::Unstated { measured } | Self::Unsought { measured } => measured,
+        }
+    }
+
+    /// Whether the measured rule was applied and the corpus itself states no
+    /// route — the state in which the shortfall gap is replaced by
+    /// [`WorldAuditGap::NoRouteInMeasuredCorpus`].
+    #[must_use]
+    pub const fn corpus_states_none(&self) -> bool {
+        matches!(self, Self::Unstated { .. })
+    }
 }
 
 /// Why a traversal route or a stunt-critical opening could not be stated.
@@ -2562,7 +2715,7 @@ impl fmt::Display for TraversalBlocker {
 pub struct StuntOpeningAudit {
     world: WorldId,
     located: Vec<StuntOpening>,
-    unlocated: Vec<OpeningClass>,
+    unlocated: Vec<UnlocatedOpening>,
 }
 
 impl StuntOpeningAudit {
@@ -2578,10 +2731,31 @@ impl StuntOpeningAudit {
         &self.located
     }
 
-    /// The classes nothing located, in [`OpeningClass::ALL`] order.
+    /// The classes nothing located, in [`OpeningClass::ALL`] order, each one
+    /// carrying the measurement that says why.
+    ///
+    /// Never a bare class: a report that shows *which* classes are missing
+    /// without *why* is the silent zero this audit exists to prevent, so every
+    /// row here answers both.
     #[must_use]
-    pub fn unlocated(&self) -> &[OpeningClass] {
+    pub fn unlocated(&self) -> &[UnlocatedOpening] {
         &self.unlocated
+    }
+
+    /// The classes nothing located, as the classes alone, in
+    /// [`OpeningClass::ALL`] order.
+    #[must_use]
+    pub fn unlocated_classes(&self) -> Vec<OpeningClass> {
+        self.unlocated.iter().map(UnlocatedOpening::class).collect()
+    }
+
+    /// The measurement that says why one class is not located here, or `None`
+    /// when this class *was* located.
+    pub fn unlocated_reason(&self, class: OpeningClass) -> Option<&str> {
+        self.unlocated
+            .iter()
+            .find(|row| row.class() == class)
+            .map(UnlocatedOpening::measured)
     }
 
     /// Whether every class the sheet names was located.
@@ -2728,11 +2902,38 @@ pub enum WorldAuditGap {
     /// The placement and the unit scale are both established, and the group
     /// still states no route. A group that measured cleanly and reported
     /// nothing has been measured for the wrong thing.
+    ///
+    /// This is the **shortfall** form, and the audit only reaches it when no
+    /// measured route rule reached the census ([`RouteSearch::Unsought`]): a
+    /// group the rule *did* reach reports [`Self::NoRouteInMeasuredCorpus`]
+    /// instead, which cites what was searched and which content the missing
+    /// route affects.
     NoRouteMeasured {
         /// The group that produced no route.
         world: WorldId,
         /// How many placed objects the placement source reported.
         placed_objects: usize,
+    },
+    /// The measured route rule was applied to this group and the corpus itself
+    /// states no traversal route for it.
+    ///
+    /// The successor to [`Self::NoRouteMeasured`] for every group a measured
+    /// rule covered. Where the shortfall gap said only "you measured and found
+    /// nothing", this one names **what** was searched, **why** the corpus holds
+    /// no route and **which content** the absence affects, so it can be filed
+    /// as a follow-up against the task that resolves it instead of being
+    /// rediscovered as a hole in a claim.
+    NoRouteInMeasuredCorpus {
+        /// The group the rule was applied to.
+        world: WorldId,
+        /// How many openings the same rule located in this group, so a reader
+        /// sees what the search did find beside what it did not.
+        located_openings: usize,
+        /// The content the absent route affects: the group's missions, or the
+        /// group itself when the campaign declares no mission in it.
+        affected: Vec<String>,
+        /// What was searched and what the corpus holds, as measured.
+        measured: String,
     },
     /// The census names a group its row does not declare, so the measured
     /// numbers belong to some other installation's world.
@@ -2763,6 +2964,21 @@ impl fmt::Display for WorldAuditGap {
                 f,
                 "{world} placed {placed_objects} objects and measured the unit scale, and still \
                  states no traversal route"
+            ),
+            Self::NoRouteInMeasuredCorpus {
+                world,
+                located_openings,
+                affected,
+                measured,
+            } => write!(
+                f,
+                "{world}: the measured route search states no traversal route affecting {} \
+                 ({located_openings} opening(s) located by the same rule): {measured}",
+                if affected.is_empty() {
+                    "no named content".to_owned()
+                } else {
+                    affected.join(", ")
+                }
             ),
             Self::CensusGroupMismatch { declared, measured } => write!(
                 f,
@@ -2810,6 +3026,15 @@ pub enum WorldAuditError {
         /// Which axis of the bound the offending corner is on.
         axis: usize,
     },
+    /// An opening class was recorded as unlocated with no measurement behind
+    /// it.
+    ///
+    /// Refused rather than reported, because a class that is unlocated and
+    /// silent is exactly the hole the opening audit exists to close.
+    BlankOpeningReason {
+        /// The class that carried no measurement, by its stable code.
+        class: String,
+    },
 }
 
 impl fmt::Display for WorldAuditError {
@@ -2843,6 +3068,11 @@ impl fmt::Display for WorldAuditError {
                 f,
                 "world group {world:?} mesh {mesh_index} has a non-finite stored corner on axis \
                  {axis}"
+            ),
+            Self::BlankOpeningReason { class } => write!(
+                f,
+                "the opening class {class:?} was recorded as unlocated with no measurement \
+                 behind it"
             ),
         }
     }
@@ -2967,18 +3197,41 @@ fn census_verdict(group: &WorldGroupRef, census: WorldGroupCensus) -> WorldGroup
         });
     }
     if facts_established && census.routes().is_empty() {
-        gaps.push(WorldAuditGap::NoRouteMeasured {
-            world: group.world().clone(),
-            placed_objects: match census.placement() {
-                PlacementSource::Decoded { placed_objects } => placed_objects,
-                PlacementSource::Undecoded { .. } => 0,
-            },
-        });
+        if let RouteSearch::Unstated { measured } = census.route_search() {
+            // The rule was applied and the corpus itself says there is no
+            // route: a measured finding, not a shortfall. It names the content
+            // the absence affects — the missions this group carries, or the
+            // group itself when the campaign declares none in it — so a reader
+            // can file it against a task instead of rediscovering it.
+            let affected: Vec<String> = if group.missions().is_empty() {
+                vec![format!("world group {}", group.world().key())]
+            } else {
+                group.missions().to_vec()
+            };
+            gaps.push(WorldAuditGap::NoRouteInMeasuredCorpus {
+                world: group.world().clone(),
+                located_openings: census.openings().len(),
+                affected,
+                measured: measured.clone(),
+            });
+        } else {
+            gaps.push(WorldAuditGap::NoRouteMeasured {
+                world: group.world().clone(),
+                placed_objects: match census.placement() {
+                    PlacementSource::Decoded { placed_objects } => placed_objects,
+                    PlacementSource::Undecoded { .. } => 0,
+                },
+            });
+        }
     }
 
     // The opening audit visits every class the sheet names, whether or not
     // anything located it, so a report can always be asked "was a hangar
-    // looked for?" and get an answer.
+    // looked for?" and get an answer — and, when the answer is no, *why* not.
+    // Every unlocated class therefore carries a measurement: the one the
+    // survey recorded for it, or the stated fact that no survey recorded one.
+    // Neither can be an empty string ([`WorldAuditError::BlankOpeningReason`]
+    // refuses that at the census boundary).
     //
     // There is deliberately **no** "class outside the vocabulary" check here.
     // It was written once and could never fire: `located` is filtered by
@@ -2996,7 +3249,17 @@ fn census_verdict(group: &WorldGroupRef, census: WorldGroupCensus) -> WorldGroup
                 .cloned()
                 .collect();
             let unlocated = if located.is_empty() {
-                vec![*class]
+                vec![
+                    UnlocatedOpening::new(
+                        *class,
+                        census
+                            .unlocated_openings()
+                            .iter()
+                            .find(|row| row.class() == *class)
+                            .map_or(OPENING_SEARCH_UNSUPPLIED, UnlocatedOpening::measured),
+                    )
+                    .expect("a non-empty measurement, refused at the census boundary"),
+                ]
             } else {
                 Vec::new()
             };
