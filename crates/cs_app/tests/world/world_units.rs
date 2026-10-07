@@ -844,8 +844,8 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
                 .copied()
                 .unwrap_or(0),
             measured.unresolved_roles,
-            "{}: exactly the geometry-bearing unindexed records report an \
-             unknown role",
+            "{}: exactly the unindexed records that store geometry and carry no \
+             measured prefix report an unknown role",
             measured.group
         );
         assert_eq!(

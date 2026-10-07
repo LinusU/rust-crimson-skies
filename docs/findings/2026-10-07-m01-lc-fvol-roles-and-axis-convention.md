@@ -233,15 +233,22 @@ they are all fog volumes now.
 ## Commands run
 
 ```sh
-cargo fmt --all -- --check                                           # exit 0
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
+cargo fmt --all -- --check                                           # exit 0 (before and after the rebase)
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0 (before and after the rebase)
 cargo test --workspace --locked                                      # exit 0
-cargo test --workspace --locked -- accept_m01_lc_fvol_roles --include-ignored
+cargo test --workspace --locked -- accept_m01_lc_fvol_roles --include-ignored   # exit 0
 #   4 tests discovered under this prefix, all passing: 3 run everywhere,
 #   1 retail test run locally under CS_GAME_DIR.
 python3 tools/validate_evidence.py private/evidence/M01-LC-FVOL-ROLES/acceptance.json \
   --artifact-root private/evidence/M01-LC-FVOL-ROLES --require-pass   # exit 0
 ```
+
+The branch was then rebased on `origin/main` (no conflict; main's commits
+touch none of the files this branch changes and no `Cargo.toml`/`Cargo.lock`,
+per the owner's 2026-10-01 merge-race directive), so the re-push ran the
+lighter set — `fmt`, `clippy` and the prefix run, all exit 0 — and the
+evidence report was regenerated on the rebased tree (`1de7feab`) with the same
+prefix run.
 
 Evidence: `docs/findings/evidence/M01-LC-FVOL-ROLES.json` (the harness's
 second artifact, `world-fvol-roles-census.json`, is the production re-run of
