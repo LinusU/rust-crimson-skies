@@ -16,7 +16,10 @@
 //! * `accept_f37_d_fu4_expired_countdown_fails_the_mission_before_that_ticks_objectives`
 //!   — the acceptance sentence: expiry on this tick ⇒ the mission fails, no
 //!   objective of that tick completes and no reward of that tick is granted,
-//!   while the same tick without the expiry does all three.
+//!   while the same tick without the expiry admits the lowest-declared
+//!   objective (one completion per tick,
+//!   `f37.rule.terminal_precedence.one_completion_per_tick`), grants its
+//!   reward and records the success.
 //! * `accept_f37_d_fu4_expiry_grants_no_reward_of_that_tick_including_queued_work`
 //!   — deferred work due that tick is not executed either.
 //! * `accept_f37_d_fu4_noloss_and_network_games_exclude_the_expiry` — the two
@@ -114,9 +117,12 @@ fn terminal_requests(events: &[MissionEvent]) -> Vec<Outcome> {
 /// One tick, one program whose two objectives are satisfied on it, one of
 /// which would also record a success:
 ///
-/// * with [`MissionCountdown::NONE`] the tick does what it always did —
-///   both objectives complete, both rewards are granted, the success is
-///   recorded;
+/// * with [`MissionCountdown::NONE`] the tick does what it always did — the
+///   objective the measured scan admits (lowest declaration index,
+///   `f37.rule.terminal_precedence.one_completion_per_tick`) completes, its
+///   reward is granted and the success is recorded. The second satisfied
+///   objective waits for a later tick, and the recorded success ends the
+///   mission before it can run;
 /// * with a countdown that expired *on this tick* the mission records
 ///   `Failed`, and that tick completes no objective, grants no reward and
 ///   requests no outcome. The pre-emption runs before the observe phase, so
@@ -137,16 +143,27 @@ fn accept_f37_d_fu4_expired_countdown_fails_the_mission_before_that_ticks_object
     .validate()
     .unwrap();
 
-    // Control: the same program on the same tick, without an expiry.
+    // Control: the same program on the same tick, without an expiry. At most
+    // one objective completes per tick — the lowest declaration index — so
+    // objective 1 admits, grants and wins here; objective 2, satisfied on the
+    // same tick, waits and never runs because the success ends the mission.
     let mut control = MissionState::new(&p, SESSION);
     let tick = control.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
-    assert_eq!(completions(&tick.events), vec![1, 2], "no pre-emption");
     assert_eq!(
-        rewards(&tick.events).len(),
-        2,
-        "both rewards are granted without an expiry"
+        completions(&tick.events),
+        vec![1],
+        "no pre-emption: exactly one completion, the lower declared index"
+    );
+    assert_eq!(
+        rewards(&tick.events),
+        [cid(ContentKind::Blueprint, "r-first")],
+        "its reward is granted without an expiry"
     );
     assert_eq!(tick.terminal, TerminalState::Succeeded);
+    assert!(
+        !control.is_completed(SymbolId(2)),
+        "the waiting objective never runs: the success ended the mission"
+    );
 
     // The measured pre-emption, on a fresh session of the same program.
     let mut state = MissionState::new(&p, SESSION);
