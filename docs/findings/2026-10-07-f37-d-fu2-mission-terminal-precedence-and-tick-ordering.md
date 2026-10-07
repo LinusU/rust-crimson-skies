@@ -212,10 +212,17 @@ all calling production code:
    completes two objectives on one tick and really has no timeout path, so the
    limitations that record those divergences cannot drift from the behaviour.
 
-Mutation check for the behaviour change: restoring
-`policy: PrecedencePolicy::SyntheticConservative` in `MissionState::new` fails
-tests 1 and the two updated existing assertions; removing the label or
-limitation tables fails tests 3 and 4.
+Mutation check, run against this commit: restoring
+`policy: PrecedencePolicy::SyntheticConservative` in `MissionState::new`
+fails `accept_f37_d_fu2_measured_precedence_records_success_iff_won`,
+`accept_f37_a_simultaneous_success_and_failure_never_coexist` and
+`accept_f37_c_session_records_the_resolved_outcome_once_and_tears_down`
+(`crates/cs_sim/src/mission.rs`); changing `TERMINAL_PRECEDENCE_RULE`'s source
+to `designed-and-unmeasured` fails
+`accept_f37_d_fu2_both_rules_carry_a_source_label_and_their_evidence`, and
+emptying `f37.d.limit.one_completion_per_tick`'s `resolving_task` fails
+`accept_f37_d_fu2_every_limitation_names_affected_content_and_a_resolving_task`.
+Each mutation was reverted and the tree re-verified clean and green.
 
 ## Evidence class
 
