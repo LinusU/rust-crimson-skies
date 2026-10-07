@@ -336,7 +336,10 @@ fn glyph_verdict(glyphs: &GlyphEvidence) -> &'static str {
 /// Who ran this report and what they ran it with.
 fn review_identity() -> String {
     String::from(
-        "implementer: bunny-1/bunny-1 (Rally #466, implement claim of 2026-10-06); reviewer: to \
+        "implementer: bunny-1/bunny-1 (production code and the first retail measurement, Rally \
+         #466 implement claim of 2026-10-06); branch composed onto the task branch, the \
+         2026-10-01 supersession decided and all four checks re-run by \
+         bunny-alpha-2/bunny-alpha-2 (implement claim of 2026-10-07); reviewer: to \
          be recorded by the Rally review claim. No agent review replaces the owner's human \
          approval, and static code evidence plus a retail scan is never `verified_original`",
     )
