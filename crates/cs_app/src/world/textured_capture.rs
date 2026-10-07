@@ -685,7 +685,13 @@ pub fn capture_subject_textured(
         name_reading: report.name_reading,
         parts: parts.len(),
         textured_parts: subject_report.map_or(0, |subject| subject.textured_parts),
-        flat_parts: subject_report.map_or(0, |subject| subject.flat_materials),
+        // Parts, not materials: one flat record can serve several material
+        // groups, and the field names a part count, so it is counted off the
+        // same per-part outcome list `parts` and `textured_parts` come from.
+        flat_parts: outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, PartOutcome::Flat))
+            .count(),
         resolved_names: subject_report
             .map(|subject| subject.resolved_names.clone())
             .unwrap_or_default(),
