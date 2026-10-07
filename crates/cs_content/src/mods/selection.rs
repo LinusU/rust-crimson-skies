@@ -299,7 +299,8 @@ pub fn session_builder(context: &ResolveContext, mounted: &MountedMods) -> Sessi
 /// builder's own semantics: the mounts that already joined stay in, so the
 /// caller can complete the missing one or drop the builder to release them
 /// all. A repeated call is refused by the VFS
-/// (`MountError::DuplicateMountId`) — it is not the retry path; rebuilding
+/// (`cs_assets::vfs::MountError::DuplicateMountId`, surfaced as
+/// [`SessionError::Mount`]) — it is not the retry path; rebuilding
 /// through [`open_mod_session`] is.
 pub fn mount_payloads(
     builder: &mut SessionBuilder,

@@ -129,7 +129,7 @@ owner path, and the virtual workspace root declares no package for a root
 
 - `MountEnvironment::base_fingerprint` is still supplied by the caller:
   the production producer of the F02 installation fingerprint exists
-  (`cs_content::install::content_fingerprint`), but which fingerprint a
+  (`cs_assets::install::fingerprint`), but which fingerprint a
   host adopts for which session is a host decision outside this stage's
   vocabulary; the tests use a designed constant, like F53-B's.
 - `Compatibility::mods` is empty for the reason above; a future task can
