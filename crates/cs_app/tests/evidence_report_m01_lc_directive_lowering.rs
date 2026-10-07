@@ -43,6 +43,7 @@ use cs_app::mission_control::survey_mission_control_programs;
 use cs_assets::install::{content_fingerprint, discover, fingerprint};
 use cs_content::mission_control::{DirectiveDisposition, MeasuredControlRecord};
 use cs_script::bindings::Lowering;
+use cs_script::ir::{Condition, MissionProgram};
 
 /// Every acceptance test the report must see pass: the prefixes are unique to
 /// this task — stage `.03`'s adapter suite and the parent's own integration
@@ -68,6 +69,105 @@ const RECORDED_FINDINGS: [&str; 6] = [
 /// The M01 row label the census publishes.
 const M01: &str = "zbd/c1c/m01";
 
+/// The world-side fact maps one lowered program's conditions read, counted by
+/// the [`Condition`] variant that reads them.
+///
+/// `MissionFacts::members`, `groups`, `generators` and `animations` have no
+/// production writer (follow-up task `M01-LC-WORLD-FACTS`, #751), so every
+/// block carrying one of these readers lowers and evaluates but can never
+/// complete. The counts are derived by walking the program this run lowered —
+/// never written down by hand — and [`Self::EXPECT`] pins them, so a record
+/// that changes fails the run instead of silently drifting the report's prose.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct WorldFactReads {
+    /// Blocks whose condition tree carries at least one world-side reader.
+    blocks: usize,
+    /// Blocks reading `MissionFacts::members` (`Condition::InactiveMembers`).
+    inactive: usize,
+    /// Blocks reading `MissionFacts::groups` (`Condition::EnemyGroupDepletion`).
+    dedg: usize,
+    /// Blocks reading node positions through `Condition::Travelers` (its
+    /// subject and anchor are world members, so `members` carries them).
+    travelers: usize,
+    /// Blocks reading `MissionFacts::animations` (`Condition::AnimationStates`).
+    animations: usize,
+}
+
+impl WorldFactReads {
+    /// The figures bunny-alpha-2's review hand-off note on #717 recorded for
+    /// `zbd/c1c/m01`, in this struct's field order: 24 blocks = 12 + 8 + 1 + 3.
+    const EXPECT: (usize, usize, usize, usize, usize) = (24, 12, 8, 1, 3);
+
+    /// Everything in this struct as the tuple [`Self::EXPECT`] pins.
+    #[must_use]
+    const fn tuple(self) -> (usize, usize, usize, usize, usize) {
+        (
+            self.blocks,
+            self.inactive,
+            self.dedg,
+            self.travelers,
+            self.animations,
+        )
+    }
+
+    /// The world-side readers a whole program's objective conditions carry:
+    /// one count per block, so a block naming two readers counts in both and
+    /// in [`Self::blocks`] once.
+    #[must_use]
+    fn of(program: &MissionProgram) -> Self {
+        let mut reads = Self::default();
+        for objective in &program.objectives {
+            let mut kinds = ReaderKinds::default();
+            ReaderKinds::collect(&objective.condition, &mut kinds);
+            if kinds.any() {
+                reads.blocks += 1;
+            }
+            reads.inactive += usize::from(kinds.inactive);
+            reads.dedg += usize::from(kinds.dedg);
+            reads.travelers += usize::from(kinds.travelers);
+            reads.animations += usize::from(kinds.animations);
+        }
+        reads
+    }
+}
+
+/// Which world-side fact readers one condition tree carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ReaderKinds {
+    inactive: bool,
+    dedg: bool,
+    travelers: bool,
+    animations: bool,
+}
+
+impl ReaderKinds {
+    /// Walks one condition tree, marking every world-side reader it nests. A
+    /// block's condition is `Condition::All` of its wake gate(s) and its
+    /// evaluator (`cs_script::conditions::lower_block_condition`), so the
+    /// reader sits inside the list rather than at the root.
+    fn collect(condition: &Condition, kinds: &mut Self) {
+        match condition {
+            Condition::InactiveMembers { .. } => kinds.inactive = true,
+            Condition::EnemyGroupDepletion { .. } => kinds.dedg = true,
+            Condition::Travelers { .. } => kinds.travelers = true,
+            Condition::AnimationStates { .. } => kinds.animations = true,
+            Condition::All(inner) | Condition::Any(inner) => {
+                for child in inner {
+                    Self::collect(child, kinds);
+                }
+            }
+            Condition::Not(inner) => Self::collect(inner, kinds),
+            _ => {}
+        }
+    }
+
+    /// Whether the tree carried any world-side reader at all.
+    #[must_use]
+    const fn any(self) -> bool {
+        self.inactive || self.dedg || self.travelers || self.animations
+    }
+}
+
 /// The numbers the review method reports, each derived from the census this
 /// run produced (never written down by hand).
 struct Observed {
@@ -89,6 +189,7 @@ struct Observed {
     m01_validated: bool,
     unmet_rows: usize,
     own_tests: usize,
+    world: WorldFactReads,
 }
 
 /// How this run was reviewed, with every measured number **derived** from the
@@ -113,7 +214,15 @@ fn review_method(observed: &Observed) -> String {
         m01_validated,
         unmet_rows,
         own_tests,
+        world,
     } = *observed;
+    let WorldFactReads {
+        blocks: world_blocks,
+        inactive: world_inactive,
+        dedg: world_dedg,
+        travelers: world_travelers,
+        animations: world_animations,
+    } = world;
     format!(
         "Acceptance suite run locally with the retail capability; this harness derives every field \
          from the recorded log, production discovery of $CS_GAME_DIR, and a second production run \
@@ -143,11 +252,13 @@ fn review_method(observed: &Observed) -> String {
          scalar beside its key, an unreadable block, an empty record and a record whose attempt \
          produced no program all still refuse by name with their rows unmet. WORLD-SIDE FACT \
          LIMIT: MissionFacts::members/groups/generators/animations have no production writer, so \
-         24 of M01's 58 blocks - the 12 INACTIVE ladders, the 8 DEDG blocks, OBJECTIVE3's \
-         TRAVELERS and the ANIM_STATE blocks OBJECTIVE11/OBJECTIVE15/OBJECTIVE18 - lower and \
-         evaluate but can never complete; resolving task M01-LC-WORLD-FACTS (#751), and until it \
-         lands no fidelity, verified_original or release_approved claim about M01 objective \
-         completion may stand. TEST-SELECTION NOTE: \
+         {world_blocks} of M01's {m01_blocks} blocks - the {world_inactive} carrying \
+         Condition::InactiveMembers (the INACTIVE ladders), the {world_dedg} carrying \
+         Condition::EnemyGroupDepletion, the {world_travelers} carrying Condition::Travelers and \
+         the {world_animations} carrying Condition::AnimationStates - lower and evaluate but can \
+         never complete; resolving task M01-LC-WORLD-FACTS (#751), and until it lands no \
+         fidelity, verified_original or release_approved claim about M01 objective completion \
+         may stand. TEST-SELECTION NOTE: \
          the prefixes accept_m01_lc_lowering_adapter_ and accept_m01_lc_directive_lowering_ are \
          unique to this task, so the {own_tests} discovered assertions are exactly this task's \
          tests. Validated with tools/validate_evidence.py --require-pass.",
@@ -288,6 +399,22 @@ fn evidence_report_m01_lc_directive_lowering_writes_the_acceptance_report() {
         bevy: locked_version("bevy"),
         avian: locked_version("avian3d"),
     };
+    // The world-side fact limit the method text reports: derived by walking
+    // the program this run lowered, and pinned to the figures bunny-alpha-2's
+    // review hand-off note on #717 recorded — a record that changes must fail
+    // here instead of silently drifting the report's prose.
+    let world = WorldFactReads::of(
+        lowered
+            .program()
+            .expect("every one of M01's sites bound, so the program assembled"),
+    );
+    assert_eq!(
+        world.tuple(),
+        WorldFactReads::EXPECT,
+        "M01's world-fact-reading blocks, derived from this run's lowered program, must still \
+         match the 24 = 12 INACTIVE + 8 DEDG + 1 TRAVELERS + 3 ANIM_STATE figure the review \
+         hand-off note on #717 recorded (resolving task: M01-LC-WORLD-FACTS, #751)"
+    );
     let report = format!(
         "{{\n \"schema_version\": 1,\n \"task_id\": \"M01-LC-DIRECTIVE-LOWERING\",\n \"candidate_tree\": {},\n \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \"capabilities\": [\"retail\", \"synthetic\"],\n \"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": [],\n \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
         jstr(&candidate_tree),
@@ -325,6 +452,7 @@ fn evidence_report_m01_lc_directive_lowering_writes_the_acceptance_report() {
             m01_validated: attempt.validation.as_deref() == Some(&[][..]),
             unmet_rows,
             own_tests: suite.discovered as usize,
+            world,
         })),
     );
     let out = evidence_dir.join("acceptance.json");
