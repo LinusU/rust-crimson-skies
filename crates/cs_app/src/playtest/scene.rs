@@ -4,7 +4,7 @@
 //! labelled as such on screen. Nothing is original geometry.
 
 use avian3d::prelude::Rotation;
-use bevy::prelude::{Component, Entity, World};
+use bevy::prelude::{Component, Entity, Visibility, World};
 use cs_sim::collision::CollisionLayer;
 use cs_sim::flight::{EngineState, FlightModel, synthetic_fixed_wing};
 
@@ -137,7 +137,14 @@ pub fn spawn_aircraft(world: &mut World) -> Result<Entity, SceneError> {
     .expect("the cruise command is in range");
     let entity = spawn_flight_body(world, FlightModel::new(synthetic_fixed_wing()), &spec)
         .map_err(SceneError::Aircraft)?;
-    world.entity_mut(entity).insert(PlaytestAircraft);
+    // The aircraft is the render parent of its drawn parts; a parent without
+    // `Visibility` makes Bevy warn (B0004) for every part on each (re)spawn. It
+    // is set here, on the playtest's own flight body, rather than in
+    // `spawn_body`, because only this body is a render parent: collision-only
+    // bodies stay free of render components.
+    world
+        .entity_mut(entity)
+        .insert((PlaytestAircraft, Visibility::Inherited));
     spawn_retail_parts(world, entity);
     debug_assert!(world.get::<Rotation>(entity).is_some());
     Ok(entity)
