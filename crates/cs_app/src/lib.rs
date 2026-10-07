@@ -684,9 +684,24 @@ pub mod ui {
     //! content (F53 AC03), and [`mods::mount_selection`] attaches the
     //! bounded validator a sandboxed mission payload has to pass before
     //! `cs_content::mods::mount_mods` will enable it (F53 non-negotiable 2).
+    //!
+    //! [`import`] is the F64-C legacy-import dialog boundary
+    //! (`specs/F64-legacy-custom-aircraft-and-optional-save-import.md`, stage
+    //! `### F64-C`): [`import::ImportFlow`] offers one legacy source to the
+    //! production plan and blueprint validator, tears the previous attempt
+    //! down before every offer, propagates every refusal as
+    //! [`import::RefusedView`] carrying the producer's own code, and turns a
+    //! report into a [`import::ConfirmedImport`] only through the explicit
+    //! owner action [`import::ImportFlow::confirm`] — which refuses a plan
+    //! that would carry nothing and a blueprint set the stock rules reject.
+    //! The report it shows ([`import::MigrationView`], one
+    //! [`import::ReportLine`] per record, unresolved row and breach) retains
+    //! the verified source fingerprint, and the module holds no writer, so it
+    //! cannot touch the source or any save (F64 non-negotiable 1).
 
     pub mod front_end;
     pub mod hud;
+    pub mod import;
     pub mod instant_action;
     pub mod lobby;
     pub mod mods;
