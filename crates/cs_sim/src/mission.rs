@@ -59,8 +59,8 @@ use cs_script::ir::{
 };
 use cs_script::runtime::{
     EventKind, ExecutionKey, MissionEvent, MissionFacts, MissionState, MissionStateSnapshot,
-    RestoreError, SNAPSHOT_VERSION, SessionGeneration, StopReason, TerminalState, TickError,
-    TickResult, WorkLimits,
+    ObjectiveLifecycle, RestoreError, SNAPSHOT_VERSION, SessionGeneration, StopReason,
+    TerminalState, TickError, TickResult, WorkLimits,
 };
 use cs_types::Tick;
 use cs_types::content::ContentId;
@@ -685,6 +685,11 @@ impl ActorFactTable {
     /// on each call, so what the evaluator reads on a tick is exactly what
     /// the table holds — populated from the authoritative record on every
     /// tick, never accumulated by a caller.
+    ///
+    /// The actor-fact table owns **only** [`MissionFacts::actors`]: the other
+    /// fact maps come from their own writers (the block-lifecycle table and
+    /// the world-side member, group and animation tables), and a caller folds
+    /// them with [`MissionFacts::absorb`] before advancing a tick.
     #[must_use]
     pub fn facts(&self) -> MissionFacts {
         MissionFacts {
@@ -693,6 +698,7 @@ impl ActorFactTable {
                 .iter()
                 .filter_map(|(actor, set)| Self::state_of(set).map(|state| (*actor, state)))
                 .collect(),
+            ..MissionFacts::default()
         }
     }
 
@@ -878,6 +884,283 @@ impl ActorFactTable {
             }
         }
         Ok(Self { actors })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The block-lifecycle table: `MissionFacts::objectives` populated from the
+// record's own lifecycle spellings.
+// ---------------------------------------------------------------------------
+
+/// Why a block's lifecycle declaration was refused.
+///
+/// A declaration this table cannot read is named rather than quietly treated
+/// as "awake": a block that actually starts dormant and is recorded awake
+/// would latch at tick 0, which is exactly the failure AC3 exists to prevent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LifecycleError {
+    /// The block was already declared — a record declares each numbered
+    /// block once, and re-declaring one would silently restart its lifecycle.
+    Duplicate {
+        /// The block's zero-based record index.
+        index: u32,
+    },
+    /// The spelled wake time is not finite, so no clock comparison could ever
+    /// decide the wake.
+    NonFiniteWake {
+        /// The block's zero-based record index.
+        index: u32,
+        /// The value as declared.
+        wake_at: f64,
+    },
+}
+
+impl fmt::Display for LifecycleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Duplicate { index } => {
+                write!(f, "block {index} was already declared")
+            }
+            Self::NonFiniteWake { index, wake_at } => {
+                write!(
+                    f,
+                    "block {index} declares the non-finite wake time {wake_at}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for LifecycleError {}
+
+/// How one numbered block starts, as the record spells it.
+///
+/// Measured (finding B): the record is zeroed at parse and then given its
+/// defaults, so a block **without** `BEGIN_DORMANT` is left awake
+/// (`+0xc = 1`, `+0x5c8 = 1`), while the key's presence clears both
+/// (`+0xc = 0`, `+0x5c8 = 0`) and its child0 is stored as the mission-clock
+/// second of the timed self-wake.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LifecycleDecl {
+    /// Whether the record spelled `BEGIN_DORMANT` for this block.
+    starts_dormant: bool,
+    /// The record's `BEGIN_DORMANT` child0, exactly as spelled — a negative
+    /// value (M01's `-1` sentinel) disables the timed wake, which is why it
+    /// stays in the declaration instead of being folded into `None`.
+    wake_at: Option<f64>,
+}
+
+impl LifecycleDecl {
+    /// A block the record leaves awake: no `BEGIN_DORMANT`.
+    #[must_use]
+    pub const fn awake() -> Self {
+        Self {
+            starts_dormant: false,
+            wake_at: None,
+        }
+    }
+
+    /// A block that starts dormant, with the record's own `BEGIN_DORMANT`
+    /// child0 as its timed self-wake (`Some`), or no timed wake at all when
+    /// the record spells no child — measured: M01 always spells exactly one
+    /// float.
+    #[must_use]
+    pub const fn dormant(wake_at: Option<f64>) -> Self {
+        Self {
+            starts_dormant: true,
+            wake_at,
+        }
+    }
+
+    /// Whether the block starts dormant.
+    #[must_use]
+    pub const fn starts_dormant(self) -> bool {
+        self.starts_dormant
+    }
+
+    /// The spelled wake time, as the record wrote it.
+    #[must_use]
+    pub const fn wake_at(self) -> Option<f64> {
+        self.wake_at
+    }
+}
+
+/// One declared block's live lifecycle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BlockLifecycle {
+    state: ObjectiveLifecycle,
+    /// The arm test is `wake_at >= 0 && clock >= wake_at` (finding B), so the
+    /// stored value is the record's own — a negative sentinel never arms.
+    wake_at: Option<f64>,
+}
+
+/// The writer for [`MissionFacts::objectives`] — the numbered block's
+/// measured lifecycle state, keyed by its zero-based record index.
+///
+/// It answers the fact [`Condition::ObjectiveAwake`] reads, which is the
+/// original's pass-2 gate: a block that is dormant, napping or done evaluates
+/// nothing. Seeding comes from the record's own spelling
+/// ([`LifecycleDecl`]), and the transitions this table drives are the
+/// measured ones:
+///
+/// * **timed self-wake** — while dormant, when `wake_at >= 0` and the mission
+///   clock in seconds reaches it (pass 1, state 0);
+/// * **external wake** — the `WAKE_OBJECTIVE*` effect the host applied
+///   (`+0xc = 1`, `+0x5c8 = 1`);
+/// * **completion** — `+0x5c8 = 3` when the block completes, which is what
+///   makes `TICK_DEPENDS_ON_OBJ` freeze its dependent afterwards.
+///
+/// `Napping` and `Done` are part of the measured vocabulary and
+/// [`ObjectiveLifecycle`] carries them, but **no measured writer drives the
+/// nap and done timers yet**: `NAP_OBJECTIVE_WHEN_I_COMPLETE`, the awake
+/// duration and the force-done clock are completion/transition effects whose
+/// lowering belongs to the task that lowers the completion pipeline. This
+/// table therefore never writes `Napping`, and a block in `Awake` stays
+/// awake here until it completes.
+///
+/// A caller folds this table's [`Self::facts`] with the actor-fact table's
+/// (and the world-side maps) through [`MissionFacts::absorb`] before
+/// advancing a tick; the table owns its own field only.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BlockLifecycleTable {
+    blocks: BTreeMap<u32, BlockLifecycle>,
+}
+
+impl BlockLifecycleTable {
+    /// An empty table: no block declared, so no block is awake and every
+    /// [`Condition::ObjectiveAwake`] answers `false` (fail-closed).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Declares one numbered block's starting lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// [`LifecycleError::Duplicate`] when the index was already declared, and
+    /// [`LifecycleError::NonFiniteWake`] when the spelled wake time is not a
+    /// number a clock comparison can decide.
+    pub fn declare(
+        &mut self,
+        index: u32,
+        decl: LifecycleDecl,
+    ) -> Result<ObjectiveLifecycle, LifecycleError> {
+        if let Some(wake_at) = decl.wake_at
+            && !wake_at.is_finite()
+        {
+            return Err(LifecycleError::NonFiniteWake { index, wake_at });
+        }
+        let state = if decl.starts_dormant {
+            ObjectiveLifecycle::Dormant
+        } else {
+            ObjectiveLifecycle::Awake
+        };
+        // A refused declaration changes nothing: `insert` would overwrite the
+        // block's live lifecycle before the error could be reported, which is
+        // how a block that starts dormant ends up recorded awake.
+        if self.blocks.contains_key(&index) {
+            return Err(LifecycleError::Duplicate { index });
+        }
+        self.blocks.insert(
+            index,
+            BlockLifecycle {
+                state,
+                wake_at: decl.wake_at,
+            },
+        );
+        Ok(state)
+    }
+
+    /// Advances every declared block's timed self-wake against the mission
+    /// clock in **seconds** (finding B: `+0x5d0 >= 0 && clock >= +0x5d0`),
+    /// and returns the blocks that woke, in index order.
+    ///
+    /// A block that is not dormant is left alone — the arm test only ever
+    /// moves a dormant block — and a block that completed never self-wakes,
+    /// mirroring pass 1's `+0x14 || +0xc` guard.
+    pub fn tick(&mut self, clock_seconds: f64) -> Vec<u32> {
+        let mut woke = Vec::new();
+        for (index, block) in self.blocks.iter_mut() {
+            if block.state != ObjectiveLifecycle::Dormant {
+                continue;
+            }
+            let Some(wake_at) = block.wake_at else {
+                // No timed wake: the record's `-1` sentinel leaves the block
+                // dormant until a `WAKE_OBJECTIVE*` names it.
+                continue;
+            };
+            if wake_at >= 0.0 && clock_seconds >= wake_at {
+                block.state = ObjectiveLifecycle::Awake;
+                woke.push(*index);
+            }
+        }
+        woke
+    }
+
+    /// Wakes one block — the `WAKE_OBJECTIVE*` effect the host applied — and
+    /// reports whether it changed anything.
+    ///
+    /// A block that is already awake or already completed is left alone: the
+    /// original's wake call skips killed and completed records and resets an
+    /// awake one's accumulator without changing its state.
+    pub fn wake(&mut self, index: u32) -> bool {
+        match self.blocks.get_mut(&index) {
+            Some(block) if block.state == ObjectiveLifecycle::Dormant => {
+                block.state = ObjectiveLifecycle::Awake;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Records the measured completion transition (`+0x5c8 = 3`): the block
+    /// is done, so it is no longer awake and every dependent naming it as its
+    /// `TICK_DEPENDS_ON_OBJ` target freezes. Reports whether it changed
+    /// anything.
+    pub fn complete(&mut self, index: u32) -> bool {
+        match self.blocks.get_mut(&index) {
+            Some(block) if block.state != ObjectiveLifecycle::Done => {
+                block.state = ObjectiveLifecycle::Done;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// One declared block's current lifecycle, or `None` for a block nobody
+    /// declared (which reads as *not observed*, never as awake).
+    #[must_use]
+    pub fn state(&self, index: u32) -> Option<ObjectiveLifecycle> {
+        self.blocks.get(&index).map(|block| block.state)
+    }
+
+    /// How many blocks the table declares.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// Whether the table declares no block at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+
+    /// The [`MissionFacts`] for the next evaluation: every declared block at
+    /// its current lifecycle state. Blocks nobody declared are absent, and an
+    /// absent block is not awake — the fail-closed read
+    /// [`Condition::ObjectiveAwake`] is documented to make.
+    #[must_use]
+    pub fn facts(&self) -> MissionFacts {
+        MissionFacts {
+            objectives: self
+                .blocks
+                .iter()
+                .map(|(index, block)| (*index, block.state))
+                .collect(),
+            ..MissionFacts::default()
+        }
     }
 }
 
