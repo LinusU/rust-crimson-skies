@@ -352,12 +352,12 @@ fn render_lowering_observation(
         .collect();
     format!(
         "{{\"install_sha256\": {}, \"candidate_tree\": {}, \"missions\": {}, \"measured\": {}, \
-         \"absent\": {}, \"complete_missions\": [{}], \"campaign_ready\": {}, \"corpus\": \
+         \"absent\": {}, \"complete_missions\": {}, \"campaign_ready\": {}, \"corpus\": \
          {{\"unmet_lowering_rows\": {}}}, \
          \"m01\": {{\"mission\": {}, \"blocks\": {}, \"sites\": {}, \"vocabulary\": {}, \
          \"measured\": {}, \"terminal\": {}, \"unmeasured\": {}, \"bindings\": {}, \"objectives\": \
          {}, \"conditions\": [{}], \"calls\": {{\"bound\": {}, \"refused\": {}}}, \"unbound_keys\": \
-         [{}], \"validation\": {}, \"keys\": [{}], \"lowering_rows\": [{}]}}, \
+         {}, \"validation\": {}, \"keys\": [{}], \"lowering_rows\": [{}]}}, \
          \"recorded_findings\": [{}]}}",
         jstr(install_sha256),
         jstr(candidate_tree),
@@ -480,7 +480,7 @@ fn render_lowering_rows(lowering: cs_content::mission_control::ControlLowering) 
         .map(|row| {
             format!(
                 "{{\"requirement\": {}, \"met\": {}, \"measurement\": {}, \"unmeasured_fields\": \
-                 [{}]}}",
+                 {}}}",
                 jstr(row.kind.code()),
                 row.met,
                 jstr(&row.measurement),
