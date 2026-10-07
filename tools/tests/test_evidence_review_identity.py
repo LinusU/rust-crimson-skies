@@ -42,6 +42,29 @@ stage's merge event really exists: #578 added F14-D.7's entry to the FU4 snapsho
 after #490 had landed, because an entry written before the merge can only guess
 at the event that closes the review.
 
+The reader has to be told what a harness does only where the harness itself
+is ambiguous, and each such reading is a decision somebody can review:
+
+* **an encoder is not a shape.**  `jstr(...)`, `json(...)` and `m01lc_json(...)`
+  all quote a value into the report, so which one a harness happens to call
+  says nothing about where the identity comes from.  F04-D-order-archives
+  encodes with `json(&reviewer)` and reads `CS_EVIDENCE_REVIEWER`, which makes
+  it a runtime-identity harness like every `jstr(&reviewer)` one; refusing it
+  for its name (M16-A-FU6 / #523) turned a legitimate harness into an
+  unreadable one and put five tests red behind it.  The shape comes from the
+  argument, never from the encoder's name.
+* **a `task_id` the format string does not spell is still one the file
+  spells** - through the constant its placeholder argument names, or through
+  the report table (`M01lcReport { task_id, review }`) the caller chose.  Both
+  are read literally, neither is guessed, a table entry is its own harness, and
+  a marker that resolves to neither is still reported as unresolvable (this is
+  #492 / T388-a's case, which this file now covers).
+
+The run-time exemption itself stays unlisted: `runtime_identity_expectation`
+derives it from the committed reports, so a new runtime harness has to be a
+decision the reader and that derivation agree on rather than a line somebody
+remembered to edit.
+
 Run with:
 
     python3 -m unittest discover -s tools/tests -p 'test_evidence_review_identity.py' -v
@@ -89,15 +112,32 @@ PLACEHOLDERS = ('none yet', 'not yet assigned', 'not yet known', 'not yet indepe
 TASK_ID = re.compile(r'\\"task_id\\": \\"([^"\\]+)\\"')
 CLAIM = re.compile(r'\\"claim\\": \\"([a-z_]+)\\"')
 REVIEW_MARKER = r'\"review\": {{\"identity\": {}, \"method\": {}}}'
-# A `jstr` at the start of an argument, with or without a module path
-# (`cs_inspect`'s harnesses call `super::jstr`).
-JSTR_CALL = re.compile(r'\A\s*(?:\w+::)*jstr\s*\(')
-# The argument of a `jstr(...)`: either a literal, `&review_identity()`, or
+# The value-encoding call at the start of an argument, with or without a module
+# path (`cs_inspect`'s harnesses call `super::jstr`).  Every harness encodes a
+# string into the JSON report through a helper, and the helpers are not all
+# spelled `jstr`: F04-D-order-archives encodes with `json(&reviewer)` and the
+# m01lc family with `m01lc_json(...)`.  The helper's *name* decides nothing
+# here - the argument does - so a helper this list does not spell out falls
+# through to `unknown` only when its argument resolves to nothing; it is never
+# rejected for its name alone, and never trusted for it either.
+ENCODING_CALL = re.compile(r'\A\s*(?:\w+::)*(?:jstr|(?:\w+_)?json)\s*\(')
+# The argument of such a call: either a literal, `&review_identity()`, or
 # `&review`.
 ARGUMENT = re.compile(r'\A\s*&?\s*(\w+)\b')
 # `fn review_identity() -> String {` and `let review = env_var("CS_EVIDENCE_REVIEWER");`
 FUNCTION = r'fn\s+{}(?:\s*<[^>]*>)?\s*\(\s*\)\s*->\s*String\b'
 DECLARATION = r'(?:let\s+{}\b|fn\s+{}\b)[^;{{]{{0,200}}?(?:env::var|env_var)\(\s*"(?P<env>[A-Z0-9_]+)"'
+
+# The task id of a report the harness fills in at run time rather than spelling
+# into the format string: `"task_id": {},` with the value passed as the format
+# call's first placeholder argument.  #492's case.
+RUNTIME_TASK_ID = re.compile(r'\\"task_id\\": \{\}')
+# The m01lc harness writes three reports through one format call, choosing the
+# task id from a `M01lcReport { task_id: "...", ..., review: NAME }` table
+# entry, so its task ids and identities live in the table rather than at the
+# marker.
+TABLE_TASK_ID = re.compile(r'\btask_id:\s*"([^"\\]+)"')
+TABLE_REVIEW = re.compile(r'\breview:\s*("(?:[^"\\]|\\.)*"|\w+)\s*,')
 
 # A whole evidence harness, small enough to read: a `format!` whose `review`
 # object is filled from two `jstr` arguments, with a `\`-continued identity
@@ -114,6 +154,76 @@ MINIMAL_HARNESS = '''fn evidence_report_x99_a() {
              two"
         ),
         jstr("three"),
+    );
+}
+'''
+
+# A whole evidence harness that encodes its run-time identity with `json(...)`
+# instead of `jstr(...)`, the way F04-D-order-archives writes its report.
+JSON_HARNESS = '''fn evidence_report_x99_a() {
+    let reviewer = env_var("CS_EVIDENCE_REVIEWER");
+    let report = format!(
+        "{{\\n\\
+         \\x20\\"task_id\\": \\"X99-A\\",\\n\\
+         \\x20\\"review\\": {{\\"identity\\": {}, \\"method\\": {}}},\\n\\
+         \\x20\\"claim\\": \\"implemented\\"\\n\\
+         }}\\n",
+        json(&reviewer),
+        json(METHOD),
+    );
+}
+'''
+
+# The same run-time identity, with the `task_id` filled in at run time from a
+# constant rather than spelled into the format string (#492's case).
+RUNTIME_TASK_HARNESS = '''const TASK: &str = "X98-B";
+
+fn evidence_report_x98_b() {
+    let reviewer = env_var("CS_EVIDENCE_REVIEWER");
+    let report = format!(
+        "{{\\n\\
+         \\x20\\"task_id\\": {},\\n\\
+         \\x20\\"review\\": {{\\"identity\\": {}, \\"method\\": {}}},\\n\\
+         \\x20\\"claim\\": \\"implemented\\"\\n\\
+         }}\\n",
+        jstr(TASK),
+        json(&reviewer),
+        json(METHOD),
+    );
+}
+'''
+
+# One format call, two report table entries: the shape `accept_f20_d_validation.rs`
+# uses to write three reports through `m01lc_write_report`.
+TABLE_HARNESS = '''const REVIEW_A: &str = "implementer: x/y; reviewer: a/b, fresh context, not independent";
+
+const REVIEW_B: &str = "implementer: x/y; reviewer: x/y, fresh context, not independent";
+
+struct Spec {
+    task_id: &'static str,
+    review: &'static str,
+}
+
+const SPEC_A: Spec = Spec {
+    task_id: "X97-C",
+    review: REVIEW_A,
+};
+
+const SPEC_B: Spec = Spec {
+    task_id: "X96-D",
+    review: REVIEW_B,
+};
+
+fn evidence_report(spec: &Spec) {
+    let report = format!(
+        "{{\\n\\
+         \\x20\\"task_id\\": {},\\n\\
+         \\x20\\"review\\": {{\\"identity\\": {}, \\"method\\": {}}},\\n\\
+         \\x20\\"claim\\": \\"implemented\\"\\n\\
+         }}\\n",
+        m01lc_json(spec.task_id),
+        m01lc_json(spec.review),
+        m01lc_json(METHOD),
     );
 }
 '''
@@ -254,7 +364,7 @@ def read_identity(text, start):
     if len(arguments) < 3:
         return {'identity': None, 'shape': 'unknown', 'via': None}
     raw, offset = arguments[-2]
-    call = JSTR_CALL.match(raw)
+    call = ENCODING_CALL.match(raw)
     if not call:
         return {'identity': None, 'shape': 'unknown', 'via': raw.strip()[:60]}
     argument = raw[call.end():]
@@ -275,6 +385,104 @@ def read_identity(text, start):
     return {'identity': None, 'shape': 'unknown', 'via': name}
 
 
+def constant_string(text, name):
+    r"""The literal a `const NAME: &str = "..."` of this file holds, or `None`.
+
+    A harness that fills the report's `task_id` at run time names it through a
+    constant (`const TASK: &str = "M01-LC-AUDIO-DEVICE";`).  The reader follows
+    the name to the literal the file spells, the same way it follows an
+    identity that comes from a `fn`: it reads what is written and returns
+    `None` when nothing is, never inventing the value.
+    """
+    for declaration in re.finditer(r'\b(?:const|static)\s+' + re.escape(name)
+                                   + r'\b[^;{]*=', text):
+        quote = text.find('"', declaration.end())
+        end = text.find(';', declaration.end())
+        if quote > 0 and (end < 0 or quote < end):
+            return read_rust_string(text, quote)
+    return None
+
+
+def argument_literal(text, raw, offset):
+    """The literal an argument of the report's `format!` call plainly is, or `None`.
+
+    `raw` is the argument and `offset` where it starts in the file, so a literal
+    inside it can be read at an absolute position.  A name is resolved to the
+    constant it refers to; anything else - a field of the table the caller
+    chooses from - is `None`, because this reader reads Rust, it does not
+    evaluate it.
+    """
+    call = ENCODING_CALL.match(raw)
+    argument = raw[call.end():] if call else raw
+    argument = argument.lstrip()
+    while argument.startswith('&'):
+        argument = argument[1:].lstrip()
+    if argument.startswith('"'):
+        return read_rust_string(text, offset + raw.index('"'))
+    name = ARGUMENT.match(argument)
+    if name:
+        return constant_string(text, name.group(1))
+    return None
+
+
+def table_reports(text):
+    """Every `(task id, identity)` the report tables of this file define.
+
+    The m01lc harness writes three reports through one `format!` call, taking
+    the `task_id` and the `review` identity from the `M01lcReport { task_id:
+    "...", ..., review: NAME }` entry its caller passed.  Neither is at the
+    marker, so the reader reads the table: one entry per `task_id`, each with
+    the identity its own `review` field names.  An entry whose identity the
+    file does not spell comes back as `None` so the marker is reported rather
+    than that one report silently escaping the cross-check.
+    """
+    matches = list(TABLE_TASK_ID.finditer(text))
+    reports = []
+    for index, match in enumerate(matches):
+        stop = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        window = text[match.end():min(stop, match.end() + 2000)]
+        review = TABLE_REVIEW.search(window)
+        if review is None:
+            reports.append((match.group(1), None))
+            continue
+        value = review.group(1)
+        if value.startswith('"'):
+            identity = read_rust_string(text, match.end() + review.start(1))
+        else:
+            identity = constant_string(text, value)
+        reports.append((match.group(1), identity))
+    return reports
+
+
+def harness_reports(text, start, before):
+    """Every `(task id, identity record)` one `review` marker writes, or `[]`.
+
+    A harness that spells the `task_id` into the format string carries it
+    before the marker.  One that fills it in at run time spells it elsewhere
+    instead - in the constant the first placeholder argument names, or in the
+    report table that argument indexes - and the reader follows it there,
+    because a task id it cannot find is a harness it cannot cross-check.  `[]`
+    means the marker resolves to nothing at all, which `read_harness` reports
+    as an unresolvable marker rather than dropping quietly.
+    """
+    ids = TASK_ID.findall(text[before:start])
+    if ids:
+        return [(ids[-1], read_identity(text, start))]
+    arguments = format_arguments(text, start)
+    if len(arguments) > 1 and RUNTIME_TASK_ID.search(arguments[0][0]):
+        task_id = argument_literal(text, arguments[1][0], arguments[1][1])
+        if task_id is not None:
+            return [(task_id, read_identity(text, start))]
+        table = table_reports(text)
+        if table:
+            return [(name, {'identity': identity, 'shape': 'literal', 'via': None}
+                     if identity is not None
+                     else {'identity': None, 'shape': 'unknown',
+                           'via': 'a report table entry with no readable identity'})
+                    for name, identity in table]
+    return []
+
+
 def read_harness(text):
     """Return the task id, `review.identity` and `claim` of every harness in one file.
 
@@ -284,21 +492,25 @@ def read_harness(text):
     dropped is a harness that silently stops being cross-checked.  Each marker is
     read inside the window between it and the next one, so a harness can never
     borrow the task id or the `claim` of its neighbour in a file that writes
-    several reports.
+    several reports - and a marker that writes several reports through one
+    format call contributes one harness per report it can write (see
+    `harness_reports`).
     """
     starts = [match.start() for match in re.finditer(re.escape(REVIEW_MARKER), text)]
     harnesses = {}
     for index, start in enumerate(starts):
         before = starts[index - 1] if index else 0
         after = starts[index + 1] if index + 1 < len(starts) else len(text)
-        ids = TASK_ID.findall(text[before:start])
         claim = CLAIM.search(text, start, after)
-        if not ids or not claim:
+        reports = harness_reports(text, start, before)
+        if not reports or not claim:
             harnesses[UNRESOLVED.format(start)] = {
                 'claim': None, 'identity': None, 'shape': 'unknown',
-                'via': 'no task id before the marker' if not ids else 'no claim after the marker'}
+                'via': 'no task id before the marker' if not reports
+                else 'no claim after the marker'}
             continue
-        harnesses[ids[-1]] = {'claim': claim.group(1), **read_identity(text, start)}
+        for task_id, identity in reports:
+            harnesses[task_id] = {'claim': claim.group(1), **identity}
     return harnesses
 
 
@@ -653,10 +865,16 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
         """The reader must open the real harness files, not a list somebody maintained."""
         expected = {
             'crates/cs_app/tests/campaign/evidence.rs': ('M01-A', 'literal'),
+            # A report table entry: one format call, one harness per `task_id`.
+            'crates/cs_app/tests/accept_f20_d_validation.rs': ('M01-LC-ANIM-RECORDS', 'literal'),
+            'crates/cs_app/tests/evidence_report_m01_lc_audio_device.rs':
+                ('M01-LC-AUDIO-DEVICE', 'runtime'),
             'crates/cs_app/tests/render/paint.rs': ('F17-C-PAINT', 'literal'),
             'crates/cs_app/tests/text/evidence.rs': ('F51-D', 'function'),
             'crates/cs_app/tests/world/audit/evidence.rs': ('F18-D', 'function'),
             'crates/cs_assets/tests/accept_f04_d_member_collisions.rs': ('T342', 'runtime'),
+            'crates/cs_assets/tests/accept_f04_d_order_archives.rs': ('F04-D-order-archives',
+                                                                     'runtime'),
             'crates/cs_assets/tests/evidence_report_f02_b.rs': ('F02-B', 'literal'),
             'crates/cs_assets/tests/evidence_report_f04_d.rs': ('F04-D', 'literal'),
             'crates/cs_content/tests/evidence_report_f10_c_02.rs': ('F10-C.02', 'literal'),
@@ -1049,6 +1267,65 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
         self.assertGreaterEqual(merge['at'], task['reviewer']['review_claim_started'])
         self.assertLessEqual(task['implementer']['claim_started'], task['reviewer']['review_claim_started'])
         self.assertLessEqual(task['reviewer']['review_claim_started'], merge['at'])
+
+    # -- M16-A-FU6 (#523): harnesses whose identity or task id is filled in at run time ---
+
+    def test_accept_m16_a_fu6_a_json_encoder_reads_as_a_jstr_encoder(self):
+        """`json(&reviewer)` is the run-time identity `jstr(&reviewer)` writes.
+
+        The helper only quotes the value, so refusing it for its name turned a
+        legitimate run-time harness (F04-D-order-archives) into an unreadable
+        one: its shape became `unknown`, the runtime exemption stopped matching
+        the derivation from the reports, and five tests that ask for no
+        problems at all went red behind it.  The shape must come from the
+        argument - here the `env_var` declaration - and never from the name of
+        the encoder.
+        """
+        self.assertEqual(read_harness(JSON_HARNESS),
+                         {'X99-A': {'claim': 'implemented', 'identity': None,
+                                    'shape': 'runtime',
+                                    'via': 'CS_EVIDENCE_REVIEWER'}})
+
+    def test_accept_m16_a_fu6_a_run_time_task_id_resolves_through_its_constant(self):
+        """A `task_id` passed as a format argument is read from the constant it names.
+
+        A literal the format string does not spell is still a literal the file
+        spells, so the harness can be keyed and cross-checked like any other.
+        """
+        self.assertEqual(read_harness(RUNTIME_TASK_HARNESS),
+                         {'X98-B': {'claim': 'implemented', 'identity': None,
+                                    'shape': 'runtime',
+                                    'via': 'CS_EVIDENCE_REVIEWER'}})
+
+    def test_accept_m16_a_fu6_one_format_call_over_a_table_writes_one_harness_per_entry(self):
+        """A file that writes several reports through one format call cross-checks all of them.
+
+        Each `M01lcReport`-style entry carries its own `task_id` and its own
+        `review` identity, so each is a harness of its own; resolving only the
+        one the marker happens to sit nearest would leave the other reports
+        without the harness that wrote them.
+        """
+        harnesses = read_harness(TABLE_HARNESS)
+        self.assertEqual({key: harness['shape'] for key, harness in harnesses.items()},
+                         {'X97-C': 'literal', 'X96-D': 'literal'})
+        self.assertEqual(harnesses['X97-C']['identity'],
+                         'implementer: x/y; reviewer: a/b, fresh context, not independent')
+        self.assertEqual(harnesses['X96-D']['identity'],
+                         'implementer: x/y; reviewer: x/y, fresh context, not independent')
+        self.assertEqual({harness['claim'] for harness in harnesses.values()}, {'implemented'})
+
+    def test_accept_m16_a_fu6_a_task_id_that_resolves_to_nothing_is_still_reported(self):
+        """A run-time `task_id` the reader cannot pin down is a hole, not a silent skip."""
+        orphan = RUNTIME_TASK_HARNESS.replace('const TASK: &str = "X98-B";\n\n', '') \
+                                     .replace('jstr(TASK)', 'jstr(spec.task_id)')
+        keys = list(read_harness(orphan))
+        self.assertEqual(len(keys), 1, keys)
+        self.assertTrue(keys[0].startswith('unresolved review marker'), keys)
+        harnesses = read_harnesses_from({'crates/demo/tests/evidence.rs': orphan})
+        self.assertTrue(any('cannot be resolved' in problem
+                            and 'crates/demo/tests/evidence.rs' in problem
+                            for problem in review_problems(self.snapshots, harnesses,
+                                                           self.reports)[0]), harnesses)
 
 
 def copy_reports(reports, **extra):
