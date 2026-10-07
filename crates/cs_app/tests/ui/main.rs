@@ -18,11 +18,19 @@
 //! repository (see
 //! `docs/findings/2026-10-07-f45-b-original-asset-screen-decks.md`), so the
 //! original screens themselves are F45-D's capture.
+//!
+//! Acceptance stage F45-C (`mod wiring`) adds the flows themselves: the
+//! `FrontEndFlow` that runs every transition's domain transaction *before*
+//! the machine moves, the resource ledger that consumes the acquire/release
+//! stream, and the loading screen's real `LoadingSession` over a content
+//! session — AC03's minimum scenario, a load whose dependency is missing,
+//! fails, is repaired and is retried in the same process.
 
 mod flow;
 mod layout;
 mod screens;
 mod table;
+mod wiring;
 
 use cs_types::content::{ContentId, ContentKind};
 

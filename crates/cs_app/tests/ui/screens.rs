@@ -41,7 +41,7 @@ use super::id;
 /// The logical size of every authored image in this file.
 const IMAGE: (u32, u32) = (640, 480);
 /// The surface every click and view is made against.
-const SURFACE: (u32, u32) = (1920, 1080);
+pub(crate) const SURFACE: (u32, u32) = (1920, 1080);
 
 const fn rect(x: u32, y: u32, width: u32, height: u32) -> Rect {
     Rect {
@@ -81,7 +81,7 @@ fn authored(key: &str, actions: &[&str]) -> ScreenAssets {
 
 /// A deck carrying every screen a player reaches before flying, with the
 /// briefing's authored order deliberately different from the table's.
-fn preflight_deck() -> ScreenDeck {
+pub(crate) fn preflight_deck() -> ScreenDeck {
     ScreenDeck::new(vec![
         (Screen::InstallSelect, authored("art-install", &["quit"])),
         (
@@ -150,7 +150,7 @@ fn press(session: &mut ScreenSession, action: Action) -> Vec<Effect> {
 }
 
 /// The surface point at the centre of a screen's authored button.
-fn button_point(session: &ScreenSession, action: Action) -> (u32, u32) {
+pub(crate) fn button_point(session: &ScreenSession, action: Action) -> (u32, u32) {
     let view = session.view(SURFACE).expect("the screen is authored");
     let button = view
         .buttons

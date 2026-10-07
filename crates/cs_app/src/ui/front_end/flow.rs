@@ -50,7 +50,9 @@ use std::path::PathBuf;
 
 use cs_assets::cache::CacheStore;
 use cs_assets::vfs::ContentSession;
-use cs_content::airframe_roles::{AirframeRoles, LaunchAssignmentError, OwnedLoadout, ResolvedLaunch};
+use cs_content::airframe_roles::{
+    AirframeRoles, LaunchAssignmentError, OwnedLoadout, ResolvedLaunch,
+};
 use cs_content::construction::{ConstructionPolicy, ConstructionRules, PriceBook};
 use cs_content::save::settings::SettingCatalog;
 use cs_sim::campaign::{
@@ -340,7 +342,10 @@ impl ResourceLedger {
     fn acquire(&mut self, resource: Resource) -> Result<(), ResourceProblem> {
         match resource {
             Resource::Input(context) => match self.input {
-                Some(held) => Err(ResourceProblem::InputBoundTwice { held, offered: context }),
+                Some(held) => Err(ResourceProblem::InputBoundTwice {
+                    held,
+                    offered: context,
+                }),
                 None => {
                     self.input = Some(context);
                     Ok(())
@@ -443,7 +448,7 @@ pub enum LoadVerdict {
     /// The loading screen is not running a load.
     Idle,
     /// The load is still working; the screen draws this.
-    Running(LoadingScreen),
+    Running(Box<LoadingScreen>),
     /// Every declared dependency was delivered and the machine moved on to
     /// the flight.
     Ready,
@@ -481,6 +486,12 @@ impl LoadFlow {
     /// The mission's declared dependency closure.
     pub fn set_plan(&mut self, plan: LoadPlan) {
         self.plan = Some(plan);
+    }
+
+    /// The private cache the attempts run over. It is held by a running load
+    /// and handed back by the teardown, so the application supplies it once.
+    pub fn set_cache_store(&mut self, store: CacheStore) {
+        self.store = Some(store);
     }
 
     /// The transaction state of the running attempt, if any.
@@ -568,10 +579,7 @@ impl LoadFlow {
             attempt.pump(&mut io)?;
         }
         let state = attempt.state();
-        Ok((
-            state,
-            (!state.is_terminal()).then(|| attempt.screen()),
-        ))
+        Ok((state, (!state.is_terminal()).then(|| attempt.screen())))
     }
 
     /// Tears the attempt down the way leaving the loading screen must: a
@@ -665,7 +673,10 @@ impl fmt::Display for FlowError {
             Self::Launch(error) => write!(f, "launch: {error}"),
             Self::NoMissionOutcome => f.write_str("the mission reported no outcome"),
             Self::OutcomeMismatch { expected, recorded } => {
-                write!(f, "the screen says {expected:?} but the record says {recorded:?}")
+                write!(
+                    f,
+                    "the screen says {expected:?} but the record says {recorded:?}"
+                )
             }
             Self::Load(error) => write!(f, "load: {error}"),
         }
@@ -772,14 +783,17 @@ impl FlowDomain {
             return Err(FlowError::ProfileAlreadyOpen);
         }
         let setup = &self.setup;
-        let mut session = ProfileSession::open(&setup.base, setup.origin, setup.kind, &setup.catalog)
-            .map_err(FlowError::Profile)?;
+        let mut session =
+            ProfileSession::open(&setup.base, setup.origin, setup.kind, &setup.catalog)
+                .map_err(FlowError::Profile)?;
         match intent {
             ProfileIntent::New => {
-                session.create(&setup.new_profile).map_err(FlowError::Profile)?;
+                session
+                    .create(&setup.new_profile)
+                    .map_err(FlowError::Profile)?;
             }
             ProfileIntent::Existing => {
-                if let Some(id) = setup.existing.clone() {
+                if let Some(id) = setup.existing {
                     session.select(id).map_err(FlowError::Profile)?;
                 }
             }
@@ -880,7 +894,10 @@ impl FlowDomain {
     }
 
     fn apply_outcome(&mut self, verdict: MissionOutcome) -> Result<(), FlowError> {
-        let record = self.mission_outcome.take().ok_or(FlowError::NoMissionOutcome)?;
+        let record = self
+            .mission_outcome
+            .as_ref()
+            .ok_or(FlowError::NoMissionOutcome)?;
         let expected = match verdict {
             MissionOutcome::Success => MissionResult::Succeeded,
             MissionOutcome::Failure => MissionResult::Failed,
@@ -891,6 +908,7 @@ impl FlowDomain {
                 recorded: record.outcome,
             });
         }
+        let record = self.mission_outcome.take().expect("checked just above");
         let run = self.run.as_mut().ok_or(FlowError::NoCampaign)?;
         let profile = self
             .profile
@@ -949,11 +967,23 @@ pub struct FrontEndFlow {
 impl FrontEndFlow {
     /// A flow on the install selection with `deck`'s authored screens and
     /// `setup`'s profile, campaign and construction inputs.
+    ///
+    /// The ledger starts holding what the machine starts holding — the install
+    /// selection's own input context and audio scope — fed through the same
+    /// acquire path every later effect takes, so the first release a transition
+    /// emits has something to release.
     #[must_use]
     pub fn new(deck: ScreenDeck, setup: FlowSetup) -> Self {
+        let session = ScreenSession::new(deck);
+        let mut ledger = ResourceLedger::default();
+        for resource in session.front_end().held() {
+            ledger
+                .apply(&Effect::Acquire(*resource))
+                .expect("the start screen holds each resource at most once");
+        }
         Self {
-            session: ScreenSession::new(deck),
-            ledger: ResourceLedger::default(),
+            session,
+            ledger,
             domain: FlowDomain::new(setup),
             load: LoadFlow::default(),
             exiting: false,
@@ -1127,7 +1157,7 @@ impl FrontEndFlow {
                 Ok(LoadVerdict::Failed { reason })
             }
             _ => match running {
-                Some(screen) => Ok(LoadVerdict::Running(screen)),
+                Some(screen) => Ok(LoadVerdict::Running(Box::new(screen))),
                 None => Ok(LoadVerdict::Idle),
             },
         }
@@ -1184,7 +1214,9 @@ impl FrontEndFlow {
     ///
     /// As [`Self::open_construction`], and with no draft open.
     pub fn edit_construction(&mut self, components: Vec<ContentId>) -> Result<(), FlowError> {
-        self.session.edit_construction(components).map_err(Into::into)
+        self.session
+            .edit_construction(components)
+            .map_err(Into::into)
     }
 
     /// Hands the flow the construction screen `CommitBlueprint` commits
@@ -1217,6 +1249,11 @@ impl FrontEndFlow {
     /// The content session the loading screen's reads resolve through.
     pub fn set_content_session(&mut self, content: ContentSession) {
         self.load.set_content_session(content);
+    }
+
+    /// The private cache the loading screen's attempts run over.
+    pub fn set_cache_store(&mut self, store: CacheStore) {
+        self.load.set_cache_store(store);
     }
 
     /// The mission's declared dependency closure — content data this stage
@@ -1286,7 +1323,7 @@ impl FlowDomainView<'_> {
     /// The selected profile's id.
     #[must_use]
     pub fn profile_id(&self) -> Option<ProfileId> {
-        self.0.profile_id.clone()
+        self.0.profile_id
     }
 
     /// The live campaign run.
