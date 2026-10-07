@@ -33,9 +33,9 @@ use cs_content::construction::{
     AircraftBlueprint, ArmorFitment, BudgetQuantity, ConstraintViolation, ConstructionPolicy,
     ConstructionRules, DecalPlacement, PaintSelection, PriceBook,
     SYNTHETIC_BOUNDARY_COST_LIMIT_MINOR, SYNTHETIC_BOUNDARY_MASS_LIMIT_UNITS, SYNTHETIC_GUN_KEY,
-    SYNTHETIC_HEAVY_PLATE_KEY, SYNTHETIC_MISSILE_KEY, declared_synthetic_blueprint,
-    declared_synthetic_price_book, synthetic_boundary_rules, synthetic_gun_fitments,
-    synthetic_policy,
+    SYNTHETIC_HEAVY_PLATE_KEY, SYNTHETIC_MISSILE_KEY, SYNTHETIC_RADIO_KEY, ValidationRefusal,
+    declared_synthetic_blueprint, declared_synthetic_price_book, synthetic_boundary_rules,
+    synthetic_gun_fitments, synthetic_policy,
 };
 use cs_content::save::settings::SettingCatalog;
 use cs_sim::campaign::{
@@ -589,4 +589,121 @@ fn accept_f44_c_paint_edits_stay_references_through_export_and_import() {
         .expect("the imported blueprint commits");
     // Paint is not a priced component: the charge is still the six parts.
     assert_eq!(receipt.charged, DISTINCT_PRICE);
+}
+
+#[test]
+fn accept_f44_c_a_queued_sale_previews_its_refund_and_commits_once() {
+    let fx = Fixture::new();
+    let base = TempBase::new("sale");
+    let mut state = funded(&fx.graph);
+    let mut session = sandbox_with_campaign(base.path(), &state);
+
+    // Buy the whole boundary blueprint first, so the profile owns every
+    // component it names and has paid a recorded price for each.
+    let mut buyer = ConstructionScreen::open(&state, declared_synthetic_blueprint(), vec![]);
+    buyer
+        .commit_saved(&fx.ctx(), &mut state, &mut session)
+        .expect("the boundary blueprint buys");
+    assert_eq!(state.unlocks().count(), 6);
+    let after_buy = state.snapshot();
+
+    let radio = id(ContentKind::HardpointEquipment, SYNTHETIC_RADIO_KEY);
+    let paid = state
+        .paid_for(&radio)
+        .expect("the profile recorded what it paid for the radio");
+
+    // A blueprint that no longer uses the radio, staging its sale.
+    let no_equipment = declared_synthetic_blueprint()
+        .with_equipment(Vec::new())
+        .expect("a blueprint without equipment is still valid");
+    let mut screen = ConstructionScreen::open(&state, no_equipment.clone(), vec![]);
+    screen.queue_sale(radio.clone());
+    assert!(screen.is_dirty());
+
+    // The preview is the transaction the commit will run: nothing to buy (the
+    // profile owns every part) and the refund the sale credits.
+    let view = screen.view(&fx.ctx(), &state);
+    assert!(view.verdict.expect("measurable").is_valid());
+    let pending = view.pending.expect("a priced draft has a pending commit");
+    assert!(pending.buys.is_empty(), "the profile owns every part");
+    assert_eq!(pending.charge, 0);
+    assert_eq!(pending.sells, vec![radio.clone()]);
+    assert_eq!(
+        pending.credit, paid,
+        "the previewed credit is the refund the commit pays"
+    );
+
+    // The same sale staged twice is refused rather than refunded twice: the
+    // economy rejects repeated lines and the profile is exactly as it was.
+    let mut doubled = ConstructionScreen::open(&state, no_equipment, vec![]);
+    doubled.queue_sale(radio.clone());
+    doubled.queue_sale(radio.clone());
+    let error = doubled
+        .commit(&fx.ctx(), &mut state)
+        .expect_err("one sale staged twice must not commit");
+    assert!(
+        matches!(
+            error,
+            ConstructionError::Economy(EconomyError::ConflictingLines { .. })
+        ),
+        "got {error:?}"
+    );
+    assert_eq!(
+        state.snapshot(),
+        after_buy,
+        "the refused sale moved nothing"
+    );
+
+    // The one staged sale commits once, in memory and on the save.
+    let receipt = screen
+        .commit_saved(&fx.ctx(), &mut state, &mut session)
+        .expect("the sale commits");
+    assert_eq!(receipt.charged, 0);
+    assert_eq!(receipt.refunded, paid);
+    assert_eq!(state.unlocks().count(), 5, "the radio was sold");
+    assert_eq!(state.currency(), GRANT - DISTINCT_PRICE + paid);
+
+    let stored = stored_campaign(&session);
+    assert_eq!(stored.revision, after_buy.revision + 1, "one more revision");
+    assert_eq!(stored.currency, GRANT - DISTINCT_PRICE + paid);
+    assert_eq!(stored.unlocks.len(), 5, "the sale is durable");
+    assert!(!screen.is_dirty(), "the committed screen is clean again");
+    assert_eq!(screen.committed(), Some(&receipt));
+}
+
+#[test]
+fn accept_f44_c_an_unmeasurable_import_is_refused_not_adopted() {
+    let fx = Fixture::new();
+    let state = funded(&fx.graph);
+    let mut screen = ConstructionScreen::open(&state, declared_synthetic_blueprint(), vec![]);
+
+    // The host's pairing rule is unmeasured, so a paired import cannot be
+    // judged at all — and "cannot be judged" is a refusal, never an adoption
+    // by default. The draft, the dirty flag and the state are untouched.
+    let unmeasured = ConstructionPolicy::new(
+        Resolved::unknown(
+            ClaimId::new("f44c.test.pairing").expect("valid claim id"),
+            "the original pairing rule is unmeasured",
+        )
+        .expect("a reason is present"),
+        BTreeSet::new(),
+        fx.policy.available().clone(),
+    );
+    let ctx = ConstructionContext {
+        policy: &unmeasured,
+        ..fx.ctx()
+    };
+    let rejection = screen
+        .import(&ctx, paired_blueprint())
+        .expect_err("an unmeasurable import must not be adopted");
+    let ImportRejection::Refused(refusal) = rejection else {
+        panic!("expected Refused, got {rejection:?}");
+    };
+    assert!(
+        matches!(refusal, ValidationRefusal::UnknownPairingRule { .. }),
+        "got {refusal:?}"
+    );
+    assert_eq!(screen.blueprint(), &declared_synthetic_blueprint());
+    assert!(!screen.is_dirty());
+    assert!(screen.notice().is_some(), "the refusal is displayed");
 }

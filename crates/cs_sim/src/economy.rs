@@ -90,12 +90,6 @@ impl ConstructionDraft {
         self.expected_revision
     }
 
-    /// The weight verdict the draft was written with.
-    #[must_use]
-    pub const fn weight(&self) -> &LoadoutWeight {
-        &self.weight
-    }
-
     /// The staged purchases, in the order they were declared.
     ///
     /// [`commit`] is still the only place they are applied; reading them is how

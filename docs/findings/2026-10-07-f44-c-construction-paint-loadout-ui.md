@@ -17,10 +17,9 @@ ordinary build/test only.
 - `crates/cs_content/src/construction.rs`: `AircraftBlueprint::with_engine`,
   `with_equipment`, `with_paint`; the equipment checks in `try_new` extracted
   to `check_equipment`.
-- `crates/cs_sim/src/economy.rs`: `ConstructionDraft::buys`/`sells`/`weight`
-  accessors so the screen's pending-transaction preview reads the real staged
-  draft.
-- `crates/cs_app/tests/accept_f44_c_construction_screen.rs`: six tests.
+- `crates/cs_sim/src/economy.rs`: `ConstructionDraft::buys`/`sells` accessors so
+  the screen's pending-transaction preview reads the real staged draft.
+- `crates/cs_app/tests/accept_f44_c_construction_screen.rs`: eight tests.
 
 Observable failure before this change: no producer or consumer used
 `ConstructionSession` — an imported blueprint had no path through the shared
@@ -70,3 +69,25 @@ the profile document after `commit_saved`.
 - When a task owns `crates/cs_app/src/campaign.rs`, `CampaignRun` should grow a
   method that runs the construction commit inside `transact` so
   `commit_saved`'s restated persist has one canonical home.
+
+## Review additions (2026-10-07)
+
+Two production paths this stage added were untested; both now have tests that
+fail when the path is removed (verified by mutating each path in turn):
+
+- The screen's *sale* path —
+  `accept_f44_c_a_queued_sale_previews_its_refund_and_commits_once`: the
+  preview's `PendingTransaction::credit` is the refund the commit pays, one
+  refund lands in memory and on the save, and the same item staged twice is
+  refused as `EconomyError::ConflictingLines` with the profile untouched.
+  Staging is deliberately *not* de-duplicated in the screen: like an
+  unaffordable charge, the preview shows what was staged and the commit is
+  what refuses it.
+- `ImportRejection::Refused` —
+  `accept_f44_c_an_unmeasurable_import_is_refused_not_adopted`: an unmeasured
+  pairing rule refuses a paired import instead of adopting it, with the draft,
+  the dirty flag and the state untouched.
+
+`ConstructionDraft::weight()` was removed again: nothing read it (the view's
+mass meter already carries the validator's own mass and limit from the same
+`assess` call), and an accessor without a consumer is speculative API.
