@@ -125,9 +125,12 @@ impl MissionSession {
     /// caller declared is applicable.
     ///
     /// The session launches with no countdown — the measured state of a
-    /// mission that spells no `MISSION_TIMER`, stopped at zero. A timer
-    /// directive can still arm it later; [`Self::launch_with_countdown`] is
-    /// the path whose record spelled one.
+    /// mission that spells no `MISSION_TIMER`, stopped at zero — and with
+    /// no declared tick rate, so a timer directive that would arm one is
+    /// refused by name ([`CountdownFault::NoDeclaredTickRate`]) rather than
+    /// handed a guessed dt. [`Self::launch_with_countdown`] is the path
+    /// whose record spelled a timer, and the only way a session declares
+    /// the rate a directive arm decrements against.
     ///
     /// # Errors
     ///
@@ -616,8 +619,11 @@ pub struct Countdown {
 impl Countdown {
     /// A session launched with no countdown: the measured state of a
     /// mission that spells no `MISSION_TIMER` — stopped at zero, reporting
-    /// [`MissionCountdown::NONE`] every tick. A timer directive can still
-    /// arm it if the session declared a rate.
+    /// [`MissionCountdown::NONE`] every tick. It carries no declared rate,
+    /// so a directive that would arm it is refused by name
+    /// ([`CountdownFault::NoDeclaredTickRate`]); [`Self::armed`] with a
+    /// non-positive spec is the stopped countdown a directive can still
+    /// start.
     fn unarmed() -> Self {
         Self {
             remaining_seconds: 0.0,
