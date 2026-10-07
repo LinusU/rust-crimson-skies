@@ -23,8 +23,8 @@
 
 use cs_app::campaign::lower_campaign;
 use cs_app::ui::front_end::{
-    Action, ConstructionDraft, DeckError, Effect, LayoutProblem, Loadout, ProfileIntent, Request,
-    Resource, Screen, ScreenAssetError, ScreenAssets, ScreenDeck, ScreenSession,
+    Action, ConstructionDraft, DeckError, Effect, LayoutProblem, Loadout, ProfileIntent, Refusal,
+    Request, Resource, Screen, ScreenAssetError, ScreenAssets, ScreenDeck, ScreenSession,
     ScreenSessionError,
 };
 use cs_content::campaign::declared_synthetic_campaign;
@@ -237,11 +237,15 @@ fn to_cabin(session: &mut ScreenSession) -> Vec<Request> {
     made
 }
 
-/// **AC02 — the stage's minimum scenario.** Cancel (or Back) at every
-/// preflight screen, driven through the authored buttons, and the campaign's
-/// state and currency are unchanged: no cancel path produces a transaction
-/// the domain could apply (applying one is F45-C's wiring; this stage's half
-/// of that contract is that cancelling has nothing to apply).
+/// **AC02 — the stage's minimum scenario.** Cancel (or Back, or Quit where a
+/// screen has nothing else to leave by) at **every** preflight screen — all
+/// twelve of them, the whole `preflight` list the deck must carry — driven
+/// through the authored buttons, and the campaign's state and currency are
+/// unchanged: no cancel path produces a transaction the domain could apply to
+/// the campaign (applying one is F45-C's wiring; this stage's half of that
+/// contract is that cancelling has nothing to apply). The single transaction
+/// a cancel asks for anywhere in the walk is leaving the cabin, which closes
+/// the profile — the profile's own save/close, never a campaign one.
 #[test]
 fn accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_unchanged() {
     let campaign = campaign();
@@ -262,6 +266,11 @@ fn accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_uncha
     assert_eq!(deck.screens().collect::<Vec<_>>(), preflight);
 
     let mut cancelled: Vec<Request> = Vec::new();
+    // Every screen this walk actually cancels at, so "every preflight screen"
+    // below is an assertion and not a claim in a comment. Loading's own
+    // cancel lives in `accept_f45_b_cancelling_the_load_…`, which also pins
+    // the campaign snapshot.
+    let mut cancelled_at: Vec<Screen> = Vec::new();
 
     // The menu screens: reaching them and backing out is not a transaction.
     for (open, screen) in [
@@ -283,6 +292,7 @@ fn accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_uncha
             "cancel on {screen:?} asked the domain for something"
         );
         cancelled.extend(requests(&leave));
+        cancelled_at.push(screen);
     }
 
     // The cabin and its screens. Opening the profile is the one transaction
@@ -364,6 +374,21 @@ fn accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_uncha
             let prompt = click(&mut session, leave);
             assert_eq!(prompt, vec![Effect::AskDiscard], "{screen:?}");
             assert_eq!(session.front_end().screen(), screen);
+            // While the prompt is open nothing slips past it: pressing the
+            // same authored cancel again and moving focus are both refused,
+            // and a refusal leaves the machine exactly as it was.
+            let (x, y) = button_point(&session, leave);
+            assert_eq!(
+                session.click(SURFACE, x, y),
+                Err(ScreenSessionError::Refused(Refusal::ConfirmationPending)),
+                "the open prompt refuses another click on {screen:?}"
+            );
+            assert_eq!(
+                session.move_focus(true),
+                Err(ScreenSessionError::Refused(Refusal::ConfirmationPending)),
+                "the open prompt refuses focus movement on {screen:?}"
+            );
+            assert_eq!(session.front_end().screen(), screen);
             let confirmed = session.confirm_discard().expect("discard confirmed");
             let leave_effects = confirmed.effects;
             assert_eq!(confirmed.to, leave_to, "{screen:?}");
@@ -392,11 +417,83 @@ fn accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_uncha
             );
             cancelled.extend(requests(&leave_effects));
         }
+        cancelled_at.push(screen);
     }
+
+    // The four preflight screens the walks above pass through without
+    // cancelling *from*: the install selection and the main menu have only
+    // Quit to leave by, the diagnosis returns to choosing an installation,
+    // and the cabin's own escape closes the profile.
+    let mut session = ScreenSession::new(deck.clone());
+    let quit = click(&mut session, Action::Quit);
+    assert_eq!(session.front_end().screen(), Screen::InstallSelect);
+    assert!(
+        quit.contains(&Effect::ExitApplication),
+        "quitting the install selection leaves the application"
+    );
+    assert!(
+        requests(&quit).is_empty(),
+        "cancel on InstallSelect asked the domain for something"
+    );
+    cancelled_at.push(Screen::InstallSelect);
+
+    let mut session = ScreenSession::new(deck.clone());
+    press(&mut session, Action::InstallRejected);
+    assert_eq!(session.front_end().screen(), Screen::ContentDiagnosis);
+    let again = click(&mut session, Action::ChooseAnotherInstall);
+    assert_eq!(session.front_end().screen(), Screen::InstallSelect);
+    assert!(
+        requests(&again).is_empty(),
+        "cancel on ContentDiagnosis asked the domain for something"
+    );
+    cancelled_at.push(Screen::ContentDiagnosis);
+
+    let mut session = ScreenSession::new(deck.clone());
+    press(&mut session, Action::InstallVerified);
+    assert_eq!(session.front_end().screen(), Screen::MainMenu);
+    let quit = click(&mut session, Action::Quit);
+    assert_eq!(session.front_end().screen(), Screen::MainMenu);
+    assert!(
+        quit.contains(&Effect::ExitApplication),
+        "quitting the main menu leaves the application"
+    );
+    assert!(
+        requests(&quit).is_empty(),
+        "cancel on MainMenu asked the domain for something"
+    );
+    cancelled_at.push(Screen::MainMenu);
+
+    // Leaving the cabin is a cancel too, and the one transaction a cancel
+    // asks for anywhere in this walk: closing the profile, which is the
+    // profile's own save/close and never a campaign one.
+    let mut session = ScreenSession::new(deck.clone());
+    assert_eq!(
+        to_cabin(&mut session),
+        vec![Request::OpenProfile(ProfileIntent::New)]
+    );
+    let leave = click(&mut session, Action::Back);
+    assert_eq!(session.front_end().screen(), Screen::MainMenu);
+    assert_eq!(
+        requests(&leave),
+        vec![Request::CloseProfile],
+        "leaving the cabin closes the profile and asks for nothing else"
+    );
+    cancelled_at.push(Screen::Cabin);
 
     assert!(
         cancelled.is_empty(),
         "a cancel path produced a transaction: {cancelled:?}"
+    );
+    let mut covered = cancelled_at;
+    covered.sort_unstable();
+    let expected: Vec<Screen> = preflight
+        .iter()
+        .copied()
+        .filter(|screen| *screen != Screen::Loading)
+        .collect();
+    assert_eq!(
+        covered, expected,
+        "every preflight screen except Loading (cancelled in the load test) is cancelled here"
     );
     assert_eq!(
         campaign.snapshot(),

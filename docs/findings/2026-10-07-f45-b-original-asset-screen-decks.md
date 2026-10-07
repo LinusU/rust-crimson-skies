@@ -143,10 +143,18 @@ attributed):
 
 - `accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_unchanged`
   (the minimum scenario, AC02): every preflight screen carries authored art
-  (`Screen::ALL` minus the in-flight/results screens), each screen is reached
-  and cancelled through `click`, dirty drafts go through the discard prompt,
-  the only transaction in the whole walk is opening the profile, and the
-  campaign snapshot (currency 500) is unchanged.
+  (`Screen::ALL` minus the in-flight/results screens), and the walk records
+  every screen it actually cancels at so the closing assertion
+  (`cancelled_at` == that list minus `Loading`) turns "every preflight
+  screen" into a check rather than a claim in a comment. Each screen is
+  reached and cancelled through `click` — `Quit` on the install selection and
+  the main menu, `choose-another-install` on the diagnosis, `Back` on the
+  cabin, `Back`/`Cancel` on the rest — dirty drafts go through the discard
+  prompt and every input the open prompt receives is refused, the only
+  transactions in the whole walk are opening the profile and closing it when
+  leaving the cabin (the profile's own save/close, never a campaign one), and
+  the campaign snapshot (currency 500) is unchanged. `Loading`'s cancel is the
+  load test below, which pins the same snapshot.
 - `accept_f45_b_focus_visits_the_authored_button_order_and_activates_it` —
   authored order ≠ table order on the briefing; entry focus, wrap both ways,
   activation, one-button wrap.
@@ -171,10 +179,46 @@ Sensitivity was checked by mutation and then reverted (each run:
 | `ScreenSession::entered` never re-focuses the authored first button | the focus test (focus stays at the table's `ReplayBriefing`) |
 | `ScreenAssets::new` skips the artwork-kind check | the artwork-id test |
 | `click` hit-tests logical coordinates instead of the fitted surface | the letterbox test: `(100, 100)` activates `ContinueProfile` instead of hitting nothing |
+| `FrontEnd::apply` skips the open-prompt lock | AC02: the prompt's own cancel click comes back `Ok(AskDiscard)` instead of `Refused(ConfirmationPending)` |
+| `FrontEnd::set_focus` skips the open-prompt lock | AC02: focus moves while a discard prompt is open |
+| `FrontEnd::perform` asks `CloseProfile` on every `Quit` exit | AC02: "cancel on InstallSelect asked the domain for something" |
+| the AC02 walk forgets to record one screen it cancelled at | AC02's coverage assertion names the screen (`left`/`right` differ by it) |
 
 Full local checks before handover: `cargo fmt --all -- --check`,
 `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`,
 `cargo test --workspace --locked` and the task selection above — all exit 0.
+
+## Review (2026-10-07)
+
+Reviewed by `bunny-alpha-2` — the same agent instance and model that
+implemented the stage, in a fresh session that started from the hand-over
+summary. That makes this a self-review: `checked` evidence at best, not
+independent original-reference evidence, and no substitute for the owner's
+human approval.
+
+Found and fixed before hand-over:
+
+- **AC02 did not cancel at every preflight screen.** The walk cancelled at 7
+  of the 12 screens the deck must carry; `InstallSelect`, `ContentDiagnosis`,
+  `MainMenu` and `Cabin` were in the asserted `preflight` list but never
+  cancelled from. The walk now drives each of them (`Quit` on the install
+  selection and the menu, `choose-another-install` back out of the diagnosis,
+  `Back` out of the cabin, whose one legitimate transaction is
+  `Request::CloseProfile`) and records every screen it cancels at, so the new
+  closing assertion fails if a screen is ever dropped from the walk again.
+- **Nothing pinned the open-prompt lock.** `FrontEnd::apply` and
+  `FrontEnd::set_focus` both refuse while a discard prompt is open, but no
+  test drove it. AC02 now presses the same cancel again and moves focus while
+  the prompt is up and requires `Refused(ConfirmationPending)` both times,
+  with the screen unchanged.
+
+Considered and deliberately left alone: a screen whose art declares two
+hotspots for one action is accepted. Focus is stored as an `Action`
+(F45-A's design), so both regions would highlight and moving focus visits the
+action rather than each region; activation is the same transition either way.
+No original hotspot layout is decoded anywhere yet, so refusing a duplicate
+now could block faithful art later — #742 (F45-B.1) should record what the
+original layout does and revisit this rule if it needs it.
 
 ## What remains unknown (recorded, not guessed)
 
