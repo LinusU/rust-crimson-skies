@@ -9,9 +9,19 @@
 //! hotspot rule. Everything is authored synthetic data; no original screen,
 //! coordinate or file is read, so this proves the table and its machine only,
 //! never the original front end (F45-B/D).
+//!
+//! Acceptance stage F45-B (`mod screens`) adds the original-asset screens:
+//! a validated `ScreenDeck` of artwork and hotspots presented by
+//! `ScreenSession`, and AC02's minimum scenario driven through that authored
+//! art. Its fixture data is authored for the same
+//! reason as F45-A's: no original front-end layout is decoded anywhere in this
+//! repository (see
+//! `docs/findings/2026-10-07-f45-b-original-asset-screen-decks.md`), so the
+//! original screens themselves are F45-D's capture.
 
 mod flow;
 mod layout;
+mod screens;
 mod table;
 
 use cs_types::content::{ContentId, ContentKind};
