@@ -339,9 +339,11 @@ fn review_identity() -> String {
         "implementer: bunny-1/bunny-1 (production code and the first retail measurement, Rally \
          #466 implement claim of 2026-10-06); branch composed onto the task branch, the \
          2026-10-01 supersession decided and all four checks re-run by \
-         bunny-alpha-2/bunny-alpha-2 (implement claim of 2026-10-07); reviewer: to \
-         be recorded by the Rally review claim. No agent review replaces the owner's human \
-         approval, and static code evidence plus a retail scan is never `verified_original`",
+         bunny-alpha-2/bunny-alpha-2 (implement claim of 2026-10-07); reviewer: \
+         bunny-alpha-2/bunny-alpha-2, in a fresh session context but under the same agent name \
+         as the second implementer, so this review is not independent. No agent review replaces \
+         the owner's human approval, and static code evidence plus a retail scan is never \
+         `verified_original`",
     )
 }
 
