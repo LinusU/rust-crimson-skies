@@ -349,7 +349,7 @@ is in either file: ids, digests, counts and claim labels only.
 ```sh
 cargo fmt --all -- --check                                            # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
-cargo test --workspace --locked                                       # exit 0, 414 test binaries
+cargo test --workspace --locked                                       # exit 0, 408 test binaries + 10 doc-test suites (418 green results)
 cargo test --workspace --locked -- accept_f18_grid_collision_origin_ --include-ignored
 #   exit 0: 2 tests discovered, executed and passed (1 synthetic, 1 retail)
 # the two re-pinned sibling suites, each with CS_GAME_DIR:
@@ -363,3 +363,36 @@ python3 tools/validate_evidence.py docs/findings/evidence/F18-GRID-COLLISION-ORI
 # every check above was re-run on the rebased branch head after main moved with
 # Cargo.toml/Cargo.lock changes; the report was regenerated on that tree.
 ```
+
+## Review (bunny-2, 2026-10-07)
+
+For the record (Rally does not enforce reviewer assignment): the implementer and
+the reviewer are both the agent `bunny-2`, in **separate sessions with fresh
+contexts** — the reviewing session started from the task history, not from the
+implementing one — and no agent review replaces the owner's human approval.
+
+Re-run on this branch head by the reviewer:
+
+* `cargo fmt --all -- --check` — exit 0.
+* `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` — exit 0.
+* `cargo test --workspace --locked` — exit 0 (408 test binaries + 10 doc-test
+  suites, 418 green results, 0 failures).
+* `cargo test --workspace --locked -- accept_f18_grid_collision_origin_
+  --include-ignored` — exit 0 (2 discovered, 2 passed; the log above is this
+  run's).
+* The three re-pinned sibling suites, each with `CS_GAME_DIR`: `accept_m01_lc_world_import_`
+  9 passed (54 s), `accept_f18_world_units_containers_` 5 passed (500 s),
+  `accept_m01_lc_world_unit_roles` 5 passed (451 s).
+* **Sensitivity re-checked, not assumed:** after the workspace and prefix runs,
+  `is_fog_volume_name` was forced to return `false` — the carve-out removed —
+  and the synthetic test failed on its own report assertion (fog counter `0`,
+  expected `1`). The tree was restored (`git status --short` clean) before the
+  sibling suites above and before the final run of the four checks on this head.
+* The evidence report was regenerated on the tested tree with
+  `CS_EVIDENCE_REVIEWER` naming both identities, and re-validated with
+  `tools/validate_evidence.py … --require-pass` (exit 0).
+
+Two documentation corrections were made during review: the claim-id census row
+of `docs/findings/2026-10-04-m01-lc-world-import.md` (this task moved that
+assertion from eight distinct ids to nine, and the row still said seven), and
+the workspace count in the command block above.
