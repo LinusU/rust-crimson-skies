@@ -307,6 +307,22 @@ No test was weakened: each assertion that moved states a *smaller* or
 existed for (the index still decides the rest of the role; the spawn still
 reports exactly its gaps).
 
+## Evidence
+
+`docs/findings/evidence/F18-GRID-COLLISION-ORIGIN.json` — schema
+`schemas/evidence.schema.json`, written by
+`crates/cs_app/tests/evidence_report_f18_grid_collision_origin.rs` and
+validated with `tools/validate_evidence.py … --require-pass` (exit 0,
+`structurally_valid: true`). Capabilities `retail` + `synthetic`; candidate tree
+`358b457634a91be53e8fe03a6adfdb8daabe8bfa` (the tree the acceptance run
+tested); 2 tests discovered, executed and passed; claim `implemented`. Its
+second artifact, `grid-collision-origin-census.json`, is a **second production
+observation** — one discovery over the installation and one import per
+container — recording each group's grid size, fog counter, solid count and the
+node slots of the six fog volumes (C1C 293/4/289, C5 471/2/469, zero
+elsewhere), plus the measured source's own calibration record. No original byte
+is in either file: ids, digests, counts and claim labels only.
+
 ## Sources used
 
 - `$CS_GAME_DIR/crimson.decrypted.exe` (sha256 above), addresses as in
@@ -331,9 +347,17 @@ reports exactly its gaps).
 ## Commands run
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --locked
+cargo fmt --all -- --check                                            # exit 0
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
+cargo test --workspace --locked                                       # exit 0, 414 test binaries
 cargo test --workspace --locked -- accept_f18_grid_collision_origin_ --include-ignored
-#   2 tests: 1 run and pass without original data, 1 retail run and pass
+#   exit 0: 2 tests discovered, executed and passed (1 synthetic, 1 retail)
+# the two re-pinned sibling suites, each with CS_GAME_DIR:
+cargo test -p cs_app --test world -- accept_m01_lc_world_import_ --include-ignored        # exit 0, 9 passed
+cargo test -p cs_app --test world -- accept_f18_world_units_containers_ --include-ignored # exit 0, 5 passed
+cargo test -p cs_app --test accept_m01_lc_world_unit_roles -- --include-ignored           # exit 0, 5 passed
+# evidence (docs/contracts/CLI-EVIDENCE.md):
+cargo test --locked -p cs_app --test evidence_report_f18_grid_collision_origin -- --ignored  # exit 0
+python3 tools/validate_evidence.py docs/findings/evidence/F18-GRID-COLLISION-ORIGIN.json \
+  --artifact-root private/evidence/F18-GRID-COLLISION-ORIGIN --require-pass  # exit 0
 ```
