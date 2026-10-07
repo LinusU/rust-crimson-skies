@@ -212,6 +212,7 @@ use crate::playtest_textures::{
     PlaytestTextureReport, TextureBinder,
 };
 use crate::world::WorldMeshes;
+use crate::world::audit::GEOMETRY_CONTAINER_FILE;
 use crate::world::fixture::MESH_SETTLE_UPDATES;
 use crate::world::retail::{container_mesh_key, stored_presentation_unknowns, stored_render_mesh};
 use crate::world::spawn::{
@@ -1396,6 +1397,89 @@ fn read_container(
     }
     container.table = table;
     Ok(container)
+}
+
+/// One world group's sources inside an all-groups read: the container and
+/// the texture archive, each carrying its own outcome.
+///
+/// Both halves are results because F17-E's rule is that a group is never
+/// silently skipped: a group whose `gamez.zbd` does not decode, or whose
+/// directory holds no texture archive, is an entry whose members say why —
+/// not a group missing from the list.
+#[derive(Debug)]
+pub struct PlaytestWorldGroupSources {
+    /// The group's directory name as discovery spells it, e.g. `C1C`.
+    pub group: String,
+    /// The group's world container, or why it did not read.
+    pub container: Result<PlaytestContainer, PlaytestError>,
+    /// The group's texture archive, or why it did not open.
+    pub textures: Result<PlaytestTextureArchive, PlaytestTextureError>,
+}
+
+/// Everything an all-groups consumer reads: the shared aircraft container
+/// once, then one entry per discovered world group.
+///
+/// [`install::discover`] hashes the whole installation — a property of the
+/// installation rather than of one group — so a caller that wants every
+/// world group's sources pays for it once here rather than once per group
+/// through [`read_playtest_sources`]. The same private [`read_container`]
+/// serves every group, so a per-group read and this read cannot disagree.
+#[derive(Debug)]
+pub struct PlaytestAllSources {
+    /// The installation fingerprint production discovery measured.
+    pub installation: String,
+    /// The shared airframe container, or why it did not read.
+    pub aircraft: Result<PlaytestContainer, PlaytestError>,
+    /// Every discovered world group, in discovery order.
+    pub groups: Vec<PlaytestWorldGroupSources>,
+}
+
+/// Reads the aircraft container and **every** discovered world group, paying
+/// the production discovery once.
+///
+/// Used by F17-E's widened comparison matrix: each group's container and
+/// texture archive are read through the same code [`read_playtest_sources`]
+/// uses for the pinned group, and a group that cannot be read keeps its
+/// entry with the refusal attached.
+///
+/// # Errors
+///
+/// [`PlaytestError::Discovery`] when the installation cannot be inventoried
+/// at all. Per-container and per-archive refusals are carried on the group
+/// entries, never returned from here.
+pub fn read_all_playtest_sources(install_root: &Path) -> Result<PlaytestAllSources, PlaytestError> {
+    let found = install::discover(install_root)?;
+    let aircraft = read_container(&found, "planes", AIRCRAFT_CONTAINER_KEY);
+    let groups = found
+        .diagnosis
+        .world_groups
+        .iter()
+        .map(|directory| {
+            let group = directory
+                .as_str()
+                .rsplit('/')
+                .next()
+                .unwrap_or(directory.as_str())
+                .to_owned();
+            let lower = group.to_ascii_lowercase();
+            let container = read_container(
+                &found,
+                &lower,
+                &format!("zbd/{lower}/{GEOMETRY_CONTAINER_FILE}"),
+            );
+            let textures = PlaytestTextureArchive::open(install_root, &found, &lower);
+            PlaytestWorldGroupSources {
+                group,
+                container,
+                textures,
+            }
+        })
+        .collect();
+    Ok(PlaytestAllSources {
+        installation: install::fingerprint(&found.manifest).to_string(),
+        aircraft,
+        groups,
+    })
 }
 
 // ----------------------------------------------------------- the scene graph --
