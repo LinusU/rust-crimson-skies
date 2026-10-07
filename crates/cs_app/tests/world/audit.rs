@@ -1065,11 +1065,11 @@ fn empty_mesh() -> RenderMesh {
 /// the representative geometry of every group is compared.
 ///
 /// The traversal half of the acceptance scenario is where the honest verdict
-/// lives: no production path decodes a GameZ node array, so **no** group can
-/// locate an opening or measure a route, and the report says so per group with
-/// the container's own `node_array_size` and `nodes_offset` quoted. This test
-/// pins that verdict, so a future stage that decodes a node array has to change
-/// the test — which is the point.
+/// lives: the node array is decoded and the vertex unit is the measured metre,
+/// so both traversal blockers are gone, but no rule that says what an opening
+/// or a route *is* has been measured. Every group therefore carries one
+/// `NoRouteMeasured` gap and all five opening classes stay unlocated. This test
+/// pins that verdict, so a stage that measures such a rule has to change it.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
@@ -1124,8 +1124,8 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
     assert_eq!(report.blocked().count(), 0);
     assert!(
         !report.is_complete(),
-        "no group can state a traversal route while the node array is undecoded, so the audit is \
-         explicitly not a pass — and never will be until a production path decodes it"
+        "placement and scale are established but no route or opening rule is measured, so every \
+         group carries a NoRouteMeasured gap and the audit is explicitly not a pass"
     );
     assert_eq!(report.routed().count(), 0);
     assert!(
@@ -1138,6 +1138,7 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
     // verdict blocked by both missing facts, and all five opening classes
     // reported unlocated with the blockers that stopped them.
     let mut total_stored_nodes = 0_u32;
+    let mut total_placed = 0_usize;
     for audit in report.visited() {
         let census = audit.census().expect("a visited group has a census");
         let group = audit.group();
@@ -1246,63 +1247,71 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
             group.world()
         );
 
-        // Placement: undecoded, with the container header's own numbers.
+        // Placement: decoded by the production node reader, never beyond the
+        // records the container's own header declares.
+        let stored_node_records = survey
+            .group(group.world())
+            .and_then(|surveyed| surveyed.container().ok())
+            .map(|container| container.meshes.header.node_array_size)
+            .expect("the surveyed container is readable");
         match census.placement() {
-            PlacementSource::Undecoded {
-                stored_node_records,
-                nodes_offset,
-            } => {
+            PlacementSource::Decoded { placed_objects } => {
                 assert!(
-                    stored_node_records > 0,
-                    "{}: a container with no stored node record holds no placed scene",
+                    placed_objects > 0,
+                    "{}: a decoded world places at least one mesh",
                     group.world()
                 );
                 assert!(
-                    nodes_offset > 0,
-                    "{}: the array starts somewhere",
-                    group.world()
+                    u32::try_from(placed_objects).expect("fits") <= stored_node_records,
+                    "{}: a node places at most one mesh, so placed objects cannot exceed the {} \
+                     stored node records",
+                    group.world(),
+                    stored_node_records
                 );
                 total_stored_nodes += stored_node_records;
+                total_placed += placed_objects;
             }
-            PlacementSource::Decoded { .. } => panic!(
-                "{}: this stage expects no decoded placement; a stage that decodes the node array \
-                 must change this test and re-measure",
+            PlacementSource::Undecoded { .. } => panic!(
+                "{}: the node array is decoded by `read_gamez_nodes`, so the placement must be \
+                 reported as decoded",
                 group.world()
             ),
         }
         assert_eq!(
             census.vertex_scale_to_m(),
-            None,
-            "{}: the stored vertex unit is unmeasured and is reported as such",
+            Some(1.0),
+            "{}: the stored vertex unit is the measured metre (task #677, code-derived)",
             group.world()
         );
 
-        // Traversal: both missing facts, named, and no route.
-        assert_eq!(audit.routes().len(), 0);
-        assert!(!audit.routes_measured());
-        let blockers = audit.traversal_blockers();
-        assert_eq!(blockers.len(), 2, "{}: both facts are named", group.world());
-        match &blockers[0] {
-            TraversalBlocker::PlacementUndecoded { .. } => {}
-            other => panic!(
-                "{}: the missing placement is named first, got {other:?}",
-                group.world()
+        // Traversal: both facts established, so the blockers are gone; the audit
+        // still states no route, and says so as a gap rather than a pass.
+        assert!(audit.routes_measured());
+        assert!(
+            audit.traversal_blockers().is_empty(),
+            "{}: placement and scale are established, so no blocker remains",
+            group.world()
+        );
+        assert_eq!(
+            audit.routes().len(),
+            0,
+            "{}: no route rule is measured",
+            group.world()
+        );
+        assert!(
+            matches!(
+                audit.gaps(),
+                [cs_content::world::WorldAuditGap::NoRouteMeasured { placed_objects, .. }]
+                    if matches!(
+                        census.placement(),
+                        PlacementSource::Decoded { placed_objects: decoded } if decoded == *placed_objects
+                    )
             ),
-        }
-        match &blockers[1] {
-            TraversalBlocker::VertexScaleUnmeasured {
-                largest_stored_extent,
-                ..
-            } => assert!(
-                *largest_stored_extent > 0.0,
-                "{}: the scale blocker quotes a measured extent",
-                group.world()
-            ),
-            other => panic!(
-                "{}: the unmeasured scale is named second, got {other:?}",
-                group.world()
-            ),
-        }
+            "{}: with both facts established and no route stated, the one gap is \
+             NoRouteMeasured, got {:?}",
+            group.world(),
+            audit.gaps()
+        );
 
         // Openings: all five classes visited, none located, every one naming the
         // class it stands for.
@@ -1310,7 +1319,7 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
         for opening in audit.openings() {
             assert!(
                 opening.located().is_empty(),
-                "{}: no opening class may be located without a placement",
+                "{}: no opening-classification rule is measured, so no class is located",
                 group.world()
             );
             assert_eq!(opening.unlocated().len(), 1);
@@ -1321,8 +1330,11 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
             );
             assert!(!opening.is_complete());
         }
-        assert_eq!(audit.gaps(), &[] as &[cs_content::world::WorldAuditGap]);
     }
+    assert!(
+        total_placed > 0 && total_placed <= total_stored_nodes as usize,
+        "placed objects {total_placed} over {total_stored_nodes} stored nodes"
+    );
     assert!(
         total_stored_nodes > 10_000,
         "the eight world archives declare far more stored node records than one group, got \
@@ -1542,4 +1554,53 @@ fn accept_f17_g_retail_representatives_upload_under_the_partial_normal_policy() 
          {strict_refusals} refused strictly"
     );
     eprintln!("F17-G: {meshes} representatives, {split_groups} material groups split");
+}
+
+/// **F18-E over the real installation**: every world group reports a decoded
+/// placement and the measured metre, and the two traversal blockers F18-D named
+/// are gone because the facts exist, not because they were dropped.
+///
+/// What stays open is stated rather than hidden: no rule that says what a
+/// tunnel, arch, building opening, hangar or stunt passage *is* has been
+/// measured, so no opening is located and no route is claimed. The audit says
+/// so as one `NoRouteMeasured` gap per group, and a route claimed without its
+/// two facts is still `RouteWithoutFacts`.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f18_e_retail_placement_is_decoded_and_the_scale_is_the_measured_metre() {
+    let game_dir =
+        PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR is set for a retail test"));
+    let survey =
+        survey_world_groups(&game_dir).expect("the installation is discovered and surveyed");
+    let report = audit_survey(&survey).expect("the audit runs over the survey");
+    assert_eq!(report.groups().len(), 8);
+    let placed: BTreeMap<String, usize> = report
+        .visited()
+        .map(|audit| {
+            let census = audit.census().expect("visited");
+            let PlacementSource::Decoded { placed_objects } = census.placement() else {
+                panic!("{}: placement must be decoded", audit.group().world());
+            };
+            assert_eq!(census.vertex_scale_to_m(), Some(1.0));
+            assert!(audit.traversal_blockers().is_empty());
+            (audit.group().world().key().to_owned(), placed_objects)
+        })
+        .collect();
+    assert_eq!(placed.len(), 8, "{placed:?}");
+    let expected: BTreeMap<String, usize> = [
+        ("c1", 3966),
+        ("c1b", 3485),
+        ("c1c", 3354),
+        ("c2", 2558),
+        ("c2b", 3039),
+        ("c3", 2868),
+        ("c4", 4929),
+        ("c5", 6003),
+    ]
+    .into_iter()
+    .map(|(group, count)| (group.to_owned(), count))
+    .collect();
+    assert_eq!(placed, expected, "mesh-naming node records per group");
+    assert_eq!(report.gap_count(), 8, "one NoRouteMeasured gap per group");
+    assert!(!report.is_complete());
 }

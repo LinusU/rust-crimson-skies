@@ -65,24 +65,23 @@
 //!
 //! **What the survey does not establish, and says so:**
 //!
-//! * *Placement.* No production path decodes a GameZ node array, so no stored
-//!   mesh has a position, orientation or scale in world space. The survey
-//!   reports [`PlacementSource::Undecoded`] carrying the container header's own
-//!   `node_array_size` and `nodes_offset`, and the audit turns that into a
-//!   [`TraversalBlocker`]. A survey that decoded a placement would report
-//!   [`PlacementSource::Decoded`] and the same audit code would then measure
-//!   routes, so the seam is the data and not the code.
-//! * *The stored vertex unit.* `cs_content::mesh` applies no scale to stored
-//!   positions and nothing in this workspace has established the original's
-//!   world-vertex unit, so `vertex_scale_to_m` is [`None`] and every stored
-//!   extent in a census is in **stored units**, never metres.
-//! * *Traversal routes and stunt openings.* Both follow from the two facts
-//!   above, so the survey states none. A census that carried one anyway is an
-//!   audit gap, not a result.
+//! * *Placement* is decoded (F18-E): `read_gamez_nodes` walks the node array on the
+//!   same parse context as the two section readers, and the survey reports
+//!   [`PlacementSource::Decoded`] with the number of node records that name a mesh.
+//! * *The stored vertex unit* is the measured metre
+//!   ([`CoordinateSource::retail_gamez`], task #677, `observed_tool`, with the
+//!   axis convention code-derived per task #436's owner note), read from the
+//!   convention rather than spelled as a literal. Never `verified_original`.
+//! * *Traversal routes and stunt openings* are **still not stated**. Both facts
+//!   above exist, but no measured rule says what a tunnel, arch, building
+//!   opening, hangar or stunt passage is in placed geometry, and inventing one
+//!   from node names would be a guess. The audit reports one
+//!   [`WorldAuditGap::NoRouteMeasured`] per group and leaves all five classes
+//!   unlocated.
 //!
 //! # What is deliberately not here
 //!
-//! No format reader, no node-array decoder, no collision-role classification, no
+//! No format reader, no collision-role classification, no
 //! boundary rule and no route search. The unknowns F18-A/B/C recorded are still
 //! unknowns, and this file measures what can be measured and names the rest.
 
@@ -92,6 +91,7 @@ use std::path::Path;
 use crate::render::bevy_mesh::MeshAdapterError;
 use cs_assets::install::{self, Discovery};
 use cs_content::campaign_bindings::campaign_layout;
+use cs_content::coordinates::CoordinateSource;
 use cs_content::mesh::RenderMesh;
 use cs_content::world::UploadVerdict;
 use cs_content::world::{
@@ -100,8 +100,10 @@ use cs_content::world::{
 };
 use cs_formats::gamez::{
     FaceCensus, GameZMaterials, GameZMeshes, read_gamez_materials, read_gamez_meshes,
+    read_gamez_nodes,
 };
 use cs_formats::io::ParseContext;
+use cs_types::asset_id::SourceSpan;
 
 /// The logical key every world group's geometry container has.
 ///
@@ -197,6 +199,12 @@ pub struct SurveyedContainer {
     pub meshes: GameZMeshes,
     /// The material section, as `read_gamez_materials` produced it.
     pub materials: GameZMaterials,
+    /// How many stored node records name a mesh, as `read_gamez_nodes` decoded
+    /// them: the stored meshes a node places.
+    pub placed_objects: usize,
+    /// Metres per stored vertex unit, read from the measured GameZ coordinate
+    /// convention ([`CoordinateSource::retail_gamez`]) for this container's span.
+    pub vertex_scale_to_m: f64,
     /// The exact face accounting over the whole container.
     pub faces: FaceCensus,
     /// One entry per representative mesh, in ascending array index: the mesh's
@@ -493,6 +501,50 @@ fn survey_one(
             );
         }
     };
+    // The node array, through the production reader, on the same parse context.
+    let nodes = match read_gamez_nodes(&mut parse, &bytes) {
+        Ok(nodes) => nodes,
+        Err(error) => {
+            return (
+                Err(WorldGroupBlocker::GeometryUnreadable {
+                    world: world.clone(),
+                    container: container_key,
+                    reason: error.to_string(),
+                }),
+                digest,
+            );
+        }
+    };
+    let placed_objects = nodes
+        .nodes
+        .iter()
+        .filter(|node| node.mesh_index() >= 0)
+        .count();
+    // The unit is the measured one (task #677, `observed_tool`; task #436's
+    // owner note adds the code-derived axis convention): the scale is read off
+    // the measured convention rather than spelled here as a literal.
+    let vertex_scale_to_m = match SourceSpan::new(
+        install::fingerprint(&found.manifest),
+        record.relative_spelling.as_str(),
+        None,
+        0,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        Some(record.sha256),
+    ) {
+        Ok(span) => CoordinateSource::retail_gamez(span)
+            .convention()
+            .meters_per_unit(),
+        Err(error) => {
+            return (
+                Err(WorldGroupBlocker::GeometryUnreadable {
+                    world: world.clone(),
+                    container: container_key,
+                    reason: format!("the container's source span is not recordable: {error}"),
+                }),
+                digest,
+            );
+        }
+    };
     // The independent check that the mesh walk really ends on the node array
     // the header declares. Both readers share one header parser, so comparing
     // their header words with each other would prove nothing; this compares a
@@ -586,6 +638,8 @@ fn survey_one(
         Ok(SurveyedContainer {
             meshes,
             materials,
+            placed_objects,
+            vertex_scale_to_m,
             faces,
             representatives,
             presentable,
@@ -799,16 +853,13 @@ fn census_of(
     WorldGroupCensus::new(
         world.clone(),
         facts,
-        // Measured from the container's own header: how many stored node records
-        // it declares and where they start. Nothing decoded them, because no
-        // production path decodes a GameZ node array.
-        PlacementSource::Undecoded {
-            stored_node_records: container.meshes.header.node_array_size,
-            nodes_offset: container.meshes.header.nodes_offset,
+        // Decoded by `read_gamez_nodes`: the stored node records that name a mesh.
+        PlacementSource::Decoded {
+            placed_objects: container.placed_objects,
         },
-        // Unmeasured, and stated as such: nothing in this workspace has
-        // established the original's world-vertex unit.
-        None,
+        // The measured GameZ unit (one stored unit per metre), code-derived and
+        // observed by tool; never `verified_original`.
+        Some(container.vertex_scale_to_m),
         candidates,
         Vec::new(),
         Vec::new(),
