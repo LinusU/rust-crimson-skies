@@ -3958,14 +3958,20 @@ mod tests {
         assert_eq!(tick.presentation, None);
         assert_eq!(running.state().terminal_presentation(), None);
 
-        // Both requests on the ending tick: the branch runs loss-first while
-        // the result, the mission sound and the animation answer the WON flag.
+        // Both requests on the ending tick: one objective completes per tick
+        // (F37-D-FU3), so the win side is queued from the first tick and
+        // drains on the tick the loss side completes. The branch runs
+        // loss-first while the result, the mission sound and the animation
+        // answer the WON flag.
         let mut s = MissionSession::launch(
             program(vec![
                 objective(
                     10,
                     Condition::Const(true),
-                    vec![Action::Finish(Outcome::Succeeded)],
+                    vec![Action::Schedule {
+                        delay_ticks: 1,
+                        actions: vec![Action::Finish(Outcome::Succeeded)],
+                    }],
                 ),
                 objective(
                     3,
@@ -3977,7 +3983,14 @@ mod tests {
             [],
         )
         .unwrap();
-        let ended = s.advance(&facts(), Tick(1)).unwrap();
+        let first = s.advance(&facts(), Tick(1)).unwrap();
+        assert_eq!(
+            first.terminal,
+            TerminalState::Running,
+            "tick 1 admits one objective: it queues the win request"
+        );
+        assert_eq!(first.presentation, None);
+        let ended = s.advance(&facts(), Tick(2)).unwrap();
         assert_eq!(ended.terminal, TerminalState::Succeeded);
         let presentation = ended
             .presentation
