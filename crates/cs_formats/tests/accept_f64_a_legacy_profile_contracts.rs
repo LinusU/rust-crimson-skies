@@ -120,20 +120,23 @@ fn accept_f64_a_inventory_covers_every_class_with_unknown_evidence() {
 }
 
 /// Custom-aircraft import is required only when a measured original content
-/// path references it, and no such path has been measured — so the requirement
-/// is *not triggered* rather than assumed. The save rows are the separately
-/// labeled optional enhancement with a named disable switch.
+/// path references it. F64-B's retail measurement found exactly one:
+/// `ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT` fills a four-slot grid of saved
+/// planes, so the requirement is now *on* and the row records the path that
+/// switched it. The save rows are the separately labeled optional enhancement
+/// with a named disable switch.
 #[test]
 fn accept_f64_a_custom_aircraft_import_is_not_required_until_a_path_references_it() {
     let aircraft = layout_record(LegacyArtifactClass::CustomAircraft).requirement;
     assert!(
-        !aircraft.is_required(),
-        "no original content path has been measured to reference a custom \
-         aircraft, so import must not be treated as required yet"
+        aircraft.is_required(),
+        "PLANECONSTRUCTION.SCRIPT was measured to fill the saved-plane slots, \
+         so custom-aircraft import is required"
     );
-    assert!(
-        aircraft.referenced_by().is_empty(),
-        "an unreferenced row must carry no referencing path"
+    assert_eq!(
+        aircraft.referenced_by(),
+        &["ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT"],
+        "the required row must record the measured referencing path"
     );
 
     for class in [

@@ -562,9 +562,10 @@ fn accept_f64_a_optional_save_import_can_be_switched_off_without_touching_other_
     let plan = plan_import(&still_plannable).expect("a custom aircraft is not behind the switch");
     assert_eq!(plan.class(), LegacyArtifactClass::CustomAircraft);
     assert!(
-        !plan.requirement().is_required(),
-        "no measured original path references a custom aircraft yet, so the \
-         plan must not claim a triggered requirement"
+        plan.requirement().is_required(),
+        "PLANECONSTRUCTION.SCRIPT was measured (F64-B) to fill the saved-plane \
+         slots, so the requirement is on — the save-import switch still does \
+         not gate it"
     );
 }
 

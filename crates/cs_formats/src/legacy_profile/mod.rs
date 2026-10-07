@@ -20,14 +20,19 @@
 //!   reserved, and every byte the layout does not name is retained instead of
 //!   dropped or guessed.
 //!
-//! **Nothing here is original-verified and nothing is measured.** This stage
-//! used ordinary build/test only: no `$CS_GAME_DIR` was read, no legacy file
-//! was opened, and the single shipped layout ([`synthetic_layout`]) is
-//! [`ClaimStatus::Designed`](cs_types::evidence::ClaimStatus::Designed) fixture
-//! data. The byte layout, version field, id encoding and location of every
-//! original legacy profile, save and custom-aircraft file are **unknown** and
-//! are listed row by row in [`LEGACY_LAYOUT_INVENTORY`]; measuring them is
-//! F64-B, which needs the `retail` capability.
+//! **Nothing here is original-verified.** F64-B's retail measurement found
+//! that the installation ships no legacy save or custom-plane file at all —
+//! the originals are runtime-created under `Planes\` and
+//! `SavedGames\<profile>\`, observed as path templates in the owner-supplied
+//! decrypted engine image — so no legacy byte layout has ever been read and
+//! every inventory row's `evidence` stays
+//! [`ClaimStatus::Unknown`](cs_types::evidence::ClaimStatus::Unknown). What the
+//! measurement did establish is recorded in [`LEGACY_LAYOUT_INVENTORY`]: the
+//! construction screen's four-slot saved-plane grid references custom
+//! aircraft, and the shipped layouts ([`synthetic_layout`],
+//! [`synthetic_blueprint_layout`]) remain
+//! [`ClaimStatus::Designed`](cs_types::evidence::ClaimStatus::Designed)
+//! fixtures, never claims about an original file.
 //!
 //! F64-A's own minimum scenario is sheet **AC01**: a malicious or oversized
 //! old profile fails without touching the source or any new save. The reader
@@ -42,7 +47,7 @@ pub use document::{
     LEGACY_MAGIC_BYTES, LegacyIdClass, LegacyIdSlot, LegacyLayout, LegacyLayoutError, LegacyLimits,
     LegacyProfileDocument, LegacyProfileError, LegacyProfileErrorKind, LegacyRecord, LegacySlot,
     LegacySlotType, LegacyValue, TrailingPolicy, check_slot_widths, read_legacy_profile,
-    synthetic_layout,
+    synthetic_blueprint_layout, synthetic_layout,
 };
 pub use inventory::{
     ArtifactProposal, ArtifactProposalError, ImportRequirement, LEGACY_LAYOUT_INVENTORY,

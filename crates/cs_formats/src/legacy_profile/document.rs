@@ -1189,6 +1189,58 @@ fn read_slot(
     })
 }
 
+/// The designed blueprint-record fixture layout: a synthetic profile whose
+/// records carry every id slot a legacy custom aircraft needs.
+///
+/// **Not a claim about any original file.** No `Planes\` or save file ships
+/// with the original installation (F64-B's retail measurement), so nothing
+/// about a real stored plane's fields is known; this fixture exists so the
+/// import layer's blueprint subset can be exercised end to end — airframe,
+/// engine, four gun positions and two hardpoints, mirroring the original
+/// construction screen's measured slot counts — and its evidence is
+/// [`ClaimStatus::Designed`], which the strict admission policy refuses.
+#[must_use]
+pub fn synthetic_blueprint_layout() -> LegacyLayout {
+    let header = vec![
+        LegacySlot::new("version_major", LegacySlotType::U32, LEGACY_MAGIC_BYTES),
+        LegacySlot::new("version_minor", LegacySlotType::U32, 12),
+        LegacySlot::new("record_count", LegacySlotType::U32, 16),
+        LegacySlot::new("label", LegacySlotType::Text { len: 8 }, 20),
+    ];
+    LegacyLayout::new(
+        "synthetic.fixture_blueprint/v1",
+        ClaimStatus::Designed,
+        *b"CSBPRF01",
+        header,
+        "version_major",
+        "version_minor",
+        1,
+        "record_count",
+        vec![
+            LegacySlot::new("name", LegacySlotType::Text { len: 12 }, 0),
+            LegacySlot::new("airframe_id", LegacySlotType::U32, 12),
+            LegacySlot::new("engine_id", LegacySlotType::U32, 16),
+            LegacySlot::new("gun_1", LegacySlotType::U32, 20),
+            LegacySlot::new("gun_2", LegacySlotType::U32, 24),
+            LegacySlot::new("gun_3", LegacySlotType::U32, 28),
+            LegacySlot::new("gun_4", LegacySlotType::U32, 32),
+            LegacySlot::new("rocket_1", LegacySlotType::U32, 36),
+            LegacySlot::new("rocket_2", LegacySlotType::U32, 40),
+        ],
+        vec![
+            LegacyIdSlot::new("airframe_id", LegacyIdClass::Airframe),
+            LegacyIdSlot::new("engine_id", LegacyIdClass::Engine),
+            LegacyIdSlot::new("gun_1", LegacyIdClass::Weapon),
+            LegacyIdSlot::new("gun_2", LegacyIdClass::Weapon),
+            LegacyIdSlot::new("gun_3", LegacyIdClass::Weapon),
+            LegacyIdSlot::new("gun_4", LegacyIdClass::Weapon),
+            LegacyIdSlot::new("rocket_1", LegacyIdClass::Ordnance),
+            LegacyIdSlot::new("rocket_2", LegacyIdClass::Ordnance),
+        ],
+        TrailingPolicy::Retain,
+    )
+}
+
 /// The designed fixture layout: a synthetic profile the acceptance tests read.
 ///
 /// **Not a claim about any original file.** Its magic, field names, field

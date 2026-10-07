@@ -27,10 +27,16 @@
 //!    [`validate_against`] re-checks it, so a hostile or simply broken
 //!    profile is turned away at the door rather than after an allocation.
 //!
-//! Nothing here is derived from original game data. No legacy profile, save or
-//! custom-aircraft file was surveyed for this stage: the inventory rows are
-//! declared *candidates* with their evidence state honestly `Unknown`, and the
-//! byte layout of each is unmeasured (F64-B's retail measurement).
+//! F64-A wrote the rows without the `retail` capability, so every
+//! `referenced_by` was empty and every `evidence` `Unknown`. F64-B's retail
+//! measurement then found that the installation ships **no** legacy save or
+//! custom-plane file (they are runtime-created), but it did measure original
+//! content that references them: `ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT`
+//! fills a four-slot grid of saved planes, and the owner-supplied decrypted
+//! engine image holds the `Planes\%s`, `SavedGames\%s\...` and registry path
+//! templates. `CustomAircraft` is therefore `referenced_by` a measured path
+//! and its requirement is on, while every row's byte layout stays `Unknown`
+//! because no file of any class exists to read.
 
 use std::fmt;
 
@@ -119,11 +125,12 @@ pub enum ImportRequirement {
     /// Required as soon as a **verified original content path** references the
     /// artifact class. The recorded references are the measured evidence that
     /// switched the requirement on; while the list is empty the requirement is
-    /// *not triggered*, and this stage never turns it on by itself.
+    /// *not triggered*, and no stage turns it on by itself.
     RequiredWhenReferenced {
-        /// Original content paths measured to reference the class. Empty
-        /// until F64-B/D measures one; empty means "not required yet", never
-        /// "never required".
+        /// Original content paths measured to reference the class. F64-B
+        /// measured `ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT` to fill a
+        /// four-slot saved-plane grid, so `CustomAircraft` carries it; an
+        /// empty list means "not required yet", never "never required".
         referenced_by: &'static [&'static str],
     },
     /// A separately labeled compatibility enhancement. Not importing it is
@@ -187,21 +194,31 @@ pub struct LegacyLayoutRecord {
 
 /// The import-surface inventory, one row per [`LegacyArtifactClass`].
 ///
-/// This is an inventory of *what must be known*, deliberately not an inventory
-/// of *what was seen*: reading original files needs the `retail` capability,
-/// which this stage did not use. `referenced_by` is therefore empty on every
-/// row, so no custom-aircraft import is required yet — and the rows say so
-/// instead of the engine assuming a requirement it cannot justify.
+/// This is an inventory of *what must be known* plus what a retail stage has
+/// since measured. F64-B read the installation and found that no legacy file
+/// of any class ships with it — the originals are runtime-created under
+/// `Planes\` and `SavedGames\<profile>\`, both observed as path templates in
+/// the owner-supplied decrypted engine image — so no byte layout has ever
+/// been seen and every row's `evidence` stays `Unknown`. What the
+/// measurement *did* establish is recorded per row: `CustomAircraft` is
+/// referenced by the original construction screen's four-slot saved-plane
+/// grid, which turns its requirement on; the save classes stay separately
+/// labeled optional enhancements because an optional enhancement is never
+/// required no matter what references it.
 pub static LEGACY_LAYOUT_INVENTORY: [LegacyLayoutRecord; 5] = [
     LegacyLayoutRecord {
         class: LegacyArtifactClass::CustomAircraft,
-        requirement: ImportRequirement::RequiredWhenReferenced { referenced_by: &[] },
+        requirement: ImportRequirement::RequiredWhenReferenced {
+            referenced_by: &["ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT"],
+        },
         evidence: ClaimStatus::Unknown,
         unknowns: &[
-            "whether any original content path references a custom aircraft at all",
-            "which installation file holds a custom aircraft definition",
-            "the file format, its version field and its id encoding",
-            "which parts of a definition are aircraft data and which are player data",
+            "the byte layout of a `Planes\\` custom-plane file — none ships \
+             with the installation, so the format needs an original run or an \
+             owner-captured file",
+            "the version field and the id encoding inside a stored plane",
+            "which parts of a stored plane are aircraft data and which are \
+             player data",
         ],
     },
     LegacyLayoutRecord {
@@ -209,8 +226,10 @@ pub static LEGACY_LAYOUT_INVENTORY: [LegacyLayoutRecord; 5] = [
         requirement: ImportRequirement::RequiredWhenReferenced { referenced_by: &[] },
         evidence: ClaimStatus::Unknown,
         unknowns: &[
-            "which installation file holds a custom loadout",
-            "whether a loadout is stored in the aircraft definition or separately",
+            "whether the loadout is stored inside the `Planes\\` custom-plane \
+             file or separately — the screen that edits it is the same one \
+             that fills the four saved-plane slots, and no file ships to \
+             distinguish the two",
             "how a stored component is identified (name, numeric id or index)",
             "what the original enforces about a stored loadout, if anything",
         ],
@@ -223,8 +242,11 @@ pub static LEGACY_LAYOUT_INVENTORY: [LegacyLayoutRecord; 5] = [
         },
         evidence: ClaimStatus::Unknown,
         unknowns: &[
-            "whether the original keeps saves in a file, the registry or both",
-            "the save format, its version field and its checksum",
+            "the byte layout of `SavedGames\\<profile>` files — the \
+             `Status.dat`, `Mission.%1d%02d`, `Persist.%1d%02d`, `AutoSave.sav` \
+             and `%s.sav` templates are observed in the engine image, but no \
+             such file ships to read",
+            "the save's version field and its checksum",
             "whether the original campaign's mission index, currency and \
              equipment ids are recoverable, and which are not",
         ],
@@ -237,7 +259,10 @@ pub static LEGACY_LAYOUT_INVENTORY: [LegacyLayoutRecord; 5] = [
         },
         evidence: ClaimStatus::Unknown,
         unknowns: &[
-            "where the original stores settings and in what format",
+            "which registry values under `SOFTWARE\\Microsoft\\Microsoft \
+             Games\\Crimson Skies\\1.0` carry settings and their formats — \
+             the key name is observed in the engine image but the original \
+             runs on Windows, so no hive ships to read",
             "which settings keys exist and which are live/restart",
         ],
     },
@@ -249,7 +274,10 @@ pub static LEGACY_LAYOUT_INVENTORY: [LegacyLayoutRecord; 5] = [
         },
         evidence: ClaimStatus::Unknown,
         unknowns: &[
-            "how the original records which profile is active",
+            "which store names the active profile — the per-profile \
+             `SavedGames\\%s` directory and the registry `Savegame` string \
+             are both observed in the engine image, and which is \
+             authoritative is unmeasured",
             "whether a missing or damaged pointer is recoverable by the original",
         ],
     },
