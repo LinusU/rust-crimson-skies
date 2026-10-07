@@ -243,7 +243,13 @@ No test was deleted, skipped or made more tolerant.
   alongside, so `preempts()` stays the single place the end-decision is
   taken; the poll's NOLOSS side effect (zero `[+4]`, report no expiry —
   the countdown clamps at zero) is kept in the producer, skipped in a
-  network game because the whole check is. Directives apply after the step
+  network game because the whole check is. The end path's own side effect
+  is kept too: the expiry block's last act on the timer is `0x46c5c0`
+  (stop), so an expiry that ends a still-running mission stops the
+  countdown on the same tick — while the `0x463c00` ended-flag guard means
+  an expiry merely reported under an already-ended mission leaves it
+  running, still decrementing and still reporting, exactly as the poll
+  region does through the end delay. Directives apply after the step
   that emitted them — the completion/wake effects run after the countdown
   poll inside `0x46a490` — and exactly once by execution key, across ticks
   and a save/restore; a malformed spelling or an arm with no declared rate

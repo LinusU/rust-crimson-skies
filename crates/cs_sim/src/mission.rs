@@ -193,7 +193,9 @@ impl MissionSession {
     ///
     /// [`TickError`] when the tick does not advance.
     pub fn advance(&mut self, facts: &MissionFacts, tick: Tick) -> Result<MissionTick, TickError> {
-        let input = self.countdown.tick(tick, self.state.last_tick())?;
+        let input = self
+            .countdown
+            .tick(tick, self.state.last_tick(), self.state.terminal())?;
         let result = self
             .state
             .step_with_countdown(&self.program, facts, tick, input)?;
@@ -224,7 +226,9 @@ impl MissionSession {
     ///
     /// [`TickError`] when the tick does not advance.
     pub fn step(&mut self, facts: &MissionFacts, tick: Tick) -> Result<TickResult, TickError> {
-        let input = self.countdown.tick(tick, self.state.last_tick())?;
+        let input = self
+            .countdown
+            .tick(tick, self.state.last_tick(), self.state.terminal())?;
         let result = self
             .state
             .step_with_countdown(&self.program, facts, tick, input)?;
@@ -311,7 +315,7 @@ impl MissionSession {
             .map_err(ObservedError::Facts)?;
         let countdown = self
             .countdown
-            .tick(tick, self.state.last_tick())
+            .tick(tick, self.state.last_tick(), self.state.terminal())
             .map_err(ObservedError::Tick)?;
         let result = self
             .state
@@ -572,10 +576,15 @@ impl CountdownSpec {
 /// the objective passes the step runs. The exclusions are not folded into
 /// `expired`: the input reports the poll's observation together with both
 /// exclusion flags, so [`MissionCountdown::preempts`] stays the single
-/// place the end-decision is taken. The poll's one side effect is kept:
+/// place the end-decision is taken. The poll's own side effect is kept:
 /// under `NOLOSS` (and not in a network game, where the whole check is
 /// skipped) it zeroes `[+4]` and reports no expiry — the countdown is
-/// clamped at zero instead of ending the mission.
+/// clamped at zero instead of ending the mission. And the end path the
+/// input feeds has one side effect back on the timer: when the produced
+/// input is what ends a still-running mission, the expiry block's
+/// `0x46c5c0` stops it — a stopped timer reports no expiry — while an
+/// expiry merely observed under an already-ended mission (the `0x463c00`
+/// guard skips the end path) leaves it running.
 ///
 /// It is also the consumer of the mission-timer directives the evaluator
 /// emits — `RESET_TIMER`, `END_TIMER`, `TIMER_ADJUST` and
@@ -642,13 +651,28 @@ impl Countdown {
     /// dt as `game_dt`), then the expiry check (`0x46c640`), before the
     /// tick's objective passes.
     ///
+    /// `terminal` is the session's state at the tick's start: when the
+    /// produced input [`MissionCountdown::preempts`] on a still-running
+    /// mission, the expiry end path's last act on the timer — `0x46c5c0`
+    /// — is to stop it, so the countdown stops on the same tick. On a
+    /// session that already ended the whole end path is skipped (the
+    /// `0x463c00` guard on the mission's ended flag) while the decrement
+    /// and the poll keep running through the end delay, so an expiry
+    /// reported under an ended mission neither ends it again nor stops
+    /// the timer.
+    ///
     /// A tick that does not advance is refused exactly as the step is —
     /// the countdown consumes no time for a tick that never ran.
     ///
     /// # Errors
     ///
     /// [`TickError::NotAdvancing`] when `tick` is not after `last`.
-    fn tick(&mut self, tick: Tick, last: Option<Tick>) -> Result<MissionCountdown, TickError> {
+    fn tick(
+        &mut self,
+        tick: Tick,
+        last: Option<Tick>,
+        terminal: TerminalState,
+    ) -> Result<MissionCountdown, TickError> {
         if let Some(last) = last
             && tick <= last
         {
@@ -674,11 +698,19 @@ impl Countdown {
         if expired && self.no_loss && !self.network_game {
             self.remaining_seconds = 0.0;
         }
-        Ok(MissionCountdown {
+        let input = MissionCountdown {
             expired,
             no_loss: self.no_loss,
             network_game: self.network_game,
-        })
+        };
+        // The expiry end path's last act on the timer: `0x46c5c0` stops
+        // it. The stop runs iff this expiry is what ends the mission — on
+        // an already-ended session the `0x463c00` guard skips the whole
+        // block, so a reported expiry under one leaves the timer running.
+        if terminal == TerminalState::Running && input.preempts() {
+            self.running = false;
+        }
+        Ok(input)
     }
 
     /// Applies every countdown directive in `state`'s log that this

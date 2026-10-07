@@ -40,7 +40,10 @@
 //!   time, running state, flags, rate and the consumed-directive set all
 //!   cross the save record, checked rather than trusted.
 //! * `accept_f37_d_fu6_a_refused_tick_costs_no_countdown_time` — a
-//!   not-advancing tick is refused before the decrement, on every path.
+//!   not-advancing tick is refused before the decrement, on every path, and
+//!   `accept_f37_d_fu6_expiry_on_an_ended_session_does_not_stop_the_timer` —
+//!   the expiry end path's `0x46c5c0` stop runs only on the expiry that ends
+//!   the mission, not on an expiry merely reported under an ended one.
 //! * `accept_f37_d_fu6_producer_limitation_is_closed_and_the_residuals_recorded`
 //!   — `f37.d.limit.mission_countdown_producer` is closed only together
 //!   with these tests, and what stays open is named.
@@ -282,10 +285,29 @@ fn accept_f37_d_fu6_expired_countdown_preempts_the_same_ticks_objectives() {
         "the expiry path selects the no-flag end presentation"
     );
 
+    // The expiry end path's last act on the timer is `0x46c5c0` — the
+    // countdown that just ended the mission is stopped, so a later tick
+    // reports no expiry and burns no more of it.
+    assert!(
+        !s.countdown().running(),
+        "the expiry's `0x46c5c0` stopped the timer that ended the mission"
+    );
+
     // Latched like every terminal path: a later tick changes nothing.
     let later = s.advance(&facts(), Tick(2)).unwrap();
     assert_eq!(later.terminal, TerminalState::Failed);
     assert!(later.events.is_empty());
+    assert_eq!(
+        later.countdown.input,
+        MissionCountdown::NONE,
+        "a stopped timer reports no expiry — the poll's answer on a timer \
+         that is not running"
+    );
+    assert_eq!(
+        s.countdown().remaining_seconds(),
+        -0.5 * DT,
+        "the stopped timer's [+4] is frozen where the end path left it"
+    );
 }
 
 /// **NOLOSS: the poll clamps the countdown at zero and reports no expiry —
@@ -801,6 +823,67 @@ fn accept_f37_d_fu6_a_refused_tick_costs_no_countdown_time() {
         .unwrap();
     assert!(!observed.countdown.input.expired);
     assert_eq!(s.countdown().remaining_seconds(), DT);
+
+    // `advance_observed` — the fact-folding variant of `advance` — is the
+    // fourth path through the same producer: the countdown ticks on it and
+    // the `MissionTick` it returns carries the produced input. The session
+    // has one dt left, so this is the expiring tick.
+    let fourth = s
+        .advance_observed(
+            &ActorFactInput {
+                registered: &[],
+                lifecycles: &[],
+            },
+            Tick(4),
+        )
+        .unwrap();
+    assert!(fourth.mission.countdown.input.expired);
+    assert_eq!(fourth.mission.terminal, TerminalState::Failed);
+    assert!(!s.countdown().running());
+}
+
+/// **An expiry merely observed under an already-ended mission does not
+/// stop the timer** — the end path's `0x463c00` guard skips the whole
+/// block (end call, messages, the `0x46c5c0` stop) once the mission's
+/// ended flag is set, while the decrement and the poll keep running
+/// through the end delay. A countdown that reaches zero under a mission
+/// that ended another way is left running, still reporting the
+/// observation the consumer no longer acts on.
+#[test]
+fn accept_f37_d_fu6_expiry_on_an_ended_session_does_not_stop_the_timer() {
+    // The objective wins tick 1 while the countdown still runs; tick 2's
+    // decrement takes it past zero.
+    let mut s = countdown_session(
+        vec![always(
+            1,
+            vec![reward("r-ended"), Action::Finish(Outcome::Succeeded)],
+        )],
+        vec![reward_id("r-ended")],
+        spec(1.5 * DT),
+    );
+    let first = s.advance(&facts(), Tick(1)).unwrap();
+    assert_eq!(first.terminal, TerminalState::Succeeded);
+    assert!(s.countdown().running(), "still running: 0.5·dt remained");
+
+    let second = s.advance(&facts(), Tick(2)).unwrap();
+    assert_eq!(
+        second.terminal,
+        TerminalState::Succeeded,
+        "the recorded result is latched — a second end is never written"
+    );
+    assert!(
+        second.countdown.input.expired,
+        "the poll still runs through the end delay and reports the observation"
+    );
+    assert!(
+        s.countdown().running(),
+        "the `0x463c00` guard skipped the end path — the timer is not stopped"
+    );
+    assert_eq!(
+        s.countdown().remaining_seconds(),
+        -0.5 * DT,
+        "and it keeps decrementing"
+    );
 }
 
 /// **The producer limitation is closed — only together with these tests —
