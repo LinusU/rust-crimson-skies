@@ -20,6 +20,8 @@
 //! Every value here is newly authored synthetic fixture data; no price, mass or
 //! limit is an original value, and no `CS_GAME_DIR` access happens.
 
+use std::collections::BTreeSet;
+
 use bevy::prelude::World;
 use cs_app::asset_stack::headless_app;
 use cs_app::campaign::lower_campaign;
@@ -47,7 +49,7 @@ use cs_sim::campaign::{
 };
 use cs_sim::damage::{ActorId, DamageNodeKey};
 use cs_sim::flight::{FlightModel, LoadoutMass, synthetic_fixed_wing};
-use cs_sim::weapons::{GunBank, SYNTHETIC_STARTING_ROUNDS};
+use cs_sim::weapons::SYNTHETIC_STARTING_ROUNDS;
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
@@ -456,6 +458,10 @@ fn accept_f44_d_an_invalid_draft_is_refused_by_both_the_preview_and_the_spawn() 
         0,
         "a refused spawn leaves no aircraft behind"
     );
+    assert!(
+        weapons.state(&actor()).is_none(),
+        "a refused spawn registers no guns: nothing became fireable"
+    );
 }
 
 /// **A gun the declared catalogue does not cover refuses the spawn by name.**
@@ -513,6 +519,10 @@ fn accept_f44_d_a_gun_no_declared_record_covers_refuses_the_spawn() {
         0,
         "a refused spawn leaves no aircraft behind"
     );
+    assert!(
+        weapons.state(&actor()).is_none(),
+        "the catalogue is matched before anything registers: no gun became fireable"
+    );
 }
 
 /// **There is exactly one mass on the spawned aircraft: the body integrates the
@@ -565,21 +575,60 @@ fn accept_f44_d_the_spawned_body_carries_the_declared_total_mass() {
     );
 }
 
-/// The bank the spawn builds is the mounts the blueprint occupies — the same
-/// list a caller would have had to assemble by hand, checked against the
-/// production `GunBank` rather than asserted as a constant.
+/// **The bank the spawn built is the mounts the blueprint occupies, read back
+/// from the weapon session the spawn registered with.**
+///
+/// The bank never reaches the caller: `spawn_blueprint` hands it straight to
+/// the production `WeaponSession`, so this is the only place it can be
+/// observed — a spawn that registered a narrower bank than the blueprint fits
+/// would give the aircraft fewer firing groups than the preview showed.
 #[test]
 fn accept_f44_d_the_spawn_bank_is_the_blueprints_own_mounts() {
-    let blueprint = declared_synthetic_blueprint();
-    let mounts: Vec<DamageNodeKey> = blueprint
+    let fixture = Fixture::new();
+    let state = funded(&fixture.graph);
+    let screen = ConstructionScreen::open(&state, declared_synthetic_blueprint(), Vec::new());
+
+    let mut app = headless_app();
+    let world = app.world_mut();
+    let mut weapons = session();
+    let spawned = spawn_blueprint(
+        world,
+        &mut weapons,
+        actor(),
+        SYNTHETIC_STARTING_ROUNDS,
+        &BlueprintSpawnRequest {
+            blueprint: screen.blueprint(),
+            rules: &fixture.rules,
+            policy: &fixture.policy,
+            book: &fixture.book,
+            declared_guns: &declared_catalogue(),
+            model: model(),
+            spec: spec(LoadoutMass::EMPTY),
+        },
+    )
+    .expect("the fixture spawns");
+
+    let fitted: BTreeSet<DamageNodeKey> = screen
+        .blueprint()
         .guns()
         .iter()
         .map(|fitment| fitment.mount().clone())
         .collect();
-    let bank = GunBank::try_new(mounts.iter().cloned()).expect("the fixture mounts are real");
+    let registered = weapons
+        .state(&actor())
+        .expect("the spawn registered the guns with the session");
     assert_eq!(
-        bank.mounts().len(),
-        mounts.len(),
+        registered.selected().mounts(),
+        &fitted,
+        "the bank the spawn built is exactly the mounts the blueprint occupies"
+    );
+    assert_eq!(
+        registered.selected().len(),
+        screen.blueprint().guns().len(),
         "one bank entry per fitted gun"
+    );
+    assert!(
+        spawned.normalized(world).is_some(),
+        "the spawned aircraft keeps its record beside the session's bank"
     );
 }

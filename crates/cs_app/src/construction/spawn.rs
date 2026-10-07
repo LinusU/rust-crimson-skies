@@ -308,6 +308,14 @@ pub enum BlueprintSpawnError {
     },
     /// The weapon session registered a mount the blueprint does not fit a gun
     /// to, so the spawned aircraft's weapon list cannot be attributed.
+    ///
+    /// Every registration is built from the blueprint's own fitments, so this
+    /// arm cannot be reached today; it exists as a refusal rather than a
+    /// silent mis-attribution if that ever changes. Note that the body is
+    /// despawned but the session entry a successful registration left behind
+    /// cannot be withdrawn — `WeaponSession` has no per-actor unregister —
+    /// which is a limitation of the session API, not a rollback this module
+    /// can perform.
     UnmatchedMount {
         /// The mount the session reported.
         mount: DamageNodeKey,

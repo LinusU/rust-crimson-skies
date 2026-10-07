@@ -154,8 +154,12 @@ is the minimum scenario. Around it:
   record is missing, and the spawn names `gun_mount_2` rather than omitting it.
 - `accept_f44_d_the_spawned_body_carries_the_declared_total_mass` asserts the
   one-mass rule on the spawned `FlightAircraft`.
-- `accept_f44_d_the_spawn_bank_is_the_blueprints_own_mounts` checks the bank the
-  spawn builds against the production `GunBank`.
+- `accept_f44_d_the_spawn_bank_is_the_blueprints_own_mounts` reads the bank
+  back from the weapon session the spawn registered with and checks it against
+  the blueprint's own mounts — the bank never reaches the caller, so the session
+  is the only place it can be observed.
+- Both refusal cases additionally assert that nothing became fireable: a
+  refused spawn registers no guns with the session.
 
 Selection: `cargo test --workspace --locked -- accept_f44_d_ --include-ignored`
 runs **13** tests — six in `cs_app` (AC04 and its failure cases) and seven in
