@@ -110,7 +110,8 @@ the original release's supported-locale list, which stays unmeasured (F51-A).
 So every unit of every image decodes and is answered by `en-us` — the
 single-installation, single-language observation F12-D already recorded. The
 audit's own verdict is nevertheless **incomplete** (`is_complete() == false`),
-and honestly so, for one measured reason and one unmeasured one:
+and honestly so, for one measured reason and one unmeasured one *(the second
+superseded 2026-10-06 by task #466, see the note on that bullet below)*:
 
 - **21 `langui.dll` strings overflow the declared panel.** They do not fit the
   declared 640×480 panel over the reserved button row at the declared 16 px
@@ -150,6 +151,13 @@ and honestly so, for one measured reason and one unmeasured one:
    `is_complete()` is false. They are not in the evidence report's `unknowns`
    (which are the task's own blockers and are empty because acceptance passed);
    they are the product incompleteness this finding records.
+   *(Superseded 2026-10-06 for the font mapping only by task #466: the ten
+   `rimage.zbd` bitmap fonts are measured and both loose TGAs carry the
+   `unused_in_original` verdict, so neither is why `is_complete()` is false any
+   more — on the original installation that reason is the overflow above. The
+   rule itself stands and is still pinned: a media nobody could measure blocks,
+   and `accept_f51_d_media_license_and_unmeasured_glyphs_are_audited_not_assumed`
+   proves it with a synthetic `GlyphEvidence::Unmeasured` media.)*
 6. **The GPU witness is geometry, not appearance and not glyphs.** It draws the
    production line boxes (the measured text extents) on the real adapter and
    refuses a frame that is uniform. It does not render the original's glyphs, use
@@ -251,6 +259,9 @@ context; it is not `verified_original` and not the owner's approval.
   as media but not decoded, so per-locale glyph coverage from the original fonts
   is `Unmeasured`. This is the blocker the audit reports; it needs a font-format
   decode that does not exist yet.
+  *(Resolved 2026-10-06 by #466 — see the follow-up below: neither loose TGA is
+  a font of the original, and the ten `rimage.zbd` bitmap fonts are measured, so
+  the audit reports no `unmeasured_glyphs` blocker any more.)*
 - **The original supported-locale list.** `SupportedLocales` is caller-declared;
   the real list is unknown, and this installation carries only language id 1033.
 - **Whether a localized installation preserves stable ids while changing text.**
