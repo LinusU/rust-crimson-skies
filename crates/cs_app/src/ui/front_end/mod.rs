@@ -21,13 +21,22 @@
 //! * [`check_layout`] — a visible hotspot must request a user action that has a
 //!   transition on that screen.
 //! * [`FrontEnd`] (in `machine`) — the machine that walks the table.
+//! * [`ScreenSession`] (in `screens`, F45-B) — the front end presented through
+//!   a validated [`ScreenDeck`] of authored artwork and hotspots: pointer
+//!   hit-testing through the image's own aspect-fit transform and focus in the
+//!   authored order, with every action still applied by the table above.
 //!
 //! Everything here is **designed** and synthetic; no original screen, hotspot
 //! or flow was read. The original screen list, art, hotspot coordinates and
-//! voice are F45-B's to import; capture of the original flow is F45-D's. See
-//! `docs/findings/2026-10-01-f45-a-frontend-state-table.md` for the unknowns.
+//! voice were F45-B's to import: no original front-end layout is decoded
+//! anywhere in this repository, so F45-B validates and presents whatever a
+//! loader supplies and refuses a screen it does not carry rather than showing
+//! a placeholder (see `docs/findings/2026-10-07-f45-b-original-asset-screen-decks.md`).
+//! Capture of the original flow is F45-D's. See
+//! `docs/findings/2026-10-01-f45-a-frontend-state-table.md` for F45-A's unknowns.
 
 mod machine;
+mod screens;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,6 +45,10 @@ use cs_content::ui_layout::ScreenLayout;
 pub use machine::{
     ConstructionDraft, Effect, FrontEnd, LoadFailure, Loadout, LoadoutProblem, MissionOutcome,
     Outcome, ProfileIntent, Refusal, Request,
+};
+pub use screens::{
+    Button, ButtonView, DeckError, ScreenAssetError, ScreenAssets, ScreenDeck, ScreenSession,
+    ScreenSessionError, ScreenView,
 };
 
 /// A front-end screen.

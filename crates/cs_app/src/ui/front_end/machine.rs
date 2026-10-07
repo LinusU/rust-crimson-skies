@@ -478,6 +478,34 @@ impl FrontEnd {
         Ok(outcome)
     }
 
+    /// Focuses one specific button of the current screen. The authored
+    /// hotspots of a screen declare the order focus visits them (F45-B), so
+    /// the presentation layer sets that order here rather than the table's
+    /// own row order; focus still resets on entry.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::ConfirmationPending`] while a discard prompt is open, or
+    /// [`Refusal::NoTransition`] when the screen offers no such button for a
+    /// person to press (including an application-side result).
+    pub fn set_focus(&mut self, action: Action) -> Result<(), Refusal> {
+        if self.pending_discard.is_some() {
+            return Err(Refusal::ConfirmationPending);
+        }
+        let row = find(self.screen, action).ok_or(Refusal::NoTransition {
+            screen: self.screen,
+            action,
+        })?;
+        if row.action.source() != ActionSource::User {
+            return Err(Refusal::NoTransition {
+                screen: self.screen,
+                action,
+            });
+        }
+        self.focus = Some(action);
+        Ok(())
+    }
+
     /// Moves focus to the next (or previous) button, wrapping.
     pub fn move_focus(&mut self, forward: bool) {
         let visible = self.visible_actions();
