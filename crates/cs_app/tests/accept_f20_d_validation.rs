@@ -3561,14 +3561,16 @@ const M01LCR_OPEN_STATE: &str = "OPEN, and not this task's blocker: (1) the EVEN
      every mission-facing animation claim until an event grammar exists.";
 
 const M01LCR_REVIEW: &str = "implementer: sonnet-1/sonnet-1 (Claude Sonnet 5.5, Rally task \
-     #650, session of 2026-10-05); reviewer: sonnet-1/sonnet-1 — the SAME agent identity as \
-     the implementer, and the review claim started 15 seconds after the implementation was \
-     submitted, so the reviewer's context was NOT fresh: this is a self-review, not \
-     independent original-reference evidence. The record walk and the startup-identity rule \
-     are format/mission semantics that want a reviewer other than the implementer; the \
+     #650, session of 2026-10-05); reviewer: sonnet-1/sonnet-1 — the SAME agent name as the \
+     implementer, which that review's own complete_review notes record as 'same agent name as \
+     the implementer, fresh context; NOT independent evidence'. The context was fresh (Rally \
+     hands a review to a new session, and #466's review claim, 43 seconds after its submit, is \
+     recorded as a fresh session the same way), but the review is not independent \
+     original-reference evidence: the record walk and the startup-identity rule are \
+     format/mission semantics that want a reviewer other than the implementer, and the \
      implementer re-derived the layout on every retail container before writing the reader, \
-     but neither is independent review. The claim stays at level `implemented`, and no agent \
-     review replaces the owner's human approval";
+     which is not independent review either. The claim stays at level `implemented`, and no \
+     agent review replaces the owner's human approval";
 
 const M01LCR_CENSUS_ARTIFACT: &str = "anim-records.json";
 
@@ -3584,7 +3586,7 @@ const M01LCR_REPORT: M01lcReport = M01lcReport {
     open_needles: &[
         "EVENT STREAMS",
         "10 of 195 startanims.zrd identities",
-        "a self-review, not independent",
+        "fresh context; NOT independent evidence",
     ],
 };
 
