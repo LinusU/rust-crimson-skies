@@ -10,6 +10,14 @@
 //! and two more save-record refusals come from it. Host effect application is
 //! the simulation side (`cs_sim::mission`).
 //!
+//! One input precedes every phase below: the **mission-countdown
+//! pre-emption** (F37-D-FU4, measured — owner note on Rally #589). When the
+//! countdown expired on this tick and neither measured exclusion applies
+//! ([`MissionCountdown::preempts`]), the tick ends *there*: the session
+//! records [`TerminalState::Failed`] and phases 1-4 do not run at all, so no
+//! objective of that tick completes, no reward of that tick is granted and no
+//! queued item due that tick runs.
+//!
 //! Phases of one tick (`docs/contracts/SCRIPT-MISSION.md`, "Objective event
 //! ordering"; "actions do not directly recurse into callbacks"):
 //! 1. **Observe** — every condition is evaluated against the state as it was
@@ -283,18 +291,28 @@ pub const RULE_LIMITATIONS: &[RuleLimitation] = &[
         resolving_task: "F37-D-FU3 (#729)",
     },
     RuleLimitation {
-        id: "f37.d.limit.mission_countdown_preemption",
-        open: "The original's mission countdown expiry ends the mission at once as a \
-               failure, before that tick's objectives; no countdown exists in this \
-               layer — `AdjustMissionTimer`/`EndMissionTimer`/`ResetMissionTimer` are \
-               host directives with no expiry consumer, and a tick carries no timeout \
-               input. Timer units for the recreation are also unmeasured.",
+        id: "f37.d.limit.mission_countdown_producer",
+        open: "The countdown pre-emption itself is implemented \
+               (`MissionState::step_with_countdown` records a failure before that \
+               tick's objective passes), but nothing in this tree produces its input: \
+               no code arms, ticks or reports a mission countdown, so every current \
+               caller runs `MissionState::step`, which passes `MissionCountdown::NONE`. \
+               The recreation's timer units are unmeasured — the original counts float \
+               seconds by frame dt (`0x46c5f0`, ms copy `0x46c610`) while this project \
+               runs integer simulation ticks, so no seconds-to-ticks conversion may be \
+               guessed — and the provenance of the two measured exclusions (NOLOSS, \
+               network game) belongs to that producer. Two guards of the original's \
+               end path stay unmodelled: `0x440ad0()`'s global game-state byte (its \
+               meaning is unknown) and the `remaining < -1.0f` skip.",
         affected_content: "Every mission that sets a mission countdown — the \
-                           TIMER_ADJUST/END_TIMER/RESET_TIMER sites the source adapter \
-                           lowers (cs_content::mission_control) and so every campaign \
-                           mission with a time limit: its timeout neither fails the \
-                           mission nor pre-empts an objective result of that tick.",
-        resolving_task: "F37-D-FU4 (#730)",
+                           MISSION_TIMER record field and the TIMER_ADJUST/END_TIMER/\
+                           RESET_TIMER sites the source adapter lowers \
+                           (cs_content::mission_control), i.e. every campaign mission \
+                           with a time limit: until a producer feeds this layer, its \
+                           timeout still neither fails the mission nor pre-empts an \
+                           objective result of that tick, and the NOLOSS and \
+                           network-game exclusions have no supplier either.",
+        resolving_task: "F37-D-FU6 (#737)",
     },
     RuleLimitation {
         id: "f37.d.limit.terminal_branch_delay_and_sound",
@@ -406,7 +424,7 @@ pub const TERMINAL_PRECEDENCE_RULE: RuleLabel = RuleLabel {
             addresses: "countdown object 0x71b468; expiry check 0x46c640 (skipped with \
                         NOLOSS and in network games); end call 0x463c30(1, 3.0); result \
                         0x4194e0",
-            limitations: &["f37.d.limit.mission_countdown_preemption"],
+            limitations: &["f37.d.limit.mission_countdown_producer"],
         },
         MeasuredFact {
             id: "f37.rule.terminal_precedence.one_completion_per_tick",
@@ -503,7 +521,7 @@ pub const TICK_ORDERING_RULE: RuleLabel = RuleLabel {
                         at 0x46a94c; completion effects 0x46a630; terminal check \
                         0x46af7a then 0x46afad",
             limitations: &[
-                "f37.d.limit.mission_countdown_preemption",
+                "f37.d.limit.mission_countdown_producer",
                 "f37.d.limit.one_completion_per_tick",
             ],
         },
@@ -591,6 +609,59 @@ impl PrecedencePolicy {
                 requested.iter().next_back().copied()
             }
         }
+    }
+}
+
+/// One tick's mission-countdown input: the measured expiry decision's
+/// inputs, supplied by whoever runs the countdown (F37-D-FU4).
+///
+/// The original's countdown is a global object at `0x71b468`: while it runs
+/// (`[+0x10]`) `[+4]` holds remaining **seconds** and is decremented by the
+/// frame's dt (`0x46c5f0`), `[+0x14]` is the `NOLOSS` flag, and the poll
+/// `0x46c640` reports expiry iff remaining `<= 0.0f`. This layer has no
+/// countdown of its own — the recreation's timer units are **unmeasured**
+/// (float seconds by frame dt there, integer simulation ticks here), so
+/// nothing here arms, ticks or converts one, and no conversion may be
+/// guessed (`f37.d.limit.mission_countdown_producer`). What the F37 session
+/// owns is the *decision* the poll feeds: an expiry ends the mission at once
+/// as a failure, before that tick's objective passes
+/// (`f37.rule.terminal_precedence.countdown_preempts`, owner note on Rally
+/// #589 — static code evidence, never an original run).
+///
+/// `Default` is [`Self::NONE`], "no countdown expired", which is what
+/// [`MissionState::step`] passes: a session nobody feeds an expiry into can
+/// never end by timeout, exactly as before this input existed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct MissionCountdown {
+    /// The countdown reached zero on this tick — the poll's
+    /// `remaining <= 0` while the timer is running (`0x46c640`).
+    pub expired: bool,
+    /// The mission record's `NOLOSS` flag: the exact 7-byte `NOLOSS` child of
+    /// `MISSION_TIMER` sets it (`0x46c540`, field `[+0x14]`), and the poll
+    /// then zeroes the remaining time and reports **no** expiry (`0x46c640`).
+    pub no_loss: bool,
+    /// A network game: the original skips the expiry check in network games
+    /// (owner note on Rally #589). Session-constant, carried here so the
+    /// measured decision and both of its exclusions live in one place.
+    pub network_game: bool,
+}
+
+impl MissionCountdown {
+    /// No countdown expired this tick: what [`MissionState::step`] passes and
+    /// what every caller that has no countdown should pass.
+    pub const NONE: Self = Self {
+        expired: false,
+        no_loss: false,
+        network_game: false,
+    };
+
+    /// The measured decision: expiry ends the mission **unless** one of the
+    /// two measured exclusions holds — NOLOSS (the poll itself reports no
+    /// expiry, `0x46c640`) and the network-game skip (owner note on Rally
+    /// #589). `expired == false` is the stopped or still-running timer, which
+    /// the poll also reports as no expiry.
+    pub const fn preempts(self) -> bool {
+        self.expired && !self.no_loss && !self.network_game
     }
 }
 
@@ -1584,7 +1655,10 @@ impl MissionState {
         self.teardown()
     }
 
-    /// Resolves one tick. See the module docs for the phases and bounds.
+    /// Resolves one tick with no countdown input
+    /// ([`MissionCountdown::NONE`]): nothing can end this session by
+    /// timeout. The countdown-aware path is
+    /// [`MissionState::step_with_countdown`].
     ///
     /// # Errors
     ///
@@ -1596,6 +1670,45 @@ impl MissionState {
         program: &ValidatedProgram,
         facts: &MissionFacts,
         tick: Tick,
+    ) -> Result<TickResult, TickError> {
+        self.step_with_countdown(program, facts, tick, MissionCountdown::NONE)
+    }
+
+    /// Resolves one tick with a mission-countdown input. See the module docs
+    /// for the phases and bounds.
+    ///
+    /// The countdown is polled **first**, before the observe phase: when
+    /// [`MissionCountdown::preempts`] says the countdown expired on this tick,
+    /// the session records [`TerminalState::Failed`] and returns without
+    /// observing a single condition, so no objective of this tick completes,
+    /// no reward of this tick is granted and no queued item due this tick
+    /// runs. That is the measured order (owner note on Rally #589, 2026-10-05:
+    /// the countdown is polled inside `CZMission::Update` `0x46a490` at
+    /// `0x46c640`, before the objective passes, and the mission ends at once
+    /// through `0x463c30(1, 3.0)` with neither WON nor LOST — static code
+    /// evidence, never an original run). The result is a failure because the
+    /// recorded result is success iff the WON flag is set (`0x4194e0`), and
+    /// the expiry sets no flag at all. Nothing else in the tick changes: the
+    /// precedence policy is not consulted, because the original does not end
+    /// through an objective's outcome kind here.
+    ///
+    /// Work already due on this tick is left in the pending queue — it belongs
+    /// to a mission that has just ended, and it is dropped by the consumer's
+    /// teardown of a terminal tick (`cs_sim::mission::MissionSession::advance`
+    /// finishes the session) or by [`MissionState::teardown`]; it is never
+    /// executed.
+    ///
+    /// # Errors
+    ///
+    /// [`TickError::NotAdvancing`] when `tick` is not after the last one.
+    /// Bound violations are not errors: they stop the tick early and are
+    /// reported in [`TickResult::stop`].
+    pub fn step_with_countdown(
+        &mut self,
+        program: &ValidatedProgram,
+        facts: &MissionFacts,
+        tick: Tick,
+        countdown: MissionCountdown,
     ) -> Result<TickResult, TickError> {
         if let Some(last) = self.last_tick
             && tick <= last
@@ -1611,6 +1724,16 @@ impl MissionState {
             stop: None,
         };
         if self.terminal != TerminalState::Running {
+            return Ok(result);
+        }
+        // Phase 0 — the measured countdown pre-emption: an expiry ends the
+        // mission here, before any condition is observed and before any
+        // queued work runs, so this tick completes no objective and grants no
+        // reward. Both measured exclusions (NOLOSS, network game) are part of
+        // the input, not of this branch: see `MissionCountdown::preempts`.
+        if countdown.preempts() {
+            self.terminal = TerminalState::Failed;
+            result.terminal = self.terminal;
             return Ok(result);
         }
         let mut run = TickRun {

@@ -425,7 +425,9 @@ fn accept_f37_d_fu2_every_limitation_names_affected_content_and_a_resolving_task
 /// test demonstrates the divergence itself, so the entry cannot survive a
 /// silent behaviour change, and a change of behaviour cannot land without the
 /// entry being closed in the same commit (F37-D-FU3 closes
-/// `f37.d.limit.one_completion_per_tick` together with these assertions).
+/// `f37.d.limit.one_completion_per_tick` together with these assertions, and
+/// F37-D-FU4 closed `f37.d.limit.mission_countdown_preemption` together with
+/// the `accept_f37_d_fu4_*` tests that implement the pre-emption).
 #[test]
 fn accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does() {
     // `f37.d.limit.one_completion_per_tick`: two satisfied objectives both
@@ -452,22 +454,34 @@ fn accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does() {
         "the divergence this test just demonstrated must stay recorded"
     );
 
-    // `f37.d.limit.mission_countdown_preemption`: no tick of this runtime can
-    // end by timeout, because nothing feeds a countdown into it — the timer
-    // directives are host effects the program emits, never an input.
+    // F37-D-FU4 (#730) closed `f37.d.limit.mission_countdown_preemption`: the
+    // pre-emption the entry denied ("a tick carries no timeout input") exists
+    // now — `MissionState::step_with_countdown` ends the mission as a failure
+    // before that tick's objectives, pinned by `accept_f37_d_fu4_*`. A closed
+    // entry must not come back while that behaviour stands.
+    assert!(
+        !RULE_LIMITATIONS
+            .iter()
+            .any(|limitation| limitation.id == "f37.d.limit.mission_countdown_preemption"),
+        "the closed countdown entry must not come back: the pre-emption is implemented"
+    );
+    // What still diverges is reachability: nothing in this tree feeds the
+    // input, so that entry stays recorded.
     assert!(
         RULE_LIMITATIONS
             .iter()
-            .any(|limitation| limitation.id == "f37.d.limit.mission_countdown_preemption"),
-        "the countdown pre-emption the original has stays recorded while this \
-         layer has no countdown"
+            .any(|limitation| limitation.id == "f37.d.limit.mission_countdown_producer"),
+        "the countdown pre-emption's remaining divergence — no producer feeds it — \
+         stays recorded"
     );
     let p = program(vec![objective(1, vec![reward("r-only")])])
         .validate()
         .unwrap();
     let mut state = MissionState::new(&p, SESSION);
-    // Ten ordinary ticks: the mission runs on, granting exactly its one
-    // reward, with no path that could have failed it on the way.
+    // Ten ordinary ticks on the path every current caller uses
+    // (`MissionState::step`, which passes `MissionCountdown::NONE`): the
+    // mission runs on, granting exactly its one reward, with no path that
+    // could have failed it on the way — the divergence the entry describes.
     for tick in 1..=10u64 {
         let result = state
             .step(&p, &MissionFacts::default(), Tick(tick))
@@ -477,6 +491,6 @@ fn accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does() {
     assert_eq!(
         state.terminal(),
         TerminalState::Running,
-        "nothing but a program request can end this mission"
+        "nothing but a program request can end this mission on the default path"
     );
 }
