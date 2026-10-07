@@ -562,7 +562,9 @@ fn accept_f37_e1_producer_defects_refuse_the_whole_input() {
 
 /// The facts the evaluator reads are the table's whole map each tick —
 /// cumulative and authoritative, never accumulated by the caller — and an
-/// actor admitted and transitioned in the same input fires on that tick.
+/// actor admitted and transitioned in the same input is in that map on
+/// that tick, its objective completing on the first tick the one-per-tick
+/// scan admits it (`f37.rule.terminal_precedence.one_completion_per_tick`).
 #[test]
 fn accept_f37_e1_facts_populate_every_tick_from_the_authoritative_record() {
     let mut s = session(
@@ -587,7 +589,8 @@ fn accept_f37_e1_facts_populate_every_tick_from_the_authoritative_record() {
         vec![reward_id("r-raider"), reward_id("r-newguy")],
     );
 
-    // Both actors enter play on tick 1; one dies the same tick.
+    // Both actors enter play on tick 1; one dies the same tick, so the
+    // record already holds both states before the evaluator reads it.
     let first = s
         .advance_observed(
             &input(&[RAIDER, NEWGUY], &[(NEWGUY, LifecycleKind::Destroyed)]),
@@ -595,17 +598,42 @@ fn accept_f37_e1_facts_populate_every_tick_from_the_authoritative_record() {
         )
         .unwrap();
     assert_eq!(
-        first.mission.host.rewards_granted,
-        [reward_id("r-raider"), reward_id("r-newguy")]
-    );
-    assert_eq!(
         s.actor_facts().facts().actors,
         BTreeMap::from([(RAIDER, ActorState::Alive), (NEWGUY, ActorState::Dead),])
     );
+    // The map is populated from the record whatever the evaluator admits:
+    // only the lowest declared index whose condition holds completes, so
+    // `r-raider` fires now and the satisfied `r-newguy` waits
+    // (`f37.rule.terminal_precedence.one_completion_per_tick`, #729).
+    assert_eq!(
+        first
+            .mission
+            .events
+            .iter()
+            .filter(|event| event.kind == EventKind::ObjectiveCompleted)
+            .map(|event| event.key.source)
+            .collect::<Vec<_>>(),
+        vec![SymbolId(1)],
+        "exactly one objective completes on tick 1, in declaration order"
+    );
+    assert_eq!(first.mission.host.rewards_granted, [reward_id("r-raider")]);
 
-    // Tick 2 carries nothing; the recorded state still feeds the map.
+    // Tick 2 carries nothing; the recorded state still feeds the map, and
+    // the objective that waited completes now — its condition was
+    // re-evaluated this tick, never latched early.
     let second = s.advance_observed(&input(&[], &[]), Tick(2)).unwrap();
-    assert!(second.mission.host.rewards_granted.is_empty());
+    assert_eq!(
+        second
+            .mission
+            .events
+            .iter()
+            .filter(|event| event.kind == EventKind::ObjectiveCompleted)
+            .map(|event| event.key.source)
+            .collect::<Vec<_>>(),
+        vec![SymbolId(2)],
+        "the waiting objective completes on a later tick, exactly once"
+    );
+    assert_eq!(second.mission.host.rewards_granted, [reward_id("r-newguy")]);
     assert_eq!(s.actor_facts().facts().actors.len(), 2);
 }
 

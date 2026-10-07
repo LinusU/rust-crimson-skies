@@ -62,6 +62,8 @@ fn program(objectives: Vec<Objective>) -> cs_script::ir::ValidatedProgram {
 /// completes on the first tick it is awake, and `TICK_DEPENDS_ON_OBJ`'s gate
 /// holds a dependent until its dependency is awake — through
 /// `MissionState::step`, on facts `cs_sim`'s block-lifecycle table produces.
+/// Two open gates on one tick complete one at a time, lowest declaration
+/// index first, on consecutive ticks.
 #[test]
 fn accept_m01_lc_lowering_conditions_lifecycle_gates_are_represented() {
     // Three blocks: 0 starts dormant with a timed self-wake at 2 s, 1 is
@@ -166,17 +168,45 @@ fn accept_m01_lc_lowering_conditions_lifecycle_gates_are_represented() {
     );
 
     // The dependency's own timed self-wake fires at the spelled second, and
-    // the dependent's gate opens with it.
+    // the dependent's gate opens with it. Both conditions now hold, but at
+    // most one objective completes per tick — the lowest declared index
+    // whose condition holds (`f37.rule.terminal_precedence.one_completion_per_tick`, #729).
     assert_eq!(table.tick(2.0), vec![0]);
     assert_eq!(table.tick(3.0), vec![], "a woken block does not re-wake");
-    state.step(&program, &table.facts(), Tick(3)).unwrap();
+    let third = state.step(&program, &table.facts(), Tick(3)).unwrap();
     assert!(
         state.is_completed(SymbolId(0)),
         "the block wakes itself at its measured second and completes"
     );
+    assert_eq!(
+        third
+            .events
+            .iter()
+            .map(|event| event.key.source)
+            .collect::<Vec<_>>(),
+        vec![SymbolId(0)],
+        "exactly one completion on this tick, the lower declared index"
+    );
+    assert!(
+        !state.is_completed(SymbolId(2)),
+        "the dependent's gate is open, but it waits for a later tick"
+    );
+
+    // Its condition is re-evaluated every tick, never latched early: on the
+    // next tick the dependent is the lowest satisfied index and completes.
+    let fourth = state.step(&program, &table.facts(), Tick(4)).unwrap();
     assert!(
         state.is_completed(SymbolId(2)),
         "the dependent completes once its dependency is awake"
+    );
+    assert_eq!(
+        fourth
+            .events
+            .iter()
+            .map(|event| event.key.source)
+            .collect::<Vec<_>>(),
+        vec![SymbolId(2)],
+        "one completion per tick, in declaration-index order"
     );
 }
 
