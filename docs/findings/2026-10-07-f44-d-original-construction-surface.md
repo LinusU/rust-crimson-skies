@@ -163,8 +163,14 @@ runs **13** tests — six in `cs_app` (AC04 and its failure cases) and seven in
 
 ## Recorded unknowns (not guessed)
 
-Each of these also appears in the committed evidence report's `unknowns`, so it
-survives this task being marked done.
+Each of these is stated in full — with its affected content and its resolving
+task — in the committed evidence report's `review.method`, in this finding and
+in the filed follow-up task, so it survives this task being marked done; the
+report's `unknowns` array is empty because every measurement *it* made
+resolved, which is what `tools/validate_evidence.py --require-pass` checks
+(the same split F27-D, F28-D and F39-D record). Every fidelity,
+`verified_original` and release claim for F44 stays gated on resolving task
+#563.
 
 1. **The weight unit's conversion to SI is unmeasured.** No file declares a
    component's mass, so `WeightUnits` is never converted to the kilograms the

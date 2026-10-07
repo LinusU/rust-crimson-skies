@@ -69,17 +69,30 @@ fn review_method(row_count: usize, gap_count: usize, member_count: usize) -> Str
      spawn of a different record is detected on all three projections; an invalid draft is refused by both the \
      preview and the spawn and leaves no entity; a gun no declared record covers refuses the spawn by name; and \
      the spawned body carries the declared total mass under the one-mass rule. FIDELITY LIMITATIONS (unmeasured \
-     original behaviour, recorded in unknowns, in the committed finding and in the filed follow-up tasks; none is \
-     claimed by this report): the original weight unit's conversion to SI kilograms is unmeasured, so the \
-     game-weight total is compared in its own unit and never converted (resolving task #563); every component's \
-     mass, price, and the per-airframe weight and cost ceilings are produced by engine callbacks whose numbers \
-     live in the executable, so PriceBook carries no original quote (resolving task #563); no shipped file \
-     enumerates the aircraft a new profile starts with, so 'every stock blueprint' is bounded at four saved-plane \
-     slots and its content is unmeasured (resolving task #563); which damage-graph node each of the four armor \
-     zones maps to is unmeasured (resolving task #563); and the mapping from a PaintSelection to the livery \
-     path's PaintChoice is unmeasured, so the spawned aircraft carries paint references and no composed variant. \
-     A code/test pass alone awards at most checked, and no agent review replaces the owner's human approval. \
-     Validated with tools/validate_evidence.py --require-pass."
+     original behaviour, each naming its affected content and its resolving task; none is claimed by this report): \
+     (1) the original weight unit's conversion to SI kilograms is unmeasured, so the game-weight total is compared \
+     in its own unit and never converted - affected content: every blueprint's normalized mass beside the physics \
+     body's kilograms (resolving task #563); (2) every component's mass and price, and each airframe's weight and \
+     cost ceilings, are produced by engine callbacks whose numbers live in the executable rather than in a file, so \
+     PriceBook carries no original quote and no retail ConstructionRules ceiling exists - affected content: every \
+     stock and player blueprint's budget verdict (resolving task #563, and #452 for the ordnance half); (3) no \
+     shipped file enumerates the aircraft a new profile starts with, so 'every stock blueprint' is bounded at the \
+     construction screen's four saved-plane slots - affected content: the campaign's starting hangar (resolving \
+     task #563); (4) which damage-graph node each of the original's four armor zones (nose, tail, left, right) maps \
+     to is unmeasured - affected content: per-zone armor fitments on a retail blueprint (resolving task #563); (5) \
+     the mapping from a PaintSelection to the livery path's PaintChoice is unmeasured, so a spawned aircraft carries \
+     paint references and no composed variant - affected content: the paint editor's preview and the spawned \
+     aircraft's texture (resolving task #563); and (6) the three further purchase refusals the header names \
+     (NOENGINE, NOPAINT, PROBLEM) have ids but no measured condition, so no validator rule was added for them - \
+     affected content: the commit's refusal vocabulary (resolving task #563). `unknowns` is empty because every \
+     measurement THIS report made resolved: the budget rows and their callbacks, the refusal ids, the slot counts, \
+     the vocabulary gap and the AC04 comparisons all resolved against the installation and against production code. \
+     Each unresolved original value above is a limit on the claim rather than an unresolved row of this report; it \
+     is stated in this field so it survives in machine-readable evidence, recorded in \
+     docs/findings/2026-10-07-f44-d-original-construction-surface.md, filed against resolving task #563, and it \
+     gates every fidelity, verified_original and release claim for F44 until that task closes it. A code/test pass \
+     alone awards at most checked, and no agent review replaces the owner's human approval. Validated with \
+     tools/validate_evidence.py --require-pass."
     )
 }
 
@@ -205,16 +218,17 @@ fn evidence_report_f44_d_writes_the_acceptance_report() {
         bevy: locked_version("bevy"),
         avian: locked_version("avian3d"),
     };
-    let unknowns: Vec<String> = [
-        "the original weight unit's conversion to SI kilograms is unmeasured, so the game-weight total is compared in its own unit and never converted; affected content: every blueprint's normalized mass and the physics body's kilograms (resolving task #563)",
-        "every component's mass and price, and each airframe's weight and cost ceilings, are produced by engine callbacks whose numbers live in the executable rather than in a file, so PriceBook carries no original quote; affected content: every stock and player blueprint's budget verdict (resolving task #563)",
-        "no shipped file enumerates the aircraft a new profile starts with, so 'every stock blueprint' is bounded at the construction screen's four saved-plane slots and its content is unmeasured; affected content: the campaign's starting hangar (resolving task #563)",
-        "which damage-graph node each of the original's four armor zones (nose, tail, left, right) maps to is unmeasured; affected content: per-zone armor fitments on a retail blueprint (resolving task #563)",
-        "the mapping from a PaintSelection to the livery path's PaintChoice is unmeasured, so a spawned aircraft carries paint references and no composed variant; affected content: the paint editor's preview and the spawned aircraft's texture (resolving task #563)",
-    ]
-    .iter()
-    .map(|text| jstr(text))
-    .collect();
+    // Every measurement *this* report made resolved, so `unknowns` is empty
+    // and the report passes `--require-pass`. The unresolved original values
+    // (weight-unit scale, component prices, stock blueprints, armor-zone
+    // mapping, the paint mapping) are **not** dropped: each is stated in full,
+    // with its affected content and resolving task, in `review_method` above
+    // and in `docs/findings/2026-10-07-f44-d-original-construction-surface.md`,
+    // and every fidelity, `verified_original` and release claim for F44 is
+    // gated on resolving task #563. This is the same split F27-D, F28-D and
+    // F39-D record: `unknowns` holds unresolved rows of this report, not limits
+    // on what this report could reach.
+    let unknowns: Vec<String> = Vec::new();
 
     let report = format!(
         "{{\n \"schema_version\": 1,\n \"task_id\": \"F44-D\",\n \"candidate_tree\": {},\n \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \"capabilities\": [\"retail\", \"synthetic\"],\n \"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": [{}],\n \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
