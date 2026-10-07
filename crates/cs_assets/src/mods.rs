@@ -54,8 +54,9 @@ use cs_types::evidence::ContentHash;
 use cs_types::install::{RelativePath, RelativePathError};
 
 use crate::vfs::mount::{MemberRecord, Mount, MountBuilder};
+use crate::vfs::resolve::read_whole_member;
 use crate::vfs::source::{
-    MountedDirectory, ReadError, RejectedEntry, SourceError, mount_directory, read_member_range,
+    MountedDirectory, ReadError, RejectedEntry, SourceError, mount_directory,
 };
 
 /// The mount namespace every mod root is mounted in.
@@ -256,13 +257,18 @@ impl ModRoot {
     /// The length is checked against what the mount indexed, every
     /// component of the host path is re-checked not to be a symbolic link
     /// and the bytes are re-hashed against the digest recorded at mount
-    /// time, so a file swapped after mounting is refused rather than read.
+    /// time, so a file swapped after mounting is refused — as
+    /// [`ReadError::DigestMismatch`] — rather than read. The re-hash is
+    /// the whole-member read every other digest-checked read in this
+    /// crate goes through ([`crate::vfs::resolve::read_whole_member`]),
+    /// so a payload the compatibility signature attests to is the payload
+    /// a reader actually gets.
     ///
     /// # Errors
     ///
     /// [`ReadError`] when the member cannot be read coherently.
     pub fn read(&self, member: &MemberRecord) -> Result<Vec<u8>, ReadError> {
-        read_member_range(&self.mounted.mount, member, 0, member.size_bytes())
+        read_whole_member(&self.mounted.mount, member)
     }
 
     /// The digest the mount recorded for `member`, if it has one.
@@ -417,6 +423,45 @@ mod tests {
         // caller somehow held a member-shaped request for it.
         let inside = root.resolve("art/panel.png").expect("the real file ships");
         assert_eq!(inside.size_bytes(), b"synthetic panel bytes".len() as u64);
+    }
+
+    /// A file rewritten after the root was walked is refused: the read
+    /// re-hashes against the digest the walk recorded, so a **same-length**
+    /// swap — which passes every length, link and inode check — never
+    /// reaches the caller, never reaches the bytes a program gate would
+    /// validate, and never disagrees with the digest the compatibility
+    /// signature covers.
+    #[test]
+    fn accept_f53_b_a_payload_swapped_after_the_walk_is_refused() {
+        let temp = rooted("swap");
+        let root = ModRoot::mount(mod_id("synthetic.repaint"), temp.path())
+            .expect("the fixture root mounts");
+        let member = root
+            .resolve("art/panel.png")
+            .expect("the shipped file resolves");
+        assert_eq!(
+            root.read(member).expect("the original bytes read"),
+            b"synthetic panel bytes"
+        );
+
+        // Same length, one byte different: the length check, the symlink
+        // check and the inode check all pass it, so only the re-hash can
+        // tell it from what the mount indexed.
+        assert_eq!(
+            b"synthetic panel bytes".len(),
+            b"synthetic panel byteS".len(),
+            "the swap must hold the length the mount recorded"
+        );
+        fs::write(temp.path().join("art/panel.png"), b"synthetic panel byteS")
+            .expect("the payload is rewritten in place");
+
+        let error = root
+            .read(member)
+            .expect_err("a swapped payload is refused, not returned");
+        assert!(
+            matches!(error, ReadError::DigestMismatch { .. }),
+            "the refusal names the digest that moved: {error}"
+        );
     }
 
     /// The mount a [`ModRoot`] hands out is mod-precedence, mod-scoped and
