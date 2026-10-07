@@ -833,16 +833,26 @@ pub struct Objective {
 
 /// The versioned mission program: data only.
 ///
-/// `objectives` contributes two different orders and neither is the other's sort
-/// (both are designed policies, pinned by the F37-D corpus):
+/// `objectives` contributes two different orders and neither is the other's
+/// sort. Both now carry a source label (F37-D-FU2, [`crate::runtime::RuleSource`]):
 ///
-/// - **Execution order** is declaration order. Within one tick the objectives
-///   resolve in the order they are declared here, then the deferred work queue
-///   drains. When two objectives write the same variable on the same tick, the
-///   later declaration's write is the one that lands.
-/// - **Observation order** is [`crate::runtime::EventKey`]: session, tick, source
-///   symbol, sequence. It does not depend on declaration order at all, so the
-///   same objectives declared in any order report the same event sequence.
+/// - **Execution order** is declaration order — the program's own index order.
+///   Within one tick the objectives resolve in the order they are declared
+///   here, then the deferred work queue drains. When two objectives write the
+///   same variable on the same tick, the later declaration's write is the one
+///   that lands. The *index order* matches what the owner measured in the
+///   original's completion scan (lowest index first,
+///   [`crate::runtime::TICK_ORDERING_RULE`]), but the original completes
+///   **at most one** objective per tick and this runtime completes every
+///   satisfied one — that divergence is the machine-readable
+///   `f37.d.limit.one_completion_per_tick` entry in
+///   [`crate::runtime::RULE_LIMITATIONS`].
+/// - **Observation order** is [`crate::runtime::EventKey`]: session, tick,
+///   source symbol, sequence. It does not depend on declaration order at all,
+///   so the same objectives declared in any order report the same event
+///   sequence. This order is `designed-and-unmeasured`
+///   ([`crate::runtime::EVENT_OBSERVATION_ORDER_RULE`]): the contract fixes the
+///   key, and the original emits no comparable event stream.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MissionProgram {
     pub version: u32,

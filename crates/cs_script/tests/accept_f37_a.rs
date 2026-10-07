@@ -177,11 +177,17 @@ fn accept_f37_a_simultaneous_success_and_failure_never_coexist() {
     ]);
     let mut s = MissionSession::launch(p, SessionGeneration(1)).unwrap();
     let r = s.step(&dead(&[10, 20]), Tick(1)).unwrap();
-    assert_eq!(r.terminal, TerminalState::Failed);
+    // Exactly one answer, and the measured precedence decides which one: the
+    // original records success iff its WON flag is set, so the success stands
+    // when both were requested on one tick (`TERMINAL_PRECEDENCE_RULE`,
+    // `f37.rule.terminal_precedence.result_iff_won`). The designed
+    // `SyntheticConservative` answer is pinned separately by
+    // `accept_f37_d_fu2_*`, which selects it explicitly.
+    assert_eq!(r.terminal, TerminalState::Succeeded);
     // Latched: later ticks emit nothing and cannot flip it.
     let later = s.step(&dead(&[10, 20]), Tick(2)).unwrap();
     assert!(later.events.is_empty());
-    assert_eq!(later.terminal, TerminalState::Failed);
+    assert_eq!(later.terminal, TerminalState::Succeeded);
 }
 
 #[test]

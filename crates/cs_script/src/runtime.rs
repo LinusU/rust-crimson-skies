@@ -31,6 +31,18 @@
 //! [`EventKey`] total order, which is by source symbol and does not depend on
 //! declaration order at all. F37-D pinned both with its corpus.
 //!
+//! Both gameplay rules carry an explicit **source label** ([`RuleSource`],
+//! F37-D-FU2): the terminal precedence
+//! ([`TERMINAL_PRECEDENCE_RULE`]) and the per-tick order
+//! ([`TICK_ORDERING_RULE`]) are `measured-from-original` — static code
+//! evidence from the owner-supplied decrypted executable, never an original
+//! run and never `verified_original` — while the observation order
+//! ([`EVENT_OBSERVATION_ORDER_RULE`]) and
+//! [`PrecedencePolicy::SyntheticConservative`] are `designed-and-unmeasured`.
+//! Where this runtime does not follow a measured fact, the fact names the
+//! [`RULE_LIMITATIONS`] entry that gates the affected fidelity claim; nothing
+//! is recorded as measured that has not been read at the addresses cited.
+//!
 //! Bounds (contract: "each tick has an instruction/action budget and
 //! recursion/stack limits"):
 //! - every objective firing, pending dequeue and action execution spends one
@@ -52,6 +64,7 @@ use std::fmt;
 
 use cs_types::Tick;
 use cs_types::content::ContentId;
+use cs_types::evidence::ClaimStatus;
 use cs_types::random::SplitMix64;
 
 use crate::ir::{
@@ -177,22 +190,406 @@ impl From<Outcome> for TerminalState {
     }
 }
 
+/// Where a mission rule's evidence comes from — the source label F37-D-FU2
+/// puts on the terminal-precedence rule and on the tick-ordering rule.
+///
+/// Neither variant can ever be [`ClaimStatus::VerifiedOriginal`]:
+/// [`Self::MeasuredFromOriginalStatic`] is *static code evidence* read from
+/// the owner-supplied decrypted executable at the addresses the owner's note
+/// on Rally #589 cites (2026-10-05) — never a run of the original — and
+/// [`Self::DesignedAndUnmeasured`] is project design the original has not been
+/// measured on. [`RuleSource::claim`] maps the two to `inferred` and
+/// `designed` structurally, so no record can upgrade either by assertion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RuleSource {
+    /// **measured-from-original**: settled by static analysis of the
+    /// owner-supplied decrypted executable, cited per fact.
+    MeasuredFromOriginalStatic,
+    /// **designed-and-unmeasured**: a project design the original has not been
+    /// measured on (contract: "A designed conservative policy can be used for
+    /// synthetic tests only until verified").
+    DesignedAndUnmeasured,
+}
+
+impl RuleSource {
+    /// The spec-vocabulary label of the source.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::MeasuredFromOriginalStatic => "measured-from-original",
+            Self::DesignedAndUnmeasured => "designed-and-unmeasured",
+        }
+    }
+
+    /// The claim this source supports: static code evidence is `inferred`,
+    /// design is `designed`. No arm can produce `verified_original`.
+    pub const fn claim(self) -> ClaimStatus {
+        match self {
+            Self::MeasuredFromOriginalStatic => ClaimStatus::Inferred,
+            Self::DesignedAndUnmeasured => ClaimStatus::Designed,
+        }
+    }
+}
+
+/// sha256 of the owner-supplied decrypted image the measured rules below were
+/// read from (`$CS_GAME_DIR/crimson.decrypted.exe`, the owner's decryption of
+/// `crimson.icd` `0e3b4724…9833b`) — the same image F16-F records in
+/// `cs_sim::time`.
+///
+/// A hash of decrypted bytes, never the bytes: no executable, disassembly
+/// listing or decompiled code is committed anywhere in this tree, and the
+/// addresses on each fact are documentation, not code.
+pub const ORIGINAL_IMAGE_SHA256: &str =
+    "43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75";
+
+/// The findings entry that records both rules: provenance, the addresses, how
+/// this runtime differs from the original and every limitation below.
+pub const TERMINAL_RULE_FINDINGS: &str =
+    "docs/findings/2026-10-07-f37-d-fu2-mission-terminal-precedence-and-tick-ordering.md";
+
+/// One `f37.d.limit.*` claim: a place where this runtime does not follow a
+/// measured rule, or where the evidence cannot settle a mapping at all.
+///
+/// Every entry names the content it affects and the task that resolves it
+/// (or why nothing can), and it travels with the rule that produced it, so a
+/// fidelity claim gated by one cannot be dropped silently — the F27-E.1
+/// precedent, on the mission terminal rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuleLimitation {
+    /// Stable claim id, always `f37.d.limit.*`.
+    pub id: &'static str,
+    /// What is open, and about which rule.
+    pub open: &'static str,
+    /// The content the open part affects: what a claim must not cover.
+    pub affected_content: &'static str,
+    /// The Rally task (or the reason no task can) that closes it.
+    pub resolving_task: &'static str,
+}
+
+/// Every limitation F37-D-FU2 records for the terminal-precedence and
+/// tick-ordering rules.
+pub const RULE_LIMITATIONS: &[RuleLimitation] = &[
+    RuleLimitation {
+        id: "f37.d.limit.one_completion_per_tick",
+        open: "The original completes at most one objective per tick (the lowest \
+               index whose condition holds); `MissionState::step` completes every \
+               satisfied objective, in declaration order, on the same tick.",
+        affected_content: "Any mission program run through `MissionState::step` in \
+                           which two or more objectives satisfy on one tick — today \
+                           the F37-D corpus programs and the AC01 two-objective probe, \
+                           and from F38/F39 on every campaign mission lowered into \
+                           this IR (starting with M01): its per-tick completions, \
+                           event sequence and same-tick write conflicts differ from \
+                           the original by one tick per extra completion.",
+        resolving_task: "F37-D-FU3 (#729)",
+    },
+    RuleLimitation {
+        id: "f37.d.limit.mission_countdown_preemption",
+        open: "The original's mission countdown expiry ends the mission at once as a \
+               failure, before that tick's objectives; no countdown exists in this \
+               layer — `AdjustMissionTimer`/`EndMissionTimer`/`ResetMissionTimer` are \
+               host directives with no expiry consumer, and a tick carries no timeout \
+               input. Timer units for the recreation are also unmeasured.",
+        affected_content: "Every mission that sets a mission countdown — the \
+                           TIMER_ADJUST/END_TIMER/RESET_TIMER sites the source adapter \
+                           lowers (cs_content::mission_control) and so every campaign \
+                           mission with a time limit: its timeout neither fails the \
+                           mission nor pre-empts an objective result of that tick.",
+        resolving_task: "F37-D-FU4 (#730)",
+    },
+    RuleLimitation {
+        id: "f37.d.limit.terminal_branch_delay_and_sound",
+        open: "The original's terminal check tests LOST before WON to choose the end \
+               delay (0.1 s when an INSTANT* fired that tick, else 3.0 s) and which \
+               end sound, won/lost animation and mission sound play; the recorded \
+               result is still success iff WON. This layer records the result only — \
+               neither the branch, the delay, the sounds nor the animation exists here.",
+        affected_content: "Mission-end presentation for every campaign mission: the \
+                           end-screen delay, OBJECTIVES_WON_SOUND/OBJECTIVES_LOST_SOUND \
+                           and MISSION_WON_SOUND/MISSION_LOST_SOUND selection and the \
+                           WIN_ANIM/LOSS_ANIM selection. The *result* half is \
+                           implemented; only the presentation half is open.",
+        resolving_task: "F37-D-FU5 (#731)",
+    },
+    RuleLimitation {
+        id: "f37.d.limit.aborted_outcome",
+        open: "The original has no Aborted outcome, so no original observation of its \
+               precedence can exist. `PrecedencePolicy::MeasuredOriginal` keeps the \
+               designed conservative ordering — an abort request beats the measured \
+               results — because a mission torn down by the host must not be recorded \
+               as a result a program asked for.",
+        affected_content: "Any program or teardown that requests `Outcome::Aborted` \
+                           together with a WON/LOST result on one tick (`Finish(Aborted)` \
+                           sites and `MissionState::abort`): the recorded result of such \
+                           a tick is designed, never measured, and gates any fidelity \
+                           claim about an aborted or torn-down mission.",
+        resolving_task: "none possible — owner decision only; the original has no such \
+                         state, so no measurement can resolve it",
+    },
+    RuleLimitation {
+        id: "f37.d.limit.frame_phase_and_player_down",
+        open: "The original runs the world/node update first and the mission update \
+               near the end of the frame, and skips the mission update entirely while \
+               the player-down flag is set. This runtime has no frame: whoever calls \
+               `MissionState::step` decides where the mission tick sits and whether it \
+               runs at all.",
+        affected_content: "Every mission tick while the player is down (respawn and \
+                           downed windows) and every mission's position in the frame, \
+                           for the wired mission path that drives this session — a \
+                           caller that advances the mission every frame regardless \
+                           diverges from the original's skip.",
+        resolving_task: "VS-M01-RUNTIME (#359), which wires the mission session into \
+                         the application frame",
+    },
+];
+
+/// One fact about a rule the owner note settles, with the virtual addresses in
+/// the analysed image that settle it and the limitations where this runtime
+/// does not follow it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeasuredFact {
+    /// Stable id, e.g. `f37.rule.terminal_precedence.result_iff_won`.
+    pub id: &'static str,
+    /// What the original does.
+    pub statement: &'static str,
+    /// The virtual addresses that settle it (file offset = VA − 0x400000 for
+    /// `.text`, `.rdata` and `.data` below VA 0x643000).
+    pub addresses: &'static str,
+    /// The [`RULE_LIMITATIONS`] ids where this runtime diverges; empty when
+    /// this runtime follows the fact.
+    pub limitations: &'static [&'static str],
+}
+
+/// One mission rule with its source label, the facts behind it and where the
+/// evidence comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuleLabel {
+    /// Stable id for evidence records and fidelity gates.
+    pub id: &'static str,
+    /// `measured-from-original` or `designed-and-unmeasured`.
+    pub source: RuleSource,
+    /// The rule in one sentence.
+    pub statement: &'static str,
+    /// The findings entry, the image sha256 and the method behind the label.
+    pub evidence: &'static str,
+    /// The facts behind `statement`, in the order the original applies them.
+    pub facts: &'static [MeasuredFact],
+}
+
+/// The terminal-precedence rule: what decides a mission's recorded result when
+/// objectives, a countdown and the terminal check collide on one tick.
+///
+/// `measured-from-original` static code evidence (owner note on Rally #589,
+/// 2026-10-05) — `inferred`, never `verified_original`.
+pub const TERMINAL_PRECEDENCE_RULE: RuleLabel = RuleLabel {
+    id: "f37.rule.terminal_precedence",
+    source: RuleSource::MeasuredFromOriginalStatic,
+    statement: "A mission countdown that expires ends the mission at once as a failure \
+                and pre-empts any objective result of the same tick; at most one \
+                objective completes per tick, the lowest index whose condition holds, \
+                so through objectives success and failure cannot be requested on one \
+                tick; the loss branch is tested before the win branch, and the recorded \
+                result is success if and only if the WON flag is set. The original has \
+                no Aborted outcome.",
+    evidence: "owner note on Rally #589 (2026-10-05), static analysis of the \
+               owner-supplied decrypted executable; see \
+               docs/findings/2026-10-07-f37-d-fu2-mission-terminal-precedence-and-tick-ordering.md; \
+               image sha256 \
+               43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75; \
+               static code evidence, never an original run and never verified_original",
+    facts: &[
+        MeasuredFact {
+            id: "f37.rule.terminal_precedence.countdown_preempts",
+            statement: "A mission countdown that expires ends the mission immediately \
+                        with neither WON nor LOST (message 0x1772), before the \
+                        objective passes of that tick, so it pre-empts any objective \
+                        result in the same tick; the recorded result is failure.",
+            addresses: "countdown object 0x71b468; expiry check 0x46c640 (skipped with \
+                        NOLOSS and in network games); end call 0x463c30(1, 3.0); result \
+                        0x4194e0",
+            limitations: &["f37.d.limit.mission_countdown_preemption"],
+        },
+        MeasuredFact {
+            id: "f37.rule.terminal_precedence.one_completion_per_tick",
+            statement: "At most one objective completes per tick — the lowest-indexed \
+                        one whose condition holds. Later satisfied objectives wait for \
+                        later ticks while their condition checks still run this tick, \
+                        so through objectives success and failure can never be \
+                        requested on one tick.",
+            addresses: "CZMission::Update 0x46a490; scan from index 0, cursor 0x71c128 \
+                        only normalised; the completed-this-tick flag is tested at \
+                        0x46a94c after the condition checks",
+            limitations: &["f37.d.limit.one_completion_per_tick"],
+        },
+        MeasuredFact {
+            id: "f37.rule.terminal_precedence.loss_branch_before_win",
+            statement: "The terminal check tests LOST before WON: the loss branch \
+                        chooses the end delay (0.1 s when an INSTANTLOSS fired that \
+                        tick, else 3.0 s) and OBJECTIVES_LOST_SOUND, the win branch the \
+                        same for OBJECTIVES_WON_SOUND. Which branch ran does not decide \
+                        the recorded result.",
+            addresses: "LOST 0x46af7a then WON 0x46afad; OBJECTIVES_LOST_SOUND +0xc74, \
+                        OBJECTIVES_WON_SOUND +0xc70",
+            limitations: &["f37.d.limit.terminal_branch_delay_and_sound"],
+        },
+        MeasuredFact {
+            id: "f37.rule.terminal_precedence.result_iff_won",
+            statement: "The recorded mission result is success if and only if the WON \
+                        flag is set; the LOST flag has no other reader. When both flags \
+                        are set together the loss branch still plays, but success is \
+                        what is recorded, what the end animation shows and which \
+                        mission sound the end call picks.",
+            addresses: "result 0x4194e0; flags [mission+0xc58] WON / [mission+0xc5c] \
+                        LOST; end call 0x463c30 picks MISSION_WON_SOUND +0xc78 when WON \
+                        is set, else MISSION_LOST_SOUND +0xc7c; end animation 0x46ba10 \
+                        (WIN_ANIM +0x6e4 when WON, else LOSS_ANIM +0x6e8)",
+            limitations: &[],
+        },
+        MeasuredFact {
+            id: "f37.rule.terminal_precedence.no_aborted",
+            statement: "The original has no Aborted outcome: an objective's outcome \
+                        kind is LOST=1, WON=2, INSTANTWIN=3, INSTANTLOSS=4 or none=0.",
+            addresses: "outcome kind at [obj+0x554], objective records 0x5e4 bytes at \
+                        [mission+0xc4c] with the count at +0xc48",
+            limitations: &["f37.d.limit.aborted_outcome"],
+        },
+    ],
+};
+
+/// The tick-ordering rule: what runs inside one tick and in what order.
+///
+/// `measured-from-original` static code evidence (owner note on Rally #589,
+/// 2026-10-05) — `inferred`, never `verified_original`. It is a different
+/// question from the *observation* order of the recreated event stream, which
+/// is [`EVENT_OBSERVATION_ORDER_RULE`].
+pub const TICK_ORDERING_RULE: RuleLabel = RuleLabel {
+    id: "f37.rule.tick_ordering",
+    source: RuleSource::MeasuredFromOriginalStatic,
+    statement: "One tick is one rendered frame: the world/node update runs first \
+                (planes, AI, weapons, damage, effects) and the mission update runs \
+                near the end of the frame, skipped entirely while the player is down. \
+                Inside the mission update: helper updates, the countdown, mission \
+                time, the objective lifecycle timers in index order, then the \
+                completion scan in index order — at most one completion, lowest index, \
+                with its effects in a fixed order — then the WON/LOST recount, then \
+                the terminal check with loss before win.",
+    evidence: "owner note on Rally #589 (2026-10-05), static analysis of the \
+               owner-supplied decrypted executable; see \
+               docs/findings/2026-10-07-f37-d-fu2-mission-terminal-precedence-and-tick-ordering.md; \
+               image sha256 \
+               43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75; \
+               static code evidence, never an original run and never verified_original",
+    facts: &[
+        MeasuredFact {
+            id: "f37.rule.tick_ordering.mission_update_position",
+            statement: "The flight frame runs the world/node update first and calls \
+                        the mission update near its end; the mission update does not \
+                        run at all while the player-down flag is set.",
+            addresses: "flight frame 0x4a0220; world/node update 0x4d0010; mission \
+                        update call 0x4a09c3; player-down flag [player+0x91d]",
+            limitations: &["f37.d.limit.frame_phase_and_player_down"],
+        },
+        MeasuredFact {
+            id: "f37.rule.tick_ordering.per_tick_order",
+            statement: "Inside the mission update: helper updates, then the countdown, \
+                        then mission time, then the objective lifecycle timers in index \
+                        order, then the completion scan in index order with at most one \
+                        completion and its effects in a fixed order, then the WON/LOST \
+                        recount over all objectives, then the terminal check with loss \
+                        before win.",
+            addresses: "CZMission::Update 0x46a490; helpers 0x46cdf0, 0x46c870; \
+                        countdown 0x46c640; mission time [mission+0x6f0]; lifecycle \
+                        timers (dormant [obj+0x5d0], awake 0x5d4, nap 0x5d8, end 0x5dc, \
+                        gate [obj+0x10]); completion scan cursor 0x71c128 with the flag \
+                        at 0x46a94c; completion effects 0x46a630; terminal check \
+                        0x46af7a then 0x46afad",
+            limitations: &[
+                "f37.d.limit.mission_countdown_preemption",
+                "f37.d.limit.one_completion_per_tick",
+            ],
+        },
+    ],
+};
+
+/// The *observation* order of the recreated event stream — the question the
+/// original cannot answer, because it emits no such stream.
+///
+/// `designed-and-unmeasured`: the key is fixed by the shared contract
+/// ("stable ordering keys use session/tick/source/program sequence, not hash
+/// map or entity iteration order"), not by anything measured from the
+/// original, and it is the order `EventKey` sorts by.
+pub const EVENT_OBSERVATION_ORDER_RULE: RuleLabel = RuleLabel {
+    id: "f37.rule.event_observation_order",
+    source: RuleSource::DesignedAndUnmeasured,
+    statement: "The recreated runtime observes one tick's events in `EventKey` order — \
+                session, tick, source symbol, program sequence — while execution \
+                follows declaration order and then the deferred queue; neither order is \
+                a claim about the original.",
+    evidence: "docs/contracts/SCRIPT-MISSION.md, \"Objective event ordering\"; \
+               docs/findings/2026-10-03-f37-d-adversarial-corpus-and-ordering-probes.md; \
+               no addresses: nothing about this order was measured from the original, \
+               which emits no event stream",
+    facts: &[],
+};
+
 /// How simultaneous terminal requests on one tick are resolved.
 ///
-/// The original game's precedence is **unmeasured**: this is a designed
-/// conservative policy, valid for synthetic tests only until an original
-/// observation replaces it (contract, "Objective event ordering").
+/// Two policies, each carrying its own source label ([`RuleSource`]):
+///
+/// * [`Self::MeasuredOriginal`] is the default: the terminal precedence the
+///   owner measured in the original's mission runtime — the recorded result is
+///   **success if and only if the WON flag is set**, so when both a success
+///   and a failure are requested on one tick the success stands, and an abort
+///   request keeps the designed ordering because the original has no such
+///   outcome ([`TERMINAL_PRECEDENCE_RULE`]).
+/// * [`Self::SyntheticConservative`] is the designed `Aborted` > `Failed` >
+///   `Succeeded` policy F37-A wrote. The contract allows a designed policy
+///   "for synthetic tests only until verified"; the rule has been measured
+///   (static code evidence, `inferred`), so the runtime no longer selects it
+///   by default, and it stays selectable for the synthetic tests that want the
+///   conservative answer.
+///
+/// Both are labelled and neither can be `verified_original`: see
+/// [`RuleSource::claim`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrecedencePolicy {
-    /// `Aborted` beats `Failed` beats `Succeeded`.
+    /// `Aborted` beats `Failed` beats `Succeeded`. Designed and unmeasured —
+    /// synthetic tests only.
     SyntheticConservative,
+    /// The measured original precedence: success iff WON, an abort request
+    /// ordered above the measured results because the original has no abort.
+    MeasuredOriginal,
 }
 
 impl PrecedencePolicy {
+    /// The source label of the rule this policy applies.
+    pub const fn source(self) -> RuleSource {
+        match self {
+            Self::SyntheticConservative => RuleSource::DesignedAndUnmeasured,
+            Self::MeasuredOriginal => RuleSource::MeasuredFromOriginalStatic,
+        }
+    }
+
     fn pick(self, requested: &BTreeSet<Outcome>) -> Option<Outcome> {
         match self {
             // `Outcome`'s order is Succeeded < Failed < Aborted.
             Self::SyntheticConservative => requested.iter().next_back().copied(),
+            Self::MeasuredOriginal => {
+                if requested.contains(&Outcome::Aborted) {
+                    // The original has no Aborted outcome, so no measurement
+                    // can order it: the designed conservative answer stands
+                    // (a torn-down mission must not be recorded as a result a
+                    // program asked for). `f37.d.limit.aborted_outcome`.
+                    return Some(Outcome::Aborted);
+                }
+                // The recorded result is success iff the WON flag is set: when
+                // both were requested, the success is the one that is recorded
+                // even though the loss branch is the one that plays.
+                if requested.contains(&Outcome::Succeeded) {
+                    return Some(Outcome::Succeeded);
+                }
+                // Otherwise the single failure, or nothing was requested.
+                requested.iter().next_back().copied()
+            }
         }
     }
 }
@@ -497,6 +894,10 @@ pub struct MissionStateSnapshot {
     /// The last evaluated tick; a restored session still refuses to re-evaluate
     /// it ([`TickError::NotAdvancing`]).
     pub last_tick: Option<Tick>,
+    /// The precedence policy this session resolves terminal requests with. It
+    /// travels in the record because the rule decides the result: a restore
+    /// must not swap a session from the measured policy to the designed one
+    /// (or back) half-way through.
     pub policy: PrecedencePolicy,
     /// The whole pending queue in `(due, enqueue)` order — the exact order a
     /// drain would rebuild it in.
@@ -814,7 +1215,11 @@ impl MissionState {
             directives: Vec::new(),
             terminal: TerminalState::Running,
             last_tick: None,
-            policy: PrecedencePolicy::SyntheticConservative,
+            // The measured original precedence (static code evidence, owner
+            // note on Rally #589). The designed conservative policy stays
+            // selectable for synthetic tests; the contract only allowed it
+            // "until verified".
+            policy: PrecedencePolicy::MeasuredOriginal,
             pending: BTreeMap::new(),
             pending_len: 0,
             next_item_ordinal: 0,

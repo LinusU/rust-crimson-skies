@@ -390,8 +390,10 @@ fn accept_f37_d_emitted_order_is_the_reference_key_order_and_independent_of_decl
         ],
         "one tick must report its events in (source, sequence) order"
     );
-    // Five conflicting `Finish` actions resolve to exactly one answer, and the
-    // synthetic conservative policy answers `Aborted`.
+    // Five conflicting `Finish` actions resolve to exactly one answer. The
+    // abort request still wins it: the original has no Aborted outcome, so
+    // no measurement can order one, and the measured policy keeps the
+    // designed conservative ordering for it (`f37.d.limit.aborted_outcome`).
     assert_eq!(tick.terminal, TerminalState::Aborted);
 }
 

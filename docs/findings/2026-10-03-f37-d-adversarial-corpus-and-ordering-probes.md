@@ -1,5 +1,15 @@
 # F37-D: adversarial mission-runtime corpus and reference ordering probes
 
+> **Superseded on two questions, 2026-10-07 (F37-D-FU2, `#589`)**: the
+> "Unknowns" below that say terminal precedence and original in-tick ordering
+> are *unmeasured* were settled by the owner's static code analysis of the
+> decrypted executable (owner note on `#589`, 2026-10-05). The measured rules,
+> their addresses, the behaviour change they caused here and the
+> `f37.d.limit.*` limitations are recorded in
+> `docs/findings/2026-10-07-f37-d-fu2-mission-terminal-precedence-and-tick-ordering.md`.
+> Everything else in this document stands: the corpus is still a new-engine
+> design under adversarial input, and its evidence class is still synthetic.
+
 The F37-D corpus (`cs_script` acceptance tests, `cs_sim::mission` tests) is a
 **new engine design under adversarial input**. Nothing in it is measured from
 the original game, no original opcode, reward, event order or terminal

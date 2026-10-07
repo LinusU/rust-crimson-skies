@@ -26,7 +26,11 @@
 //! - The recorded outcome is the one the runtime's
 //!   [`cs_script::runtime::PrecedencePolicy`] resolved, not one program's
 //!   request, and a second different outcome for the same session is refused.
-//!   Success cannot coexist with failure.
+//!   Success cannot coexist with failure. The policy the runtime selects by
+//!   default is the measured original precedence
+//!   (`PrecedencePolicy::MeasuredOriginal`, static code evidence recorded in
+//!   `cs_script::runtime::TERMINAL_PRECEDENCE_RULE`); both requests of a
+//!   conflicting tick still reach the host, and only the resolved one settles.
 //!
 //! Teardown: once the session is terminal, [`MissionState::teardown`] drops the
 //! deferred work queue and [`HostLedger::teardown`] refuses every *newly
@@ -2177,6 +2181,11 @@ mod tests {
     /// Two objectives request conflicting outcomes on one tick: both requests
     /// are recorded, the resolved outcome is the one that settles, and the
     /// session tears down so nothing the deferred queue held fires afterwards.
+    ///
+    /// Which one resolves is the measured rule (`TERMINAL_PRECEDENCE_RULE`,
+    /// static code evidence from the owner note on #589): the original records
+    /// success iff its WON flag is set, so the success stands while the
+    /// failure that lost stays a mere request.
     #[test]
     fn accept_f37_c_session_records_the_resolved_outcome_once_and_tears_down() {
         let mut s = session(
@@ -2199,13 +2208,16 @@ mod tests {
         );
         let tick = s.advance(&facts(), Tick(1)).unwrap();
         // Both requests reached the host; the precedence policy resolved the
-        // failure, and that is what the ledger settled on.
+        // success, and that is what the ledger settled on.
         assert_eq!(
             terminal_requests(&tick.host),
             [Outcome::Succeeded, Outcome::Failed]
         );
-        assert_eq!(tick.terminal, TerminalState::Failed);
-        assert_eq!(s.host().settled(), Some((Tick(1), TerminalState::Failed)));
+        assert_eq!(tick.terminal, TerminalState::Succeeded);
+        assert_eq!(
+            s.host().settled(),
+            Some((Tick(1), TerminalState::Succeeded))
+        );
 
         // Teardown dropped the deferred reward rather than leaving it queued.
         assert_eq!(s.state().queued_items(), 0);
@@ -2214,7 +2226,7 @@ mod tests {
             let after = s.advance(&facts(), Tick(later)).unwrap();
             assert!(after.events.is_empty(), "tick {later} ran program work");
             assert!(after.host.rewards_granted.is_empty());
-            assert_eq!(after.terminal, TerminalState::Failed);
+            assert_eq!(after.terminal, TerminalState::Succeeded);
         }
         assert_eq!(s.host().granted_rewards(), 0);
     }
