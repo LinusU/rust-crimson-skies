@@ -237,8 +237,8 @@ All from the workspace root on branch
   `schemas/evidence.schema.json`, capabilities `["retail", "gpu", "synthetic"]`,
   9 discovered / 9 executed / 9 passed, `unknowns: []`, claim `implemented`.
   The committed copy `docs/findings/evidence/F17-D.json` carries the
-  **reviewer's** regeneration on the rebased head `0dd7885b` (tree
-  `59b13b51f9dfe1ff1677027796981cf207d8d10f`); it reproduces the implementer's
+  **reviewer's** regeneration on the rebased head `54949571` (tree
+  `fd27acdfb800e4729485b5e0f5e2f411b2f0d4f8`); it reproduces the implementer's
   report for tree `49335d6f80ce46d541140d71e65b23b9e8e565f9` (commit
   `c583fc13`) field by field — see *Reviewer verification* below.
 * The branch was rebased onto `origin/main` (19 commits, no conflicts; none of
@@ -278,8 +278,8 @@ human approval, and nothing here is `verified_original`.
   `cargo test --workspace --locked -- accept_f17_d_ --include-ignored` → 0
   (9 of 9, including the two `#[ignore]`d retail tests and the GPU capture
   test, run with `CS_GAME_DIR` set and a real adapter).
-* Evidence **regenerated on the rebased head** `0dd7885b` (tree `59b13b51…`)
-  and validated with
+* Evidence **regenerated on the rebased head** `54949571` (tree
+  `fd27acdf…`) and validated with
   `python3 tools/validate_evidence.py private/evidence/F17-D/acceptance.json
   --artifact-root private/evidence/F17-D --require-pass` → 0
   (`structurally_valid: true`, 7 artifacts). `comparison-matrix.json` and all
@@ -294,6 +294,10 @@ human approval, and nothing here is `verified_original`.
   fail (exit 101, four rows accepted). The source was restored byte-for-byte
   and all four checks re-run green afterwards, so the branch as pushed carries
   no mutation.
+* The only delta between the tested tree `fd27acdf…` and the pushed head is
+  this finding's own text and the committed evidence copy — both under
+  `docs/findings/`, no code, so the report describes exactly the code that
+  ships.
 
 ## Wiring edits (outside owner paths, logic-free)
 
