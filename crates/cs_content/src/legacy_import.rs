@@ -1549,6 +1549,26 @@ impl BlueprintRecordReport {
 /// Why a blueprint assessment of a whole document was refused.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BlueprintImportRefusal {
+    /// The layout the request names is not the layout the document was read
+    /// through. The field map is validated against the layout that produced
+    /// the records or the assessment is refused — never against a stranger
+    /// whose evidence or slots the document does not share.
+    LayoutMismatch {
+        /// The layout id the document recorded at read time.
+        document: String,
+        /// The layout id the request carried.
+        layout: String,
+    },
+    /// The layout evidence the document recorded at read time is not admitted
+    /// under the requested policy — the same gate [`plan_import`] applies, so
+    /// a document read through a designed or unknown layout can never be
+    /// assessed as a measured import by naming a measured field map.
+    LayoutEvidence {
+        /// The layout's label.
+        layout: String,
+        /// The evidence state that was refused.
+        evidence: ClaimStatus,
+    },
     /// The field map's evidence is not admitted under the requested policy.
     MapEvidence {
         /// The map's label.
@@ -1563,6 +1583,14 @@ pub enum BlueprintImportRefusal {
 impl fmt::Display for BlueprintImportRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LayoutMismatch { document, layout } => write!(
+                f,
+                "the request names layout {layout} but the document was read through {document}"
+            ),
+            Self::LayoutEvidence { layout, evidence } => write!(
+                f,
+                "layout {layout} is {evidence} evidence, which this admission does not allow"
+            ),
             Self::MapEvidence { map, evidence } => write!(
                 f,
                 "field map {map} is {evidence} evidence, which this admission does not allow"
@@ -1600,18 +1628,22 @@ pub struct BlueprintImportRequest<'a> {
     pub origin: Origin,
     /// The provenance every assembled blueprint carries.
     pub provenance: Provenance,
-    /// Which field-map evidence may be assessed.
+    /// Which field-map and document-layout evidence may be assessed.
     pub admission: LayoutAdmission,
 }
 
 /// The blueprint verdicts of one legacy document, record by record.
 ///
 /// Retained like [`ImportPlan::report`]: it describes what was judged and how
-/// each record fared, and the `admitted_designed_map` flag marks a report
-/// that could only be produced through the fixture admission so fixture data
-/// can never present itself as a measured import.
+/// each record fared, and the `admitted_designed_layout` /
+/// `admitted_designed_map` flags mark a report that could only be produced
+/// through the fixture admission so fixture data can never present itself as
+/// a measured import.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlueprintImportReport {
+    layout_id: String,
+    layout_evidence: ClaimStatus,
+    admitted_designed_layout: bool,
     field_map_id: String,
     field_map_evidence: ClaimStatus,
     admitted_designed_map: bool,
@@ -1619,17 +1651,38 @@ pub struct BlueprintImportReport {
 }
 
 impl BlueprintImportReport {
+    /// The layout the assessed document was read through.
+    #[must_use]
+    pub fn layout_id(&self) -> &str {
+        &self.layout_id
+    }
+
+    /// That layout's evidence state, as the document recorded it.
+    #[must_use]
+    pub const fn layout_evidence(&self) -> ClaimStatus {
+        self.layout_evidence
+    }
+
+    /// Whether the document's layout could only be assessed through
+    /// [`LayoutAdmission::AllowDesignedFixtures`].
+    #[must_use]
+    pub const fn admitted_designed_layout(&self) -> bool {
+        self.admitted_designed_layout
+    }
+
     /// The field map the assessment ran through.
+    #[must_use]
     pub fn field_map_id(&self) -> &str {
         &self.field_map_id
     }
 
     /// That map's evidence state.
+    #[must_use]
     pub const fn field_map_evidence(&self) -> ClaimStatus {
         self.field_map_evidence
     }
 
-    /// Whether the report could only be made through
+    /// Whether the field map could only be assessed through
     /// [`LayoutAdmission::AllowDesignedFixtures`].
     #[must_use]
     pub const fn admitted_designed_map(&self) -> bool {
@@ -1681,17 +1734,36 @@ impl BlueprintImportReport {
 ///
 /// # Errors
 ///
+/// [`BlueprintImportRefusal::LayoutMismatch`] when the named layout is not
+/// the one the document was read through,
 /// [`BlueprintImportRefusal::MapEvidence`] when the field map's evidence is
-/// not admitted, and [`BlueprintImportRefusal::Map`] when the map cannot
-/// describe this layout's records. Per-record failures are *not* errors of
-/// this function: they are [`BlueprintRecordOutcome`]s in the report.
+/// not admitted, [`BlueprintImportRefusal::LayoutEvidence`] when the layout
+/// evidence the document recorded is not admitted under the same policy, and
+/// [`BlueprintImportRefusal::Map`] when the map cannot describe this layout's
+/// records. Per-record failures are *not* errors of this function: they are
+/// [`BlueprintRecordOutcome`]s in the report.
 pub fn assess_imported_blueprints(
     request: &BlueprintImportRequest<'_>,
 ) -> Result<BlueprintImportReport, BlueprintImportRefusal> {
+    if request.document.layout_id() != request.layout.id() {
+        return Err(BlueprintImportRefusal::LayoutMismatch {
+            document: request.document.layout_id().to_owned(),
+            layout: request.layout.id().to_owned(),
+        });
+    }
     if !request.admission.admits(request.field_map.evidence()) {
         return Err(BlueprintImportRefusal::MapEvidence {
             map: request.field_map.id().to_owned(),
             evidence: request.field_map.evidence(),
+        });
+    }
+    // The layout's evidence is gated exactly like the map's: the document
+    // recorded it at read time, so a designed or unknown layout can never
+    // reach a verdict behind a measured field map.
+    if !request.admission.admits(request.document.layout_evidence()) {
+        return Err(BlueprintImportRefusal::LayoutEvidence {
+            layout: request.document.layout_id().to_owned(),
+            evidence: request.document.layout_evidence(),
         });
     }
     request
@@ -1709,6 +1781,10 @@ pub fn assess_imported_blueprints(
     }
 
     Ok(BlueprintImportReport {
+        layout_id: request.document.layout_id().to_owned(),
+        layout_evidence: request.document.layout_evidence(),
+        admitted_designed_layout: request.admission == LayoutAdmission::AllowDesignedFixtures
+            && !LayoutAdmission::MeasuredOnly.admits(request.document.layout_evidence()),
         field_map_id: request.field_map.id().to_owned(),
         field_map_evidence: request.field_map.evidence(),
         admitted_designed_map: request.admission == LayoutAdmission::AllowDesignedFixtures

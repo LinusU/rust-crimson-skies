@@ -72,7 +72,14 @@ budget implementation:
   the blueprint through `AircraftBlueprint::try_new`, and calls the
   production `ConstructionRules::validate` — never a parallel budget —
   yielding `BlueprintRecordOutcome::{Conforming, Rejected, Refused}` per
-  record in a `BlueprintImportReport`.
+  record in a `BlueprintImportReport`. The admission gate applies to **both**
+  declared inputs: the field map's evidence *and* the layout evidence the
+  document recorded at read time are refused under `MeasuredOnly` when
+  undesigned, a layout that is not the document's own is refused by name
+  (`LayoutMismatch`/`LayoutEvidence`), and the report carries
+  `layout_id`/`layout_evidence` plus `admitted_designed_layout` /
+  `admitted_designed_map` so fixture data can never present itself as a
+  measured import.
 - **AC02** is the `Rejected` outcome: the retained `BlueprintVerdict` carries
   the exact `LimitBreach` fields (`Mass { limit, total }`,
   `GunPositions { limit, used }`, `RocketHardpoints { limit, used }`,

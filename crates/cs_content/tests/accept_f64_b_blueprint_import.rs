@@ -38,7 +38,7 @@ use cs_content::legacy_import::{
 };
 use cs_formats::legacy_profile::{
     ArtifactProposal, LegacyArtifactClass, LegacyIdClass, LegacyLimits, LegacyProfileDocument,
-    read_legacy_profile, synthetic_blueprint_layout,
+    read_legacy_profile, synthetic_blueprint_layout, synthetic_layout,
 };
 use cs_types::content::{
     CatalogElement, ConsumerKind, ContentId, ContentKind, Dependency, DependencyKind, Known,
@@ -838,8 +838,98 @@ fn accept_f64_b_a_designed_field_map_is_refused_under_measured_admission() {
         &doc, &layout, &map, &ids, &catalog, &rules, &policy, &book,
     ));
     assert!(
-        report.admitted_designed_map(),
-        "a report made through the fixture admission must say so"
+        report.admitted_designed_map() && report.admitted_designed_layout(),
+        "a report made through the fixture admission must say so, for the map \
+         and for the document's layout alike"
+    );
+    assert_eq!(report.layout_id(), "synthetic.fixture_blueprint/v1");
+    assert_eq!(report.layout_evidence(), ClaimStatus::Designed);
+}
+
+/// A document read through a designed layout is refused under the strict
+/// admission even when the field map is measured: the layout evidence the
+/// document recorded at read time is gated exactly like the map's, so a
+/// guessed layout can never reach a verdict behind a measured map.
+#[test]
+fn accept_f64_b_a_designed_layout_is_refused_under_measured_admission() {
+    let bytes = document(&[full_record()]);
+    let doc = read_document(&bytes);
+    let layout = synthetic_blueprint_layout();
+    // A *measured* map, so only the document's layout evidence is on trial.
+    let measured_map = BlueprintFieldMap::new(
+        "test.measured_map",
+        ClaimStatus::VerifiedOriginal,
+        vec![
+            BlueprintFieldSlot::new("airframe_id", BlueprintRole::Airframe),
+            BlueprintFieldSlot::new("engine_id", BlueprintRole::Engine),
+        ],
+    )
+    .expect("the map's own structure is valid");
+    let ids = id_map();
+    let catalog = catalog();
+    let rules = synthetic_boundary_rules();
+    let policy = synthetic_policy();
+    let book = declared_synthetic_price_book();
+
+    let refusal = assess_imported_blueprints(&BlueprintImportRequest {
+        document: &doc,
+        layout: &layout,
+        field_map: &measured_map,
+        ids: &ids,
+        catalog: &catalog,
+        rules: &rules,
+        policy: &policy,
+        book: &book,
+        origin: Origin::SyntheticFixture,
+        provenance: designed("f64b.test.blueprint"),
+        admission: LayoutAdmission::MeasuredOnly,
+    })
+    .expect_err("a designed layout must be refused under the strict admission");
+    assert_eq!(
+        refusal,
+        BlueprintImportRefusal::LayoutEvidence {
+            layout: "synthetic.fixture_blueprint/v1".to_owned(),
+            evidence: ClaimStatus::Designed,
+        }
+    );
+}
+
+/// A layout that is not the one the document was read through is refused by
+/// name: the map is validated against the layout that produced the records
+/// or the assessment is refused, never against a stranger whose slots or
+/// evidence the document does not share.
+#[test]
+fn accept_f64_b_a_layout_that_is_not_the_documents_is_refused() {
+    let bytes = document(&[full_record()]);
+    let doc = read_document(&bytes);
+    let other = synthetic_layout();
+    let map = synthetic_blueprint_map();
+    let ids = id_map();
+    let catalog = catalog();
+    let rules = synthetic_boundary_rules();
+    let policy = synthetic_policy();
+    let book = declared_synthetic_price_book();
+
+    let refusal = assess_imported_blueprints(&BlueprintImportRequest {
+        document: &doc,
+        layout: &other,
+        field_map: &map,
+        ids: &ids,
+        catalog: &catalog,
+        rules: &rules,
+        policy: &policy,
+        book: &book,
+        origin: Origin::SyntheticFixture,
+        provenance: designed("f64b.test.blueprint"),
+        admission: LayoutAdmission::AllowDesignedFixtures,
+    })
+    .expect_err("a foreign layout refuses the assessment");
+    assert_eq!(
+        refusal,
+        BlueprintImportRefusal::LayoutMismatch {
+            document: "synthetic.fixture_blueprint/v1".to_owned(),
+            layout: "synthetic.fixture_profile/v1".to_owned(),
+        }
     );
 }
 
