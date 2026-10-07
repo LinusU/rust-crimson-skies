@@ -41,6 +41,14 @@
 //! **not** claim the original engine behaved this way: `retail` is file access
 //! and no original run happened, so nothing here is `verified_original`.
 //!
+//! Since task #656, `c3`'s settle blocker is **resolved, not pinned**: the
+//! declared [`SUBNORMAL_POSITION_CLAIM`] canonicalisation flushes a subnormal
+//! stored position component to the signed zero of its own sign at the upload
+//! boundary, so the parry extent that used to panic the binned BVH builder is
+//! exactly zero. `the_declared_flush_reaches_the_collider` reproduces the
+//! mechanism on authored bytes (the corpus's own bit patterns) and runs in CI;
+//! `the_subnormal_blocker_is_canonicalised` re-measures the real container.
+//!
 //! The retail half is `#[ignore]`d (`requires CS_GAME_DIR`): CI has no original
 //! data. Every number below is a count, a dimension or a relation — no name list,
 //! no mesh, no screenshot — so nothing derived from the original bytes is
@@ -49,13 +57,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use avian3d::prelude::Collider;
+use bevy::mesh::{Mesh, VertexAttributeValues};
+use cs_app::render::bevy_mesh::SUBNORMAL_POSITION_CLAIM;
+use cs_app::world::retail::stored_presentation_unknowns;
 use cs_app::world::{
-    MESH_SETTLE_UPDATES, RETAIL_WORLD_IMPORT, RetailWorldContainer, RetailWorldContainers,
-    SkipReason, instance_placement, read_world_containers, spawn_world, world_app,
+    HARBOR_OBJECT_HANGAR, MESH_SETTLE_UPDATES, RETAIL_WORLD_IMPORT, RetailWorldContainer,
+    RetailWorldContainers, SkipReason, harbor_meshes, harbor_world, instance_placement,
+    mesh_reference, read_world_containers, spawn_world, world_app,
 };
 use cs_content::coordinates::{CoordinateSource, SourceAdapter};
+use cs_content::mesh::RenderMesh;
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{UNINDEXED_ROLE_UNMEASURED, WORLD_SURFACE_UNMEASURED, WorldPartitionGrid};
+use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMesh, RawPolygon};
 use cs_types::content::{Origin, Resolved};
 use cs_types::evidence::ClaimStatus;
 
@@ -110,9 +124,11 @@ struct Measured {
     transformed: usize,
     /// Whether this group's colliders survive the settle on this host.
     ///
-    /// `false` for exactly one group, `C3`, and the reason is measured rather
-    /// than assumed: see
-    /// [`accept_f18_world_units_containers_the_settle_blocker_is_named_not_hidden`].
+    /// `true` for every group since task #656: `C3` used to fail it on a
+    /// subnormal stored extent (mesh slot 447) until the declared
+    /// [`SUBNORMAL_POSITION_CLAIM`] canonicalisation flushed that extent to
+    /// signed zero at the upload boundary — see
+    /// [`accept_f18_world_units_containers_the_subnormal_blocker_is_canonicalised`].
     settles: bool,
 }
 
@@ -245,8 +261,11 @@ const MEASURED: [Measured; 8] = [
         anchors: 14,
         fog: 0,
         unresolved_roles: 0,
+        // `true` since #656: the subnormal extent of stored mesh slot 447 is
+        // canonicalised at the upload boundary, so the settle finishes and all
+        // 374 colliders are built.
         transformed: 17,
-        settles: false,
+        settles: true,
     },
     Measured {
         group: "C4",
@@ -298,11 +317,13 @@ const MEASURED: [Measured; 8] = [
 
 /// The world groups whose colliders the settle cannot finish on this host.
 ///
-/// One group, and it is named rather than skipped: the pin is on the *measured
-/// corpus fact*, not on a workaround, so the assertion fails loudly when the
-/// situation changes in either direction. The mechanism and the follow-up are in
-/// the finding.
-const SETTLE_BLOCKERS: [&str; 1] = ["C3"];
+/// **Empty since task #656**: `C3` was the one blocker — parry's binned BVH
+/// builder could not divide by the subnormal centroid extent its mesh slot 447
+/// stores — until the upload boundary's declared
+/// [`SUBNORMAL_POSITION_CLAIM`] rule flushed subnormal position components to
+/// signed zero. The constant stays so a settle failure is still *measured
+/// against the corpus* and reported as a new blocker, not skipped.
+const SETTLE_BLOCKERS: [&str; 0] = [];
 
 /// The retail root, or a loud failure.
 ///
@@ -731,7 +752,7 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
 /// The collider counts are the **spawn's** own, checked against the import's, and
 /// the skip report is checked against the two counts that can explain it. Where a
 /// group cannot finish the settle, that is a separate measured fact, pinned by
-/// [`accept_f18_world_units_containers_the_settle_blocker_is_named_not_hidden`],
+/// [`accept_f18_world_units_containers_the_subnormal_blocker_is_canonicalised`],
 /// and it does not weaken anything asserted here: the spawn itself accepted
 /// every group.
 #[test]
@@ -786,8 +807,8 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
         // draws and no substitute can have entered. This is checked on the
         // **spawn report** rather than on the built `Collider`, because a
         // mesh-derived `Collider` is attached by the physics backend during the
-        // settle — and one group's settle does not finish on this host (pinned by
-        // `accept_f18_world_units_containers_the_settle_blocker_is_named_not_hidden`).
+        // settle — measured per group in
+        // `accept_f18_world_units_containers_the_subnormal_blocker_is_canonicalised`.
         for spawned_object in spawned.objects() {
             let Some(record) = world.object(&spawned_object.object) else {
                 panic!("{}: every spawned object has a record", measured.group);
@@ -1078,67 +1099,259 @@ fn accept_f18_world_units_containers_a_mesh_the_store_holds_no_geometry_for_is_a
     assert_eq!(collided, 0, "and none of them collides");
 }
 
-/// **The one group the settle cannot finish is named, measured and pinned, not
-/// silently skipped.** (retail)
+/// **A stored mesh whose positions carry subnormal components settles into a
+/// built collider, because the upload boundary canonicalises exactly those
+/// components.** (synthetic — no `CS_GAME_DIR` needed)
 ///
-/// `spawn_world` accepts all eight containers, but on this host the physics
-/// backend cannot build colliders for **`C3`**: Avian's mesh-derived collider
-/// reaches parry 0.27's binned BVH builder, which computes its bin index as
-/// `NUM_BINS * (1 - eps) / (centroid_extent) * (centroid - centroid_min)`. For one
-/// of c3's stored meshes that extent is **denormal** — the container stores
-/// subnormal `f32` `y` values (`4e-45`, `-8e-45`, read verbatim from the bytes) on
-/// an otherwise exactly flat plane — so the division overflows, the index becomes
-/// `usize::MAX` and the builder indexes its 8-entry bin array out of bounds.
+/// This is the corpus mechanism of `c3` mesh slot 447 reproduced without
+/// original bytes: three triangles authored so their leaf-AABB centers span a
+/// **subnormal** extent along `y` — the one input parry 0.27's binned BVH
+/// builder cannot bin, because it divides by that extent — using the same
+/// stored bit patterns the container carries (`0x0000_0003` ≈ `4e-45`,
+/// `0x8000_0006` ≈ `-8e-45`). The authored mesh replaces the harbor world's
+/// hangar geometry, so the settle builds a real `TrimeshFromMesh` collider
+/// from the uploaded buffer.
 ///
-/// Measured, by building that one mesh both ways through the production adapter:
-/// as stored it panics; with its subnormal coordinates flushed to zero it builds a
-/// collider. So the blocker is **parry's BVH builder on denormal coordinates**, not
-/// this project's readers, importer or spawn: the same bytes reach Avian intact
-/// and the spawn returns `Ok`.
+/// Removing [`SUBNORMAL_POSITION_CLAIM`] fails this test twice over: the
+/// uploaded positions then keep the subnormal bit patterns, and the settle
+/// panics inside `App::update`.
+#[test]
+fn accept_f18_world_units_containers_the_declared_flush_reaches_the_collider() {
+    assert_eq!(
+        SUBNORMAL_POSITION_CLAIM, "f17-b.subnormal-position-flushes-to-zero",
+        "the canonicalisation rule carries its own claim id"
+    );
+
+    // The corpus's own bit patterns on an otherwise flat plane: `+denormal`
+    // and `-denormal`, with every other component a stored `±0.0`. Three
+    // triangles share the plane patch: parry's `Bvh::from_iter` special-cases
+    // one and two leaves, so three is the smallest input that reaches the
+    // binned partition. Every leaf's AABB center is `(0, subnormal, 0.5)`, so
+    // the centroid extent the builder divides by is subnormal on `y` — the
+    // one input it cannot bin.
+    let corner = |position: u32| RawCorner {
+        position,
+        normal: None,
+        uv: None,
+        color: None,
+    };
+    let stored = RawMesh {
+        positions: vec![
+            [0.0, 0.0, 0.0],
+            [0.0, f32::from_bits(0x0000_0003), 0.0],
+            [0.0, f32::from_bits(0x8000_0006), 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        normals: Vec::new(),
+        polygons: vec![
+            RawPolygon {
+                kind: PrimitiveKind::Polygon,
+                raw_flags: 0,
+                material: 0,
+                corners: vec![corner(0), corner(1), corner(3)],
+            },
+            RawPolygon {
+                kind: PrimitiveKind::Polygon,
+                raw_flags: 0,
+                material: 0,
+                corners: vec![corner(0), corner(2), corner(3)],
+            },
+            RawPolygon {
+                kind: PrimitiveKind::Polygon,
+                raw_flags: 0,
+                material: 0,
+                corners: vec![corner(1), corner(2), corner(3)],
+            },
+        ],
+    };
+    let render = RenderMesh::build(&stored).expect("the authored mesh has a decodable outline");
+    let stored_subnormals: Vec<u32> = render
+        .vertices()
+        .iter()
+        .flat_map(|vertex| vertex.position)
+        .filter(|component| component.is_subnormal())
+        .map(|component| component.to_bits())
+        .collect();
+    assert_eq!(
+        stored_subnormals,
+        vec![0x0000_0003, 0x8000_0006],
+        "the authored premise: exactly the two corpus bit patterns, subnormal \
+         in the IR — the reader is faithful"
+    );
+
+    // The production upload path: the harbor world's own mesh source, with the
+    // hangar's geometry replaced by the authored mesh under its real id.
+    let mut meshes = harbor_meshes();
+    let hangar = mesh_reference(HARBOR_OBJECT_HANGAR)
+        .known()
+        .expect("the fixture hangar reference is known");
+    meshes
+        .insert_render_mesh(
+            hangar.clone(),
+            &render,
+            &stored_presentation_unknowns(&render),
+        )
+        .expect("the authored mesh uploads through the production adapter");
+    let uploaded = meshes.get(&hangar).expect("the mesh is registered");
+    assert_eq!(
+        uploaded.subnormal_components(),
+        2,
+        "the declared rule reports flushing exactly the two stored components"
+    );
+    let positions = uploaded_positions(uploaded);
+    assert_eq!(
+        positions
+            .iter()
+            .flatten()
+            .filter(|bits| f32::from_bits(**bits).is_subnormal())
+            .count(),
+        0,
+        "no subnormal reaches the buffer the collider is derived from"
+    );
+    for bits in [0x0000_0000u32, 0x8000_0000] {
+        assert!(
+            positions.iter().any(|position| position[1] == bits),
+            "the subnormal uploads as the signed zero of its own sign: {bits:#x}"
+        );
+    }
+
+    // The production spawn and settle: the object draws and collides from one
+    // shared handle, so the flushed buffer is what parry bins.
+    let world = harbor_world().expect("the synthetic harbor world is well formed");
+    let mut app = world_app();
+    let spawned = spawn_world(&mut app, &world, &meshes).expect("the world spawns");
+    assert!(
+        settles(&mut app),
+        "the settle builds the subnormal mesh's collider: without the declared \
+         flush the binned BVH builder panics inside App::update here"
+    );
+    let hangar_id = world
+        .objects()
+        .iter()
+        .find(|object| object.id().as_str() == HARBOR_OBJECT_HANGAR)
+        .expect("the harbor world has the hangar record")
+        .id()
+        .clone();
+    let entity = spawned
+        .collider_for(&hangar_id)
+        .expect("the hangar's record collides");
+    let collider = app
+        .world()
+        .get::<Collider>(entity)
+        .expect("its collider is built once the settle finishes");
+    assert!(
+        collider.shape().as_trimesh().is_some(),
+        "and it is the triangle mesh itself, not a substitute shape"
+    );
+}
+
+/// The uploaded position buffer of one world mesh, as bit patterns, so no
+/// comparison depends on float equality.
+fn uploaded_positions(mesh: &cs_app::world::WorldMesh) -> Vec<[u32; 3]> {
+    match mesh.mesh().attribute(Mesh::ATTRIBUTE_POSITION) {
+        Some(VertexAttributeValues::Float32x3(values)) => {
+            values.iter().map(|value| value.map(f32::to_bits)).collect()
+        }
+        other => panic!("positions are Float32x3, got {other:?}"),
+    }
+}
+
+/// **The `c3` settle blocker is resolved by a declared canonicalisation at the
+/// upload boundary, and the stored bytes — not a substitute — prove it.**
+/// (retail)
 ///
-/// The test asserts the blocker **exists and is the only one**, so a reader sees
-/// the honest corpus fact; when the situation changes in either direction the
-/// assertion fails loudly instead of the gap quietly disappearing. **This is a
-/// pinned limitation, not a passing collider path:** `C3` has no verified
-/// collider for that mesh, and `docs/findings/` records the follow-up.
+/// #639 measured the blocker: `c3`'s mesh slot 447 stores two position `y`
+/// components as subnormals (`0x0000_0003`, `0x8000_0006`) on an otherwise
+/// exactly-`y = 0` plane; parry's binned BVH builder divides by the leaf-center
+/// extent, the subnormal extent overflows the `f32` division, the bin index
+/// saturates to `usize::MAX`, and the 8-entry bin array is indexed out of
+/// bounds — a panic inside `App::update` that left 33 of c3's 374 colliders
+/// unbuilt.
+///
+/// #656 resolves it with [`SUBNORMAL_POSITION_CLAIM`] — a stored position
+/// component that is subnormal uploads as the signed zero of its own sign, and
+/// nothing else changes — so the builder's extent becomes exactly `0`, the
+/// input that always binned rather than panicked. This test asserts the
+/// resolution rather than trusting it:
+///
+/// * the **stored** bytes still carry the two subnormals — the premise is
+///   intact, the reader is still faithful;
+/// * the production upload reports exactly those two components flushed,
+///   hands Bevy a buffer with no subnormal left and no other value changed;
+/// * **every** group's settle finishes, and every collider a group reports is
+///   a built triangle mesh — for `c3` that is all **374**, the count the panic
+///   kept this suite from reaching.
+///
+/// Removing the rule fails this test where #639 measured the failure: the
+/// settle panics, `c3` goes back on the blocker list, and the
+/// `subnormal_components` report loses its two.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_f18_world_units_containers_the_settle_blocker_is_named_not_hidden() {
+fn accept_f18_world_units_containers_the_subnormal_blocker_is_canonicalised() {
     let found = retail();
 
-    // One discovery pass, and the stored bytes of the mesh the blocker names. The
-    // slot is a constant because it is a property of the corpus, like every other
-    // number here.
-    const C3_BLOCKING_SLOT: u32 = 447;
+    // The slot is a constant because it is a property of the corpus, like every
+    // other number here.
+    const C3_SUBNORMAL_SLOT: u32 = 447;
     let container = found
         .container("C3", &WorldTextureLoad::project_default())
         .expect("the c3 geometry container reads");
     let slot = container
         .meshes()
-        .get(C3_BLOCKING_SLOT)
+        .get(C3_SUBNORMAL_SLOT)
         .expect("c3 holds the blocking mesh slot");
 
-    // The stored coordinates really do carry subnormals: the reader is faithful
-    // (`read_f32` decodes the bytes verbatim), so this is what the owner shipped.
-    let subnormals: Vec<[f32; 3]> = slot
+    // The premise is intact: the stored bytes still carry exactly the two
+    // subnormal components the blocker was measured on, decoded verbatim.
+    let subnormal_bits: BTreeSet<u32> = slot
         .mesh
         .positions
         .iter()
-        .copied()
-        .filter(|position| position.iter().any(|value| value.is_subnormal()))
+        .flatten()
+        .filter(|component| component.is_subnormal())
+        .map(|component| component.to_bits())
         .collect();
     assert_eq!(
-        subnormals.len(),
-        2,
-        "c3's blocking mesh stores exactly two vertices with a subnormal \
-         coordinate, which is what makes its centroid extent denormal"
+        subnormal_bits,
+        BTreeSet::from([0x0000_0003, 0x8000_0006]),
+        "the stored bytes are unchanged, so what unblocks the settle is the \
+         declared canonicalisation, not a changed corpus"
     );
-    for position in &subnormals {
-        assert!(
-            position.iter().any(|value| value.is_subnormal()),
-            "and each of those vertices really carries one: {position:?}"
-        );
-    }
+    // The canonicalisation, stated: each subnormal component becomes the signed
+    // zero of its own sign, every other bit pattern is kept. Building the
+    // expected set from the rule rather than from the upload keeps the
+    // comparison honest.
+    let canonical: BTreeSet<[u32; 3]> = slot
+        .mesh
+        .positions
+        .iter()
+        .map(|position| {
+            position.map(|component| {
+                if component.is_subnormal() {
+                    0.0f32.copysign(component)
+                } else {
+                    component
+                }
+            })
+        })
+        .map(|position| position.map(f32::to_bits))
+        .collect();
+    let flushed: BTreeSet<[u32; 3]> = slot
+        .mesh
+        .positions
+        .iter()
+        .filter(|position| position.iter().any(|component| component.is_subnormal()))
+        .map(|position| {
+            position.map(|component| {
+                if component.is_subnormal() {
+                    0.0f32.copysign(component)
+                } else {
+                    component
+                }
+            })
+        })
+        .map(|position| position.map(f32::to_bits))
+        .collect();
 
     // Per group: does the settle finish? The answer is a property of the corpus
     // on this host, and it is asserted rather than assumed.
@@ -1167,31 +1380,118 @@ fn accept_f18_world_units_containers_the_settle_blocker_is_named_not_hidden() {
              those are the colliders the settle has to build",
             measured.group
         );
-        let settled = settles(&mut app);
-        if settled != measured.settles {
-            if settled {
-                blockers.push(format!(
-                    "{}: the settle now finishes, so the pinned blocker set is stale \
-                     and the parry follow-up can be closed",
-                    measured.group
-                ));
-            } else {
-                panic!(
-                    "{}: the settle now fails, which no measured group predicted: \
-                     this is a new blocker and needs its own finding",
-                    measured.group
+
+        // On the group the blocker came from, the canonicalisation is checked
+        // on the uploaded mesh itself — before the settle — so "the rule ran"
+        // is measured, not inferred from the panic being gone.
+        if measured.group == "C3" {
+            let uploaded = meshes
+                .get(&catalog_mesh_id(&group_container, C3_SUBNORMAL_SLOT))
+                .expect("the once-blocking mesh is registered");
+            assert_eq!(
+                uploaded.subnormal_components(),
+                2,
+                "C3: the declared rule reports flushing exactly the two stored \
+                 subnormal components"
+            );
+            let uploaded_positions = uploaded_positions(uploaded);
+            assert!(
+                uploaded_positions
+                    .iter()
+                    .flatten()
+                    .all(|bits| !f32::from_bits(*bits).is_subnormal()),
+                "C3: no subnormal component reaches the buffer the collider is \
+                 derived from"
+            );
+            for position in &uploaded_positions {
+                assert!(
+                    canonical.contains(position),
+                    "C3: every uploaded position is a stored position or its \
+                     signed-zero canonicalisation, so nothing else changed: \
+                     {position:?}"
+                );
+            }
+            for position in &flushed {
+                assert!(
+                    uploaded_positions.contains(position),
+                    "C3: the stored subnormal vertices upload as their signed \
+                     zeros, not some other value: {position:?}"
                 );
             }
         }
+
+        let settled = settles(&mut app);
+        if settled != measured.settles {
+            panic!(
+                "{}: the settle outcome flipped against the measured table \
+                 (settles = {}): a new blocker is named by failing here, not \
+                 skipped",
+                measured.group, measured.settles
+            );
+        }
         if !settled {
             blockers.push(measured.group.to_owned());
+            continue;
+        }
+        // Every collider the spawn reports is actually built and is the record's
+        // own triangle mesh: for `c3` that is all 374, not the 341 the panic
+        // left behind.
+        let mut built = 0usize;
+        for object in world.objects() {
+            let Some(entity) = spawned.collider_for(object.id()) else {
+                continue;
+            };
+            let collider = app
+                .world()
+                .get::<Collider>(entity)
+                .expect("a settled mesh collider is a collider");
+            assert!(
+                collider.shape().as_trimesh().is_some(),
+                "{}: a FromMesh record is collided by a triangle mesh, not a \
+                 substitute shape",
+                measured.group
+            );
+            built += 1;
+        }
+        assert_eq!(
+            built,
+            spawned.colliders().len(),
+            "{}: every collider the spawn reports is built after the settle",
+            measured.group
+        );
+        // And the records that name the once-blocking mesh specifically:
+        // their colliders are built, from that mesh.
+        if measured.group == "C3" {
+            let mut consumers = 0usize;
+            for object in world.objects() {
+                let Resolved::Known(mesh) = object.mesh() else {
+                    continue;
+                };
+                if mesh_slot(&mesh.value) != Some(C3_SUBNORMAL_SLOT) {
+                    continue;
+                }
+                consumers += 1;
+                let entity = spawned
+                    .collider_for(object.id())
+                    .expect("a record naming the mesh has a collider");
+                assert!(
+                    app.world().get::<Collider>(entity).is_some(),
+                    "C3: the collider on slot {C3_SUBNORMAL_SLOT}'s geometry is \
+                     built, for {}",
+                    object.id().as_str()
+                );
+            }
+            assert!(
+                consumers > 0,
+                "C3: at least one record names the once-blocking mesh slot"
+            );
         }
     }
 
     assert_eq!(
         blockers, SETTLE_BLOCKERS,
-        "exactly one group cannot finish the settle on this host, and it is the \
-         one named; the other seven build every collider they report"
+        "no group is a settle blocker on this host anymore: every group's \
+         colliders finish building"
     );
 }
 
@@ -1215,7 +1515,7 @@ static SETTLE_HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// reads like a test failure, and the loop **stops at the first** failure: a
 /// backend that panicked mid-frame is not in a state where running more frames
 /// measures anything.
-fn settles(app: &mut bevy::prelude::App) -> bool {
+pub(crate) fn settles(app: &mut bevy::prelude::App) -> bool {
     // A panic while the lock is held would poison it; the measurement itself is
     // what failed, and the other test still needs its own settle window.
     let _guard = SETTLE_HOOK_LOCK

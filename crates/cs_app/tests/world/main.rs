@@ -99,10 +99,14 @@
 //! names 16 mesh slots the store holds no geometry for (and the upload used to
 //! abort the whole container over the first of them), and `objects_in_a_sector`
 //! is **not** the grid's value count outside `c1c`, because residency and the
-//! collision role are separate questions. The one group whose collider settle
-//! cannot finish on this host (`c3`, whose stored mesh carries subnormal
-//! coordinates that make parry's BVH bin index overflow) is **pinned and named**
-//! there rather than skipped.
+//! collision role are separate questions. The `c3` settle blocker they found —
+//! parry's BVH builder cannot divide by a subnormal centroid extent — is
+//! **resolved** there since #656 by the upload boundary's declared
+//! `SUBNORMAL_POSITION_CLAIM` canonicalisation, with the corpus's own bit
+//! patterns reproduced in a synthetic regression test that runs in CI.
+//! `evidence_f18_parry_denormal_bvh` is that task's evidence harness: not an
+//! acceptance test, it writes `acceptance.json` from the recorded suite log
+//! and a second production run over the installation.
 //!
 //! **#688** (`accept_f08_c_renderer_`) wires the renderer-settings consumer
 //! that chooses a world's texture archive: `texture_archive` owns the
@@ -125,6 +129,7 @@
 mod audit;
 mod common;
 mod crossing;
+mod evidence_f18_parry_denormal_bvh;
 mod failed_load;
 mod fvol_roles;
 mod hierarchy;

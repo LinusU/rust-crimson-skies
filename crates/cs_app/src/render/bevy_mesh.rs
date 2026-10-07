@@ -15,11 +15,21 @@
 //!
 //! What the adapter does *not* do is the point of the whole file:
 //!
-//! * **No vertex value is changed.** Positions, normals, UVs and corner
-//!   colors are copied bit-exact from the IR. Nothing is normalized, no `V`
-//!   is flipped, no coordinate is wrapped or clamped, no color is converted
-//!   or clamped (`cs_content::mesh::RenderVertex` already guarantees the
-//!   stored values are unresolved; the adapter keeps them that way).
+//! * **No vertex value is changed beyond one declared canonicalisation.**
+//!   Positions, normals, UVs and corner colors are copied bit-exact from the
+//!   IR. Nothing is normalized, no `V` is flipped, no coordinate is wrapped
+//!   or clamped, no color is converted or clamped (`cs_content::mesh::
+//!   RenderVertex` already guarantees the stored values are unresolved; the
+//!   adapter keeps them that way). The single stated exception is
+//!   [`SUBNORMAL_POSITION_CLAIM`]: a **subnormal** stored position component
+//!   uploads as the signed zero of its own sign, because the engine consumer
+//!   that reads positions — parry's binned BVH builder behind Avian's
+//!   `TrimeshFromMesh` — cannot bin a subnormal extent (it divides by that
+//!   extent, the `f32` quotient overflows and the bin index saturates out of
+//!   bounds; measured on c3's stored mesh slot 447, task #656). Every other
+//!   stored value — `±0.0` itself, `f32::MIN_POSITIVE`, every normal, UV and
+//!   color component — keeps its stored bit pattern, and each flush is
+//!   counted into [`GroupReport::subnormal_components`].
 //! * **No attribute is fabricated.** A group whose vertices all carry a
 //!   normal gets the normal buffer; a group where *no* vertex carries one
 //!   gets no buffer at all; a group where *some* do is refused
@@ -182,6 +192,45 @@ pub const PARTIAL_NORMAL_POLICY: PartialNormalPolicy = PartialNormalPolicy::Spli
 pub const ORIGINAL_NORMAL_FREE_BEHAVIOR: OriginalNormalFreeBehavior =
     OriginalNormalFreeBehavior::Unmeasured;
 
+/// The claim id of the adapter's one canonicalisation: a stored **position**
+/// component that is subnormal uploads as the signed zero of its own sign.
+///
+/// # The rule
+///
+/// For each `f32` component of a stored position: `value.is_subnormal()`
+/// uploads as `0.0f32.copysign(value)` — `0x0000_0003` as `+0.0`,
+/// `0x8000_0006` as `-0.0` — and every value that is not subnormal uploads
+/// with its stored bit pattern unchanged. `±0.0`, `f32::MIN_POSITIVE` (the
+/// smallest *normal* `f32`), NaN and infinity all pass through verbatim; only
+/// the subnormal magnitude is discarded, never the sign bit — the same
+/// canonicalisation hardware flush-to-zero performs. Normals, UVs and corner
+/// colors are **not** covered: no measured consumer of them needs it, so they
+/// stay bit-exact.
+///
+/// # Why, argued from the corpus
+///
+/// `ZBD/C3/gamez.zbd` mesh slot 447 stores two position `y` components as
+/// subnormals — `4e-45` and `-8e-45` — on a plane that is otherwise exactly
+/// `y = 0` (`docs/findings/2026-10-05-f18-world-units-containers.md`, task
+/// #656). The faithful reader decodes them verbatim, Avian's
+/// `ColliderConstructor::TrimeshFromMesh` derives the collider from *this*
+/// upload, and parry 0.27's binned BVH builder computes
+/// `NUM_BINS * (1 - eps) / (centroid_extent)` — a division that overflows to
+/// `inf` when the extent is subnormal, so the bin index saturates to
+/// `usize::MAX` and the 8-entry bin array is indexed out of bounds
+/// (`bvh_binned_build.rs`). An exactly-zero extent does not panic
+/// (`inf * 0` is `NaN`, which casts to `0`), which is why flushing — not a
+/// wider rewrite — is the narrow rule the corpus supports. `rebuild_bvh`
+/// hardcodes `BvhBuildStrategy::Binned`, so no `TriMeshFlags` combination
+/// avoids that path on this version.
+///
+/// A subnormal position is below `2^-126` of a stored unit — below the
+/// resolution of any representable distance — so this is an
+/// **engine-compatibility canonicalisation at the upload boundary**, stated
+/// and counted ([`GroupReport::subnormal_components`]), not a claim about
+/// what the original engine did with these bytes: that is unmeasured.
+pub const SUBNORMAL_POSITION_CLAIM: &str = "f17-b.subnormal-position-flushes-to-zero";
+
 /// Which part of a material group an upload holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GroupPart {
@@ -206,6 +255,12 @@ pub struct GroupReport {
     /// How many of [`Self::triangles`] the IR flagged as degenerate. They
     /// are kept in the index buffer, never dropped.
     pub degenerate_triangles: usize,
+    /// How many stored position **components** the
+    /// [`SUBNORMAL_POSITION_CLAIM`] canonicalisation uploaded as a signed
+    /// zero. `0` means every stored component reached the buffer with its
+    /// own bit pattern; anything else is the rule's measured footprint, not
+    /// an estimate.
+    pub subnormal_components: usize,
     /// Whether the group carries a normal on every vertex.
     pub normals: bool,
     /// Whether the group carries a UV on every vertex.
@@ -358,11 +413,17 @@ fn build_upload(
     let mut normals = Vec::with_capacity(total);
     let mut uvs = Vec::with_capacity(total);
     let mut colors = Vec::with_capacity(total);
+    let mut subnormal_components = 0usize;
     for &vertex_index in &slots {
         let vertex = vertices
             .get(vertex_index as usize)
             .expect("RenderMesh validates its own vertex indices at construction");
-        positions.push(vertex.position);
+        subnormal_components += vertex
+            .position
+            .iter()
+            .filter(|component| component.is_subnormal())
+            .count();
+        positions.push(vertex.position.map(canonicalise_position_component));
         if let Some(normal) = vertex.normal {
             normals.push(normal);
         }
@@ -411,6 +472,7 @@ fn build_upload(
         vertices: total,
         triangles: source_triangles.len(),
         degenerate_triangles: degenerate,
+        subnormal_components,
         normals: has_normals,
         uvs: has_uvs,
         colors: has_colors,
@@ -452,6 +514,16 @@ pub fn upload_groups(
         uploads.extend(upload_group_parts(render, group, unknowns)?);
     }
     Ok(uploads)
+}
+
+/// `component` as uploaded under [`SUBNORMAL_POSITION_CLAIM`]: the signed zero
+/// of its own sign when it is subnormal, its stored bit pattern otherwise.
+fn canonicalise_position_component(component: f32) -> f32 {
+    if component.is_subnormal() {
+        0.0f32.copysign(component)
+    } else {
+        component
+    }
 }
 
 /// Whether `stored` means "no vertex has it" (`Ok(false)`) or "every vertex

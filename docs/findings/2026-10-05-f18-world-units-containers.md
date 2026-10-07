@@ -78,7 +78,15 @@ them first and the reason is "never measured", not "a download failed".
 
 ### Two: `c3`'s colliders cannot finish building, and it is parry, not this project
 
-This one is **not** fixed here, and is recorded as a limitation instead.
+**Resolved by #656 on 2026-10-07** (`F18-PARRY-DENORMAL-BVH`,
+`docs/findings/2026-10-07-f18-parry-denormal-bvh.md`): the upload boundary now
+carries a declared canonicalisation, `f17-b.subnormal-position-flushes-to-zero`,
+that uploads a subnormal stored position component as the signed zero of its own
+sign — so the centroid extent the builder divides by is exactly `0`, the input
+that always binned rather than panicked. All 374 of `c3`'s colliders build, and
+the pin described below is replaced by a resolution assertion over the same
+stored bytes. The measurement that follows is kept as the record of the
+mechanism.
 
 `spawn_world` accepts `c3` and returns `Ok` with 374 colliders. Then the settle
 fails: Avian's mesh-derived collider reaches parry 0.27's binned BVH builder
@@ -114,16 +122,19 @@ so does one with `y = 1e-30`, so this is not "flat meshes are refused" — it is
 denormal magnitude specifically.
 
 **Affected content:** the collision of whichever records in `c3` name mesh slot
-447, on this host and this parry version. **Not affected:** presentation (the mesh
-draws), the import, the sector index, or the other seven containers — every one
-of them finishes its settle. **Resolving task:** **#656** below; the honest fix
-belongs at the parry/Avian boundary or in an explicit stated rule about denormal
-stored coordinates, and neither is this task's owner path.
+447, on this host and this parry version — **resolved by #656**, which applied
+the explicit stated rule about denormal stored coordinates this paragraph calls
+for. **Not affected then or now:** presentation (the mesh drew throughout), the
+import, the sector index, or the other seven containers — every one of them
+finishes its settle.
 
-The blocker is **pinned, not skipped**: `SETTLE_BLOCKERS` names it, and the test
-asserts that the blocked set is *exactly* `["C3"]`, so the gap fails loudly in
-either direction — if the settle starts working the assertion says so and points
-at the follow-up, and if a new group breaks it panics as a new blocker.
+~~The blocker is **pinned, not skipped**: `SETTLE_BLOCKERS` names it, and the
+test asserts that the blocked set is *exactly* `["C3"]`, so the gap fails loudly
+in either direction — if the settle starts working the assertion says so and
+points at the follow-up, and if a new group breaks it panics as a new
+blocker.~~ **Superseded by #656:** `SETTLE_BLOCKERS` is now empty and the
+resolution test asserts every group's settle finishes, so a *new* blocker is
+still named by a failure rather than skipped.
 
 ## The measurement
 
@@ -175,11 +186,14 @@ at all), and the only one whose mesh array holds empty slots.
 | `every_world_group_imports_with_the_measured_counts` | all eight groups discovered (and every reference lead present); per group the grid's `x_count`/`y_count`, value count, distinct-slot count, cell count and world node; the three ownership counts and the relation between them; empty-cell and no-extent counts; `sectors == cells - no_extent`; residency as a **separate** question from the role, with its bounds; `objects_with_mesh` vs `values_with_mesh`; `matrix_disagreements`; `mesh_binding_records_elsewhere`; every unresolved role and surface carrying its claim id; no invented boundary; the reported unit factor at `Unknown`; every object's provenance at `ObservedTool` with the container's own span | a reader changes its walk, a count moves, residency stops being distinguished from the role, a gap loses its claim id, or a retail-derived value stops pointing at its bytes |
 | `every_world_group_spawns_and_reports_its_gaps` | the production `spawn_world` over all eight, per group into its own app with the geometry uploaded through the production F17-B adapter: every object presented; colliders equal to the import's `partition_records_with_mesh`; every collider's record declaring `FromMesh` (so no substitute shape entered, checked on the spawn report so it holds even where the settle fails); and the settle check that every built collider really is a triangle mesh, under the same `SETTLE_HOOK_LOCK`-serialised silence window the blocker test uses | the spawn stops accepting a container, a collider stops being derived from its own record's mesh, or the skip report stops being exactly the two gaps the bytes imply |
 | `a_mesh_the_store_holds_no_geometry_for_is_a_gap` | `c5`'s 16 empty mesh slots and 61 affected records: the slot **exists** in the container's array as a **present** mesh record (non-zero `parent_count`, so not an all-zero array stub) whose **own stored `polygon_count` and `vertex_count` are zero** — so the empty decode is what the bytes state, not a reader that walked the wrong offset, with a non-zero stored count asserted for every slot that decodes polygons so the check discriminates; every distinct mesh that does hold geometry is registered and **nothing else**; the mesh count is below the record count because records share meshes; and each affected record is reported with no collider at all | the `NoGeometry` arm becomes a refusal again (which loses the whole container), an empty slot gets registered, an affected record is given a substitute shape, or the emptiness stops being the store's own stored fact |
-| `the_settle_blocker_is_named_not_hidden` | the blocker **exists**, is **exactly** `["C3"]`, and rests on the measured stored bytes: mesh slot 447 stores exactly two vertices with a subnormal coordinate, decoded verbatim by the reader | the blocker is silently skipped or silently disappears, a new group breaks the settle, or the stored subnormals are no longer there (i.e. the premise changed) |
+| `the_subnormal_blocker_is_canonicalised` (replaced `the_settle_blocker_is_named_not_hidden` in #656) | the premise **and** the resolution: slot 447's stored bytes still carry exactly the two subnormal components; the production upload reports exactly those two flushed to signed zero and changes no other bit pattern; **every** group's settle finishes and every reported collider is a built triangle mesh — 374 for `c3` | the canonicalisation stops running, flushes a non-subnormal value, loses the sign, or a group's settle or collider build regresses |
+| `the_declared_flush_reaches_the_collider` (added by #656, **synthetic — runs in CI**) | the corpus's own two bit patterns on an authored three-triangle mesh through the production upload into the harbor world: the IR keeps the subnormals, the upload reports them flushed, the buffer carries the signed zeros, and the settle builds the collider | the canonicalisation is removed (the settle panics inside `App::update`, the reproduction this task was filed for) or an assertion about the report or the buffer breaks |
 | `every_stored_transform_places_exactly` | the per-group count of records storing a real (non-identity) transform — `c1` 72 and `c5` 165 being the two the task named — and that the production `instance_placement`, the classifier the spawn runs over every instance *before* spawning anything, places **every** record of **every** group exactly | a record's transform is dropped on the way in, or a stored matrix is placed approximately rather than refused |
 
-All five are `#[ignore]`d (`requires CS_GAME_DIR`) and **all five run and pass**
-locally: `5 passed; 0 failed` over one discovery pass.
+~~All five are `#[ignore]`d (`requires CS_GAME_DIR`) and **all five run and pass**
+locally: `5 passed; 0 failed` over one discovery pass.~~ Since #656 the suite is
+**six**: the five retail tests stay ignored, and `the_declared_flush_reaches_the_collider`
+is the one **unignored** synthetic regression, so CI covers the mechanism.
 
 **Sensitivity.** Four mutations were applied to the production path, the retail
 selection was re-run, and the source was restored each time. **All four are
@@ -254,13 +268,15 @@ restored and the failure is not reported as a passing run.
 
 ## Unknowns and limitations (recorded, not guessed)
 
-- **`c3`'s colliders are not verified on this host.** 33 of 374 are not built,
+- ~~**`c3`'s colliders are not verified on this host.** 33 of 374 are not built,
   because parry 0.27's BVH builder cannot bin a mesh whose centroid extent is
-  denormal. **Affected content:** collision for whichever `c3` records name mesh
-  slot 447, on this host and this parry version. **Not affected:** presentation,
-  the import, the sector index, and the other seven containers. **Resolving task:**
-  **#656** below. This task does **not** claim a working `c3`
-  collision path.
+  denormal.~~ **Resolved by #656** on 2026-10-07: the upload boundary's declared
+  `f17-b.subnormal-position-flushes-to-zero` canonicalisation flushes a
+  subnormal stored position component to the signed zero of its own sign, so
+  all 374 `c3` colliders build. What remains unmeasured is what the **original**
+  engine did with those bytes — the canonicalisation is an
+  engine-compatibility rule of this project, not an observed behavior of the
+  original.
 - **Whether the 2000 engine loaded a world this way is UNMEASURED.** No original
   run happened. Every fact here is measured from the container bytes by the
   production readers; nothing claims the engine streamed, culled or collided as
@@ -300,10 +316,12 @@ restored and the failure is not reported as a passing run.
 
 ## Follow-ups filed
 
-- **#656** (`F18-PARRY-DENORMAL-BVH`) — the `c3` settle blocker: either a stated
+- ~~**#656** (`F18-PARRY-DENORMAL-BVH`) — the `c3` settle blocker: either a stated
   rule for denormal stored coordinates at the upload boundary, or a parry/Avian
-  configuration that bins them. Until then `c3` has no verified collision for that
-  mesh and the blocker stays pinned rather than hidden. Filed by this task.
+  configuration that bins them.~~ **Done** on 2026-10-07: the stated rule won
+  (parry 0.27 hardcodes `BvhBuildStrategy::Binned`, so no `TriMeshFlags`
+  combination avoids the path); the resolution is recorded in
+  `docs/findings/2026-10-07-f18-parry-denormal-bvh.md`.
 - **The `scene_node` id grammar blocker** F11-A's world names hit (filed by
   #629, unchanged by this task): a world record's identity can come from its
   authored name-path as well as from its slot.

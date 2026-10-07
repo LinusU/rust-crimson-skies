@@ -90,6 +90,9 @@ pub struct WorldMeshGroup {
     triangles: usize,
     /// Vertices this group uploaded, after per-group compaction.
     vertices: usize,
+    /// Position components the upload canonicalised to a signed zero under
+    /// [`crate::render::bevy_mesh::SUBNORMAL_POSITION_CLAIM`].
+    subnormal_components: usize,
 }
 
 impl WorldMeshGroup {
@@ -115,6 +118,14 @@ impl WorldMeshGroup {
     #[must_use]
     pub const fn vertices(self) -> usize {
         self.vertices
+    }
+
+    /// Position components canonicalised to a signed zero by the upload's
+    /// declared [`crate::render::bevy_mesh::SUBNORMAL_POSITION_CLAIM`] rule.
+    /// `0` means every stored component kept its own bit pattern.
+    #[must_use]
+    pub const fn subnormal_components(self) -> usize {
+        self.subnormal_components
     }
 }
 
@@ -142,6 +153,7 @@ impl WorldMesh {
             fingerprint: upload.fingerprint(),
             triangles: upload.report().triangles,
             vertices: upload.report().vertices,
+            subnormal_components: upload.report().subnormal_components,
         };
         Self {
             fingerprint: group.fingerprint,
@@ -179,6 +191,7 @@ impl WorldMesh {
                 fingerprint: upload.fingerprint(),
                 triangles: upload.report().triangles,
                 vertices: upload.report().vertices,
+                subnormal_components: upload.report().subnormal_components,
             })
             .collect();
         if groups.len() == 1 {
@@ -233,6 +246,18 @@ impl WorldMesh {
     #[must_use]
     pub fn group_count(&self) -> usize {
         self.groups.len()
+    }
+
+    /// How many stored position components the upload canonicalised to a
+    /// signed zero under [`crate::render::bevy_mesh::SUBNORMAL_POSITION_CLAIM`],
+    /// summed over every group — `0` means every stored component kept its own
+    /// bit pattern.
+    #[must_use]
+    pub fn subnormal_components(&self) -> usize {
+        self.groups
+            .iter()
+            .map(|group| group.subnormal_components)
+            .sum()
     }
 
     /// Per-corner attributes no merged mesh could carry because at least one
