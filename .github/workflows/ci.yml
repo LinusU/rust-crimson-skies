@@ -16,6 +16,14 @@ env:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    # Lint and test run on separate runners: on one runner, clippy's check artifacts plus every
+    # engine-linked test binary left main with 521 MB free after `cargo test` on 2026-10-07, and
+    # branches adding one test file ran out of disk.
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [lint, test]
+    name: rust (${{ matrix.check }})
     env:
       # The workspace's test binaries no longer fit the runner's disk with full debug info: the
       # linker dies with SIGBUS (signal 7) while writing a doctest binary. Line tables keep panics'
@@ -24,9 +32,8 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
-      # The workspace's ~370 test binaries each link Bevy, and `cargo test --workspace` left main with
-      # 450 MB free on 2026-10-05, so drop every preinstalled toolchain this job does not use. Rust comes
-      # from rustup in ~/.rustup, and the system python3 stays.
+      # The workspace's ~380 test binaries each link Bevy, so drop every preinstalled toolchain this
+      # job does not use. Rust comes from rustup in ~/.rustup, and the system python3 stays.
       - name: Free runner disk space
         run: |
           df -h
@@ -35,6 +42,7 @@ jobs:
             /usr/local/share/chromium /usr/local/lib/node_modules /opt/microsoft /opt/google /opt/az \
             /usr/lib/jvm /usr/share/miniconda
           sudo docker image prune --all --force > /dev/null || true
+          sudo swapoff -a && sudo rm -f /swapfile /mnt/swapfile || true
           df -h
 
       - uses: actions/checkout@v5
@@ -58,20 +66,22 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         if: steps.workspace.outputs.present == 'true'
+        with:
+          key: ${{ matrix.check }}
 
       - name: cargo fmt
-        if: steps.workspace.outputs.present == 'true'
+        if: steps.workspace.outputs.present == 'true' && matrix.check == 'lint'
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
-        if: steps.workspace.outputs.present == 'true'
+        if: steps.workspace.outputs.present == 'true' && matrix.check == 'lint'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: cargo test
-        if: steps.workspace.outputs.present == 'true'
+        if: steps.workspace.outputs.present == 'true' && matrix.check == 'test'
         run: cargo test --workspace --locked
 
-      - name: Disk after tests
+      - name: Disk after the checks
         if: always()
         run: df -h
 
