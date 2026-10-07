@@ -59,10 +59,10 @@ use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_content::scene::MeshSlot;
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
-    INDEXED_RECORD_IS_STATIC, ImportedWorld, OBJECT_ID_IS_THE_NODE_SLOT, OBJECT_STORES_NO_MESH,
-    PARTITION_GRID_IS_THE_SECTOR_INDEX, UNINDEXED_RECORD_STORES_NO_GEOMETRY,
-    UNINDEXED_ROLE_UNMEASURED, WORLD_BOUNDARY_UNMEASURED, WORLD_SURFACE_UNMEASURED,
-    WorldImportError, WorldPartitionGrid, import_world_container,
+    GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, INDEXED_RECORD_IS_STATIC, ImportedWorld,
+    OBJECT_ID_IS_THE_NODE_SLOT, OBJECT_STORES_NO_MESH, PARTITION_GRID_IS_THE_SECTOR_INDEX,
+    UNINDEXED_RECORD_STORES_NO_GEOMETRY, UNINDEXED_ROLE_UNMEASURED, WORLD_BOUNDARY_UNMEASURED,
+    WORLD_SURFACE_UNMEASURED, WorldImportError, WorldPartitionGrid, import_world_container,
 };
 use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMesh, RawPolygon, read_gamez_nodes};
 use cs_formats::io::ParseContext;
@@ -422,7 +422,7 @@ fn tile_mesh() -> RawMesh {
 
 /// The mesh source the spawn consumes: one engine mesh per stored mesh slot the
 /// definition names, uploaded through the production F17-B adapter.
-fn fixture_meshes(world: &cs_content::world::WorldDefinition) -> WorldMeshes {
+pub(super) fn fixture_meshes(world: &cs_content::world::WorldDefinition) -> WorldMeshes {
     const UNKNOWNS: [MeshPresentationUnknown; 2] = [
         MeshPresentationUnknown::FrontFaceWinding,
         MeshPresentationUnknown::UvOrigin,
@@ -882,6 +882,7 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
         WORLD_BOUNDARY_UNMEASURED,
         OBJECT_ID_IS_THE_NODE_SLOT,
         OBJECT_STORES_NO_MESH,
+        GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
         RETAIL_WORLD_IMPORT,
     ] {
         assert!(
@@ -892,6 +893,7 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
     let distinct: BTreeSet<&str> = [
         PARTITION_GRID_IS_THE_SECTOR_INDEX,
         INDEXED_RECORD_IS_STATIC,
+        GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
         UNINDEXED_ROLE_UNMEASURED,
         UNINDEXED_RECORD_STORES_NO_GEOMETRY,
         WORLD_SURFACE_UNMEASURED,
@@ -901,7 +903,7 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
     ]
     .into_iter()
     .collect();
-    assert_eq!(distinct.len(), 8, "each gap has its own claim id");
+    assert_eq!(distinct.len(), 9, "each gap has its own claim id");
 }
 
 // ------------------------------------------------------------------ the retail half --
@@ -973,7 +975,11 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
     assert_eq!(report.stored_child_list(), 53);
     assert_eq!(report.objects(), 346);
     assert_eq!(report.objects_with_mesh(), 309);
-    assert_eq!(report.objects_solid(), 293);
+    // Task #727: four of the 293 grid-named records are the original's fog
+    // volumes (`fvol1`…`fvol4`, node slots 944–947), so the grid's candidate
+    // set and the records that resolve `Solid` come apart by exactly those four.
+    assert_eq!(report.partition_records_fog_volume(), 4);
+    assert_eq!(report.objects_solid(), 289);
     assert_eq!(report.objects_in_a_sector(), 293);
     assert_eq!(report.objects_resident(), 53);
     assert_eq!(report.sectors(), 144);
@@ -1013,10 +1019,11 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
     // Everything the container does not state is an explicit unknown, and the
     // definition's own accessors report every one of them.
     assert_eq!(report.matrix_disagreements(), 0);
-    assert!(
-        world.unresolved_collision().is_empty(),
-        "no c1c record stores collision geometry without a measured role any more: {}",
-        world.unresolved_collision().len()
+    assert_eq!(
+        world.unresolved_collision().len(),
+        4,
+        "the four grid-named fog volumes are the only c1c record left without a \
+         measured role (#727); the 17 unindexed `fvol*` resolve as fog volumes (#716)"
     );
     assert_eq!(
         world.unresolved_surface().len(),
@@ -1024,12 +1031,29 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
         "no gameplay surface is measured for any record"
     );
     assert!(world.known_boundary().is_none());
+    // Every unresolved role carries the claim that names *its* gap: the
+    // grid-named fog volumes are the index's candidate that the original takes
+    // as fog (task #727). Nothing unindexed asks the question any more: #716
+    // resolved those as fog volumes.
+    let mut by_claim: BTreeMap<&str, usize> = BTreeMap::new();
     for object in world.unresolved_collision() {
         let Resolved::Unknown { claim_id, .. } = object.collision() else {
             panic!("an unresolved role must be an explicit unknown");
         };
-        assert_eq!(claim_id.as_str(), UNINDEXED_ROLE_UNMEASURED);
+        *by_claim.entry(claim_id.as_str()).or_default() += 1;
+        assert!(
+            !object.shape().is_known(),
+            "an unresolved role keeps an unresolved shape: {:?}",
+            object.id()
+        );
     }
+    assert_eq!(
+        by_claim,
+        BTreeMap::from([(GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, 4)]),
+        "the only role c1c still owes is the four grid-named fog volumes' (#727); the \
+         unindexed `fvol*` half left this list when #716 resolved it as fog, so no \
+         `UNINDEXED_ROLE_UNMEASURED` record remains here"
+    );
     for object in world.unresolved_surface() {
         let Resolved::Unknown { claim_id, .. } = object.surface() else {
             panic!("an unresolved surface must be an explicit unknown");
@@ -1126,8 +1150,9 @@ fn accept_m01_lc_world_import_retail_spawn_world_runs_on_the_imported_c1c_defini
     assert_eq!(spawned.objects().len(), world.objects().len());
     assert_eq!(
         spawned.colliders().len(),
-        292,
-        "every indexed record that binds a mesh collides"
+        288,
+        "every indexed record that binds a mesh collides, except the four \
+         grid-named fog volumes whose role the container never states"
     );
     let mut reasons: BTreeMap<&str, usize> = BTreeMap::new();
     for entry in spawned.skipped() {
@@ -1136,13 +1161,18 @@ fn accept_m01_lc_world_import_retail_spawn_world_runs_on_the_imported_c1c_defini
     assert_eq!(
         reasons,
         BTreeMap::from([
+            // The four grid-named fog volumes (task #727): in the index, taken
+            // as fog by the original's own consumer, never claimed solid here.
+            // The 17 unindexed `fvol*` volumes are no longer a gap — task #716
+            // resolved them as fog volumes.
+            ("unknown_collision_role", 4),
             // The one indexed record that stores no mesh index: it is in the
             // world's spatial index and draws nothing, so it is reported rather
             // than given substitute geometry.
             ("unknown_mesh", 1),
         ]),
-        "the 17 fvol* volumes are no longer a gap — they resolve as fog volumes \
-         (task #716) — so the spawn reports exactly the one gap c1c's own bytes imply"
+        "the spawn reports exactly the two gaps c1c's own bytes imply: the four \
+         grid-named fog volumes (#727) and the one mesh-less indexed record"
     );
     // The 36 anchors and the 17 fog volumes are a *deliberate* `None`:
     // presented, never blocking, and not in the skip list — a resolved record

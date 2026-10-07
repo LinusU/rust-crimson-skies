@@ -43,7 +43,7 @@
 //! original executable ran. Nothing here is `verified_original`, and the tests
 //! assert that too.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cs_app::world::{
     MESH_SETTLE_UPDATES, RetailWorldContainer, RetailWorldContainers, read_world_containers,
@@ -55,8 +55,8 @@ use cs_content::coordinates::{
 use cs_content::scene::{BindingMap, MeshSlot, scene_graph_from_gamez};
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
-    FOG_VOLUME_RECORD_NEVER_BLOCKS, OBJECT_STORES_NO_MESH, UNINDEXED_RECORD_STORES_NO_GEOMETRY,
-    UNINDEXED_ROLE_UNMEASURED, WorldCollisionRole,
+    FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, OBJECT_STORES_NO_MESH,
+    UNINDEXED_RECORD_STORES_NO_GEOMETRY, UNINDEXED_ROLE_UNMEASURED, WorldCollisionRole,
 };
 use cs_formats::gamez::read_gamez_nodes;
 use cs_formats::io::ParseContext;
@@ -671,6 +671,16 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
             split.group
         );
 
+        // Which records the grid names, so the object walk below can tell the
+        // container's own silence (an unindexed record) from the grid-named fog
+        // volumes, which carry their own claim (task #727).
+        let indexed: BTreeSet<u32> = container
+            .partition_grid()
+            .expect("the container's own grid reads")
+            .indexed_slots()
+            .into_iter()
+            .collect();
+
         // The object-level consequence, checked per record rather than as a
         // count: a `None` role is answered either by a record whose own store
         // holds no geometry (shape claim `UNINDEXED_RECORD_STORES_NO_GEOMETRY`)
@@ -737,13 +747,30 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
                     let Resolved::Unknown { claim_id, .. } = object.collision() else {
                         unreachable!("checked above")
                     };
-                    assert_eq!(
-                        claim_id.as_str(),
-                        UNINDEXED_ROLE_UNMEASURED,
-                        "{}: {} keeps the unknown the container owes it",
-                        split.group,
-                        object.id().as_str()
-                    );
+                    let grid_named = object
+                        .id()
+                        .as_str()
+                        .strip_prefix("node-")
+                        .and_then(|slot| slot.parse::<u32>().ok())
+                        .is_some_and(|slot| indexed.contains(&slot));
+                    if grid_named {
+                        assert_eq!(
+                            claim_id.as_str(),
+                            GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
+                            "{}: {} is named by the grid but its name is the one the \
+                             original's fog consumer keys, so it keeps that claim",
+                            split.group,
+                            object.id().as_str()
+                        );
+                    } else {
+                        assert_eq!(
+                            claim_id.as_str(),
+                            UNINDEXED_ROLE_UNMEASURED,
+                            "{}: {} keeps the unknown the container owes it",
+                            split.group,
+                            object.id().as_str()
+                        );
+                    }
                     assert!(
                         object.mesh().is_known(),
                         "{}: {} asks the role question of a record that stores \
@@ -806,8 +833,10 @@ fn accept_m01_lc_world_unit_roles_the_c1c_spawn_reports_the_measured_split() {
     assert_eq!(spawned.objects().len(), world.objects().len());
     assert_eq!(
         spawned.colliders().len(),
-        imported.report().partition_records_with_mesh(),
-        "every indexed record that binds a mesh collides, from that mesh"
+        imported.report().partition_records_with_mesh()
+            - imported.report().partition_records_fog_volume(),
+        "every indexed record that binds a mesh collides, from that mesh, except \
+         the grid-named fog volumes whose own role the container never states"
     );
     let mut reasons: BTreeMap<&str, usize> = BTreeMap::new();
     for entry in spawned.skipped() {
@@ -815,9 +844,10 @@ fn accept_m01_lc_world_unit_roles_the_c1c_spawn_reports_the_measured_split() {
     }
     assert_eq!(
         reasons,
-        BTreeMap::from([("unknown_mesh", 1),]),
-        "the 17 `fvol*` volumes are no longer a gap: they resolve as fog volumes, so \
-         only the one mesh-less indexed record reports a gap"
+        BTreeMap::from([("unknown_collision_role", 4), ("unknown_mesh", 1),]),
+        "the four grid-named fog volumes report the missing role (#727), the 17 \
+         unindexed `fvol*` volumes no longer report one because they resolve as fog \
+         volumes (#716), and the one mesh-less indexed record reports its own gap"
     );
     assert_eq!(
         spawned.non_colliding().len(),

@@ -18,8 +18,10 @@
 //!   discriminator matters: a record that stores geometry but carries no
 //!   measured prefix keeps [`UNINDEXED_ROLE_UNMEASURED`], a record that stores
 //!   no geometry keeps [`UNINDEXED_RECORD_STORES_NO_GEOMETRY`], and an `fvol*`
-//!   record the partition grid *does* name keeps `Solid` under the index rule,
-//!   with the disagreement counted instead of settled.
+//!   record the partition grid *does* name resolves role-unknown under
+//!   [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] instead of the index rule —
+//!   task #727 measured how the image reads the grid (a broad-phase candidate
+//!   index, never a solidity statement), which is what this task deferred to.
 //! * **the axis convention is measured** ([`WORLD_AXIS_CONVENTION_MEASURED`],
 //!   task #436's owner note): identity axis map, `+Y` up, right-handed,
 //!   radians — code-derived over the decrypted image, so the import reports
@@ -38,9 +40,9 @@ use cs_content::coordinates::{
 };
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
-    FOG_VOLUME_RECORD_NEVER_BLOCKS, ImportedWorld, UNINDEXED_RECORD_STORES_NO_GEOMETRY,
-    UNINDEXED_ROLE_UNMEASURED, WORLD_AXIS_CONVENTION_MEASURED, WorldCollisionRole, WorldId,
-    WorldObjectId, import_world_container,
+    FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, ImportedWorld,
+    UNINDEXED_RECORD_STORES_NO_GEOMETRY, UNINDEXED_ROLE_UNMEASURED, WORLD_AXIS_CONVENTION_MEASURED,
+    WorldCollisionRole, WorldId, WorldObjectId, import_world_container,
 };
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{Origin, Resolved};
@@ -147,24 +149,37 @@ fn accept_m01_lc_fvol_roles_an_unindexed_fvol_record_is_a_fog_volume_and_never_b
         "the reason names the measured prefix: {reason}"
     );
 
-    // The index rule is untouched: the `fvol*` record the grid names is still
-    // the world's static geometry, and the disagreement is counted.
+    // Task #727 settles what this task deferred: the `fvol*` record the grid
+    // names is not static geometry, because the image reads that grid as a
+    // broad-phase candidate index — never as a solidity statement — and the
+    // container states no collision role for this record either way.
     let grid_fog = object(&imported, indexed_slot);
+    let grid_role = grid_fog.collision();
+    let Resolved::Unknown { claim_id, reason } = grid_role else {
+        panic!("a grid-named fog volume has no measured collision role: {grid_role:?}");
+    };
     assert_eq!(
-        grid_fog.known_collision(),
-        Some(WorldCollisionRole::Solid),
-        "the partition grid still wins for a record it names — no measurement here \
-         says how the original collided with a grid-named record"
+        claim_id.as_str(),
+        GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
+        "the grid-named `fvol*` record carries #727's claim, not the index's `Solid`"
     );
+    assert!(
+        reason.contains("partition grid") && reason.contains("fog-volume consumer"),
+        "the reason names both statements the record is caught between: {reason}"
+    );
+    let shape = grid_fog.shape();
+    let Resolved::Unknown { claim_id, .. } = shape else {
+        panic!("a record with no measured role stores no measured shape: {shape:?}");
+    };
     assert_eq!(
-        grid_fog.known_shape(),
-        Some(cs_content::world::WorldCollisionShape::FromMesh),
-        "and its collider is still derived from its own mesh"
+        claim_id.as_str(),
+        GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
+        "and its shape is unknown for the same reason, so no collider is derived"
     );
     assert_eq!(
         report.partition_records_fog_volume(),
         1,
-        "the overlap the two rules disagree about is reported, not hidden"
+        "the overlap the two rules disagree about is still reported, not hidden"
     );
 
     // The two classes that were already measured keep their own answers, so a
@@ -204,7 +219,11 @@ fn accept_m01_lc_fvol_roles_an_unindexed_fvol_record_is_a_fog_volume_and_never_b
         report.stored_child_list(),
         "the three classes still partition the world-owned unindexed records exactly"
     );
-    assert_eq!(report.objects_solid(), report.partition_records());
+    assert_eq!(
+        report.objects_solid(),
+        report.partition_records() - report.partition_records_fog_volume(),
+        "the index rule still resolves every grid-named record but the fog volume"
+    );
     assert_eq!(report.objects(), 7);
 }
 
@@ -423,8 +442,8 @@ fn accept_m01_lc_fvol_roles_every_container_fog_split_is_measured() {
         );
         assert_eq!(
             report.objects_solid(),
-            report.partition_records(),
-            "{}: the index rule is untouched by the fog measurement",
+            report.partition_records() - report.partition_records_fog_volume(),
+            "{}: the index rule resolves every grid-named record but the fog volumes              (task #727 settles what this task deferred)",
             split.group
         );
 

@@ -4659,7 +4659,54 @@ pub const PARTITION_GRID_IS_THE_SECTOR_INDEX: &str = "f18-world.partition-grid-i
 /// indexed record as the world's static geometry (`Solid`, `FromMesh`) and
 /// names every record the index does not name as role-unknown. It is a claim
 /// about **this** conversion, not about how the 2000 engine collided.
+///
+/// **One measured exception (task #727).** The 2000 engine's own handling of
+/// the partition grid, read out of the owner-supplied decrypted image
+/// (`docs/findings/2026-10-07-f18-grid-collision-origin.md`), is a *broad-phase
+/// candidate index*, never a solidity statement: the loader reads every cell
+/// (`0x4e3081`–`0x4e3141`) and `cls_di.c`'s intersection-database builder walks
+/// it (`0x4cb579`) to collect **candidates**, which are then filtered by node
+/// flags, a zone whitelist and an optional name before any box is tested. So a
+/// grid-named record is a record the engine could consider, not a record the
+/// engine declared solid — and a record whose own measured role contradicts
+/// static geometry must not inherit one from the index. That is the six
+/// grid-named `fvol*` records of `c1c` and `c5`, which resolve under
+/// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] instead of this claim.
 pub const INDEXED_RECORD_IS_STATIC: &str = "f18-world.indexed-record-is-static";
+
+/// A record the partition grid names whose name keys the original's fog-volume
+/// consumer.
+///
+/// **Unmeasured collision role, measured contradiction.** Two statements about
+/// the same six records disagree and neither of them is a solidity claim:
+///
+/// * the record is in the world's partition grid, which this conversion
+///   otherwise reads as static geometry ([`INDEXED_RECORD_IS_STATIC`]);
+/// * the record's name starts with the four bytes `fvol`, which is the prefix
+///   the decrypted image's **only** name-keyed consumer of that prefix matches
+///   — `strncmp` against `"fvol"` at VA `0x44e087`, inside the routine at VA
+///   `0x44d9d0` that also reads `fogvol.zrd`'s fog keys, so the engine takes
+///   such a record as a **fog volume**.
+///
+/// The measurement that settles it is how the image handles the grid itself
+/// (task #727, `docs/findings/2026-10-07-f18-grid-collision-origin.md`): the
+/// grid is read at load and walked only as a candidate set — `cls_di.c`'s
+/// builder at `0x4cb420` gathers the cells overlapping a query box and then
+/// filters each candidate by node flags, a zone whitelist (`0x56c430`) and an
+/// optional name before its own bounding box is copied (`0x4cd960`). The
+/// container states no collision field for these records at all, so their role
+/// is an explicit **unknown** with this claim id rather than the index's
+/// `Solid`: a consumer sees "the container did not say" instead of a fog bank
+/// that stops a plane.
+///
+/// **Affected content:** collision over exactly these records — the four
+/// `fvol1`…`fvol4` of `c1c` (node slots 944–947) and `fvol1`/`fvol3` of `c5`
+/// (node slots 2304 and 2306) in the original installation — and every claim
+/// that a grid-named record is static collision geometry, which now carries
+/// this named exception. Evidence class: `observed_tool` (static analysis of
+/// one executable), never `verified_original`.
+pub const GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED: &str =
+    "f18-world.grid-named-fog-volume-role-unmeasured";
 
 /// The original's coordinate handedness, axis order and angle unit — and, for
 /// a conversion that never measured it, the world-vertex unit.
@@ -4739,11 +4786,12 @@ pub const WORLD_AXIS_CONVENTION_MEASURED: &str = "f18-world.world-axis-conventio
 /// conversion — not a claim that the 2000 engine never intersected a fog box.
 ///
 /// The claim does **not** reach the `fvol*` records the partition grid *does*
-/// name: for those the index rule ([`INDEXED_RECORD_IS_STATIC`]) still says
-/// `Solid`, and the disagreement is counted by
-/// [`WorldImportReport::partition_records_fog_volume`] rather than settled
-/// here, because no measurement in this task says how the original engine
-/// collided with a record its spatial index names.
+/// name. For those, task #727 measured what the image does with the grid
+/// itself — a broad-phase candidate index, never a solidity statement — so
+/// they resolve an explicit unknown under
+/// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] instead of the index's `Solid`,
+/// and the overlap stays counted by
+/// [`WorldImportReport::partition_records_fog_volume`].
 pub const FOG_VOLUME_RECORD_NEVER_BLOCKS: &str = "f18-world.fog-volume-record-never-blocks";
 
 /// The original's world floor, ceiling and lateral rules.
@@ -5304,6 +5352,7 @@ pub struct WorldImportReport {
     partition_cells: usize,
     partition_records: usize,
     partition_records_with_mesh: usize,
+    partition_records_fog_volume: usize,
     empty_cells: usize,
     objects: usize,
     objects_with_mesh: usize,
@@ -5313,7 +5362,6 @@ pub struct WorldImportReport {
     objects_unindexed_none: usize,
     objects_unindexed_fog: usize,
     objects_unindexed_unresolved: usize,
-    partition_records_fog_volume: usize,
     sectors: usize,
     sectors_without_extent: usize,
     mesh_binding_records_elsewhere: usize,
@@ -5367,6 +5415,25 @@ impl WorldImportReport {
         self.partition_records_with_mesh
     }
 
+    /// How many of the grid's records are the original's fog volumes.
+    ///
+    /// **A measured disagreement, settled rather than only counted.** Task #716
+    /// measured that the image's only name-keyed consumer of the four-byte
+    /// `fvol` prefix is its fog system, while [`INDEXED_RECORD_IS_STATIC`] had
+    /// resolved every grid-named record to `Solid`. Task #727 then measured
+    /// what the image does with the grid itself — a broad-phase *candidate*
+    /// index, never a solidity statement
+    /// (`docs/findings/2026-10-07-f18-grid-collision-origin.md`) — so these
+    /// records are counted here **and** resolve role-unknown under
+    /// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] instead of `Solid`, while
+    /// every other grid-named record keeps the index rule. Measured over the
+    /// original installation: four in `c1c`, two in `c5`, none anywhere else,
+    /// so `partition_records == objects_solid + partition_records_fog_volume`.
+    #[must_use]
+    pub const fn partition_records_fog_volume(&self) -> usize {
+        self.partition_records_fog_volume
+    }
+
     /// How many cells name no record.
     #[must_use]
     pub const fn empty_cells(&self) -> usize {
@@ -5399,9 +5466,15 @@ impl WorldImportReport {
 
     /// How many carry a resolved `Solid` collision role.
     ///
-    /// Equal to [`Self::partition_records`]: the role follows the spatial index
-    /// (see [`INDEXED_RECORD_IS_STATIC`]), so a consumer can tell a world's
-    /// static geometry from its unindexed content with one number.
+    /// Equal to [`Self::partition_records`] minus
+    /// [`Self::partition_records_fog_volume`]: the role follows the spatial
+    /// index (see [`INDEXED_RECORD_IS_STATIC`]) except for the grid-named fog
+    /// volumes, which the original's own consumer takes as fog and this
+    /// conversion therefore leaves role-unknown
+    /// ([`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`]). Subtracting the one from
+    /// the other is what lets a consumer tell a world's static geometry from
+    /// its unindexed content **and** see the measured overlap between the index
+    /// and the fog volumes with three numbers instead of one.
     #[must_use]
     pub const fn objects_solid(&self) -> usize {
         self.objects_solid
@@ -5440,22 +5513,6 @@ impl WorldImportReport {
     #[must_use]
     pub const fn objects_unindexed_unresolved(&self) -> usize {
         self.objects_unindexed_unresolved
-    }
-
-    /// How many records the partition grid names **and** whose name carries the
-    /// `fvol` prefix ([`FOG_VOLUME_RECORD_NEVER_BLOCKS`]).
-    ///
-    /// **A measured disagreement, reported rather than settled.** Task #716
-    /// measured that `fvol*` records are consumed by the fog system, while
-    /// [`INDEXED_RECORD_IS_STATIC`] resolves a grid-named record to `Solid`.
-    /// Both statements hold for this measured handful (six records over the
-    /// eight retail containers), so this conversion keeps the index rule — it
-    /// has no measurement of how the original collided with a record its
-    /// spatial index names — and counts the overlap here instead of hiding it
-    /// in either count.
-    #[must_use]
-    pub const fn partition_records_fog_volume(&self) -> usize {
-        self.partition_records_fog_volume
     }
 
     /// How many sectors the definition declares.
@@ -5724,9 +5781,13 @@ fn canonical_transform(
 ///
 /// An object the grid names becomes the world's static geometry
 /// ([`INDEXED_RECORD_IS_STATIC`]) — a **designed** rule over a measured fact,
-/// not a measurement of how the 2000 engine collided. An unindexed object that
-/// binds no mesh and stores no extent is the store saying this record has no
-/// geometry, so its role resolves to `None`
+/// not a measurement of how the 2000 engine collided — with one measured
+/// exception: a grid-named record whose name the original's fog-volume
+/// consumer keys resolves role-unknown instead
+/// ([`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`], reported by
+/// [`WorldImportReport::partition_records_fog_volume`]). An unindexed object
+/// that binds no mesh and stores no extent is the store saying this record has
+/// no geometry, so its role resolves to `None`
 /// ([`UNINDEXED_RECORD_STORES_NO_GEOMETRY`]) — measured to be exactly the
 /// anchors, transform groups and dummies. An unindexed object whose stored
 /// name carries the `fvol` prefix resolves to `None` under
@@ -5880,14 +5941,34 @@ pub fn import_world_container(
             objects_with_mesh += 1;
             Resolved::Known(Known::new(slot.id().clone(), provenance.clone()))
         };
-        let (collision, shape) = if indexed_record {
-            if is_fog_volume(&record.name) {
-                // Measured (task #716): the grid names some `fvol*` records as
-                // well. The index rule below still says `Solid` for them — this
-                // conversion does not settle a disagreement it cannot measure —
-                // so the overlap is counted and reported instead of hidden.
-                partition_records_fog_volume += 1;
-            }
+        let (collision, shape) = if indexed_record && is_fog_volume(&record.name) {
+            // Measured (task #716) and settled (task #727): the image's only
+            // name-keyed consumer of the `fvol` prefix is its fog system, and
+            // the grid this record is named by is read by the image as a
+            // broad-phase **candidate** index — `cls_di.c`'s builder walks
+            // `0x4cb579` and filters each candidate by node flags, a zone
+            // whitelist and an optional name before any box is tested — never
+            // as a solidity statement. The container states no collision field
+            // either way, so the role is an explicit unknown under #727's
+            // claim rather than the index's `Solid`.
+            partition_records_fog_volume += 1;
+            let reason = format!(
+                "node slot {} is named by the world record's partition grid, but its name is one \
+                 the original's fog-volume consumer takes as fog, and the container states no \
+                 collision role for it",
+                record.index
+            );
+            (
+                Resolved::Unknown {
+                    claim_id: claim(GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED),
+                    reason: reason.clone(),
+                },
+                Resolved::Unknown {
+                    claim_id: claim(GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED),
+                    reason,
+                },
+            )
+        } else if indexed_record {
             objects_solid += 1;
             (
                 Resolved::Known(Known::new(WorldCollisionRole::Solid, provenance.clone())),
@@ -5999,6 +6080,7 @@ pub fn import_world_container(
         partition_cells: grid.cells().len(),
         partition_records: indexed.len(),
         partition_records_with_mesh,
+        partition_records_fog_volume,
         empty_cells: grid.empty_cells().len(),
         objects: definition.objects().len(),
         objects_with_mesh,
@@ -6008,7 +6090,6 @@ pub fn import_world_container(
         objects_unindexed_none,
         objects_unindexed_fog,
         objects_unindexed_unresolved,
-        partition_records_fog_volume,
         sectors: definition.sectors().len(),
         sectors_without_extent,
         mesh_binding_records_elsewhere,

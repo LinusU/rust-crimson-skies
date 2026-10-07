@@ -132,6 +132,7 @@ mod crossing;
 mod evidence_f18_parry_denormal_bvh;
 mod failed_load;
 mod fvol_roles;
+mod grid_collision_origin;
 mod hierarchy;
 mod import;
 mod import_retail;

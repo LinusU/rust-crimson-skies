@@ -68,7 +68,10 @@ use cs_app::world::{
 use cs_content::coordinates::{CoordinateSource, SourceAdapter};
 use cs_content::mesh::RenderMesh;
 use cs_content::textures::WorldTextureLoad;
-use cs_content::world::{UNINDEXED_ROLE_UNMEASURED, WORLD_SURFACE_UNMEASURED, WorldPartitionGrid};
+use cs_content::world::{
+    GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, UNINDEXED_ROLE_UNMEASURED, WORLD_SURFACE_UNMEASURED,
+    WorldPartitionGrid,
+};
 use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMesh, RawPolygon};
 use cs_types::content::{Origin, Resolved};
 use cs_types::evidence::ClaimStatus;
@@ -94,6 +97,10 @@ struct Measured {
     objects: usize,
     /// How many of the grid's records bind a mesh.
     values_with_mesh: usize,
+    /// How many of the grid's records are the original's fog volumes, whose
+    /// name the image's own fog consumer keys (task #727): they are candidates
+    /// the index names and never resolve `Solid`.
+    grid_fog: usize,
     /// How many imported records resolve a mesh reference.
     objects_with_mesh: usize,
     /// How many cells could be given no extent, so their records stay resident.
@@ -146,6 +153,7 @@ const MEASURED: [Measured; 8] = [
         child_list: 66,
         objects: 412,
         values_with_mesh: 285,
+        grid_fog: 0,
         objects_with_mesh: 295,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -169,6 +177,7 @@ const MEASURED: [Measured; 8] = [
         child_list: 78,
         objects: 233,
         values_with_mesh: 139,
+        grid_fog: 0,
         objects_with_mesh: 139,
         // Five cells whose members all store an all-zero box, so they get no
         // sector and their records stay resident.
@@ -191,6 +200,7 @@ const MEASURED: [Measured; 8] = [
         child_list: 53,
         objects: 346,
         values_with_mesh: 292,
+        grid_fog: 4,
         objects_with_mesh: 309,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -211,6 +221,7 @@ const MEASURED: [Measured; 8] = [
         child_list: 24,
         objects: 282,
         values_with_mesh: 186,
+        grid_fog: 0,
         objects_with_mesh: 186,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -231,6 +242,7 @@ const MEASURED: [Measured; 8] = [
         child_list: 48,
         objects: 338,
         values_with_mesh: 289,
+        grid_fog: 0,
         objects_with_mesh: 298,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -251,6 +263,7 @@ const MEASURED: [Measured; 8] = [
         child_list: 14,
         objects: 453,
         values_with_mesh: 374,
+        grid_fog: 0,
         objects_with_mesh: 374,
         // Three cells whose members all store an all-zero box.
         cells_without_extent: 3,
@@ -275,6 +288,7 @@ const MEASURED: [Measured; 8] = [
         child_list: 51,
         objects: 401,
         values_with_mesh: 303,
+        grid_fog: 0,
         objects_with_mesh: 316,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -295,6 +309,7 @@ const MEASURED: [Measured; 8] = [
         child_list: 105,
         objects: 576,
         values_with_mesh: 367,
+        grid_fog: 2,
         objects_with_mesh: 452,
         // Four cells whose members all store an all-zero box.
         cells_without_extent: 4,
@@ -538,11 +553,20 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
             measured.group
         );
 
-        // The role follows the spatial index, so the solid count is the grid's.
+        // The role follows the spatial index, so the solid count is the grid's
+        // minus the grid-named fog volumes: those are in the candidate set and
+        // are never claimed solid, because the original takes their name as fog
+        // (task #727).
+        assert_eq!(
+            report.partition_records_fog_volume(),
+            measured.grid_fog,
+            "{}: how many grid-named records the original's fog consumer takes",
+            measured.group
+        );
         assert_eq!(
             report.objects_solid(),
-            measured.values,
-            "{}: one solid record per indexed record",
+            measured.values - measured.grid_fog,
+            "{}: one solid record per indexed record, except the grid fog volumes",
             measured.group
         );
         // Residency is a **separate** question from the role, and the two come
@@ -643,14 +667,16 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
             measured.group
         );
 
-        // Every gap is named, per group, with its own claim id.
+        // Every gap is named, per group, with its own claim id: the unindexed
+        // records that store geometry, plus the grid-named fog volumes.
         assert_eq!(
             world.unresolved_collision().len(),
-            measured.unresolved_roles,
-            "{}: exactly the unindexed records that store geometry and carry no \
-             measured prefix have no measured role",
+            measured.unresolved_roles + measured.grid_fog,
+            "{}: the geometry-bearing unindexed records and the grid fog volumes \
+             have no measured role",
             measured.group
         );
+        let mut by_claim: BTreeMap<&str, usize> = BTreeMap::new();
         for object in world.unresolved_collision() {
             let Resolved::Unknown { claim_id, .. } = object.collision() else {
                 panic!(
@@ -658,13 +684,37 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
                     measured.group
                 );
             };
-            assert_eq!(claim_id.as_str(), UNINDEXED_ROLE_UNMEASURED);
+            *by_claim.entry(claim_id.as_str()).or_default() += 1;
             assert!(
                 !object.shape().is_known(),
                 "{}: and its shape is unknown for the same reason",
                 measured.group
             );
         }
+        assert_eq!(
+            by_claim
+                .get(UNINDEXED_ROLE_UNMEASURED)
+                .copied()
+                .unwrap_or(0),
+            measured.unresolved_roles,
+            "{}: the unindexed records keep the container's own silence",
+            measured.group
+        );
+        assert_eq!(
+            by_claim
+                .get(GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED)
+                .copied()
+                .unwrap_or(0),
+            measured.grid_fog,
+            "{}: and the grid-named fog volumes keep their own claim",
+            measured.group
+        );
+        assert_eq!(
+            by_claim.values().sum::<usize>(),
+            measured.unresolved_roles + measured.grid_fog,
+            "{}: no third claim appears in the unresolved roles",
+            measured.group
+        );
         assert_eq!(
             world.unresolved_surface().len(),
             measured.objects,
@@ -798,8 +848,9 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
         );
         assert_eq!(
             spawned.colliders().len(),
-            report.partition_records_with_mesh(),
-            "{}: every indexed record that binds a mesh collides, from that mesh",
+            report.partition_records_with_mesh() - report.partition_records_fog_volume(),
+            "{}: every indexed record that binds a mesh collides, from that mesh, \
+             except the grid-named fog volumes",
             measured.group
         );
         // Every collider the spawn reports is for a record whose own shape is
@@ -867,9 +918,9 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
                 .get(SkipReason::UnknownCollisionRole.label())
                 .copied()
                 .unwrap_or(0),
-            measured.unresolved_roles,
-            "{}: exactly the unindexed records that store geometry and carry no \
-             measured prefix report an unknown role",
+            measured.unresolved_roles + measured.grid_fog,
+            "{}: the geometry-bearing unindexed records and the grid-named fog \
+             volumes report an unknown role",
             measured.group
         );
         assert_eq!(
@@ -884,7 +935,7 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
         );
         assert_eq!(
             reasons.len(),
-            1 + usize::from(measured.unresolved_roles > 0),
+            1 + usize::from(measured.unresolved_roles + measured.grid_fog > 0),
             "{}: no other gap reason appears",
             measured.group
         );
@@ -1375,9 +1426,11 @@ fn accept_f18_world_units_containers_the_subnormal_blocker_is_canonicalised() {
         // settle is trying to realise.
         assert_eq!(
             spawned.colliders().len(),
-            imported.report().partition_records_with_mesh(),
-            "{}: the spawn reports every indexed record that binds a mesh, and \
-             those are the colliders the settle has to build",
+            imported.report().partition_records_with_mesh()
+                - imported.report().partition_records_fog_volume(),
+            "{}: the spawn reports every indexed record that binds a mesh but is not \
+             a grid-named fog volume, and those are the colliders the settle has to \
+             build",
             measured.group
         );
 
