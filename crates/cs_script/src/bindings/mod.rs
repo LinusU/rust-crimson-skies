@@ -551,7 +551,7 @@ impl HostBindingRegistry {
         // arity-matching signature's — a more informative error than an
         // arity report — or an `ArityMismatch` naming every accepted count
         // when no signature's count matched at all.
-        let mut arity_error: Option<BindingError> = None;
+        let mut shape_error: Option<BindingError> = None;
         for signature in &spec.signatures {
             if call.args.len() != signature.len() {
                 continue;
@@ -583,11 +583,11 @@ impl HostBindingRegistry {
                     return Self::lower_bound_call(spec, call, at, name);
                 }
                 Some(error) => {
-                    arity_error.get_or_insert(error);
+                    shape_error.get_or_insert(error);
                 }
             }
         }
-        if let Some(error) = arity_error {
+        if let Some(error) = shape_error {
             // At least one signature had the right count; its refusal is the
             // one that reports what actually failed.
             return Err(error);
