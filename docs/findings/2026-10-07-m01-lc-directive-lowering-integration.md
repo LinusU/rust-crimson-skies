@@ -76,7 +76,13 @@ cargo test --workspace --locked -- accept_m01_lc_lowering_ --include-ignored    
 The evidence report for the parent task is regenerated with the command in
 `docs/findings/2026-10-07-m01-lc-directive-lowering-adapter.md` and validated
 with `tools/validate_evidence.py ... --require-pass`; its copy is
-`docs/findings/evidence/M01-LC-DIRECTIVE-LOWERING.json`.
+`docs/findings/evidence/M01-LC-DIRECTIVE-LOWERING.json`. Its `review.method`
+now carries the world-side fact limit as a **limit on the claim** — affected
+content, resolving task and gating — rather than as an `unknowns` entry: this
+report's claim is `implemented` about the *lowering*, and `unknowns` is the
+repo's slot for unresolved **measurements** of that claim (see
+`M01-LC-MISSION-PROGRAM.json`), which is why `--require-pass` requires it
+empty.
 
 ## Status and limits
 
