@@ -753,6 +753,7 @@ fn accept_m01_lc_lowering_signatures_restore_checks_the_directive_log() {
         consumed: vec![],
         directives: vec![],
         terminal: TerminalState::Running,
+        presentation: None,
         last_tick: None,
         policy: cs_script::runtime::PrecedencePolicy::SyntheticConservative,
         pending: vec![],

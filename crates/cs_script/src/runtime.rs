@@ -51,6 +51,16 @@
 //! [`RULE_LIMITATIONS`] entry that gates the affected fidelity claim; nothing
 //! is recorded as measured that has not been read at the addresses cited.
 //!
+//! The terminal check's **presentation half** is
+//! [`MissionEndPresentation`] (F37-D-FU5): the same tick that records the
+//! result selects the branch (LOST before WON), the end delay, the
+//! `OBJECTIVES_*_SOUND`/`MISSION_*_SOUND` slots and the win/loss animation,
+//! and the three reads stay independent — the loss branch can run while the
+//! recorded result is the success. A selection is not a playback: which of
+//! those slots a mission actually fills with a handle is mission content, and
+//! playing, showing or timing them on screen belongs to the audio/presentation
+//! stages, not to this layer.
+//!
 //! Bounds (contract: "each tick has an instruction/action budget and
 //! recursion/stack limits"):
 //! - every objective firing, pending dequeue and action execution spends one
@@ -69,6 +79,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
+use std::time::Duration;
 
 use cs_types::Tick;
 use cs_types::content::ContentId;
@@ -109,7 +120,12 @@ pub const MAX_PENDING_ITEMS: usize = 4096;
 /// Version of the [`MissionStateSnapshot`] record this crate writes. It is
 /// separate from [`crate::ir::IR_VERSION`] because a save outlives the program
 /// it was taken from: an older record must be refused, never reinterpreted.
-pub const SNAPSHOT_VERSION: u32 = 1;
+///
+/// Version 2 carries the mission-end presentation
+/// ([`MissionEndPresentation`], F37-D-FU5): a record written before it cannot
+/// say which branch, delay, sounds and animation the tick that ended the
+/// session selected, so it is refused rather than read as if it carried one.
+pub const SNAPSHOT_VERSION: u32 = 2;
 
 /// Most `Draw`s a restore will replay to rewind the mission's RNG stream.
 ///
@@ -254,6 +270,14 @@ pub const ORIGINAL_IMAGE_SHA256: &str =
 pub const TERMINAL_RULE_FINDINGS: &str =
     "docs/findings/2026-10-07-f37-d-fu2-mission-terminal-precedence-and-tick-ordering.md";
 
+/// The findings entry that records the mission-end presentation this runtime
+/// applies ([`MissionEndPresentation`], F37-D-FU5): which of the measured
+/// facts it now follows, how the mission IR's single terminal action maps onto
+/// the original's instant-outcome marker, and what closed
+/// `f37.d.limit.terminal_branch_delay_and_sound`.
+pub const TERMINAL_PRESENTATION_FINDINGS: &str =
+    "docs/findings/2026-10-07-f37-d-fu5-mission-end-presentation.md";
+
 /// One `f37.d.limit.*` claim: a place where this runtime does not follow a
 /// measured rule, or where the evidence cannot settle a mapping at all.
 ///
@@ -275,6 +299,13 @@ pub struct RuleLimitation {
 
 /// Every limitation F37-D-FU2 records for the terminal-precedence and
 /// tick-ordering rules.
+///
+/// The list shrinks only with its evidence: F37-D-FU5 (#731) removed
+/// `f37.d.limit.terminal_branch_delay_and_sound` once
+/// [`MissionEndPresentation`] implemented the branch, the end delay and the
+/// sound/animation selection it named, pinned by the `accept_f37_d_fu5_*`
+/// tests together with the findings update — the closure and what stays open
+/// are recorded in [`TERMINAL_PRESENTATION_FINDINGS`].
 pub const RULE_LIMITATIONS: &[RuleLimitation] = &[
     RuleLimitation {
         id: "f37.d.limit.one_completion_per_tick",
@@ -313,20 +344,6 @@ pub const RULE_LIMITATIONS: &[RuleLimitation] = &[
                            objective result of that tick, and the NOLOSS and \
                            network-game exclusions have no supplier either.",
         resolving_task: "F37-D-FU6 (#737)",
-    },
-    RuleLimitation {
-        id: "f37.d.limit.terminal_branch_delay_and_sound",
-        open: "The original's terminal check tests LOST before WON to choose the end \
-               delay (0.1 s when an INSTANT* fired that tick, else 3.0 s) and which \
-               end sound, won/lost animation and mission sound play; the recorded \
-               result is still success iff WON. This layer records the result only — \
-               neither the branch, the delay, the sounds nor the animation exists here.",
-        affected_content: "Mission-end presentation for every campaign mission: the \
-                           end-screen delay, OBJECTIVES_WON_SOUND/OBJECTIVES_LOST_SOUND \
-                           and MISSION_WON_SOUND/MISSION_LOST_SOUND selection and the \
-                           WIN_ANIM/LOSS_ANIM selection. The *result* half is \
-                           implemented; only the presentation half is open.",
-        resolving_task: "F37-D-FU5 (#731)",
     },
     RuleLimitation {
         id: "f37.d.limit.aborted_outcome",
@@ -447,7 +464,7 @@ pub const TERMINAL_PRECEDENCE_RULE: RuleLabel = RuleLabel {
                         the recorded result.",
             addresses: "LOST 0x46af7a then WON 0x46afad; OBJECTIVES_LOST_SOUND +0xc74, \
                         OBJECTIVES_WON_SOUND +0xc70",
-            limitations: &["f37.d.limit.terminal_branch_delay_and_sound"],
+            limitations: &[],
         },
         MeasuredFact {
             id: "f37.rule.terminal_precedence.result_iff_won",
@@ -662,6 +679,170 @@ impl MissionCountdown {
     /// the poll also reports as no expiry.
     pub const fn preempts(self) -> bool {
         self.expired && !self.no_loss && !self.network_game
+    }
+}
+
+/// Measured end-screen delay for a mission whose terminal tick fired an
+/// `INSTANTWIN`/`INSTANTLOSS`: **0.1 s**.
+///
+/// `measured-from-original` static code evidence (owner note on Rally #589,
+/// 2026-10-05) — the instant-outcome completion sets the byte the terminal
+/// check reads, and the terminal check (`LOST 0x46af7a` then `WON 0x46afad`)
+/// passes 0.1 s when it is set. `inferred`, never `verified_original`.
+pub const INSTANT_END_DELAY: Duration = Duration::from_millis(100);
+
+/// Measured end-screen delay in every other case: **3.0 s** — the terminal
+/// check's answer when no instant outcome fired that tick, and the value the
+/// countdown-expiry path passes to the end call `0x463c30(1, 3.0)` outright.
+///
+/// Same evidence and same claim status as [`INSTANT_END_DELAY`].
+pub const STANDARD_END_DELAY: Duration = Duration::from_secs(3);
+
+/// Which branch of the original's terminal check selected the mission-end
+/// presentation. The check tests **LOST before WON** (`0x46af7a` then
+/// `0x46afad`), and which branch ran never decides the recorded result
+/// ([`MissionEndPresentation::result`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TerminalBranch {
+    /// The LOST flag was set — even when WON is set too, the loss branch is
+    /// the one tested first and therefore the one that runs.
+    Loss,
+    /// The LOST flag was clear and the WON flag set: the win branch runs.
+    Win,
+}
+
+/// The `OBJECTIVES_LOST_SOUND` (`+0xc74`) or `OBJECTIVES_WON_SOUND` (`+0xc70`)
+/// slot the branch selects. Whether the mission fills that slot with a handle
+/// is mission content (a null handle plays nothing), not this layer's answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ObjectivesCue {
+    ObjectivesLostSound,
+    ObjectivesWonSound,
+}
+
+/// The `MISSION_WON_SOUND` (`+0xc78`) or `MISSION_LOST_SOUND` (`+0xc7c`) slot
+/// the end call `0x463c30` selects from the **WON flag** — from the flag, not
+/// from the recorded result, so the two reads stay independent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MissionCue {
+    MissionWonSound,
+    MissionLostSound,
+}
+
+/// The end animation `0x46ba10` selects from the WON flag: `WIN_ANIM`
+/// (`+0x6e4`) when WON is set, `LOSS_ANIM` (`+0x6e8`) otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EndAnimation {
+    WinAnim,
+    LossAnim,
+}
+
+/// How long the end screen waits: [`EndDelay::Instant`] when an
+/// `INSTANTWIN`/`INSTANTLOSS` fired on the terminal tick, [`EndDelay::Standard`]
+/// otherwise (measured pair, see [`INSTANT_END_DELAY`]/[`STANDARD_END_DELAY`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EndDelay {
+    Instant,
+    Standard,
+}
+
+impl EndDelay {
+    /// The measured wait this delay names: 0.1 s or 3.0 s.
+    #[must_use]
+    pub const fn seconds(self) -> Duration {
+        match self {
+            Self::Instant => INSTANT_END_DELAY,
+            Self::Standard => STANDARD_END_DELAY,
+        }
+    }
+}
+
+/// What one terminal tick selected for mission-end presentation (F37-D-FU5):
+/// the branch, the end delay, the two sound slots and the end animation,
+/// beside the recorded result.
+///
+/// Built from three **independent** reads of the same tick, exactly as the
+/// original reads them, so a caller cannot collapse them into one:
+///
+/// * `lost` — the branch is chosen by testing **LOST before WON**
+///   (`0x46af7a` then `0x46afad`): [`Self::branch`] is [`TerminalBranch::Loss`]
+///   whenever the LOST flag is set, even when the WON flag is set too, and
+///   `None` when neither flag is set (the original then plays no
+///   `OBJECTIVES_*_SOUND` at all — that is the countdown-expiry shape);
+/// * `won` — the mission sound and the animation follow the **WON flag** alone
+///   (`0x463c30` picks `MISSION_WON_SOUND` when WON is set, `0x46ba10` picks
+///   `WIN_ANIM`), never the branch and never the result;
+/// * `instant` — the end delay is 0.1 s when an `INSTANTWIN`/`INSTANTLOSS`
+///   fired that tick, else 3.0 s;
+/// * `result` — what the session recorded, success iff WON (`0x4194e0`), so
+///   **the loss branch may run while the recorded result is the success**.
+///
+/// This is a *selection*, not a playback: it says which of the mission's
+/// `*_SOUND` slots and which animation the original would reach for, and how
+/// long the end screen would wait. Filling those slots with handles is mission
+/// content, and playing or showing anything needs the audio/presentation
+/// stages and their own capabilities (`docs/00-SCOPE.md`); nothing here claims
+/// an audible or visual result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MissionEndPresentation {
+    /// The branch the terminal check took, `None` when neither flag was set.
+    pub branch: Option<TerminalBranch>,
+    /// The mission-level sound slot the end call selects from the WON flag.
+    pub mission_cue: MissionCue,
+    /// The end animation the WON flag selects.
+    pub animation: EndAnimation,
+    /// How long the end screen waits.
+    pub end_delay: EndDelay,
+    /// The recorded result: success iff the WON flag is set (`0x4194e0`).
+    pub result: TerminalState,
+}
+
+impl MissionEndPresentation {
+    /// Builds the presentation of one terminal tick from its four measured
+    /// inputs: the LOST flag, the WON flag, whether an instant outcome fired
+    /// that tick, and the result the session recorded.
+    ///
+    /// The branch test is written LOST first, mirroring `0x46af7a` then
+    /// `0x46afad`, so the order cannot be reversed by accident.
+    #[must_use]
+    pub fn new(lost: bool, won: bool, instant: bool, result: TerminalState) -> Self {
+        let branch = if lost {
+            Some(TerminalBranch::Loss)
+        } else if won {
+            Some(TerminalBranch::Win)
+        } else {
+            None
+        };
+        Self {
+            branch,
+            mission_cue: if won {
+                MissionCue::MissionWonSound
+            } else {
+                MissionCue::MissionLostSound
+            },
+            animation: if won {
+                EndAnimation::WinAnim
+            } else {
+                EndAnimation::LossAnim
+            },
+            end_delay: if instant {
+                EndDelay::Instant
+            } else {
+                EndDelay::Standard
+            },
+            result,
+        }
+    }
+
+    /// The `OBJECTIVES_*_SOUND` slot the branch selects, `None` when neither
+    /// flag was set — the branch's own half of the presentation.
+    #[must_use]
+    pub const fn objectives_cue(&self) -> Option<ObjectivesCue> {
+        match self.branch {
+            Some(TerminalBranch::Loss) => Some(ObjectivesCue::ObjectivesLostSound),
+            Some(TerminalBranch::Win) => Some(ObjectivesCue::ObjectivesWonSound),
+            None => None,
+        }
     }
 }
 
@@ -962,6 +1143,12 @@ pub struct MissionStateSnapshot {
     /// the host never applies one twice.
     pub directives: Vec<DirectiveEmission>,
     pub terminal: TerminalState,
+    /// The mission-end presentation of the tick that ended the session, or
+    /// `None` while it runs. It travels in the record because it is state the
+    /// session produced — which branch, delay, sound slots and animation the
+    /// terminal tick selected — and a restore must hand the host the same
+    /// answer a session that never stopped would (F37-D-FU5).
+    pub presentation: Option<MissionEndPresentation>,
     /// The last evaluated tick; a restored session still refuses to re-evaluate
     /// it ([`TickError::NotAdvancing`]).
     pub last_tick: Option<Tick>,
@@ -1036,6 +1223,13 @@ pub enum RestoreDefect {
     /// The record carries more queued items than the session's queue may hold:
     /// the live path enforces that cap and a restore must not route around it.
     PendingQueueTooLong { count: usize, allowed: usize },
+    /// The record's terminal state and its mission-end presentation disagree
+    /// (F37-D-FU5): a session holds a presentation exactly while it is
+    /// terminal, and that presentation's recorded result is the record's own
+    /// terminal state. A record that breaks either half is not one a live
+    /// session wrote, and restoring it would decide the end screen from data
+    /// the tick that ended the mission never selected.
+    PresentationMismatch,
 }
 
 /// Why a save record could not be restored.
@@ -1168,6 +1362,10 @@ impl fmt::Display for RestoreError {
                     f,
                     "snapshot carries {count} pending items, more than the queue's {allowed}"
                 ),
+                RestoreDefect::PresentationMismatch => write!(
+                    f,
+                    "snapshot's terminal state and mission-end presentation disagree"
+                ),
             },
             Self::WorkBudgetTooSmall { found } => write!(
                 f,
@@ -1259,6 +1457,10 @@ pub struct MissionState {
     pending: BTreeMap<Tick, VecDeque<PendingWork>>,
     /// Count of items stored in `pending` (the memory cap's account).
     pending_len: usize,
+    /// The presentation of the tick that ended this session, `None` while it
+    /// runs ([`MissionEndPresentation`]); set together with `terminal`, so the
+    /// two can never disagree.
+    presentation: Option<MissionEndPresentation>,
     /// Session-unique ordinal for the next scheduled item.
     next_item_ordinal: u32,
     limits: WorkLimits,
@@ -1293,6 +1495,7 @@ impl MissionState {
             policy: PrecedencePolicy::MeasuredOriginal,
             pending: BTreeMap::new(),
             pending_len: 0,
+            presentation: None,
             next_item_ordinal: 0,
             limits: WorkLimits::default(),
             rng: SplitMix64::for_domain(session.0 as u64, MISSION_EVALUATOR_DOMAIN),
@@ -1302,6 +1505,17 @@ impl MissionState {
 
     pub fn terminal(&self) -> TerminalState {
         self.terminal
+    }
+
+    /// The measured mission-end presentation once the session is terminal
+    /// ([`MissionEndPresentation`]), `None` while it runs.
+    ///
+    /// It is the same value on every later read: the tick that ended the
+    /// mission selected it, a latched terminal state never re-selects it, and
+    /// a restored session carries the presentation its record held.
+    #[must_use]
+    pub fn terminal_presentation(&self) -> Option<MissionEndPresentation> {
+        self.presentation
     }
 
     /// Overrides the work/queue bounds; the default is [`WorkLimits::default`].
@@ -1394,6 +1608,7 @@ impl MissionState {
             consumed: self.consumed.iter().copied().collect(),
             directives: self.directives.clone(),
             terminal: self.terminal,
+            presentation: self.presentation,
             last_tick: self.last_tick,
             policy: self.policy,
             pending,
@@ -1423,6 +1638,20 @@ impl MissionState {
             return Err(RestoreError::MissionMismatch {
                 expected: expected.clone(),
                 found: snapshot.mission.clone(),
+            });
+        }
+        // The terminal state and its mission-end presentation are written
+        // together, so they must arrive together: a session holds a
+        // presentation exactly while it is terminal, and the presentation's
+        // own result is the record's terminal state (F37-D-FU5).
+        let presentation_consistent = snapshot.presentation.is_some()
+            == (snapshot.terminal != TerminalState::Running)
+            && snapshot
+                .presentation
+                .is_none_or(|presentation| presentation.result == snapshot.terminal);
+        if !presentation_consistent {
+            return Err(RestoreError::Corrupt {
+                defect: RestoreDefect::PresentationMismatch,
             });
         }
         let declared = |symbol: SymbolId| {
@@ -1622,6 +1851,7 @@ impl MissionState {
             consumed,
             directives: snapshot.directives,
             terminal: snapshot.terminal,
+            presentation: snapshot.presentation,
             last_tick: snapshot.last_tick,
             policy: snapshot.policy,
             pending,
@@ -1648,9 +1878,23 @@ impl MissionState {
     /// Ends the session as [`TerminalState::Aborted`] and drops its queued
     /// work. Idempotent, and a session that already resolved an outcome keeps
     /// it: the evaluator's answer is the answer.
+    ///
+    /// A teardown sets neither mission flag and fires no instant outcome, so
+    /// the presentation it records is the original's **no-flag** shape
+    /// ([`MissionEndPresentation::new`] with all three flags clear): no
+    /// `OBJECTIVES_*_SOUND`, the standard 3.0 s end delay, and the loss side
+    /// of the mission sound and animation because WON is not set. The
+    /// *result* of this path stays designed — the original has no Aborted
+    /// state to observe (`f37.d.limit.aborted_outcome`).
     pub fn abort(&mut self) -> usize {
         if self.terminal == TerminalState::Running {
             self.terminal = TerminalState::Aborted;
+            self.presentation = Some(MissionEndPresentation::new(
+                false,
+                false,
+                false,
+                TerminalState::Aborted,
+            ));
         }
         self.teardown()
     }
@@ -1912,6 +2156,27 @@ impl MissionState {
         }
         if let Some(outcome) = self.policy.pick(&run.requested) {
             self.terminal = outcome.into();
+            // The presentation half of the same tick (F37-D-FU5), built from
+            // three independent reads: the LOST flag chooses the branch (loss
+            // before win), the WON flag chooses the mission sound, the
+            // animation and — through the policy — the recorded result, and
+            // an instant outcome fired this tick exactly when the program
+            // requested the win or the loss. `Action::Finish` is the mission
+            // IR's terminal action and the measured lowering vocabulary
+            // reaches it through `INSTANTWIN`/`INSTANTLOSS`
+            // (`cs_content::mission_control::terminal_outcome_of`), so a
+            // program request that resolves a mission *is* the original's
+            // instant-outcome marker; a transition with no such request (only
+            // a host teardown reaches one today) carries the standard delay.
+            let lost = run.requested.contains(&Outcome::Failed);
+            let won = run.requested.contains(&Outcome::Succeeded);
+            let instant = lost || won;
+            self.presentation = Some(MissionEndPresentation::new(
+                lost,
+                won,
+                instant,
+                self.terminal,
+            ));
         }
         result.events.sort_by_key(|e| e.key);
         result.terminal = self.terminal;

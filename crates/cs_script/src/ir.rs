@@ -755,6 +755,20 @@ pub enum Action {
         max: i32,
     },
     /// Request the mission's terminal outcome.
+    ///
+    /// This is the mission IR's one terminal action, and the measured
+    /// lowering vocabulary reaches it through the two keys that carry no
+    /// argument list — `INSTANTWIN`/`INSTANTLOSS`
+    /// (`cs_content::mission_control::terminal_outcome_of`, "the mission IR
+    /// has an action for it"). The runtime therefore reads a request that
+    /// resolves the mission on the tick it arrives as the original's
+    /// instant-outcome marker, which selects the 0.1 s end delay instead of
+    /// the 3.0 s one (`crate::runtime::MissionEndPresentation`). A *non-instant*
+    /// ending — the outcome-class aggregation (`WON`/`LOST`, which the IR
+    /// spells as [`DirectiveOperation::OutcomeClass`] and never as a terminal
+    /// request) or a countdown expiry — has no way to request an outcome
+    /// without that marker, so it cannot be expressed here yet; the gap and
+    /// its resolving task are recorded in `crate::runtime::TERMINAL_PRESENTATION_FINDINGS`.
     Finish(Outcome),
     /// A reward intent; the host applies it, the runtime emits it once.
     GrantReward {

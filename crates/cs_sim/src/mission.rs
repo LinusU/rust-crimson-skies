@@ -62,9 +62,9 @@ use cs_script::ir::{
     ActorId, ActorState, MissionProgram, Outcome, ValidatedProgram, ValidationError,
 };
 use cs_script::runtime::{
-    EventKind, ExecutionKey, MissionEvent, MissionFacts, MissionState, MissionStateSnapshot,
-    ObjectiveLifecycle, RestoreError, SNAPSHOT_VERSION, SessionGeneration, StopReason,
-    TerminalState, TickError, TickResult, WorkLimits,
+    EventKind, ExecutionKey, MissionEndPresentation, MissionEvent, MissionFacts, MissionState,
+    MissionStateSnapshot, ObjectiveLifecycle, RestoreError, SNAPSHOT_VERSION, SessionGeneration,
+    StopReason, TerminalState, TickError, TickResult, WorkLimits,
 };
 use cs_types::Tick;
 use cs_types::content::ContentId;
@@ -159,6 +159,7 @@ impl MissionSession {
             events: result.events,
             stop: result.stop,
             terminal: result.terminal,
+            presentation: self.state.terminal_presentation(),
             host,
         })
     }
@@ -1356,6 +1357,12 @@ pub struct MissionTick {
     /// Set when a bound stopped the tick early; the mission keeps running.
     pub stop: Option<StopReason>,
     pub terminal: TerminalState,
+    /// The measured mission-end presentation once the mission is terminal
+    /// ([`MissionEndPresentation`]), `None` while it runs: which branch of the
+    /// terminal check ran, how long the end screen waits and which of the
+    /// mission's sound slots and animation it selects — the selection the host
+    /// drives the end screen from, not a playback.
+    pub presentation: Option<MissionEndPresentation>,
     /// What the host applied or refused for this tick.
     pub host: HostReport,
 }
@@ -3100,5 +3107,68 @@ mod tests {
                 .granted_rewards(),
             1
         );
+    }
+
+    /// F37-D-FU5: the mission-end presentation of the tick that ended the
+    /// mission travels with that tick to the host — the loss branch ran while
+    /// the recorded result is the success — and a mission that is still
+    /// running carries none.
+    #[test]
+    fn accept_f37_d_fu5_session_tick_carries_the_mission_end_presentation() {
+        use cs_script::runtime::{
+            EndAnimation, EndDelay, MissionCue, ObjectivesCue, TerminalBranch,
+        };
+
+        // Nothing selected while the mission runs.
+        let mut running = MissionSession::launch(
+            program(vec![objective(
+                1,
+                Condition::Const(false),
+                vec![Action::Finish(Outcome::Succeeded)],
+            )]),
+            SESSION,
+            [],
+        )
+        .unwrap();
+        let tick = running.advance(&facts(), Tick(1)).unwrap();
+        assert_eq!(tick.terminal, TerminalState::Running);
+        assert_eq!(tick.presentation, None);
+        assert_eq!(running.state().terminal_presentation(), None);
+
+        // Both requests on the ending tick: the branch runs loss-first while
+        // the result, the mission sound and the animation answer the WON flag.
+        let mut s = MissionSession::launch(
+            program(vec![
+                objective(
+                    10,
+                    Condition::Const(true),
+                    vec![Action::Finish(Outcome::Succeeded)],
+                ),
+                objective(
+                    3,
+                    Condition::Const(true),
+                    vec![Action::Finish(Outcome::Failed)],
+                ),
+            ]),
+            SESSION,
+            [],
+        )
+        .unwrap();
+        let ended = s.advance(&facts(), Tick(1)).unwrap();
+        assert_eq!(ended.terminal, TerminalState::Succeeded);
+        let presentation = ended
+            .presentation
+            .expect("the tick that ends the mission carries its presentation");
+        assert_eq!(presentation.result, TerminalState::Succeeded);
+        assert_eq!(presentation.branch, Some(TerminalBranch::Loss));
+        assert_eq!(
+            presentation.objectives_cue(),
+            Some(ObjectivesCue::ObjectivesLostSound)
+        );
+        assert_eq!(presentation.mission_cue, MissionCue::MissionWonSound);
+        assert_eq!(presentation.animation, EndAnimation::WinAnim);
+        assert_eq!(presentation.end_delay, EndDelay::Instant);
+        // The live session agrees with the tick it handed out.
+        assert_eq!(s.state().terminal_presentation(), Some(presentation));
     }
 }
