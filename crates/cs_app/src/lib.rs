@@ -664,11 +664,21 @@ pub mod ui {
     //! the type has no campaign cash, ownership or objective field, so an
     //! Instant Action run cannot write campaign progression (F49
     //! non-negotiable 3).
+    //!
+    //! [`mods`] is the F53-C mod-screen projection and lobby fold
+    //! (`specs/F53-mod-mounts-custom-content-and-compatibility-signatures.md`,
+    //! stage `### F53-C`): [`mods::ModsView`] projects the host's
+    //! `cs_content::mods::ModSelection` and its mount outcome into rows and
+    //! refusal notices, and [`mods::lobby_compatibility`] folds the mounted
+    //! set's compatibility signature into the `cs_net` handshake record, so
+    //! a tuning mod can never silently share a lobby with stock content
+    //! (F53 AC03).
 
     pub mod front_end;
     pub mod hud;
     pub mod instant_action;
     pub mod lobby;
+    pub mod mods;
     pub mod scrapbook;
 }
 pub mod weapons;
