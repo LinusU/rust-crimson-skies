@@ -2477,6 +2477,306 @@ pub fn declared_synthetic_blueprint() -> AircraftBlueprint {
     .expect("the synthetic boundary blueprint is valid")
 }
 
+// ------------------------------------------ original construction surface ----
+
+/// The gun slots one airframe's loadout offers, re-exported from
+/// [`crate::weapons`].
+///
+/// **One number, one place**: the single-player ordinance layout builds four
+/// gun-name and four gun-ammunition dropdowns, and the plane-construction gun
+/// page builds four titles, four dropdowns and a four-element selection array
+/// (`object DS[4]`, `object ES[4]`, `int AS[4]`, each with `for (R=0; R < 4;
+/// R++)`). This is non-negotiable 1's "four gun positions", now measured twice
+/// on two different screens rather than taken from the manual alone.
+pub use crate::weapons::ORIGINAL_GUN_SLOTS;
+
+/// The rocket slots one airframe's loadout offers, re-exported from
+/// [`crate::weapons`]. **Measured**: `object RKA[8]` with `for (BA = 0; BA < 8;
+/// BA++)` in `ASSETS/SCRIPTS/ORDINANCELAYOUT.SCRIPT`.
+pub use crate::weapons::ORIGINAL_ROCKET_SLOTS;
+
+/// The hardpoint points one airframe's construction offers, re-exported from
+/// [`crate::weapons`]. **Measured**: `object Q[2]`, `object CT[2]`, `object
+/// DT[2]` and three `for (… < 2; …)` loops in
+/// `ASSETS/SCRIPTS/HARDPOINTS.SCRIPT`.
+pub use crate::weapons::ORIGINAL_HARDPOINT_POINTS;
+
+/// The armor zones the original's armor page declares, as the resource
+/// header's own ids with the control label each page control carries.
+///
+/// **Measured twice**: `ASSETS/SCRIPTS/ARMOR.SCRIPT` builds exactly four
+/// armor-point dropdowns (`object X[4]`, `for (R = 0; R < 4; R++)`) under four
+/// titles spelled `ar_t_nosetitle`, `ar_t_tailtitle`, `ar_t_lefttitle` and
+/// `ar_t_righttitle`, and `ASSETS/SCRIPTS/RESOURCE.H` declares
+/// `IDS_AR_NOSE_TITLE 1044`, `IDS_AR_TAIL_TITLE 1045`, `IDS_AR_LEFT_TITLE
+/// 1046` and `IDS_AR_RIGHT_TITLE 1047` for them.
+///
+/// The *words* are what F44 non-negotiable 1 asked for: per-zone armor is four
+/// named zones (nose, tail, left, right), not an unbounded list. Which
+/// damage-graph node each zone maps to is not in any file, so
+/// [`ArmorFitment`]'s [`DamageNodeKey`] stays declared per profile rather than
+/// bound to these ids here.
+pub const ORIGINAL_ARMOR_ZONES: [(&str, u32, &str); 4] = [
+    ("IDS_AR_NOSE_TITLE", 1044, "ar_t_nosetitle"),
+    ("IDS_AR_TAIL_TITLE", 1045, "ar_t_tailtitle"),
+    ("IDS_AR_LEFT_TITLE", 1046, "ar_t_lefttitle"),
+    ("IDS_AR_RIGHT_TITLE", 1047, "ar_t_righttitle"),
+];
+
+/// The number of armor zones one airframe's construction page offers.
+///
+/// **Measured**: the four-element dropdown array of `ARMOR.SCRIPT`, which is
+/// also the number of titles [`ORIGINAL_ARMOR_ZONES`] records.
+pub const ORIGINAL_ARMOR_ZONE_COUNT: u32 = 4;
+
+/// The plane (blueprint) slots the construction screen keeps.
+///
+/// **Measured**: `ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT` builds `object
+/// HMA[4]` filled with `callback($$E$$, 2243, (R), HMA[R].AK, 1)` for `R` in
+/// `0..4` — four saved-plane slots on one screen.
+///
+/// What each slot *holds* is not in any file: no shipped member enumerates the
+/// aircraft the game starts a profile with, so "every stock blueprint" is
+/// bounded at four slots and its content stays **unmeasured** (recorded in the
+/// F44-D finding and filed as a follow-up, never guessed).
+pub const ORIGINAL_PLANE_SLOTS: u32 = 4;
+
+/// The weight-and-cost row the original's purchase screen keeps for one budget
+/// category, with the exact ids its controls carry.
+///
+/// **Measured** in `ASSETS/SCRIPTS/PURCHASE.SCRIPT`: every row is a set of
+/// `@ctl@PE` controls whose `YC` label ids spell the row, filled by the engine
+/// callback recorded here (`TJ` is the per-control fill callback; the airframe
+/// and engine rows are filled in one `callback($$E$$, 2251/2252, …)` call
+/// across all three cells).
+///
+/// The row's **numbers are not in any file**: the callback reads the
+/// executable's own tables, which is why [`PriceBook`] still has no original
+/// quote. This record says *which rows the original keeps*, never what any of
+/// them holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalBudgetRow {
+    /// The category noun the row's label id spells, before
+    /// [`normalized_budget_word`] applies. `"guns"` and `"hardpoint"` are the
+    /// singular/plural the ids actually use.
+    pub word: &'static str,
+    /// The row label's control id (`pur_t_airframe`, `pur_t_armortitle`, …).
+    pub label: &'static str,
+    /// The weight cell's control id.
+    pub weight: &'static str,
+    /// The cost cell's control id.
+    pub cost: &'static str,
+    /// The engine callback that fills the weight cell.
+    pub weight_callback: u32,
+    /// The engine callback that fills the cost cell.
+    pub cost_callback: u32,
+}
+
+/// Every weight-and-cost row the original's purchase screen declares, in the
+/// order the screen draws them. The screen's `totals` row is deliberately not
+/// here: it is the sum of these, not a category of its own.
+///
+/// See [`OriginalBudgetRow`] for where each id and callback was measured.
+pub const ORIGINAL_BUDGET_ROWS: [OriginalBudgetRow; 5] = [
+    OriginalBudgetRow {
+        word: "airframe",
+        label: "pur_t_airframe",
+        weight: "pur_t_airframeweight",
+        cost: "pur_t_airframecost",
+        weight_callback: 2251,
+        cost_callback: 2251,
+    },
+    OriginalBudgetRow {
+        word: "engine",
+        label: "pur_t_engine",
+        weight: "pur_t_engineweight",
+        cost: "pur_t_enginecost",
+        weight_callback: 2252,
+        cost_callback: 2252,
+    },
+    OriginalBudgetRow {
+        word: "armor",
+        label: "pur_t_armortitle",
+        weight: "pur_t_armorweight",
+        cost: "pur_t_armorcost",
+        weight_callback: 2254,
+        cost_callback: 2255,
+    },
+    OriginalBudgetRow {
+        word: "guns",
+        label: "pur_t_gunstitle",
+        weight: "pur_t_gunweight",
+        cost: "pur_t_guncost",
+        weight_callback: 2257,
+        cost_callback: 2258,
+    },
+    OriginalBudgetRow {
+        word: "hardpoint",
+        label: "pur_t_hardpointtitle",
+        weight: "pur_t_hardpointweight",
+        cost: "pur_t_hardpointcost",
+        weight_callback: 2260,
+        cost_callback: 2261,
+    },
+];
+
+/// The purchase screen's own totals row, drawn after every category.
+///
+/// **Measured**: `callback($$E$$, 2262, ARA.BC, BRA.BC)` fills
+/// `pur_t_totalsweight` and `pur_t_totalscost`.
+pub const ORIGINAL_BUDGET_TOTALS: OriginalBudgetRow = OriginalBudgetRow {
+    word: "totals",
+    label: "pur_t_totalstitle",
+    weight: "pur_t_totalsweight",
+    cost: "pur_t_totalscost",
+    weight_callback: 2262,
+    cost_callback: 2262,
+};
+
+/// The refusal strings the original's purchase screen can show, as the
+/// resource header's own ids.
+///
+/// **Measured** in `ASSETS/SCRIPTS/RESOURCE.H`. The screen decides whether the
+/// purchase button is live from one engine callback
+/// (`if (!callback($$E$$, 2264, AQA.BC)) mail (10000, BQA)`, which disables
+/// `pur_b_purchase`), so these ids are the vocabulary that callback reports
+/// *from*, not a rule this project inferred.
+///
+/// Two of them corroborate refusals this project already enforces:
+/// `IDS_PX_PUR_OVERWEIGHT` is the campaign economy's `LoadoutOverweight` and
+/// `IDS_PX_PUR_INSUFFICIENT` is its `InsufficientFunds`. The rest name
+/// refusals whose original *rule* (what counts as no engine, when paint is
+/// required) is unmeasured.
+pub const ORIGINAL_PURCHASE_REFUSALS: [(&str, u32); 5] = [
+    ("IDS_PX_PUR_PROBLEM", 1182),
+    ("IDS_PX_PUR_NOENGINE", 1183),
+    ("IDS_PX_PUR_NOPAINT", 1225),
+    ("IDS_PX_PUR_INSUFFICIENT", 1226),
+    ("IDS_PX_PUR_OVERWEIGHT", 1227),
+];
+
+/// The construction screen's own measured fields, as the resource header ids.
+///
+/// **Measured** in `ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT`: the screen keeps
+/// a weight *capacity* and a *current* weight next to a plane cost and the
+/// player's cash, which is exactly the pair [`ConstructionRules::max_mass`] and
+/// [`BlueprintTotals::mass`] must answer between, and the pair
+/// [`ConstructionRules::max_cost`] and [`BlueprintTotals::cost`] answer for the
+/// price side.
+///
+/// That the screen displays a capacity says nothing about how the capacity is
+/// *computed*: the number comes from an engine callback and is unmeasured.
+pub const ORIGINAL_CONSTRUCTION_FIELDS: [(&str, u32); 4] = [
+    ("IDS_PX_WEIGHTCAPACITY_TITLE", 1030),
+    ("IDS_PX_CURRENTWEIGHT_TITLE", 1031),
+    ("IDS_PX_PLANECOST_TITLE", 1036),
+    ("IDS_PX_PUR_TOTALCOST", 1178),
+];
+
+/// The budget noun both sides are compared as, after one documented
+/// normalization: lowercase, then a single trailing `s` removed.
+///
+/// The original's ids spell `pur_t_gunweight` and this project spells the
+/// category `guns`; a comparison that insisted on the plural would report a
+/// difference the screen never meant to have. Only the trailing `s` moves —
+/// `ordnance` and `equipment` are untouched, and `hardpoint`/`hardpoints` would
+/// be the same word either way — so no two *different* nouns can collide.
+#[must_use]
+pub fn normalized_budget_word(word: &str) -> String {
+    let lowered = word.trim().to_ascii_lowercase();
+    match lowered.strip_suffix('s') {
+        Some(stem) if !stem.is_empty() => stem.to_owned(),
+        _ => lowered,
+    }
+}
+
+/// Every budget noun [`ORIGINAL_BUDGET_ROWS`] keeps, normalized by
+/// [`normalized_budget_word`] and in screen order without duplicates.
+///
+/// This is the original side of [`original_budget_vocabulary_gaps`]; it is a
+/// function rather than a constant so a caller that re-measured the rows
+/// against the installation gets the same comparison the crate states.
+#[must_use]
+pub fn original_budget_words() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for row in ORIGINAL_BUDGET_ROWS {
+        let word = normalized_budget_word(row.word);
+        if !out.iter().any(|seen| seen == &word) {
+            out.push(word);
+        }
+    }
+    out
+}
+
+/// One budget category this project prices that the original's purchase screen
+/// has no weight-and-cost row for, or the other way round.
+///
+/// A gap is a **finding, not a defect on either side**: F44-A declared
+/// [`BudgetCategory`] from the deliverable's list, and the screen's rows are
+/// measured. Which of the two the original really charges for an item nobody
+/// has read out of the executable is unmeasured, so the audit reports the
+/// disagreement by name instead of silently widening or narrowing either list.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BudgetVocabularyGap {
+    /// A [`BudgetCategory`] with no row of the same noun on the purchase
+    /// screen.
+    OursWithoutOriginal {
+        /// The category this project prices.
+        ours: BudgetCategory,
+    },
+    /// A purchase-screen row this project does not price as a category.
+    OriginalWithoutOurs {
+        /// The screen row's normalized noun.
+        original: String,
+    },
+}
+
+impl fmt::Display for BudgetVocabularyGap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OursWithoutOriginal { ours } => write!(
+                f,
+                "this project prices a {ours} category the purchase screen keeps no \
+                 weight-and-cost row for"
+            ),
+            Self::OriginalWithoutOurs { original } => write!(
+                f,
+                "the purchase screen keeps a {original} weight-and-cost row this \
+                 project does not price as a category"
+            ),
+        }
+    }
+}
+
+/// Every mismatch between [`BudgetCategory::ALL`] and
+/// [`ORIGINAL_BUDGET_ROWS`], ours first in category order, then the screen's
+/// rows in screen order.
+///
+/// Both sides are normalized by [`normalized_budget_word`] before they are
+/// compared, and the comparison is a plain set difference: nothing is mapped,
+/// renamed or dropped, so a reader sees exactly which noun on which side did
+/// not match.
+#[must_use]
+pub fn original_budget_vocabulary_gaps() -> Vec<BudgetVocabularyGap> {
+    let theirs = original_budget_words();
+    let ours: Vec<String> = BudgetCategory::ALL
+        .iter()
+        .map(|category| normalized_budget_word(category.label()))
+        .collect();
+    let mut gaps = Vec::new();
+    for (category, word) in BudgetCategory::ALL.iter().zip(ours.iter()) {
+        if !theirs.contains(word) {
+            gaps.push(BudgetVocabularyGap::OursWithoutOriginal { ours: *category });
+        }
+    }
+    for word in theirs {
+        if !ours.contains(&word) {
+            gaps.push(BudgetVocabularyGap::OriginalWithoutOurs { original: word });
+        }
+    }
+    gaps
+}
+
 /// The synthetic boundary blueprint with a different engine fitted.
 ///
 /// # Errors

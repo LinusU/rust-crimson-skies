@@ -16,10 +16,15 @@
 //! save as one revision.
 
 pub mod screen;
+pub mod spawn;
 
 pub use screen::{
     ConstructionScreen, ConstructionView, ImportRejection, PendingTransaction, QuantityMeter,
     ScreenSaveError,
+};
+pub use spawn::{
+    BlueprintSpawnError, BlueprintSpawnRequest, NormalizedAircraft, PreviewRefusal,
+    SpawnedAircraft, SpawnedBlueprint, preview_normalized, spawn_blueprint,
 };
 
 use std::collections::BTreeSet;
