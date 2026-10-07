@@ -49,12 +49,12 @@ use cs_content::stunts::{
 };
 use cs_formats::script_raw::{discover_container, mission_scope};
 use cs_script::conditions::{
-    BlockCondition, BlockDirective, BlockRefusal, ConditionRefusal, DirectiveArguments, RawBlock,
-    TRAVELERS_APPROACHING, lower_block_condition, lower_record,
+    ANIM_STATE_TAG, BlockCondition, BlockDirective, BlockRefusal, ConditionRefusal,
+    DirectiveArguments, RawBlock, TRAVELERS_APPROACHING, lower_block_condition, lower_record,
 };
 use cs_script::ir::{
     AnimationState, Condition, DEDG_MEMBER_FIELD_REWRITES, IN_PLAY_BIT_WRITERS_UNTRACED,
-    IR_VERSION, MissionProgram, Objective, Value,
+    IR_VERSION, MAX_VALUE_ITEMS, MissionProgram, Objective, Value,
 };
 use cs_script::runtime::{
     MemberFact, MemberPresence, MissionFacts, MissionState, ObjectiveLifecycle, SessionGeneration,
@@ -485,6 +485,43 @@ fn accept_m01_lc_lowering_conditions_every_m01_block_lowers_to_a_validated_condi
         .filter(|declared| declared.begins_dormant())
         .count();
     assert_eq!(dormant, 52, "M01 spells BEGIN_DORMANT in 52 blocks");
+
+    // Measured against the record itself: a block that waits on a dependency
+    // never arms a timed self-wake in M01, so `TICK_DEPENDS_ON_OBJ` reaches
+    // this mission only through the completion gate above and never through
+    // pass 1's wake-timer gate. If a record ever spells a dated wake beside a
+    // dependency, this says so instead of leaving that gate unexercised.
+    for (block, dependency) in &dependencies {
+        let raw = blocks
+            .iter()
+            .find(|candidate| match candidate {
+                RawBlock::Read { block: key, .. } => key == block,
+                _ => false,
+            })
+            .unwrap_or_else(|| panic!("{block} was read from the record"));
+        let RawBlock::Read { directives, .. } = raw else {
+            panic!("{block} was read from the record");
+        };
+        for directive in directives {
+            if directive.key != "BEGIN_DORMANT" {
+                continue;
+            }
+            let DirectiveArguments::List(args) = &directive.args else {
+                panic!("{block} spells an argumented BEGIN_DORMANT");
+            };
+            let wake = match args.first() {
+                Some(Value::Float(wake)) => *wake,
+                Some(Value::Int(wake)) => f64::from(*wake),
+                other => panic!("{block}'s BEGIN_DORMANT spells {other:?}"),
+            };
+            assert!(
+                wake < 0.0,
+                "{block} depends on block index {dependency} and arms its timed self-wake at \
+                 {wake} seconds: pass 1's dependency gate matters to M01's wake timing too, and \
+                 the lifecycle table must be declared with that dependency"
+            );
+        }
+    }
 
     // Every condition validates as one program — AC1's "that
     // MissionProgram::validate accepts", over all 58 at once.
@@ -954,6 +991,260 @@ fn accept_m01_lc_lowering_conditions_evaluation_writes_nothing() {
         conditions[1]
             .residual_unknowns()
             .contains(&DEDG_MEMBER_FIELD_REWRITES)
+    );
+}
+
+// --------------------------------- bounds, slots and the anchor fallback ----
+
+/// AC1: the operand bound applies to the **lists** a condition carries — the
+/// member rows, the animation rows and one name chain — and to nothing else.
+/// A name's own byte length is data, not an operand count, so a long
+/// animation name still validates exactly as a long [`Value::Str`] does.
+#[test]
+fn accept_m01_lc_lowering_conditions_operand_bounds_count_the_lists_they_bound() {
+    fn validate(condition: Condition) -> Result<(), cs_script::ir::ValidationError> {
+        MissionProgram {
+            version: IR_VERSION,
+            mission: cid(ContentKind::Mission, "synthetic"),
+            variables: vec![],
+            objectives: vec![Objective {
+                id: cs_script::ir::SymbolId(0),
+                content: cid(ContentKind::Objective, "BOUNDS"),
+                condition,
+                actions: vec![],
+                span: None,
+            }],
+        }
+        .validate()
+        .map(|_| ())
+    }
+
+    let too_many_rows = Condition::InactiveMembers {
+        members: vec![vec!["member".to_owned()]; MAX_VALUE_ITEMS + 1],
+        threshold: 1,
+    };
+    assert!(
+        matches!(
+            validate(too_many_rows),
+            Err(cs_script::ir::ValidationError::TooManyConditionOperands { count, .. })
+                if count == MAX_VALUE_ITEMS + 1
+        ),
+        "a member list longer than the IR's own list cap is refused"
+    );
+
+    let too_long_a_chain = Condition::InactiveMembers {
+        members: vec![(0..=MAX_VALUE_ITEMS).map(|i| format!("n{i}")).collect()],
+        threshold: 1,
+    };
+    assert!(
+        matches!(
+            validate(too_long_a_chain),
+            Err(cs_script::ir::ValidationError::TooManyConditionOperands { .. })
+        ),
+        "one name chain is bounded the same way"
+    );
+
+    let too_many_animations = Condition::AnimationStates {
+        required: (MAX_VALUE_ITEMS + 1) as u32,
+        animations: vec![("anim".to_owned(), AnimationState::Running); MAX_VALUE_ITEMS + 1],
+    };
+    assert!(
+        matches!(
+            validate(too_many_animations),
+            Err(cs_script::ir::ValidationError::TooManyConditionOperands { count, .. })
+                if count == MAX_VALUE_ITEMS + 1
+        ),
+        "the animation list is counted, not each name's byte length"
+    );
+
+    // The regression the count fixes: an animation name longer than the cap
+    // is a name, not a list, and must validate.
+    let long_name = "a".repeat(MAX_VALUE_ITEMS * 4);
+    assert!(
+        validate(Condition::AnimationStates {
+            required: 1,
+            animations: vec![(long_name.clone(), AnimationState::Executed)],
+        })
+        .is_ok(),
+        "a long animation name is data the condition carries, not an operand count"
+    );
+    assert!(
+        validate(Condition::InactiveMembers {
+            members: vec![vec![long_name]],
+            threshold: 1,
+        })
+        .is_ok(),
+        "a long member name is data the condition carries, not an operand count"
+    );
+}
+
+/// AC1/AC4: the record holds one slot per evaluator kind, so a second `DEDG`
+/// or `TRAVELERS` spelling refuses by block and key instead of becoming a
+/// disjunction the original's single evaluator cannot produce — while
+/// `ANIM_STATE`, whose header appends every pair, lowers to **one** condition
+/// whose required count is the total pair count.
+#[test]
+fn accept_m01_lc_lowering_conditions_one_slot_per_evaluator_kind() {
+    let dedg = BlockDirective::new("DEDG", vec![Value::Int(4), Value::Int(1)]);
+    let refusal = lower_block_condition("OBJECTIVE9", 8, &[dedg.clone(), dedg.clone()])
+        .expect_err("a second DEDG overwrites the record's one slot");
+    assert_eq!(refusal.block(), "OBJECTIVE9");
+    assert_eq!(refusal.key(), "DEDG");
+
+    let travelers = |polarity: &str| {
+        BlockDirective::new(
+            "TRAVELERS",
+            vec![
+                s("player"),
+                s(polarity),
+                s("anchor"),
+                Value::Float(10.0),
+                Value::Int(1),
+            ],
+        )
+    };
+    let refusal = lower_block_condition(
+        "OBJECTIVE10",
+        9,
+        &[
+            travelers(TRAVELERS_APPROACHING),
+            travelers(TRAVELERS_APPROACHING),
+        ],
+    )
+    .expect_err("a second TRAVELERS overwrites the record's one slot");
+    assert_eq!(refusal.key(), "TRAVELERS");
+
+    // Two ANIM_STATE directives are measured to append into the block's one
+    // header: one evaluator, required = both pairs.
+    let anim = |name: &str, state: &str| {
+        BlockDirective::new(
+            "ANIM_STATE",
+            vec![
+                s(ANIM_STATE_TAG),
+                ls(vec![
+                    s("NAME"),
+                    ls(vec![s(name)]),
+                    s("STATE"),
+                    ls(vec![s(state)]),
+                ]),
+            ],
+        )
+    };
+    let condition = lower(
+        "OBJECTIVE11",
+        10,
+        vec![anim("first", "RUNNING"), anim("second", "EXECUTED")],
+    );
+    let Condition::All(items) = &condition else {
+        panic!("the gate and the one evaluator lower to an All: {condition:?}");
+    };
+    let Some(Condition::AnimationStates {
+        required,
+        animations,
+    }) = items.get(1)
+    else {
+        panic!("the appended pairs lower to one animation evaluator: {condition:?}");
+    };
+    assert_eq!(*required, 2, "required counts every appended pair");
+    assert_eq!(
+        animations,
+        &vec![
+            ("first".to_owned(), AnimationState::Running),
+            ("second".to_owned(), AnimationState::Executed),
+        ],
+        "both directives' pairs, in declaration order"
+    );
+
+    let mut facts = MissionFacts::default();
+    facts.objectives.insert(10, ObjectiveLifecycle::Awake);
+    facts
+        .animations
+        .insert("first".to_owned(), AnimationState::Running.code());
+    let state = evaluator();
+    assert!(
+        !state.holds(&condition, &facts),
+        "one of two appended pairs does not reach a required count of two"
+    );
+    facts
+        .animations
+        .insert("second".to_owned(), AnimationState::Executed.code());
+    assert!(
+        state.holds(&condition, &facts),
+        "both appended pairs satisfy the required count"
+    );
+}
+
+/// AC2: the anchor's own measured fallback — a name the facts record as
+/// unresolved leaves the record's explicit point unwritten, so the original
+/// measures from the zeroed point, while a chain nobody recorded at all is
+/// still fail-closed.
+#[test]
+fn accept_m01_lc_lowering_conditions_an_unresolved_anchor_falls_back_to_the_zeroed_point() {
+    let condition = lower(
+        "OBJECTIVE12",
+        11,
+        vec![BlockDirective::new(
+            "TRAVELERS",
+            vec![
+                s("player"),
+                s(TRAVELERS_APPROACHING),
+                s("anchor"),
+                Value::Float(5.0),
+                Value::Int(1),
+            ],
+        )],
+    );
+    let state = evaluator();
+
+    let mut facts = MissionFacts::default();
+    facts.objectives.insert(11, ObjectiveLifecycle::Awake);
+    let anchor = |presence| MemberFact {
+        presence,
+        position: [1_000.0, 0.0, 0.0],
+    };
+
+    // The anchor name never resolves: the original's explicit point stays the
+    // zeroed record, so the distance is measured from the world origin.
+    facts
+        .members
+        .insert(vec!["anchor".to_owned()], anchor(MemberPresence::Missing));
+    facts.members.insert(
+        vec!["player".to_owned()],
+        MemberFact {
+            presence: MemberPresence::InPlay,
+            position: [3.0, 0.0, 0.0],
+        },
+    );
+    assert!(
+        state.holds(&condition, &facts),
+        "3 units from the zeroed point is inside the radius of 5"
+    );
+    facts.members.insert(
+        vec!["player".to_owned()],
+        MemberFact {
+            presence: MemberPresence::InPlay,
+            position: [10.0, 0.0, 0.0],
+        },
+    );
+    assert!(
+        !state.holds(&condition, &facts),
+        "10 units from the zeroed point is outside the radius of 5"
+    );
+
+    // A chain the facts never carried is a different question: nobody
+    // observed it, so no distance comes from an undescribed world.
+    let mut unobserved = MissionFacts::default();
+    unobserved.objectives.insert(11, ObjectiveLifecycle::Awake);
+    unobserved.members.insert(
+        vec!["player".to_owned()],
+        MemberFact {
+            presence: MemberPresence::InPlay,
+            position: [1.0, 0.0, 0.0],
+        },
+    );
+    assert!(
+        !state.holds(&condition, &unobserved),
+        "an anchor nobody recorded still fails closed"
     );
 }
 

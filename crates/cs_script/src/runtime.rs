@@ -1688,9 +1688,18 @@ impl MissionState {
                     return false;
                 }
                 let anchor_point = match anchor {
-                    TravelersAnchor::Object(chain) => {
-                        facts.members.get(chain).map(|row| row.position)
-                    }
+                    TravelersAnchor::Object(chain) => match facts.members.get(chain) {
+                        Some(row) if row.presence != MemberPresence::Missing => Some(row.position),
+                        // Measured (finding B): the anchor name is resolved
+                        // lazily and, while it never resolves, the record's
+                        // explicit point is never written — so the original
+                        // measures the distance from the **zeroed point**.
+                        // A chain the facts do not carry at all is a
+                        // different question: nobody observed it, so no
+                        // distance may be taken from a world nobody described.
+                        Some(_) => Some([0.0; 3]),
+                        None => None,
+                    },
                     TravelersAnchor::Point(point) => Some(*point),
                 };
                 let Some(anchor_point) = anchor_point else {

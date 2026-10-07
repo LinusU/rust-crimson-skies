@@ -1090,8 +1090,11 @@ impl Ctx<'_> {
 
     /// The [`MAX_VALUE_ITEMS`] bound over one world-shaped condition's
     /// operand collections — the same cap a list value carries, applied to
-    /// the member chains and animation lists a condition holds as data, so a
-    /// condition cannot carry more than an IR list may.
+    /// the **counts** a condition holds as data: how many member rows
+    /// ([`Condition::InactiveMembers`]' `members`), how many animation rows
+    /// ([`Condition::AnimationStates`]' `animations`), and how long one name
+    /// chain may run. A name's own byte length is not an operand count and is
+    /// deliberately unbounded, exactly as a [`Value::Str`] is.
     fn condition_operands(
         &self,
         sizes: impl IntoIterator<Item = usize>,
@@ -1128,11 +1131,12 @@ impl Ctx<'_> {
             Condition::All(items) | Condition::Any(items) => items
                 .iter()
                 .try_for_each(|i| self.condition(i, depth + 1, trace)),
-            Condition::InactiveMembers { members, .. } => {
-                self.condition_operands(members.iter().map(MemberName::len), trace)
-            }
+            Condition::InactiveMembers { members, .. } => self.condition_operands(
+                members.iter().map(MemberName::len).chain([members.len()]),
+                trace,
+            ),
             Condition::AnimationStates { animations, .. } => {
-                self.condition_operands(animations.iter().map(|(name, _)| name.len()), trace)
+                self.condition_operands([animations.len()], trace)
             }
             Condition::EnemyGroupDepletion { .. } => Ok(()),
             Condition::Travelers {

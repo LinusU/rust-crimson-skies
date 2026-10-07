@@ -106,7 +106,7 @@ fn accept_m01_lc_lowering_conditions_lifecycle_gates_are_represented() {
     );
     assert_eq!(
         table
-            .declare(2, LifecycleDecl::dormant(Some(-1.0)))
+            .declare(2, LifecycleDecl::dormant(Some(-1.0)).depends_on(0),)
             .expect("block 2 is declared once"),
         ObjectiveLifecycle::Dormant
     );
@@ -322,4 +322,63 @@ fn accept_m01_lc_lowering_conditions_a_firing_block_emits_one_completion() {
         table.facts().objectives.get(&1),
         Some(&ObjectiveLifecycle::Done)
     );
+}
+
+/// The measured pass-1 gate on the timed self-wake: a block that names a
+/// `TICK_DEPENDS_ON_OBJ` target does not run its own wake timer while that
+/// dependency is not awake — the dependency delays the dependent's whole
+/// lifecycle, not only its completion (finding B, pass 1). An external wake
+/// is not gated, because the original's wake call checks killed and completed
+/// records only, and a dependency nobody declared reads as not awake.
+#[test]
+fn accept_m01_lc_lowering_conditions_the_timed_self_wake_waits_for_its_dependency() {
+    // Block 1's wake time is due well before block 0's, but its dependency is
+    // block 0 — so it stays dormant until the dependency wakes.
+    let mut table = BlockLifecycleTable::new();
+    table
+        .declare(0, LifecycleDecl::dormant(Some(5.0)))
+        .expect("block 0 is declared once");
+    table
+        .declare(1, LifecycleDecl::dormant(Some(1.0)).depends_on(0))
+        .expect("block 1 is declared once");
+    assert_eq!(
+        table.tick(2.0),
+        Vec::<u32>::new(),
+        "block 1's wake time has passed, but its dependency is still dormant"
+    );
+    assert_eq!(table.state(1), Some(ObjectiveLifecycle::Dormant));
+
+    // When the dependency wakes, the dependent's own (long overdue) timer
+    // fires in the same call — record order, the same sequencing the
+    // original's per-objective loop has.
+    assert_eq!(table.tick(6.0), vec![0, 1]);
+    assert_eq!(table.state(1), Some(ObjectiveLifecycle::Awake));
+    assert_eq!(
+        table.tick(7.0),
+        Vec::<u32>::new(),
+        "a woken block does not re-wake"
+    );
+
+    // A dependency nobody declared is never awake, so the dependent never
+    // self-wakes: absence fails closed rather than opening the gate.
+    let mut unknown = BlockLifecycleTable::new();
+    unknown
+        .declare(0, LifecycleDecl::dormant(Some(1.0)).depends_on(9))
+        .expect("block 0 is declared once");
+    assert_eq!(unknown.tick(10.0), Vec::<u32>::new());
+    assert_eq!(unknown.state(0), Some(ObjectiveLifecycle::Dormant));
+    assert_eq!(unknown.state(9), None);
+
+    // A dependency that already completed is not awake either: the dependent
+    // stays dormant for the rest of the mission, while an *external* wake
+    // still works (the wake call has no dependency gate).
+    let mut done = BlockLifecycleTable::new();
+    done.declare(0, LifecycleDecl::awake())
+        .expect("declared once");
+    done.declare(1, LifecycleDecl::dormant(Some(1.0)).depends_on(0))
+        .expect("block 1 is declared once");
+    assert!(done.complete(0), "the dependency completes");
+    assert_eq!(done.tick(10.0), Vec::<u32>::new());
+    assert!(done.wake(1), "the external wake is not dependency-gated");
+    assert_eq!(done.state(1), Some(ObjectiveLifecycle::Awake));
 }

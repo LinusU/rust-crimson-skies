@@ -21,8 +21,13 @@
 //! * every block carries [`Condition::ObjectiveAwake`] for itself, so a block
 //!   that starts dormant cannot latch at tick 0 and a completed dependency
 //!   freezes its dependent (the measured `TICK_DEPENDS_ON_OBJ` gate);
-//! * an armed evaluator becomes the block's predicate; two would be
-//!   [`Condition::Any`] (the original's "first true wins");
+//! * an armed evaluator becomes the block's predicate; two **different
+//!   kinds** would be [`Condition::Any`] (the original's "first true wins");
+//!   a second spelling of the *same* kind refuses instead, because the record
+//!   holds one slot per kind and overwrites it at parse — except
+//!   `ANIM_STATE`, whose header appends every pair and counts them all into
+//!   `required`, which [`lower_block_condition`] accumulates into one
+//!   condition;
 //! * a block with **no** armed evaluator is the gate alone — measured: "an
 //!   objective with no armed condition completes on the first tick it is
 //!   awake". That is a lifecycle state, never a `Condition::Const(_)`.
@@ -429,9 +434,9 @@ pub fn lower_block(raw: &RawBlock) -> BlockCondition {
 /// # Errors
 ///
 /// A [`ConditionRefusal`] naming the block and the key, never a guessed
-/// predicate: an evaluator this build does not lower, a polarity or state
-/// token outside the measured vocabulary, or operands outside every measured
-/// shape.
+/// predicate: an evaluator this build does not lower, a second spelling of an
+/// evaluator kind the record stores once, a polarity or state token outside
+/// the measured vocabulary, or operands outside every measured shape.
 pub fn lower_block_condition(
     block: &str,
     index: u32,
@@ -442,6 +447,16 @@ pub fn lower_block_condition(
     let mut members: Vec<MemberName> = Vec::new();
     let mut threshold: Option<u32> = None;
     let mut evaluators: Vec<Condition> = Vec::new();
+    // The record holds **one slot per evaluator kind**: a second `DEDG` or
+    // `TRAVELERS` spelling overwrites the first's fields at parse (finding B),
+    // so the original evaluates one evaluator of each kind, never both. A
+    // block that spells either key twice is refused rather than OR'd into a
+    // disjunction the original cannot produce. `ANIM_STATE` is the measured
+    // exception — its header *appends* every pair and counts them into
+    // `required` — so its pairs accumulate below.
+    let mut dedg_spelled = false;
+    let mut travelers_spelled = false;
+    let mut animations: Vec<(String, AnimationState)> = Vec::new();
 
     for directive in directives {
         let key = directive.key.as_str();
@@ -537,16 +552,47 @@ pub fn lower_block_condition(
                 }
             }
             "DEDG" => {
+                if dedg_spelled {
+                    return Err(ConditionRefusal::NoConditionFor {
+                        block: block.to_owned(),
+                        key: key.to_owned(),
+                        detail: "the record holds one DEDG slot: a second spelling overwrites \
+                                 +0x580/+0x584 at parse, and the optional generator name at \
+                                 +0x588 is aliased with TICK_DEPENDS_ON_OBJ, so only one DEDG \
+                                 evaluator exists and OR-ing two spellings would offer a \
+                                 predicate that evaluator cannot produce"
+                            .to_owned(),
+                    });
+                }
+                dedg_spelled = true;
                 if let Some(condition) = dedg(block, directive)? {
                     evaluators.push(condition);
                 }
             }
             "TRAVELERS" => {
+                if travelers_spelled {
+                    return Err(ConditionRefusal::NoConditionFor {
+                        block: block.to_owned(),
+                        key: key.to_owned(),
+                        detail: "the record holds one TRAVELERS slot: a second spelling \
+                                 overwrites the subject, the polarity, the anchor, the radius \
+                                 and the required count at parse, so only one TRAVELERS \
+                                 evaluator exists and OR-ing two spellings would offer a \
+                                 predicate that evaluator cannot produce"
+                            .to_owned(),
+                    });
+                }
+                travelers_spelled = true;
                 if let Some(condition) = travelers(block, directive)? {
                     evaluators.push(condition);
                 }
             }
-            "ANIM_STATE" => evaluators.push(anim_state(block, directive)?),
+            // Measured (finding C): every `ANIM_STATE` directive appends its
+            // pairs to the block's single `{required, count, records}` header
+            // and increments `required` once per appended pair, so several
+            // directives are **one** evaluator whose required count is the
+            // total pair count — not a disjunction of per-directive tests.
+            "ANIM_STATE" => animations.extend(anim_state(block, directive)?),
             "DANGER_ZONES_COMPLETED" | "DANGER_ZONES_COMPLETION_COUNT" => {
                 return Err(ConditionRefusal::NoConditionFor {
                     block: block.to_owned(),
@@ -592,6 +638,14 @@ pub fn lower_block_condition(
         // when the key is absent (`+0x55c` defaults to `+0x560`).
         let threshold = threshold.unwrap_or(members.len() as u32);
         evaluators.push(Condition::InactiveMembers { members, threshold });
+    }
+    if !animations.is_empty() {
+        // Measured (finding C): `required` is the number of appended pairs,
+        // counted across every `ANIM_STATE` directive of the block.
+        evaluators.push(Condition::AnimationStates {
+            required: animations.len() as u32,
+            animations,
+        });
     }
 
     Ok(match evaluators.len() {
@@ -880,16 +934,20 @@ fn point_of(
     Ok(components)
 }
 
-/// `ANIM_STATE ["ANIM", ["NAME", [name], "STATE", [token]]]` → the
-/// animation-state predicate.
+/// `ANIM_STATE ["ANIM", ["NAME", [name], "STATE", [token]]]` → the animation
+/// pairs this directive **appends** to the block's one header.
 ///
 /// Measured (finding C): the descriptor is a tag-3 `ANIM` followed by a spec
 /// record; `NAME` and `STATE` are read out of it, the state token maps
-/// `RUNNING`/`EXECUTED`/`INVALID` to 2/3/4, and `required` is the number of
-/// appended pairs. Every M01 site spells exactly one pair; the
+/// `RUNNING`/`EXECUTED`/`INVALID` to 2/3/4, and the header's `required` is
+/// incremented once per appended pair — across every `ANIM_STATE` directive of
+/// the block. Every M01 site spells exactly one pair; the
 /// `COMPLETION_COUNT` sibling that could overwrite `required` is refused by
 /// its own key.
-fn anim_state(block: &str, directive: &BlockDirective) -> Result<Condition, ConditionRefusal> {
+fn anim_state(
+    block: &str,
+    directive: &BlockDirective,
+) -> Result<Vec<(String, AnimationState)>, ConditionRefusal> {
     let args = directive.operands(block)?;
     let refuse = |detail: String| ConditionRefusal::BadOperands {
         block: block.to_owned(),
@@ -986,11 +1044,5 @@ fn anim_state(block: &str, directive: &BlockDirective) -> Result<Condition, Cond
             "the spec does not spell both a NAME and a STATE".to_owned(),
         ));
     };
-    Ok(Condition::AnimationStates {
-        // The number of appended pairs — the descriptor's own count. The
-        // `COMPLETION_COUNT` sibling that could overwrite it is refused by
-        // its key, so the record's value and this one cannot disagree.
-        required: 1,
-        animations: vec![(name, state)],
-    })
+    Ok(vec![(name, state)])
 }

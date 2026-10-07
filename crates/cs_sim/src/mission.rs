@@ -940,6 +940,11 @@ impl std::error::Error for LifecycleError {}
 /// (`+0xc = 1`, `+0x5c8 = 1`), while the key's presence clears both
 /// (`+0xc = 0`, `+0x5c8 = 0`) and its child0 is stored as the mission-clock
 /// second of the timed self-wake.
+///
+/// [`Self::depends_on`] carries the block's `TICK_DEPENDS_ON_OBJ` target, a
+/// second measured part of the same lifecycle: pass 1 refuses **every** timer
+/// of a block whose dependency is not currently awake, so the dependency
+/// delays the dependent's timed self-wake and not only its completion.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LifecycleDecl {
     /// Whether the record spelled `BEGIN_DORMANT` for this block.
@@ -948,6 +953,9 @@ pub struct LifecycleDecl {
     /// value (M01's `-1` sentinel) disables the timed wake, which is why it
     /// stays in the declaration instead of being folded into `None`.
     wake_at: Option<f64>,
+    /// The `TICK_DEPENDS_ON_OBJ` target this block's lifecycle waits on, as
+    /// the record stores it (zero-based, absent for no dependency).
+    depends_on: Option<u32>,
 }
 
 impl LifecycleDecl {
@@ -957,19 +965,36 @@ impl LifecycleDecl {
         Self {
             starts_dormant: false,
             wake_at: None,
+            depends_on: None,
         }
     }
 
     /// A block that starts dormant, with the record's own `BEGIN_DORMANT`
-    /// child0 as its timed self-wake (`Some`), or no timed wake at all when
-    /// the record spells no child — measured: M01 always spells exactly one
-    /// float.
+    /// child0 as its timed self-wake (`Some`), or no timed wake at all.
+    ///
+    /// Measured: every `BEGIN_DORMANT` site the installation spells carries
+    /// child0 (1014 sentinel plus 104 positive arguments over 1118 sites), so
+    /// a declaration without a wake time is a synthetic one — and a record
+    /// that spelled the key with no child would keep `+0x5d0 = 0`, the parse
+    /// default, and therefore wake on the first tick rather than never. A
+    /// caller that wants the measured "never wakes" reads the record's `-1`
+    /// sentinel as `Some(-1.0)`.
     #[must_use]
     pub const fn dormant(wake_at: Option<f64>) -> Self {
         Self {
             starts_dormant: true,
             wake_at,
+            depends_on: None,
         }
+    }
+
+    /// The block's `TICK_DEPENDS_ON_OBJ` target: while that block is not
+    /// awake, this one's timed self-wake does not run (measured: pass 1's
+    /// `+0x10 >= 0 && dep->+0x5c8 != 1` skip).
+    #[must_use]
+    pub fn depends_on(mut self, dependency: u32) -> Self {
+        self.depends_on = Some(dependency);
+        self
     }
 
     /// Whether the block starts dormant.
@@ -983,6 +1008,12 @@ impl LifecycleDecl {
     pub const fn wake_at(self) -> Option<f64> {
         self.wake_at
     }
+
+    /// The `TICK_DEPENDS_ON_OBJ` target the block's lifecycle waits on.
+    #[must_use]
+    pub const fn dependency(self) -> Option<u32> {
+        self.depends_on
+    }
 }
 
 /// One declared block's live lifecycle.
@@ -992,6 +1023,8 @@ struct BlockLifecycle {
     /// The arm test is `wake_at >= 0 && clock >= wake_at` (finding B), so the
     /// stored value is the record's own — a negative sentinel never arms.
     wake_at: Option<f64>,
+    /// The `TICK_DEPENDS_ON_OBJ` target pass 1's gate waits on, if spelled.
+    depends_on: Option<u32>,
 }
 
 /// The writer for [`MissionFacts::objectives`] — the numbered block's
@@ -1004,7 +1037,9 @@ struct BlockLifecycle {
 /// measured ones:
 ///
 /// * **timed self-wake** — while dormant, when `wake_at >= 0` and the mission
-///   clock in seconds reaches it (pass 1, state 0);
+///   clock in seconds reaches it (pass 1, state 0), and only while the block's
+///   declared [`LifecycleDecl::depends_on`] target is awake, the measured
+///   pass-1 gate that delays the dependent's whole lifecycle;
 /// * **external wake** — the `WAKE_OBJECTIVE*` effect the host applied
 ///   (`+0xc = 1`, `+0x5c8 = 1`);
 /// * **completion** — `+0x5c8 = 3` when the block completes, which is what
@@ -1067,6 +1102,7 @@ impl BlockLifecycleTable {
             BlockLifecycle {
                 state,
                 wake_at: decl.wake_at,
+                depends_on: decl.depends_on,
             },
         );
         Ok(state)
@@ -1079,20 +1115,53 @@ impl BlockLifecycleTable {
     /// A block that is not dormant is left alone — the arm test only ever
     /// moves a dormant block — and a block that completed never self-wakes,
     /// mirroring pass 1's `+0x14 || +0xc` guard.
+    ///
+    /// Measured pass-1 gate: a block that names a `TICK_DEPENDS_ON_OBJ`
+    /// target is skipped entirely while that dependency is not **currently
+    /// awake** (`+0x10 >= 0 && dep->+0x5c8 != 1`), so its own wake timer does
+    /// not run either. Blocks are visited in record order, so a dependency
+    /// that wakes earlier in the same call already counts as awake for a
+    /// dependent declared below it — the same sequencing the original's
+    /// per-objective loop has. A dependency nobody declared reads as *not
+    /// observed*, which is never awake (fail-closed).
+    ///
+    /// The external wake ([`Self::wake`]) is deliberately **not** gated: the
+    /// original's wake call checks only killed and completed records, not the
+    /// tick dependency.
     pub fn tick(&mut self, clock_seconds: f64) -> Vec<u32> {
         let mut woke = Vec::new();
-        for (index, block) in self.blocks.iter_mut() {
-            if block.state != ObjectiveLifecycle::Dormant {
+        let declared: Vec<u32> = self.blocks.keys().copied().collect();
+        for index in declared {
+            // Read the block, then its dependency, then mutate: pass 1's
+            // dependency gate is a read of the *current* lifecycle states.
+            let (state, wake_at, depends_on) = {
+                let Some(block) = self.blocks.get(&index) else {
+                    continue;
+                };
+                (block.state, block.wake_at, block.depends_on)
+            };
+            if let Some(dependency) = depends_on {
+                let awake = self
+                    .blocks
+                    .get(&dependency)
+                    .is_some_and(|dep| dep.state == ObjectiveLifecycle::Awake);
+                if !awake {
+                    continue;
+                }
+            }
+            if state != ObjectiveLifecycle::Dormant {
                 continue;
             }
-            let Some(wake_at) = block.wake_at else {
+            let Some(wake_at) = wake_at else {
                 // No timed wake: the record's `-1` sentinel leaves the block
                 // dormant until a `WAKE_OBJECTIVE*` names it.
                 continue;
             };
             if wake_at >= 0.0 && clock_seconds >= wake_at {
-                block.state = ObjectiveLifecycle::Awake;
-                woke.push(*index);
+                if let Some(block) = self.blocks.get_mut(&index) {
+                    block.state = ObjectiveLifecycle::Awake;
+                }
+                woke.push(index);
             }
         }
         woke
