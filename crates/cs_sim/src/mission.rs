@@ -2962,14 +2962,18 @@ mod tests {
         assert_eq!(s.host().granted_rewards(), 2);
     }
 
-    /// Two objectives request conflicting outcomes on one tick: both requests
-    /// are recorded, the resolved outcome is the one that settles, and the
-    /// session tears down so nothing the deferred queue held fires afterwards.
+    /// Two sources request conflicting outcomes on one tick: both requests are
+    /// recorded, the resolved outcome is the one that settles, and the session
+    /// tears down so nothing the deferred queue held fires afterwards.
     ///
     /// Which one resolves is the measured rule (`TERMINAL_PRECEDENCE_RULE`,
     /// static code evidence from the owner note on #589): the original records
     /// success iff its WON flag is set, so the success stands while the
-    /// failure that lost stays a mere request.
+    /// failure that lost stays a mere request. Two *objectives* cannot both
+    /// request on one tick any more — only one completes per tick — so the
+    /// conflict arrives the way it still can: the queued work of the objective
+    /// that completed earlier, draining on the tick the second objective
+    /// completes.
     #[test]
     fn accept_f37_c_session_records_the_resolved_outcome_once_and_tears_down() {
         let mut s = session(
@@ -2978,7 +2982,7 @@ mod tests {
                     1,
                     Condition::Const(true),
                     vec![
-                        Action::Finish(Outcome::Succeeded),
+                        delay(1, vec![Action::Finish(Outcome::Succeeded)]),
                         delay(LATER_TICK - 1, vec![reward("r-too-late")]),
                     ],
                 ),
@@ -2990,7 +2994,17 @@ mod tests {
             ],
             vec![cid(ContentKind::Blueprint, "r-too-late")],
         );
-        let tick = s.advance(&facts(), Tick(1)).unwrap();
+        // Tick 1 queues: objective 1 is the lower declaration index, so it is
+        // the one that completes — and its own actions ask for nothing yet.
+        let first = s.advance(&facts(), Tick(1)).unwrap();
+        assert!(
+            terminal_requests(&first.host).is_empty(),
+            "no outcome was requested on tick 1: {:?}",
+            first.host
+        );
+        // Tick 2: objective 2 completes (phase 2) and objective 1's queued
+        // `Finish` drains behind it (phase 3) — both requests on one tick.
+        let tick = s.advance(&facts(), Tick(2)).unwrap();
         // Both requests reached the host; the precedence policy resolved the
         // success, and that is what the ledger settled on.
         assert_eq!(
@@ -3000,13 +3014,13 @@ mod tests {
         assert_eq!(tick.terminal, TerminalState::Succeeded);
         assert_eq!(
             s.host().settled(),
-            Some((Tick(1), TerminalState::Succeeded))
+            Some((Tick(2), TerminalState::Succeeded))
         );
 
         // Teardown dropped the deferred reward rather than leaving it queued.
         assert_eq!(s.state().queued_items(), 0);
-        assert_eq!(s.host().torn_down(), Some(Tick(1)));
-        for later in 2..=LATER_TICK + 2 {
+        assert_eq!(s.host().torn_down(), Some(Tick(2)));
+        for later in 3..=LATER_TICK + 2 {
             let after = s.advance(&facts(), Tick(later)).unwrap();
             assert!(after.events.is_empty(), "tick {later} ran program work");
             assert!(after.host.rewards_granted.is_empty());
@@ -3575,36 +3589,65 @@ mod tests {
     /// The reference ordering probe through the host: effects are applied and
     /// reported in the documented key order, whatever order they arrive in, and
     /// the applied ledger keeps that order too.
+    ///
+    /// One objective completes per tick (lowest declaration index first), so
+    /// the five scrambled objectives report over five ticks — each tick also
+    /// carrying the delayed item an earlier objective scheduled — and the run
+    /// lasts until the last item has fired.
     #[test]
     fn accept_f37_d_host_orders_effects_by_reference_key_not_arrival_order() {
-        let catalog: Vec<ContentId> = ["r-1", "r-3", "r-5", "r-7", "r-9"]
-            .into_iter()
-            .map(|k| cid(ContentKind::Blueprint, k))
-            .collect();
+        let catalog: Vec<ContentId> = [
+            "r-1", "r-1-late", "r-3", "r-3-late", "r-5", "r-5-late", "r-7", "r-7-late", "r-9",
+            "r-9-late",
+        ]
+        .into_iter()
+        .map(|k| cid(ContentKind::Blueprint, k))
+        .collect();
         let mut s = MissionSession::launch(scrambled_program(), SESSION, catalog.clone()).unwrap();
-        let tick = s.advance(&facts(), Tick(1)).unwrap();
 
-        // The five immediate rewards are reported in source-symbol order, not in
-        // the order their objectives were declared (9, 3, 7, 1, 5) and not in
-        // the order the delayed items fire.
+        let mut applied: Vec<ContentId> = Vec::new();
+        for tick in 1..=7u64 {
+            let report = s.advance(&facts(), Tick(tick)).unwrap();
+            // The producer emitted this tick's rewards in reference key order
+            // and the host applied exactly that order.
+            let keys = reward_keys(&report.events);
+            let mut sorted = keys.clone();
+            sorted.sort();
+            assert_eq!(
+                keys, sorted,
+                "tick {tick}: producer emitted out of key order"
+            );
+            let emitted: Vec<ContentId> = report
+                .events
+                .iter()
+                .filter_map(|event| match &event.kind {
+                    EventKind::RewardGranted(reward) => Some(reward.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                applied_rewards(&report.host),
+                emitted,
+                "tick {tick}: the host applied effects out of reference key order"
+            );
+            applied.extend(applied_rewards(&report.host));
+        }
+        // Every reward of the scrambled program landed exactly once: the five
+        // immediate ones, one per tick of the scan, and the five delayed ones
+        // behind them.
+        let mut expected = catalog.clone();
+        expected.sort();
+        let mut granted = applied;
+        granted.sort();
         assert_eq!(
-            applied_rewards(&tick.host),
-            catalog,
-            "the host applied effects out of reference key order"
-        );
-        // The producer emitted them in the same order: the host's report is the
-        // reference key order, not an accident of what arrived first.
-        let keys = reward_keys(&tick.events);
-        let mut sorted = keys.clone();
-        sorted.sort();
-        assert_eq!(
-            keys, sorted,
-            "the producer emitted rewards out of key order"
+            granted, expected,
+            "the ledger did not keep every reward exactly once"
         );
 
         // A result whose events arrive out of order is still applied and
         // reported in key order: the ledger does not trust the arrival order for
-        // the order it claims.
+        // the order it claims. Tick 1 carries two rewards — objective 9's own
+        // and its zero-delay item's — so reversing them is a real reordering.
         let mut other =
             MissionSession::launch(scrambled_program(), SESSION, catalog.clone()).unwrap();
         let mut shuffled = other.step(&facts(), Tick(1)).unwrap();
@@ -3617,10 +3660,13 @@ mod tests {
         let report = other.host_mut().apply(&shuffled);
         assert_eq!(
             applied_rewards(&report),
-            catalog,
+            vec![
+                cid(ContentKind::Blueprint, "r-9"),
+                cid(ContentKind::Blueprint, "r-9-late")
+            ],
             "a shuffled result changed the order the host reported"
         );
-        assert_eq!(other.host().granted_rewards(), 5);
+        assert_eq!(other.host().granted_rewards(), 2);
     }
 
     /// A stale event from an earlier run of the same mission is refused, and the

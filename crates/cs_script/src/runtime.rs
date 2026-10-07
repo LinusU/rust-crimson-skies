@@ -23,10 +23,14 @@
 //! 1. **Observe** — every condition is evaluated against the state as it was
 //!    at the start of the tick; nothing evaluated in this tick sees a write
 //!    made in this tick.
-//! 2. **Queue + resolve objectives** — firing objectives are taken in program
-//!    order and their actions run. `Schedule`/`Reschedule` never call back
-//!    into evaluation: they append to the *pending* queue, which is drained
-//!    separately.
+//! 2. **Queue + resolve one objective** — at most one objective completes per
+//!    tick: the lowest declaration index whose condition holds
+//!    (`f37.rule.terminal_precedence.one_completion_per_tick`, measured from
+//!    the original). Every condition is still evaluated this tick, the
+//!    satisfied ones that lost the scan stay unfired and are re-evaluated on a
+//!    later tick. The admitted objective's actions run;
+//!    `Schedule`/`Reschedule` never call back into evaluation: they append to
+//!    the *pending* queue, which is drained separately.
 //! 3. **Drain pending work** — items whose `due` tick is now or past run in
 //!    (due, enqueue) order, one action at a time. A zero-delay item appends to
 //!    the end of the queue being drained, so it cannot starve earlier work.
@@ -34,10 +38,11 @@
 //!    resolved by the [`PrecedencePolicy`], `Host` effects are emitted.
 //!
 //! Two orders come out of one tick and they are not the same order. Execution
-//! follows phase 2 then 3, so two objectives writing one variable on one tick
-//! leave the later *declaration*'s write standing. Observation follows the
+//! follows phase 2 then 3, so only one objective writes in phase 2 — the one
+//! the index-order scan admitted — and the pending work draining behind it
+//! writes last, its write being the one that stands. Observation follows the
 //! [`EventKey`] total order, which is by source symbol and does not depend on
-//! declaration order at all. F37-D pinned both with its corpus.
+//! execution order at all. F37-D pinned both with its corpus.
 //!
 //! Both gameplay rules carry an explicit **source label** ([`RuleSource`],
 //! F37-D-FU2): the terminal precedence
@@ -298,29 +303,20 @@ pub struct RuleLimitation {
 }
 
 /// Every limitation F37-D-FU2 records for the terminal-precedence and
-/// tick-ordering rules.
+/// tick-ordering rules that is **still open**.
 ///
-/// The list shrinks only with its evidence: F37-D-FU5 (#731) removed
+/// The list shrinks only with its evidence. F37-D-FU5 (#731) removed
 /// `f37.d.limit.terminal_branch_delay_and_sound` once
 /// [`MissionEndPresentation`] implemented the branch, the end delay and the
 /// sound/animation selection it named, pinned by the `accept_f37_d_fu5_*`
 /// tests together with the findings update — the closure and what stays open
-/// are recorded in [`TERMINAL_PRESENTATION_FINDINGS`].
+/// are recorded in [`TERMINAL_PRESENTATION_FINDINGS`]. F37-D-FU3 (#729)
+/// removed `f37.d.limit.one_completion_per_tick`: `MissionState::step` now
+/// admits at most one objective per tick, the lowest declaration index whose
+/// condition holds, so the divergence it recorded is gone and the entry with
+/// it — a limitation is removed only together with the behaviour that caused
+/// it, never to empty a table.
 pub const RULE_LIMITATIONS: &[RuleLimitation] = &[
-    RuleLimitation {
-        id: "f37.d.limit.one_completion_per_tick",
-        open: "The original completes at most one objective per tick (the lowest \
-               index whose condition holds); `MissionState::step` completes every \
-               satisfied objective, in declaration order, on the same tick.",
-        affected_content: "Any mission program run through `MissionState::step` in \
-                           which two or more objectives satisfy on one tick — today \
-                           the F37-D corpus programs and the AC01 two-objective probe, \
-                           and from F38/F39 on every campaign mission lowered into \
-                           this IR (starting with M01): its per-tick completions, \
-                           event sequence and same-tick write conflicts differ from \
-                           the original by one tick per extra completion.",
-        resolving_task: "F37-D-FU3 (#729)",
-    },
     RuleLimitation {
         id: "f37.d.limit.mission_countdown_tick_dt",
         open: "The countdown producer (`cs_sim::mission::Countdown`) decrements \
@@ -491,7 +487,7 @@ pub const TERMINAL_PRECEDENCE_RULE: RuleLabel = RuleLabel {
             addresses: "CZMission::Update 0x46a490; scan from index 0, cursor 0x71c128 \
                         only normalised; the completed-this-tick flag is tested at \
                         0x46a94c after the condition checks",
-            limitations: &["f37.d.limit.one_completion_per_tick"],
+            limitations: &[],
         },
         MeasuredFact {
             id: "f37.rule.terminal_precedence.loss_branch_before_win",
@@ -579,7 +575,6 @@ pub const TICK_ORDERING_RULE: RuleLabel = RuleLabel {
                 "f37.d.limit.mission_countdown_tick_dt",
                 "f37.d.limit.mission_countdown_end_guards",
                 "f37.d.limit.mission_countdown_spec_sourcing",
-                "f37.d.limit.one_completion_per_tick",
             ],
         },
     ],
@@ -2043,7 +2038,9 @@ impl MissionState {
         };
         let budget = self.limits.max_work_per_tick;
 
-        // Observe: all conditions against the start-of-tick state.
+        // Observe: every condition against the start-of-tick state. All of
+        // them are evaluated — including the objectives that will not be
+        // admitted this tick — so a satisfied objective is never latched early.
         let firing: Vec<_> = program
             .program()
             .objectives
@@ -2051,30 +2048,19 @@ impl MissionState {
             .filter(|o| !self.completed.contains(&o.id) && self.holds(&o.condition, facts))
             .collect();
 
-        // Queue + resolve objective actions, in program order. A budget stop
-        // latches the interrupted objective (it *did* fire), defers its
-        // unexecuted actions as pending work and stops the tick; objectives
-        // after it never fired and stay unfired for a later tick.
-        for o in firing {
-            if run.work >= budget {
-                self.completed.insert(o.id);
-                self.emit(
-                    &mut result,
-                    EventKey {
-                        session: self.session,
-                        tick,
-                        source: o.id,
-                        sequence: 0,
-                    },
-                    EventKind::ObjectiveCompleted,
-                );
-                self.defer(tick, &mut run, o.id, o.actions.to_vec());
-                result.stop = Some(StopReason::WorkBudget {
-                    at: self.locator(program, o.id, &["objective fire"]),
-                    spent: run.work,
-                });
-                break;
-            }
+        // Queue + resolve *one* objective's actions: at most one objective
+        // completes per tick, the lowest declaration index whose condition
+        // holds (`f37.rule.terminal_precedence.one_completion_per_tick`,
+        // `measured-from-original`). The satisfied objectives that lost the
+        // scan stay unfired and are re-evaluated from scratch on a later tick,
+        // so nothing is latched here.
+        //
+        // Admission itself can never be refused: phase 2 starts with a full
+        // budget and [`MIN_WORK_PER_TICK`] guarantees room for one firing plus
+        // its first action. A budget stop *inside* the admitted objective's
+        // action list latches it (it *did* fire), defers its unexecuted
+        // actions as pending work and stops the tick.
+        if let Some(o) = firing.into_iter().next() {
             run.work += 1;
             self.completed.insert(o.id);
             let session = self.session;
@@ -2114,9 +2100,6 @@ impl MissionState {
                     result.stop = Some(stop);
                     break;
                 }
-            }
-            if result.stop.is_some() {
-                break;
             }
         }
 

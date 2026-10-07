@@ -290,36 +290,49 @@ fn accept_f37_d_unknown_instruction_returns_unsupported_and_prevents_reward_and_
     assert!(matches!(fired.events[0].kind, EventKind::RewardGranted(_)));
 }
 
-/// The reference ordering probe: one tick, many objectives, symbol order and
-/// declaration order deliberately at odds.
+/// The reference ordering probe: many objectives, symbol order and declaration
+/// order deliberately at odds.
 ///
-/// The emitted sequence must be the documented key order, and it must not
-/// change when the same objectives are declared in a different order — the
-/// order is a function of the keys, not of declaration order or map iteration.
+/// At most one objective completes per tick — the lowest declaration index
+/// whose condition holds
+/// (`f37.rule.terminal_precedence.one_completion_per_tick`) — so this run spans
+/// one tick per objective, and every objective schedules an item that lands on
+/// the *next* tick, behind the objective that completes there. Those ticks
+/// carry events from two sources at once: execution runs the completion first
+/// and drains the queue after it, while the report comes out in
+/// (session, tick, source, sequence) order — a different order, which is what
+/// makes the probe discriminate.
+///
+/// The reference order is recomputed from the documented key rule instead of
+/// taken from the runtime, so a change in the ordering key fails here. What
+/// must *not* depend on the declaration order is the rule, not the resulting
+/// sequence: however the same objectives are declared, the report is
+/// key-ordered, one completion per tick in that declaration's index order, and
+/// every reward is granted exactly once. Which tick a completion lands on does
+/// change with the declaration — that is the measured scan, pinned by
+/// `accept_f37_d_fu3_*` — and no `Finish` appears here: a single `Finish`
+/// latches the mission, so terminal precedence is pinned by
+/// `accept_f37_d_fu2_measured_precedence_records_success_iff_won`.
 #[test]
 fn accept_f37_d_emitted_order_is_the_reference_key_order_and_independent_of_declaration() {
     // Symbols 9, 3, 7, 1, 5: neither ascending nor descending, and never in
     // symbol order as declared.
     let symbols = [9u32, 3, 7, 1, 5];
-    // Conflicting outcomes, so the resolved terminal state is the precedence
-    // policy's answer rather than an echo of one objective.
-    let outcomes = [
-        Outcome::Succeeded,
-        Outcome::Failed,
-        Outcome::Succeeded,
-        Outcome::Aborted,
-        Outcome::Failed,
-    ];
-    let build = |declaration: &[(u32, Outcome)]| {
+    let build = |declaration: &[u32]| {
         program(
             vec![],
             declaration
                 .iter()
-                .map(|(id, outcome)| {
+                .map(|id| {
                     objective(
                         *id,
                         Condition::Const(true),
-                        vec![reward(&format!("r-{id}")), Action::Finish(*outcome)],
+                        vec![
+                            reward(&format!("r-{id}")),
+                            // One tick later, behind whichever objective
+                            // completes on that tick: a second source on it.
+                            schedule(1, vec![reward(&format!("r-{id}-late"))]),
+                        ],
                     )
                 })
                 .collect(),
@@ -328,73 +341,96 @@ fn accept_f37_d_emitted_order_is_the_reference_key_order_and_independent_of_decl
         .unwrap()
     };
 
-    let forward = build(&symbols.iter().copied().zip(outcomes).collect::<Vec<_>>());
-    let backward = build(
-        &symbols
+    let shuffled_declaration = [7u32, 9, 5, 3, 1];
+    let forward = build(&symbols);
+    let backward = build(&symbols.iter().rev().copied().collect::<Vec<_>>());
+    let shuffled = build(&shuffled_declaration);
+
+    // One tick per objective (the scan) plus the last item's tick.
+    let ticks = symbols.len() as u64 + 1;
+    let runs: [(&str, &ValidatedProgram, Vec<u32>); 3] = [
+        ("forward", &forward, symbols.to_vec()),
+        (
+            "backward",
+            &backward,
+            symbols.iter().rev().copied().collect(),
+        ),
+        ("shuffled", &shuffled, shuffled_declaration.to_vec()),
+    ];
+    for (label, program, declaration) in runs {
+        let run = run_all(program, ticks);
+
+        // The report is the key order — recomputed here, not trusted — for
+        // every declaration order: the ordering *rule* is a function of the
+        // keys alone.
+        assert_eq!(
+            run,
+            reference_order(&run),
+            "{label}: the emitted order is not the reference key order"
+        );
+
+        // One completion per tick, in declaration (index) order: that is the
+        // measured scan, and it is what the declaration order decides.
+        let completed: Vec<(u64, u32)> = run
             .iter()
-            .rev()
-            .copied()
-            .zip(outcomes)
-            .collect::<Vec<_>>(),
-    );
-    let shuffled = build(&[
-        (7, outcomes[2]),
-        (9, outcomes[0]),
-        (5, outcomes[4]),
-        (3, outcomes[1]),
-        (1, outcomes[3]),
-    ]);
+            .filter(|event| matches!(event.kind, EventKind::ObjectiveCompleted))
+            .map(|event| (event.key.tick.0, event.key.source.0))
+            .collect();
+        let expected: Vec<(u64, u32)> = (1..=symbols.len() as u64)
+            .zip(declaration.iter().copied())
+            .collect();
+        assert_eq!(
+            completed, expected,
+            "{label}: the completion scan is not declaration index order"
+        );
 
-    // Five objectives fire on tick 1: five completions and two events each.
-    let reference = trace(&run_all(&forward, 1));
-    assert_eq!(reference.len(), 15, "{reference:?}");
-    assert_eq!(
-        reference,
-        trace(&run_all(&backward, 1)),
-        "reversing declaration order changed the emitted order"
-    );
-    assert_eq!(
-        reference,
-        trace(&run_all(&shuffled, 1)),
-        "shuffling declaration order changed the emitted order"
-    );
+        // Exactly once: each objective's own reward and its deferred one,
+        // nothing granted twice and nothing missing.
+        let mut granted = rewards_in(&run);
+        granted.sort();
+        let mut expect_rewards: Vec<ContentId> = symbols
+            .iter()
+            .flat_map(|id| {
+                [
+                    cid(ContentKind::Blueprint, &format!("r-{id}")),
+                    cid(ContentKind::Blueprint, &format!("r-{id}-late")),
+                ]
+            })
+            .collect();
+        expect_rewards.sort();
+        assert_eq!(
+            granted, expect_rewards,
+            "{label}: rewards were not exactly once"
+        );
+    }
 
-    // The reference order is by source symbol, then by sequence within it.
-    let mut state = state(&forward);
-    let tick = state
-        .step(&forward, &MissionFacts::default(), Tick(1))
-        .unwrap();
+    // The forward run in full, tick by tick. Tick 3 is the discriminating one:
+    // objective 3's queued item drains on the tick objective 7 completes, so
+    // execution (completion, then queue) would report 7 before 3 while the key
+    // order reports 3 first — and so it does.
     assert_eq!(
-        tick.events,
-        reference_order(&tick.events),
-        "the runtime's own order is not its key order"
-    );
-    assert_eq!(
-        trace(&tick.events),
+        trace(&run_all(&forward, ticks)),
         vec![
-            (1, 1, 0),
-            (1, 1, 1),
-            (1, 1, 2),
-            (1, 3, 0),
-            (1, 3, 1),
-            (1, 3, 2),
-            (1, 5, 0),
-            (1, 5, 1),
-            (1, 5, 2),
-            (1, 7, 0),
-            (1, 7, 1),
-            (1, 7, 2),
             (1, 9, 0),
             (1, 9, 1),
-            (1, 9, 2),
+            // The completion of tick k runs before the queue drained behind it,
+            // but the report is by source symbol.
+            (2, 3, 0),
+            (2, 3, 1),
+            (2, 9, 66),
+            (3, 3, 131),
+            (3, 7, 0),
+            (3, 7, 1),
+            (4, 1, 0),
+            (4, 1, 1),
+            (4, 7, 196),
+            (5, 1, 261),
+            (5, 5, 0),
+            (5, 5, 1),
+            (6, 5, 326),
         ],
-        "one tick must report its events in (source, sequence) order"
+        "the emitted trace diverged from the reference key order"
     );
-    // Five conflicting `Finish` actions resolve to exactly one answer. The
-    // abort request still wins it: the original has no Aborted outcome, so
-    // no measurement can order one, and the measured policy keeps the
-    // designed conservative ordering for it (`f37.d.limit.aborted_outcome`).
-    assert_eq!(tick.terminal, TerminalState::Aborted);
 }
 
 /// A run is a function of the program, the session *and the bounds*: a tighter
@@ -444,41 +480,49 @@ fn accept_f37_d_the_work_budget_is_part_of_the_sessions_determinism() {
     let roomy = run_traced(&p, 4);
     let mut tight_state = state(&p);
     tight_state.set_limits(WorkLimits {
-        // Two objectives latch and complete on tick 1 (three work units spent),
-        // so the budget cuts inside the first objective's action list.
-        max_work_per_tick: 3,
+        // One objective completes per tick and the floor leaves room for its
+        // firing and its first action only, so its draw is deferred to a later
+        // tick instead of running with the reward.
+        max_work_per_tick: MIN_WORK_PER_TICK,
         ..WorkLimits::default()
     });
     let tight = (1..=4)
         .map(|tick| record_tick(&p, &mut tight_state, tick))
         .collect::<RunTrace>();
 
-    // The same rewards, in the same per-tick key order, and the same draws.
+    // The same rewards, in the same key order, and the same draws — the whole
+    // draw sequence, not a shorter one.
     assert_eq!(rewards_of(&roomy), rewards_of(&tight));
     assert_eq!(values_of(&roomy), values_of(&tight));
-    // But not on the same ticks: the budget moved the work.
+    // But not on the same ticks: the budget moved the work. The deferral is
+    // visible in the state the tick leaves behind — the draws are what a
+    // tighter budget pushes to later ticks (`Draw` emits no event, so the
+    // event streams of the two runs are the same and prove nothing here).
     assert_ne!(
         roomy
             .iter()
-            .map(|tick| tick.events.clone())
+            .map(|tick| tick.variables.clone())
             .collect::<Vec<_>>(),
         tight
             .iter()
-            .map(|tick| tick.events.clone())
+            .map(|tick| tick.variables.clone())
             .collect::<Vec<_>>(),
-        "the tighter budget was expected to defer work across ticks"
+        "the tighter budget was expected to defer the draws across ticks"
     );
     // And the record carries the bounds that produced it.
     let tight_state = state(&p);
     let mut tightened = tight_state;
     tightened.set_limits(WorkLimits {
-        max_work_per_tick: 3,
+        max_work_per_tick: MIN_WORK_PER_TICK,
         ..WorkLimits::default()
     });
     tightened
         .step(&p, &MissionFacts::default(), Tick(1))
         .unwrap();
-    assert_eq!(tightened.snapshot(&p).limits.max_work_per_tick, 3);
+    assert_eq!(
+        tightened.snapshot(&p).limits.max_work_per_tick,
+        MIN_WORK_PER_TICK
+    );
 
     // The order itself, not only the ticks: at the floor the tail of the first
     // objective is deferred, so the second and third objectives report before
@@ -955,20 +999,37 @@ fn writes_of(trace: &RunTrace, symbol: u32) -> Vec<Value> {
 /// Execution order and observation order are different orders, and the corpus
 /// pins both.
 ///
-/// Within one tick, objectives resolve in *declaration* order and the queue
-/// drains afterwards, so when two objectives write the same variable on the same
-/// tick the later declaration's write is the one that lands. The events those
-/// objectives emit are ordered by *source symbol*, so the one whose write was
-/// overwritten reports first. Neither order is the other's sort: a reader of the
-/// event stream cannot infer the surviving value from the report order.
+/// Two writes land on one tick when the queue an earlier objective scheduled
+/// drains behind the objective that completes on that tick: phase 2 (the
+/// completion) writes first and phase 3 (the queued item) writes last, so the
+/// *queued* write is the one that lands — one completion per tick means an
+/// objective and its own queue are what can collide. Neither write emits an
+/// event; the only thing that reports on that tick is the completion, ordered
+/// by tick and source symbol rather than by who wrote last. A reader of the
+/// event stream therefore cannot infer the surviving value from the report
+/// order: the same report shape accompanies either survivor, decided only by
+/// the declaration.
 #[test]
 fn accept_f37_d_simultaneous_writes_follow_execution_order_events_follow_key_order() {
+    // Every objective writes the variable itself and queues the same write one
+    // tick later, so the tick after a completion carries two writes of one
+    // variable: the next objective's completion and the earlier objective's
+    // queued item.
     let build = |declaration: &[u32]| {
         program(
             vec![variable(100, 0)],
             declaration
                 .iter()
-                .map(|id| objective(*id, Condition::Const(true), vec![set(100, *id as i32)]))
+                .map(|id| {
+                    objective(
+                        *id,
+                        Condition::Const(true),
+                        vec![
+                            set(100, *id as i32),
+                            schedule(1, vec![set(100, *id as i32 + 100)]),
+                        ],
+                    )
+                })
                 .collect(),
         )
         .validate()
@@ -984,30 +1045,37 @@ fn accept_f37_d_simultaneous_writes_follow_execution_order_events_follow_key_ord
         (run.variable(SymbolId(100)).cloned(), observed)
     };
 
-    // Declared 5 then 2: objective 2 runs last, so its value lands.
+    // Declared 5 then 2: on tick 2 objective 2 writes 2 and objective 5's
+    // queued write lands after it, so 105 is what survives.
     let five_first = build(&[5, 2]);
     let (value, reported) = survivor(&five_first);
-    assert_eq!(value, Some(Value::Int(2)), "the later declaration must win");
+    assert_eq!(
+        value,
+        Some(Value::Int(105)),
+        "the queued write drains after the completion's write"
+    );
     assert_eq!(
         reported,
-        // A state write emits no event: only the completion of each objective is
-        // observable, and those two are ordered by source symbol.
-        vec![vec![(1, 2, 0), (1, 5, 0)], vec![]],
-        "the events are ordered by source symbol, so #2 reports first"
+        // A state write emits no event: only the completion of each objective
+        // is observable, one per tick, in declaration (index) order.
+        vec![vec![(1, 5, 0)], vec![(2, 2, 0)]],
+        "one completion per tick, and it reports in key order"
     );
 
-    // Declared 2 then 5: the same two objectives, the other survivor.
+    // Declared 2 then 5: the same two objectives, the other survivor — and the
+    // *same* report shape, which is the point: tick 2 reports #5 while the
+    // write that survived is #2's queued one, the mirror of the run above.
     let two_first = build(&[2, 5]);
     let (value, reported) = survivor(&two_first);
     assert_eq!(
         value,
-        Some(Value::Int(5)),
-        "the survivor follows declaration order, not symbol order"
+        Some(Value::Int(102)),
+        "the survivor follows the queue, not the symbol order"
     );
     assert_eq!(
         reported,
-        vec![vec![(1, 2, 0), (1, 5, 0)], vec![]],
-        "the report order does not change with the declaration order"
+        vec![vec![(1, 2, 0)], vec![(2, 5, 0)]],
+        "the report is keyed by tick and source, never by who wrote last"
     );
 }
 

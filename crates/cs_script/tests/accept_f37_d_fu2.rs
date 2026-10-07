@@ -23,8 +23,9 @@
 //!   table and machine-readable limitations, cross-referenced so neither side
 //!   can drift from the other.
 //! * `accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does` — the
-//!   runtime really does diverge where a limitation says it does, so closing a
-//!   limitation and changing the behaviour cannot happen apart.
+//!   runtime diverges exactly where an open limitation says it does: the entry
+//!   F37-D-FU3 closed went together with the behaviour it recorded, and the
+//!   entry still open stays.
 
 use std::collections::BTreeSet;
 
@@ -106,13 +107,23 @@ fn completions(events: &[MissionEvent]) -> Vec<u32> {
 /// record, which is why the policy travels in the record — and still gives
 /// the opposite answer, so the two rules are distinguishable by behaviour and
 /// not only by their labels.
+///
+/// The two requests come from two sources on one tick: the objective that
+/// completes on it and the item an earlier objective queued for it. Two
+/// *objectives* cannot both request any more — only one completes per tick
+/// (`f37.rule.terminal_precedence.one_completion_per_tick`, pinned by
+/// `accept_f37_d_fu3_*`) — so the conflict is built where it still arises.
 #[test]
 fn accept_f37_d_fu2_measured_precedence_records_success_iff_won() {
+    let queued_conflict = |outcome: Outcome| Action::Schedule {
+        delay_ticks: 1,
+        actions: vec![Action::Finish(outcome)],
+    };
+    // Declared out of symbol order on purpose: the requests are merged into
+    // one set, so which one wins does not depend on the scan.
     let p = program(vec![
-        // Declared out of symbol order on purpose: the requests are merged
-        // into one set, so which one wins may not depend on the scan.
+        objective(3, vec![queued_conflict(Outcome::Failed)]),
         objective(10, vec![Action::Finish(Outcome::Succeeded)]),
-        objective(3, vec![Action::Finish(Outcome::Failed)]),
     ])
     .validate()
     .unwrap();
@@ -124,8 +135,18 @@ fn accept_f37_d_fu2_measured_precedence_records_success_iff_won() {
         measured.snapshot(&p).policy,
         PrecedencePolicy::MeasuredOriginal
     );
-    let tick = measured
+    // Tick 1 only queues: objective 3 is the lower declaration index, and its
+    // own action asks for nothing yet.
+    let first = measured
         .step(&p, &MissionFacts::default(), Tick(1))
+        .unwrap();
+    assert!(
+        terminal_requests(&first.events).is_empty(),
+        "{:?}",
+        first.events
+    );
+    let tick = measured
+        .step(&p, &MissionFacts::default(), Tick(2))
         .unwrap();
     // Both requests were made — the runtime does not hide the one that lost.
     assert_eq!(
@@ -137,7 +158,7 @@ fn accept_f37_d_fu2_measured_precedence_records_success_iff_won() {
     assert_eq!(tick.terminal, TerminalState::Succeeded);
     // Latched: later ticks cannot flip it and emit nothing.
     let later = measured
-        .step(&p, &MissionFacts::default(), Tick(2))
+        .step(&p, &MissionFacts::default(), Tick(3))
         .unwrap();
     assert!(later.events.is_empty());
     assert_eq!(later.terminal, TerminalState::Succeeded);
@@ -147,8 +168,11 @@ fn accept_f37_d_fu2_measured_precedence_records_success_iff_won() {
     let mut record = MissionState::new(&p, SESSION).snapshot(&p);
     record.policy = PrecedencePolicy::SyntheticConservative;
     let mut designed = MissionState::restore(&p, record).unwrap();
-    let tick = designed
+    designed
         .step(&p, &MissionFacts::default(), Tick(1))
+        .unwrap();
+    let tick = designed
+        .step(&p, &MissionFacts::default(), Tick(2))
         .unwrap();
     assert_eq!(tick.terminal, TerminalState::Failed);
 
@@ -156,13 +180,14 @@ fn accept_f37_d_fu2_measured_precedence_records_success_iff_won() {
     // answer, because the original has no Aborted outcome to measure
     // (`f37.d.limit.aborted_outcome`).
     let p = program(vec![
-        objective(1, vec![Action::Finish(Outcome::Succeeded)]),
-        objective(2, vec![Action::Finish(Outcome::Aborted)]),
+        objective(1, vec![queued_conflict(Outcome::Aborted)]),
+        objective(2, vec![Action::Finish(Outcome::Succeeded)]),
     ])
     .validate()
     .unwrap();
     let mut state = MissionState::new(&p, SESSION);
-    let tick = state.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
+    state.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
+    let tick = state.step(&p, &MissionFacts::default(), Tick(2)).unwrap();
     assert_eq!(
         tick.terminal,
         TerminalState::Aborted,
@@ -178,12 +203,14 @@ fn accept_f37_d_fu2_measured_precedence_records_success_iff_won() {
 
 /// **The index-order scan, pinned on the production path.**
 ///
-/// The objectives are declared out of symbol order (9 first, 3 second) and
-/// the work budget is at its floor, so only one objective can be *admitted*
-/// per tick: the scan order decides which one. A scan in symbol order would
-/// run objective 3 first and defer objective 9; the measured order — lowest
-/// index first — runs the objective declared first, and the other one's own
-/// reward follows on the next tick.
+/// The objectives are declared out of symbol order (9 first, 3 second), both
+/// conditions hold on tick 1 and the work budget is at its floor. Only one
+/// objective completes per tick, so the scan order decides which one: a scan in
+/// symbol order would complete objective 3 first, the measured order — lowest
+/// declaration index first — completes objective 9 and leaves objective 3
+/// *unfired*, its condition re-evaluated rather than latched, so its own reward
+/// follows on the next tick. The floor still admits the winner's firing and its
+/// first action.
 #[test]
 fn accept_f37_d_fu2_completion_scan_runs_in_declaration_index_order() {
     let r9 = cid(ContentKind::Blueprint, "r-nine");
@@ -205,20 +232,23 @@ fn accept_f37_d_fu2_completion_scan_runs_in_declaration_index_order() {
     assert_eq!(
         rewards(&first.events),
         vec![r9.clone()],
-        "objective 9 is declared first, so the scan admits it first"
+        "objective 9 is declared first, so the scan completes it first"
     );
     assert!(state.is_completed(SymbolId(9)));
-    // The scan reached the second objective too — it is latched by the budget
-    // stop — but its own action had no budget left and is retried, never
-    // skipped.
-    assert!(state.is_completed(SymbolId(3)));
+    // The second satisfied objective waits: its condition held all along and
+    // nothing latched it early.
+    assert!(
+        !state.is_completed(SymbolId(3)),
+        "only one objective completes per tick"
+    );
 
     let second = state.step(&p, &MissionFacts::default(), Tick(2)).unwrap();
     assert_eq!(
         rewards(&second.events),
         vec![r3],
-        "the deferred action of the later-declared objective runs next tick"
+        "the later-declared objective completes on the next tick, never skipped"
     );
+    assert!(state.is_completed(SymbolId(3)));
 }
 
 /// **Both rules carry a source label, with the evidence behind it.**
@@ -421,17 +451,22 @@ fn accept_f37_d_fu2_every_limitation_names_affected_content_and_a_resolving_task
 
 /// **The record tells the truth about what this runtime does.**
 ///
-/// A limitation that claims a divergence must describe the running code: this
-/// test demonstrates the divergence itself, so the entry cannot survive a
-/// silent behaviour change, and a change of behaviour cannot land without the
-/// entry being closed in the same commit (F37-D-FU3 closes
+/// A limitation that claims a divergence must describe the running code: a
+/// test like this one demonstrates the divergence itself, so an entry cannot
+/// survive a silent behaviour change, and a change of behaviour cannot land
+/// without closing the entry in the same commit. Both directions are pinned
+/// for the entries already closed that way: F37-D-FU3 closed
 /// `f37.d.limit.one_completion_per_tick` together with these assertions, and
 /// F37-D-FU4 closed `f37.d.limit.mission_countdown_preemption` together with
-/// the `accept_f37_d_fu4_*` tests that implement the pre-emption).
+/// the `accept_f37_d_fu4_*` tests that implement the pre-emption. The entry
+/// that is still open stays recorded.
 #[test]
 fn accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does() {
-    // `f37.d.limit.one_completion_per_tick`: two satisfied objectives both
-    // complete on this tick, which the original never does.
+    // `f37.d.limit.one_completion_per_tick`, closed by F37-D-FU3 (#729): the
+    // runtime completes at most one objective per tick, so the entry that
+    // recorded the divergence is gone — and neither half can move alone: a
+    // second completion on one tick fails the first assertion, and the entry
+    // reappearing fails the last one.
     let p = program(vec![
         objective(1, vec![reward("r-a")]),
         objective(2, vec![reward("r-b")]),
@@ -439,19 +474,36 @@ fn accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does() {
     .validate()
     .unwrap();
     let mut state = MissionState::new(&p, SESSION);
-    let tick = state.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
+    let first = state.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
     assert_eq!(
-        completions(&tick.events),
-        vec![1, 2],
-        "two objectives completed on one tick: f37.d.limit.one_completion_per_tick \
-         still describes this runtime (close it and this assertion together, in \
-         F37-D-FU3)"
+        completions(&first.events),
+        vec![1],
+        "only the lowest declaration index completes on one tick"
+    );
+    assert!(
+        !state.is_completed(SymbolId(2)),
+        "the second satisfied objective stays unfired, re-evaluated next tick"
+    );
+    let second = state.step(&p, &MissionFacts::default(), Tick(2)).unwrap();
+    assert_eq!(
+        completions(&second.events),
+        vec![2],
+        "it completes on a later tick, never latched early and never skipped"
     );
     assert!(
         RULE_LIMITATIONS
             .iter()
-            .any(|limitation| limitation.id == "f37.d.limit.one_completion_per_tick"),
-        "the divergence this test just demonstrated must stay recorded"
+            .all(|limitation| limitation.id != "f37.d.limit.one_completion_per_tick"),
+        "the runtime follows the rule, so the divergence entry must be gone"
+    );
+    let fact = TERMINAL_PRECEDENCE_RULE
+        .facts
+        .iter()
+        .find(|fact| fact.id == "f37.rule.terminal_precedence.one_completion_per_tick")
+        .expect("the measured fact stays recorded");
+    assert!(
+        fact.limitations.is_empty(),
+        "a fact this runtime follows carries no open limitation"
     );
 
     // F37-D-FU4 (#730) closed `f37.d.limit.mission_countdown_preemption`: the

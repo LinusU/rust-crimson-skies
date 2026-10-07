@@ -677,30 +677,41 @@ fn accept_m01_lc_lowering_signatures_every_operation_executes() {
 /// replay of the same execution does not emit twice.
 #[test]
 fn accept_m01_lc_lowering_signatures_directive_log_is_ordered_once_and_restorable() {
-    // Two objectives firing in one tick: declared in reverse id order so
-    // execution order and key order disagree.
+    // Declared in reverse id order so execution order and key order disagree.
+    // Only one objective completes per tick, so objective 3 (declared first)
+    // fires on tick 1 and queues its second directive for tick 2, where
+    // objective 9 completes behind it — two sources on one tick.
     let program = MissionProgram {
         version: IR_VERSION,
         mission: cid(ContentKind::Mission, "m01"),
         variables: vec![],
         objectives: vec![
             Objective {
+                id: SymbolId(3),
+                content: cid(ContentKind::Objective, "earlier"),
+                condition: Condition::Const(true),
+                actions: vec![
+                    Action::Directive {
+                        operation: DirectiveOperation::KillObjectives,
+                        args: vec![ls(vec![s("x")])],
+                    },
+                    Action::Schedule {
+                        delay_ticks: 1,
+                        actions: vec![Action::Directive {
+                            operation: DirectiveOperation::WakeObjectives,
+                            args: vec![Value::Int(1)],
+                        }],
+                    },
+                ],
+                span: None,
+            },
+            Objective {
                 id: SymbolId(9),
                 content: cid(ContentKind::Objective, "later"),
                 condition: Condition::Const(true),
                 actions: vec![Action::Directive {
                     operation: DirectiveOperation::WakeObjectives,
-                    args: vec![Value::Int(1)],
-                }],
-                span: None,
-            },
-            Objective {
-                id: SymbolId(3),
-                content: cid(ContentKind::Objective, "earlier"),
-                condition: Condition::Const(true),
-                actions: vec![Action::Directive {
-                    operation: DirectiveOperation::KillObjectives,
-                    args: vec![ls(vec![s("x")])],
+                    args: vec![Value::Int(2)],
                 }],
                 span: None,
             },
@@ -712,23 +723,34 @@ fn accept_m01_lc_lowering_signatures_directive_log_is_ordered_once_and_restorabl
     state
         .step(&program, &MissionFacts::default(), Tick(1))
         .unwrap();
+    state
+        .step(&program, &MissionFacts::default(), Tick(2))
+        .unwrap();
     let directives = state.directives();
-    assert_eq!(directives.len(), 2);
-    // Key order wins over execution order: source 3 before source 9.
+    assert_eq!(directives.len(), 3);
+    // Tick 1: objective 3 fires alone — one completion per tick.
     assert_eq!(directives[0].key.source, SymbolId(3));
+    assert_eq!(directives[0].key.sequence, 1);
     assert_eq!(directives[0].operation, DirectiveOperation::KillObjectives);
-    assert_eq!(directives[1].key.source, SymbolId(9));
+    // Key order wins over execution order: on tick 2 objective 9's directive
+    // ran first (phase 2) and objective 3's queued one after it (phase 3), yet
+    // the log reports source 3 — the lower key — first.
+    assert_eq!(directives[1].key.source, SymbolId(3));
     assert_eq!(directives[1].operation, DirectiveOperation::WakeObjectives);
+    assert_eq!(directives[1].args, vec![Value::Int(1)]);
+    assert_eq!(directives[2].key.source, SymbolId(9));
+    assert_eq!(directives[2].operation, DirectiveOperation::WakeObjectives);
+    assert_eq!(directives[2].args, vec![Value::Int(2)]);
 
     // Save/restore keeps the log, and the consumed keys with it.
     let record = state.snapshot(&program);
     let mut restored = MissionState::restore(&program, record).unwrap();
     assert_eq!(restored.directives(), directives);
-    let t2 = restored
-        .step(&program, &MissionFacts::default(), Tick(2))
+    let t3 = restored
+        .step(&program, &MissionFacts::default(), Tick(3))
         .unwrap();
     assert!(
-        t2.events.is_empty() && restored.directives().len() == 2,
+        t3.events.is_empty() && restored.directives().len() == 3,
         "a replayed tick emits nothing twice"
     );
 }

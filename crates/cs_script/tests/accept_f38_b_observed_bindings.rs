@@ -745,12 +745,13 @@ fn recreated_program(declared: &[DeclaredStep]) -> MissionProgram {
 /// The same program with its objectives **declared** in `declaration` order while
 /// their symbols stay in original-program order.
 ///
-/// F37-D measured that execution order is declaration order and observation
-/// order is `EventKey` (source symbol), and that the two are not each other's
-/// sort. Building the program this way separates them, so the differential can
-/// only agree if it compares the runtime's **observation** order — a
-/// normalization that used declaration order instead would produce a different
-/// trace and fail.
+/// F37-D measured that execution order is declaration order — one completion
+/// per tick, lowest declaration index first — and that observation order is
+/// `EventKey` (session, tick, source symbol, sequence); the two are not each
+/// other's sort. Building the program this way separates them: the emission
+/// order follows this declaration while the key's source field does not, so a
+/// normalization that re-sorted what it was given by source symbol would
+/// produce a different trace and fail.
 fn recreated_program_declared_in(
     declared: &[DeclaredStep],
     declaration: &[usize],
@@ -856,7 +857,9 @@ fn accept_f38_b_the_differential_trace_compares_original_and_recreated_order() {
     assert_eq!(original.len(), 3);
 
     let program = recreated_program(&declared);
-    let events = run(&program, 2);
+    // One objective completes per tick (lowest declaration index first), so
+    // the three steps need three ticks — plus one for the run to be over.
+    let events = run(&program, declared.len() as u64 + 1);
     let map: std::collections::HashMap<(u32, u32), (MeasuredForm, i64, u32)> = declared
         .iter()
         .enumerate()
@@ -921,10 +924,11 @@ fn accept_f38_b_the_differential_trace_compares_original_and_recreated_order() {
     );
 
     // The two orders are genuinely different. Declaring the same objectives in
-    // reverse order leaves the runtime's *execution* order reversed while its
-    // observation order stays the symbol order — so the recreated trace still
-    // agrees with the original, and a normalization that had followed
-    // declaration order would not.
+    // reverse order reverses the runtime's execution order too: one objective
+    // completes per tick, lowest declaration index first, so the reverse
+    // declaration emits one objective per tick in reverse — while every tick's
+    // own report stays `EventKey`-ordered, and the normalization keeps the
+    // emission order it is given instead of re-sorting it by source symbol.
     let reversed = recreated_program_declared_in(&declared, &[2, 1, 0]);
     assert_eq!(
         reversed
@@ -935,19 +939,32 @@ fn accept_f38_b_the_differential_trace_compares_original_and_recreated_order() {
         vec![10_002, 10_001, 10_000],
         "the objectives are declared in reverse"
     );
-    let reversed_events = run(&reversed, 2);
-    assert_ne!(
+    let reversed_events = run(&reversed, declared.len() as u64 + 1);
+    assert_eq!(
         reversed_events
             .iter()
             .map(|e| e.key.source.0)
             .collect::<Vec<_>>(),
         vec![10_002, 10_001, 10_000],
-        "the runtime reports events in `EventKey` order, not in declaration order"
+        "the scan is declaration index order: one completion per tick, in reverse"
+    );
+    assert!(
+        reversed_events.windows(2).all(|w| w[0].key < w[1].key),
+        "the report is still `EventKey` order: ticks ascend, keys ascend within"
     );
     let reversed_trace = normalize_emitted(&scenario, &reversed_events, &|event| {
         map.get(&(event.key.source.0, event.key.sequence)).copied()
     })
     .expect("a named scenario");
+    assert_eq!(
+        reversed_trace
+            .steps()
+            .iter()
+            .map(|s| s.source.unwrap())
+            .collect::<Vec<_>>(),
+        vec![10_002, 10_001, 10_000],
+        "the normalization keeps the emission order; a re-sort by source symbol would flip it"
+    );
     let reversed_comparison =
         compare_traces(&original, &reversed_trace, &scenario, &scenario).expect("same scenario");
     assert!(

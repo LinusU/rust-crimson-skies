@@ -100,23 +100,40 @@ fn two_objectives() -> MissionProgram {
 
 #[test]
 fn accept_f37_a_two_objectives_one_tick_have_stable_order() {
-    // Facts inserted in opposite orders must give the identical result.
+    // Both conditions become true on the same tick. Facts inserted in
+    // opposite orders must give the identical result, and only the lowest
+    // declaration index completes on that tick: objective 2 is declared
+    // first, so it fires on tick 5 while objective 1 — satisfied all along —
+    // waits for tick 6, its condition re-evaluated rather than latched
+    // (`f37.rule.terminal_precedence.one_completion_per_tick`).
     let run = |actors: &[u32]| {
         let mut s = MissionSession::launch(two_objectives(), SessionGeneration(1)).unwrap();
-        s.step(&dead(actors), Tick(5)).unwrap()
+        let first = s.step(&dead(actors), Tick(5)).unwrap();
+        let second = s.step(&dead(actors), Tick(6)).unwrap();
+        // Exactly one objective completes per tick, and it is the one the
+        // index-order scan reaches first.
+        let sources = |events: &[MissionEvent]| -> Vec<_> {
+            events
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::ObjectiveCompleted))
+                .map(|e| e.key.source)
+                .collect()
+        };
+        assert_eq!(sources(&first.events), [SymbolId(2)], "tick 5");
+        assert_eq!(sources(&second.events), [SymbolId(1)], "tick 6");
+        let mut all = first.events;
+        all.extend(second.events);
+        all
     };
     let a = run(&[10, 20]);
     let b = run(&[20, 10]);
     assert_eq!(a, b);
-    let order: Vec<_> = a
-        .events
-        .iter()
-        .map(|e| (e.key.source.0, e.key.sequence))
-        .collect();
-    // Source id order, completion before its own actions, never program
-    // declaration order of the Vec (objective 2 is declared first).
-    assert_eq!(order, vec![(1, 0), (1, 1), (2, 0), (2, 1)]);
-    assert!(a.events.windows(2).all(|w| w[0].key < w[1].key));
+    let order: Vec<_> = a.iter().map(|e| (e.key.source.0, e.key.sequence)).collect();
+    // Execution follows declaration order (objective 2 is declared first),
+    // completion before its own actions, never source-symbol order — and the
+    // whole two-tick sequence is key-ordered, tick by tick.
+    assert_eq!(order, vec![(2, 0), (2, 1), (1, 0), (1, 1)]);
+    assert!(a.windows(2).all(|w| w[0].key < w[1].key));
 }
 
 #[test]
