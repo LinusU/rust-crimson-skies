@@ -69,8 +69,8 @@ use bevy::app::PluginGroup;
 use bevy::camera::{ClearColorConfig, PerspectiveProjection, Projection, RenderTarget};
 use bevy::image::Image;
 use bevy::prelude::{
-    App, Assets, Camera, Camera3d, Color, DefaultPlugins, DirectionalLight, Mesh3d, MeshMaterial3d,
-    Transform, WindowPlugin, default,
+    App, Assets, Bundle, Camera, Camera3d, Color, DefaultPlugins, DirectionalLight, Handle, Mesh3d,
+    MeshMaterial3d, Transform, WindowPlugin, default,
 };
 use cs_assets::install::sha256;
 use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
@@ -83,6 +83,7 @@ use crate::playtest_textures::{
     UnresolvedMaterial,
 };
 use crate::render::capture::ComparisonSettings;
+use crate::render::profile::{bevy_tonemapping, msaa_for};
 use crate::world::meshes::WorldMeshes;
 use crate::world::retail::container_mesh_key;
 
@@ -757,25 +758,8 @@ fn spawn_textured_scene(
 
     let centre_f = bevy::math::Vec3::new(centre[0] as f32, centre[1] as f32, centre[2] as f32);
     let up = bevy::math::Vec3::Y;
-    app.world_mut().spawn((
-        Camera3d::default(),
-        Camera {
-            clear_color: ClearColorConfig::Custom(Color::srgba(
-                CLEAR_COLOR[0],
-                CLEAR_COLOR[1],
-                CLEAR_COLOR[2],
-                CLEAR_COLOR[3],
-            )),
-            ..default()
-        },
-        RenderTarget::Image(handle.clone().into()),
-        Projection::Perspective(PerspectiveProjection {
-            near: (distance * NEAR_PLANE_FRACTION) as f32,
-            far: (distance * FAR_PLANE_FACTOR) as f32,
-            ..PerspectiveProjection::default()
-        }),
-        Transform::from_xyz(eye[0] as f32, eye[1] as f32, eye[2] as f32).looking_at(centre_f, up),
-    ));
+    app.world_mut()
+        .spawn(comparison_camera(eye, centre_f, distance, handle.clone()));
     app.world_mut().spawn((
         DirectionalLight {
             illuminance: KEY_LIGHT_ILLUMINANCE,
@@ -794,4 +778,95 @@ fn spawn_textured_scene(
     }
 
     CaptureTarget { image: handle }
+}
+
+/// The camera every comparison frame is drawn through: the flat capture's
+/// clear colour, projection and framing, **and the fixed comparison set as
+/// components**.
+///
+/// `CameraPlugin` registers `Msaa` as a required component of `Camera` and
+/// `Core3dPlugin` registers `Tonemapping` on `Camera3d`, so a spawn that
+/// said nothing would render four samples a pixel under `TonyMcMapface`
+/// while [`TexturedCapture`] records `msaa_samples: 1` and `tonemap:
+/// "none"` — a settings record the pixels would not back. The set is
+/// applied the way [`crate::render::sync`]'s `apply_presentation` applies
+/// the fidelity profile: as the camera's own components, through
+/// [`msaa_for`] and [`bevy_tonemapping`], so the record and the render
+/// cannot disagree.
+///
+/// Exposure and the rest of the HDR post chain need nothing here: no `Hdr`
+/// marker is spawned, so the curve component's own pass never runs — which
+/// is what "no exposure change" and "no tone curve" already mean — the sRGB
+/// target supplies the gamma encode, and `DirectionalLight` defaults to no
+/// shadow mapping.
+fn comparison_camera(
+    eye: [f64; 3],
+    centre: bevy::math::Vec3,
+    distance: f64,
+    image: Handle<Image>,
+) -> impl Bundle {
+    let settings = ComparisonSettings::comparison();
+    (
+        Camera3d::default(),
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::srgba(
+                CLEAR_COLOR[0],
+                CLEAR_COLOR[1],
+                CLEAR_COLOR[2],
+                CLEAR_COLOR[3],
+            )),
+            ..default()
+        },
+        RenderTarget::Image(image.into()),
+        Projection::Perspective(PerspectiveProjection {
+            near: (distance * NEAR_PLANE_FRACTION) as f32,
+            far: (distance * FAR_PLANE_FACTOR) as f32,
+            ..PerspectiveProjection::default()
+        }),
+        Transform::from_xyz(eye[0] as f32, eye[1] as f32, eye[2] as f32)
+            .looking_at(centre, bevy::math::Vec3::Y),
+        msaa_for(settings.msaa_samples())
+            .expect("the fixed comparison sample count is a count Bevy expresses"),
+        bevy_tonemapping(settings.tonemap()),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::core_pipeline::tonemapping::Tonemapping as BevyTonemapping;
+    use bevy::ecs::world::World;
+    use bevy::render::view::Msaa;
+
+    use super::*;
+
+    /// The record [`TexturedCapture`] makes is the fixed comparison set;
+    /// this is what makes the record *true*: `Camera` would otherwise take
+    /// `Msaa::Sample4` as a required component and the recorded `1` would
+    /// describe a frame that was never rendered. Asserted on the spawned
+    /// entity, not on the settings constant, so a bundle that forgets the
+    /// components fails the test.
+    #[test]
+    fn accept_f17_e_the_capture_camera_carries_the_fixed_set_as_components() {
+        let mut world = World::new();
+        let entity = world
+            .spawn(comparison_camera(
+                [10.0, 10.0, 10.0],
+                bevy::math::Vec3::ZERO,
+                10.0,
+                Handle::<Image>::default(),
+            ))
+            .id();
+        assert_eq!(
+            world.get::<Msaa>(entity),
+            Some(&Msaa::Off),
+            "the comparison set is one sample per pixel — `msaa_for(1)` — \
+             and `Camera`'s own required component is `Sample4`"
+        );
+        assert_eq!(
+            world.get::<BevyTonemapping>(entity),
+            Some(&BevyTonemapping::None),
+            "the comparison set is no tone curve, and `Camera3d`'s own \
+             required component is `TonyMcMapface`"
+        );
+    }
 }
