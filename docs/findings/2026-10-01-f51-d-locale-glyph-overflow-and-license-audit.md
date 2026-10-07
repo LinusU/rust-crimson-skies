@@ -275,7 +275,7 @@ claims above rather than left without a resolving task:
   executable (Rally #466 owner note, 2026-10-05) established that neither TGA
   is read as a font at all, and that the game's bitmap fonts are the ten
   `fonts.zrd` images in `ZBD/rimage.zbd`, whose cell rule is now measured by
-  production code. Both TGAs carry a `unused_in_original` verdict with the
+  production code. Both TGAs carry an `unused_in_original` verdict with the
   cited addresses, `rimage.zbd` carries ten measured coverages (94 cells
   each), and the audit emits no `unmeasured_glyphs` blocker any more. See
   `docs/findings/2026-10-06-f51-fontcell-bitmap-font-coverage.md`.

@@ -23,11 +23,12 @@
 >   was measured from the executable (colour-key separator columns, cell
 >   `c - 0x21`, `CELL_COUNT` = 94 cells, `'!'` drawn for anything outside
 >   `[0x21, 0x7f]`). Retail data confirms it independently: the production scan
->   finds exactly 94 cells in each of the ten fonts of three different widths,
->   which is the count the original requires before it stops logging
+>   finds exactly 94 cells in each of the ten fonts — five different image
+>   sizes, 463×6 to 761×12 (five widths, two heights), which is the count the
+>   original requires before it stops logging
 >   `Only found %d characters in font %s` (`0x5f` = 94 cells + the cell-less
->   space). If the rule were wrong, ten fonts of six different layouts could
->   not all land on that number.
+>   space). If the rule were wrong, ten fonts of five different image sizes
+>   could not all land on that number.
 > - **"What would unblock the task", item 3, is the path that was taken.**
 >   Successor record: `docs/findings/2026-10-06-f51-fontcell-bitmap-font-coverage.md`
 >   and `crates/cs_app/src/text/original_font.rs`; the verdict the F51-D audit
