@@ -242,3 +242,62 @@ Every limitation above is named so a later fidelity claim cannot quietly
 inherit it: nothing in this stage is `original-verified`, and its fixture data
 is authored synthetic data that proves the wiring, never the original front
 end.
+
+## Review addendum (review of the same date)
+
+Identities, per AGENTS.md's review policy: **implemented by** `bunny-2`
+(session of 2026-10-07 17:44–19:12), **reviewed by** `bunny-2` in a separate
+session with a fresh context that did not write the code it reviewed. The two
+roles share an agent identity, so this is a fresh-context review, not an
+independent-model one; no review here awards anything beyond `checked`.
+
+What the review changed (this addendum supersedes the "9 tests" count above —
+the target now runs **11** `accept_f45_c_*` tests):
+
+1. **Stale-state defect fixed.** `FlowDomain::close_profile` cleared the
+   profile, the run, the construction screen, the committed loadout, the
+   launch and the pending mission outcome, but *not* `applied`: after closing
+   a profile the flow kept reporting the previous campaign's applied outcome
+   as if it belonged to the next one. It is now cleared with the rest, and
+   `accept_f45_c_the_return_flow_saves_the_outcome_and_reopens_the_profile_
+   without_a_restart` asserts it is `None` after the reopen.
+2. **Coverage gap closed: the refusal that must not happen at all.**
+   `FrontEndFlow::prepare` → `LoadFlow::check_begin` (no plan, no content
+   session, no cache) had no test, so removing it left no failing test even
+   though the machine would then reach `Loading` over a load that cannot
+   start. Added
+   `accept_f45_c_a_launch_without_a_usable_load_plan_is_refused_before_the_
+   machine_moves`, which pins all three `LoadError` variants, the untouched
+   screen/ledger/campaign, and — after the cache is supplied — the same flow
+   launching in the same process.
+3. **Coverage gap closed: the ledger's own refusal paths.** The walks only
+   proved that a *well-formed* stream is taken. Added
+   `accept_f45_c_the_ledger_refuses_an_impossible_resource_stream`, which pins
+   `ReleasedUnknown`, `AcquiredTwice` (audio scope and world) and both faces
+   of `InputBoundTwice`, plus the release-then-acquire switch a real
+   transition emits.
+4. **Sensitivity re-checked by mutation** (each run
+   `cargo test -p cs_app --test ui -- accept_f45_c_`, then reverted):
+   `prepare`'s check removed → the new no-plan test fails with the machine on
+   `Loading`; `self.applied = None` removed → the return-flow test fails;
+   `ResourceLedger::apply` made infallible → the new ledger test fails.
+
+Two partial-failure windows the review found and deliberately did **not**
+patch, because both need a domain API this task does not own:
+
+- `FlowDomain::open_profile` writes to the population (`ProfileSession::
+  create` writes the save and persists the registry immediately —
+  `crates/cs_content/src/save/library.rs`, and `select` persists the active
+  pointer) *before* `CampaignRun::open` can refuse, e.g. `CampaignSaveError::
+  WrongRun` when the stored snapshot names another campaign profile/run
+  (`crates/cs_app/src/campaign.rs`). A refused `ConfirmProfile` can therefore
+  leave a created profile — or a moved active pointer — behind while the
+  screen does not move. The session itself is dropped, so the population claim
+  is released and a retry is possible; only the population's contents differ
+  from a strict "a refusal changes nothing" reading.
+- `commit_blueprint` writes through `ConstructionScreen::commit_saved` and
+  *then* re-reads the run with `CampaignRun::open`. If that re-read fails, the
+  commit is already on disk while the screen stays where it was and
+  `FlowDomain::run` still holds the pre-commit state. This is the cost of the
+  re-read already filed as **#750**; a `CampaignRun` commit path that cannot
+  fail after the write removes the window.
