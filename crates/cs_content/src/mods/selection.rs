@@ -1065,7 +1065,8 @@ mod tests {
     fn accept_f53_c_mount_failures_propagate_and_a_retry_mounts() {
         let tuning = synthetic_tuning_mod();
         let mut selection = ModSelection::new();
-        let missing_root = Temp::new("missing").path().join("not-here");
+        let temp = Temp::new("missing");
+        let missing_root = temp.path().join("not-here");
         selection
             .offer(tuning.clone(), &missing_root)
             .expect("offered");
