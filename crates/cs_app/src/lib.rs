@@ -669,14 +669,16 @@ pub mod ui {
     //! Instant Action run cannot write campaign progression (F49
     //! non-negotiable 3).
     //!
-    //! [`mods`] is the F53-C mod-screen projection and lobby fold
+    //! [`mods`] is the F53 mod screen and the host half of a mod mount
     //! (`specs/F53-mod-mounts-custom-content-and-compatibility-signatures.md`,
-    //! stage `### F53-C`): [`mods::ModsView`] projects the host's
-    //! `cs_content::mods::ModSelection` and its mount outcome into rows and
-    //! refusal notices, and [`mods::lobby_compatibility`] folds the mounted
-    //! set's compatibility signature into the `cs_net` handshake record, so
-    //! a tuning mod can never silently share a lobby with stock content
-    //! (F53 AC03).
+    //! stages `### F53-B` and `### F53-C`): [`mods::ModsView`] projects the
+    //! host's `cs_content::mods::ModSelection` and its mount outcome into
+    //! rows and refusal notices, [`mods::lobby_compatibility`] folds the
+    //! mounted set's compatibility signature into the `cs_net` handshake
+    //! record so a tuning mod can never silently share a lobby with stock
+    //! content (F53 AC03), and [`mods::mount_selection`] attaches the
+    //! bounded validator a sandboxed mission payload has to pass before
+    //! `cs_content::mods::mount_mods` will enable it (F53 non-negotiable 2).
 
     pub mod front_end;
     pub mod hud;

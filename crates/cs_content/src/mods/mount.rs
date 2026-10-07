@@ -97,10 +97,14 @@ const COMPAT_SIGNATURE_DOMAIN: &[u8] = b"cs-content-compat-signature-v1\n";
 /// * a [`ProgramValidator`] must accept a payload only after running that
 ///   bounded validation, and must reject rather than defer;
 /// * with **no** validator the mount refuses the override outright
-///   ([`MountError::UnvalidatedProgram`]), because no measured decoder from
-///   mod-authored bytes into a mission program exists in this workspace yet
-///   (`cs_content::mission_control` still reports why it cannot lower one)
-///   — a missing capability blocks, it never passes.
+///   ([`MountError::UnvalidatedProgram`]) — a missing capability blocks, it
+///   never passes. The host that owns the decoder supplies one: since
+///   `F53-B-FU1` `cs_app::ui::mods` decodes a mod's payload through the
+///   measured `.zrd` reader and the retail lowering adapter and ends at
+///   `MissionProgram::validate`, and attaches that validator in the
+///   environment it mounts with. This trait stays where it is because
+///   `cs_content` still may not name `cs_script`'s types, so a host that
+///   supplies no validator still refuses.
 ///
 /// This is a *capability*, not a policy knob: it cannot make a payload
 /// mountable that the validator refused, and it is never consulted for a
