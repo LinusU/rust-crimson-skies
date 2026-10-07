@@ -320,7 +320,7 @@ fn census_json(report: &WorldGroupAuditReport) -> String {
         let unlocated = audit
             .openings()
             .iter()
-            .flat_map(|opening| opening.unlocated().iter().map(|class| class.code()))
+            .flat_map(|opening| opening.unlocated().iter().map(|row| row.class().code()))
             .collect::<Vec<_>>();
         rows.push_str(&format!(
             "{{\"world\":{},\"directory\":{},\"geometry_container\":{},\"texture_archive\":{},\

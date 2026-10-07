@@ -25,15 +25,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use cs_app::world::audit::{
-    GEOMETRY_CONTAINER_FILE, PRESENTABLE_PROBE_MESHES, REPRESENTATIVE_MESHES, TEXTURE_ARCHIVE_FILE,
-    audit_survey, survey_world_groups, upload_verdict,
+    GEOMETRY_CONTAINER_FILE, OPENING_CLASS_ABSENT_FROM_THE_CORPUS, PRESENTABLE_PROBE_MESHES,
+    REPRESENTATIVE_MESHES, ROUTE_ABSENT_FROM_THE_CORPUS, TEXTURE_ARCHIVE_FILE, audit_survey,
+    class_absent, locate_stunt_passages, route_absent, survey_world_groups, upload_verdict,
 };
 use cs_app::world::gpu_capture::{CaptureRequest, capture_world_mesh};
 use cs_content::mesh::RenderMesh;
+use cs_content::stunts::{
+    RetailStuntEncodingSurvey, RetailStuntGate, ScenarioFlyThroughTarget, StuntEncodingSpan,
+};
 use cs_content::world::{
-    GroupFacts, OpeningClass, PlacementSource, RepresentativeGeometry, StuntOpening,
-    StuntOpeningAudit, TraversalBlocker, TraversalRoute, UploadVerdict, WorldAuditError,
-    WorldGroupAudit, WorldGroupCensus, WorldGroupRef, WorldId,
+    GroupFacts, OPENING_SEARCH_UNSUPPLIED, OpeningClass, PlacementSource, RepresentativeGeometry,
+    RetailTriggerVolume, RouteSearch, StoredVolume, StuntOpening, StuntOpeningAudit,
+    TraversalBlocker, TraversalRoute, TriggerVolumeSpan, UnlocatedOpening, UploadVerdict,
+    WorldAuditError, WorldAuditGap, WorldGroupAudit, WorldGroupCensus, WorldGroupRef, WorldId,
 };
 use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMesh, RawPolygon};
 use cs_types::evidence::ContentHash;
@@ -61,6 +66,7 @@ fn synthetic_group(key: &str) -> WorldGroupRef {
 
 /// One measured census for a synthetic group, with the numbers named in the
 /// argument so a test never asserts on a number it did not write down.
+#[allow(clippy::too_many_arguments)]
 fn synthetic_census(
     key: &str,
     present: usize,
@@ -68,6 +74,8 @@ fn synthetic_census(
     vertex_scale_to_m: Option<f64>,
     routes: Vec<TraversalRoute>,
     openings: Vec<StuntOpening>,
+    unlocated_openings: Vec<UnlocatedOpening>,
+    route_search: RouteSearch,
 ) -> WorldGroupCensus {
     let representative: Vec<RepresentativeGeometry> = (0..2)
         .map(|step| RepresentativeGeometry {
@@ -105,6 +113,8 @@ fn synthetic_census(
         representative,
         routes,
         openings,
+        unlocated_openings,
+        route_search,
     )
     .expect("authored census values are finite")
 }
@@ -133,6 +143,10 @@ fn decoded_census(key: &str) -> WorldGroupCensus {
                 clearance_m: Some(6.5 - step as f64),
             })
             .collect(),
+        // This fixture authors openings for every class and one route, so no
+        // class is unlocated and the route search is never consulted.
+        Vec::new(),
+        RouteSearch::default(),
     )
 }
 
@@ -293,6 +307,8 @@ fn accept_f18_d_a_refused_upload_names_the_material_group_the_adapter_refused() 
         }],
         Vec::new(),
         Vec::new(),
+        Vec::new(),
+        RouteSearch::default(),
     )
     .expect("finite authored values");
     assert_eq!(carried.refused_representatives(), 1);
@@ -340,6 +356,8 @@ fn accept_f18_d_the_audit_visits_every_group_and_compares_its_representative_geo
                 None,
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
+                RouteSearch::default(),
             )),
             _ => Err(cs_content::world::WorldGroupBlocker::NoGeometry {
                 world: row.world().clone(),
@@ -511,6 +529,8 @@ fn accept_f18_d_an_unlocated_opening_or_route_is_reported_instead_of_assumed() {
                 mesh_index: 0,
                 clearance_m: Some(2.0),
             }],
+            Vec::new(),
+            RouteSearch::default(),
         ))
     });
     let gaps = report.groups()[0].gaps();
@@ -547,6 +567,8 @@ fn accept_f18_d_an_unlocated_opening_or_route_is_reported_instead_of_assumed() {
                 openings: Vec::new(),
             }],
             Vec::new(),
+            Vec::new(),
+            RouteSearch::default(),
         ))
     });
     assert_eq!(
@@ -569,6 +591,8 @@ fn accept_f18_d_an_unlocated_opening_or_route_is_reported_instead_of_assumed() {
             Some(0.05),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            RouteSearch::default(),
         ))
     });
     assert_eq!(
@@ -706,6 +730,8 @@ fn accept_f18_d_world_group_records_refuse_contradictions_and_impossible_values(
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            RouteSearch::default(),
         )
         .expect_err("a non-finite scale must be refused, not stored");
         match refused {
@@ -751,6 +777,8 @@ fn accept_f18_d_world_group_records_refuse_contradictions_and_impossible_values(
             vec![bad_corner],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
+            RouteSearch::default(),
         )
         .err(),
         Some(WorldAuditError::NonFiniteStoredCorner {
@@ -1065,12 +1093,18 @@ fn empty_mesh() -> RenderMesh {
 /// VFS mount, the production ZBD dispatch and both production GameZ readers, and
 /// the representative geometry of every group is compared.
 ///
-/// The traversal half of the acceptance scenario is where the honest verdict
-/// lives: the node array is decoded and the vertex unit is the measured metre,
-/// so both traversal blockers are gone, but no rule that says what an opening
-/// or a route *is* has been measured. Every group therefore carries one
-/// `NoRouteMeasured` gap and all five opening classes stay unlocated. This test
-/// pins that verdict, so a stage that measures such a rule has to change it.
+/// **F18-D over the real installation, after task #732's opening rule.** Every
+/// group's placement is decoded and the measured metre is carried, so both
+/// traversal blockers are gone. What the traversal half now says is a
+/// measurement rather than an absence: a **stunt passage** is located wherever
+/// the group's own instant-action scenario declares a fly-through danger-zone
+/// target (54 across six of the eight groups, `c1c` and `c2b` author none),
+/// the other four opening classes are reported unlocated *with the measurement
+/// that says the corpus holds none of them*, and no route is stated because the
+/// container stores no path and the corpus's only route carrier (`aiv.zrd`) has
+/// an unmeasured encoding — one `NoRouteInMeasuredCorpus` gap per group, naming
+/// the missions it affects. A route claimed without its two facts is still
+/// `RouteWithoutFacts`.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
@@ -1125,8 +1159,9 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
     assert_eq!(report.blocked().count(), 0);
     assert!(
         !report.is_complete(),
-        "placement and scale are established but no route or opening rule is measured, so every \
-         group carries a NoRouteMeasured gap and the audit is explicitly not a pass"
+        "the four opening classes the corpus states nothing about stay unlocated and no route is \
+         stated, so every group carries a NoRouteInMeasuredCorpus gap and the audit is \
+         explicitly not a pass"
     );
     assert_eq!(report.routed().count(), 0);
     assert!(
@@ -1136,8 +1171,26 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
     assert!(report.drawn_triangle_count() > 0);
 
     // Per group: measured geometry that agrees with the census, a traversal
-    // verdict blocked by both missing facts, and all five opening classes
-    // reported unlocated with the blockers that stopped them.
+    // verdict whose two facts both exist, and one opening row per class with
+    // the measurement behind it.
+    //
+    // The stunt-passage column is F42-D's own measurement of the eight
+    // instant-action scenarios (task #463): the fly-through danger-zone targets
+    // each group's `targets.zrd` declares. `c1c` and `c2b` author none, which is
+    // the two rows where the class must come back unlocated **with that
+    // measurement** rather than as a bare zero.
+    let stunt_passages: BTreeMap<&str, usize> = [
+        ("c1", 5_usize),
+        ("c1b", 5),
+        ("c1c", 0),
+        ("c2", 9),
+        ("c2b", 0),
+        ("c3", 4),
+        ("c4", 14),
+        ("c5", 17),
+    ]
+    .into_iter()
+    .collect();
     let mut total_stored_nodes = 0_u32;
     let mut total_placed = 0_usize;
     for audit in report.visited() {
@@ -1286,7 +1339,9 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
         );
 
         // Traversal: both facts established, so the blockers are gone; the audit
-        // still states no route, and says so as a gap rather than a pass.
+        // states no route, and says so through the **measured** gap — what was
+        // searched, why the corpus holds none, and which missions the absence
+        // affects — rather than the old "measured for the wrong thing" shortfall.
         assert!(audit.routes_measured());
         assert!(
             audit.traversal_blockers().is_empty(),
@@ -1296,41 +1351,171 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
         assert_eq!(
             audit.routes().len(),
             0,
-            "{}: no route rule is measured",
+            "{}: the container stores no path and aiv.zrd's encoding is unmeasured (task #455), \
+             so no route can be stated",
             group.world()
         );
-        assert!(
-            matches!(
-                audit.gaps(),
-                [cs_content::world::WorldAuditGap::NoRouteMeasured { placed_objects, .. }]
-                    if matches!(
-                        census.placement(),
-                        PlacementSource::Decoded { placed_objects: decoded } if decoded == *placed_objects
-                    )
+        let located_here = audit
+            .openings()
+            .iter()
+            .map(|class_audit| class_audit.located().len())
+            .sum::<usize>();
+        match audit.gaps() {
+            [
+                WorldAuditGap::NoRouteInMeasuredCorpus {
+                    world: named,
+                    located_openings,
+                    affected,
+                    measured,
+                },
+            ] => {
+                assert_eq!(
+                    named,
+                    group.world(),
+                    "the gap is filed against the group it measured"
+                );
+                assert_eq!(
+                    *located_openings, located_here,
+                    "the gap quotes how many openings the same rule did locate"
+                );
+                assert!(
+                    !affected.is_empty(),
+                    "{}: the gap names the content the absent route affects, got nothing",
+                    group.world()
+                );
+                assert!(
+                    affected.iter().any(|entry| entry == group.world().key())
+                        || affected.iter().all(|entry| entry.starts_with('M')),
+                    "{}: the affected content is this group's missions or the group itself, got \
+                     {affected:?}",
+                    group.world()
+                );
+                assert!(
+                    measured.contains("aiv.zrd") && measured.contains("455"),
+                    "{}: the gap cites the route carrier and the task that owns its unmeasured \
+                     encoding, got {measured:?}",
+                    group.world()
+                );
+            }
+            other => panic!(
+                "{}: with both facts established and no route stated, the one gap is \
+                 NoRouteInMeasuredCorpus, got {other:?}",
+                group.world()
             ),
-            "{}: with both facts established and no route stated, the one gap is \
-             NoRouteMeasured, got {:?}",
-            group.world(),
-            audit.gaps()
-        );
-
-        // Openings: all five classes visited, none located, every one naming the
-        // class it stands for.
-        assert_eq!(audit.openings().len(), OpeningClass::ALL.len());
-        for opening in audit.openings() {
-            assert!(
-                opening.located().is_empty(),
-                "{}: no opening-classification rule is measured, so no class is located",
-                group.world()
-            );
-            assert_eq!(opening.unlocated().len(), 1);
-            assert!(
-                OpeningClass::ALL.contains(&opening.unlocated()[0]),
-                "{}: the unlocated class is one the sheet names",
-                group.world()
-            );
-            assert!(!opening.is_complete());
         }
+
+        // Openings: all five classes visited. Stunt passages are located from
+        // the group's own instant-action declarations; the other four classes
+        // are unlocated **with the measurement that says the corpus holds none
+        // of them** — never a bare class, never a silent zero.
+        assert_eq!(audit.openings().len(), OpeningClass::ALL.len());
+        let mut unlocated_here = 0_usize;
+        for class_audit in audit.openings() {
+            if class_audit.located().is_empty() {
+                assert_eq!(
+                    class_audit.unlocated().len(),
+                    1,
+                    "{}: an unlocated class carries exactly one reason",
+                    group.world()
+                );
+                let row = &class_audit.unlocated()[0];
+                let class = row.class();
+                assert!(
+                    OpeningClass::ALL.contains(&class),
+                    "{}: the unlocated class is one the sheet names",
+                    group.world()
+                );
+                assert!(
+                    !row.measured().trim().is_empty(),
+                    "{}: {class} is unlocated with no measurement: the silent zero the audit \
+                     exists to prevent",
+                    group.world()
+                );
+                assert_ne!(
+                    row.measured(),
+                    OPENING_SEARCH_UNSUPPLIED,
+                    "{}: the retail survey searched every class, so no class may report that the \
+                     search never happened",
+                    group.world()
+                );
+                if class == OpeningClass::StuntPassage {
+                    assert!(
+                        row.measured().contains("fly-through danger-zone target"),
+                        "{}: a group that authors no stunt passage says so from its own scenario \
+                         declarations, got {:?}",
+                        group.world(),
+                        row.measured()
+                    );
+                    assert_eq!(
+                        *stunt_passages
+                            .get(group.world().key())
+                            .expect("every discovered group is pinned here"),
+                        0,
+                        "{}: only a group that authors no fly-through target may leave this class \
+                         unlocated",
+                        group.world()
+                    );
+                } else {
+                    assert!(
+                        row.measured().contains("the container stores no field"),
+                        "{}: {class} is reported absent from the corpus with that measurement, \
+                         got {:?}",
+                        group.world(),
+                        row.measured()
+                    );
+                }
+                assert!(!class_audit.is_complete());
+                unlocated_here += 1;
+                continue;
+            }
+            assert_eq!(
+                class_audit.located()[0].class,
+                OpeningClass::StuntPassage,
+                "{}: the only class the measured rule locates is the stunt passage",
+                group.world()
+            );
+            assert!(
+                class_audit.unlocated().is_empty(),
+                "{}: a located class has nothing unlocated",
+                group.world()
+            );
+            for opening in class_audit.located() {
+                let clearance = opening.clearance_m.unwrap_or_else(|| {
+                    panic!(
+                        "{}: a located opening carries a measured clearance",
+                        group.world()
+                    )
+                });
+                assert!(
+                    clearance.is_finite() && clearance > 0.0,
+                    "{}: the clearance is the zone box's own narrowest extent times the measured \
+                     metre, got {clearance}",
+                    group.world()
+                );
+            }
+        }
+        let stunt_here = *stunt_passages
+            .get(group.world().key())
+            .expect("every discovered group is pinned here");
+        assert_eq!(
+            located_here,
+            stunt_here,
+            "{}: the located stunt passages are exactly the fly-through targets this group's own \
+             scenario declares",
+            group.world()
+        );
+        let expected_unlocated = if stunt_here > 0 {
+            OpeningClass::ALL.len() - 1
+        } else {
+            OpeningClass::ALL.len()
+        };
+        assert_eq!(
+            unlocated_here,
+            expected_unlocated,
+            "{}: exactly the four classes the corpus states nothing about are unlocated when \
+             {stunt_here} stunt passage(s) were located, and all five when none was",
+            group.world()
+        );
     }
     assert!(
         total_placed > 0 && total_placed <= total_stored_nodes as usize,
@@ -1561,11 +1746,13 @@ fn accept_f17_g_retail_representatives_upload_under_the_partial_normal_policy() 
 /// placement and the measured metre, and the two traversal blockers F18-D named
 /// are gone because the facts exist, not because they were dropped.
 ///
-/// What stays open is stated rather than hidden: no rule that says what a
-/// tunnel, arch, building opening, hangar or stunt passage *is* has been
-/// measured, so no opening is located and no route is claimed. The audit says
-/// so as one `NoRouteMeasured` gap per group, and a route claimed without its
-/// two facts is still `RouteWithoutFacts`.
+/// What stays open is stated rather than hidden: four of the five opening
+/// classes and every traversal route are measured to be **absent** from the
+/// corpus, so each group reports one `NoRouteInMeasuredCorpus` gap naming the
+/// missions the absence affects, every unlocated class carries the measurement
+/// behind it, and a route claimed without its two facts is still
+/// `RouteWithoutFacts`. The `accept_f18_e1_` suite below pins that opening rule
+/// itself.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f18_e_retail_placement_is_decoded_and_the_scale_is_the_measured_metre() {
@@ -1602,6 +1789,453 @@ fn accept_f18_e_retail_placement_is_decoded_and_the_scale_is_the_measured_metre(
     .map(|(group, count)| (group.to_owned(), count))
     .collect();
     assert_eq!(placed, expected, "mesh-naming node records per group");
-    assert_eq!(report.gap_count(), 8, "one NoRouteMeasured gap per group");
+    assert_eq!(
+        report.gap_count(),
+        8,
+        "one NoRouteInMeasuredCorpus gap per group"
+    );
+    assert!(
+        report
+            .groups()
+            .iter()
+            .all(|audit| audit.gaps().iter().all(|gap| matches!(
+                gap,
+                cs_content::world::WorldAuditGap::NoRouteInMeasuredCorpus { .. }
+            ))),
+        "the shortfall gap is replaced by the measured one for every group the rule covered"
+    );
     assert!(!report.is_complete());
+}
+
+// ------------------------------------- F18-E.1: the measured opening rule ---
+
+/// One authored instant-action fly-through target resolved to one authored
+/// world box — the shape F42-D's survey produces for each of its 54 rows, so a
+/// synthetic test can drive the **production** classification
+/// ([`locate_stunt_passages`]) without the installation.
+///
+/// `world_zone` is `None` for a target whose own scenario never bound its
+/// label, which F42-D reports as a gap; such a row must contribute no opening.
+fn synthetic_fly_through_gate(
+    world: &str,
+    label: &str,
+    world_zone: Option<&str>,
+    mesh_index: Option<i32>,
+    corners: ([f64; 3], [f64; 3]),
+) -> RetailStuntGate {
+    let id = WorldId::from_key(world).expect("a valid world key");
+    let geometry = mesh_index.map(|index| {
+        let volume = StoredVolume::new(corners.0, corners.1).expect("an authored box");
+        RetailTriggerVolume::new(
+            TriggerVolumeSpan::new(
+                id.clone(),
+                format!("zbd/{world}/gamez.zbd"),
+                hash(&format!("{world}-container")).to_hex(),
+                12,
+                4_096,
+                144,
+            ),
+            world_zone.unwrap_or("dzpath?").to_owned(),
+            Some(index),
+            volume,
+        )
+    });
+    let target = ScenarioFlyThroughTarget {
+        zone_label: label.to_owned(),
+        description: "MSG_OBJ_DESCRIPTION_1".to_owned(),
+        category_label: "MSG_OBJ_DZ".to_owned(),
+        help_label: "MSG_OBJ_FLYTHROUGH".to_owned(),
+    };
+    RetailStuntGate::new(
+        id,
+        "stunt_flying",
+        label,
+        world_zone.map(str::to_owned),
+        &target,
+        StuntEncodingSpan::new(
+            format!("zbd/{world}/ia1/zrdr.zbd"),
+            hash("scenario").to_hex(),
+            "targets.zrd",
+            64,
+            128,
+        ),
+        geometry,
+    )
+}
+
+/// **Task #732's opening rule, on evidence this test writes down.**
+///
+/// Three things a reviewer has to be able to see failing:
+///
+/// 1. the **classification** itself — [`locate_stunt_passages`] turns an
+///    authored fly-through target resolved to an authored world box into a
+///    `StuntOpening` whose mesh index is the box's and whose clearance is the
+///    box's *narrowest stored extent times the caller's measured unit*. Remove
+///    the box→clearance conversion, or classify by something other than the
+///    objective's own declaration, and the numbers here stop matching;
+/// 2. the **gap the measured route search produces** —
+///    `NoRouteInMeasuredCorpus`, naming the missions it affects and citing the
+///    route carrier and the task that owns its unmeasured encoding. Drop the
+///    `RouteSearch` consultation and this group falls back to the old shortfall
+///    gap, which is asserted *not* to be there;
+/// 3. the **never-silent** property — a class the survey searched and found
+///    nothing of carries the survey's own measurement, and a census that
+///    searched for nothing still carries `OPENING_SEARCH_UNSUPPLIED` rather
+///    than an empty string; a blank measurement is refused at construction.
+#[test]
+fn accept_f18_e1_a_located_stunt_passage_and_an_absent_route_carry_their_measurement() {
+    // --- 1. the classification, over authored evidence -----------------------
+    let world = WorldId::from_key("c1").expect("a valid world key");
+    // Stored corners: extents 8 x 5.5 x 19, so the narrowest is 5.5 units.
+    let resolved = synthetic_fly_through_gate(
+        "c1",
+        "dz1",
+        Some("dzpath1"),
+        Some(949),
+        ([-10.0, 4.0, -20.0], [-2.0, 9.5, -1.0]),
+    );
+    // A target whose scenario never bound its label: F42-D reports it as a gap,
+    // and the classification must produce no opening from it.
+    let unbound = synthetic_fly_through_gate("c1", "sghangar", None, None, ([0.0; 3], [1.0; 3]));
+    // Another group's target: the classification is per world.
+    let other = synthetic_fly_through_gate(
+        "c5",
+        "dz2",
+        Some("dzpath2"),
+        Some(7),
+        ([0.0, 0.0, 0.0], [4.0, 4.0, 4.0]),
+    );
+    let stunts =
+        RetailStuntEncodingSurvey::new(hash("install").to_hex(), vec![resolved, unbound, other]);
+
+    let located = locate_stunt_passages(&world, &stunts, 2.0);
+    assert_eq!(
+        located,
+        vec![StuntOpening {
+            class: OpeningClass::StuntPassage,
+            mesh_index: 949,
+            clearance_m: Some(11.0),
+        }],
+        "the narrowest stored extent (5.5) times the caller's measured unit (2.0) is the \
+         clearance, and the box's own mesh binding is the opening's mesh"
+    );
+    assert!(
+        locate_stunt_passages(
+            &WorldId::from_key("c5").expect("a valid world key"),
+            &stunts,
+            2.0
+        )
+        .len()
+            == 1,
+        "the other group locates its own target and not this one's"
+    );
+
+    // --- 2. the measured verdicts the audit derives from them ---------------
+    let unlocated: Vec<UnlocatedOpening> = OpeningClass::ALL
+        .iter()
+        .filter(|class| **class != OpeningClass::StuntPassage)
+        .map(|class| {
+            UnlocatedOpening::new(*class, class_absent(*class)).expect("a non-empty measurement")
+        })
+        .collect();
+    assert_eq!(
+        unlocated.len(),
+        4,
+        "four classes the corpus states nothing about"
+    );
+    assert!(
+        unlocated.iter().all(|row| {
+            row.measured()
+                .contains(OPENING_CLASS_ABSENT_FROM_THE_CORPUS)
+                && row.measured().contains(row.class().code())
+        }),
+        "every absence quotes the shared measurement and names its own class"
+    );
+
+    let census = synthetic_census(
+        "c1",
+        40,
+        PlacementSource::Decoded { placed_objects: 38 },
+        Some(2.0),
+        Vec::new(),
+        located,
+        unlocated,
+        RouteSearch::Unstated {
+            measured: route_absent(&world),
+        },
+    );
+    let declared = WorldGroupAudit::new(vec![synthetic_group("c1")]).expect("one group");
+    let report = declared.audit(|_| Ok(census.clone()));
+    let verdict = &report.groups()[0];
+
+    assert_eq!(
+        verdict.gaps(),
+        &[WorldAuditGap::NoRouteInMeasuredCorpus {
+            world: world.clone(),
+            located_openings: 1,
+            affected: vec!["M01".to_owned(), "M02".to_owned()],
+            measured: route_absent(&world),
+        }],
+        "the measured route search names what was searched, what it located and which missions \
+         the absent route affects"
+    );
+    assert!(
+        !report.groups().iter().any(|audit| audit
+            .gaps()
+            .iter()
+            .any(|gap| matches!(gap, WorldAuditGap::NoRouteMeasured { .. }))),
+        "a group the rule covered no longer reports the shortfall gap"
+    );
+    assert_eq!(
+        report.routed().count(),
+        0,
+        "no route is stated, so nothing counts as routed"
+    );
+    assert!(!report.is_complete(), "four classes stay unlocated");
+
+    let opening_rows = verdict.openings();
+    assert_eq!(opening_rows.len(), OpeningClass::ALL.len());
+    for row in opening_rows {
+        if row.located().is_empty() {
+            assert_eq!(row.unlocated().len(), 1);
+            let reason = row.unlocated()[0].measured();
+            assert!(
+                !reason.trim().is_empty() && reason != OPENING_SEARCH_UNSUPPLIED,
+                "a class this survey searched carries the survey's measurement, got {reason:?}"
+            );
+        } else {
+            assert_eq!(row.located()[0].class, OpeningClass::StuntPassage);
+            assert!(row.unlocated().is_empty());
+        }
+    }
+
+    // --- 3. a census that searched for nothing is still never silent --------
+    let unsought = synthetic_census(
+        "c2",
+        9,
+        PlacementSource::Decoded { placed_objects: 7 },
+        Some(1.0),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        RouteSearch::default(),
+    );
+    let declared = WorldGroupAudit::new(vec![synthetic_group("c2")]).expect("one group");
+    let report = declared.audit(|_| Ok(unsought.clone()));
+    assert_eq!(
+        report.groups()[0].gaps(),
+        &[WorldAuditGap::NoRouteMeasured {
+            world: WorldId::from_key("c2").expect("a valid world key"),
+            placed_objects: 7,
+        }],
+        "with no measured route search the shortfall gap is still the honest verdict"
+    );
+    for row in report.groups()[0].openings() {
+        assert_eq!(row.unlocated().len(), 1, "every class is visited");
+        assert_eq!(
+            row.unlocated()[0].measured(),
+            OPENING_SEARCH_UNSUPPLIED,
+            "an unlocated class whose search never ran says exactly that"
+        );
+    }
+
+    // A blank measurement is refused, so "unlocated and silent" is not a state
+    // a census can be built in.
+    assert_eq!(
+        UnlocatedOpening::new(OpeningClass::Hangar, "   ").err(),
+        Some(WorldAuditError::BlankOpeningReason {
+            class: "hangar".to_owned(),
+        })
+    );
+    assert!(
+        UnlocatedOpening::new(OpeningClass::Hangar, class_absent(OpeningClass::Hangar)).is_ok(),
+        "a real measurement is accepted"
+    );
+
+    // --- the contradiction arm still wins -----------------------------------
+    let contradicted = synthetic_census(
+        "c3",
+        5,
+        PlacementSource::Undecoded {
+            stored_node_records: 100,
+            nodes_offset: 4_096,
+        },
+        None,
+        vec![TraversalRoute {
+            route: "invented".to_owned(),
+            from_m: [0.0; 3],
+            to_m: [1.0; 3],
+            clearance_m: None,
+            openings: Vec::new(),
+        }],
+        Vec::new(),
+        Vec::new(),
+        RouteSearch::Unstated {
+            measured: ROUTE_ABSENT_FROM_THE_CORPUS.to_owned(),
+        },
+    );
+    let declared = WorldGroupAudit::new(vec![synthetic_group("c3")]).expect("one group");
+    let report = declared.audit(|_| Ok(contradicted.clone()));
+    assert_eq!(
+        report.groups()[0].gaps(),
+        &[WorldAuditGap::RouteWithoutFacts {
+            world: WorldId::from_key("c3").expect("a valid world key"),
+            routes: 1,
+            openings: 0,
+        }],
+        "a route claimed while the facts it needs are missing is still RouteWithoutFacts, \
+         whatever the route search measured"
+    );
+}
+
+/// **F18-E.1 over the real installation.** The opening rule applied to all
+/// eight groups: stunt passages located from each group's own instant-action
+/// declarations (54 across six groups, `c1c` and `c2b` author none), every
+/// other class unlocated **with the measurement that says the corpus holds none
+/// of it**, one measured route gap per group naming the missions it affects,
+/// and no shortfall gap anywhere.
+///
+/// Ignored because CI has no original data; run it with `--include-ignored`
+/// beside the other retail tests.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f18_e1_retail_stunt_passages_are_located_and_every_absence_is_measured() {
+    let game_dir =
+        PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR is set for a retail test"));
+    let survey =
+        survey_world_groups(&game_dir).expect("the installation is discovered and surveyed");
+    let report = audit_survey(&survey).expect("the audit runs over the survey");
+
+    // F42-D's own measurement of the eight instant-action scenarios (task #463):
+    // the fly-through danger-zone targets each group's `targets.zrd` declares.
+    let expected: BTreeMap<&str, usize> = [
+        ("c1", 5_usize),
+        ("c1b", 5),
+        ("c1c", 0),
+        ("c2", 9),
+        ("c2b", 0),
+        ("c3", 4),
+        ("c4", 14),
+        ("c5", 17),
+    ]
+    .into_iter()
+    .collect();
+    let stunts = survey.stunts().expect("the stunt encoding was measured");
+
+    let mut located_total = 0_usize;
+    for verdict in report.visited() {
+        let world = verdict.group().world();
+        let group = survey.group(world).expect("the surveyed row");
+        let container = group.container().expect("every group's container reads");
+        let expected_here = *expected
+            .get(world.key())
+            .expect("the installation's eight groups are pinned");
+        assert_eq!(
+            locate_stunt_passages(world, stunts, container.vertex_scale_to_m).len(),
+            expected_here,
+            "{world}: the classification over the measured survey finds this group's own \
+             fly-through targets"
+        );
+
+        let mut located_here = 0_usize;
+        for row in verdict.openings() {
+            if row.located().is_empty() {
+                assert_eq!(row.unlocated().len(), 1, "{world}: one reason per class");
+                let reason = row.unlocated()[0].measured();
+                assert!(
+                    !reason.trim().is_empty(),
+                    "{world}: {} is unlocated with no measurement — the silent zero the audit \
+                     exists to prevent",
+                    row.unlocated()[0].class()
+                );
+                assert_ne!(
+                    reason, OPENING_SEARCH_UNSUPPLIED,
+                    "{world}: the retail survey searched every class"
+                );
+                match row.unlocated()[0].class() {
+                    OpeningClass::StuntPassage => {
+                        assert!(
+                            expected_here == 0 && reason.contains("declares 0 fly-through"),
+                            "{world}: a group that authors no fly-through target says so from its \
+                             own scenario, got {reason:?}"
+                        );
+                        assert!(
+                            reason.contains(&format!("zbd/{}/ia1/zrdr.zbd", world.key())),
+                            "{world}: the reason names this group's own scenario container, got \
+                             {reason:?}"
+                        );
+                    }
+                    class => assert_eq!(
+                        reason,
+                        class_absent(class),
+                        "{world}: {class} carries the shared corpus-absence measurement"
+                    ),
+                }
+                continue;
+            }
+            assert_eq!(
+                row.located()[0].class,
+                OpeningClass::StuntPassage,
+                "{world}: the only class the measured rule locates"
+            );
+            assert_eq!(
+                row.located().len(),
+                expected_here,
+                "{world}: counted twice?"
+            );
+            located_here += row.located().len();
+            for opening in row.located() {
+                let clearance = opening
+                    .clearance_m
+                    .unwrap_or_else(|| panic!("{world}: a measured clearance"));
+                assert!(
+                    clearance.is_finite() && clearance > 0.0,
+                    "{world}: the clearance is the zone box's narrowest stored extent times the \
+                     measured metre, got {clearance}"
+                );
+                assert!(
+                    (opening.mesh_index as usize) < container.meshes.meshes.len(),
+                    "{world}: mesh {} the container stores (it holds {} slots)",
+                    opening.mesh_index,
+                    container.meshes.meshes.len()
+                );
+                assert!(
+                    container.meshes.meshes[opening.mesh_index as usize].is_some(),
+                    "{world}: mesh {} the located opening names is a stored mesh, not an absent \
+                     slot",
+                    opening.mesh_index
+                );
+            }
+        }
+        assert_eq!(located_here, expected_here, "{world}: located count");
+        located_total += located_here;
+
+        assert_eq!(
+            verdict.gaps(),
+            &[WorldAuditGap::NoRouteInMeasuredCorpus {
+                world: world.clone(),
+                located_openings: expected_here,
+                affected: verdict.group().missions().to_vec(),
+                measured: route_absent(world),
+            }],
+            "{world}: one measured route gap naming this group's missions and the evidence"
+        );
+        assert!(
+            verdict
+                .gaps()
+                .iter()
+                .all(|gap| !matches!(gap, WorldAuditGap::NoRouteMeasured { .. })),
+            "{world}: the shortfall gap is gone for every group the rule covered"
+        );
+    }
+    assert_eq!(located_total, 54, "F42-D's measured corpus total");
+    assert_eq!(
+        report.gap_count(),
+        8,
+        "one measured route gap per group, no shortfall gap"
+    );
+    assert!(
+        !report.is_complete(),
+        "four classes and every route stay open"
+    );
 }
