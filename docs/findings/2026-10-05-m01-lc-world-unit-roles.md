@@ -178,7 +178,12 @@ sensors or solids by inference.
   preservation, angle unit and rotation sense are now measured by static
   analysis of the decrypted image (#436's owner note) and reported per import
   by `WorldImportReport::axis_class`; this source's own calibration still
-  carries no landmark for them, which is #390/F16-E's work.)*
+  carries no landmark for them, which is #390/F16-E's work.
+  **Resolved as a measurement by #390/F16-E (2026-10-06):** that task recorded
+  three static-analysis artifact landmarks per quantity on `retail.gamez` for
+  the axis map, handedness and angle unit, so this source's calibration gap
+  list now names only the missing behavior landmark for them — see
+  `docs/findings/2026-10-06-f16-e-original-unit-calibration-landmarks.md`.)*
 - **`observed_tool` is the ceiling here.** No original executable ran; the
   metre claim is a byte census. It could still be wrong if the format's
   `GRAVITY` word is not the Earth's, or if the aircraft were authored at a
