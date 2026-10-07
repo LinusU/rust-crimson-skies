@@ -55,8 +55,9 @@ use cs_types::content::ContentId;
 use cs_types::random::SplitMix64;
 
 use crate::ir::{
-    Action, ActorId, ActorState, CompareOp, Condition, MAX_ACTIONS_PER_OBJECTIVE, Outcome,
-    ProgramLocator, SymbolId, ValidatedProgram, ValidationError, Value, ValueType,
+    Action, ActorId, ActorState, CompareOp, Condition, DirectiveOperation,
+    MAX_ACTIONS_PER_OBJECTIVE, Outcome, ProgramLocator, SymbolId, ValidatedProgram,
+    ValidationError, Value, ValueType,
 };
 
 /// SplitMix64 domain separating the mission evaluator's stream from every
@@ -225,6 +226,35 @@ pub struct MissionEvent {
     pub kind: EventKind,
 }
 
+/// One measured directive operation the program asked the host to perform —
+/// the documented host effect of [`Action::Directive`].
+///
+/// `EventKind` is F37's fixed vocabulary of mission-state *observations* —
+/// an objective completing, a reward intent, a terminal request — and a
+/// measured directive is none of those. The simulation matches the enum
+/// exhaustively (`cs_sim::mission` applies each kind), so this crate cannot
+/// grow it without changing a crate this stage does not own. A directive is
+/// instead emitted to the session's **directive log**
+/// ([`MissionState::directives`]): exactly once per execution key under the
+/// same `consumed` guard [`MissionEvent`]s use, in `EventKey` order, with the
+/// bound call's arguments carried field for field — nested lists stay
+/// nested. It is a real emission, not a no-op: the host applies each entry
+/// it has not already applied, deduplicating by execution key exactly as it
+/// does for events.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DirectiveEmission {
+    /// When and where in the program the emission was produced; its
+    /// [`EventKey::execution_key`] is the exactly-once identity the host
+    /// deduplicates on.
+    pub key: EventKey,
+    /// The measured operation the binding declared for the call.
+    pub operation: DirectiveOperation,
+    /// The call's own arguments as the site spelled them, nested structure
+    /// intact — never flattened into a positional order the site did not
+    /// write.
+    pub args: Vec<Value>,
+}
+
 /// Result of one tick.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TickResult {
@@ -341,8 +371,9 @@ fn pending_timer(
 /// It carries every piece that can change a later observation: variable
 /// values, the latched objectives, the consumed execution keys, the terminal
 /// state, the last evaluated tick, the whole pending queue in drain order with
-/// its eligibility ticks, the item-ordinal counter and the RNG draw count.
-/// Mid-mission save is therefore supported; nothing is declared unsupported.
+/// its eligibility ticks, the item-ordinal counter, the RNG draw count and
+/// the directive emissions already produced. Mid-mission save is therefore
+/// supported; nothing is declared unsupported.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MissionStateSnapshot {
     pub version: u32,
@@ -356,6 +387,10 @@ pub struct MissionStateSnapshot {
     pub completed: Vec<SymbolId>,
     /// Every execution key already emitted, in key order.
     pub consumed: Vec<ExecutionKey>,
+    /// The session's directive emissions so far, in `EventKey` order — the
+    /// record of host effects already produced, so a restore keeps it and
+    /// the host never applies one twice.
+    pub directives: Vec<DirectiveEmission>,
     pub terminal: TerminalState,
     /// The last evaluated tick; a restored session still refuses to re-evaluate
     /// it ([`TickError::NotAdvancing`]).
@@ -407,8 +442,16 @@ pub enum RestoreDefect {
     /// The queue is not in `(due, enqueue)` order, so draining it would not
     /// reproduce the order the record claims.
     PendingOrder { previous: Tick, given: Tick },
-    /// A consumed execution key belongs to another session.
+    /// A consumed execution key — or a directive emission's key — belongs to
+    /// another session.
     ForeignExecutionKey { session: SessionGeneration },
+    /// The directive log is not in `EventKey` order, or repeats an execution
+    /// key: no live session produced it that way.
+    DirectiveOrder,
+    /// A directive emission's execution key was never consumed, so no live
+    /// session emitted it — the emit path inserts the key and the emission
+    /// together.
+    DirectiveNotConsumed { key: ExecutionKey },
     /// The record drops a variable the program declares. Every state of this
     /// program holds all of them, and a condition on a missing variable is
     /// false, so an absent one would silently disarm the mission.
@@ -524,6 +567,19 @@ impl fmt::Display for RestoreError {
                 RestoreDefect::ForeignExecutionKey { session } => {
                     write!(f, "execution key belongs to session {}", session.0)
                 }
+                RestoreDefect::DirectiveOrder => {
+                    write!(
+                        f,
+                        "directive log is not key-ordered or repeats an execution key"
+                    )
+                }
+                RestoreDefect::DirectiveNotConsumed { key } => {
+                    write!(
+                        f,
+                        "directive emission for objective #{} seq {} was never consumed",
+                        key.source.0, key.sequence
+                    )
+                }
                 RestoreDefect::MissingVariable { symbol } => {
                     write!(
                         f,
@@ -620,6 +676,8 @@ pub struct MissionState {
     variables: BTreeMap<SymbolId, Value>,
     completed: BTreeSet<SymbolId>,
     consumed: BTreeSet<ExecutionKey>,
+    /// The session's directive emissions so far, in `EventKey` order.
+    directives: Vec<DirectiveEmission>,
     terminal: TerminalState,
     last_tick: Option<Tick>,
     policy: PrecedencePolicy,
@@ -651,6 +709,7 @@ impl MissionState {
                 .collect(),
             completed: BTreeSet::new(),
             consumed: BTreeSet::new(),
+            directives: Vec::new(),
             terminal: TerminalState::Running,
             last_tick: None,
             policy: PrecedencePolicy::SyntheticConservative,
@@ -701,6 +760,15 @@ impl MissionState {
         self.last_tick
     }
 
+    /// The session's directive emissions so far, in [`EventKey`] order — the
+    /// documented host effect of an [`Action::Directive`]. Each carries its
+    /// execution key (emitted exactly once, under the same `consumed` guard
+    /// the events use), the measured operation and the bound call's own
+    /// arguments.
+    pub fn directives(&self) -> &[DirectiveEmission] {
+        &self.directives
+    }
+
     /// The pending queue as [`PendingTimer`]s, in `(due, enqueue)` order.
     /// Each carries the exact remaining ticks of one scheduled item.
     pub fn pending_timers(&self) -> Vec<PendingTimer> {
@@ -746,6 +814,7 @@ impl MissionState {
                 .collect(),
             completed: self.completed.iter().copied().collect(),
             consumed: self.consumed.iter().copied().collect(),
+            directives: self.directives.clone(),
             terminal: self.terminal,
             last_tick: self.last_tick,
             policy: self.policy,
@@ -819,11 +888,46 @@ impl MissionState {
                 return Err(RestoreError::UnknownObjective { symbol: *symbol });
             }
         }
+        let mut consumed = BTreeSet::new();
         for key in &snapshot.consumed {
             if key.session != snapshot.session {
                 return Err(RestoreError::Corrupt {
                     defect: RestoreDefect::ForeignExecutionKey {
                         session: key.session,
+                    },
+                });
+            }
+            consumed.insert(*key);
+        }
+        // The directive log is host-effect state, checked rather than
+        // trusted like every other record field: every emission belongs to
+        // this session, the log is in `EventKey` order with distinct
+        // execution keys, and every emission's execution key was consumed —
+        // the emit path inserts the two together, so a record that names an
+        // emission without its consumption could not come from a live
+        // session.
+        let mut previous_directive: Option<EventKey> = None;
+        let mut directive_keys = BTreeSet::new();
+        for emission in &snapshot.directives {
+            if emission.key.session != snapshot.session {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::ForeignExecutionKey {
+                        session: emission.key.session,
+                    },
+                });
+            }
+            if previous_directive.is_some_and(|before| before >= emission.key)
+                || !directive_keys.insert(emission.key.execution_key())
+            {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::DirectiveOrder,
+                });
+            }
+            previous_directive = Some(emission.key);
+            if !consumed.contains(&emission.key.execution_key()) {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::DirectiveNotConsumed {
+                        key: emission.key.execution_key(),
                     },
                 });
             }
@@ -937,7 +1041,8 @@ impl MissionState {
             session: snapshot.session,
             variables,
             completed: snapshot.completed.iter().copied().collect(),
-            consumed: snapshot.consumed.iter().copied().collect(),
+            consumed,
+            directives: snapshot.directives,
             terminal: snapshot.terminal,
             last_tick: snapshot.last_tick,
             policy: snapshot.policy,
@@ -1290,6 +1395,32 @@ impl MissionState {
         }
     }
 
+    /// Emits one directive emission under the same exactly-once guard
+    /// [`emit`] applies to events: the execution key is consumed first, so a
+    /// retried or replayed execution cannot produce the effect twice.
+    ///
+    /// The log is kept in [`EventKey`] order. Execution order is not key
+    /// order — objectives resolve in declaration order while keys order by
+    /// source — so the emission is inserted at its sorted position, the same
+    /// order `TickResult.events` is sorted into before the tick returns.
+    fn emit_directive(&mut self, key: EventKey, operation: DirectiveOperation, args: &[Value]) {
+        if !self.consumed.insert(key.execution_key()) {
+            return;
+        }
+        let emission = DirectiveEmission {
+            key,
+            operation,
+            args: args.to_vec(),
+        };
+        let Err(at) = self.directives.binary_search_by_key(&key, |e| e.key) else {
+            // The full key is already logged: impossible through `consumed`,
+            // which admits an execution key only once, but fail closed rather
+            // than record a host effect twice.
+            return;
+        };
+        self.directives.insert(at, emission);
+    }
+
     /// Runs one action of `enclosing` (the objective's list or the pending
     /// item's list — `Reschedule` re-queues whichever list the action lives
     /// in). `key` is the event key this action's emissions use.
@@ -1326,6 +1457,9 @@ impl MissionState {
             }
             Action::GrantReward { reward } => {
                 self.emit(result, key, EventKind::RewardGranted(reward.clone()));
+            }
+            Action::Directive { operation, args } => {
+                self.emit_directive(key, *operation, args);
             }
             Action::Schedule {
                 delay_ticks,
