@@ -30,6 +30,16 @@ pub const MAX_CONDITION_DEPTH: usize = 16;
 /// Deepest `Schedule` action-list nesting accepted (contract: "recursion /
 /// stack limits").
 pub const MAX_ACTION_NESTING: usize = 16;
+/// Deepest [`Value::List`] nesting accepted, counting the nested lists
+/// themselves: a list may sit inside at most this many enclosing lists. A
+/// design bound, not a measured original limit — the deepest measured
+/// argument list nests three (`ANIM_STATE`'s descriptor).
+pub const MAX_VALUE_DEPTH: usize = 8;
+/// Most items one list-shaped value may carry: a [`Value::List`]'s children
+/// or a directive's top-level arguments. A design bound, not a measured
+/// original limit — the longest measured list is `WAKE_OBJECTIVE`'s fifteen
+/// indices.
+pub const MAX_VALUE_ITEMS: usize = 64;
 
 /// Stable identity of a mission-scoped actor. Never an entity index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -58,6 +68,8 @@ pub enum ValueType {
     Actor,
     Vector,
     OptActor,
+    /// An ordered list of values (`Value::List`).
+    List,
 }
 
 /// A typed IR value. There is no implicit coercion between variants.
@@ -74,6 +86,25 @@ pub enum Value {
     Vector([f64; 3]),
     /// A typed optional actor reference.
     OptActor(Option<ActorId>),
+    /// One original argument-list node, carried as structure field for field:
+    /// each child is the value at that position of the list, nested lists stay
+    /// nested. Measured directive sites spell nested lists
+    /// (`COMPLETED_STOPPOINT`'s `[[text,int,int]]`, `ANIM_STATE`'s
+    /// `[text,[text,[text],text,[text]]]`); flattening one into positional
+    /// arguments would be a format change presented as a binding, so the IR
+    /// carries the node itself.
+    List(Vec<Value>),
+}
+
+/// Why a value lies outside the IR's bounds (contract: "cap memory/time").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ValueDefect {
+    /// A float or vector component is NaN or infinite.
+    NonFinite,
+    /// A [`Value::List`] nested deeper than [`MAX_VALUE_DEPTH`].
+    TooDeep,
+    /// A [`Value::List`] carrying more than [`MAX_VALUE_ITEMS`] items.
+    TooManyItems { count: usize },
 }
 
 impl Value {
@@ -88,14 +119,30 @@ impl Value {
             Self::Actor(_) => ValueType::Actor,
             Self::Vector(_) => ValueType::Vector,
             Self::OptActor(_) => ValueType::OptActor,
+            Self::List(_) => ValueType::List,
         }
     }
 
-    fn is_finite(&self) -> bool {
+    /// Finiteness and the list bounds, checked recursively at `depth`
+    /// enclosing lists. The recursion is what makes the bounds necessary: an
+    /// unbounded `List` would make the check itself unbounded.
+    pub(crate) fn check(&self, depth: usize) -> Result<(), ValueDefect> {
         match self {
-            Self::Float(f) => f.is_finite(),
-            Self::Vector(v) => v.iter().all(|c| c.is_finite()),
-            _ => true,
+            Self::Float(f) if !f.is_finite() => Err(ValueDefect::NonFinite),
+            Self::Vector(v) if v.iter().any(|c| !c.is_finite()) => Err(ValueDefect::NonFinite),
+            Self::List(items) => {
+                if depth >= MAX_VALUE_DEPTH {
+                    return Err(ValueDefect::TooDeep);
+                }
+                if items.len() > MAX_VALUE_ITEMS {
+                    return Err(ValueDefect::TooManyItems { count: items.len() });
+                }
+                for item in items {
+                    item.check(depth + 1)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -162,6 +209,290 @@ pub enum Outcome {
     Aborted,
 }
 
+/// A measured directive operation — the engine's own vocabulary of the
+/// operation one control-record directive key performs, as the M01-LC
+/// findings documents established it.
+///
+/// This mirrors `cs_content::mission_control::DirectiveOperation` variant
+/// for variant: `cs_script` may depend on `cs_types` only
+/// (`docs/01-ARCHITECTURE.md`), so it cannot name that type, and the mirror
+/// is kept honest two ways — [`Self::code`] returns the identical stable
+/// identifier the measurement side publishes, and the M01-LC acceptance
+/// suite cross-checks every code the measured vocabulary produces against
+/// this enum.
+///
+/// One variant per measured **mechanism**, not per key: keys that share a
+/// handler share a variant (`WAKE_OBJECTIVE` and
+/// `WAKE_OBJECTIVE_WHEN_I_COMPLETE`; the hundred `INACTIVE<n>` spellings;
+/// the four `ADD`/`REMOVE` `_OBJECTIVE`/`_OTHER` `_TARGET` keys). The
+/// operation names *what the original is measured to do*; it is not a claim
+/// that the engine performs it — the runtime carries it to the host as a
+/// documented effect ([`crate::runtime::MissionState::directives`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DirectiveOperation {
+    /// `INACTIVE<n>`: each listed name resolves through a chained member
+    /// lookup into a handle; the block completes when at least the threshold
+    /// of them no longer carry the in-play bit.
+    InactiveMembers,
+    /// `INACTIVE_COMPLETION_COUNT`: the count of cleared members the
+    /// inactive-members evaluator needs.
+    InactiveThreshold,
+    /// `DANGER_ZONES_COMPLETED`: completes when at least the stored threshold
+    /// of the recorded zone flag bytes are nonzero.
+    DangerZoneFlags,
+    /// `DANGER_ZONES_COMPLETION_COUNT`: that threshold.
+    DangerZoneThreshold,
+    /// `DEDG`: completes when the named enemy group has at most the spelled
+    /// count of members still in play, plus whatever its generator still
+    /// owes.
+    EnemyGroupDepletion,
+    /// `ANIM_STATE`: completes when at least the required count of the listed
+    /// animations are in the named state.
+    AnimationStates,
+    /// `TRAVELERS`: completes when the named subject crosses the radius about
+    /// the anchor — or, in the counting mode, when the cumulative group
+    /// count reaches the required number.
+    Travelers,
+    /// `COUNTER`: the block's named-counter triples over the global integer
+    /// registry — wake and complete writes plus a per-tick test.
+    NamedCounters,
+    /// `BEGIN_DORMANT`: the block starts dormant; its first child is the
+    /// mission-clock second at which it wakes itself, and the next children
+    /// arm the awake, nap and done timers.
+    DormantStart,
+    /// `TICK_DEPENDS_ON_OBJ`: the dependent runs no timers and evaluates no
+    /// conditions while the objective at the stored index is not awake.
+    DependencyGate,
+    /// `IDENTITY`: the class spelling selects the completion sound channel
+    /// and HUD class; the integer is the HUD slot ordinal.
+    PresentationIdentity,
+    /// `WAKE_OBJECTIVE` / `WAKE_OBJECTIVE_WHEN_I_COMPLETE`: at completion,
+    /// wake each listed index in order.
+    WakeObjectives,
+    /// `SLEEP_OBJECTIVE_WHEN_I_COMPLETE`: at completion, put each listed
+    /// index to sleep through the shared transition.
+    SleepObjectives,
+    /// `KILL_OBJECTIVE_WHEN_I_COMPLETE`: at completion, kill each listed
+    /// index — it stops ticking and never counts in the outcome aggregation.
+    KillObjectives,
+    /// `NAP_OBJECTIVE_WHEN_I_COMPLETE`: at completion, put the target to nap
+    /// and re-wake it after the spelled seconds, clearing its completed flag.
+    NapObjective,
+    /// `ADD`/`REMOVE` `_OBJECTIVE`/`_OTHER` `_TARGET`: at completion, resolve
+    /// each name chain to one object and set or clear its target flag.
+    SetTargetFlag {
+        /// `true` for the objective-target flag, `false` for the
+        /// other-target flag.
+        objective: bool,
+        /// `true` to set the flag, `false` to clear it.
+        set: bool,
+    },
+    /// `COMPLETED_STOPPOINT`: forward the `{int, bool}` pair to the named
+    /// stoppoint's two-step advance/select handler.
+    AdvanceStopPoint,
+    /// `COMPLETED_ZEPCANNONS`: store the byte at the resolved zeppelin's
+    /// field.
+    ZeppelinCannons,
+    /// `SET_AI_NET`: point the named vehicle or zeppelin at the named entry
+    /// of the global node list.
+    AssignNet,
+    /// `SET_AI_TEAM`: write the named actor's team field.
+    AssignTeam,
+    /// `SET_AI_ATTACK_RADIUS`: write the vehicle's radius triple `r²`, `-r`,
+    /// `r`.
+    SetAttackRadius,
+    /// `START_TAXI`: clear the vehicle's AI hold-off byte.
+    ReleaseTaxi,
+    /// `SET_HELP_LABEL`: give the resolved object the localized label id and
+    /// text.
+    SetHelpLabel,
+    /// `STOP_QUEUED_SOUNDS`: flag each matching queued-sound entry and
+    /// schedule its removal a fixed time later.
+    StopQueuedSounds,
+    /// `COMPLETED_SOUND_GROUP`: play the sound-group handle through the
+    /// completed channel.
+    CompletedSoundGroup,
+    /// `TIMER_ADJUST` / `ADJUST_TIMER_WHEN_I_COMPLETE`: set or adjust the
+    /// mission timer by the spelled seconds at completion.
+    AdjustMissionTimer,
+    /// `END_TIMER`: stop the mission timer at completion.
+    EndMissionTimer,
+    /// `WARP_VEHICLE`: teleport the vehicle to a randomly chosen listed
+    /// point and add the shared-scalar velocity unless AI-driven.
+    WarpVehicle,
+    /// `WAKEUP_ENEMIES`: on wake, wake only the named actors that are asleep.
+    WakeEnemies,
+    /// `WAKEUP_TURRETS`: on wake, set the live byte of every turret entry
+    /// whose name matches, `*` consuming exactly one digit.
+    WakeTurrets,
+    /// `WAKEUP_ZEP_TURRETS`: on wake, activate the named zeppelin-turret
+    /// node and all its children.
+    WakeZeppelinTurrets,
+    /// `WAKEUP_GENERATOR`: on wake, add the spelled count to the named
+    /// generator's pending-spawn counter.
+    FeedGenerator,
+    /// `WAKE_ANIM`: on wake, execute the named animation on the named or
+    /// defaulted target.
+    WakeAnimation,
+    /// `WAKEUP_SOUND_GROUP`: on wake, play the sound-group handle through the
+    /// woken channel.
+    WakeSoundGroup,
+    /// `RESET_TIMER`: on a dormant wake, set and start the mission timer at
+    /// the spelled seconds.
+    ResetMissionTimer,
+    /// `HIDE_OBJ`: on a dormant wake, mark the named objective completed
+    /// with no outcome class.
+    HideObjective,
+    /// `SLEEP_ANIM`: on a nap or done transition, execute the named animation
+    /// on the named target.
+    TransitionAnimation,
+    /// `WAKE_OBJECTIVE_WHEN_I_SLEEP`: wake the listed indices when this
+    /// objective auto-naps or auto-dones on its own timers.
+    WakeObjectivesOnTransition,
+    /// `WON` / `LOST`: the block's outcome class — the mission resolves when
+    /// every block of a class completes; the class block itself does not
+    /// fire on its own completion.
+    OutcomeClass {
+        /// `true` for `WON`, `false` for `LOST`.
+        won: bool,
+    },
+}
+
+impl DirectiveOperation {
+    /// Every measured operation code, as variants — one entry per code
+    /// [`Self::code`] publishes, so the parameterized mechanisms appear once
+    /// per spelling (`SetTargetFlag` four times, `OutcomeClass` twice).
+    pub const ALL: [DirectiveOperation; 43] = [
+        Self::InactiveMembers,
+        Self::InactiveThreshold,
+        Self::DangerZoneFlags,
+        Self::DangerZoneThreshold,
+        Self::EnemyGroupDepletion,
+        Self::AnimationStates,
+        Self::Travelers,
+        Self::NamedCounters,
+        Self::DormantStart,
+        Self::DependencyGate,
+        Self::PresentationIdentity,
+        Self::WakeObjectives,
+        Self::SleepObjectives,
+        Self::KillObjectives,
+        Self::NapObjective,
+        Self::SetTargetFlag {
+            objective: true,
+            set: true,
+        },
+        Self::SetTargetFlag {
+            objective: true,
+            set: false,
+        },
+        Self::SetTargetFlag {
+            objective: false,
+            set: true,
+        },
+        Self::SetTargetFlag {
+            objective: false,
+            set: false,
+        },
+        Self::AdvanceStopPoint,
+        Self::ZeppelinCannons,
+        Self::AssignNet,
+        Self::AssignTeam,
+        Self::SetAttackRadius,
+        Self::ReleaseTaxi,
+        Self::SetHelpLabel,
+        Self::StopQueuedSounds,
+        Self::CompletedSoundGroup,
+        Self::AdjustMissionTimer,
+        Self::EndMissionTimer,
+        Self::WarpVehicle,
+        Self::WakeEnemies,
+        Self::WakeTurrets,
+        Self::WakeZeppelinTurrets,
+        Self::FeedGenerator,
+        Self::WakeAnimation,
+        Self::WakeSoundGroup,
+        Self::ResetMissionTimer,
+        Self::HideObjective,
+        Self::TransitionAnimation,
+        Self::WakeObjectivesOnTransition,
+        Self::OutcomeClass { won: true },
+        Self::OutcomeClass { won: false },
+    ];
+
+    /// The stable identifier a report carries — the identical string
+    /// `cs_content::mission_control::DirectiveOperation::code` publishes for
+    /// the same operation.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::InactiveMembers => "inactive_members",
+            Self::InactiveThreshold => "inactive_threshold",
+            Self::DangerZoneFlags => "danger_zone_flags",
+            Self::DangerZoneThreshold => "danger_zone_threshold",
+            Self::EnemyGroupDepletion => "enemy_group_depletion",
+            Self::AnimationStates => "animation_states",
+            Self::Travelers => "travelers",
+            Self::NamedCounters => "named_counters",
+            Self::DormantStart => "dormant_start",
+            Self::DependencyGate => "dependency_gate",
+            Self::PresentationIdentity => "presentation_identity",
+            Self::WakeObjectives => "wake_objectives",
+            Self::SleepObjectives => "sleep_objectives",
+            Self::KillObjectives => "kill_objectives",
+            Self::NapObjective => "nap_objective",
+            Self::SetTargetFlag {
+                objective: true,
+                set: true,
+            } => "add_objective_target",
+            Self::SetTargetFlag {
+                objective: true,
+                set: false,
+            } => "remove_objective_target",
+            Self::SetTargetFlag {
+                objective: false,
+                set: true,
+            } => "add_other_target",
+            Self::SetTargetFlag {
+                objective: false,
+                set: false,
+            } => "remove_other_target",
+            Self::AdvanceStopPoint => "advance_stop_point",
+            Self::ZeppelinCannons => "zeppelin_cannons",
+            Self::AssignNet => "assign_net",
+            Self::AssignTeam => "assign_team",
+            Self::SetAttackRadius => "set_attack_radius",
+            Self::ReleaseTaxi => "release_taxi",
+            Self::SetHelpLabel => "set_help_label",
+            Self::StopQueuedSounds => "stop_queued_sounds",
+            Self::CompletedSoundGroup => "completed_sound_group",
+            Self::AdjustMissionTimer => "adjust_mission_timer",
+            Self::EndMissionTimer => "end_mission_timer",
+            Self::WarpVehicle => "warp_vehicle",
+            Self::WakeEnemies => "wake_enemies",
+            Self::WakeTurrets => "wake_turrets",
+            Self::WakeZeppelinTurrets => "wake_zeppelin_turrets",
+            Self::FeedGenerator => "feed_generator",
+            Self::WakeAnimation => "wake_animation",
+            Self::WakeSoundGroup => "wake_sound_group",
+            Self::ResetMissionTimer => "reset_mission_timer",
+            Self::HideObjective => "hide_objective",
+            Self::TransitionAnimation => "transition_animation",
+            Self::WakeObjectivesOnTransition => "wake_objectives_on_transition",
+            Self::OutcomeClass { won: true } => "outcome_won",
+            Self::OutcomeClass { won: false } => "outcome_lost",
+        }
+    }
+
+    /// The operation a measured code names; `None` for a code this build
+    /// does not publish, so a caller holding a newer measurement is refused
+    /// rather than silently reading a different operation.
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.iter().find(|op| op.code() == code).copied()
+    }
+}
+
 /// The documented phase in which an action's effect is resolved. Effects are
 /// queued and resolved in this order, never recursively (non-negotiable
 /// behavior 2).
@@ -214,6 +545,20 @@ pub enum Action {
     Reschedule {
         delay_ticks: u64,
     },
+    /// A measured directive operation handed to the host with the bound
+    /// call's own arguments — nested lists stay nested, field for field
+    /// ([`Value::List`]). The runtime executes it as a documented host
+    /// effect: an emission on the session's directive log
+    /// ([`crate::runtime::MissionState::directives`]), exactly once per
+    /// execution key. It is never a no-op and never `Unknown`: the operation
+    /// names what the original is measured to do, and carrying it to the
+    /// host is the action's whole effect.
+    Directive {
+        /// The measured operation the binding declared.
+        operation: DirectiveOperation,
+        /// The call's arguments as the site spelled them.
+        args: Vec<Value>,
+    },
     /// An instruction or native call that could not be decoded.
     Unknown {
         instruction: String,
@@ -231,7 +576,7 @@ impl Action {
             | Self::Schedule { .. }
             | Self::Reschedule { .. } => Phase::State,
             Self::Finish(_) => Phase::Terminal,
-            Self::GrantReward { .. } | Self::Unknown { .. } => Phase::Host,
+            Self::GrantReward { .. } | Self::Directive { .. } | Self::Unknown { .. } => Phase::Host,
         }
     }
 }
@@ -336,6 +681,16 @@ pub enum ValidationError {
     ActionsTooDeep {
         at: ProgramLocator,
     },
+    /// A `Value::List` nested deeper than [`MAX_VALUE_DEPTH`].
+    ValueTooDeep {
+        at: ProgramLocator,
+    },
+    /// A `Value::List` — or a directive's top-level argument list — holding
+    /// more than [`MAX_VALUE_ITEMS`] items.
+    TooManyValueItems {
+        at: ProgramLocator,
+        count: usize,
+    },
     /// A `Draw` whose `min` exceeds its `max`.
     InvalidRange {
         at: ProgramLocator,
@@ -386,6 +741,12 @@ impl fmt::Display for ValidationError {
                     f,
                     "{at}: scheduled actions deeper than {MAX_ACTION_NESTING}"
                 )
+            }
+            Self::ValueTooDeep { at } => {
+                write!(f, "{at}: value list nested deeper than {MAX_VALUE_DEPTH}")
+            }
+            Self::TooManyValueItems { at, count } => {
+                write!(f, "{at}: {count} list items exceeds {MAX_VALUE_ITEMS}")
             }
             Self::InvalidRange { at } => write!(f, "{at}: draw min exceeds max"),
             Self::TooManyActions { at, count } => {
@@ -468,6 +829,20 @@ impl Ctx<'_> {
             .map(|v| v.initial.value_type())
     }
 
+    /// The IR's value bounds — finiteness, list depth and item count —
+    /// located at `at`.
+    fn check_value(&self, at: &ProgramLocator, value: &Value) -> Result<(), ValidationError> {
+        match value.check(0) {
+            Ok(()) => Ok(()),
+            Err(ValueDefect::NonFinite) => Err(ValidationError::NonFiniteValue { at: at.clone() }),
+            Err(ValueDefect::TooDeep) => Err(ValidationError::ValueTooDeep { at: at.clone() }),
+            Err(ValueDefect::TooManyItems { count }) => Err(ValidationError::TooManyValueItems {
+                at: at.clone(),
+                count,
+            }),
+        }
+    }
+
     fn condition(
         &self,
         c: &Condition,
@@ -499,9 +874,7 @@ impl Ctx<'_> {
                         symbol: *variable,
                     });
                 };
-                if !value.is_finite() {
-                    return Err(ValidationError::NonFiniteValue { at: at() });
-                }
+                self.check_value(&at(), value)?;
                 if value.value_type() != expected {
                     return Err(ValidationError::TypeMismatch {
                         at: at(),
@@ -531,6 +904,20 @@ impl Ctx<'_> {
         }
         match a {
             Action::Finish(_) | Action::GrantReward { .. } | Action::Reschedule { .. } => Ok(()),
+            Action::Directive { args, .. } => {
+                // A directive's top-level arguments are its argument list;
+                // the same bound a `Value::List` carries applies to it.
+                if args.len() > MAX_VALUE_ITEMS {
+                    return Err(ValidationError::TooManyValueItems {
+                        at: at(),
+                        count: args.len(),
+                    });
+                }
+                for arg in args {
+                    self.check_value(&at(), arg)?;
+                }
+                Ok(())
+            }
             Action::Unknown { instruction } => Err(ValidationError::UnsupportedInstruction {
                 at: at(),
                 instruction: instruction.clone(),
@@ -573,9 +960,7 @@ impl Ctx<'_> {
                         symbol: *variable,
                     });
                 };
-                if !value.is_finite() {
-                    return Err(ValidationError::NonFiniteValue { at: at() });
-                }
+                self.check_value(&at(), value)?;
                 if value.value_type() != expected {
                     return Err(ValidationError::TypeMismatch {
                         at: at(),
@@ -621,11 +1006,7 @@ impl MissionProgram {
                     symbol: v.id,
                 });
             }
-            if !v.initial.is_finite() {
-                return Err(ValidationError::NonFiniteValue {
-                    at: ctx.at(&["variables"]),
-                });
-            }
+            ctx.check_value(&ctx.at(&["variables"]), &v.initial)?;
         }
         for o in &self.objectives {
             let ctx = Ctx {
