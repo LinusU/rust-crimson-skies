@@ -72,6 +72,18 @@
 //!   over resolved content bytes, so this stage exposes only the inputs it
 //!   would hash.
 //!
+//! F53-C wires the two halves into their producer and consumers in
+//! [`mod@selection`]: [`selection::ModSelection`] holds which discovered
+//! mods are enabled and supplies the [`ModSet`], the roots and the
+//! catalog-derived [`MountRequest`] a mount needs; [`selection::open_mod_session`]
+//! hands the payload mounts to a [`cs_assets::vfs::SessionBuilder`] under a
+//! context opted into the plan's load order; [`selection::content_signature`]
+//! is the `content_sha256` a session announces to the lobby;
+//! [`selection::mount_to_text`] is the mount's deterministic diagnostics;
+//! and [`selection::export_mounted_mods`] is the private export that ships a
+//! mod's own bytes while naming the original dependencies it refuses to
+//! copy.
+//!
 //! # Designed vocabulary, not original data
 //!
 //! The original game's mod support — whether it had any, what a mod manifest
@@ -95,6 +107,7 @@ use cs_types::evidence::{ClaimId, ContentHash};
 mod manifest;
 mod mount;
 mod overrides;
+mod selection;
 
 pub use manifest::{
     DependencyStrength, EngineRange, MAX_MOD_NAME_BYTES, ManifestError, ModDependency, ModHeader,
@@ -106,6 +119,11 @@ pub use mount::{
 pub use overrides::{
     COSMETIC_CONTENT_KINDS, ContentOverride, ModModification, OverrideAction, OverrideEffect,
     OverrideValidation, SANDBOXED_PROGRAM_CONTENT_KINDS, classify_effect, classify_validation,
+};
+pub use selection::{
+    AvailableMod, MOD_EXPORT_REPORT, ModExport, ModExportError, ModSelection, OriginalDependency,
+    SelectionError, content_signature, export_mounted_mods, mod_export_text, modded_context,
+    mount_payloads, mount_request, mount_to_text, open_mod_session, session_builder,
 };
 
 /// The claim id every synthetic fixture in this module is designed under.

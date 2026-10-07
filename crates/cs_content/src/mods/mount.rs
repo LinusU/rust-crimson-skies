@@ -303,6 +303,13 @@ impl MountedMods {
             .filter_map(|id| self.roots.get(id).map(|root| (id, root)))
     }
 
+    /// One planned mod's mounted root. The private export reads winners
+    /// straight from it (`ModRoot::read` re-checks each member's digest), so
+    /// an export can never be served bytes the walk did not index.
+    pub fn root(&self, mod_id: &ModId) -> Option<&ModRoot> {
+        self.roots.get(mod_id)
+    }
+
     /// The payload mounts in load order, ready to be handed to a content
     /// session. Each is mod-precedence and scoped to its own mod, so a
     /// context that has not opted into it never sees it.
