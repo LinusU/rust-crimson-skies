@@ -141,7 +141,13 @@ fn review_method(observed: &Observed) -> String {
          stage A-D findings recorded stay named on the rows and keys that carry them. \
          FAIL-CLOSED WITNESSES: an unmeasured key, a block the condition lowering refused, a \
          scalar beside its key, an unreadable block, an empty record and a record whose attempt \
-         produced no program all still refuse by name with their rows unmet. TEST-SELECTION NOTE: \
+         produced no program all still refuse by name with their rows unmet. WORLD-SIDE FACT \
+         LIMIT: MissionFacts::members/groups/generators/animations have no production writer, so \
+         24 of M01's 58 blocks - the 12 INACTIVE ladders, the 8 DEDG blocks, OBJECTIVE3's \
+         TRAVELERS and the ANIM_STATE blocks OBJECTIVE11/OBJECTIVE15/OBJECTIVE18 - lower and \
+         evaluate but can never complete; resolving task M01-LC-WORLD-FACTS (#751), and until it \
+         lands no fidelity, verified_original or release_approved claim about M01 objective \
+         completion may stand. TEST-SELECTION NOTE: \
          the prefixes accept_m01_lc_lowering_adapter_ and accept_m01_lc_directive_lowering_ are \
          unique to this task, so the {own_tests} discovered assertions are exactly this task's \
          tests. Validated with tools/validate_evidence.py --require-pass.",
