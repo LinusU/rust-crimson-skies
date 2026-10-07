@@ -1,5 +1,7 @@
-//! Evidence-report harness for task F17-D (`docs/contracts/CLI-EVIDENCE.md`,
-//! schema `schemas/evidence.schema.json`).
+//! Evidence-report harness for tasks F17-D and F17-E-MATRIX-COVERAGE
+//! (`docs/contracts/CLI-EVIDENCE.md`, schema `schemas/evidence.schema.json`).
+//! The F17-E sequence — same shape, its own prefix and artifact names — is
+//! documented in the `F17-E` section below.
 //!
 //! This test is deliberately **not** named `accept_f17_d_*`: it is not part of
 //! the acceptance suite, it fails loudly when its inputs are missing instead of
@@ -90,6 +92,412 @@ const MATRIX_ARTIFACT: &str = "comparison-matrix.json";
 const CAPTURE_PREFIX: &str = "subject-";
 const CAPTURE_SUFFIX: &str = ".png";
 
+// ------------------------------------------------------------------ F17-E ---
+//
+// The same harness for task F17-E-MATRIX-COVERAGE (Rally #736): the matrix is
+// widened to **every** discovered world group and each resolved world-side
+// subject is drawn a second time with the materials the group's own texture
+// archive binds (`cs_app::world::textured_capture`), where a texture that does
+// not resolve is the `missing_texture` refusal rather than a neutral stand-in.
+//
+// The sequence is the F17-D one with the F17-E names:
+//
+// 1. ```sh
+//    cargo test --workspace --locked -- accept_f17_e_ --include-ignored \
+//      2>&1 | tee private/evidence/F17-E-MATRIX-COVERAGE/cargo-test.log
+//    ```
+// 2. ```sh
+//    CS_EVIDENCE_DIR=private/evidence/F17-E-MATRIX-COVERAGE \
+//    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+//    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f17_e_ --include-ignored" \
+//    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
+//      cargo test --locked -p cs_app --test render evidence_report_f17_e -- --ignored
+//    ```
+// 3. ```sh
+//    python3 tools/validate_evidence.py \
+//      private/evidence/F17-E-MATRIX-COVERAGE/acceptance.json \
+//      --artifact-root private/evidence/F17-E-MATRIX-COVERAGE --require-pass
+//    ```
+// 4. Commit a copy of `acceptance.json` as
+//    `docs/findings/evidence/F17-E-MATRIX-COVERAGE.json`.
+
+/// The acceptance tests whose capabilities the F17-E report declares:
+/// `retail` by the first (production discovery + readers over every world
+/// group), `gpu` by the second (the textured captures on a real adapter).
+const REQUIRED_TESTS_F17_E: &[&str] = &[
+    "accept_f17_e_retail_every_discovered_world_group_is_a_matrix_entry",
+    "accept_f17_e_gpu_every_resolved_world_subject_is_captured_or_refused_by_name",
+];
+
+/// The F17-E synthetic half, which must be present beside the retail one.
+const SYNTHETIC_TESTS_F17_E: &[&str] = &[
+    "accept_f17_e_every_offered_group_is_a_matrix_entry_in_offered_order",
+    "accept_f17_e_a_refused_airframe_container_is_reported_on_every_group",
+    "accept_f17_e_each_group_resolves_against_its_own_stored_forest",
+    "accept_f17_e_a_missing_texture_is_a_refusal_never_a_fallback",
+    "accept_f17_e_the_capture_settings_are_the_fixed_comparison_set",
+];
+
+/// The derived widened matrix, written beside the report and referenced by
+/// digest: per group, subject, anchor, chosen mesh, refusals and coverage
+/// counts only, never original content.
+const WIDE_MATRIX_ARTIFACT: &str = "widened-matrix.json";
+
+/// The per-group textured captures the retail GPU test wrote.
+const TEXTURED_CAPTURE_PREFIX: &str = "textured-";
+
+#[test]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+fn evidence_report_f17_e_writes_the_acceptance_report() {
+    use cs_app::render::matrix::{MatrixContainer, WidenedMatrix, WorldGroupSource, resolve_wide};
+
+    let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
+    let candidate_tree = env_var("CS_CANDIDATE_TREE");
+    let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !argv.is_empty(),
+        "CS_EVIDENCE_ARGV must hold the acceptance command (space-separated)"
+    );
+    let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
+        .parse()
+        .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+    let game_dir = PathBuf::from(env_var("CS_GAME_DIR"));
+
+    let head_tree = git(&["rev-parse", "HEAD^{tree}"]);
+    assert_eq!(
+        candidate_tree, head_tree,
+        "CS_CANDIDATE_TREE must be `git rev-parse 'HEAD^{{tree}}'` of the tested commit; \
+         old reports cannot be reused for new code"
+    );
+
+    let log_path = evidence_dir.join("cargo-test.log");
+    let log = fs::read_to_string(&log_path).unwrap_or_else(|error| {
+        panic!(
+            "cannot read the acceptance log {}: {error} (step 1 must tee its output there)",
+            log_path.display()
+        )
+    });
+    let suite = parse_suite(&log, "accept_f17_e_");
+    assert!(
+        suite.passed > 0 && !suite.assertions.is_empty(),
+        "no `accept_f17_e_` tests were recorded in {}",
+        log_path.display()
+    );
+
+    for required in REQUIRED_TESTS_F17_E.iter().chain(SYNTHETIC_TESTS_F17_E) {
+        let status = suite
+            .assertions
+            .iter()
+            .find(|(name, _)| name == required)
+            .map(|(_, status)| *status)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{required} did not run: F17-E requires capabilities `retail` and `gpu`, run \
+                     step 1 with `--include-ignored`, CS_GAME_DIR set and a GPU adapter available"
+                )
+            });
+        assert_eq!(status, "pass", "{required} must pass; got status {status}");
+    }
+
+    let found = discover(&game_dir)
+        .expect("production discovery must read the original installation for the evidence record");
+    let install_sha256 = fingerprint(&found.manifest).to_hex();
+    let content_sha256 = content_fingerprint(&found.manifest).to_hex();
+
+    // The widened matrix itself, resolved again over that installation: the
+    // report's entries are this report's own run, not a transcription of a
+    // test message.
+    let sources = cs_app::playtest_retail::read_all_playtest_sources(&game_dir)
+        .expect("the all-groups source read must succeed where the test ran");
+    let aircraft = sources
+        .aircraft
+        .as_ref()
+        .map(|container| {
+            MatrixContainer::new(
+                container.container_key(),
+                container.nodes(),
+                container.meshes(),
+                container.materials(),
+            )
+        })
+        .map_err(|error| error.to_string());
+    let groups: Vec<WorldGroupSource> = sources
+        .groups
+        .iter()
+        .map(|source| WorldGroupSource {
+            group: source.group.clone(),
+            container: source
+                .container
+                .as_ref()
+                .map(|container| {
+                    MatrixContainer::new(
+                        container.container_key(),
+                        container.nodes(),
+                        container.meshes(),
+                        container.materials(),
+                    )
+                })
+                .map_err(|error| error.to_string()),
+        })
+        .collect();
+    let wide: WidenedMatrix = resolve_wide(aircraft, groups);
+    assert_eq!(
+        wide.groups.len(),
+        sources.groups.len(),
+        "every discovered world group is a matrix entry"
+    );
+    for entry in &wide.groups {
+        assert_eq!(
+            entry.matrix.rows().len(),
+            ComparisonSubject::ALL.len(),
+            "{}: all five subjects are rows",
+            entry.group
+        );
+    }
+
+    let matrix_path = evidence_dir.join(WIDE_MATRIX_ARTIFACT);
+    fs::write(
+        &matrix_path,
+        wide_matrix_json(&sources, &wide, &install_sha256),
+    )
+    .unwrap_or_else(|error| panic!("write {}: {error}", matrix_path.display()));
+
+    let mut artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
+    artifacts.push(artifact(&matrix_path, "json", &evidence_dir));
+    let captures = capture_artifacts(&evidence_dir, TEXTURED_CAPTURE_PREFIX, CAPTURE_SUFFIX);
+    assert!(
+        !captures.is_empty(),
+        "the retail GPU test must have written at least one textured capture"
+    );
+    artifacts.extend(captures);
+
+    let engine = Engine {
+        rust: rustc_version(),
+        bevy: locked_version("bevy"),
+        avian: locked_version("avian3d"),
+    };
+
+    let document = format!(
+        "{{\n\
+         \x20\"schema_version\": 1,\n\
+         \x20\"task_id\": \"F17-E-MATRIX-COVERAGE\",\n\
+         \x20\"candidate_tree\": {},\n\
+         \x20\"engine\": {},\n\
+         \x20\"created_at\": {},\n\
+         \x20\"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n\
+         \x20\"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+         \x20\"seed\": 0,\n\
+         \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
+         \x20\"overrides\": [],\n\
+         \x20\"capabilities\": [\"retail\", \"gpu\", \"synthetic\"],\n\
+         \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
+         \x20\"assertions\": [{}],\n\
+         \x20\"artifacts\": [{}],\n\
+         \x20\"unknowns\": [],\n\
+         \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
+         \x20\"claim\": \"implemented\"\n\
+         }}\n",
+        jstr(&candidate_tree),
+        engine_json(&engine),
+        jstr(&iso_utc_now()),
+        str_array(&argv),
+        jstr(&git(&["rev-parse", "--show-toplevel"])),
+        exit_code,
+        jstr(&install_sha256),
+        jstr(&content_sha256),
+        suite.discovered,
+        suite.executed,
+        suite.passed,
+        suite.failed,
+        suite.ignored,
+        assertion_array(&suite.assertions),
+        artifact_array(&artifacts),
+        jstr(&review_identity_f17_e()),
+        jstr(&review_method_f17_e()),
+    );
+
+    let out = evidence_dir.join("acceptance.json");
+    fs::write(&out, &document).unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
+
+    let written = fs::read_to_string(&out).expect("the report reads back");
+    for needle in [
+        "\"schema_version\": 1",
+        "\"task_id\": \"F17-E-MATRIX-COVERAGE\"",
+        "\"capabilities\": [\"retail\", \"gpu\", \"synthetic\"]",
+        "\"claim\": \"implemented\"",
+        "\"install_sha256\"",
+        "\"assertions\": [",
+        "\"artifacts\": [",
+    ] {
+        assert!(
+            written.contains(needle),
+            "the written report is missing {needle:?}:\n{written}"
+        );
+    }
+    assert!(
+        suite.failed == 0 && exit_code == 0,
+        "the acceptance run failed (exit {exit_code}, {} failed): the report was written \
+         honestly and must NOT validate; fix the tests first",
+        suite.failed
+    );
+    println!("wrote {}", out.display());
+}
+
+/// The widened matrix, as JSON: per group, per subject — anchors, chosen
+/// meshes, skipped candidates, refusals and coverage verdicts, plus the
+/// group's container and archive read outcomes. Counts, names and codes only,
+/// never original content.
+fn wide_matrix_json(
+    sources: &cs_app::playtest_retail::PlaytestAllSources,
+    wide: &cs_app::render::matrix::WidenedMatrix,
+    install_sha256: &str,
+) -> String {
+    let mut groups = String::new();
+    for (index, entry) in wide.groups.iter().enumerate() {
+        if index > 0 {
+            groups.push(',');
+        }
+        let source = &sources.groups[index];
+        let container_error = entry
+            .container_error
+            .as_deref()
+            .map_or("null".to_owned(), jstr);
+        let archive = source.textures.as_ref().map_or_else(
+            |error| {
+                format!(
+                    "{{\"resolved\":false,\"reason\":{}}}",
+                    jstr(&error.to_string())
+                )
+            },
+            |archive| {
+                format!(
+                    "{{\"resolved\":true,\"path\":{},\"sha256\":{},\"selection\":{}}}",
+                    jstr(archive.path()),
+                    jstr(archive.sha256()),
+                    jstr(archive.selection()),
+                )
+            },
+        );
+        groups.push_str(&format!(
+            "{{\"group\":{},\"container_error\":{},\"archive\":{},\
+              \"fully_resolved\":{},\"rows\":[{}]}}",
+            jstr(&entry.group),
+            container_error,
+            archive,
+            entry.matrix.is_fully_resolved(),
+            rows_json(&entry.matrix),
+        ));
+    }
+    format!(
+        "{{\"schema\":\"cs-f17-e-widened-matrix/1\",\"install_sha256\":{},\
+          \"aircraft\":{},\"group_count\":{},\"groups_with_world_subjects\":{},\
+          \"groups\":[{}]}}",
+        jstr(install_sha256),
+        sources
+            .aircraft
+            .as_ref()
+            .map(|container| jstr(container.container_key()))
+            .unwrap_or_else(|error| format!("{{\"refused\":{}}}", jstr(&error.to_string()))),
+        wide.groups.len(),
+        wide.groups_with_world_subjects(),
+        groups,
+    )
+}
+
+/// The rows of one group's matrix, as the F17-D artifact serializes them.
+fn rows_json(matrix: &cs_app::render::matrix::ComparisonMatrix) -> String {
+    let mut rows = String::new();
+    for (index, row) in matrix.rows().iter().enumerate() {
+        if index > 0 {
+            rows.push(',');
+        }
+        let subject = row.subject().code();
+        let Some(resolved) = row.resolved() else {
+            rows.push_str(&format!(
+                "{{\"subject\":{},\"resolved\":false,\"reason\":{}}}",
+                jstr(subject),
+                jstr(row.reason().unwrap_or("no reason recorded"))
+            ));
+            continue;
+        };
+        let skipped = resolved
+            .skipped
+            .iter()
+            .map(|skip| {
+                format!(
+                    "{{\"slot\":{},\"name\":{},\"reason\":{}}}",
+                    skip.slot,
+                    jstr(&skip.name),
+                    jstr(&skip.reason)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        rows.push_str(&format!(
+            "{{\"subject\":{},\"resolved\":true,\"container\":{},\
+              \"anchor\":{{\"slot\":{},\"name\":{}}},\
+              \"chosen\":{{\"slot\":{},\"name\":{},\"mesh_index\":{}}},\
+              \"skipped\":[{}],\"triangles\":{},\
+              \"extent\":[{},{},{}],\"unknowns\":[{}],\"coverage\":{}}}",
+            jstr(subject),
+            jstr(&resolved.container),
+            resolved.anchor_slot,
+            jstr(&resolved.anchor_name),
+            resolved.chosen.slot,
+            jstr(&resolved.chosen.name),
+            resolved.chosen.mesh_index,
+            skipped,
+            resolved.triangles,
+            resolved.extent[0],
+            resolved.extent[1],
+            resolved.extent[2],
+            resolved
+                .unknowns
+                .iter()
+                .map(|unknown| jstr(unknown.code()))
+                .collect::<Vec<_>>()
+                .join(","),
+            coverage_json(&resolved.coverage),
+        ));
+    }
+    rows
+}
+
+fn review_identity_f17_e() -> String {
+    String::from(
+        "implementer: swe2-max-1 (Devin, Rally #736 implement claim). \
+         Reviewer: recorded by the reviewer in the complete_review notes — this report was \
+         written by the implementer, so it is not independent evidence and no agent review \
+         replaces the owner's human approval. Nothing here is verified_original: no original \
+         run has happened, and `retail` in this report means read access to the owner's files \
+         only",
+    )
+}
+
+fn review_method_f17_e() -> String {
+    String::from(
+        "the acceptance suite re-run locally with the retail capability and a real GPU adapter; \
+         this harness derives every field from the recorded log, production discovery of \
+         $CS_GAME_DIR, and the production widened comparison matrix resolved again over that \
+         installation (`cs_app::render::matrix::resolve_wide` over every discovered world group \
+         from `cs_app::playtest_retail::read_all_playtest_sources`) with the textured captures \
+         the retail test wrote on the real adapter \
+         (`cs_app::world::textured_capture::capture_subject_textured`, which binds each material \
+         group's texture out of the group's own archive through the production `TextureBinder` \
+         and `WorldMeshes` path under the fixed comparison settings of spec F17 non-negotiable \
+         3, and refuses with `missing_texture` — no PNG — when a named texture does not \
+         resolve); validated with tools/validate_evidence.py --require-pass. The textured \
+         captures bind images under the #666 declared name reading and provisional \
+         presentation: they are evidence that the group's own textures resolve and draw on the \
+         subject's real geometry, never a claim about the original renderer's appearance, and \
+         never a comparison against an original screenshot (#358 REF-OWNER-FIRST-CAPTURE \
+         remains the other side of the comparison). `claim` is `implemented` only",
+    )
+}
+
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
 fn evidence_report_f17_d_writes_the_acceptance_report() {
@@ -124,7 +532,7 @@ fn evidence_report_f17_d_writes_the_acceptance_report() {
             log_path.display()
         )
     });
-    let suite = parse_suite(&log);
+    let suite = parse_suite(&log, "accept_f17_d_");
     assert!(
         suite.passed > 0 && !suite.assertions.is_empty(),
         "no `accept_f17_d_` tests were recorded in {}",
@@ -187,7 +595,7 @@ fn evidence_report_f17_d_writes_the_acceptance_report() {
 
     let mut artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
     artifacts.push(artifact(&matrix_path, "json", &evidence_dir));
-    let captures = capture_artifacts(&evidence_dir);
+    let captures = capture_artifacts(&evidence_dir, CAPTURE_PREFIX, CAPTURE_SUFFIX);
     assert_eq!(
         captures.len(),
         ComparisonSubject::ALL.len(),
@@ -270,60 +678,6 @@ fn evidence_report_f17_d_writes_the_acceptance_report() {
 /// The resolved matrix, as JSON: counts, names, refusals and coverage verdicts
 /// only — never a stored byte and never original content.
 fn matrix_json(matrix: &cs_app::render::matrix::ComparisonMatrix, install_sha256: &str) -> String {
-    let mut rows = String::new();
-    for (index, row) in matrix.rows().iter().enumerate() {
-        if index > 0 {
-            rows.push(',');
-        }
-        let subject = row.subject().code();
-        let Some(resolved) = row.resolved() else {
-            rows.push_str(&format!(
-                "{{\"subject\":{},\"resolved\":false,\"reason\":{}}}",
-                jstr(subject),
-                jstr(row.reason().unwrap_or("no reason recorded"))
-            ));
-            continue;
-        };
-        let skipped = resolved
-            .skipped
-            .iter()
-            .map(|skip| {
-                format!(
-                    "{{\"slot\":{},\"name\":{},\"reason\":{}}}",
-                    skip.slot,
-                    jstr(&skip.name),
-                    jstr(&skip.reason)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        rows.push_str(&format!(
-            "{{\"subject\":{},\"resolved\":true,\"container\":{},\
-              \"anchor\":{{\"slot\":{},\"name\":{}}},\
-              \"chosen\":{{\"slot\":{},\"name\":{},\"mesh_index\":{}}},\
-              \"skipped\":[{}],\"triangles\":{},\
-              \"extent\":[{},{},{}],\"unknowns\":[{}],\"coverage\":{}}}",
-            jstr(subject),
-            jstr(&resolved.container),
-            resolved.anchor_slot,
-            jstr(&resolved.anchor_name),
-            resolved.chosen.slot,
-            jstr(&resolved.chosen.name),
-            resolved.chosen.mesh_index,
-            skipped,
-            resolved.triangles,
-            resolved.extent[0],
-            resolved.extent[1],
-            resolved.extent[2],
-            resolved
-                .unknowns
-                .iter()
-                .map(|unknown| jstr(unknown.code()))
-                .collect::<Vec<_>>()
-                .join(","),
-            coverage_json(&resolved.coverage),
-        ));
-    }
     format!(
         "{{\"schema\":\"cs-f17-d-comparison-matrix/1\",\"install_sha256\":{},\
           \"world_group\":{},\"subject_count\":{},\"fully_resolved\":{},\
@@ -337,7 +691,7 @@ fn matrix_json(matrix: &cs_app::render::matrix::ComparisonMatrix, install_sha256
             .iter()
             .filter_map(|row| row.resolved())
             .all(|resolved| resolved.coverage.is_fully_unclassified()),
-        rows,
+        rows_json(matrix),
     )
 }
 
@@ -360,8 +714,13 @@ fn coverage_json(coverage: &MaterialCoverage) -> String {
     )
 }
 
-/// Every per-subject PNG the retail GPU test wrote, hashed as artifacts.
-fn capture_artifacts(evidence_dir: &Path) -> Vec<(String, String, String)> {
+/// Every capture PNG of one prefix the retail GPU test wrote, hashed as
+/// artifacts.
+fn capture_artifacts(
+    evidence_dir: &Path,
+    prefix: &str,
+    suffix: &str,
+) -> Vec<(String, String, String)> {
     let mut found: Vec<(String, String, String)> = fs::read_dir(evidence_dir)
         .expect("the evidence directory is readable")
         .filter_map(Result::ok)
@@ -369,9 +728,7 @@ fn capture_artifacts(evidence_dir: &Path) -> Vec<(String, String, String)> {
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name.starts_with(CAPTURE_PREFIX) && name.ends_with(CAPTURE_SUFFIX)
-                })
+                .is_some_and(|name| name.starts_with(prefix) && name.ends_with(suffix))
         })
         .map(|path| {
             let name = path
@@ -503,9 +860,10 @@ struct Suite {
     assertions: Vec<(String, &'static str)>,
 }
 
-/// Extracts the libtest summaries and the per-test results of the
-/// `accept_f17_d_` tests from a recorded `cargo test` output.
-fn parse_suite(log: &str) -> Suite {
+/// Extracts the libtest summaries and the per-test results of the tests whose
+/// name contains `prefix` (e.g. `accept_f17_d_`) from a recorded `cargo test`
+/// output.
+fn parse_suite(log: &str, prefix: &str) -> Suite {
     let mut suite = Suite::default();
     let mut pending: VecDeque<String> = VecDeque::new();
     for line in log.lines() {
@@ -543,7 +901,7 @@ fn parse_suite(log: &str) -> Suite {
                 break;
             };
             let full = &after[..separator];
-            if !full.contains("accept_f17_d_") {
+            if !full.contains(prefix) {
                 cursor = &after[separator + 5..];
                 continue;
             }
