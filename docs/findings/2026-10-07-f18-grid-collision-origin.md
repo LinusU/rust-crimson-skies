@@ -276,15 +276,19 @@ and the six records are still *in* the grid and still get a sector.
   carries the named exception above. `INDEXED_RECORD_IS_STATIC` stays a designed
   rule about this conversion for the other 289 (`c1c`) and 469 (`c5`) records,
   and stays *not* a statement about how the 2000 engine collided.
-* count changes that follow, all re-pinned through the production path:
-  `c1c` `objects_solid` 293 → **289**, colliders 292 → **288**,
-  `unresolved_collision` 17 → **21**; `c5` `objects_solid` 471 → **469**,
-  colliders 367 → **365**. The other six containers do not move.
-* the committed evidence census
-  `docs/findings/evidence/M01-LC-WORLD-UNIT-ROLES.json` was produced at its own
-  recorded tree and predates this change; its `objects_solid` rows for `c1c`
-  and `c5` describe that tree. Regenerating it is that task's own harness, and
-  no number in it was edited here.
+* count changes that follow, all re-pinned through the production path and
+  stated against the tree task #716 landed on (which had already resolved the
+  17 unindexed `fvol*` records of `c1c` and the 15 of `c5` as fog volumes, and
+  had left these six `Solid` as this task's description quotes it): `c1c`
+  `objects_solid` 293 → **289**, colliders 292 → **288**, `unresolved_collision`
+  0 → **4** — the four grid-named records are now the only `c1c` record with no
+  measured role; `c5` `objects_solid` 471 → **469**, colliders 367 → **365**,
+  `unresolved_collision` 70 → **72**. The other six containers do not move.
+* the committed evidence censuses `docs/findings/evidence/M01-LC-WORLD-UNIT-ROLES.json`
+  and `docs/findings/evidence/M01-LC-FVOL-ROLES.json` were each produced at
+  their own recorded tree and predate this change; their `objects_solid` rows
+  for `c1c` and `c5` describe those trees. Regenerating them is those tasks'
+  own harnesses, and no number in either was edited here.
 
 ## Test inventory
 
@@ -300,12 +304,18 @@ by one production discovery).
 Supporting assertions were re-pinned where the change is visible:
 `crates/cs_app/tests/world/import_retail.rs` (c1c counts, spawn report, the
 claim-id census now nine), `crates/cs_app/tests/world/world_units.rs` (a
-`grid_fog` column per container, the solid/unresolved/collider identities), and
-`crates/cs_app/tests/accept_m01_lc_world_unit_roles.rs` (the c1c spawn split).
-No test was weakened: each assertion that moved states a *smaller* or
-*differently partitioned* truth and names why, and each keeps the property it
-existed for (the index still decides the rest of the role; the spawn still
-reports exactly its gaps).
+`grid_fog` column per container, the solid/unresolved/collider identities),
+`crates/cs_app/tests/accept_m01_lc_world_unit_roles.rs` (the c1c spawn split)
+and — because #716 landed this branch's other half while it was in review, and
+its own test pinned the opposite answer for exactly these six records —
+`crates/cs_app/tests/world/fvol_roles.rs`: the grid-named `fvol*` record of its
+fixture now resolves #727's claim instead of `Solid`, and its two
+`objects_solid == partition_records` identities became
+`objects_solid == partition_records − partition_records_fog_volume`. No test
+was weakened: each assertion that moved states a *smaller* or *differently
+partitioned* truth and names why, and each keeps the property it existed for
+(the index still decides the rest of the role; the spawn still reports exactly
+its gaps).
 
 ## Evidence
 
@@ -349,13 +359,14 @@ is in either file: ids, digests, counts and claim labels only.
 ```sh
 cargo fmt --all -- --check                                            # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
-cargo test --workspace --locked                                       # exit 0, 408 test binaries + 10 doc-test suites (418 green results)
+cargo test --workspace --locked   # exit 0, 409 test binaries + 10 doc-test suites (419 green results)
 cargo test --workspace --locked -- accept_f18_grid_collision_origin_ --include-ignored
 #   exit 0: 2 tests discovered, executed and passed (1 synthetic, 1 retail)
-# the two re-pinned sibling suites, each with CS_GAME_DIR:
+# the re-pinned sibling suites, each with CS_GAME_DIR:
 cargo test -p cs_app --test world -- accept_m01_lc_world_import_ --include-ignored        # exit 0, 9 passed
 cargo test -p cs_app --test world -- accept_f18_world_units_containers_ --include-ignored # exit 0, 5 passed
 cargo test -p cs_app --test accept_m01_lc_world_unit_roles -- --include-ignored           # exit 0, 5 passed
+cargo test -p cs_app --test world -- accept_m01_lc_fvol_roles_ --include-ignored          # exit 0, 4 passed
 # evidence (docs/contracts/CLI-EVIDENCE.md):
 cargo test --locked -p cs_app --test evidence_report_f18_grid_collision_origin -- --ignored  # exit 0
 python3 tools/validate_evidence.py docs/findings/evidence/F18-GRID-COLLISION-ORIGIN.json \
@@ -371,28 +382,51 @@ the reviewer are both the agent `bunny-2`, in **separate sessions with fresh
 contexts** — the reviewing session started from the task history, not from the
 implementing one — and no agent review replaces the owner's human approval.
 
+**The review found task #716 (`M01-LC-FVOL-ROLES`) merged into `main` while this
+branch was under review**, in the same files. It had measured what the image
+does with an `fvol*` record's *name* (`FOG_VOLUME_RECORD_NEVER_BLOCKS`: an
+unindexed one resolves `None`), added this report's
+`partition_records_fog_volume()` accessor with the opposite reading — count the
+six, keep them `Solid` — and pinned that answer in its own suite as exactly the
+limitation #727 was filed to settle. The branch was rebased onto it and the two
+measurements were bound together:
+
+* an unindexed `fvol*` record keeps #716's `None` + `FOG_VOLUME_RECORD_NEVER_BLOCKS`;
+* a **grid-named** `fvol*` record resolves this task's explicit unknown instead
+  of `Solid`, which is the half #716 recorded as its open limitation;
+* `partition_records_fog_volume()` keeps one meaning — how many grid-named
+  records the fog consumer keys — and
+  `objects_solid == partition_records − partition_records_fog_volume` holds for
+  every container;
+* `crates/cs_app/tests/world/fvol_roles.rs` (#716's suite) was re-pinned to the
+  settled answer: the grid-named record of its fixture carries this claim for
+  role **and** shape, and its two `objects_solid == partition_records`
+  identities were re-partitioned.
+
 Re-run on this branch head by the reviewer:
 
 * `cargo fmt --all -- --check` — exit 0.
 * `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` — exit 0.
-* `cargo test --workspace --locked` — exit 0 (408 test binaries + 10 doc-test
-  suites, 418 green results, 0 failures).
+* `cargo test --workspace --locked` — exit 0 (409 test binaries + 10 doc-test
+  suites, 419 green results, 0 failures).
 * `cargo test --workspace --locked -- accept_f18_grid_collision_origin_
   --include-ignored` — exit 0 (2 discovered, 2 passed; the log above is this
   run's).
-* The three re-pinned sibling suites, each with `CS_GAME_DIR`: `accept_m01_lc_world_import_`
-  9 passed (54 s), `accept_f18_world_units_containers_` 5 passed (500 s),
-  `accept_m01_lc_world_unit_roles` 5 passed (451 s).
-* **Sensitivity re-checked, not assumed:** after the workspace and prefix runs,
-  `is_fog_volume_name` was forced to return `false` — the carve-out removed —
-  and the synthetic test failed on its own report assertion (fog counter `0`,
-  expected `1`). The tree was restored (`git status --short` clean) before the
-  sibling suites above and before the final run of the four checks on this head.
+* The four re-pinned sibling suites, each with `CS_GAME_DIR`: `accept_m01_lc_world_import_`
+  9 passed (53 s), `accept_f18_world_units_containers_` 5 passed (392 s),
+  `accept_m01_lc_world_unit_roles` 5 passed (302 s), `accept_m01_lc_fvol_roles_`
+  4 passed (286 s).
+* **Sensitivity re-checked, not assumed:** `is_fog_volume` was forced to return
+  `false` — the carve-out removed — and the synthetic task test failed on its
+  own report assertion (fog counter `0`, expected `1`); the tree was restored
+  (`git status --short` clean) before the checks above.
 * The evidence report was regenerated on the tested tree with
   `CS_EVIDENCE_REVIEWER` naming both identities, and re-validated with
   `tools/validate_evidence.py … --require-pass` (exit 0).
 
-Two documentation corrections were made during review: the claim-id census row
-of `docs/findings/2026-10-04-m01-lc-world-import.md` (this task moved that
-assertion from eight distinct ids to nine, and the row still said seven), and
-the workspace count in the command block above.
+Documentation corrections made during review: the claim-id census row of
+`docs/findings/2026-10-04-m01-lc-world-import.md` (this task moved that
+assertion from eight distinct ids to nine, while the row still said seven), the
+workspace count in the command block above, the counts this rebase moved in that
+file's retail rows and in the #716 write-up (supersession notes, no number
+edited in either task's committed evidence).

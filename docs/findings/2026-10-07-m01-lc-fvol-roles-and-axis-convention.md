@@ -147,6 +147,20 @@ they are all fog volumes now.
    `partition_records_fog_volume()` reports the overlap. The two measured
    statements disagree about those six records and this task has no
    measurement that settles it — see the limitation below.
+
+   > **Settled by #727** (2026-10-07,
+   > `docs/findings/2026-10-07-f18-grid-collision-origin.md`, landed just after
+   > this task): that follow-up measured what the image does with the partition
+   > grid itself — a broad-phase *candidate* index, never a solidity statement —
+   > so the six grid-named `fvol*` records resolve an **explicit unknown** under
+   > `f18-world.grid-named-fog-volume-role-unmeasured` instead of `Solid`, they
+   > produce no collider, and `objects_solid`/the collider count fall by four in
+   > `c1c` and two in `c5`. `partition_records_fog_volume()` keeps both its
+   > count and its meaning; what changed is that the disagreement it reported is
+   > now settled on the side of "the container states no collision role". This
+   > file's census and the committed
+   > `docs/findings/evidence/M01-LC-FVOL-ROLES.json` describe the tree #716
+   > landed on; no number in either was edited.
 3. **The axis convention.** The report states the axis map it applied
    (`"identity"`, or the spelled permutation), whether it preserves
    orientation, the source convention's angle unit and rotation sense, and
@@ -169,14 +183,17 @@ they are all fog volumes now.
   reports a contact for one. **Affected content:** collision over the 59
   world-owned fog volumes in every world container, and therefore over M01's
   world. **Resolving task:** the follow-up below.
-- **How the original engine built world collision at all is UNMEASURED**, and
-  the six grid-named `fvol*` records are where it shows: the fog measurement
-  says "not a collider" and `INDEXED_RECORD_IS_STATIC` says `Solid`, and both
-  statements are about records that exist. **Affected content:** those six
-  records (c1c: 4, c5: 2), and every claim that a grid-named record is static
-  collision geometry rather than streamable content. **Resolving task:** filed
-  as a follow-up with this task; it needs the original's collision
-  construction measured from the image or an original run (#358).
+- **How the original engine built world collision at all was UNMEASURED** when
+  this task landed, and the six grid-named `fvol*` records were where it showed:
+  the fog measurement said "not a collider" and `INDEXED_RECORD_IS_STATIC` said
+  `Solid`, and both statements are about records that exist. **Affected
+  content:** those six records (c1c: 4, c5: 2), and every claim that a
+  grid-named record is static collision geometry rather than streamable content.
+  **Resolving task:** #727, which measured the answer out of the same decrypted
+  image (the grid is loaded whole and walked only as a candidate set; the narrow
+  phase is a per-node box reached through `node+0x70`) and bound it into
+  `import_world_container`; what `node+0x70` points at and which gameplay query
+  consumes that walk stay unknown, and no original run happened (#358).
 - **The convention and the `fvol` classification are code-derived static
   analysis, at `observed_tool`.** No original executable ran, so no landmark
   is a behavior landmark and nothing reaches `verified_original` until #358
