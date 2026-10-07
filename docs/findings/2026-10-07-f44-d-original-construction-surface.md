@@ -200,9 +200,13 @@ resolved, which is what `tools/validate_evidence.py --require-pass` checks
 
 ## Follow-ups (not this task)
 
-Filed with `create_tasks` as one research task (#563 exists for the
-"where does the original state components" question; this stage adds its own
-measured starting point rather than re-asking it).
+Recorded as a note on the existing research task #563, *"Locate where the
+original states airframe engines, armor, guns, ammunition and hardpoints"*,
+which owns exactly this question — this stage adds its measured starting point
+and its six unresolved items rather than opening a duplicate. #563 is the
+resolving task named by every unknown above; until it closes, F44's
+`verified_original` and release claims stay gated. No unrelated bug was found
+in this stage's scope.
 
 ## Limits of this stage
 
