@@ -70,6 +70,19 @@
 //! table is *every material unclassified, reason `undeclared`*: that is this
 //! stage's finding, recorded rather than defaulted. Nothing here ever turns
 //! an unclassified material into an opaque one.
+//!
+//! # The widened set (F17-E)
+//!
+//! [`resolve_all`] pins the world side to one group
+//! ([`MATRIX_WORLD_GROUP`]). [`resolve_wide`] drops that pin: the caller
+//! offers every discovered world group as a [`WorldGroupSource`] — the
+//! container, or the reader's refusal — and gets back a [`WidenedMatrix`]
+//! with one [`GroupMatrix`] per group, five rows each. A group whose
+//! container did not read stays in the set: its three world-side rows are
+//! unresolved with [`MatrixError::ContainerRefused`], never dropped.
+//! [`crate::world::textured_capture`] is the other half of the stage: it
+//! draws one resolved subject with the materials the group's own texture
+//! archive binds, rather than the flat geometry-witness material.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -330,6 +343,15 @@ pub enum MatrixError {
         /// The material index the mesh referenced.
         material_index: u32,
     },
+    /// A container the matrix was offered could not be read, so every subject
+    /// anchored to its side reports this one refusal. The group is still part
+    /// of the set — F17-E's rule is that a group is never silently skipped.
+    ContainerRefused {
+        /// The container's logical key, spelled as the caller would read it.
+        container: String,
+        /// Why the container could not be read, verbatim from the reader.
+        reason: String,
+    },
     /// The matrix has no row for a required subject.
     MissingSubject {
         /// The subject that is missing.
@@ -415,6 +437,11 @@ impl fmt::Display for MatrixError {
                 f,
                 "the {subject} subject's mesh in {container} references material {material_index}, \
                  which the container's material table does not hold"
+            ),
+            Self::ContainerRefused { container, reason } => write!(
+                f,
+                "the container {container} could not be read, so the subject has nothing to \
+                 select from: {reason}"
             ),
             Self::MissingSubject { subject } => {
                 write!(f, "the comparison set has no row for {subject}")
@@ -1217,6 +1244,30 @@ fn coverage_of(
     Ok(MaterialCoverage::of(facts))
 }
 
+/// Resolves one subject against the container its side reads, keeping a
+/// refusal as the row.
+fn resolve_row(
+    subject: ComparisonSubject,
+    container: &MatrixContainer<'_>,
+    nodes: &[SubjectNode],
+) -> MatrixRow {
+    match select(subject, container.key, nodes).and_then(|selection| load(container, &selection)) {
+        Ok(resolved) => MatrixRow::Resolved(Box::new(resolved)),
+        Err(error) => MatrixRow::unresolved(subject, error),
+    }
+}
+
+/// The logical key a group's world container reads under — the same spelling
+/// the playtest source read produces, so a refusal names the file that was
+/// asked for.
+fn world_container_key(group: &str) -> String {
+    format!(
+        "zbd/{}/{}",
+        group.to_ascii_lowercase(),
+        crate::world::audit::GEOMETRY_CONTAINER_FILE
+    )
+}
+
 /// Builds the comparison set for both containers, keeping every refusal as a
 /// row.
 ///
@@ -1237,13 +1288,7 @@ pub fn resolve_all(
             SubjectSide::World => (world, &world_nodes),
             SubjectSide::Aircraft => (aircraft, &aircraft_nodes),
         };
-        let row = match select(subject, container.key, nodes)
-            .and_then(|selection| load(container, &selection))
-        {
-            Ok(resolved) => MatrixRow::Resolved(Box::new(resolved)),
-            Err(error) => MatrixRow::unresolved(subject, error),
-        };
-        rows.push(row);
+        rows.push(resolve_row(subject, container, nodes));
     }
     // The rows come from `ComparisonSubject::ALL`, so this can only fail if
     // that constant stopped naming five distinct subjects — a failure worth
@@ -1251,4 +1296,141 @@ pub fn resolve_all(
     ComparisonMatrix::build(rows).unwrap_or_else(|error| {
         panic!("the set built from ComparisonSubject::ALL is not a set: {error}");
     })
+}
+
+/// One world group offered to the widened matrix, as the caller read it.
+///
+/// The group name and its container are paired by the caller — production
+/// pairs them in [`crate::playtest_retail::read_all_playtest_sources`] — and a
+/// group whose container would not read is offered as `Err(reason)` rather
+/// than left out, so its world-side subjects resolve to the named
+/// [`MatrixError::ContainerRefused`] refusal instead of the group vanishing
+/// from the set.
+pub struct WorldGroupSource<'a> {
+    /// The group's directory name as discovery spelled it, e.g. `C1C`.
+    pub group: String,
+    /// The group's world container, or why it could not be read.
+    pub container: Result<MatrixContainer<'a>, String>,
+}
+
+/// One world group's matrix: the five subject rows plus the container
+/// refusal that produced the world-side ones when it did.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupMatrix {
+    /// The group's directory name, as the caller offered it.
+    pub group: String,
+    /// The refusal that kept the group's container out of the set, when it
+    /// did. `Some` exactly when the world-side rows carry
+    /// [`MatrixError::ContainerRefused`]; the value is the reader's own
+    /// message.
+    pub container_error: Option<String>,
+    /// The group's comparison set: one row per subject, always five.
+    pub matrix: ComparisonMatrix,
+}
+
+/// The comparison matrix over **every** world group the installation offers
+/// (F17-E), one [`GroupMatrix`] per group in the order they were offered.
+///
+/// A widened matrix is never shorter than its input: a group the reader
+/// refused is an entry whose world-side rows are unresolved with the
+/// container's own refusal, so "every world group" is a count a caller can
+/// assert against the discovery's group list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WidenedMatrix {
+    /// Every offered group, in offered order.
+    pub groups: Vec<GroupMatrix>,
+}
+
+impl WidenedMatrix {
+    /// One group's matrix, by its directory name (case-insensitive).
+    #[must_use]
+    pub fn group(&self, group: &str) -> Option<&GroupMatrix> {
+        self.groups
+            .iter()
+            .find(|entry| entry.group.eq_ignore_ascii_case(group))
+    }
+
+    /// How many groups resolved at least one world-side subject.
+    #[must_use]
+    pub fn groups_with_world_subjects(&self) -> usize {
+        self.groups
+            .iter()
+            .filter(|entry| {
+                entry.matrix.rows().iter().any(|row| {
+                    row.subject().side() == SubjectSide::World && row.resolved().is_some()
+                })
+            })
+            .count()
+    }
+}
+
+/// Builds the comparison set for **every** offered world group plus the one
+/// shared aircraft container.
+///
+/// The aircraft rows are identical in every group — there is one shared
+/// `zbd/planes.zbd` airframe container, so each group's matrix carries the
+/// same two aircraft rows — while the world-side rows are that group's own.
+/// A container that could not be read produces [`MatrixRow::Unresolved`] rows
+/// carrying [`MatrixError::ContainerRefused`]: the world's refusal names the
+/// group, the aircraft's the shared container, and a refusal on one side
+/// never masks the other.
+pub fn resolve_wide(
+    aircraft: Result<MatrixContainer<'_>, String>,
+    groups: Vec<WorldGroupSource<'_>>,
+) -> WidenedMatrix {
+    let aircraft = aircraft.as_ref().map_err(String::as_str);
+    let aircraft_nodes = aircraft.ok().map(MatrixContainer::subject_nodes);
+    let mut resolved_groups = Vec::with_capacity(groups.len());
+    for source in groups {
+        let world = source.container.as_ref().map_err(String::as_str);
+        let world_nodes = world.ok().map(MatrixContainer::subject_nodes);
+        let mut rows = Vec::with_capacity(ComparisonSubject::ALL.len());
+        for subject in ComparisonSubject::ALL {
+            let row = match subject.side() {
+                SubjectSide::World => match world {
+                    Ok(container) => resolve_row(
+                        subject,
+                        container,
+                        world_nodes.as_deref().unwrap_or_default(),
+                    ),
+                    Err(reason) => MatrixRow::unresolved(
+                        subject,
+                        MatrixError::ContainerRefused {
+                            container: world_container_key(&source.group),
+                            reason: reason.to_owned(),
+                        },
+                    ),
+                },
+                SubjectSide::Aircraft => match aircraft {
+                    Ok(container) => resolve_row(
+                        subject,
+                        container,
+                        aircraft_nodes.as_deref().unwrap_or_default(),
+                    ),
+                    Err(reason) => MatrixRow::unresolved(
+                        subject,
+                        MatrixError::ContainerRefused {
+                            container: crate::playtest_retail::AIRCRAFT_CONTAINER_KEY.to_owned(),
+                            reason: reason.to_owned(),
+                        },
+                    ),
+                },
+            };
+            rows.push(row);
+        }
+        // Same invariant as `resolve_all`: the rows are built from
+        // `ComparisonSubject::ALL`, so the build cannot fail unless that
+        // constant changed underneath the module.
+        let matrix = ComparisonMatrix::build(rows).unwrap_or_else(|error| {
+            panic!("the set built from ComparisonSubject::ALL is not a set: {error}");
+        });
+        resolved_groups.push(GroupMatrix {
+            container_error: source.container.err(),
+            group: source.group,
+            matrix,
+        });
+    }
+    WidenedMatrix {
+        groups: resolved_groups,
+    }
 }
