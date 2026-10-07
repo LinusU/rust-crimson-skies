@@ -41,6 +41,14 @@ cs_script.workspace = true
 # crate decodes original members itself (F06-C) rather than handing files to a
 # decoder.
 rodio = { version = "0.22", default-features = false, features = ["playback"] }
+# `image` is a production dependency of `src/ui/front_end/retail.rs` (F45-D):
+# the original front-end screen artwork of `GOSDATA/ASSETS/crimson.rof` is
+# stored as PNG/JPEG/TGA/BMP, and this is the decoder Bevy already compiles
+# into this workspace through `bevy_image`. It is named directly so the front
+# end can measure and draw those original images instead of reporting them
+# unread; the version is the one Cargo.lock already resolves, and only the
+# four decoders this stage reads are enabled.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "tga", "bmp"] }
 
 [[bin]]
 name = "cs"

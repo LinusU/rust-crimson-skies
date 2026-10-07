@@ -25,6 +25,16 @@
 //!   a validated [`ScreenDeck`] of authored artwork and hotspots: pointer
 //!   hit-testing through the image's own aspect-fit transform and focus in the
 //!   authored order, with every action still applied by the table above.
+//! * [`review_navigation`] (in `paths`, F45-D) — the navigation review: every
+//!   row of the table applied on the real machine, with every screen either
+//!   reached or named as not reached and every refusal carried by its code.
+//! * [`capture_screen`] (in `capture`, F45-D) — one screen drawn on the real
+//!   renderer, artwork and hotspots and focus, offscreen, with a named refusal
+//!   for every frame that is not evidence of a drawn screen.
+//! * [`FrontEndScreens`] (in `retail`, F45-D) — the original installation's
+//!   front-end screen artwork: the complete inventory of both sources and the
+//!   decode that feeds a capture. `retail` here is read access to the owner's
+//!   files, never a run of the original executable.
 //!
 //! Everything here is **designed** and synthetic; no original screen, hotspot
 //! or flow was read. The original screen list, art, hotspot coordinates and
@@ -35,14 +45,21 @@
 //! Capture of the original flow is F45-D's. See
 //! `docs/findings/2026-10-01-f45-a-frontend-state-table.md` for F45-A's unknowns.
 
+mod capture;
 mod flow;
 mod machine;
+mod paths;
+mod retail;
 mod screens;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use cs_content::ui_layout::ScreenLayout;
 
+pub use capture::{
+    Artwork, CapturedButton, SCREEN_CAPTURE_HEIGHT, SCREEN_CAPTURE_SURFACE, SCREEN_CAPTURE_WIDTH,
+    ScreenCapture, ScreenCaptureError, capture_artwork, capture_screen,
+};
 pub use flow::{
     ConstructionInputs, FlowDomainView, FlowError, FlowSetup, FrontEndFlow, LoadError, LoadFlow,
     LoadPlan, LoadVerdict, ResourceLedger, ResourceProblem,
@@ -50,6 +67,14 @@ pub use flow::{
 pub use machine::{
     ConstructionDraft, Effect, FrontEnd, LoadFailure, Loadout, LoadoutProblem, MissionOutcome,
     Outcome, Plan, ProfileIntent, Refusal, Request,
+};
+pub use paths::{
+    NavigationInputs, PathReview, PathStep, StepOutcome, SuppliedInput, review_navigation,
+    review_navigation_with,
+};
+pub use retail::{
+    FrontEndInventory, FrontEndScreens, GRAPHICS_PREFIX, ImageSource, MINIMUM_SCREEN_EXTENT,
+    OriginalImage, SCREEN_CONTAINER, UI_IMAGE_CONTAINER,
 };
 pub use screens::{
     Button, ButtonView, DeckError, ScreenAssetError, ScreenAssets, ScreenDeck, ScreenSession,

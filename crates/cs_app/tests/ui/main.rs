@@ -25,10 +25,20 @@
 //! stream, and the loading screen's real `LoadingSession` over a content
 //! session — AC03's minimum scenario, a load whose dependency is missing,
 //! fails, is repaired and is retried in the same process.
+//!
+//! Acceptance stage F45-D (`mod stage_d`) adds the end-to-end review itself:
+//! AC04's navigation half (every row of the table applied on the real machine,
+//! every screen reached or named) and its capture half (a screen drawn on a
+//! real GPU, and every screen-capable original image of the installation
+//! measured, decoded and captured). The `retail` and `gpu` tests there are
+//! `#[ignore]`d because CI has neither; the evidence report this stage writes
+//! is `mod evidence`, deliberately **not** named `accept_f45_d_*`.
 
+mod evidence;
 mod flow;
 mod layout;
 mod screens;
+mod stage_d;
 mod table;
 mod wiring;
 
