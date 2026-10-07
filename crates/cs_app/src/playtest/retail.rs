@@ -152,12 +152,13 @@ impl RetailContent {
         format!(
             "{{\"label\":\"{RETAIL_LABEL}\",\"installation\":\"{}\",\"containers\":[{containers}],\
 \"area_node\":\"{}\",\"area_mesh_records\":{},\"area_triangles\":{},\"area_colliders\":{},\
-{},{},\"textures\":{}}}",
+{},{},{},\"textures\":{}}}",
             self.installation,
             self.area.node_name,
             self.area.mesh_records,
             self.area.triangles,
             self.area.colliders(),
+            self.area.json_fields(),
             self.aircraft.json_fields(),
             propeller_spin_json(self.propeller.as_ref()),
             self.textures.json(),

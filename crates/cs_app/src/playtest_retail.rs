@@ -333,6 +333,18 @@ pub const PLAYTEST_AIRCRAFT_PROP_NODE_NAME: &str = "staticprop1";
 /// distance. A **designed** value; the original's LOD distances are unmeasured.
 pub const PLAYTEST_AIRCRAFT_LOD_DISTANCE_M: f64 = 20.0;
 
+/// The viewer distance, in metres, the area's LOD bands are selected at: about
+/// half the airship's length, the approach distance the aircraft spawns at. A
+/// **designed** value; the original's LOD distances are unmeasured.
+pub const PLAYTEST_AREA_LOD_DISTANCE_M: f64 = 300.0;
+
+/// The area's selection rule, verbatim, for the `playtest sources` line and the
+/// smoke `report.json`. Provisional: a name read, not a measured original rule.
+pub const PLAYTEST_AREA_SELECTION_RULE: &str = "one LOD band per sibling group (F11-B select_lod_variant at the designed viewer \
+     distance); the scorched `burnpanels` beside `panels`, the `<stem>d` beside `<stem>h` and the running `spin`/`counterspin` \
+     beside `propstill` are hidden; colliders follow the drawn set. Designed, from authored names; the original's damage \
+     state rule is unmeasured";
+
 /// The container key the aircraft is read from.
 pub const AIRCRAFT_CONTAINER_KEY: &str = "zbd/planes.zbd";
 
@@ -1610,6 +1622,236 @@ pub fn aircraft_graph(
     })
 }
 
+/// What [`choose_lod_band`] decided about one group of sibling `Lod` bands.
+struct BandChoice<'g> {
+    selected: Option<&'g SceneNode>,
+    coverage: Option<LodCoverage>,
+    hidden: Vec<HiddenLod>,
+}
+
+/// The one LOD rule of this scene, shared by the airframe and the area: among
+/// sibling `Lod` bands, a band whose range lies **inside** a wider sibling band
+/// is a *detail overlay* and not a variant of the same part, so it is not a
+/// candidate; [`select_lod_variant`] chooses among the rest at `distance_m`; every
+/// other band is hidden with the reason that applies.
+///
+/// # Errors
+///
+/// [`PlaytestError::AircraftNode`] when the F11-B rule refuses the bands.
+fn choose_lod_band<'g>(
+    bands: &[&'g SceneNode],
+    distance_m: f64,
+    what: &'static str,
+) -> Result<BandChoice<'g>, PlaytestError> {
+    let range = |node: &SceneNode| match node.kind() {
+        NodeKind::Lod(info) => (info.range_min.0, info.range_max.0),
+        _ => (0.0, 0.0),
+    };
+    let is_overlay = |band: &SceneNode| {
+        let (min, max) = range(band);
+        bands.iter().any(|other| {
+            let (other_min, other_max) = range(other);
+            other.index() != band.index()
+                && other_min <= min
+                && max <= other_max
+                && (other_min, other_max) != (min, max)
+        })
+    };
+    let variants: Vec<&SceneNode> = bands.iter().copied().filter(|b| !is_overlay(b)).collect();
+    let (selected, coverage) = if variants.is_empty() {
+        (None, None)
+    } else {
+        let infos: Vec<_> = variants
+            .iter()
+            .filter_map(|node| node.lod().copied())
+            .collect();
+        let choice = select_lod_variant(&infos, Meters(distance_m)).map_err(|error| {
+            PlaytestError::AircraftNode {
+                what,
+                asked: error.to_string(),
+            }
+        })?;
+        (Some(variants[choice.index]), Some(choice.coverage))
+    };
+    let hidden = bands
+        .iter()
+        .filter(|band| selected.is_none_or(|chosen| chosen.index() != band.index()))
+        .map(|band| {
+            let (min, max) = range(band);
+            let reason = if is_overlay(band) {
+                format!(
+                    "detail overlay band {min}-{max} m nested inside a wider band: not a \
+                     variant of the same part, so not a candidate for the selection"
+                )
+            } else {
+                format!("LOD band {min}-{max} m not selected at {distance_m} m")
+            };
+            HiddenLod {
+                node_slot: band.index(),
+                node_name: band.name().to_owned(),
+                reason,
+            }
+        })
+        .collect();
+    Ok(BandChoice {
+        selected,
+        coverage,
+        hidden,
+    })
+}
+
+/// The mesh bindings of the area the selection decided on.
+struct AreaSelection<'g> {
+    /// The mesh-bearing nodes to draw, in the graph's preorder.
+    draw: Vec<&'g SceneNode>,
+    /// Every other mesh-bearing node of the area, with its reason.
+    undrawn: Vec<UndrawnBinding>,
+    hidden_lods: Vec<HiddenLod>,
+    bindings: usize,
+}
+
+/// The authored-name rule for the **damage-state** alternatives of one part, a
+/// designed development reading of the names the container stores (the original's
+/// state machine is unmeasured): returns why `node` is not the intact variant, or
+/// `None` when it is.
+///
+/// * `burnpanels` is the scorched counterpart of the sibling `panels` (it carries
+///   the `burn…` copy of every `panel…` mesh, drawn over the same hull plane);
+/// * a sibling pair `<stem>h` / `<stem>d` (`pleftb1h`, `pleftb1d`) is the
+///   healthy and the damaged state of one panel: the `d` one is hidden;
+/// * `propstill` is the stopped propeller, `spin` / `counterspin` its running
+///   states: the airship is drawn at rest, so the running states are hidden.
+fn damage_alternative(node: &SceneNode, siblings: &[&SceneNode]) -> Option<String> {
+    let name = node.name();
+    let has = |wanted: &str| siblings.iter().any(|other| other.name() == wanted);
+    if name == "burnpanels" && has("panels") {
+        return Some(
+            "damage-state alternative: the scorched copy of the sibling `panels`, drawn over \
+             the same hull plane"
+                .to_owned(),
+        );
+    }
+    if let Some(stem) = name.strip_suffix('d')
+        && has(&format!("{stem}h"))
+    {
+        return Some(format!(
+            "damage-state alternative: the damaged variant of the sibling `{stem}h`"
+        ));
+    }
+    if matches!(name, "spin" | "counterspin") && has("propstill") {
+        return Some(
+            "propeller state alternative: the running state of a part whose sibling \
+             `propstill` is the stopped one; the area is drawn at rest"
+                .to_owned(),
+        );
+    }
+    None
+}
+
+/// Decides which mesh bindings of the area make **one intact variant of every
+/// part** at one LOD band.
+///
+/// The same rules the airframe uses, applied to every node's children:
+///
+/// 1. sibling `Lod` bands go through [`choose_lod_band`] (the one F11-B rule) at
+///    `distance_m`; the bands it does not choose hide their whole subtrees;
+/// 2. [`damage_alternative`] hides the damage-state (and stopped/running
+///    propeller) alternatives of a part;
+/// 3. a mesh under a hidden node is undrawn, with the hidden node's reason.
+///
+/// # Errors
+///
+/// [`PlaytestError::AircraftNode`] when the LOD rule refuses a group of bands.
+fn select_area_parts<'g>(
+    graph: &'g SceneGraph,
+    root: &SceneNodeId,
+    distance_m: f64,
+    select: bool,
+) -> Result<AreaSelection<'g>, PlaytestError> {
+    let members = graph.subtree(root);
+    if !select {
+        let draw: Vec<&SceneNode> = members
+            .iter()
+            .copied()
+            .filter(|n| n.mesh().is_some())
+            .collect();
+        let bindings = draw.len();
+        return Ok(AreaSelection {
+            draw,
+            undrawn: Vec::new(),
+            hidden_lods: Vec::new(),
+            bindings,
+        });
+    }
+    let mut hidden_roots: std::collections::BTreeMap<u32, String> =
+        std::collections::BTreeMap::new();
+    let mut hidden_lods = Vec::new();
+    for parent in &members {
+        let children: Vec<&SceneNode> = parent
+            .children()
+            .iter()
+            .filter_map(|id| graph.node(id))
+            .collect();
+        let bands: Vec<&SceneNode> = children
+            .iter()
+            .copied()
+            .filter(|node| matches!(node.kind(), NodeKind::Lod(_)))
+            .collect();
+        if !bands.is_empty() {
+            let choice = choose_lod_band(&bands, distance_m, "area LOD selection")?;
+            for hidden in choice.hidden {
+                hidden_roots.insert(hidden.node_slot, hidden.reason.clone());
+                hidden_lods.push(hidden);
+            }
+        }
+        for child in &children {
+            if let Some(reason) = damage_alternative(child, &children) {
+                hidden_roots.insert(child.index(), reason);
+            }
+        }
+    }
+    let mut draw = Vec::new();
+    let mut undrawn = Vec::new();
+    let mut bindings = 0usize;
+    for node in &members {
+        let Some(binding) = node.mesh() else {
+            continue;
+        };
+        bindings += 1;
+        let mut cursor = Some(*node);
+        let mut reason = None;
+        while let Some(current) = cursor {
+            if let Some(why) = hidden_roots.get(&current.index()) {
+                reason = Some(format!(
+                    "under {:?} (slot {}): {why}",
+                    current.name(),
+                    current.index()
+                ));
+                break;
+            }
+            if current.id() == root {
+                break;
+            }
+            cursor = current.parent().and_then(|id| graph.node(id));
+        }
+        match reason {
+            None => draw.push(*node),
+            Some(reason) => undrawn.push(UndrawnBinding {
+                node_slot: node.index(),
+                node_name: node.name().to_owned(),
+                mesh_index: binding.index,
+                reason,
+            }),
+        }
+    }
+    Ok(AreaSelection {
+        draw,
+        undrawn,
+        hidden_lods,
+        bindings,
+    })
+}
+
 /// The mesh bindings of the airframe the selection decided on, before any of them
 /// is built.
 struct AircraftSelection<'g> {
@@ -1696,59 +1938,15 @@ fn select_aircraft_parts<'g>(
         .filter_map(|id| planes.node(id))
         .filter(|node| matches!(node.kind(), NodeKind::Lod(_)))
         .collect();
-    let range = |node: &SceneNode| match node.kind() {
-        NodeKind::Lod(info) => (info.range_min.0, info.range_max.0),
-        _ => (0.0, 0.0),
-    };
-    let is_overlay = |band: &SceneNode| {
-        let (min, max) = range(band);
-        bands.iter().any(|other| {
-            let (other_min, other_max) = range(other);
-            other.index() != band.index()
-                && other_min <= min
-                && max <= other_max
-                && (other_min, other_max) != (min, max)
-        })
-    };
-    let variants: Vec<&SceneNode> = bands.iter().copied().filter(|b| !is_overlay(b)).collect();
-    let (selected_lod, coverage) = if variants.is_empty() {
-        (None, None)
-    } else {
-        let infos: Vec<_> = variants
-            .iter()
-            .filter_map(|node| node.lod().copied())
-            .collect();
-        let choice = select_lod_variant(&infos, Meters(config.aircraft_lod_distance_m)).map_err(
-            |error| PlaytestError::AircraftNode {
-                what: "aircraft LOD selection",
-                asked: error.to_string(),
-            },
-        )?;
-        (Some(variants[choice.index]), Some(choice.coverage))
-    };
-    let hidden_lods: Vec<HiddenLod> = bands
-        .iter()
-        .filter(|band| selected_lod.is_none_or(|chosen| chosen.index() != band.index()))
-        .map(|band| {
-            let (min, max) = range(band);
-            let reason = if is_overlay(band) {
-                format!(
-                    "detail overlay band {min}-{max} m nested inside a wider band: not a \
-                     variant of the same part, so not a candidate for the selection"
-                )
-            } else {
-                format!(
-                    "LOD band {min}-{max} m not selected at {} m",
-                    config.aircraft_lod_distance_m
-                )
-            };
-            HiddenLod {
-                node_slot: band.index(),
-                node_name: band.name().to_owned(),
-                reason,
-            }
-        })
-        .collect();
+    let BandChoice {
+        selected: selected_lod,
+        coverage,
+        hidden: hidden_lods,
+    } = choose_lod_band(
+        &bands,
+        config.aircraft_lod_distance_m,
+        "aircraft LOD selection",
+    )?;
 
     // Which band (if any) a node hangs under.
     let band_of = |node: &'g SceneNode| -> Option<&'g SceneNode> {
@@ -1888,6 +2086,12 @@ pub struct PlaytestConfig {
     pub aircraft_prop_node_name: String,
     /// The viewer distance the aircraft's LOD band is selected at, in metres.
     pub aircraft_lod_distance_m: f64,
+    /// The viewer distance the area's LOD bands are selected at, in metres.
+    pub area_lod_distance_m: f64,
+    /// Whether the area draws one intact variant of each part (`true`, the
+    /// documented rule) or every stored binding of the subtree (`false`, #648's
+    /// behaviour: the baseline the flicker is measured against).
+    pub select_area_variants: bool,
     /// The capture frame's width, in pixels.
     pub capture_width: u32,
     /// The capture frame's height, in pixels.
@@ -1915,6 +2119,8 @@ impl PlaytestConfig {
             aircraft_prop_node_slot: PLAYTEST_AIRCRAFT_PROP_NODE_SLOT,
             aircraft_prop_node_name: PLAYTEST_AIRCRAFT_PROP_NODE_NAME.to_owned(),
             aircraft_lod_distance_m: PLAYTEST_AIRCRAFT_LOD_DISTANCE_M,
+            area_lod_distance_m: PLAYTEST_AREA_LOD_DISTANCE_M,
+            select_area_variants: true,
             capture_width: CAPTURE_WIDTH,
             capture_height: CAPTURE_HEIGHT,
             textured: true,
@@ -1971,8 +2177,17 @@ pub struct PlaytestAreaReport {
     pub node_name: String,
     /// How many nodes the subtree holds.
     pub nodes: usize,
-    /// How many of them bind a mesh the container stores geometry for.
+    /// How many of them bind a mesh the container stores geometry for **and are
+    /// drawn**: the selected intact variants. Each has a collider.
     pub mesh_records: usize,
+    /// How many mesh bindings the subtree stores before the selection.
+    pub stored_bindings: usize,
+    /// The viewer distance the LOD bands were selected at, in metres.
+    pub lod_distance_m: f64,
+    /// The LOD bands the selection hid.
+    pub hidden_lods: Vec<HiddenLod>,
+    /// Every stored mesh binding not drawn, with its reason.
+    pub undrawn: Vec<UndrawnBinding>,
     /// How many stored triangles those records draw.
     pub triangles: usize,
     /// The composed extent of that geometry, in canonical metres.
@@ -1986,6 +2201,21 @@ pub struct PlaytestAreaReport {
 }
 
 impl PlaytestAreaReport {
+    /// The selection as the body of a JSON object (no braces), for the startup
+    /// `playtest sources` line and the smoke report.
+    #[must_use]
+    pub fn json_fields(&self) -> String {
+        let hidden = hidden_lods_json(&self.hidden_lods);
+        let undrawn = undrawn_json(&self.undrawn);
+        format!(
+            "\"area_stored_bindings\":{},\"area_selection\":{{\"lod_distance_m\":{},\
+\"rule\":\"{}\",\"hidden_lods\":[{hidden}]}},\"area_undrawn\":[{undrawn}]",
+            self.stored_bindings,
+            self.lod_distance_m,
+            json_escape(PLAYTEST_AREA_SELECTION_RULE),
+        )
+    }
+
     /// How many records were presented **and** collided.
     #[must_use]
     pub fn colliders(&self) -> usize {
@@ -2086,33 +2316,8 @@ impl PlaytestAircraftReport {
     /// smoke report.
     #[must_use]
     pub fn json_fields(&self) -> String {
-        let hidden = self
-            .hidden_lods
-            .iter()
-            .map(|lod| {
-                format!(
-                    "{{\"slot\":{},\"name\":\"{}\",\"reason\":\"{}\"}}",
-                    lod.node_slot,
-                    json_escape(&lod.node_name),
-                    json_escape(&lod.reason)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        let undrawn = self
-            .undrawn
-            .iter()
-            .map(|binding| {
-                format!(
-                    "{{\"slot\":{},\"name\":\"{}\",\"mesh\":{},\"reason\":\"{}\"}}",
-                    binding.node_slot,
-                    json_escape(&binding.node_name),
-                    binding.mesh_index,
-                    json_escape(&binding.reason)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+        let hidden = hidden_lods_json(&self.hidden_lods);
+        let undrawn = undrawn_json(&self.undrawn);
         let selected = self.selected_lod.as_ref().map_or_else(
             || "null".to_owned(),
             |(slot, name)| format!("{{\"slot\":{slot},\"name\":\"{}\"}}", json_escape(name)),
@@ -2131,6 +2336,37 @@ impl PlaytestAircraftReport {
             self.lod_distance_m,
         )
     }
+}
+
+fn hidden_lods_json(hidden: &[HiddenLod]) -> String {
+    hidden
+        .iter()
+        .map(|lod| {
+            format!(
+                "{{\"slot\":{},\"name\":\"{}\",\"reason\":\"{}\"}}",
+                lod.node_slot,
+                json_escape(&lod.node_name),
+                json_escape(&lod.reason)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn undrawn_json(undrawn: &[UndrawnBinding]) -> String {
+    undrawn
+        .iter()
+        .map(|binding| {
+            format!(
+                "{{\"slot\":{},\"name\":\"{}\",\"mesh\":{},\"reason\":\"{}\"}}",
+                binding.node_slot,
+                json_escape(&binding.node_name),
+                binding.mesh_index,
+                json_escape(&binding.reason)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Escapes the two characters a quoted JSON string cannot hold raw.
@@ -2669,8 +2905,13 @@ pub fn spawn_playtest_content(
             found: Some(root_name),
         });
     }
-    let members = graph.subtree(&root);
-    let node_count = members.len();
+    let node_count = graph.subtree(&root).len();
+    let area_selection = select_area_parts(
+        &graph,
+        &root,
+        config.area_lod_distance_m,
+        config.select_area_variants,
+    )?;
 
     // -- the aircraft, read before anything is spawned ----------------------
     let planes = aircraft_graph(sources.aircraft(), &adapter)?;
@@ -2779,7 +3020,7 @@ pub fn spawn_playtest_content(
     let mut max = [f64::NEG_INFINITY; 3];
     let mut triangles = 0usize;
     let mut mesh_records = 0usize;
-    for node in &members {
+    for node in &area_selection.draw {
         let Some(binding) = node.mesh() else {
             continue;
         };
@@ -2962,6 +3203,10 @@ pub fn spawn_playtest_content(
         node_name: root_name,
         nodes: node_count,
         mesh_records,
+        stored_bindings: area_selection.bindings,
+        lod_distance_m: config.area_lod_distance_m,
+        hidden_lods: area_selection.hidden_lods,
+        undrawn: area_selection.undrawn,
         triangles,
         bounds,
         refused,
@@ -3870,6 +4115,121 @@ pub fn capture_part_footprint(
             .filter(|(whole, core)| **whole && !**core)
             .count(),
         png: all.png,
+    })
+}
+
+/// What [`capture_view_stability`] measured.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaytestStability {
+    /// Frames rendered, the first being the reference.
+    pub frames: usize,
+    /// The per-frame camera step, in metres.
+    pub step_m: f32,
+    /// Pixels the reference frame covers: the hull region.
+    pub region_pixels: usize,
+    /// For each later frame, the pixels of the region whose colour flipped.
+    pub flipped_per_frame: Vec<usize>,
+    /// The worst frame's flipped share of the region.
+    pub worst_share: f64,
+    /// The first and last frame's PNGs, under the caller's directory.
+    pub pngs: Vec<String>,
+}
+
+/// Measures pixel instability of the area: the share of the hull region whose
+/// colour flips between frames although the camera moved only `step_m` metres.
+///
+/// Renders `frames` frames of the eye at `view.eye + i * step_m` (straight up) looking
+/// at `view.target`, with the aircraft hidden, on the real GPU. The reference is frame
+/// 0; the region is its non-clear pixels; a pixel *flips* when any colour channel
+/// differs from the reference by more than `FLIP_TOLERANCE`. A step of
+/// centimetres moves a surface edge by a small fraction of a pixel, so what flips
+/// is depth-fighting layers, not motion.
+///
+/// # Errors
+///
+/// [`PlaytestError::Capture`] when a frame does not come back or the PNG cannot
+/// be read, and [`PlaytestError::World`] when `frames < 2`.
+pub fn capture_view_stability(
+    app: &mut App,
+    scene: &PlaytestScene,
+    view: &PlaytestCameraView,
+    step_m: f32,
+    frames: usize,
+    out_dir: &Path,
+) -> Result<PlaytestStability, PlaytestError> {
+    const FLIP_TOLERANCE: u8 = 8;
+    if frames < 2 {
+        return Err(PlaytestError::World {
+            reason: "a stability measurement needs at least two frames".to_owned(),
+        });
+    }
+    install_capture_observer(app);
+    aircraft_visible(app, scene, false);
+    let clear = [
+        (CLEAR_COLOR[0] * 255.0).round() as u8,
+        (CLEAR_COLOR[1] * 255.0).round() as u8,
+        (CLEAR_COLOR[2] * 255.0).round() as u8,
+    ];
+    let mut reference: Option<Vec<u8>> = None;
+    let mut region: Vec<bool> = Vec::new();
+    let mut flipped_per_frame = Vec::new();
+    let mut pngs = Vec::new();
+    for index in 0..frames {
+        let moved = PlaytestCameraView {
+            eye: [
+                view.eye[0],
+                view.eye[1] + step_m * index as f32,
+                view.eye[2],
+            ],
+            ..*view
+        };
+        let png = (index == 0 || index == frames - 1)
+            .then(|| out_dir.join(format!("{}-frame{index}.png", view.name)));
+        let rendered = render_view(app, scene, &moved, png)?;
+        if !rendered.png.is_empty() {
+            pngs.push(rendered.png.clone());
+        }
+        match &reference {
+            None => {
+                region = rendered
+                    .facts
+                    .pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|p| p[0] != clear[0] || p[1] != clear[1] || p[2] != clear[2])
+                    .collect();
+                reference = Some(rendered.facts.pixels);
+            }
+            Some(first) => {
+                let flipped = first
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(rendered.facts.pixels.as_chunks::<4>().0)
+                    .zip(&region)
+                    .filter(|((a, b), inside)| {
+                        **inside && (0..3).any(|c| a[c].abs_diff(b[c]) > FLIP_TOLERANCE)
+                    })
+                    .count();
+                flipped_per_frame.push(flipped);
+            }
+        }
+    }
+    aircraft_visible(app, scene, true);
+    let region_pixels = region.iter().filter(|inside| **inside).count();
+    let worst = flipped_per_frame.iter().copied().max().unwrap_or(0);
+    Ok(PlaytestStability {
+        frames,
+        step_m,
+        region_pixels,
+        flipped_per_frame,
+        worst_share: if region_pixels == 0 {
+            0.0
+        } else {
+            worst as f64 / region_pixels as f64
+        },
+        pngs,
     })
 }
 
