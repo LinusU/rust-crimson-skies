@@ -55,6 +55,11 @@ mod nose;
 #[path = "playtest_retail/prop_spin.rs"]
 mod prop_spin;
 
+// #753 (`accept_playtest_area_flicker_`): folded into this binary so it does not add
+// another Bevy-linked test executable.
+#[path = "playtest_retail/area_flicker.rs"]
+mod area_flicker;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
