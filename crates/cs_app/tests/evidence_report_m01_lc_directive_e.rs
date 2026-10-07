@@ -48,6 +48,7 @@ fn review_method(
     unmeasured_keys: usize,
     m01_measured: usize,
     unmet_rows: usize,
+    complete_rows: usize,
     own_tests: usize,
 ) -> String {
     format!(
@@ -59,19 +60,23 @@ fn review_method(
          supplies (operation, role, evidence and residual unknowns): the census records \
          {measured_keys} measured corpus key(s) and {unmeasured_keys} refused unmeasured one(s), \
          {m01_measured} of M01's 41 non-outcome keys measured, and {unmet_rows} unmet lowering \
-         rows corpus-wide - mission and objective identity are met on every measured record while \
-         the condition and the calls stay unmet. The disposition is STATIC CODE EVIDENCE ONLY: the \
+         rows corpus-wide - the rows a record's own lowering attempt left unmet, each named per \
+         mission and per field - while {complete_rows} row(s) lower completely. The disposition is \
+         STATIC CODE EVIDENCE ONLY: the \
          findings' measurements were read out of crimson.decrypted.exe (sha256 \
          43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75, the same binary stage \
          A read) and no original program was run, so nothing here is verified_original runtime \
-         behaviour and a measured disposition is not a host binding - no directive key is \
-         implemented beyond the two outcome spellings, and no mission reports complete. LIMITS OF \
+         behaviour, and a measured disposition is a statement about the original rather than a \
+         licence: no directive key is implemented beyond the two outcome spellings - a bound call \
+         for a measured key only emits Action::Directive for the host to honour. LIMITS OF \
          WHAT WAS MEASURED: every residual unknown the findings recorded is carried per key in the \
-         disposition and named again on the lowering row that owns it (IDENTITY's third child, the \
+         disposition and named again on the lowering row that owns it wherever that row is unmet \
+         (IDENTITY's third child, the \
          in-play flag's writers, DEDG's member-field rewrites, TRAVELERS' unspelled polarity, the \
-         sound-group handles, the animation call's trailing arguments and the rest); keys whose \
-         argument shapes disagree or nest lists the IR cannot carry are named by the lowering \
-         accounting rather than flattened; and every corpus key no finding covers stays refused \
+         sound-group handles, the animation call's trailing arguments and the rest); key sites \
+         that disagree about their argument shape register one signature per measured shape (no \
+         majority resolved) and nested argument lists are carried as nested lists rather than \
+         flattened; and every corpus key no finding covers stays refused \
          `Unmeasured`. TEST-SELECTION NOTE: the prefix accept_m01_lc_directive_e_ is unique to \
          this task, so the {own_tests} discovered assertions are exactly this task's tests. \
          Validated with tools/validate_evidence.py --require-pass.",
@@ -158,6 +163,7 @@ fn evidence_report_m01_lc_directive_e_writes_the_acceptance_report() {
         measured_keys > 0 && unmeasured_keys > 0 && unmet_rows > 0,
         "the census must measure all three populations"
     );
+    let complete_rows = census.complete_missions().len();
 
     let census_path = evidence_dir.join("directive-disposition-census.json");
     fs::write(
@@ -201,6 +207,7 @@ fn evidence_report_m01_lc_directive_e_writes_the_acceptance_report() {
             unmeasured_keys,
             m01_measured,
             unmet_rows,
+            complete_rows,
             suite.discovered as usize,
         )),
     );

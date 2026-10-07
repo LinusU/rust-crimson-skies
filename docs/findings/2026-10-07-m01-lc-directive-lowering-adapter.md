@@ -172,8 +172,17 @@ four rows are met; the empty record's three are still unmet),
 and measured is still not implemented), the module docs of
 `accept_m01_lc_directive_meaning.rs`, and the launch-gate assertion beside it.
 The five `evidence_report_*` harnesses whose artifacts quote the old rows were
-regenerated rather than edited. No assertion was deleted, no test was skipped
-and no `#[ignore]` was added to dodge the reconciliation.
+reconciled to the new API, and the report prose three of them carried —
+"lower_program's four requirements are unmet for every measured archive … so no
+mission is lowered", "the condition and the calls stay unmet … and no mission
+reports complete", "the exact set of argument shapes the mission IR cannot
+carry" — was rewritten during review to interpolate what the census measures
+(`{complete_rows}` of `{measured_rows}` rows lower completely, nested argument
+lists carried as nested values, one signature per disagreeing shape) instead of
+asserting what this stage made false; all six artifacts were then regenerated
+on the reviewed tree by their own harnesses, never edited by hand. No assertion
+was deleted, no test was skipped and no `#[ignore]` was added to dodge the
+reconciliation.
 
 ## How to re-derive every number here
 

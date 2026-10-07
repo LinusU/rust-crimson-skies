@@ -60,8 +60,8 @@ fn review_method(key_count: usize, site_count: u32, block_count: u32, own_tests:
          $CS_GAME_DIR/crimson.decrypted.exe (sha256 \
          43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75) across {site_count} \
          sites in {block_count} numbered objective blocks - the acceptance suite asserts the \
-         spellings those semantics apply to and the exact set of argument shapes the mission IR \
-         cannot carry against the production census, so a drift between the document and the \
+         spellings those semantics apply to and the exact set of argument shapes whose list nests \
+         a list, against the production census, so a drift between the document and the \
          data fails the run. The native-side evidence is STATIC CODE EVIDENCE ONLY: the \
          objective record layout, the CZMission::Update two-pass structure, the lifecycle state \
          machine (+0x5c8 dormant/awake/nap/done), the condition evaluators, the completion \

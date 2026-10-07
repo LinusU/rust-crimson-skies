@@ -65,6 +65,7 @@ struct Observed {
     corpus_measured: usize,
     corpus_unmeasured: usize,
     unmet_rows: usize,
+    complete_rows: usize,
     citations: usize,
     held_citations: usize,
     own_tests: usize,
@@ -81,6 +82,7 @@ fn review_method(observed: &Observed) -> String {
         corpus_measured,
         corpus_unmeasured,
         unmet_rows,
+        complete_rows,
         citations,
         held_citations,
         own_tests,
@@ -96,15 +98,18 @@ fn review_method(observed: &Observed) -> String {
          every measured disposition names {citations} findings citation(s), {held_citations} of \
          which resolve to a document this tree holds under docs/findings/. Corpus-wide the census \
          records {corpus_measured} measured key occurrence(s) and {corpus_unmeasured} refused \
-         unmeasured one(s), with {unmet_rows} unmet lowering row(s): mission and objective \
-         identity are met on every measured record while the condition and the calls stay unmet, \
-         so no mission reports complete and the mission_program / mission_objectives support a \
-         future launch path reads stays Unsupported. The dispositions are STATIC CODE EVIDENCE \
+         unmeasured one(s), with {unmet_rows} unmet lowering row(s) named per mission and per \
+         field and {complete_rows} row(s) lowering completely: the mission_program / \
+         mission_objectives support a future launch path reads Supported only for a row whose own \
+         lowering attempt produced a validated program, and Unsupported for every other row. The \
+         dispositions are STATIC CODE EVIDENCE \
          ONLY: the findings' measurements were read out of crimson.decrypted.exe (sha256 \
          43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75, the same binary stage \
          A read) and no original program was run, so nothing here is verified_original runtime \
-         behaviour, a measured disposition is not a host binding, and only the two outcome \
-         spellings reach an engine operation. LIMITS OF WHAT WAS MEASURED: the residual unknowns \
+         behaviour: a measured disposition is a statement about the original rather than a licence, \
+         only the two outcome spellings reach an engine operation the program itself performs, and \
+         a bound call for a measured key only emits Action::Directive for the host to honour. \
+         LIMITS OF WHAT WAS MEASURED: the residual unknowns \
          each finding recorded are carried per key (IDENTITY's third child, the in-play flag's \
          writers, DEDG's member-field rewrites, TRAVELERS' polarity, the sound-group handles, the \
          animation call's trailing arguments) and named again on the lowering row that owns them; \
@@ -274,6 +279,7 @@ fn evidence_report_m01_lc_directive_meaning_writes_the_acceptance_report() {
             corpus_measured,
             corpus_unmeasured,
             unmet_rows,
+            complete_rows: census.complete_missions().len(),
             citations: citations.len(),
             held_citations: held,
             own_tests: suite.discovered as usize,

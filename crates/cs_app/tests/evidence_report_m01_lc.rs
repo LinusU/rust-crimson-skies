@@ -74,6 +74,10 @@ fn review_method(
         .map(|(kind, missions)| format!("{kind} on {} mission(s)", missions.len()))
         .collect();
     let fields = census.unmeasured_fields();
+    // The lowering gate, as this run measures it: which rows the attempt
+    // actually cleared, never a fixed "no mission is lowered".
+    let complete_rows = census.complete_missions().len();
+    let measured_rows = census.measured_len();
     // The name-reading counterexample is **derived**, never written down: the
     // reader whose longest member exceeds its control member by the largest
     // factor, with both byte extents from the same census row.
@@ -147,11 +151,15 @@ fn review_method(
          nothing here is evidence of behaviour; (2) the mission-language instruction table the \
          F13-C census searched for is not what a mission-scoped reader contains: its control \
          program is a typed keyed list in one member, and the bytecode mission VM that F13-B/C \
-         reported as 0-of-1452 resolved remains unlocated and unmeasured; (3) lower_program's four \
-         requirements are unmet for every measured archive - {} - and the unmeasured fields it \
-         names are {} - so no mission is lowered, no mission is playable and this report claims no \
-         original behaviour; (4) the mission id is not a member field: the reader is mission-scoped \
-         by path and the canonical id comes from the campaign binding record (M01-A); (5) an empty \
+         reported as 0-of-1452 resolved remains unlocated and unmeasured; (3) lower_program's \
+         requirements are unmet on some archives - {} - and the unmeasured fields it names are {}; \
+         {complete_rows} of the {measured_rows} measured archive(s) lower completely today, which \
+         says that record's own lowering attempt produced a validated program and nothing more - a \
+         bound call still only emits Action::Directive for the host, so no mission is playable off \
+         this report and it claims no original behaviour; (4) the mission id is not a member field: \
+         the reader is mission-scoped by path and the canonical id comes from the campaign layout \
+         (campaign_bindings::campaign_layout, the derivation SourceContext::read shares); (5) an \
+         empty \
          or unreadable record never reports itself complete, and the campaign gate is closed while \
          any reader declares a directive with no measured effect. `unknowns` is empty because \
          every unresolved item above is a limit on the claim rather than an unresolved measurement: \
