@@ -3,7 +3,7 @@
 //! records the measured runtime semantics of M01's lifecycle and target
 //! directives. These tests pin the **spellings the document interprets**: the
 //! argument shapes the measured semantics apply to, and the exact set of
-//! sites whose shapes the mission IR cannot carry. Both come from
+//! sites whose argument lists nest a list. Both come from
 //! `survey_mission_control_programs`, a real production read of the owner's
 //! installation, so the tests need `CS_GAME_DIR`.
 
@@ -128,14 +128,16 @@ fn accept_m01_lc_directive_b_each_measured_keys_argument_shapes_match_the_record
     );
 }
 
-/// The document names every M01 spelling whose argument list nests a list —
-/// the shapes `cs_script::ir::Value` cannot carry. Compute the same set from
-/// the production census and require it to match the named table exactly: a
-/// spelling that nests a list added to or removed from M01 changes the
-/// documented set, and so does an `is_ir_carriable` change in production.
+/// The document names every M01 spelling whose argument list nests a list.
+/// Compute the same set from the production census and require it to match the
+/// named table exactly: a spelling that nests a list added to or removed from
+/// M01 changes the documented set. Since stage `.01` of the directive-lowering
+/// work the IR carries `Value::List`, so the table is no longer a set of
+/// defects the lowering names — it is the set the adapter must carry through
+/// as nested `Value::List`s, which `accept_m01_lc_lowering_adapter_` pins.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m01_lc_directive_b_the_named_non_carriable_shapes_match_the_record() {
+fn accept_m01_lc_directive_b_the_named_nested_list_shapes_match_the_record() {
     let census = survey_mission_control_programs(&game_dir()).expect("census runs on the install");
     let record = census
         .row("zbd/c1c/m01")
@@ -144,17 +146,25 @@ fn accept_m01_lc_directive_b_the_named_non_carriable_shapes_match_the_record() {
         .expect("M01 declares a control program");
     let mut computed: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for key in record.keys() {
-        let non_carriable: Vec<String> = key
+        let nested: Vec<String> = key
             .shapes
             .iter()
-            .filter(|(shape, _)| !shape.is_ir_carriable())
+            .filter(|(shape, _)| {
+                matches!(
+                    shape,
+                    cs_content::mission_control::DirectiveShape::Arguments(args)
+                        if args
+                            .iter()
+                            .any(|arg| matches!(arg, cs_content::mission_control::MeasuredArg::List(_)))
+                )
+            })
             .map(|(shape, count)| format!("{}x{}", shape.label(), count))
             .collect();
-        if !non_carriable.is_empty() {
-            computed.insert(key.key.clone(), non_carriable);
+        if !nested.is_empty() {
+            computed.insert(key.key.clone(), nested);
         }
     }
-    // The document's "list-valued shapes the IR cannot carry" table, exactly.
+    // The document's "list-valued shapes" table, exactly.
     let documented: BTreeMap<&str, &[&str]> = BTreeMap::from([
         ("ADD_OBJECTIVE_TARGET", &["[[text,text]]x2"][..]),
         ("REMOVE_OBJECTIVE_TARGET", &["[[text,text]]x3"][..]),
@@ -178,6 +188,6 @@ fn accept_m01_lc_directive_b_the_named_non_carriable_shapes_match_the_record() {
         .collect();
     assert_eq!(
         computed, documented,
-        "the non-carriable spellings named in the findings document"
+        "the nested-list spellings named in the findings document"
     );
 }

@@ -33,16 +33,18 @@
 
 use std::path::PathBuf;
 
+use cs_app::control_lowering::{LoweredControlRecord, lower_control_record};
 use cs_app::mission_control::{
     RetailControlCensus, read_control_member, survey_mission_control_programs,
 };
 use cs_content::mission_control::{
-    CONTROL_MEMBER, CONTROL_RECORD_KEY_VOCABULARY, ControlLowering, ControlMemberError,
-    ControlRecordField, DecodedMember, DirectiveDisposition, LoweringRequirementKind, MeasuredArg,
-    TerminalOutcome, UnmeasuredReason, control_member, measure_control_record, objective_blocks_of,
-    terminal_outcome_of,
+    CONTROL_MEMBER, CONTROL_RECORD_KEY_VOCABULARY, CallOutcome, ConditionOutcome, ControlLowering,
+    ControlMemberError, ControlRecordField, DecodedMember, DirectiveDisposition,
+    LoweringRequirementKind, MeasuredArg, MeasuredControlRecord, TerminalOutcome, UnmeasuredReason,
+    control_member, measure_control_record, objective_blocks_of, terminal_outcome_of,
 };
 use cs_content::stunts::{ZRD_TAG_FLOAT, ZRD_TAG_INT, ZRD_TAG_LIST, ZRD_TAG_TEXT, ZrdValue};
+use cs_types::content::{ContentId, ContentKind};
 
 // ------------------------------------------------------------------ helpers ---
 
@@ -117,6 +119,22 @@ fn control_record(fields: Vec<(String, ZrdValue)>) -> ZrdValue {
         children.push(value);
     }
     zrd_list(vec![zrd_list(children)])
+}
+
+/// Measures an authored record and runs the production lowering adapter over
+/// it, so the lowering rows below are derived from a real attempt — the same
+/// `cs_app::control_lowering::lower_control_record` the census runs per row.
+/// A fixed synthetic mission id stands in for the campaign-layout derivation.
+fn lower(document: &ZrdValue) -> (MeasuredControlRecord, LoweredControlRecord) {
+    let record = measure_control_record(document);
+    let lowered = lower_control_record(
+        ContentId::from_source(ContentKind::Mission, "accept-mission")
+            .map_err(|error| error.to_string()),
+        "accept-mission",
+        document,
+        &record,
+    );
+    (record, lowered)
 }
 
 /// An authored record with one block spelling `INSTANTWIN` bare beside an
@@ -315,15 +333,19 @@ fn accept_m01_lc_a_bare_directive_is_not_read_as_carrying_the_next_key() {
     );
 }
 
-/// A nested argument list is measured as nested, and it is named by the
-/// lowering accounting because `cs_script::ir::Value` has no list variant.
-/// Flattening it into a positional `Vec<Value>` would be a format change
-/// presented as a binding — so the key's *measured* effect does not launder the
-/// shape: the disposition says what the original does and the lowering row
-/// still says the shape cannot be carried.
+/// A nested argument list is measured as nested, carried as a nested
+/// `Value::List` through the bound call, and — when the descriptor it spells is
+/// not the measured `ANIM` spec grammar — refused by the condition lowerer,
+/// which names the block and the key. Flattening it into a positional
+/// `Vec<Value>` would be a format change presented as a binding — so the key's
+/// *measured* effect does not launder the shape: the disposition says what the
+/// original does and the lowering reports exactly what the attempt produced.
 #[test]
 fn accept_m01_lc_a_nested_argument_shape_is_named_and_never_flattened() {
-    // `ANIM_STATE`'s measured M01 shape: one name beside a nested descriptor.
+    // `ANIM_STATE`'s measured M01 shape: the `ANIM` tag beside a spec record.
+    // This site's spec does not match the measured `NAME`/`STATE` pair
+    // grammar, so the condition lowerer refuses it by name while the call
+    // still binds — the nested shape is carriable either way.
     let document = control_record(vec![block(
         1,
         vec![directive(
@@ -331,7 +353,7 @@ fn accept_m01_lc_a_nested_argument_shape_is_named_and_never_flattened() {
             vec![zrd_text("wv_tailhook"), zrd_list(vec![zrd_text("x")])],
         )],
     )]);
-    let record = measure_control_record(&document);
+    let (record, lowered) = lower(&document);
     let key = record.key("ANIM_STATE").expect("the directive is measured");
 
     assert_eq!(
@@ -343,11 +365,6 @@ fn accept_m01_lc_a_nested_argument_shape_is_named_and_never_flattened() {
             ]
         )),
         "the nested list is preserved as a nested shape rather than flattened into two arguments"
-    );
-    assert!(
-        !key.agreed_shape()
-            .is_some_and(|shape| shape.is_ir_carriable()),
-        "a shape nesting a list is not IR-carriable"
     );
 
     match key.disposition() {
@@ -364,9 +381,26 @@ fn accept_m01_lc_a_nested_argument_shape_is_named_and_never_flattened() {
         }
         other => panic!("a measured key is Measured, got {other:?}"),
     }
-    // And the shape defect is named, on the row that owns it: ANIM_STATE is a
-    // completion evaluator, so the condition row carries it.
-    let lowering = record.lowering();
+
+    // The call binds with the list nested — the IR carries `Value::List` — and
+    // the condition refuses the spec content, naming the block and the key.
+    let attempt = lowered.attempt();
+    assert_eq!(attempt.calls, [CallOutcome::Bound]);
+    assert_eq!(
+        lowered.raw_program().expect("assembled").objectives[0].calls[0].args,
+        [
+            cs_script::ir::Value::Str("wv_tailhook".to_owned()),
+            cs_script::ir::Value::List(vec![cs_script::ir::Value::Str("x".to_owned())]),
+        ],
+        "the bound call carries the nested argument verbatim"
+    );
+    assert!(
+        matches!(&attempt.conditions[0], ConditionOutcome::Refused(field)
+            if field.contains("OBJECTIVE1") && field.contains("ANIM_STATE")),
+        "the refused spec names its block and key: {:?}",
+        attempt.conditions
+    );
+    let lowering = record.lowering(attempt);
     let condition = lowering
         .requirements()
         .iter()
@@ -376,25 +410,25 @@ fn accept_m01_lc_a_nested_argument_shape_is_named_and_never_flattened() {
         condition
             .unmeasured_fields
             .iter()
-            .any(|field| field.contains("ANIM_STATE") && field.contains("cannot carry")),
-        "the condition row names the shape the IR cannot carry: {:?}",
+            .any(|field| field.contains("ANIM_STATE")),
+        "the condition row names the refused evaluator: {:?}",
         condition.unmeasured_fields
     );
-    assert!(!record.is_complete());
+    assert!(!record.is_complete(attempt));
 }
 
 /// Sites that disagree about a key's argument shape are both kept, and the
-/// disagreement is named by the lowering accounting rather than resolved to the
-/// majority shape.
+/// adapter registers **one signature per measured shape** rather than resolving
+/// the disagreement to a majority: both sites bind the signature they spelled.
 ///
 /// The witness is the measured `INACTIVE1` disagreement: ten sites spell a node,
 /// a part and a part-state; two spell a node alone. Both forms are measured
 /// forms of the same mechanism — the resolver takes one to three names — so the
-/// key's *effect* is measured; what the disagreement blocks is the single call
-/// signature a lowering would need, and the condition row says so. A reader
-/// that picked the majority would still be inventing a rule.
+/// key's *effect* is measured, and the binding registry carries both shapes so
+/// no site is coerced into a signature it did not spell. A reader that picked
+/// the majority would still be inventing a rule.
 #[test]
-fn accept_m01_lc_disagreeing_argument_shapes_are_both_kept_and_refused() {
+fn accept_m01_lc_disagreeing_argument_shapes_are_both_kept_and_bound() {
     let document = control_record(vec![
         block(
             1,
@@ -409,7 +443,7 @@ fn accept_m01_lc_disagreeing_argument_shapes_are_both_kept_and_refused() {
         ),
         block(2, vec![directive("INACTIVE1", vec![zrd_text("piratezep")])]),
     ]);
-    let record = measure_control_record(&document);
+    let (record, lowered) = lower(&document);
     let key = record.key("INACTIVE1").expect("the stage key is measured");
 
     assert_eq!(key.sites, 2, "both sites are counted");
@@ -441,22 +475,30 @@ fn accept_m01_lc_disagreeing_argument_shapes_are_both_kept_and_refused() {
         }
         other => panic!("a key the findings measure is Measured, got {other:?}"),
     }
-    // The disagreement itself is still named — on the row that owns it — so a
-    // lowering could never pick one shape silently.
-    let lowering = record.lowering();
-    let condition = lowering
-        .requirements()
-        .iter()
-        .find(|row| row.kind == LoweringRequirementKind::ObjectiveCondition)
-        .expect("the condition row exists");
-    assert!(
-        condition
-            .unmeasured_fields
-            .iter()
-            .any(|field| field.contains("INACTIVE1") && field.contains("distinct argument shapes")),
-        "the disagreement is named by the row that owns it: {:?}",
-        condition.unmeasured_fields
+    // The disagreement lowers as two signatures on the one spec: each site
+    // binds the one it spelled, and nothing is resolved to the majority shape
+    // silently.
+    let spec = lowered
+        .registry()
+        .get("INACTIVE1")
+        .expect("a measured key registers a binding");
+    assert_eq!(
+        spec.signatures.len(),
+        2,
+        "one signature per measured shape: {:?}",
+        spec.signatures
     );
+    assert!(
+        spec.signatures.iter().any(|args| args.len() == 3)
+            && spec.signatures.iter().any(|args| args.len() == 1),
+        "the 3-argument and the 1-argument sites each keep a signature"
+    );
+    assert_eq!(
+        lowered.attempt().calls,
+        [CallOutcome::Bound, CallOutcome::Bound],
+        "each site binds the signature it spelled"
+    );
+    assert!(record.is_complete(lowered.attempt()));
 }
 
 /// A block the walk cannot read is a refusal naming the block and the child, not a
@@ -464,10 +506,11 @@ fn accept_m01_lc_disagreeing_argument_shapes_are_both_kept_and_refused() {
 #[test]
 fn accept_m01_lc_an_unreadable_block_is_refused_with_its_block_and_child() {
     // A block whose value is not a list at all.
-    let not_a_list = measure_control_record(&control_record(vec![(
+    let document = control_record(vec![(
         "OBJECTIVE4".to_owned(),
         zrd_text("this is not a directive list"),
-    )]));
+    )]);
+    let (not_a_list, lowered) = lower(&document);
     assert_eq!(
         not_a_list.refusals(),
         &[cs_content::mission_control::BlockRefusal::BlockNotAList {
@@ -480,17 +523,26 @@ fn accept_m01_lc_an_unreadable_block_is_refused_with_its_block_and_child() {
         1,
         "the block is still counted: a refusal is not a skip"
     );
+    assert_eq!(
+        lowered.attempt().conditions,
+        [ConditionOutcome::Unreadable(
+            "objective_condition: OBJECTIVE4: block_not_a_list: the block is not a directive list"
+                .to_owned()
+        )],
+        "the attempt carries the block-level refusal"
+    );
     assert!(
-        !not_a_list.is_complete(),
+        !not_a_list.is_complete(lowered.attempt()),
         "a record with an unreadable block is never complete"
     );
 
     // A block whose directive key is not text: the walk stops at that child and
     // says where, rather than reading an integer as a directive.
-    let not_text = measure_control_record(&control_record(vec![(
+    let document = control_record(vec![(
         "OBJECTIVE5".to_owned(),
         zrd_list(vec![zrd_int(7), zrd_list(vec![zrd_text("x")])]),
-    )]));
+    )]);
+    let (not_text, lowered) = lower(&document);
     assert_eq!(
         not_text.refusals(),
         &[cs_content::mission_control::BlockRefusal::KeyNotText {
@@ -499,10 +551,10 @@ fn accept_m01_lc_an_unreadable_block_is_refused_with_its_block_and_child() {
         }],
         "a non-text directive key is refused with its child position"
     );
+    let refusal = not_text.to_lowering_refusal(lowered.attempt());
     assert!(
-        not_text.to_lowering_refusal().contains("OBJECTIVE5"),
-        "the lowering refusal names the unreadable block: {}",
-        not_text.to_lowering_refusal()
+        refusal.contains("OBJECTIVE5"),
+        "the lowering refusal names the unreadable block: {refusal}"
     );
 }
 
@@ -703,7 +755,7 @@ fn accept_m01_lc_only_an_outcome_key_reaches_an_engine_operation() {
             directive("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE", vec![zrd_int(3)]),
         ],
     )]);
-    let record = measure_control_record(&document);
+    let (record, lowered) = lower(&document);
 
     let implemented = record.implemented();
     assert_eq!(
@@ -768,7 +820,9 @@ fn accept_m01_lc_only_an_outcome_key_reaches_an_engine_operation() {
         "a directive outside the measured outcome vocabulary has no reading"
     );
     assert!(
-        record.to_lowering_refusal().contains("unmeasured"),
+        record
+            .to_lowering_refusal(lowered.attempt())
+            .contains("unmeasured"),
         "the refusal names what is unmeasured"
     );
 }
@@ -777,15 +831,17 @@ fn accept_m01_lc_only_an_outcome_key_reaches_an_engine_operation() {
 // The lowering accounting
 // ---------------------------------------------------------------------------
 
-/// The accounting is requirement-by-requirement and fails closed: the mission id
-/// is met (it comes from the path, not the member) and the objective identity is
-/// met (each block's authored `OBJECTIVE<N>` key is its identity, and stage B
-/// measured `IDENTITY` as presentation data) — the condition and the calls name
-/// their unmeasured fields. An unmet row with nothing named would be the failure
-/// this accounting exists to prevent.
+/// The accounting is requirement-by-requirement, derived from the record's own
+/// lowering attempt, and fails closed: the mission id is met (it comes from the
+/// path, not the member) and the objective identity is met (each block's
+/// authored `OBJECTIVE<N>` key is its identity, and stage B measured `IDENTITY`
+/// as presentation data) — a block whose evaluator the condition lowerer
+/// refuses and a site whose key registers no binding keep the two rows they
+/// own unmet, each naming the block and the key. An unmet row with nothing
+/// named would be the failure this accounting exists to prevent.
 #[test]
 fn accept_m01_lc_the_lowering_accounting_names_what_each_unmet_requirement_lacks() {
-    let record = measure_control_record(&control_record(vec![block(
+    let (record, lowered) = lower(&control_record(vec![block(
         1,
         vec![
             directive(
@@ -795,10 +851,15 @@ fn accept_m01_lc_the_lowering_accounting_names_what_each_unmet_requirement_lacks
             directive("BEGIN_DORMANT", vec![zrd_float(-1.0)]),
             directive("INACTIVE1", vec![zrd_text("workersvoyagezep")]),
             directive("INACTIVE_COMPLETION_COUNT", vec![zrd_int(4)]),
+            // Measured to evaluate, unlowered by this build: the condition
+            // lowerer refuses it by block and key.
+            directive("DANGER_ZONES_COMPLETED", vec![zrd_int(1)]),
+            // No finding covers this key: its site refuses `unknown host call`.
+            directive("A_KEY_NOBODY_MEASURED", vec![zrd_text("x")]),
             directive("INSTANTWIN", Vec::new()),
         ],
     )]));
-    let lowering = record.lowering();
+    let lowering = record.lowering(lowered.attempt());
 
     let rows: Vec<(&LoweringRequirementKind, bool)> = lowering
         .requirements()
@@ -825,9 +886,16 @@ fn accept_m01_lc_the_lowering_accounting_names_what_each_unmet_requirement_lacks
     }
     let fields = lowering.unmeasured_fields();
     assert!(
-        fields.iter().any(|field| field.contains("IDENTITY")),
-        "the calls row names the `IDENTITY` child the measured parse never \
-         reads: {fields:?}"
+        fields
+            .iter()
+            .any(|field| field.contains("OBJECTIVE1") && field.contains("DANGER_ZONES_COMPLETED")),
+        "the condition row names the refused evaluator by block and key: {fields:?}"
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|field| field.contains("A_KEY_NOBODY_MEASURED")),
+        "the calls row names the site no binding was registered for: {fields:?}"
     );
     assert!(
         !lowering.complete(),
@@ -867,6 +935,13 @@ fn accept_m01_lc_the_lowering_accounting_names_what_each_unmet_requirement_lacks
         "and the thresholds beside them: {}",
         condition.measurement
     );
+    assert!(
+        condition
+            .measurement
+            .contains("lowered 0 of the 1 block(s)"),
+        "the unmet row reports the attempt's own count: {}",
+        condition.measurement
+    );
 }
 
 /// An **empty** record does not report itself complete: a census that answered
@@ -874,15 +949,18 @@ fn accept_m01_lc_the_lowering_accounting_names_what_each_unmet_requirement_lacks
 /// be wrong.
 #[test]
 fn accept_m01_lc_an_empty_record_is_not_complete() {
-    let record = measure_control_record(&control_record(Vec::new()));
+    let (record, lowered) = lower(&control_record(Vec::new()));
     assert_eq!(record.keys().len(), 0);
     assert_eq!(record.sites(), 0);
     assert!(
-        !record.is_complete(),
+        !record.is_complete(lowered.attempt()),
         "a record with no measured keys is never complete"
     );
     assert!(
-        ControlLowering::measure(&record).requirements().len() == 4,
+        ControlLowering::measure(&record, lowered.attempt())
+            .requirements()
+            .len()
+            == 4,
         "the accounting still answers every requirement, so an empty record is \
          refused by rule rather than by accident"
     );
@@ -1141,9 +1219,16 @@ fn accept_m01_lc_every_directive_m01_spells_is_measured_and_only_outcomes_run() 
     );
     assert_eq!(record.vocabulary(), 43, "M01 spells 43 distinct keys");
     assert!(
-        !record.is_complete(),
-        "M01 is not complete: the lowering rows its directives cannot satisfy \
-         keep it refused"
+        record.is_complete(
+            row.lowering_attempt()
+                .expect("a measured row lowers")
+                .attempt()
+        ),
+        "M01 lowers completely: every site binds and every block's condition lowers"
+    );
+    assert!(
+        row.is_complete(),
+        "M01's own lowering attempt satisfies all four requirement rows"
     );
 
     // A bare key in M01 is not automatically an outcome key. The measured corpus
@@ -1171,12 +1256,14 @@ fn accept_m01_lc_every_directive_m01_spells_is_measured_and_only_outcomes_run() 
     }
 }
 
-/// The corpus-wide gate. Every mission is measured with the same rule, every
-/// measured record is incomplete, and the census's positive name for a
-/// releasable mission is empty.
+/// The corpus-wide gate. Every mission is measured with the same rule; the
+/// records whose vocabularies are fully measured and whose programs validate
+/// report complete — M01 and the four other rows the findings cover — and the
+/// census's positive name for a releasable mission is exactly those rows,
+/// while the campaign gate stays closed on the rest.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m01_lc_every_mission_is_measured_and_none_is_campaign_ready() {
+fn accept_m01_lc_every_mission_is_measured_and_the_gate_reports_who_lowers() {
     let census = census();
     assert!(
         census.len() >= 50,
@@ -1201,15 +1288,14 @@ fn accept_m01_lc_every_mission_is_measured_and_none_is_campaign_ready() {
              had candidates everywhere",
             row.mission()
         );
-        assert!(
-            !row.is_complete(),
-            "{}: a mission with unmeasured directives — or none at all — is never \
-             complete",
-            row.mission()
-        );
         let Some(record) = row.record() else {
             // A reader with no control program: its absence is the measurement,
             // and the row still carries the members it scanned.
+            assert!(
+                !row.is_complete(),
+                "{}: a row with no record is never complete",
+                row.mission()
+            );
             assert!(
                 matches!(
                     row.program,
@@ -1241,16 +1327,42 @@ fn accept_m01_lc_every_mission_is_measured_and_none_is_campaign_ready() {
             row.mission(),
             record.refusals()
         );
-        assert!(
-            row.lowering().expect("measured").unmet().count() >= 2,
-            "{}: the condition and the calls are unmet on every measured \
-             control program",
+        let lowering = row.lowering().expect("measured");
+        assert_eq!(
+            row.is_complete(),
+            lowering.complete(),
+            "{}: `is_complete` is the lowering rows' own verdict",
             row.mission()
         );
+        if row.is_complete() {
+            assert!(
+                record.unmeasured().is_empty(),
+                "{}: a complete record spells no unmeasured key: {:?}",
+                row.mission(),
+                record.unmeasured()
+            );
+        } else {
+            assert!(
+                lowering
+                    .unmeasured_fields()
+                    .iter()
+                    .all(|field| !field.is_empty()),
+                "{}: an unmet row must name what it lacks",
+                row.mission()
+            );
+        }
     }
+    // The measured-complete missions are named — the set is evidence, and it
+    // is exactly the rows whose vocabularies the findings cover.
+    let complete = census.complete_missions();
     assert!(
-        census.complete_missions().is_empty(),
-        "no mission is complete, so the positive name for a releasable mission is empty"
+        complete.contains(&M01),
+        "M01's lowering attempt validated: {complete:?}"
+    );
+    assert!(
+        complete.len() < census.measured_len(),
+        "the findings do not cover every corpus key, so complete is a strict \
+         subset of the measured rows: {complete:?}"
     );
     assert!(
         !census.campaign_ready(),
@@ -1283,34 +1395,39 @@ fn accept_m01_lc_every_mission_is_measured_and_none_is_campaign_ready() {
     );
 
     // The corpus-wide accounting: which requirement blocks which missions.
+    // A requirement names exactly the measured rows whose own attempt left it
+    // unmet — the complete rows are on no list.
     let unmet = census.unmet_by_requirement();
-    for kind in [
-        LoweringRequirementKind::ObjectiveCondition,
-        LoweringRequirementKind::CallArguments,
-    ] {
-        let missions = unmet
-            .get(kind.code())
-            .unwrap_or_else(|| panic!("{} is unmet somewhere", kind.code()));
-        assert_eq!(
-            missions.len(),
-            census.measured_len(),
-            "{} blocks every measured control program, so the requirement is not \
-             mission-specific",
-            kind.code()
-        );
-    }
-    for kind in [
-        LoweringRequirementKind::MissionIdentity,
-        LoweringRequirementKind::ObjectiveIdentity,
-    ] {
+    let complete = census.complete_missions();
+    // Every row's unmet list names only the measured rows whose attempt left
+    // it unmet — a complete row appears on none. `call_arguments` must appear:
+    // the corpus spells keys no finding covers. `mission_identity` can be
+    // unmet for a reader the campaign layout names no mission for — its
+    // attempt produces no `RawProgram` at all — and `objective_identity` and
+    // `objective_condition` follow wherever a program could not assemble.
+    for kind in LoweringRequirementKind::ALL {
+        let Some(missions) = unmet.get(kind.code()) else {
+            continue;
+        };
+        for mission in missions {
+            assert!(
+                !complete.contains(&mission.as_str()),
+                "{mission}: a complete row appears on no unmet list ({})",
+                kind.code()
+            );
+        }
         assert!(
-            !unmet.contains_key(kind.code()),
-            "{} is met on every measured control program: the mission id comes \
-             from the path, and each block's authored `OBJECTIVE<N>` key is its \
-             identity",
+            missions.len() <= census.measured_len() - complete.len(),
+            "{} can name at most the measured rows that are not complete",
             kind.code()
         );
     }
+    assert!(
+        unmet
+            .get(LoweringRequirementKind::CallArguments.code())
+            .is_some_and(|missions| !missions.is_empty()),
+        "the corpus spells unmeasured keys, so the calls row is unmet somewhere"
+    );
     assert!(
         !census.vocabulary().is_empty()
             && census.vocabulary().len() >= census.directive_keys().len(),
@@ -1321,7 +1438,8 @@ fn accept_m01_lc_every_mission_is_measured_and_none_is_campaign_ready() {
             .unmeasured_fields()
             .iter()
             .any(|field| field.contains("IDENTITY")),
-        "the corpus names the identity field it cannot read"
+        "the corpus still names the measured key's residual unknowns wherever a \
+         row they ride on stays unmet"
     );
 }
 

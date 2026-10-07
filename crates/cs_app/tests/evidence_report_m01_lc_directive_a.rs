@@ -123,11 +123,8 @@ fn evidence_report_m01_lc_directive_a_writes_the_acceptance_report() {
     // exact key census the findings document maps, with every site's argument
     // shapes and dispositions.
     let census = survey_mission_control_programs(&game_dir).expect("the census surveys");
-    let record = census
-        .row("zbd/c1c/m01")
-        .expect("M01 is present")
-        .record()
-        .expect("M01 declares a control program");
+    let row = census.row("zbd/c1c/m01").expect("M01 is present");
+    let record = row.record().expect("M01 declares a control program");
     assert_eq!(
         record.keys().len(),
         M01_KEY_VOCABULARY,
@@ -138,7 +135,7 @@ fn evidence_report_m01_lc_directive_a_writes_the_acceptance_report() {
         &census_path,
         format!(
             "{}\n",
-            render_directive_census(record, &install_sha256, &candidate_tree)
+            render_directive_census(record, row.is_complete(), &install_sha256, &candidate_tree)
         ),
     )
     .expect("write directive-census.json");
@@ -192,6 +189,7 @@ fn evidence_report_m01_lc_directive_a_writes_the_acceptance_report() {
 /// the block refusals and the lowering accounting. No original bytes.
 fn render_directive_census(
     record: &MeasuredControlRecord,
+    complete: bool,
     install_sha256: &str,
     candidate_tree: &str,
 ) -> String {
@@ -281,7 +279,7 @@ fn render_directive_census(
         record.blocks(),
         record.sites(),
         record.vocabulary(),
-        record.is_complete(),
+        complete,
         fields.join(", "),
         unclassified.join(", "),
         refusals.join(", "),

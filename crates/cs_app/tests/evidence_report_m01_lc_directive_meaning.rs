@@ -180,9 +180,14 @@ fn evidence_report_m01_lc_directive_meaning_writes_the_acceptance_report() {
         .flat_map(|record| record.keys().iter())
         .filter(|key| matches!(key.disposition(), DirectiveDisposition::Unmeasured { .. }))
         .count();
-    let unmet_rows: usize = measured_rows
-        .iter()
-        .map(|record| record.lowering().unmet().count())
+    let unmet_rows: usize = census
+        .measured_rows()
+        .map(|row| {
+            row.lowering()
+                .expect("a measured row lowers")
+                .unmet()
+                .count()
+        })
         .sum();
 
     let m01 = census
@@ -374,7 +379,14 @@ fn render_meaning_observation(
         m01.implemented().len(),
         m01.unmeasured().len(),
         render_record_keys(m01).join(", "),
-        render_lowering_rows(m01).join(", "),
+        render_lowering_rows(
+            census
+                .row("zbd/c1c/m01")
+                .expect("M01 is present")
+                .lowering()
+                .expect("a measured row lowers"),
+        )
+        .join(", "),
     )
 }
 
@@ -433,9 +445,8 @@ fn render_record_keys(record: &MeasuredControlRecord) -> Vec<String> {
 }
 
 /// M01's lowering rows: requirement, verdict and the fields it still names.
-fn render_lowering_rows(record: &MeasuredControlRecord) -> Vec<String> {
-    record
-        .lowering()
+fn render_lowering_rows(lowering: cs_content::mission_control::ControlLowering) -> Vec<String> {
+    lowering
         .requirements()
         .iter()
         .map(|row| {

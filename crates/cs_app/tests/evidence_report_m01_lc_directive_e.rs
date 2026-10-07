@@ -141,9 +141,14 @@ fn evidence_report_m01_lc_directive_e_writes_the_acceptance_report() {
         .record()
         .expect("M01 declares a control program");
     let m01_measured = m01_record.measured().len();
-    let unmet_rows: usize = measured_rows
-        .iter()
-        .map(|record| record.lowering().unmet().count())
+    let unmet_rows: usize = census
+        .measured_rows()
+        .map(|row| {
+            row.lowering()
+                .expect("a measured row lowers")
+                .unmet()
+                .count()
+        })
         .sum();
     assert_eq!(
         m01_measured, 41,
@@ -225,7 +230,9 @@ fn render_disposition_census(
         .map(|row| {
             let record = row.record();
             let keys = record.map_or_else(Vec::new, render_record_keys);
-            let lowering = record.map_or_else(Vec::new, render_lowering_rows);
+            let lowering = row
+                .lowering()
+                .map_or_else(Vec::new, |lowering| render_lowering_rows(&lowering));
             format!(
                 "{{\"mission\": {}, \"measured\": {}, \"complete\": {}, \"blocks\": {}, \
                  \"sites\": {}, \"keys\": [{}], \"lowering\": [{}]}}",
@@ -304,9 +311,8 @@ fn render_record_keys(record: &MeasuredControlRecord) -> Vec<String> {
 
 /// A record's lowering rows as JSON: each requirement, its verdict and the
 /// fields it still names.
-fn render_lowering_rows(record: &MeasuredControlRecord) -> Vec<String> {
-    record
-        .lowering()
+fn render_lowering_rows(lowering: &cs_content::mission_control::ControlLowering) -> Vec<String> {
+    lowering
         .requirements()
         .iter()
         .map(|row| {

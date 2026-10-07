@@ -620,6 +620,7 @@ pub mod capture;
 pub mod cinematics;
 pub mod cli;
 pub mod construction;
+pub mod control_lowering;
 pub mod damage;
 pub mod debris;
 pub mod diagnostics;

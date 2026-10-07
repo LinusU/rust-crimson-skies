@@ -41,8 +41,7 @@
 //!   either because no original observation states what the key does
 //!   ([`UnmeasuredReason::MeaningNotMeasured`]), because its own sites disagree
 //!   about their argument shape
-//!   ([`UnmeasuredReason::DisagreeingArgumentShape`]), or because the shape it
-//!   spells has no value in the mission IR ([`UnmeasuredReason::ArgumentShapeHasNoValue`]).
+//!   ([`UnmeasuredReason::DisagreeingArgumentShape`]).
 //!
 //! There is deliberately **no** "partially understood" and **no** "probably this"
 //! variant. A directive the engine cannot honour is counted and named, never
@@ -50,27 +49,37 @@
 //! is the sum over every key, and [`MeasuredControlRecord::sites`] is checked
 //! against the walk that produced it by the acceptance suite.
 //!
-//! # Why the record does not lower to a [`cs_script::ir::MissionProgram`] yet
+//! # How the record lowers to a [`cs_script::ir::MissionProgram`]
 //!
 //! [`MeasuredControlRecord::lowering`] is the honest accounting. `lower_program`
 //! (`cs_script::bindings`) takes a `RawProgram` whose objectives each carry a
 //! `ContentId` and a `Condition`, and whose calls carry a flat
-//! `Vec<cs_script::ir::Value>`. The control record meets **two** of those four
-//! requirements and fails the other two on measured grounds:
+//! `Vec<cs_script::ir::Value>`. Since `M01-LC-DIRECTIVE-LOWERING` the adapter
+//! that performs the crossing lives in `cs_app`
+//! (`cs_app::control_lowering::lower_control_record`): it walks the record's
+//! numbered blocks into `cs_script::conditions::RawBlock`s, lowers each block's
+//! measured evaluators through `lower_record`, carries every directive site to a
+//! `RawCall` (nested lists stay nested inside `Value::List`), binds each call
+//! through a `HostBindingRegistry` built from the key dispositions, and reports
+//! the whole attempt back here as a [`LoweringAttempt`] — plain data, because
+//! `cs_content` may not name `cs_script`'s types (`docs/01-ARCHITECTURE.md`).
 //!
 //! | What `lower_program` needs | What the record spells | Verdict |
 //! | --- | --- | --- |
-//! | the mission's `ContentId` | nothing; the member is mission-scoped by *path* | supplied outside the member (`missions/bindings/M01.json`, M01-A) |
-//! | an objective `ContentId` per block | each block is authored under its own `OBJECTIVE<N>` key, and every cross-objective directive addresses a block by its zero-based index (measured); `IDENTITY` is measured to supply the presentation class and HUD ordinal, not the identity | [`LoweringRequirement::ObjectiveIdentity`], **met** |
-//! | a `Condition` per block | measured evaluators that read live world state — member handles, registry bytes, animation states, the named counters — several with side effects during evaluation; none is the side-effect-free `Condition` the field needs | [`LoweringRequirement::ObjectiveCondition`], unmeasured |
-//! | a flat `Vec<Value>` per call | measured operations — lifecycle writes, evaluator arming, ordered pipeline effects — none of which is a `cs_script::bindings::Lowering` variant; plus sites that disagree about shape and nested shapes the IR cannot carry | [`LoweringRequirement::CallArguments`], unmeasured |
+//! | the mission's `ContentId` | nothing; the member is mission-scoped by *path* | supplied outside the member: the campaign layout (`campaign_bindings::campaign_layout`, the same derivation `SourceContext::read` and the catalog baseline use) |
+//! | an objective `ContentId` per block | each block is authored under its own `OBJECTIVE<N>` key, and every cross-objective directive addresses a block by its zero-based index (measured); `IDENTITY` is measured to supply the presentation class and HUD ordinal, not the identity | [`LoweringRequirement::ObjectiveIdentity`] |
+//! | a `Condition` per block | measured evaluators that read live world state | [`cs_script::conditions::lower_record`] reproduces the pass-2 evaluator shape side-effect-free; a block this build cannot predicate is refused by block and key |
+//! | a `Vec<Value>` per call | measured operations — lifecycle writes, evaluator arming, ordered pipeline effects | [`cs_script::bindings::Lowering::Directive`] carries the site's own arguments to the host as `Action::Directive`; `Value::List` keeps nested spellings nested |
 //!
 //! Each row is reported as a [`LoweringRequirement`] carrying the measured
 //! numbers behind it and the fields that remain unknown, so the reader can see
-//! *why* the member is Unsupported rather than only that it is. The
-//! `objective_condition` and `call_arguments` rows are unmet for every retail
-//! record today, and [`ControlLowering::complete`] is false with them —
-//! nothing downstream may call a mission playable off this measurement
+//! *why* the member is Unsupported rather than only that it is — and a row can
+//! only be met when the attempt actually produced what the row needs: a mission
+//! `ContentId`, one `RawObjective` per numbered block, one lowered `Condition`
+//! per block and one bound call per directive site, with the lowered program
+//! passing `MissionProgram::validate`. A record whose attempt refused anywhere
+//! is still named field by field — unknown keys, unreadable blocks, un-carriable
+//! values and unbound signatures — and never vacuously green
 //! (AGENTS.md rule 4, contract "If the actual program is unavailable or cannot
 //! be decoded, the mission remains Unsupported").
 //!
@@ -305,19 +314,6 @@ impl MeasuredArg {
             }
         }
     }
-
-    /// Whether this shape can be written into a `cs_script::ir::Value`.
-    ///
-    /// **No.** The IR's value types are `bool`, checked integer, finite float,
-    /// string, content id, actor, vector and optional actor — a *list* is not
-    /// one of them. So a directive whose argument list holds a list has a shape
-    /// the IR cannot carry, which is what
-    /// [`UnmeasuredReason::ArgumentShapeHasNoValue`] reports rather than
-    /// flattening it into an invented order.
-    #[must_use]
-    pub const fn is_ir_carriable(&self) -> bool {
-        matches!(self, Self::Int | Self::Float | Self::Text)
-    }
 }
 
 /// What one directive site spells beside its key.
@@ -352,19 +348,6 @@ impl DirectiveShape {
                 let inner: Vec<String> = args.iter().map(MeasuredArg::label).collect();
                 format!("[{}]", inner.join(","))
             }
-        }
-    }
-
-    /// Whether this shape can be written into a `cs_script::ir::Value`.
-    ///
-    /// A bare directive needs no value at all, so it is carriable; see
-    /// [`MeasuredArg::is_ir_carriable`] for why a list is not.
-    #[must_use]
-    pub fn is_ir_carriable(&self) -> bool {
-        match self {
-            Self::Bare => true,
-            Self::NotAList => false,
-            Self::Arguments(args) => args.iter().all(MeasuredArg::is_ir_carriable),
         }
     }
 
@@ -431,10 +414,11 @@ impl MeasuredDirectiveKey {
     /// The effect question is asked **before** the shape question: a key whose
     /// semantics a finding measured is [`DirectiveDisposition::Measured`] even
     /// when its own sites disagree about their shape (`INACTIVE1`) or spell a
-    /// shape the IR cannot carry (`ANIM_STATE`) — the shape defect belongs to
-    /// the lowering accounting, which names it per site, not to the
-    /// disposition, which would otherwise report a measured key as *unknown*.
-    /// Shape refusals remain, for the keys no finding covers.
+    /// nested shape (`ANIM_STATE`) — every site then binds against the measured
+    /// signatures the lowering registry carries for the operation, and a site
+    /// that fits none is refused per site by the lowering accounting, not here:
+    /// a shape defect reported at the disposition would render a measured key
+    /// *unknown*. Shape refusals remain, for the keys no finding covers.
     #[must_use]
     pub fn disposition(&self) -> DirectiveDisposition {
         if let Some(outcome) = terminal_outcome_of(&self.key) {
@@ -450,15 +434,8 @@ impl MeasuredDirectiveKey {
                 },
             };
         }
-        match self.agreed_shape() {
-            Some(shape) if !shape.is_ir_carriable() => DirectiveDisposition::Unmeasured {
-                reason: UnmeasuredReason::ArgumentShapeHasNoValue {
-                    shape: shape.clone(),
-                },
-            },
-            _ => DirectiveDisposition::Unmeasured {
-                reason: UnmeasuredReason::MeaningNotMeasured,
-            },
+        DirectiveDisposition::Unmeasured {
+            reason: UnmeasuredReason::MeaningNotMeasured,
         }
     }
 }
@@ -518,19 +495,6 @@ pub enum UnmeasuredReason {
         /// How many distinct shapes the sites spell.
         shapes: usize,
     },
-    /// Every site agrees, but the agreed shape has no value in the mission IR.
-    ///
-    /// Measured for `ADD_OBJECTIVE_TARGET`, `REMOVE_OBJECTIVE_TARGET`,
-    /// `ADD_OTHER_TARGET`, `SET_AI_NET`, `SET_HELP_LABEL`, `ANIM_STATE` and
-    /// `COMPLETED_STOPPOINT`, whose argument lists nest one or more lists
-    /// (`[[text,text]]`, `[text,[text,[text],text,[text]]]`). `cs_script::ir::Value`
-    /// has no list variant, so carrying these would mean flattening a nested
-    /// original structure into a positional one — a format change, not a
-    /// binding.
-    ArgumentShapeHasNoValue {
-        /// The shape every site agrees on.
-        shape: DirectiveShape,
-    },
 }
 
 impl UnmeasuredReason {
@@ -540,7 +504,6 @@ impl UnmeasuredReason {
         match self {
             Self::MeaningNotMeasured => "meaning_not_measured",
             Self::DisagreeingArgumentShape { .. } => "disagreeing_argument_shape",
-            Self::ArgumentShapeHasNoValue { .. } => "argument_shape_has_no_value",
         }
     }
 
@@ -553,9 +516,6 @@ impl UnmeasuredReason {
             }
             Self::DisagreeingArgumentShape { shapes } => {
                 format!("{shapes} distinct argument shapes across its sites")
-            }
-            Self::ArgumentShapeHasNoValue { shape } => {
-                format!("every site spells {shape}, which the mission IR cannot carry")
             }
         }
     }
@@ -872,12 +832,14 @@ impl DirectiveOperation {
 /// The measured effect of one directive key, as a stage A/B/C/D findings
 /// document established it.
 ///
-/// A measured disposition is **not** support: it names the operation the
+/// A measured disposition is **not** full support: it names the operation the
 /// original performs, with the evidence for the measurement and the residual
-/// unknowns the measurement leaves. The engine still cannot honour it —
-/// [`DirectiveDisposition::is_implemented`] stays `false` — and
-/// [`ControlLowering`]'s rows name the argument shapes the IR cannot carry and
-/// the bindings the operation still lacks, per key.
+/// unknowns the measurement leaves. The lowering registry binds the operation
+/// to `cs_script::bindings::Lowering::Directive`, whose `Action::Directive` is
+/// the host-facing emission of the measured effect — [`DirectiveDisposition::is_implemented`]
+/// stays `false` because the world-side behaviour is the host's to perform,
+/// and [`ControlLowering`]'s rows still name any site whose arguments fit no
+/// measured signature.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MeasuredDirective {
     /// The measured operation.
@@ -1376,13 +1338,15 @@ pub enum DirectiveDisposition {
     /// original performs is named, with the evidence for the measurement and
     /// the residual unknowns it leaves.
     ///
-    /// **Measured is not support.** The disposition says what the key does, not
-    /// that the engine can do it: the key still has no
-    /// `cs_script::bindings` operation — [`Self::is_implemented`] stays
-    /// `false` — and the lowering accounting ([`ControlLowering`]) names the
-    /// per-site argument shapes the mission IR cannot carry and every residual
-    /// unknown the finding recorded, so a measured key can never be silently
-    /// read as either *implemented* or *unknown*.
+    /// **Measured is not full support.** The disposition says what the key
+    /// does; since `M01-LC-DIRECTIVE-LOWERING` the lowering registry binds it
+    /// to a `cs_script::bindings::Lowering::Directive` — a bound
+    /// `Action::Directive` whose whole effect is the host-facing emission of
+    /// the measured operation and the site's own arguments. [`Self::is_implemented`]
+    /// stays `false` because the operation's world-side effect is the host's
+    /// documented behaviour, not something the IR performs itself, and the
+    /// finding's residual unknowns stay named on the disposition so a measured
+    /// key can never be silently read as either *implemented* or *unknown*.
     Measured(MeasuredDirective),
     /// Measured, counted and refused before flight. Never replaced by a stub
     /// that reports success (contract "Host interface": a binding with no
@@ -1394,12 +1358,15 @@ pub enum DirectiveDisposition {
 }
 
 impl DirectiveDisposition {
-    /// Whether the engine may act on this key.
+    /// Whether the mission IR itself resolves this key.
     ///
-    /// Only a terminal outcome reaches an engine operation today: a
-    /// [`Self::Measured`] key's semantics are known but there is no host
-    /// binding that runs them, so it is **not** implemented — measured is a
-    /// statement about the original, not a license.
+    /// Only a terminal outcome qualifies: `Lowering::Finish` is an action the
+    /// program performs itself. A [`Self::Measured`] key's semantics are known
+    /// and it binds a real `Action::Directive`, but that action's whole effect
+    /// is the host-facing directive emission — the world-side behaviour it
+    /// names belongs to the host, so the key is **not** implemented in the
+    /// sense this question asks. Measured is a statement about the original,
+    /// not a license.
     #[must_use]
     pub const fn is_implemented(&self) -> bool {
         matches!(self, Self::TerminalOutcome { .. })
@@ -1733,24 +1700,28 @@ impl MeasuredControlRecord {
     /// read, and every lowering requirement is met — the whole of what
     /// "Supported" means.
     ///
-    /// `false` for every measured retail record, and that is the correct reading
-    /// rather than a missing one: a mission may not be launched off a record whose
-    /// directives the engine cannot honour (contract "Source adapter acceptance").
+    /// `false` for every measured retail record whose lowering attempt refused
+    /// anywhere — a mission may not be launched off a record whose directives
+    /// the engine cannot honour (contract "Source adapter acceptance").
     /// An empty record also answers `false`, so a member nobody read can never
     /// report itself complete.
+    ///
+    /// `attempt` is the lowering attempt `cs_app::control_lowering` reports for
+    /// this record — the completeness question is asked of what it produced,
+    /// so a record can never be complete on vocabulary alone.
     #[must_use]
-    pub fn is_complete(&self) -> bool {
+    pub fn is_complete(&self, attempt: &LoweringAttempt) -> bool {
         !self.keys.is_empty()
             && self.refusals.is_empty()
             && self.unmeasured().is_empty()
-            && self.lowering().complete()
+            && self.lowering(attempt).complete()
     }
 
-    /// The honest accounting of what this record would still need before
-    /// `lower_program` could produce a `MissionProgram`.
+    /// The honest accounting of what this record's lowering attempt produced —
+    /// and, where it refused, of what `lower_program` would still need.
     #[must_use]
-    pub fn lowering(&self) -> ControlLowering {
-        ControlLowering::measure(self)
+    pub fn lowering(&self, attempt: &LoweringAttempt) -> ControlLowering {
+        ControlLowering::measure(self, attempt)
     }
 
     /// The refusal text this record raises: the unmet requirements and the fields
@@ -1759,8 +1730,8 @@ impl MeasuredControlRecord {
     /// The one-line-per-reason form of [`Self::lowering`], for a diagnostic that
     /// has room for a message and not for a table.
     #[must_use]
-    pub fn to_lowering_refusal(&self) -> String {
-        lowering_refusal(self)
+    pub fn to_lowering_refusal(&self, attempt: &LoweringAttempt) -> String {
+        lowering_refusal(self, attempt)
     }
 }
 
@@ -1993,6 +1964,85 @@ impl LoweringRequirement {
     }
 }
 
+/// One block's completion-condition outcome inside a [`LoweringAttempt`].
+///
+/// Plain data on purpose: `cs_content` may not depend on `cs_script`
+/// (`docs/01-ARCHITECTURE.md`), so the lowering attempt reports what became of
+/// each block as values this crate owns rather than as
+/// `cs_script::conditions::BlockCondition`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConditionOutcome {
+    /// The block's measured evaluators lowered into the side-effect-free
+    /// `Condition` `RawObjective::condition` carries.
+    Lowered,
+    /// `cs_script::conditions::lower_record` refused the block's evaluator:
+    /// the field a `ConditionRefusal` names — the block, the key and why.
+    Refused(String),
+    /// The directive walk could not read the block: the refusal the census
+    /// itself recorded ([`BlockRefusal`]), rendered with the block named.
+    Unreadable(String),
+}
+
+/// One directive site's call outcome inside a [`LoweringAttempt`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallOutcome {
+    /// The site bound to a host call — `Lowering::Directive` for a measured
+    /// key, `Lowering::Finish` for a terminal-outcome key.
+    Bound,
+    /// The site refused: its arguments could not be carried into
+    /// `cs_script::ir::Value`, or the registry holds no binding that fits —
+    /// including the sites of an unmeasured key, which report *unknown host
+    /// call*. The text names the site, the key and the reason.
+    Refused(String),
+}
+
+/// What one attempt to lower a measured record into a
+/// `cs_script::bindings::RawProgram` produced.
+///
+/// `cs_content` may not depend on `cs_script` (`docs/01-ARCHITECTURE.md`), so
+/// this is the attempt's results as plain data — the adapter in `cs_app`
+/// (`cs_app::control_lowering::lower_control_record`) fills it, and
+/// [`ControlLowering::measure`] reads **only** it for what the lowering did:
+/// a row cannot be met while its attempt says otherwise.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoweringAttempt {
+    /// The mission `ContentId` the assembled `RawProgram` carries, rendered —
+    /// or the reason the attempt produced no program at all.
+    pub mission: Result<String, String>,
+    /// How many `RawObjective`s the attempt emitted: one per numbered block,
+    /// or `0` when no program was assembled.
+    pub objectives: u32,
+    /// The per-block condition outcomes, in the order the blocks appear in the
+    /// record.
+    pub conditions: Vec<ConditionOutcome>,
+    /// The per-site call outcomes, in the order the sites appear in the
+    /// record.
+    pub calls: Vec<CallOutcome>,
+    /// The keys the binding registry refused at registration, each named with
+    /// the registry's reason.
+    pub unbound_keys: Vec<String>,
+    /// `MissionProgram::validate`'s verdict on the lowered program: `Some` —
+    /// empty when the program passed — when a program stood to be checked,
+    /// `None` when none did.
+    pub validation: Option<Vec<String>>,
+}
+
+impl LoweringAttempt {
+    /// An attempt that never produced a program: every outcome list is empty
+    /// and `mission` carries `reason`, which is what the unmet rows name.
+    #[must_use]
+    pub fn refused(reason: impl Into<String>) -> Self {
+        Self {
+            mission: Err(reason.into()),
+            objectives: 0,
+            conditions: Vec::new(),
+            calls: Vec::new(),
+            unbound_keys: Vec::new(),
+            validation: None,
+        }
+    }
+}
+
 /// The record's lowering accounting, row per requirement.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ControlLowering {
@@ -2024,73 +2074,110 @@ impl ControlLowering {
         fields.into_keys().collect()
     }
 
-    /// Whether every requirement is met.
-    ///
-    /// `false` for every measured retail record today. It is the gate a
-    /// `MissionProgram` would have to pass before a mission could be launched,
-    /// and it fails closed: a record with no measured keys at all has unmet rows
-    /// because its rows say so, not because it is empty.
+    /// Whether every requirement is met — which is only possible when the
+    /// attempt the rows were built from produced a validated program. It is the
+    /// gate a `MissionProgram` would have to pass before a mission could be
+    /// launched, and it fails closed: a record with no measured keys at all has
+    /// unmet rows because its rows say so, not because it is empty.
     #[must_use]
     pub fn complete(&self) -> bool {
         self.requirements.iter().all(|row| row.met)
     }
 
-    /// Builds the accounting for one measured record.
+    /// Builds the accounting for one measured record from one lowering attempt.
+    ///
+    /// `attempt` is what `cs_app::control_lowering::lower_control_record`
+    /// reports for this record, and the rows are derived **from it**: a row is
+    /// met only while the attempt produced what the row needs — the mission
+    /// `ContentId` in a `RawProgram`, one `RawObjective` per numbered block,
+    /// one lowered `Condition` per block and one bound call per directive
+    /// site, with the lowered program passing `MissionProgram::validate`.
     #[must_use]
-    pub fn measure(record: &MeasuredControlRecord) -> Self {
+    pub fn measure(record: &MeasuredControlRecord, attempt: &LoweringAttempt) -> Self {
         let blocks = record.blocks();
         let keys = record.keys();
 
-        // The mission id is not a member field: the archive is mission-scoped by
-        // its path (F13-B's rule) and the canonical id comes from the campaign
-        // binding record M01-A derived. That is a real answer, so the row is met
-        // — and it says where the answer comes from, so nobody later reads it as
-        // something the control member spells.
-        let mission = LoweringRequirement::met(
-            LoweringRequirementKind::MissionIdentity,
-            "the member spells no mission identity; the reader archive is mission-scoped by path \
-             and the canonical id comes from the campaign binding record (M01-A)",
-        );
+        // The mission id is not a member field: the archive is mission-scoped
+        // by its path (F13-B's rule) and the canonical id comes from the
+        // campaign layout — the same derivation `SourceContext::read` and the
+        // catalog baseline use. The row is met only when the attempt carried
+        // that id into a `RawProgram`; a program that never assembled names
+        // the reason instead.
+        let mission = match &attempt.mission {
+            Ok(id) => LoweringRequirement::met(
+                LoweringRequirementKind::MissionIdentity,
+                format!(
+                    "the member spells no mission identity; the reader archive is mission-scoped \
+                     by path and the lowered program carries `{id}`, the canonical mission \
+                     `ContentId` the campaign layout derives for this reader's path"
+                ),
+            ),
+            Err(reason) => LoweringRequirement::unmet(
+                LoweringRequirementKind::MissionIdentity,
+                "the member spells no mission identity and the lowering attempt assembled no \
+                 `RawProgram` to carry one",
+                vec![reason.clone()],
+            ),
+        };
 
         // The per-block identity is derivable now that the stage-B measurement
         // is in: every block is authored under its own `OBJECTIVE<N>` key at a
         // distinct position in the record, every cross-objective directive
         // addresses a block by its zero-based index, and `IDENTITY` is
         // measured to be presentation data — class channel plus HUD ordinal —
-        // not an identity. A record with no blocks spells no program at all,
-        // so the row stays unmet there rather than vacuously met.
+        // not an identity. The row is met only when the attempt emitted one
+        // `RawObjective` per block; a record with no blocks spells no program
+        // at all and stays unmet rather than vacuously met.
         let identity_sites = keys
             .iter()
             .filter(|key| key.key == OBJECTIVE_IDENTITY_KEY)
             .map(|key| key.sites)
             .sum::<u32>();
-        let objective_identity = if blocks > 0 {
-            LoweringRequirement::met(
-                LoweringRequirementKind::ObjectiveIdentity,
-                format!(
-                    "{blocks} numbered block(s); each is authored under its own `OBJECTIVE<N>` key \
-                     at a distinct position in the record, and every cross-objective directive \
-                     addresses a block by its zero-based index (measured), so one stable objective \
-                     ContentId per block is derivable; {identity_sites} `{OBJECTIVE_IDENTITY_KEY}` \
-                     site(s) supply the presentation class and HUD ordinal the completion and \
-                     save/load paths read, which is measured presentation data rather than identity"
-                ),
-            )
-        } else {
+        let objective_identity = if blocks == 0 {
             LoweringRequirement::unmet(
                 LoweringRequirementKind::ObjectiveIdentity,
                 "0 numbered block(s); the record declares no objective program at all",
                 vec!["one numbered block authored under an `OBJECTIVE<N>` key".to_owned()],
             )
+        } else if attempt.objectives == blocks {
+            LoweringRequirement::met(
+                LoweringRequirementKind::ObjectiveIdentity,
+                format!(
+                    "{blocks} numbered block(s); each is authored under its own `OBJECTIVE<N>` \
+                     key at a distinct position in the record, and every cross-objective \
+                     directive addresses a block by its zero-based index (measured), so the \
+                     attempt emitted one `RawObjective` per block, with the content id under the \
+                     block's own number; {identity_sites} `{OBJECTIVE_IDENTITY_KEY}` site(s) \
+                     supply the presentation class and HUD ordinal the completion and save/load \
+                     paths read, which is measured presentation data rather than identity"
+                ),
+            )
+        } else {
+            let mut fields = Vec::new();
+            if let Err(reason) = &attempt.mission {
+                fields.push(reason.clone());
+            }
+            fields.push(format!(
+                "{} `RawObjective`(s) emitted for {blocks} numbered block(s)",
+                attempt.objectives
+            ));
+            LoweringRequirement::unmet(
+                LoweringRequirementKind::ObjectiveIdentity,
+                format!(
+                    "{blocks} numbered block(s), each authored under its own `OBJECTIVE<N>` key \
+                     and addressed by its zero-based index (measured), but the attempt emitted \
+                     {} `RawObjective`(s)",
+                    attempt.objectives
+                ),
+                fields,
+            )
         };
 
-        // The completion-condition evaluators: measured where the findings
-        // cover them — they read live world state (member handles, registry
-        // bytes, animation states, the named counters) and several perform
-        // measured side effects during evaluation — so none is the
-        // side-effect-free `Condition` `RawObjective::condition` requires,
-        // whatever its shape. A block with no evaluator completes when awake:
-        // a lifecycle state, not a predicate.
+        // The completion-condition evaluators: the attempt ran
+        // `cs_script::conditions::lower_record` over the walked blocks, and the
+        // row reports its per-block verdicts — lowered, refused (by block and
+        // key) or unreadable. A block with no evaluator completes on wake, a
+        // lifecycle state the lowering expresses directly.
         let condition_keys: Vec<&MeasuredDirectiveKey> = keys
             .iter()
             .filter(|key| {
@@ -2121,35 +2208,61 @@ impl ControlLowering {
                 vec!["one numbered block whose condition could be lowered".to_owned()],
             )
         } else {
-            let mut fields = residual_unknowns(&condition_keys);
-            let gaps = shape_gaps(&condition_keys);
-            let condition_gaps = gaps.len();
-            fields.extend(gaps);
-            fields.push(format!(
-                "one side-effect-free `Condition` for each of the {blocks} block(s)"
-            ));
-            LoweringRequirement::unmet(
-                LoweringRequirementKind::ObjectiveCondition,
-                format!(
-                    "{evaluator_sites} completion-evaluator site(s) over {} measured key(s) — \
-                     {stage_sites} inactive-stage site(s) beside {threshold_sites} \
-                     completion-count threshold(s) and {dormant_sites} dormant marker(s); \
-                     {condition_gaps} evaluator key(s) spell no single `Value`-carriable \
-                     signature; the evaluators are measured to read live world state and several \
-                     write during evaluation, so none is the side-effect-free `Condition` \
-                     `RawObjective::condition` requires",
-                    condition_keys.len(),
-                ),
-                fields,
-            )
+            let mut lowered = 0u32;
+            let mut fields = Vec::new();
+            for outcome in &attempt.conditions {
+                match outcome {
+                    ConditionOutcome::Lowered => lowered += 1,
+                    ConditionOutcome::Refused(field) | ConditionOutcome::Unreadable(field) => {
+                        fields.push(field.clone());
+                    }
+                }
+            }
+            if attempt.conditions.len() as u32 != blocks {
+                fields.push(format!(
+                    "the attempt produced a condition verdict for {} of the {blocks} numbered \
+                     block(s)",
+                    attempt.conditions.len()
+                ));
+            }
+            if fields.is_empty() {
+                LoweringRequirement::met(
+                    LoweringRequirementKind::ObjectiveCondition,
+                    format!(
+                        "{evaluator_sites} completion-evaluator site(s) over {} measured key(s) — \
+                         {stage_sites} inactive-stage site(s) beside {threshold_sites} \
+                         completion-count threshold(s) and {dormant_sites} dormant marker(s); the \
+                         attempt lowered one side-effect-free `Condition` for each of the \
+                         {blocks} block(s), reproducing the pass-2 evaluator's measured gate — \
+                         a block with no evaluator completes on wake, a lifecycle state rather \
+                         than a predicate",
+                        condition_keys.len()
+                    ),
+                )
+            } else {
+                fields.extend(residual_unknowns(&condition_keys));
+                LoweringRequirement::unmet(
+                    LoweringRequirementKind::ObjectiveCondition,
+                    format!(
+                        "{evaluator_sites} completion-evaluator site(s) over {} measured key(s) — \
+                         {stage_sites} inactive-stage site(s) beside {threshold_sites} \
+                         completion-count threshold(s) and {dormant_sites} dormant marker(s); the \
+                         attempt lowered {lowered} of the {blocks} block(s) into a `Condition` \
+                         and the rest refused or were unreadable",
+                        condition_keys.len()
+                    ),
+                    fields,
+                )
+            }
         };
 
-        // The calls: every non-condition directive needs a host call, and none
-        // has one — the measured operations are lifecycle writes, evaluator
-        // arming and ordered pipeline effects, none of which is a
-        // `cs_script::bindings::Lowering` variant. Measured keys still name
-        // their residual unknowns and their shape gaps; unmeasured keys name
-        // their reason.
+        // The calls: every directive site needs a bound host call. The attempt
+        // walked each site to a `RawCall` and bound it — `Lowering::Directive`
+        // for a measured key, `Lowering::Finish` for a terminal outcome — and
+        // the row reports its per-site verdicts, the keys the registry refused
+        // at registration and `MissionProgram::validate`'s verdict on the
+        // lowered program. The unmeasured keys name their reason; the measured
+        // keys' residual unknowns stay named too.
         let call_keys: Vec<&MeasuredDirectiveKey> = keys
             .iter()
             .filter(|key| {
@@ -2169,15 +2282,16 @@ impl ControlLowering {
             .copied()
             .filter(|key| matches!(key.disposition(), DirectiveDisposition::Unmeasured { .. }))
             .collect();
-        let shape_blocked = call_keys
+        let terminal_sites: u32 = keys
             .iter()
             .filter(|key| {
-                key.shapes.len() > 1
-                    || key
-                        .agreed_shape()
-                        .is_some_and(|shape| !shape.is_ir_carriable())
+                matches!(
+                    key.disposition(),
+                    DirectiveDisposition::TerminalOutcome { .. }
+                )
             })
-            .count();
+            .map(|key| key.sites)
+            .sum();
         let widest = keys
             .iter()
             .filter_map(|key| key.agreed_shape())
@@ -2191,38 +2305,68 @@ impl ControlLowering {
                 vec!["a directive whose measured operation could be bound".to_owned()],
             )
         } else {
-            let mut fields: Vec<String> = unmeasured_calls
-                .iter()
-                .map(|key| {
+            let mut bound = 0u32;
+            let mut fields = Vec::new();
+            for outcome in &attempt.calls {
+                match outcome {
+                    CallOutcome::Bound => bound += 1,
+                    CallOutcome::Refused(field) => fields.push(field.clone()),
+                }
+            }
+            fields.extend(attempt.unbound_keys.iter().cloned());
+            if attempt.calls.len() as u32 != record.sites() {
+                fields.push(format!(
+                    "the attempt produced a call verdict for {} of {} directive site(s)",
+                    attempt.calls.len(),
+                    record.sites()
+                ));
+            }
+            for refusal in record.refusals() {
+                fields.push(format!("unreadable: {refusal}"));
+            }
+            match &attempt.validation {
+                Some(errors) => fields.extend(errors.iter().cloned()),
+                None => fields.push(
+                    "the attempt assembled no lowered program for `MissionProgram::validate` to \
+                     pass"
+                        .to_owned(),
+                ),
+            }
+            if fields.is_empty() {
+                LoweringRequirement::met(
+                    LoweringRequirementKind::CallArguments,
+                    format!(
+                        "{} directive site(s) over {} key(s): every site carried a `RawCall` and \
+                         every call bound — {measured_calls} measured non-condition key(s) to \
+                         `Lowering::Directive` and {terminal_sites} terminal-outcome site(s) to \
+                         `Lowering::Finish`, widest arity {widest} — and the lowered program \
+                         passes `MissionProgram::validate`",
+                        record.sites(),
+                        record.vocabulary(),
+                    ),
+                )
+            } else {
+                fields.extend(unmeasured_calls.iter().map(|key| {
                     let disposition = key.disposition();
                     let reason = disposition
                         .refusal()
                         .expect("an unmeasured disposition carries a reason");
                     format!("`{}`: {}", key.key, reason)
-                })
-                .collect();
-            fields.extend(residual_unknowns(&call_keys));
-            fields.extend(shape_gaps(&call_keys));
-            fields.push(
-                "one bound host call per directive site — no `cs_script::bindings::Lowering` \
-                 variant carries the measured directive operations"
-                    .to_owned(),
-            );
-            LoweringRequirement::unmet(
-                LoweringRequirementKind::CallArguments,
-                format!(
-                    "{} directive key(s) over {} site(s); {measured_calls} measured non-condition \
-                     key(s) and {} unmeasured one(s) would each need a host call; \
-                     {shape_blocked} of them spell no single `Value`-carriable signature; widest \
-                     agreed arity {widest}; the measured dispositions are lifecycle writes, \
-                     evaluator arming and ordered pipeline effects — no \
-                     `cs_script::bindings::Lowering` variant exists for them",
-                    record.vocabulary(),
-                    record.sites(),
-                    unmeasured_calls.len(),
-                ),
-                fields,
-            )
+                }));
+                fields.extend(residual_unknowns(&call_keys));
+                LoweringRequirement::unmet(
+                    LoweringRequirementKind::CallArguments,
+                    format!(
+                        "{} directive key(s) over {} site(s); {measured_calls} measured \
+                         non-condition key(s) and {} unmeasured one(s) each need a host call; \
+                         the attempt bound {bound} of them",
+                        record.vocabulary(),
+                        record.sites(),
+                        unmeasured_calls.len(),
+                    ),
+                    fields,
+                )
+            }
         };
 
         Self {
@@ -2251,34 +2395,6 @@ fn residual_unknowns(keys: &[&MeasuredDirectiveKey]) -> Vec<String> {
         .collect()
 }
 
-/// The argument-shape gaps `lower_program` would hit for `keys`, one line per
-/// spelled defect — the refusal a per-key disposition no longer carries now
-/// that the key's *effect* may be measured.
-fn shape_gaps(keys: &[&MeasuredDirectiveKey]) -> Vec<String> {
-    let mut gaps = Vec::new();
-    for key in keys {
-        match key.shapes.len() {
-            0 => {}
-            1 => {
-                if let Some(shape) = key.agreed_shape()
-                    && !shape.is_ir_carriable()
-                {
-                    gaps.push(format!(
-                        "`{}`: every site spells {}, which `cs_script::ir::Value` cannot carry",
-                        key.key,
-                        shape.label()
-                    ));
-                }
-            }
-            count => gaps.push(format!(
-                "`{}`: {count} distinct argument shapes across its sites — no single call signature",
-                key.key
-            )),
-        }
-    }
-    gaps
-}
-
 impl fmt::Display for ControlLowering {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for row in &self.requirements {
@@ -2298,8 +2414,8 @@ impl fmt::Display for ControlLowering {
 /// record's own directives are **unknown rather than unmeasured** — a block this
 /// walk cannot read might hold a directive no other part of the census mentions.
 #[must_use]
-pub fn lowering_refusal(record: &MeasuredControlRecord) -> String {
-    let lowering = record.lowering();
+pub fn lowering_refusal(record: &MeasuredControlRecord, attempt: &LoweringAttempt) -> String {
+    let lowering = record.lowering(attempt);
     let mut out = if lowering.complete() && record.refusals.is_empty() {
         String::new()
     } else {

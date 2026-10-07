@@ -33,11 +33,12 @@
 //!   names (`cs_content::mission_control::terminal_outcome_of`) — none of it is
 //!   an observation of runtime behaviour.
 //! * A mission is **not** playable because this census measured it.
-//!   [`RetailControlRow::is_complete`] is `false` for every measured row and
+//!   [`RetailControlRow::is_complete`] is answered by the row's own lowering
+//!   attempt — the `RawProgram`/`MissionProgram` the adapter produced — and
 //!   [`RetailControlCensus::campaign_ready`] is `false` while any row is
-//!   incomplete: the record declares directives the engine cannot honour — a
-//!   measured disposition is not a host binding — and a contract's "the mission
-//!   remains Unsupported" is the only honest reading.
+//!   incomplete. A row whose attempt refused anywhere reports its reason; the
+//!   contract's "the mission remains Unsupported" is the only honest reading
+//!   until every row's attempt validates.
 //! * A member that fails to decode is a **refusal**
 //!   ([`ControlCensusError::Decode`]) and fails the whole census, so a
 //!   mission cannot vanish from the denominator by having one unreadable member.
@@ -54,13 +55,17 @@ use std::fmt;
 use std::path::Path;
 
 use cs_assets::install::{Discovery, sha256};
+use cs_content::campaign_bindings::campaign_layout;
 use cs_content::mission_control::{
     ControlLowering, ControlMemberError, DecodedMember, MeasuredControlRecord, control_member,
     measure_control_record, objective_blocks_of,
 };
 use cs_content::stunts::{ZrdValue, decode_zrd};
 use cs_formats::script_raw::mission_scope;
+use cs_types::content::{ContentId, ContentKind};
 use cs_types::install::RelativePath;
+
+use crate::control_lowering::{LoweredControlRecord, lower_control_record};
 
 /// The reader archive every mission's control program lives in, as the census
 /// selects it: the logical key's last segment, so `zbd/<group>/<mission>/zrdr.zbd`
@@ -170,9 +175,12 @@ pub enum ControlProgram {
         len: u64,
         /// SHA-256 of the member's own bytes.
         sha256: String,
-        /// The measured record: blocks, directive sites, the key vocabulary and
-        /// the lowering accounting.
+        /// The measured record: blocks, directive sites, the key vocabulary.
         record: MeasuredControlRecord,
+        /// What lowering the record into a `RawProgram` produced — the attempt
+        /// the record's lowering rows are derived from. Boxed: it dwarfs the
+        /// `Absent` variant and is only read on inspection.
+        lowering: Box<LoweredControlRecord>,
     },
     /// The archive declares no member carrying numbered objective blocks.
     Absent {
@@ -187,6 +195,16 @@ impl ControlProgram {
     pub const fn record(&self) -> Option<&MeasuredControlRecord> {
         match self {
             Self::Measured { record, .. } => Some(record),
+            Self::Absent { .. } => None,
+        }
+    }
+
+    /// The lowering attempt the record's rows were derived from, or `None` for
+    /// an absent program.
+    #[must_use]
+    pub const fn lowering_attempt(&self) -> Option<&LoweredControlRecord> {
+        match self {
+            Self::Measured { lowering, .. } => Some(&**lowering),
             Self::Absent { .. } => None,
         }
     }
@@ -248,24 +266,43 @@ impl RetailControlRow {
     /// every block was read, and every lowering requirement is met — the whole
     /// of what "Supported" means.
     ///
-    /// `false` for every measured retail row. See the module documentation for
+    /// Asked of the record's own lowering attempt, so a row is only complete
+    /// when the lowering actually produced a validated program. `false` for a
+    /// row whose attempt refused anywhere — see the module documentation for
     /// why that is the correct reading rather than a gap.
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.record()
-            .is_some_and(MeasuredControlRecord::is_complete)
+        match &self.program {
+            ControlProgram::Measured {
+                record, lowering, ..
+            } => record.is_complete(lowering.attempt()),
+            ControlProgram::Absent { .. } => false,
+        }
+    }
+
+    /// The lowering attempt this row's accounting was derived from — the
+    /// `RawProgram`/`MissionProgram` it produced — or `None` for an absent
+    /// program.
+    #[must_use]
+    pub fn lowering_attempt(&self) -> Option<&LoweredControlRecord> {
+        self.program.lowering_attempt()
     }
 
     /// The record's requirement-by-requirement lowering accounting, or `None` for
     /// an absent program.
     ///
-    /// Derived from [`RetailControlRow::record`] on every call rather than stored
-    /// beside it: a cached copy could disagree with the record it was built from,
-    /// and a gate reading a stale gate is the failure mode this accounting exists
-    /// to prevent.
+    /// Derived from the record **and its lowering attempt** on every call
+    /// rather than stored beside them: a cached copy could disagree with the
+    /// attempt it was built from, and a gate reading a stale gate is the
+    /// failure mode this accounting exists to prevent.
     #[must_use]
     pub fn lowering(&self) -> Option<ControlLowering> {
-        self.record().map(MeasuredControlRecord::lowering)
+        match &self.program {
+            ControlProgram::Measured {
+                record, lowering, ..
+            } => Some(record.lowering(lowering.attempt())),
+            ControlProgram::Absent { .. } => None,
+        }
     }
 }
 
@@ -441,9 +478,12 @@ impl RetailControlCensus {
 
     /// The missions whose control program is complete.
     ///
-    /// Empty for the measured installation. Kept as a method so a reader has a
-    /// positive name for the gate: a corpus with a complete row would report it
-    /// here, and today it reports none.
+    /// The rows whose own lowering attempt met every requirement — the
+    /// missions whose directive vocabularies the findings cover, whose sites
+    /// all bound and whose programs validated. Kept as a method so a reader
+    /// has a positive name for the gate: the campaign gate still needs every
+    /// row, and this reports which rows have cleared it rather than which are
+    /// cleared to ship.
     #[must_use]
     pub fn complete_missions(&self) -> Vec<&str> {
         self.rows
@@ -489,6 +529,12 @@ pub fn survey_mission_control_programs(
     let found = cs_assets::install::discover(install_root)
         .map_err(|error| ControlCensusError::Discovery(error.to_string()))?;
     let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
+    // The canonical mission ids, derived once by the campaign layout — the same
+    // walk `SourceContext::read` and the catalog baseline use, so a lowered
+    // program's `mission` field is the id every other surface agrees on. A
+    // layout that cannot be read is not fatal here: every measured row's
+    // attempt then reports the reason, and `mission_identity` names it.
+    let mission_ids = campaign_mission_ids(install_root);
 
     let mut rows = Vec::new();
     for record in &found.manifest.files {
@@ -513,6 +559,7 @@ pub fn survey_mission_control_programs(
             &record.sha256.to_hex(),
             &found,
             &path,
+            mission_id_of(&mission_ids, &container_key),
         )?);
     }
 
@@ -536,6 +583,7 @@ fn measure_archive(
     container_sha256: &str,
     found: &Discovery,
     path: &RelativePath,
+    mission_id: Result<ContentId, String>,
 ) -> Result<RetailControlRow, ControlCensusError> {
     let bytes = std::fs::read(found.manifest.host_root.join(spelling)).map_err(|error| {
         ControlCensusError::Read {
@@ -625,6 +673,9 @@ fn measure_archive(
         })
         .collect();
 
+    let record = measure_control_record(&control.document);
+    let lowering = lower_control_record(mission_id, mission, &control.document, &record);
+
     Ok(RetailControlRow {
         mission: mission.to_owned(),
         container: spelling.to_owned(),
@@ -635,9 +686,63 @@ fn measure_archive(
             offset: control_row.offset,
             len: control_row.len,
             sha256: sha256(&control_bytes).to_hex(),
-            record: measure_control_record(&control.document),
+            record,
+            lowering: Box::new(lowering),
         },
     })
+}
+
+/// The canonical mission `ContentId` of every campaign-layout entry, keyed by
+/// the reader archive's logical container key (`zbd/<group>/<mission>/zrdr.zbd`).
+///
+/// The derivation is [`campaign_layout`] — the same `scan_campaign` walk
+/// `SourceContext::read` and the catalog baseline use — so a lowered program's
+/// `mission` is the id `missions/bindings/<label>.json` publishes
+/// (`mission/ch1-m01`), and a mission row whose archive the layout does not
+/// name resolves to `Err` rather than to a made-up id.
+fn campaign_mission_ids(install_root: &Path) -> Result<BTreeMap<String, ContentId>, String> {
+    let layout = campaign_layout(install_root)
+        .map_err(|error| format!("the campaign layout could not be read: {error}"))?;
+    let mut ids = BTreeMap::new();
+    for entry in layout {
+        let mission = entry.mission;
+        let key = RelativePath::new(&mission.program_asset.to_lowercase())
+            .map_err(|error| {
+                format!(
+                    "the program asset `{}` is not a relative path: {error}",
+                    mission.program_asset
+                )
+            })?
+            .logical_key();
+        let id = ContentId::from_source(
+            ContentKind::Mission,
+            &format!("ch{}-m{:02}", mission.chapter, mission.mission_number),
+        )
+        .map_err(|error| {
+            format!(
+                "the mission id for `zbd/{}/m{:02}` is not a valid `ContentId` key: {error}",
+                mission.world_group, mission.mission_number
+            )
+        })?;
+        ids.insert(key, id);
+    }
+    Ok(ids)
+}
+
+/// One archive's canonical mission id, or the reason the campaign layout
+/// could not supply it — which is what the row's `mission_identity` row then
+/// names.
+fn mission_id_of(
+    ids: &Result<BTreeMap<String, ContentId>, String>,
+    container_key: &str,
+) -> Result<ContentId, String> {
+    match ids {
+        Err(reason) => Err(reason.clone()),
+        Ok(map) => map
+            .get(container_key)
+            .cloned()
+            .ok_or_else(|| format!("the campaign layout names no mission for `{container_key}`")),
+    }
 }
 
 /// The archive bytes of one member's located extent.

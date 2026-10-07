@@ -9,17 +9,19 @@
 //! * every key a finding covers reports `DirectiveDisposition::Measured` — the
 //!   measured operation, the evidence and the residual unknowns;
 //! * a measured key is **not** implemented — measured is a statement about the
-//!   original, not a host binding — and `Supported`/`complete` still requires
-//!   the lowering requirements, which stay unmet;
+//!   original, not a host binding — and `Supported`/`complete` reads the
+//!   record's own lowering attempt, so a measured vocabulary that lowers
+//!   completely still reports only the two outcome spellings as implemented;
 //! * a key no finding covers stays `DirectiveDisposition::Unmeasured` with its
 //!   named reason — `SET_AI_`, `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`, the
 //!   `OBJECTIVE_HD_*` family, `TEST_COMPLETE`, `WIN_ANIM`, `DELETE_ON_SUCCESS`,
 //!   the record-level fields and the stray English words the corpus spells all
 //!   keep their refusals;
-//! * and the shape defects a per-key refusal used to carry — `INACTIVE1`'s
-//!   disagreeing sites, `ANIM_STATE`'s nested list — are named by the lowering
-//!   accounting on the row that owns them rather than laundered by the measured
-//!   disposition.
+//! * and the spellings a per-key refusal used to carry — `INACTIVE1`'s
+//!   disagreeing sites, `ANIM_STATE`'s nested list — are kept by the record as
+//!   measured shapes, bound by the lowering attempt as one signature per shape
+//!   with the nested lists carried as `Value::List`, never flattened or
+//!   laundered by the measured disposition.
 //!
 //! The retail tests need `CS_GAME_DIR`; the synthetic ones build `.zrd` values
 //! tag by tag and exercise the same production walk.
@@ -27,12 +29,14 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use cs_app::control_lowering::lower_control_record;
 use cs_app::mission_control::survey_mission_control_programs;
 use cs_content::mission_control::{
-    DirectiveDisposition, DirectiveOperation, DirectiveRole, LoweringRequirementKind,
+    CallOutcome, DirectiveDisposition, DirectiveOperation, DirectiveRole, LoweringRequirementKind,
     MeasuredDirective, measure_control_record, measured_directive,
 };
 use cs_content::stunts::ZrdValue;
+use cs_types::content::{ContentId, ContentKind};
 
 fn game_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("CS_GAME_DIR").expect("CS_GAME_DIR must be set"))
@@ -395,9 +399,39 @@ fn accept_m01_lc_directive_e_measured_is_not_implemented_and_the_sets_partition(
         "the three sets partition: {measured:?} + {implemented:?} + {unmeasured:?}"
     );
 
-    // The measured keys keep their shape gaps named — SET_HELP_LABEL's nested
-    // site lands on the calls row, never flattened into a positional call.
-    let lowering = record.lowering();
+    // The lowering attempt binds every measured site — SET_HELP_LABEL's nested
+    // site is carried as a `Value::List`, never flattened — and the one
+    // unmeasured key's site refuses the bind, which is what the calls row
+    // names.
+    let lowered = lower_control_record(
+        ContentId::from_source(ContentKind::Mission, "accept-mission")
+            .map_err(|error| error.to_string()),
+        "accept-mission",
+        &document,
+        &record,
+    );
+    let attempt = lowered.attempt();
+    assert_eq!(attempt.calls.len(), 9, "one verdict per spelled site");
+    assert_eq!(
+        attempt
+            .calls
+            .iter()
+            .filter(|outcome| matches!(outcome, CallOutcome::Bound))
+            .count(),
+        8,
+        "every measured and outcome site bound: {:?}",
+        attempt.calls
+    );
+    assert!(
+        attempt.calls.iter().any(|outcome| matches!(
+            outcome,
+            CallOutcome::Refused(reason) if reason.contains("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE")
+        )),
+        "the unmeasured key's site is refused by name: {:?}",
+        attempt.calls
+    );
+
+    let lowering = record.lowering(attempt);
     let calls = lowering
         .requirements()
         .iter()
@@ -408,37 +442,40 @@ fn accept_m01_lc_directive_e_measured_is_not_implemented_and_the_sets_partition(
         calls
             .unmeasured_fields
             .iter()
-            .any(|field| field.contains("SET_HELP_LABEL") && field.contains("cannot carry")),
-        "the calls row names the nested shape it cannot carry: {:?}",
-        calls.unmeasured_fields
-    );
-    assert!(
-        calls
-            .unmeasured_fields
-            .iter()
             .any(|field| field.contains("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE")),
         "the calls row names the unmeasured key: {:?}",
         calls.unmeasured_fields
     );
-    assert!(!record.is_complete());
-    assert!(!record.lowering().complete());
+    assert!(!record.is_complete(attempt));
+    assert!(!lowering.complete());
 }
 
-/// `Supported` is a bar the accounting still fails: mission and objective
-/// identity are measured, the condition and the calls are not — and an empty
-/// record fails closed rather than vacuously reporting ready.
+/// `Supported` reads the lowering attempt now: a record of only measured
+/// directives lowers completely — all four rows met because the attempt bound
+/// every call and lowered the condition — while an empty record fails closed
+/// rather than vacuously reporting ready.
 #[test]
 fn accept_m01_lc_directive_e_the_lowering_rows_fail_closed() {
-    // A record of only measured directives: identity met, condition and calls
-    // still unmet.
-    let record = measure_control_record(&control_record(vec![block(
+    // A record of only measured directives: every row met once the attempt
+    // bound every site and lowered the block's measured gate. `Complete` is
+    // the record's honesty gate — it says the program validated, never that
+    // the world-side handlers exist.
+    let document = control_record(vec![block(
         1,
         vec![
             directive("BEGIN_DORMANT", vec![zrd_float(-1.0)]),
             directive("INSTANTWIN", Vec::new()),
         ],
-    )]));
-    let lowering = record.lowering();
+    )]);
+    let record = measure_control_record(&document);
+    let lowered = lower_control_record(
+        ContentId::from_source(ContentKind::Mission, "accept-mission")
+            .map_err(|error| error.to_string()),
+        "accept-mission",
+        &document,
+        &record,
+    );
+    let lowering = record.lowering(lowered.attempt());
     let rows: BTreeMap<LoweringRequirementKind, bool> = lowering
         .requirements()
         .iter()
@@ -449,23 +486,24 @@ fn accept_m01_lc_directive_e_the_lowering_rows_fail_closed() {
         BTreeMap::from([
             (LoweringRequirementKind::MissionIdentity, true),
             (LoweringRequirementKind::ObjectiveIdentity, true),
-            (LoweringRequirementKind::ObjectiveCondition, false),
-            (LoweringRequirementKind::CallArguments, false),
+            (LoweringRequirementKind::ObjectiveCondition, true),
+            (LoweringRequirementKind::CallArguments, true),
         ]),
-        "the measured block's rows: identity met, condition and calls unmet"
+        "the measured block's rows: all four met by the attempt"
     );
-    for row in lowering.unmet() {
-        assert!(
-            !row.unmeasured_fields.is_empty(),
-            "{}: an unmet row names what it lacks",
-            row.label()
-        );
-    }
 
     // And the empty record: no blocks, so even identity is unmet — never a
     // vacuous pass.
-    let empty = measure_control_record(&control_record(Vec::new()));
-    let empty_lowering = empty.lowering();
+    let empty_document = control_record(Vec::new());
+    let empty = measure_control_record(&empty_document);
+    let empty_lowered = lower_control_record(
+        ContentId::from_source(ContentKind::Mission, "accept-mission")
+            .map_err(|error| error.to_string()),
+        "accept-mission",
+        &empty_document,
+        &empty,
+    );
+    let empty_lowering = empty.lowering(empty_lowered.attempt());
     assert_eq!(empty_lowering.requirements().len(), 4);
     assert_eq!(
         empty_lowering.unmet().count(),
@@ -473,7 +511,7 @@ fn accept_m01_lc_directive_e_the_lowering_rows_fail_closed() {
         "an empty record fails identity, condition and calls"
     );
     assert!(!empty_lowering.complete());
-    assert!(!empty.is_complete());
+    assert!(!empty.is_complete(empty_lowered.attempt()));
 }
 
 // ---------------------------------------------------------------------------
@@ -604,55 +642,63 @@ fn accept_m01_lc_directive_e_every_m01_key_reports_the_disposition_its_evidence_
     );
 }
 
-/// M01's lowering: the two identity requirements are met and the condition and
-/// the calls stay unmet, each naming what it lacks — the evaluators are not
-/// side-effect-free `Condition`s and no `Lowering` variant carries the measured
-/// operations. Supported is still refused, honestly.
+/// M01 lowers completely: every requirement row is met because the record's
+/// own lowering attempt bound all 353 sites and lowered all 58 block
+/// conditions into a `MissionProgram` that validates. `Complete` is the
+/// record's honesty gate — a measured directive still emits `Action::Directive`
+/// for the host, not a verified world-side behaviour, and only the two outcome
+/// spellings are implemented — so the corpus gate stays closed on the missions
+/// whose vocabularies are unmeasured.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m01_lc_directive_e_m01_is_measured_but_never_supported() {
+fn accept_m01_lc_directive_e_m01_lowers_completely_while_measured_is_not_implemented() {
     let census =
         survey_mission_control_programs(&game_dir()).expect("the census runs on the installation");
     let row = census.row(M01).expect("M01 is measured");
+    let record = row.record().expect("M01 declares a control program");
     let lowering = row.lowering().expect("a measured row lowers");
 
-    let unmet: Vec<LoweringRequirementKind> = lowering.unmet().map(|row| row.kind).collect();
-    assert_eq!(
-        unmet,
-        [
-            LoweringRequirementKind::ObjectiveCondition,
-            LoweringRequirementKind::CallArguments,
-        ],
-        "the two rows the findings cannot discharge stay unmet"
+    assert!(
+        lowering.complete() && lowering.unmet().count() == 0,
+        "every requirement row is met by the attempt: {:?}",
+        lowering.unmet().map(|row| row.kind).collect::<Vec<_>>()
     );
-    assert!(!lowering.complete());
-    assert!(!row.is_complete());
+    assert!(row.is_complete());
+    let attempt = row.lowering_attempt().expect("a measured row lowers");
+    assert!(
+        attempt.attempt().calls.len() == record.sites() as usize
+            && attempt.attempt().conditions.len() == record.blocks() as usize,
+        "one verdict per site and per block"
+    );
 
-    let fields = lowering.unmeasured_fields();
-    // The residual unknowns are named, per key — the measurements' own limits,
-    // carried rather than dropped.
+    // The residual unknowns still live where they were measured: on the keys'
+    // dispositions, carried rather than dropped — the lowering rows are met,
+    // so they name nothing.
+    let unknowned: Vec<&str> = record
+        .measured()
+        .iter()
+        .filter(|(_, directive)| !directive.unknowns.is_empty())
+        .map(|(key, _)| key.key.as_str())
+        .collect();
     for name in ["IDENTITY", "TRAVELERS", "DEDG"] {
         assert!(
-            fields.iter().any(|field| field.contains(name)),
-            "{name}: its residual unknown is named: {fields:?}"
+            unknowned.contains(&name),
+            "{name}: its residual unknowns are carried on the disposition"
         );
     }
     // And the unmeasured-key names that are known corpus-wide stay absent here:
     // M01 spells none of them.
-    for key in ["SET_AI_", "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE"] {
-        assert!(
-            !fields
-                .iter()
-                .any(|field| field.contains(&format!("`{key}`:"))),
-            "{key}: M01 does not spell it, so it cannot be named unmeasured here"
-        );
-    }
-
-    // The corpus gate follows: no mission is complete while any row spells an
-    // unmeasured key or an unmet lowering row.
     assert!(
-        census.complete_missions().is_empty(),
-        "no mission reports complete while measured is not implemented"
+        record.unmeasured().is_empty(),
+        "every M01 key is measured or an outcome"
+    );
+
+    // The corpus gate follows: complete rows report complete, and the gate
+    // stays closed on the missions whose vocabularies carry unmeasured keys.
+    assert!(
+        census.complete_missions().contains(&M01),
+        "M01 is one of the rows whose attempt validated: {:?}",
+        census.complete_missions()
     );
     assert!(!census.campaign_ready());
 }

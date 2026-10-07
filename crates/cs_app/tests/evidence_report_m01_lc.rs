@@ -312,12 +312,13 @@ fn render_census(
                     len,
                     sha256,
                     record,
+                    lowering,
                 } => format!(
                     "{{\"label\": \"measured\", \"member\": {}, \"offset\": {offset}, \"length\": \
                      {len}, \"member_sha256\": {}, \"record\": {}}}",
                     jstr(member),
                     jstr(sha256),
-                    render_record(record),
+                    render_record(record, lowering.attempt()),
                 ),
                 ControlProgram::Absent { scanned } => {
                     format!("{{\"label\": \"absent\", \"scanned_members\": {scanned}}}")
@@ -400,7 +401,10 @@ fn render_member(member: &RetailMemberRow) -> String {
 /// One measured control record: its counts, every directive key with its measured
 /// argument shapes and its disposition, the record fields outside the blocks and
 /// the lowering accounting.
-fn render_record(record: &MeasuredControlRecord) -> String {
+fn render_record(
+    record: &MeasuredControlRecord,
+    attempt: &cs_content::mission_control::LoweringAttempt,
+) -> String {
     let keys: Vec<String> = record
         .keys()
         .iter()
@@ -474,7 +478,7 @@ fn render_record(record: &MeasuredControlRecord) -> String {
             )
         })
         .collect();
-    let lowering = record.lowering();
+    let lowering = record.lowering(attempt);
     let requirements: Vec<String> = lowering
         .requirements()
         .iter()
@@ -496,7 +500,7 @@ fn render_record(record: &MeasuredControlRecord) -> String {
         record.blocks(),
         record.sites(),
         record.vocabulary(),
-        record.is_complete(),
+        record.is_complete(attempt),
         fields.join(", "),
         unclassified.join(", "),
         refusals.join(", "),

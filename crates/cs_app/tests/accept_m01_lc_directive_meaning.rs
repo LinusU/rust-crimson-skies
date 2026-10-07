@@ -16,9 +16,10 @@
 //!   only connection to its evidence, and no sibling suite reads it;
 //! * the launch gate stays where stage E left it: `mission_program` /
 //!   `mission_objectives` support is `MeasuredControlRecord::is_complete()`
-//!   (`cs_app::mission_control`'s census surfaces), which additionally needs
-//!   the lowering requirements, so a fully measured mission still reports
-//!   Unsupported while `objective_condition` and `call_arguments` are unmet.
+//!   (`cs_app::mission_control`'s census surfaces), which reads the lowering
+//!   requirements — now derived from the record's own lowering attempt — so a
+//!   mission whose reachable vocabulary is unmeasured, or whose attempt
+//!   refused, still reports Unsupported.
 //!
 //! `crates/cs_app/src/mission_launch.rs` (task #359, where
 //! `plan_mission_launch` spells those two surfaces by name) is not on this
@@ -34,12 +35,14 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use cs_app::control_lowering::lower_control_record;
 use cs_app::mission_control::survey_mission_control_programs;
 use cs_content::mission_control::{
     DirectiveDisposition, LoweringRequirementKind, TerminalOutcome, measure_control_record,
     measured_directive,
 };
 use cs_content::stunts::ZrdValue;
+use cs_types::content::{ContentId, ContentKind};
 
 const M01: &str = "zbd/c1c/m01";
 
@@ -400,22 +403,37 @@ fn accept_m01_lc_directive_meaning_a_key_no_finding_recorded_refuses_the_gate() 
         "exactly the one key no finding records, refused by its measured reason"
     );
 
-    let lowering = record.lowering();
+    // The lowering rows derive from the record's real lowering attempt: the
+    // measured sites bind, the block's condition lowers (it spells no
+    // evaluator, so it is the measured wake gate), and only the unmeasured
+    // key's site keeps the calls row unmet.
+    let lowered = lower_control_record(
+        ContentId::from_source(ContentKind::Mission, "accept-mission")
+            .map_err(|error| error.to_string()),
+        "accept-mission",
+        &document,
+        &record,
+    );
+    let lowering = record.lowering(lowered.attempt());
     assert_eq!(
         lowering
             .unmet()
             .map(|row| row.kind)
             .collect::<Vec<LoweringRequirementKind>>(),
-        [
-            LoweringRequirementKind::ObjectiveCondition,
-            LoweringRequirementKind::CallArguments,
-        ],
-        "measured is not support: the condition and the calls stay unmet"
+        [LoweringRequirementKind::CallArguments],
+        "measured is not support: the unmeasured key's site refuses its call"
     );
     assert!(
-        !record.is_complete() && !lowering.complete(),
+        lowering
+            .unmeasured_fields()
+            .iter()
+            .any(|field| field.contains("SET_AI_")),
+        "the unmet row names the key no finding covers"
+    );
+    assert!(
+        !record.is_complete(lowered.attempt()) && !lowering.complete(),
         "the surfaces mission_program / mission_objectives read stay Unsupported while a \
-         reachable key is unmeasured and the lowering rows are unmet"
+         reachable key is unmeasured"
     );
 }
 
