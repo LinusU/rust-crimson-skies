@@ -1,12 +1,14 @@
-//! Instrument values and display-unit conversion (F46-A).
+//! Instrument values and display-unit conversion (F46-A) and the HUD frame
+//! projection over the session authorities (F46-B).
 //!
-//! Spec: `specs/F46-hud-instruments-mission-map-and-pause.md`, stage `### F46-A`.
-//! Shared contract: `docs/contracts/UI-NETWORK.md` and, for rebinding on an
-//! aircraft swap, `docs/contracts/STATE-TRANSACTIONS.md`.
+//! Spec: `specs/F46-hud-instruments-mission-map-and-pause.md`, stages
+//! `### F46-A` and `### F46-B`. Shared contract:
+//! `docs/contracts/UI-NETWORK.md` and, for rebinding on an aircraft swap,
+//! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
 //! The HUD is a read-only projection of one aircraft's authoritative state.
-//! [`Hud::project`] takes an [`AircraftSample`] (SI units, canonical axes) and
-//! returns [`Instruments`]:
+//! [`Hud::project`] takes an [`AircraftSample`] (SI units, canonical axes)
+//! and returns [`Instruments`]:
 //!
 //! * **Horizon and heading** from the attitude quaternion ([`attitude`]).
 //!   Designed convention: pitch is the elevation of the nose, roll is positive
@@ -17,20 +19,31 @@
 //! * **Speeds, altitude and the low-altitude warning** converted per
 //!   `cs_content::hud::HudPolicy`; the simulation stays SI. The warning has
 //!   hysteresis and resets when the HUD binds to another aircraft.
-//! * **The weapon gauge**: the selected weapon and its ammunition. Empty
-//!   ammunition is a gauge state; it never changes the selection.
 //! * **Binding**: a sample stamped with another session or actor than the
-//!   bound one is refused ([`HudError::Stale`]), so ammunition, damage or
-//!   target of a previous aircraft can never be shown after a swap.
+//!   bound one is refused ([`HudError::Stale`]), so a previous aircraft's
+//!   values can never be shown after a swap.
+//!
+//! [`Hud::frame`] (F46-B) is the whole HUD: the instruments above plus the
+//! gauge clusters and the target display, derived from the authorities the
+//! session owns — the F27-C weapon session, the F28-C ordnance session, the
+//! F29 damage resolver and the F30-C published consumer views. Every one of
+//! them is read for the bound actor only, a foreign-generation authority is
+//! refused ([`HudError::ForeignAuthority`]) rather than read as an empty
+//! gauge, and an absent authority produces no rows rather than invented
+//! ones. See `docs/findings/2026-10-07-f46-b-hud-gauges-and-target-display.md`.
 //!
 //! Everything is **designed** and synthetic. The original units, datum,
-//! thresholds, dial layouts and angle conventions are F46-B's to import and
-//! F46-D's to compare; see `docs/findings/2026-10-01-f46-a-instrument-values.md`.
+//! thresholds, dial layouts, gauge semantics and target appearance are
+//! F46-D's to compare; see
+//! `docs/findings/2026-10-01-f46-a-instrument-values.md`.
+
+mod frame;
+
+pub use frame::{DamageZone, HudFrame, HudSources, MountedGun, MountedOrdnance, WeaponGauge};
 
 use std::fmt;
 
 use cs_content::hud::{AltitudeDatum, HudPolicy, HudPolicyError, SpeedReference};
-use cs_types::content::ContentId;
 use cs_types::net::{ActorId, SessionId};
 use cs_types::space::{Quaternion, Radians, SpaceError, UnitVec3};
 
@@ -77,27 +90,12 @@ pub fn attitude(q: Quaternion) -> Result<Attitude, SpaceError> {
     })
 }
 
-/// The weapon gauge's input: what is selected and how much it holds.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WeaponSample {
-    /// The selected weapon, by content id; `None` with nothing selected.
-    pub selected: Option<ContentId>,
-    /// Rounds remaining in the selected weapon.
-    pub ammunition: u32,
-}
-
-/// The weapon gauge's state.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WeaponGauge {
-    /// The selected weapon, unchanged from the sample.
-    pub selected: Option<ContentId>,
-    /// Rounds remaining.
-    pub ammunition: u32,
-    /// Whether the selected weapon has nothing left to fire.
-    pub empty: bool,
-}
-
-/// One aircraft's authoritative state, in SI and canonical axes.
+/// One aircraft's authoritative kinematic state, in SI and canonical axes.
+///
+/// The sample carries identity and kinematics only: the gauges an aircraft's
+/// state implies are derived from the session authorities inside
+/// [`Hud::frame`], never asserted by the caller — a sample that could name
+/// its own ammunition would be a second truth beside `WeaponState`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AircraftSample {
     /// The session generation the sample belongs to.
@@ -114,11 +112,9 @@ pub struct AircraftSample {
     pub height_m: f64,
     /// Terrain height directly below, metres, when known.
     pub ground_height_m: Option<f64>,
-    /// The weapon gauge's input.
-    pub weapon: WeaponSample,
 }
 
-/// The values every instrument shows for one sample.
+/// The values every flight instrument shows for one sample.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Instruments {
     /// The session generation the values belong to.
@@ -137,8 +133,6 @@ pub struct Instruments {
     pub altitude: f64,
     /// Whether the low-altitude warning is showing.
     pub low_altitude_warning: bool,
-    /// The weapon gauge.
-    pub weapon: WeaponGauge,
 }
 
 /// Why a sample could not be projected.
@@ -159,6 +153,17 @@ pub enum HudError {
     MissingGroundHeight,
     /// The bound actor belongs to another session than the one it binds in.
     ActorSessionMismatch,
+    /// An authority offered to the frame belongs to another session
+    /// generation — a stale weapon, ordnance or damage table is refused,
+    /// never read as an empty gauge.
+    ForeignAuthority {
+        /// Which source carried the wrong generation.
+        source: &'static str,
+        /// The session generation the HUD is bound to.
+        expected: SessionId,
+        /// The generation the source holds.
+        found: u64,
+    },
     /// The attitude could not be rotated into body axes.
     Space(SpaceError),
     /// The display policy is invalid.
@@ -181,6 +186,14 @@ impl fmt::Display for HudError {
             Self::ActorSessionMismatch => {
                 f.write_str("the actor does not belong to the session it is bound in")
             }
+            Self::ForeignAuthority {
+                source,
+                expected,
+                found,
+            } => write!(
+                f,
+                "the {source} authority belongs to session {found}, but the HUD is bound to {expected}"
+            ),
             Self::Space(error) => write!(f, "attitude: {error}"),
             Self::Policy(error) => write!(f, "display policy: {error}"),
         }
@@ -291,11 +304,6 @@ impl Hud {
             gauge_speed,
             altitude: altitude_m * self.policy.altitude_unit.value.per_meter(),
             low_altitude_warning: self.low_altitude,
-            weapon: WeaponGauge {
-                selected: sample.weapon.selected.clone(),
-                ammunition: sample.weapon.ammunition,
-                empty: sample.weapon.selected.is_some() && sample.weapon.ammunition == 0,
-            },
         })
     }
 }
