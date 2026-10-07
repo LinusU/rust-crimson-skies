@@ -47,12 +47,18 @@ fn accept_f64_b_retail_the_installation_ships_no_legacy_save_or_plane_file() {
     );
 
     for shape in ABSENT_SHAPES {
+        // The engine spells paths with backslashes on a case-insensitive
+        // filesystem; the inventory preserves the host's separators and
+        // case, so both separator spellings are checked case-insensitively —
+        // a `planes\` or `.SAV` written differently is the same shipped file
+        // to the original engine.
+        let native = shape.to_lowercase();
+        let forward = shape.replace('\\', "/").to_lowercase();
         let hits: Vec<&String> = spellings
             .iter()
             .filter(|spelling| {
-                // The engine spells paths with backslashes; the inventory
-                // preserves the host's separators, so both are checked.
-                spelling.contains(shape) || spelling.contains(&shape.replace('\\', "/"))
+                let lowered = spelling.to_lowercase();
+                lowered.contains(&native) || lowered.contains(&forward)
             })
             .collect();
         assert!(
@@ -84,11 +90,13 @@ fn accept_f64_b_retail_storage_paths_are_measured_in_the_engine_image() {
         );
     }
 
-    // The `Planes\%s` template appears twice: once beside `rb` (the engine
-    // reads listed saved planes) and once beside `wb+` and a bare `Planes\`
-    // directory string — the write path that creates them. A file the engine
-    // opens for writing is not one it ships, which is why the saved-plane
-    // directory is runtime-created.
+    // The `Planes\%s` template appears twice: once beside the NUL-terminated
+    // `rb` mode string (the engine reads listed saved planes) and once beside
+    // `wb+` and a bare `Planes\` directory string — the write path that
+    // creates them. A file the engine opens for writing is not one it ships,
+    // which is why the saved-plane directory is runtime-created. The mode
+    // strings are matched with their NUL terminators: `rb` alone is two
+    // bytes any 64-byte window can hold by accident.
     let mut planes = Vec::new();
     let mut cursor = 0;
     while let Some(offset) = find(&image[cursor..], b"Planes\\%s") {
@@ -101,7 +109,7 @@ fn accept_f64_b_retail_storage_paths_are_measured_in_the_engine_image() {
     );
     let write_path = planes.iter().any(|offset| {
         let window = &image[*offset..(*offset + 64).min(image.len())];
-        find(window, b"wb+").is_some() && find(window, b"Planes\x00").is_some()
+        find(window, b"wb+\x00").is_some() && find(window, b"Planes\x00").is_some()
     });
     assert!(
         write_path,
@@ -109,8 +117,11 @@ fn accept_f64_b_retail_storage_paths_are_measured_in_the_engine_image() {
     );
     let read_path = planes
         .iter()
-        .any(|offset| find(&image[*offset..(*offset + 64).min(image.len())], b"rb").is_some());
-    assert!(read_path, "one Planes\\%s must sit beside the rb read mode");
+        .any(|offset| find(&image[*offset..(*offset + 64).min(image.len())], b"rb\x00").is_some());
+    assert!(
+        read_path,
+        "one Planes\\%s must sit beside the NUL-terminated rb read mode"
+    );
 }
 
 /// `PLANECONSTRUCTION.SCRIPT` references stored custom planes: the four-slot

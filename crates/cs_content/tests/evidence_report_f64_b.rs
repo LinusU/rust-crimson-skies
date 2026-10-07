@@ -76,8 +76,9 @@ fn review_method(
      LimitBreach fields (mass 5370/5000u, gun positions 8/4, hardpoints 2/1 measured on the fixture), an \
      unmapped component stays a named unresolved row, a field-map/class mismatch is refused before any \
      record is read, an unmeasured limit is refused rather than read as no limit, a mismatched airframe \
-     profile refuses by name, a repeated mount is a schema refusal, and a designed map is refused under \
-     the measured-only admission. FIDELITY LIMITATIONS (unmeasured original behaviour, none claimed by \
+     profile refuses by name, a repeated mount is a schema refusal, a designed map *or* a designed \
+     document layout is refused under the measured-only admission, and a layout that is not the one the \
+     document was read through is refused by name. FIDELITY LIMITATIONS (unmeasured original behaviour, none claimed by \
      this report): (1) no Planes\\, SavedGames or save file ships, so the byte layout, version field and id \
      encoding of a stored plane or save are UNKNOWN — affected content: every legacy import row \
      (resolving task: a follow-up that captures an original-run file); (2) whether a stored loadout lives \
@@ -144,10 +145,16 @@ fn evidence_report_f64_b_writes_the_acceptance_report() {
     let absent_rows: Vec<String> = ABSENT_SHAPES
         .iter()
         .map(|shape| {
+            // The same case-insensitive, both-separators sweep the acceptance
+            // test asserts: the original filesystem was case-insensitive, so
+            // a differently cased spelling is the same shipped file.
+            let native = shape.to_lowercase();
+            let forward = shape.replace('\\', "/").to_lowercase();
             let hits = spellings
                 .iter()
                 .filter(|spelling| {
-                    spelling.contains(shape) || spelling.contains(&shape.replace('\\', "/"))
+                    let lowered = spelling.to_lowercase();
+                    lowered.contains(&native) || lowered.contains(&forward)
                 })
                 .count();
             format!(
@@ -185,8 +192,8 @@ fn evidence_report_f64_b_writes_the_acceptance_report() {
             format!(
                 "{{\"offset\": {offset}, \"rb_adjacent\": {}, \"wb_plus_adjacent\": {}, \
                  \"planes_dir_adjacent\": {}}}",
-                find(window, b"rb").is_some(),
-                find(window, b"wb+").is_some(),
+                find(window, b"rb\x00").is_some(),
+                find(window, b"wb+\x00").is_some(),
                 find(window, b"Planes\x00").is_some(),
             )
         })
