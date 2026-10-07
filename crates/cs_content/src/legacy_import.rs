@@ -67,15 +67,23 @@ use std::fmt;
 use cs_assets::install::sha256;
 use cs_formats::legacy_profile::{
     ArtifactProposal, ArtifactProposalError, ImportRequirement, LegacyArtifactClass, LegacyIdClass,
-    LegacyLayout, LegacyLimits, LegacyProfileError, LegacyProfileErrorKind,
-    MAX_LEGACY_SOURCE_BYTES, layout_record, read_legacy_profile,
+    LegacyLayout, LegacyLimits, LegacyProfileDocument, LegacyProfileError, LegacyProfileErrorKind,
+    LegacyRecord, MAX_LEGACY_SOURCE_BYTES, layout_record, read_legacy_profile,
 };
-use cs_types::content::{ContentId, ContentKind};
+use cs_types::content::{
+    ContentId, ContentIdError, ContentKind, Known, Origin, Provenance, Resolved,
+};
 use cs_types::evidence::ClaimStatus;
 use cs_types::install::InstallIdentity;
 use cs_types::profile::{ProfileId, ProfileKind};
 
 use crate::catalog::Catalog;
+use crate::construction::{
+    AircraftBlueprint, BlueprintVerdict, ConstructionPolicy, ConstructionRules,
+    ConstructionSchemaError, GunFitment, OrdnanceFitment, PaintSelection, PriceBook,
+    ValidationRefusal,
+};
+use crate::damage::DamageNodeKey;
 
 /// Which layout evidence a plan may be made from.
 ///
@@ -1146,4 +1154,776 @@ pub fn refusal_is_read_failure(kind: LegacyProfileErrorKind) -> bool {
             | LegacyProfileErrorKind::FieldTooWide
             | LegacyProfileErrorKind::Layout
     )
+}
+
+// --------------------------------- verified blueprint import subset (F64-B) ----
+
+/// The blueprint role one declared record field fills.
+///
+/// A legacy custom-aircraft record is a list of content identities plus, for
+/// each fitted component, *where* it sits. Which record field fills which role
+/// is a measurement, so it is declared as data in a [`BlueprintFieldMap`]
+/// rather than guessed from a field name or a slot position.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlueprintRole {
+    /// The airframe the plane is built on. The field must be a declared
+    /// [`LegacyIdClass::Airframe`] id slot; the resolved identity is also the
+    /// airframe a [`ConstructionRules`] profile must describe before any
+    /// verdict exists.
+    Airframe,
+    /// The engine. The field must be a declared [`LegacyIdClass::Engine`] id
+    /// slot.
+    Engine,
+    /// A gun fitted on `mount`, occupying `positions` gun positions. The field
+    /// must be a declared [`LegacyIdClass::Weapon`] id slot. `positions` is
+    /// [`Resolved`] because a measured file may not say how many positions its
+    /// guns occupy; an unknown position count is an explicit unknown, never a
+    /// guessed `1`.
+    Gun {
+        /// The mount the gun claims on the damage graph.
+        mount: DamageNodeKey,
+        /// How many of the airframe's gun positions the gun occupies.
+        positions: Resolved<u32>,
+    },
+    /// An ordnance item fitted at `hardpoint`. The field must be a declared
+    /// [`LegacyIdClass::Ordnance`] id slot.
+    Ordnance {
+        /// The hardpoint the item claims on the damage graph.
+        hardpoint: DamageNodeKey,
+    },
+}
+
+impl BlueprintRole {
+    /// The id class a field carrying this role must be declared with.
+    #[must_use]
+    pub const fn id_class(&self) -> LegacyIdClass {
+        match self {
+            Self::Airframe => LegacyIdClass::Airframe,
+            Self::Engine => LegacyIdClass::Engine,
+            Self::Gun { .. } => LegacyIdClass::Weapon,
+            Self::Ordnance { .. } => LegacyIdClass::Ordnance,
+        }
+    }
+
+    /// The stable report label.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Airframe => "airframe",
+            Self::Engine => "engine",
+            Self::Gun { .. } => "gun",
+            Self::Ordnance { .. } => "ordnance",
+        }
+    }
+}
+
+/// One declared record field and the blueprint role it fills.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlueprintFieldSlot {
+    field: String,
+    role: BlueprintRole,
+}
+
+impl BlueprintFieldSlot {
+    /// Declares that `field` fills `role`.
+    #[must_use]
+    pub fn new(field: &str, role: BlueprintRole) -> Self {
+        Self {
+            field: field.to_owned(),
+            role,
+        }
+    }
+
+    /// The record field name, exactly as the layout declares it.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// The role the field fills.
+    #[must_use]
+    pub const fn role(&self) -> &BlueprintRole {
+        &self.role
+    }
+}
+
+/// Why a [`BlueprintFieldMap`] could not be built or could not describe a
+/// layout's records.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlueprintMapError {
+    /// The same record field is assigned to two roles.
+    DuplicateField {
+        /// The field assigned twice.
+        field: String,
+    },
+    /// A role that may appear once appears twice.
+    DuplicateRole {
+        /// The role repeated.
+        role: &'static str,
+    },
+    /// A blueprint needs this role and the map declares none.
+    MissingRole {
+        /// The role no field fills.
+        role: &'static str,
+    },
+    /// The map names a field the layout does not declare as a record slot.
+    FieldNotDeclared {
+        /// The field the layout does not declare.
+        field: String,
+    },
+    /// The map names a record slot the layout does not declare as an id slot.
+    FieldNotAnIdSlot {
+        /// The field that carries no declared id class.
+        field: String,
+    },
+    /// The role resolves a different id class than the layout declares for the
+    /// field. Assigning a gun role to the airframe field is a declaration
+    /// error, not an unresolved import, and it is refused before any record is
+    /// read.
+    RoleClassMismatch {
+        /// The field whose declarations disagree.
+        field: String,
+        /// The class the role resolves through.
+        role_class: LegacyIdClass,
+        /// The class the layout declared for the field.
+        declared_class: LegacyIdClass,
+    },
+}
+
+impl fmt::Display for BlueprintMapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateField { field } => {
+                write!(f, "record field {field:?} is assigned to two roles")
+            }
+            Self::DuplicateRole { role } => {
+                write!(f, "the {role} role is assigned more than once")
+            }
+            Self::MissingRole { role } => {
+                write!(f, "no record field fills the {role} role")
+            }
+            Self::FieldNotDeclared { field } => write!(
+                f,
+                "record field {field:?} is not a record slot of the layout"
+            ),
+            Self::FieldNotAnIdSlot { field } => {
+                write!(f, "record field {field:?} is not a declared id slot")
+            }
+            Self::RoleClassMismatch {
+                field,
+                role_class,
+                declared_class,
+            } => write!(
+                f,
+                "record field {field:?} fills a role that resolves {} ids, but the \
+                 layout declares it a {} id slot",
+                role_class.label(),
+                declared_class.label()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BlueprintMapError {}
+
+/// The declared field-to-blueprint map for one layout.
+///
+/// Like [`LegacyLayout`], this is **data**: a measured file format is described
+/// by a map with [`ClaimStatus`] evidence, and the acceptance tests use a
+/// designed one. The strict admission policy refuses a designed or unknown
+/// map, so a guessed field assignment can never reach a record. The map says
+/// which record fields build the blueprint; record fields it does not name
+/// (a name, a paint, a checksum) are not blueprint roles at this stage and
+/// stay out of the verdict entirely rather than being interpreted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlueprintFieldMap {
+    id: String,
+    evidence: ClaimStatus,
+    slots: Vec<BlueprintFieldSlot>,
+}
+
+impl BlueprintFieldMap {
+    /// Declares a field map, refusing one that cannot describe a blueprint.
+    ///
+    /// A blueprint holds exactly one airframe and one engine, so the map must
+    /// declare exactly one of each; gun and ordnance slots are open-ended.
+    ///
+    /// # Errors
+    ///
+    /// [`BlueprintMapError::DuplicateField`] when a field is assigned twice,
+    /// [`BlueprintMapError::DuplicateRole`] when the airframe or engine role
+    /// is assigned more than once, and [`BlueprintMapError::MissingRole`]
+    /// when either is absent.
+    pub fn new(
+        id: &str,
+        evidence: ClaimStatus,
+        slots: Vec<BlueprintFieldSlot>,
+    ) -> Result<Self, BlueprintMapError> {
+        for (index, slot) in slots.iter().enumerate() {
+            if slots[..index]
+                .iter()
+                .any(|earlier| earlier.field == slot.field)
+            {
+                return Err(BlueprintMapError::DuplicateField {
+                    field: slot.field.clone(),
+                });
+            }
+            if matches!(slot.role, BlueprintRole::Airframe | BlueprintRole::Engine) {
+                let role = slot.role.label();
+                if slots[..index]
+                    .iter()
+                    .any(|earlier| earlier.role.label() == role)
+                {
+                    return Err(BlueprintMapError::DuplicateRole { role });
+                }
+            }
+        }
+        for role in ["airframe", "engine"] {
+            if !slots.iter().any(|slot| slot.role.label() == role) {
+                return Err(BlueprintMapError::MissingRole { role });
+            }
+        }
+        Ok(Self {
+            id: id.to_owned(),
+            evidence,
+            slots,
+        })
+    }
+
+    /// The map's label.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// How strong the evidence for this map is.
+    #[must_use]
+    pub const fn evidence(&self) -> ClaimStatus {
+        self.evidence
+    }
+
+    /// The declared field-to-role assignments.
+    #[must_use]
+    pub fn slots(&self) -> &[BlueprintFieldSlot] {
+        &self.slots
+    }
+
+    /// Checks the map against the layout it describes.
+    ///
+    /// # Errors
+    ///
+    /// [`BlueprintMapError::FieldNotDeclared`] when a field is not a record
+    /// slot, [`BlueprintMapError::FieldNotAnIdSlot`] when it is not a declared
+    /// id slot, and [`BlueprintMapError::RoleClassMismatch`] when the role and
+    /// the declared class disagree.
+    pub fn validate_against(&self, layout: &LegacyLayout) -> Result<(), BlueprintMapError> {
+        for slot in &self.slots {
+            if !layout
+                .record_slots()
+                .iter()
+                .any(|declared| declared.name() == slot.field)
+            {
+                return Err(BlueprintMapError::FieldNotDeclared {
+                    field: slot.field.clone(),
+                });
+            }
+            let declared = layout
+                .id_refs()
+                .iter()
+                .find(|id_ref| id_ref.field() == slot.field);
+            let Some(id_ref) = declared else {
+                return Err(BlueprintMapError::FieldNotAnIdSlot {
+                    field: slot.field.clone(),
+                });
+            };
+            let role_class = slot.role.id_class();
+            if id_ref.class() != role_class {
+                return Err(BlueprintMapError::RoleClassMismatch {
+                    field: slot.field.clone(),
+                    role_class,
+                    declared_class: id_ref.class(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Why one legacy record could not be judged against the stock rules.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlueprintRecordRefusal {
+    /// The record's component ids could not be resolved — the same named
+    /// [`UnresolvedRow`]s the plan reports, so an unimportable record is
+    /// described the same way in both reports.
+    Unresolved(Vec<UnresolvedRow>),
+    /// [`AircraftBlueprint::try_new`] refused the assembled fitments (a
+    /// wrong-namespace id, a repeated mount, a zero-position gun).
+    Schema(ConstructionSchemaError),
+    /// The record's blueprint identity could not be formed from the layout
+    /// label and the record index.
+    Identity(ContentIdError),
+    /// The stock validator could not measure or judge the blueprint: a limit
+    /// is unmeasured, a component is unpriced, the pairing rule is unknown or
+    /// the rules describe a different airframe. An unjudged blueprint is
+    /// refused, never passed as conforming.
+    Validation(ValidationRefusal),
+}
+
+impl fmt::Display for BlueprintRecordRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unresolved(rows) => {
+                write!(f, "{} unresolved row(s): ", rows.len())?;
+                for (index, row) in rows.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, "; ")?;
+                    }
+                    write!(f, "{row}")?;
+                }
+                Ok(())
+            }
+            Self::Schema(error) => write!(f, "the blueprint does not assemble: {error}"),
+            Self::Identity(error) => {
+                write!(f, "the record's blueprint id could not be formed: {error}")
+            }
+            Self::Validation(error) => {
+                write!(f, "the stock rules could not judge the blueprint: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BlueprintRecordRefusal {}
+
+/// What judging one legacy record's blueprint against the stock rules found.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlueprintRecordOutcome {
+    /// The record assembled into a blueprint that is inside every measured
+    /// limit and constraint. The verdict is retained whole, totals included.
+    Conforming {
+        /// The blueprint the record became.
+        blueprint: AircraftBlueprint,
+        /// Its verdict under the stock rules.
+        verdict: BlueprintVerdict,
+    },
+    /// The record assembled into a blueprint that the stock rules reject.
+    ///
+    /// The verdict carries the specific fields of every breach
+    /// ([`crate::construction::LimitBreach`]'s `limit`/`total`/`used` pairs)
+    /// and every [`crate::construction::ConstraintViolation`], so a rejection
+    /// is machine-matchable rather than a prose message.
+    Rejected {
+        /// The blueprint the record became.
+        blueprint: AircraftBlueprint,
+        /// Its verdict under the stock rules, with the broken constraints.
+        verdict: BlueprintVerdict,
+    },
+    /// No verdict could be produced; the reason is named.
+    Refused {
+        /// Why the record could not be judged.
+        reason: BlueprintRecordRefusal,
+    },
+}
+
+/// One record's blueprint verdict, keyed by its document index.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlueprintRecordReport {
+    record_index: u32,
+    outcome: BlueprintRecordOutcome,
+}
+
+impl BlueprintRecordReport {
+    /// The record's index in the legacy document.
+    #[must_use]
+    pub const fn record_index(&self) -> u32 {
+        self.record_index
+    }
+
+    /// What judging the record found.
+    #[must_use]
+    pub const fn outcome(&self) -> &BlueprintRecordOutcome {
+        &self.outcome
+    }
+}
+
+/// Why a blueprint assessment of a whole document was refused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlueprintImportRefusal {
+    /// The field map's evidence is not admitted under the requested policy.
+    MapEvidence {
+        /// The map's label.
+        map: String,
+        /// The evidence state that was refused.
+        evidence: ClaimStatus,
+    },
+    /// The field map could not describe this layout's records.
+    Map(BlueprintMapError),
+}
+
+impl fmt::Display for BlueprintImportRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MapEvidence { map, evidence } => write!(
+                f,
+                "field map {map} is {evidence} evidence, which this admission does not allow"
+            ),
+            Self::Map(error) => write!(f, "the field map cannot describe the layout: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for BlueprintImportRefusal {}
+
+/// Everything [`assess_imported_blueprints`] needs, all by shared reference.
+///
+/// The same read-only shape as [`ImportRequest`]: no mutable handle, no
+/// writer, no host path. The request judges records a caller has already
+/// read; it never reads a file itself.
+pub struct BlueprintImportRequest<'a> {
+    /// The legacy document, already read through its declared layout.
+    pub document: &'a LegacyProfileDocument,
+    /// The layout the document was read through.
+    pub layout: &'a LegacyLayout,
+    /// The declared field-to-blueprint map for the layout.
+    pub field_map: &'a BlueprintFieldMap,
+    /// The declared legacy-id to content-identity table.
+    pub ids: &'a LegacyIdMap,
+    /// The catalog identities are resolved against.
+    pub catalog: &'a Catalog,
+    /// The stock construction rules the blueprints are judged by.
+    pub rules: &'a ConstructionRules,
+    /// The host policy the blueprints are judged by.
+    pub policy: &'a ConstructionPolicy,
+    /// The component prices the budgets are measured against.
+    pub book: &'a PriceBook,
+    /// The origin every assembled blueprint is stamped with.
+    pub origin: Origin,
+    /// The provenance every assembled blueprint carries.
+    pub provenance: Provenance,
+    /// Which field-map evidence may be assessed.
+    pub admission: LayoutAdmission,
+}
+
+/// The blueprint verdicts of one legacy document, record by record.
+///
+/// Retained like [`ImportPlan::report`]: it describes what was judged and how
+/// each record fared, and the `admitted_designed_map` flag marks a report
+/// that could only be produced through the fixture admission so fixture data
+/// can never present itself as a measured import.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlueprintImportReport {
+    field_map_id: String,
+    field_map_evidence: ClaimStatus,
+    admitted_designed_map: bool,
+    records: Vec<BlueprintRecordReport>,
+}
+
+impl BlueprintImportReport {
+    /// The field map the assessment ran through.
+    pub fn field_map_id(&self) -> &str {
+        &self.field_map_id
+    }
+
+    /// That map's evidence state.
+    pub const fn field_map_evidence(&self) -> ClaimStatus {
+        self.field_map_evidence
+    }
+
+    /// Whether the report could only be made through
+    /// [`LayoutAdmission::AllowDesignedFixtures`].
+    #[must_use]
+    pub const fn admitted_designed_map(&self) -> bool {
+        self.admitted_designed_map
+    }
+
+    /// Every record's verdict, in document order.
+    #[must_use]
+    pub fn records(&self) -> &[BlueprintRecordReport] {
+        &self.records
+    }
+
+    /// How many records assembled into a stock-legal blueprint.
+    #[must_use]
+    pub fn conforming_count(&self) -> usize {
+        self.records
+            .iter()
+            .filter(|row| matches!(row.outcome, BlueprintRecordOutcome::Conforming { .. }))
+            .count()
+    }
+
+    /// How many records assembled into a blueprint the stock rules reject.
+    #[must_use]
+    pub fn rejected_count(&self) -> usize {
+        self.records
+            .iter()
+            .filter(|row| matches!(row.outcome, BlueprintRecordOutcome::Rejected { .. }))
+            .count()
+    }
+
+    /// How many records could not be judged at all.
+    #[must_use]
+    pub fn refused_count(&self) -> usize {
+        self.records
+            .iter()
+            .filter(|row| matches!(row.outcome, BlueprintRecordOutcome::Refused { .. }))
+            .count()
+    }
+}
+
+/// Judges every record of a legacy document against the stock construction
+/// rules.
+///
+/// This is the F64-B subset: the resolved identities of [`plan_import`]'s
+/// records are extended into real [`AircraftBlueprint`]s through the declared
+/// [`BlueprintFieldMap`], and each is measured by the production
+/// [`ConstructionRules::validate`], so a violating blueprint is rejected with
+/// the same specific fields any other blueprint carries.
+///
+/// # Errors
+///
+/// [`BlueprintImportRefusal::MapEvidence`] when the field map's evidence is
+/// not admitted, and [`BlueprintImportRefusal::Map`] when the map cannot
+/// describe this layout's records. Per-record failures are *not* errors of
+/// this function: they are [`BlueprintRecordOutcome`]s in the report.
+pub fn assess_imported_blueprints(
+    request: &BlueprintImportRequest<'_>,
+) -> Result<BlueprintImportReport, BlueprintImportRefusal> {
+    if !request.admission.admits(request.field_map.evidence()) {
+        return Err(BlueprintImportRefusal::MapEvidence {
+            map: request.field_map.id().to_owned(),
+            evidence: request.field_map.evidence(),
+        });
+    }
+    request
+        .field_map
+        .validate_against(request.layout)
+        .map_err(BlueprintImportRefusal::Map)?;
+
+    let mut records = Vec::with_capacity(request.document.records().len());
+    for (index, record) in request.document.records().iter().enumerate() {
+        let record_index = u32::try_from(index).unwrap_or(u32::MAX);
+        records.push(BlueprintRecordReport {
+            record_index,
+            outcome: assess_record_blueprint(record, record_index, request),
+        });
+    }
+
+    Ok(BlueprintImportReport {
+        field_map_id: request.field_map.id().to_owned(),
+        field_map_evidence: request.field_map.evidence(),
+        admitted_designed_map: request.admission == LayoutAdmission::AllowDesignedFixtures
+            && !LayoutAdmission::MeasuredOnly.admits(request.field_map.evidence()),
+        records,
+    })
+}
+
+/// Judges one record: assemble its blueprint, then validate it.
+fn assess_record_blueprint(
+    record: &LegacyRecord,
+    record_index: u32,
+    request: &BlueprintImportRequest<'_>,
+) -> BlueprintRecordOutcome {
+    let blueprint = match blueprint_from_record(record, record_index, request) {
+        Ok(blueprint) => blueprint,
+        Err(reason) => return BlueprintRecordOutcome::Refused { reason },
+    };
+    match request
+        .rules
+        .validate(request.policy, &blueprint, request.book)
+    {
+        Err(reason) => BlueprintRecordOutcome::Refused {
+            reason: BlueprintRecordRefusal::Validation(reason),
+        },
+        Ok(verdict) if verdict.is_valid() => {
+            BlueprintRecordOutcome::Conforming { blueprint, verdict }
+        }
+        Ok(verdict) => BlueprintRecordOutcome::Rejected { blueprint, verdict },
+    }
+}
+
+/// Assembles one record into an [`AircraftBlueprint`].
+///
+/// Every field the map names resolves through the same [`LegacyIdMap`] and
+/// [`Catalog`] the plan uses, so a record that cannot be judged is described
+/// by the same unresolved rows the plan reports. A record's blueprint id is
+/// derived from the layout label and the record index — the only identities
+/// in scope at this stage — never guessed from a text field whose semantics
+/// are unmeasured.
+fn blueprint_from_record(
+    record: &LegacyRecord,
+    record_index: u32,
+    request: &BlueprintImportRequest<'_>,
+) -> Result<AircraftBlueprint, BlueprintRecordRefusal> {
+    let mut unresolved = Vec::new();
+    let mut airframe = None;
+    let mut engine = None;
+    let mut guns = Vec::new();
+    let mut ordnance = Vec::new();
+
+    for slot in request.field_map.slots() {
+        let class = slot.role().id_class();
+        let Some(raw) = record.integer(slot.field()) else {
+            unresolved.push(UnresolvedRow {
+                record_index: Some(record_index),
+                field: Some(slot.field().to_owned()),
+                reason: UnresolvedReason::IdSlotNotInteger {
+                    field: slot.field().to_owned(),
+                    class,
+                },
+            });
+            continue;
+        };
+        // The same range rule as the planner: a value wider than a legacy id
+        // is unresolved, never clamped into range.
+        let Ok(raw) = u32::try_from(raw) else {
+            unresolved.push(UnresolvedRow {
+                record_index: Some(record_index),
+                field: Some(slot.field().to_owned()),
+                reason: UnresolvedReason::IdOutOfRange {
+                    field: slot.field().to_owned(),
+                    class,
+                    value: raw,
+                },
+            });
+            continue;
+        };
+        let id = match request.ids.resolve(class, raw, request.catalog) {
+            Ok(id) => id,
+            Err(reason) => {
+                unresolved.push(UnresolvedRow {
+                    record_index: Some(record_index),
+                    field: Some(slot.field().to_owned()),
+                    reason,
+                });
+                continue;
+            }
+        };
+        match slot.role() {
+            BlueprintRole::Airframe => airframe = Some(id),
+            BlueprintRole::Engine => engine = Some(id),
+            BlueprintRole::Gun { mount, positions } => guns.push(
+                GunFitment::try_new(id, mount.clone(), positions.clone())
+                    .map_err(BlueprintRecordRefusal::Schema)?,
+            ),
+            BlueprintRole::Ordnance { hardpoint } => ordnance.push(
+                OrdnanceFitment::try_new(hardpoint.clone(), id)
+                    .map_err(BlueprintRecordRefusal::Schema)?,
+            ),
+        }
+    }
+    if !unresolved.is_empty() {
+        return Err(BlueprintRecordRefusal::Unresolved(unresolved));
+    }
+    // `BlueprintFieldMap::new` requires exactly one airframe and one engine
+    // slot, and a slot that resolved always assigned above — a `None` here
+    // would mean the map validation and this loop disagree, not a data
+    // condition.
+    let airframe = airframe.expect("the field map was validated to carry an airframe slot");
+    let engine = engine.expect("the field map was validated to carry an engine slot");
+
+    let mut key = String::with_capacity(request.layout.id().len() + 14);
+    key.push_str("legacy.");
+    for ch in request.layout.id().chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+            key.push(ch.to_ascii_lowercase());
+        } else {
+            key.push('.');
+        }
+    }
+    key.push('.');
+    key.push_str(&record_index.to_string());
+    let id = ContentId::from_source(ContentKind::Blueprint, &key)
+        .map_err(BlueprintRecordRefusal::Identity)?;
+
+    // Armor, equipment and paint are not blueprint roles at this stage: how a
+    // legacy file encodes them is unmeasured, so they are empty rather than
+    // guessed. The stock rules measure what is declared, and a missing armor
+    // or paint is a measured state, not a fabricated one.
+    AircraftBlueprint::try_new(
+        id,
+        airframe,
+        engine,
+        vec![],
+        guns,
+        ordnance,
+        vec![],
+        PaintSelection::default(),
+        request.origin.clone(),
+        request.provenance.clone(),
+    )
+    .map_err(BlueprintRecordRefusal::Schema)
+}
+
+/// The designed fixture map for [`cs_formats::legacy_profile::synthetic_blueprint_layout`].
+///
+/// **Not a claim about any original file.** It assigns the fixture layout's
+/// declared id slots to blueprint roles so the import subset can be exercised
+/// end to end: the airframe and engine fields as themselves, `gun_1`..`gun_4`
+/// as single-position guns on four distinct mounts, and `rocket_1`/`rocket_2`
+/// on two hardpoints — the original construction screen's measured four gun
+/// positions and two hardpoint points. Its evidence is
+/// [`ClaimStatus::Designed`], which the strict admission refuses.
+#[must_use]
+pub fn synthetic_blueprint_map() -> BlueprintFieldMap {
+    fn node(key: &str) -> DamageNodeKey {
+        DamageNodeKey::new(key).expect("the synthetic mount key is valid")
+    }
+    fn positions(count: u32) -> Resolved<u32> {
+        Resolved::Known(Known::new(
+            count,
+            Provenance::designed(
+                cs_types::evidence::ClaimId::new("f64b.fixture.positions")
+                    .expect("the claim id is valid"),
+            ),
+        ))
+    }
+    BlueprintFieldMap::new(
+        "synthetic.fixture_blueprint_map/v1",
+        ClaimStatus::Designed,
+        vec![
+            BlueprintFieldSlot::new("airframe_id", BlueprintRole::Airframe),
+            BlueprintFieldSlot::new("engine_id", BlueprintRole::Engine),
+            BlueprintFieldSlot::new(
+                "gun_1",
+                BlueprintRole::Gun {
+                    mount: node("mount_1"),
+                    positions: positions(1),
+                },
+            ),
+            BlueprintFieldSlot::new(
+                "gun_2",
+                BlueprintRole::Gun {
+                    mount: node("mount_2"),
+                    positions: positions(1),
+                },
+            ),
+            BlueprintFieldSlot::new(
+                "gun_3",
+                BlueprintRole::Gun {
+                    mount: node("mount_3"),
+                    positions: positions(1),
+                },
+            ),
+            BlueprintFieldSlot::new(
+                "gun_4",
+                BlueprintRole::Gun {
+                    mount: node("mount_4"),
+                    positions: positions(1),
+                },
+            ),
+            BlueprintFieldSlot::new(
+                "rocket_1",
+                BlueprintRole::Ordnance {
+                    hardpoint: node("hardpoint_1"),
+                },
+            ),
+            BlueprintFieldSlot::new(
+                "rocket_2",
+                BlueprintRole::Ordnance {
+                    hardpoint: node("hardpoint_2"),
+                },
+            ),
+        ],
+    )
+    .expect("the synthetic blueprint map is valid")
 }
