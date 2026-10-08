@@ -1765,11 +1765,11 @@ fn drive_targeting_schedule(world: &mut World) {
     // successful pass) would find a target box whose store no longer exists.
     // `teardown_target_consumers` refuses a different session's views, so a
     // late teardown can never blank a newer generation.
-    if let Some(tracked) = world.remove_resource::<TrackedTargetingSession>() {
-        if installed.is_none_or(|current| (tracked.session, tracked.generation) != current) {
-            teardown_target_consumers(world, tracked.session);
-            report.tore_down = Some(tracked.session);
-        }
+    if let Some(tracked) = world.remove_resource::<TrackedTargetingSession>()
+        && installed.is_none_or(|current| (tracked.session, tracked.generation) != current)
+    {
+        teardown_target_consumers(world, tracked.session);
+        report.tore_down = Some(tracked.session);
     }
     if let Some((session, generation)) = installed {
         world.insert_resource(TrackedTargetingSession {
