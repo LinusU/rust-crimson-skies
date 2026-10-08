@@ -343,3 +343,21 @@ occluded and the overview frame carried **zero** aircraft pixels (failing the
 span from the centre, half a span beyond the aft face, so "from outside the
 area" holds by construction; re-measured, the overview carries 24 aircraft
 pixels again.
+
+## Coplanar decal layers draw 1 cm off their base (#794)
+
+Provisional, and a designed rule — nothing in the stored records marks a
+decal. The skull emblem on the `piratezep` hull (a second material group of
+the hull quads, `fhunter_logo2.tif`/`fhunter_logo4.tif` over `piratezepskin2.tif`)
+and the Bloodhawk's wing insignia (own quads ~1 mm off the wing,
+`blo_winglogo.tif`) are coplanar layers that z-fight their base. The shared
+rule: a part whose bound texture carries keyed coverage is a decal layer, and
+its vertices move `DECAL_OFFSET_M` (0.01 m) along their normals before upload,
+so the coplanar base can never win the depth test. `StandardMaterial::depth_bias`
+was measured inert on this path — `Depth32Float` scales a constant bias by the
+smallest representable increment, ≈ 0 — so the offset is expressed in geometry.
+`PlaytestConfig::decal_offset = false` keeps the coplanar baseline the
+acceptance suite measures against. Every decal layer is listed with mesh,
+material group, stored material and texture in the `playtest sources` line and
+the smoke `report.json` (`decals`). See
+`docs/findings/2026-10-08-playtest-decal-zfight.md`.
