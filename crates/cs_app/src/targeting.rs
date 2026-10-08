@@ -47,6 +47,15 @@
 //!   the entry [`apply_target_consumers`] that derives all three from one
 //!   phase record, and [`teardown_target_consumers`] that drops them when a
 //!   session ends.
+//! * [`TargetingSchedulePlugin`] — the schedule those five entries actually
+//!   run on: one exclusive system in `Update` (once per rendered frame) that
+//!   runs roster sync, command edges, the damage tick and the consumer pass
+//!   in that order, fed by the [`TargetingFrameInputs`] and
+//!   [`PendingTargetDamage`] the session publishes and recorded pass by pass
+//!   in [`TargetingScheduleReport`]. The order is the consumer contract: the
+//!   consumer pass derives its own phase record at the tick the consumers
+//!   render, after the damage that same tick recorded, so a target destroyed
+//!   mid-tick is never in the published views.
 //!
 //! Nothing here draws a reticle. The views are the *data* each consumer needs
 //! from targeting; the HUD's glyphs, the spyglass rig and the weapon path are
@@ -55,6 +64,7 @@
 
 use std::collections::BTreeSet;
 
+use bevy::app::{App, Plugin, Update};
 use bevy::ecs::component::Component;
 use bevy::ecs::entity::Entity;
 use bevy::ecs::resource::Resource;
@@ -65,9 +75,9 @@ use cs_content::target_rules::{
 };
 use cs_sim::damage::{ActorId, DamageEvent, DamageEventKind, HitEvent, HitEventId, LifecycleKind};
 use cs_sim::targeting::{
-    Allegiance, AllegianceTable, CycleDirection, Reticle, SelectionAction, SelectionBinding,
-    SelectionClearReason, SelectionFrame, TargetClass, TargetError, TargetFilter, TargetPhase,
-    TargetPolicy, TargetRecord, TargetSelection, TargetStore, ThreatCue, ThreatFeed,
+    Allegiance, AllegianceTable, CrosshairQuery, CycleDirection, Reticle, SelectionAction,
+    SelectionBinding, SelectionClearReason, SelectionFrame, TargetClass, TargetError, TargetFilter,
+    TargetPhase, TargetPolicy, TargetRecord, TargetSelection, TargetStore, ThreatCue, ThreatFeed,
     WeaponGuidance,
 };
 use cs_types::Tick;
@@ -1502,4 +1512,322 @@ pub fn teardown_target_consumers(world: &mut World, session: SessionId) -> bool 
     }
     consumers.clear();
     true
+}
+
+// --------------------------------------------------------------- schedule ----
+
+/// Resource: one rendered frame's targeting inputs, published by the session
+/// that installed [`TargetingSession`].
+///
+/// The scheduled frame reads this record where a direct caller would pass the
+/// arguments to [`apply_selection_edges`]: the observer, the tick, the command
+/// edges in arrival order and the crosshair ray the camera producer reported,
+/// if any. [`TargetingSchedulePlugin`] **drains** it when the frame's passes
+/// read it, so one publication is one frame's work and an edge can never be
+/// replayed by a record the session forgot to replace — the same
+/// one-transaction-per-tick discipline [`PendingTargetDamage`] follows.
+///
+/// A session that installs [`TargetingSession`] publishes this resource once
+/// per rendered frame before the schedule runs. A frame with no publication is
+/// not a frame with no selection work: the schedule treats it as a frame whose
+/// views cannot be trusted, drops this session's published views (the
+/// [`teardown_target_consumers`] path) and reports
+/// [`TargetingScheduleReport::missing_inputs`], rather than leaving the
+/// previous frame's target box up with no observer to re-derive it from.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub struct TargetingFrameInputs {
+    observer: ActorId,
+    at: Tick,
+    edges: Vec<Action>,
+    crosshair: Option<CrosshairQuery>,
+}
+
+impl TargetingFrameInputs {
+    /// The frame's observer and tick, with no command edges and no crosshair
+    /// ray: the ordinary frame, where the player pressed no target key and the
+    /// camera had no ray to report.
+    #[must_use]
+    pub const fn new(observer: ActorId, at: Tick) -> Self {
+        Self {
+            observer,
+            at,
+            edges: Vec::new(),
+            crosshair: None,
+        }
+    }
+
+    /// The frame's command edges, in arrival order — two edges walk the cycle
+    /// twice, exactly as a direct [`apply_selection_edges`] call would.
+    #[must_use]
+    pub fn with_edges(mut self, edges: Vec<Action>) -> Self {
+        self.edges = edges;
+        self
+    }
+
+    /// The crosshair ray the camera producer reported for this frame. An
+    /// under-crosshair edge in a frame with no ray is refused by the store, not
+    /// answered with "nothing under the crosshair".
+    #[must_use]
+    pub fn with_crosshair(mut self, crosshair: CrosshairQuery) -> Self {
+        self.crosshair = Some(crosshair);
+        self
+    }
+
+    /// The observing actor this frame's selection and consumer passes describe.
+    #[must_use]
+    pub const fn observer(&self) -> ActorId {
+        self.observer
+    }
+
+    /// The tick this frame's passes run at.
+    #[must_use]
+    pub const fn at(&self) -> Tick {
+        self.at
+    }
+
+    /// The command edges this frame carried, in arrival order.
+    pub fn edges(&self) -> &[Action] {
+        &self.edges
+    }
+
+    /// The crosshair ray this frame carried, when the camera had one.
+    pub fn crosshair(&self) -> Option<&CrosshairQuery> {
+        self.crosshair.as_ref()
+    }
+}
+
+/// Resource: the damage resolver's record for one tick, published for the
+/// schedule's damage pass.
+///
+/// A session that runs the damage system publishes the tick's resolved batch
+/// here — the hits that were submitted and the [`DamageEvent`]s the real
+/// resolver emitted for them — so [`apply_target_damage`] consumes the
+/// resolver's own output instead of a targeting-side reconstruction of it. The
+/// schedule **drains** the resource when the pass reads it, so one batch is
+/// recorded once: the lifecycle transitions and the attack evidence it carries
+/// are transactions against the store, and replaying them next frame would
+/// mint a second threat cue for an attack that happened once.
+///
+/// The damage pass is optional. A frame with no published batch runs no damage
+/// tick; the roster sync, the command edges and the consumer pass still run,
+/// in that order.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct PendingTargetDamage {
+    hits: Vec<HitEvent>,
+    events: Vec<DamageEvent>,
+}
+
+impl PendingTargetDamage {
+    /// The tick's batch: the hits the resolver was handed and the events it
+    /// emitted for them — usually straight from
+    /// [`cs_sim::damage::DamageResolver::resolve`]'s own output.
+    #[must_use]
+    pub fn new(hits: Vec<HitEvent>, events: Vec<DamageEvent>) -> Self {
+        Self { hits, events }
+    }
+
+    /// The batch as the damage entry reads it.
+    pub fn tick(&self) -> TargetDamageTick<'_> {
+        TargetDamageTick {
+            hits: &self.hits,
+            events: &self.events,
+        }
+    }
+}
+
+/// What one [`drive_targeting_schedule`] frame did, pass by pass.
+///
+/// The report is the schedule's observable side: a driver (or a test) reads
+/// the passes' own reports and errors here instead of calling any targeting
+/// entry itself, exactly as [`TargetConsumers`] is the consumers' side. Each
+/// frame's fields describe **that frame**: a pass that did not run is `None`,
+/// and a pass that was refused names its [`TargetingError`] rather than
+/// disappearing.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct TargetingScheduleReport {
+    /// Frames the schedule has run, including this one.
+    pub frames: u64,
+    /// The session this frame ran under; `None` when no session was installed.
+    pub session: Option<SessionId>,
+    /// What the roster sync did this frame.
+    pub roster: Option<RosterReport>,
+    /// What the command-edge pass did this frame, when inputs were published.
+    pub selection: Option<SelectionReport>,
+    /// Why the command-edge pass was refused, when it was.
+    pub selection_error: Option<TargetingError>,
+    /// What the damage pass did this frame, when a batch was published.
+    pub damage: Option<TargetDamageReport>,
+    /// Why the damage pass was refused, when it was.
+    pub damage_error: Option<TargetingError>,
+    /// What the consumer pass published this frame, when inputs were
+    /// published.
+    pub consumers: Option<ConsumerReport>,
+    /// Why the consumer pass was refused, when it was.
+    pub consumer_error: Option<TargetingError>,
+    /// A session resource vanished or was replaced this frame, and its views
+    /// were dropped through [`teardown_target_consumers`].
+    pub tore_down: Option<SessionId>,
+    /// A session was installed but published no [`TargetingFrameInputs`], so
+    /// the frame published no views and dropped the previous ones.
+    pub missing_inputs: bool,
+}
+
+impl TargetingScheduleReport {
+    /// Rolls the per-frame fields over for a new frame.
+    fn begin_frame(&mut self) {
+        self.frames += 1;
+        self.session = None;
+        self.roster = None;
+        self.selection = None;
+        self.selection_error = None;
+        self.damage = None;
+        self.damage_error = None;
+        self.consumers = None;
+        self.consumer_error = None;
+        self.tore_down = None;
+        self.missing_inputs = false;
+    }
+}
+
+/// The session generation the schedule last ran under, so a removal or a
+/// replacement is visible as a change of this record. The same
+/// `STATE-TRANSACTIONS` identity rule [`TargetableBinding`] follows: the pair
+/// `(session, generation)` is the session's identity, and a `TargetingSession`
+/// installed under a different one is a different session whose views must not
+/// inherit the old one's target box.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+struct TrackedTargetingSession {
+    session: SessionId,
+    generation: SceneGeneration,
+}
+
+/// Registers the rendered-frame targeting schedule.
+///
+/// One exclusive system in [`Update`] — [`drive_targeting_schedule`] — runs
+/// the five entries a session drives, once per rendered frame, in the order
+/// the consumer contract requires:
+///
+/// 1. session teardown (a removed or replaced [`TargetingSession`] drops the
+///    old generation's views before anything can publish under the new one),
+/// 2. [`sync_targetable_roster`],
+/// 3. [`apply_selection_edges`] from the frame's [`TargetingFrameInputs`],
+/// 4. [`apply_target_damage`] from the frame's [`PendingTargetDamage`], and
+/// 5. [`apply_target_consumers`].
+///
+/// Being one exclusive system is the ordering guarantee itself: the consumer
+/// pass cannot be scheduled before the same frame's damage tick, because there
+/// is no schedule boundary between them to get wrong. That is the F30-C
+/// acceptance criterion (a target destroyed mid-tick is not in the views at
+/// the end of that tick) held by construction rather than by a chain of system
+/// orderings, and the schedule report is where a frame proves it happened.
+///
+/// The plugin installs no session: a mission that opens targeting installs its
+/// own [`TargetingSession`], publishes [`TargetingFrameInputs`] (and, on
+/// frames the resolver produced damage, [`PendingTargetDamage`]) and removes
+/// or replaces that resource when the generation ends. Everything the plugin
+/// publishes — [`TargetConsumers`], [`TargetingScheduleReport`] — starts empty,
+/// so a reader of a session-less world finds no target rather than a stale one.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TargetingSchedulePlugin;
+
+impl Plugin for TargetingSchedulePlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<TargetingScheduleReport>();
+        app.add_systems(Update, drive_targeting_schedule);
+    }
+}
+
+/// Drives one rendered frame's targeting: teardown, roster, edges, damage,
+/// consumers — in that order — and records the frame in
+/// [`TargetingScheduleReport`].
+///
+/// Exclusive over the world because the entries it drives are exclusive
+/// [`&mut World`] entries; running them anywhere else would be a second
+/// schedule for the same store. The frame's inputs and damage batch are
+/// **drained**, so a publication is consumed exactly once, and no error is a
+/// panic: a refused pass is recorded in the report with the views the entries
+/// themselves left behind (a failed consumer pass unbinds, a failed edge pass
+/// leaves the selection as the last successful edge left it).
+fn drive_targeting_schedule(world: &mut World) {
+    let mut report = world
+        .remove_resource::<TargetingScheduleReport>()
+        .unwrap_or_default();
+    report.begin_frame();
+
+    let installed = world
+        .get_resource::<TargetingSession>()
+        .map(|targeting| (targeting.session(), targeting.generation()));
+    report.session = installed.map(|(session, _)| session);
+
+    // Teardown first: a session resource that was removed or replaced this
+    // frame must drop the views its store derived, or the consumers below (or
+    // a consumer reading the resource between the removal and the next
+    // successful pass) would find a target box whose store no longer exists.
+    // `teardown_target_consumers` refuses a different session's views, so a
+    // late teardown can never blank a newer generation.
+    if let Some(tracked) = world.remove_resource::<TrackedTargetingSession>() {
+        if installed.is_none_or(|current| (tracked.session, tracked.generation) != current) {
+            teardown_target_consumers(world, tracked.session);
+            report.tore_down = Some(tracked.session);
+        }
+    }
+    if let Some((session, generation)) = installed {
+        world.insert_resource(TrackedTargetingSession {
+            session,
+            generation,
+        });
+    }
+
+    let Some((session, _generation)) = installed else {
+        // No session: nothing to sync, act on or describe, and the report says
+        // the frame ran session-less rather than looking like a skipped frame.
+        world.insert_resource(report);
+        return;
+    };
+
+    report.roster = Some(sync_targetable_roster(world));
+
+    let Some(inputs) = world.remove_resource::<TargetingFrameInputs>() else {
+        // A session that publishes no frame inputs leaves this frame with no
+        // observer to re-derive the views from. Dropping the previous frame's
+        // views through the teardown path is the documented equivalent of a
+        // failed pass: no target is shown rather than a stale one, and the
+        // report names the miswired frame.
+        report.missing_inputs = true;
+        teardown_target_consumers(world, session);
+        world.insert_resource(report);
+        return;
+    };
+    let TargetingFrameInputs {
+        observer,
+        at,
+        edges,
+        crosshair,
+    } = inputs;
+    let frame = match &crosshair {
+        Some(query) => SelectionFrame::at(at).with_crosshair(query),
+        None => SelectionFrame::at(at),
+    };
+    match apply_selection_edges(world, observer, &edges, frame) {
+        Ok(selection) => report.selection = Some(selection),
+        Err(error) => report.selection_error = Some(error),
+    }
+
+    // The damage batch is consumed before the consumer pass, never after: the
+    // views this frame publishes must already know about this tick's
+    // destructions, so no view can describe a target the same tick destroyed.
+    if let Some(batch) = world.remove_resource::<PendingTargetDamage>() {
+        let tick = batch.tick();
+        match apply_target_damage(world, &tick) {
+            Ok(damage) => report.damage = Some(damage),
+            Err(error) => report.damage_error = Some(error),
+        }
+    }
+
+    match apply_target_consumers(world, observer, at) {
+        Ok(consumers) => report.consumers = Some(consumers),
+        Err(error) => report.consumer_error = Some(error),
+    }
+
+    world.insert_resource(report);
 }

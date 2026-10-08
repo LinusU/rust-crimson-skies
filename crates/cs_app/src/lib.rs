@@ -428,6 +428,15 @@
 //! destroyed or withdrawn target clears before any consumer describes it, and
 //! no view confers combat authority.
 //!
+//! [`targeting::TargetingSchedulePlugin`] is how a session actually drives
+//! all five entries: one exclusive `Update` system runs the roster sync, the
+//! command edges, the damage tick and the consumer pass in that order once
+//! per rendered frame — the consumer pass always after the same frame's
+//! damage — fed by the [`targeting::TargetingFrameInputs`] and
+//! [`targeting::PendingTargetDamage`] the session publishes, recorded in the
+//! [`targeting::TargetingScheduleReport`], and tearing the views down when
+//! the session resource is removed or replaced.
+//!
 //!
 //! [`ai`] is the F31-C mission-ECS binding
 //! (`specs/F31-ai-navigation-routes-and-obstacle-avoidance.md`, stage
