@@ -244,6 +244,42 @@ pub enum VictoryRule {
     HighestScore,
 }
 
+impl VictoryRule {
+    /// Every rule this vocabulary declares; mirrors `cs_net::rules::Victory::ALL`
+    /// (the F56-C acceptance test pins the two together).
+    pub const ALL: [VictoryRule; 1] = [Self::HighestScore];
+
+    /// The stable wire label of this rule: the same spelling
+    /// `cs_net::rules::Victory::label` reports for the rule a resolved
+    /// `MatchRules` carries.
+    ///
+    /// The two crates may not depend on each other (AGENTS rule 7 /
+    /// `docs/01-ARCHITECTURE.md`), so this label pair *is* the bridge between
+    /// the rules vocabulary and the resolver's: the wiring reads the rule the
+    /// host resolved with `label()` and builds the resolver's rule from
+    /// [`VictoryRule::from_label`], which refuses a label it does not run
+    /// instead of silently resolving a different match. The F56-C acceptance
+    /// test pins the two vocabularies to each other, the same way
+    /// `cs_content`'s `RULE_LABELS` mirrors `RuleField::ALL`.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::HighestScore => "highest_score",
+        }
+    }
+
+    /// Builds the rule a wire label names.
+    ///
+    /// `None` for a label this resolver does not run: a mode whose measured
+    /// victory condition has no resolver yet must be refused at the wiring,
+    /// never coerced onto [`VictoryRule::HighestScore`].
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "highest_score" => Some(Self::HighestScore),
+            _ => None,
+        }
+    }
+}
+
 /// Why the match ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndReason {

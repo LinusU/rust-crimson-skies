@@ -1,7 +1,8 @@
-//! Multiplayer match rules (F56-A, F56-B).
+//! Multiplayer match rules (F56-A, F56-B, F56-C).
 //!
 //! Spec: `specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stages
-//! `### F56-A`/`### F56-B`. Shared contract: `docs/contracts/UI-NETWORK.md`.
+//! `### F56-A`/`### F56-B`/`### F56-C`. Shared contract:
+//! `docs/contracts/UI-NETWORK.md`.
 //!
 //! [`result`] is the one place a match's final result is decided: lethal
 //! events and the two limits are folded into a single sealed
@@ -19,6 +20,13 @@
 //! two clients claiming one objective can never both hold it — only the
 //! server-accepted claim applies — and a retransmitted event is a duplicate,
 //! never a second transition.
+//!
+//! [`session`] is F56-C's wiring: the one owner that starts a match from the
+//! map, host options and rules the producers emit, drives both consumers on
+//! the same judged tick, restarts a match without leaking a score, a pickup or
+//! a timer into the next generation, and renders the sealed result into the
+//! [`session::EndOfMatch`] record the results screen consumes.
 
 pub mod objective;
 pub mod result;
+pub mod session;
