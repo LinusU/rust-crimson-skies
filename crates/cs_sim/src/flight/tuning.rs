@@ -37,23 +37,35 @@ pub const AIRSPEED_EPSILON_MPS: f64 = 1.0e-6;
 
 /// Which flight model an airframe uses.
 ///
-/// Fixed-wing airframes share the one control law in this module. An
-/// `Exceptional` airframe (an autogyro or another special model) implements
+/// A `FixedWing` airframe shares the one designed control law in this module.
+/// An `Exceptional` airframe (an autogyro or another special model) implements
 /// the same input/output boundary but may use a different control law; its
 /// roles and telemetry are F25-A's deliverable, and nothing here invents a
 /// helicopter hover for it (`FLIGHT-PHYSICS`: "Do not use the word autogyro
-/// as permission to invent helicopter hover").
+/// as permission to invent helicopter hover"). `OriginalFixedWing` is the
+/// original 2000 PC game's recovered law (task #796), which is a third kind
+/// because it is a different law, not a variant of the designed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ModelKind {
-    /// A conventional fixed-wing airframe.
+    /// A conventional fixed-wing airframe, flown by the designed `CL(alpha)`
+    /// law in this module (F24).
     FixedWing,
     /// A special model with its own control law (F25-A).
     Exceptional,
+    /// The original 2000 PC game's recovered fixed-wing law, in
+    /// [`super::original`] (task #796, provenance `OWNER-STATIC-2026-10-08`).
+    ///
+    /// It is a separate kind rather than a profile of [`Self::FixedWing`]
+    /// because its lift is velocity steering, its atmosphere is a hard
+    /// two-layer ceiling and it integrates angular momentum kinematically —
+    /// none of which the designed law does. See the module's contract
+    /// mapping before wiring it to a physics body.
+    OriginalFixedWing,
 }
 
 impl ModelKind {
     /// Every declared kind, in a stable order.
-    pub const ALL: [Self; 2] = [Self::FixedWing, Self::Exceptional];
+    pub const ALL: [Self; 3] = [Self::FixedWing, Self::Exceptional, Self::OriginalFixedWing];
 
     /// The stable label used in reports and persisted records.
     #[must_use]
@@ -61,6 +73,7 @@ impl ModelKind {
         match self {
             Self::FixedWing => "fixed_wing",
             Self::Exceptional => "exceptional",
+            Self::OriginalFixedWing => "original_fixed_wing",
         }
     }
 

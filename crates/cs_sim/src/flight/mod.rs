@@ -43,11 +43,24 @@
 //! (`docs/01-ARCHITECTURE.md`), so the model input is declared on the
 //! consuming side.
 //!
+//! * [`original`] is task #796's stage: the original 2000 PC game's recovered
+//!   fixed-wing law (provenance `OWNER-STATIC-2026-10-08`, static analysis of
+//!   the owner's decrypted image), plus the flat parameter vocabulary
+//!   ([`original::AIRFRAME_FIELDS`], [`original::GLOBAL_FIELDS`]) the
+//!   content-side importer fills from `vehicle.zrd`, `engines.zrd` and
+//!   `player.zrd`. It is a `ModelKind` of its own
+//!   ([`ModelKind::OriginalFixedWing`]) rather than a profile of the designed
+//!   law: its lift is velocity steering, its atmosphere is a hard two-layer
+//!   ceiling, and it integrates angular momentum kinematically. Its module
+//!   docs carry the mapping onto `docs/contracts/FLIGHT-PHYSICS.md` that
+//!   keeps gravity and drag from being applied twice.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
 pub mod autogyro;
 pub mod model;
+pub mod original;
 pub mod synthetic;
 pub mod tuning;
 
@@ -64,6 +77,12 @@ pub use model::{
     BODY_FORWARD, BODY_RIGHT, BODY_UP, EngineState, FlightDiagnostics, FlightEnvironment,
     FlightError, FlightInput, FlightInputError, FlightModel, FlightOutput, FlightState,
     InstrumentState,
+};
+pub use original::{
+    AIRFRAME_FIELDS, Atmosphere, DynamicsKind, GLOBAL_FIELDS, OriginalAirframe,
+    OriginalFlightModel, OriginalGlobals, OriginalInput, OriginalParamsError, OriginalState,
+    OriginalStep, OriginalStepError, atmosphere, authority, drag_coefficient, lift_target,
+    max_lift_coefficient, nose_direction, thrust_coefficient,
 };
 pub use synthetic::{
     SyntheticCase, SyntheticEnvelope, SyntheticEnvelopeError, SyntheticManeuver, SyntheticProbe,

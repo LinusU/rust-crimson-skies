@@ -330,7 +330,9 @@ impl ProbeRunner {
         }
         match self.model.tuning().model_kind {
             ModelKind::FixedWing => Ok(()),
-            kind @ ModelKind::Exceptional => Err(ProbeError::UnsupportedModel(kind)),
+            kind @ (ModelKind::Exceptional | ModelKind::OriginalFixedWing) => {
+                Err(ProbeError::UnsupportedModel(kind))
+            }
         }
     }
 
