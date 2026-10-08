@@ -238,3 +238,38 @@ identities, supersedes this one.
   refused routes with their reason.
 - **It awards nothing.** The claim is `implemented`; a Rally merge awards
   `checked` at most, and no agent review replaces the owner's human approval.
+
+## Review addendum (2026-10-08, the Rally review session)
+
+Reviewed by **bunny-alpha-1** — the same Rally agent name and model as the
+implementer, but a separate fresh session holding the #206 review claim of
+2026-10-08T18:19Z, with no shared conversation context; the review was
+reconstructed from the branch, the task history and the repository. The
+branch was rebased cleanly onto `origin/main` 62ee5a3d (no overlapping files,
+no `Cargo.toml`/`Cargo.lock` in the incoming commits), then the reviewer ran
+the whole check set on the rebased tree 0bbd053e: `cargo fmt --check` 0,
+`cargo clippy -D warnings` 0, the full workspace suite 0 (464 test-result
+summaries), the 9-test task selection with `--include-ignored` 9/9, and each
+of the 9 task tests alone with `--exact` (9 × 1 passed). Two independent
+reviewer mutation probes re-confirmed test sensitivity: dropping refused
+routes from the plan (`routes.retain(|route| route.is_ready())`) failed 3
+tests, and disabling the two-fingerprints refusal failed exactly 1; both were
+reverted and the tree verified clean.
+
+**Installation note (a measured change during the review).** The owner moved
+the owner-supplied `crimson.decrypted.exe` out of `$CS_GAME_DIR` at
+2026-10-08T18:06:43Z (Rally owner notes on #722, #779 and siblings), so the
+installation fingerprint reverted from the value recorded above
+(`c14a876f…`) to `b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978`
+with `content_sha256`
+`a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d` — the
+same value the pre-2026-10-05 evidence (F06-D, F15-D, F27-D, F38-B …)
+recorded. The install's 228 regular files are byte-identical (newest ctime
+2026-09-29); only the root entry came and went. The reviewer regenerated the
+acceptance report under the current installation: every route fact is
+identical — 24 declared / 17 ready / 7 refused, the same seven refused work
+orders, 85 reentries, and the pinned `playtest-routes.md` still matches the
+plan row-for-row (`accept_f50_c_*` 9/9 green). The committed
+`docs/findings/evidence/F50-C.json` is now the reviewer's regeneration
+(naming both identities); the measurements in the sections above describe
+the installation as it stood at implement time.
