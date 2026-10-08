@@ -547,15 +547,20 @@
 //! transactions and never edits campaign or profile fields itself.
 //!
 //! [`ui::hud`] is the F46 instrument projection
-//! (`specs/F46-hud-instruments-mission-map-and-pause.md`, stages `### F46-A`
-//! and `### F46-B`): [`ui::hud::attitude`] turns an attitude quaternion into
-//! horizon and heading, [`ui::hud::Hud`] converts an SI aircraft sample into
-//! gauge values under a `cs_content::hud::HudPolicy`, keeps the low-altitude
-//! warning, and refuses a sample of any session or aircraft it is not bound
-//! to — and [`ui::hud::Hud::frame`] projects the whole HUD (instruments, gun
-//! gauge, airframe panel, launcher cluster and target display) from the
-//! session's own weapon, ordnance, damage and target authorities, refusing a
-//! source stamped for another session generation.
+//! (`specs/F46-hud-instruments-mission-map-and-pause.md`, stages `### F46-A`,
+//! `### F46-B` and `### F46-C`): [`ui::hud::attitude`] turns an attitude
+//! quaternion into horizon and heading, [`ui::hud::Hud`] converts an SI
+//! aircraft sample into gauge values under a `cs_content::hud::HudPolicy`,
+//! keeps the low-altitude warning, and refuses a sample of any session or
+//! aircraft it is not bound to — and [`ui::hud::Hud::frame`] projects the
+//! whole HUD (instruments, gun gauge, airframe panel, launcher cluster and
+//! target display) from the session's own weapon, ordnance, damage and
+//! target authorities, refusing a source stamped for another session
+//! generation. [`ui::hud::HudSession`] is the in-flight page state: the
+//! cockpit frame plus the map, objectives and recon pages, which project the
+//! world record, the objective display and the target roster read-only —
+//! revealed contacts only — and hold the mode-aware local pause a networked
+//! session has no authority to take.
 //!
 //! [`text`] is the F51-A text boundary
 //! (`specs/F51-localization-fonts-text-layout-and-original-media-ids.md`, stage

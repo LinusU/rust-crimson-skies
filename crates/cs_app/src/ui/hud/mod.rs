@@ -1,8 +1,9 @@
-//! Instrument values and display-unit conversion (F46-A) and the HUD frame
-//! projection over the session authorities (F46-B).
+//! Instrument values and display-unit conversion (F46-A), the HUD frame
+//! projection over the session authorities (F46-B), and the in-flight page
+//! session — cockpit, map, objectives, recon — that consumes them (F46-C).
 //!
 //! Spec: `specs/F46-hud-instruments-mission-map-and-pause.md`, stages
-//! `### F46-A` and `### F46-B`. Shared contract:
+//! `### F46-A`, `### F46-B` and `### F46-C`. Shared contract:
 //! `docs/contracts/UI-NETWORK.md` and, for rebinding on an aircraft swap,
 //! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
@@ -32,18 +33,32 @@
 //! gauge, and an absent authority produces no rows rather than invented
 //! ones. See `docs/findings/2026-10-07-f46-b-hud-gauges-and-target-display.md`.
 //!
+//! [`HudSession`] (F46-C, in [`session`]) is the in-flight page state the
+//! flight loop drives: the cockpit frame, the mission map's read-only
+//! projection of the world record/objective display/target roster, and the
+//! mode-aware pause — a request that answers with the input path's own
+//! [`crate::input::PauseDecision`], so a networked session's map opens but
+//! its world keeps flying. See
+//! `docs/findings/2026-10-08-f46-c-hud-pages-map-and-pause.md`.
+//!
 //! Everything is **designed** and synthetic. The original units, datum,
-//! thresholds, dial layouts, gauge semantics and target appearance are
-//! F46-D's to compare; see
+//! thresholds, dial layouts, gauge semantics, map composition, page set and
+//! target appearance are F46-D's to compare; see
 //! `docs/findings/2026-10-01-f46-a-instrument-values.md`.
 
 mod frame;
+mod session;
 
 pub use frame::{DamageZone, HudFrame, HudSources, MountedGun, MountedOrdnance, WeaponGauge};
+pub use session::{
+    ContactMark, GeographyMark, HudSession, HudTeardown, MapView, MissionPage, MissionSources,
+    PageOutcome, PageView, PauseCommand, PlayerMark,
+};
 
 use std::fmt;
 
 use cs_content::hud::{AltitudeDatum, HudPolicy, HudPolicyError, SpeedReference};
+use cs_content::world::WorldId;
 use cs_types::net::{ActorId, SessionId};
 use cs_types::space::{Quaternion, Radians, SpaceError, UnitVec3};
 
@@ -164,6 +179,17 @@ pub enum HudError {
         /// The generation the source holds.
         found: u64,
     },
+    /// The load record offered to the map reads a different world
+    /// definition than the one supplied — a wiring fault, not a display
+    /// state: the map draws authored geography, and a load of another world
+    /// would answer `activates`/`initial_condition` for objects this
+    /// definition never declared.
+    WorldMismatch {
+        /// The definition that was supplied.
+        definition: WorldId,
+        /// The definition the load record reads.
+        load: WorldId,
+    },
     /// The attitude could not be rotated into body axes.
     Space(SpaceError),
     /// The display policy is invalid.
@@ -193,6 +219,10 @@ impl fmt::Display for HudError {
             } => write!(
                 f,
                 "the {source} authority belongs to session {found}, but the HUD is bound to {expected}"
+            ),
+            Self::WorldMismatch { definition, load } => write!(
+                f,
+                "the load record reads world {load}, but the map was given {definition}"
             ),
             Self::Space(error) => write!(f, "attitude: {error}"),
             Self::Policy(error) => write!(f, "display policy: {error}"),
@@ -244,6 +274,12 @@ impl Hud {
     #[must_use]
     pub fn bound(&self) -> Option<(SessionId, ActorId)> {
         self.bound
+    }
+
+    /// The display policy this HUD projects under.
+    #[must_use]
+    pub const fn policy(&self) -> &HudPolicy {
+        &self.policy
     }
 
     /// Projects `sample` into instrument values and advances the warning.
