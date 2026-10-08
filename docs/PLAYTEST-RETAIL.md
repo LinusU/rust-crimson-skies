@@ -83,9 +83,9 @@ as metres, so the framing holds for a different aircraft:
 
 | view | eye, as an offset from the spawn | target | why |
 | --- | --- | --- | --- |
-| `chase` | `(−1.8·length, +0.7·height, +0.6·length)` = `(−135.39, −39.80, 203.00)` | the spawn | **abeam, outboard.** Behind the aircraft it would show a 2 m cross-section (measured: 807 aircraft pixels); outboard, because an inboard eye puts the *camera* between the aircraft and the area and frames only sky (measured: refused as `NoEnvironment`) |
-| `quarter` | `(−1.4·length, +1.2·height, −1.6·length)` = `(−131.30, −39.06, 180.48)` | the spawn | the same placement from higher and further forward, so the second aircraft frame is a different angle rather than the same one twice |
-| `overview` | `centre + (−0.42·span_x, +0.36·span_y + 3·height, +0.5·span_z)` = `(−44.66, 31.13, 616.61)` | the area's centre | frames the **area**: the whole airship with the aircraft a measured speck in front of it |
+| `chase` | `(−1.8·length, +0.7·height, +0.6·length)` = `(−136.08, −5.96, 212.16)` | the spawn | **abeam, outboard.** Behind the aircraft it would show a 2 m cross-section (measured: 807 aircraft pixels); outboard, because an inboard eye puts the *camera* between the aircraft and the area and frames only sky (measured: refused as `NoEnvironment`) |
+| `quarter` | `(−1.4·length, +1.2·height, −1.6·length)` = `(−131.83, −4.43, 188.80)` | the spawn | the same placement from higher and further forward, so the second aircraft frame is a different angle rather than the same one twice |
+| `overview` | `centre + (−0.42·span_x, +0.36·span_y + 3·height, +1.0·span_z)` = `(−44.66, 46.04, 634.48)` | the area's centre | frames the **area**: the whole airship with the aircraft a measured speck in front of it. The z offset is a full span (#795's review), so the eye stands half a span **beyond** the extent's aft face: at the earlier `+0.5·span` it sat exactly on that plane, which once the landing cards no longer inflated the extent left the eye inside the hull's silhouette and the outboard spawn occluded (measured: 0 aircraft pixels) |
 
 ### The propeller spin (task #710, `PLAYTEST-PROP-SPIN`)
 
@@ -137,6 +137,12 @@ Measured on the pinned pair (640 × 480, `Apple M3 Pro`, Metal):
 | `chase` | 168 376 | 548 | **9 357** | 168 361 | 154 957 |
 | `quarter` | 130 166 | 423 | **5 089** | 130 166 | 121 371 |
 | `overview` | 28 113 | 91 | **10** | 28 103 | 38 574 |
+
+Those numbers predate #795: they were measured with the landing cards still
+drawn, so the area extent and the designed start were larger. Re-measured after
+#795 (same machine and renderer, `playtest_retail` binary): aircraft pixels
+`chase` 11 359, `quarter` 7 968, `overview` 24, with covered permille 621 / 226 /
+31 — the same invariant holds and the tests assert it on every run.
 
 The digests of those exact files, so a later reader can tell a rerun's frame from
 this one instead of trusting a byte count (they are reproducible on the pinned
@@ -326,3 +332,14 @@ The drawn set is
 follow the drawn set. The before/after GPU frames of that end of the airship
 are measured in `docs/findings/2026-10-08-playtest-area-flat-shape.md` (hashes
 only; the PNGs stay under `private/`).
+
+Hiding the cards also shrank the area's measured extent, which moved two
+designed values that derive from it. The start length fraction was retuned
+(see above); and the review caught that the `overview` camera's eye, placed at
+`centre + 0.5·span_z`, then sat exactly **on** the extent's aft plane — at the
+airship's own aft tip, inside the hull's silhouette — so the outboard spawn was
+occluded and the overview frame carried **zero** aircraft pixels (failing the
+`c1c`, nose and textures capture tests). The overview eye now stands a full
+span from the centre, half a span beyond the aft face, so "from outside the
+area" holds by construction; re-measured, the overview carries 24 aircraft
+pixels again.

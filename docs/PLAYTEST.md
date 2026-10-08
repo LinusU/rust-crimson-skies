@@ -225,3 +225,11 @@ The drawn set is
 follow the drawn set. The before/after GPU frames of that end of the airship
 are measured in `docs/findings/2026-10-08-playtest-area-flat-shape.md` (hashes
 only; the PNGs stay under `private/`).
+
+Hiding the cards also shrank the area's measured extent, which moved the
+designed values that derive from it (the start length fraction retuned, and the
+`overview` camera eye moved to stand a full span from the center — half a span
+beyond the extent's aft face — after the review caught the old eye sitting
+exactly on that plane, inside the hull's silhouette, occluding the outboard
+spawn with zero aircraft pixels in the overview frame). Details in the finding
+and in `docs/PLAYTEST-RETAIL.md`.

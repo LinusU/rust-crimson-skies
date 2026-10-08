@@ -103,6 +103,34 @@ without `RetailContent`), so the only contact surface is the airship itself, as
 the existing `playtest-retail.aircraft-pose-is-designed` claim, not a
 measurement.
 
+### Review catch: the retune left the `overview` camera without the aircraft (fixed)
+
+The review reran the **whole** `playtest_retail` binary (`--include-ignored`)
+after the retune — the implementation's own green run of that binary predated
+the retune commit — and three capture tests failed deterministically on the
+branch while passing on unmodified `origin/main` (`c1c_area_and_bloodhawk…`,
+`nose_gpu_chase…`, `textures_retail_gpu_capture…`): one root cause, the
+`overview` view reporting **0** aircraft pixels (`NoAircraft`; the chase and
+quarter views still showed 11 359 / 7 968).
+
+Measured cause: `overview`'s eye is `centre + (−0.42·span_x, 0.36·span_y +
+3·height, 0.5·span_z)` — the z term put the eye exactly **on** the extent's
+aft-max plane. While the landing cards were drawn that plane sat 268 m aft of
+the real hull (the cards' tail), so the eye stood clear of the geometry by
+luck; with the cards hidden the aft plane is the hull's own tip (`z ≈ 348.7`)
+and the eye (`−44.66, 46.04, 348.69`) ended up inside the hull's silhouette,
+so the sightline to the outboard spawn (`x = −116.97`) was occluded by the
+hull it stood in. The design statement "looks at the area's centre **from
+outside it**" was not actually enforced by the old formula.
+
+Fix: the overview eye now stands a **full span** from the centre along the
+area's length (`centre[2] + span[2]`, i.e. half a span beyond the aft face),
+which keeps the eye outside the measured geometry by construction for any
+bounds. Re-measured on the branch (same machine, 640 × 480): overview 24
+aircraft pixels, 31 permille covered (chase/quarter unchanged), and all 32
+tests of the binary pass again. The CI pin `measured_bounds()` was re-pinned
+to the drawn-set extent (with the cards-drawn values recorded in its comment).
+
 ## GPU before/after capture (hashes only; PNGs stay under `private/`)
 
 View `flat-shape-underside-aft`, derived from the two cards' composed geometry
