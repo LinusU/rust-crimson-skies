@@ -342,8 +342,9 @@ pub const PLAYTEST_AREA_LOD_DISTANCE_M: f64 = 300.0;
 /// smoke `report.json`. Provisional: a name read, not a measured original rule.
 pub const PLAYTEST_AREA_SELECTION_RULE: &str = "one LOD band per sibling group (F11-B select_lod_variant at the designed viewer \
      distance); the scorched `burnpanels` beside `panels`, the `<stem>d` beside `<stem>h` and the running `spin`/`counterspin` \
-     beside `propstill` are hidden; colliders follow the drawn set. Designed, from authored names; the original's damage \
-     state rule is unmeasured";
+     beside `propstill` are hidden; the flat-colour landing cards under `pz_auto_land`/`pz_manual_land` are hidden \
+     (unmeasured render class, provisional, #795); colliders follow the drawn set. Designed, from authored names and stored \
+     attributes; the original's damage state rule is unmeasured";
 
 /// The container key the aircraft is read from.
 pub const AIRCRAFT_CONTAINER_KEY: &str = "zbd/planes.zbd";
@@ -1748,6 +1749,99 @@ fn damage_alternative(node: &SceneNode, siblings: &[&SceneNode]) -> Option<Strin
     None
 }
 
+/// Why one stored binding is an unmeasured-class **flat-colour card**, or `None`
+/// when it is an ordinary part (#795).
+///
+/// The measured class, over the whole `piratezep` subtree of
+/// `ZBD/C1C/gamez.zbd`: the mesh stores exactly **one** polygon, that polygon is
+/// planar (one extent axis of the stored positions is exactly zero), and every
+/// material group it stores resolves to a **flat-colour** material record — one
+/// whose textured flag is clear, so it names no texture and the surface carries
+/// no stored picture. Exactly two drawn bindings match, and both are cards of
+/// landing behaviour rather than hull skin: `sphere` (node slot 3063, mesh 786,
+/// one 500 × 125 triangle) under `pz_auto_land` and `half_cone` (node slot 3066,
+/// mesh 787, one 96 × 32 triangle) under `pz_manual_land`. In the owner's
+/// playtest screenshot (`PLAYTEST-AREA-FLAT-SHAPE`, task #795) one of them is
+/// the large flat grey shape sticking out of the airship's underside.
+///
+/// What the original did with these cards is **unmeasured**: the material record
+/// stores no render class this reader decodes, and whether the 2000 engine drew
+/// them additive, translucent, or only while a landing sequence ran is unknown.
+/// So the card is hidden from drawing and from collision (colliders follow the
+/// drawn set) with that reason, and the treatment is provisional — the same
+/// provisional treatment #753 gave the damage-state alternatives. It is the
+/// stored attributes above, not the authored names, that decide the class; the
+/// names travel in the reason as evidence.
+fn flat_card_reason(
+    node: &SceneNode,
+    graph: &SceneGraph,
+    container: &PlaytestContainer,
+) -> Option<String> {
+    let binding = node.mesh()?;
+    let mesh = container.meshes().get(binding.index)?;
+    if mesh.mesh.polygons.len() != 1 {
+        return None;
+    }
+    let positions = &mesh.mesh.positions;
+    if positions.len() < 3 {
+        return None;
+    }
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    for position in positions {
+        for axis in 0..3 {
+            lo[axis] = lo[axis].min(position[axis]);
+            hi[axis] = hi[axis].max(position[axis]);
+        }
+    }
+    let extent = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    if !extent.iter().any(|side| *side == 0.0) {
+        return None;
+    }
+    let mut materials = BTreeSet::new();
+    for groups in &mesh.material_groups {
+        for group in groups {
+            materials.insert(group.material);
+        }
+    }
+    if materials.is_empty() {
+        return None;
+    }
+    for index in &materials {
+        let record = container.materials().material(*index)?;
+        if container.materials().names_a_texture(record) {
+            return None;
+        }
+    }
+    let mut chain = Vec::new();
+    let mut cursor = node.parent().and_then(|id| graph.node(id));
+    while let Some(current) = cursor {
+        chain.push(format!("`{}` (slot {})", current.name(), current.index()));
+        cursor = current.parent().and_then(|id| graph.node(id));
+    }
+    chain.reverse();
+    let parent = chain
+        .last()
+        .cloned()
+        .unwrap_or_else(|| "the area root".to_owned());
+    Some(format!(
+        "flat-colour card: the mesh stores one planar polygon ({v} corners, extent \
+         {x} × {y} × {z} stored units) whose every material group ({mats}) names no texture, \
+         and it hangs under {parent} — its original render class (additive, translucent, or \
+         gated by the landing behaviour this free-flight playtest never runs) is unmeasured, so \
+         it is hidden from drawing and collision, provisional (#795)",
+        v = positions.len(),
+        x = extent[0],
+        y = extent[1],
+        z = extent[2],
+        mats = materials
+            .iter()
+            .map(|index| format!("material {index}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    ))
+}
+
 /// Decides which mesh bindings of the area make **one intact variant of every
 /// part** at one LOD band.
 ///
@@ -1757,7 +1851,10 @@ fn damage_alternative(node: &SceneNode, siblings: &[&SceneNode]) -> Option<Strin
 ///    `distance_m`; the bands it does not choose hide their whole subtrees;
 /// 2. [`damage_alternative`] hides the damage-state (and stopped/running
 ///    propeller) alternatives of a part;
-/// 3. a mesh under a hidden node is undrawn, with the hidden node's reason.
+/// 3. [`flat_card_reason`] hides the unmeasured-class flat-colour cards (#795)
+///    when `hide_flat_cards` is set — the documented behaviour; `false` draws
+///    them, which is the baseline their removal is measured against;
+/// 4. a mesh under a hidden node is undrawn, with the hidden node's reason.
 ///
 /// # Errors
 ///
@@ -1767,6 +1864,8 @@ fn select_area_parts<'g>(
     root: &SceneNodeId,
     distance_m: f64,
     select: bool,
+    hide_flat_cards: bool,
+    container: &PlaytestContainer,
 ) -> Result<AreaSelection<'g>, PlaytestError> {
     let members = graph.subtree(root);
     if !select {
@@ -1833,6 +1932,12 @@ fn select_area_parts<'g>(
                 break;
             }
             cursor = current.parent().and_then(|id| graph.node(id));
+        }
+        if reason.is_none()
+            && hide_flat_cards
+            && let Some(why) = flat_card_reason(node, graph, container)
+        {
+            reason = Some(why);
         }
         match reason {
             None => draw.push(*node),
@@ -2092,6 +2197,12 @@ pub struct PlaytestConfig {
     /// documented rule) or every stored binding of the subtree (`false`, #648's
     /// behaviour: the baseline the flicker is measured against).
     pub select_area_variants: bool,
+    /// Whether the selection hides the unmeasured-class **flat-colour cards**
+    /// (#795: `sphere` under `pz_auto_land`, `half_cone` under `pz_manual_land`).
+    /// `true`, the documented rule; `false` draws them, which is the baseline
+    /// their footprint is measured against. Only applies while
+    /// [`Self::select_area_variants`] is set.
+    pub hide_flat_colour_cards: bool,
     /// The capture frame's width, in pixels.
     pub capture_width: u32,
     /// The capture frame's height, in pixels.
@@ -2121,6 +2232,7 @@ impl PlaytestConfig {
             aircraft_lod_distance_m: PLAYTEST_AIRCRAFT_LOD_DISTANCE_M,
             area_lod_distance_m: PLAYTEST_AREA_LOD_DISTANCE_M,
             select_area_variants: true,
+            hide_flat_colour_cards: true,
             capture_width: CAPTURE_WIDTH,
             capture_height: CAPTURE_HEIGHT,
             textured: true,
@@ -2911,6 +3023,8 @@ pub fn spawn_playtest_content(
         &root,
         config.area_lod_distance_m,
         config.select_area_variants,
+        config.hide_flat_colour_cards,
+        sources.world(),
     )?;
 
     // -- the aircraft, read before anything is spawned ----------------------
@@ -4230,6 +4344,115 @@ pub fn capture_view_stability(
             worst as f64 / region_pixels as f64
         },
         pngs,
+    })
+}
+
+/// What [`capture_visibility_delta`] measured.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaytestVisibilityDelta {
+    /// The view's label.
+    pub view: &'static str,
+    /// The eye both frames were taken from.
+    pub eye: [f32; 3],
+    /// What the camera looked at.
+    pub target: [f32; 3],
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Pixels the frame covers while the entities are shown.
+    pub shown_covered_pixels: usize,
+    /// Pixels the frame covers while they are hidden.
+    pub hidden_covered_pixels: usize,
+    /// Pixels that differ between the two frames: the shown entities' own
+    /// footprint, measured against the very scene they live in.
+    pub changed_pixels: usize,
+    /// Where the shown frame's PNG was written.
+    pub shown_png: String,
+    /// SHA-256 of the shown frame's PNG bytes.
+    pub shown_png_sha256: ContentHash,
+    /// Where the hidden frame's PNG was written.
+    pub hidden_png: String,
+    /// SHA-256 of the hidden frame's PNG bytes.
+    pub hidden_png_sha256: ContentHash,
+}
+
+/// Measures what `entities` contribute to one real GPU frame of `view`.
+///
+/// Two renders of the same scene from the same eye: once with the entities
+/// shown, once with them [`Visibility::Hidden`] (restored afterwards). The
+/// pixels that differ are those entities' own screen footprint, measured in the
+/// scene they were spawned into rather than against a second spawn whose
+/// placement could differ. Both frames are written under `out_dir`; a frame
+/// that draws nothing is refused and leaves no PNG behind, so a file that
+/// exists is a frame that was measured.
+///
+/// # Errors
+///
+/// [`PlaytestError::Capture`] when a frame does not come back, comes back
+/// uniform, or a PNG cannot be read.
+pub fn capture_visibility_delta(
+    app: &mut App,
+    scene: &PlaytestScene,
+    view: &PlaytestCameraView,
+    entities: &[Entity],
+    out_dir: &Path,
+) -> Result<PlaytestVisibilityDelta, PlaytestError> {
+    install_capture_observer(app);
+    aircraft_visible(app, scene, false);
+    let set = |app: &mut App, value: Visibility| {
+        for entity in entities {
+            if let Ok(mut target) = app.world_mut().get_entity_mut(*entity) {
+                target.insert(value);
+            }
+        }
+    };
+    let show_aircraft = |app: &mut App| aircraft_visible(app, scene, true);
+    set(app, Visibility::Visible);
+    let shown_png = out_dir.join(format!("{}-shown.png", view.name));
+    let shown = match render_view(app, scene, view, Some(shown_png.clone())) {
+        Ok(rendered) => rendered,
+        Err(error) => {
+            let _ = fs::remove_file(&shown_png);
+            show_aircraft(app);
+            return Err(error);
+        }
+    };
+    if shown.facts.distinct_luminance <= 1 {
+        let _ = fs::remove_file(&shown_png);
+        show_aircraft(app);
+        return Err(PlaytestError::Capture(CaptureError::UniformFrame {
+            view: view.name,
+            distinct_luminance: shown.facts.distinct_luminance,
+        }));
+    }
+    set(app, Visibility::Hidden);
+    let hidden_png = out_dir.join(format!("{}-hidden.png", view.name));
+    let hidden = match render_view(app, scene, view, Some(hidden_png.clone())) {
+        Ok(rendered) => rendered,
+        Err(error) => {
+            let _ = fs::remove_file(&hidden_png);
+            set(app, Visibility::Visible);
+            show_aircraft(app);
+            return Err(error);
+        }
+    };
+    set(app, Visibility::Visible);
+    show_aircraft(app);
+    let changed_pixels = differing(&shown.facts.pixels, &hidden.facts.pixels);
+    Ok(PlaytestVisibilityDelta {
+        view: view.name,
+        eye: view.eye,
+        target: view.target,
+        width: shown.facts.width,
+        height: shown.facts.height,
+        shown_covered_pixels: shown.facts.covered_pixels,
+        hidden_covered_pixels: hidden.facts.covered_pixels,
+        changed_pixels,
+        shown_png: shown.png,
+        shown_png_sha256: shown.png_sha256,
+        hidden_png: hidden.png,
+        hidden_png_sha256: hidden.png_sha256,
     })
 }
 
