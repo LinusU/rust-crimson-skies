@@ -183,15 +183,24 @@ committed one (`git diff` shows only the stage's 161 added lines).
 
 `private/evidence/F50-B/acceptance.json`, copied unchanged to
 `docs/findings/evidence/F50-B.json`. Capabilities `["retail", "synthetic"]`;
-9 discovered / 9 executed / 9 passed / 0 failed; claim `implemented`;
-`candidate_tree` `4f0aa11aed083130c7a468828510bc887c7a7222`, the tree of the
-commit the suite and the harness ran on — the only later deltas are this
-report's own copy under `docs/findings/evidence/` and this document, neither
-of which the acceptance suite reads. Artifacts: `cargo-test.log`
-(`810670b08912789fc214c5bd2161cb5df4ca21fa57078a2cc4cb172c980f9a03`) and
+9 discovered / 9 executed / 9 passed / 0 failed; claim `implemented`.
+
+The committed copy is the **reviewer's** regeneration of 2026-10-08T14:11Z on
+the rebased candidate tree `8c0304d2f112e878379d5758612ae8589e96bd5c`
+(`docs/contracts/CLI-EVIDENCE.md`: "the reviewer regenerates the report on the
+rebased commit and compares it"); its `review.identity` names both the
+implementer and the reviewing session. Artifacts of that run: `cargo-test.log`
+(`b6ac87bcc38ad952dae452164c1be59b99153c70088969f2b6504a8eba2a8ad4`) and
 `campaign-binding.json`
-(`5364bf8c97fd4e3b9edab4aaa1359530ecb81784dda6e16c58afff66750f7286`), both
-staying in `private/`.
+(`24d41be97c70a1e86ae406359eb11b636701a62351edc1119ea87dfea0d4710c`), both
+staying in `private/`. The only deltas after that tree are this report's own
+copy under `docs/findings/evidence/` and this document, neither of which the
+acceptance suite reads. The implementer's own run (tree
+`4f0aa11aed083130c7a468828510bc887c7a7222`, log
+`810670b08912789fc214c5bd2161cb5df4ca21fa57078a2cc4cb172c980f9a03`, campaign
+`5364bf8c97fd4e3b9edab4aaa1359530ecb81784dda6e16c58afff66750f7286`) reported
+the same 9/9/9/0 counts and the same measurements; it is superseded by the
+committed copy rather than kept beside it.
 
 ## What this stage does not do
 
@@ -244,3 +253,61 @@ Nothing in F50-B depends on those records: its campaign binding is derived
 fresh from the installation on every run, and its own continuity assertion is
 `SourceContext::install_sha256() == fingerprint(discover($CS_GAME_DIR).manifest)`,
 which holds for the installation as it stands today.
+
+## Review record (2026-10-08)
+
+Reviewer: **bunny-alpha-2**, Rally #205 review claim of 2026-10-08T13:48Z —
+the same agent name and model as the implementer, but a separate session with
+its own, fresh context (it started from the task description, the sheet, the
+contract and the diff, not from the implementation conversation). Recorded
+here because the review is therefore *not* independent-model evidence, and no
+agent review replaces the owner's human approval.
+
+What the review checked, on the branch rebased onto `origin/main` (`deacdcf6`,
+rebase applied with no conflicts):
+
+- the diff against `origin/main` for scope: seven files, all inside the task's
+  owner paths (`missions/bindings/README.md`,
+  `crates/cs_content/src/campaign_bindings.rs`,
+  `crates/cs_app/tests/campaign/{main,evidence,f50_b}.rs`, this document and
+  `docs/findings/evidence/F50-B.json`), no protected path, no `Cargo.toml` /
+  `Cargo.lock`, no binary file, nothing removed from any existing test or lint;
+- `assemble_campaign`'s three refusals against the code and against F50
+  non-negotiable behavior 5 (the denominator may not shrink), and
+  `bind_campaign` against its own claim of one context, one inventory order
+  and one fingerprint;
+- that the nine `accept_f50_b_*` tests call production code
+  (`SourceContext::bind_campaign` / `assemble_campaign`, not a test-only
+  parallel), that each passes alone with `--exact`, and that the evidence
+  harness is named without the `accept_` prefix so it never pads the task
+  selection.
+
+Two **reviewer mutation probes**, each applied to
+`crates/cs_content/src/campaign_bindings.rs`, the suite run, then the file
+restored with `git checkout --` (working tree verified clean afterwards):
+
+| # | Mutation | Result |
+| --- | --- | --- |
+| R1 | `sources.reverse()` inside `bind_campaign` before assembly | 2 tests FAILED: `the_whole_campaign_binds_from_one_installation` (`sources must follow the declared inventory order…`, left `M24`, right `M01`) and `unresolved_identities_stay_unresolved_and_the_campaign_stays_unready` (pinned list came back reversed) |
+| R2 | drop `assemble_campaign`'s "declared work order supplied no binding" check | `a_declared_work_order_with_no_binding_is_refused` FAILED (4 passed, 4 ignored), the assembled campaign shown holding a `placeholder: true` M02 |
+
+Reviewer checks (rebased tree; the last four re-run after the two doc/JSON
+commits of this review, which touch no Rust source):
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_f50_b_ --include-ignored` | 0 — 9 tests |
+| each of the 9 task tests alone with `--exact --include-ignored` | 0 — 9 × 1 passed |
+| `cargo test --locked -p cs_app --test campaign -- evidence_report_f50_b --ignored` (with `CS_EVIDENCE_REVIEWER` = the reviewer identity, `CS_CANDIDATE_TREE` = `8c0304d2…`) | 0 |
+| `python3 tools/validate_evidence.py private/evidence/F50-B/acceptance.json --artifact-root private/evidence/F50-B --require-pass` | 0 |
+| `python3 -m unittest discover -s tools/tests -p 'test_evidence_review_identity.py'` | 0 — 27 tests |
+
+Still open after this review, unchanged and not worked around: the campaign
+progression is unmeasured (so `is_ready()` stays false and AC02's literal
+"play in progression order" reading waits on F50-C/F50-D), the seven uncarried
+titles stay unknown, and Rally #779 (the 17 committed per-mission records'
+`install_sha256`) is a separate pre-existing failure this branch neither
+causes nor fixes.
