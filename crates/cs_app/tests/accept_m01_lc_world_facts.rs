@@ -278,8 +278,10 @@ fn accept_m01_lc_world_facts_a_lowered_block_completes_on_observed_world_state()
         "the driven block is the single-chain INACTIVE ladder this suite drives"
     );
 
-    let observed = world_as_m01_opens(&operands, &resolver)
-        .member(member_chain(["piratezep"]), MemberObservation::no_longer_in_play([0.0; 3]));
+    let observed = world_as_m01_opens(&operands, &resolver).member(
+        member_chain(["piratezep"]),
+        MemberObservation::no_longer_in_play([0.0; 3]),
+    );
     let mut table = WorldFactTable::new(resolver);
     table.observe(observed);
 
@@ -306,8 +308,7 @@ fn accept_m01_lc_world_facts_a_lowered_block_completes_on_observed_world_state()
         tick.events
     );
     assert_eq!(
-        tick
-            .events
+        tick.events
             .iter()
             .filter(|event| event.kind == EventKind::ObjectiveCompleted)
             .count(),
@@ -378,8 +379,10 @@ fn accept_m01_lc_world_facts_removing_the_resolver_keeps_every_answer_fail_close
     let operands = WorldOperands::of(&program);
     let resolver = m01_resolver();
 
-    let observed = world_as_m01_opens(&operands, &resolver)
-        .member(member_chain(["piratezep"]), MemberObservation::no_longer_in_play([0.0; 3]));
+    let observed = world_as_m01_opens(&operands, &resolver).member(
+        member_chain(["piratezep"]),
+        MemberObservation::no_longer_in_play([0.0; 3]),
+    );
     let mut table = WorldFactTable::new(resolver);
     table.observe(observed);
     table.drop_resolver();
@@ -404,8 +407,7 @@ fn accept_m01_lc_world_facts_removing_the_resolver_keeps_every_answer_fail_close
         "and no position is defaulted either"
     );
     assert!(
-        facts.groups.is_empty() && facts.generators.is_empty()
-            && facts.animations.is_empty(),
+        facts.groups.is_empty() && facts.generators.is_empty() && facts.animations.is_empty(),
         "no count of any kind is reported without a resolver: groups={:?} \
          generators={:?} animations={:?}",
         facts.groups,
@@ -545,12 +547,15 @@ fn accept_m01_lc_world_facts_a_chain_that_cannot_be_pinned_stays_fail_closed() {
     let unobserved = WorldFactTable::new(resolver.clone());
     let facts = unobserved.facts(&operands);
     assert!(
-        !facts.members.contains_key(&member_chain(["zeppelin", "reng1", "healthy"])),
+        !facts
+            .members
+            .contains_key(&member_chain(["zeppelin", "reng1", "healthy"])),
         "a resolved chain nobody observed carries no row"
     );
-    assert!(facts.groups.is_empty() && facts.generators.is_empty()
-        && facts.animations.is_empty(),
-        "and neither does a count nobody reported");
+    assert!(
+        facts.groups.is_empty() && facts.generators.is_empty() && facts.animations.is_empty(),
+        "and neither does a count nobody reported"
+    );
 
     // Resolver removed: every chain absent, no count, whatever was observed.
     let mut removed = WorldFactTable::new(resolver);
@@ -566,14 +571,12 @@ fn accept_m01_lc_world_facts_a_chain_that_cannot_be_pinned_stays_fail_closed() {
         facts
             .members
             .values()
-            .all(|row| row.presence == MemberPresence::Missing
-                && row.position == [0.0; 3]),
+            .all(|row| row.presence == MemberPresence::Missing && row.position == [0.0; 3]),
         "with no resolver nothing is defaulted: {:?}",
         facts.members
     );
     assert!(
-        facts.groups.is_empty() && facts.generators.is_empty()
-            && facts.animations.is_empty(),
+        facts.groups.is_empty() && facts.generators.is_empty() && facts.animations.is_empty(),
         "and no count at all is reported"
     );
 }

@@ -41,23 +41,33 @@ accept_m01_lc_directive_lowering_ --include-ignored` → 14 tests, 4 retail.
 
 ## What "runnable" still does not mean
 
-* **The world-side fact maps have no producer.** `MissionFacts::actors` and
-  `MissionFacts::objectives` have production writers in `cs_sim`;
-  `members`, `groups`, `generators` and `animations` are read by the lowered
-  `InactiveMembers`, `EnemyGroupDepletion`, `Travelers` and `AnimationStates`
-  conditions but populated by nobody, because mapping an original
+* **The world-side fact maps had no producer — closed by M01-LC-WORLD-FACTS
+  (#751).** `MissionFacts::actors` and `MissionFacts::objectives` have
+  production writers in `cs_sim`; `members`, `groups`, `generators` and
+  `animations`, which the lowered `InactiveMembers`, `EnemyGroupDepletion`,
+  `Travelers` and `AnimationStates` conditions read, were populated by nobody
+  when this step recorded the gap, because mapping an original
   node/part/part-state chain onto a live world object needs a name resolver
-  and world registries this tree does not have. Until that exists,
-  **24 of M01's 58 blocks** — the 12 INACTIVE ladders, the 8 DEDG blocks,
-  `OBJECTIVE3`'s TRAVELERS and the 3 ANIM_STATE blocks `OBJECTIVE11`/`OBJECTIVE15`/
-  `OBJECTIVE18` — lower and evaluate but can never complete. Split off as
-  **M01-LC-WORLD-FACTS (#751)**, which carries this gating.
-* **Gating (survives #717 being marked done):** while #751 is open, no
-  fidelity / `verified_original` / `release_approved` claim about **M01
-  objective completion** may stand, and any evidence reporting M01's
-  objectives as completable must name #751 as an unmet condition. Source of
-  the limitation and of the 24-block figure: bunny-alpha-2's review hand-off
-  note on #717 (2026-10-07).
+  and world registries this tree did not have. #751 built them:
+  `crates/cs_app/src/world_facts.rs` resolves each chain against the
+  installation's own node hierarchy, carries the world's report for presence,
+  group living counts, generator pending spawns and animation state bytes, and
+  folds all four maps through `MissionFacts::absorb` before the tick
+  (`compose_mission_facts`). So **24 of M01's 58 blocks** — the 12 INACTIVE
+  ladders, the 8 DEDG blocks, `OBJECTIVE3`'s TRAVELERS and the 3 ANIM_STATE
+  blocks `OBJECTIVE11`/`OBJECTIVE15`/`OBJECTIVE18` — are no longer
+  *permanently* blocked; `docs/findings/2026-10-08-m01-lc-world-facts.md`
+  states which of them can complete on what a host can observe today, with its
+  evidence.
+* **Gating, as discharged:** while #751 was open, no fidelity /
+  `verified_original` / `release_approved` claim about **M01 objective
+  completion** could stand, and any evidence reporting M01's objectives as
+  completable had to name #751 as an unmet condition. #751 has landed the
+  writers, so the "no production writer" form of that limit is closed; what it
+  gated is unchanged — no original run has shown M01's objectives completing,
+  and a Rally merge awards `checked`. Source of the original limitation and of
+  the 24-block figure: bunny-alpha-2's review hand-off note on #717
+  (2026-10-07).
 * A bound call still only emits `Action::Directive` for the host:
   `DirectiveDisposition::is_implemented` stays `false` for every measured key,
   and only the two outcome spellings reach an engine operation. The measured
@@ -77,8 +87,11 @@ The evidence report for the parent task is regenerated with the command in
 `docs/findings/2026-10-07-m01-lc-directive-lowering-adapter.md` and validated
 with `tools/validate_evidence.py ... --require-pass`; its copy is
 `docs/findings/evidence/M01-LC-DIRECTIVE-LOWERING.json`. Its `review.method`
-now carries the world-side fact limit as a **limit on the claim** — affected
-content, resolving task and gating — rather than as an `unknowns` entry: this
+first carried the world-side fact limit as a **limit on the claim** — affected
+content, resolving task and gating — rather than as an `unknowns` entry, and
+since #751 it carries the world-side fact **writers** in the same slot: the
+resolved task, what a host still has to observe before each of the 24 blocks
+can complete, and the standing refusal of any `verified_original` claim. This
 report's claim is `implemented` about the *lowering*, and `unknowns` is the
 repo's slot for unresolved **measurements** of that claim (see
 `M01-LC-MISSION-PROGRAM.json`), which is why `--require-pass` requires it
@@ -89,10 +102,12 @@ empty.
 * `implemented` only: this task awarded itself no `checked`, no
   `verified_original` and no `release_approved`.
 * Affected content and what still blocks a fidelity claim: the 24 blocks
-  above (#751), and the residual unknowns named by findings A–D. Resolving
-  tasks: **M01-LC-WORLD-FACTS (#751)** for the fact producers,
-  **VS-M01-RUNTIME (#359)** for the launch path that will supply them, and the
-  stage findings for any residual a later reading corrects.
+  above now have production writers (#751) but still need a host that observes
+  their world state before they complete — `docs/findings/2026-10-08-m01-lc-world-facts.md`
+  names that per condition — plus the residual unknowns named by findings A–D.
+  Resolving tasks: **VS-M01-RUNTIME (#359)** for the launch path that will
+  supply those observations, and the stage findings for any residual a later
+  reading corrects.
 * `docs/findings/2026-10-07-m01-lc-directive-lowering-adapter.md` remains the
   record of stage `.03`; this document adds only the runtime seam and the
   follow-up.

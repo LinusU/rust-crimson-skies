@@ -414,16 +414,16 @@ impl WorldOperands {
             Condition::InactiveMembers { members, .. } => {
                 operands.members.extend(members.iter().cloned());
             }
-            Condition::Travelers { subject, anchor, .. } => {
+            Condition::Travelers {
+                subject, anchor, ..
+            } => {
                 operands.members.insert(subject.clone());
                 if let TravelersAnchor::Object(chain) = anchor {
                     operands.members.insert(chain.clone());
                 }
             }
             Condition::EnemyGroupDepletion {
-                group,
-                generator,
-                ..
+                group, generator, ..
             } => {
                 operands.groups.insert(*group);
                 if let Some(name) = generator {
@@ -431,7 +431,8 @@ impl WorldOperands {
                 }
             }
             Condition::AnimationStates { animations, .. } => {
-                operands.animations
+                operands
+                    .animations
                     .extend(animations.iter().map(|(name, _)| name.clone()));
             }
             Condition::All(inner) | Condition::Any(inner) => {

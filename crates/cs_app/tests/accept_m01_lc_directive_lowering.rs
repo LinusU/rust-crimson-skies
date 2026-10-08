@@ -14,11 +14,13 @@
 //! What this suite does **not** claim: no original executable was run and no
 //! mission was played, so nothing here is `verified_original`. The world-side
 //! half of [`cs_script::runtime::MissionFacts`] — `members`, `groups`,
-//! `generators` and `animations` — still has no production writer (recorded in
-//! `docs/findings/evidence/M01-LC-DIRECTIVE-LOWERING.json` and the follow-up
-//! task it links), so the retail case below advances with an unpopulated map
-//! and asserts exactly that nothing completes: an unpopulated
-//! [`MissionFacts`] completes nothing rather than completing everything.
+//! `generators` and `animations` — has had production writers since task
+//! `M01-LC-WORLD-FACTS` (#751, `cs_app::world_facts`), which is exactly why
+//! the retail case below can still advance with an unpopulated map and assert
+//! that nothing completes: an unpopulated [`MissionFacts`] completes nothing
+//! rather than completing everything, and that contract survives the writers
+//! landing beside it. That suite owns the populated half; this one owns the
+//! empty one.
 //!
 //! Test prefix `accept_m01_lc_directive_lowering_`; the retail case needs
 //! `$CS_GAME_DIR` and is `#[ignore]`d so CI runs the synthetic case.
@@ -279,11 +281,12 @@ fn accept_m01_lc_directive_lowering_a_lowered_record_runs_to_a_terminal_outcome(
 ///
 /// The assertions on what *does not* happen are the fail-closed half: with an
 /// unpopulated [`MissionFacts`] no numbered block can be awake, so the mission
-/// completes nothing and emits nothing. The world-side half of the fact map
-/// has no production writer yet (follow-up task recorded in
-/// `docs/findings/evidence/M01-LC-DIRECTIVE-LOWERING.json`), and a report that
-/// claimed completions from facts nobody observed would be exactly the
-/// guesswork this project refuses.
+/// completes nothing and emits nothing. The world-side half of the fact map now
+/// has production writers (`cs_app::world_facts`, task `M01-LC-WORLD-FACTS`
+/// #751) but **none of them runs here**: this case supplies no world
+/// observation at all, so `MissionState::holds` still answers `false` for
+/// every key the maps do not hold, and a report that claimed completions from
+/// facts nobody observed would be exactly the guesswork this project refuses.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_lc_directive_lowering_m01_lowers_launches_and_steps_in_the_runtime() {

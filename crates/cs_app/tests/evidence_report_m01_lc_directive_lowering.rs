@@ -72,12 +72,12 @@ const M01: &str = "zbd/c1c/m01";
 /// The world-side fact maps one lowered program's conditions read, counted by
 /// the [`Condition`] variant that reads them.
 ///
-/// `MissionFacts::members`, `groups`, `generators` and `animations` have no
-/// production writer (follow-up task `M01-LC-WORLD-FACTS`, #751), so every
-/// block carrying one of these readers lowers and evaluates but can never
-/// complete. The counts are derived by walking the program this run lowered —
-/// never written down by hand — and [`Self::EXPECT`] pins them, so a record
-/// that changes fails the run instead of silently drifting the report's prose.
+/// The blocks reading the four world-side maps `M01-LC-WORLD-FACTS` (#751)
+/// gave production writers. The counts are derived by walking the program this
+/// run lowered — never written down by hand — and [`Self::EXPECT`] pins them,
+/// so a record that changes fails the run instead of silently drifting the
+/// report's prose. [`Self::EXPECT`] is unchanged by #751: the *limit* it used
+/// to count is gone, the shape it counted is M01's own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct WorldFactReads {
     /// Blocks whose condition tree carries at least one world-side reader.
@@ -251,14 +251,24 @@ fn review_method(observed: &Observed) -> String {
          FAIL-CLOSED WITNESSES: an unmeasured key, a block the condition lowering refused, a \
          scalar beside its key, an unreadable block, an empty record and a record whose attempt \
          produced no program all still refuse by name with their rows unmet. WORLD-SIDE FACT \
-         LIMIT: MissionFacts::members/groups/generators/animations have no production writer, so \
+         WRITERS: MissionFacts::members/groups/generators/animations now have production \
+         writers (cs_app::world_facts, folded before the tick by compose_mission_facts), so the \
          {world_blocks} of M01's {m01_blocks} blocks - the {world_inactive} carrying \
          Condition::InactiveMembers (the INACTIVE ladders), the {world_dedg} carrying \
          Condition::EnemyGroupDepletion, the {world_travelers} carrying Condition::Travelers and \
-         the {world_animations} carrying Condition::AnimationStates - lower and evaluate but can \
-         never complete; resolving task M01-LC-WORLD-FACTS (#751), and until it lands no \
-         fidelity, verified_original or release_approved claim about M01 objective completion \
-         may stand. TEST-SELECTION NOTE: \
+         the {world_animations} carrying Condition::AnimationStates - are no longer permanently \
+         blocked: task M01-LC-WORLD-FACTS (#751) resolved the limit this report used to carry, \
+         and its acceptance accept_m01_lc_world_facts_ drives one INACTIVE block to completion on \
+         observed world state and to non-completion while the world still holds the member in \
+         play, with every chain, group id and animation name the record spells resolved into the \
+         right map and an unresolvable chain recorded absent. What a host still has to observe \
+         before each of them can complete - member in-play state, group living counts, the \
+         TRAVELERS subject's position and animation state bytes - is named in \
+         docs/findings/2026-10-08-m01-lc-world-facts.md, and until a host observes it the \
+         condition still answers false rather than defaulting. This is a statement about this \
+         engine's writers, not about the original: no fidelity, verified_original or \
+         release_approved claim about M01 objective completion stands on it, and a Rally merge \
+         awards checked. TEST-SELECTION NOTE: \
          the prefixes accept_m01_lc_lowering_adapter_ and accept_m01_lc_directive_lowering_ are \
          unique to this task, so the {own_tests} discovered assertions are exactly this task's \
          tests. Validated with tools/validate_evidence.py --require-pass.",
