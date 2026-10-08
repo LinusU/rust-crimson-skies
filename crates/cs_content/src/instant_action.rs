@@ -846,9 +846,12 @@ impl CustomScenarioDraft {
 
     // The remaining accessors exist for the screen that edits this draft
     // (F49-C): a dropdown shows *and* changes the current selection, so the
-    // form has to be able to read back what it is showing. Every one of them
-    // is `None` exactly while [`Self::unset_dimensions`] names the field, so a
-    // screen can pair a value with the "unset" state without parsing either.
+    // form has to be able to read back what it is showing. Each dimension
+    // accessor is `None` exactly while [`Self::unset_dimensions`] names its
+    // field, so a screen can pair a value with the "unset" state without
+    // parsing either. `provenance` is the one exception: `unset_dimensions`
+    // does not name it as a dimension, even though [`Self::resolve`] refuses
+    // a draft that has not set it.
 
     /// The `ia_scenario` identity the draft resolves to, when set.
     #[must_use]
