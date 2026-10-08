@@ -12,10 +12,17 @@
 //!
 //! F52-B adds `objective_page`: the F46-C objectives page read with the colour
 //! filter off at the largest UI scale.
+//!
+//! F52-C adds `session`: the live settings session — recovery from an
+//! unusable file, apply/retry/teardown with the error propagated, the
+//! labelled control profile, and one projection that hands a frame's
+//! gameplay, presented effects and fidelity metadata to their consumers
+//! together (AC03: shake and flash off, gameplay telemetry unchanged).
 
 mod cues;
 mod fidelity;
 mod navigation;
 mod objective_page;
 mod remap;
+mod session;
 mod store;
