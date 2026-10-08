@@ -41,6 +41,15 @@ attempt are all unmeasured and belong to F49-D's retail stage.
   the record and asks to leave for the menu; `Retry` ends the old generation
   **before** it begins the next one and re-runs the authored lowering unchanged;
   `Back` on `Flight` abandons the generation with no record at all.
+* **Both screens a draft can be lost from ask first** (review of this task).
+  Abanding a launched custom session hands the edited draft back to `Select`,
+  so `Select`'s `Back` carries `DiscardsDraft` like `Customize`'s does, and its
+  `ConfirmDiscard`/`KeepEditing` rows answer that prompt — confirming drops the
+  draft back to its preset and replays the `Back` (`DiscardDraft` +
+  `LeaveToMenu`), keeping editing cancels it. Covered by
+  `accept_f49_c_leaving_the_screens_with_a_dirty_draft_confirms_first`, with
+  `accept_f49_c_leaving_the_screens_with_a_clean_draft_asks_nothing` proving the
+  prompt is not unconditional: a draft nothing was edited in leaves at once.
 
 ## The minimum scenario (AC03)
 
@@ -94,10 +103,23 @@ failing rather than resting on a frozen object.
   root seed for a developer overlay (F49 non-negotiable 4) and every record
   entry carries it; writing it into a *replay* needs the replay machinery,
   which is not part of this stage.
+* **Provenance of an edited value.** A world or environment edit stamps the
+  chosen value with the catalog's provenance, while a slot's airframe or
+  loadout edit stamps it with the authored actor's provenance (the actor
+  itself keeps its own). Both are `designed` in the synthetic fixture, so the
+  difference is invisible today; which claim a *retail* value a player picked
+  from a dropdown should carry is unmeasured and belongs to F49-D rather than
+  being guessed here.
+* **Session generations are minted per flow.** `InstantActionFlow` counts from
+  `SessionGeneration(0)`, so uniqueness holds inside one visit to the screens
+  (and inside one `IaRecordBook`, which lives as long as the flow does).
+  Persisting that book — follow-up #775 — has to source generations from an
+  authority shared by every visit, or a later flow would mint a generation a
+  stored entry already holds and settlement would be refused as a duplicate.
 
 ## Verification
 
-`cargo test --workspace --locked -- accept_f49_c_ --include-ignored` selects 11
+`cargo test --workspace --locked -- accept_f49_c_ --include-ignored` selects 13
 tests in `crates/cs_app/tests/accept_f49_c_ia_flow.rs`, all passing. They drive
 the production path end to end (`preset_rows` -> `lower_preset`/`lower_custom`
 -> `evaluate_outcome` -> `IaRecordBook`) on the synthetic fixture catalog; none

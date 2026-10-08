@@ -670,6 +670,118 @@ fn accept_f49_c_back_discards_a_draft_only_after_confirmation() {
     );
 }
 
+/// A custom draft does not only live on the customize screen: abandoning its
+/// flight brings it back to `Select` still holding its edits, so leaving the
+/// Instant Action screens from there has to confirm the loss exactly like
+/// `Back` does on `Customize` (UI-NETWORK, "Back from a draft discards or
+/// explicitly confirms changes").
+#[test]
+fn accept_f49_c_leaving_the_screens_with_a_dirty_draft_confirms_first() {
+    let mut flow = customizing();
+    let preset = dogfight_preset(&flow);
+    let airframe = other_airframe(&flow, ScenarioSide::Enemy, RosterSlot(1));
+    flow.edit(IaEdit::SlotAirframe {
+        side: ScenarioSide::Enemy,
+        slot: RosterSlot(1),
+        airframe,
+    })
+    .expect("the edit applies");
+
+    launch(&mut flow);
+    flow.apply(IaAction::Back).expect("the flight is abandoned");
+    assert_eq!(flow.screen(), IaScreen::Select);
+    assert!(
+        flow.draft().is_some(),
+        "the abandoned flight hands the custom selection back to Select"
+    );
+    assert!(
+        flow.draft_is_dirty(),
+        "and it still holds the edits made before the flight"
+    );
+
+    // Leaving asks first, and the prompt gates everything else from there.
+    let asked = flow
+        .apply(IaAction::Back)
+        .expect("a dirty draft is confirmed for before the screens are left");
+    assert_eq!(asked.from, IaScreen::Select);
+    assert_eq!(asked.to, IaScreen::Select, "nothing moved yet");
+    assert_eq!(asked.effects, vec![IaEffect::AskDiscard]);
+    assert!(flow.pending_discard());
+    assert_eq!(
+        flow.apply(IaAction::Launch),
+        Err(IaRefusal::ConfirmationPending),
+        "the prompt gates a launch from Select too"
+    );
+    assert_eq!(
+        flow.apply(IaAction::StartCustom {
+            subject: custom_subject(),
+        }),
+        Err(IaRefusal::ConfirmationPending),
+        "and the opening of another draft"
+    );
+    assert_eq!(
+        flow.select_preset(&preset),
+        Err(IaRefusal::ConfirmationPending),
+        "and a new preset selection"
+    );
+
+    // Keeping the draft answers the prompt without moving or losing it.
+    let kept = flow
+        .apply(IaAction::KeepEditing)
+        .expect("the prompt answers");
+    assert_eq!(kept.to, IaScreen::Select);
+    assert!(
+        kept.effects.is_empty(),
+        "keeping changes ends the transition there"
+    );
+    assert!(!flow.pending_discard());
+    assert!(flow.draft().is_some(), "the edits are still in hand");
+    assert!(flow.draft_is_dirty());
+
+    // Confirming drops the draft back to the preset it was seeded from and
+    // grants the Back that asked: the screens are left for the menu.
+    flow.apply(IaAction::Back).expect("the prompt reopens");
+    let left = flow
+        .apply(IaAction::ConfirmDiscard)
+        .expect("the prompt answers");
+    assert_eq!(left.to, IaScreen::Select);
+    assert_eq!(
+        left.effects,
+        vec![IaEffect::DiscardDraft, IaEffect::LeaveToMenu]
+    );
+    assert!(flow.draft().is_none());
+    assert!(!flow.draft_is_dirty());
+    assert_eq!(flow.preset_id(), Some(&preset));
+
+    // Nothing is pending any more, so leaving takes no second confirmation.
+    let clean = flow
+        .apply(IaAction::Back)
+        .expect("a selection with no edits leaves at once");
+    assert_eq!(clean.effects, vec![IaEffect::LeaveToMenu]);
+}
+
+/// An abandoned flight whose draft was never edited is not a draft with
+/// changes to lose: `Select`'s Back leaves at once, without a prompt.
+#[test]
+fn accept_f49_c_leaving_the_screens_with_a_clean_draft_asks_nothing() {
+    let mut flow = customizing();
+    assert!(!flow.draft_is_dirty());
+    launch(&mut flow);
+    flow.apply(IaAction::Back).expect("the flight is abandoned");
+    assert_eq!(flow.screen(), IaScreen::Select);
+    assert!(flow.draft().is_some(), "the clean draft is still in hand");
+
+    let left = flow
+        .apply(IaAction::Back)
+        .expect("nothing was edited, so nothing needs confirming");
+    assert_eq!(
+        left.effects,
+        vec![IaEffect::LeaveToMenu],
+        "no prompt stands between a clean selection and the menu"
+    );
+    assert!(!flow.pending_discard());
+}
+
 /// Every visible customization option reaches the scenario that is actually
 /// launched (F49 non-negotiable 5), and each reaches it as itself.
 #[test]

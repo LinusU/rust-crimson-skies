@@ -199,11 +199,17 @@ use IaScreen as S;
 /// `ConfirmDiscard` and `KeepEditing` answer the discard prompt
 /// [`IaEffect::AskDiscard`] opens, so they are refused while no prompt is
 /// pending (and every other action is refused while one is) — that gating
-/// lives in [`InstantActionFlow::apply`], not in a row.
+/// lives in [`InstantActionFlow::apply`], not in a row. Both screens a draft
+/// can be lost from carry [`IaGuard::DiscardsDraft`]: `Customize`, where the
+/// draft is edited, and `Select`, which a launched custom draft comes back to
+/// when its session is abandoned — leaving the Instant Action screens with it
+/// still holds the draft, so the same confirmation has to guard it there.
 pub const IA_TABLE: &[IaRow] = &[
-    row(S::Select, K::Back, S::Select, G::Always),
+    row(S::Select, K::Back, S::Select, G::DiscardsDraft),
     row(S::Select, K::StartCustom, S::Customize, G::NeedsPreset),
     row(S::Select, K::Launch, S::Flight, G::HasSelection),
+    row(S::Select, K::ConfirmDiscard, S::Select, G::Always),
+    row(S::Select, K::KeepEditing, S::Select, G::Always),
     row(S::Customize, K::Launch, S::Flight, G::HasSelection),
     row(S::Customize, K::Back, S::Select, G::DiscardsDraft),
     row(S::Customize, K::ConfirmDiscard, S::Select, G::Always),
@@ -709,14 +715,17 @@ impl InstantActionFlow {
             .and_then(ScenarioSelection::preset_id)
     }
 
-    /// The selection the next launch lowers: a preset on
-    /// [`IaScreen::Select`], the edited draft on [`IaScreen::Customize`].
+    /// The selection the next launch lowers: a preset — or the custom draft
+    /// an abandoned flight came back to — on [`IaScreen::Select`], the
+    /// edited draft on [`IaScreen::Customize`].
     #[must_use]
     pub const fn selection(&self) -> Option<&ScenarioSelection> {
         self.selection.as_ref()
     }
 
-    /// The custom draft being edited on [`IaScreen::Customize`].
+    /// The custom draft the flow holds: the one being edited on
+    /// [`IaScreen::Customize`], or the one a launched custom session left
+    /// behind on [`IaScreen::Select`] when its flight was abandoned.
     #[must_use]
     pub fn draft(&self) -> Option<&CustomScenarioDraft> {
         match &self.selection {
@@ -726,7 +735,9 @@ impl InstantActionFlow {
     }
 
     /// Whether the draft has been edited since it was seeded, which is what
-    /// makes Back ask before discarding it.
+    /// makes Back ask before discarding it — on [`IaScreen::Customize`],
+    /// where it is edited, and on [`IaScreen::Select`], where an abandoned
+    /// flight can leave it holding those edits.
     #[must_use]
     pub const fn draft_is_dirty(&self) -> bool {
         self.draft_edited
@@ -1026,12 +1037,23 @@ impl InstantActionFlow {
                     generation: session.generation,
                 });
             }
+            (IaAction::ConfirmDiscard, IaScreen::Select) => {
+                // The prompt was opened by `Back` on this screen, which
+                // means "leave Instant Action"; answering it replays that
+                // intent, so the draft goes and the screens are left.
+                self.discard_draft();
+                self.pending_discard = false;
+                effects.push(IaEffect::DiscardDraft);
+                effects.push(IaEffect::LeaveToMenu);
+            }
             (IaAction::ConfirmDiscard, IaScreen::Customize) => {
                 self.discard_draft();
                 self.pending_discard = false;
                 effects.push(IaEffect::DiscardDraft);
             }
-            (IaAction::KeepEditing, IaScreen::Customize) => self.pending_discard = false,
+            (IaAction::KeepEditing, IaScreen::Select | IaScreen::Customize) => {
+                self.pending_discard = false;
+            }
             (IaAction::Retry, IaScreen::Results) => {
                 let (authored, previous) = {
                     let session = self.session.as_ref().ok_or(IaRefusal::NoSession)?;
