@@ -308,6 +308,10 @@ components of the 7 degree target against the hand-computed blend).
   the actual-throttle thrust, the fuel freeze and the slew-down. No other
   assertion changes: every probe already started with the actual throttle at
   the commanded value.
+* **The evidence report's `review.identity` said "reviewer: not yet
+  assigned".** The review claim is now open, so the harness names both
+  claims and states plainly that the reviewer is the same agent name that
+  implemented the work — `checked` at best, not independent evidence.
 * **Two doc comments claimed an order that did not exist**
   (`OriginalAirframeParameters::values` "in `AIRFRAME_FIELDS` order",
   `OriginalGlobalParameters::values` "in `GLOBAL_FIELDS` order"). Neither

@@ -270,17 +270,21 @@ fn evidence_report_flight_original_writes_the_acceptance_report() {
             .join(", "),
         identity = jstr(
             "implementer: bunny-alpha-2 (Rally #796 implement claim of 2026-10-08); reviewer: \
-             not yet assigned — Rally hands this branch to another agent instance for review, \
-             and the activity log records who that was. An agent review is `checked` at best \
-             and never replaces the owner's human approval",
+             bunny-alpha-2 (Rally #796 review claim of 2026-10-08) — the same agent name that \
+             implemented the work, in a separate session that re-read the task description, \
+             `docs/contracts/FLIGHT-PHYSICS.md`, the diff and the findings before checking it \
+             line by line. Per AGENTS.md a review by the same agent is `checked` at best and is \
+             **not** independent original-reference evidence; it never replaces the owner's \
+             human approval. The activity log records both claims.",
         ),
         method = jstr(
             "acceptance suite run locally with the retail capability and recorded verbatim in \
              cargo-test.log; this harness derives every field from that log, from production \
              discovery of $CS_GAME_DIR, from a fresh run of the task's own importer \
-             (retail-import.json), from rustc and from Cargo.lock; structure checked with \
-             tools/validate_evidence.py, which --require-pass refuses while `unknowns` is \
-             non-empty by design",
+             (retail-import.json), from rustc and from Cargo.lock; the reviewing claim \
+             regenerated this report on the reviewed commit and re-ran all four checks; \
+             structure checked with tools/validate_evidence.py, which --require-pass refuses \
+             while `unknowns` is non-empty by design",
         ),
     );
 
