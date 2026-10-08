@@ -1,9 +1,10 @@
-//! Lobby screen projection (F55-A).
+//! Lobby screen projection and screen (F55-A, F55-C).
 //!
-//! Spec: `specs/F55-multiplayer-lobby-host-rules-readiness-and-ux.md`, stage
-//! `### F55-A`. The lobby truth is `cs_net::lobby::Lobby`, owned by the host;
-//! this module is the client's read-only view of the events the host sends and
-//! owns only client state: the notices on screen and the mute list.
+//! Spec: `specs/F55-multiplayer-lobby-host-rules-readiness-and-ux.md`, stages
+//! `### F55-A` and `### F55-C`. The lobby truth is `cs_net::lobby::Lobby`,
+//! owned by the host; this module is the client's view of the events the
+//! host sends and owns only client state: the stage and form drafts, the
+//! focus, and the mute list.
 //!
 //! [`LobbyView::observe`] turns each [`LobbyEvent`] into display lines. A
 //! readiness revocation becomes a [`Notice::ReadyRevoked`] naming the
@@ -12,13 +13,24 @@
 //! not of a renderer. Chat from a muted peer is dropped here, and chat text is
 //! kept as literal text, never markup.
 //!
-//! No widget layout, localization lookup or input is wired yet (F55-C); the
-//! reason carries its stable key and the designed English fallback only.
+//! F55-C adds the screen itself ([`screen::LobbyScreen`]: the stage table and
+//! the join/host/team/loadout/chat forms) and its connection to the
+//! authoritative lobby ([`link::LobbyLink`]). No widget layout or
+//! localization lookup is wired yet: the reason carries its stable key and
+//! the designed English fallback only.
+
+pub mod link;
+pub mod screen;
 
 use std::collections::BTreeSet;
 
 use cs_net::lobby::{ChatText, LobbyEvent, Revision, RevokeReason};
 use cs_types::net::PeerId;
+
+pub use link::{HostSettings, LobbyLink};
+pub use screen::{
+    Back, Field, FieldProblem, HostDraft, JoinDraft, LobbyScreen, LobbyUiError, Stage,
+};
 
 /// A line the lobby screen shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +53,16 @@ pub enum Notice {
         from: PeerId,
         /// The line.
         text: ChatText,
+    },
+    /// A member joined the lobby.
+    MemberJoined {
+        /// Who.
+        peer: PeerId,
+    },
+    /// A member left the lobby cleanly (spec non-negotiable 4).
+    MemberLeft {
+        /// Who.
+        peer: PeerId,
     },
     /// A pending launch was cancelled.
     LaunchCancelled,
@@ -65,6 +87,8 @@ impl Notice {
             }
             Self::RulesChanged { revision } => format!("The rules changed ({revision})"),
             Self::Chat { from, text } => format!("{from}: {}", text.as_str()),
+            Self::MemberJoined { peer } => format!("{peer} joined"),
+            Self::MemberLeft { peer } => format!("{peer} left"),
             Self::LaunchCancelled => "Launch cancelled".to_owned(),
         }
     }
@@ -101,6 +125,12 @@ impl LobbyView {
         self.muted.contains(&peer)
     }
 
+    /// Drops every notice: what entering or leaving a screen resets. The
+    /// mute list is client preference and is kept.
+    pub fn clear(&mut self) {
+        self.notices.clear();
+    }
+
     /// Projects one host event into display notices.
     pub fn observe(&mut self, event: &LobbyEvent) {
         let notice = match event {
@@ -115,6 +145,8 @@ impl LobbyView {
                 from: *from,
                 text: text.clone(),
             },
+            LobbyEvent::MemberJoined { peer } => Notice::MemberJoined { peer: *peer },
+            LobbyEvent::MemberLeft { peer } => Notice::MemberLeft { peer: *peer },
             LobbyEvent::LaunchCancelled => Notice::LaunchCancelled,
             _ => return,
         };
