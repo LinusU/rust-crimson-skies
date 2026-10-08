@@ -22,11 +22,11 @@
 //! vocabulary of `cs_content::instant_action::VictoryCondition`. See
 //! `docs/findings/2026-10-08-f49-b-scenario-normalization-and-outcomes.md`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_content::instant_action::{
-    RespawnBudget, RosterSlot, ScenarioSeed, ScenarioSide, TieOutcome, VictoryCondition,
+    RosterSlot, ScenarioSeed, ScenarioSide, TieOutcome, VictoryCondition,
 };
 use cs_types::content::ContentId;
 
@@ -181,7 +181,7 @@ pub fn diff_scenarios(before: &LoweredScenario, after: &LoweredScenario) -> Vec<
 pub struct ScenarioSnapshot {
     tick: u64,
     alive: BTreeSet<(ScenarioSide, RosterSlot)>,
-    respawns_used: u32,
+    respawns_used: BTreeMap<ScenarioSide, u32>,
 }
 
 impl ScenarioSnapshot {
@@ -191,14 +191,22 @@ impl ScenarioSnapshot {
         Self {
             tick,
             alive: alive.into_iter().collect(),
-            respawns_used: 0,
+            respawns_used: BTreeMap::new(),
         }
     }
 
-    /// Records how many replacements each side has used so far.
+    /// Records that `side` has spent `used` of **its own** replacement budget.
+    ///
+    /// The count is per side because the declared budget is
+    /// [`RespawnBudget::PerSide`](cs_content::instant_action::RespawnBudget::PerSide)
+    /// — "each side may replace up to `per_side` destroyed actors" — and the
+    /// two coalitions do not share one: replacements the opposition spent say
+    /// nothing about whether the player's side can still replace, or the other
+    /// way round. Chains, so a snapshot of both sides' spending reads
+    /// `.with_respawns_used(ScenarioSide::Player, 1).with_respawns_used(ScenarioSide::Enemy, 2)`.
     #[must_use]
-    pub const fn with_respawns_used(mut self, used: u32) -> Self {
-        self.respawns_used = used;
+    pub fn with_respawns_used(mut self, side: ScenarioSide, used: u32) -> Self {
+        self.respawns_used.insert(side, used);
         self
     }
 
@@ -207,6 +215,12 @@ impl ScenarioSnapshot {
             .iter()
             .filter(|(side, _)| sides.contains(side))
             .count()
+    }
+
+    /// The replacements `side` has spent of its own budget. A side the
+    /// snapshot does not mention has spent nothing.
+    fn respawns_spent(&self, side: ScenarioSide) -> u32 {
+        self.respawns_used.get(&side).copied().unwrap_or_default()
     }
 }
 
@@ -283,37 +297,55 @@ impl ScenarioOutcome {
 /// Returns `None` while the scenario is still running. The player's side is
 /// the player and ally actors; the opposition is the enemy actors. Neutral
 /// traffic never decides an outcome. A side with replacements left in the
-/// declared [`RespawnBudget`] is not yet out, so a lone destroyed actor does
-/// not end a scenario that would replace it.
+/// declared [`RespawnBudget`](cs_content::instant_action::RespawnBudget) is
+/// not yet out, so a lone destroyed actor does not end a scenario that would
+/// replace it. That budget is counted **per side**, as it is declared: a side
+/// is out only when nothing of it is flying and no side of its coalition that
+/// flies in this scenario has a replacement left, so replacements the
+/// opposition spent never keep the player's side in — or push it out.
+///
+/// When both coalitions are out at once under
+/// [`VictoryCondition::EliminateEnemies`] or
+/// [`VictoryCondition::LastSideStanding`] (mutual destruction on one tick),
+/// neither condition has a winner and the scenario's declared
+/// [`TieOutcome`] decides, rather than a hard-coded precedence.
 #[must_use]
 pub fn evaluate_outcome(
     scenario: &LoweredScenario,
     snapshot: &ScenarioSnapshot,
 ) -> Option<ScenarioOutcome> {
-    let friendly = snapshot.alive_on(&[ScenarioSide::Player, ScenarioSide::Ally]);
-    let hostile = snapshot.alive_on(&[ScenarioSide::Enemy]);
-    let replaceable = match scenario.respawns() {
-        RespawnBudget::None => false,
-        RespawnBudget::PerSide { per_side } => snapshot.respawns_used < per_side,
+    const FRIENDLY: &[ScenarioSide] = &[ScenarioSide::Player, ScenarioSide::Ally];
+    const HOSTILE: &[ScenarioSide] = &[ScenarioSide::Enemy];
+    let budget = scenario.respawns().per_side();
+    let flies = |side: ScenarioSide| scenario.actors().iter().any(|actor| actor.side == side);
+    // A coalition can still field an actor when one of the sides it flies
+    // here has budget left. A side the roster does not hold has no actor to
+    // replace, so its untouched budget is not a reserve — otherwise a roster
+    // without allies would keep the player's side "not out" on an ally budget
+    // no actor of this scenario could ever spend.
+    let can_replace = |sides: &[ScenarioSide]| {
+        sides
+            .iter()
+            .any(|side| flies(*side) && snapshot.respawns_spent(*side) < budget)
     };
-    let friendly_out = friendly == 0 && !replaceable;
-    let hostile_out = hostile == 0 && !replaceable;
+    let friendly = snapshot.alive_on(FRIENDLY);
+    let hostile = snapshot.alive_on(HOSTILE);
+    let friendly_out = friendly == 0 && !can_replace(FRIENDLY);
+    let hostile_out = hostile == 0 && !can_replace(HOSTILE);
     let result = match scenario.condition() {
-        VictoryCondition::EliminateEnemies => {
-            if friendly_out {
-                ScenarioResult::Defeat
-            } else if hostile_out {
-                ScenarioResult::Victory
-            } else {
-                return None;
+        // Both conditions end on the same two facts — which coalition is still
+        // flying — and neither order of checking may swallow the case where
+        // neither is: that is a tie, and the rules declare what a tie resolves
+        // to. Treating a mutual wipe as a plain loss would throw the declared
+        // `tie_outcome` away for the one case that needs it most.
+        VictoryCondition::EliminateEnemies | VictoryCondition::LastSideStanding => {
+            match (friendly_out, hostile_out) {
+                (true, true) => tie(scenario.tie_outcome()),
+                (true, false) => ScenarioResult::Defeat,
+                (false, true) => ScenarioResult::Victory,
+                (false, false) => return None,
             }
         }
-        VictoryCondition::LastSideStanding => match (friendly_out, hostile_out) {
-            (true, true) => tie(scenario.tie_outcome()),
-            (true, false) => ScenarioResult::Defeat,
-            (false, true) => ScenarioResult::Victory,
-            (false, false) => return None,
-        },
         VictoryCondition::SurviveToDeadline => {
             if friendly_out {
                 ScenarioResult::Defeat

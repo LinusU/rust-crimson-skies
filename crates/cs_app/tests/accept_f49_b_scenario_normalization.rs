@@ -16,12 +16,13 @@ use cs_app::ui::instant_action::{
     ActorField, LowerError, ProblemCode, ScenarioChange, ScenarioResult, ScenarioSnapshot,
     diff_scenarios, evaluate_outcome, lower_custom, lower_preset,
 };
+use cs_content::ai::DifficultyTier;
 use cs_content::instant_action::{
     CustomScenarioDraft, RespawnBudget, RosterSlot, SYNTHETIC_IA_AIRFRAME_HEAVY,
     SYNTHETIC_IA_AIRFRAME_INTERCEPTOR, SYNTHETIC_IA_LOADOUT_HEAVY, SYNTHETIC_IA_LOADOUT_LIGHT,
     SYNTHETIC_IA_LOADOUT_UNSUPPORTED, ScenarioSchemaError, ScenarioSeed, ScenarioSide, TieOutcome,
     VictoryCondition, VictoryRules, synthetic_actor, synthetic_custom_request,
-    synthetic_instant_action_catalog,
+    synthetic_difficulty, synthetic_instant_action_catalog,
 };
 
 /// The valid fixture request as a draft, with a second enemy so a slot change
@@ -122,12 +123,40 @@ fn accept_f49_b_scenario_level_changes_report_as_themselves() {
         vec![ScenarioChange::Rules]
     );
 
-    // Whole different authored scenarios differ in more than one dimension.
+    let more_seats = lower_custom(&catalog, base_draft(None).with_players(2)).unwrap();
+    assert_eq!(
+        diff_scenarios(&before, &more_seats),
+        vec![ScenarioChange::Players]
+    );
+
+    let harder = lower_custom(
+        &catalog,
+        base_draft(None).with_difficulty(synthetic_difficulty(DifficultyTier::Hard)),
+    )
+    .unwrap();
+    assert_eq!(
+        diff_scenarios(&before, &harder),
+        vec![ScenarioChange::Difficulty]
+    );
+
+    // The two authored presets are the fixture's other authored dimensions:
+    // they differ in every scenario-level dimension the diff reports except
+    // the player count, which `lower_preset` reads as single-player for both.
     let presets = catalog.presets();
     let a = lower_preset(&catalog, presets[0].id()).unwrap();
     let b = lower_preset(&catalog, presets[1].id()).unwrap();
     let changes = diff_scenarios(&a, &b);
-    assert!(changes.contains(&ScenarioChange::Subject));
+    for expected in [
+        ScenarioChange::Subject,
+        ScenarioChange::World,
+        ScenarioChange::Environment,
+        ScenarioChange::Rules,
+        ScenarioChange::Difficulty,
+        ScenarioChange::Seed,
+    ] {
+        assert!(changes.contains(&expected), "{expected:?} not reported");
+    }
+    assert!(!changes.contains(&ScenarioChange::Players));
 }
 
 /// Actors match by identity, so a removed actor does not shift its neighbours.
@@ -297,6 +326,8 @@ fn accept_f49_b_survive_to_deadline_wins_at_the_deadline_and_not_before() {
     assert_eq!(dead.result(), ScenarioResult::Defeat);
 }
 
+/// The replacement budget is declared **per side**, so each coalition's
+/// spending counts against its own replacements and nobody else's.
 #[test]
 fn accept_f49_b_a_side_with_replacements_left_is_not_yet_out() {
     let catalog = synthetic_instant_action_catalog();
@@ -309,15 +340,142 @@ fn accept_f49_b_a_side_with_replacements_left_is_not_yet_out() {
         ))),
     )
     .unwrap();
-    let wiped = alive(&[(ScenarioSide::Player, 0)]);
+
+    // The player's side is wiped while the opposition is still flying, but
+    // neither the player's nor the allies' own budget is spent: the scenario
+    // runs on. The two replacements the *enemy* side spent do not spend
+    // theirs.
+    let running = ScenarioSnapshot::new(9, alive(&[(ScenarioSide::Enemy, 1)]))
+        .with_respawns_used(ScenarioSide::Enemy, 2);
     assert_eq!(
-        evaluate_outcome(&scenario, &ScenarioSnapshot::new(9, wiped.clone())),
+        evaluate_outcome(&scenario, &running),
         None,
-        "a replacement is still available"
+        "the player's side still has replacements left"
     );
-    let spent = ScenarioSnapshot::new(9, wiped).with_respawns_used(2);
+
+    // The same picture with both friendly sides' budgets spent is terminal:
+    // spending is counted per side, and neither side of the coalition can
+    // field an actor any more.
+    let lost = ScenarioSnapshot::new(9, alive(&[(ScenarioSide::Enemy, 1)]))
+        .with_respawns_used(ScenarioSide::Player, 2)
+        .with_respawns_used(ScenarioSide::Ally, 2);
     assert_eq!(
-        evaluate_outcome(&scenario, &spent).map(|o| o.result()),
+        evaluate_outcome(&scenario, &lost).map(|o| o.result()),
+        Some(ScenarioResult::Defeat)
+    );
+
+    // The opposition wiped out with its budget spent is a victory even while
+    // the player's side still has replacements to call on.
+    let won = ScenarioSnapshot::new(9, alive(&[(ScenarioSide::Player, 0)]))
+        .with_respawns_used(ScenarioSide::Enemy, 2);
+    assert_eq!(
+        evaluate_outcome(&scenario, &won).map(|o| o.result()),
         Some(ScenarioResult::Victory)
     );
+}
+
+/// A side the roster does not fly has no actor to replace, so its untouched
+/// budget is not a reserve for the coalition.
+#[test]
+fn accept_f49_b_a_side_the_roster_does_not_fly_is_not_a_reserve() {
+    let catalog = synthetic_instant_action_catalog();
+    let request = synthetic_custom_request();
+    let without_allies: Vec<_> = request
+        .parameters()
+        .roster()
+        .actors()
+        .iter()
+        .filter(|actor| actor.side() != ScenarioSide::Ally)
+        .cloned()
+        .collect();
+    let scenario = lower_custom(
+        &catalog,
+        base_draft(Some(rules(
+            VictoryCondition::EliminateEnemies,
+            None,
+            RespawnBudget::PerSide { per_side: 2 },
+        )))
+        .with_roster(without_allies),
+    )
+    .unwrap();
+
+    // The roster flies no ally, so with the player's own budget spent there
+    // is nobody left who could replace anything.
+    let lost = ScenarioSnapshot::new(6, alive(&[(ScenarioSide::Enemy, 0)]))
+        .with_respawns_used(ScenarioSide::Player, 2);
+    assert_eq!(
+        evaluate_outcome(&scenario, &lost).map(|o| o.result()),
+        Some(ScenarioResult::Defeat)
+    );
+
+    // The same snapshot with the player's budget untouched still runs.
+    assert_eq!(
+        evaluate_outcome(
+            &scenario,
+            &ScenarioSnapshot::new(6, alive(&[(ScenarioSide::Enemy, 0)]))
+        ),
+        None
+    );
+}
+
+/// Mutual destruction on one tick satisfies both conditions at once, which is
+/// the tie the declared [`TieOutcome`] resolves — for this condition as much
+/// as for `LastSideStanding`.
+#[test]
+fn accept_f49_b_eliminate_enemies_resolves_a_mutual_wipe_with_the_declared_tie() {
+    let catalog = synthetic_instant_action_catalog();
+    for (tie, expected) in [
+        (TieOutcome::Draw, ScenarioResult::Draw),
+        (TieOutcome::PlayerFavour, ScenarioResult::Victory),
+        (TieOutcome::OppositionFavour, ScenarioResult::Defeat),
+    ] {
+        let rules = VictoryRules::try_new(
+            VictoryCondition::EliminateEnemies,
+            RespawnBudget::None,
+            None,
+            tie,
+        )
+        .unwrap();
+        let scenario = lower_custom(&catalog, base_draft(Some(rules))).unwrap();
+        let outcome = evaluate_outcome(&scenario, &ScenarioSnapshot::new(7, alive(&[])))
+            .expect("both coalitions destroyed ends the scenario");
+        assert_eq!(outcome.result(), expected, "tie outcome {tie}");
+    }
+}
+
+/// Unaligned traffic is neither side: it never keeps a wiped scenario running
+/// and never hands anybody a win.
+#[test]
+fn accept_f49_b_neutral_traffic_never_decides_an_outcome() {
+    let catalog = synthetic_instant_action_catalog();
+    let scenario = lower_custom(
+        &catalog,
+        base_draft(Some(rules(
+            VictoryCondition::EliminateEnemies,
+            None,
+            RespawnBudget::None,
+        ))),
+    )
+    .unwrap();
+
+    // Only neutral traffic still flying: both coalitions are gone, so the
+    // declared tie decides — neutral actors are not an opposition to wipe.
+    let leftovers = evaluate_outcome(
+        &scenario,
+        &ScenarioSnapshot::new(3, alive(&[(ScenarioSide::Neutral, 0)])),
+    )
+    .expect("neither coalition is still flying");
+    assert_eq!(leftovers.result(), ScenarioResult::Draw);
+
+    // Neutral actors flying beside the player do not make the enemy side
+    // "not yet eliminated": the scenario is won as soon as every enemy is out.
+    let won = evaluate_outcome(
+        &scenario,
+        &ScenarioSnapshot::new(
+            4,
+            alive(&[(ScenarioSide::Player, 0), (ScenarioSide::Neutral, 0)]),
+        ),
+    )
+    .expect("no enemy is left");
+    assert_eq!(won.result(), ScenarioResult::Victory);
 }
