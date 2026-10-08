@@ -1,10 +1,11 @@
 # M01-LC-CAMPAIGN-AIRFRAME-POSE: the campaign airframe is engine state, and what is still missing
 
-Date: 2026-10-08. Task: #770 `M01-LC-CAMPAIGN-AIRFRAME-POSE`, session 1 of an
-unfinished implementation claim. Capabilities used: **`retail`** (the owner's
-installation read-only) and **static analysis** of the owner-supplied decrypted
-executable. **No original run happened; nothing here is `verified_original`**,
-and no airframe or yaw is bound for M01 (AGENTS.md rules 4 and 5).
+Date: 2026-10-08. Task: #770 `M01-LC-CAMPAIGN-AIRFRAME-POSE`, sessions 1 and 2
+of an unfinished implementation claim (§1–§8 are session 1, §9–§10 are session
+2). Capabilities used: **`retail`** (the owner's installation read-only) and
+**static analysis** of the owner-supplied decrypted executable. **No original
+run happened; nothing here is `verified_original`**, and no airframe or yaw is
+bound for M01 (AGENTS.md rules 4 and 5).
 
 ## Sources and method
 
@@ -227,6 +228,178 @@ owner-supplied original run — never an invented yaw.
 
 | unknown | affected content | resolving work |
 | --- | --- | --- |
-| the roster/selection value on a profile-less install (which row `0x71daec` holds for M01) | M01's and every campaign mission's player spawn; the `player_configuration` launch surface (#359) | this static pass continued (roster init at `0x64b78c`, entry of `0x4b3750`), F44/F45/F48, or #358 |
-| heading zero direction and handedness | `initial_pose()` for every mission; camera/spawn yaw | this static pass continued (§6.2) or #358 |
+| the roster/selection value on a profile-less install (which row `0x71daec` holds for M01) | M01's and every campaign mission's player spawn; the `player_configuration` launch surface (#359) | **closed by session 2 for a profile-less install (§9.1); a player who has moved the hangar selection can still differ, and where a profile is stored is unmeasured** |
+| heading zero direction and handedness | `initial_pose()` for every mission; camera/spawn yaw | **the conversion site is now located (§9.2); what is left is the `Object3d` rotation triple's world meaning**, then this row or #358 |
 | frame relation between `aiv.zrd` starts and the world grid (194/777/826 stored units outside `c1c`) | every start pose's world placement | #436's remaining work, F16-E-2's prose sync |
+
+---
+
+# Session 2 (same claim, same task): the roster default, and the pose's
+# conversion site
+
+Same date, same capabilities (`retail` + static analysis of
+`$CS_GAME_DIR/crimson.decrypted.exe`, sha256 `43540fc9…`), same method
+(strings, radare2 `pd`, small Python byte scans over the file). **No original
+run happened; nothing here is `verified_original`, no production code and no
+test was changed.**
+
+## 9.1 The campaign airframe's initial value on a profile-less install
+
+Session 1 ended with two open sub-questions: the roster's initialisation and
+the entry of the `0x4b3750` reset. The **roster initialisation is now
+measured**, and it makes the reset's entry irrelevant to the value below.
+
+**The init function `0x4113b0` (…`0x411639`) is called from exactly two sites,
+`0x407a7e` and `0x411361`; `0x411361` sits inside the startup parameter
+routine that first sets `[0x6480c8] = 0x619f58`.** That pointer is written
+once in the whole image (`0x41134d`) and read only by `0x4113b0`'s body, so it
+is the fixed `.data` block `0x619f58` for the rest of the run.
+
+What `0x4113b0` does, in order (addresses from `crimson.decrypted.exe`):
+
+| address | instruction | meaning |
+| --- | --- | --- |
+| `0x411420` | `mov ecx, 0x52e` / `mov edi, 0x64b78c` / `rep stosd` (eax = 0) | **zero the whole roster**: 1326 dwords = 5304 bytes = 26 records of 204 bytes (`0x64b78c`..`0x64cc50`) |
+| `0x411477` | `mov dword [0x64b67c], ebx` (ebx = 0) | **selection index := 0** |
+| `0x41147d` | `mov dword [0x64b680], 1` | wingman-1 roster index := 1 |
+| `0x411487` | `lstrcpyA(0x64b684, …)` | the pinup name |
+| `0x411579`…`0x4115a6` | `mov ecx, [0x6480c8]` / `lea esi, [ecx+0x8c4]` / `mov edi, 0x64b78c` / `rep movsd` (51 dwords) then `lstrcpyA(0x64b790, string(0x1ff))` | **roster[0] := the 204 bytes at `0x619f58 + 0x8c4` = `0x61a81c`**, name from string id 511 |
+| `0x4115aa`…`0x4115d5` | same with `esi = [0x6480c8] + 0x990`, `edi = 0x64b858` | **roster[1] := `0x619f58 + 0x990` = `0x61a8e8`**, name from string id 512 |
+| `0x4115e2` | `mov esi, 0x64b78c` / `mov edi, 0x64cb78` / `rep movsd` | a second copy of roster[0] at `0x64cb78` (the template the hangar paths copy from, `0x40b60a`) |
+| `0x411600`…`0x411633` | gated on `cmp dword [0x647b5c], ebx` / `je 0x411635`; copies `0x619f58 + (i−2)·204` into records 2..12 and stores `1` at each record's `+0` | the 11 airframe records; **`[0x647b5c]` is `.bss` and no reference in the image writes it**, so on the measured image this gate is false and records 2..12 stay zero — either way record 0 is untouched |
+
+The source block's own contents, read straight from the file:
+
+```
+src[ 0..10]  +0 = 0   +0x2c = 0,1,2,…,10     (one row per airframe index)
+src[11] va=0x61a81c  +0 = 1  +0x2c = 5   <- seeds roster[0]
+src[12] va=0x61a8e8  +0 = 1  +0x2c = 5   <- seeds roster[1]
+```
+
+So **`roster[0] + 0x2c` (`0x64b7b8`) starts at 5**, and the wingman's
+`roster[1] + 0x2c` starts at 5 as well.
+
+**Nothing but the init writes `roster[0] + 0x2c`.** All nine absolute
+references to `0x64b7b8` in the image decode as reads (`mov reg, [..]`):
+`0x405d2b`, `0x405de5`, `0x409453`, `0x4094bc`, `0x409836`, `0x40a123`,
+`0x417042`, `0x4172bc`, `0x4173c2`. The only writes are the `rep movsd` /
+`stosd` above. (A record written through a base register is the same nine
+sites; there is no other `mov edi, 0x64b78c`-style store.)
+
+**`[0x64b67c]` (the selection) has seven writers** and only one of them is
+startup: `0x411477` (init, = 0). The other six are `0x405fb4` (find the type-2
+record whose `+0x2c` equals a wanted airframe), `0x406030` (select a plane by
+index), `0x4094f7`, `0x409580`, `0x4095db` (menu handlers), `0x40b61a` (copy
+the `0x64cb78` template into a record and select it) — every one of them a
+hangar/plane-selection path, none on the way from startup to a campaign
+mission start. Every other reference reads it (`0x405d05`, `0x405dcc`,
+`0x4094d1`, `0x40a039`, `0x40a1c1`, `0x4101e5`, `0x41022f`, `0x411xxx`,
+`0x417114`, `0x417131`, `0x417172`, `0x4172a9`, `0x443dfd`), including the
+whole campaign-start function `0x417114`…`0x41740c`.
+
+**The chain therefore closes for a fresh, profile-less installation:**
+
+```
+startup 0x4113b0 : selection = 0, roster[0] = src[11] (+0x2c = 5)
+campaign start 0x41712c : call 0x416ea0(&roster[selection])
+0x416ea0/0x416db0 : idx = identity_table(roster[0]+0x2c) = 5, 5 < 11 -> [0x71daec] = 5
+spawn 0x474d48 : mode != 3, so the airframe row read from [0x71daec] = 5
+row 5 = Devastator / scene root `player_pfighter` / model `piratefighter`
+```
+
+Three independent engine defaults now agree on row 5: this roster default,
+the `0x4b3786` reset value (session 1) and the instant-action default
+(`0x45940e`, session 1).
+
+**What is still not measured, and why this is not yet a `Resolved::Known`:**
+
+* where a **stored profile** lives and what it can change. `nPrevPlane`
+  (`dword [0x6480c4]`, registered at `0x402128`…`0x402141`) is a *copy* of the
+  selection (`0x405d25` writes it from `[0x64b67c]`) and has no other reference
+  in the image, so nothing in this pass reads it back; but the six menu writers
+  above do change both the selection and the roster, and the file or registry
+  the settings at `0x407670` (called with ids `0xd` and `0x3ff`) read from was
+  not identified. #715's "the installation holds no profile or hangar file" is
+  a statement about the installation only.
+* the caller chain of `0x413a8a` — the *other* caller of the setter
+  `0x416ea0`, which passes the fixed parameter block `0x642fd0`. That block is
+  itself filled from the same source array by `0x411230`
+  (`lea esi, [eax*4 + 0x619f58]` → `rep movsd` into `0x642fd0`), with the index
+  `[0x64e2a8]`, so its `+0x2c` (`0x642ffc`) is one of `src[0..10]`'s — but
+  which function `0x413a8a` belongs to, and when it runs relative to a
+  campaign start, was not established in this session. `0x416ea0` has exactly
+  two callers in the image (`0x413a8a`, `0x41712c`), so whichever runs last
+  wins.
+
+Resolving: identify the settings store behind `0x407670` (F44/F45/F48's
+profile shape) and the function containing `0x413a8a`, or #358's owner run.
+
+## 9.2 The start pose's conversion site — located
+
+Session 1 could not find where the `player` record's field 1/field 2 become a
+world pose. **It is `0x47c210`.** The spawn loop ends each record with
+
+```
+0x47531e   call 0x47c210        ; (model/name, record, 0, extra)
+```
+
+and inside `0x47c210`, with `edi = [ebp+0xc]` = the record object:
+
+| address | instruction | meaning |
+| --- | --- | --- |
+| `0x47c234` | `mov eax, [edi+8]` / `push eax` / `push 7` / `call 0x4d0280` | the record's **name** (`[edi+8]`) — the same field the spawn loop compares against `player` |
+| `0x47c2a6` | `lea ecx, [edi+0x18]`; reads `[edi+0x18]`, `[edi+0x1c]`, `[edi+0x20]` into `[ebp-0x44]/-0x40/-0x3c` | **the position vector** — record `+0x18..+0x20`, i.e. aiv field 1 |
+| `0x47c4b3`…`0x47c4c0` | pushes that vector and `call 0x4d1d50(vehicle, x, y, z)` | the position setter (`Object3d.c`) |
+| `0x47c4e5` | `mov edi, [ebp+0xc]` / `fld dword [edi+0x24]` | **the heading** — record `+0x24`, i.e. aiv field 2 |
+| `0x47c4ee` | `fmul qword [0x6040e8]` | **degrees → radians** (the same `pi/180` constant `0x3f91df46a2529983` the zeppelin parse uses) |
+| `0x47c4f4`…`0x47c4fa` | `fstp dword [esp]`, `push esi`, `call 0x4d1a30(vehicle, 0, heading_rad, 0)` | **the rotation setter** |
+
+`0x4d1a30` is in `D:\zipper\gamez\zclass\Object3d.c` (its own assertion
+string at `0x62d118`; the file's functions are the 34 sites `0x4d126a`…
+`0x4d20e3`). It takes `ecx = [node+0x38]` (the class data) and stores
+
+```
+a0 -> [class+0x18],  a1 -> [class+0x1c],  a2 -> [class+0x20]
+```
+
+so for a plain `aiv` record **only the middle component, `class+0x1c`, is the
+player's heading**; the first and last are 0. The vehicle's own position goes
+through `0x4d1d50` instead. (The other branch at `0x47c4cc`, taken when
+`[esp+0x10] != 0`, passes three floats of some override vector to the same
+setter; for M01's player that argument is the literal `0`, so the fallback
+with the record's heading runs.)
+
+**What is still missing is the meaning of that triple** — the heading's zero
+direction and its handedness:
+
+* `[class+0]` is a flags word (`or eax, 1` / `test dl, 8` around `0x4d1a85`),
+  so the class data is not itself a matrix, and no matrix build was found that
+  reads it: scanning the image for `fld dword [reg+0x1c]` (46 sites) and
+  pairing it with a `mov reg, [reg+0x38]` class-data load in the preceding 96
+  bytes with the same register gives **no pairs**, i.e. the consumer keeps the
+  pointer across a longer region or fetches it differently;
+* `0x4cdb50`…`0x4ce400` is a plain 3×3 matrix multiply (nine floats at
+  `+0x00..+0x20` of both operands, results to `[esp+0x10..0x2c]`) — a
+  *matrix* product, not the Euler/triple → matrix build;
+* `0x4cf830`, called immediately after the setter (`0x4d1ad6`), only propagates
+  dirty flags down the node tree (`or` bits, recursive over `[esi+0x5c]`);
+* the retail scene has a node literally named `compass` (string `0x627cc4`,
+  looked up at `0x476bbb` beside `pfhorizon`/`rtracks`/`ltracks` into
+  `[esi+0x4e4]`) — a cockpit/world compass card, and the cheapest remaining
+  landmark: whoever rotates it by the aircraft's heading spells out both the
+  zero direction and the sign.
+
+Resolving: follow `[esi+0x4e4]` (or the `Object3d` triple → matrix build), or
+#358's owner run. **Never an invented yaw** (AGENTS.md rule 4).
+
+## 10. What changed in session 2
+
+* This note only. `recover_retail_start_configuration` still returns
+  `Resolved::Unknown` for both the airframe and the initial pose, because the
+  pose's zero direction and handedness are unmeasured (rule 5: a source is
+  either measured or it is not).
+* The acceptance criterion naming
+  `crates/cs_app/tests/campaign/vs_m01_runtime.rs` could not be exercised:
+  that file exists only on `origin/rally/359-wire-one-original-mission-into-the-playa`
+  (#359, blocked on this task), not on `main`. It was not created on `main`
+  and #359's branch was not touched.
