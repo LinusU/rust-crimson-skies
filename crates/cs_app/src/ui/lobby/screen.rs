@@ -263,9 +263,10 @@ pub struct JoinDraft {
 /// No field carries an original default: the original's lobby options are
 /// not measured (F55-D / F56-A). `team_mode`, `late_join` and `host_loss`
 /// start at the conservative designed initial state and the host changes
-/// them through the form; `scenario`, `host_callsign`, `password` and
-/// `max_members` start *unset* and the form refuses to submit until they
-/// are entered, rather than inventing a value.
+/// them through the form; `scenario`, `host_callsign` and `max_members`
+/// start *unset* and the form refuses to submit until they are entered,
+/// rather than inventing a value. An empty `password` is not missing: it
+/// is the deliberate no-password choice that opens an open lobby.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostDraft {
     /// The scenario to host, a `multiplayer_scenario` content id.
@@ -842,7 +843,9 @@ impl LobbyScreen {
         self.request(link, "set_loadout", PeerRequest::SetLoadout(loadout))
     }
 
-    /// Readies up under the revision the screen last saw.
+    /// Readies up under the lobby's current rules revision, so a rule
+    /// change between seeing it and pressing Ready can never produce a
+    /// stale acknowledgement.
     ///
     /// # Errors
     ///
