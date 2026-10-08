@@ -121,6 +121,7 @@ mod m02_a;
 mod m02_b;
 mod m02_t3;
 mod m03_a;
+mod m03_b;
 mod m04_a;
 mod m05_a;
 mod m06_a;
