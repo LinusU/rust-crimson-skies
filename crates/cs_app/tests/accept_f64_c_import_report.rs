@@ -38,7 +38,7 @@ use cs_app::ui::import::{
 };
 use cs_assets::install::sha256;
 use cs_content::legacy_import::{
-    ImportClass, ImportRefusal, LayoutAdmission, LegacyIdMap, TargetProfile,
+    ImportClass, ImportRefusal, LayoutAdmission, LegacyIdMap, TargetProfile, UnresolvedReason,
 };
 use cs_formats::legacy_profile::{
     ArtifactProposal, LegacyArtifactClass, LegacyIdClass, LegacyLimits, MAX_LEGACY_SOURCE_BYTES,
@@ -49,8 +49,8 @@ use cs_types::evidence::ClaimStatus;
 use cs_types::profile::{ProfileId, ProfileKind};
 use support::{
     BlueprintRecord, CatalogRows, TempBase, blueprint_document, blueprint_layout_and_map, catalog,
-    cid, context, designed, full_record, id_map, id_map_reordered, offer, position_of,
-    profile_document, proposal, stock, target, tight_mass_rules, tree,
+    cid, context, designed, full_record, id_map, id_map_reordered, no_id_layout, offer,
+    position_of, profile_document, proposal, stock, target, tight_mass_rules, tree,
 };
 
 /// The identities the fixture document's one record must present, in layout
@@ -328,6 +328,23 @@ fn accept_f64_c_hostile_or_oversized_offer_touches_neither_source_nor_destinatio
             destination_before,
             "{label}: the refused import must not touch any new save"
         );
+
+        // The explicit owner action is refused while a refusal is on screen —
+        // with the refusal's own code — and it leaves everything exactly as
+        // it was: the refusal still shown, nothing confirmed.
+        assert_eq!(
+            flow.confirm()
+                .expect_err("a refused attempt has no report to confirm"),
+            ConfirmError::Refused {
+                code: expected_code
+            },
+            "{label}: the owner action names the refusal it ran into"
+        );
+        assert!(
+            flow.refusal_view().is_some(),
+            "{label}: a refused confirmation leaves the refusal on screen"
+        );
+        assert!(flow.confirmed().is_none(), "{label}: and confirms nothing");
 
         // Teardown leaves nothing of the failed attempt behind.
         flow.dismiss();
@@ -797,6 +814,107 @@ fn accept_f64_c_a_document_resolving_nothing_is_never_confirmed_as_a_blank_profi
             }
         )),
         "the screen says unsupported rather than full"
+    );
+    assert!(
+        view.lines().iter().any(|line| matches!(
+            line,
+            ReportLine::Unresolved {
+                code: "id_not_mapped",
+                ..
+            }
+        )),
+        "and the screen shows *why* nothing could be carried, by the \
+         producer's own reason code: {:?}",
+        view.lines()
+    );
+}
+
+/// A layout that declares no id slot: every record reads cleanly and resolves
+/// with **nothing to carry**, so the plan is `unsupported` even though its
+/// record list is full. The report must name the reason, offer no record to
+/// persist and refuse the owner action — the three ways a screen could
+/// otherwise present this document as an import of a blank profile (spec F64
+/// non-negotiable 5).
+#[test]
+fn accept_f64_c_an_unsupported_document_names_its_reason_and_offers_no_record() {
+    let bytes = profile_document(&[(7, 1, "phoenix"), (7, 2, "kestrel")]);
+    let source = proposal(&bytes, LegacyArtifactClass::CustomAircraft)
+        .expect("the fixture source is within the cap");
+    let layout = no_id_layout();
+    let ids = id_map();
+    let catalog = catalog(CatalogRows::Base);
+    let (rules, policy, book) = stock();
+    let context = context(&ids, &catalog, &rules, &policy, &book, true);
+    let target = target();
+
+    let mut flow = ImportFlow::new();
+    let view = flow
+        .offer(
+            &context,
+            // No blueprint roles: this layout declares no id slot at all.
+            &offer(&source, &bytes, Some(&layout), None, &target),
+        )
+        .view()
+        .expect("the document reads; it just carries nothing");
+
+    assert_eq!(view.verdict(), MigrationVerdict::Unsupported);
+    assert_eq!(
+        view.report().records().len(),
+        2,
+        "both records read cleanly — the verdict is about what they carry, \
+         not whether they parsed"
+    );
+
+    // The verdict and the record list must not contradict each other: an
+    // unsupported plan carries nothing, so nothing may be offered for it.
+    assert!(
+        view.importable_records().is_empty(),
+        "an unsupported report offers no record to persist: {:?}",
+        view.importable_records()
+    );
+
+    // The reason the verdict rests on reaches the screen with its own code.
+    assert!(
+        view.lines().iter().any(|line| matches!(
+            line,
+            ReportLine::Unresolved {
+                code: "no_resolvable_identity",
+                detail
+            } if detail.contains("2 declared")
+        )),
+        "the screen says why nothing would be carried: {:?}",
+        view.lines()
+    );
+
+    // Every record line reads as a sentence: a record that carries nothing
+    // must say so rather than ending on "carries".
+    for line in view.lines() {
+        let text = line.to_string();
+        assert!(
+            !text.ends_with("carries "),
+            "the report line must not end mid-sentence: {text:?}"
+        );
+    }
+
+    // And the owner action refuses it, with the producer's reason.
+    let error = flow
+        .confirm()
+        .expect_err("a plan that carries nothing cannot be confirmed");
+    assert!(
+        matches!(
+            &error,
+            ConfirmError::Unsupported { reason }
+                if matches!(
+                    reason,
+                    UnresolvedReason::NoResolvableIdentity { records: 2 }
+                )
+        ),
+        "the refusal carries the producer's own reason: {error:?}"
+    );
+    assert!(flow.confirmed().is_none());
+    assert!(
+        flow.view().is_some(),
+        "the refused confirmation leaves the report on screen"
     );
 }
 

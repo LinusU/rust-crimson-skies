@@ -60,23 +60,25 @@ save:
 - **`ConfirmedImport`** — the outcome transaction: target profile, retained
   migration report, blueprint verdicts, fixture marker and
   `importable_records()`, the intersection of *planned* and *stock-conforming*
-  record indices. A rejected or refused blueprint is never in that list.
+  record indices — and empty for an `unsupported` plan, which carries nothing.
+  A rejected or refused blueprint is never in that list.
   `confirm()` refuses `NothingToConfirm`, `Refused`, `Unsupported` (the plan
   carries nothing — never a blank profile called imported) and
   `NoConformingRecord` (nothing the stock rules accept).
 
-## What the tests pin (`accept_f64_c_*`, 11 tests)
+## What the tests pin (`accept_f64_c_*`, 12 tests)
 
 | test | sheet criterion / behaviour |
 | --- | --- |
 | `..._reordered_catalog_never_remaps_an_imported_weapon` | **AC03, the stage's minimum scenario** |
-| `..._hostile_or_oversized_offer_touches_neither_source_nor_destination` | **AC01** |
+| `..._hostile_or_oversized_offer_touches_neither_source_nor_destination` | **AC01** (+ the owner action refused while a refusal is on screen) |
 | `..._rejected_blueprint_is_reported_with_breach_fields_and_cannot_be_confirmed` | **AC02** at the consumer |
 | `..._optional_save_import_can_be_disabled_while_new_profiles_still_work` | **AC04** |
 | `..._a_refused_attempt_is_torn_down_and_the_retry_runs_clean` | teardown/retry |
 | `..._confirm_retains_the_fingerprint_and_the_importable_records` | explicit owner action + retention |
 | `..._a_partial_import_names_what_it_could_not_carry` | non-negotiable 5 (partial ≠ full) |
 | `..._a_document_resolving_nothing_is_never_confirmed_as_a_blank_profile` | non-negotiable 5 (unsupported) |
+| `..._an_unsupported_document_names_its_reason_and_offers_no_record` | non-negotiable 5 (unsupported reason reaches the screen; no record offered) |
 | `..._a_field_map_that_cannot_describe_the_layout_propagates_its_code` | blueprint-stage error propagation |
 | `..._production_admission_refuses_the_fixture_layout_by_code` | measured-only default + `NoMeasuredLayout` |
 | `..._retail_every_shipped_file_is_refused_by_name_and_nothing_is_written` | `retail`, `#[ignore]`, run with `--include-ignored` |
@@ -118,6 +120,37 @@ asserts each one is refused with `no_measured_layout` naming
 that files over the cap are unproposable, that a probe destination directory
 is byte-for-byte unchanged, and that one file offered *with* a layout in hand
 is refused with `layout_evidence`. It passed locally with `CS_GAME_DIR` set.
+
+## Review fixes (bunny-2, 2026-10-08)
+
+Three problems found while reviewing the branch, all fixed in owner paths
+(`crates/cs_app/src/ui/import.rs`, `crates/cs_app/tests/`):
+
+1. **An unsupported document's reason never reached the screen.** `lines_for`
+   rendered the producer's `UnresolvedRow`s only for a *partial* plan, so a
+   report whose verdict was `unsupported` carried no line saying why — the
+   one distinction non-negotiable 5 asks the report to make was present as a
+   label only. The producer's reason is now rendered as a
+   `ReportLine::Unresolved` with its own code (`no_resolvable_identity`,
+   `id_not_mapped`, `unsupported_version`, ...).
+2. **`MigrationView::importable_records()` could contradict its own verdict.**
+   For a plan the producer classifies `unsupported` *because* its records
+   resolved with nothing to carry (a layout with no declared id slot — the
+   state F64-A's `accept_f64_a_carrying_nothing_is_named_...` exercises),
+   `report.records()` is non-empty, so the view offered those record indices
+   while `confirmable()` refused the same report. `confirm()` was never
+   exposed (it validates first), but the view's own contract — "what the
+   report shows and what an import would carry cannot drift apart" — was
+   broken. An `unsupported` plan now offers no record at all, and the record
+   line for such a record reads "carries no content identity" instead of
+   ending on "carries".
+3. **`ConfirmError::Refused` had no test.** Confirming while a refusal is on
+   screen is a path a screen can reach; AC01 now pins that it returns the
+   refusal's own code and leaves the refusal (and nothing confirmed) in place.
+
+The new test `accept_f64_c_an_unsupported_document_names_its_reason_and_offers_no_record`
+fails on all three before the fix (the reason line is absent, the record list
+is `[0, 1]`, and a rendered record line ends mid-sentence).
 
 ## Deliberately not done
 

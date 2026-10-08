@@ -31,7 +31,9 @@
 //! * [`MigrationView`] and [`ReportLine`] — what the screen shows: a verdict
 //!   of full, partial, unsupported or refused, the retained source
 //!   fingerprint, one line per record, unresolved row, limit breach and
-//!   notice, each carrying a stable machine [`ReportLine::code`].
+//!   notice — including the producer's reason when the verdict is
+//!   *unsupported*, so the screen never shows an unexplained verdict — each
+//!   carrying a stable machine [`ReportLine::code`].
 //!
 //! # What the boundary guarantees
 //!
@@ -389,6 +391,13 @@ impl fmt::Display for ReportLine {
             Self::Version { major, minor } => write!(f, "document version {major}.{minor}"),
             Self::Verdict { verdict } => write!(f, "verdict: {}", verdict.label()),
             Self::Record { index, identities } => {
+                if identities.is_empty() {
+                    // Only reachable from a plan that carries nothing: the
+                    // layout declared no id slot, so the record resolved with
+                    // no identity. "carries" followed by nothing would be a
+                    // sentence the reader has to guess at.
+                    return write!(f, "record {index} carries no content identity");
+                }
                 write!(f, "record {index} carries ")?;
                 for (position, (class, id)) in identities.iter().enumerate() {
                     if position > 0 {
@@ -548,7 +557,9 @@ impl MigrationView {
     /// The records a persistence layer may actually carry: planned **and**,
     /// when the offer declared blueprint roles, stock-conforming. A rejected
     /// or refused blueprint is never in this list, so "what the report shows"
-    /// and "what an import would carry" cannot drift apart.
+    /// and "what an import would carry" cannot drift apart. An
+    /// [`MigrationVerdict::Unsupported`] report offers none: its plan carries
+    /// nothing, so there is nothing to hand a persistence layer either.
     #[must_use]
     pub fn importable_records(&self) -> &[u32] {
         &self.importable
@@ -1081,8 +1092,14 @@ fn run_attempt(
 ///
 /// The plan decides what *resolved*; the stock rules decide what *fits*. Only
 /// their intersection may be carried, so neither report alone can authorise
-/// a record.
+/// a record. An [`ImportClass::Unsupported`] plan carries nothing by
+/// definition (spec F64 non-negotiable 5), so it offers no index at all —
+/// otherwise this list would contradict the verdict above it for a document
+/// whose records resolved with no identity to carry.
 fn importable_records(plan: &ImportPlan, blueprints: Option<&BlueprintImportReport>) -> Vec<u32> {
+    if matches!(plan.report().class(), ImportClass::Unsupported { .. }) {
+        return Vec::new();
+    }
     let planned: Vec<u32> = plan
         .report()
         .records()
@@ -1151,6 +1168,19 @@ fn lines_for(
                 detail: row.to_string(),
             });
         }
+    }
+
+    // An unsupported document keeps its reason on the screen too. The
+    // producer retains the first one (F64-A's shape), and a verdict of
+    // "unsupported" with no line saying why would leave the screen unable to
+    // show what non-negotiable 5 asks it to distinguish — the partial case
+    // names every row it could not carry, so the nothing-carried case must
+    // name its reason as well.
+    if let ImportClass::Unsupported { reason } = report.class() {
+        lines.push(ReportLine::Unresolved {
+            code: reason.code(),
+            detail: reason.to_string(),
+        });
     }
 
     if let Some(blueprints) = blueprints {

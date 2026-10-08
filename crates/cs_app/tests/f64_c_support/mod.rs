@@ -36,14 +36,15 @@ use cs_content::legacy_import::{
     BlueprintFieldMap, LegacyIdBinding, LegacyIdMap, TargetProfile, synthetic_blueprint_map,
 };
 use cs_formats::legacy_profile::{
-    ArtifactProposal, ArtifactProposalError, LegacyArtifactClass, LegacyIdClass, LegacyLayout,
-    LegacyLimits, synthetic_blueprint_layout,
+    ArtifactProposal, ArtifactProposalError, LEGACY_MAGIC_BYTES, LegacyArtifactClass,
+    LegacyIdClass, LegacyLayout, LegacyLimits, LegacySlot, LegacySlotType, TrailingPolicy,
+    synthetic_blueprint_layout,
 };
 use cs_types::content::{
     CatalogElement, ConsumerKind, ContentId, ContentKind, Dependency, DependencyKind, Known,
     NormalizeState, Origin, Provenance, Readiness, Resolved, RuntimeConsumer, UnsupportedReason,
 };
-use cs_types::evidence::ClaimId;
+use cs_types::evidence::{ClaimId, ClaimStatus};
 use cs_types::install::ParseState;
 use cs_types::profile::{ProfileId, ProfileKind};
 
@@ -314,6 +315,39 @@ pub fn profile_document(records: &[(u32, u32, &str)]) -> Vec<u8> {
         bytes.extend_from_slice(&field);
     }
     bytes
+}
+
+/// A layout that declares **no** id slot.
+///
+/// Its header and record fields are `synthetic_layout`'s, so
+/// [`profile_document`] reads through it unchanged; without a declared id
+/// slot every record reads cleanly and resolves with nothing to carry, which
+/// the plan classifies as `unsupported` with the producer's own
+/// `no_resolvable_identity` reason. The F64-C report built from it must name
+/// that reason and offer no record, whatever its record list holds.
+pub fn no_id_layout() -> LegacyLayout {
+    LegacyLayout::new(
+        "synthetic.no_id_slots/v1",
+        ClaimStatus::Designed,
+        *b"CSPROF01",
+        vec![
+            LegacySlot::new("version_major", LegacySlotType::U32, LEGACY_MAGIC_BYTES),
+            LegacySlot::new("version_minor", LegacySlotType::U32, 12),
+            LegacySlot::new("record_count", LegacySlotType::U32, 16),
+            LegacySlot::new("label", LegacySlotType::Text { len: 8 }, 20),
+        ],
+        "version_major",
+        "version_minor",
+        1,
+        "record_count",
+        vec![
+            LegacySlot::new("airframe_id", LegacySlotType::U32, 0),
+            LegacySlot::new("weapon_id", LegacySlotType::U32, 4),
+            LegacySlot::new("name", LegacySlotType::Text { len: 8 }, 8),
+        ],
+        Vec::new(),
+        TrailingPolicy::Retain,
+    )
 }
 
 /// The spellings the offers in these tests declare.
