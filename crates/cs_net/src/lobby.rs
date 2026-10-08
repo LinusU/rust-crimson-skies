@@ -39,18 +39,35 @@
 //! ([`JoinError::WrongPassword`], [`JoinError::LobbyFull`],
 //! [`JoinError::ContentMismatch`], F55 AC03).
 //!
+//! **Packets (F55-B).** [`LobbyPacket`] is the member-to-host envelope: a
+//! bounded, self-describing byte record [`LobbyPacket::encode`] writes and
+//! [`LobbyPacket::decode`] reads. [`Lobby::receive_bytes`] is the host's one
+//! entry point — it decodes, checks the packet's session epoch, drops a
+//! packet it has already applied (bounded replay guard,
+//! [`PacketOutcome::Replayed`]), checks the sender is a member, and only then
+//! dispatches to [`Lobby::apply`], [`Lobby::begin_launch`],
+//! [`Lobby::acknowledge_launch`] or [`Lobby::cancel_launch`]. A launch packet
+//! naming an old rules revision is refused there ([`PacketReject::Launch`],
+//! [`LaunchError::StaleRevision`], F55 AC02) before any lobby state can
+//! change.
+//!
 //! Everything here is newly authored design. The original multiplayer option
 //! table is not known; see `docs/findings/2026-10-02-f55-a-lobby-state-and-
-//! revision-protocol.md`. [`RulesDigest`] is an FNV-1a staleness check, not a
-//! security primitive, and the password comparison is a placeholder for the
-//! F58-A session identity rules.
+//! revision-protocol.md`, and the packet envelope's own open wiring in
+//! `docs/findings/2026-10-08-f55-b-host-validation-readiness-membership.md`.
+//! [`RulesDigest`] is an FNV-1a staleness check, not a security primitive, and
+//! the password comparison is a placeholder for the F58-A session identity
+//! rules.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
+use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
-use cs_types::net::{PeerId, SessionId};
+use cs_types::net::{EventId, PeerId, SessionId};
 
+use crate::bounds::MAX_PACKET_BYTES;
+use crate::codec::MAX_CONTENT_ID_WIRE_BYTES;
 use crate::compat::{
     ClientHello, Compatibility, HandshakeReject, PROTOCOL_VERSION, PeerAllocError, PeerAllocator,
     SessionParameters, evaluate_hello,
@@ -68,6 +85,19 @@ pub const MAX_LOADOUT_COMPONENTS: usize = 64;
 pub const MAX_PASSWORD_BYTES: usize = 64;
 /// Most teams a team mode may declare.
 pub const MAX_TEAMS: u8 = 8;
+/// Longest callsign as it crosses the wire, in bytes: at most
+/// [`MAX_CALLSIGN_CHARS`] characters of four UTF-8 bytes each. The decoded
+/// text still has to satisfy [`Callsign::new`], which counts characters.
+pub const MAX_CALLSIGN_WIRE_BYTES: usize = MAX_CALLSIGN_CHARS * 4;
+/// Longest chat line as it crosses the wire, in bytes: at most
+/// [`MAX_CHAT_CHARS`] characters of four UTF-8 bytes each. The decoded text
+/// still has to satisfy [`ChatText::new`], which counts characters.
+pub const MAX_CHAT_WIRE_BYTES: usize = MAX_CHAT_CHARS * 4;
+/// Most client packet ids one host remembers for replay protection. The
+/// reliable channel can redeliver a packet after a retry, so the host keeps a
+/// bounded seen-set and evicts the *oldest* id when it is full (contract:
+/// "Reliable delivery does not replace application idempotency").
+pub const MAX_SEEN_LOBBY_PACKETS: usize = 256;
 
 /// The rules revision: increments on every host change that alters
 /// [`LobbyRules`]. Starts at 1; 0 is never a live revision.
@@ -741,6 +771,38 @@ pub enum LaunchError {
     NoLaunchPending,
 }
 
+impl fmt::Display for LaunchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotHost { peer } => write!(f, "{peer} is not the host"),
+            Self::StaleRevision { current, found } => write!(
+                f,
+                "launch names revision {} but the rules are at {}",
+                found.get(),
+                current.get()
+            ),
+            Self::DigestMismatch => {
+                f.write_str("the launch names other rules than the live digest")
+            }
+            Self::NotReady { peers } => {
+                f.write_str("not ready:")?;
+                for peer in peers {
+                    write!(f, " {peer}")?;
+                }
+                Ok(())
+            }
+            Self::Empty => f.write_str("a launch needs at least one member"),
+            Self::WrongPhase { phase } => write!(f, "not allowed while the lobby is {phase:?}"),
+            Self::AckMismatch => {
+                f.write_str("the acknowledgment names other rules than the pending launch")
+            }
+            Self::NoLaunchPending => f.write_str("no launch is pending"),
+        }
+    }
+}
+
+impl std::error::Error for LaunchError {}
+
 /// What an acknowledgment did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LaunchProgress {
@@ -780,6 +842,9 @@ pub struct Lobby {
     phase: Phase,
     pending_acks: BTreeSet<PeerId>,
     allocator: PeerAllocator,
+    /// Packet ids already applied, oldest first: the bounded replay guard of
+    /// [`Lobby::receive`].
+    seen: VecDeque<EventId>,
 }
 
 impl Lobby {
@@ -823,6 +888,7 @@ impl Lobby {
             phase: Phase::Gathering,
             pending_acks: BTreeSet::new(),
             allocator,
+            seen: VecDeque::new(),
         })
     }
 
@@ -934,6 +1000,104 @@ impl Lobby {
                 self.apply_peer(from, request, validator)
             }
         }
+    }
+
+    /// The host's one entry point for a packet a member sent: decode, epoch
+    /// check, replay check, membership check, then dispatch. The gates run in
+    /// that order, so nothing a packet claims is trusted before the check
+    /// that owns it:
+    ///
+    /// 1. [`PacketReject::ForeignSession`] — the packet's
+    ///    [`EventId::session`] is not this lobby's session epoch ("Epoch
+    ///    mismatch rejects stale packets"), refused before the payload is
+    ///    interpreted.
+    /// 2. [`PacketOutcome::Replayed`] — the id was already applied. The
+    ///    reliable channel can redeliver a packet after a retry, and it is
+    ///    application idempotency, not delivery, that stops the redelivery
+    ///    from applying twice.
+    /// 3. [`PacketReject::NotAMember`] — the sender is not in the lobby.
+    /// 4. Dispatch: [`Lobby::apply`] for a command (authority is checked
+    ///    first there, so a client packet can never carry host authority,
+    ///    F55 non-negotiable 2), and [`Lobby::begin_launch`],
+    ///    [`Lobby::acknowledge_launch`] or [`Lobby::cancel_launch`] for the
+    ///    launch transition — a launch naming an old revision is refused as
+    ///    [`LaunchError::StaleRevision`] (F55 AC02).
+    ///
+    /// Only an *accepted* packet joins the replay guard: a refused packet may
+    /// be corrected and retried under the same id.
+    ///
+    /// # Errors
+    ///
+    /// A [`PacketReject`]. A refused packet changes no lobby state.
+    pub fn receive(
+        &mut self,
+        from: PeerId,
+        packet: LobbyPacket,
+        validator: &dyn LoadoutValidator,
+    ) -> Result<PacketOutcome, PacketReject> {
+        let id = packet.id();
+        if id.session != self.session {
+            return Err(PacketReject::ForeignSession {
+                expected: self.session,
+                found: id.session,
+            });
+        }
+        if self.seen.contains(&id) {
+            return Ok(PacketOutcome::Replayed);
+        }
+        if !self.members.contains_key(&from) {
+            return Err(PacketReject::NotAMember { peer: from });
+        }
+        let outcome = match packet {
+            LobbyPacket::Command { command, .. } => self
+                .apply(from, command, validator)
+                .map(PacketOutcome::Applied)
+                .map_err(PacketReject::Command)?,
+            LobbyPacket::Launch { request, .. } => self
+                .begin_launch(from, request)
+                .map(PacketOutcome::Launch)
+                .map_err(PacketReject::Launch)?,
+            LobbyPacket::LaunchAck { request, .. } => self
+                .acknowledge_launch(from, request)
+                .map(PacketOutcome::Launch)
+                .map_err(PacketReject::Launch)?,
+            LobbyPacket::CancelLaunch { .. } => self
+                .cancel_launch(from)
+                .map(PacketOutcome::Applied)
+                .map_err(PacketReject::Launch)?,
+        };
+        self.remember(id);
+        Ok(outcome)
+    }
+
+    /// [`Lobby::receive`] for wire bytes: the packet is decoded first, so a
+    /// malformed, oversized or out-of-bounds record is refused as
+    /// [`PacketReject::Malformed`] before it can name a single lobby field.
+    ///
+    /// # Errors
+    ///
+    /// [`PacketReject::Malformed`] for an undecodable buffer, then any
+    /// [`PacketReject`] [`Lobby::receive`] reports.
+    pub fn receive_bytes(
+        &mut self,
+        from: PeerId,
+        bytes: &[u8],
+        validator: &dyn LoadoutValidator,
+    ) -> Result<PacketOutcome, PacketReject> {
+        let packet = LobbyPacket::decode(bytes).map_err(PacketReject::Malformed)?;
+        self.receive(from, packet, validator)
+    }
+
+    /// Records one accepted packet id, evicting the oldest when the bounded
+    /// seen-set is full.
+    fn remember(&mut self, id: EventId) {
+        if self.seen.contains(&id) {
+            return;
+        }
+        while self.seen.len() >= MAX_SEEN_LOBBY_PACKETS {
+            self.seen.pop_front();
+        }
+        self.seen.push_back(id);
     }
 
     fn require_gathering(&self) -> Result<(), LobbyError> {
@@ -1354,5 +1518,710 @@ pub fn hello_for(compatibility: Compatibility) -> ClientHello {
     ClientHello {
         protocol: PROTOCOL_VERSION,
         compatibility,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F55-B: the member-to-host packet envelope and its bounded codec.
+//
+// `cs_net::message` (F54-A) carries the session envelope, and its payload
+// variants are not owned by this stage, so the lobby's own records travel in
+// an envelope of their own with the same wire discipline the F54-B codec
+// documents: little-endian integers, `u16` counts checked against the lobby's
+// caps at decode time, no floats, unknown tags, truncated buffers and
+// trailing bytes refused, and a decoded record re-checked by the constructors
+// that own its bounds (`Callsign::new`, `ChatText::new`, `Revision::new`,
+// `ContentId::parse`). `MAX_PACKET_BYTES` caps both directions.
+// ---------------------------------------------------------------------------
+
+/// The wire tag of a [`LobbyPacket::Command`].
+const TAG_COMMAND: u8 = 0;
+/// The wire tag of a [`LobbyPacket::Launch`].
+const TAG_LAUNCH: u8 = 1;
+/// The wire tag of a [`LobbyPacket::LaunchAck`].
+const TAG_LAUNCH_ACK: u8 = 2;
+/// The wire tag of a [`LobbyPacket::CancelLaunch`].
+const TAG_CANCEL_LAUNCH: u8 = 3;
+
+/// One lobby packet a member sends to the host: the lobby's in-session
+/// envelope, decoded and judged by [`Lobby::receive_bytes`] before any lobby
+/// state can change.
+///
+/// Every packet carries an [`EventId`]. The id is both the session epoch the
+/// packet belongs to (another epoch is refused before the payload is read)
+/// and the replay key the host deduplicates on, so a retry that redelivers a
+/// packet cannot apply it twice. Delivery is [`crate::message::Delivery::
+/// Reliable`] and idempotent by that id, as the contract requires.
+///
+/// There is no client packet that grants host authority: the host's own
+/// rules changes travel as [`LobbyCommand::Host`], and the authority check
+/// still runs inside [`Lobby::apply`] after decoding, so a client that sends
+/// one is refused rather than trusted to have encoded it correctly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LobbyPacket {
+    /// A command: a host rules change or a member's own request.
+    Command {
+        /// The replay and epoch stamp.
+        id: EventId,
+        /// What the member asks.
+        command: LobbyCommand,
+    },
+    /// The host asks to launch, bound to the revision and digest it believes
+    /// are in force.
+    Launch {
+        /// The replay and epoch stamp.
+        id: EventId,
+        /// The rules the launch binds to.
+        request: LaunchRequest,
+    },
+    /// A member acknowledges the pending launch under the same revision and
+    /// digest.
+    LaunchAck {
+        /// The replay and epoch stamp.
+        id: EventId,
+        /// The rules the acknowledgment names.
+        request: LaunchRequest,
+    },
+    /// The host cancels the pending launch.
+    CancelLaunch {
+        /// The replay and epoch stamp.
+        id: EventId,
+    },
+}
+
+impl LobbyPacket {
+    /// The stamp this packet carries.
+    pub const fn id(&self) -> EventId {
+        match self {
+            Self::Command { id, .. }
+            | Self::Launch { id, .. }
+            | Self::LaunchAck { id, .. }
+            | Self::CancelLaunch { id } => *id,
+        }
+    }
+
+    /// Encodes the packet as the bounded byte record
+    /// [`LobbyPacket::decode`] reads back.
+    ///
+    /// # Errors
+    ///
+    /// [`PacketError::TooLarge`] when a text field exceeds its wire cap or
+    /// the encoded record would pass [`crate::bounds::MAX_PACKET_BYTES`].
+    pub fn encode(&self) -> Result<Vec<u8>, PacketError> {
+        let mut w = PacketWriter::new();
+        match self {
+            Self::Command { id, command } => {
+                w.u8(TAG_COMMAND);
+                put_event_id(&mut w, *id);
+                put_command(&mut w, command)?;
+            }
+            Self::Launch { id, request } => {
+                w.u8(TAG_LAUNCH);
+                put_event_id(&mut w, *id);
+                put_launch_request(&mut w, request);
+            }
+            Self::LaunchAck { id, request } => {
+                w.u8(TAG_LAUNCH_ACK);
+                put_event_id(&mut w, *id);
+                put_launch_request(&mut w, request);
+            }
+            Self::CancelLaunch { id } => {
+                w.u8(TAG_CANCEL_LAUNCH);
+                put_event_id(&mut w, *id);
+            }
+        }
+        w.finish()
+    }
+
+    /// Decodes the bounded byte record [`LobbyPacket::encode`] writes.
+    ///
+    /// Every bound is checked on the way in: the packet cap, the lobby's
+    /// list and text caps, unknown tags, zero ids, truncated input and
+    /// trailing bytes. Text is decoded as UTF-8 and re-validated by the
+    /// constructor that owns it, so a callsign or chat line the lobby would
+    /// refuse never reaches [`Lobby::receive`].
+    ///
+    /// # Errors
+    ///
+    /// A [`PacketError`].
+    pub fn decode(bytes: &[u8]) -> Result<Self, PacketError> {
+        if bytes.len() > MAX_PACKET_BYTES {
+            return Err(PacketError::TooLarge {
+                field: "lobby_packet",
+                max: MAX_PACKET_BYTES,
+                len: bytes.len(),
+            });
+        }
+        let mut r = PacketReader::new(bytes);
+        let tag = r.u8("lobby_packet.tag")?;
+        let id = event_id(&mut r)?;
+        let packet = match tag {
+            TAG_COMMAND => Self::Command {
+                id,
+                command: command(&mut r)?,
+            },
+            TAG_LAUNCH => Self::Launch {
+                id,
+                request: launch_request(&mut r)?,
+            },
+            TAG_LAUNCH_ACK => Self::LaunchAck {
+                id,
+                request: launch_request(&mut r)?,
+            },
+            TAG_CANCEL_LAUNCH => Self::CancelLaunch { id },
+            other => {
+                return Err(PacketError::UnknownTag {
+                    field: "lobby_packet.tag",
+                    tag: other,
+                });
+            }
+        };
+        r.done()?;
+        Ok(packet)
+    }
+}
+
+/// Why a buffer could not be decoded, or a record could not be encoded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PacketError {
+    /// The buffer ended before the named field could be read.
+    Truncated {
+        /// The field that ran out of bytes.
+        field: &'static str,
+        /// The bytes the field needed.
+        needed: usize,
+        /// The bytes that were left.
+        remaining: usize,
+    },
+    /// Bytes remained after the record was complete.
+    Trailing {
+        /// How many.
+        len: usize,
+    },
+    /// A tag no packet of this kind defines.
+    UnknownTag {
+        /// The field holding the tag.
+        field: &'static str,
+        /// The refused tag.
+        tag: u8,
+    },
+    /// A count exceeded the lobby cap it is checked against.
+    TooMany {
+        /// The field that overflowed.
+        field: &'static str,
+        /// The cap.
+        max: usize,
+        /// The offered count.
+        len: usize,
+    },
+    /// A byte string exceeded its cap or the packet cap.
+    TooLarge {
+        /// The field that overflowed.
+        field: &'static str,
+        /// The cap.
+        max: usize,
+        /// The offered size in bytes.
+        len: usize,
+    },
+    /// A text field was not UTF-8, or its constructor refused it (empty,
+    /// padded, too long or holding control characters).
+    BadText {
+        /// The field.
+        field: &'static str,
+    },
+    /// An id field was zero, where only a nonzero id can name a live
+    /// session, peer or revision.
+    ZeroId {
+        /// The field.
+        field: &'static str,
+    },
+}
+
+impl fmt::Display for PacketError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Truncated {
+                field,
+                needed,
+                remaining,
+            } => write!(
+                f,
+                "{field} needs {needed} bytes but only {remaining} remain"
+            ),
+            Self::Trailing { len } => write!(f, "{len} trailing bytes after the packet"),
+            Self::UnknownTag { field, tag } => write!(f, "{field} carries unknown tag {tag}"),
+            Self::TooMany { field, max, len } => {
+                write!(f, "{field} has {len} entries, max is {max}")
+            }
+            Self::TooLarge { field, max, len } => {
+                write!(f, "{field} is {len} bytes, max is {max}")
+            }
+            Self::BadText { field } => write!(f, "{field} is not acceptable text"),
+            Self::ZeroId { field } => write!(f, "{field} must not be zero"),
+        }
+    }
+}
+
+impl std::error::Error for PacketError {}
+
+/// What an accepted packet did. These are the events to broadcast and the
+/// launch progress to report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PacketOutcome {
+    /// A command was applied: these events go to the members.
+    Applied(Applied),
+    /// A launch request or acknowledgment progressed; the last
+    /// acknowledgment carries the committed [`LaunchOrder`].
+    Launch(LaunchProgress),
+    /// The packet had already been applied: nothing changed, nothing to
+    /// broadcast. Idempotent by [`EventId`].
+    Replayed,
+}
+
+impl PacketOutcome {
+    /// The events to broadcast, if any. A replay broadcasts nothing.
+    pub fn events(&self) -> &[LobbyEvent] {
+        match self {
+            Self::Applied(applied) => &applied.events,
+            Self::Launch(_) | Self::Replayed => &[],
+        }
+    }
+}
+
+/// Why a packet was refused. Nothing in the lobby changed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PacketReject {
+    /// The buffer did not decode.
+    Malformed(PacketError),
+    /// The packet belongs to another session epoch.
+    ForeignSession {
+        /// This lobby's epoch.
+        expected: SessionId,
+        /// The epoch the packet carried.
+        found: SessionId,
+    },
+    /// The sender is not a member of this lobby.
+    NotAMember {
+        /// The sender.
+        peer: PeerId,
+    },
+    /// The decoded command was refused (authority, phase, revision,
+    /// loadout...).
+    Command(LobbyError),
+    /// The decoded launch packet was refused.
+    Launch(LaunchError),
+}
+
+impl fmt::Display for PacketReject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Malformed(error) => write!(f, "malformed lobby packet: {error}"),
+            Self::ForeignSession { expected, found } => write!(
+                f,
+                "lobby packet for session {} but this lobby is session {}",
+                found.get(),
+                expected.get()
+            ),
+            Self::NotAMember { peer } => write!(f, "{peer} is not in the lobby"),
+            Self::Command(error) => write!(f, "{error}"),
+            Self::Launch(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for PacketReject {}
+
+// ---- encoding -------------------------------------------------------------
+
+fn put_event_id(w: &mut PacketWriter, id: EventId) {
+    w.u64(id.session.get());
+    w.u64(id.tick.0);
+    w.u32(id.producer);
+    w.u32(id.sequence);
+}
+
+fn put_launch_request(w: &mut PacketWriter, request: &LaunchRequest) {
+    w.u32(request.revision.get());
+    w.u64(request.digest.get());
+}
+
+fn put_command(w: &mut PacketWriter, command: &LobbyCommand) -> Result<(), PacketError> {
+    match command {
+        LobbyCommand::Host(action) => {
+            w.u8(0);
+            put_host_action(w, action)
+        }
+        LobbyCommand::Peer(request) => {
+            w.u8(1);
+            put_peer_request(w, request)
+        }
+    }
+}
+
+fn put_host_action(w: &mut PacketWriter, action: &HostAction) -> Result<(), PacketError> {
+    match action {
+        HostAction::SetScenario(scenario) => {
+            w.u8(0);
+            put_content_id(w, "host_action.scenario", scenario)?;
+        }
+        HostAction::Ban(component) => {
+            w.u8(1);
+            put_content_id(w, "host_action.ban", component)?;
+        }
+        HostAction::Unban(component) => {
+            w.u8(2);
+            put_content_id(w, "host_action.unban", component)?;
+        }
+        HostAction::SetTeamMode(mode) => {
+            w.u8(3);
+            match mode {
+                TeamMode::FreeForAll => w.u8(0),
+                TeamMode::Teams { teams } => {
+                    w.u8(1);
+                    w.u8(*teams);
+                }
+            }
+        }
+        HostAction::SetLateJoin(policy) => {
+            w.u8(4);
+            w.u8(match policy {
+                LateJoin::Closed => 0,
+                LateJoin::Open => 1,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn put_peer_request(w: &mut PacketWriter, request: &PeerRequest) -> Result<(), PacketError> {
+    match request {
+        PeerRequest::SetCallsign(callsign) => {
+            w.u8(0);
+            w.text(
+                "peer_request.callsign",
+                callsign.as_str(),
+                MAX_CALLSIGN_WIRE_BYTES,
+            )?;
+        }
+        PeerRequest::SetTeam(team) => {
+            w.u8(1);
+            w.u8(team.0);
+        }
+        PeerRequest::SetLoadout(loadout) => {
+            w.u8(2);
+            put_content_id(w, "peer_request.loadout.blueprint", &loadout.blueprint)?;
+            w.count(
+                "peer_request.loadout.components",
+                loadout.components.len(),
+                MAX_LOADOUT_COMPONENTS,
+            )?;
+            for component in &loadout.components {
+                put_content_id(w, "peer_request.loadout.components[]", component)?;
+            }
+        }
+        PeerRequest::SetReady { revision } => {
+            w.u8(3);
+            w.u32(revision.get());
+        }
+        PeerRequest::Unready => w.u8(4),
+        PeerRequest::Chat(text) => {
+            w.u8(5);
+            w.text("peer_request.chat", text.as_str(), MAX_CHAT_WIRE_BYTES)?;
+        }
+    }
+    Ok(())
+}
+
+fn put_content_id(
+    w: &mut PacketWriter,
+    field: &'static str,
+    id: &ContentId,
+) -> Result<(), PacketError> {
+    let text = id.as_str();
+    if text.len() > MAX_CONTENT_ID_WIRE_BYTES {
+        return Err(PacketError::TooLarge {
+            field,
+            max: MAX_CONTENT_ID_WIRE_BYTES,
+            len: text.len(),
+        });
+    }
+    w.counted_bytes(text.as_bytes());
+    Ok(())
+}
+
+// ---- decoding -------------------------------------------------------------
+
+fn event_id(r: &mut PacketReader<'_>) -> Result<EventId, PacketError> {
+    let session = SessionId::new(r.u64("event.session")?).ok_or(PacketError::ZeroId {
+        field: "event.session",
+    })?;
+    Ok(EventId {
+        session,
+        tick: Tick(r.u64("event.tick")?),
+        producer: r.u32("event.producer")?,
+        sequence: r.u32("event.sequence")?,
+    })
+}
+
+fn launch_request(r: &mut PacketReader<'_>) -> Result<LaunchRequest, PacketError> {
+    let revision = Revision::new(r.u32("launch.revision")?).ok_or(PacketError::ZeroId {
+        field: "launch.revision",
+    })?;
+    let digest = RulesDigest(r.u64("launch.digest")?);
+    Ok(LaunchRequest { revision, digest })
+}
+
+fn command(r: &mut PacketReader<'_>) -> Result<LobbyCommand, PacketError> {
+    match r.u8("command.kind")? {
+        0 => Ok(LobbyCommand::Host(host_action(r)?)),
+        1 => Ok(LobbyCommand::Peer(peer_request(r)?)),
+        tag => Err(PacketError::UnknownTag {
+            field: "command.kind",
+            tag,
+        }),
+    }
+}
+
+fn host_action(r: &mut PacketReader<'_>) -> Result<HostAction, PacketError> {
+    match r.u8("host_action.tag")? {
+        0 => Ok(HostAction::SetScenario(content_id(
+            r,
+            "host_action.scenario",
+        )?)),
+        1 => Ok(HostAction::Ban(content_id(r, "host_action.ban")?)),
+        2 => Ok(HostAction::Unban(content_id(r, "host_action.unban")?)),
+        3 => {
+            let mode = match r.u8("host_action.team_mode")? {
+                0 => TeamMode::FreeForAll,
+                1 => TeamMode::Teams {
+                    teams: r.u8("host_action.teams")?,
+                },
+                tag => {
+                    return Err(PacketError::UnknownTag {
+                        field: "host_action.team_mode",
+                        tag,
+                    });
+                }
+            };
+            Ok(HostAction::SetTeamMode(mode))
+        }
+        4 => {
+            let policy = match r.u8("host_action.late_join")? {
+                0 => LateJoin::Closed,
+                1 => LateJoin::Open,
+                tag => {
+                    return Err(PacketError::UnknownTag {
+                        field: "host_action.late_join",
+                        tag,
+                    });
+                }
+            };
+            Ok(HostAction::SetLateJoin(policy))
+        }
+        tag => Err(PacketError::UnknownTag {
+            field: "host_action.tag",
+            tag,
+        }),
+    }
+}
+
+fn peer_request(r: &mut PacketReader<'_>) -> Result<PeerRequest, PacketError> {
+    match r.u8("peer_request.tag")? {
+        0 => {
+            let text = r.text("peer_request.callsign", MAX_CALLSIGN_WIRE_BYTES)?;
+            let callsign = Callsign::new(&text).map_err(|_| PacketError::BadText {
+                field: "peer_request.callsign",
+            })?;
+            Ok(PeerRequest::SetCallsign(callsign))
+        }
+        1 => Ok(PeerRequest::SetTeam(TeamId(r.u8("peer_request.team")?))),
+        2 => {
+            let blueprint = content_id(r, "peer_request.loadout.blueprint")?;
+            let count = r.count("peer_request.loadout.components", MAX_LOADOUT_COMPONENTS)?;
+            let mut components = Vec::with_capacity(count);
+            for _ in 0..count {
+                components.push(content_id(r, "peer_request.loadout.components[]")?);
+            }
+            Ok(PeerRequest::SetLoadout(Loadout {
+                blueprint,
+                components,
+            }))
+        }
+        3 => {
+            let revision = Revision::new(r.u32("peer_request.ready.revision")?).ok_or(
+                PacketError::ZeroId {
+                    field: "peer_request.ready.revision",
+                },
+            )?;
+            Ok(PeerRequest::SetReady { revision })
+        }
+        4 => Ok(PeerRequest::Unready),
+        5 => {
+            let text = r.text("peer_request.chat", MAX_CHAT_WIRE_BYTES)?;
+            let chat = ChatText::new(&text).map_err(|_| PacketError::BadText {
+                field: "peer_request.chat",
+            })?;
+            Ok(PeerRequest::Chat(chat))
+        }
+        tag => Err(PacketError::UnknownTag {
+            field: "peer_request.tag",
+            tag,
+        }),
+    }
+}
+
+fn content_id(r: &mut PacketReader<'_>, field: &'static str) -> Result<ContentId, PacketError> {
+    let text = r.text(field, MAX_CONTENT_ID_WIRE_BYTES)?;
+    ContentId::parse(&text).map_err(|_| PacketError::BadText { field })
+}
+
+// ---- the bounded reader and writer ---------------------------------------
+
+/// A bounded reader over one packet: little-endian integers, `u16` counts
+/// and lengths checked against the caller's cap before any allocation.
+struct PacketReader<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> PacketReader<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    fn remaining(&self) -> usize {
+        self.buf.len() - self.pos
+    }
+
+    fn take(&mut self, field: &'static str, len: usize) -> Result<&'a [u8], PacketError> {
+        if self.remaining() < len {
+            return Err(PacketError::Truncated {
+                field,
+                needed: len,
+                remaining: self.remaining(),
+            });
+        }
+        let bytes = &self.buf[self.pos..self.pos + len];
+        self.pos += len;
+        Ok(bytes)
+    }
+
+    fn u8(&mut self, field: &'static str) -> Result<u8, PacketError> {
+        Ok(self.take(field, 1)?[0])
+    }
+
+    fn u16(&mut self, field: &'static str) -> Result<u16, PacketError> {
+        let bytes = self.take(field, 2)?;
+        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn u32(&mut self, field: &'static str) -> Result<u32, PacketError> {
+        let bytes = self.take(field, 4)?;
+        Ok(u32::from_le_bytes(bytes.try_into().expect("four bytes")))
+    }
+
+    fn u64(&mut self, field: &'static str) -> Result<u64, PacketError> {
+        let bytes = self.take(field, 8)?;
+        Ok(u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
+    }
+
+    /// A `u16` count, refused when it exceeds `max`.
+    fn count(&mut self, field: &'static str, max: usize) -> Result<usize, PacketError> {
+        let len = usize::from(self.u16(field)?);
+        if len > max {
+            return Err(PacketError::TooMany { field, max, len });
+        }
+        Ok(len)
+    }
+
+    /// A `u16`-length byte string, refused when it exceeds `max`.
+    fn bytes(&mut self, field: &'static str, max: usize) -> Result<&'a [u8], PacketError> {
+        let len = usize::from(self.u16(field)?);
+        if len > max {
+            return Err(PacketError::TooLarge { field, max, len });
+        }
+        self.take(field, len)
+    }
+
+    /// A `u16`-length UTF-8 string, refused when it exceeds `max`.
+    fn text(&mut self, field: &'static str, max: usize) -> Result<String, PacketError> {
+        let bytes = self.bytes(field, max)?;
+        String::from_utf8(bytes.to_vec()).map_err(|_| PacketError::BadText { field })
+    }
+
+    fn done(&self) -> Result<(), PacketError> {
+        if self.remaining() == 0 {
+            Ok(())
+        } else {
+            Err(PacketError::Trailing {
+                len: self.remaining(),
+            })
+        }
+    }
+}
+
+/// A bounded writer that refuses to emit a packet past
+/// [`MAX_PACKET_BYTES`].
+struct PacketWriter(Vec<u8>);
+
+impl PacketWriter {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    fn u8(&mut self, value: u8) {
+        self.0.push(value);
+    }
+
+    fn u16(&mut self, value: u16) {
+        self.0.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn u32(&mut self, value: u32) {
+        self.0.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn u64(&mut self, value: u64) {
+        self.0.extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// A `u16` count, refused when it exceeds `max`.
+    fn count(&mut self, field: &'static str, len: usize, max: usize) -> Result<(), PacketError> {
+        if len > max {
+            return Err(PacketError::TooMany { field, max, len });
+        }
+        self.u16(len as u16);
+        Ok(())
+    }
+
+    /// A `u16` length plus bytes. Callers keep the slice inside `u16` space:
+    /// every wire text here is capped by a constant far below it.
+    fn counted_bytes(&mut self, bytes: &[u8]) {
+        self.u16(bytes.len() as u16);
+        self.0.extend_from_slice(bytes);
+    }
+
+    /// A `u16`-length UTF-8 string, refused when it exceeds `max`.
+    fn text(&mut self, field: &'static str, text: &str, max: usize) -> Result<(), PacketError> {
+        if text.len() > max {
+            return Err(PacketError::TooLarge {
+                field,
+                max,
+                len: text.len(),
+            });
+        }
+        self.counted_bytes(text.as_bytes());
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Vec<u8>, PacketError> {
+        if self.0.len() > MAX_PACKET_BYTES {
+            return Err(PacketError::TooLarge {
+                field: "lobby_packet",
+                max: MAX_PACKET_BYTES,
+                len: self.0.len(),
+            });
+        }
+        Ok(self.0)
     }
 }
