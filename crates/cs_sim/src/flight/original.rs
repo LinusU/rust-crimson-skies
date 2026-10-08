@@ -327,8 +327,10 @@ fn read_fields(
 /// share a vocabulary without either crate depending on the other
 /// (`docs/01-ARCHITECTURE.md`: `cs_sim` may not depend on `cs_content`).
 /// [`OriginalAirframe::from_values`] refuses an unknown, missing, duplicated,
-/// non-finite or — for the three values the law divides by — non-positive
-/// field by name: nothing is clamped and no default is invented here.
+/// non-finite or — for the three values a non-positive one would break the
+/// law (`veh_weight` and `ref_area` are divisors, a non-positive damping
+/// rate would turn decay into growth) — non-positive field by name: nothing
+/// is clamped and no default is invented here.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OriginalAirframe {
     /// Roll `delta L` gain.
