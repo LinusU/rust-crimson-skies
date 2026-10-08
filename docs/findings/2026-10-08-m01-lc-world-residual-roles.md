@@ -448,3 +448,51 @@ touching only `tools/cs_xtask/*` and one findings document: no `Cargo.toml` or
 merge-race conditions), so the re-push ran the lighter set — `fmt`, `clippy` and
 the prefix run, all exit 0 — and the full workspace suite had been exit 0 on the
 pre-rebase tree (CI runs it on the pushed commit).
+
+## Review (2026-10-08)
+
+Rally-assigned review of this branch against the task's acceptance criteria,
+`specs/F18-world-geometry-terrain-water-and-traversable-interiors.md`
+(`### F18-B`, `### F18-D`), `AGENTS.md` and `docs/contracts/CLI-EVIDENCE.md`.
+
+**One defect found and fixed.** The rustdoc on
+`WorldImportReport::objects_unresolved_collision()` said that since #771 the
+counter is "exactly" [`Self::objects_unindexed_unresolved`]. That is false in
+general and is contradicted by this task's own synthetic test, which pins
+`objects_unresolved_collision() == objects_unindexed_unresolved() + 1` for the
+fixture that keeps a grid-named `fvol*` record open: a grid-named `fvol*` record
+that stores [`INTERSECTION_NARROW_PHASE_FLAG`] stays an explicit unknown and is
+counted here too. The doc now states the exception and that the two counters are
+equal only on this installation. No code path, count, claim id, refusal or test
+changed — a reader of the accessor a launch verdict reads was being told the two
+numbers could be used interchangeably.
+
+**Checked and left alone:** both new arms of `import_world_container` (the flags
+test keys the measurement, the store-silence arm mirrors #677's already-merged
+rule), the `partition_records == objects_solid + partition_records_fog_volume +
+partition_records_stores_no_geometry` identity, `spawn_world` being unmodified
+(the `None` role arm at `spawn.rs` presents without a collider or a skip, and a
+shape that is not `FromMesh` resolves no upload — read, not assumed), the
+re-pinned sibling suites (each gained assertions rather than losing any; no test
+was removed, renamed out of its prefix or un-`#[ignore]`d), the finding's
+supersession notes in the #716/#727/#629 write-ups, the note filed on #359 with
+the two-line `geometry_verdict` change it must make on its own branch, and the
+evidence report's `unknowns` field: this task family (#677, #716, #727) carries
+its code-derived residuals in `review.method` because
+`tools/validate_evidence.py --require-pass` — the command `CLI-EVIDENCE.md`
+prescribes — requires `unknowns` to be empty, and the three residuals are named
+with affected content and #358 in `review.method`, in this file and in the claim
+ids themselves rather than deleted.
+
+**Evidence regenerated on the reviewed tree**, as `CLI-EVIDENCE.md` asks of the
+reviewer: the acceptance suite re-run (2 discovered, 2 executed, 2 passed, exit
+0), the harness re-run, `--require-pass` exit 0. Every measured number
+reproduced unchanged — 6 grid-named `fvol*` volumes, 148 empty grid records, 75
+open roles over the eight containers, `c1c`'s spawn 346 objects / 288 colliders /
+0 skips / 58 non-colliding / 0 presentation gaps. Only `candidate_tree` (now the
+reviewed tree), `created_at`, the two artifact hashes and `review.identity`
+differ. `review.identity` records both sides honestly: the implementer was
+`bunny-alpha-2`, the review was assigned by Rally to the same agent name, run in
+a fresh session with fresh context but **not** a different instance, so this
+review is not independent evidence in the sense AGENTS.md asks for, and no agent
+review replaces the owner's human approval.
