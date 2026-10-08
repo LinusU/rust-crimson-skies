@@ -96,9 +96,10 @@ impl ObjectivePage {
             .collect()
     }
 
-    /// The smallest scroll offset at or after `from` that shows line `index`
-    /// fully, or `None` when there is no such line or it is taller than the
-    /// viewport.
+    /// The scroll offset nearest to `from` that shows line `index` fully —
+    /// smaller than `from` when the line already starts above the visible
+    /// area — or `None` when there is no such line or it is taller than the
+    /// viewport. The answer never exceeds the scroll range.
     #[must_use]
     pub fn scroll_to_show(&self, index: usize, from: u32) -> Option<u32> {
         let line = self.lines.get(index)?;
