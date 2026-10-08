@@ -16,6 +16,35 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Package names of the real workspace members.
+fn members() -> Vec<String> {
+    let root = workspace_root();
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).expect("the root manifest exists");
+    cs_xtask::bootstrap::workspace_members(&manifest)
+        .expect("the root manifest lists members")
+        .iter()
+        .map(|dir| dir.rsplit('/').next().unwrap().to_string())
+        .collect()
+}
+
+/// The real workflow with its single workspace test command replaced by the
+/// split the owner uses: the app on one runner, the rest on another.
+fn split_workflow() -> String {
+    let full = workflow_text();
+    let single = "cargo test --workspace --locked";
+    if !full.contains("cargo test -p cs_app --locked") {
+        assert!(
+            full.contains(single),
+            "the real workflow must test the workspace"
+        );
+        return full.replace(
+            single,
+            "cargo test -p cs_app --locked\n        run: cargo test --workspace --locked --exclude cs_app",
+        );
+    }
+    full
+}
+
 fn workflow_text() -> String {
     fs::read_to_string(workspace_root().join(WORKFLOW_PATH))
         .expect("the owner-maintained CI workflow must exist and be readable")
@@ -43,7 +72,7 @@ fn accept_f00_c_ci_workflow_without_a_gate_is_rejected() {
         .filter(|line| !line.contains("cargo fmt"))
         .collect::<Vec<&str>>()
         .join("\n");
-    let error = ci::verify_workflow(WORKFLOW_PATH, &without_fmt)
+    let error = ci::verify_workflow(WORKFLOW_PATH, &without_fmt, &members())
         .expect_err("a workflow without the fmt gate must be rejected");
     assert!(
         matches!(
@@ -58,7 +87,7 @@ fn accept_f00_c_ci_workflow_without_a_gate_is_rejected() {
         .filter(|line| !line.contains("cargo clippy"))
         .collect::<Vec<&str>>()
         .join("\n");
-    let error = ci::verify_workflow(WORKFLOW_PATH, &without_clippy)
+    let error = ci::verify_workflow(WORKFLOW_PATH, &without_clippy, &members())
         .expect_err("a workflow without the clippy gate must be rejected");
     assert!(
         matches!(
@@ -70,7 +99,7 @@ fn accept_f00_c_ci_workflow_without_a_gate_is_rejected() {
     // `-D warnings` is part of that gate: keeping the command without it is
     // the exact shortcut the spec forbids.
     let clippy_without_denials = full.replace(" -- -D warnings", " --");
-    let error = ci::verify_workflow(WORKFLOW_PATH, &clippy_without_denials)
+    let error = ci::verify_workflow(WORKFLOW_PATH, &clippy_without_denials, &members())
         .expect_err("clippy without -D warnings must be rejected");
     assert!(
         matches!(
@@ -86,7 +115,7 @@ fn accept_f00_c_ci_workflow_without_a_gate_is_rejected() {
         .filter(|line| !line.contains("cargo test"))
         .collect::<Vec<&str>>()
         .join("\n");
-    let error = ci::verify_workflow(WORKFLOW_PATH, &without_tests)
+    let error = ci::verify_workflow(WORKFLOW_PATH, &without_tests, &members())
         .expect_err("a workflow without the test gate must be rejected");
     assert!(
         matches!(
@@ -109,5 +138,67 @@ fn accept_f00_c_a_missing_ci_workflow_is_reported() {
     assert!(
         error.to_string().contains("cannot read"),
         "the error must say what failed, got {error}"
+    );
+}
+
+/// A workflow that splits the suite across commands is accepted while the
+/// commands together cover every member.
+#[test]
+fn accept_f00_c_split_test_commands_covering_every_member_are_accepted() {
+    ci::verify_workflow(WORKFLOW_PATH, &split_workflow(), &members())
+        .expect("a complete split must pass");
+}
+
+/// Dropping the step that tests `cs_app` leaves it untested, and the
+/// rejection names it.
+#[test]
+fn accept_f00_c_dropping_a_split_step_names_the_untested_member() {
+    let without_app: String = split_workflow()
+        .lines()
+        .filter(|line| !line.contains("cargo test -p cs_app"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let error = ci::verify_workflow(WORKFLOW_PATH, &without_app, &members())
+        .expect_err("cs_app is no longer tested");
+    assert!(
+        matches!(&error, CiError::UntestedMember { member, .. } if member == "cs_app"),
+        "got {error:?}"
+    );
+    assert!(error.to_string().contains("cs_app"));
+}
+
+/// An extra `--exclude cs_sim` leaves `cs_sim` untested, in both the split
+/// and the single-command workflow.
+#[test]
+fn accept_f00_c_an_extra_exclude_names_the_untested_member() {
+    for text in [split_workflow(), workflow_text()] {
+        let excluded = text.replace(
+            "cargo test --workspace --locked",
+            "cargo test --workspace --locked --exclude cs_sim",
+        );
+        let error = ci::verify_workflow(WORKFLOW_PATH, &excluded, &members())
+            .expect_err("cs_sim is excluded and tested nowhere");
+        assert!(
+            matches!(&error, CiError::UntestedMember { member, .. } if member == "cs_sim"),
+            "got {error:?}"
+        );
+    }
+}
+
+/// A test step without `--locked` is rejected, naming the command.
+#[test]
+fn accept_f00_c_a_test_step_without_locked_is_rejected() {
+    let unlocked =
+        split_workflow().replace("cargo test -p cs_app --locked", "cargo test -p cs_app");
+    let unlocked = if unlocked == split_workflow() {
+        workflow_text().replace("cargo test --workspace --locked", "cargo test --workspace")
+    } else {
+        unlocked
+    };
+    let error = ci::verify_workflow(WORKFLOW_PATH, &unlocked, &members())
+        .expect_err("an unlocked cargo test must be rejected");
+    assert!(
+        matches!(&error, CiError::TestNotLocked { command, .. } if command.starts_with("cargo test")),
+        "got {error:?}"
     );
 }
