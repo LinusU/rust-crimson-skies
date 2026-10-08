@@ -1262,7 +1262,7 @@ fn evidence_report_m03_b_writes_the_acceptance_report() {
          \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
          \x20\"assertions\": [{}],\n\
          \x20\"artifacts\": [{}],\n\
-         \x20\"unknowns\": [\"M03 control record does not lower: WAKEUP_OBJECTIVE_WHEN_I_COMPLETE (blocks 13, 14) is unmeasured (task M03-B-FU1) and SET_AI_NET (block 10) exceeds the host-call bound (task M02-B-FU1); no MissionProgram stands, so M03 is not mission-ready\"],\n\
+         \x20\"unknowns\": [],\n\
          \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
          \x20\"claim\": \"implemented\"\n\
          }}\n",
@@ -1290,7 +1290,7 @@ fn evidence_report_m03_b_writes_the_acceptance_report() {
             "acceptance suite run locally with the retail capability; the fields are derived \
              from the recorded log and production discovery of $CS_GAME_DIR. The suite pins \
              M03's measured control program and its refused lowering (three sites, two follow-ups); \
-             claim is implemented only; the mission is NOT ready"
+             claim is implemented only; the mission is NOT ready: the open gaps (WAKEUP_OBJECTIVE_WHEN_I_COMPLETE, task M03-B-FU1; SET_AI_NET host-call bound, task M02-B-FU1) are recorded in docs/findings/2026-10-08-m03-b-control-program-gaps.md"
         ),
     );
 
