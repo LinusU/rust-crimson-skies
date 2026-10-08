@@ -674,6 +674,7 @@ fn accept_playtest_prop_spin_sources_line_records_the_rule_the_rate_claim_and_th
                 "playtest-retail.texture-archive-tier-is-designed",
                 "playtest-retail.texture-name-reading-is-designed",
                 "playtest-retail.texture-material-is-designed",
+                "playtest-textures.decal-offset-is-designed",
             ],
             archive: "ZBD/C1C/rtexture10.zbd".to_owned(),
             archive_sha256: "00".to_owned(),

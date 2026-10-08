@@ -110,6 +110,7 @@ fn accept_playtest_area_flicker_retail_the_selected_hull_is_stable_and_the_unsel
                 STEP_M,
                 FRAMES,
                 &out,
+                false,
             )
             .expect("the hull renders");
             eprintln!("STABILITY {name}: {result:?}");

@@ -68,6 +68,10 @@ mod area_flicker;
 #[path = "playtest_retail/flat_shape.rs"]
 mod flat_shape;
 
+// #794 (`accept_playtest_decal_`): same binary, same reason.
+#[path = "playtest_retail/decal.rs"]
+mod decal;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
