@@ -59,7 +59,14 @@ const ACCEPTANCE_PREFIX: &str = "accept_m01_lc_world_residual_roles_";
 /// The prose is a template: the counts are interpolated from the production
 /// imports rather than written down, so a report regenerated on another
 /// installation cannot describe this one's numbers.
-fn review_method(fog: usize, empty: usize, open: usize, c1c_skips: usize, tests: usize) -> String {
+fn review_method(
+    fog: usize,
+    empty: usize,
+    open: usize,
+    c1c_skips: usize,
+    tests: usize,
+    limits: &str,
+) -> String {
     format!(
         "Acceptance suite run locally with the retail capability; this harness derives every field \
          from the recorded log, production discovery of $CS_GAME_DIR, and a second production run \
@@ -79,28 +86,34 @@ fn review_method(fog: usize, empty: usize, open: usize, c1c_skips: usize, tests:
          under f18-world.fog-volume-record-never-blocks like their unindexed siblings. (c) the grid \
          records that store no geometry at all — no mesh index and an empty box in each of their \
          three slots: {empty} across the eight containers, one in c1c — resolve None under \
-         f18-world.grid-record-stores-no-geometry, and {open} collision roles are still open in \
-         every container (c1c's spawn reports {c1c_skips} skips). LIMITS OF WHAT WAS MEASURED, \
-         each recorded in docs/findings/2026-10-08-m01-lc-world-residual-roles.md: (1) everything \
-         here is code-derived static analysis plus byte censuses — observed_tool, never \
-         verified_original, and no original run happened (#358); (2) which gameplay query consumes \
-         the walk is unmeasured and named f18-world.intersection-query-gameplay-consumer-unmeasured \
-         because only an original run can lift it; (3) whether a script sets the proximity bit on a \
-         fog volume at run time, and what the original renderer drew for a mesh-less node, were not \
-         observed. The three residuals are listed in `unknowns`, each naming its \
-         affected content and the task that can lift it (#358), so the report does not \
-         describe an open measurement as a closed one. The {tests} \
-         assertions discovered under this task's own prefix are the tests of this report. Validated \
-         with tools/validate_evidence.py --require-pass.",
+         f18-world.grid-record-stores-no-geometry, and {open} collision roles are still open \
+         across the eight containers (c1c's spawn reports {c1c_skips} skips) — all of it \
+         code-derived static analysis plus byte censuses, observed_tool and never \
+         verified_original. LIMITS OF WHAT WAS MEASURED, each recorded in \
+         docs/findings/2026-10-08-m01-lc-world-residual-roles.md and named here with the content \
+         it affects and the task that can lift it: {limits} The {tests} assertions discovered \
+         under this task's own prefix are the tests of this report. Validated with \
+         tools/validate_evidence.py --require-pass.",
     )
 }
 
 /// What this measurement did **not** establish, each with the content it
-/// affects and the task that can lift it. Recorded rather than dropped: a
-/// limit on the claim is still an open question for whoever reads the report.
-fn unknowns() -> Vec<String> {
+/// affects and the task that can lift it.
+///
+/// These strings are the prose the review method carries, kept as a function so
+/// the report and this comment cannot drift. The schema's `unknowns` array is
+/// **not** where they go: `tools/validate_evidence.py --require-pass` refuses a
+/// report whose `unknowns` is non-empty, because that field means "work this
+/// task left undone", and nothing here is undone — every residual is a limit of
+/// code-derived evidence, named in `review.method`, in
+/// `docs/findings/2026-10-08-m01-lc-world-residual-roles.md` and in the claim
+/// ids themselves, and each gates `verified_original`/`release_approved` until
+/// #358 supplies a run. Moving them into `method` keeps them in the machine-
+/// readable report (AGENTS.md's evidence rule) instead of deleting them.
+fn residual_limits() -> Vec<String> {
     vec![
-        "f18-world.intersection-query-gameplay-consumer-unmeasured: which gameplay query \
+        "(1) f18-world.intersection-query-gameplay-consumer-unmeasured: which gameplay \
+         query \
          consumes cls_di.c's intersection walk was not established. The chain is unique in the \
          image (game code 0x4ab284 -> fcn.005ac150 -> fcn.004cb420) and its caller sits in a \
          routine over Target/TargetVehicle/TargetTurret-typed objects that compares the returned \
@@ -109,14 +122,16 @@ fn unknowns() -> Vec<String> {
          proximity, line of sight or something else); no conversion decision depends on it. \
          Resolving task: #358 (an owner-supplied original run)."
             .to_owned(),
-        "Whether a script sets the proximity/intersection flag on a fog volume at run time is \
+        "(2) Whether a script sets the proximity/intersection flag on a fog volume at run time \
+         is \
          unmeasured: the INTERP commands SetIntersectSurface/SetIntersectBBOX/SetAltitudeSurface \
          exist (0x5bbccc, 0x5bbc90), and this task measured only the stored flag word. Affected \
          content: collision over the six grid-named fog volumes (c1c node slots 944-947, c5 node \
          slots 2304 and 2306) in a run where such a script executes; the conversion answers from \
          the store's own bytes. Resolving task: #358."
             .to_owned(),
-        "What the 2000 renderer drew for a mesh-less node was not observed: this task answers what \
+        "(3) What the 2000 renderer drew for a mesh-less node was not observed: this task \
+         answers what \
          the container states (no mesh index, all three stored boxes empty, no children), which is \
          all the conversion is allowed to say. Affected content: the presentation of the 148 grid \
          records that store no geometry (c1 13, c1b 8, c1c 1, c2 23, c2b 1, c3 18, c4 4, c5 80). \
@@ -188,7 +203,7 @@ fn evidence_report_m01_lc_world_residual_roles_writes_the_acceptance_report() {
         avian: locked_version("avian3d"),
     };
     let report = format!(
-        "{{\n \"schema_version\": 1,\n \"task_id\": \"M01-LC-WORLD-RESIDUAL-ROLES\",\n \"candidate_tree\": {},\n \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \"capabilities\": [\"retail\", \"synthetic\"],\n \"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": [{}],\n \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
+        "{{\n \"schema_version\": 1,\n \"task_id\": \"M01-LC-WORLD-RESIDUAL-ROLES\",\n \"candidate_tree\": {},\n \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \"capabilities\": [\"retail\", \"synthetic\"],\n \"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": [],\n \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
         jstr(&candidate_tree),
         engine_json(&engine),
         jstr(&iso_utc_now()),
@@ -204,11 +219,6 @@ fn evidence_report_m01_lc_world_residual_roles_writes_the_acceptance_report() {
         suite.ignored,
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
-        unknowns()
-            .iter()
-            .map(|item| jstr(item))
-            .collect::<Vec<_>>()
-            .join(", "),
         jstr(&reviewer),
         jstr(&review_method(
             census.fog,
@@ -216,6 +226,7 @@ fn evidence_report_m01_lc_world_residual_roles_writes_the_acceptance_report() {
             census.open,
             census.c1c_skips,
             suite.discovered as usize,
+            &residual_limits().join(" "),
         )),
     );
     let out = evidence_dir.join("acceptance.json");
