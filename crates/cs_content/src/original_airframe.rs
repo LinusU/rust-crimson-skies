@@ -1210,15 +1210,15 @@ impl OriginalDocuments {
 
         let mut values = Vec::with_capacity(GLOBAL_FIELDS.len());
         let mut unused = Vec::with_capacity(UNUSED_GLOBAL_FIELDS.len());
-        for field in [
-            "nom_gravity",
-            "max_aoa_deg",
-            "lift_accel_rate",
-            "stall_mag",
-            "yaw_low_speed",
-            "yaw_high_speed",
+        for (field, key) in [
+            ("nom_gravity", "nom_gravity"),
+            ("max_aoa_deg", "maxAOA"),
+            ("lift_accel_rate", "lift_accel_rate"),
+            ("stall_mag", "stall_mag"),
+            ("yaw_low_speed", "yaw_low_speed"),
+            ("yaw_high_speed", "yaw_high_speed"),
         ] {
-            values.push(self.global_scalar(document, field, field)?);
+            values.push(self.global_scalar(document, field, key)?);
         }
         for (field, key, index) in [
             ("lift_aoa_0_deg", "liftAOAs", 0usize),
@@ -1239,10 +1239,14 @@ impl OriginalDocuments {
             unused.push(self.global_scalar(document, field, field)?);
         }
 
-        // The vocabulary and the produced fields must agree, or a rename on
-        // either side would silently drop a value.
-        let produced: Vec<&str> = values.iter().map(|entry| entry.field).collect();
-        if produced != GLOBAL_FIELDS {
+        // The vocabulary and the produced fields must agree as a set, or a
+        // rename on either side would silently drop a value. Duplicates are
+        // refused too, so the comparison stays a set.
+        let mut produced: Vec<&str> = values.iter().map(|entry| entry.field).collect();
+        let mut declared: Vec<&str> = GLOBAL_FIELDS.to_vec();
+        produced.sort_unstable();
+        declared.sort_unstable();
+        if produced != declared {
             return Err(OriginalImportError::Shape {
                 detail: format!("global fields {produced:?} are not the declared vocabulary"),
             });
