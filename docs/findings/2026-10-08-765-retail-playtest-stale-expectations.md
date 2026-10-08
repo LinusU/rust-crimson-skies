@@ -83,9 +83,10 @@ part 2541 drifted from body pose x composed local: -0.7644531 vs 0.11122215
 
 Evidence that the expectation, not the pose, is what changed:
 
-* `PLAYTEST_AIRCRAFT_PROP_NODE_SLOT == 2541` (`staticprop1`): the one part that
-  drifts is exactly the drawn propeller, and no other part does. The
-  `global == body × composed local` check passed for the other 15 bindings.
+* `PLAYTEST_AIRCRAFT_PROP_NODE_SLOT == 2541` (`staticprop1`): the part the check
+  fails on **is** the drawn propeller, the one child `spawn_retail_parts` gives a
+  `PropellerSpin`. (The loop stops at its first failure, so the drift measured
+  here is the one it reached, not a count of every drifting part.)
 * `fba05e81` (#710) added `propeller::spin_propellers`, which writes **the
   propeller child's own local `Transform`** every frame while the engine runs.
   This is the documented design, not a side effect:
@@ -127,29 +128,43 @@ The test still fails if the spin system stops writing, writes something other
 than its own transform, attaches to another child, or if anything at all writes
 a non-propeller part's local.
 
-## Commands and results (this host)
+## Commands and results (this host, `CS_GAME_DIR` set)
+
+Before the fix, on a branch cut from `origin/main` (`bd5f8a38`) with no local
+change:
 
 ```sh
-git checkout --no-track -B rally/765-two-retail-ignore-playtest-tests-fail-on origin/main
-
 cargo test -p cs_app --test playtest_retail \
   accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture -- --include-ignored
-#   FAILED: mesh_records left 295, right 401 (before the fix)
+#   EXIT 101 — left: 295  right: 401   (playtest_retail.rs:557)
 
 cargo test -p cs_app --test playtest_full_aircraft \
   accept_playtest_full_aircraft_parts_follow_the_single_flight_body -- --include-ignored
-#   FAILED: part 2541 drifted … -0.7644531 vs 0.11122215 (before the fix)
-
-cargo test -p cs_app --test playtest_retail accept_playtest_retail_ --include-ignored
-cargo test -p cs_app --test playtest_full_aircraft accept_playtest_full_aircraft_ --include-ignored
-#   after the fix: green (see the task's handover summary for exit codes)
+#   EXIT 101 — part 2541 drifted from body pose x composed local: -0.7644531 vs 0.11122215
+#   (playtest_full_aircraft.rs:241; re-run on this host by checking that one file
+#    back out of the fixed tree, so the "fails before, passes after" pair is
+#    measured here and not only reported)
 ```
 
-Not the provisioned retail data: the same installation and the same tree answer
-401 stored bindings / 295 drawn / 8 110 drawn triangles consistently across the
-three suites that read them (`playtest_retail`, `playtest_retail_launch`,
-`area_flicker`), and 793 nodes and 401 bindings have been stable on this host
-since the subtree was first measured.
+After the fix (two test files, no production line):
+
+| command | result |
+| --- | --- |
+| `cargo fmt --all -- --check` | exit 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | exit 0 |
+| `cargo test --workspace --locked` | exit 0 |
+| `cargo test --workspace --locked -- accept_playtest_retail_ --include-ignored` | exit 0 (11 + 6 tests passed) |
+| `cargo test --workspace --locked -- accept_playtest_full_aircraft_ --include-ignored` | exit 0 (6 passed) |
+| `cargo test -p cs_app --test playtest_retail -- --include-ignored` | exit 0 (29 of 29) |
+| `cargo test -p cs_app --test playtest_full_aircraft -- --include-ignored` | exit 0 (6 of 6) |
+
+Not the provisioned retail data: the same installation answers 793 nodes and 401
+stored bindings on every suite that reads them (the c1c test, the flicker tests,
+the launch smoke), and both numbers have been stable on this host since the
+subtree was first measured; the drawn set is pinned here (295 / 8 110) and is
+consistent with the flicker tests' own invariant
+`mesh_records + undrawn.len() == stored_bindings` (106 hidden). The failure is
+therefore in the expectations, not in `CS_GAME_DIR`.
 
 ## Follow-up noticed, not fixed here
 
