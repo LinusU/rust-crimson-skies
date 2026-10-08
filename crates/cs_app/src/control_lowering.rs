@@ -50,8 +50,9 @@
 //!   `MissionProgram::validate` also accepts it.
 
 use cs_content::mission_control::{
-    CallOutcome, ConditionOutcome, DirectiveDisposition, DirectiveShape, LoweringAttempt,
-    MeasuredArg, MeasuredControlRecord, MeasuredDirectiveKey, TerminalOutcome,
+    CallOutcome, ConditionOutcome, DirectiveDisposition, DirectiveOperation as MeasuredOperation,
+    DirectiveShape, LoweringAttempt, MeasuredArg, MeasuredControlRecord, MeasuredDirectiveKey,
+    TerminalOutcome,
 };
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, objective_record, zrd_flat_fields};
@@ -166,6 +167,15 @@ pub fn lower_control_record(
         .map(ToString::to_string)
         .unwrap_or_else(|_| mission_label.to_owned());
 
+    // The keys whose measured operation takes one list of indices: their
+    // spelled list is one `Value::List` argument, not a positional row.
+    let index_list_keys: Vec<&str> = record
+        .keys()
+        .iter()
+        .filter(|key| takes_index_list(key))
+        .map(|key| key.key.as_str())
+        .collect();
+
     // ---- Walk the numbered blocks, exactly the measure grammar.
     let mut raw_blocks: Vec<RawBlock> = Vec::new();
     let mut block_calls: Vec<Vec<RawCall>> = Vec::new();
@@ -210,7 +220,13 @@ pub fn lower_control_record(
             match children.get(index + 1) {
                 Some(next) if next.as_list().is_some() => {
                     let items = next.as_list().unwrap_or_default();
-                    match convert_args(items) {
+                    match convert_args(items).map(|args| {
+                        if index_list_keys.contains(&name) {
+                            vec![Value::List(args)]
+                        } else {
+                            args
+                        }
+                    }) {
                         Ok(args) => {
                             site_map.push((site_outcomes.len(), block_index, calls.len()));
                             site_outcomes.push(None);
@@ -452,6 +468,26 @@ fn arg_domain(arg: &MeasuredArg) -> ArgDomain {
     }
 }
 
+/// Whether a key's measured operation takes **one list of objective indices**
+/// (`DirectiveOperation::WakeObjectives`, `SleepObjectives`, `KillObjectives`,
+/// `WakeObjectivesOnTransition`): the list spelled beside the key is that one
+/// argument, so its length is the list's, not an arity. Carrying it as one
+/// `Value::List` keeps a long list (M02's nine-index kill sites) inside the
+/// host-call bound without raising it. A bare site has no list and carries
+/// none.
+fn takes_index_list(key: &MeasuredDirectiveKey) -> bool {
+    matches!(
+        key.disposition(),
+        DirectiveDisposition::Measured(directive) if matches!(
+            directive.operation,
+            MeasuredOperation::WakeObjectives
+                | MeasuredOperation::SleepObjectives
+                | MeasuredOperation::KillObjectives
+                | MeasuredOperation::WakeObjectivesOnTransition
+        )
+    )
+}
+
 /// The signatures one key's measured shapes accept: one per distinct spelled
 /// shape — a `Bare` site accepts no arguments, a `not_a_list` site no
 /// signature covers, and equal shapes contribute one signature.
@@ -460,6 +496,9 @@ fn signatures_for(key: &MeasuredDirectiveKey) -> Vec<Vec<ArgDomain>> {
     for (shape, _) in &key.shapes {
         let signature = match shape {
             DirectiveShape::Bare => Vec::new(),
+            DirectiveShape::Arguments(args) if takes_index_list(key) => {
+                vec![ArgDomain::List(args.iter().map(arg_domain).collect())]
+            }
             DirectiveShape::Arguments(args) => args.iter().map(arg_domain).collect(),
             DirectiveShape::NotAList => continue,
         };

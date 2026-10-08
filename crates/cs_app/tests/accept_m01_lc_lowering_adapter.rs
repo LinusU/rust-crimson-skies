@@ -214,10 +214,22 @@ fn accept_m01_lc_lowering_adapter_m01_lowers_into_a_validated_raw_program() {
     }
     // Nested lists arrive nested: a measured `SET_AI_NET`/`ANIM_STATE`-shape
     // site carries a `Value::List` argument, never a flattened positional row.
-    let nested: Vec<&[Value]> = raw
-        .objectives
-        .iter()
-        .flat_map(|objective| objective.calls.iter())
+    // The objective-index directives carry their one index list as a single
+    // `Value::List` argument (task M02-B-FU1); they are counted apart.
+    const INDEX_LIST_KEYS: [&str; 5] = [
+        "WAKE_OBJECTIVE",
+        "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
+        "SLEEP_OBJECTIVE_WHEN_I_COMPLETE",
+        "KILL_OBJECTIVE_WHEN_I_COMPLETE",
+        "WAKE_OBJECTIVE_WHEN_I_SLEEP",
+    ];
+    let all_calls = || {
+        raw.objectives
+            .iter()
+            .flat_map(|objective| objective.calls.iter())
+    };
+    let nested: Vec<&[Value]> = all_calls()
+        .filter(|call| !INDEX_LIST_KEYS.contains(&call.name.as_str()))
         .filter(|call| call.args.iter().any(|arg| matches!(arg, Value::List(_))))
         .map(|call| call.args.as_slice())
         .collect();
@@ -226,6 +238,18 @@ fn accept_m01_lc_lowering_adapter_m01_lowers_into_a_validated_raw_program() {
         14,
         "the sites M01 spells with a nested list argument: {:?}",
         nested
+    );
+    let index_lists: Vec<&[Value]> = all_calls()
+        .filter(|call| INDEX_LIST_KEYS.contains(&call.name.as_str()))
+        .map(|call| call.args.as_slice())
+        .collect();
+    assert_eq!(index_lists.len(), 29, "M01's index-list directive sites");
+    assert!(
+        index_lists.iter().all(|args| matches!(
+            args,
+            [Value::List(items)] if items.iter().all(|item| matches!(item, Value::Int(_)))
+        )),
+        "each carries its indices as one list of integers: {index_lists:?}"
     );
 
     let program = lowered.program().expect("every call bound");
