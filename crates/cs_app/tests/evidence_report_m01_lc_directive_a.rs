@@ -54,7 +54,7 @@ fn review_method(key_count: usize, site_count: u32, block_count: u32, own_tests:
          of cs_app::mission_control::survey_mission_control_programs over the installation \
          (directive-census.json). Claim is implemented only. MEASURED: the findings document \
          docs/findings/2026-10-06-m01-lc-directive-a-objective-directive-parser.md maps the native \
-         CZMission objective-directive parser in $CS_GAME_DIR/crimson.decrypted.exe (sha256 \
+         CZMission objective-directive parser in $CS_ENGINE_IMAGE (sha256 \
          43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75) for every key M01 spells, \
          and the production census reports that vocabulary as {key_count} distinct directive keys \
          across {site_count} sites in {block_count} numbered objective blocks - the acceptance \

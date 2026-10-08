@@ -8,7 +8,7 @@
 //! # Where every number here comes from
 //!
 //! The owner supplied a decrypted image of the executable
-//! (`$CS_GAME_DIR/crimson.decrypted.exe`, SHA-256
+//! (`$CS_ENGINE_IMAGE`, SHA-256
 //! `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`)
 //! and had it analysed statically; the owner note of 2026-10-05 on Rally task
 //! #466 records the addresses below. This module commits **only** addresses,

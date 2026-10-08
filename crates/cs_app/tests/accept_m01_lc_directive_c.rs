@@ -1,7 +1,7 @@
 //! Acceptance for `M01-LC-DIRECTIVE-C` (#681): the findings document
 //! `docs/findings/2026-10-06-m01-lc-directive-c-ai-world-and-animation-directives.md`
 //! records what M01's AI, world and animation directives **do**, measured from
-//! the native handlers in `$CS_GAME_DIR/crimson.decrypted.exe` and cross-checked
+//! the native handlers in `$CS_ENGINE_IMAGE` and cross-checked
 //! against the arguments the installation ships.
 //!
 //! Three independent production observations are pinned, so the document cannot

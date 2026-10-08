@@ -260,7 +260,7 @@ impl RuleSource {
 }
 
 /// sha256 of the owner-supplied decrypted image the measured rules below were
-/// read from (`$CS_GAME_DIR/crimson.decrypted.exe`, the owner's decryption of
+/// read from (`$CS_ENGINE_IMAGE`, the owner's decryption of
 /// `crimson.icd` `0e3b4724…9833b`) — the same image F16-F records in
 /// `cs_sim::time`.
 ///

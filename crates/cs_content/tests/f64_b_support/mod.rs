@@ -168,17 +168,24 @@ pub fn inventoried_spellings(root: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The owner-supplied decrypted engine image's bytes.
-pub fn engine_image(root: &Path) -> Vec<u8> {
-    std::fs::read(root.join(ENGINE_IMAGE)).unwrap_or_else(|error| {
-        panic!("the engine image {ENGINE_IMAGE} must be readable: {error:?}")
-    })
+/// The owner-supplied decrypted engine image's bytes, read through
+/// `CS_ENGINE_IMAGE` (#798).
+///
+/// The image is not installation content: since #798 the owner keeps it
+/// outside `$CS_GAME_DIR`, so this is the only path that reaches it, and the
+/// production loader refuses a file that is absent or that hashes to
+/// something other than [`cs_content::coordinates::ORIGINAL_IMAGE_SHA256`].
+pub fn engine_image() -> Vec<u8> {
+    cs_content::coordinates::load_engine_image()
+        .unwrap_or_else(|error| panic!("the engine image must load: {error}"))
+        .bytes
 }
 
 /// The engine image's decoded length and SHA-256, for the evidence artifact.
-pub fn engine_image_digest(root: &Path) -> (u64, String) {
-    let bytes = engine_image(root);
-    (bytes.len() as u64, sha256(&bytes).to_hex())
+pub fn engine_image_digest() -> (u64, String) {
+    let image = cs_content::coordinates::load_engine_image()
+        .unwrap_or_else(|error| panic!("the engine image must load: {error}"));
+    (image.bytes.len() as u64, image.digest.to_hex())
 }
 
 /// Opens one retail member's bytes through the production ROF mount — the

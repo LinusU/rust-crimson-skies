@@ -74,10 +74,9 @@ fn accept_f64_b_retail_the_installation_ships_no_legacy_save_or_plane_file() {
 /// image, so the save/plane *locations* are measured even though no file of
 /// those classes ships to read.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_ENGINE_IMAGE"]
 fn accept_f64_b_retail_storage_paths_are_measured_in_the_engine_image() {
-    let root = game_dir();
-    let image = engine_image(&root);
+    let image = engine_image();
     assert!(
         image.len() > 1_000_000,
         "{ENGINE_IMAGE} is the full decrypted engine image"

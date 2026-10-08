@@ -83,7 +83,7 @@ fn review_method(
          implemented only. MEASURED: the findings document \
          docs/findings/2026-10-06-m01-lc-directive-c-ai-world-and-animation-directives.md \
          records what M01's AI, world and animation directives do, read out of the native handlers \
-         in $CS_GAME_DIR/crimson.decrypted.exe (sha256 \
+         in $CS_ENGINE_IMAGE (sha256 \
          43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75): the wake handler at \
          0x469af0, the completion pass at 0x46a630, the objective transition at 0x46b160 and the \
          per-key handlers 0x4a97b0, 0x4bef70, 0x451720, 0x493fb0, 0x4940d0, 0x469e20, 0x46a000, \

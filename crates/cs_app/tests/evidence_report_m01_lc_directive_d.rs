@@ -74,7 +74,7 @@ fn review_method(
          (directive-audio-ui-census.json). Claim is implemented only. MEASURED: the findings \
          document docs/findings/2026-10-06-m01-lc-directive-d-sound-help-timer-directives.md \
          records the native handlers of M01's audio/UI/timer directives in \
-         $CS_GAME_DIR/crimson.decrypted.exe (sha256 \
+         $CS_ENGINE_IMAGE (sha256 \
          43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75, the same binary stage \
          A read), and the production census reports {wakeup_names} distinct WAKEUP_SOUND_GROUP \
          names, {completed_names} distinct COMPLETED_SOUND_GROUP names and {stopped_names} \

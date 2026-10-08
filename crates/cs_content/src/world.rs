@@ -5089,7 +5089,7 @@ pub const WORLD_UNIT_UNMEASURED: &str = "f18-world.unit-unmeasured";
 /// owner-supplied decrypted image (task #436's owner note, 2026-10-05).
 ///
 /// **Code-derived, never `VerifiedOriginal`.** The landmarks the owner recorded
-/// on `$CS_GAME_DIR/crimson.decrypted.exe` (sha256
+/// on `$CS_ENGINE_IMAGE` (sha256
 /// `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`) say the
 /// stored GameZ frame and the project's canonical frame are the **same** frame:
 ///

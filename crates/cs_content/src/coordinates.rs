@@ -113,6 +113,8 @@
 //! declares.
 
 use std::f64::consts::PI;
+use std::ffi::OsStr;
+use std::path::PathBuf;
 
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{Origin, Provenance};
@@ -1025,15 +1027,172 @@ pub const ZRD_SOURCE_LABEL: &str = "retail.zrd";
 /// `verified_original`.
 pub const ZRD_DOCUMENT_CONVENTION_IS_MEASURED: &str = "f16-e.zrd-document-world-convention";
 
-/// SHA-256 of `$CS_GAME_DIR/crimson.decrypted.exe`: the owner-supplied
-/// decrypted executable (a decryption of `crimson.icd`) every F16-E code
-/// landmark was measured in.
+/// SHA-256 of the owner-supplied decrypted engine image
+/// (`$CS_ENGINE_IMAGE`, file name `crimson.decrypted.exe`): the decrypted
+/// executable (a decryption of `crimson.icd`) every F16-E code landmark was
+/// measured in.
 ///
-/// The digest comes from the owner's note on task #390 and the retail
-/// acceptance test re-hashes the file, so a drifted image fails there instead
-/// of silently backing evidence about different bytes.
+/// The digest comes from the owner's note on task #390 and
+/// [`load_engine_image`] re-hashes the bytes it read, so a drifted image
+/// fails there instead of silently backing evidence about different bytes.
+///
+/// The image is **not** part of the retail installation: since #798 the owner
+/// keeps it outside `$CS_GAME_DIR`, where it is a separate static-analysis
+/// input rather than an installed file, and nothing may look for it inside
+/// the read-only tree.
 pub const ORIGINAL_IMAGE_SHA256: &str =
     "43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75";
+
+/// The environment variable holding the absolute path of the owner-supplied
+/// decrypted engine image (#798).
+///
+/// The owner sets it beside `CS_GAME_DIR`, but the two name different things:
+/// `CS_GAME_DIR` is the read-only retail installation and this variable is
+/// the separate, owner-supplied static-analysis input. [`load_engine_image`]
+/// reads only this variable and never falls back to `$CS_GAME_DIR`.
+pub const ENGINE_IMAGE_ENV_VAR: &str = "CS_ENGINE_IMAGE";
+
+/// [`ORIGINAL_IMAGE_SHA256`] as a [`ContentHash`] for span construction.
+///
+/// # Panics
+///
+/// Only if the `ORIGINAL_IMAGE_SHA256` literal stops being 64 lowercase hex
+/// characters — a compile-time constant of this crate, checked by the F16-E
+/// acceptance suite.
+#[must_use]
+pub fn original_image_digest() -> ContentHash {
+    ContentHash::from_hex(ORIGINAL_IMAGE_SHA256)
+        .expect("ORIGINAL_IMAGE_SHA256 is 64 lowercase hex characters")
+}
+
+/// The owner-supplied decrypted engine image, read once from
+/// [`ENGINE_IMAGE_ENV_VAR`] and hashed (#798).
+///
+/// The bytes are the whole image: `load_engine_image` refuses anything that
+/// does not hash to [`ORIGINAL_IMAGE_SHA256`], so a `EngineImage` that came
+/// from the loader always describes the measured bytes.
+#[derive(Clone, Debug)]
+pub struct EngineImage {
+    /// The path [`ENGINE_IMAGE_ENV_VAR`] named.
+    pub path: PathBuf,
+    /// The image's own bytes.
+    pub bytes: Vec<u8>,
+    /// SHA-256 of [`Self::bytes`].
+    pub digest: ContentHash,
+}
+
+/// Why the owner-supplied decrypted engine image could not be loaded.
+///
+/// Each of the three cases the loader must refuse is its own variant: the
+/// variable is unset, the file it names is unreadable, and the bytes it holds
+/// are not the measured image. There is no fourth case that falls back to
+/// `$CS_GAME_DIR` (owner decision #798: the image is never installation
+/// content).
+#[derive(Debug)]
+pub enum EngineImageError {
+    /// [`ENGINE_IMAGE_ENV_VAR`] is unset or empty.
+    Unset,
+    /// [`ENGINE_IMAGE_ENV_VAR`] names a path that could not be read.
+    Unreadable {
+        /// The path the variable named.
+        path: PathBuf,
+        /// What reading it failed with.
+        source: std::io::Error,
+    },
+    /// The path's bytes hash to something other than
+    /// [`ORIGINAL_IMAGE_SHA256`] — evidence about different bytes.
+    DigestMismatch {
+        /// The path the variable named.
+        path: PathBuf,
+        /// The digest those bytes actually carry.
+        found: ContentHash,
+    },
+}
+
+impl std::fmt::Display for EngineImageError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unset => write!(
+                formatter,
+                "{ENGINE_IMAGE_ENV_VAR} is not set: it must name the owner-supplied decrypted \
+                 engine image (crimson.decrypted.exe), which lives outside the read-only retail \
+                 installation (#798)"
+            ),
+            Self::Unreadable { path, source } => write!(
+                formatter,
+                "{ENGINE_IMAGE_ENV_VAR} names {}, which cannot be read: {source} (#798: the image \
+                 is never looked for in $CS_GAME_DIR)",
+                path.display()
+            ),
+            Self::DigestMismatch { path, found } => write!(
+                formatter,
+                "{} hashes to {found}, not to the measured {ORIGINAL_IMAGE_SHA256}, so it cannot \
+                 back evidence about the original (#798)",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EngineImageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unset | Self::DigestMismatch { .. } => None,
+            Self::Unreadable { source, .. } => Some(source),
+        }
+    }
+}
+
+/// Loads the owner-supplied decrypted engine image from
+/// [`ENGINE_IMAGE_ENV_VAR`] (#798's one production helper).
+///
+/// The bytes are read from the path the variable names and hashed here, so a
+/// caller can bind a span to [`EngineImage::digest`] without trusting an
+/// inventory row. The variable is the **only** source: a missing variable, an
+/// unreadable file and a drifted image are all errors, and `$CS_GAME_DIR` is
+/// never consulted as a fallback.
+///
+/// # Errors
+///
+/// [`EngineImageError::Unset`] when the variable is unset or empty,
+/// [`EngineImageError::Unreadable`] when the file cannot be read, and
+/// [`EngineImageError::DigestMismatch`] when its bytes do not hash to
+/// [`ORIGINAL_IMAGE_SHA256`].
+pub fn load_engine_image() -> Result<EngineImage, EngineImageError> {
+    load_engine_image_from(std::env::var_os(ENGINE_IMAGE_ENV_VAR).as_deref())
+}
+
+/// [`load_engine_image`] over an explicit value of [`ENGINE_IMAGE_ENV_VAR`].
+///
+/// Split out so every refusal case is reachable from a test without mutating
+/// the process environment (which would race with the other tests of the
+/// binary). `None` and an empty string are both [`EngineImageError::Unset`].
+///
+/// # Errors
+///
+/// As [`load_engine_image`].
+pub fn load_engine_image_from(path: Option<&OsStr>) -> Result<EngineImage, EngineImageError> {
+    let Some(path) = path.filter(|value| !value.is_empty()) else {
+        return Err(EngineImageError::Unset);
+    };
+    let path = PathBuf::from(path);
+    let bytes = std::fs::read(&path).map_err(|source| EngineImageError::Unreadable {
+        path: path.clone(),
+        source,
+    })?;
+    let digest = cs_assets::install::sha256(&bytes);
+    if digest != original_image_digest() {
+        return Err(EngineImageError::DigestMismatch {
+            path,
+            found: digest,
+        });
+    }
+    Ok(EngineImage {
+        path,
+        bytes,
+        digest,
+    })
+}
 
 /// The retail reader archive the one `.zrd` **data** landmark was measured in.
 pub const ZRD_READER_ARCHIVE: &str = "ZBD/zrdr.zbd";

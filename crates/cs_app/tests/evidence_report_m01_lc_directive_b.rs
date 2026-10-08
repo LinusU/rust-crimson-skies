@@ -57,7 +57,7 @@ fn review_method(key_count: usize, site_count: u32, block_count: u32, own_tests:
          (directive-census.json). Claim is implemented only. MEASURED: the findings document \
          docs/findings/2026-10-06-m01-lc-directive-b-objective-lifecycle-target-semantics.md \
          records the runtime handler effects of M01's {key_count} spelled directive keys in \
-         $CS_GAME_DIR/crimson.decrypted.exe (sha256 \
+         $CS_ENGINE_IMAGE (sha256 \
          43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75) across {site_count} \
          sites in {block_count} numbered objective blocks - the acceptance suite asserts the \
          spellings those semantics apply to and the exact set of argument shapes whose list nests \

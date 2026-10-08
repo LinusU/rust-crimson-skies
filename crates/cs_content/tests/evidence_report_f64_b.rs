@@ -99,7 +99,7 @@ fn review_method(
 }
 
 #[test]
-#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR, CS_ENGINE_IMAGE"]
 fn evidence_report_f64_b_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
@@ -163,8 +163,8 @@ fn evidence_report_f64_b_writes_the_acceptance_report() {
             )
         })
         .collect();
-    let image = engine_image(&game_dir);
-    let (image_len, image_digest) = engine_image_digest(&game_dir);
+    let image = engine_image();
+    let (image_len, image_digest) = engine_image_digest();
     let template_rows: Vec<String> = STORAGE_TEMPLATES
         .iter()
         .map(|(template, meaning)| {

@@ -29,7 +29,7 @@
 //! # Where the original does assign one (#715)
 //!
 //! Measured on retail data plus static analysis of the owner-supplied decrypted
-//! executable (`$CS_GAME_DIR/crimson.decrypted.exe`, sha256
+//! executable (`$CS_ENGINE_IMAGE`, sha256
 //! `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`); see
 //! `docs/findings/2026-10-06-m01-lc-player-airframe-source.md`:
 //!
@@ -98,8 +98,8 @@
 //!   and for each wingmate, whose row is its own measurement and stays
 //!   unknown. Reading a number in the record as an airframe index would be a
 //!   guess (AGENTS.md rule 4). [`recover_retail_start_configuration`] then
-//!   binds the player's from the engine state above when this installation
-//!   carries the image those bytes were read from, and otherwise names exactly
+//!   binds the player's from the engine state above when `$CS_ENGINE_IMAGE`
+//!   names the image those bytes were read from, and otherwise names exactly
 //!   why it could not ([`EngineStateError`]).
 //! * **The metric pose, from the document alone.** The stored unit is measured
 //!   as the metre, but the record alone carries no conversion to it, so
@@ -120,11 +120,12 @@
 use std::fmt;
 use std::path::Path;
 
+use cs_content::coordinates::EngineImage;
 use cs_content::stunts::{ZrdValue, decode_zrd};
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
-use cs_types::install::{InstallManifest, RelativePath};
+use cs_types::install::RelativePath;
 
 /// The reader archive a mission's records live in, under the mission's key.
 const READER_ARCHIVE: &str = "zrdr.zbd";
@@ -152,7 +153,7 @@ const HEADING_FIELD: usize = 2;
 /// `docs/findings/2026-10-06-m01-lc-player-airframe-source.md`.
 ///
 /// [`recover_retail_start_configuration`] replaces this refusal with a
-/// [`Resolved::Known`] when the installation carries the image the campaign
+/// [`Resolved::Known`] when `$CS_ENGINE_IMAGE` names the image the campaign
 /// chain was measured in; [`MissionStartConfiguration::read`] keeps it, since
 /// the document alone carries no such source.
 pub const AIRFRAME_UNKNOWN_REASON: &str = "no source in this document assigns the player's airframe: no field of an aiv.zrd aircraft record names one (the player's field 0 is the none value 0xFFFFFFFF in all 53 retail missions that have a player record), no member of M01's zrdr.zbd carries the `player_plane` key the executable reads — that key is read only by the instant-action setup, from `ia.zrd`, and resolved through the executable's eleven-row airframe table — the installation holds no profile or hangar file, and the mission-language statements that may assign one are undecoded (F13-B/C, F38)";
@@ -160,7 +161,7 @@ pub const AIRFRAME_UNKNOWN_REASON: &str = "no source in this document assigns th
 ///
 /// The stored unit is measured (#436); what the record does not carry is the
 /// executable's convention for the heading, which
-/// [`recover_retail_start_configuration`] names when this installation holds
+/// [`recover_retail_start_configuration`] names when `$CS_ENGINE_IMAGE` holds
 /// the image it was measured in, and which [`MissionStartConfiguration::read`]
 /// has no source to name.
 pub const POSE_UNKNOWN_REASON: &str = "the stored position unit is measured as the metre (#436, owner note 2026-10-05: 1 world unit = 1 metre, +Y up, right-handed, stored positions map to the canonical frame with identity axis map and scale 1.0), but this document carries no conversion for the heading: its zero direction and its handedness live in the executable's convention, not in the record (#770 measures them there), and the mission program may move the aircraft before launch (F13-B/C, F38)";
@@ -185,11 +186,15 @@ pub const POSE_UNKNOWN_REASON: &str = "the stored position unit is measured as t
 pub const STORED_POSITION_METRES_PER_UNIT: f32 = 1.0;
 
 /// The owner-supplied decrypted image (#770's measurement source), as it is
-/// spelled in the installation's inventory.
+/// spelled in every evidence span over it.
 ///
-/// Its digest is [`ENGINE_IMAGE_SHA256`]; [`engine_state_source`] refuses to
-/// name a span over an image that is absent or that hashes differently, so a
-/// drifted image can never back a binding about different bytes.
+/// The file name is what a [`SourceSpan`] carries as its container; the file
+/// itself is **not** installed — since #798 it lives at the path
+/// `$CS_ENGINE_IMAGE` names, outside the read-only retail installation. Its
+/// digest is [`ENGINE_IMAGE_SHA256`]; [`engine_state_source`] refuses to name
+/// a span over an image that was not loaded from `$CS_ENGINE_IMAGE` or that
+/// hashes differently, so a drifted image can never back a binding about
+/// different bytes.
 pub const ENGINE_IMAGE: &str = "crimson.decrypted.exe";
 
 /// SHA-256 of [`ENGINE_IMAGE`].
@@ -292,37 +297,50 @@ pub const CAMPAIGN_AIRFRAME_SOURCE: &str = "profile/flight-check shape of a fres
      a hangar or registry/INI profile selection and the undecoded mission language (F13-B/C, F38) \
      are named residues, not guesses";
 
-/// Why the engine-state source could not be named from an installation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Why the engine-state source could not be named (#798: from
+/// `$CS_ENGINE_IMAGE`, never from the installation's inventory).
+#[derive(Debug)]
 pub enum EngineStateError {
-    /// The installation's inventory has no [`ENGINE_IMAGE`] row.
-    ImageAbsent,
-    /// The inventory's row for [`ENGINE_IMAGE`] does not hash to
-    /// [`ENGINE_IMAGE_SHA256`]: it would be evidence about different bytes.
+    /// `$CS_ENGINE_IMAGE` did not yield the measured image — it is unset, the
+    /// file is unreadable, or the bytes are not the measured ones.
+    ImageUnavailable(cs_content::coordinates::EngineImageError),
+    /// The separately loaded image does not hash to [`ENGINE_IMAGE_SHA256`]:
+    /// it would be evidence about different bytes.
     DigestMismatch {
-        /// The digest the inventory recorded.
+        /// The digest the loaded image carries.
         found: ContentHash,
     },
+}
+
+impl From<cs_content::coordinates::EngineImageError> for EngineStateError {
+    fn from(error: cs_content::coordinates::EngineImageError) -> Self {
+        Self::ImageUnavailable(error)
+    }
 }
 
 impl fmt::Display for EngineStateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ImageAbsent => write!(
-                formatter,
-                "the installation's inventory carries no {ENGINE_IMAGE}, the decrypted image the \
-                 campaign airframe and the heading convention were measured in (#770)"
-            ),
+            // `EngineImageError`'s own message already names
+            // `$CS_ENGINE_IMAGE` and what it refused.
+            Self::ImageUnavailable(error) => write!(formatter, "{error}"),
             Self::DigestMismatch { found } => write!(
                 formatter,
-                "the installation's {ENGINE_IMAGE} hashes to {found}, not to the measured \
+                "the image $CS_ENGINE_IMAGE names hashes to {found}, not to the measured \
                  {ENGINE_IMAGE_SHA256}, so it cannot back the #770 engine-state binding"
             ),
         }
     }
 }
 
-impl std::error::Error for EngineStateError {}
+impl std::error::Error for EngineStateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ImageUnavailable(error) => Some(error),
+            Self::DigestMismatch { .. } => None,
+        }
+    }
+}
 
 /// The spans #770's two bindings name: the byte that decides the airframe, and
 /// the sequence that converts a stored heading into the node's yaw.
@@ -337,39 +355,37 @@ pub struct EngineStateSource {
 }
 
 /// Where the campaign airframe and the heading convention were measured, read
-/// out of the installation's own inventory.
+/// out of the separately loaded owner-supplied image (#798).
 ///
-/// The spans name [`ENGINE_IMAGE`]: [`EngineStateSource::airframe`] covers
-/// [`CAMPAIGN_AIRFRAME_RECORD_OFFSET`], the bytes the airframe chain reads, and
-/// [`EngineStateSource::heading`] covers [`HEADING_CONVERSION_OFFSET`], the
-/// sequence that converts a stored heading. Their `install_sha256` is the
+/// The argument is the image [`cs_content::coordinates::load_engine_image`]
+/// read from `$CS_ENGINE_IMAGE` — not a row of an `InstallManifest`, because
+/// the image is not installation content. The spans name [`ENGINE_IMAGE`]:
+/// [`EngineStateSource::airframe`] covers
+/// [`CAMPAIGN_AIRFRAME_RECORD_OFFSET`], the bytes the airframe chain reads,
+/// and [`EngineStateSource::heading`] covers [`HEADING_CONVERSION_OFFSET`],
+/// the sequence that converts a stored heading. Their `install_sha256` is the
 /// image's own digest, the idiom F16-E already uses for this evidence
 /// (`cs_content::coordinates::image_evidence`): the image *is* the source
-/// this claim stands on. A missing or differently-hashed image is an error,
-/// never a silent fallback to a claim about other bytes.
+/// this claim stands on. An image that was not loaded from
+/// `$CS_ENGINE_IMAGE`, or one that hashes differently, is an error, never a
+/// silent fallback to a claim about other bytes.
 ///
 /// # Errors
 ///
-/// [`EngineStateError::ImageAbsent`] or [`EngineStateError::DigestMismatch`].
-pub fn engine_state_source(
-    manifest: &InstallManifest,
-) -> Result<EngineStateSource, EngineStateError> {
-    let record = manifest
-        .files
-        .iter()
-        .find(|row| row.relative_spelling.logical_key() == ENGINE_IMAGE)
-        .ok_or(EngineStateError::ImageAbsent)?;
-    let expected =
-        ContentHash::from_hex(ENGINE_IMAGE_SHA256).map_err(|_| EngineStateError::ImageAbsent)?;
-    if record.sha256 != expected {
+/// [`EngineStateError::ImageUnavailable`] when the caller could not load the
+/// image, [`EngineStateError::DigestMismatch`] when the image it holds does
+/// not hash to [`ENGINE_IMAGE_SHA256`].
+pub fn engine_state_source(image: &EngineImage) -> Result<EngineStateSource, EngineStateError> {
+    let expected = cs_content::coordinates::original_image_digest();
+    if image.digest != expected {
         return Err(EngineStateError::DigestMismatch {
-            found: record.sha256,
+            found: image.digest,
         });
     }
     let span = |offset: u64, length: u64| {
         SourceSpan::new(expected, ENGINE_IMAGE, None, offset, length, None).map_err(|_| {
             EngineStateError::DigestMismatch {
-                found: record.sha256,
+                found: image.digest,
             }
         })
     };
@@ -815,7 +831,8 @@ impl MissionStartConfiguration {
     /// Binds the player's airframe and initial pose from the measured
     /// engine-state source (#770).
     ///
-    /// `source` is [`engine_state_source`]'s answer for this installation. The
+    /// `source` is [`engine_state_source`]'s answer for the image
+    /// `$CS_ENGINE_IMAGE` names. The
     /// airframe becomes [`CAMPAIGN_AIRFRAME_ROW`] as
     /// [`CAMPAIGN_AIRFRAME_SOURCE`] spells it — its provenance points at the
     /// `.data` record that carries the deciding byte. The pose becomes the
@@ -898,8 +915,8 @@ impl MissionStartConfiguration {
     /// keeping the claim [`read`] gave it.
     ///
     /// Used for the two refusals that must override a binding or stand where
-    /// the document-only refusal stood: the engine-state source this
-    /// installation cannot name, and an archive whose own instant-action
+    /// the document-only refusal stood: the engine-state source
+    /// `$CS_ENGINE_IMAGE` cannot name, and an archive whose own instant-action
     /// scenario assigns the airframe instead.
     ///
     /// # Errors
@@ -918,11 +935,13 @@ impl MissionStartConfiguration {
 /// `mission` is the mission's logical key, e.g. `zbd/c1c/m01`.
 ///
 /// The document gives the records and the stored pose. The player's airframe
-/// and the metric initial pose come from the measured engine state: when this
-/// installation's inventory carries [`ENGINE_IMAGE`] at [`ENGINE_IMAGE_SHA256`]
+/// and the metric initial pose come from the measured engine state: when
+/// `$CS_ENGINE_IMAGE` names [`ENGINE_IMAGE`] at [`ENGINE_IMAGE_SHA256`]
 /// ([`engine_state_source`]), they are [`Resolved::Known`] with the source
 /// span named above; otherwise [`MissionStartConfiguration::refuse_engine_state`]
-/// says exactly why, and nothing is invented in its place.
+/// says exactly why, and nothing is invented in its place. The image is
+/// loaded separately from `$CS_ENGINE_IMAGE` and never looked for inside
+/// `install_root` (#798).
 ///
 /// One measured exception: an archive that carries its own instant-action
 /// scenario (`ia.zrd` with [`PLAYER_PLANE_KEY`]) has its airframe refused
@@ -986,7 +1005,13 @@ pub fn recover_retail_start_configuration(
     )
     .map_err(|error| MissionStartError::Provenance(error.to_string()))?;
     let mut configuration = MissionStartConfiguration::read(mission, &document, &source)?;
-    match engine_state_source(&found.manifest) {
+    // #798: the engine image is a separate owner-supplied input at
+    // `$CS_ENGINE_IMAGE`, so it is loaded here rather than read out of the
+    // installation's inventory, and a refusal names that variable.
+    let engine_state = cs_content::coordinates::load_engine_image()
+        .map_err(EngineStateError::from)
+        .and_then(|image| engine_state_source(&image));
+    match engine_state {
         Ok(engine) => configuration.bind_engine_state(&engine)?,
         Err(error) => configuration.refuse_engine_state(&error.to_string())?,
     }

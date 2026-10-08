@@ -71,8 +71,8 @@ fn review_method(archives: usize, members: usize, row: u32, constant: f64, tests
          that re-reads this task's two byte ranges out of crimson.decrypted.exe, re-runs \
          engine_state_source and recover_retail_start_configuration through production code and \
          walks every reader archive of the installation (campaign-airframe-pose.json). Claim is \
-         implemented only. MEASURED: (a) the campaign player's airframe — the installation's \
-         inventory carries the decrypted image at the recorded digest, engine_state_source names \
+         implemented only. MEASURED: (a) the campaign player's airframe — CS_ENGINE_IMAGE \
+         names the decrypted image at the recorded digest, engine_state_source names \
          the plane-roster record at file offset 0x21a81c whose +0x2c dword reads {row} here, which \
          is CAMPAIGN_AIRFRAME_ROW, and M01's player is bound as ContentId airframe/{root} with the \
          profile/flight-check chain named in CAMPAIGN_AIRFRAME_SOURCE (roster init 0x4113b0, \
@@ -114,7 +114,7 @@ fn review_method(archives: usize, members: usize, row: u32, constant: f64, tests
 }
 
 #[test]
-#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR, CS_ENGINE_IMAGE"]
 fn evidence_report_m01_lc_campaign_airframe_pose_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
@@ -154,9 +154,11 @@ fn evidence_report_m01_lc_campaign_airframe_pose_writes_the_acceptance_report() 
     let content_sha256 = content_fingerprint(&found.manifest).to_hex();
 
     // The production bindings themselves, re-run here: the spans the report
-    // names must be the spans the production function answers.
-    let engine = engine_state_source(&found.manifest)
-        .expect("this installation's image is the measured one");
+    // names must be the spans the production function answers. The image is
+    // the one `CS_ENGINE_IMAGE` names (#798), not an inventory row.
+    let engine_image = cs_content::coordinates::load_engine_image()
+        .expect("CS_ENGINE_IMAGE names the measured image");
+    let engine = engine_state_source(&engine_image).expect("the loaded image is the measured one");
     assert_eq!(
         (
             engine.airframe.offset(),
@@ -307,21 +309,12 @@ fn render_campaign_airframe_pose(
         }
     }
 
-    // The two byte ranges this task binds from, read out of the image the
-    // installation's inventory just hashed.
-    let image_record = found
-        .manifest
-        .files
-        .iter()
-        .find(|row| row.relative_spelling.logical_key() == ENGINE_IMAGE)
-        .unwrap_or_else(|| panic!("the installation carries {ENGINE_IMAGE}"));
-    let image = fs::read(
-        found
-            .manifest
-            .host_root
-            .join(image_record.relative_spelling.as_str()),
-    )
-    .expect("the image reads");
+    // The two byte ranges this task binds from, read out of the image
+    // `CS_ENGINE_IMAGE` names (#798) — never out of the installation, which
+    // does not carry it.
+    let engine_image = cs_content::coordinates::load_engine_image()
+        .expect("CS_ENGINE_IMAGE names the measured image");
+    let image = &engine_image.bytes;
     let row_offset = (CAMPAIGN_AIRFRAME_RECORD_OFFSET + 0x2c) as usize;
     let row = u32::from_le_bytes(
         image[row_offset..row_offset + 4]
@@ -336,8 +329,8 @@ fn render_campaign_airframe_pose(
     );
 
     // The production bindings, re-run here.
-    let engine = engine_state_source(&found.manifest)
-        .expect("this installation's image is the measured one");
+    let engine =
+        engine_state_source(&engine_image).expect("CS_ENGINE_IMAGE names the measured image");
     let config = recover_retail_start_configuration(game_dir, "zbd/c1c/m01")
         .expect("M01's start configuration reads");
     let stored = match config.stored_pose() {
@@ -435,8 +428,8 @@ fn render_campaign_airframe_pose(
             jstr(install_sha256),
             jstr(candidate_tree),
             jstr(ENGINE_IMAGE),
-            jstr(&image_record.sha256.to_hex()),
-            image_record.size_bytes,
+            jstr(&engine_image.digest.to_hex()),
+            engine_image.bytes.len(),
             CAMPAIGN_AIRFRAME_RECORD_OFFSET,
             CAMPAIGN_AIRFRAME_RECORD_LENGTH,
             CAMPAIGN_AIRFRAME_ROW,

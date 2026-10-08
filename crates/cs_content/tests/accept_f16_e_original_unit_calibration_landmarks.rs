@@ -53,11 +53,20 @@ use cs_types::evidence::{
 };
 use cs_types::space::Winding;
 
-/// The installation hash and content hash of the installation the landmarks
-/// were recorded against: `docs/findings/evidence/M01-LC-WORLD-UNIT-ROLES.json`
-/// records both, and the retail test below re-derives them from the manifest.
-const INSTALL_SHA256: &str = "c14a876f4457d8710dee7986333ab636122c9549cf72b646fd69cbe7e72c5352";
-const CONTENT_SHA256: &str = "148a24b7b0506812e8f1ee13d8d3137a05926abebbe10161994e8c4cd300c35e";
+/// The installation hash and content hash of the read-only retail
+/// installation the landmarks were re-derived against (#798): the retail test
+/// below re-derives them from the manifest.
+///
+/// Both were first recorded with the owner's decrypted image still sitting
+/// inside `$CS_GAME_DIR`, where it was an inventoried file and therefore part
+/// of both digests (`c14a876f…` / `148a24b7…`, still what
+/// `docs/findings/evidence/M01-LC-WORLD-UNIT-ROLES.json` records of that
+/// run). The owner has moved the image out of the installation for good
+/// (#798), so these are re-derived from the read-only tree, which hashes to
+/// the same values the pre-image findings recorded
+/// (`2026-09-29-f14-d-retail-baseline-inventory.md`).
+const INSTALL_SHA256: &str = "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978";
+const CONTENT_SHA256: &str = "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d";
 
 /// The installation envelope a measured source is declared with; the retail
 /// test builds the same thing from the discovered installation.
@@ -647,22 +656,26 @@ fn accept_f16_e_declared_sources_still_arrive_uncalibrated() {
 /// **The recorded hashes still describe this installation, and the data
 /// landmark's bytes are the bytes that were recorded** (retail).
 ///
-/// Every fingerprint the calibration cites is re-derived here from
-/// `$CS_GAME_DIR`: the owner's decrypted image, the installation and content
-/// hashes, the retail archive's digest, and the `anim.zrd` member span that
-/// holds the `-9.8` gravity word. A landmark recorded about different files
-/// fails here instead of standing as confident prose.
+/// Every fingerprint the calibration cites is re-derived here: the owner's
+/// decrypted image from `$CS_ENGINE_IMAGE` (#798), and from `$CS_GAME_DIR`
+/// the installation and content hashes, the retail archive's digest, and the
+/// `anim.zrd` member span that holds the `-9.8` gravity word. A landmark
+/// recorded about different files fails here instead of standing as confident
+/// prose.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_f16_e_the_recorded_hashes_still_describe_this_installation() {
     let root = std::path::PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR is set"));
     let found = cs_assets::install::discover(&root).expect("the installation is discovered");
 
-    // The image every code landmark cites.
-    let image = std::fs::read(root.join("crimson.decrypted.exe"))
-        .unwrap_or_else(|error| panic!("the owner's decrypted image is readable: {error}"));
+    // The image every code landmark cites, read from `$CS_ENGINE_IMAGE` —
+    // never from the installation: the image is not installation content
+    // (#798), and the loader already refused anything that does not hash to
+    // `ORIGINAL_IMAGE_SHA256`.
+    let image = cs_content::coordinates::load_engine_image()
+        .unwrap_or_else(|error| panic!("the owner's decrypted image loads: {error}"));
     assert_eq!(
-        cs_assets::install::sha256(&image).to_hex(),
+        image.digest.to_hex(),
         ORIGINAL_IMAGE_SHA256,
         "the image the landmarks were measured in is byte-identical to the one recorded"
     );

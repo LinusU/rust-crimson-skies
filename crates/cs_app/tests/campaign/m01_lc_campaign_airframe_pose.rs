@@ -4,7 +4,7 @@
 //! name when this installation cannot name it.
 //!
 //! The evidence is static analysis of the owner-supplied decrypted image
-//! (`$CS_GAME_DIR/crimson.decrypted.exe`, sha256 as
+//! (`$CS_ENGINE_IMAGE`, sha256 as
 //! [`ENGINE_IMAGE_SHA256`]) plus retail data, recorded in
 //! `docs/findings/2026-10-08-m01-lc-campaign-airframe-engine-state.md`.
 //! Nothing here is `verified_original`: no original run supplied any of it,
@@ -30,31 +30,27 @@ use cs_app::mission_start::{
     MissionStartConfiguration, POSE_UNKNOWN_REASON, STORED_HEADING_DEGREES_TO_RADIANS,
     engine_state_source, recover_retail_start_configuration, stored_heading_radians,
 };
+use cs_content::coordinates::{EngineImage, load_engine_image, load_engine_image_from};
 use cs_content::stunts::ZrdValue;
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::{ClaimStatus, ContentHash};
-use cs_types::install::{FileRole, InstallFileRecord, InstallManifest, ParseState, RelativePath};
 
 /// The digest the measured image carries, as a [`ContentHash`].
 fn image_hash() -> ContentHash {
     ContentHash::from_hex(ENGINE_IMAGE_SHA256).expect("the recorded image digest is hex")
 }
 
-/// An installation inventory carrying `crimson.decrypted.exe` at `digest`.
-fn inventory(digest: ContentHash) -> InstallManifest {
-    InstallManifest::new(
-        PathBuf::from("/game"),
-        vec![InstallFileRecord {
-            relative_spelling: RelativePath::new(ENGINE_IMAGE).expect("a plain file name"),
-            size_bytes: 2_580_480,
-            sha256: digest,
-            family: None,
-            role: FileRole::Unknown,
-            parse_state: ParseState::Unparsed,
-        }],
-    )
-    .expect("one row is a valid inventory")
+/// The separately loaded image (#798) at `digest`, as `engine_state_source`
+/// takes it. The bytes are empty because this function never reads them: the
+/// digest is what the binding stands on, so a caller that hands over a
+/// different one must be refused by name.
+fn image(digest: ContentHash) -> EngineImage {
+    EngineImage {
+        path: PathBuf::from("/owner").join(ENGINE_IMAGE),
+        bytes: Vec::new(),
+        digest,
+    }
 }
 
 fn text(value: &str) -> ZrdValue {
@@ -93,9 +89,9 @@ fn engine_source() -> EngineStateSource {
 
 #[test]
 fn accept_m01_lc_campaign_airframe_pose_engine_state_source_names_the_measured_bytes() {
-    // The measured image: the inventory row's own digest is the one the
-    // binding names, so a drifted image can never back it.
-    let found = engine_state_source(&inventory(image_hash())).expect("the measured image names");
+    // The measured image: the digest the binding names is the one the
+    // separately loaded image carries, so a drifted image can never back it.
+    let found = engine_state_source(&image(image_hash())).expect("the measured image names");
     assert_eq!(found.airframe.container_path(), ENGINE_IMAGE);
     assert_eq!(
         found.airframe.member_key(),
@@ -115,17 +111,26 @@ fn accept_m01_lc_campaign_airframe_pose_engine_state_source_names_the_measured_b
         (HEADING_CONVERSION_OFFSET, HEADING_CONVERSION_LENGTH)
     );
 
-    // An installation without that image says so instead of binding.
-    let absent = InstallManifest::new(PathBuf::from("/game"), vec![]).expect("an empty inventory");
-    let error = engine_state_source(&absent).expect_err("no image, no source");
-    assert_eq!(error, EngineStateError::ImageAbsent);
-    assert!(error.to_string().contains(ENGINE_IMAGE));
+    // No image at all says so instead of binding, and the message names
+    // `CS_ENGINE_IMAGE` — never an installation inventory row (#798).
+    let error = EngineStateError::from(
+        load_engine_image_from(None).expect_err("an unset CS_ENGINE_IMAGE refuses"),
+    );
+    assert!(error.to_string().contains("CS_ENGINE_IMAGE"), "{error}");
+    assert!(error.to_string().contains(ENGINE_IMAGE), "{error}");
 
-    // So does one whose image is not the measured bytes.
+    // So does an image that is not the measured bytes.
     let other = ContentHash::from_hex(&"cd".repeat(32)).expect("hex");
-    let error = engine_state_source(&inventory(other)).expect_err("a different image");
-    assert_eq!(error, EngineStateError::DigestMismatch { found: other });
+    let error = engine_state_source(&image(other)).expect_err("a different image");
+    assert!(
+        matches!(&error, EngineStateError::DigestMismatch { found } if *found == other),
+        "{error:?}"
+    );
     assert!(error.to_string().contains(ENGINE_IMAGE_SHA256));
+    assert!(
+        !error.to_string().contains("installation's inventory"),
+        "the refusal must not name the installation inventory any more: {error}"
+    );
 }
 
 #[test]
@@ -180,7 +185,7 @@ fn accept_m01_lc_campaign_airframe_pose_bind_names_the_source_and_keeps_the_refu
     // A refusal never withdraws a binding, and the source's own prose names
     // the profile/flight-check shape and its residues.
     config
-        .refuse_engine_state("the inventory carries no measured image")
+        .refuse_engine_state("CS_ENGINE_IMAGE does not name the measured image")
         .expect("refusal recorded");
     assert!(config.airframe().is_known());
     assert!(config.initial_pose().is_known());
@@ -245,12 +250,14 @@ fn accept_m01_lc_campaign_airframe_pose_stored_heading_converts_like_the_origina
 }
 
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_lc_campaign_airframe_pose_retail_m01_binds_from_the_measured_bytes() {
     let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
 
-    let found = cs_assets::install::discover(&root).expect("the installation discovers");
-    let engine = engine_state_source(&found.manifest).expect("the measured image is inventoried");
+    // The image is loaded from `CS_ENGINE_IMAGE`, not from the installation
+    // (#798), and the binding is built from the image it loaded.
+    let loaded = load_engine_image().expect("CS_ENGINE_IMAGE names the measured image");
+    let engine = engine_state_source(&loaded).expect("the measured image names");
     assert_eq!(
         (engine.airframe.offset(), engine.heading.offset()),
         (CAMPAIGN_AIRFRAME_RECORD_OFFSET, HEADING_CONVERSION_OFFSET)
@@ -258,7 +265,7 @@ fn accept_m01_lc_campaign_airframe_pose_retail_m01_binds_from_the_measured_bytes
 
     // Read the two bindings back out of the image's own bytes: the roster
     // record's airframe row, and the degree-to-radian double.
-    let image = std::fs::read(root.join(ENGINE_IMAGE)).expect("the image reads");
+    let image = &loaded.bytes;
     let row_offset = (CAMPAIGN_AIRFRAME_RECORD_OFFSET + 0x2c) as usize;
     let row = u32::from_le_bytes(
         image[row_offset..row_offset + 4]
@@ -316,7 +323,7 @@ fn accept_m01_lc_campaign_airframe_pose_retail_m01_binds_from_the_measured_bytes
 }
 
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_lc_campaign_airframe_pose_an_instant_action_scenario_keeps_its_own_assignment() {
     let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
 

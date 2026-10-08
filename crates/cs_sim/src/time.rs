@@ -1338,7 +1338,7 @@ pub const ORIGINAL_POLICY_FINDINGS: &str =
     "docs/findings/2026-10-06-f16-f-original-clock-pause-and-speed-up-policy.md";
 
 /// sha256 of the owner-supplied decrypted image the policy was read from
-/// (`$CS_GAME_DIR/crimson.decrypted.exe`, a decryption of `crimson.icd`).
+/// (`$CS_ENGINE_IMAGE`, a decryption of `crimson.icd`).
 ///
 /// A hash of decrypted bytes, never the bytes: nothing executable, no
 /// decompiled code and no game data is committed anywhere in this tree.
