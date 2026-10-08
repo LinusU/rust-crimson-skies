@@ -441,7 +441,16 @@ impl WorldOperands {
                 }
             }
             Condition::Not(inner) => Self::collect(inner, operands),
-            _ => {}
+            // The variants that spell no world operand, listed one by one the
+            // way [`cs_script::runtime::MissionState::holds`] lists them. No
+            // catch-all on purpose: a later world-shaped variant must be a
+            // compile error here rather than a map that silently stays empty
+            // while the condition reading it answers `false` forever.
+            Condition::Const(_)
+            | Condition::Compare { .. }
+            | Condition::ActorIs { .. }
+            | Condition::ObjectiveAwake { .. }
+            | Condition::Unknown { .. } => {}
         }
     }
 
