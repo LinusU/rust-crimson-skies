@@ -123,11 +123,10 @@ fn accept_f49_b_scenario_level_changes_report_as_themselves() {
         vec![ScenarioChange::Rules]
     );
 
-    let more_seats = lower_custom(&catalog, base_draft(None).with_players(2)).unwrap();
-    assert_eq!(
-        diff_scenarios(&before, &more_seats),
-        vec![ScenarioChange::Players]
-    );
+    // `ScenarioChange::Players` has no case here: a roster seats exactly one
+    // player slot (`ScenarioRoster::try_new` refuses a second) and the seat
+    // count must equal the slots the roster declares, so two valid lowerings
+    // can only ever both seat one — which the preset pair below pins.
 
     let harder = lower_custom(
         &catalog,

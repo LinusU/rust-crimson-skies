@@ -41,6 +41,13 @@ record rules remain unmeasured (see the F49-A finding) and F49-D owns them.
   coalition is "not yet out" while any side of it **that flies in the
   scenario** has budget left, and neutral actors are counted by neither
   coalition.
+* `ScenarioChange::Players` cannot move through the production lowering path:
+  a roster accepts exactly one player slot (`ScenarioRoster::try_new` refuses
+  a second) and `check_seats` requires the seat count to equal the slots the
+  roster declares, so every valid lowering — custom or preset — seats one.
+  The branch stays (the dimension is declared by the draft API), and the test
+  pins the only observable half of it: two authored presets never differ in
+  seats.
 
 ## Review corrections (2026-10-08, reviewer bunny-alpha-1)
 
