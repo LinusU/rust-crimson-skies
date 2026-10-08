@@ -367,9 +367,9 @@ fn accept_flight_original_retail_bloodhawk_and_devastator_match_the_table() {
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_flight_original_retail_level_top_speed_matches_fd_speed() {
     let documents = load();
-    let globals = globals(&documents);
+    let globals = globals(documents);
 
-    let (bloodhawk, model) = model_for(&documents, &globals, "pbloodhawk");
+    let (bloodhawk, model) = model_for(documents, &globals, "pbloodhawk");
     let fuel = bloodhawk
         .initial_fuel
         .clone()
@@ -399,7 +399,7 @@ fn accept_flight_original_retail_level_top_speed_matches_fd_speed() {
         "pwarhawk",
     ];
     for record in fighters {
-        let (parameters, model) = model_for(&documents, &globals, record);
+        let (parameters, model) = model_for(documents, &globals, record);
         let fuel = parameters
             .initial_fuel
             .clone()
@@ -420,7 +420,7 @@ fn accept_flight_original_retail_level_top_speed_matches_fd_speed() {
 
     // The autogyro flies step 9's fake dynamics, so its speed converges to
     // exactly `fd_speed * throttle`.
-    let (parameters, model) = model_for(&documents, &globals, "pautogyro");
+    let (parameters, model) = model_for(documents, &globals, "pautogyro");
     assert!(parameters.is_autogyro, "pautogyro sets is_autogyro");
     assert_eq!(model.dynamics, DynamicsKind::Fake);
     let fd_speed = parameters
@@ -442,8 +442,8 @@ fn accept_flight_original_retail_level_top_speed_matches_fd_speed() {
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_flight_original_retail_vertical_climb_and_ceiling() {
     let documents = load();
-    let globals = globals(&documents);
-    let (parameters, model) = model_for(&documents, &globals, "pbloodhawk");
+    let globals = globals(documents);
+    let (parameters, model) = model_for(documents, &globals, "pbloodhawk");
     let fuel = parameters
         .initial_fuel
         .clone()

@@ -282,11 +282,11 @@ pub const GLOBAL_FIELDS: [&str; 17] = [
 /// unique, and every declared name must be present, in declaration order.
 fn read_fields(
     declared: &[&'static str],
-    fields: &[(&str, f64)],
+    fields: &[(&'static str, f64)],
 ) -> Result<Vec<(&'static str, f64)>, OriginalParamsError> {
-    let mut seen: Vec<&str> = Vec::with_capacity(fields.len());
+    let mut seen: Vec<&'static str> = Vec::with_capacity(fields.len());
     for &(name, value) in fields {
-        if !declared.iter().any(|field| *field == name) {
+        if !declared.contains(&name) {
             return Err(OriginalParamsError::UnknownField {
                 name: name.to_owned(),
             });
@@ -367,7 +367,7 @@ impl OriginalAirframe {
     /// [`OriginalParamsError`] naming the first problem: an undeclared or
     /// repeated field, a missing field, a non-finite value, or a non-positive
     /// weight, reference area or damping rate.
-    pub fn from_values(fields: &[(&str, f64)]) -> Result<Self, OriginalParamsError> {
+    pub fn from_values(fields: &[(&'static str, f64)]) -> Result<Self, OriginalParamsError> {
         let values = read_fields(&AIRFRAME_FIELDS, fields)?;
         let get = |name: &str| -> f64 {
             values
@@ -444,7 +444,7 @@ impl OriginalGlobals {
     ///
     /// [`OriginalParamsError`] naming the first problem, exactly as
     /// [`OriginalAirframe::from_values`] does.
-    pub fn from_values(fields: &[(&str, f64)]) -> Result<Self, OriginalParamsError> {
+    pub fn from_values(fields: &[(&'static str, f64)]) -> Result<Self, OriginalParamsError> {
         let values = read_fields(&GLOBAL_FIELDS, fields)?;
         let get = |name: &str| -> f64 {
             values
@@ -1448,9 +1448,12 @@ mod tests {
         assert_eq!(high.rho, 0.0570481 * 0.002377);
         assert_eq!(high.sound_speed_ftps, (0.7348 + 1.0) * 558.0);
 
-        // 2000 m * 3.2808399 = 6561.6798 ft: at or below the switch.
-        assert!(2000.0 * 3.2808399 <= 6561.68);
-        assert!(2500.0 * 3.2808399 > 6561.68);
+        // The switch sits at 2000 m: 6561.6798 ft is at or below it and a
+        // hundred metres more is above it, with no interpolation between.
+        assert_eq!(atmosphere(1999.9).k, LOW_K);
+        assert_eq!(atmosphere(2000.0).k, LOW_K);
+        assert_eq!(atmosphere(2000.1).k, HIGH_K);
+        assert!((LOW_CEILING_FT / METERS_TO_FEET - 2000.0).abs() < 1.0e-3);
     }
 
     /// The thrust coefficient, against the formula written out by hand, and
