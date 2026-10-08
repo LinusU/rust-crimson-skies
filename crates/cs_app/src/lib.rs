@@ -710,3 +710,7 @@ pub mod ui {
 pub mod weapons;
 pub mod world;
 pub mod world_actors;
+/// The world-side [`cs_script::runtime::MissionFacts`] writers — `members`,
+/// `groups`, `generators` and `animations` — and the fold that runs before a
+/// mission tick (task `M01-LC-WORLD-FACTS`).
+pub mod world_facts;
