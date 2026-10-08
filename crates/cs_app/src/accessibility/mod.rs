@@ -11,6 +11,9 @@
 //!   commit a map that strands a device.
 //! * [`cues`] — objective status cues that never rely on colour, scaled with
 //!   the UI scale.
+//! * [`objective_page`] — (F52-B) the in-flight objectives page as the player
+//!   reads it: each `HudSession` row with its cue at the UI scale, and what
+//!   fits a viewport.
 //! * [`motion`] — reduced shake/flash that drops cosmetic effects and never a
 //!   required damage or target notification.
 //! * [`store`] — atomic persistence and the safe-defaults startup.
@@ -21,5 +24,6 @@
 pub mod cues;
 pub mod motion;
 pub mod navigation;
+pub mod objective_page;
 pub mod remap;
 pub mod store;
