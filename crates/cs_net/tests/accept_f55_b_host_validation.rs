@@ -15,6 +15,7 @@
 
 use std::collections::BTreeSet;
 
+use cs_net::bounds::MAX_PACKET_BYTES;
 use cs_net::fixture::{SYNTHETIC_SESSION, synthetic_hello, synthetic_parameters};
 use cs_net::lobby::*;
 use cs_types::Tick;
@@ -26,6 +27,16 @@ struct AcceptAll;
 impl LoadoutValidator for AcceptAll {
     fn validate(&self, _: &Loadout) -> Result<(), &'static str> {
         Ok(())
+    }
+}
+
+/// A shared validator that refuses every loadout with its stable code, so the
+/// packet path's validator parameter is exercised on its refusing side too.
+struct RejectAll;
+
+impl LoadoutValidator for RejectAll {
+    fn validate(&self, _: &Loadout) -> Result<(), &'static str> {
+        Err("over_budget")
     }
 }
 
@@ -594,6 +605,22 @@ fn accept_f55_b_malformed_bytes_are_refused_before_the_lobby_changes() {
         })
     );
     unchanged(&lobby);
+
+    // A buffer past the packet cap is refused before the first field is
+    // read, so an oversized datagram costs one comparison, not a parse.
+    let oversize = vec![0u8; MAX_PACKET_BYTES + 1];
+    let reject = lobby
+        .receive_bytes(host, &oversize, &AcceptAll)
+        .expect_err("an oversized buffer is malformed");
+    assert_eq!(
+        reject,
+        PacketReject::Malformed(PacketError::TooLarge {
+            field: "lobby_packet",
+            max: MAX_PACKET_BYTES,
+            len: MAX_PACKET_BYTES + 1,
+        })
+    );
+    unchanged(&lobby);
 }
 
 /// Chat stays bounded, escaped text on the wire too: a line the lobby's own
@@ -796,4 +823,124 @@ fn accept_f55_b_readiness_and_membership_travel_the_host_receive_path() {
         Some(Ready::NotReady),
         "the ban revoked readiness on the host record"
     );
+}
+
+/// Host validation of a loadout over the packet path: the host's ban and the
+/// shared validator each refuse the member's own choice, nothing lands, and
+/// the refusal keeps its packet id free so the corrected request can be
+/// retried under the same id.
+#[test]
+fn accept_f55_b_an_unacceptable_loadout_packet_is_refused() {
+    let mut lobby = open_lobby(admission());
+    let host = lobby.host();
+    let a = join(&mut lobby, "Ace");
+    let cannon = id(ContentKind::Gun, "synthetic_cannon");
+    let mg = id(ContentKind::Gun, "synthetic_mg");
+
+    // The host bans the cannon over the same path a member uses.
+    send(
+        &mut lobby,
+        host,
+        &LobbyPacket::Command {
+            id: packet_id(1),
+            command: LobbyCommand::Host(HostAction::Ban(cannon.clone())),
+        },
+    )
+    .expect("the host's ban applies");
+    assert_eq!(lobby.revision().get(), 2);
+
+    // Ace's packet naming the banned component is refused after decoding,
+    // and Ace still holds no loadout.
+    let banned = LobbyPacket::Command {
+        id: packet_id(2),
+        command: LobbyCommand::Peer(PeerRequest::SetLoadout(loadout(&[&cannon]))),
+    };
+    let bytes = banned.encode().expect("the packet fits the wire caps");
+    let reject = lobby
+        .receive_bytes(a, &bytes, &AcceptAll)
+        .expect_err("a banned component must not load out");
+    assert_eq!(
+        reject,
+        PacketReject::Command(LobbyError::LoadoutRejected(LoadoutProblem::Banned {
+            component: cannon.clone(),
+        }))
+    );
+    assert_eq!(
+        lobby.member(a).and_then(|member| member.loadout.clone()),
+        None
+    );
+
+    // The shared validator judges the same shape and its stable code travels
+    // back to the member instead of being swallowed.
+    let shared = LobbyPacket::Command {
+        id: packet_id(3),
+        command: LobbyCommand::Peer(PeerRequest::SetLoadout(loadout(&[&mg]))),
+    };
+    let bytes = shared.encode().expect("the packet fits the wire caps");
+    let reject = lobby
+        .receive_bytes(a, &bytes, &RejectAll)
+        .expect_err("the shared validator must refuse it");
+    assert_eq!(
+        reject,
+        PacketReject::Command(LobbyError::LoadoutRejected(LoadoutProblem::Invalid {
+            code: "over_budget"
+        }))
+    );
+    assert_eq!(
+        lobby.member(a).and_then(|member| member.loadout.clone()),
+        None
+    );
+
+    // Neither refusal joined the replay guard: the very same packet id,
+    // accepted by a validator that allows it, still applies.
+    match lobby
+        .receive_bytes(a, &bytes, &AcceptAll)
+        .expect("a corrected retry under the same id applies")
+    {
+        PacketOutcome::Applied(applied) => assert!(applied.events.is_empty()),
+        other => panic!("expected an applied loadout, got {other:?}"),
+    }
+    assert_eq!(
+        lobby.member(a).and_then(|member| member.loadout.clone()),
+        Some(loadout(&[&mg]))
+    );
+}
+
+/// The launch is bound to a rules *hash*, not only to the revision: a packet
+/// naming the live revision under another lobby's digest is refused and
+/// leaves no launch pending.
+#[test]
+fn accept_f55_b_a_launch_naming_another_rules_digest_is_refused() {
+    let (mut lobby, host, a, _b, _cannon, _mg) = ready_lobby();
+    let request = LaunchRequest {
+        revision: lobby.revision(),
+        digest: other_rules_digest(),
+    };
+
+    let reject = send(
+        &mut lobby,
+        host,
+        &LobbyPacket::Launch {
+            id: packet_id(1),
+            request,
+        },
+    )
+    .expect_err("a launch naming other rules than the live digest must not launch");
+    assert_eq!(reject, PacketReject::Launch(LaunchError::DigestMismatch));
+    assert_eq!(lobby.phase(), Phase::Gathering);
+
+    // Nothing was recorded as pending, so an acknowledgment now is refused
+    // as "no launch" rather than accepted against a phantom launch.
+    let live = live_launch(&lobby);
+    let reject = send(
+        &mut lobby,
+        a,
+        &LobbyPacket::LaunchAck {
+            id: packet_id(2),
+            request: live,
+        },
+    )
+    .expect_err("there is no pending launch to acknowledge");
+    assert_eq!(reject, PacketReject::Launch(LaunchError::NoLaunchPending));
+    assert_eq!(lobby.phase(), Phase::Gathering);
 }

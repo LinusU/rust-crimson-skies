@@ -19,7 +19,7 @@ Listed before editing, per the sheet.
   ([`PacketOutcome`], [`PacketReject`]), the bounded replay guard
   (`Lobby::seen`, [`MAX_SEEN_LOBBY_PACKETS`]), and `Display`/`Error` for
   `LaunchError` (it had `Debug` only, and `PacketReject` reports it).
-- `crates/cs_net/tests/accept_f55_b_host_validation.rs` (new): 11 tests, all
+- `crates/cs_net/tests/accept_f55_b_host_validation.rs` (new): 13 tests, all
   named `accept_f55_b_*`.
 - Wiring edits: none were needed — `lobby` is already declared in
   `crates/cs_net/src/lib.rs`.
@@ -96,8 +96,9 @@ member bytes ─▶ LobbyPacket::decode ─▶ Lobby::receive
 - **The envelope is not on the wire yet.** `ClientPayload`/`ServerPayload`
   (F54-A, not owned here) still carry no lobby variant, so a real client
   cannot send these bytes and `lifecycle::ServerSession` does not dispatch to
-  `Lobby::receive_bytes`. Filed as a follow-up task: the lobby's *validated*
-  path exists, the transport wiring does not.
+  `Lobby::receive_bytes`. Filed as follow-up **#763 (F55-BU1-WIRE)**; until
+  it lands, no end-to-end "a lobby packet crossed the wire" claim is made
+  for this stage.
 - **`LoadoutValidator` still has no production implementation.** The hook is
   exercised by the tests through `AcceptAll`/`RejectAll`, as in F55-A. A
   content-side implementation cannot be honestly written yet: `cs_net`'s
@@ -105,7 +106,11 @@ member bytes ─▶ LobbyPacket::decode ─▶ Lobby::receive
   `cs_content::construction::ConstructionRules::validate` needs an
   `AircraftBlueprint` with armor zones, weapon mounts and hardpoints, and no
   authored blueprint-id → `AircraftBlueprint` table exists in `cs_content`.
-  Mapping ids onto fitments would be a guess. Filed as a follow-up task.
+  Mapping ids onto fitments would be a guess. Filed as follow-up **#764
+  (F55-BU2-VALIDATOR)**; until it lands, no lobby loadout is claimed to pass
+  the shared budget/fitment rules, and fidelity of lobby loadout validation
+  stays unverified for the affected content (every multiplayer blueprint and
+  component the lobby accepts).
 - **`crates/cs_content/src/lobby.rs` was not created** for that reason: there
   is no content-side lobby data this stage can use without guessing. Budget
   and fitment validation therefore remains unproven for lobby loadouts; the
@@ -123,7 +128,7 @@ member bytes ─▶ LobbyPacket::decode ─▶ Lobby::receive
 
 ## Tests
 
-`crates/cs_net/tests/accept_f55_b_host_validation.rs` — 10 tests, each
+`crates/cs_net/tests/accept_f55_b_host_validation.rs` — 13 tests, each
 encoding a packet with the production codec and handing the *bytes* to
 `Lobby::receive_bytes`:
 
@@ -145,9 +150,20 @@ encoding a packet with the production codec and handing the *bytes* to
   client rules change refused; the host's own packet is accepted.
 - `accept_f55_b_malformed_bytes_are_refused_before_the_lobby_changes` —
   truncated, trailing, unknown packet tag, unknown command kind, zero
-  session id; revision, phase and rules untouched after every refusal.
+  session id, a buffer past `MAX_PACKET_BYTES`; revision, phase and rules
+  untouched after every refusal.
 - `accept_f55_b_an_unacceptable_chat_packet_is_refused` — invalid UTF-8, a
   control character, 201 characters, and 801 wire bytes.
+- `accept_f55_b_two_members_with_the_same_packet_id_both_apply` — the replay
+  guard is keyed by sender as well as by id.
+- `accept_f55_b_an_unacceptable_loadout_packet_is_refused` — the host's ban
+  and the shared validator each refuse a member's loadout over the packet
+  path (`Banned`, then `Invalid { code: "over_budget" }`), nothing lands,
+  and the refused packet's id stays free so the corrected retry under the
+  same id applies.
+- `accept_f55_b_a_launch_naming_another_rules_digest_is_refused` — the live
+  revision under another lobby's digest is `DigestMismatch`, nothing is
+  recorded as pending, and a later acknowledgment is `NoLaunchPending`.
 - `accept_f55_b_readiness_and_membership_travel_the_host_receive_path` —
   admit → ready → host ban → readiness revoked with the reason, all through
   `receive_bytes`.
@@ -168,6 +184,24 @@ Sensitivity was measured, not assumed (mutation run, reverted afterwards):
 - With the implementation removed entirely the tests do not compile, because
   they call `LobbyPacket`, `Lobby::receive_bytes`, `PacketOutcome` and
   `PacketReject` production API.
+
+The reviewer repeated the exercise independently on the submitted head, one
+mutation per run, each reverted before the next (`13 passed` is green):
+
+| Mutation (all reverted) | Detected by |
+| --- | --- |
+| stale-revision refusal in `begin_launch` removed | `..._launch_packet_for_an_old_rules_revision_is_rejected` |
+| replay guard in `receive` removed | `..._a_replayed_packet_is_applied_once`, `..._a_replayed_launch_packet_does_not_recommit` |
+| session-epoch gate removed | `..._a_packet_from_another_session_epoch_is_refused` |
+| membership gate removed | `..._a_non_member_packet_is_refused` |
+| host-ban readiness revocation disabled | `..._launch_packet_for_an_old_rules_revision_is_rejected`, `..._readiness_and_membership_travel_the_host_receive_path` |
+| `MAX_PACKET_BYTES` check in `LobbyPacket::decode` removed | **measured undetected on the submitted head (11 passed)** → the new oversize-buffer case in `..._malformed_bytes_are_refused_before_the_lobby_changes` now fails instead |
+| shared validator ignored in `check_loadout` | no test on the submitted head passed a refusing validator → `..._an_unacceptable_loadout_packet_is_refused` |
+| rules-digest refusal in `begin_launch` removed | no test on the submitted head named the live revision with a foreign digest → `..._a_launch_naming_another_rules_digest_is_refused` |
+
+The three gaps the reviewer found were closed by tests, not by relaxing
+anything: the submitted head was green before the review additions and after
+them.
 
 ## Commands
 
