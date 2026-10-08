@@ -312,3 +312,92 @@ Sensitivity was checked by mutation, then reverted (each run:
   `MS_P_` prefix; **no script line, record line or picture is committed
   anywhere**, and every claim taken from them is stated as a lead or as an
   explicit unknown.
+
+## Review (2026-10-08)
+
+Reviewed by `bunny-2` (agent `bunny-2`, Rally #201 review claim of
+2026-10-08T11:51:33Z) in a **separate session whose context was fresh** and
+never saw the implementation sessions, but under the **same agent name and the
+same model** as the implementer — so per `AGENTS.md` this is same-agent review,
+**not independent evidence** for format, mission-semantics or fidelity claims,
+and no agent review replaces the owner's human approval. The identity is
+recorded byte-for-byte in `review.identity` of `docs/findings/evidence/F47-D.json`
+and in the harness literal that writes it
+(`crates/cs_content/tests/evidence_report_f47_d.rs`), so the two cannot drift.
+
+What the reviewer read: `specs/F47-scrapbook-records-mementos-and-mission-replay.md`
+(section `### F47-D`, AC04, non-negotiable 1/4/5), `docs/contracts/CLI-EVIDENCE.md`
+and `docs/contracts/STATE-TRANSACTIONS.md`, the production discovery and audit in
+`crates/cs_content/src/scrapbook.rs`, all five `accept_f47_d_*` tests, the
+evidence harness, and the F14-D.8/F12-I findings the measurements lean on.
+
+**Fixed during review** (two commits, then everything was re-run):
+
+1. `ScrapbookSourceError::Document`'s no-record reason carried a run of 18
+   literal spaces — a broken line continuation in the source
+   (`… Mission_Spread_Item schema                  covers`) that reached every
+   user of that refusal. Rewritten as a proper `\` continuation. No test pinned
+   the text (the error test only pins `Mission_Spread_Item`), which is why it
+   shipped; the message now reads as written.
+2. The finding and `DiscoveredPage`'s doc both record *"25 contiguous runs
+   `0..=24`"* as a **measured** property of the retail member, but nothing
+   pinned it: discovery groups by the key's first component alone, so a page
+   scattered through the member would satisfy every existing assertion. The
+   retail test now reads every item's line number, walks the pages in member
+   order and asserts the run sequence is exactly `0..=24` with no page resuming
+   after another.
+
+**Sensitivity re-checked by the reviewer** (mutation applied, run, reverted):
+
+| mutation | result |
+| --- | --- |
+| the artwork join returns an empty list | synthetic test fails on `[]` vs `ASSETS/GRAPHICS/SCRAPBOOK/ART_A.PNG`; retail test fails on `294` (`left: 0`) |
+| `audit` stops counting a `Known` rule as unbacked | audit test fails on `unlock_unbacked` (`0` vs `3`) |
+| the `grouped.is_empty()` refusal removed | the error test fails: the member now reads as an empty `DiscoveredScrapbook { records: 0, pages: [], gaps: {} }` instead of refusing |
+
+**Checks run by the reviewer** (after rebasing onto `origin/main`, which had
+moved by six commits; the rebase applied without conflicts and neither a
+`Cargo.toml`/`Cargo.lock` nor any file this branch changes was touched, but the
+branch also gained commits of its own, so the *full* four checks were run rather
+than the lighter re-push set):
+
+| command | exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_f47_d_ --include-ignored` (recorded as `private/evidence/F47-D/cargo-test.log`) | 0 — **5 discovered, 5 passed** (3 synthetic, 1 retail, 1 retail+GPU on the Apple M3 Pro/Metal adapter) |
+| the evidence harness on the rebased tree | 0 |
+| `python3 tools/validate_evidence.py private/evidence/F47-D/acceptance.json --artifact-root private/evidence/F47-D --require-pass` | 0 (28 artifacts) |
+| `python3 -m unittest discover -s tools/tests -p 'test_evidence_review_identity.py' -v` | 0 |
+
+**Evidence regenerated, not reused.** The report the implementer committed
+carried `candidate_tree` `db6e9620…`, the tree of a pre-rebase HEAD that no
+longer exists as a commit on this branch — the rebase moved it, exactly the case
+`CLI-EVIDENCE.md` describes ("old reports cannot be reused for new code"). The
+reviewer re-ran the acceptance selection with `CS_EVIDENCE_DIR` set, re-ran the
+harness, and re-validated: the committed report now carries
+`candidate_tree` `9e156681…` (the tree of `6d25378c`, the branch head the run
+tested), created `2026-10-08T12:42:00Z`, `tests`
+`5/5/5/0/0`, the same 28 artifact paths with new digests (the captures were
+re-drawn and the log re-recorded), `unknowns` `[]`, `claim` `implemented`. The
+only deltas after that run are this review section and the report's own copy
+under `docs/findings/evidence/` — neither is read by the acceptance suite.
+
+**Kept as it stands** (checked, deliberately not changed): `audit` counts a
+declared replay link against the real mission rows but has no `replay_unbacked`
+counter, while a declared memento does fail `is_complete()`. The asymmetry is
+real and documented on both sides (`REPLAY_BACKING` / `MEMENTO_BACKING`, and
+`ORIGINAL_REPLAY_FIELDS` is 0 while `ORIGINAL_MEMENTO_RECORDS` counts *table*
+records only): the original's replay control lives in a script, not in the
+table, so there is no table record to demand a match against. AC04 asks that a
+replay link be audited **against original progression**, which the mission-row
+check does.
+
+**Not fixed here, filed instead:** `DiscoveredScrapbook::discover` re-implements
+the container-find / mount / read / group-with-duplicate-rules path that
+`catalog::baseline::scrapbook_rows` (F14-D.8) already owns, because
+`crates/cs_content/src/catalog/baseline.rs` is outside this task's owner paths.
+The two readers are cross-checked on retail data (equal 461-key sets and equal
+counts), so a divergence fails the retail test rather than being believed, but
+the duplication itself is follow-up work.
