@@ -35,14 +35,16 @@ attempt are all unmeasured and belong to F49-D's retail stage.
 * `CustomScenarioDraft` accessors in `crates/cs_content/src/instant_action.rs`
   (`subject`, `world`, `environment`, `difficulty`, `rules`, `seed`, `players`,
   `provenance`): a dropdown shows *and* changes the current selection, so the
-  form has to be able to read back what it is showing. Each is `None` exactly
-  while `unset_dimensions` names the field.
+  form has to be able to read back what it is showing. Each *dimension*
+  accessor is `None` exactly while `unset_dimensions` names its field;
+  `provenance` is the exception, because `resolve` refuses a draft that has not
+  set it while `unset_dimensions` does not list it as a dimension.
 * Teardown and retry are first-class: `Finish` ends the live generation, writes
   the record and asks to leave for the menu; `Retry` ends the old generation
   **before** it begins the next one and re-runs the authored lowering unchanged;
   `Back` on `Flight` abandons the generation with no record at all.
 * **Both screens a draft can be lost from ask first** (review of this task).
-  Abanding a launched custom session hands the edited draft back to `Select`,
+  Abandoning a launched custom session hands the edited draft back to `Select`,
   so `Select`'s `Back` carries `DiscardsDraft` like `Customize`'s does, and its
   `ConfirmDiscard`/`KeepEditing` rows answer that prompt — confirming drops the
   draft back to its preset and replays the `Back` (`DiscardDraft` +
