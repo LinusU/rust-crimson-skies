@@ -1,10 +1,12 @@
-//! The Instant Action selection and scenario-lowering boundary (F49-A).
+//! The Instant Action selection, scenario-lowering and screen boundary
+//! (F49-A, F49-B, F49-C).
 //!
-//! Spec: `specs/F49-instant-action-presets-and-custom-scenarios.md`, stage
-//! `### F49-A`. Shared contract: `docs/contracts/UI-NETWORK.md` ("A UI action
-//! requests a domain transaction; it does not directly edit campaign cash,
-//! ownership or objective fields." and "Dropdown selection is a content id,
-//! never a transient row number").
+//! Spec: `specs/F49-instant-action-presets-and-custom-scenarios.md`, stages
+//! `### F49-A`, `### F49-B` and `### F49-C`. Shared contract:
+//! `docs/contracts/UI-NETWORK.md` ("A UI action requests a domain
+//! transaction; it does not directly edit campaign cash, ownership or
+//! objective fields.", "Dropdown selection is a content id, never a
+//! transient row number" and the path "IA customize -> finish -> main").
 //!
 //! This module is the boundary between three things that cannot see each
 //! other: the **declared** preset and custom-scenario schema
@@ -26,13 +28,20 @@
 //! * [`LowerError`] — why a selection could not be lowered, carrying the whole
 //!   [`ScenarioProblems`] list so a screen shows every problem at once
 //!   (AC04) rather than one per retry.
+//! * [`InstantActionFlow`] and [`IA_TABLE`] — the screens (F49-C): one row
+//!   per `(screen, action)` with its Back/Cancel path, the session generation
+//!   a launch begins and a retry replaces, and the profile-scoped
+//!   [`IaRecordBook`] an ended session is written into — which holds no
+//!   campaign field, so settling an Instant Action cannot move campaign
+//!   progression or money.
 //!
 //! What this stage deliberately does **not** own: the running scenario.
-//! `ScenarioSelection` and [`LoweredScenario`] are records; spawning actors,
-//! ticking a mission and reporting an outcome are F49-B's
-//! ("scenario normalization and isolated outcomes") and F49-C's. The screen
-//! that drives this boundary is F45's front-end state table plus F49-C's IA
-//! screens.
+//! `ScenarioSelection` and [`LoweredScenario`] are records; spawning actors
+//! and ticking a mission belong to a later runtime stage. The screens that
+//! drive this boundary are F45's front-end state table plus F49-C's
+//! [`InstantActionFlow`], which carries a selection through customization, a
+//! live session generation and its outcome, and writes the settled run into a
+//! profile-scoped [`IaRecordBook`].
 //!
 //! # Designed, synthetic
 //!
@@ -42,6 +51,7 @@
 //! unmeasured; see
 //! `docs/findings/2026-10-01-f49-a-instant-action-scenario-schemas.md`.
 
+mod flow;
 mod normalize;
 
 use std::fmt;
@@ -57,6 +67,11 @@ use cs_sim::allies::{
 };
 use cs_types::content::{ContentId, Resolved};
 use cs_types::evidence::ClaimId;
+
+pub use flow::{
+    IA_TABLE, IaAction, IaActionKind, IaEdit, IaEffect, IaRecordBook, IaRecordEntry, IaRecordError,
+    IaRefusal, IaRow, IaScreen, IaTransition, InstantActionFlow, find_row, rows_on,
+};
 
 pub use normalize::{
     ActorField, ScenarioChange, ScenarioOutcome, ScenarioResult, ScenarioSnapshot, diff_scenarios,
