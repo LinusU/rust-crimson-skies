@@ -125,6 +125,24 @@ fn accept_f52_b_hidden_has_no_cue_and_the_colour_filter_leaves_status_alone() {
 }
 
 #[test]
+fn accept_f52_b_an_unrevealed_row_is_never_listed() {
+    // The display's own predicate is `revealed && state.is_visible()`: an
+    // objective born into a shown state under a deferred reveal rule stays
+    // unlisted until the reveal fires, so the page must not show a row
+    // `ObjectiveDisplay::visible` would hide.
+    let mut unrevealed = rows();
+    unrevealed[1].revealed = false;
+    let page = objective_page(&unrevealed, &Presentation::designed(), 1000);
+    assert_eq!(page.lines.len(), STATES.len() - 1);
+    assert!(
+        page.lines
+            .iter()
+            .all(|line| line.status != ObjectiveStatus::Active),
+        "the unrevealed Active row must not be listed"
+    );
+}
+
+#[test]
 fn accept_f52_b_the_hud_sessions_objectives_page_is_read_through_the_cues() {
     let objectives = ObjectiveSession::launch(
         lower_program(&declared_synthetic_objectives()).unwrap(),

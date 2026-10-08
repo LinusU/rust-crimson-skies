@@ -119,8 +119,14 @@ impl ObjectivePage {
 
 /// Lays out the visible objective rows.
 ///
-/// A row whose state is not shown ([`status_of`] is `None`) is skipped; the
-/// display never lists one, so skipping is a guard, not a filter.
+/// The skip predicate is the display's own
+/// [`ObjectiveDisplay::visible`](crate::objectives::ObjectiveDisplay::visible)
+/// predicate — `revealed && state.is_visible()`, here `row.revealed` and
+/// [`status_of`] — so a caller that hands in rows `visible()` would hide
+/// (for example an unfiltered
+/// [`ObjectiveDisplay::row`](crate::objectives::ObjectiveDisplay::row)) still
+/// never lists an objective the stream has not shown. Skipping is a guard,
+/// not a filter.
 #[must_use]
 pub fn objective_page(
     rows: &[DisplayedObjective],
@@ -133,6 +139,9 @@ pub fn objective_page(
     let mut top_px = 0;
     let mut lines = Vec::new();
     for row in rows {
+        if !row.revealed {
+            continue;
+        }
         let Some(status) = status_of(row.state) else {
             continue;
         };
