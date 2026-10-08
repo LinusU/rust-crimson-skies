@@ -18,11 +18,22 @@
 //! labelled control profile, and one projection that hands a frame's
 //! gameplay, presented effects and fidelity metadata to their consumers
 //! together (AC03: shake and flash off, gameplay telemetry unchanged).
+//!
+//! F52-D adds `gpu_capture` and `record`: the objectives page drawn on a real
+//! adapter (AC02/behavior 2 at the pixel level, the `gpu` capability) and AC04
+//! end to end — a gameplay assist enabled in the live session and named by the
+//! comparison/replay metadata, with the inert, refused and unsaved failure
+//! cases. `evidence` is this task's evidence-report harness: deliberately not
+//! named `accept_f52_d_*`, and `#[ignore]`d so the task selection never picks
+//! it up as an acceptance test.
 
 mod cues;
+mod evidence;
 mod fidelity;
+mod gpu_capture;
 mod navigation;
 mod objective_page;
+mod record;
 mod remap;
 mod session;
 mod store;
