@@ -2226,6 +2226,11 @@ pub struct PlaytestConfig {
     /// surface with the neutral development material of #648, which is the
     /// baseline a textured frame is measured against.
     pub textured: bool,
+    /// Whether a coverage-carrying (decal-class) part's vertices are offset
+    /// [`crate::playtest_textures::DECAL_OFFSET_M`] along their normals
+    /// (`true`, the #794 rule) or left coplanar with their base surface
+    /// (`false`: the baseline the decal flicker is measured against).
+    pub decal_offset: bool,
 }
 
 impl PlaytestConfig {
@@ -2251,6 +2256,7 @@ impl PlaytestConfig {
             capture_width: CAPTURE_WIDTH,
             capture_height: CAPTURE_HEIGHT,
             textured: true,
+            decal_offset: true,
         }
     }
 
@@ -3156,7 +3162,7 @@ pub fn spawn_playtest_content(
     )?;
 
     let mut meshes = WorldMeshes::new();
-    let mut binder = TextureBinder::new(sources.textures(), config.textured);
+    let mut binder = TextureBinder::new(sources.textures(), config.textured, config.decal_offset);
     let mut world_parts: std::collections::BTreeMap<ContentId, Vec<PlaytestPart>> =
         std::collections::BTreeMap::new();
     let mut records: Vec<WorldObjectInstance> = Vec::new();
@@ -3194,6 +3200,7 @@ pub fn spawn_playtest_content(
                 sources.world(),
                 uploaded,
                 NeutralColor(WORLD_MATERIAL_COLOR),
+                index,
             );
             world_parts.insert(known.value.clone(), parts);
         }
@@ -3296,6 +3303,7 @@ pub fn spawn_playtest_content(
             sources.aircraft(),
             uploaded,
             NeutralColor(AIRCRAFT_MATERIAL_COLOR),
+            node.mesh().map_or(0, |binding| binding.index),
         );
         let local = crate::scene::NodeVisualTransform::from_canonical(node.visual_transform())
             .map_err(|error| PlaytestError::World {
@@ -4289,10 +4297,14 @@ pub struct PlaytestStability {
 /// centimetres moves a surface edge by a small fraction of a pixel, so what flips
 /// is depth-fighting layers, not motion.
 ///
+/// `aircraft` selects whether the aircraft is presented: the area harness hides
+/// it, a wing-insignia view frames it.
+///
 /// # Errors
 ///
 /// [`PlaytestError::Capture`] when a frame does not come back or the PNG cannot
 /// be read, and [`PlaytestError::World`] when `frames < 2`.
+#[allow(clippy::too_many_arguments)]
 pub fn capture_view_stability(
     app: &mut App,
     scene: &PlaytestScene,
@@ -4300,6 +4312,7 @@ pub fn capture_view_stability(
     step_m: f32,
     frames: usize,
     out_dir: &Path,
+    aircraft: bool,
 ) -> Result<PlaytestStability, PlaytestError> {
     const FLIP_TOLERANCE: u8 = 8;
     if frames < 2 {
@@ -4308,7 +4321,7 @@ pub fn capture_view_stability(
         });
     }
     install_capture_observer(app);
-    aircraft_visible(app, scene, false);
+    aircraft_visible(app, scene, aircraft);
     let clear = [
         (CLEAR_COLOR[0] * 255.0).round() as u8,
         (CLEAR_COLOR[1] * 255.0).round() as u8,
@@ -4483,6 +4496,41 @@ pub fn capture_visibility_delta(
         shown_png_sha256: shown.png_sha256,
         hidden_png: hidden.png,
         hidden_png_sha256: hidden.png_sha256,
+    })
+}
+
+/// One captured frame's pixels, for a test that measures which pixels a class
+/// of surface draws (a decal layer's footprint, say).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapturedPixels {
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// RGBA8 bytes, row-major, straight off the render target.
+    pub pixels: Vec<u8>,
+}
+
+/// Renders `view` once and returns the frame's pixels. `aircraft` selects
+/// whether the aircraft is presented, `png` is the artifact to write (or none).
+///
+/// # Errors
+///
+/// [`PlaytestError::Capture`] when the frame does not come back.
+pub fn capture_view_pixels(
+    app: &mut App,
+    scene: &PlaytestScene,
+    view: &PlaytestCameraView,
+    aircraft: bool,
+    png: Option<PathBuf>,
+) -> Result<CapturedPixels, PlaytestError> {
+    install_capture_observer(app);
+    aircraft_visible(app, scene, aircraft);
+    let rendered = render_view(app, scene, view, png)?;
+    Ok(CapturedPixels {
+        width: rendered.facts.width,
+        height: rendered.facts.height,
+        pixels: rendered.facts.pixels,
     })
 }
 

@@ -591,12 +591,15 @@ pub fn capture_subject_textured(
     // The production binding: the group's own archive, strict. A part whose
     // stored material names a texture but carries no bound image refuses
     // the whole capture — before any frame is drawn, so no PNG can result.
-    let mut binder = TextureBinder::new(request.archive, true);
+    // The shared #794 rule: a coverage-carrying part is offset like the
+    // playtest's own decals, so a capture of one measures the drawn geometry.
+    let mut binder = TextureBinder::new(request.archive, true, true);
     let parts = binder.parts(
         &mut app,
         request.container,
         world_mesh,
         NeutralColor(MESH_COLOR),
+        request.mesh_index,
     );
     let report = binder.finish();
     if parts.is_empty() {
