@@ -208,10 +208,11 @@ pub use events::{
 pub use mission::{
     AMBIGUOUS_DECLARATION_REASON, AnimationRecordFacts, AnimationTarget, CarrierFact,
     DECLARATION_MATCH_CLAIM, EVENTS_NOT_DECODED_CLAIM, EVENTS_NOT_DECODED_REASON,
-    MissionAnimationBinding, MissionAnimationError, MissionAnimationRun,
-    OBJECT_NAME_DISAGREES_REASON, PLACEMENT_FIELDS_CLAIM, PLACEMENT_FIELDS_REASON, PlayRefusal,
-    RecordResolution, RecordSequence, SEQUENCE_NAMES_DISAGREE_REASON, StartupAnimation,
-    TargetResolution, TargetSource, UNDECLARED_REASON, UNREADABLE_TARGET_REASON,
+    MeasuredPlacement, MissionAnimationBinding, MissionAnimationError, MissionAnimationRun,
+    OBJECT_NAME_DISAGREES_REASON, PLACEMENT_FIELDS_CLAIM, PLACEMENT_FIELDS_REASON,
+    PLACEMENT_ROTATION_AXIS_CLAIM, PLACEMENT_ROTATION_AXIS_REASON, PLACEMENT_STATE_CLAIM,
+    PlayRefusal, RecordResolution, RecordSequence, SEQUENCE_NAMES_DISAGREE_REASON,
+    StartupAnimation, TargetResolution, TargetSource, UNDECLARED_REASON, UNREADABLE_TARGET_REASON,
     WorldActorPlacement, bind_mission_animation, join_startup_animation,
 };
 pub use playback::{

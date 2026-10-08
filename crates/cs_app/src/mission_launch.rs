@@ -1081,9 +1081,10 @@ fn measure_actor_readers(
                     detail.push_str(&format!("; never declared: {}", undeclared.join(", ")));
                 }
                 detail.push_str(&format!(
-                    "; the carrier's pose binds under {SPAWN_POSE_CLAIM} while the scope's \
-                     {placements} placezeps.zrd placement declarations still refuse under \
-                     {PLACEMENT_FIELDS_CLAIM}; {MOTION_RESIDUE} \
+                    "; the carrier's pose binds under {SPAWN_POSE_CLAIM}; the scope's \
+                     {placements} placezeps.zrd placement declarations bind their node join and \
+                     translate/rotate states (measured, #791) and their composition into a \
+                     pose stays refused under {PLACEMENT_FIELDS_CLAIM}; {MOTION_RESIDUE} \
                      (docs/findings/2026-10-08-m01-lc-world-actor-spawn.md)"
                 ));
                 SurfaceVerdict::Unsupported {

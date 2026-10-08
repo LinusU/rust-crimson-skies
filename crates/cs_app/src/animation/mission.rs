@@ -82,11 +82,15 @@
 //! mission runs: the `ON_STARTUP` definitions of `placezeps.zrd` are M01's
 //! placement statements for its three capital ships, and
 //! [`MissionAnimationBinding::placements`] carries them with their object
-//! selectors resolved against the same world container. Their *placement* stays
-//! refused ([`PLACEMENT_FIELDS_CLAIM`]): the placement member's `node` /
-//! `position` / `yaw` / `pitch` / `max_speed` / `max_accel` fields are F33-D's
-//! undecoded carrier and the world's own unit is #436's open measurement, so no
-//! actor is spawned from a guessed coordinate.
+//! selectors resolved against the same world container.
+//! [`MissionAnimationBinding::measured_placements`] carries what the member
+//! states, read field by field by [`cs_formats::zbd::placezeps`]: the node join,
+//! the `OBJECT_TRANSLATE_STATE` triple and the `OBJECT_ROTATE_STATE` triple,
+//! each `Resolved::Known` under [`PLACEMENT_STATE_CLAIM`] with the byte range
+//! it was read from. What stays refused ([`PLACEMENT_FIELDS_CLAIM`],
+//! [`PLACEMENT_ROTATION_AXIS_CLAIM`]) is the composition of those states into a
+//! pose and which rotation component is the heading, so no actor is spawned
+//! from a guessed orientation.
 
 use std::fmt;
 use std::path::Path;
@@ -96,12 +100,16 @@ use cs_content::stunts::{ZrdValue, decode_zrd};
 use cs_content::textures::WorldTextureLoad;
 use cs_formats::io::ParseContext;
 use cs_formats::script_raw::discover_container;
+use cs_formats::zbd::placezeps::{
+    PLACEZEPS_MEMBER, PlacementDefinition, PlacezepsMember, RESET_TIME_CLAIM, StateStatement,
+    read_placezeps_member,
+};
 use cs_formats::zbd::{
     AnimationRecord, AnimationRecordSequenceKind, AnimationRecordTableKind, AnimationRecords,
     ZbdFamily, ZbdProbe, dispatch, family_record, read_animation_index,
 };
 use cs_types::asset_id::SourceSpan;
-use cs_types::content::Provenance;
+use cs_types::content::{Known, Provenance, Resolved};
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 use cs_types::install::RelativePath;
 
@@ -176,9 +184,25 @@ pub const AMBIGUOUS_DECLARATION_REASON: &str = "more than one member of the miss
      rule picks one of the declaring sites";
 
 /// Why a placed world actor is not spawned from its declaration.
-pub const PLACEMENT_FIELDS_REASON: &str = "the placement member's node, position, yaw, pitch, max_speed and max_accel fields are an \
-     undecoded carrier (F33-D) and the world's own unit is unmeasured (#436), so no spawn \
-     position, heading or motion limit is read out of them";
+pub const PLACEMENT_FIELDS_REASON: &str = "the placement member states a translate and a rotate state per node, but how the executable \
+     composes a node's stored state into the pose the world draws, the meaning of the \
+     definition's RESET_TIME, and any key outside the measured vocabulary are unmeasured, so \
+     no spawn pose or motion limit is read out of them";
+
+/// The claim under which the placement member's state statements are recorded.
+///
+/// **Measured** from the decrypted image's statement parsers (`0x5075b0`,
+/// `0x505ff0`) and executors (`0x4e8de0`, `0x4e8b80`); see
+/// `docs/findings/2026-10-08-m01-lc-placezeps-fields.md`.
+pub const PLACEMENT_STATE_CLAIM: &str = "f20-anim.placement-state-statements";
+
+/// The claim under which "which rotation component is the heading" is recorded.
+pub const PLACEMENT_ROTATION_AXIS_CLAIM: &str = "f20-anim.placement-rotation-axis-unmeasured";
+
+/// Why a placement's yaw is not read out of its rotation triple.
+pub const PLACEMENT_ROTATION_AXIS_REASON: &str = "the executable stores the three OBJECT_ROTATE_STATE numbers in a node's state slots in \
+     stored order, but no traced consumer names which slot is the heading, so the middle \
+     component is not called yaw by position alone";
 
 /// Why a stored name that is not a selector is kept and reported.
 pub const UNREADABLE_TARGET_REASON: &str = "the stored name is empty or spells a node path rather than one node name; it is kept as \
@@ -1606,6 +1630,44 @@ impl WorldActorPlacement {
     }
 }
 
+/// What the placement member states for one declared placement, read field by
+/// field.
+///
+/// Every value is [`Resolved::Known`] under [`PLACEMENT_STATE_CLAIM`] with the
+/// byte range of the member it came from, or [`Resolved::Unknown`] under a
+/// named claim. A statement the member does not state is `None`: absent is not
+/// unknown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeasuredPlacement {
+    /// The definition's index inside the member
+    /// ([`WorldActorPlacement::definition`]).
+    pub definition: usize,
+    /// The node the statements address, joined to exactly one world record.
+    pub node: Resolved<String>,
+    /// The `OBJECT_TRANSLATE_STATE` triple as the executable keeps it (signed
+    /// integers converted to `f32`), in the stored unit and axis order.
+    pub translation: Option<Resolved<[f32; 3]>>,
+    /// The `OBJECT_ROTATE_STATE` triple in the stored degrees, in stored order.
+    pub rotation_degrees: Option<Resolved<[f32; 3]>>,
+    /// The same triple after the parser's degrees-to-radians multiply.
+    pub rotation_radians: Option<Resolved<[f32; 3]>>,
+    /// The heading. Unknown under [`PLACEMENT_ROTATION_AXIS_CLAIM`] whenever a
+    /// rotation is stated.
+    pub yaw_degrees: Option<Resolved<f32>>,
+    /// The stored `RESET_TIME` word, whose meaning is unknown.
+    pub reset_time: Option<Resolved<u32>>,
+    /// Every key the decoder could not model, spelled as stored.
+    pub unmodelled_fields: Vec<String>,
+}
+
+impl MeasuredPlacement {
+    /// How many keys the decoder could not model.
+    #[must_use]
+    pub fn unmodelled_field_count(&self) -> usize {
+        self.unmodelled_fields.len()
+    }
+}
+
 /// One animation carrier the mission's playback inputs were read from.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CarrierFact {
@@ -1728,6 +1790,7 @@ pub struct MissionAnimationBinding {
     carriers: Vec<CarrierFact>,
     startup: Vec<StartupAnimation>,
     placements: Vec<WorldActorPlacement>,
+    measured_placements: Vec<MeasuredPlacement>,
     provenance: Provenance,
 }
 
@@ -1782,6 +1845,13 @@ impl MissionAnimationBinding {
     #[must_use]
     pub fn placements(&self) -> &[WorldActorPlacement] {
         &self.placements
+    }
+
+    /// What the placement member states for each of [`Self::placements`], in
+    /// the same order.
+    #[must_use]
+    pub fn measured_placements(&self) -> &[MeasuredPlacement] {
+        &self.measured_placements
     }
 
     /// How many startup animations can be played. Zero today, for every record
@@ -1894,6 +1964,8 @@ pub fn bind_mission_animation(
     let mut members: Vec<String> = Vec::new();
     let mut declarations: Vec<AnimationDefinitionSite> = Vec::new();
     let mut startup_table = None;
+    let mut placement_members: Vec<(String, String, u64, Option<ContentHash>, PlacezepsMember)> =
+        Vec::new();
     let mut reader_bytes: Vec<(String, Vec<u8>)> = Vec::new();
     for key in [mission_key.clone(), group_key.clone(), root_key.clone()] {
         let Some((spelling, bytes)) = read_optional_archive(&found, &key)? else {
@@ -1940,6 +2012,21 @@ pub fn bind_mission_animation(
                     }
                 })?;
             let span = locator.span();
+            if is_mission && member.eq_ignore_ascii_case(PLACEZEPS_MEMBER) {
+                let decoded = read_placezeps_member(program.bytes()).map_err(|error| {
+                    MissionAnimationError::Archive {
+                        container: key.clone(),
+                        reason: format!("{member}: {error}"),
+                    }
+                })?;
+                placement_members.push((
+                    key.clone(),
+                    member.clone(),
+                    span.offset,
+                    container_sha256,
+                    decoded,
+                ));
+            }
             let span = SourceSpan::new(
                 install_sha256,
                 &key,
@@ -2158,6 +2245,32 @@ pub fn bind_mission_animation(
         });
     }
 
+    let mut measured_placements = Vec::new();
+    for placement in &placements {
+        let Some((key, member, member_offset, container_sha256, decoded)) =
+            placement_members.iter().find(|(key, member, _, _, _)| {
+                key == placement.archive() && member.eq_ignore_ascii_case(placement.member())
+            })
+        else {
+            continue;
+        };
+        let Some(definition) = decoded
+            .definitions()
+            .iter()
+            .find(|definition| definition.index() == placement.definition())
+        else {
+            continue;
+        };
+        let source = StatementSource {
+            install_sha256,
+            key,
+            member,
+            member_offset: *member_offset,
+            container_sha256: *container_sha256,
+        };
+        measured_placements.push(measure_placement(placement, definition, &source)?);
+    }
+
     let provenance = Provenance::new(
         claim_id(DECLARATION_MATCH_CLAIM)?,
         ClaimStatus::ObservedTool,
@@ -2172,6 +2285,7 @@ pub fn bind_mission_animation(
         carriers: carrier_facts,
         startup,
         placements,
+        measured_placements,
         provenance,
     })
 }
@@ -2342,6 +2456,142 @@ fn declares_definition_record(bytes: &[u8]) -> bool {
         == Some(ANIMATION_DEFINITIONS_RECORD)
 }
 
+/// Where a placement member's bytes sit in the installation.
+struct StatementSource<'a> {
+    install_sha256: ContentHash,
+    key: &'a str,
+    member: &'a str,
+    member_offset: u64,
+    container_sha256: Option<ContentHash>,
+}
+
+impl StatementSource<'_> {
+    /// The recorded span of one member-relative byte range.
+    fn span(
+        &self,
+        range: cs_formats::zbd::placezeps::MemberRange,
+    ) -> Result<SourceSpan, MissionAnimationError> {
+        SourceSpan::new(
+            self.install_sha256,
+            self.key,
+            Some(self.member),
+            self.member_offset + range.start,
+            range.end - range.start,
+            self.container_sha256,
+        )
+        .map_err(|error| MissionAnimationError::Provenance(error.to_string()))
+    }
+
+    fn known<T>(
+        &self,
+        value: T,
+        range: cs_formats::zbd::placezeps::MemberRange,
+    ) -> Result<Resolved<T>, MissionAnimationError> {
+        let provenance = Provenance::new(
+            claim_id(PLACEMENT_STATE_CLAIM)?,
+            ClaimStatus::ObservedTool,
+            Some(self.span(range)?),
+        )
+        .map_err(|error| MissionAnimationError::Provenance(error.to_string()))?;
+        Ok(Resolved::Known(Known::new(value, provenance)))
+    }
+}
+
+/// Binds one declared placement to the fields its member states.
+fn measure_placement(
+    placement: &WorldActorPlacement,
+    definition: &PlacementDefinition,
+    source: &StatementSource<'_>,
+) -> Result<MeasuredPlacement, MissionAnimationError> {
+    let sequence = definition.sequence();
+    let statements: Vec<&StateStatement> = [sequence.translate(), sequence.rotate()]
+        .into_iter()
+        .flatten()
+        .collect();
+
+    // The node join: a statement's NAME is one of the definition's own
+    // selectors and that selector names exactly one world record.
+    let joined = |statement: &StateStatement| {
+        placement
+            .targets()
+            .iter()
+            .find(|target| target.stored() == statement.node())
+            .is_some_and(|target| target.resolution().occurrences() == Some(1))
+            && definition
+                .names()
+                .iter()
+                .any(|name| name == statement.node())
+    };
+    let node = match statements.as_slice() {
+        [first, rest @ ..]
+            if rest.iter().all(|other| other.node() == first.node()) && joined(first) =>
+        {
+            source.known(first.node().to_owned(), first.node_range())?
+        }
+        _ => Resolved::unknown(
+            claim_id(PLACEMENT_FIELDS_CLAIM)?,
+            "the statements address no single world record the definition selects",
+        )
+        .map_err(|error| MissionAnimationError::Provenance(error.to_string()))?,
+    };
+
+    let translation = sequence
+        .translate()
+        .map(|statement| source.known(statement.parsed(), statement.state_range()))
+        .transpose()?;
+    let rotation_degrees = sequence
+        .rotate()
+        .map(|statement| source.known(statement.state(), statement.state_range()))
+        .transpose()?;
+    let rotation_radians = sequence
+        .rotate()
+        .map(|statement| source.known(statement.parsed(), statement.state_range()))
+        .transpose()?;
+    let yaw_degrees = sequence
+        .rotate()
+        .map(|_| {
+            Resolved::unknown(
+                claim_id(PLACEMENT_ROTATION_AXIS_CLAIM)?,
+                PLACEMENT_ROTATION_AXIS_REASON,
+            )
+            .map_err(|error| MissionAnimationError::Provenance(error.to_string()))
+        })
+        .transpose()?;
+    let reset_time = definition
+        .reset_time()
+        .map(|_| {
+            Resolved::unknown(
+                claim_id(RESET_TIME_CLAIM)?,
+                "RESET_TIME is stored but no consumer of it is traced",
+            )
+            .map_err(|error| MissionAnimationError::Provenance(error.to_string()))
+        })
+        .transpose()?;
+
+    let mut unmodelled_fields: Vec<String> = definition
+        .unknown_fields()
+        .iter()
+        .chain(sequence.unknown_fields())
+        .chain(
+            statements
+                .iter()
+                .flat_map(|statement| statement.unknown_fields()),
+        )
+        .map(|field| field.key.clone())
+        .collect();
+    unmodelled_fields.sort();
+    Ok(MeasuredPlacement {
+        definition: definition.index(),
+        node,
+        translation,
+        rotation_degrees,
+        rotation_radians,
+        yaw_degrees,
+        reset_time,
+        unmodelled_fields,
+    })
+}
+
 fn claim_id(id: &str) -> Result<ClaimId, MissionAnimationError> {
     ClaimId::new(id).map_err(|error| MissionAnimationError::Provenance(error.to_string()))
 }
@@ -2383,6 +2633,7 @@ mod tests {
             carriers: Vec::new(),
             startup: rows,
             placements: Vec::new(),
+            measured_placements: Vec::new(),
             provenance: Provenance::new(
                 claim_id(DECLARATION_MATCH_CLAIM).expect("the static claim id is valid"),
                 ClaimStatus::ObservedTool,
