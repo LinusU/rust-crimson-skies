@@ -59,31 +59,31 @@ size.
 
 | Mission | records | bytes | | Mission | records | bytes |
 | --- | --- | --- | --- | --- | --- | --- |
-| c1/ia1 | 1 | 3206 | | c3/m02 | 1 | 2524 |
-| c1/m04 | 1 | 2558 | | c3/m03 | 1 | 2524 |
-| c1/m05 | 1 | 2524 | | c3/m04 | 1 | 2524 |
-| c1/mp1 | 0 | 16 | | c3/m05 | 1 | 2524 |
-| c1/mp2 | 0 | 16 | | c3/mp1 | 0 | 16 |
-| c1/mp3 | 2 | 6614 | | c3/mp2 | 0 | 16 |
-| c1b/ia1 | 1 | 3212 | | c3/mp3 | 2 | 6614 |
-| c1b/m03 | 2 | 4986 | | c4/ia1 | 1 | 3206 |
-| c1b/mp1 | 0 | 16 | | c4/m01 | 1 | 2524 |
-| c1b/mp3 | 2 | 6614 | | c4/m02 | 1 | 2524 |
-| c1c/ia1 | 1 | 3206 | | c4/m03 | 1 | 2524 |
-| c1c/m01 | 3 | 6766 | | c4/m04 | 1 | 2524 |
-| c1c/mp1 | 0 | 16 | | c4/m05 | 3 | 5204 |
-| c1c/mp3 | 2 | 6614 | | c4/mp1 | 0 | 16 |
-| c2/ia1 | 1 | 3206 | | c4/mp2 | 0 | 16 |
-| c2/m02 | 1 | 2524 | | c4/mp3 | 2 | 6614 |
-| c2/m03 | 1 | 2559 | | c5/ia1 | 1 | 3209 |
-| c2/m05 | 1 | 1343 | | c5/m01 | 1 | 2105 |
-| c2/mp1 | 0 | 16 | | c5/m02 | 1 | 1797 |
-| c2/mp2 | 0 | 16 | | c5/m03 | 4 | 5632 |
-| c2/mp3 | 2 | 6614 | | c5/m04 | 3 | 7535 |
-| c2b/ia1 | 1 | 3206 | | c5/mp1 | 0 | 16 |
-| c2b/m04 | 2 | 5104 | | c5/mp3 | 2 | 6614 |
-| c2b/mp1 | 0 | 16 | | | | |
-| c2b/mp3 | 2 | 6614 | | | | |
+| c1/ia1 | 1 | 3206 | | c3/ia1 | 1 | 3206 |
+| c1/m04 | 1 | 2558 | | c3/m01 | 2 | 3816 |
+| c1/m05 | 1 | 2524 | | c3/m02 | 1 | 2524 |
+| c1/mp1 | 0 | 16 | | c3/m03 | 1 | 2524 |
+| c1/mp2 | 0 | 16 | | c3/m04 | 1 | 2524 |
+| c1/mp3 | 2 | 6614 | | c3/m05 | 1 | 2524 |
+| c1b/ia1 | 1 | 3212 | | c3/mp1 | 0 | 16 |
+| c1b/m03 | 2 | 4986 | | c3/mp2 | 0 | 16 |
+| c1b/mp1 | 0 | 16 | | c3/mp3 | 2 | 6614 |
+| c1b/mp3 | 2 | 6614 | | c4/ia1 | 1 | 3206 |
+| c1c/ia1 | 1 | 3206 | | c4/m01 | 1 | 2524 |
+| c1c/m01 | 3 | 6766 | | c4/m02 | 1 | 2524 |
+| c1c/mp1 | 0 | 16 | | c4/m03 | 1 | 2524 |
+| c1c/mp3 | 2 | 6614 | | c4/m04 | 1 | 2524 |
+| c2/ia1 | 1 | 3206 | | c4/m05 | 3 | 5204 |
+| c2/m02 | 1 | 2524 | | c4/mp1 | 0 | 16 |
+| c2/m03 | 1 | 2559 | | c4/mp2 | 0 | 16 |
+| c2/m05 | 1 | 1343 | | c4/mp3 | 2 | 6614 |
+| c2/mp1 | 0 | 16 | | c5/ia1 | 1 | 3209 |
+| c2/mp2 | 0 | 16 | | c5/m01 | 1 | 2105 |
+| c2/mp3 | 2 | 6614 | | c5/m02 | 1 | 1797 |
+| c2b/ia1 | 1 | 3206 | | c5/m03 | 4 | 5632 |
+| c2b/m04 | 2 | 5104 | | c5/m04 | 3 | 7535 |
+| c2b/mp1 | 0 | 16 | | c5/mp1 | 0 | 16 |
+| c2b/mp3 | 2 | 6614 | | c5/mp3 | 2 | 6614 |
 
 Histogram: 12 members carry zero records (every `c*/mp1` and `c*/mp2`
 present — `c5/mp2` is one of the three omitted archives), 23 carry one, 11
@@ -123,7 +123,7 @@ every one of the 58 records.
 | `net` | one-text list | 58 (required) | a net-name spelling per record |
 | `healthy` | list of two-text rows | 58 (required) | 316 rows; every row's second text is `panels` |
 | `num_healthy_required` | one-int list | 58 (required) | `2` ×1, `3` ×36, `4` ×18, `5` ×3 |
-| `engines` | list of texts | 58 (required) | 11, 14 or 18 engine node names per record |
+| `engines` | list of texts | 58 (required) | 12, 14 or 18 `leng*`/`reng*` engine node names per record — 18, 38 and 2 records respectively |
 | `deactivated` | one-int list | 9 | `1` ×7, `0` ×2 |
 | `team` | one-text list | 16 | `ally` ×12, `enemy` ×4 |
 | `cannon_fire_delay` | one-float list | 48 | 10.0 .. 20.0 |
@@ -132,7 +132,7 @@ every one of the 58 records.
 | `left_cannons` | list of three-text rows | 48 | `lbroad<N>` node + `deploy_*` + `retract_*` animation spellings |
 | `right_cannons` | list of three-text rows | 48 | `rbroad<N>` + `deploy_*` + `retract_*` |
 | `targets` | list of texts | 47 | `player` or a sibling record's `node`; empty on the 8 instant-action records |
-| `gasbags` | list of `[text, float, one-text list, optional text]` rows | 57 | 310 rows; float `120.0` or `400.0`; `*_gasbagtorpedo<N>` in the list; `panels` as the fourth text on the 100 multiplayer rows |
+| `gasbags` | list of `[text, float, one-text list, optional text]` rows | 57 | 310 rows; float in six measured values (`120.0`×110, `400.0`×120, `150.0`×33, `80.0`×22, `180.0`×20, `240.0`×5); `*_gasbagtorpedo<N>` in the list; `panels` as the fourth text on the 100 multiplayer rows |
 | `cannon_health` | list of `[4 texts, float, one-text list, two float/text pairs]` rows | 24 | 144 rows; texts are cannon node, `gunback`, `frame`, gasbag node; float `200.0`; `destroy_*` list; pairs `0.6`/`60_*`, `0.3`/`30_*` |
 
 432 `left_cannons`/`right_cannons` rows in all. Non-`player` `targets`
@@ -141,8 +141,9 @@ spellings are `blackswanzep`, `cargozep2`, `dantezep`, `geminizep`,
 resolves to a record's `node` in the *same* member (asserted by
 `accept_t574_retail_decoded_records_hold_the_measured_vocabulary`), so the
 cannon targets are an intra-member reference, not a global actor name.
-Records spell their keys in 16 distinct orders; `node` leads everywhere
-except the nine `deactivated` records, which lead with `deactivated`.
+Records spell their keys in 16 distinct orders; `node` leads on 54 of the
+58 and `deactivated` on the other four — on its five remaining carriers
+`deactivated` sits second or third, never later.
 
 ## The F33 link is a measured negative
 
