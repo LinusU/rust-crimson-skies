@@ -23,11 +23,22 @@ pub enum ObjectiveStatus {
     Completed,
     /// Lost.
     Failed,
+    /// Shown as optional; never gates mission success.
+    Optional,
+    /// Replaced by another objective.
+    Superseded,
 }
 
 impl ObjectiveStatus {
     /// Every status.
-    pub const ALL: [Self; 4] = [Self::Pending, Self::Active, Self::Completed, Self::Failed];
+    pub const ALL: [Self; 6] = [
+        Self::Pending,
+        Self::Active,
+        Self::Completed,
+        Self::Failed,
+        Self::Optional,
+        Self::Superseded,
+    ];
 }
 
 /// A glyph shape, distinct per status.
@@ -41,6 +52,10 @@ pub enum Shape {
     Check,
     /// A cross.
     Cross,
+    /// A diamond.
+    Diamond,
+    /// A struck-through dash.
+    Strike,
 }
 
 /// A redundant colour role; absent under a filter that removes colour.
@@ -54,6 +69,8 @@ pub enum ColourRole {
     Success,
     /// Failure.
     Failure,
+    /// De-emphasised.
+    Muted,
 }
 
 /// What an objective line shows for a status.
@@ -75,6 +92,8 @@ pub fn cue_for(status: ObjectiveStatus, filter: ColourFilter) -> Cue {
         ObjectiveStatus::Active => (Shape::Arrow, "objective.active", ColourRole::Attention),
         ObjectiveStatus::Completed => (Shape::Check, "objective.completed", ColourRole::Success),
         ObjectiveStatus::Failed => (Shape::Cross, "objective.failed", ColourRole::Failure),
+        ObjectiveStatus::Optional => (Shape::Diamond, "objective.optional", ColourRole::Neutral),
+        ObjectiveStatus::Superseded => (Shape::Strike, "objective.superseded", ColourRole::Muted),
     };
     Cue {
         shape,
