@@ -184,13 +184,13 @@ committed one (`git diff` shows only the stage's 161 added lines).
 `private/evidence/F50-B/acceptance.json`, copied unchanged to
 `docs/findings/evidence/F50-B.json`. Capabilities `["retail", "synthetic"]`;
 9 discovered / 9 executed / 9 passed / 0 failed; claim `implemented`;
-`candidate_tree` `fa33c187fe85d22305c5c9ac26b7cb07f514b6ab`, the tree of the
+`candidate_tree` `4f0aa11aed083130c7a468828510bc887c7a7222`, the tree of the
 commit the suite and the harness ran on — the only later deltas are this
 report's own copy under `docs/findings/evidence/` and this document, neither
 of which the acceptance suite reads. Artifacts: `cargo-test.log`
-(`7ee7338b4eb05cda813991bc3a3944e616df47316e0bd8e024b90dba67f7fbe2`) and
+(`810670b08912789fc214c5bd2161cb5df4ca21fa57078a2cc4cb172c980f9a03`) and
 `campaign-binding.json`
-(`df3968e067acf8d2b8ee62b3a8820eb71eebac2af62d7ce3985954ed25d64dd4`), both
+(`5364bf8c97fd4e3b9edab4aaa1359530ecb81784dda6e16c58afff66750f7286`), both
 staying in `private/`.
 
 ## What this stage does not do
