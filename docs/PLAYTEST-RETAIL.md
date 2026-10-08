@@ -65,7 +65,7 @@ a constant in `playtest_retail.rs`.
 | object identity | `playtest.node-<stored slot>` (the slot, for #629's reason: the container stores 34 records named `g27816` in one group) | — |
 | gameplay surface | an explicit **unknown** carrying `cs_content::world::WORLD_SURFACE_UNMEASURED` | #629's claim |
 | world boundary | an explicit **unknown**; no invisible wall | #629's claim |
-| spawn | `min + (−0.6·width, 0.55·height, 0.5·depth)` of the measured extent → `(−116.97, −40.85, 196.86)` | `playtest-retail.aircraft-pose-is-designed` |
+| spawn | `min + (−0.6·width, 0.55·height, 0.75·depth)` of the measured extent → `(−116.97, −8.11, 205.80)` | `playtest-retail.aircraft-pose-is-designed` |
 | aircraft nose | `nose_mapping`'s yaw landing the **measured** stored nose (`−Z`, `STORED_AIRCRAFT_NOSE_AXIS`: the container's tail surfaces compose aft of the cockpit in all eleven scene airframes) onto the runtime's forward axis (`−Z`) — the identity, so nothing is turned. Measured axis, designed mapping (#709) | same |
 | propeller spin rate | 1 rev/s at idle rising linearly to 6 rev/s at full throttle, read from the flight model's **engine spool**; `0` while the engine is stopped, frozen while paused; only the propeller child's own local `Transform` is written, never the flight body's pose (#710) | `playtest-retail.propeller-spin-rate-is-designed` |
 | propeller spin sense | the measured disc normal oriented **aft** (away from the measured `−Z` nose) with the right-hand rule about it. The axis and pivot themselves are **measured** from the disc's own 16 triangles, not chosen: see "The propeller spin" below (#710) | `playtest-retail.propeller-spin-sense-is-designed` |

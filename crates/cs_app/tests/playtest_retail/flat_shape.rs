@@ -167,6 +167,12 @@ fn accept_playtest_area_flat_shape_retail_the_landing_cards_are_identified_and_h
     let mut app = playtest_app();
     let scene = spawn_playtest_scene(&mut app, &sources, &config).expect("the scene spawns");
     let area = scene.area();
+    eprintln!(
+        "AREA BOUNDS (cards hidden): min={:?} max={:?} spawn={:?}",
+        area.bounds.min(),
+        area.bounds.max(),
+        scene.spawn()
+    );
     let undrawn: BTreeMap<u32, &cs_app::playtest_retail::UndrawnBinding> = area
         .undrawn
         .iter()
@@ -231,6 +237,12 @@ fn accept_playtest_area_flat_shape_retail_the_landing_cards_are_identified_and_h
     let mut baseline_app = playtest_app();
     let baseline =
         spawn_playtest_scene(&mut baseline_app, &sources, &baseline_config).expect("it spawns");
+    eprintln!(
+        "AREA BOUNDS (cards drawn, main behaviour): min={:?} max={:?} spawn={:?}",
+        baseline.area().bounds.min(),
+        baseline.area().bounds.max(),
+        baseline.spawn()
+    );
     let baseline_undrawn: BTreeSet<u32> = baseline
         .area()
         .undrawn

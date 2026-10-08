@@ -76,6 +76,28 @@ The drawn set is now **293 bindings / 8 108 triangles** of the 401 stored
 bindings (main drew 295 / 8 110), and the collider count still equals the drawn
 binding count (`accept_playtest_area_flat_shape_retail_…`).
 
+### Consequence: the designed start length fraction is retuned (#795)
+
+The spawn fractions place the start relative to the area's **measured**
+extent, and hiding the cards changed that extent: the card's 500 m tail had
+inflated the z-extent to `−222.9 … 616.6`, so the old `SPAWN_FRACTION_Z = 0.5`
+put the start at `z ≈ 197` — mid-hull only by coincidence — while with the
+cards hidden the same `0.5` puts it at `z ≈ 63`. The retail-launch smoke then
+**missed the airship**: measured from its trace, the scripted steer-into-area
+maneuver crosses the hull's `z` range about 350 m of flight after the reset, so
+from `z ≈ 63` the crossing lands at `z ≈ −287`, behind the hull's `z`-minimum
+`−222.9`, and `accept_playtest_retail_launch_scripted_smoke_…` failed with "the
+aircraft never collided with the obstacle" (0 contacts over 6 resets).
+
+`SPAWN_FRACTION_Z` is therefore retuned to **0.75**, a designed value that
+restores the start to `z ≈ 205.8` — alongside the airship's hull, the
+relationship `steer_into_area` documents — and the launch smoke collides again.
+`SPAWN_FRACTION_Y` stays `0.55` (start `y ≈ −8.1`); retail mode has no ground
+and no tower, so the only contact surface is the airship itself, as
+`docs/PLAYTEST.md` states. The retune is a designed development value under
+the existing `playtest-retail.aircraft-pose-is-designed` claim, not a
+measurement.
+
 ## GPU before/after capture (hashes only; PNGs stay under `private/`)
 
 View `flat-shape-underside-aft`, derived from the two cards' composed geometry

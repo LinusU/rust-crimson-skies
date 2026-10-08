@@ -357,9 +357,24 @@ pub const AIRCRAFT_CONTAINER_KEY: &str = "zbd/planes.zbd";
 pub const SPAWN_FRACTION_X: f64 = -0.6;
 /// The start's height, as a fraction of the area's height from its minimum.
 pub const SPAWN_FRACTION_Y: f64 = 0.55;
+
+/// Where the aircraft starts along the area's length, as a fraction from its
+/// minimum: three quarters along, so the start sits **alongside the airship's
+/// hull** with room to steer into it.
+///
+/// A **designed** value, retuned by #795. At `0.5` the start is the middle of
+/// the measured extent — but while the #795 landing cards were drawn their
+/// 500 m tail inflated that extent to `−222.9 … 616.6`, so `0.5` put the start
+/// at `z ≈ 197` (mid-hull by coincidence); with the cards hidden the extent is
+/// the hull's own (`−222.9 … 348.7`) and `0.5` would start at `z ≈ 63`, from
+/// which the scripted smoke's steer-into-area maneuver crosses the hull's `z`
+/// range **behind** the airship and misses it (measured: the crossing is about
+/// 350 m of flight after the reset). `0.75` restores the start to `z ≈ 206`,
+/// alongside the hull, and the launch smoke collides again.
 /// The start's position along the area's length, as a fraction from its minimum:
-/// amidships.
-pub const SPAWN_FRACTION_Z: f64 = 0.5;
+/// 0.75, alongside the airship's hull (see [`SPAWN_FRACTION_Z`]'s note on the
+/// #795 retune).
+pub const SPAWN_FRACTION_Z: f64 = 0.75;
 
 /// Which stored axis an airframe's nose is on: **`−Z`**, one rule for every
 /// airframe of `ZBD/planes.zbd`.
