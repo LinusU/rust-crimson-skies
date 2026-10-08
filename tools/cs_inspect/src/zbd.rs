@@ -1894,10 +1894,13 @@ mod tests {
             artifact(&audit_path, "json"),
             super::jstr(
                 "implementer: Devin SWE-2/swe2-max-1 (Rally task #527, implement claim of \
-                 2026-10-08T03:21:14Z), which added the decode-cost measurement and regenerated \
-                 this report in the implementing session; reviewer: pending — this report is \
-                 committed with the branch's submission and Rally's review claim on #527 names \
-                 who reviews it, so no reviewer identity can be recorded here yet. The earlier \
+                 2026-10-08T03:21:14Z), which added the decode-cost measurement and first \
+                 generated this report in the implementing session; reviewer: Devin \
+                 SWE-2/swe2-max-1 again (Rally task #527, review claim of \
+                 2026-10-08T04:29:36Z), a fresh session over the implementer's branch that \
+                 re-ran the acceptance suite and regenerated this report on the reviewed and \
+                 rebased tree — the same agent identity and model wrote and reviewed this \
+                 change, so this is a self-review and NOT independent evidence. The earlier \
                  census arithmetic this report also carries was written and reviewed under task \
                  #525 by bunny-alpha-1/bunny-alpha-1 in both roles (review claim of \
                  2026-10-02T18:58:20Z): a self-review, NOT independent evidence, and an \
