@@ -180,12 +180,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cs_formats::ParseContext;
+use cs_formats::script_raw::discover_container;
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved, ResolvedError};
 use cs_types::evidence::{ClaimId, ClaimIdError, ClaimStatus, ContentHash};
+use cs_types::install::RelativePath;
 
 use crate::catalog::Catalog;
 use crate::config::{StringCatalog, StringRow};
+use crate::mission_control::{
+    ControlMemberError, DecodedMember, MeasuredControlRecord, control_member,
+    measure_control_record, objective_blocks_of,
+};
+use crate::stunts::decode_zrd;
 
 /// The identities of the subsystems every mission binding depends on.
 ///
@@ -4377,5 +4384,386 @@ fn plan_route(source: &SourceBinding) -> MissionProbeRoute {
         install_sha256: source.install_sha256.clone(),
         reentries,
         refusal,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A campaign mission's control program, bound to its identities (M02-B)
+// ---------------------------------------------------------------------------
+
+/// One member of a mission reader archive, as the control-program binding
+/// accounts for it.
+///
+/// The row exists so the binding can report *every* member the archive
+/// offered — the rule that picks the control member is falsifiable only if a
+/// reader can check it against the members it did **not** pick.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlMemberRow {
+    /// The member's name, as production discovery spells it inside the
+    /// archive.
+    pub name: String,
+    /// The member's first byte inside the reader archive.
+    pub offset: u64,
+    /// The member's length in bytes.
+    pub len: u64,
+    /// How many numbered `OBJECTIVE<N>` blocks the member's decoded record
+    /// declares. Exactly one member of a well-formed archive carries a
+    /// positive count; that is the selection rule, not its filename.
+    pub objective_blocks: u32,
+}
+
+/// The control program of one campaign mission, bound through the measured
+/// rule to the identities the mission binding already resolves.
+///
+/// Three production derivations meet in this record, and the acceptance
+/// suite checks that they cannot disagree about the mission:
+///
+/// * the **campaign binding** ([`SourceContext::bind`]) decides, through the
+///   localized-title join, *which* retail mission directory the work order
+///   names, and with it the mission id and the program identity;
+/// * the **reader-archive walk** ([`cs_formats::script_raw::discover_container`],
+///   the same enumeration the F13-B script census uses) enumerates the
+///   archive's members with their byte ranges;
+/// * the **control-member rule** ([`crate::mission_control::control_member`])
+///   picks the member whose decoded record declares numbered
+///   `OBJECTIVE<N>` blocks — never a filename constant — and
+///   [`crate::mission_control::measure_control_record`] measures every
+///   directive that member spells.
+///
+/// What the record **does not** claim: nothing here is runnable. The
+/// directive dispositions the measurement carries say what the stage A–D
+/// findings measured about each key; whether the engine can honour a key is
+/// the lowering's answer (`cs_app::control_lowering`), which needs the host
+/// call to bind *and* the mission program to validate. A mission whose
+/// vocabulary lowers completely is still not playable — that verdict belongs
+/// to the launch closure, not to this binding. Nothing here is
+/// `verified_original` (AGENTS.md rule 8): the join is an inference, the
+/// directive effects are static findings, and no original executable has
+/// been run.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MissionControlBinding {
+    /// The work order this binding was requested for.
+    pub label: MissionLabel,
+    /// The canonical mission id the campaign layout derives for the mission
+    /// directory the title join selected (`mission/ch1-m02`).
+    pub mission: ContentId,
+    /// The program identity [`SourceContext::bind`] resolves for the same
+    /// work order and the same directory (`script/c1-m02-zrdr`), so the
+    /// control binding and the mission binding cite one program.
+    pub program_id: ContentId,
+    /// The reader archive as the installation spells it on disk.
+    pub program_asset: String,
+    /// The whole archive's length in bytes — the span the mission binding
+    /// cites for the program.
+    pub program_length: u64,
+    /// The whole archive's SHA-256 — the digest the mission binding cites
+    /// for the program.
+    pub program_sha256: String,
+    /// The member the measured rule chose, as production discovery spells
+    /// it. Never derived from this name: [`control_member`] re-decides it
+    /// from the members' own records.
+    pub control_member: String,
+    /// The control member's first byte inside the archive.
+    pub control_offset: u64,
+    /// The control member's length in bytes.
+    pub control_length: u64,
+    /// SHA-256 of the control member's own bytes, so an evidence consumer
+    /// can pin the exact document the measurement walked.
+    pub control_sha256: String,
+    /// Every member the archive offered, in archive order — the candidates
+    /// the rule judged, each with the block count that qualified or excluded
+    /// it.
+    pub members: Vec<ControlMemberRow>,
+    /// The measured directive record of the control member.
+    pub record: MeasuredControlRecord,
+}
+
+impl MissionControlBinding {
+    /// The directive keys the record spells that no findings entry covers —
+    /// the keys the engine may not act on **and** that keep the mission's
+    /// lowering from completing.
+    #[must_use]
+    pub fn unmeasured_keys(&self) -> Vec<String> {
+        self.record
+            .unmeasured()
+            .into_iter()
+            .map(|(key, _)| key.key.clone())
+            .collect()
+    }
+
+    /// The record-level keys outside
+    /// [`crate::mission_control::CONTROL_RECORD_KEY_VOCABULARY`] — fields the
+    /// measurement counts but does not interpret, each a named unknown.
+    #[must_use]
+    pub fn unclassified_record_keys(&self) -> &[String] {
+        self.record.unclassified_record_keys()
+    }
+
+    /// The member the rule picked, as a [`ControlMemberRow`], so a caller can
+    /// cite the chosen member's span beside the choice itself.
+    #[must_use]
+    pub fn control_row(&self) -> Option<&ControlMemberRow> {
+        self.members
+            .iter()
+            .find(|row| row.name == self.control_member)
+    }
+}
+
+/// Why a campaign mission's control program could not be bound.
+///
+/// Every arm is a refusal, never a partial binding: a member whose bytes do
+/// not decode is a member whose directives nobody read, and a binding that
+/// skipped it could report a smaller vocabulary than the mission spells.
+#[derive(Debug)]
+pub enum ControlProgramError {
+    /// The work order's own mission binding failed — the title join or a
+    /// required file refused.
+    Binding {
+        /// Why [`SourceContext::bind`] failed.
+        source: SourceBindingError,
+    },
+    /// The join resolved no campaign position, or the mission directory
+    /// declares no reader archive, so there is no program to read.
+    Unresolved {
+        /// The work order that could not be placed.
+        label: MissionLabel,
+        /// What did not resolve, in the refusal's own words.
+        reason: String,
+    },
+    /// The reader archive could not be read from disk.
+    Io {
+        /// The path that failed.
+        path: String,
+        /// The I/O error.
+        source: std::io::Error,
+    },
+    /// A reader-archive member's bytes do not decode as a `.zrd` document.
+    Decode {
+        /// The member's name.
+        member: String,
+        /// The decoder's refusal code.
+        code: &'static str,
+        /// The offset of the refusal inside the member.
+        offset: u64,
+    },
+    /// The measured control-member rule refused the archive: no member
+    /// declares numbered blocks, or several do.
+    Control {
+        /// Why the rule refused.
+        source: ControlMemberError,
+    },
+    /// A derived id, path or span did not validate.
+    Inconsistent {
+        /// What could not be turned into a valid value.
+        reason: String,
+    },
+}
+
+impl fmt::Display for ControlProgramError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Binding { source } => write!(f, "the mission binding failed: {source}"),
+            Self::Unresolved { label, reason } => {
+                write!(f, "{label} has no control program to bind: {reason}")
+            }
+            Self::Io { path, source } => {
+                write!(f, "reader archive {path} could not be read: {source}")
+            }
+            Self::Decode {
+                member,
+                code,
+                offset,
+            } => write!(
+                f,
+                "member {member} does not decode as a .zrd document ({code} at offset {offset})"
+            ),
+            Self::Control { source } => write!(f, "the control-member rule refused: {source}"),
+            Self::Inconsistent { reason } => write!(f, "{reason}"),
+        }
+    }
+}
+
+impl std::error::Error for ControlProgramError {}
+
+impl SourceContext {
+    /// Binds one work order's **control program**: the reader archive the
+    /// mission binding cites, walked for its members, with the member the
+    /// measured rule picks and every directive it spells measured beside the
+    /// identities the mission binding resolves.
+    ///
+    /// The work order is resolved exactly like [`SourceContext::bind`] — the
+    /// same title confirmation, the same join, the same campaign position —
+    /// so this binding cannot name a different mission than the record
+    /// `missions/bindings/M02.json` names. The archive is then read through
+    /// the same production member enumeration the F13-B script census uses,
+    /// and every member is decoded with the production `.zrd` reader before
+    /// the control-member rule is applied to the whole set.
+    ///
+    /// # Errors
+    ///
+    /// [`ControlProgramError::Binding`] when the mission binding itself
+    /// fails, [`ControlProgramError::Unresolved`] when the join placed no
+    /// mission or the directory declares no archive,
+    /// [`ControlProgramError::Io`] when the archive cannot be read,
+    /// [`ControlProgramError::Decode`] when any member's bytes do not decode
+    /// (the whole binding is refused, never narrowed),
+    /// [`ControlProgramError::Control`] when the rule finds no control member
+    /// or more than one, and [`ControlProgramError::Inconsistent`] when a
+    /// derived id, path or span does not validate.
+    pub fn control_program(
+        &self,
+        label: MissionLabel,
+        discovery_title: &str,
+    ) -> Result<MissionControlBinding, ControlProgramError> {
+        let binding = self
+            .bind(label.clone(), discovery_title)
+            .map_err(|source| ControlProgramError::Binding { source })?;
+
+        let position =
+            binding
+                .campaign_position
+                .ok_or_else(|| ControlProgramError::Unresolved {
+                    label: label.clone(),
+                    reason: format!(
+                        "the localized-title join placed no campaign position ({})",
+                        binding
+                            .dependencies
+                            .iter()
+                            .filter(|dependency| {
+                                !matches!(dependency.state, DependencyState::Resolved { .. })
+                            })
+                            .map(|dependency| dependency.id.label())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                })?;
+        let entry = self
+            .campaign
+            .get(position)
+            .ok_or_else(|| ControlProgramError::Unresolved {
+                label: label.clone(),
+                reason: format!("campaign position {position} is past the campaign"),
+            })?;
+        if !entry.program_present {
+            return Err(ControlProgramError::Unresolved {
+                label,
+                reason: format!("{} declares no reader archive on disk", entry.program_asset),
+            });
+        }
+        let program_id = binding
+            .program_id
+            .ok_or_else(|| ControlProgramError::Unresolved {
+                label: label.clone(),
+                reason: "the mission binding resolved no program identity".to_owned(),
+            })?;
+        let mission =
+            ContentId::from_source(ContentKind::Mission, &mission_key(entry)).map_err(|error| {
+                ControlProgramError::Inconsistent {
+                    reason: format!("the mission id is not valid: {error}"),
+                }
+            })?;
+
+        let path = self.install_root.join(&entry.program_asset);
+        let bytes = read_file(&path).map_err(|source| match source {
+            SourceBindingError::Io { source, .. } => ControlProgramError::Io {
+                path: path.display().to_string(),
+                source,
+            },
+            other => ControlProgramError::Inconsistent {
+                reason: other.to_string(),
+            },
+        })?;
+        let program_length = bytes.len() as u64;
+        let program_sha256 = cs_assets::install::sha256(&bytes).to_hex();
+
+        // Enumerate and decode every member through the same production
+        // discovery the script census uses, so the two derivations cannot
+        // disagree about what the archive holds. A member that fails to
+        // decode refuses the binding: the control-member rule judges the
+        // archive's *whole* member set, and skipping an unreadable one could
+        // hide the second block-carrying member the rule exists to refuse.
+        let logical = entry.program_asset.to_lowercase();
+        let relative =
+            RelativePath::new(&logical).map_err(|error| ControlProgramError::Inconsistent {
+                reason: format!(
+                    "the program archive path {logical:?} is not a relative path: {error}"
+                ),
+            })?;
+        let container_key = relative.logical_key();
+        let discovery = discover_container(&container_key, &relative, &bytes);
+        if !discovery.findings().is_empty() {
+            return Err(ControlProgramError::Inconsistent {
+                reason: format!(
+                    "the reader archive was not fully located: {}",
+                    discovery
+                        .findings()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+            });
+        }
+
+        let mut members: Vec<DecodedMember> = Vec::new();
+        let mut rows: Vec<ControlMemberRow> = Vec::new();
+        for program in discovery.programs() {
+            let Some(name) = program.locator().member() else {
+                continue;
+            };
+            let document =
+                decode_zrd(program.bytes()).map_err(|error| ControlProgramError::Decode {
+                    member: name.to_owned(),
+                    code: error.code(),
+                    offset: error.offset(),
+                })?;
+            let span = program.locator().span();
+            rows.push(ControlMemberRow {
+                name: name.to_owned(),
+                offset: span.offset,
+                len: span.len,
+                objective_blocks: objective_blocks_of(&DecodedMember::new(name, document.clone())),
+            });
+            members.push(DecodedMember::new(name, document));
+        }
+
+        // The rule decides, from the members' own records — never from a
+        // filename constant, so a renamed control member is still found and a
+        // member that stops carrying blocks stops being accepted.
+        let control = control_member(&container_key, &members)
+            .map_err(|source| ControlProgramError::Control { source })?;
+        let row = rows
+            .iter()
+            .find(|row| row.name == control.name)
+            .expect("every decoded member contributed its own row");
+        let end = row
+            .offset
+            .checked_add(row.len)
+            .filter(|end| *end <= program_length)
+            .ok_or_else(|| ControlProgramError::Inconsistent {
+                reason: format!(
+                    "member {} spans past the archive's {} bytes",
+                    row.name, program_length
+                ),
+            })?;
+        let control_sha256 =
+            cs_assets::install::sha256(&bytes[row.offset as usize..end as usize]).to_hex();
+
+        let record = measure_control_record(&control.document);
+
+        Ok(MissionControlBinding {
+            label,
+            mission,
+            program_id,
+            program_asset: entry.program_asset.clone(),
+            program_length,
+            program_sha256,
+            control_member: control.name.clone(),
+            control_offset: row.offset,
+            control_length: row.len,
+            control_sha256,
+            members: rows,
+            record,
+        })
     }
 }

@@ -87,6 +87,19 @@
 //! It reuses `f50_b.rs`'s retail fixtures (`bound`, `game_dir`,
 //! `synthetic_source`) through their `pub(crate)` seam, so the whole suite
 //! reads the installation exactly once.
+//!
+//! `m02_b.rs` is the M02-B stage: `accept_m02_b_*` tests that bind M02's
+//! mission control program through `SourceContext::control_program` and hold
+//! it to the mission binding's identities, the retail control census and the
+//! lowering that decides what the engine may honour — including the measured
+//! host-call-bound gap that keeps M02's record from lowering. Its four
+//! synthetic members run in CI and its four retail members are
+//! `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
+//! `evidence_report_m02_b_*` writes that task's report and is selected by
+//! test name. The prefix is shared with `m02_t3.rs` (the M02-T3 follow-up of
+//! Rally #450, which pinned the title-row correspondence under the same
+//! `accept_m02_b_` selection), so a task selection runs both suites and both
+//! must pass.
 
 mod closure;
 mod common;
@@ -105,6 +118,7 @@ mod m01_lc_campaign_airframe_pose_evidence;
 mod m01_lc_player_airframe_source;
 mod m01_lc_player_config;
 mod m02_a;
+mod m02_b;
 mod m02_t3;
 mod m03_a;
 mod m04_a;
