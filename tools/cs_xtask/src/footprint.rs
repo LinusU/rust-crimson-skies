@@ -29,6 +29,15 @@
 //!   floor ([`ENGINE_LINKED_FLOOR`]) and prints both group sizes, so a tree
 //!   whose sizes do not fall into the two groups is visible in the output
 //!   instead of silently moving the median.
+//! * It lists the `deps` directory **once** for the whole plan, whatever the
+//!   plan holds (task #766). The plan is hundreds of targets and the
+//!   directory is thousands of entries, so the listing-per-target measurement
+//!   this replaced cost `plan x entries` calls: 437 listings, 3.1 M entries
+//!   visited, 745 k stats and 193 k reads measured on this tree — 6.9 s here
+//!   and 20.3 s when six of them ran at once, and an hour of uninterruptible
+//!   sleep on the loaded host that reported the task. One pass instead, and
+//!   the pass records its own bill in [`DepsScan`], which the report prints,
+//!   so a slow run says where its time went.
 //!
 //! What it does not count is stated rather than guessed: `cargo test` also
 //! links one binary per doc-test code block, and counting those needs rustdoc's
@@ -39,8 +48,10 @@
 //! The measurements behind the numbers quoted here are in
 //! `docs/findings/2026-10-06-t696-ci-runner-disk-budget.md`.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::bootstrap;
 use crate::transient;
@@ -113,6 +124,35 @@ impl TestTarget {
 pub struct Footprint {
     /// Every test binary in the plan, ordered by member then source path.
     pub targets: Vec<TestTarget>,
+    /// What listing the target directory's `deps` directory cost: one pass
+    /// for this whole plan, whatever the plan holds.
+    pub scan: DepsScan,
+}
+
+/// What one pass over a `deps` directory cost, counted as it was made.
+///
+/// The pass is one [`read_dir`](std::fs::read_dir) of the directory plus a
+/// fixed number of calls per entry it holds, so these counts are bounded by
+/// the directory's own size and never by the number of targets in the plan.
+/// They are the report's own bill: printed as `report-test-disk: scan: …`, so
+/// a run on a loaded host says how long the pass took and how many calls it
+/// made instead of going quiet (task #766).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DepsScan {
+    /// `read_dir` calls made on the `deps` directory. There is exactly one
+    /// per report whether or not the directory exists — a missing directory
+    /// still costs the call, which is why a report against an empty target
+    /// dir counts 1 and visits 0 entries.
+    pub listings: usize,
+    /// Directory entries visited across those listings.
+    pub entries: usize,
+    /// `metadata` calls on the binary beside a `.d` sidecar: one per sidecar,
+    /// and the same call that measures the binary when it is there.
+    pub stats: usize,
+    /// `.d` sidecars opened and read — the ones whose binary was found.
+    pub dep_files: usize,
+    /// Wall time the pass took.
+    pub elapsed: Duration,
 }
 
 impl Footprint {
@@ -431,49 +471,72 @@ fn target(member: &str, name: &str, source: String, kind: TargetKind) -> TestTar
     }
 }
 
-/// Measures the binary `target` produced in `deps_dir`, if it is there.
+/// One pass over `deps_dir`, measuring every target of `plan` from it.
 ///
-/// The match is made on the `.d` sidecar cargo writes beside every binary,
-/// which names the source file that produced it, so two members with equally
-/// named test files stay apart and a stale binary from an older build of the
-/// same file is still the one that describes the file. Returns `None` when the
-/// target dir holds no binary for the target: an unmeasured target is unknown,
-/// not zero.
-pub fn measure(target: &TestTarget, deps_dir: &Path) -> Option<Measured> {
-    let entries = transient::read_dir(deps_dir, transient::SCAN).ok()?;
-    let mut measured: Option<Measured> = None;
+/// The directory is listed **once**, whatever the plan holds. Each entry then
+/// costs one `metadata` on the binary beside it — the call that answers "is
+/// it built" and, when it is, is also its measurement — and one read of the
+/// `.d` sidecar, which names the source file that binary came from, so two
+/// members with equally named test files stay apart and a stale binary from
+/// an older build of the same file is still the one that describes the file.
+/// A sidecar whose *root* dependency names a planned source attaches that
+/// size to the source; a target the directory holds no binary for stays
+/// out of the result: unknown, not zero.
+///
+/// What the pass cost is returned beside what it found, as [`DepsScan`].
+fn scan_deps(
+    deps_dir: &Path,
+    plan: &HashMap<&str, Vec<usize>>,
+) -> (DepsScan, HashMap<usize, Measured>) {
+    let started = Instant::now();
+    let mut scan = DepsScan::default();
+    scan.listings += 1;
+    let entries = match transient::read_dir(deps_dir, transient::SCAN) {
+        Ok(entries) => entries,
+        // A target directory that holds nothing is still one listing that
+        // found nothing: the call was made, and nothing else was.
+        Err(_) => {
+            scan.elapsed = started.elapsed();
+            return (scan, HashMap::new());
+        }
+    };
+
+    let mut found: HashMap<usize, Measured> = HashMap::new();
     for entry in entries.flatten() {
+        scan.entries += 1;
         let name = entry.file_name().to_string_lossy().into_owned();
         let Some(stem) = name.strip_suffix(".d") else {
             continue;
         };
         let binary = deps_dir.join(stem);
-        if !transient::is_file(&binary, transient::SCAN) {
+        scan.stats += 1;
+        let Ok(metadata) = transient::metadata(&binary, transient::SCAN) else {
+            continue;
+        };
+        if !metadata.is_file() {
             continue;
         }
+        scan.dep_files += 1;
         let Ok(text) = transient::read_to_string(&deps_dir.join(&name), transient::SCAN) else {
             continue;
         };
-        if !dep_file_root(&text).is_some_and(|token| root_is(token, &target.source)) {
+        let Some(root) = dep_file_root(&text) else {
             continue;
-        }
-        if let Ok(metadata) = transient::metadata(&binary, transient::SCAN) {
+        };
+        for index in sources_matching(root, plan) {
             // A dir entry list is unordered and an older build of the same
             // source can sit beside a newer one, so every binary of this source
             // counts and the largest is the one a new build would reproduce.
-            measured = Some(match measured {
-                None => Measured {
-                    bytes: metadata.len(),
-                    binaries: 1,
-                },
-                Some(previous) => Measured {
-                    bytes: previous.bytes.max(metadata.len()),
-                    binaries: previous.binaries + 1,
-                },
+            let measured = found.entry(index).or_insert(Measured {
+                bytes: metadata.len(),
+                binaries: 0,
             });
+            measured.bytes = measured.bytes.max(metadata.len());
+            measured.binaries += 1;
         }
     }
-    measured
+    scan.elapsed = started.elapsed();
+    (scan, found)
 }
 
 /// What a target dir holds for one test target: its largest binary and how
@@ -503,16 +566,35 @@ fn dep_file_root(text: &str) -> Option<&str> {
     rule.split_whitespace().next()
 }
 
-/// Whether a root dependency `token` from a `.d` file is `source`, the
-/// workspace-relative path.
+/// The plan entries a root dependency `token` from a `.d` file identifies.
+///
+/// A root names a target when it *is* that target's workspace-relative source
+/// or ends with it at a `/` boundary — the two halves of `token == source ||
+/// token.ends_with("/{source}")`. Walking the root's own suffix chain answers
+/// that for every target at once, so matching stays one hash lookup per path
+/// component of the root instead of one comparison per target in the plan:
+/// the plan is hundreds of targets and the directory is thousands of
+/// sidecars, and the difference is the whole cost this pass exists to remove
+/// (task #766).
 ///
 /// Cargo writes the root relative to the workspace root for a target built
-/// inside it and absolute for one built from elsewhere, so an absolute tail is
-/// the same root. Windows separators are folded because the same tree can be
-/// read on either.
-fn root_is(token: &str, source: &str) -> bool {
-    let token = token.replace('\\', "/");
-    token == source || token.ends_with(&format!("/{source}"))
+/// inside it and absolute for one built from elsewhere, so an absolute tail
+/// is the same root — which is why the chain walks to the last component.
+/// Windows separators are folded because the same tree can be read on either.
+fn sources_matching(root: &str, plan: &HashMap<&str, Vec<usize>>) -> Vec<usize> {
+    let token = root.replace('\\', "/");
+    let mut matched = Vec::new();
+    let mut start = 0;
+    loop {
+        if let Some(indices) = plan.get(&token[start..]) {
+            matched.extend_from_slice(indices);
+        }
+        match token[start..].find('/') {
+            Some(offset) => start += offset + 1,
+            None => break,
+        }
+    }
+    matched
 }
 
 /// The whole workspace's test-binary plan, with the binaries `deps_dir` holds
@@ -547,13 +629,21 @@ pub fn measure_workspace(
         targets.extend(found);
     }
     targets.sort_by(|a, b| a.source.cmp(&b.source));
-    for target in &mut targets {
-        if let Some(measured) = measure(target, deps_dir) {
-            target.bytes = Some(measured.bytes);
-            target.binaries = measured.binaries;
+    // The directory is listed once for the whole plan, so the plan is an
+    // index here and never a loop over the directory (task #766).
+    let (scan, measured) = {
+        let mut plan: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (index, target) in targets.iter().enumerate() {
+            plan.entry(target.source.as_str()).or_default().push(index);
         }
+        scan_deps(deps_dir, &plan)
+    };
+    for (index, measured) in measured {
+        let target = &mut targets[index];
+        target.bytes = Some(measured.bytes);
+        target.binaries = measured.binaries;
     }
-    Ok(Footprint { targets })
+    Ok(Footprint { targets, scan })
 }
 
 /// The workspace manifest's path relative to the workspace root. Shared with

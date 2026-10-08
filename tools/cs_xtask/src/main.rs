@@ -373,7 +373,9 @@ does not emit full DWARF for CI's dev, test and bench profiles",
 /// how many this target directory has binaries for, what they measure and what
 /// one more engine-linked test file costs. An unmeasured target is printed as
 /// unmeasured and the exit code stays 0, because "not built here" is not a
-/// finding about the workspace.
+/// finding about the workspace. It opens with what the measurement itself
+/// cost — one listing of the `deps` directory, however many targets the plan
+/// holds — so a run on a loaded host states where its time went (task #766).
 fn run_report_test_disk(args: &[String]) -> ExitCode {
     let options = match parse_options(args, false, false, true) {
         Ok(options) => options,
@@ -389,6 +391,20 @@ fn run_report_test_disk(args: &[String]) -> ExitCode {
     );
     match footprint::measure_workspace(&options.workspace_root, &deps) {
         Ok(report) => {
+            // What the measurement cost, so a run on a loaded host says where
+            // its time went instead of going quiet (task #766): the deps
+            // directory is listed once for the whole plan, never once per
+            // target, and these are the calls that one listing made.
+            println!(
+                "report-test-disk: scan: {} listing of {}: {} entries, {} dep files read, {} \
+                 binaries stat'ed, {} ms",
+                report.scan.listings,
+                deps.display(),
+                report.scan.entries,
+                report.scan.dep_files,
+                report.scan.stats,
+                report.scan.elapsed.as_millis(),
+            );
             for member in report.by_member() {
                 println!(
                     "report-test-disk: {:<18} {:>4} planned, {:>4} measured, {:>10} measured",

@@ -24,7 +24,12 @@
 //!   the way `tools/cs_xtask/Cargo.toml` uses it (task #610);
 //! * the report reached through the command line prints the measurement, and
 //!   asked about a target directory holding nothing it says the marginal cost
-//!   is unknown rather than printing a zero.
+//!   is unknown rather than printing a zero;
+//! * the measurement lists the target directory's `deps` directory **once**
+//!   for the whole plan, so what a report costs is bounded by that directory
+//!   and never multiplied by the 400-odd targets in the plan, and it prints
+//!   that cost, so a run on a loaded host says where its time went (task
+//!   #766, the report that spent an hour in uninterruptible sleep).
 //!
 //! The suite reads whichever target directory this build used, so it says what
 //! holds under any invocation: a member-scoped `cargo test -p cs_xtask` in a
@@ -43,7 +48,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cs_xtask::bootstrap;
-use cs_xtask::footprint::{self, ENGINE_LINKED_FLOOR, Footprint, TargetKind, TestTarget};
+use cs_xtask::footprint::{self, DepsScan, ENGINE_LINKED_FLOOR, Footprint, TargetKind, TestTarget};
 use cs_xtask::transient;
 
 fn workspace_root() -> PathBuf {
@@ -143,6 +148,26 @@ fn integration_files(root: &Path) -> Vec<String> {
     found
 }
 
+/// The number of `deps` listings the report says it made, read back out of
+/// the `scan:` line it opens with.
+fn printed_listings(text: &str) -> usize {
+    let line = text
+        .lines()
+        .find(|line| line.contains("report-test-disk: scan:"))
+        .expect("the report must state what its measurement cost");
+    for expected in ["entries", "dep files read", "binaries stat'ed", "ms"] {
+        assert!(
+            line.contains(expected),
+            "the scan line must state {expected:?}:\n{line}"
+        );
+    }
+    line.split("report-test-disk: scan: ")
+        .nth(1)
+        .and_then(|head| head.split(" listing").next())
+        .and_then(|count| count.parse::<usize>().ok())
+        .unwrap_or_else(|| panic!("the listing count is printed as a number:\n{line}"))
+}
+
 /// The measured plan of this workspace, which is what the CI job links: every
 /// test file the tree really has, every enabled harness, and nothing else.
 #[test]
@@ -151,6 +176,30 @@ fn accept_t696_the_workspaces_test_binaries_are_measured_not_guessed() {
     let deps = footprint::default_deps_dir(&root);
     let report = footprint::measure_workspace(&root, &deps)
         .unwrap_or_else(|error| panic!("the workspace's test plan must be readable: {error}"));
+
+    // What the measurement itself cost, on the real target directory where a
+    // per-target listing used to multiply: one pass over `deps`, however many
+    // targets the plan holds. The counts are the bound, not a timer — a timer
+    // would fail on the loaded host this pins them for, and these fail on the
+    // multiplication directly.
+    assert_eq!(
+        report.scan.listings,
+        1,
+        "the deps directory is listed once for the whole {}-target plan",
+        report.planned()
+    );
+    assert!(
+        report.scan.stats <= report.scan.entries,
+        "one pass stats each entry at most once: {} stats over {} entries",
+        report.scan.stats,
+        report.scan.entries
+    );
+    assert!(
+        report.scan.dep_files <= report.scan.entries,
+        "one pass reads at most one dep file per entry: {} reads over {} entries",
+        report.scan.dep_files,
+        report.scan.entries
+    );
 
     let planned: Vec<&str> = report
         .targets
@@ -248,6 +297,107 @@ fn accept_t696_the_workspaces_test_binaries_are_measured_not_guessed() {
             "with no engine-linked binary measured the marginal cost is unknown, not zero"
         );
     }
+}
+
+/// One listing of `deps` for the whole plan, whatever the plan holds — the
+/// pass measured as calls, because a listing per target is what spent an hour
+/// in uninterruptible sleep on a loaded host (task #766). The plan here is
+/// deliberately larger than the directory's own entry count, so every count
+/// below is a per-target count multiplied out under the old scan, and is not
+/// one under this one. The counts are the bound: a wall-clock assertion would
+/// fail on exactly the loaded host this pins them for.
+#[test]
+fn accept_t696_the_deps_directory_is_listed_once_for_the_whole_plan() {
+    let root = scratch("one-pass");
+    fake_workspace(
+        &root,
+        &[
+            (
+                "heavy",
+                "[package]\nname = \"heavy\"\n\n[lib]\n",
+                &["flight.rs", "night.rs", "physics/main.rs", "raid.rs"],
+            ),
+            (
+                "light",
+                "[package]\nname = \"light\"\n\n[lib]\n",
+                &["wire.rs"],
+            ),
+            (
+                "third",
+                "[package]\nname = \"third\"\n\n[lib]\n",
+                &["a.rs", "b.rs", "c.rs"],
+            ),
+        ],
+    );
+    let deps = root.join("target/debug/deps");
+    fs::create_dir_all(&deps).expect("the deps dir must be creatable");
+    // Nine entries: two sidecars whose binaries this plan asks for, one whose
+    // binary is for a source the plan no longer holds, one sidecar with no
+    // binary beside it, and three entries that are not sidecars at all.
+    built_binary(&deps, "flight", "crates/heavy/tests/flight.rs", 8192);
+    built_binary(&deps, "wire", "crates/light/tests/wire.rs", 4096);
+    built_binary(&deps, "ghost", "crates/heavy/tests/ghost.rs", 1024);
+    fs::write(
+        deps.join("orphan-1111111111111111.d"),
+        ".../orphan-1111111111111111.d: crates/heavy/tests/orphan.rs\n\n\
+         crates/heavy/tests/orphan.rs:\n",
+    )
+    .expect("the sidecar must be writable");
+    fs::write(deps.join("libthing.rlib"), b"rlib").expect("a non-sidecar entry");
+    fs::write(deps.join("notes.txt"), "notes").expect("a non-sidecar entry");
+
+    let report = footprint::measure_workspace(&root, &deps).expect("the plan");
+    assert_eq!(
+        report.planned(),
+        11,
+        "the plan holds eleven targets against the directory's nine entries"
+    );
+
+    let scan = &report.scan;
+    assert_eq!(
+        scan.listings,
+        1,
+        "deps is listed once for the whole {}-target plan, not once per target",
+        report.planned()
+    );
+    assert_eq!(
+        scan.entries, 9,
+        "each entry of the directory is visited once"
+    );
+    assert_eq!(
+        scan.stats, 4,
+        "one metadata per sidecar, not one per target per sidecar"
+    );
+    assert_eq!(
+        scan.dep_files, 3,
+        "the sidecars with a binary beside them are read once, not once per target"
+    );
+    assert!(
+        scan.stats <= scan.entries && scan.dep_files <= scan.entries,
+        "one pass cannot cost more calls than the directory has entries"
+    );
+
+    // The single pass still measures: this plan's two binaries are found, the
+    // ghost's is not a target of this plan, and the sidecar with no binary
+    // beside it leaves its target unknown rather than zero.
+    let measured: Vec<(&str, u64)> = report
+        .measured()
+        .map(|target| (target.source.as_str(), target.bytes.unwrap_or_default()))
+        .collect();
+    assert_eq!(
+        measured,
+        vec![
+            ("crates/heavy/tests/flight.rs", 8192),
+            ("crates/light/tests/wire.rs", 4096),
+        ],
+        "one pass measures exactly the plan's own binaries, by their roots"
+    );
+    assert!(
+        report
+            .unmeasured()
+            .all(|target| target.bytes.is_none() && target.binaries == 0),
+        "a target this directory holds nothing for stays unknown, never zero"
+    );
 }
 
 /// The plan is this tree's real test files, one binary each, and it drops
@@ -462,6 +612,7 @@ fn accept_t696_the_engine_linked_split_reports_both_groups() {
             heavy(2_000_000),
             heavy(3_000_000),
         ],
+        scan: DepsScan::default(),
     };
 
     assert_eq!(report.engine_linked().len(), 3);
@@ -580,6 +731,16 @@ fn accept_t696_the_report_command_prints_the_measured_footprint() {
             "the report must state {expected:?}:\n{text}"
         );
     }
+    // The report opens with what its own measurement cost — the listing of
+    // the deps directory and the calls it made — so a run on a loaded host
+    // says where its time went instead of going quiet, and so the listing is
+    // seen to be one for the whole plan rather than one per target (766).
+    assert_eq!(
+        printed_listings(&text),
+        1,
+        "the deps directory must be listed once for the whole plan, and the report must \
+         say how many entries, dep files and stats that cost:\n{text}"
+    );
     // The marginal cost is a measurement wherever this target directory holds
     // an engine-linked binary, and is reported as unknown where it holds none.
     let measured = footprint::measure_workspace(&root, &footprint::default_deps_dir(&root))
@@ -615,6 +776,12 @@ fn accept_t696_the_report_command_prints_the_measured_footprint() {
         "nothing built here is not a finding about the workspace, so it must exit 0"
     );
     let text = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        printed_listings(&text),
+        1,
+        "a deps directory that is not there still costs one listing, and the report says so \
+         — 0 entries, 0 dep files, 0 stats — rather than claiming a pass it did not make:\n{text}"
+    );
     assert!(
         text.contains("unmeasured: crates/cs_app/")
             && text.contains("marginal cost of another test file is unknown"),
