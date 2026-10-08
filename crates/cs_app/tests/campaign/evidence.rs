@@ -1201,7 +1201,7 @@ fn evidence_report_m03_b_writes_the_acceptance_report() {
         log_path.display()
     );
 
-    for retail_test in RETAIL_TESTS_M03_A {
+    for retail_test in RETAIL_TESTS_M03_B {
         let status = suite
             .assertions
             .iter()
@@ -1218,7 +1218,7 @@ fn evidence_report_m03_b_writes_the_acceptance_report() {
             "{retail_test} must pass; got status {status}"
         );
     }
-    for synthetic_test in SYNTHETIC_TESTS_M03_A {
+    for synthetic_test in SYNTHETIC_TESTS_M03_B {
         let status = suite
             .assertions
             .iter()
@@ -1238,7 +1238,7 @@ fn evidence_report_m03_b_writes_the_acceptance_report() {
     let install_sha256 = fingerprint(&found.manifest).to_hex();
     let content_sha256 = content_fingerprint(&found.manifest).to_hex();
 
-    let mut artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
+    let artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
 
     let engine = Engine {
         rust: rustc_version(),
