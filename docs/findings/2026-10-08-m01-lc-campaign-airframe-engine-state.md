@@ -702,6 +702,23 @@ refusal of §6.1 — the split is deliberate: the value does not live in
   `…/m01_lc_player_airframe_source.rs` — their retail members now assert
   `Resolved::Known` with the measured values instead of the refusals (their
   synthetic members still assert the refusals, which `read` still returns).
+* One measured exception, added after the first green run: an archive that
+  carries **both** `aiv.zrd` and an `ia.zrd` with `player_plane` — the eight
+  `IA1` archives, no campaign one (#715) — keeps its airframe refused under
+  that scenario's own assignment, because mode 3 reads the key (`0x4593e5`)
+  and the campaign chain is not the chain that decides. Without it,
+  `recover_retail_start_configuration(…, "zbd/c1c/ia1")` would have answered
+  row 5 while the scenario says `Fury`. The pose is bound either way: the
+  record's pose takes the same conversion whatever the mode. Pinned by
+  `accept_m01_lc_campaign_airframe_pose_an_instant_action_scenario_keeps_its_own_assignment`.
+* `crates/cs_app/tests/campaign/m01_lc_campaign_airframe_pose_evidence.rs`
+  (registered in `main.rs`) — this task's evidence harness, the same kind of
+  member as `f39_e3_evidence.rs`, deliberately linked into the campaign
+  binary rather than starting a test binary of its own (the CI runner-disk
+  finding `docs/findings/2026-09-30-t430-rust-lld-sigbus-in-ci.md`). It
+  re-reads both byte ranges out of the image, re-runs the production
+  bindings, and writes `acceptance.json` for
+  `docs/findings/evidence/M01-LC-CAMPAIGN-AIRFRAME-POSE.json`.
 * The acceptance item naming
   `crates/cs_app/tests/campaign/vs_m01_runtime.rs`
   (`accept_vs_m01_runtime_retail_launch_is_refused_with_source_diagnostics`
