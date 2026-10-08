@@ -18,8 +18,10 @@
 //!
 //! * **the area is the documented subtree and nothing else.** `C1C` node slot
 //!   517 (`piratezep`) and its 792 descendants, over the measured 793 nodes /
-//!   401 mesh bindings / 8 673 triangles; a pinned slot holding a different record
-//!   is refused by name rather than substituted.
+//!   401 mesh bindings / 8 673 stored triangles; of that stored set the #753
+//!   selection draws 295 bindings / 8 110 triangles and lists the rest undrawn
+//!   with a reason. A pinned slot holding a different record is refused by name
+//!   rather than substituted.
 //! * **the aircraft is the whole intact `bloodhawk` airframe** (task #665): every
 //!   mesh binding of one selected LOD band plus the propeller disc, each part's
 //!   triangle count measured from the container; the full-aircraft checks live in
@@ -555,12 +557,47 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
         "the pinned subtree's node count, measured over the production readers"
     );
     assert_eq!(
-        area.mesh_records, 401,
+        area.stored_bindings, 401,
         "how many of those nodes bind a mesh the container stores geometry for"
     );
     assert_eq!(
-        area.triangles, 8_673,
-        "the stored triangles the area draws, over the production F10-E builder"
+        area.mesh_records, 295,
+        "and how many of those the selection draws: one intact variant of every part \
+         (#753); the rest are listed undrawn with a reason"
+    );
+    assert_eq!(
+        area.mesh_records + area.undrawn.len(),
+        area.stored_bindings,
+        "every stored binding is either drawn or listed undrawn with a reason"
+    );
+    // The report's triangle total is the stored geometry of **that drawn set**,
+    // recomputed here from the container the reader names, not echoed back.
+    let mut drawn_triangles = 0usize;
+    for object in scene.definition().objects() {
+        let Resolved::Known(known) = object.mesh() else {
+            panic!("{} must resolve a mesh", object.id());
+        };
+        let index = sources
+            .world()
+            .mesh_index_of(&known.value)
+            .expect("a drawn record names a mesh of this container's own slot table");
+        let stored = sources
+            .world()
+            .meshes()
+            .get(index)
+            .unwrap_or_else(|| panic!("mesh {index} is stored"));
+        drawn_triangles += cs_app::world::retail::stored_render_mesh(stored)
+            .unwrap_or_else(|error| panic!("mesh {index} builds: {error}"))
+            .triangles()
+            .len();
+    }
+    assert_eq!(
+        area.triangles, drawn_triangles,
+        "the triangles the area draws, rebuilt from the stored meshes"
+    );
+    assert_eq!(
+        area.triangles, 8_110,
+        "the stored triangles of the drawn set, measured over the production readers"
     );
     assert!(
         area.refused.is_empty(),
