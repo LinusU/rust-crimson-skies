@@ -21,11 +21,13 @@
 //! One step per frame, `dt <= `[`MAX_STEP_S`] seconds, no substeps:
 //!
 //! 1. the actual throttle slews toward the command at
-//!    [`THROTTLE_SLEW_PER_S`] per second and a player burns fuel;
+//!    [`THROTTLE_SLEW_PER_S`] per second and a player burns fuel; **every**
+//!    later use of "throttle" is this actual value, never the command, so a
+//!    fuel-exhausted aircraft whose throttle froze cannot thrust again;
 //! 2. [`atmosphere`] gives `k`, `rho` and the speed of sound — a **hard
 //!    two-layer ceiling** above [`LOW_CEILING_FT`], with no interpolation;
-//! 3. [`thrust_coefficient`] times throttle, engine factor, reference area and
-//!    the nose-orientation factor, along the nose;
+//! 3. [`thrust_coefficient`] times the actual throttle, engine factor,
+//!    reference area and the nose-orientation factor, along the nose;
 //! 4. [`drag_coefficient`] times `q * S * drag_factor`, against the velocity;
 //! 5. lift is **velocity steering**, not a lift curve: [`lift_target`] blends
 //!    the target velocity from the current one to the nose direction across
@@ -1016,6 +1018,7 @@ impl OriginalFlightModel {
         } else {
             let aero = self.aero(
                 input,
+                throttle,
                 &velocity,
                 [right, up, back],
                 nose,
@@ -1100,10 +1103,16 @@ impl OriginalFlightModel {
 
     /// Steps 3–6: thrust along the nose, drag against the velocity, the
     /// velocity-steering lift, and the load factor each of them produces.
+    ///
+    /// `throttle` is the **actual** (slewed, possibly frozen) throttle from
+    /// step 1, never the [`OriginalInput::throttle`] command: the command is
+    /// only the value the actual one chases at [`THROTTLE_SLEW_PER_S`] per
+    /// second, and a frozen throttle (no fuel) is what stops the engine.
     #[allow(clippy::too_many_arguments)]
     fn aero(
         &self,
         input: OriginalInput,
+        throttle: f64,
         velocity: &[f64; 3],
         axes: [[f64; 3]; 3],
         nose: [f64; 3],
@@ -1128,7 +1137,7 @@ impl OriginalFlightModel {
         let thrust_throttle = if input.nitro {
             NITRO_THROTTLE
         } else {
-            input.throttle
+            throttle
         };
         let mut thrust =
             coefficient * thrust_throttle * airframe.engine_factor * area * orientation_factor;
@@ -1675,6 +1684,77 @@ mod tests {
             (roll.to_degrees() - 189.0).abs() < 10.0,
             "{} deg/s",
             roll.to_degrees()
+        );
+    }
+
+    /// Thrust follows the **actual** slewed throttle of step 1, never the
+    /// command: the command is only the value the actual one chases, and the
+    /// freeze at `fuel <= 0` is what stops the engine.
+    #[test]
+    fn accept_flight_original_thrust_follows_the_actual_throttle() {
+        let model = OriginalFlightModel::full(airframe(), globals());
+        let input = OriginalInput::full_throttle(true); // command 1.0
+
+        // The thrust the formulas give at `throttle` for a level, still
+        // aircraft at ground level (orientation factor 1, `M' = 0.1`).
+        let expected = |throttle: f64| -> f64 {
+            thrust_coefficient(0.1, &atmosphere(0.0)) * throttle * 0.62 * 330.0
+        };
+
+        // The actual throttle starts at 0 and moves at 0.5/s, so after one
+        // 0.01 s step it is 0.005 and the thrust must be 0.005's, not the
+        // command's.
+        let mut state = OriginalState::at(0.0, Quaternion::IDENTITY, 0.0, 1e9);
+        let step = model
+            .step(&mut state, input, 0.01)
+            .expect("the declared step is valid");
+        assert!(
+            (step.throttle - 0.005).abs() < 1.0e-12,
+            "the actual throttle is {}",
+            step.throttle
+        );
+        let command = expected(1.0);
+        let slewed = expected(0.005);
+        assert!(
+            (step.thrust - slewed).abs() <= 1.0e-9 * slewed.max(1.0),
+            "thrust is {} lb, expected {slewed} lb (the command would give {command} lb)",
+            step.thrust
+        );
+
+        // With no fuel the throttle is frozen at 0: full throttle on the
+        // stick cannot turn the engine back on.
+        let mut dry = OriginalState::at(0.0, Quaternion::IDENTITY, 0.0, 0.0);
+        let dry_step = model
+            .step(&mut dry, input, 0.01)
+            .expect("the declared step is valid");
+        assert_eq!(dry.throttle, 0.0, "a frozen throttle does not move");
+        assert_eq!(dry.fuel, 0.0, "a dry tank burns nothing");
+        assert_eq!(
+            dry_step.thrust, 0.0,
+            "a frozen throttle thrusts at its own (zero) value, not the command"
+        );
+
+        // And an aircraft that has already run the slew up to 1.0 keeps
+        // thrusting at that value while the command is cut: the command is
+        // never what the law reads.
+        let mut full = OriginalState::at(0.0, Quaternion::IDENTITY, 1.0, 1e9);
+        let cut = OriginalInput {
+            throttle: 0.0,
+            is_player: true,
+            ..OriginalInput::default()
+        };
+        let first = model
+            .step(&mut full, cut, 0.01)
+            .expect("the declared step is valid");
+        assert!(
+            (first.thrust - expected(0.995)).abs() <= 1.0e-9 * expected(0.995),
+            "thrust is {} lb after one step of the slew",
+            first.thrust
+        );
+        assert!(
+            (full.throttle - 0.995).abs() < 1.0e-12,
+            "the actual throttle is {}",
+            full.throttle
         );
     }
 
