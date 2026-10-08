@@ -403,3 +403,175 @@ Resolving: follow `[esi+0x4e4]` (or the `Object3d` triple → matrix build), or
   that file exists only on `origin/rally/359-wire-one-original-mission-into-the-playa`
   (#359, blocked on this task), not on `main`. It was not created on `main`
   and #359's branch was not touched.
+
+---
+
+# Session 3 (same claim, same task): the second `0x71daec` setter's owner,
+# and the `Object3d` rotation triple's exact world meaning
+
+Same date, same capabilities (`retail` + static analysis of
+`$CS_GAME_DIR/crimson.decrypted.exe`, sha256 `43540fc9…`, plus the retail
+`ZBD/interp.zbd` / `ZBD/planes.zbd`), same method (strings, radare2 `pd`,
+small Python byte scans over the file). **No original run happened; nothing
+here is `verified_original`, no production code and no test was changed.**
+
+## 11. The airframe: the *other* setter of `0x71daec` belongs to the
+## multiplayer start, and the settings live outside the installation
+
+Session 2 closed with two open items (§9.1). Both are now answered.
+
+### 11.1 `0x413a8a` sits in `0x4136e0`, whose exit starts a mode-2 session
+
+* The function containing `0x413a8a` begins at **`0x4136e0`** (prologue
+  `55 8b ec`; `r2`'s `af` splits it, the byte scan does not). It is reached
+  through the pointer table that holds `0x4136e0` at `0x60338c`, `0x6033bc`
+  and `0x6033cc`; the object that carries that table is written at
+  `0x41232a` / `0x412fec` and published at **`0x64e724`** — the very object
+  `0x4136e0` itself dereferences at `0x413a6e` (`mov ecx, [0x64e724]`).
+* The fall-through path of `0x4136e0` ends at **`0x413bee call 0x496c60`**
+  and then returns (`0x413bf3`…`0x413c06`). `0x496c60` is the routine
+  session 1 measured as the **mode-2 writer**: `0x496c7e mov dword
+  [0x71bb80], 2` immediately before `0x496c88 call 0x4638f0` (the chapter /
+  mission script loader), i.e. the multiplayer start.
+* Consequence: **`0x416ea0`'s two callers are on different start paths.**
+  A campaign launch (mode 1, function `0x417114`, setter `0x41712c` with
+  `&roster[[0x64b67c]]`) does *not* also run `0x413a8a` (the fixed parameter
+  block `0x642fd0`), because the only other thing `0x4136e0` does on that
+  path is start a mode-2 session. Session 2's "whichever runs last wins"
+  caveat therefore does not apply to a campaign start: **on the measured
+  campaign path the roster is the only writer of `0x71daec`.**
+
+### 11.2 `0x407670` is a message dispatcher, and the settings store is the
+### registry / an INI, i.e. outside the installation
+
+* `0x407670` opens `sub esp, 0x404`, reads an id from `esi`, bounds-checks it
+  against `0x3e8`, then `jmp dword [ecx*4 + 0x408368]` — a **jump-table
+  message/event dispatcher**, not a settings reader. Session 1's phrase "the
+  settings at `0x407670`" was imprecise; it is a dispatch on an id (its
+  callers pass ids such as `0xd` and `0x3ff`).
+* The installation does have an off-install settings store, found as import
+  and string evidence in the image: **`SOFTWARE\Microsoft\Microsoft Games\Crimson Skies\1.0`**,
+  **`SOFTWARE\Microsoft\Microsoft Games\Crimson Skies\Special`**,
+  `RegOpenKeyExA`, `GetPrivateProfileStringA`, `CRIMSON_SKIES_SAVELOAD_VERSION`
+  and `D:\zipper\Crimson\config.cpp`. #715's "the installation holds no
+  profile or hangar file" is thus a statement about the *files* only: a
+  player's persisted selection can live in the registry or an INI where no
+  retail file can show it, and this installation (a file copy on a
+  non-Windows host) cannot exhibit it either way.
+* What this leaves for the airframe: **on a fresh, profile-less launch into a
+  campaign mission the chain of §9.1 closes at row 5 `Devastator`**, with
+  three independent engine defaults agreeing (roster init, `0x4b3786` reset,
+  instant-action `0x45940e`), and the campaign path now shown to be the only
+  writer (§11.1). What can still differ is a player whose hangar selection or
+  persisted registry/INI value differs — that is the profile/flight-check
+  shape, and it names the affected content rather than an unknown in the
+  chain.
+
+## 12. The start pose: the `Object3d` rotation triple and its world matrix
+
+### 12.1 The triple is `(pitch, yaw, roll)` in radians, and it is `SetRotation`
+
+* `0x4d1a30` (`Object3d.c`) stores its three `float` arguments into
+  `class+0x18`, `class+0x1c`, `class+0x20`; **`0x4d1b40`** reads the same
+  three slots back in the same order (`GetRotation(node, &a, &b, &c)`), and
+  `0x4d1d50` stores the *position* at `class+0x54/0x58/0x5c`. The aiv spawn
+  calls it as `0x4d1a30(node, 0, heading_rad, 0)` (`0x47c4fa`), so the
+  stored heading lands in **`class+0x1c`** and the triple is `(0, ψ, 0)`.
+* Independent corroboration from content: `ZBD/interp.zbd` carries the script
+  `FindNode cargozep1` … `Object3DRotate -0.000010 -3.144009 -0.000000` —
+  the same three-component rotation, **in radians** (`−3.144009 ≈ −π`), next
+  to `Object3DTranslate x y z` in world coordinates.
+
+### 12.2 `0x53bf40` builds the world matrix from the triple; it decodes to
+### `M = Ry(r1) · Rx(r0) · Rz(r2)` with the **right-handed** matrices
+
+The HUD object reads the vehicle node's triple with `GetRotation` into
+`+0x1f8/+0x1fc/+0x200` (`0x4762a6`) and rebuilds a 3×3 at its `+0x180` with
+**`0x53bf40(r0, r1, r2, out)`** (`0x47631e`). Decoding `0x53bf40`'s nine
+stores (with `A = r0`, `B = r1`, `C = r2`):
+
+```
+M0 = sinB*sinA*sinC + cosC*cosB   M1 = sinC*cosA   M2 = sinC*cosB*sinA - cosC*sinB
+M3 = sinB*cosC*sinA - sinC*cosB   M4 = cosC*cosA   M5 = sinC*sinB + cosC*cosB*sinA
+M6 = sinB*cosA                    M7 = -sinA       M8 = cosB*cosA
+```
+
+and three zeros at `M9..M11`. Read as **columns** (`M0..M2` = image of local
+`+X`, `M3..M5` = `+Y`, `M6..M8` = `+Z`) this is exactly
+`M = Ry(r1)·Rx(r0)·Rz(r2)` built from the standard **right-handed** rotation
+matrices (`Ry(θ)(1,0,0) = (cosθ, 0, −sinθ)`, `Rx(θ)(0,1,0) = (0, cosθ, sinθ)`,
+`Rz(θ)` usual).
+
+Three independent cross-checks, all measured:
+
+1. **The inverse.** `0x53df30` (matrix → Euler) reads the same nine floats and
+   answers `pitch = asin(−M7)`, `yaw = atan2(M6, M8)`,
+   `roll = atan2(M1, M4)` — algebraically exactly `r0`, `r1`, `r2` for the
+   matrix above. `0x53def0` is the one-component form `atan2(M6, M8)`.
+2. **The helpers.** `0x53e160` decodes to `out = (v0, c·v1 − s·v2, s·v1 + c·v2)`
+   (right-handed `Rx`) and `0x53e1e0` to `out = (c·v0 + s·v2, v1, c·v2 − s·v0)`
+   (right-handed `Ry`) — the same two factors `0x53bf40` composes.
+3. **The HUD compass** (`0x49f8ec`…`0x49f90d`): the node found by the retail
+   scene lookup `FindNode compass` (string `0x627cc4`, stored at
+   `hud+0x4e4` in `0x476bc9`) is given
+   `SetRotation(compass, 0, −yaw, 0)` where `yaw = atan2(M6, M8)` of the
+   vehicle matrix — **the compass card counter-rotates against the vehicle's
+   yaw**, which is the behaviour landmark #436 recorded as missing, and it
+   only works if `class+0x1c` is read back as that yaw, i.e. if the triple is
+   `(pitch, yaw, roll)` composed as above.
+
+### 12.3 What this does and does not fix
+
+**Fixed (measured):**
+
+* the composition and its handedness: `ψ = 0` ⇒ `M = I`, so at heading 0 the
+  airframe node's **local axes are the world axes** (`+X = +X`, `+Y = up`,
+  `+Z = +Z` in #436's right-handed, identity-mapped, metre frame);
+* positive `ψ` rotates the node **right-handed about `+Y`**, taking local
+  `+Z` toward `+X` (and local `−Z` toward `−X`);
+* the conversion itself: stored degrees × `π/180` (`0x47c4ee`, the same
+  `qword [0x6040e8]` as every other `.zrd` angle) is *the* value the original
+  puts in `class+0x1c`.
+
+**Still open — the airframe model's own nose axis.** Which *local* axis the
+`player_<x>` scene root points along (so that "heading 0 = world …" can be
+spelled as a world direction) is a property of `support\planes.gw` /
+`support\util\planesurgery.gw` and the `common\planes\<model>\<model>.flt`
+geometry, not of the heading convention, and it is **not** measured here.
+Two independent pieces of engine evidence point at **local `−Z`**, but neither
+is yet tied to the spawned aiv record end to end:
+
+* the flight module's motion integrator `0x470550` (called from the actor
+  update `0x4bf9d0` at `0x4bf9fd`) advances an actor's world position along
+  **`(−sinψ·cosφ, sinφ, −cosψ·cosφ)`** where `ψ = actor+0x2c`, `φ = actor+0x30`,
+  and the same module's `0x4bf950` writes exactly that pair back into the node
+  as `SetRotation(node, φ, ψ, 0)` — so *for every object that module drives*,
+  world motion at `ψ = 0` is `(0, 0, −1)`;
+* `0x48a3e1`/`0x48a3f5` build a direction by rotating the literal base vector
+  **`(0, 0, −1)`** with `0x53e160` (pitch) and then `0x53e1e0` (yaw);
+* against that, `0x53de20` (world direction → `(pitch, yaw, 0)`, with
+  `yaw = atan2(dx, dz)`) is what *aligns local `+Z`* with a direction, and it
+  is used that way for props/cameras.
+
+What is missing between them: **the store that puts the aiv record's heading
+into the flight actor's `+0x2c`** (the spawn allocates the `0xa20`-byte
+aircraft object at `0x47c502`, sets `+0xc8/+0xcc/+0xd0/+0xd4/+0x210/+0x21c`,
+but no `… [reg+0x2c]` store fed by a `… [reg+0x24]` read exists anywhere in
+the image, and `GetRotation`'s eleven callers do not include the spawn). Until
+that link or the `.flt`/`planes.gw` nose axis is measured, "heading 0 faces
+world −Z" is a **candidate with two measured supports, not a measurement**,
+and §10's verdict stands unchanged.
+
+## 13. What changed in session 3
+
+* This note only. `recover_retail_start_configuration` still returns
+  `Resolved::Unknown` for both the airframe and the initial pose: the
+  airframe's remaining question is now only the profile/flight-check shape
+  (§11), but the pose still has no measured nose axis (§12.3), so binding
+  either would be a guess between candidates (AGENTS.md rules 4 and 5).
+* The acceptance criterion naming
+  `crates/cs_app/tests/campaign/vs_m01_runtime.rs` still could not be
+  exercised: the file exists only on
+  `origin/rally/359-wire-one-original-mission-into-the-playa` (#359, blocked
+  on this task), not on `main`. It was not created on `main` and #359's
+  branch was not touched.
