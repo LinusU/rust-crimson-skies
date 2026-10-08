@@ -187,11 +187,9 @@ fn package_name(manifest: &str) -> Option<String> {
         let line = line.trim();
         if line.starts_with('[') {
             in_package = line == "[package]";
-        } else if in_package {
-            if let Some(rest) = line.strip_prefix("name") {
-                let value = rest.trim_start().strip_prefix('=')?.trim();
-                return Some(value.trim_matches('"').to_string());
-            }
+        } else if in_package && let Some(rest) = line.strip_prefix("name") {
+            let value = rest.trim_start().strip_prefix('=')?.trim();
+            return Some(value.trim_matches('"').to_string());
         }
     }
     None
