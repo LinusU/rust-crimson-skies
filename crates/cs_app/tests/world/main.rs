@@ -127,6 +127,14 @@
 //! with its own evidence class — `observed_tool` over original bytes,
 //! `contradicted` when an installation-backed source applied another map.
 //! `fvol_roles` owns it.
+//!
+//! **#771** (`accept_m01_lc_world_residual_roles_`) closes the two record
+//! classes `c1c`'s spawn still reported as gaps: a grid-named `fvol*` record
+//! that the image's own intersection walk drops before any box test (its
+//! stored narrow-phase bit is clear) resolves `None` under the fog claim
+//! instead of #727's unknown, while one storing that bit keeps it; and a grid
+//! record that stores no mesh **and** no stored box resolves `None` because
+//! the store states no geometry. `residual_roles` owns it.
 
 mod audit;
 mod common;
@@ -141,6 +149,7 @@ mod import_retail;
 mod overlays;
 mod records;
 mod residency;
+mod residual_roles;
 mod scene_ids;
 mod sensor_layer;
 mod shared_asset;

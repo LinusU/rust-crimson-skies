@@ -55,7 +55,7 @@ use cs_content::coordinates::{
 use cs_content::scene::{BindingMap, MeshSlot, scene_graph_from_gamez};
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
-    FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, OBJECT_STORES_NO_MESH,
+    FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_RECORD_STORES_NO_GEOMETRY, OBJECT_STORES_NO_MESH,
     UNINDEXED_RECORD_STORES_NO_GEOMETRY, UNINDEXED_ROLE_UNMEASURED, WorldCollisionRole,
 };
 use cs_formats::gamez::read_gamez_nodes;
@@ -683,10 +683,12 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
 
         // The object-level consequence, checked per record rather than as a
         // count: a `None` role is answered either by a record whose own store
-        // holds no geometry (shape claim `UNINDEXED_RECORD_STORES_NO_GEOMETRY`)
-        // or by a fog volume whose measured consumer is the fog system (shape
-        // claim `FOG_VOLUME_RECORD_NEVER_BLOCKS`, mesh kept), and the role the
-        // container owes is asked only of a record no measured prefix names.
+        // holds no geometry (shape claim `UNINDEXED_RECORD_STORES_NO_GEOMETRY`
+        // for a record the grid omits, `GRID_RECORD_STORES_NO_GEOMETRY` for one
+        // it names — task #771) or by a fog volume whose measured consumer is
+        // the fog system (shape claim `FOG_VOLUME_RECORD_NEVER_BLOCKS`, mesh
+        // kept), and the role the container owes is asked only of a record no
+        // measured prefix names.
         for object in world.objects() {
             match object.known_collision() {
                 Some(WorldCollisionRole::None) => {
@@ -708,7 +710,23 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
                         );
                         continue;
                     }
-                    assert_eq!(claim_id.as_str(), UNINDEXED_RECORD_STORES_NO_GEOMETRY);
+                    let grid_named = object
+                        .id()
+                        .as_str()
+                        .strip_prefix("node-")
+                        .and_then(|slot| slot.parse::<u32>().ok())
+                        .is_some_and(|slot| indexed.contains(&slot));
+                    assert_eq!(
+                        claim_id.as_str(),
+                        if grid_named {
+                            GRID_RECORD_STORES_NO_GEOMETRY
+                        } else {
+                            UNINDEXED_RECORD_STORES_NO_GEOMETRY
+                        },
+                        "{}: a record that stores no geometry answers the same way whoever \\
+                         the grid names it — the store states no geometry either way",
+                        split.group
+                    );
                     assert!(
                         !object.mesh().is_known(),
                         "{}: {} resolved to `None` but names a mesh — the store \\
@@ -754,23 +772,22 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
                         .and_then(|slot| slot.parse::<u32>().ok())
                         .is_some_and(|slot| indexed.contains(&slot));
                     if grid_named {
-                        assert_eq!(
-                            claim_id.as_str(),
-                            GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
-                            "{}: {} is named by the grid but its name is the one the \
-                             original's fog consumer keys, so it keeps that claim",
+                        panic!(
+                            "{}: {} is named by the grid and asks an open role — task \
+                             #771 measured the filter that resolves every grid-named \
+                             record here, so {} should not be open",
                             split.group,
-                            object.id().as_str()
-                        );
-                    } else {
-                        assert_eq!(
-                            claim_id.as_str(),
-                            UNINDEXED_ROLE_UNMEASURED,
-                            "{}: {} keeps the unknown the container owes it",
-                            split.group,
-                            object.id().as_str()
+                            object.id().as_str(),
+                            claim_id.as_str()
                         );
                     }
+                    assert_eq!(
+                        claim_id.as_str(),
+                        UNINDEXED_ROLE_UNMEASURED,
+                        "{}: {} keeps the unknown the container owes it",
+                        split.group,
+                        object.id().as_str()
+                    );
                     assert!(
                         object.mesh().is_known(),
                         "{}: {} asks the role question of a record that stores \
@@ -801,14 +818,15 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
 }
 
 /// **On c1c, the 53 records the task asked about land as 36 presented anchors
-/// and 17 fog volumes, and the spawn reports no missing role at all.** (retail)
+/// and 17 fog volumes, and the spawn reports no gap at all.** (retail)
 ///
 /// This is the number the `world_geometry` blocker was waiting on: the
 /// definition imported from `ZBD/C1C/gamez.zbd` carries no invented roles, and
 /// the spawn report shows exactly which records block and which never could.
-/// Task #716 resolved the 17 `fvol*` volumes as fog volumes, so the only gap
-/// left in this container is the one indexed record the store binds no mesh
-/// for.
+/// Task #716 resolved the 17 `fvol*` volumes as fog volumes, task #727 showed
+/// the grid is a candidate index, and task #771 measured what the image's walk
+/// does with those four candidates and with the one record that stores no
+/// geometry — so nothing is left to report.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_lc_world_unit_roles_the_c1c_spawn_reports_the_measured_split() {
@@ -835,8 +853,9 @@ fn accept_m01_lc_world_unit_roles_the_c1c_spawn_reports_the_measured_split() {
         spawned.colliders().len(),
         imported.report().partition_records_with_mesh()
             - imported.report().partition_records_fog_volume(),
-        "every indexed record that binds a mesh collides, from that mesh, except \
-         the grid-named fog volumes whose own role the container never states"
+        "every indexed record that binds a mesh collides, from that mesh, except the \
+         grid-named fog volumes — the image's own walk drops them, so they never \
+         could build one (#771)"
     );
     let mut reasons: BTreeMap<&str, usize> = BTreeMap::new();
     for entry in spawned.skipped() {
@@ -844,16 +863,18 @@ fn accept_m01_lc_world_unit_roles_the_c1c_spawn_reports_the_measured_split() {
     }
     assert_eq!(
         reasons,
-        BTreeMap::from([("unknown_collision_role", 4), ("unknown_mesh", 1),]),
-        "the four grid-named fog volumes report the missing role (#727), the 17 \
-         unindexed `fvol*` volumes no longer report one because they resolve as fog \
-         volumes (#716), and the one mesh-less indexed record reports its own gap"
+        BTreeMap::from([]),
+        "the spawn reports no gap at all: the four grid-named fog volumes resolve \
+         through the image's own filter (#771), the one mesh-less grid record resolves \
+         from the store's own silence (#771), and the 17 unindexed `fvol*` volumes were \
+         already fog volumes (#716)"
     );
     assert_eq!(
         spawned.non_colliding().len(),
-        53,
-        "the 36 anchors and the 17 fog volumes are presented and deliberately never \
-         block: a resolved `None` is not a skip"
+        58,
+        "the 36 anchors, the 17 fog volumes, the four grid-named fog volumes and the \
+         one empty grid record are presented and deliberately never block: a resolved \
+         `None` is not a skip"
     );
     assert_eq!(spawned.presentation_gap_count(), 0);
 }

@@ -59,10 +59,11 @@ use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_content::scene::MeshSlot;
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
-    GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, INDEXED_RECORD_IS_STATIC, ImportedWorld,
-    OBJECT_ID_IS_THE_NODE_SLOT, OBJECT_STORES_NO_MESH, PARTITION_GRID_IS_THE_SECTOR_INDEX,
-    UNINDEXED_RECORD_STORES_NO_GEOMETRY, UNINDEXED_ROLE_UNMEASURED, WORLD_BOUNDARY_UNMEASURED,
-    WORLD_SURFACE_UNMEASURED, WorldImportError, WorldPartitionGrid, import_world_container,
+    GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, GRID_RECORD_STORES_NO_GEOMETRY,
+    INDEXED_RECORD_IS_STATIC, ImportedWorld, OBJECT_ID_IS_THE_NODE_SLOT, OBJECT_STORES_NO_MESH,
+    PARTITION_GRID_IS_THE_SECTOR_INDEX, UNINDEXED_RECORD_STORES_NO_GEOMETRY,
+    UNINDEXED_ROLE_UNMEASURED, WORLD_BOUNDARY_UNMEASURED, WORLD_SURFACE_UNMEASURED,
+    WorldImportError, WorldPartitionGrid, import_world_container,
 };
 use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMesh, RawPolygon, read_gamez_nodes};
 use cs_formats::io::ParseContext;
@@ -115,9 +116,18 @@ pub(crate) struct ObjectSpec {
     has_parent: bool,
     /// The record's stored `unk196` word.
     unk196: u32,
+    /// The record's stored node flag word, read back by the production node
+    /// reader and tested by `cls_di.c`'s walk (task #771).
+    flags: u32,
 }
 
 impl ObjectSpec {
+    /// The flag word every fixture record stores by default: bit `0x40`
+    /// ([`cs_content::world::INTERSECTION_NARROW_PHASE_FLAG`]) clear, which is
+    /// what the original installation's six grid-named `fvol*` records store
+    /// (`0x0308831c`).
+    const DEFAULT_FLAGS: u32 = 0x0180_0000;
+
     pub(crate) const fn new(name: &'static str, mesh: i32) -> Self {
         Self {
             name,
@@ -126,12 +136,21 @@ impl ObjectSpec {
             box_max: [0.0; 3],
             has_parent: true,
             unk196: 160,
+            flags: Self::DEFAULT_FLAGS,
         }
     }
 
     pub(crate) const fn extent(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
         self.box_min = min;
         self.box_max = max;
+        self
+    }
+
+    /// The stored node flag word this record is written with, so a fixture can
+    /// author a record the image's intersection walk would keep instead of one
+    /// it drops.
+    pub(crate) const fn flags(mut self, flags: u32) -> Self {
+        self.flags = flags;
         self
     }
 }
@@ -272,7 +291,7 @@ pub(crate) fn write_container(fixture: &Fixture) -> Vec<u8> {
         let index = position as u32 + 1;
         let slot = NODES_OFFSET as usize + SLOT * (index as usize);
         bytes[slot..slot + object.name.len()].copy_from_slice(object.name.as_bytes());
-        word(&mut bytes, slot + 36, 0x0180_0000);
+        word(&mut bytes, slot + 36, object.flags);
         word(&mut bytes, slot + 40, 0);
         word(&mut bytes, slot + 44, 1);
         word(&mut bytes, slot + 48, 255);
@@ -883,6 +902,7 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
         OBJECT_ID_IS_THE_NODE_SLOT,
         OBJECT_STORES_NO_MESH,
         GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
+        GRID_RECORD_STORES_NO_GEOMETRY,
         RETAIL_WORLD_IMPORT,
     ] {
         assert!(
@@ -894,6 +914,7 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
         PARTITION_GRID_IS_THE_SECTOR_INDEX,
         INDEXED_RECORD_IS_STATIC,
         GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
+        GRID_RECORD_STORES_NO_GEOMETRY,
         UNINDEXED_ROLE_UNMEASURED,
         UNINDEXED_RECORD_STORES_NO_GEOMETRY,
         WORLD_SURFACE_UNMEASURED,
@@ -903,7 +924,7 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
     ]
     .into_iter()
     .collect();
-    assert_eq!(distinct.len(), 9, "each gap has its own claim id");
+    assert_eq!(distinct.len(), 10, "each gap has its own claim id");
 }
 
 // ------------------------------------------------------------------ the retail half --
@@ -976,10 +997,20 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
     assert_eq!(report.objects(), 346);
     assert_eq!(report.objects_with_mesh(), 309);
     // Task #727: four of the 293 grid-named records are the original's fog
-    // volumes (`fvol1`…`fvol4`, node slots 944–947), so the grid's candidate
-    // set and the records that resolve `Solid` come apart by exactly those four.
+    // volumes (`fvol1`…`fvol4`, node slots 944–947), and task #771: one more
+    // (`zepnull`, node slot 2105) stores no mesh and no box. Both resolve a
+    // measured `None`, so the grid's candidate set and the records that resolve
+    // `Solid` come apart by exactly those five.
     assert_eq!(report.partition_records_fog_volume(), 4);
-    assert_eq!(report.objects_solid(), 289);
+    assert_eq!(report.partition_records_stores_no_geometry(), 1);
+    assert_eq!(report.objects_solid(), 288);
+    assert_eq!(
+        report.partition_records(),
+        report.objects_solid()
+            + report.partition_records_fog_volume()
+            + report.partition_records_stores_no_geometry(),
+        "the index partitions exactly into solids, fog volumes and empty records"
+    );
     assert_eq!(report.objects_in_a_sector(), 293);
     assert_eq!(report.objects_resident(), 53);
     assert_eq!(report.sectors(), 144);
@@ -1012,8 +1043,13 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
     assert_eq!(
         report.partition_records_fog_volume(),
         4,
-        "four of c1c's fvol* records are named by the partition grid as well, and the \
-         disagreement between the two rules is counted rather than settled"
+        "four of c1c's fvol* records are named by the partition grid as well: the \
+         overlap is counted, and task #771 settled how each resolves"
+    );
+    assert_eq!(
+        report.objects_unresolved_collision(),
+        0,
+        "c1c's whole surface is answered: no object's collision role is open"
     );
 
     // Everything the container does not state is an explicit unknown, and the
@@ -1021,9 +1057,11 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
     assert_eq!(report.matrix_disagreements(), 0);
     assert_eq!(
         world.unresolved_collision().len(),
-        4,
-        "the four grid-named fog volumes are the only c1c record left without a \
-         measured role (#727); the 17 unindexed `fvol*` resolve as fog volumes (#716)"
+        0,
+        "no c1c record is left without a measured role: the four grid-named fog \
+         volumes resolve `None` through the image's own filter (#771) after #716 \
+         resolved the 17 unindexed `fvol*` records as fog volumes, and the one grid \
+         record that stores no geometry resolves `None` from the store's own silence"
     );
     assert_eq!(
         world.unresolved_surface().len(),
@@ -1031,10 +1069,11 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
         "no gameplay surface is measured for any record"
     );
     assert!(world.known_boundary().is_none());
-    // Every unresolved role carries the claim that names *its* gap: the
-    // grid-named fog volumes are the index's candidate that the original takes
-    // as fog (task #727). Nothing unindexed asks the question any more: #716
-    // resolved those as fog volumes.
+    // With every role answered there is nothing left to carry a role claim —
+    // which is what makes `world_geometry` a closed surface rather than a list
+    // of gaps. The shape claims that remain are answers of their own kind (a
+    // fog volume and an empty record build no collider by measurement), not
+    // open roles.
     let mut by_claim: BTreeMap<&str, usize> = BTreeMap::new();
     for object in world.unresolved_collision() {
         let Resolved::Unknown { claim_id, .. } = object.collision() else {
@@ -1049,10 +1088,10 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
     }
     assert_eq!(
         by_claim,
-        BTreeMap::from([(GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, 4)]),
-        "the only role c1c still owes is the four grid-named fog volumes' (#727); the \
-         unindexed `fvol*` half left this list when #716 resolved it as fog, so no \
-         `UNINDEXED_ROLE_UNMEASURED` record remains here"
+        BTreeMap::from([]),
+        "c1c owes no collision role at all: #727's four grid-named fog volumes and \
+         #771's empty grid record are answers now, and #716 resolved the unindexed \
+         `fvol*` half before that"
     );
     for object in world.unresolved_surface() {
         let Resolved::Unknown { claim_id, .. } = object.surface() else {
@@ -1151,8 +1190,9 @@ fn accept_m01_lc_world_import_retail_spawn_world_runs_on_the_imported_c1c_defini
     assert_eq!(
         spawned.colliders().len(),
         288,
-        "every indexed record that binds a mesh collides, except the four \
-         grid-named fog volumes whose role the container never states"
+        "every indexed record that binds a mesh collides, except the four grid-named \
+         fog volumes and the one record that stores no geometry — neither can build \
+         one, and both are answers rather than gaps"
     );
     let mut reasons: BTreeMap<&str, usize> = BTreeMap::new();
     for entry in spawned.skipped() {
@@ -1160,28 +1200,21 @@ fn accept_m01_lc_world_import_retail_spawn_world_runs_on_the_imported_c1c_defini
     }
     assert_eq!(
         reasons,
-        BTreeMap::from([
-            // The four grid-named fog volumes (task #727): in the index, taken
-            // as fog by the original's own consumer, never claimed solid here.
-            // The 17 unindexed `fvol*` volumes are no longer a gap — task #716
-            // resolved them as fog volumes.
-            ("unknown_collision_role", 4),
-            // The one indexed record that stores no mesh index: it is in the
-            // world's spatial index and draws nothing, so it is reported rather
-            // than given substitute geometry.
-            ("unknown_mesh", 1),
-        ]),
-        "the spawn reports exactly the two gaps c1c's own bytes imply: the four \
-         grid-named fog volumes (#727) and the one mesh-less indexed record"
+        BTreeMap::from([]),
+        "the spawn reports **no** gap at all: the four grid-named fog volumes resolve \
+         through the image's own filter (#771), the one mesh-less grid record resolves \
+         from the store's own silence (#771), and the 17 unindexed `fvol*` volumes were \
+         already fog volumes (#716)"
     );
-    // The 36 anchors and the 17 fog volumes are a *deliberate* `None`:
+    // The 36 anchors, the 17 unindexed fog volumes, the four grid-named fog
+    // volumes and the one empty grid record are a *deliberate* `None`:
     // presented, never blocking, and not in the skip list — a resolved record
     // does not read as a gap.
     assert_eq!(
         spawned.non_colliding().len(),
-        53,
-        "the anchors, horizon and fog volumes are presented with no collider by \
-         their own answer"
+        58,
+        "the anchors, horizon, fog volumes and the empty grid record are presented \
+         with no collider by their own answer"
     );
     assert_eq!(
         spawned.presentation_gap_count(),

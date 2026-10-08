@@ -22,9 +22,12 @@
 //!   before any box is tested.
 //!
 //! So the binding this suite pins is: the grid names candidates, it does not
-//! declare solidity, and a grid-named record the original takes as fog resolves
-//! an explicit unknown under
-//! [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] instead of `Solid`.
+//! declare solidity, and what a grid-named record the original takes as fog
+//! resolves is what the walk does with it — task #771 measured the filter at
+//! `0x4cb635`: with the record's narrow-phase bit clear the candidate is
+//! dropped before any box test, so it resolves `None` under
+//! [`FOG_VOLUME_RECORD_NEVER_BLOCKS`] instead of `Solid`, and only a record
+//! storing that bit keeps [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`].
 //!
 //! The synthetic half needs no original data and runs in CI; the retail half is
 //! `#[ignore]`d (`requires CS_GAME_DIR`) and names the six records the original
@@ -41,9 +44,10 @@ use cs_app::world::{
 use cs_content::coordinates::{CoordinateSource, SourceAdapter};
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
-    GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, INDEXED_RECORD_IS_STATIC, UNINDEXED_ROLE_UNMEASURED,
-    WorldCollisionRole, WorldObjectId,
+    FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
+    INDEXED_RECORD_IS_STATIC, UNINDEXED_ROLE_UNMEASURED, WorldCollisionRole, WorldObjectId,
 };
+use cs_formats::gamez::RawNode;
 use cs_types::content::{Origin, Resolved};
 
 use super::import_retail::{
@@ -104,29 +108,34 @@ fn accept_f18_grid_collision_origin_a_grid_named_fog_volume_is_never_solid_geome
         "so three records resolve the index's `Solid`, not four"
     );
 
-    // The fog record's own role and shape are explicit unknowns carrying this
-    // task's claim id, with a reason that says which two statements collided.
+    // The fog record's own role and shape are resolved by measured facts, not
+    // by the index: task #727 showed the grid is a candidate index, and task
+    // #771 measured the candidate's filter — with the stored narrow-phase bit
+    // clear (this fixture stores `0x01800000`) the walk drops the record
+    // before any box test, so it is presented and never blocks.
     let fog = world
         .object(&WorldObjectId::new(&format!("node-{FOG}")).expect("the key is valid"))
         .expect("the grid-named fog volume imported");
-    let role = fog.collision();
-    let Resolved::Unknown { claim_id, reason } = role else {
-        panic!("a grid-named fog volume has no measured collision role: {role:?}");
+    assert_eq!(
+        fog.known_collision(),
+        Some(WorldCollisionRole::None),
+        "a grid-named fog volume the image's walk drops has a measured role, and it \
+         is never the index's `Solid`"
+    );
+    let shape = fog.shape();
+    let Resolved::Unknown { claim_id, reason } = shape else {
+        panic!("a fog volume builds no collider, so its shape stays an unknown: {shape:?}");
     };
     assert_eq!(
         claim_id.as_str(),
-        GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
-        "the fog volume carries its own claim id, not the index's"
+        FOG_VOLUME_RECORD_NEVER_BLOCKS,
+        "the shape names the measured fog consumer, not the index"
     );
     assert!(
-        reason.contains("partition grid") && reason.contains("fog-volume consumer"),
-        "the reason names both statements the record is caught between: {reason}"
+        reason.contains("partition grid") && reason.contains("narrow-phase"),
+        "the reason names both statements: the grid it is named by and the filter \
+         that drops it: {reason}"
     );
-    let shape = fog.shape();
-    let Resolved::Unknown { claim_id, .. } = shape else {
-        panic!("a record with no measured role stores no measured shape: {shape:?}");
-    };
-    assert_eq!(claim_id.as_str(), GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED);
 
     // The carve-out does not spill: the other grid-named records keep the
     // designed rule exactly as it was written.
@@ -161,11 +170,14 @@ fn accept_f18_grid_collision_origin_a_grid_named_fog_volume_is_never_solid_geome
     }
     assert_eq!(
         by_claim,
-        BTreeMap::from([
-            (UNINDEXED_ROLE_UNMEASURED, 1),
-            (GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, 1),
-        ]),
-        "the two gaps are told apart by their own claim ids"
+        BTreeMap::from([(UNINDEXED_ROLE_UNMEASURED, 1)]),
+        "the one gap left is the container's own silence; the grid-named fog volume \
+         is answered, so it is no longer a gap"
+    );
+    assert_eq!(
+        report.objects_unresolved_collision(),
+        1,
+        "and the report counts exactly that one open role"
     );
 
     // And the effect the task exists for: the fog volume never becomes a
@@ -192,21 +204,25 @@ fn accept_f18_grid_collision_origin_a_grid_named_fog_volume_is_never_solid_geome
         });
     assert_eq!(
         reasons,
-        BTreeMap::from([("unknown_collision_role", 2)]),
-        "the grid-named fog volume and the unindexed volume report their gap; the \
-         anchor's `None` is an answer, not a gap"
+        BTreeMap::from([("unknown_collision_role", 1)]),
+        "only the unindexed volume reports its gap: the grid-named fog volume and the \
+         anchor's `None` are answers, not gaps"
     );
     let skipped: Vec<SkipReason> = spawned.skipped().iter().map(|entry| entry.reason).collect();
     assert!(
         skipped
             .iter()
             .all(|reason| *reason == SkipReason::UnknownCollisionRole),
-        "and both skips are the same missing measurement: {skipped:?}"
+        "and the one skip is the missing measurement: {skipped:?}"
     );
     assert_eq!(
         spawned.non_colliding(),
-        vec![WorldObjectId::new("node-4").expect("the key is valid")],
-        "the anchor is presented and never blocks, which a fog volume is not"
+        vec![
+            WorldObjectId::new("node-4").expect("the key is valid"),
+            WorldObjectId::new(&format!("node-{FOG}")).expect("the key is valid")
+        ],
+        "the anchor is presented and never blocks, and so is the fog volume the \
+         image's walk drops"
     );
     assert_eq!(
         spawned.presentation_gap_count(),
@@ -215,14 +231,26 @@ fn accept_f18_grid_collision_origin_a_grid_named_fog_volume_is_never_solid_geome
     );
 }
 
+/// A stored record that binds no mesh **and** stores an empty box in each of
+/// its three slots: the store states no geometry for it (task #771).
+///
+/// Re-derived here from the record's own bytes rather than read back from the
+/// import's counter, so the test and the implementation cannot fail together.
+fn stores_no_geometry(record: &RawNode) -> bool {
+    record.mesh_index() < 0
+        && [record.info.unk116, record.info.unk140, record.info.unk164]
+            .iter()
+            .all(|stored| (0..3).all(|axis| stored[0][axis] == stored[1][axis]))
+}
+
 /// **Over the original installation there are exactly six grid-named `fvol*`
-/// records, and every one of them resolves its own claim id instead of the
-/// index's `Solid`.**
+/// records, each now resolved as the fog volume the image's own walk drops.**
 ///
 /// One production discovery, all eight world containers: the affected content
 /// this task names (`c1c` four, `c5` two, nowhere else), the node slots, the
-/// stored names, and the fact that every *other* grid-named record in every
-/// container still resolves `Solid`.
+/// stored names, the records that store no geometry (task #771's second arm),
+/// and the fact that every *other* grid-named record in every container still
+/// resolves `Solid`.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f18_grid_collision_origin_retail_the_six_grid_named_fog_volumes_are_named() {
@@ -257,60 +285,111 @@ fn accept_f18_grid_collision_origin_retail_the_six_grid_named_fog_volumes_are_na
         );
         assert_eq!(
             report.objects_solid(),
-            report.partition_records() - fog_count,
-            "{group}: every grid-named record but the fog volumes resolves `Solid`"
+            report.partition_records() - fog_count - report.partition_records_stores_no_geometry(),
+            "{group}: every grid-named record but the fog volumes and the records that \
+             store no geometry resolves `Solid`"
         );
         assert_eq!(
-            report.partition_records_fog_volume() + report.objects_solid(),
+            report.partition_records_fog_volume()
+                + report.partition_records_stores_no_geometry()
+                + report.objects_solid(),
             report.partition_records(),
-            "{group}: the fog counter and the solid count partition the grid exactly"
+            "{group}: the fog counter, the empty records and the solid count partition \
+             the grid exactly"
         );
 
         // Which records they are: node slot and stored name, read from the same
-        // container bytes the import read.
+        // container bytes the import read. Since task #771 each resolves
+        // `None` with the fog claim — the image's own walk reads the record's
+        // flags word and drops it before any box test, which is the measurement
+        // #727 was missing.
+        let fog_set: BTreeSet<u32> = fog_slots.iter().copied().collect();
         let mut fog_slots_found: Vec<u32> = Vec::new();
-        for object in imported.definition().unresolved_collision() {
-            let Resolved::Unknown { claim_id, reason } = object.collision() else {
-                panic!("{group}: an unresolved role must be an explicit unknown");
+        for slot in &fog_set {
+            let object = imported
+                .definition()
+                .object(&WorldObjectId::new(&format!("node-{slot}")).expect("the key is valid"))
+                .expect("a grid-named fog volume imported");
+            assert_eq!(
+                object.known_collision(),
+                Some(WorldCollisionRole::None),
+                "{group}: node {slot} is a fog volume the walk drops, so it never blocks"
+            );
+            let Resolved::Unknown { claim_id, reason } = object.shape() else {
+                panic!("{group}: node {slot} builds no collider, so its shape stays open");
             };
-            if claim_id.as_str() != GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED {
-                assert_eq!(
-                    claim_id.as_str(),
-                    UNINDEXED_ROLE_UNMEASURED,
-                    "{group}: the container's other silence keeps its own claim id"
-                );
-                continue;
-            }
-            let slot = object
-                .id()
-                .as_str()
-                .strip_prefix("node-")
-                .and_then(|slot| slot.parse::<u32>().ok())
-                .expect("an object id is its node slot");
+            assert_eq!(
+                claim_id.as_str(),
+                FOG_VOLUME_RECORD_NEVER_BLOCKS,
+                "{group}: node {slot} names the measured fog consumer"
+            );
+            assert!(
+                reason.contains("narrow-phase"),
+                "{group}: node {slot}'s reason names the filter that drops it: {reason}"
+            );
             let record = container
                 .nodes()
-                .get(slot)
+                .get(*slot)
                 .expect("an imported object is a stored record");
             assert!(
                 record.name.starts_with("fvol"),
                 "{group}: the record the claim names is a stored `fvol*` record: {}",
                 record.name
             );
-            assert!(
-                reason.contains("partition grid") && reason.contains("fog-volume consumer"),
-                "{group}: the reason names both statements: {reason}"
-            );
-            fog_slots_found.push(slot);
-            seen_slots.push((group.clone(), slot, record.name.clone()));
+            fog_slots_found.push(*slot);
+            seen_slots.push((group.clone(), *slot, record.name.clone()));
         }
         assert_eq!(
             fog_slots_found, fog_slots,
             "{group}: exactly the measured grid-named fog volumes, in stored order"
         );
 
-        // Every grid-named record that is **not** one of those keeps the
-        // designed rule, so the carve-out is as narrow as the measurement.
-        let fog_set: BTreeSet<u32> = fog_slots.iter().copied().collect();
+        // What is left open, and only that: every grid-named record resolves a
+        // role (#771), so the unmeasured class is the whole of it — and no
+        // object still carries #727's claim, which this installation's
+        // narrow-phase bits have retired.
+        for object in imported.definition().unresolved_collision() {
+            let Resolved::Unknown { claim_id, .. } = object.collision() else {
+                panic!("{group}: an unresolved role must be an explicit unknown");
+            };
+            assert_eq!(
+                claim_id.as_str(),
+                UNINDEXED_ROLE_UNMEASURED,
+                "{group}: the container's other silence keeps its own claim id, and no \
+                 grid-named record is open: {} carries {}",
+                object.id(),
+                claim_id.as_str()
+            );
+        }
+        assert!(
+            imported
+                .definition()
+                .objects()
+                .iter()
+                .all(|object| !matches!(
+                    object.collision(),
+                    Resolved::Unknown { claim_id, .. }
+                        if claim_id.as_str() == GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED
+                )),
+            "{group}: no record carries #727's claim here: every grid-named `fvol*` \
+             record stores the narrow-phase bit clear"
+        );
+
+        // Every grid-named record that is neither a fog volume nor one the
+        // store gives no geometry keeps the designed rule, so the carve-outs
+        // are as narrow as the measurement.
+        let empty: BTreeSet<u32> = container
+            .partition_grid()
+            .expect("the container's own grid reads")
+            .indexed_slots()
+            .into_iter()
+            .filter(|slot| container.nodes().get(*slot).is_some_and(stores_no_geometry))
+            .collect();
+        assert_eq!(
+            empty.len(),
+            report.partition_records_stores_no_geometry(),
+            "{group}: the report's empty records are the container's own bytes"
+        );
         let indexed = container
             .partition_grid()
             .expect("the container's own grid reads")
@@ -321,7 +400,7 @@ fn accept_f18_grid_collision_origin_retail_the_six_grid_named_fog_volumes_are_na
             "{group}: the report's grid is the container's grid"
         );
         for slot in indexed {
-            if fog_set.contains(&slot) {
+            if fog_set.contains(&slot) || empty.contains(&slot) {
                 continue;
             }
             let object = imported

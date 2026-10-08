@@ -99,8 +99,14 @@ struct Measured {
     values_with_mesh: usize,
     /// How many of the grid's records are the original's fog volumes, whose
     /// name the image's own fog consumer keys (task #727): they are candidates
-    /// the index names and never resolve `Solid`.
+    /// the index names and never resolve `Solid`. Task #771 settled *how* they
+    /// resolve (the image's own walk drops them), but this count is the
+    /// overlap the two statements describe, so it does not move.
     grid_fog: usize,
+    /// How many of the grid's records store **no geometry at all**: no mesh
+    /// index and an empty box in each of their three stored slots (task #771).
+    /// They resolve `None` from the store's own silence and are never a skip.
+    grid_no_geometry: usize,
     /// How many imported records resolve a mesh reference.
     objects_with_mesh: usize,
     /// How many cells could be given no extent, so their records stay resident.
@@ -154,6 +160,7 @@ const MEASURED: [Measured; 8] = [
         objects: 412,
         values_with_mesh: 285,
         grid_fog: 0,
+        grid_no_geometry: 13,
         objects_with_mesh: 295,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -178,6 +185,7 @@ const MEASURED: [Measured; 8] = [
         objects: 233,
         values_with_mesh: 139,
         grid_fog: 0,
+        grid_no_geometry: 8,
         objects_with_mesh: 139,
         // Five cells whose members all store an all-zero box, so they get no
         // sector and their records stay resident.
@@ -201,6 +209,7 @@ const MEASURED: [Measured; 8] = [
         objects: 346,
         values_with_mesh: 292,
         grid_fog: 4,
+        grid_no_geometry: 1,
         objects_with_mesh: 309,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -222,6 +231,7 @@ const MEASURED: [Measured; 8] = [
         objects: 282,
         values_with_mesh: 186,
         grid_fog: 0,
+        grid_no_geometry: 23,
         objects_with_mesh: 186,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -243,6 +253,7 @@ const MEASURED: [Measured; 8] = [
         objects: 338,
         values_with_mesh: 289,
         grid_fog: 0,
+        grid_no_geometry: 1,
         objects_with_mesh: 298,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -264,6 +275,7 @@ const MEASURED: [Measured; 8] = [
         objects: 453,
         values_with_mesh: 374,
         grid_fog: 0,
+        grid_no_geometry: 18,
         objects_with_mesh: 374,
         // Three cells whose members all store an all-zero box.
         cells_without_extent: 3,
@@ -289,6 +301,7 @@ const MEASURED: [Measured; 8] = [
         objects: 401,
         values_with_mesh: 303,
         grid_fog: 0,
+        grid_no_geometry: 4,
         objects_with_mesh: 316,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -310,6 +323,7 @@ const MEASURED: [Measured; 8] = [
         objects: 576,
         values_with_mesh: 367,
         grid_fog: 2,
+        grid_no_geometry: 80,
         objects_with_mesh: 452,
         // Four cells whose members all store an all-zero box.
         cells_without_extent: 4,
@@ -554,9 +568,9 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
         );
 
         // The role follows the spatial index, so the solid count is the grid's
-        // minus the grid-named fog volumes: those are in the candidate set and
-        // are never claimed solid, because the original takes their name as fog
-        // (task #727).
+        // minus the two measured sets that resolve some other way: the
+        // grid-named fog volumes the original takes as fog (task #727), and the
+        // grid records that store no geometry at all (task #771).
         assert_eq!(
             report.partition_records_fog_volume(),
             measured.grid_fog,
@@ -564,9 +578,25 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
             measured.group
         );
         assert_eq!(
+            report.partition_records_stores_no_geometry(),
+            measured.grid_no_geometry,
+            "{}: how many grid-named records store no mesh and no box, which is the \
+             store saying they have no geometry (task #771)",
+            measured.group
+        );
+        assert_eq!(
             report.objects_solid(),
-            measured.values - measured.grid_fog,
-            "{}: one solid record per indexed record, except the grid fog volumes",
+            measured.values - measured.grid_fog - measured.grid_no_geometry,
+            "{}: one solid record per indexed record, except the grid fog volumes and \
+             the empty ones",
+            measured.group
+        );
+        assert_eq!(
+            report.partition_records(),
+            report.objects_solid()
+                + report.partition_records_fog_volume()
+                + report.partition_records_stores_no_geometry(),
+            "{}: and the three partition the grid exactly",
             measured.group
         );
         // Residency is a **separate** question from the role, and the two come
@@ -668,12 +698,21 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
         );
 
         // Every gap is named, per group, with its own claim id: the unindexed
-        // records that store geometry, plus the grid-named fog volumes.
+        // records that store geometry. Nothing the grid names is open any more
+        // (task #771): the grid-named fog volumes resolve `None` through the
+        // image's own filter, and the empty grid records resolve `None` from
+        // the store's own silence.
         assert_eq!(
             world.unresolved_collision().len(),
-            measured.unresolved_roles + measured.grid_fog,
-            "{}: the geometry-bearing unindexed records and the grid fog volumes \
-             have no measured role",
+            measured.unresolved_roles,
+            "{}: the geometry-bearing unindexed records have no measured role, and no \
+             grid-named record does",
+            measured.group
+        );
+        assert_eq!(
+            report.objects_unresolved_collision(),
+            measured.unresolved_roles,
+            "{}: the report counts the same open roles by role",
             measured.group
         );
         let mut by_claim: BTreeMap<&str, usize> = BTreeMap::new();
@@ -705,13 +744,14 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
                 .get(GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED)
                 .copied()
                 .unwrap_or(0),
-            measured.grid_fog,
-            "{}: and the grid-named fog volumes keep their own claim",
+            0,
+            "{}: and no grid-named fog volume carries #727's claim — task #771 \
+             measured the filter that drops every one of them",
             measured.group
         );
         assert_eq!(
             by_claim.values().sum::<usize>(),
-            measured.unresolved_roles + measured.grid_fog,
+            measured.unresolved_roles,
             "{}: no third claim appears in the unresolved roles",
             measured.group
         );
@@ -918,9 +958,9 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
                 .get(SkipReason::UnknownCollisionRole.label())
                 .copied()
                 .unwrap_or(0),
-            measured.unresolved_roles + measured.grid_fog,
-            "{}: the geometry-bearing unindexed records and the grid-named fog \
-             volumes report an unknown role",
+            measured.unresolved_roles,
+            "{}: the geometry-bearing unindexed records report an unknown role; no \
+             grid-named record does (task #771)",
             measured.group
         );
         assert_eq!(
@@ -928,23 +968,27 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
                 .get(SkipReason::UnknownMesh.label())
                 .copied()
                 .unwrap_or(0),
-            measured.values - measured.values_with_mesh,
-            "{}: and each indexed record the store binds no mesh for reports that \
-             instead, having passed the role check",
+            measured.values - measured.values_with_mesh - measured.grid_no_geometry,
+            "{}: each indexed record the store binds no mesh for reports that, except \
+             the ones that also store no box — the store states no geometry for those, \
+             so they are an answer rather than a gap (task #771)",
             measured.group
         );
+        let open_roles = measured.unresolved_roles;
+        let open_meshes = measured.values - measured.values_with_mesh - measured.grid_no_geometry;
         assert_eq!(
             reasons.len(),
-            1 + usize::from(measured.unresolved_roles + measured.grid_fog > 0),
+            usize::from(open_roles > 0) + usize::from(open_meshes > 0),
             "{}: no other gap reason appears",
             measured.group
         );
-        // The anchors (task #677) and the fog volumes (task #716) are a
+        // The anchors (task #677), the fog volumes (task #716), the grid-named
+        // fog volumes and the empty grid records (task #771) are a
         // *deliberate* `None`: presented, never blocking, and not in the skip
         // list — a resolved record is not a gap.
         assert_eq!(
             spawned.non_colliding().len(),
-            measured.anchors + measured.fog,
+            measured.anchors + measured.fog + measured.grid_fog + measured.grid_no_geometry,
             "{}: the records that store no geometry and the `fvol*` records are \
              presented with no collider by their own answer",
             measured.group

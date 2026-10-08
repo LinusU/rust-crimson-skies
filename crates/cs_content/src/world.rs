@@ -4950,8 +4950,12 @@ pub const PARTITION_GRID_IS_THE_SECTOR_INDEX: &str = "f18-world.partition-grid-i
 /// grid-named record is a record the engine could consider, not a record the
 /// engine declared solid — and a record whose own measured role contradicts
 /// static geometry must not inherit one from the index. That is the six
-/// grid-named `fvol*` records of `c1c` and `c5`, which resolve under
-/// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] instead of this claim.
+/// grid-named `fvol*` records of `c1c` and `c5`: with the candidate's own
+/// narrow-phase bit measured clear (task #771) they resolve
+/// [`WorldCollisionRole::None`] under [`FOG_VOLUME_RECORD_NEVER_BLOCKS`], and
+/// a grid-named `fvol*` record storing that bit would resolve under
+/// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] instead. A grid-named record that
+/// stores no geometry at all resolves [`GRID_RECORD_STORES_NO_GEOMETRY`].
 pub const INDEXED_RECORD_IS_STATIC: &str = "f18-world.indexed-record-is-static";
 
 /// A record the partition grid names whose name keys the original's fog-volume
@@ -4979,14 +4983,87 @@ pub const INDEXED_RECORD_IS_STATIC: &str = "f18-world.indexed-record-is-static";
 /// `Solid`: a consumer sees "the container did not say" instead of a fog bank
 /// that stops a plane.
 ///
-/// **Affected content:** collision over exactly these records — the four
-/// `fvol1`…`fvol4` of `c1c` (node slots 944–947) and `fvol1`/`fvol3` of `c5`
-/// (node slots 2304 and 2306) in the original installation — and every claim
-/// that a grid-named record is static collision geometry, which now carries
-/// this named exception. Evidence class: `observed_tool` (static analysis of
-/// one executable), never `verified_original`.
+/// **Narrowed by task #771 — the six records it was written for no longer
+/// carry it.** What this claim was missing was the candidate's own filter:
+/// `cls_di.c`'s walk reads the record's flags word at `0x4cb635` and reaches
+/// the narrow phase (the only branch that copies `[node+0x70]`) only with
+/// [`INTERSECTION_NARROW_PHASE_FLAG`] set, otherwise recursing into children
+/// or dropping the candidate. Measured over the original installation, all
+/// six grid-named `fvol*` records store that bit clear with no children, so
+/// they are dropped before any box test and resolve
+/// [`WorldCollisionRole::None`] under [`FOG_VOLUME_RECORD_NEVER_BLOCKS`]
+/// instead. This claim stays for what it still truthfully describes: a
+/// grid-named `fvol*` record that **does** store the narrow-phase bit, whose
+/// box the walk would copy — the container still states no collision role for
+/// such a record, so it keeps the explicit unknown rather than the index's
+/// `Solid`. Evidence class: `observed_tool` (static analysis of one
+/// executable), never `verified_original`.
 pub const GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED: &str =
     "f18-world.grid-named-fog-volume-role-unmeasured";
+
+/// The record flag bit `cls_di.c`'s intersection walk requires before it runs
+/// the narrow phase — the branch that copies a record's box through
+/// `[node+0x70]`.
+///
+/// **Measured** (task #771, static analysis of the owner-supplied decrypted
+/// image, `observed_tool`): the walk reads the candidate's flags word at
+/// `0x4cb5eb` (bit `0x04`, the first filter), then at `0x4cb635`–`0x4cb668`
+/// tests this bit (`test al, 0x40`) and, when it is clear, recurses into the
+/// record's children instead — a record with no children is dropped there
+/// (`cmp word [esi+0x56], bx` / `jle`, `0x4cb63e`) **before any box is read**.
+/// With the bit set the walk tests bit `0x100` and only then copies the 24
+/// bytes held at `[node+0x70]` (`0x4cd960`). `cls_util.c`'s own error string
+/// names this bit the *proximity* flag (`0x62d784`), and the INTERP commands
+/// `SetIntersectSurface` / `SetIntersectBBOX` / `SetAltitudeSurface` can write
+/// the related bits at run time (`0x5bbccc`, `0x5bbc90`), so this is a stored
+/// default and never a statement about what a script set later.
+pub const INTERSECTION_NARROW_PHASE_FLAG: u32 = 0x40;
+
+/// A record the partition grid names that stores **no geometry at all**: no
+/// mesh index and no non-empty stored box.
+///
+/// **Measured store state, designed resolution** (task #771). The store's own
+/// `mesh_index` is signed, with `-1` meaning "no mesh" (the loader skips the
+/// mesh-base adjustment for it at `0x4e2aa9`), and the record's three stored
+/// boxes (offsets `0x74`, `0x8c`, `0xa4`) are all empty — zero extent on every
+/// axis — so nothing a collider or a drawing could come from exists in the
+/// container. This is the same store state task #677 resolved for *unindexed*
+/// records ([`UNINDEXED_RECORD_STORES_NO_GEOMETRY`]), reached here on a record
+/// the grid names: the index only makes such a record a **candidate**
+/// ([`INDEXED_RECORD_IS_STATIC`]), and a candidate that stores nothing has
+/// nothing to test, so it resolves [`WorldCollisionRole::None`] and its absent
+/// mesh stays an explicit unknown under [`OBJECT_STORES_NO_MESH`].
+///
+/// Measured over the original installation: one such record per `c1c` and
+/// `c2b`, eight in `c1b`, thirteen in `c1`, twenty-three in `c2`, eighteen in
+/// `c3`, four in `c4` and eighty in `c5` — a **subset** of
+/// [`WorldImportReport::partition_records_with_mesh`]'s complement, because a
+/// grid record with no mesh that still stores a box in one of the other two
+/// slots keeps whatever its container says and is not resolved by this claim.
+///
+/// Evidence class: `observed_tool` (the store's bytes through the production
+/// readers), never `verified_original`.
+pub const GRID_RECORD_STORES_NO_GEOMETRY: &str = "f18-world.grid-record-stores-no-geometry";
+
+/// Which gameplay query consumes `cls_di.c`'s intersection walk — unmeasured.
+///
+/// **Open, and open only in a way an original run can lift** (task #771). The
+/// walk has exactly one caller chain in the image: game code at `0x4ab284` →
+/// `fcn.005ac150` (a distance computation that then walks the intersections
+/// database) → `fcn.004cb420`, whose returned distance the calling routine
+/// compares against a threshold (`0x4ab28c`) before calling `0x4b7e70`. What
+/// that routine *is* was not established: it is a `thiscall` over an object
+/// holding node pointers and positions (`0x4aabb0`), and the RTTI comparisons
+/// inside it name `Target`, `TargetVehicle` and `TargetTurret` (`0x620768`,
+/// `0x620780`), which places it in the target/weapon code without naming the
+/// query.
+///
+/// Affected content: any claim about *what the original used the walk for* —
+/// target acquisition, proximity, line of sight or something else. Resolving
+/// it needs a behavior observation, i.e. an original run (#358); nothing in
+/// the repository's own artifacts answers it.
+pub const INTERSECTION_QUERY_GAMEPLAY_CONSUMER_UNMEASURED: &str =
+    "f18-world.intersection-query-gameplay-consumer-unmeasured";
 
 /// The original's coordinate handedness, axis order and angle unit — and, for
 /// a conversion that never measured it, the world-vertex unit.
@@ -5065,13 +5142,24 @@ pub const WORLD_AXIS_CONVENTION_MEASURED: &str = "f18-world.world-axis-conventio
 /// [`UNINDEXED_RECORD_STORES_NO_GEOMETRY`], and it is a claim about this
 /// conversion — not a claim that the 2000 engine never intersected a fog box.
 ///
-/// The claim does **not** reach the `fvol*` records the partition grid *does*
-/// name. For those, task #727 measured what the image does with the grid
-/// itself — a broad-phase candidate index, never a solidity statement — so
-/// they resolve an explicit unknown under
-/// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] instead of the index's `Solid`,
-/// and the overlap stays counted by
-/// [`WorldImportReport::partition_records_fog_volume`].
+/// **Task #771 extended it to the `fvol*` records the partition grid *does*
+/// name.** For those, task #727 had measured that the grid is a broad-phase
+/// candidate index, never a solidity statement, and left their role an
+/// explicit unknown because the store states no collision field either way.
+/// What settles the candidate is `cls_di.c`'s own filter, measured from the
+/// same decrypted image: at `0x4cb635` the walk reads the record's flags word
+/// and reaches the narrow phase — the only branch that copies a box through
+/// `[node+0x70]` — only with [`INTERSECTION_NARROW_PHASE_FLAG`] set, so a
+/// grid-named `fvol*` record that stores the bit clear is dropped before any
+/// box test and resolves the same `None` here, with the overlap still counted
+/// by [`WorldImportReport::partition_records_fog_volume`]. The six such
+/// records this installation stores (`c1c` node slots 944–947, `c5` node
+/// slots 2304 and 2306) all store it clear with no children, so they resolve
+/// this claim; one storing the bit would stay an explicit unknown under
+/// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`]. Whether a script sets that bit
+/// at run time, and which gameplay query the walk serves
+/// ([`INTERSECTION_QUERY_GAMEPLAY_CONSUMER_UNMEASURED`]) are the named
+/// residuals; both need an original run (#358).
 pub const FOG_VOLUME_RECORD_NEVER_BLOCKS: &str = "f18-world.fog-volume-record-never-blocks";
 
 /// The original's world floor, ceiling and lateral rules.
@@ -5633,6 +5721,7 @@ pub struct WorldImportReport {
     partition_records: usize,
     partition_records_with_mesh: usize,
     partition_records_fog_volume: usize,
+    partition_records_stores_no_geometry: usize,
     empty_cells: usize,
     objects: usize,
     objects_with_mesh: usize,
@@ -5642,6 +5731,7 @@ pub struct WorldImportReport {
     objects_unindexed_none: usize,
     objects_unindexed_fog: usize,
     objects_unindexed_unresolved: usize,
+    objects_unresolved_collision: usize,
     sectors: usize,
     sectors_without_extent: usize,
     mesh_binding_records_elsewhere: usize,
@@ -5703,15 +5793,42 @@ impl WorldImportReport {
     /// resolved every grid-named record to `Solid`. Task #727 then measured
     /// what the image does with the grid itself — a broad-phase *candidate*
     /// index, never a solidity statement
-    /// (`docs/findings/2026-10-07-f18-grid-collision-origin.md`) — so these
-    /// records are counted here **and** resolve role-unknown under
-    /// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] instead of `Solid`, while
-    /// every other grid-named record keeps the index rule. Measured over the
-    /// original installation: four in `c1c`, two in `c5`, none anywhere else,
-    /// so `partition_records == objects_solid + partition_records_fog_volume`.
+    /// (`docs/findings/2026-10-07-f18-grid-collision-origin.md`) — and task
+    /// #771 measured the candidate's own filter: with the record's
+    /// [`INTERSECTION_NARROW_PHASE_FLAG`] clear the walk drops it before any
+    /// box test, so these records now resolve role `None` under
+    /// [`FOG_VOLUME_RECORD_NEVER_BLOCKS`] the way their unindexed siblings
+    /// already did, and [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] stays only
+    /// for a grid-named `fvol*` record that stores that bit. **This counter is
+    /// the overlap, not an open question**: it says how many grid-named records
+    /// the original's fog consumer keys — four in `c1c`, two in `c5`, none
+    /// anywhere else — and a verdict that wants to know what is still
+    /// unanswered must read [`Self::objects_unresolved_collision`] instead.
     #[must_use]
     pub const fn partition_records_fog_volume(&self) -> usize {
         self.partition_records_fog_volume
+    }
+
+    /// How many of the grid's records store **no geometry at all**: no mesh
+    /// index and no non-empty stored box ([`GRID_RECORD_STORES_NO_GEOMETRY`]).
+    ///
+    /// This is the answered half of the grid's mesh-less records: the store
+    /// gives them nothing a collider or a drawing could come from, so they
+    /// resolve `None` and are never a skip. What a verdict asks about a
+    /// grid record that stores **no mesh** is therefore
+    ///
+    /// ```text
+    /// partition_records() - partition_records_with_mesh()
+    ///                     - partition_records_stores_no_geometry()
+    /// ```
+    ///
+    /// — grid records that bind no mesh **and** do store a box, which this
+    /// claim does not speak for. Measured over the original installation:
+    /// thirteen in `c1`, eight in `c1b`, one in `c1c`, twenty-three in `c2`,
+    /// one in `c2b`, eighteen in `c3`, four in `c4` and eighty in `c5`.
+    #[must_use]
+    pub const fn partition_records_stores_no_geometry(&self) -> usize {
+        self.partition_records_stores_no_geometry
     }
 
     /// How many cells name no record.
@@ -5747,17 +5864,35 @@ impl WorldImportReport {
     /// How many carry a resolved `Solid` collision role.
     ///
     /// Equal to [`Self::partition_records`] minus
-    /// [`Self::partition_records_fog_volume`]: the role follows the spatial
-    /// index (see [`INDEXED_RECORD_IS_STATIC`]) except for the grid-named fog
-    /// volumes, which the original's own consumer takes as fog and this
-    /// conversion therefore leaves role-unknown
-    /// ([`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`]). Subtracting the one from
-    /// the other is what lets a consumer tell a world's static geometry from
-    /// its unindexed content **and** see the measured overlap between the index
-    /// and the fog volumes with three numbers instead of one.
+    /// [`Self::partition_records_fog_volume`] minus
+    /// [`Self::partition_records_stores_no_geometry`]: the role follows the
+    /// spatial index (see [`INDEXED_RECORD_IS_STATIC`]) except for the
+    /// grid-named fog volumes, which the original's own consumer takes as fog
+    /// ([`FOG_VOLUME_RECORD_NEVER_BLOCKS`], settled by tasks #716/#727/#771),
+    /// and the grid records that store no geometry at all
+    /// ([`GRID_RECORD_STORES_NO_GEOMETRY`]). Subtracting the two measured
+    /// sets from the index is what lets a consumer tell a world's static
+    /// geometry from its fog volumes and its empty records with three numbers
+    /// instead of one.
     #[must_use]
     pub const fn objects_solid(&self) -> usize {
         self.objects_solid
+    }
+
+    /// How many imported objects still carry `Unknown` for their **collision
+    /// role** — the count a launch verdict reads to learn what is unanswered.
+    ///
+    /// Every record the partition grid names resolves a role (the index, the
+    /// fog consumer or the store's own silence), so since task #771 this is
+    /// exactly the unindexed records whose container says nothing —
+    /// [`Self::objects_unindexed_unresolved`] — and a report where it is zero
+    /// has no record whose collision behavior this conversion had to leave
+    /// open. A record can still carry an explicit unknown for its **shape**
+    /// (fog volumes and empty records do, on purpose); that is a statement
+    /// about which geometry, not about whether it blocks.
+    #[must_use]
+    pub const fn objects_unresolved_collision(&self) -> usize {
+        self.objects_unresolved_collision
     }
 
     /// How many unindexed records resolved to `None` — the anchors, groups and
@@ -5981,6 +6116,29 @@ fn stored_extent(record: &RawNode) -> Result<Option<StoredVolume>, WorldImportEr
     })
 }
 
+/// Whether a record stores **no geometry at all**: the store's own `-1` mesh
+/// index and, in each of the record's three stored boxes, a zero extent on
+/// every axis.
+///
+/// This is the store state task #771 resolved for grid-named records
+/// ([`GRID_RECORD_STORES_NO_GEOMETRY`]): with no mesh and no non-empty box
+/// there is nothing a collider or a drawing could come from. A box this
+/// function cannot even parse (non-finite or inverted) is **not** "empty" —
+/// the record keeps its container's silence rather than being told it stores
+/// nothing.
+fn stores_no_stored_geometry(record: &RawNode) -> bool {
+    if record.mesh_index() >= 0 {
+        return false;
+    }
+    [record.info.unk116, record.info.unk140, record.info.unk164]
+        .iter()
+        .all(|stored| {
+            let min = stored[0].map(f64::from);
+            let max = stored[1].map(f64::from);
+            matches!(StoredVolume::new(min, max), Ok(volume) if volume.is_empty())
+        })
+}
+
 /// Converts a stored box into canonical metres through `adapter`.
 fn canonical_bounds(
     volume: &StoredVolume,
@@ -6061,11 +6219,17 @@ fn canonical_transform(
 ///
 /// An object the grid names becomes the world's static geometry
 /// ([`INDEXED_RECORD_IS_STATIC`]) — a **designed** rule over a measured fact,
-/// not a measurement of how the 2000 engine collided — with one measured
-/// exception: a grid-named record whose name the original's fog-volume
-/// consumer keys resolves role-unknown instead
-/// ([`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`], reported by
-/// [`WorldImportReport::partition_records_fog_volume`]). An unindexed object
+/// not a measurement of how the 2000 engine collided — with two measured
+/// exceptions, both about what the container itself states: a grid-named
+/// record whose name the original's fog-volume consumer keys, and which the
+/// image's intersection walk drops before any box test, resolves role `None`
+/// ([`FOG_VOLUME_RECORD_NEVER_BLOCKS`], the overlap reported by
+/// [`WorldImportReport::partition_records_fog_volume`]); and a grid-named
+/// record that stores no mesh and no non-empty box resolves `None` because the
+/// store states no geometry for it ([`GRID_RECORD_STORES_NO_GEOMETRY`],
+/// [`WorldImportReport::partition_records_stores_no_geometry`]). A grid-named
+/// `fvol*` record that stores the narrow-phase bit still resolves role-unknown
+/// ([`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`]). An unindexed object
 /// that binds no mesh and stores no extent is the store saying this record has
 /// no geometry, so its role resolves to `None`
 /// ([`UNINDEXED_RECORD_STORES_NO_GEOMETRY`]) — measured to be exactly the
@@ -6073,7 +6237,8 @@ fn canonical_transform(
 /// name carries the `fvol` prefix resolves to `None` under
 /// [`FOG_VOLUME_RECORD_NEVER_BLOCKS`], because the image's only name-keyed
 /// consumer of that prefix is its fog system. Its id is its node slot
-/// ([`OBJECT_ID_IS_THE_NODE_SLOT`]).
+/// ([`OBJECT_ID_IS_THE_NODE_SLOT`]). Every object whose role this function
+/// leaves open is counted by [`WorldImportReport::objects_unresolved_collision`].
 ///
 /// **The axis convention is bound, not assumed.** The report states the axis
 /// map this conversion applied, whether it preserves orientation, the source
@@ -6183,6 +6348,8 @@ pub fn import_world_container(
     let mut matrix_disagreements = 0usize;
     let mut partition_records_with_mesh = 0usize;
     let mut partition_records_fog_volume = 0usize;
+    let mut partition_records_stores_no_geometry = 0usize;
+    let mut objects_unresolved_collision = 0usize;
     for record in records
         .nodes
         .iter()
@@ -6222,29 +6389,79 @@ pub fn import_world_container(
             Resolved::Known(Known::new(slot.id().clone(), provenance.clone()))
         };
         let (collision, shape) = if indexed_record && is_fog_volume(&record.name) {
-            // Measured (task #716) and settled (task #727): the image's only
-            // name-keyed consumer of the `fvol` prefix is its fog system, and
-            // the grid this record is named by is read by the image as a
+            // Measured (task #716), the candidate index settled (task #727),
+            // and the candidate's own filter settled (task #771): the image's
+            // only name-keyed consumer of the `fvol` prefix is its fog system,
+            // and the grid this record is named by is read by the image as a
             // broad-phase **candidate** index — `cls_di.c`'s builder walks
             // `0x4cb579` and filters each candidate by node flags, a zone
             // whitelist and an optional name before any box is tested — never
-            // as a solidity statement. The container states no collision field
-            // either way, so the role is an explicit unknown under #727's
-            // claim rather than the index's `Solid`.
+            // as a solidity statement. The filter is decisive for these
+            // records: at `0x4cb635` the walk reads the record's own flags
+            // word and takes the narrow phase (the only branch that copies a
+            // box through `[node+0x70]`) only when bit `0x40` is set, and
+            // otherwise recurses into children — so a grid-named `fvol*`
+            // record without that bit is **dropped before any box test**. The
+            // installation's six all store it clear (`0x0308831c`, no
+            // children), so their role resolves the same way an unindexed fog
+            // volume's does. A record that *did* store the bit would still be
+            // a live candidate, and keeps #727's explicit unknown.
             partition_records_fog_volume += 1;
+            if record.flags() & INTERSECTION_NARROW_PHASE_FLAG == 0 {
+                let reason = format!(
+                    "node slot {} is named by the world record's partition grid and its name is \
+                     one the original's fog-volume consumer takes as fog: the grid is a \
+                     broad-phase candidate index, and the image's intersection walk reads this \
+                     record's flags word at 0x4cb635 and, with its narrow-phase bit 0x{:08x} \
+                     clear, drops it before any box test (0x4cb63c-0x4cb642), so nothing \
+                     measured reports a contact for it",
+                    record.index, INTERSECTION_NARROW_PHASE_FLAG,
+                );
+                (
+                    Resolved::Known(Known::new(WorldCollisionRole::None, provenance.clone())),
+                    Resolved::Unknown {
+                        claim_id: claim(FOG_VOLUME_RECORD_NEVER_BLOCKS),
+                        reason,
+                    },
+                )
+            } else {
+                let reason = format!(
+                    "node slot {} is named by the world record's partition grid, but its name is \
+                     one the original's fog-volume consumer takes as fog, and the container \
+                     states no collision role for it",
+                    record.index
+                );
+                (
+                    Resolved::Unknown {
+                        claim_id: claim(GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED),
+                        reason: reason.clone(),
+                    },
+                    Resolved::Unknown {
+                        claim_id: claim(GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED),
+                        reason,
+                    },
+                )
+            }
+        } else if indexed_record && stores_no_stored_geometry(record) {
+            // Measured (task #771): this record binds no mesh (`mesh_index` is
+            // the store's own `-1` = "no mesh") **and** every one of its three
+            // stored boxes is empty, so the container states no geometry a
+            // collider or a drawing could come from — the same store state
+            // task #677 resolved for unindexed records, here on a record the
+            // grid names. The index can only make it a *candidate* (#727), and
+            // a candidate that stores nothing has nothing to test: it is
+            // presented and never blocks, with its absent mesh kept as an
+            // explicit unknown so "the store states no mesh" stays readable.
+            partition_records_stores_no_geometry += 1;
             let reason = format!(
-                "node slot {} is named by the world record's partition grid, but its name is one \
-                 the original's fog-volume consumer takes as fog, and the container states no \
-                 collision role for it",
+                "node slot {} is named by the world record's partition grid and stores no mesh \
+                 index and no non-empty stored box, so the container states no geometry for it",
                 record.index
             );
             (
+                Resolved::Known(Known::new(WorldCollisionRole::None, provenance.clone())),
                 Resolved::Unknown {
-                    claim_id: claim(GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED),
-                    reason: reason.clone(),
-                },
-                Resolved::Unknown {
-                    claim_id: claim(GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED),
+                    claim_id: claim(GRID_RECORD_STORES_NO_GEOMETRY),
                     reason,
                 },
             )
@@ -6310,6 +6527,12 @@ pub fn import_world_container(
                 },
             )
         };
+        // What is still open, counted once per object: a role this container
+        // states nothing about is the whole of the import's unanswered
+        // collision behavior (task #771).
+        if matches!(&collision, Resolved::Unknown { .. }) {
+            objects_unresolved_collision += 1;
+        }
         let surface = Resolved::Unknown {
             claim_id: claim(WORLD_SURFACE_UNMEASURED),
             reason: format!(
@@ -6361,6 +6584,7 @@ pub fn import_world_container(
         partition_records: indexed.len(),
         partition_records_with_mesh,
         partition_records_fog_volume,
+        partition_records_stores_no_geometry,
         empty_cells: grid.empty_cells().len(),
         objects: definition.objects().len(),
         objects_with_mesh,
@@ -6370,6 +6594,7 @@ pub fn import_world_container(
         objects_unindexed_none,
         objects_unindexed_fog,
         objects_unindexed_unresolved,
+        objects_unresolved_collision,
         sectors: definition.sectors().len(),
         sectors_without_extent,
         mesh_binding_records_elsewhere,

@@ -1,50 +1,57 @@
-//! Evidence-report harness for task `F18-GRID-COLLISION-ORIGIN`:
+//! Evidence-report harness for task `M01-LC-WORLD-RESIDUAL-ROLES`:
 //! `docs/contracts/CLI-EVIDENCE.md`, schema `schemas/evidence.schema.json`.
-//! Not named `accept_f18_grid_collision_origin_*`: it is not part of the
+//! Not named `accept_m01_lc_world_residual_roles_*`: it is not part of the
 //! acceptance suite and fails loudly when its inputs are missing.
 //!
-//! 1. `cargo test --workspace --locked -- accept_f18_grid_collision_origin_
+//! 1. `cargo test --workspace --locked -- accept_m01_lc_world_residual_roles_
 //!    --include-ignored 2>&1 | tee
-//!    private/evidence/F18-GRID-COLLISION-ORIGIN/cargo-test.log` (note the exit
-//!    status)
+//!    private/evidence/M01-LC-WORLD-RESIDUAL-ROLES/cargo-test.log` (note the
+//!    exit status)
 //! 2. ```sh
-//!    CS_EVIDENCE_DIR=private/evidence/F18-GRID-COLLISION-ORIGIN \
+//!    CS_EVIDENCE_DIR=private/evidence/M01-LC-WORLD-RESIDUAL-ROLES \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f18_grid_collision_origin_ --include-ignored" \
+//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_m01_lc_world_residual_roles_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
-//!      cargo test --locked -p cs_app --test evidence_report_f18_grid_collision_origin -- --ignored
+//!      cargo test --locked -p cs_app --test evidence_report_m01_lc_world_residual_roles -- --ignored
 //!    ```
 //! 3. `python3 tools/validate_evidence.py
-//!    private/evidence/F18-GRID-COLLISION-ORIGIN/acceptance.json
-//!    --artifact-root private/evidence/F18-GRID-COLLISION-ORIGIN --require-pass`
-//! 4. Commit a copy as `docs/findings/evidence/F18-GRID-COLLISION-ORIGIN.json`.
+//!    private/evidence/M01-LC-WORLD-RESIDUAL-ROLES/acceptance.json
+//!    --artifact-root private/evidence/M01-LC-WORLD-RESIDUAL-ROLES --require-pass`
+//! 4. Commit a copy as `docs/findings/evidence/M01-LC-WORLD-RESIDUAL-ROLES.json`.
 //!
 //! Every field is derived from the recorded log, the environment, production
 //! discovery of `$CS_GAME_DIR` and `Cargo.lock`. The second artifact is a
 //! **second production observation**: the harness re-runs the world-container
-//! import over all eight containers and records the grid census — how many
-//! records each partition grid names, how many of them the original's fog
-//! consumer takes by name, how many resolve `Solid`, and the node slots of the
-//! grid-named fog volumes — as JSON. That is a real production run over the
-//! owner's installation, not a paraphrase of the acceptance assertions, and it
-//! carries no original bytes: ids, digests, counts and claim labels only.
+//! import over all eight containers and records, per group, how many records
+//! each partition grid names, how many of them the original's fog consumer
+//! takes by name, how many store no geometry at all, how many resolve `Solid`
+//! and how many roles are still open — then runs the production spawn over
+//! `c1c`'s own uploaded geometry and records its skip report. That is a real
+//! production run over the owner's installation, not a paraphrase of the
+//! acceptance assertions, and it carries no original bytes: ids, digests,
+//! counts and claim labels only.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cs_app::world::{RetailWorldContainer, read_world_containers};
+use cs_app::world::{
+    MESH_SETTLE_UPDATES, RetailWorldContainer, read_world_containers, spawn_world, world_app,
+};
 use cs_assets::install::{content_fingerprint, discover, fingerprint};
 use cs_content::coordinates::{CalibratedQuantity, CoordinateSource, SourceAdapter};
 use cs_content::textures::WorldTextureLoad;
-use cs_content::world::{FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED};
+use cs_content::world::{
+    FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
+    GRID_RECORD_STORES_NO_GEOMETRY, INTERSECTION_QUERY_GAMEPLAY_CONSUMER_UNMEASURED,
+};
 use cs_types::content::{Origin, Resolved};
 
 /// Every acceptance test the report must see pass: this task's own prefix, so
 /// the selection cannot credit a sibling task's assertions to this report.
-const ACCEPTANCE_PREFIX: &str = "accept_f18_grid_collision_origin_";
+const ACCEPTANCE_PREFIX: &str = "accept_m01_lc_world_residual_roles_";
 
 /// How this run was reviewed, with every measured number **derived** from the
 /// census this same run produced.
@@ -52,44 +59,75 @@ const ACCEPTANCE_PREFIX: &str = "accept_f18_grid_collision_origin_";
 /// The prose is a template: the counts are interpolated from the production
 /// imports rather than written down, so a report regenerated on another
 /// installation cannot describe this one's numbers.
-fn review_method(fog: usize, tests: usize) -> String {
+fn review_method(fog: usize, empty: usize, open: usize, c1c_skips: usize, tests: usize) -> String {
     format!(
         "Acceptance suite run locally with the retail capability; this harness derives every field \
          from the recorded log, production discovery of $CS_GAME_DIR, and a second production run \
-         of the world-container import path over the installation \
-         (grid-collision-origin-census.json). Claim is implemented only. MEASURED: (a) what fed \
-         world collision in the 2000 engine, read out of the owner-supplied decrypted image \
-         (sha256 43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75, image base \
-         0x400000): the loader reads the whole partition grid into memory — 88-byte cells, the u16 \
-         value count at cell offset 0x3a, 12-byte values (0x4e3081–0x4e3141) — and rewrites each \
-         value's stored node slot through fcn.004e18f0, which returns base + 212*column, the \
-         212-byte node slot; cls_di.c's intersection-database builder walks those very cells \
-         (0x4cb579–0x4cb5c2) and filters each candidate by node flags, a zone whitelist (0x56c430) \
-         and an optional name before its own 24-byte box is copied through [node+0x70] \
-         (0x4cd960). So grid membership is broad-phase candidate membership, never a solidity \
-         statement, and the Intersect dispatcher refuses the world record itself (0x4c9daf). (b) \
-         the six grid-named fog volumes this installation stores — {fog} across the eight \
-         containers — resolve an explicit unknown under \
-         f18-world.grid-named-fog-volume-role-unmeasured instead of the index's Solid, and every \
-         other grid-named record still resolves Solid, which the census records per group. LIMITS \
-         OF WHAT WAS MEASURED, each recorded in \
-         docs/findings/2026-10-07-f18-grid-collision-origin.md: (1) the image evidence is static \
-         analysis of one executable — observed_tool, never verified_original, and no original run \
-         happened (#358), so nothing here is a behavior landmark; (2) what [node+0x70] points at, \
-         the meaning of the individual node flag bits beyond the names cls_util.c's error strings \
-         give them, and which gameplay query consumes fcn.004cb420 are unmeasured and recorded as \
-         unknown rather than guessed; (3) whether the original collides with a fog volume at run \
-         time was not observed. `unknowns` is empty because every unresolved item above is a limit \
-         on the claim rather than an unresolved measurement: every container imported and every \
-         grid-named record carries the claim its own bytes imply. The {tests} assertions discovered \
-         under this task's own prefix are the tests of this report. Validated with \
-         tools/validate_evidence.py --require-pass.",
+         of the world-container import path over the installation plus the spawn over c1c's own \
+         geometry (world-residual-roles-census.json). Claim is implemented only. MEASURED: (a) what \
+         the narrow phase behind [node+0x70] points at, read out of the owner-supplied decrypted \
+         image (sha256 43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75, image base \
+         0x400000): cls_zbd.c's node pass loops over every node (0x4e2a54-0x4e2b06) and rewrites \
+         the stored word at +0x70 into a pointer to that record's own stored box — 0 -> +0x74, \
+         1 -> +0x8c, 2 -> +0xa4 (0x4e2a7c-0x4e2aa6), with the inverse mapping at \
+         0x4e19e6-0x4e1a1a — so the narrow phase (0x4cd960) copies one of the record's three \
+         stored boxes, which closes #727's open question. (b) what cls_di.c's intersection walk \
+         does with a grid-named fog volume: it reads the record's flags word at 0x4cb635 and \
+         reaches the box copy only with bit 0x40 set, otherwise it recurses into children or drops \
+         the candidate (0x4cb63c-0x4cb642); the {fog} grid-named `fvol*` records this installation \
+         stores all keep that bit clear with no children, so they resolve WorldCollisionRole::None \
+         under f18-world.fog-volume-record-never-blocks like their unindexed siblings. (c) the grid \
+         records that store no geometry at all — no mesh index and an empty box in each of their \
+         three slots: {empty} across the eight containers, one in c1c — resolve None under \
+         f18-world.grid-record-stores-no-geometry, and {open} collision roles are still open in \
+         every container (c1c's spawn reports {c1c_skips} skips). LIMITS OF WHAT WAS MEASURED, \
+         each recorded in docs/findings/2026-10-08-m01-lc-world-residual-roles.md: (1) everything \
+         here is code-derived static analysis plus byte censuses — observed_tool, never \
+         verified_original, and no original run happened (#358); (2) which gameplay query consumes \
+         the walk is unmeasured and named f18-world.intersection-query-gameplay-consumer-unmeasured \
+         because only an original run can lift it; (3) whether a script sets the proximity bit on a \
+         fog volume at run time, and what the original renderer drew for a mesh-less node, were not \
+         observed. The three residuals are listed in `unknowns`, each naming its \
+         affected content and the task that can lift it (#358), so the report does not \
+         describe an open measurement as a closed one. The {tests} \
+         assertions discovered under this task's own prefix are the tests of this report. Validated \
+         with tools/validate_evidence.py --require-pass.",
     )
+}
+
+/// What this measurement did **not** establish, each with the content it
+/// affects and the task that can lift it. Recorded rather than dropped: a
+/// limit on the claim is still an open question for whoever reads the report.
+fn unknowns() -> Vec<String> {
+    vec![
+        "f18-world.intersection-query-gameplay-consumer-unmeasured: which gameplay query \
+         consumes cls_di.c's intersection walk was not established. The chain is unique in the \
+         image (game code 0x4ab284 -> fcn.005ac150 -> fcn.004cb420) and its caller sits in a \
+         routine over Target/TargetVehicle/TargetTurret-typed objects that compares the returned \
+         distance against a threshold, but that names a neighbourhood, not a query. Affected \
+         content: every claim about what the original used the walk for (target acquisition, \
+         proximity, line of sight or something else); no conversion decision depends on it. \
+         Resolving task: #358 (an owner-supplied original run)."
+            .to_owned(),
+        "Whether a script sets the proximity/intersection flag on a fog volume at run time is \
+         unmeasured: the INTERP commands SetIntersectSurface/SetIntersectBBOX/SetAltitudeSurface \
+         exist (0x5bbccc, 0x5bbc90), and this task measured only the stored flag word. Affected \
+         content: collision over the six grid-named fog volumes (c1c node slots 944-947, c5 node \
+         slots 2304 and 2306) in a run where such a script executes; the conversion answers from \
+         the store's own bytes. Resolving task: #358."
+            .to_owned(),
+        "What the 2000 renderer drew for a mesh-less node was not observed: this task answers what \
+         the container states (no mesh index, all three stored boxes empty, no children), which is \
+         all the conversion is allowed to say. Affected content: the presentation of the 148 grid \
+         records that store no geometry (c1 13, c1b 8, c1c 1, c2 23, c2b 1, c3 18, c4 4, c5 80). \
+         Resolving task: #358."
+            .to_owned(),
+    ]
 }
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
-fn evidence_report_f18_grid_collision_origin_writes_the_acceptance_report() {
+fn evidence_report_m01_lc_world_residual_roles_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
     let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
@@ -127,13 +165,17 @@ fn evidence_report_f18_grid_collision_origin_writes_the_acceptance_report() {
     let install_sha256 = fingerprint(&found.manifest).to_hex();
     let content_sha256 = content_fingerprint(&found.manifest).to_hex();
 
-    // The second production observation: the split census over every world
-    // container, plus the measured source's own calibration record.
-    let census_path = evidence_dir.join("grid-collision-origin-census.json");
-    let (fog, imported) = render_census(&game_dir, &install_sha256, &candidate_tree, &census_path);
+    // The second production observation: the residual-roles census over every
+    // world container, then the spawn over c1c's own geometry.
+    let census_path = evidence_dir.join("world-residual-roles-census.json");
+    let census = render_census(&game_dir, &install_sha256, &candidate_tree, &census_path);
     assert!(
-        imported > 0 && fog > 0,
-        "the report must not be written over an empty census: {imported} containers, {fog}          grid-named fog volumes"
+        census.containers > 0 && census.fog > 0 && census.empty > 0,
+        "the report must not be written over an empty census: {} containers, {} grid-named fog \
+         volumes, {} empty grid records",
+        census.containers,
+        census.fog,
+        census.empty
     );
 
     let artifacts = vec![
@@ -146,7 +188,7 @@ fn evidence_report_f18_grid_collision_origin_writes_the_acceptance_report() {
         avian: locked_version("avian3d"),
     };
     let report = format!(
-        "{{\n \"schema_version\": 1,\n \"task_id\": \"F18-GRID-COLLISION-ORIGIN\",\n \"candidate_tree\": {},\n \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \"capabilities\": [\"retail\", \"synthetic\"],\n \"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": [],\n \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
+        "{{\n \"schema_version\": 1,\n \"task_id\": \"M01-LC-WORLD-RESIDUAL-ROLES\",\n \"candidate_tree\": {},\n \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \"capabilities\": [\"retail\", \"synthetic\"],\n \"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": [{}],\n \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
         jstr(&candidate_tree),
         engine_json(&engine),
         jstr(&iso_utc_now()),
@@ -162,8 +204,19 @@ fn evidence_report_f18_grid_collision_origin_writes_the_acceptance_report() {
         suite.ignored,
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
+        unknowns()
+            .iter()
+            .map(|item| jstr(item))
+            .collect::<Vec<_>>()
+            .join(", "),
         jstr(&reviewer),
-        jstr(&review_method(fog, suite.discovered as usize)),
+        jstr(&review_method(
+            census.fog,
+            census.empty,
+            census.open,
+            census.c1c_skips,
+            suite.discovered as usize,
+        )),
     );
     let out = evidence_dir.join("acceptance.json");
     fs::write(&out, &report).expect("write acceptance.json");
@@ -175,23 +228,40 @@ fn evidence_report_f18_grid_collision_origin_writes_the_acceptance_report() {
     println!("wrote {}", out.display());
 }
 
+/// The numbers the census carries: read, never written down.
+struct Census {
+    /// World containers imported through the production path.
+    containers: usize,
+    /// Grid-named records the original's fog consumer keys, over all groups.
+    fog: usize,
+    /// Grid records that store no geometry at all, over all groups.
+    empty: usize,
+    /// Collision roles still open, over all groups.
+    open: usize,
+    /// The spawn's skip count over c1c's own geometry.
+    c1c_skips: usize,
+}
+
 /// The second production observation: import all eight world containers
-/// through the measured GameZ source and record what the import reports —
-/// counts, digests and claim labels, no original bytes.
-///
-/// Returns `(grid-named fog volumes, containers imported)` and writes the
-/// census JSON.
+/// through the measured GameZ source, then spawn c1c, and record what the
+/// import reports — counts, digests and claim labels, no original bytes.
 fn render_census(
     game_dir: &Path,
     install_sha256: &str,
     candidate_tree: &str,
     path: &Path,
-) -> (usize, usize) {
+) -> Census {
     let found =
         read_world_containers(game_dir).expect("production world-container discovery reads");
     let mut groups: Vec<String> = Vec::new();
-    let mut imported = 0usize;
-    let mut fog_total = 0usize;
+    let mut census = Census {
+        containers: 0,
+        fog: 0,
+        empty: 0,
+        open: 0,
+        c1c_skips: 0,
+    };
+    let mut c1c = None;
     for group in found.groups() {
         let container = found
             .container(&group, &WorldTextureLoad::project_default())
@@ -208,15 +278,14 @@ fn render_census(
                 panic!("{}: the container imports: {error}", container.group())
             });
         let report = imported_world.report();
-        imported += 1;
-        fog_total += report.partition_records_fog_volume();
+        census.containers += 1;
+        census.fog += report.partition_records_fog_volume();
+        census.empty += report.partition_records_stores_no_geometry();
+        census.open += report.objects_unresolved_collision();
 
-        // Which records the grid-named fog claim landed on: their identity (the
-        // container's own node slot) and the count, never the stored name. Both
-        // outcomes count — task #771 made the resolved ones carry the fog claim
-        // on their shape, and a record that still stores the narrow-phase bit
-        // would carry #727's claim instead — and both are grid-named.
-        let indexed: std::collections::BTreeSet<u32> = container
+        // The grid-named fog volumes this claim landed on: their identity (the
+        // container's own node slot), never the stored name.
+        let indexed: BTreeSet<u32> = container
             .partition_grid()
             .expect("the container's own grid reads")
             .indexed_slots()
@@ -228,10 +297,14 @@ fn render_census(
                 Resolved::Unknown { claim_id, .. } => claim_id.as_str(),
                 Resolved::Known(_) => continue,
             };
-            if claim != FOG_VOLUME_RECORD_NEVER_BLOCKS
-                && claim != GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED
-            {
-                continue;
+            if claim != FOG_VOLUME_RECORD_NEVER_BLOCKS {
+                // A grid-named `fvol*` record that stored the narrow-phase bit
+                // would keep #727's claim on both halves instead; this
+                // installation stores none, but the count below must hold for
+                // either answer rather than depend on which one it is.
+                if claim != GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED {
+                    continue;
+                }
             }
             let slot = object
                 .id()
@@ -246,40 +319,63 @@ fn render_census(
         assert_eq!(
             fog_slots.len(),
             report.partition_records_fog_volume(),
-            "{}: the report's fog counter is the definition's fog objects",
+            "{}: every grid-named fog volume resolved the fog claim (task #771)",
             container.group()
         );
 
         groups.push(format!(
             "{{\"group\": {}, \"container\": {}, \"container_sha256\": {}, \"objects\": {}, \
-             \"stored_child_list\": {}, \"partition_records\": {}, \
-             \"partition_records_fog_volume\": {}, \"fog_slots\": [{}], \"objects_solid\": {}, \
-             \"objects_unindexed_none\": {}, \"objects_unindexed_unresolved\": {}, \
-             \"objects_resident\": {}, \"sectors\": {}, \"sectors_without_extent\": {}, \
-             \"empty_cells\": {}, \"meters_per_unit\": {}, \"unit_class\": {}}}",
+             \"partition_cells\": {}, \"partition_records\": {}, \
+             \"partition_records_with_mesh\": {}, \"partition_records_fog_volume\": {}, \
+             \"fog_slots\": [{}], \"partition_records_stores_no_geometry\": {}, \
+             \"objects_solid\": {}, \"objects_unresolved_collision\": {}, \
+             \"objects_unindexed_unresolved\": {}, \"meters_per_unit\": {}, \"unit_class\": {}}}",
             jstr(container.group()),
             jstr(container.container_key()),
             jstr(container.container_sha256()),
             report.objects(),
-            report.stored_child_list(),
+            report.partition_cells(),
             report.partition_records(),
+            report.partition_records_with_mesh(),
             report.partition_records_fog_volume(),
             fog_slots
                 .iter()
                 .map(u32::to_string)
                 .collect::<Vec<_>>()
                 .join(", "),
+            report.partition_records_stores_no_geometry(),
             report.objects_solid(),
-            report.objects_unindexed_none(),
+            report.objects_unresolved_collision(),
             report.objects_unindexed_unresolved(),
-            report.objects_resident(),
-            report.sectors(),
-            report.sectors_without_extent(),
-            report.empty_cells(),
             report.meters_per_unit(),
             jstr(report.unit_class().label()),
         ));
+        if group == "C1C" {
+            c1c = Some((container, imported_world));
+        }
     }
+
+    // The spawn over c1c's own geometry: the report the launch verdict reads.
+    let (container, imported_world) = c1c.expect("the installation holds c1c");
+    let world = imported_world.definition();
+    let meshes = container
+        .uploaded_meshes(world)
+        .expect("c1c's own meshes upload");
+    let mut app = world_app();
+    let spawned = spawn_world(&mut app, world, &meshes).expect("c1c's imported world spawns");
+    for _ in 0..MESH_SETTLE_UPDATES {
+        app.update();
+    }
+    census.c1c_skips = spawned.skipped().len();
+    let spawn = format!(
+        "{{\"objects\": {}, \"colliders\": {}, \"skipped\": {}, \"non_colliding\": {}, \
+         \"presentation_gaps\": {}}}",
+        spawned.objects().len(),
+        spawned.colliders().len(),
+        spawned.skipped().len(),
+        spawned.non_colliding().len(),
+        spawned.presentation_gap_count(),
+    );
 
     // The measured source's own calibration record: the landmark census and
     // the gaps it honestly keeps.
@@ -326,14 +422,21 @@ fn render_census(
         path,
         format!(
             "{{\n \"install_sha256\": {},\n \"candidate_tree\": {},\n \"containers\": {},\n \
-             \"grid_named_fog_volumes\": {},\n \"claim\": {},\n \
+             \"grid_named_fog_volumes\": {},\n \"grid_records_stores_no_geometry\": {},\n \
+             \"objects_unresolved_collision\": {},\n \"c1c_spawn\": {},\n \
+             \"claims\": [{}, {}, {}],\n \
              \"measured_source\": {{\"label\": {}, \"claim_status\": {}, \"complete\": {}, \
-             \"quantities\": [{}], \"gaps\": [{}]}},\n \"groups\": [{}]\n}}\n",
+             \"quantities\": [{}], \"gaps\": [{}]}},\n \"groups\": [{}]}}\n",
             jstr(install_sha256),
             jstr(candidate_tree),
-            imported,
-            fog_total,
-            jstr(GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED),
+            census.containers,
+            census.fog,
+            census.empty,
+            census.open,
+            spawn,
+            jstr(FOG_VOLUME_RECORD_NEVER_BLOCKS),
+            jstr(GRID_RECORD_STORES_NO_GEOMETRY),
+            jstr(INTERSECTION_QUERY_GAMEPLAY_CONSUMER_UNMEASURED),
             jstr(source.label()),
             jstr(calibration.claim_status().label()),
             calibration.is_complete(),
@@ -342,8 +445,8 @@ fn render_census(
             groups.join(",\n  "),
         ),
     )
-    .expect("write grid-collision-origin-census.json");
-    (fog_total, imported)
+    .expect("write world-residual-roles-census.json");
+    census
 }
 
 /// The conversion the census imports through: the measured GameZ source over
@@ -358,13 +461,13 @@ fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
         panic!(
             "{name} is not set: this harness only runs through the sequence in its module doc \
-             (crates/cs_app/tests/evidence_report_f18_grid_collision_origin.rs)"
+             (crates/cs_app/tests/evidence_report_m01_lc_world_residual_roles.rs)"
         )
     })
 }
 
 /// Cargo runs a test binary with its working directory set to the *package*
-/// root, so a path like `private/evidence/M01-LC-WORLD-UNIT-ROLES` written
+/// root, so a path like `private/evidence/M01-LC-WORLD-RESIDUAL-ROLES` written
 /// relative to the workspace root in the module doc must be re-anchored here.
 fn workspace_path(as_described: &str) -> PathBuf {
     let path = PathBuf::from(as_described);
@@ -597,7 +700,7 @@ fn assertion_array(assertions: &[(String, &'static str)]) -> String {
         .map(|(name, status)| {
             format!(
                 "{{\"id\": {}, \"status\": {status:?}, \"evidence\": [\"cargo-test.log\", \
-                 \"grid-collision-origin-census.json\"]}}",
+                 \"world-residual-roles-census.json\"]}}",
                 jstr(name)
             )
         })
