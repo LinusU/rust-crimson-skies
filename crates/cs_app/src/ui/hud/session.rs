@@ -9,7 +9,7 @@
 //!
 //! * [`MissionPage::Cockpit`] is the F46-B [`HudFrame`] verbatim;
 //! * [`MissionPage::Map`] is the authored geography of the load's
-//!   [`WorldDefinition`]/`[`WorldInstance`] pair, the visible objectives of
+//!   [`WorldDefinition`]/[`WorldInstance`] pair, the visible objectives of
 //!   the mission's [`ObjectiveDisplay`] and the *revealed* contacts of the
 //!   [`TargetStore`] — an unrevealed actor or objective is never a mark, so
 //!   the fidelity mode cannot leak it;
@@ -550,11 +550,16 @@ impl HudSession {
         instruments: &Instruments,
     ) -> (Option<PlayerMark>, Vec<ContactMark>) {
         let (_, actor) = self.hud.bound().expect("project proved the binding");
-        let player = store.record(&actor).map(|record| PlayerMark {
-            position: record.position,
-            heading: instruments.attitude.heading,
-        });
-        let observer_faction = store.record(&actor).map(|record| record.faction.clone());
+        let (player, observer_faction) = match store.record(&actor) {
+            Some(record) => (
+                Some(PlayerMark {
+                    position: record.position,
+                    heading: instruments.attitude.heading,
+                }),
+                Some(record.faction.clone()),
+            ),
+            None => (None, None),
+        };
         let mut contacts = Vec::new();
         for other in store.registered() {
             if other == actor {
