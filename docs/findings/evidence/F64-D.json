@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "task_id": "F64-D",
-  "candidate_tree": "70ac1afe39fb27f800b9187cb622452fe7aa83ac",
+  "candidate_tree": "ba4b650f5b51370a6998fe3c599aa1ce07f37e61",
   "engine": {
     "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
     "bevy": "0.19.1",
     "avian": "0.7.0"
   },
-  "created_at": "2026-10-08T15:52:59Z",
+  "created_at": "2026-10-08T16:41:42Z",
   "command": {
     "argv": [
       "cargo",
@@ -87,18 +87,18 @@
   "artifacts": [
     {
       "path": "cargo-test.log",
-      "sha256": "97266e2459c66bbdf9a5b088bfb43fe0057183573d300c2acbbe1d7a93cf49ed",
+      "sha256": "71687f53becacb186c0ff351a69ea66793ab532bb7ca2655defafea036055bac",
       "kind": "log"
     },
     {
       "path": "switch-trace.json",
-      "sha256": "dec001a6354cd8c764c6713cec2fac9b4da1133ab327b49c144014422e8a08e1",
+      "sha256": "55925a9f402f1dfe529f3b57f61eea40b3f41ee89197d1961ecdc547d344a3ce",
       "kind": "json"
     }
   ],
   "unknowns": [],
   "review": {
-    "identity": "bunny-alpha-2 (implementer run; reviewer regenerates the report on the reviewed commit)",
+    "identity": "bunny-alpha-2 reviewer run, fresh session context, rebased commit 676fe307",
     "method": "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES includes retail); this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run of the F64-D boundary (switch-trace.json). Claim is implemented only. MEASURED: 229 inventoried files, 179 of them within the 4 MiB designed import cap and 50 refused at the proposal constructor; 1 recorded original-content references resolve to shipped members in this installation (1 resolved), and 0 shipped files match the runtime-created save/plane shapes (none ship, so no original byte layout has been read). The optional-save switch is declared once as the profile setting cs.profile.legacy_save_import with default on: one transaction through the production profile store took it from that default to a committed off that a reopened session reads back (persisted: true) while the same profile's campaign run kept working (run committed and read back: true). CONSUMER BEHAVIOUR (production code over this installation): with the switch off, 179 save-class offers were declined with enhancement_disabled naming the switch before any byte was judged; with it on, 179 fell through to no_measured_layout because this build has measured no byte layout for any class; 1 offer of the required custom-aircraft class with the switch off was answered by that same missing capability, so the switch never stands in front of a required class. Nothing was written: the probe destination is byte-for-byte unchanged and every offered source re-reads identically. FIDELITY LIMITS (unmeasured original behaviour, none claimed by this report): (1) no legacy save or custom-plane file ships and none has ever been read, so the byte layout, version field and id encoding of an original artifact remain UNKNOWN \u2014 affected content: every legacy import row (resolving task: a follow-up that captures an original-run file); (2) the original executable was never run, so nothing here says how the original game itself treats a custom aircraft or an old save \u2014 affected content: original runtime behaviour (resolving task: a capture-protocol follow-up); (3) the front-end dialog that draws these refusals and the persistence of a confirmed import are outside this stage's owner paths \u2014 affected content: the visible screen and the imported profile's storage (resolving tasks: #757 and #756). `unknowns` is empty because every measurement THIS report made resolved: the reference resolution, the setting transaction, the refusal census and the untouched destination all resolved against this installation and against production code. Each unresolved original value above is a limit on the claim rather than an unresolved row of this report; it is stated in this field so it survives in machine-readable evidence and is recorded in docs/findings/2026-10-08-f64-d-verify-custom-aircraft-and-optional-saves.md. A code/test pass alone awards at most checked, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."
   },
   "claim": "implemented"

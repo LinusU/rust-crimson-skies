@@ -114,10 +114,45 @@ Re-derivable from the artifact, all measured on this installation
   the explicit owner action and is still refused under
   `LayoutAdmission::MeasuredOnly`.
 
+## Reviewer regeneration (2026-10-08)
+
+Per `docs/contracts/CLI-EVIDENCE.md` the reviewer regenerates the report on
+the reviewed commit. The reviewer is `bunny-alpha-2` in a **fresh session
+context** (the implementer was the same agent name in an earlier, separate
+session — recorded here so the review's independence is auditable), on the
+branch rebased onto `a97dd67a` (head `676fe307`, tree `ba4b650f`):
+
+- Acceptance run of record, reviewer side:
+  `cargo test --workspace --locked -- accept_f64_d_ --include-ignored` → exit
+  0, **5 discovered / 5 executed / 5 passed** (3 synthetic, 2 retail), logged
+  to `private/evidence/F64-D/cargo-test.log`.
+- The harness was re-run against that log and installation; the regenerated
+  `private/evidence/F64-D/acceptance.json` passes
+  `tools/validate_evidence.py … --require-pass` (exit 0) and so does the
+  re-committed copy `docs/findings/evidence/F64-D.json`. Compared with the
+  implementer's report, **every measurement is unchanged** — 229 inventoried
+  files (179 in cap, 50 over), 1 of 1 reference resolving as a container
+  member, 179/179/1 refusal census, 0 destination writes, the persisted `off`
+  and the still-running campaign run; only `candidate_tree`, `created_at`,
+  the two artifact hashes and `review.identity` differ. `candidate_tree`
+  `ba4b650f` is the tree of `676fe307`, the commit whose code was tested; the
+  commits above it carry only this report copy and this note.
+- Independent mutation checks by the reviewer, both reverted (tree clean
+  afterwards, tests green again): (1) the early switch check in
+  `crates/cs_app/src/ui/import.rs` disabled →
+  `accept_f64_d_the_switch_is_consulted_before_the_missing_layout_capability`
+  fails (`left: "no_measured_layout"`, `right: "enhancement_disabled"`);
+  (2) `legacy_save_import_enabled` stubbed to return `true` → all three
+  synthetic `accept_f64_d_*` tests fail.
+- Review outcome: no code or test fix was needed; the change stayed inside
+  the owner paths and no protected path is touched.
+
 ## Follow-ups
 
 - Existing: **#756** (persist a `ConfirmedImport`), **#757** (draw the report
-  in the front-end dialog).
+  in the front-end dialog), **#460** (assemble the production settings
+  catalog at session start — until it runs, `legacy_save_import_rule()` is
+  declared but no runtime session declares it, exactly like the locale rule).
 - New: **#790** (`F64-E`) — the inventory's `referenced_by` is `&[&str]`
   with no field saying *where* a path resolves (installation root or
   container member), a distinction this stage had to measure by trial.
