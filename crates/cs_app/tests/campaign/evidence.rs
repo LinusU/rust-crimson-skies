@@ -5966,7 +5966,7 @@ const RETAIL_TESTS_M02_B: &[&str] = &[
     "accept_m02_b_m02s_control_program_is_bound_to_the_same_identities_as_its_mission_binding",
     "accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key",
     "accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_invented",
-    "accept_m02_b_the_lowering_gap_is_named_and_the_campaign_gate_stays_closed",
+    "accept_m02_b_fu1_the_kill_sites_lower_through_one_list_argument_and_m02_lowers",
 ];
 
 /// The synthetic predicate tests M02-B's report must also record: they run in
@@ -5976,6 +5976,7 @@ const SYNTHETIC_TESTS_M02_B: &[&str] = &[
     "accept_m02_b_the_control_rule_refuses_an_archive_without_or_with_two_control_members",
     "accept_m02_b_the_vocabulary_partition_is_exact_on_an_authored_record",
     "accept_m02_b_a_site_over_the_host_call_bound_refuses_and_one_at_the_bound_binds",
+    "accept_m02_b_fu1_a_long_index_list_binds_as_one_list_argument",
     "accept_m02_b_a_disagreeing_key_keeps_every_shape_and_a_text_follower_is_the_next_key",
 ];
 
@@ -6234,9 +6235,9 @@ fn evidence_report_m02_b_writes_the_acceptance_report() {
              and program identities equal to the M02-A binding, the control member chosen by the \
              measured rule over the archive's whole member set, the directive accounting of the \
              member it spells). NOT CLAIMED: no directive is implemented by a measured effect; \
-             M02's control record does not lower — its KILL_OBJECTIVE_WHEN_I_COMPLETE sites spell \
-             argument lists longer than the registry's per-signature bound, which the suite pins \
-             — so M02 stays Unsupported and the campaign gate stays closed; the five record-level \
+             M02's control record lowers completely (its KILL_OBJECTIVE_WHEN_I_COMPLETE index \
+             lists are carried as one list argument each, task M02-B-FU1), which is lowering \
+             evidence only, not an implemented effect; the five record-level \
              sound keys stay outside the measured vocabulary; no mission was played, no original \
              executable was run and nothing is verified_original. Claim is implemented only; \
              validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the \
