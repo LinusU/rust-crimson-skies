@@ -19,6 +19,7 @@ use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyCode, KeyboardInput, NativeKey};
 use bevy::prelude::{App, ChildOf, Children, Entity, GlobalTransform, Mesh3d, Transform, With};
 use cs_app::playtest::headless_app_with;
+use cs_app::playtest::propeller::PropellerSpin;
 use cs_app::playtest::retail::{self, RetailContent, RetailRequest};
 use cs_app::playtest::scene::PlaytestAircraft;
 use cs_app::playtest_retail::{
@@ -187,6 +188,13 @@ fn accept_playtest_full_aircraft_draws_every_intact_binding_measured_from_the_co
 
 /// **Every part follows the one flight body, without drift, through input, reset and
 /// teardown.**
+///
+/// The one part whose local transform production writes after spawn is the drawn
+/// propeller (`spin_propellers`, #710): it is turned about its measured hub, and
+/// its `PropellerSpin` carries both the placement it was spawned at and the turn
+/// drawn so far. The check therefore reads the expected local from that component
+/// — the only writer — and every other part must still hold its authored
+/// placement exactly.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_playtest_full_aircraft_parts_follow_the_single_flight_body() {
@@ -225,11 +233,29 @@ fn accept_playtest_full_aircraft_parts_follow_the_single_flight_body() {
             .get::<AircraftPart>(*part)
             .expect("marker")
             .node_slot;
-        let local = locals
+        let authored = locals
             .iter()
             .find(|(s, _)| *s == slot)
             .expect("a local for every part")
             .1;
+        // Exactly one part's local transform is written after spawn, on purpose:
+        // `spin_propellers` (#710) turns the drawn propeller about its measured
+        // hub. Its own `PropellerSpin` carries the placement it was spawned at,
+        // so the local this test expects is production's own composition of that
+        // placement and the turn drawn so far; every other part must still hold
+        // the authored placement byte for byte.
+        let spun = app.world().get::<PropellerSpin>(*part);
+        let local = match spun {
+            Some(spin) => {
+                assert_eq!(
+                    spin.base(),
+                    authored,
+                    "part {slot}'s spin carries the placement it was spawned at"
+                );
+                spin.transform()
+            }
+            None => authored,
+        };
         let got = app
             .world()
             .get::<GlobalTransform>(*part)
@@ -246,7 +272,8 @@ fn accept_playtest_full_aircraft_parts_follow_the_single_flight_body() {
         assert_eq!(
             *app.world().get::<Transform>(*part).expect("local"),
             local,
-            "nothing wrote part {slot}'s local transform"
+            "part {slot}'s local is exactly what this test composed: the authored \
+             placement, or the drawn propeller's own spin over it"
         );
         assert!(app.world().get::<Mesh3d>(*part).is_some());
     }
