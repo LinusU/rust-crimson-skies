@@ -39,6 +39,10 @@
 //!   records themselves stay undecoded, for the reason the module states.
 //! * [`detection_zones`] decodes the campaign mission's `dzones.zrd` member by a
 //!   grammar measured over all 23 retail members (task #513).
+//! * [`zeppelins`] decodes the mission-scoped `zeppelins.zrd` member into its
+//!   placed-zeppelin records by a grammar measured over all 50 retail members
+//!   (task #574). What those records mean to the original is unmeasured;
+//!   every key reports [`zeppelins::KeyMeaning::Unknown`].
 //! * [`wave`] reads the RIFF/WAVE header of one sound member into the
 //!   descriptor [`sound_archive`] reports (task #344).
 //! * [`adpcm`] reads the `fmt ` extension the two ADPCM tags carry and decodes
@@ -82,6 +86,7 @@ pub mod sound_archive;
 pub mod sound_sample;
 pub mod trailer;
 pub mod wave;
+pub mod zeppelins;
 
 pub use adpcm::{
     ADAPTATION_TABLE, AdpcmError, AdpcmExtension, AdpcmLayout, IMA_BLOCK_HEADER_BYTES,
