@@ -243,6 +243,19 @@ The four options in #727's description, answered against the measurements:
   original run happened (#358), so `retail` here is file access and nothing is
   `verified_original`.
 
+> **Settled by #771** (2026-10-08,
+> `docs/findings/2026-10-08-m01-lc-world-residual-roles.md`): `node+0x70`
+> **is** one of the record's own three stored boxes — `cls_zbd.c`'s node pass
+> rewrites the stored word at `0x4e2a7c`–`0x4e2aa6` (`0` → `node+0x74`,
+> `1` → `node+0x8c`, `2` → `node+0xa4`, with the inverse at `0x4e19e6`), so
+> the narrow phase copies the record's own stored box. The same pass measured
+> what the walk does with the six grid-named fog volumes: with the record's
+> proximity bit clear it drops them before any box test, so they resolve
+> `None` as fog volumes instead of an explicit unknown. The gameplay query the
+> walk serves stays open, now named
+> `f18-world.intersection-query-gameplay-consumer-unmeasured`, and needs an
+> original run (#358). No number in this file was edited.
+
 ## G. The binding
 
 `crates/cs_content/src/world.rs`:

@@ -183,6 +183,14 @@ they are all fog volumes now.
   reports a contact for one. **Affected content:** collision over the 59
   world-owned fog volumes in every world container, and therefore over M01's
   world. **Resolving task:** the follow-up below.
+  > **Settled further by #771** (2026-10-08,
+  > `docs/findings/2026-10-08-m01-lc-world-residual-roles.md`): for the six
+  > `fvol*` records the partition grid *also* names, the candidate's own filter
+  > is now measured — `cls_di.c`'s walk reads the record's flags word at
+  > `0x4cb635` and, with the proximity bit clear, drops it before any box test,
+  > so all six resolve `None` under `FOG_VOLUME_RECORD_NEVER_BLOCKS` instead of
+  > #727's explicit unknown. Whether a script sets that bit at run time, and
+  > which gameplay query the walk serves, stay open (#358).
 - **How the original engine built world collision at all was UNMEASURED** when
   this task landed, and the six grid-named `fvol*` records were where it showed:
   the fog measurement said "not a collider" and `INDEXED_RECORD_IS_STATIC` said
