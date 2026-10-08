@@ -481,13 +481,20 @@ fn read_member_and_index(root: &Path, install: ContentHash) -> (Vec<u8>, Vec<Str
 /// then names the review that actually happened.
 fn review_identity() -> String {
     let recorded = String::from(
-        "implementer: bunny-2 (opencode/mimo-v2.6-Flash, Rally #201, implement claim of \
-         2026-10-08T10:06:07Z); reviewer: recorded by the reviewer in the complete_review notes \
-         — this report was written by the implementer, so it is not independent evidence: \
-         AGENTS.md asks for a different agent instance or model with a fresh context for format, \
-         mission-semantics and fidelity claims, and no agent review of this evidence replaces the \
-         owner's human approval. `checked` is the ceiling for an agent review; `retail` here means \
-         read access to the owner's installation and never a run of the original executable",
+        "implementer: bunny-2/bunny-2 (opencode/mimo-v2.6-Flash, Rally #201 implement claim of \
+         2026-10-08T10:06:07Z, submitted at 090fe720); reviewer: bunny-2/bunny-2 (Rally #201 \
+         review claim of 2026-10-08T11:51:33Z): a separate session whose context was fresh and \
+         never saw the implementation, but the same agent name and the same model as the \
+         implementer, so per AGENTS.md this review is NOT independent evidence for format, \
+         mission-semantics and fidelity claims, and no agent review replaces the owner's human \
+         approval. The reviewer re-read the production discovery and the production audit, ran \
+         all four checks on the rebased branch, fixed two defects himself (the mangled Document \
+         refusal text and a missing contiguity assertion over the 25 retail page runs) and \
+         regenerated this report on the tree of the commit those fixes landed in; the only later \
+         deltas are this report's own copy under docs/findings/evidence/ and the finding's review \
+         section, neither of which the acceptance suite reads. `checked` is the ceiling for an \
+         agent review; `retail` here means read access to the owner's installation and never a \
+         run of the original executable",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
