@@ -100,6 +100,15 @@
 //! Rally #450, which pinned the title-row correspondence under the same
 //! `accept_m02_b_` selection), so a task selection runs both suites and both
 //! must pass.
+//!
+//! `m04_b.rs` is the M04-B stage: `accept_m04_b_*` tests that run the shared
+//! control-program machinery over M04's own reader archive — census,
+//! dispositions, block graph, sheet priorities and lowering — and pin the one
+//! measured gap (`ANIM_STATE`) that keeps M04's record from lowering. Its two
+//! synthetic members run in CI and its six retail members are
+//! `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
+//! `evidence_report_m04_b_*` writes that task's report and is selected by
+//! test name, so a task selection never picks it up as an acceptance test.
 
 mod closure;
 mod common;
@@ -123,6 +132,7 @@ mod m02_t3;
 mod m03_a;
 mod m03_b;
 mod m04_a;
+mod m04_b;
 mod m05_a;
 mod m06_a;
 mod m07_a;
