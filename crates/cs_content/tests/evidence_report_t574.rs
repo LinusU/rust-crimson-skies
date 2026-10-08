@@ -69,8 +69,10 @@ const RETAIL_TESTS: &[&str] = &[
 /// report then names the review that actually happened.
 fn review_identity() -> String {
     let recorded = String::from(
-        "implementer: Devin SWE-2/swe2-max-1 (Rally #574 implement claim); reviewer: recorded \
-         by the reviewing agent — no review had happened when this report was generated",
+        "implementer: Devin SWE-2/swe2-max-1 (Rally #574 implement claim); reviewer: Devin \
+         SWE-2/swe2-max-1 (Rally #574 review claim), a fresh session and context but the same \
+         agent identity — not independent; the measured corpus was independently recounted \
+         against the retail installation during review",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
