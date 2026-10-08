@@ -33,7 +33,12 @@
 //!
 //! Every field is derived from real inputs: the recorded test log, the
 //! environment, `rustc --version` and `Cargo.lock`, and the PNGs the GPU
-//! witness wrote on the real adapter. Nothing is typed in by hand.
+//! witness wrote on the real adapter. Nothing is typed in by hand. Two
+//! guards keep those inputs honest: the report is refused unless the checkout
+//! is clean (so `candidate_tree` really is the tree that ran, per
+//! `docs/contracts/CLI-EVIDENCE.md`), and the test counts must equal this
+//! task's own assertions (so a wider green run cannot stand in for the
+//! selection).
 //!
 //! The stage declares **`gpu` and `synthetic`** and no `retail`: F52-D's
 //! required capability is `gpu`, no acceptance test here reads `$CS_GAME_DIR`,
@@ -67,13 +72,15 @@ use cs_assets::install::sha256;
 ///
 /// `gpu` is carried by the capture test (it draws a real frame through
 /// `cs_app::accessibility::gpu_capture::capture_objective_page`); the other
-/// seven are synthetic and run on every push. All eight must appear in the
+/// nine are synthetic and run on every push. All ten must appear in the
 /// recorded log and pass, or the report is not written with that capability.
 const REQUIRED_TESTS: &[&str] = &[
     "accept_f52_d_a_real_gpu_capture_draws_the_objectives_page_at_the_ui_scale",
     "accept_f52_d_the_objectives_page_geometry_is_identical_under_every_colour_filter",
     "accept_f52_d_a_larger_ui_scale_draws_the_same_rows_bigger_and_never_drops_one",
     "accept_f52_d_only_the_part_of_a_row_inside_the_viewport_is_drawn",
+    "accept_f52_d_the_quads_sit_at_their_measured_horizontal_positions",
+    "accept_f52_d_a_viewport_that_does_not_fit_the_frame_scales_the_whole_page_down",
     "accept_f52_d_a_capture_with_nothing_to_draw_is_refused_without_writing_a_file",
     "accept_f52_d_enabling_a_gameplay_assist_is_named_in_the_comparison_and_replay_metadata",
     "accept_f52_d_an_inert_assist_and_a_refused_change_never_reach_the_record",
@@ -119,6 +126,17 @@ fn evidence_report_f52_d_writes_the_acceptance_report() {
          reports cannot be reused for new code"
     );
 
+    // The candidate tree is only the tree of the commit being tested if the
+    // checkout is clean: a report produced over uncommitted edits names a tree
+    // that does not contain the code that ran (`docs/contracts/CLI-EVIDENCE.md`:
+    // "the tree of the commit being tested: `git rev-parse HEAD^{tree}` on a
+    // clean checkout").
+    let status = git(&["status", "--porcelain"]);
+    assert!(
+        status.is_empty(),
+        "the report must be produced on a clean checkout; uncommitted changes:\n{status}"
+    );
+
     // The acceptance suite is the evidence: parse its recorded output.
     let log_path = evidence_dir.join("cargo-test.log");
     let log = fs::read_to_string(&log_path).unwrap_or_else(|error| {
@@ -158,6 +176,32 @@ fn evidence_report_f52_d_writes_the_acceptance_report() {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>()
+    );
+
+    // The counters describe *this* selection, not whatever green run the log
+    // happens to contain: a wider command (the whole workspace suite, say)
+    // would put its own passes in `tests.passed` while the assertions still
+    // listed the ten task tests, and `--require-pass` would not notice.
+    let passed = suite
+        .assertions
+        .iter()
+        .filter(|(_, status)| *status == "pass")
+        .count() as u64;
+    let failed = suite
+        .assertions
+        .iter()
+        .filter(|(_, status)| *status == "fail")
+        .count() as u64;
+    assert_eq!(
+        suite.passed, passed,
+        "every passing test in the log is one of this report's assertions: the log must be the \
+         task selection of `cargo test --workspace --locked -- accept_f52_d_ --include-ignored`, \
+         not a wider run"
+    );
+    assert_eq!(suite.failed, failed, "and so is every failing one");
+    assert_eq!(
+        suite.ignored, 0,
+        "`--include-ignored` runs every task test, so none of them is left ignored"
     );
 
     // `source` is null: this stage declares no `retail` capability and reads no
