@@ -148,24 +148,38 @@ fn integration_files(root: &Path) -> Vec<String> {
     found
 }
 
-/// The number of `deps` listings the report says it made, read back out of
-/// the `scan:` line it opens with.
-fn printed_listings(text: &str) -> usize {
+/// The bill the report prints for its own measurement — listings, entries
+/// visited, dep files read, binaries stat'ed — read back out of the `scan:`
+/// line it opens with.
+fn printed_scan(text: &str) -> (usize, usize, usize, usize) {
     let line = text
         .lines()
         .find(|line| line.contains("report-test-disk: scan:"))
         .expect("the report must state what its measurement cost");
-    for expected in ["entries", "dep files read", "binaries stat'ed", "ms"] {
-        assert!(
-            line.contains(expected),
-            "the scan line must state {expected:?}:\n{line}"
-        );
-    }
-    line.split("report-test-disk: scan: ")
-        .nth(1)
-        .and_then(|head| head.split(" listing").next())
-        .and_then(|count| count.parse::<usize>().ok())
-        .unwrap_or_else(|| panic!("the listing count is printed as a number:\n{line}"))
+    // `scan: <n> listing of <deps dir>: <n> entries, <n> dep files read,
+    // <n> binaries stat'ed, <n> ms` — every count sits directly before the
+    // first word that names it, so the directory path in the middle cannot
+    // shift them, and each one has to be there and be a number.
+    let words: Vec<&str> = line
+        .split_whitespace()
+        .map(|word| word.trim_end_matches(','))
+        .collect();
+    let count_before = |unit: &str| -> usize {
+        let position = words
+            .iter()
+            .position(|word| *word == unit)
+            .unwrap_or_else(|| panic!("the scan line must state {unit:?}:\n{line}"));
+        words
+            .get(position.wrapping_sub(1))
+            .and_then(|count| count.parse::<usize>().ok())
+            .unwrap_or_else(|| panic!("the count before {unit:?} is printed as a number:\n{line}"))
+    };
+    (
+        count_before("listing"),
+        count_before("entries"),
+        count_before("dep"),
+        count_before("binaries"),
+    )
 }
 
 /// The measured plan of this workspace, which is what the CI job links: every
@@ -736,7 +750,7 @@ fn accept_t696_the_report_command_prints_the_measured_footprint() {
     // says where its time went instead of going quiet, and so the listing is
     // seen to be one for the whole plan rather than one per target (766).
     assert_eq!(
-        printed_listings(&text),
+        printed_scan(&text).0,
         1,
         "the deps directory must be listed once for the whole plan, and the report must \
          say how many entries, dep files and stats that cost:\n{text}"
@@ -777,8 +791,8 @@ fn accept_t696_the_report_command_prints_the_measured_footprint() {
     );
     let text = String::from_utf8_lossy(&output.stdout);
     assert_eq!(
-        printed_listings(&text),
-        1,
+        printed_scan(&text),
+        (1, 0, 0, 0),
         "a deps directory that is not there still costs one listing, and the report says so \
          — 0 entries, 0 dep files, 0 stats — rather than claiming a pass it did not make:\n{text}"
     );
