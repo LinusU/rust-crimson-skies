@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "PLAYTEST-DECAL-ZFIGHT",
+ "candidate_tree": "023741f977c6aec3a5d6ed701aff4d52ab6c8501",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-08T22:02:42Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_playtest_decal_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "gpu", "synthetic"],
+ "tests": {"discovered": 4, "executed": 4, "passed": 4, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "decal::accept_playtest_decal_report_json_lists_each_layer", "status": "pass", "evidence": ["cargo-test.log", "decal-report.json"]}, {"id": "decal::accept_playtest_decal_docs_present_the_offset_rule_as_designed", "status": "pass", "evidence": ["cargo-test.log", "decal-report.json"]}, {"id": "decal::accept_playtest_decal_retail_the_report_identifies_the_drawn_layers", "status": "pass", "evidence": ["cargo-test.log", "decal-report.json"]}, {"id": "decal::accept_playtest_decal_retail_coplanar_layers_hold_stable_and_stay_drawn", "status": "pass", "evidence": ["cargo-test.log", "decal-report.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "21994cfc39b5d4a2ba18cc72dd79a8db7304aaf5b133eccc89caaf186fbc5039", "kind": "log"}, {"path": "decal-report.json", "sha256": "298e2289a03e745bc2b4f7e5e4e10802ba8d1d9eed51d4af49188cd1463256ff", "kind": "json"}, {"path": "after-skull-frame0.png", "sha256": "44c886a88cacbc8b083f4d85b01ec21da75456258c0c1fecb2d128ec2ca5021f", "kind": "png"}, {"path": "after-skull-frame3.png", "sha256": "43f04deccedccb09b4e31eead69a26cba91432c57ce2bd5a4f400bc923ae642a", "kind": "png"}, {"path": "before-skull-frame0.png", "sha256": "8e8e8d58a5ea168ab28eee4f4b232f971843970efbe53f4d3126eabab9839a5d", "kind": "png"}, {"path": "before-skull-frame3.png", "sha256": "06671d4cef0a98a5c19a0eac7357981477e4a4b6cdc51a00a58817b18c31816a", "kind": "png"}, {"path": "skull-after.png", "sha256": "44c886a88cacbc8b083f4d85b01ec21da75456258c0c1fecb2d128ec2ca5021f", "kind": "png"}, {"path": "skull-before.png", "sha256": "8e8e8d58a5ea168ab28eee4f4b232f971843970efbe53f4d3126eabab9839a5d", "kind": "png"}],
+ "unknowns": [],
+ "review": {"identity": "swe2-max-1 (implementing agent)", "method": "Acceptance suite run locally with the retail and gpu capabilities; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production spawn of the documented C1C + bloodhawk playtest scene whose texture report is serialised as decal-report.json (the measured decal-group attribution). Claim is implemented only: the keyed-coverage classification and the 1 cm geometric offset are DESIGNED development rules over production readers — the original engine's own decal rule (draw order, stored flag or its own offset) was not measured and is recorded as unknown in docs/findings/2026-10-08-playtest-decal-zfight.md. LIMITS: (1) no original executable was run, so nothing here is evidence of the original's runtime behaviour; (2) two keyed layers coplanar with each other would both take the offset and could still tie — none was measured to; (3) polygon field unk04 correlates with logo polygons but does not separate them, so its meaning stays unknown. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
