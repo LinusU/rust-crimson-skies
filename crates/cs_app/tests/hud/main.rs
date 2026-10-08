@@ -1,17 +1,22 @@
-//! Acceptance stage F46: instrument values and display-unit policy (F46-A)
-//! and the HUD frame over the session authorities (F46-B).
+//! Acceptance stage F46: instrument values and display-unit policy (F46-A),
+//! the HUD frame over the session authorities (F46-B) and the in-flight page
+//! session (F46-C).
 //!
 //! `specs/F46-hud-instruments-mission-map-and-pause.md`, sections
-//! `### F46-A` and `### F46-B`. F46-A's minimum scenario is AC01's shape: a
-//! known attitude quaternion produces the expected horizon and heading.
-//! F46-B's is AC02's: a bank that fires its last round reads `empty` on the
-//! very next frame while the selection — the authority's own state — is
-//! untouched. The rest covers the unit policy, the low-altitude hysteresis,
-//! rebinding on an aircraft swap and the stale-state refusal. Everything is
-//! authored synthetic data through the real `WeaponSession`, `OrdnanceSession`,
-//! `DamageResolver` and `TargetConsumers`; no original unit, datum, gauge
-//! layout or target semantic is read, so this proves the projection only,
-//! never original display behavior (F46-D).
+//! `### F46-A`, `### F46-B` and `### F46-C`. F46-A's minimum scenario is
+//! AC01's shape: a known attitude quaternion produces the expected horizon
+//! and heading. F46-B's is AC02's: a bank that fires its last round reads
+//! `empty` on the very next frame while the selection — the authority's own
+//! state — is untouched. F46-C's is the aircraft swap: a `HudSession` rebinds
+//! and every instrument, gauge and page describes the new aircraft only. The
+//! rest covers the unit policy, the low-altitude hysteresis, the map's
+//! authored-geography and revealed-only contacts, the mode-aware pause and
+//! teardown/retry rebinding. Everything is authored synthetic data through
+//! the real `WeaponSession`, `OrdnanceSession`, `DamageResolver`,
+//! `TargetConsumers`, `WorldDefinition`/`WorldInstance`, `ObjectiveDisplay`
+//! and `TargetStore`; no original unit, datum, gauge layout, map composition
+//! or target semantic is read, so this proves the projection only, never
+//! original display behavior (F46-D).
 
 use cs_app::ordnance::OrdnanceSession;
 use cs_app::ui::hud::AircraftSample;
@@ -30,6 +35,7 @@ use cs_types::space::{Quaternion, Radians, UnitVec3};
 mod attitude;
 mod binding;
 mod gauges;
+mod session;
 mod targets;
 mod units;
 
@@ -81,7 +87,7 @@ fn claim() -> ClaimId {
 }
 
 /// The declared fixture gun moved onto `mount` and declared as `kind`.
-fn declared_on(mount: &str, kind: DeclaredGunMountKind) -> DeclaredGunDefinition {
+pub fn declared_on(mount: &str, kind: DeclaredGunMountKind) -> DeclaredGunDefinition {
     let fixture = declared_synthetic_gun();
     DeclaredGunDefinition::try_new(
         fixture.gun().clone(),
