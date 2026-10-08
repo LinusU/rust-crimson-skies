@@ -98,6 +98,12 @@ changed nothing".
   projection cannot foreign-check them — the caller supplies the running
   session's own display and load; only `roster` and the `HudSources`
   authorities are generation-stamped.
+- `HudSession`'s pause record covers only pauses requested through it. A
+  pause the `InputSession` took on its own path (e.g. `FocusLost`) is not
+  reflected in `is_paused()`, `pause_reason()` or `MapView.pause` — the
+  input session stays the pause authority and the caller applies each
+  `PageOutcome` to it, so a page can under-report a held pause but never
+  invent one.
 
 ## Unknowns (not guessed)
 
