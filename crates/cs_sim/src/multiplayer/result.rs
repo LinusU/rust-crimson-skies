@@ -126,6 +126,15 @@ impl Roster {
         })
     }
 
+    /// Whether `peer` is a participant of this match.
+    ///
+    /// Other session machines that share the roster (the objective board,
+    /// F56-B) check membership through this so a peer outside the match can
+    /// never hold match state.
+    pub fn contains(&self, peer: PeerId) -> bool {
+        self.teams.contains_key(&peer)
+    }
+
     fn sides(&self) -> BTreeSet<Side> {
         self.teams
             .keys()
@@ -222,6 +231,19 @@ impl fmt::Display for SubmitError {
 
 impl std::error::Error for SubmitError {}
 
+/// The victory/draw condition the resolver runs.
+///
+/// This crate's own vocabulary (`cs_net` is not a dependency of `cs_sim`); a
+/// resolved `cs_net::rules::MatchRules::victory` maps onto it at the wiring
+/// boundary. [`VictoryRule::HighestScore`] is the one rule implemented — the
+/// resolution order documented above — so a rules value that does not map
+/// onto it cannot silently produce a different match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VictoryRule {
+    /// The side holding the highest score wins; equal top scores draw.
+    HighestScore,
+}
+
 /// Why the match ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndReason {
@@ -265,6 +287,7 @@ pub struct MatchResolver {
     roster: Roster,
     table: ScoreTable,
     limits: Limits,
+    victory: VictoryRule,
     scores: BTreeMap<Side, i32>,
     seen: BTreeSet<EventId>,
     queued: BTreeMap<EventId, LethalEvent>,
@@ -273,7 +296,8 @@ pub struct MatchResolver {
 }
 
 impl MatchResolver {
-    /// Starts a match with every side at zero.
+    /// Starts a match with every side at zero, running
+    /// [`VictoryRule::HighestScore`]: the one victory/draw rule implemented.
     ///
     /// # Errors
     ///
@@ -283,6 +307,27 @@ impl MatchResolver {
         roster: Roster,
         table: ScoreTable,
         limits: Limits,
+    ) -> Result<Self, ConfigError> {
+        Self::with_victory(session, roster, table, limits, VictoryRule::HighestScore)
+    }
+
+    /// Starts a match running the declared `victory` rule.
+    ///
+    /// The `victory` input exists so the rule a resolved `MatchRules` carries
+    /// is handed to the resolver, not assumed: the mapping from the rules
+    /// vocabulary onto [`VictoryRule`] is the wiring's exhaustive check, and
+    /// today [`VictoryRule::HighestScore`] is the only value either side can
+    /// name.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::NoLimit`], [`ConfigError::NonPositiveScoreLimit`].
+    pub fn with_victory(
+        session: SessionId,
+        roster: Roster,
+        table: ScoreTable,
+        limits: Limits,
+        victory: VictoryRule,
     ) -> Result<Self, ConfigError> {
         if limits.time_limit.is_none() && limits.score_limit.is_none() {
             return Err(ConfigError::NoLimit);
@@ -296,12 +341,18 @@ impl MatchResolver {
             roster,
             table,
             limits,
+            victory,
             scores,
             seen: BTreeSet::new(),
             queued: BTreeMap::new(),
             closed_through: None,
             result: None,
         })
+    }
+
+    /// The victory/draw rule this resolver runs.
+    pub fn victory(&self) -> VictoryRule {
+        self.victory
     }
 
     /// Queues one lethal event for its tick.
@@ -432,9 +483,11 @@ impl MatchResolver {
             .take_while(|(_, score)| *score == top)
             .map(|(side, _)| *side)
             .collect();
-        let outcome = match leaders.as_slice() {
-            [only] => Outcome::Winner(*only),
-            _ => Outcome::Draw(leaders),
+        let outcome = match self.victory {
+            VictoryRule::HighestScore => match leaders.as_slice() {
+                [only] => Outcome::Winner(*only),
+                _ => Outcome::Draw(leaders),
+            },
         };
         FinalResult {
             session: self.session,
