@@ -844,6 +844,60 @@ impl CustomScenarioDraft {
         self.roster.as_deref()
     }
 
+    // The remaining accessors exist for the screen that edits this draft
+    // (F49-C): a dropdown shows *and* changes the current selection, so the
+    // form has to be able to read back what it is showing. Every one of them
+    // is `None` exactly while [`Self::unset_dimensions`] names the field, so a
+    // screen can pair a value with the "unset" state without parsing either.
+
+    /// The `ia_scenario` identity the draft resolves to, when set.
+    #[must_use]
+    pub fn subject(&self) -> Option<&ContentId> {
+        self.subject.as_ref()
+    }
+
+    /// The selected world, when set.
+    #[must_use]
+    pub fn world(&self) -> Option<&Resolved<WorldId>> {
+        self.world.as_ref()
+    }
+
+    /// The selected environment, when set.
+    #[must_use]
+    pub fn environment(&self) -> Option<&Resolved<EnvironmentId>> {
+        self.environment.as_ref()
+    }
+
+    /// The selected difficulty profile, when set.
+    #[must_use]
+    pub fn difficulty(&self) -> Option<&DifficultyProfile> {
+        self.difficulty.as_ref()
+    }
+
+    /// The selected victory rules, when set.
+    #[must_use]
+    pub fn rules(&self) -> Option<&VictoryRules> {
+        self.rules.as_ref()
+    }
+
+    /// The selected root seed, when set.
+    #[must_use]
+    pub fn seed(&self) -> Option<ScenarioSeed> {
+        self.seed
+    }
+
+    /// The declared seat count, when set.
+    #[must_use]
+    pub fn players(&self) -> Option<u8> {
+        self.players
+    }
+
+    /// The provenance the resolved request will carry, when set.
+    #[must_use]
+    pub fn provenance(&self) -> Option<&Provenance> {
+        self.provenance.as_ref()
+    }
+
     /// Replaces the one actor that holds `actor`'s `(side, slot)`, leaving
     /// every other actor and every other dimension untouched.
     ///
