@@ -5805,10 +5805,12 @@ const SYNTHETIC_TESTS_M02_B: &[&str] = &[
 ///   and digests, the members the measured rule judged and the directive
 ///   accounting — ids, ranges, counts and hashes only, never original
 ///   content;
-/// * `CS_EVIDENCE_REVIEWER` names the agent running the harness, so the
-///   report can never carry a hand-over placeholder for the reviewer: the
-///   identity is read at run time and the implementing and reviewing agents
-///   each write their own.
+/// * `CS_EVIDENCE_REVIEWER` fills `review.identity` whole (the runtime
+///   identity shape `jstr(&reviewer)` reads), so the report can never carry
+///   a hand-over placeholder: the runner supplies the full identity text —
+///   the implementing agent's own run names the implementer and says the run
+///   is the implementer's evidence and not a review, and the reviewing
+///   agent's run names itself.
 ///
 /// The report records what M02-B does *not* claim: no directive is
 /// implemented by a measured effect, M02's control record does not lower
@@ -6035,12 +6037,7 @@ fn evidence_report_m02_b_writes_the_acceptance_report() {
         suite.ignored,
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
-        jstr(&format!(
-            "implementer: bunny-2/bunny-2 (Rally #262, session of 2026-10-08T20:03Z); \
-             reviewer: {reviewer} — the agent that ran this harness, read at run time from \
-             CS_EVIDENCE_REVIEWER so the report can never carry a hand-over placeholder; the \
-             implementing and reviewing agents each write their own report"
-        )),
+        jstr(&reviewer),
         jstr(
             "acceptance suite re-run locally with the retail capability; this harness derives \
              every field from the recorded log, production discovery of $CS_GAME_DIR and the \
