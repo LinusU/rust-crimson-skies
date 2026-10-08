@@ -84,6 +84,14 @@
 //! mod's own bytes while naming the original dependencies it refuses to
 //! copy.
 //!
+//! F53-D adds the save half in [`mod@save`]: [`save::mark_save_document`]
+//! records the announced signature in a save's `fingerprint.content` entry
+//! (the marking F53 non-negotiable 3 asks for), [`save::save_population`]
+//! maps "a set is mounted" onto F48's profile populations, and
+//! [`save::save_dependency`] is the reopen check — a save written while a
+//! mod was enabled is reported against what the session now announces and
+//! provides rather than silently degraded (F53 AC04).
+//!
 //! # Designed vocabulary, not original data
 //!
 //! The original game's mod support — whether it had any, what a mod manifest
@@ -107,6 +115,7 @@ use cs_types::evidence::{ClaimId, ContentHash};
 mod manifest;
 mod mount;
 mod overrides;
+mod save;
 mod selection;
 
 pub use manifest::{
@@ -119,6 +128,10 @@ pub use mount::{
 pub use overrides::{
     COSMETIC_CONTENT_KINDS, ContentOverride, ModModification, OverrideAction, OverrideEffect,
     OverrideValidation, SANDBOXED_PROGRAM_CONTENT_KINDS, classify_effect, classify_validation,
+};
+pub use save::{
+    SAVE_CONTENT_FINGERPRINT, SaveDependencyReport, SaveSignatureStatus, mark_save_document,
+    provided_ids, save_dependency, save_fingerprint, save_population, signature_fingerprint,
 };
 pub use selection::{
     AvailableMod, MOD_EXPORT_REPORT, ModExport, ModExportError, ModSelection, OriginalDependency,
@@ -1550,6 +1563,33 @@ pub fn synthetic_tuning_mod() -> ModManifest {
                 512,
             )
             .expect("the synthetic gun override is valid"),
+        ],
+    )
+}
+
+/// A mod that *adds* a blueprint, so a save that owns the added id depends
+/// on the mod staying enabled (F53 AC04's fixture).
+///
+/// `Blueprint` is gameplay by [`classify_effect`], so the mount marks its
+/// sessions and its saves go to the modded population; an `Add` means the
+/// id exists only while the mod serves it.
+#[must_use]
+pub fn synthetic_blueprint_mod() -> ModManifest {
+    synthetic_manifest(
+        "synthetic.zephyr-blueprint",
+        ModVersion::new(1, 0, 0),
+        false,
+        Vec::new(),
+        vec![ModPayload::new("blueprints/zephyr.toml").expect("valid")],
+        vec![
+            ContentOverride::try_new(
+                ContentId::from_source(ContentKind::Blueprint, "synthetic.zephyr")
+                    .expect("the synthetic blueprint id is valid"),
+                OverrideAction::Add,
+                "blueprints/zephyr.toml",
+                640,
+            )
+            .expect("the synthetic blueprint override is valid"),
         ],
     )
 }
