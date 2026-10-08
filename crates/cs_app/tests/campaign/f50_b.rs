@@ -52,21 +52,22 @@ use crate::common::{claim, label, load_inventory};
 /// The synthetic installation fingerprint the authored records below carry:
 /// sixty-four lowercase hex digits, so a record built here is not refused for
 /// a fingerprint it was never given.
-const SYNTHETIC_INSTALL: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+pub(crate) const SYNTHETIC_INSTALL: &str =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 /// The original installation, as the environment declares it.
-fn game_dir() -> PathBuf {
+pub(crate) fn game_dir() -> PathBuf {
     PathBuf::from(std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {
         panic!(
-            "CS_GAME_DIR is not set: F50-B needs the retail capability; run this suite with \
-             `--include-ignored` and CS_GAME_DIR pointing at the read-only installation"
+            "CS_GAME_DIR is not set: the campaign suite needs the retail capability; run this \
+             suite with `--include-ignored` and CS_GAME_DIR pointing at the read-only installation"
         )
     }))
 }
 
 /// The source context, read once for the whole suite (fingerprinting the
 /// installation walks every file, so it happens exactly once).
-fn context() -> &'static SourceContext {
+pub(crate) fn context() -> &'static SourceContext {
     static CONTEXT: OnceLock<SourceContext> = OnceLock::new();
     CONTEXT.get_or_init(|| {
         SourceContext::read(&game_dir()).expect("the installation yields a source context")
@@ -74,7 +75,7 @@ fn context() -> &'static SourceContext {
 }
 
 /// The whole campaign bound from the installation, built once.
-fn bound() -> &'static BoundCampaign {
+pub(crate) fn bound() -> &'static BoundCampaign {
     static BOUND: OnceLock<BoundCampaign> = OnceLock::new();
     BOUND.get_or_init(|| {
         context()
@@ -90,7 +91,7 @@ fn bound() -> &'static BoundCampaign {
 /// `identities` is `(mission, world, program)` when the installation would
 /// have located all three, and [`None`] when it would have located none —
 /// exactly the two states a real work order lands in.
-fn synthetic_source(
+pub(crate) fn synthetic_source(
     work_order: &str,
     title: &str,
     identities: Option<(&str, &str, &str)>,
@@ -149,7 +150,7 @@ fn synthetic_source(
 }
 
 /// The three-mission authored denominator the synthetic tests assemble over.
-fn synthetic_inventory() -> CampaignInventory {
+pub(crate) fn synthetic_inventory() -> CampaignInventory {
     CampaignInventory::parse(
         "# a synthetic denominator, authored by this file\n\
          M01\tSynthetic One\n\

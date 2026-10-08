@@ -216,6 +216,32 @@ assembly would otherwise lose. The stage's acceptance suite is
 `docs/findings/missions/2026-10-08-f50-b-campaign-binding.md` records what it
 measured.
 
+## Per-mission probe routes and playtest routes (F50-C)
+
+Stage F50-C turns the bound campaign into the retry contract every later
+mission stage plugs into: `probe_routes` (also in
+`crates/cs_content/src/campaign_bindings.rs`) plans **one probe route per
+declared work order**, anchored to the identities the installation resolved
+for it and to the one fingerprint the campaign was read under. A ready route
+states the minimum acceptance scenario of spec F50-C — after a death, a
+bailout, skipped media, a save/restart or a settings change, the next entry
+re-enters the same mission, world and program (`ProbeInterruption::ALL` is
+exactly those five). A work order whose identity did not resolve gets a
+*refused* route: named, counted, in its declared position, never dropped.
+
+`playtest-routes.md` in this directory is the human half: the same plan as a
+table a playtester follows, one row per work order plus the refusals verbatim.
+It is pinned to production by
+`accept_f50_c_the_playtest_route_document_lists_every_work_order_as_planned`,
+so it cannot drift from what the installation derives. The stage produces no
+file for any `M*.json` record and changes none of them.
+
+What F50-C does **not** claim: no mission has been played or retried in a
+runtime. Executing a route needs `VS-M01-RUNTIME` and
+`VS-M01-CONTROLLED-RUNS`; ordinary-play evidence for every mission and ending
+stays with F50-D, and the owner's human approval with M*C. The plan is the
+contract those consumers drive.
+
 ## What is not here yet
 
 - `M09.json`, `M11.json`, `M14.json`, `M15.json`, `M20.json`,
@@ -232,6 +258,7 @@ measured.
 Readiness, coverage and closure are reported, never awarded: synthetic
 fixtures prove the schema and its validation only (F50 owner ruling,
 2026-09-28). F50-B binds the campaign's identities from the installation and
-runs its prerequisite closures, but the campaign progression is still
-unmeasured and the campaign is still not ready; running the real campaign and
-collecting ordinary-play evidence stay with F50-C and F50-D.
+runs its prerequisite closures, and F50-C plans the per-mission probe routes
+and pins the human playtest route document to them; the campaign progression
+is still unmeasured and the campaign is still not ready, no mission has been
+played, and collecting ordinary-play evidence stays with F50-D.

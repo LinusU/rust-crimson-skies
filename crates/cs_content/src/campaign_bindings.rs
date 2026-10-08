@@ -147,6 +147,32 @@
 //! missions lives in original scripts that have not been measured, so every
 //! assembled mission keeps [`Progression::Unknown`] and the campaign is never
 //! ready on this stage's evidence alone.
+//!
+//! ## Per-mission probe routes (F50-C)
+//!
+//! Stage F50-C turns the bound campaign into the thing every later mission
+//! stage plugs into: one **probe route** per declared work order
+//! ([`probe_routes`]). A route is the checkable retry contract of spec F50
+//! acceptance test AC03 — "retry selected missions after death, bailout,
+//! skip-media, save/restart and settings changes" ([`ProbeInterruption::ALL`]
+//! is exactly that minimum scenario) — anchored to the mission identities the
+//! installation resolved for the work order and to the one installation
+//! fingerprint the whole campaign was read under.
+//!
+//! What a route states is narrow and deliberately so: *whichever* of the five
+//! interruptions ends a run of this mission, the next entry re-enters the
+//! **same** mission, world and program, under the **same** installation
+//! fingerprint ([`ProbeReentry`]). A work order whose identity did not resolve
+//! has no identity to re-enter, so its route is *refused* with the reason —
+//! it stays in the plan, is counted and can never read as probed
+//! ([`MissionProbeRoute::is_ready`]).
+//!
+//! What it does **not** state is what the mission runtime does not yet do: no
+//! mission is played here, no runtime death is observed and no retry has been
+//! executed. Executing a route needs the mission launch path
+//! (`VS-M01-RUNTIME`) and the controlled runs (`VS-M01-CONTROLLED-RUNS`);
+//! this module supplies the plan those consumers drive, and the acceptance
+//! suite verifies the plan against the installation it was derived from.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -4001,4 +4027,355 @@ fn array_of_strings(items: &[String]) -> String {
         return "[]".to_owned();
     }
     format!("[{}]", items.join(", "))
+}
+
+// ---------------------------------------------------------------------------
+// Per-mission probe routes (F50-C)
+// ---------------------------------------------------------------------------
+
+/// One interruption a per-mission probe route must survive.
+///
+/// The set is exactly the minimum acceptance scenario of spec F50-C
+/// (`specs/F50-per-mission-compatibility-and-full-campaign-closure.md`,
+/// section `### F50-C`): "Retry selected missions after death, bailout,
+/// skip-media, save/restart and settings changes". It is a closed enum so a
+/// new retry case is a reviewed change to the scenario itself, never a string
+/// a caller can forget to plan for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ProbeInterruption {
+    /// The player's aircraft is destroyed and the mission is retried.
+    Death,
+    /// The pilot bails out and the mission is retried.
+    Bailout,
+    /// Linked media is skipped and the mission starts (or is retried) without
+    /// it.
+    SkipMedia,
+    /// The profile is saved and the application restarted; the mission is
+    /// entered again from the stored profile.
+    SaveRestart,
+    /// A settings change is applied mid-session and the mission is retried.
+    SettingsChange,
+}
+
+impl ProbeInterruption {
+    /// The complete minimum scenario, in the order the spec names it.
+    pub const ALL: [ProbeInterruption; 5] = [
+        Self::Death,
+        Self::Bailout,
+        Self::SkipMedia,
+        Self::SaveRestart,
+        Self::SettingsChange,
+    ];
+
+    /// The stable identity of the interruption: `DEATH`, `BAILOUT`,
+    /// `SKIP_MEDIA`, `SAVE_RESTART`, `SETTINGS_CHANGE`.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Death => "DEATH",
+            Self::Bailout => "BAILOUT",
+            Self::SkipMedia => "SKIP_MEDIA",
+            Self::SaveRestart => "SAVE_RESTART",
+            Self::SettingsChange => "SETTINGS_CHANGE",
+        }
+    }
+
+    /// What the interruption does to a running mission, one sentence each.
+    pub const fn scenario(self) -> &'static str {
+        match self {
+            Self::Death => "the mission ends in aircraft destruction and is retried",
+            Self::Bailout => "the pilot bails out and the mission is retried",
+            Self::SkipMedia => "linked media is skipped and the mission continues without it",
+            Self::SaveRestart => {
+                "the profile is saved, the process restarts and the mission is entered again"
+            }
+            Self::SettingsChange => "a settings change is applied and the mission is retried",
+        }
+    }
+}
+
+impl fmt::Display for ProbeInterruption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Where one interruption's reentry lands: the mission identity, and the
+/// installation fingerprint every value was derived under.
+///
+/// The three ids are copied from the work order's own source binding
+/// ([`SourceBinding`]) — never re-parsed, never defaulted — so a reentry is
+/// exactly the identity the campaign was bound to. The fingerprint is what
+/// makes a *save/restart* reentry checkable: a restart that re-enters under a
+/// different installation is a different game, not a retry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProbeReentry {
+    /// The interruption this reentry answers.
+    pub interruption: ProbeInterruption,
+    /// The mission identity re-entered.
+    pub mission: ContentId,
+    /// The world variant re-entered.
+    pub world: ContentId,
+    /// The mission program re-entered.
+    pub program: ContentId,
+    /// The installation fingerprint the reentry is anchored to.
+    pub install_sha256: String,
+}
+
+/// The probe route of one declared work order.
+///
+/// A route is either **ready** — all five [`ProbeInterruption::ALL`] entries
+/// planned, each carrying the mission identity the work order resolved to —
+/// or **refused** — the identity did not resolve, no reentry can name a
+/// mission, and [`MissionProbeRoute::refusal`] says why. There is no third
+/// state: a route is never silently partial, and a refused route is never
+/// dropped from the plan (spec F50 non-negotiable behavior 5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissionProbeRoute {
+    /// The work order this route belongs to.
+    pub label: MissionLabel,
+    /// The declared discovery title the route was planned under.
+    pub discovery_title: String,
+    /// The retail campaign position, when one was resolved.
+    pub campaign_position: Option<usize>,
+    /// The installation fingerprint every reentry of this route re-enters
+    /// under — the fingerprint the source binding was read under.
+    pub install_sha256: String,
+    /// One planned reentry per [`ProbeInterruption::ALL`], in that order.
+    /// Empty exactly when the route is refused.
+    pub reentries: Vec<ProbeReentry>,
+    /// Why the route cannot be probed, when it cannot.
+    pub refusal: Option<String>,
+}
+
+impl MissionProbeRoute {
+    /// Whether every interruption of the minimum scenario has a planned
+    /// reentry. False exactly for a refused route.
+    pub fn is_ready(&self) -> bool {
+        self.refusal.is_none() && self.reentries.len() == ProbeInterruption::ALL.len()
+    }
+
+    /// The planned reentry of one interruption, when the route is ready.
+    pub fn reentry(&self, interruption: ProbeInterruption) -> Option<&ProbeReentry> {
+        self.reentries
+            .iter()
+            .find(|reentry| reentry.interruption == interruption)
+    }
+
+    /// The mission identity every reentry of this route lands on, when the
+    /// route is ready.
+    pub fn mission_id(&self) -> Option<&ContentId> {
+        self.reentries.first().map(|reentry| &reentry.mission)
+    }
+}
+
+/// Every declared work order's probe route, in declared denominator order.
+///
+/// The plan inherits the denominator's frozen shape: one route per declared
+/// work order, ready or refused, none dropped, none added. Its single
+/// installation fingerprint ([`ProbePlan::install_sha256`]) is the save/restart
+/// anchor of the whole campaign — planning a campaign that was read under two
+/// fingerprints is refused, because "restart and re-enter" would then name two
+/// different games.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProbePlan {
+    routes: Vec<MissionProbeRoute>,
+}
+
+impl ProbePlan {
+    /// Every route, in declared denominator order.
+    pub fn routes(&self) -> &[MissionProbeRoute] {
+        &self.routes
+    }
+
+    /// How many routes the plan holds (one per declared work order).
+    pub fn len(&self) -> usize {
+        self.routes.len()
+    }
+
+    /// Whether the plan holds no route at all.
+    pub fn is_empty(&self) -> bool {
+        self.routes.is_empty()
+    }
+
+    /// The route of one work order.
+    pub fn route(&self, label: &MissionLabel) -> Option<&MissionProbeRoute> {
+        self.routes.iter().find(|route| &route.label == label)
+    }
+
+    /// The routes that can be probed right now.
+    pub fn ready(&self) -> impl Iterator<Item = &MissionProbeRoute> {
+        self.routes.iter().filter(|route| route.is_ready())
+    }
+
+    /// The routes an unresolved identity refused, each naming its reason.
+    pub fn refused(&self) -> impl Iterator<Item = &MissionProbeRoute> {
+        self.routes.iter().filter(|route| !route.is_ready())
+    }
+
+    /// How many routes are ready.
+    pub fn ready_count(&self) -> usize {
+        self.routes.iter().filter(|route| route.is_ready()).count()
+    }
+
+    /// How many routes an unresolved identity refused.
+    pub fn refused_count(&self) -> usize {
+        self.len() - self.ready_count()
+    }
+
+    /// The one installation fingerprint every route re-enters under.
+    ///
+    /// # Panics
+    ///
+    /// Only on a plan built by [`probe_routes`], which always fills it; an
+    /// empty plan cannot come from a declared inventory.
+    pub fn install_sha256(&self) -> &str {
+        &self
+            .routes
+            .first()
+            .expect("a planned campaign declares at least one work order")
+            .install_sha256
+    }
+}
+
+/// Plans one probe route per declared work order of a bound campaign.
+///
+/// The producer is F50-B's [`SourceContext::bind_campaign`]; this is the
+/// consumer-side rule that turns its output into the retry contract later
+/// stages drive. The denominator is read first (every declared work order of
+/// `campaign.bindings` must have a source binding, in the same terms
+/// [`assemble_campaign`] refuses a missing one), then each work order's route
+/// is planned from its own [`SourceBinding`]:
+///
+/// * all three identities resolved → a **ready** route whose five reentries
+///   carry those identities and the binding's installation fingerprint;
+/// * any identity unresolved → a **refused** route naming the unresolved
+///   [`CriticalDependency`]s, still counted, still in its declared position.
+///
+/// What it refuses with an error — rather than planning around it — is every
+/// input the route contract could not stand on: a source binding naming a
+/// work order the denominator does not declare (the plan would grow it
+/// without a `declare`), two source bindings naming one work order (a route
+/// is planned once), a declared work order with no source binding (its route
+/// would silently vanish), a fingerprint that is not canonical lowercase hex
+/// (the save/restart anchor would be unreadable), and sources read under two
+/// different fingerprints (a restart could not re-enter "the same game").
+///
+/// # Errors
+///
+/// [`SourceBindingError::Inconsistent`] naming the offending work order(s)
+/// for each refusal above.
+pub fn probe_routes(campaign: &BoundCampaign) -> Result<ProbePlan, SourceBindingError> {
+    let inconsistent = |reason: String| SourceBindingError::Inconsistent { reason };
+
+    let mut by_label: BTreeMap<&MissionLabel, &SourceBinding> = BTreeMap::new();
+    let mut anchor: Option<(&MissionLabel, &str)> = None;
+    for source in &campaign.sources {
+        if campaign.bindings.get(&source.label).is_none() {
+            return Err(inconsistent(format!(
+                "source binding for {} names a work order the declared inventory does not \
+                 declare, so planning its route would grow the denominator without a declare",
+                source.label
+            )));
+        }
+        if by_label.insert(&source.label, source).is_some() {
+            return Err(inconsistent(format!(
+                "work order {} was supplied more than one source binding, and a probe route is \
+                 planned exactly once",
+                source.label
+            )));
+        }
+        if source.install_sha256.len() != 64
+            || !source
+                .install_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(inconsistent(format!(
+                "work order {} was read under {}, which is not a canonical lowercase hex \
+                 installation fingerprint, so a save/restart reentry could not be anchored to it",
+                source.label, source.install_sha256
+            )));
+        }
+        anchor = match anchor {
+            None => Some((&source.label, source.install_sha256.as_str())),
+            Some((first_label, first_fingerprint)) => {
+                if *first_fingerprint != source.install_sha256 {
+                    return Err(inconsistent(format!(
+                        "work orders {first_label} and {} were read under different installation \
+                         fingerprints ({first_fingerprint} and {}), so a restart could not \
+                         re-enter the same game for the whole campaign",
+                        source.label, source.install_sha256
+                    )));
+                }
+                Some((first_label, first_fingerprint))
+            }
+        };
+    }
+
+    let mut routes = Vec::new();
+    for label in campaign.bindings.declared() {
+        let source = by_label.get(label).copied().ok_or_else(|| {
+            inconsistent(format!(
+                "declared work order {label} was supplied no source binding, so no probe route \
+                 could be planned for it and it would silently vanish from the plan"
+            ))
+        })?;
+        routes.push(plan_route(source));
+    }
+
+    Ok(ProbePlan { routes })
+}
+
+/// Plans one work order's route from its source binding: a ready route with
+/// one reentry per [`ProbeInterruption::ALL`] when every identity resolved,
+/// a refused route naming the unresolved critical dependencies otherwise.
+fn plan_route(source: &SourceBinding) -> MissionProbeRoute {
+    let identity = match (&source.catalog_id, &source.world_id, &source.program_id) {
+        (Some(mission), Some(world), Some(program)) => Some((mission, world, program)),
+        _ => None,
+    };
+    let (reentries, refusal) = match identity {
+        Some((mission, world, program)) => (
+            ProbeInterruption::ALL
+                .iter()
+                .map(|interruption| ProbeReentry {
+                    interruption: *interruption,
+                    mission: mission.clone(),
+                    world: world.clone(),
+                    program: program.clone(),
+                    install_sha256: source.install_sha256.clone(),
+                })
+                .collect(),
+            None,
+        ),
+        None => {
+            let mut missing = Vec::new();
+            if source.catalog_id.is_none() {
+                missing.push(CriticalDependency::MissionId.label());
+            }
+            if source.world_id.is_none() {
+                missing.push(CriticalDependency::WorldGroupVariant.label());
+            }
+            if source.program_id.is_none() {
+                missing.push(CriticalDependency::ProgramSourceMap.label());
+            }
+            (
+                Vec::new(),
+                Some(format!(
+                    "{} has no probe route to run: the mission identity is incomplete, the \
+                     installation located no {}",
+                    source.label,
+                    missing.join(", ")
+                )),
+            )
+        }
+    };
+    MissionProbeRoute {
+        label: source.label.clone(),
+        discovery_title: source.discovery_title.clone(),
+        campaign_position: source.campaign_position,
+        install_sha256: source.install_sha256.clone(),
+        reentries,
+        refusal,
+    }
 }
