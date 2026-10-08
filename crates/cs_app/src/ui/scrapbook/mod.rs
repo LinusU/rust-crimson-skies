@@ -32,6 +32,20 @@
 //!
 //! The synthetic catalog and records this stage is tested with prove the
 //! projection only, never an original scrapbook rule.
+//!
+//! Stage `### F47-C` adds the `paged` module: the screen itself, [`ScrapbookUi`] — a
+//! fixed number of entries per page, one selection, titles read through the
+//! running [`TextSession`](crate::text::TextSession) locale, and the
+//! [`ReplayLaunch`] the selection offers. It consumes everything above
+//! ([`project`], [`resolve_saved`], [`replay_request`]) and reads the
+//! persisted records through [`stored`], so the producer and the consumer of
+//! this feature are the same production path the rest of the game uses.
+
+mod paged;
+
+pub use paged::{
+    LaunchError, PageError, Refresh, ReplayLaunch, ScopeFailure, ScrapbookUi, SelectError,
+};
 
 use std::collections::BTreeSet;
 use std::fmt;

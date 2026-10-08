@@ -6,6 +6,10 @@
 //! photo unlocks alone; saved ids resolve in every locale), replay links, the
 //! memento choice and catalog validation. All data is authored synthetic data;
 //! this proves the contract, never an original scrapbook rule (F47-D).
+//!
+//! The `persistence` and `paged` modules carry their own headers: stage
+//! `### F47-B` is the idempotent write path, stage `### F47-C` the paged
+//! screen, the locale it reads and the replay it launches.
 
 use cs_app::ui::scrapbook::MissionResult;
 use cs_content::scrapbook::{
@@ -22,6 +26,7 @@ use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 
 mod mementos;
+mod paged;
 mod pages;
 mod persistence;
 mod records;
