@@ -784,6 +784,28 @@ fn accept_f47_d_retail_the_installation_scrapbook_is_discovered_and_audited() {
         (0..=24).collect::<Vec<u32>>(),
         "the pages are the runs the keys spell, in order"
     );
+    // The runs are contiguous: read in the member's own order, no page starts
+    // again after another page began, and the runs are the pages 0..=24 in
+    // order. This is the shape `DiscoveredPage` and the finding record as
+    // measured, so a grouping that scattered one page through the member fails
+    // here instead of being believed.
+    let mut in_member_order: Vec<(u64, u32)> = discovered
+        .pages
+        .iter()
+        .flat_map(|page| page.items.iter().map(|item| (item.line, page.page)))
+        .collect();
+    in_member_order.sort();
+    let mut runs: Vec<u32> = Vec::new();
+    for (_, page) in &in_member_order {
+        if runs.last() != Some(page) {
+            runs.push(*page);
+        }
+    }
+    assert_eq!(
+        runs,
+        (0..=24).collect::<Vec<u32>>(),
+        "every page is one contiguous run of the member, and the runs are 0..=24 in order"
+    );
     assert_eq!(
         discovered.gaps.len(),
         1,

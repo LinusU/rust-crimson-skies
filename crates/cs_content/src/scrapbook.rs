@@ -751,7 +751,8 @@ impl DiscoveredScrapbook {
             // audit of nothing must never read as an audit of an empty
             // scrapbook.
             return Err(ScrapbookSourceError::Document {
-                reason: "the member holds no record the documented Mission_Spread_Item schema                  covers"
+                reason: "the member holds no record the documented Mission_Spread_Item schema \
+                         covers"
                     .to_owned(),
             });
         }
