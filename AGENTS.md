@@ -30,13 +30,14 @@ Do not load the whole repository into context. For a task `F05-B` read, in this 
 7. **Canonical contracts.** One physics pose owner, integer simulation ticks, stable content/actor ids and session generations. No Bevy/renderer dependency in `cs_types`, `cs_formats`, `cs_assets`, `cs_content`, `cs_script` or `cs_net`. No game state hidden in UI code.
 8. **Never self-award `verified_original` or `release_approved`.** A merged task is **checked**, not "recreated".
 9. **Git hygiene.** Only work on the Rally task branch. Never push to `main`, never force-push another branch, never rewrite someone else's history. Small commits with imperative messages that describe one change.
-10. **Shell access is not a sandbox.** Do not touch files outside this checkout except reading `$CS_GAME_DIR`. Do not download proprietary media, install global software or start background jobs that outlive your session.
+10. **Shell access is not a sandbox.** Do not touch files outside this checkout except reading `$CS_GAME_DIR` and the file `$CS_ENGINE_IMAGE` names. Do not download proprietary media, install global software or start background jobs that outlive your session.
 
 ## Environment
 
 | Variable | Meaning |
 | --- | --- |
 | `CS_GAME_DIR` | Absolute path to the read-only original installation. Unset: you have no `retail` capability. |
+| `CS_ENGINE_IMAGE` | Absolute path to the owner-supplied decrypted executable (`crimson.decrypted.exe`), kept outside `$CS_GAME_DIR` so it is not part of the installation's inventory or fingerprint. Read-only, never committed. Unset: tests that need the image fail loudly. |
 | `CS_CAPABILITIES` | Comma-separated capabilities this machine can really provide, e.g. `retail,gpu,audio`. Anything not listed is unavailable. |
 
 `human_play`, `human_review` and `network_real` are never available to an agent: they need the owner. Tasks that require them are blocked until the owner can supply the evidence.
