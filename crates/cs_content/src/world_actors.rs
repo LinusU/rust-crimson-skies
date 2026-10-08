@@ -61,8 +61,9 @@ use crate::objectives::{ProgramActor, ProgramSymbol};
 ///
 /// Designed vocabulary: the original's actor-type enumeration is
 /// unmeasured, so the schema distinguishes only the motion domains the spec
-/// names — rail, road, water and mission machinery. Kind is identity, not
-/// a motion capability.
+/// names — rail, road, water and mission machinery — plus the airship
+/// family the measured `zeppelins.zrd` record carrier names (#574, #772).
+/// Kind is identity, not a motion capability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DeclaredWorldActorKind {
     /// Rail-bound stock: trains and stock cars.
@@ -73,11 +74,20 @@ pub enum DeclaredWorldActorKind {
     Water,
     /// Mission machinery: gates, generators, elevators and similar.
     Kinematic,
+    /// An airship: the `zeppelin` record family of `zeppelins.zrd` (F35's
+    /// capital ships placed as a scope's world actors).
+    Airship,
 }
 
 impl DeclaredWorldActorKind {
     /// Every declared kind, in a stable order.
-    pub const ALL: [Self; 4] = [Self::Rail, Self::Road, Self::Water, Self::Kinematic];
+    pub const ALL: [Self; 5] = [
+        Self::Rail,
+        Self::Road,
+        Self::Water,
+        Self::Kinematic,
+        Self::Airship,
+    ];
 
     /// The stable label used in reports.
     #[must_use]
@@ -87,6 +97,7 @@ impl DeclaredWorldActorKind {
             Self::Road => "road",
             Self::Water => "water",
             Self::Kinematic => "kinematic",
+            Self::Airship => "airship",
         }
     }
 }

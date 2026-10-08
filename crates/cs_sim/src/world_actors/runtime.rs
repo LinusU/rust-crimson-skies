@@ -72,11 +72,20 @@ pub enum WorldActorKind {
     Water,
     /// Mission machinery: gates, generators, elevators and similar.
     Kinematic,
+    /// An airship: the measured `zeppelin` record family, placed as a
+    /// scope's world actors.
+    Airship,
 }
 
 impl WorldActorKind {
     /// Every declared kind, in a stable order.
-    pub const ALL: [Self; 4] = [Self::Rail, Self::Road, Self::Water, Self::Kinematic];
+    pub const ALL: [Self; 5] = [
+        Self::Rail,
+        Self::Road,
+        Self::Water,
+        Self::Kinematic,
+        Self::Airship,
+    ];
 
     /// The stable label used in reports.
     #[must_use]
@@ -86,6 +95,7 @@ impl WorldActorKind {
             Self::Road => "road",
             Self::Water => "water",
             Self::Kinematic => "kinematic",
+            Self::Airship => "airship",
         }
     }
 }

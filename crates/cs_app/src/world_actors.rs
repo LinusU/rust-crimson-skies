@@ -505,6 +505,9 @@ pub fn lower_world_actors(
                 cs_content::world_actors::DeclaredWorldActorKind::Kinematic => {
                     WorldActorKind::Kinematic
                 }
+                cs_content::world_actors::DeclaredWorldActorKind::Airship => {
+                    WorldActorKind::Airship
+                }
             },
             faction: required(&actor.faction, "faction")?,
             objective: actor.objective.map(lower_symbol),

@@ -565,7 +565,7 @@ fn accept_f34_b_identical_sessions_step_identically() {
 fn accept_f34_b_catalog_kinds_and_a_water_follower_at_its_lock_gate() {
     assert_eq!(
         WorldActorKind::ALL.map(|k| k.label()),
-        ["rail", "road", "water", "kinematic"]
+        ["rail", "road", "water", "kinematic", "airship"]
     );
     // A boat waits at a lock gate by exactly the convoy rule: the gate
     // rule is on the route's declared passage, not on the actor kind.
