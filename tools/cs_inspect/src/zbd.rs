@@ -512,12 +512,16 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{ZbdAuditRun, zbd_audit_command_result};
-    use cs_assets::zbd::{ContainerAudit, ContainerVerdict, MemberVerdict, ZbdAudit};
+    use cs_assets::install;
+    use cs_assets::vfs::{ContentSession, SessionBuilder};
+    use cs_assets::zbd::{ContainerAudit, ContainerVerdict, MemberVerdict, ZbdAudit, ZbdContainer};
     use cs_formats::zbd::{
         GAMEZ_SIGNATURE, GAMEZ_VERSION, INDEX_ENTRY_BYTES, INDEX_NAME_BYTES,
         INDEX_UNEXPLAINED_BYTES, INTERP_SIGNATURE, INTERP_VERSION, TRAILER_VERSION_ONE,
         WAVE_FORMAT_IMA_ADPCM, WAVE_FORMAT_MS_ADPCM, WAVE_FORMAT_PCM, ZbdFamily,
     };
+    use cs_formats::{AllocationBudget, ParseContext};
+    use cs_types::asset_id::{AssetKey, ResolveContext};
 
     static NEXT_TREE: AtomicU64 = AtomicU64::new(0);
 
@@ -1069,6 +1073,41 @@ mod tests {
         (count, census)
     }
 
+    /// The decode cost the audit pays for one sound container, measured
+    /// through the same calls its member rows come from: `sound_assets` (which
+    /// decodes each member once to set its [`SoundReadiness`]) and then
+    /// `SoundAsset::decode` again on every decoded member, under a fresh
+    /// per-member [`ParseContext`] at the designed
+    /// [`AllocationBudget::DEFAULT_LIMIT`] ceiling exactly as `SoundAssets`
+    /// builds it. Returns the decoded member count, the sum of every member's
+    /// [`DecodedSound::sample_count`] and the largest single member's count —
+    /// the real `i32` values the audit produces, not a figure read off a
+    /// header.
+    fn decoded_sample_cost(session: &ContentSession, key: &AssetKey) -> (usize, u64, u64) {
+        let container = ZbdContainer::open(session, key).expect("a listed sound container opens");
+        let mut context = ParseContext::with_defaults(container.label());
+        let index = container
+            .index(&mut context)
+            .expect("its trailer index reads");
+        let table = index.member_table();
+        let assets = container
+            .sound_assets(&mut context, &index, &table)
+            .expect("its sound archive lists");
+        let mut members = 0usize;
+        let mut total = 0u64;
+        let mut largest = 0u64;
+        for asset in assets.decoded() {
+            let mut member_context = ParseContext::with_defaults(container.label());
+            let decoded = asset
+                .decode(&mut member_context)
+                .expect("a member the audit decoded decodes again");
+            members += 1;
+            total += decoded.sample_count();
+            largest = largest.max(decoded.sample_count());
+        }
+        (members, total, largest)
+    }
+
     /// A sound member declaring `tag` with `block_align`, a `fmt ` payload of
     /// `extension` bytes behind the 16 common ones and a `data` payload of
     /// `data` bytes. The census reads all three from these bytes, so pinning
@@ -1374,6 +1413,65 @@ mod tests {
         assert_eq!(result.exit_code, 3);
         assert_eq!(audit.uninterpreted(), members - decoded + 184 - 64);
         assert_eq!(audit.uninterpreted(), 1293 + 120);
+
+        // The decode cost the audit now pays (Rally task #527): since task
+        // #444 decoded the two ADPCM layouts and task #524 routed the consumer
+        // through the block-aware plan, every sound member's samples are
+        // produced — before that the audit decoded only the 22 PCM members.
+        // Measured here through the same production calls the audit itself
+        // makes, per sound container, so the recorded cost is what the
+        // consumer really pays rather than an estimate from stored sizes.
+        let found = install::discover(&root).expect("discovery");
+        let context = ResolveContext::new(install::fingerprint(&found.manifest));
+        let mut builder = SessionBuilder::new(context);
+        builder
+            .mount_installation(&root, &found.diagnosis)
+            .expect("the installation mounts");
+        let session = builder.open();
+        let mut per_container_cost: BTreeMap<String, (usize, u64, u64)> = BTreeMap::new();
+        for row in audit
+            .containers
+            .iter()
+            .filter(|row| row.family == Some(ZbdFamily::Sound))
+        {
+            per_container_cost.insert(row.key.to_string(), decoded_sample_cost(&session, &row.key));
+        }
+        let _teardown = session.close();
+        let decoded_members: usize = per_container_cost.values().map(|cost| cost.0).sum();
+        let decoded_samples: u64 = per_container_cost.values().map(|cost| cost.1).sum();
+        let largest_member: u64 = per_container_cost
+            .values()
+            .map(|cost| cost.2)
+            .max()
+            .expect("sound containers exist");
+        assert_eq!(decoded_members, decoded, "every decoded row is measured");
+        // The decoded totals task #524 measured on this installation:
+        // 371,812,844 `i32` values (1,418 MiB) across all 5,041 sound members,
+        // the largest single member decoding to 5,706,908 values (22 MiB).
+        assert_eq!(decoded_samples, 371_812_844, "task #524's decoded total");
+        assert_eq!(
+            largest_member, 5_706_908,
+            "the largest member's decoded size"
+        );
+        // The per-container split, as the measurement above produced it: the
+        // 22 MiB member lives in `soundsh`.
+        assert_eq!(
+            per_container_cost["install/default/ZBD/soundsl.zbd"],
+            (2_520, 121_376_906, 1_427_130),
+            "soundsl's decode cost"
+        );
+        assert_eq!(
+            per_container_cost["install/default/ZBD/soundsh.zbd"],
+            (2_521, 250_435_938, 5_706_908),
+            "soundsh's decode cost"
+        );
+        // No single allocation exceeds the per-parse ceiling: the largest
+        // member books 22 MiB of `i32` against the 64 MiB per-member context.
+        assert!(
+            largest_member * size_of::<i32>() as u64 <= AllocationBudget::DEFAULT_LIMIT,
+            "the largest member fits the per-parse ceiling"
+        );
+        println!("decode cost per container: {per_container_cost:?}");
         println!(
             "{} containers, {members} members, {decoded} decoded ({} PCM, {} IMA ADPCM, \
              {} Microsoft ADPCM), {} uninterpreted; per archive {per_archive:?}",
@@ -1672,6 +1770,40 @@ mod tests {
             "no retail sound member is left readable"
         );
         let found = cs_assets::install::discover(&root).expect("discovery");
+        // The decode cost Rally task #527 records: every decoded member's
+        // `sample_count()` through the same `SoundAsset::decode` the audit's
+        // rows come from, under a fresh per-member `ParseContext` at the
+        // designed ceiling.
+        let context = ResolveContext::new(install::fingerprint(&found.manifest));
+        let mut builder = SessionBuilder::new(context);
+        builder
+            .mount_installation(&root, &found.diagnosis)
+            .expect("the installation mounts");
+        let session = builder.open();
+        let mut decoded_samples = 0u64;
+        let mut largest_member = 0u64;
+        for row in audit
+            .containers
+            .iter()
+            .filter(|row| row.family == Some(ZbdFamily::Sound))
+        {
+            let (_, total, largest) = decoded_sample_cost(&session, &row.key);
+            decoded_samples += total;
+            largest_member = largest_member.max(largest);
+        }
+        let _teardown = session.close();
+        assert_eq!(
+            decoded_samples, 371_812_844,
+            "task #524's decoded total on this installation"
+        );
+        assert_eq!(
+            largest_member, 5_706_908,
+            "the largest member decodes to 22 MiB"
+        );
+        assert!(
+            largest_member * size_of::<i32>() as u64 <= AllocationBudget::DEFAULT_LIMIT,
+            "no single member exceeds the per-parse ceiling"
+        );
         let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
         let content_sha256 = cs_assets::install::content_fingerprint(&found.manifest).to_hex();
 
@@ -1702,7 +1834,15 @@ mod tests {
              not interpreted (F06-B's entry encoding is undocumented); with the texture, interp, \
              GameZ and animation containers routed but not member-listed, the strict audit exits \
              {} on {} uninterpreted items; these unknowns are recorded in \
-             docs/findings/2026-09-28-f06-d-zbd-corpus-audit.md",
+             docs/findings/2026-09-28-f06-d-zbd-corpus-audit.md. Since tasks #444 (the ADPCM \
+             layouts) and #524 (the consumer's block-aware plan) the audit decodes every \
+             compressed member, so it is no longer a cheap structural census: measured through \
+             the same `SoundAsset::decode` the audit's rows come from, its decoded sound output \
+             is {decoded_samples} `i32` values ({decoded_samples} * 4 bytes, about 1,418 MiB) \
+             across the {decoded} members, the largest single member {largest_member} values \
+             (22 MiB) — every member decoded under a fresh per-member `ParseContext` at \
+             `AllocationBudget::DEFAULT_LIMIT` (64 MiB, 16,777,216 values), so no single \
+             allocation exceeds the per-parse ceiling while the aggregate far exceeds it",
             audit.failures(),
             members - decoded,
             audited.exit_code,
@@ -1753,14 +1893,17 @@ mod tests {
             artifact(&log_path, "log"),
             artifact(&audit_path, "json"),
             super::jstr(
-                "implementer: bunny-alpha-1/bunny-alpha-1 (Rally task #525, implement claim of \
-                 2026-10-02T18:16:34Z). reviewer: bunny-alpha-1/bunny-alpha-1 again (Rally \
-                 task #525, review claim of 2026-10-02T18:58:20Z, a fresh session over the \
-                 implementer's branch) — the same agent instance wrote and reviewed this change, \
-                 so this is a self-review and NOT independent evidence; an independent reviewer \
-                 is still wanted before any fidelity claim rests on it. This report is a checked \
-                 corpus census, not verified_original: no original executable was run, and no \
-                 agent review replaces the owner's approval"
+                "implementer: Devin SWE-2/swe2-max-1 (Rally task #527, implement claim of \
+                 2026-10-08T03:21:14Z), which added the decode-cost measurement and regenerated \
+                 this report in the implementing session; reviewer: pending — this report is \
+                 committed with the branch's submission and Rally's review claim on #527 names \
+                 who reviews it, so no reviewer identity can be recorded here yet. The earlier \
+                 census arithmetic this report also carries was written and reviewed under task \
+                 #525 by bunny-alpha-1/bunny-alpha-1 in both roles (review claim of \
+                 2026-10-02T18:58:20Z): a self-review, NOT independent evidence, and an \
+                 independent reviewer is still wanted before any fidelity claim rests on it. \
+                 This report is a checked corpus census, not verified_original: no original \
+                 executable was run, and no agent review replaces the owner's approval"
             ),
             super::jstr(&method),
         );

@@ -124,6 +124,42 @@ that member is `member_out_of_bounds`, every sibling row is identical to the
 audit of the unmodified copy, and the other archive has no failure. The
 installation is never written.
 
+## Decode cost (Rally task #527)
+
+Since task #444 decoded the two ADPCM layouts and task #524 switched the
+`cs_assets` sound consumer to the block-aware plan, this audit is no longer
+the cheap structural census the sections above describe: every one of the
+5,019 compressed members is decoded, so the audit pays the decode cost of
+the whole sound family — about a minute over the retail corpus.
+
+Measured on 2026-10-08 through the same production calls the audit's rows
+come from (`ZbdContainer::sound_assets`, then `SoundAsset::decode` on every
+decoded member under a fresh per-member `ParseContext` at
+`AllocationBudget::DEFAULT_LIMIT`), the sound family's decoded output is
+**371,812,844 `i32` values = 1,487,251,376 bytes ≈ 1,418 MiB** across its
+5,041 members (22 PCM and 5,019 compressed — the census above):
+
+| Archive | Decoded members | Decoded values | Bytes | Largest member |
+| --- | --- | --- | --- | --- |
+| `ZBD/soundsl.zbd` | 2,520 | 121,376,906 | ≈ 463 MiB | 1,427,130 (≈ 5 MiB) |
+| `ZBD/soundsh.zbd` | 2,521 | 250,435,938 | ≈ 955 MiB | 5,706,908 (≈ 22 MiB) |
+| both | 5,041 | 371,812,844 | ≈ 1,418 MiB | 5,706,908 (≈ 22 MiB) |
+
+What keeps the cost bounded is the per-member ceiling, not the total: each
+member is decoded under its own `ParseContext` at the designed 64 MiB
+per-parse ceiling (16,777,216 `i32` values), and the largest member's
+22,827,632 bytes fit it — **no single allocation exceeds the per-parse
+ceiling**. The aggregate, 22 times that ceiling, is exactly why
+`SoundAssets::new` books each member against a fresh context rather than a
+shared ledger; its doc comment has carried the same totals since #524.
+
+The change behind these numbers is attributed to task #444 (the two ADPCM
+decoders) and task #524 (the consumer switch), not to F06-D: this stage only
+measures and records a cost the audit already pays. The numbers are pinned,
+not transcribed — the retail test asserts the per-container totals, the
+aggregate and the largest member, and the evidence harness re-measures them
+when it regenerates `docs/findings/evidence/F06-D.json`.
+
 ## Tests (`tools/cs_inspect/src/zbd.rs`, `accept_f06_d_*`)
 
 | Test | Covers |
@@ -133,7 +169,7 @@ installation is never written.
 | `a_corrupt_container_is_a_row_beside_the_others` | a version-2 trailer (`unsupported_trailer_version`) and a GameZ header at the interp role (`dispatch`) are failed rows beside a listed archive |
 | `cli_refuses_bad_input_and_a_missing_installation` | exit 4 without an installation, 2 for bad flags and for `--out` inside the installation (nothing written) |
 | `the_census_counts_each_decoded_tag_and_needs_its_own_geometry` (added in the #525 review) | the census helper's own rules on authored members: each of the three decoded tags with the geometry it needs, a tag with no geometry, a tag this crate does not decode, a zero `nBlockAlign`, an empty payload, a partial PCM frame, a short trailing block, a member that is not RIFF, a member with no `data` chunk, and an archive whose fourth member reaches past the file (counted `undecodable`, so nothing drops out of `decoded() + undecodable`) |
-| `retail_every_zbd_container_is_audited_family_by_family` (ignored without `CS_GAME_DIR`) | the retail result above |
+| `retail_every_zbd_container_is_audited_family_by_family` (ignored without `CS_GAME_DIR`) | the retail result above, plus the decode-cost measurement of the "Decode cost" section (per-container totals, the 371,812,844-value aggregate and the 5,706,908-value largest member under the 64 MiB per-parse ceiling) |
 | `retail_a_corrupted_copy_fails_beside_its_valid_siblings` (ignored without `CS_GAME_DIR`) | AC04 on retail bytes |
 
 Mutation probes (applied, `accept_f06_d_` run, restored):
