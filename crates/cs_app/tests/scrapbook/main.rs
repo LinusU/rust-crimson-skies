@@ -5,11 +5,17 @@
 //! unrelated progression. The rest covers AC02/AC03's data halves (one stunt
 //! photo unlocks alone; saved ids resolve in every locale), replay links, the
 //! memento choice and catalog validation. All data is authored synthetic data;
-//! this proves the contract, never an original scrapbook rule (F47-D).
+//! this proves the contract, never an original scrapbook rule — the original
+//! table is audited by F47-D (`stage_d`).
 //!
 //! The `persistence` and `paged` modules carry their own headers: stage
 //! `### F47-B` is the idempotent write path, stage `### F47-C` the paged
-//! screen, the locale it reads and the replay it launches.
+//! screen, the locale it reads and the replay it launches. The `stage_d`
+//! module is stage `### F47-D`: the retail audit's `gpu` capture, which needs
+//! `CS_GAME_DIR` and an adapter and is therefore `#[ignore]`d. The rest of
+//! F47-D's acceptance lives in `crates/cs_content/tests/
+//! accept_f47_d_scrapbook_audit.rs`, next to the production discovery and
+//! audit it exercises.
 
 use cs_app::ui::scrapbook::MissionResult;
 use cs_content::scrapbook::{
@@ -30,6 +36,7 @@ mod paged;
 mod pages;
 mod persistence;
 mod records;
+mod stage_d;
 mod validation;
 
 pub fn id(kind: ContentKind, key: &str) -> ContentId {
