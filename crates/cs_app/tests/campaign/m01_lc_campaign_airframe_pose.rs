@@ -314,3 +314,33 @@ fn accept_m01_lc_campaign_airframe_pose_retail_m01_binds_from_the_measured_bytes
     };
     assert_eq!(stored.value.heading, 170.0);
 }
+
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_lc_campaign_airframe_pose_an_instant_action_scenario_keeps_its_own_assignment() {
+    let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
+
+    // The same reader, pointed at this chapter's instant-action archive: it
+    // carries both `aiv.zrd` and an `ia.zrd` whose `player_plane` assigns the
+    // player (#715 measured the key's eight archives and no campaign one), so
+    // mode 3 reads that assignment and the campaign engine-state chain is not
+    // the chain that decides — the airframe must stay refused under the
+    // scenario's own name rather than be bound to the campaign default.
+    let config = recover_retail_start_configuration(&root, "zbd/c1c/ia1")
+        .expect("the chapter's instant-action archive reads");
+    let Resolved::Unknown { reason, .. } = config.airframe() else {
+        panic!(
+            "an instant-action scenario's own assignment must not be overridden by the campaign chain"
+        );
+    };
+    for needle in ["ia.zrd", "player_plane", "Fury", "instant-action"] {
+        assert!(
+            reason.contains(needle),
+            "the refusal must name {needle:?}: {reason}"
+        );
+    }
+    assert!(
+        config.stored_pose().is_known(),
+        "the record's stored pose is read whatever the mode"
+    );
+}

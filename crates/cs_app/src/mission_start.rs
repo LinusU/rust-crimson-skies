@@ -130,6 +130,9 @@ use cs_types::install::{InstallManifest, RelativePath};
 const READER_ARCHIVE: &str = "zrdr.zbd";
 /// The member carrying the scripted aircraft table.
 const AIRCRAFT_MEMBER: &str = "aiv.zrd";
+/// The member an instant-action scenario's assignment of the player's
+/// airframe lives in (#715: the key is read only from here).
+const INSTANT_ACTION_MEMBER: &str = "ia.zrd";
 /// The record name the original gives the player.
 const PLAYER_RECORD: &str = "player";
 /// The prefix of a wingmate record name.
@@ -307,13 +310,13 @@ impl fmt::Display for EngineStateError {
         match self {
             Self::ImageAbsent => write!(
                 formatter,
-                "the installation's inventory carries no {ENGINE_IMAGE}, the decrypted image \
-                 {CAMPAIGN_AIRFRAME_SOURCE}"
+                "the installation's inventory carries no {ENGINE_IMAGE}, the decrypted image the \
+                 campaign airframe and the heading convention were measured in (#770)"
             ),
             Self::DigestMismatch { found } => write!(
                 formatter,
-                "the installation's {ENGINE_IMAGE} hashes to {found}, not to \
-                 {ENGINE_IMAGE_SHA256}, so it cannot back {CAMPAIGN_AIRFRAME_SOURCE}"
+                "the installation's {ENGINE_IMAGE} hashes to {found}, not to the measured \
+                 {ENGINE_IMAGE_SHA256}, so it cannot back the #770 engine-state binding"
             ),
         }
     }
@@ -880,10 +883,7 @@ impl MissionStartConfiguration {
     pub fn refuse_engine_state(&mut self, why: &str) -> Result<(), MissionStartError> {
         let label = claim_label(&self.mission);
         if !self.airframe.is_known() {
-            self.airframe = unknown(
-                claim_id(&format!("{label}.player-airframe"))?,
-                &format!("{AIRFRAME_UNKNOWN_REASON} ({why})"),
-            )?;
+            self.set_airframe_refusal(&format!("{AIRFRAME_UNKNOWN_REASON} ({why})"))?;
         }
         if !self.initial_pose.is_known() {
             self.initial_pose = unknown(
@@ -891,6 +891,23 @@ impl MissionStartConfiguration {
                 &format!("{POSE_UNKNOWN_REASON} ({why})"),
             )?;
         }
+        Ok(())
+    }
+
+    /// Replaces whatever the player's airframe resolves to with `reason`,
+    /// keeping the claim [`read`] gave it.
+    ///
+    /// Used for the two refusals that must override a binding or stand where
+    /// the document-only refusal stood: the engine-state source this
+    /// installation cannot name, and an archive whose own instant-action
+    /// scenario assigns the airframe instead.
+    ///
+    /// # Errors
+    ///
+    /// [`MissionStartError::Provenance`] when a claim id cannot be built.
+    fn set_airframe_refusal(&mut self, reason: &str) -> Result<(), MissionStartError> {
+        let label = claim_label(&self.mission);
+        self.airframe = unknown(claim_id(&format!("{label}.player-airframe"))?, reason)?;
         Ok(())
     }
 }
@@ -906,6 +923,13 @@ impl MissionStartConfiguration {
 /// ([`engine_state_source`]), they are [`Resolved::Known`] with the source
 /// span named above; otherwise [`MissionStartConfiguration::refuse_engine_state`]
 /// says exactly why, and nothing is invented in its place.
+///
+/// One measured exception: an archive that carries its own instant-action
+/// scenario (`ia.zrd` with [`PLAYER_PLANE_KEY`]) has its airframe refused
+/// under that assignment's name instead, because mode 3 reads that key
+/// (`0x4593e5`) and the campaign chain does not decide it. The pose is bound
+/// either way: the record's pose goes through the same conversion whatever
+/// the mode.
 ///
 /// # Errors
 ///
@@ -965,6 +989,33 @@ pub fn recover_retail_start_configuration(
     match engine_state_source(&found.manifest) {
         Ok(engine) => configuration.bind_engine_state(&engine)?,
         Err(error) => configuration.refuse_engine_state(&error.to_string())?,
+    }
+    // #715 measured that `player_plane` is read only by the instant-action
+    // setup, from an archive's `ia.zrd` (`0x4593e5`), and that no campaign
+    // archive carries it. When *this* archive does, mode 3 reads it and the
+    // campaign chain of `CAMPAIGN_AIRFRAME_SOURCE` is not the chain that
+    // decides the airframe — so the binding above is withdrawn for the
+    // airframe and the refusal names the scenario's own assignment. The pose
+    // is unaffected: the record's pose goes through the same conversion
+    // whatever the mode.
+    let instant_action = discovery
+        .programs()
+        .iter()
+        .find(|program| {
+            program
+                .locator()
+                .member()
+                .is_some_and(|name| name.eq_ignore_ascii_case(INSTANT_ACTION_MEMBER))
+        })
+        .and_then(|program| decode_zrd(program.bytes()).ok())
+        .and_then(|scenario| scenario_player_airframe(&scenario).map(str::to_owned));
+    if let Some(assignment) = instant_action {
+        configuration.set_airframe_refusal(&format!(
+            "this archive carries an {INSTANT_ACTION_MEMBER} whose {PLAYER_PLANE_KEY} assigns the \
+             player `{assignment}`: the instant-action setup reads that key (mode 3, 0x4593e5) \
+             instead of the campaign chain, so the measured engine-state default does not apply \
+             here — scenario_player_airframe reads the assignment"
+        ))?;
     }
     Ok(configuration)
 }
