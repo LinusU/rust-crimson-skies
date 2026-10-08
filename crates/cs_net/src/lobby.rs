@@ -713,6 +713,40 @@ pub enum JoinError {
     CallsignTaken,
 }
 
+impl JoinError {
+    /// The stable localization key a lobby screen looks this refusal up
+    /// under. Three refusals the spec names (wrong password, full lobby,
+    /// content mismatch) get three different keys, so a screen can never
+    /// render them as one message (F55 AC03).
+    pub const fn message_key(&self) -> &'static str {
+        match self {
+            Self::WrongPassword => "lobby.join.wrong_password",
+            Self::LobbyFull { .. } => "lobby.join.full",
+            Self::ContentMismatch(_) => "lobby.join.content_mismatch",
+            Self::LateJoinClosed => "lobby.join.late_join_closed",
+            Self::NotAccepting { .. } => "lobby.join.not_accepting",
+            Self::CallsignTaken => "lobby.join.callsign_taken",
+        }
+    }
+}
+
+impl fmt::Display for JoinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WrongPassword => f.write_str("wrong or missing password"),
+            Self::LobbyFull { max } => write!(f, "the lobby is full ({max} players)"),
+            Self::ContentMismatch(why) => write!(f, "content does not match: {why}"),
+            Self::LateJoinClosed => f.write_str("the match is running and late join is closed"),
+            Self::NotAccepting { phase } => {
+                write!(f, "the lobby is not accepting players while {phase:?}")
+            }
+            Self::CallsignTaken => f.write_str("callsign already taken"),
+        }
+    }
+}
+
+impl std::error::Error for JoinError {}
+
 /// The launch order the host sends once every member acknowledged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchOrder {
