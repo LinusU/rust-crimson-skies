@@ -398,6 +398,30 @@ set, which #771 emptied).
   `WorldImportReport`), `crates/cs_app/src/world/spawn.rs` (`spawn_world`) —
   read; `spawn.rs` not modified.
 
+## Evidence
+
+`docs/findings/evidence/M01-LC-WORLD-RESIDUAL-ROLES.json` — schema
+`schemas/evidence.schema.json`, written by
+`crates/cs_app/tests/evidence_report_m01_lc_world_residual_roles.rs` and
+validated with `tools/validate_evidence.py … --require-pass`. Capabilities
+`retail` + `synthetic`; the candidate tree recorded in the JSON is the tree of
+the commit the acceptance run tested; 2 tests discovered, executed and passed;
+claim `implemented`. Its second artifact, `world-residual-roles-census.json`, is
+a **second production observation** — one discovery over the installation, one
+import per container, then the spawn over `c1c`'s own uploaded geometry —
+recording per group the grid size, the fog overlap, the empty-record count, the
+solid count and the open-role count, plus `c1c`'s spawn summary (346 objects,
+288 colliders, **0 skips**, 58 non-colliding, 0 presentation gaps). No original
+byte is in either file: ids, digests, counts and claim labels only.
+
+The three residuals are carried in the report's `review.method` — each naming
+the content it affects and #358 as the task that lifts it — and not in the
+schema's `unknowns` array, which `tools/validate_evidence.py --require-pass`
+requires to be empty. They are limits of code-derived evidence, not work this
+task left undone, they gate `verified_original` and `release_approved` until
+#358 supplies a run, and dropping them from the report entirely (rather than
+relocating them inside it) is what the owner's evidence rule forbids.
+
 ## Commands run
 
 ```sh
@@ -406,4 +430,21 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   
 cargo test --workspace --locked                                       # exit 0
 cargo test --workspace --locked -- accept_m01_lc_world_residual_roles_ --include-ignored
 #   exit 0: 2 tests discovered, executed and passed (1 synthetic, 1 retail)
+# the re-pinned sibling suites, each with CS_GAME_DIR:
+cargo test -p cs_app --test world -- --include-ignored
+#   153 passed, 2 failed: `audit::evidence::evidence_report_f18_d_writes_the_acceptance_report`
+#   and `evidence_f18_parry_denormal_bvh::writes_the_acceptance_report`, which refuse to run
+#   without their own CS_EVIDENCE_DIR sequence and fail the same way on main
+cargo test -p cs_app --test accept_m01_lc_world_unit_roles -- --include-ignored   # exit 0, 5 passed
+# evidence (docs/contracts/CLI-EVIDENCE.md):
+cargo test --locked -p cs_app --test evidence_report_m01_lc_world_residual_roles -- --ignored  # exit 0
+python3 tools/validate_evidence.py docs/findings/evidence/M01-LC-WORLD-RESIDUAL-ROLES.json \
+  --artifact-root private/evidence/M01-LC-WORLD-RESIDUAL-ROLES --require-pass  # exit 0
 ```
+
+The branch was then rebased onto `origin/main`, which had moved by four commits
+touching only `tools/cs_xtask/*` and one findings document: no `Cargo.toml` or
+`Cargo.lock` and no file this branch changes (the owner's 2026-10-01
+merge-race conditions), so the re-push ran the lighter set — `fmt`, `clippy` and
+the prefix run, all exit 0 — and the full workspace suite had been exit 0 on the
+pre-rebase tree (CI runs it on the pushed commit).
