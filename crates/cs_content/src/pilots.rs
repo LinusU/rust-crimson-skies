@@ -51,12 +51,26 @@
 //! fixture in this module is newly authored project design carrying
 //! [`Origin::SyntheticFixture`] or [`Origin::Designed`] provenance, recorded in
 //! `docs/findings/2026-10-01-f33-a-pilot-aircraft-faction-separation.md`.
+//!
+//! The tail of this module is different in kind: task #574's *measured*
+//! retail surface — the decoded `zeppelins.zrd` mission carrier and what it
+//! can and cannot supply the declared schema. Measured data and designed
+//! vocabulary stay in separate types; nothing in the measured section is a
+//! roster value.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::Path;
 
+use cs_assets::install;
+use cs_formats::script_raw::discovery::discover_container;
+use cs_formats::zbd::zeppelins::{
+    ZEPPELINS_MEMBER, ZeppelinKey, ZeppelinMember, ZeppelinRecord, ZeppelinsError,
+    read_zeppelins_member,
+};
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::install::RelativePath;
 
 /// What a mission declares about one allied actor's survival (F33
 /// non-negotiable 4).
@@ -785,6 +799,558 @@ pub fn declared_synthetic_roster() -> DeclaredRoster {
         design_claim("f33a.synthetic.roster"),
     )
     .expect("the fixture roster is valid")
+}
+
+// --------------------- measured `zeppelins.zrd` carrier (task #574) --------
+//
+// Everything above is designed vocabulary. Everything below is measurement:
+// the decoded mission carrier, a census over the installation, and the one
+// question this module must answer honestly — what a carrier record supplies
+// toward [`DeclaredNeutralTraffic`].
+//
+// The measured facts (task #574, over the owner's retail installation):
+//
+// * 50 of 53 mission `zrdr.zbd` archives carry `zeppelins.zrd`; `c1/m02`,
+//   `c2/m01` and `c5/mp2` are the three that do not. No installation-scope
+//   archive carries it (F33-D's census established the same counts without
+//   decoding the member).
+// * All 50 members decode under the `.zrd` grammar: **58 records** in all —
+//   12 members carry zero (the `c*/mp1` and `c*/mp2` multiplayer missions),
+//   23 carry one, 11 carry two, three carry three and one carries four.
+// * A record is one placed zeppelin: a world-`node` binding, a pose, motion
+//   tuning, a `net` name, gasbag/engine/cannon bindings, `targets` that name
+//   `player` or a sibling record's `node`, and — on 16 records — a `team`
+//   spelling (`ally` 12, `enemy` 4).
+//
+// What is **not** established: what any of it means to the original, which
+// records — if any — the original treats as neutral traffic, and how a
+// record maps to the declared schema's catalog ids. The support evaluation
+// below keeps that negative explicit.
+
+/// One input a [`DeclaredNeutralTraffic`] record needs — what a decoded
+/// carrier record would have to supply to lower into one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NeutralTrafficField {
+    /// The mission-authored traffic index.
+    Traffic,
+    /// The pilot that flies the actor.
+    Pilot,
+    /// The airframe the actor flies.
+    Airframe,
+    /// The faction the actor starts on.
+    Faction,
+    /// The declared survival policy.
+    Survivability,
+}
+
+impl NeutralTrafficField {
+    /// Every input, in declared order.
+    pub const ALL: [Self; 5] = [
+        Self::Traffic,
+        Self::Pilot,
+        Self::Airframe,
+        Self::Faction,
+        Self::Survivability,
+    ];
+}
+
+/// What one decoded `zeppelins.zrd` record supplies toward one
+/// [`DeclaredNeutralTraffic`] field — measured over the retail corpus, never
+/// guessed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CarrierFieldSupport {
+    /// The record's encoding carries a field that supplies this input. No
+    /// measured key supplies any declared input today; the variant exists so
+    /// a future measurement names the key instead of widening the claim.
+    Supplied {
+        /// The measured key that carries it.
+        key: ZeppelinKey,
+    },
+    /// The record carries authored data near the input — vocabulary a naive
+    /// wiring would reach for, but not the input itself.
+    Nearby {
+        /// The measured key whose data sits nearest.
+        key: ZeppelinKey,
+        /// What the key actually carries, and why it is not the input.
+        note: &'static str,
+    },
+    /// Nothing in the measured encoding supplies this input.
+    Absent,
+}
+
+/// One decoded carrier record evaluated against the declared
+/// neutral-traffic schema (task #574).
+///
+/// The evaluation is per-field, never a boolean guess: [`Self::can_lower`]
+/// is `true` only when every [`NeutralTrafficField`] reports
+/// [`CarrierFieldSupport::Supplied`], which no measured record achieves —
+/// the member names placed zeppelins, not neutral-traffic declarations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NeutralTrafficSupport {
+    support: [(NeutralTrafficField, CarrierFieldSupport); 5],
+    node: String,
+    team: Option<String>,
+}
+
+impl NeutralTrafficSupport {
+    /// The record's `node` spelling, kept so a report can name which record
+    /// was evaluated.
+    pub fn node(&self) -> &str {
+        &self.node
+    }
+
+    /// The record's `team` spelling, when it states one — mission
+    /// vocabulary, reported verbatim, not a faction.
+    pub fn team(&self) -> Option<&str> {
+        self.team.as_deref()
+    }
+
+    /// The support one field reports.
+    pub fn support_for(&self, field: NeutralTrafficField) -> CarrierFieldSupport {
+        self.support
+            .iter()
+            .find(|(name, _)| *name == field)
+            .map(|(_, support)| *support)
+            .expect("the table covers every field")
+    }
+
+    /// The fields the record supplies outright.
+    pub fn supplied(&self) -> impl Iterator<Item = NeutralTrafficField> + '_ {
+        self.support
+            .iter()
+            .filter(|(_, support)| matches!(support, CarrierFieldSupport::Supplied { .. }))
+            .map(|(field, _)| *field)
+    }
+
+    /// The fields nothing in the measured encoding supplies.
+    pub fn missing(&self) -> impl Iterator<Item = NeutralTrafficField> + '_ {
+        self.support
+            .iter()
+            .filter(|(_, support)| matches!(support, CarrierFieldSupport::Absent))
+            .map(|(field, _)| *field)
+    }
+
+    /// Whether the record can lower into a [`DeclaredNeutralTraffic`] without
+    /// inventing data. `false` for every measured record.
+    pub fn can_lower(&self) -> bool {
+        self.missing().next().is_none() && self.nearby().next().is_none()
+    }
+
+    /// The fields the record carries only nearby vocabulary for.
+    pub fn nearby(&self) -> impl Iterator<Item = NeutralTrafficField> + '_ {
+        self.support
+            .iter()
+            .filter(|(_, support)| matches!(support, CarrierFieldSupport::Nearby { .. }))
+            .map(|(field, _)| *field)
+    }
+}
+
+/// Evaluates one decoded `zeppelins.zrd` record against the declared
+/// neutral-traffic schema.
+///
+/// The result is the measured negative, made explicit:
+///
+/// * `node` sits nearest [`NeutralTrafficField::Airframe`] — it is the
+///   record's world-node binding (a placed instance's name), not an airframe
+///   catalog id, and which airframe it names is unmeasured;
+/// * `team`, when stated, sits nearest [`NeutralTrafficField::Faction`] —
+///   it is mission vocabulary (`ally`/`enemy` measured), not a faction
+///   catalog id;
+/// * every other field is [`CarrierFieldSupport::Absent`]: the encoding
+///   carries no traffic index, no pilot and no survival policy. A lowering
+///   could invent an ordinal or a default, but that would be design — the
+///   same class of data the declared fixture authors — not a measurement of
+///   the original.
+#[must_use]
+pub fn neutral_traffic_support(record: &ZeppelinRecord) -> NeutralTrafficSupport {
+    let support = [
+        (NeutralTrafficField::Traffic, CarrierFieldSupport::Absent),
+        (NeutralTrafficField::Pilot, CarrierFieldSupport::Absent),
+        (
+            NeutralTrafficField::Airframe,
+            CarrierFieldSupport::Nearby {
+                key: ZeppelinKey::Node,
+                note: "the `node` spelling is the record's world-node binding (a placed \
+                       instance's name), not an airframe catalog id; which airframe it \
+                       names is unmeasured",
+            },
+        ),
+        (
+            NeutralTrafficField::Faction,
+            match record.team() {
+                Some(_) => CarrierFieldSupport::Nearby {
+                    key: ZeppelinKey::Team,
+                    note: "the `team` spelling is mission vocabulary (`ally`/`enemy` \
+                           measured), not a faction catalog id",
+                },
+                None => CarrierFieldSupport::Absent,
+            },
+        ),
+        (
+            NeutralTrafficField::Survivability,
+            CarrierFieldSupport::Absent,
+        ),
+    ];
+    NeutralTrafficSupport {
+        support,
+        node: record.node().to_owned(),
+        team: record.team().map(str::to_owned),
+    }
+}
+
+/// Why the decoded-carrier census could not be produced.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CarrierCensusError {
+    /// The installation could not be discovered.
+    Discovery(String),
+    /// An archive the installation declares could not be read, or discovery
+    /// inventoried no such archive.
+    Read {
+        /// The installation-relative archive.
+        container: String,
+        /// Why the read failed.
+        reason: String,
+    },
+    /// A discovered archive spelling is not a usable relative path.
+    Path {
+        /// The installation-relative archive.
+        container: String,
+        /// Why the spelling was refused.
+        reason: String,
+    },
+    /// The archive is not readable as a reader container: discovery reported
+    /// findings and located no members, so "the member is absent" cannot be
+    /// claimed.
+    NotAReaderArchive {
+        /// The installation-relative archive.
+        container: String,
+        /// Why discovery refused it.
+        reason: String,
+    },
+    /// The mission's `zeppelins.zrd` member refused to decode — a named
+    /// failure, never a skipped member.
+    Decode {
+        /// The installation-relative archive.
+        container: String,
+        /// The decoder's named refusal.
+        error: ZeppelinsError,
+    },
+}
+
+impl fmt::Display for CarrierCensusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Discovery(reason) => write!(f, "the installation is undiscoverable: {reason}"),
+            Self::Read { container, reason } => {
+                write!(f, "archive {container} could not be read: {reason}")
+            }
+            Self::Path { container, reason } => {
+                write!(
+                    f,
+                    "archive {container} is not a usable relative path: {reason}"
+                )
+            }
+            Self::NotAReaderArchive { container, reason } => {
+                write!(f, "archive {container} is not a reader archive: {reason}")
+            }
+            Self::Decode { container, error } => {
+                write!(
+                    f,
+                    "{ZEPPELINS_MEMBER} in {container} refused to decode: {error}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for CarrierCensusError {}
+
+/// One mission's carrier row: whether its archive carries `zeppelins.zrd`,
+/// and the decoded member when it does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetailZeppelinCarrier {
+    group: String,
+    mission: String,
+    archive: String,
+    archive_sha256: String,
+    member: Option<ZeppelinMember>,
+}
+
+impl RetailZeppelinCarrier {
+    /// The world group directory (`c1`, `c2`, ...).
+    pub fn group(&self) -> &str {
+        &self.group
+    }
+
+    /// The mission directory (`m01`, `mp3`, ...).
+    pub fn mission(&self) -> &str {
+        &self.mission
+    }
+
+    /// The installation-relative archive the row reports.
+    pub fn archive(&self) -> &str {
+        &self.archive
+    }
+
+    /// The archive's SHA-256, so the row's number traces to bytes.
+    pub fn archive_sha256(&self) -> &str {
+        &self.archive_sha256
+    }
+
+    /// Whether the archive carries [`ZEPPELINS_MEMBER`].
+    pub const fn carrier_present(&self) -> bool {
+        self.member.is_some()
+    }
+
+    /// The decoded member, when the archive carries it.
+    pub const fn member(&self) -> Option<&ZeppelinMember> {
+        self.member.as_ref()
+    }
+
+    /// How many records the member carries (`0` when the member is absent or
+    /// states an empty record list — distinguished by
+    /// [`Self::carrier_present`]).
+    pub fn record_count(&self) -> usize {
+        self.member.as_ref().map_or(0, ZeppelinMember::len)
+    }
+}
+
+/// The decoded `zeppelins.zrd` census over one installation: one row per
+/// mission directory, plus whether any installation-scope archive carries
+/// the member.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetailZeppelinCarrierCensus {
+    install_sha256: String,
+    content_sha256: String,
+    carrier_member: &'static str,
+    installation_scope_carrier: bool,
+    missions: Vec<RetailZeppelinCarrier>,
+    team_spellings: BTreeMap<String, u64>,
+}
+
+impl RetailZeppelinCarrierCensus {
+    /// The installation fingerprint the census was measured over.
+    pub fn install_sha256(&self) -> &str {
+        &self.install_sha256
+    }
+
+    /// The canonical-content fingerprint.
+    pub fn content_sha256(&self) -> &str {
+        &self.content_sha256
+    }
+
+    /// The member name the census decodes.
+    pub const fn carrier_member(&self) -> &'static str {
+        self.carrier_member
+    }
+
+    /// Whether the root or any world-group `zrdr.zbd` carries the member:
+    /// measured `false` over the retail installation.
+    pub const fn installation_scope_carrier(&self) -> bool {
+        self.installation_scope_carrier
+    }
+
+    /// The mission rows, in sorted `(group, mission)` order.
+    pub fn missions(&self) -> &[RetailZeppelinCarrier] {
+        &self.missions
+    }
+
+    /// The mission rows whose archive carries no member.
+    pub fn missions_without_carrier(&self) -> impl Iterator<Item = &RetailZeppelinCarrier> {
+        self.missions.iter().filter(|row| !row.carrier_present())
+    }
+
+    /// The mission rows whose archive carries a member.
+    pub fn missions_with_carrier(&self) -> impl Iterator<Item = &RetailZeppelinCarrier> {
+        self.missions.iter().filter(|row| row.carrier_present())
+    }
+
+    /// Records across every carrying member.
+    pub fn record_count(&self) -> usize {
+        self.missions
+            .iter()
+            .map(RetailZeppelinCarrier::record_count)
+            .sum()
+    }
+
+    /// The `team` spellings the decoded records carry, with their counts —
+    /// measured vocabulary, not an interpretation of it.
+    pub fn team_spellings(&self) -> &BTreeMap<String, u64> {
+        &self.team_spellings
+    }
+
+    /// Every decoded record across the carrying missions, with its mission.
+    pub fn records(&self) -> impl Iterator<Item = (&RetailZeppelinCarrier, &ZeppelinRecord)> {
+        self.missions
+            .iter()
+            .filter_map(|row| row.member().map(|member| (row, member)))
+            .flat_map(|(row, member)| member.records().iter().map(move |record| (row, record)))
+    }
+}
+
+/// One archive's member scan: whether the carrier is present and its decode.
+struct MemberScan {
+    sha256: String,
+    member: Option<ZeppelinMember>,
+}
+
+/// Reads one installation archive through the production reader-archive
+/// discovery and decodes its `zeppelins.zrd` member when present.
+///
+/// # Errors
+///
+/// [`CarrierCensusError`] when the installation declares no such archive, it
+/// cannot be read or located, it is not a reader archive at all, or the
+/// member refuses to decode. A failed read is a refusal, never an absent
+/// member; a member that will not decode is a named failure, never a skipped
+/// one.
+fn scan_carrier(
+    found: &install::Discovery,
+    container: &str,
+) -> Result<MemberScan, CarrierCensusError> {
+    let record = found
+        .manifest
+        .files
+        .iter()
+        .find(|record| record.relative_spelling.logical_key() == container)
+        .ok_or_else(|| CarrierCensusError::Read {
+            container: container.to_owned(),
+            reason: "production discovery inventoried no such archive".to_owned(),
+        })?;
+    let bytes = std::fs::read(
+        found
+            .manifest
+            .host_root
+            .join(record.relative_spelling.as_str()),
+    )
+    .map_err(|error| CarrierCensusError::Read {
+        container: container.to_owned(),
+        reason: error.to_string(),
+    })?;
+    let path = RelativePath::new(record.relative_spelling.as_str()).map_err(|error| {
+        CarrierCensusError::Path {
+            container: container.to_owned(),
+            reason: error.to_string(),
+        }
+    })?;
+    let discovery = discover_container(container, &path, &bytes);
+    if discovery.programs().is_empty() && !discovery.findings().is_empty() {
+        let reason = discovery
+            .findings()
+            .iter()
+            .map(|finding| format!("{finding:?}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(CarrierCensusError::NotAReaderArchive {
+            container: container.to_owned(),
+            reason,
+        });
+    }
+    let member = discovery
+        .programs()
+        .iter()
+        .find(|program| program.locator().member() == Some(ZEPPELINS_MEMBER))
+        .map(|program| {
+            read_zeppelins_member(program.bytes()).map_err(|error| CarrierCensusError::Decode {
+                container: container.to_owned(),
+                error,
+            })
+        })
+        .transpose()?;
+    Ok(MemberScan {
+        sha256: record.sha256.to_hex(),
+        member,
+    })
+}
+
+/// Decodes the original installation's per-mission `zeppelins.zrd` carrier
+/// (task #574).
+///
+/// One production discovery, one production reader-archive discovery per
+/// archive, and the production [`read_zeppelins_member`] decode per carrying
+/// member. Each mission row carries its archive key, SHA-256 and decoded
+/// member, so every count traces to bytes; the installation and canonical
+/// content fingerprints cover the whole source.
+///
+/// # Errors
+///
+/// [`CarrierCensusError`] on an undiscoverable installation, an archive that
+/// cannot be read or located, an archive that is not a reader container, or
+/// a member that refuses to decode. The census does not turn a failed read
+/// into a shorter list or a failed decode into a skipped member.
+pub fn survey_retail_zeppelin_carrier(
+    install_root: &Path,
+) -> Result<RetailZeppelinCarrierCensus, CarrierCensusError> {
+    let found = install::discover(install_root)
+        .map_err(|error| CarrierCensusError::Discovery(error.to_string()))?;
+    let install_sha256 = install::fingerprint(&found.manifest).to_hex();
+    let content_sha256 = install::content_fingerprint(&found.manifest).to_hex();
+
+    // Every `ZBD/<group>/<mission>` directory, from the production diagnosis
+    // (the same set F33-D's census walked: directories are authoritative).
+    let mut mission_dirs: Vec<(String, String)> = Vec::new();
+    let mut groups: Vec<String> = Vec::new();
+    for directory in &found.diagnosis.directories {
+        let key = directory.logical_key();
+        let parts: Vec<&str> = key.split('/').collect();
+        match parts.as_slice() {
+            ["zbd", group] => groups.push((*group).to_owned()),
+            ["zbd", group, mission] if !group.is_empty() && !mission.is_empty() => {
+                mission_dirs.push(((*group).to_owned(), (*mission).to_owned()));
+            }
+            _ => {}
+        }
+    }
+    mission_dirs.sort();
+    groups.sort();
+    groups.dedup();
+
+    // The installation-scope archives: the root and every world group. A
+    // carrier here is decoded the same way — measured absent, but the check
+    // is the same measurement, not an assumption.
+    let mut scope_keys: Vec<String> = vec!["zbd/zrdr.zbd".to_owned()];
+    for group in &groups {
+        scope_keys.push(format!("zbd/{group}/zrdr.zbd"));
+    }
+    let mut installation_scope_carrier = false;
+    for key in &scope_keys {
+        if scan_carrier(&found, key)?.member.is_some() {
+            installation_scope_carrier = true;
+        }
+    }
+
+    let mut missions = Vec::with_capacity(mission_dirs.len());
+    for (group, mission) in mission_dirs {
+        let archive = format!("zbd/{group}/{mission}/zrdr.zbd");
+        let scan = scan_carrier(&found, &archive)?;
+        missions.push(RetailZeppelinCarrier {
+            group,
+            mission,
+            archive,
+            archive_sha256: scan.sha256,
+            member: scan.member,
+        });
+    }
+
+    let mut team_spellings: BTreeMap<String, u64> = BTreeMap::new();
+    for row in &missions {
+        if let Some(member) = row.member() {
+            for record in member.records() {
+                if let Some(team) = record.team() {
+                    *team_spellings.entry(team.to_owned()).or_default() += 1;
+                }
+            }
+        }
+    }
+
+    Ok(RetailZeppelinCarrierCensus {
+        install_sha256,
+        content_sha256,
+        carrier_member: ZEPPELINS_MEMBER,
+        installation_scope_carrier,
+        missions,
+        team_spellings,
+    })
 }
 
 #[cfg(test)]
