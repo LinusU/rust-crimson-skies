@@ -137,7 +137,15 @@ come from (`ZbdContainer::sound_assets`, then `SoundAsset::decode` on every
 decoded member under a fresh per-member `ParseContext` at
 `AllocationBudget::DEFAULT_LIMIT`), the sound family's decoded output is
 **371,812,844 `i32` values = 1,487,251,376 bytes ≈ 1,418 MiB** across its
-5,041 members (22 PCM and 5,019 compressed — the census above):
+5,041 members (22 PCM and 5,019 compressed — the census above).
+
+The installation this measurement ran on fingerprints as
+`c14a876f…c5352` (content `148a24b7…c35e`), not the `b4e780ab…` the 2026-09-28
+and 2026-10-02 sections name: the mounted installation changed between those
+runs and 2026-10-07, as every evidence report generated since records. The
+sound corpus the fingerprint covers is unchanged — the same 184 containers,
+the same per-tag census, and the same decoded totals above agree with the
+earlier measurement to the value.
 
 | Archive | Decoded members | Decoded values | Bytes | Largest member |
 | --- | --- | --- | --- | --- |
