@@ -236,18 +236,22 @@ fn accept_playtest_retail_the_declared_unit_is_canonical_and_uncalibrated() {
 // ------------------------------------------------ the designed spawn and views --
 
 /// A real measured area: c1c's pinned subtree's composed extent, to the units the
-/// production readers reported.
+/// production readers reported — the extent of the **drawn** set, i.e. with the
+/// #795 flat-colour landing cards hidden, which is what the documented rule
+/// composes today. (With the cards drawn, `hide_flat_colour_cards = false`, the
+/// extent also spans their 500 m tail and 125 m drop: `y −160.599 … 57.131`,
+/// `z −222.893 … 616.608`.)
 fn measured_bounds() -> Aabb {
     Aabb::try_new(
         [
             -53.168_008_208_274_84,
-            -160.598_781_585_693_36,
+            -87.852_458_953_857_42,
             -222.892_888_903_617_86,
         ],
         [
             53.167_592_406_272_89,
             57.130_611_419_677_734,
-            616.608_032_226_562_5,
+            348.685_928_344_726_56,
         ],
     )
     .expect("the measured composed extent is a valid box")
@@ -261,7 +265,8 @@ const MEASURED_AIRCRAFT_EXTENT: [f32; 3] = [2.111_164_6, 1.492_971_9, 10.233_251
 ///
 /// Checked against the **measured** composed extent rather than a made-up box:
 /// the spawn must be off the area's own side (so there is air to fly into), inside
-/// its height range (so it is not above or below the geometry), and amidships, and
+/// its height range (so it is not above or below the geometry), and between the
+/// area's ends alongside the hull (#795's retuned designed fraction), and
 /// the rotation must be `nose_mapping` applied to the measured stored nose
 /// (`−Z`, `STORED_AIRCRAFT_NOSE_AXIS`) — which carries that end onto the
 /// runtime's forward axis (`−Z`) without pitching or rolling the airframe.

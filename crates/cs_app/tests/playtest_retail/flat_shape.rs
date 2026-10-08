@@ -16,8 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use cs_app::playtest_retail::{
-    PlaytestCameraView, PlaytestConfig, PlaytestScene, area_graph, capture_visibility_delta,
-    playtest_adapter, playtest_app, read_playtest_sources, spawn_playtest_scene,
+    PlaytestCameraView, PlaytestConfig, PlaytestScene, area_graph, capture_playtest_views,
+    capture_visibility_delta, playtest_adapter, playtest_app, read_playtest_sources,
+    spawn_playtest_scene,
 };
 
 /// The two landing cards, pinned by their measured stored identity.
@@ -417,6 +418,40 @@ fn card_view(
             (centre[2] + normal[2] * distance) as f32,
         ],
         target: std::array::from_fn(|axis| centre[axis] as f32),
+    }
+}
+
+/// **Every documented view still frames the aircraft with the cards hidden.**
+///
+/// #795's review caught this failing: with the landing cards hidden the area's
+/// measured extent shrank, and the `overview` eye — then placed at
+/// `centre + 0.5·span_z` — sat exactly on the extent's aft plane, which was the
+/// hull's own tip, so the outboard spawn was occluded and the overview frame
+/// carried zero aircraft pixels (failing the `c1c`, nose and textures capture
+/// tests). The production capture path is asserted here under this task's
+/// prefix: all three documented views must draw both the environment and the
+/// aircraft on the real GPU, in the documented configuration (cards hidden).
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_playtest_area_flat_shape_every_documented_view_still_frames_the_aircraft() {
+    let config = PlaytestConfig::documented();
+    let sources =
+        read_playtest_sources(&install_dir(), &config.world_group).expect("the installation reads");
+    let mut app = playtest_app();
+    app.update();
+    let scene = spawn_playtest_scene(&mut app, &sources, &config).expect("the scene spawns");
+    let dir = private_dir();
+    let captures =
+        capture_playtest_views(&mut app, &scene, &dir).expect("every documented view renders");
+    assert_eq!(captures.len(), 3, "three documented views");
+    for capture in &captures {
+        assert!(
+            capture.drew_aircraft(),
+            "{} must frame the aircraft even with the cards hidden: {} pixels changed",
+            capture.view,
+            capture.aircraft_pixels
+        );
+        assert!(capture.drew_environment(), "{} drew the area", capture.view);
     }
 }
 

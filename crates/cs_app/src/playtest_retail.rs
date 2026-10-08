@@ -2522,6 +2522,15 @@ pub struct PlaytestCameraView {
 /// `overview` looks at the area's centre from outside it, so the **environment**
 /// fills the frame with the aircraft small but present.
 ///
+/// "Outside it" is enforced, not hoped for (#795's review): `overview`'s eye
+/// stands a full span from the centre along the area's length, i.e. half a span
+/// beyond the extent's aft face. At the earlier `+0.5·span` the eye sat exactly
+/// **on** the aft plane, which only stood clear of the geometry while the landing
+/// cards' 500 m tail inflated the extent (pre-#795); once the cards were hidden
+/// the eye ended up at the airship's own aft tip, inside the hull's silhouette,
+/// and the measured overview frame carried **zero** aircraft pixels — the outboard
+/// spawn was occluded by the hull it was standing in.
+///
 /// Every camera distance is declared as a multiple of the **aircraft's** own
 /// extent, so the two aircraft-framing views hold the aircraft at a constant
 /// share of the frame instead of at a constant number of metres this file guessed
@@ -2625,7 +2634,13 @@ pub fn camera_poses(
             [
                 centre[0] - 0.42 * span[0],
                 centre[1] + 0.36 * span[1] + 3.0 * height,
-                centre[2] + 0.5 * span[2],
+                // A full span from the centre: half a span **beyond** the extent's
+                // aft face, so the eye stands outside the measured geometry by
+                // construction (#795's review measured the `+0.5·span` eye — then
+                // exactly on the aft plane — occluding the outboard spawn behind
+                // the hull's own aft tip once the landing cards no longer inflated
+                // the extent).
+                centre[2] + span[2],
             ],
             centre,
         ),
