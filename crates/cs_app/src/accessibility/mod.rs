@@ -17,13 +17,21 @@
 //! * [`motion`] — reduced shake/flash that drops cosmetic effects and never a
 //!   required damage or target notification.
 //! * [`store`] — atomic persistence and the safe-defaults startup.
+//! * [`session`] — (F52-C) the live [`session::SettingsSession`] that ties
+//!   them together: the recovery report of a boot, apply/retry/teardown with
+//!   the error propagated instead of a change dropped, the labelled
+//!   [`session::ControlProfile`], and [`session::SettingsSession::project`],
+//!   which hands one frame's gameplay, presented effects and fidelity
+//!   metadata to their consumers together.
 //!
 //! Everything is **designed** and synthetic; no original option is asserted.
-//! See `docs/findings/2026-10-01-f52-a-accessibility-settings.md`.
+//! See `docs/findings/2026-10-01-f52-a-accessibility-settings.md` and
+//! `docs/findings/2026-10-08-f52-c-settings-session-integration.md`.
 
 pub mod cues;
 pub mod motion;
 pub mod navigation;
 pub mod objective_page;
 pub mod remap;
+pub mod session;
 pub mod store;

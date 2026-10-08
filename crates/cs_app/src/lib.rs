@@ -581,7 +581,12 @@
 //! remap session that cannot strand a device, colour-independent objective
 //! cues, reduced shake/flash that keeps required notifications, and atomic
 //! settings persistence with a safe-defaults startup. The settings types are
-//! `cs_content::settings`.
+//! `cs_content::settings`. Stage `### F52-C` adds
+//! [`accessibility::session::SettingsSession`], the live session that owns
+//! the file (recovery report included), applies, retries and tears down a
+//! change without ever dropping one, exposes the labelled control profile,
+//! and projects one frame's gameplay, presented effects and fidelity
+//! metadata to their consumers together.
 //!
 //! [`network`] is the F57-A networked-aircraft boundary
 //! (`specs/F57-networked-aircraft-prediction-interpolation-and-projectiles.md`,
