@@ -5882,14 +5882,19 @@ impl WorldImportReport {
     /// How many imported objects still carry `Unknown` for their **collision
     /// role** — the count a launch verdict reads to learn what is unanswered.
     ///
-    /// Every record the partition grid names resolves a role (the index, the
-    /// fog consumer or the store's own silence), so since task #771 this is
-    /// exactly the unindexed records whose container says nothing —
-    /// [`Self::objects_unindexed_unresolved`] — and a report where it is zero
-    /// has no record whose collision behavior this conversion had to leave
-    /// open. A record can still carry an explicit unknown for its **shape**
-    /// (fog volumes and empty records do, on purpose); that is a statement
-    /// about which geometry, not about whether it blocks.
+    /// A record the partition grid names resolves one through the index, the
+    /// fog consumer or the store's own silence — **except** a grid-named
+    /// `fvol*` record that stores [`INTERSECTION_NARROW_PHASE_FLAG`], which
+    /// stays an explicit unknown under
+    /// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] and is counted here too, so
+    /// this is [`Self::objects_unindexed_unresolved`] **plus** any such
+    /// record. No record on the original installation stores that bit (task
+    /// #771's retail test asserts both facts per container), so the two are
+    /// equal there and this one is `0` for `zbd/c1c`. Either way a report
+    /// where it is zero has no record whose collision behavior this conversion
+    /// had to leave open. A record can still carry an explicit unknown for its
+    /// **shape** (fog volumes and empty records do, on purpose); that is a
+    /// statement about which geometry, not about whether it blocks.
     #[must_use]
     pub const fn objects_unresolved_collision(&self) -> usize {
         self.objects_unresolved_collision
