@@ -136,10 +136,11 @@ as in F53-A/B/C. No test is ignored: nothing here needs `CS_GAME_DIR`.
 - **No production caller yet (reviewer-confirmed).** Nothing in this
   build calls `mark_save_document`, `save_population`, `provided_ids` or
   `save_dependency` outside the acceptance tests: the host save write
-  path (`crates/cs_app/src/profile.rs`) and the load/reopen path are not
-  F53's owner paths, and no gameplay run opens a modded profile session
-  today (the mod system's own consumers are `mount_selection` and
-  `lobby_compatibility`, both from F53-C, and neither writes a save).
+  path (`crates/cs_app/src/profile.rs`) is not an F53 owner path, no
+  load/reopen screen exists yet, and no gameplay run opens a modded
+  profile session today (the mod system's own consumers are
+  `mount_selection` and `lobby_compatibility`, both from F53-C, and
+  neither writes a save).
   Affected content: a save written while a mod set is enabled carries no
   `fingerprint.content` entry in the shipped game, and a dependent save
   reopened through the host is not yet shown this report — the behaviour
@@ -161,7 +162,9 @@ as in F53-A/B/C. No test is ignored: nothing here needs `CS_GAME_DIR`.
 - `cargo test --workspace --locked -- accept_f53_d_ --include-ignored` —
   exit 0, 5 tests run, all passing.
 
-### Reviewer's run (2026-10-08, detached review worktree at `265e9607`)
+### Reviewer's runs (detached review worktree, `bunny-2`)
+
+At `265e9607` (the submitted head, before this review's docs commit):
 
 - `cargo fmt --all -- --check` — exit 0.
 - `cargo clippy --workspace --all-targets --all-features --locked --
@@ -169,6 +172,18 @@ as in F53-A/B/C. No test is ignored: nothing here needs `CS_GAME_DIR`.
 - `cargo test --workspace --locked` — exit 0, 4083 passed, 0 failed.
 - `cargo test --workspace --locked -- accept_f53_d_ --include-ignored`
   — exit 0, 5 tests executed (`1 + 2 + 2`), all passing.
+
+Run of record, on the final head this review pushed (full four
+checks, because this review added commits; those commits change only
+`docs/findings/`, which cargo does not compile):
+
+- `cargo fmt --all -- --check` — exit 0.
+- `cargo clippy --workspace --all-targets --all-features --locked --
+  -D warnings` — exit 0.
+- `cargo test --workspace --locked` — exit 0, 4095 passed, 0 failed.
+- `cargo test --workspace --locked -- accept_f53_d_ --include-ignored`
+  — exit 0, 5 tests executed, all passing.
+
 - Caveat for the next agent: this session exports
   `CARGO_TARGET_DIR=<bunny-2>/target`, which makes
   `accept_t383_this_worktrees_effective_target_dir_is_per_worktree`
