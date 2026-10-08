@@ -329,13 +329,17 @@
 //! economy draft validated against the expected profile revision before it
 //! writes.
 //!
-//! [`multiplayer`] is the F56-A multiplayer rule layer
-//! (`specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stage
-//! `### F56-A`): [`multiplayer::result::MatchResolver`] folds lethal events and
-//! the time/score limits into one sealed final result, deduplicating a
-//! retransmitted event by its `EventId` and refusing another session's events.
-//! The original rule values are unknown, so the score table and limits are
-//! caller inputs; mode state machines are F56-B.
+//! [`multiplayer`] is the F56-A/F56-B multiplayer rule layer
+//! (`specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stages
+//! `### F56-A`/`### F56-B`): [`multiplayer::result::MatchResolver`] folds
+//! lethal events and the time/score limits into one sealed final result under
+//! a declared [`multiplayer::result::VictoryRule`], deduplicating a
+//! retransmitted event by its `EventId` and refusing another session's events;
+//! [`multiplayer::objective::ObjectiveBoard`] is the server-authoritative
+//! possession state machine whose queued, id-ordered adjudication lets only
+//! the server-accepted claim hold an objective and never applies a
+//! possession, drop, return or score twice. The original rule values are
+//! unknown, so the score table and limits are caller inputs.
 //!
 //! [`net_state`] is the F57-A authoritative network state
 //! (`specs/F57-networked-aircraft-prediction-interpolation-and-projectiles.md`,
