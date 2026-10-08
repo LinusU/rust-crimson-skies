@@ -3,8 +3,14 @@
 Date: 2026-10-08. Task: M03-B "Implement and regress mission-specific
 compatibility gaps" (#265, `missions/M03.md`). Shared contract:
 `docs/contracts/SCRIPT-MISSION.md`. Capability used: `retail` (read-only
-`$CS_GAME_DIR`). Implementer: **claude-2** (Sonnet 5.5, 2026-10-08). No
-reviewer yet; nothing here is independent review or `verified_original`.
+`$CS_GAME_DIR`). Implementer: **claude-2/claude-2** (Sonnet 5.5, 2026-10-08).
+Reviewer: **bunny-2/bunny-2** (Rally review claim of 2026-10-08T21:46Z), a
+different agent instance and model with a fresh context. The review re-ran the
+whole `accept_m03_b_` suite with `CS_GAME_DIR` on the rebased commit,
+regenerated the evidence report from that run and validated it with
+`tools/validate_evidence.py --require-pass`; it is an agent review of the code
+and tests, not independent original-reference evidence, and no agent review
+replaces the owner's human approval.
 
 ## What changed
 
