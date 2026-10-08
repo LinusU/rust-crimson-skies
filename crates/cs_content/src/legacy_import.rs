@@ -66,16 +66,17 @@ use std::fmt;
 
 use cs_assets::install::sha256;
 use cs_formats::legacy_profile::{
-    ArtifactProposal, ArtifactProposalError, ImportRequirement, LegacyArtifactClass, LegacyIdClass,
-    LegacyLayout, LegacyLimits, LegacyProfileDocument, LegacyProfileError, LegacyProfileErrorKind,
-    LegacyRecord, MAX_LEGACY_SOURCE_BYTES, layout_record, read_legacy_profile,
+    ArtifactProposal, ArtifactProposalError, ImportRequirement, LEGACY_SAVE_IMPORT_SWITCH,
+    LegacyArtifactClass, LegacyIdClass, LegacyLayout, LegacyLimits, LegacyProfileDocument,
+    LegacyProfileError, LegacyProfileErrorKind, LegacyRecord, MAX_LEGACY_SOURCE_BYTES,
+    layout_record, read_legacy_profile,
 };
 use cs_types::content::{
     ContentId, ContentIdError, ContentKind, Known, Origin, Provenance, Resolved,
 };
 use cs_types::evidence::ClaimStatus;
 use cs_types::install::InstallIdentity;
-use cs_types::profile::{ProfileId, ProfileKind};
+use cs_types::profile::{ProfileId, ProfileKind, SettingApply};
 
 use crate::catalog::Catalog;
 use crate::construction::{
@@ -84,6 +85,7 @@ use crate::construction::{
     ValidationRefusal,
 };
 use crate::damage::DamageNodeKey;
+use crate::save::settings::{SettingRule, SettingsState, ValueRule};
 
 /// Which layout evidence a plan may be made from.
 ///
@@ -860,6 +862,60 @@ impl MigrationReport {
     }
 }
 
+/// The value labels of [`LEGACY_SAVE_IMPORT_SWITCH`], as a profile stores them.
+///
+/// A boolean is a two-label [`ValueRule::Choice`], which is the shape
+/// `cs_content::save::settings` declares for every persisted on/off value; the
+/// labels are newly authored engine vocabulary, never a claim about what the
+/// original writes.
+pub const LEGACY_SAVE_IMPORT_ON: &str = "on";
+/// The off label of [`LEGACY_SAVE_IMPORT_SWITCH`].
+pub const LEGACY_SAVE_IMPORT_OFF: &str = "off";
+
+/// The declared profile setting behind the inventory's
+/// [`LEGACY_SAVE_IMPORT_SWITCH`](cs_formats::legacy_profile::LEGACY_SAVE_IMPORT_SWITCH).
+///
+/// The feature that owns a setting owns its rule, so this is where F64's
+/// optional-save switch is declared: the key the inventory already names, a
+/// change that takes effect live (an import dialog reads it while it is open),
+/// and the designed default of **on** — an optional enhancement the player can
+/// decline, not one they must first enable. The import still requires the
+/// explicit owner action of `plan_import`'s confirm path and is still refused
+/// under [`LayoutAdmission::MeasuredOnly`] until a byte layout is measured, so
+/// the default never turns an unverified import into a report.
+///
+/// Nothing about the original game is claimed here: the key, the labels and
+/// the default are newly authored engine vocabulary.
+#[must_use]
+pub fn legacy_save_import_rule() -> SettingRule {
+    SettingRule {
+        key: LEGACY_SAVE_IMPORT_SWITCH,
+        apply: SettingApply::Live,
+        value: ValueRule::Choice(&[LEGACY_SAVE_IMPORT_ON, LEGACY_SAVE_IMPORT_OFF]),
+        default: LEGACY_SAVE_IMPORT_ON,
+    }
+}
+
+/// Whether a profile's resolved settings have the optional legacy-save
+/// enhancement switched on.
+///
+/// This is the production source of
+/// [`ImportRequest::legacy_save_import_enabled`]: a screen resolves the live
+/// value of [`legacy_save_import_rule`]'s key instead of inventing a boolean.
+/// A value the rule's own labels do not name (a save written before this rule
+/// was declared, or a caller whose catalog does not carry it) falls back to the
+/// declared default rather than being read as a guess, and a stored `off` is
+/// `off`.
+#[must_use]
+pub fn legacy_save_import_enabled(settings: &SettingsState) -> bool {
+    let rule = legacy_save_import_rule();
+    match settings.live_value(rule.key) {
+        Some(value) if value == LEGACY_SAVE_IMPORT_ON => true,
+        Some(value) if value == LEGACY_SAVE_IMPORT_OFF => false,
+        _ => rule.default == LEGACY_SAVE_IMPORT_ON,
+    }
+}
+
 /// Everything [`plan_import`] needs, all by shared reference.
 ///
 /// There is no field through which a caller could hand this planner a mutable
@@ -883,6 +939,10 @@ pub struct ImportRequest<'a> {
     /// Which layout evidence may be imported.
     pub admission: LayoutAdmission,
     /// Whether the optional legacy-save enhancement is switched on.
+    ///
+    /// Production resolves this with [`legacy_save_import_enabled`] from the
+    /// profile's live settings, so the value a dialog offers from is the one
+    /// the profile store holds; a caller must not invent it.
     pub legacy_save_import_enabled: bool,
     /// The installation identity the source was found under, when known.
     pub install_identity: Option<InstallIdentity>,

@@ -51,6 +51,6 @@ pub use document::{
 };
 pub use inventory::{
     ArtifactProposal, ArtifactProposalError, ImportRequirement, LEGACY_LAYOUT_INVENTORY,
-    LEGACY_PROFILE_ENTRYPOINT, LegacyArtifactClass, LegacyLayoutRecord, MAX_LEGACY_SOURCE_BYTES,
-    layout_record,
+    LEGACY_PROFILE_ENTRYPOINT, LEGACY_SAVE_IMPORT_SWITCH, LegacyArtifactClass, LegacyLayoutRecord,
+    MAX_LEGACY_SOURCE_BYTES, layout_record,
 };

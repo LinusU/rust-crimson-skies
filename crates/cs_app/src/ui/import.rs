@@ -54,9 +54,14 @@
 //!    fixture-only layout, the disabled optional enhancement, an unreadable
 //!    document, a field map that cannot describe the layout — reaches the
 //!    screen as [`RefusedView`] carrying the original structured error and
-//!    its code, together with the record that nothing was written. When this
-//!    build has measured no layout for the class at all, the offer is refused
-//!    **before any byte is judged** by [`FlowRefusal::NoMeasuredLayout`],
+//!    its code, together with the record that nothing was written. The
+//!    class-level decision comes first: while `cs.profile.legacy_save_import`
+//!    is off, an optional save class reaches the screen as
+//!    [`FlowRefusal::Plan`]`(`[`ImportRefusal::EnhancementDisabled`]`)`
+//!    before anything else is asked (F64-D), so a player who turned the
+//!    enhancement off is told exactly that. When this build has measured no
+//!    layout for the class at all, the offer is refused **before any byte is
+//!    judged** by [`FlowRefusal::NoMeasuredLayout`],
 //!    which names the class and its inventory-row evidence instead of
 //!    pretending to read a format that has never been seen.
 //! 4. **Teardown and retry are first-class.** An attempt's report never
@@ -136,7 +141,12 @@ pub struct ImportContext<'a> {
     /// Whether the optional legacy-save enhancement is switched on.
     ///
     /// AC04: with this off, an optional save class is refused by name while
-    /// the required classes and a fresh profile are unaffected.
+    /// the required classes and a fresh profile are unaffected. The value is
+    /// not decided here — a screen resolves it from the profile's settings
+    /// with `cs_content::legacy_import::legacy_save_import_enabled`, which
+    /// reads the rule that owns
+    /// [`LEGACY_SAVE_IMPORT_SWITCH`](cs_formats::legacy_profile::LEGACY_SAVE_IMPORT_SWITCH),
+    /// so this field can never disagree with what the profile store holds.
     pub legacy_save_import_enabled: bool,
     /// The origin every assembled blueprint is stamped with.
     pub origin: Origin,
@@ -1030,6 +1040,25 @@ fn run_attempt(
         Ok(class) => class,
         Err(error) => return refuse(FlowRefusal::Plan(ImportRefusal::Source(error))),
     };
+
+    // The owner's switch is a decision about the **class**, not about the
+    // bytes: while `cs.profile.legacy_save_import` is off, an optional save
+    // class is declined by name before the layout capability is even asked.
+    // Anything later would hide the switch behind `no_measured_layout` — the
+    // state every class is in today — and the screen could never say that the
+    // player turned the enhancement off rather than that this build has not
+    // measured a format. The producer's own refusal is propagated whole, and
+    // `plan_import` checks the same switch again for callers that bypass this
+    // flow.
+    if let ImportRequirement::OptionalEnhancement { disable_switch, .. } =
+        layout_record(class).requirement
+        && !context.legacy_save_import_enabled
+    {
+        return refuse(FlowRefusal::Plan(ImportRefusal::EnhancementDisabled {
+            class,
+            switch: disable_switch,
+        }));
+    }
 
     // A layout is a capability, not a detail: without one for this class the
     // offer is declined by name before a single byte is judged. Nothing about

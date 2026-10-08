@@ -57,6 +57,17 @@ pub const LEGACY_PROFILE_ENTRYPOINT: &str = "cs_formats::legacy_profile::read_le
 /// with the measurement recorded, never worked around.
 pub const MAX_LEGACY_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
 
+/// The one named switch that turns the optional legacy-save enhancement off.
+///
+/// Every [`ImportRequirement::OptionalEnhancement`] row carries this exact
+/// string, and stage F64-D declares it as a real profile setting through
+/// `cs_content::legacy_import::legacy_save_import_rule` (the feature that owns
+/// a setting owns its rule). The constant lives here so the inventory, the
+/// rule and the refusal text cannot drift into three different spellings: a
+/// report that names `cs.profile.legacy_save_import` and a settings key of the
+/// same name are the same string because both read it from here.
+pub const LEGACY_SAVE_IMPORT_SWITCH: &str = "cs.profile.legacy_save_import";
+
 /// One kind of legacy artifact the engine may be asked to import.
 ///
 /// The classes are the *roles* this engine has to reason about, not claims
@@ -238,7 +249,7 @@ pub static LEGACY_LAYOUT_INVENTORY: [LegacyLayoutRecord; 5] = [
         class: LegacyArtifactClass::CampaignSave,
         requirement: ImportRequirement::OptionalEnhancement {
             label: "legacy-save-import",
-            disable_switch: "cs.profile.legacy_save_import",
+            disable_switch: LEGACY_SAVE_IMPORT_SWITCH,
         },
         evidence: ClaimStatus::Unknown,
         unknowns: &[
@@ -255,7 +266,7 @@ pub static LEGACY_LAYOUT_INVENTORY: [LegacyLayoutRecord; 5] = [
         class: LegacyArtifactClass::SettingsBlob,
         requirement: ImportRequirement::OptionalEnhancement {
             label: "legacy-save-import",
-            disable_switch: "cs.profile.legacy_save_import",
+            disable_switch: LEGACY_SAVE_IMPORT_SWITCH,
         },
         evidence: ClaimStatus::Unknown,
         unknowns: &[
@@ -270,7 +281,7 @@ pub static LEGACY_LAYOUT_INVENTORY: [LegacyLayoutRecord; 5] = [
         class: LegacyArtifactClass::ProfilePointer,
         requirement: ImportRequirement::OptionalEnhancement {
             label: "legacy-save-import",
-            disable_switch: "cs.profile.legacy_save_import",
+            disable_switch: LEGACY_SAVE_IMPORT_SWITCH,
         },
         evidence: ClaimStatus::Unknown,
         unknowns: &[
