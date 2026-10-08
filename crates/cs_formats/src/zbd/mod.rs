@@ -43,6 +43,9 @@
 //!   placed-zeppelin records by a grammar measured over all 50 retail members
 //!   (task #574). What those records mean to the original is unmeasured;
 //!   every key reports [`zeppelins::KeyMeaning::Unknown`].
+//! * [`placezeps`] decodes the mission-scoped `placezeps.zrd` placement member
+//!   (an `ANIMATION_DEFINITIONS` document of state statements) field by field
+//!   (task #791); every key it does not model arrives as an explicit unknown.
 //! * [`wave`] reads the RIFF/WAVE header of one sound member into the
 //!   descriptor [`sound_archive`] reports (task #344).
 //! * [`adpcm`] reads the `fmt ` extension the two ADPCM tags carry and decodes
@@ -80,6 +83,7 @@ pub mod detection_zones;
 pub mod dispatch;
 pub mod family;
 pub mod header;
+pub mod placezeps;
 pub mod reader_archive;
 pub mod role;
 pub mod sound_archive;
