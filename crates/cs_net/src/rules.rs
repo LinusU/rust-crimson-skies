@@ -1,9 +1,10 @@
-//! Mode rules the host must have resolved before a match starts (F56-A).
+//! Mode rules the host must have resolved before a match starts (F56-A,
+//! F56-B).
 //!
-//! Spec: `specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stage
-//! `### F56-A` ("Each mode defines spawn/respawn, lives, time/score limits,
-//! teams, friendly fire, victory/draw conditions and disconnect policy.
-//! Unknown values remain blocked"). Shared contract:
+//! Spec: `specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stages
+//! `### F56-A`/`### F56-B` ("Each mode defines spawn/respawn, lives, time/score
+//! limits, teams, friendly fire, victory/draw conditions and disconnect
+//! policy. Unknown values remain blocked"). Shared contract:
 //! `docs/contracts/UI-NETWORK.md`.
 //!
 //! A [`RuleDraft`] holds one slot per [`RuleField`]; a slot is `None` while
@@ -14,12 +15,23 @@
 //! ranges it carries ([`MatchRules::validate_start`]): human count, team
 //! count, custom planes and per-plane component limit.
 //!
+//! F56-B adds the two fields the F56-A review found missing — [`RuleField::Spawn`]
+//! and [`RuleField::Victory`] — so a mode's spawn placement and victory/draw
+//! condition are *expressible* even while their per-mode values stay unknown,
+//! and the [`MatchRules::resolver_limits`] bridge to the `cs_sim` resolver:
+//! [`MatchRules`] is the authoritative rule set, so the resolver's limits are
+//! derived from it and never written out a second time, and a score limit the
+//! resolver could not represent is refused at resolve time
+//! ([`RulesError::LimitTooLarge`]) rather than silently ignored.
+//!
 //! The vocabulary (what a respawn policy or a disconnect policy *can be*) is
 //! engine design. Which value the original game uses for each mode is unknown
 //! (`docs/findings/2026-10-02-f56-a-multiplayer-catalog.md`); nothing here
 //! supplies one.
 
 use std::fmt;
+
+use cs_types::Tick;
 
 use crate::bounds::MAX_SESSION_PEERS;
 use crate::lobby::{LateJoin, MAX_TEAMS, TeamMode};
@@ -39,8 +51,12 @@ pub enum RuleField {
     Lives,
     /// What happens after a pilot is shot down.
     Respawn,
+    /// Which of a scenario's spawn points a pilot enters at.
+    Spawn,
     /// Whether hits on teammates damage them.
     FriendlyFire,
+    /// How the winner is decided once the match ends.
+    Victory,
     /// What happens to a participant who disconnects mid-match.
     Disconnect,
     /// The smallest and largest human count the mode supports.
@@ -55,14 +71,16 @@ pub enum RuleField {
 
 impl RuleField {
     /// Every field, in the canonical order [`RulesBlocked`] reports.
-    pub const ALL: [RuleField; 12] = [
+    pub const ALL: [RuleField; 14] = [
         Self::Teams,
         Self::LateJoin,
         Self::TimeLimit,
         Self::ScoreLimit,
         Self::Lives,
         Self::Respawn,
+        Self::Spawn,
         Self::FriendlyFire,
+        Self::Victory,
         Self::Disconnect,
         Self::Humans,
         Self::HumanScaling,
@@ -79,7 +97,9 @@ impl RuleField {
             Self::ScoreLimit => "score_limit",
             Self::Lives => "lives",
             Self::Respawn => "respawn",
+            Self::Spawn => "spawn",
             Self::FriendlyFire => "friendly_fire",
+            Self::Victory => "victory",
             Self::Disconnect => "disconnect",
             Self::Humans => "humans",
             Self::HumanScaling => "human_scaling",
@@ -116,6 +136,34 @@ pub enum Respawn {
     AfterTicks(u32),
     /// Out for the rest of the match.
     Never,
+}
+
+/// Which of a scenario's spawn points a pilot enters at, on the first spawn
+/// and on every respawn.
+///
+/// The points themselves are scenario data (the slot's own records), not a
+/// rule value; this field is the mode's placement policy over them. Engine
+/// vocabulary: which variant each original mode uses is unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spawn {
+    /// A pilot enters only at one of the points the scenario assigns to their
+    /// side.
+    OwnSide,
+    /// A pilot may enter at any of the scenario's points.
+    Any,
+}
+
+/// How the winner is decided once the match ends.
+///
+/// [`Victory::HighestScore`] is the rule `cs_sim::multiplayer::result`
+/// implements and the only one this vocabulary declares: an original mode
+/// whose measured condition differs cannot be expressed until the resolver
+/// grows the variant, so such a mode stays blocked rather than silently
+/// resolving to a rule it does not have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Victory {
+    /// The side holding the highest score wins; equal top scores draw.
+    HighestScore,
 }
 
 /// What happens to a participant who disconnects.
@@ -171,8 +219,12 @@ pub struct RuleDraft {
     pub lives: Option<Lives>,
     /// See [`RuleField::Respawn`].
     pub respawn: Option<Respawn>,
+    /// See [`RuleField::Spawn`].
+    pub spawn: Option<Spawn>,
     /// See [`RuleField::FriendlyFire`].
     pub friendly_fire: Option<bool>,
+    /// See [`RuleField::Victory`].
+    pub victory: Option<Victory>,
     /// See [`RuleField::Disconnect`].
     pub disconnect: Option<DisconnectPolicy>,
     /// See [`RuleField::Humans`].
@@ -218,6 +270,10 @@ pub enum RulesError {
     BadTeams,
     /// The scaling table does not hold exactly one factor per human count.
     BadScaling,
+    /// A limit value the `cs_sim` resolver cannot represent (a score limit
+    /// above `i32::MAX`): resolving it would let a host resolve a
+    /// [`MatchRules`] the resolver then silently runs differently.
+    LimitTooLarge(RuleField),
 }
 
 impl fmt::Display for RulesError {
@@ -228,6 +284,13 @@ impl fmt::Display for RulesError {
             Self::BadHumanRange => write!(f, "the human range is empty or exceeds the session"),
             Self::BadTeams => write!(f, "the team count does not fit the human range"),
             Self::BadScaling => write!(f, "the scaling table must cover every human count"),
+            Self::LimitTooLarge(field) => {
+                write!(
+                    f,
+                    "{} exceeds the range the resolver can hold",
+                    field.label()
+                )
+            }
         }
     }
 }
@@ -263,7 +326,9 @@ pub struct MatchRules {
     score_limit: Limit,
     lives: Lives,
     respawn: Respawn,
+    spawn: Spawn,
     friendly_fire: bool,
+    victory: Victory,
     disconnect: DisconnectPolicy,
     humans: HumanRange,
     human_scaling: HumanScaling,
@@ -281,7 +346,9 @@ impl RuleDraft {
             self.score_limit.is_some(),
             self.lives.is_some(),
             self.respawn.is_some(),
+            self.spawn.is_some(),
             self.friendly_fire.is_some(),
+            self.victory.is_some(),
             self.disconnect.is_some(),
             self.humans.is_some(),
             self.human_scaling.is_some(),
@@ -313,7 +380,9 @@ impl RuleDraft {
             Some(score_limit),
             Some(lives),
             Some(respawn),
+            Some(spawn),
             Some(friendly_fire),
+            Some(victory),
             Some(disconnect),
             Some(humans),
             Some(human_scaling),
@@ -326,7 +395,9 @@ impl RuleDraft {
             self.score_limit,
             self.lives,
             self.respawn,
+            self.spawn,
             self.friendly_fire,
+            self.victory,
             self.disconnect,
             self.humans,
             self.human_scaling.clone(),
@@ -343,7 +414,9 @@ impl RuleDraft {
             score_limit,
             lives,
             respawn,
+            spawn,
             friendly_fire,
+            victory,
             disconnect,
             humans,
             human_scaling,
@@ -375,6 +448,14 @@ impl MatchRules {
         if self.time_limit == Limit::None && self.score_limit == Limit::None {
             return Err(RulesError::NoLimit);
         }
+        // `resolver_limits` narrows the score to `i32`; a limit it cannot
+        // represent is refused here so no resolved `MatchRules` can describe a
+        // match the resolver would run differently.
+        if let Limit::At(score) = self.score_limit
+            && score > i32::MAX as u32
+        {
+            return Err(RulesError::LimitTooLarge(RuleField::ScoreLimit));
+        }
         let HumanRange { min, max } = self.humans;
         if min == 0 || min > max || usize::from(max) > MAX_SESSION_PEERS {
             return Err(RulesError::BadHumanRange);
@@ -402,9 +483,42 @@ impl MatchRules {
         self.respawn
     }
 
+    /// The spawn placement policy.
+    pub fn spawn(&self) -> Spawn {
+        self.spawn
+    }
+
+    /// The victory condition.
+    pub fn victory(&self) -> Victory {
+        self.victory
+    }
+
     /// The disconnect policy.
     pub fn disconnect(&self) -> DisconnectPolicy {
         self.disconnect
+    }
+
+    /// The time and score limits in the shape the `cs_sim` match resolver
+    /// consumes (`cs_sim::multiplayer::result::Limits`).
+    ///
+    /// `cs_net` may not depend on `cs_sim`, so the bridge is this plain record
+    /// derived here, where the rules are authoritative: a host builds the
+    /// resolver's limits *from this* and never writes them a second time, and
+    /// [`RuleDraft::resolve`] already refused a score the resolver cannot
+    /// represent, so the conversion cannot disagree.
+    pub fn resolver_limits(&self) -> ResolverLimits {
+        ResolverLimits {
+            time_limit: match self.time_limit {
+                Limit::None => None,
+                Limit::At(ticks) => Some(Tick(u64::from(ticks))),
+            },
+            score_limit: match self.score_limit {
+                Limit::None => None,
+                Limit::At(score) => {
+                    Some(i32::try_from(score).expect("resolve() bounds the score limit"))
+                }
+            },
+        }
     }
 
     /// The scaling factor in thousandths for `humans`, or `None` when the
@@ -449,6 +563,18 @@ impl MatchRules {
         }
         Ok(())
     }
+}
+
+/// The limits of a resolved [`MatchRules`], in plain types
+/// `cs_sim::multiplayer::result::Limits` can be built from (`cs_net` cannot
+/// name that type: it may not depend on `cs_sim`). See
+/// [`MatchRules::resolver_limits`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolverLimits {
+    /// The time limit as a simulation tick; `None` when the mode has none.
+    pub time_limit: Option<Tick>,
+    /// The score limit in resolver units; `None` when the mode has none.
+    pub score_limit: Option<i32>,
 }
 
 /// What the host knows about the lobby it is about to launch.

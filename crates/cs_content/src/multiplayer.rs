@@ -151,14 +151,16 @@ pub struct ModeEntry {
 
 /// The rule labels a mode defines, in the order of
 /// `cs_net::rules::RuleField::ALL`.
-pub const RULE_LABELS: [&str; 12] = [
+pub const RULE_LABELS: [&str; 14] = [
     "teams",
     "late_join",
     "time_limit",
     "score_limit",
     "lives",
     "respawn",
+    "spawn",
     "friendly_fire",
+    "victory",
     "disconnect",
     "humans",
     "human_scaling",

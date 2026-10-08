@@ -7,7 +7,8 @@
 use cs_net::lobby::{LateJoin, TeamMode};
 use cs_net::rules::{
     CustomPlanes, DisconnectPolicy, HumanRange, HumanScaling, Limit, Lives, MatchRules,
-    ResolveError, Respawn, RuleDraft, RuleField, RulesError, StartError, StartRequest,
+    ResolveError, Respawn, RuleDraft, RuleField, RulesError, Spawn, StartError, StartRequest,
+    Victory,
 };
 
 fn complete() -> RuleDraft {
@@ -18,7 +19,9 @@ fn complete() -> RuleDraft {
         score_limit: Some(Limit::None),
         lives: Some(Lives::Unlimited),
         respawn: Some(Respawn::AfterTicks(180)),
+        spawn: Some(Spawn::OwnSide),
         friendly_fire: Some(false),
+        victory: Some(Victory::HighestScore),
         disconnect: Some(DisconnectPolicy::KeepScore),
         humans: Some(HumanRange { min: 2, max: 4 }),
         human_scaling: Some(HumanScaling::None),
@@ -59,7 +62,9 @@ fn accept_f56_a_one_unknown_field_blocks_the_mode_and_is_named() {
             RuleField::ScoreLimit => draft.score_limit = None,
             RuleField::Lives => draft.lives = None,
             RuleField::Respawn => draft.respawn = None,
+            RuleField::Spawn => draft.spawn = None,
             RuleField::FriendlyFire => draft.friendly_fire = None,
+            RuleField::Victory => draft.victory = None,
             RuleField::Disconnect => draft.disconnect = None,
             RuleField::Humans => draft.humans = None,
             RuleField::HumanScaling => draft.human_scaling = None,

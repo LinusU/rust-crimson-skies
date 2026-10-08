@@ -39,6 +39,9 @@
 //! F56-A adds [`rules`]: the per-mode rule fields a host must have resolved
 //! before launch, where an unknown field blocks the mode instead of defaulting,
 //! and the start-time check of human count, custom planes and component limit.
+//! F56-B adds the `spawn`/`victory` fields the F56-A review found missing and
+//! [`rules::ResolverLimits`], the one bridge from a resolved `MatchRules` onto
+//! the limits `cs_sim`'s match resolver holds.
 //!
 //! F58-A adds [`validation`] and [`recovery`]: the threat model, the session
 //! epoch/replay gate and the peer-to-actor ownership table ([`validation`]),
