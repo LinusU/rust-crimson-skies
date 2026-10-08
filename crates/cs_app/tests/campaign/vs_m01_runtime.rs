@@ -143,12 +143,13 @@ fn accept_vs_m01_runtime_the_launch_gate_names_each_blocking_surface() {
 /// * the surfaces the landed stages own are `Satisfied` — the directive
 ///   lowering (#717) for `mission_program` and `mission_objectives`, the
 ///   audible device (#635) for `mission_audio`, `read_mission_weather` for
-///   `mission_environment`, and #718's `MissionAnimationPlayer` for **both**
-///   animation carriers, whose rows this plan starts;
-/// * what is left names its gap — the container's two unanswered records,
-///   the player's airframe and start pose, and the placed world actor's
-///   spawn — the plan is **not** launchable and the gate names the surfaces
-///   that must be measured before M01 can launch.
+///   `mission_environment`, #718's `MissionAnimationPlayer` for **both**
+///   animation carriers, whose rows this plan starts, and #715/#770's
+///   `MissionStartConfiguration` for `player_configuration`;
+/// * what is left names its gap — the container's two unanswered records
+///   and the placed world actor's spawn — the plan is **not** launchable
+///   and the gate names the surfaces that must be measured before M01 can
+///   launch.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechanism() {
@@ -246,9 +247,11 @@ fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechani
         "the axis convention is reported as the measurement it is: {detail}"
     );
 
-    // Weather binds, the audible device consumes the sound archives, and the
-    // directive lowering (#717) and the animation consumer (#718) now own
-    // their surfaces: both carriers' rows start in the production player.
+    // Weather binds, the audible device consumes the sound archives, the
+    // directive lowering (#717), the animation consumer (#718) and the
+    // start-configuration recovery (#715/#770) now own their surfaces:
+    // both carriers' rows start in the production player, and the player's
+    // airframe and pose bind measured.
     for surface in [
         LaunchSurface::MissionEnvironment,
         LaunchSurface::MissionAudio,
@@ -256,6 +259,7 @@ fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechani
         LaunchSurface::MissionObjectives,
         LaunchSurface::MissionAnimations,
         LaunchSurface::CameraAnimations,
+        LaunchSurface::PlayerConfiguration,
     ] {
         let report = plan.surface(surface).expect("the surface is reported");
         assert!(
@@ -266,14 +270,27 @@ fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechani
     }
 
     // Every remaining required surface names its gap; the whole plan refuses.
-    for (surface, want) in [
-        (LaunchSurface::WorldActors, "unsupported"),
-        (LaunchSurface::PlayerConfiguration, "unknown"),
-    ] {
+    for (surface, want) in [(LaunchSurface::WorldActors, "unsupported")] {
         let report = plan.surface(surface).expect("the surface is reported");
         match (&report.verdict, want) {
-            (SurfaceVerdict::Unsupported { mechanism, .. }, "unsupported") => {
+            (SurfaceVerdict::Unsupported { mechanism, detail }, "unsupported") => {
                 assert!(!mechanism.is_empty(), "{surface:?} names its mechanism");
+                // #772's measured boundary: the carrier decoded, all three
+                // records joined their world nodes, the spawn pose bound —
+                // and the still-open fields are the named unknowns, not a
+                // guess.
+                for expected in [
+                    "f34-world.zeppelin-spawn-pose",
+                    "f34-world.zeppelin-attitude-unmeasured",
+                    "f34-world.zeppelin-faction-unmeasured",
+                    "piratezep",
+                    "placezeps.zrd",
+                ] {
+                    assert!(
+                        detail.contains(expected),
+                        "{surface:?} names {expected}: {detail}"
+                    );
+                }
             }
             (SurfaceVerdict::Unknown { detail }, "unknown") => {
                 assert!(!detail.is_empty(), "{surface:?} names its question");
@@ -319,7 +336,7 @@ fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechani
     let named: BTreeSet<&str> = plan.gaps().map(|report| report.surface.label()).collect();
     assert_eq!(
         named,
-        BTreeSet::from(["world_geometry", "player_configuration", "world_actors"]),
+        BTreeSet::from(["world_geometry", "world_actors"]),
         "the gate names exactly the surfaces no production consumer owns yet, and \
          nothing the landed stages satisfied"
     );
@@ -395,9 +412,8 @@ fn accept_vs_m01_runtime_launch_refuses_an_undeclared_mission_and_an_empty_insta
 
 /// **On the retail installation M01 is refused with every gap spelled out and
 /// nothing is started.** The refusal is the launch's acceptance behavior for
-/// unsupported reachable content: the container's two unanswered records, the
-/// player's airframe and start pose and the placed world actor's spawn are
-/// unmeasured, so no scene is faked.
+/// unsupported reachable content: the container's unanswered records and the
+/// placed world actor's spawn are unmeasured, so no scene is faked.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_vs_m01_runtime_retail_launch_is_refused_with_source_diagnostics() {
@@ -413,7 +429,7 @@ fn accept_vs_m01_runtime_retail_launch_is_refused_with_source_diagnostics() {
     };
     assert!(!plan.launchable());
     let text = error.to_string();
-    for surface in ["world_geometry", "player_configuration", "world_actors"] {
+    for surface in ["world_geometry", "world_actors"] {
         assert!(text.contains(surface), "{surface} is named: {text}");
     }
     for satisfied in ["mission_program", "mission_animations"] {

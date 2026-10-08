@@ -69,6 +69,12 @@
 //! retail members are `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
 //! `evidence_report_f50_b_*` writes that task's report and is selected by test
 //! name, so a task selection never picks it up as an acceptance test.
+//!
+//! `vs_m01_runtime.rs` is the fourth kind: `VS-M01-RUNTIME` measures M01's
+//! launch dependency closure through `cs_app::mission_launch`, the plan layer
+//! the `--mission` path will gate on. Its retail test is ignored without
+//! `CS_GAME_DIR` like the rest, and its verdicts assert the mechanisms the
+//! launch is blocked on are named rather than guessed.
 
 mod closure;
 mod common;
@@ -103,3 +109,4 @@ mod m18_a;
 mod m19_a;
 mod m21_a;
 mod m24_a;
+mod vs_m01_runtime;

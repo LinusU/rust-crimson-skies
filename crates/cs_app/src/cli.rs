@@ -29,6 +29,15 @@ pub const EXIT_INVALID_INPUT: u8 = 2;
 /// `docs/contracts/CLI-EVIDENCE.md`. A failure is never reported as zero.
 pub const EXIT_RUNTIME_FAILURE: u8 = 1;
 
+/// A `--cs-path <dir> --mission <id>` request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissionRequest {
+    /// The read-only original installation.
+    pub cs_path: PathBuf,
+    /// The work-order label of the mission, e.g. `M01`.
+    pub mission: String,
+}
+
 /// What the caller asked the binary to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliRequest {
@@ -47,6 +56,11 @@ pub enum CliRequest {
     /// `--cs-path`, over original assets (task #649), or run its finite
     /// deterministic smoke.
     Playtest(PlaytestRequest),
+    /// `--cs-path <dir> --mission <id>`: launch one original mission through
+    /// [`crate::mission_launch::launch_mission`] (task #359). A mission whose
+    /// launch closure is not satisfied exits nonzero with its source
+    /// diagnostics.
+    Mission(MissionRequest),
     /// No arguments at all: invalid input, reported on stderr and exit 2.
     MissingInput,
     /// Arguments that name no supported run mode: reported on stderr and
@@ -94,6 +108,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut cs_path: Option<PathBuf> = None;
     let mut world: Option<String> = None;
     let mut aircraft: Option<String> = None;
+    let mut mission: Option<String> = None;
     let mut unknown = false;
 
     let mut index = 0;
@@ -120,13 +135,14 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                 }
                 values = 1;
             }
-            "--cs-path" | "--world" | "--aircraft" => {
+            "--cs-path" | "--world" | "--aircraft" | "--mission" => {
                 let Some(value) = args.get(index + 1).cloned() else {
                     return CliRequest::Unsupported { args };
                 };
                 match arg.as_str() {
                     "--cs-path" => cs_path = Some(PathBuf::from(value)),
                     "--world" => world = Some(value),
+                    "--mission" => mission = Some(value),
                     _ => aircraft = Some(value),
                 }
                 values = 1;
@@ -189,6 +205,23 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     if unknown {
         return CliRequest::Unsupported { args };
     }
+    if let Some(mission) = mission {
+        if playtest || synthetic || headless || world.is_some() || aircraft.is_some() {
+            return CliRequest::Invalid {
+                reason: "--mission launches one original mission and does not combine with \
+ --playtest, --synthetic, --headless, --world or --aircraft"
+                    .to_string(),
+            };
+        }
+        let Some(cs_path) = cs_path else {
+            return CliRequest::Invalid {
+                reason: "--mission needs --cs-path <dir>: an original mission has no \
+ synthetic stand-in"
+                    .to_string(),
+            };
+        };
+        return CliRequest::Mission(MissionRequest { cs_path, mission });
+    }
     if playtest {
         if synthetic || headless || ticks.is_some() || trace.is_some() || seed.is_some() {
             return CliRequest::Invalid {
@@ -240,7 +273,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     if cs_path.is_some() || world.is_some() || aircraft.is_some() {
         return CliRequest::Invalid {
             reason: "--cs-path, --world and --aircraft select the original-assets \
- --playtest; the --mission run modes are not implemented here"
+ --playtest; --mission needs no --world or --aircraft"
                 .to_string(),
         };
     }
@@ -348,13 +381,20 @@ WINDOWED PLAYTEST (development, not original)
         saves framebuffer PNGs, a trace and report.json to <dir> (default
         private/playtest), exits, and fails if a check fails
 
+    --cs-path <dir> --mission <id>
+        Launch one original mission (only M01 is declared). The launch reads
+        the installation's own campaign binding and measures the mission's
+        dependency closure first; a closure that is not satisfied exits
+        non-zero naming every missing surface, and never falls back to
+        synthetic content
+
 `--help` and `--version` read no environment variable, open no installation
 and start no asset discovery: they succeed without a GPU and without a retail
 installation.
 
 This stage runs no window and no renderer, so --synthetic must be combined
 with --headless. The remaining run modes of docs/contracts/CLI-EVIDENCE.md
-(--cs-path <dir> --mission <id>, --input-replay, --cam, --screenshot,
+(--input-replay, --cam, --screenshot,
 --profile-dir) are not implemented here yet and exit 2.
 ";
 

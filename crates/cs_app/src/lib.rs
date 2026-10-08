@@ -619,6 +619,19 @@
 //! [`render::capture::ComparisonSettings`]. The record schema itself is F59-A's
 //! `cs_content::replay`; the commands that drive this path and write evidence
 //! are F59-C and F59-D.
+//!
+//! [`mission_launch`] is the VS-M01-RUNTIME launch-plan boundary: it resolves
+//! one work order through the installation's own campaign binding, walks every
+//! archive surface the launch must consume — world geometry, textures, the
+//! shared aircraft container, the mission reader archive and its animation
+//! carriers, sound and environment — and records for each surface whether a
+//! production consumer owns it, which mechanism is still missing, or which
+//! question no stage has answered. [`mission_launch::MissionLaunchPlan`]'s
+//! `launchable` gate is what the runner reads: a launch whose plan names an
+//! unsupported or unknown surface exits nonzero with the surfaces spelled
+//! out, because a member whose bytes decode is not a member that plays and
+//! an undecoded program stays `Unsupported` per
+//! `docs/contracts/SCRIPT-MISSION.md`.
 
 pub mod accessibility;
 pub mod ai;
@@ -645,8 +658,10 @@ pub mod livery;
 pub mod loading;
 pub mod mission_animations;
 pub mod mission_control;
+pub mod mission_launch;
 pub mod mission_markers;
 pub mod mission_start;
+pub mod mission_world_actors;
 pub mod network;
 pub mod objectives;
 pub mod ordnance;

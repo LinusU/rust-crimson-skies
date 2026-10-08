@@ -52,9 +52,9 @@ use crate::animation::mission::{
     MissionAnimationBinding, MissionAnimationError, PLACEMENT_FIELDS_CLAIM, StartupAnimation,
     bind_mission_animation,
 };
-use crate::animation::programs::UnmeasuredFieldFamily;
 use crate::animation::survey::CarrierKind;
 use crate::mission_animations::MissionAnimationPlayer;
+use crate::mission_world_actors::{MOTION_RESIDUE, SPAWN_POSE_CLAIM, ZEPPELIN_MEMBER};
 
 /// The surfaces an original-mission launch must account for, in report
 /// order. These are the nouns the launch description names — world, aircraft,
@@ -971,16 +971,18 @@ fn measure_control_program(install_root: &Path, plan: &MissionLaunchPlan) -> Sur
 
 /// World-actor surfaces: the mission, world-group and shared (`zbd/zrdr.zbd`)
 /// reader archives — every `.zrd` member decoded, every verdict kept — judged
-/// against the one production join that carries member → actor for a scope.
+/// against the production spawn path.
 ///
 /// #632 measured which member drives which actor, #678 joined that to the
 /// world container and #718's [`crate::mission_animations::MissionAnimationPlayer`]
-/// consumes it for a mission's startup rows, so "which member drives which
-/// actor" is measured and consumed today. What still has no measured source
-/// is the declared world-actor program's runtime half — a placed actor's
-/// spawn and route — which is [`UnmeasuredFieldFamily::PlacementRecords`],
-/// and this scope's own placements refuse to place under
-/// [`PLACEMENT_FIELDS_CLAIM`].
+/// consumes it for a mission's startup rows. #772 adds the runtime half:
+/// [`crate::mission_world_actors::bind_mission_world_actors`] decodes the
+/// scope's `zeppelins.zrd` carrier, joins each record's `node` to the world
+/// container's canonical scene graph, declares the measured spawn pose and
+/// hands the program to [`crate::world_actors::lower_world_actors`] and
+/// [`crate::world_actors::WorldActorSession::launch`]. The verdict below is
+/// read off that report — a satisfied surface means a session launched; an
+/// unsupported one names the adapter's own open fields verbatim.
 fn measure_actor_readers(
     install_root: &Path,
     found: &Discovery,
@@ -999,29 +1001,101 @@ fn measure_actor_readers(
             Err(report) => assets.push(report),
         }
     }
-    let verdict = match animation {
-        Err(error) => SurfaceVerdict::Unknown {
-            detail: format!(
-                "the scope's animation join refuses, so member → actor cannot be read: \
-                 {error}"
+    let spawned = crate::mission_world_actors::bind_mission_world_actors(
+        install_root,
+        found,
+        &plan.mission_dir,
+        &plan.group_dir,
+        &plan.catalog_id,
+        crate::mission_world_actors::SESSION_TICKS_PER_SECOND,
+    );
+    let verdict = match spawned.carrier() {
+        crate::mission_world_actors::CarrierRead::Unreadable(reason) => SurfaceVerdict::Unknown {
+            detail: format!("the world-actor carrier cannot be read: {reason}"),
+        },
+        crate::mission_world_actors::CarrierRead::Absent => SurfaceVerdict::Satisfied {
+            consumer: format!(
+                "no {ZEPPELIN_MEMBER} member in {}/zrdr.zbd: the scope declares no world \
+                 actors, so nothing is placed",
+                plan.mission_dir
             ),
         },
-        Ok(binding) => {
-            let placements = binding.placements().len();
-            let targets = binding.world_targets().count();
-            SurfaceVerdict::Unsupported {
-                mechanism: "world-actor program semantics".to_owned(),
-                detail: format!(
-                    "the member → actor join resolves {targets} world names across {} \
-                     startup rows and {placements} placement declarations of this scope \
-                     (#632, #678, #718), but {} — {}; DeclaredWorldActorProgram has no \
-                     measured source for a placed actor's spawn or route, and this \
-                     scope's placements refuse to place under {PLACEMENT_FIELDS_CLAIM} \
-                     (resolving tasks #574 and the field families #632 named)",
-                    binding.startup().len(),
-                    UnmeasuredFieldFamily::PlacementRecords.label(),
-                    UnmeasuredFieldFamily::PlacementRecords.reason(),
-                ),
+        crate::mission_world_actors::CarrierRead::Refused(reason) => SurfaceVerdict::Unsupported {
+            mechanism: "zeppelin carrier decode".to_owned(),
+            detail: format!("{ZEPPELIN_MEMBER} refuses to decode: {reason}"),
+        },
+        crate::mission_world_actors::CarrierRead::Decoded(records) => {
+            // The animation join still answers for the placezeps.zrd half:
+            // the scope's own placement declarations, whose spawn path
+            // refuses by design (#718).
+            let placements = animation
+                .as_ref()
+                .map(|binding| binding.placements().len())
+                .unwrap_or(0);
+            if spawned.is_satisfied() {
+                SurfaceVerdict::Satisfied {
+                    consumer: format!(
+                        "WorldActorSession launched {} of {} decoded world actors",
+                        spawned.lowered().map_or(0, |lowered| lowered.actors.len()),
+                        records
+                    ),
+                }
+            } else {
+                let declared: Vec<String> = spawned
+                    .rows()
+                    .iter()
+                    .filter(|row| row.declared.is_some())
+                    .map(|row| row.node.clone())
+                    .collect();
+                let mut detail = format!(
+                    "the carrier decodes {} records; {} declare actors ({}) against the \
+                     world container's scene graph, but the program does not lower: ",
+                    records,
+                    declared.len(),
+                    declared.join(", "),
+                );
+                if let Some(error) = spawned.lower_error() {
+                    detail.push_str(&format!("the production lowering refuses with {error}"));
+                }
+                if let Some(error) = spawned.launch_error() {
+                    detail.push_str(&format!("; the session launch refuses with {error}"));
+                }
+                if !spawned.open_fields().is_empty() {
+                    let fields: Vec<String> = spawned
+                        .open_fields()
+                        .iter()
+                        .map(|open| {
+                            format!(
+                                "{}{} ({})",
+                                open.actor
+                                    .map(|actor| format!("{actor}."))
+                                    .unwrap_or_default(),
+                                open.field,
+                                open.claim_id.as_str()
+                            )
+                        })
+                        .collect();
+                    detail.push_str(&format!("; still open: {}", fields.join(", ")));
+                }
+                if spawned.rows().iter().any(|row| row.declared.is_none()) {
+                    let undeclared: Vec<String> = spawned
+                        .rows()
+                        .iter()
+                        .filter(|row| row.declared.is_none())
+                        .map(|row| format!("{} ({:?})", row.node, row.subject))
+                        .collect();
+                    detail.push_str(&format!("; never declared: {}", undeclared.join(", ")));
+                }
+                detail.push_str(&format!(
+                    "; the carrier's pose binds under {SPAWN_POSE_CLAIM} while the scope's \
+                     {placements} placezeps.zrd placement declarations still refuse under \
+                     {PLACEMENT_FIELDS_CLAIM}; {MOTION_RESIDUE} \
+                     (docs/findings/2026-10-08-m01-lc-world-actor-spawn.md)"
+                ));
+                SurfaceVerdict::Unsupported {
+                    mechanism: "world-actor spawn semantics".to_owned(),
+                    detail,
+                }
             }
         }
     };
