@@ -44,6 +44,19 @@
 //! play (possession, drop, return, delivery, its point worth) is not in this
 //! data; that is the designed machine in `cs_sim::multiplayer::objective`,
 //! gated by the still-unknown per-mode rules.
+//!
+//! # F56-C: how a selection reaches a match
+//!
+//! A host selects a mode and a scenario by content id, and both selections
+//! resolve here: [`ModeCatalog::get`] and [`SlotCatalog::get`] are the lookup
+//! a lobby performs on the ids it holds (they return `None` for an id this
+//! installation does not ship, so a wrong selection is an error and never the
+//! first entry), and [`ScenarioSlot::possessable_objectives`] is the map's
+//! one producer value a match start needs — how many objectives to declare —
+//! with `None` while the slot's records are unknown, which refuses the launch
+//! instead of guessing a count. Everything else the session needs (the map's
+//! id, the rules, the limits) travels from `cs_net::rules::LaunchPlan`; this
+//! crate parses bytes and never names a network or simulation type.
 
 use std::fmt;
 use std::io;
@@ -249,6 +262,15 @@ impl ModeCatalog {
     /// Whether every name has a briefing and every briefing a name.
     pub fn is_complete(&self) -> bool {
         self.names_without_briefing.is_empty() && self.briefings_without_name.is_empty()
+    }
+
+    /// The mode a host selected by its content id (F56-C: the lobby's chosen
+    /// mode, resolved against the catalog).
+    ///
+    /// `None` for an id this installation does not name, which a consumer
+    /// must treat as "no such mode" — never as the first entry.
+    pub fn get(&self, id: &ContentId) -> Option<&ModeEntry> {
+        self.modes.iter().find(|mode| mode.id == *id)
     }
 }
 
@@ -744,6 +766,39 @@ pub struct SlotCatalog {
     /// `MP<n>` directories that hold no reader archive: listed, not counted,
     /// spelled as the install manifest spells them.
     pub without_program: Vec<String>,
+}
+
+impl ScenarioSlot {
+    /// How many possessable objectives a match on this map declares (F56-C:
+    /// the map's producer side).
+    ///
+    /// `None` while the slot's own `targets.zrd` did not decode: a launch
+    /// must be refused rather than declaring a guessed number of objectives,
+    /// exactly as an unknown rule blocks the mode. `Some(0)` is a real answer
+    /// — a slot whose records are known and hold no carryable objective (a
+    /// deathmatch) starts a match with no objectives to declare.
+    ///
+    /// The count is what `cs_sim::multiplayer::session` declares on its
+    /// board, in record order; the records themselves stay here, in the crate
+    /// that parsed them.
+    pub fn possessable_objectives(&self) -> Option<usize> {
+        match &self.objectives {
+            Resolved::Known(known) => Some(known.value.iter().filter(|o| o.possessable()).count()),
+            Resolved::Unknown { .. } => None,
+        }
+    }
+}
+
+impl SlotCatalog {
+    /// The slot a host selected by its content id (F56-C: the lobby's chosen
+    /// scenario, resolved against the catalog — the same id
+    /// `cs_net::lobby::LobbyRules::scenario` carries).
+    ///
+    /// `None` for an id the installation does not ship, which a consumer must
+    /// treat as "no such map" — never as the first slot.
+    pub fn get(&self, id: &ContentId) -> Option<&ScenarioSlot> {
+        self.slots.iter().find(|slot| slot.id == *id)
+    }
 }
 
 /// `(group, slot, file)` when `path` is `ZBD/<group>/MP<n>/<file>`.
