@@ -133,6 +133,22 @@ as in F53-A/B/C. No test is ignored: nothing here needs `CS_GAME_DIR`.
   proceeds on an unsatisfied save is a host decision a later stage owns.
   This stage supplies the honest report and proves no write path exists
   to abuse.
+- **No production caller yet (reviewer-confirmed).** Nothing in this
+  build calls `mark_save_document`, `save_population`, `provided_ids` or
+  `save_dependency` outside the acceptance tests: the host save write
+  path (`crates/cs_app/src/profile.rs`) and the load/reopen path are not
+  F53's owner paths, and no gameplay run opens a modded profile session
+  today (the mod system's own consumers are `mount_selection` and
+  `lobby_compatibility`, both from F53-C, and neither writes a save).
+  Affected content: a save written while a mod set is enabled carries no
+  `fingerprint.content` entry in the shipped game, and a dependent save
+  reopened through the host is not yet shown this report — the behaviour
+  above is verified at the library/consumer boundary, not in a wired
+  host path. Resolving tasks: `F53-FU5-SAVE-MARK` (#767, mark the save
+  the session announces when a modded run commits a revision) and
+  `F53-FU6-SAVE-REOPEN` (#768, feed `save_dependency` into the reopen
+  path and decide block-vs-proceed). Until both land, no fidelity or
+  release claim may rest on the mark actually being written by the game.
 - `MountEnvironment::base_fingerprint` remains caller-supplied (the F53-C
   limitation is unchanged; the tests use a designed constant).
 
@@ -144,6 +160,22 @@ as in F53-A/B/C. No test is ignored: nothing here needs `CS_GAME_DIR`.
 - `cargo test --workspace --locked` — exit 0.
 - `cargo test --workspace --locked -- accept_f53_d_ --include-ignored` —
   exit 0, 5 tests run, all passing.
+
+### Reviewer's run (2026-10-08, detached review worktree at `265e9607`)
+
+- `cargo fmt --all -- --check` — exit 0.
+- `cargo clippy --workspace --all-targets --all-features --locked --
+  -D warnings` — exit 0.
+- `cargo test --workspace --locked` — exit 0, 4083 passed, 0 failed.
+- `cargo test --workspace --locked -- accept_f53_d_ --include-ignored`
+  — exit 0, 5 tests executed (`1 + 2 + 2`), all passing.
+- Caveat for the next agent: this session exports
+  `CARGO_TARGET_DIR=<bunny-2>/target`, which makes
+  `accept_t383_this_worktrees_effective_target_dir_is_per_worktree`
+  fail (T383's own message) from a second worktree. Run the suite with
+  `CARGO_TARGET_DIR="$PWD/target"` per that test's advice; with the
+  shared directory the suite reported 4004 passed / that one
+  environment failure, and with a private one it was fully green.
 
 ## Sensitivity probes (none committed)
 
@@ -162,3 +194,16 @@ as in F53-A/B/C. No test is ignored: nothing here needs `CS_GAME_DIR`.
   the contested key and the isolation assertion fails; if the plan order
   followed offer order, the forward/backward plan and signature equality
   fails.
+
+### Reviewer's independent sensitivity probes (mutations applied, run and reverted; tree left byte-identical)
+
+- `mark_save_document` replaced by a no-op body: the reopened document
+  records nothing, the verdict is `Unrecorded` instead of `Differs`, and
+  `accept_f53_d_disabling_a_mod_reopens_a_dependent_save_without_destructive_fallback`
+  fails (selection exit 101).
+- `provided_ids` made to ignore the mounted winners: the mod-added
+  blueprint is unprovided even under its own mod, and the same AC04 test
+  fails (selection exit 101).
+- Both mutations were reverted with `cp` from a pre-edit copy;
+  `git diff --stat` and `git status --short` were empty afterwards and
+  the selection was rerun green.
