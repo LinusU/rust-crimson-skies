@@ -1847,8 +1847,9 @@ impl MissionAnimationBinding {
         &self.placements
     }
 
-    /// What the placement member states for each of [`Self::placements`], in
-    /// the same order.
+    /// What the placement member states for each of [`Self::placements`]
+    /// declared by a `placezeps.zrd` member, in the same order. A placement
+    /// declared by any other member carries no entry here.
     #[must_use]
     pub fn measured_placements(&self) -> &[MeasuredPlacement] {
         &self.measured_placements
