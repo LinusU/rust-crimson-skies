@@ -39,10 +39,12 @@
 //!   measured lives in `Object3d::SetRotation` at `class+0x1c`, a different
 //!   object family. `orientation` stays [`Resolved::Unknown`] under
 //!   [`ATTITUDE_UNKNOWN_CLAIM`].
-//! * **The faction does not bind.** `team` spellings `ally`/`enemy` are the
-//!   measured vocabulary, but nothing maps a spelling to a faction
-//!   [`ContentId`] of this program — `faction` stays [`Resolved::Unknown`]
-//!   under [`FACTION_UNKNOWN_CLAIM`].
+//! * **The faction is measured absent or unmapped.** A record that states
+//!   no `team` carries no faction (M01's three records, #793): `faction`
+//!   is [`Resolved::Unknown`] under [`FACTION_ABSENT_CLAIM`], the
+//!   measured-absent verdict. A record that states `team` (`ally`/`enemy`)
+//!   has no source mapping the spelling to a faction [`ContentId`], so it
+//!   stays under [`FACTION_UNKNOWN_CLAIM`].
 //! * **The motion is `Held` by shape, not by claim.** The carrier states no
 //!   route polyline, keyframe schedule, velocity or carrier — a fixed pose
 //!   at spawn is the only [`DeclaredMotion`] variant whose fields the record
@@ -125,18 +127,49 @@ pub const ATTITUDE_UNKNOWN_REASON: &str = "the record's yaw/pitch are measured a
     class+0x1c layout, a different object — and placezeps.zrd's startup records state a different \
     yaw for workersvoyagezep (180 vs 220), so which source the original's pose lands on is open";
 
-/// The claim the faction refusal is filed under.
+/// The claim a stated `team` spelling's faction refusal is filed under.
 ///
 /// `team` spellings `ally`/`enemy` are #574's measured vocabulary, but no
 /// measured source maps a spelling to a faction [`ContentId`] of this
-/// program's namespace.
+/// program's namespace. It covers only records that *state* a `team`.
 pub const FACTION_UNKNOWN_CLAIM: &str = "f34-world.zeppelin-faction-unmeasured";
 
-/// Why a record's faction stays [`Resolved::Unknown`].
-pub const FACTION_UNKNOWN_REASON: &str = "the record may state a `team` spelling \
+/// Why a record that states a `team` keeps its faction
+/// [`Resolved::Unknown`].
+pub const FACTION_UNKNOWN_REASON: &str = "the record states a `team` spelling \
     (`ally`/`enemy` is the measured vocabulary), but no measured source maps a spelling to a \
     faction identity — no faction catalog joins it, and `net.zrd`, the member that may hold the \
-    net→faction table, has no decoder";
+    net→faction table, has no decoder for that purpose";
+
+/// The claim a record that states no `team` is filed under: the record
+/// carries no faction (#793).
+pub const FACTION_ABSENT_CLAIM: &str = "f34-world.zeppelin-faction-absent";
+
+/// The measured absence of a faction on a record that states no `team` (#793).
+///
+/// Measured over `ZBD/C1C/M01/zrdr.zbd`: none of the three decoded records
+/// states `team` (the only faction-bearing vocabulary of the 26 measured
+/// record keys), and the mission's `net.zrd` (336 bytes) holds eight
+/// three-float lists and no text, so it carries no net→faction table. The
+/// record's `net` value is an instance name (`PirateZep1`, `WVZep1`,
+/// `SwanZep1`), not a faction. A [`Resolved`] over a faction id cannot
+/// express an absence, so the field stays `Unknown` under this narrower
+/// claim: no faction exists to bind, and none is invented.
+pub const FACTION_ABSENT_REASON: &str = "the record states no `team` key and the mission's \
+    `net.zrd` holds only float lists: the zeppelin record carries no faction (measured absent, \
+    #793); where the original takes the zeppelin's allegiance from, if anywhere, is unmeasured";
+
+/// The faction verdict the declaration binds for a record's `team`.
+///
+/// `None` is the measured-absent verdict; `Some` is a stated spelling no
+/// source maps.
+fn faction_for_team(team: Option<&str>) -> Resolved<ContentId> {
+    let (claim_id, reason) = match team {
+        None => (FACTION_ABSENT_CLAIM, FACTION_ABSENT_REASON),
+        Some(_) => (FACTION_UNKNOWN_CLAIM, FACTION_UNKNOWN_REASON),
+    };
+    Resolved::unknown(claim(claim_id), reason).expect("a reason is stated")
+}
 
 /// The claim the subject join is reported under: a record's `node` name
 /// resolved through the world container's canonical scene graph.
@@ -187,7 +220,8 @@ pub struct SpawnedZeppelinActor {
     /// The stored `pitch` degrees.
     pub stored_pitch: f32,
     /// The `team` spelling, verbatim, when the record states one — its
-    /// mapping is unmeasured ([`FACTION_UNKNOWN_CLAIM`]).
+    /// mapping is unmeasured ([`FACTION_UNKNOWN_CLAIM`]); `None` is the
+    /// measured-absent verdict ([`FACTION_ABSENT_CLAIM`]).
     pub team: Option<String>,
     /// The `deactivated` integer, verbatim, when the record states one —
     /// its meaning is `KeyMeaning::Unknown`.
@@ -578,8 +612,7 @@ fn declare_actor(
         actor,
         subject: subject.clone(),
         kind: DeclaredWorldActorKind::Airship,
-        faction: Resolved::unknown(claim(FACTION_UNKNOWN_CLAIM), FACTION_UNKNOWN_REASON)
-            .expect("a reason is stated"),
+        faction: faction_for_team(row.team.as_deref()),
         objective: None,
         motion: DeclaredMotion::Held {
             position_m: Resolved::Known(Known::new(
@@ -827,6 +860,13 @@ mod tests {
         ] {
             assert!(resolved.contains(claim), "the field is filed under {claim}");
         }
+
+        // A record that states no `team` is the measured-absent verdict, a
+        // different claim from an unmapped spelling.
+        let mut bare = row(3, "blackswanzep", scene_subject("world1.blackswanzep"));
+        bare.team = None;
+        let bare = declare_actor(&bare, ProgramActor(3), &source_span()).expect("declares");
+        assert!(format!("{:?}", bare.faction).contains(FACTION_ABSENT_CLAIM));
 
         // The open-field list names every gap the lowering would hit, not
         // just the first: orientation and faction for each declared actor.

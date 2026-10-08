@@ -282,7 +282,7 @@ fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechani
                 for expected in [
                     "f34-world.zeppelin-spawn-pose",
                     "f34-world.zeppelin-attitude-unmeasured",
-                    "f34-world.zeppelin-faction-unmeasured",
+                    "f34-world.zeppelin-faction-absent",
                     "piratezep",
                     "placezeps.zrd",
                 ] {
