@@ -2,7 +2,7 @@
 //!
 //! 50 of the installation's 53 mission reader archives
 //! `ZBD/<group>/<mission>/zrdr.zbd` carry a member of this name (16 to 7 535
-//! bytes, 105 366 in all); `c1/m02`, `c2/m01` and `c5/mp2` are the three that
+//! bytes, 153 406 in all); `c1/m02`, `c2/m01` and `c5/mp2` are the three that
 //! do not, and no installation-scope archive carries it (the F33-D census,
 //! `docs/findings/2026-10-03-f33-d-neutral-traffic-population-and-retail-census.md`).
 //! Task #574 decoded the member: **every one of the 50 parses under the `.zrd`
@@ -341,10 +341,10 @@ impl CannonBinding {
     }
 }
 
-/// A `gasbags` row: a gasbag node name, a float (`120` or `400` measured), a
-/// one-text list (`*_gasbagtorpedo<N>` spellings measured) and — on the
-/// multiplayer records — a fourth spelling (`panels` in all 100 measured
-/// four-element rows).
+/// A `gasbags` row: a gasbag node name, a float (six measured values, `80.0`
+/// to `400.0`), a one-text list (`*_gasbagtorpedo<N>` spellings measured) and
+/// — on the multiplayer records — a fourth spelling (`panels` in all 100
+/// measured four-element rows).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GasbagRow {
     node: String,
@@ -359,8 +359,8 @@ impl GasbagRow {
         &self.node
     }
 
-    /// The row's float (`120.0` or `400.0` measured; the meaning is
-    /// unmeasured).
+    /// The row's float (six measured values, `80.0` to `400.0`; the meaning
+    /// is unmeasured).
     pub const fn value(&self) -> f32 {
         self.value
     }
