@@ -72,6 +72,11 @@ mod flat_shape;
 #[path = "playtest_retail/decal.rs"]
 mod decal;
 
+// #794 evidence harness: a module here rather than its own test binary, so CI links one
+// fewer Bevy test binary (the runner's disk is the limit).
+#[path = "playtest_retail/decal_evidence.rs"]
+mod decal_evidence;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

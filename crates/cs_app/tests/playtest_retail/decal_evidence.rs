@@ -13,7 +13,7 @@
 //!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_playtest_decal_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
 //!    CS_GAME_DIR=<install> \
-//!      cargo test --locked -p cs_app --test evidence_report_playtest_decal_zfight -- --ignored
+//!      cargo test --locked -p cs_app --test playtest_retail -- evidence_report_playtest_decal_zfight --ignored
 //!    ```
 //! 3. `python3 tools/validate_evidence.py
 //!    private/evidence/PLAYTEST-DECAL-ZFIGHT/acceptance.json
