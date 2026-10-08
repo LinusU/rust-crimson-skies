@@ -204,3 +204,24 @@ its reason in the `playtest sources` line and the smoke `report.json`
 (`area_undrawn`, `area_selection`, `area_stored_bindings`), and colliders follow
 the drawn set. No depth bias is applied: after the selection the measured
 flank views are stable (see `docs/findings/2026-10-07-playtest-area-flicker.md`).
+
+## The flat grey landing cards are hidden (#795)
+
+Provisional. The owner's 2026-10-08 playtest screenshot showed a large flat
+grey shape sticking out of the airship's underside. Measured over the drawn
+bindings, exactly two carry a class the hull skin does not: `sphere` (node slot
+3063, mesh 786 — one planar triangle, 500 × 125 stored units) under
+`pz_auto_land`, and `half_cone` (slot 3066, mesh 787 — one 96 × 32 triangle)
+under `pz_manual_land`. Each stores one polygon whose every material group
+resolves to **flat-colour material 84** — a record whose textured flag is
+clear, so it names no texture and the binder draws it in the neutral colour,
+the uniform mid-grey of the screenshot. What the original did with these
+landing cards is unmeasured (additive, translucent, or gated by landing
+behaviour this free-flight playtest never runs), so the **flat-colour card**
+rule (`flat_card_reason`, `PlaytestConfig::hide_flat_colour_cards`) hides both
+from drawing **and** from collision, listed with their reason in `area_undrawn`.
+The drawn set is
+293 of the 401 stored bindings — two fewer than #753's 295 — and colliders
+follow the drawn set. The before/after GPU frames of that end of the airship
+are measured in `docs/findings/2026-10-08-playtest-area-flat-shape.md` (hashes
+only; the PNGs stay under `private/`).
