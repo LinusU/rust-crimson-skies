@@ -4,13 +4,17 @@
 //! `docs/contracts/CLI-EVIDENCE.md`.
 //!
 //! The stage's declared capability is `gpu`, and F52-B's finding left one gap
-//! open for it: "nothing here draws". The three geometry tests below run on
+//! open for it: "nothing here draws". The five geometry tests below run on
 //! every push because [`objective_page_boxes`](cs_app::accessibility::gpu_capture::objective_page_boxes)
-//! is a pure function of the production page; the capture test is `#[ignore]`d
-//! because it needs a real adapter and no display, and the implementing and
-//! reviewing agents run it with `--include-ignored`.
+//! is a pure function of the production page — they pin the horizontal
+//! positions against their expected numbers, the clipping, the uniform
+//! scale-down when the viewport does not fit the frame, and that a colour
+//! filter changes only the fill. The capture test is `#[ignore]`d because it
+//! needs a real adapter and no display, and the implementing and reviewing
+//! agents run it with `--include-ignored`; it decodes the PNGs it wrote and
+//! samples every quad, so the frames are measured, not merely counted.
 //!
-//! The fourth test is neither: refusing a page with nothing to draw happens
+//! The sixth test is neither: refusing a page with nothing to draw happens
 //! before any renderer starts, so CI exercises the refusal on every push.
 //!
 //! Nothing here is evidence about an original option or the original's
@@ -190,8 +194,9 @@ fn accept_f52_d_a_larger_ui_scale_draws_the_same_rows_bigger_and_never_drops_one
 /// shrunk to fit the frame.
 #[test]
 fn accept_f52_d_only_the_part_of_a_row_inside_the_viewport_is_drawn() {
-    // Three rows at 100 % sit at 0, 20 and 40 with a height of 16: the third
-    // starts below a 30-pixel viewport, the second is cut through.
+    // The six rows at 100 % sit at 0, 20, 40, 60, 80 and 100 with a height of
+    // 16: the third starts below a 30-pixel viewport, the second is cut
+    // through.
     let boxes = objective_page_boxes(&objective_page(
         &rows(),
         &presentation(ColourFilter::Off, 100),
@@ -221,6 +226,132 @@ fn accept_f52_d_only_the_part_of_a_row_inside_the_viewport_is_drawn() {
         0,
     ));
     assert!(none.is_empty());
+}
+
+/// The horizontal geometry, asserted against its **expected numbers** and not
+/// only against itself: the cue column sits at the designed padding and glyph,
+/// the band starts where the cue ends and reaches the frame's right edge, and
+/// the two quads meet without overlapping. A sign or half-width error in the x
+/// mapping cannot pass by agreeing with itself.
+#[test]
+fn accept_f52_d_the_quads_sit_at_their_measured_horizontal_positions() {
+    let page = objective_page(
+        &rows(),
+        &presentation(ColourFilter::Off, 100),
+        PAGE_CAPTURE_HEIGHT,
+    );
+    let boxes = objective_page_boxes(&page);
+    assert_eq!(boxes.len(), STATES.len() * 2, "a band and a glyph per row");
+
+    let frame_w = PAGE_CAPTURE_WIDTH as f32;
+    let half_w = frame_w * 0.5;
+    let glyph = page.metrics.glyph_px as f32;
+    // The cue column is half a glyph of designed padding and then the glyph;
+    // the band begins where the cue ends and runs to the page's right edge,
+    // which at 1:1 is the frame's right edge.
+    let cue_centre = glyph - half_w;
+    let band_from = glyph * 1.5;
+    let band_centre = (band_from + frame_w) * 0.5 - half_w;
+
+    for (index, pair) in boxes.chunks(2).enumerate() {
+        let [band, cue] = pair else {
+            panic!("row {index}: a band and a glyph box, not {:?}", pair.len());
+        };
+        assert_eq!(
+            cue.center[0], cue_centre,
+            "row {index}: the glyph box is centred in the cue column"
+        );
+        assert_eq!(cue.size[0], glyph, "row {index}: one glyph wide");
+        assert_eq!(
+            band.center[0], band_centre,
+            "row {index}: the band spans from the cue to the page's right edge"
+        );
+        assert_eq!(
+            band.size[0],
+            frame_w - band_from,
+            "row {index}: and is as wide as that span"
+        );
+        assert_eq!(
+            cue.center[0] + cue.size[0] * 0.5,
+            band.center[0] - band.size[0] * 0.5,
+            "row {index}: the cue and the band touch without overlapping"
+        );
+        assert_eq!(
+            band.center[0] + band.size[0] * 0.5,
+            half_w,
+            "row {index}: at 1:1 the band reaches the frame's right edge"
+        );
+        assert!(
+            cue.center[0] - cue.size[0] * 0.5 >= -half_w,
+            "row {index}: and the cue column starts inside the frame"
+        );
+    }
+}
+
+/// A viewport taller than the capture frame cannot be shown 1:1, so the whole
+/// page is scaled down by one uniform factor: every quad's x and y together,
+/// anchored at the frame's top and centred horizontally, none dropped and
+/// none outside the frame. The 1:1 tests never take this branch, and this one
+/// pins the documented consequence — a scaled-down band ends short of the
+/// frame's edge by the same factor as everything else.
+#[test]
+fn accept_f52_d_a_viewport_that_does_not_fit_the_frame_scales_the_whole_page_down() {
+    let fitted_page = PAGE_CAPTURE_HEIGHT * 2;
+    let one = objective_page_boxes(&objective_page(
+        &rows(),
+        &presentation(ColourFilter::Off, 100),
+        PAGE_CAPTURE_HEIGHT,
+    ));
+    let scaled = objective_page_boxes(&objective_page(
+        &rows(),
+        &presentation(ColourFilter::Off, 100),
+        fitted_page,
+    ));
+    assert_eq!(one.len(), STATES.len() * 2);
+    assert_eq!(scaled.len(), one.len(), "scaling never drops a row");
+
+    let half_w = PAGE_CAPTURE_WIDTH as f32 * 0.5;
+    let half_h = PAGE_CAPTURE_HEIGHT as f32 * 0.5;
+    let scale = 0.5_f32;
+    for (index, (before, after)) in one.iter().zip(&scaled).enumerate() {
+        assert_eq!(
+            after.size[0],
+            before.size[0] * scale,
+            "row {index}: the band scales with the page"
+        );
+        assert_eq!(
+            after.size[1],
+            before.size[1] * scale,
+            "row {index}: and so does its height"
+        );
+        assert_eq!(
+            after.center[0],
+            before.center[0] * scale,
+            "row {index}: a page that does not fit stays centred horizontally"
+        );
+        assert_eq!(
+            after.center[1],
+            half_h - (half_h - before.center[1]) * scale,
+            "row {index}: and stays anchored at the frame's top"
+        );
+        assert!(
+            after.center[0].abs() + after.size[0] * 0.5 <= half_w
+                && after.center[1].abs() + after.size[1] * 0.5 <= half_h,
+            "row {index}: every quad stays inside the frame"
+        );
+    }
+
+    // The documented consequence: at half scale the band ends at half the
+    // frame's width, not at its edge.
+    assert_eq!(
+        scaled[0].center[0] + scaled[0].size[0] * 0.5,
+        half_w * scale,
+        "a scaled-down band ends short of the frame's edge by the same factor"
+    );
+    assert!(
+        scaled[0].center[0] + scaled[0].size[0] * 0.5 < half_w,
+        "…which is strictly inside the frame"
+    );
 }
 
 /// The refusal half: a page with nothing to draw is reported by name and no
@@ -261,10 +392,35 @@ fn accept_f52_d_a_capture_with_nothing_to_draw_is_refused_without_writing_a_file
     assert!(!png.exists());
 }
 
+/// The written PNG read back as RGBA8 bytes, row-major from the top: the
+/// production decoder, the same one F45-D reads its captures with.
+fn read_png(path: &Path) -> Vec<u8> {
+    image::ImageReader::open(path)
+        .unwrap_or_else(|error| panic!("open {}: {error}", path.display()))
+        .decode()
+        .unwrap_or_else(|error| panic!("decode {}: {error}", path.display()))
+        .into_rgba8()
+        .into_raw()
+}
+
+/// One pixel of an RGBA8 frame, as `[r, g, b]`.
+fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
+    let at = ((y * width + x) * 4) as usize;
+    [rgba[at], rgba[at + 1], rgba[at + 2]]
+}
+
 /// The `gpu` half: three frames of the real page on the real adapter — the
 /// designed scale, the largest scale and the colour filter off — each drawn,
 /// measured non-uniform, written as a PNG, and each different from the others,
 /// so no capture is a static fixture.
+///
+/// Each frame is then decoded back and **sampled at the centre of every quad
+/// [`objective_page_boxes`] asked for**: the pixel has to be that quad's own
+/// fill, and what no quad asked for has to be one untouched background shared
+/// by all three frames. A frame that is merely non-uniform — a stray
+/// rectangle, a misplaced column, a band drawn at half width — does not pass,
+/// so what this witnesses is the geometry reaching the image, not just a
+/// renderer reporting that it drew something.
 #[test]
 #[ignore = "requires a GPU adapter; run with --include-ignored"]
 fn accept_f52_d_a_real_gpu_capture_draws_the_objectives_page_at_the_ui_scale() {
@@ -285,7 +441,10 @@ fn accept_f52_d_a_real_gpu_capture_draws_the_objectives_page_at_the_ui_scale() {
         ),
     ];
 
+    let half_w = PAGE_CAPTURE_WIDTH as f32 * 0.5;
+    let half_h = PAGE_CAPTURE_HEIGHT as f32 * 0.5;
     let mut digests = std::collections::BTreeSet::new();
+    let mut backgrounds = std::collections::BTreeSet::new();
     for (label, filter, scale, file) in cases {
         let page = objective_page(&rows(), &presentation(filter, scale), PAGE_CAPTURE_HEIGHT);
         let png = dir.join(file);
@@ -310,7 +469,55 @@ fn accept_f52_d_a_real_gpu_capture_draws_the_objectives_page_at_the_ui_scale() {
             "the adapter the frame was drawn on is recorded"
         );
         digests.insert(capture.png_sha256.to_hex());
+
+        // The witness: every requested quad really is that quad's fill, at the
+        // place the pure function put it.
+        let boxes = objective_page_boxes(&page);
+        assert_eq!(
+            boxes.len(),
+            STATES.len() * 2,
+            "{label}: a band and a glyph per row"
+        );
+        let rgba = read_png(&png);
+        for (index, quad) in boxes.iter().enumerate() {
+            let left = quad.center[0] + half_w - quad.size[0] * 0.5;
+            let top = half_h - quad.center[1] - quad.size[1] * 0.5;
+            assert!(
+                left >= 0.0 && top >= 0.0,
+                "{label}: quad {index} starts inside the frame"
+            );
+            let x = (left + quad.size[0] * 0.5).round() as u32;
+            let y = (top + quad.size[1] * 0.5).round() as u32;
+            let got = pixel(&rgba, PAGE_CAPTURE_WIDTH, x, y);
+            for (channel, byte) in got.iter().enumerate() {
+                // The authored fills are f32, so the encoder's byte is the
+                // rounded product: one byte of tolerance for the GPU's own
+                // rounding, nothing more.
+                let want = (quad.color[channel] * 255.0).round().clamp(0.0, 255.0) as i64;
+                assert!(
+                    (i64::from(*byte) - want).abs() <= 1,
+                    "{label}: quad {index} pixel ({x},{y}) channel {channel} is {byte}, the box \
+                     asked for {want}"
+                );
+            }
+        }
+        // …and what no quad asked for is one untouched background, identical
+        // in all three frames: neither the scale nor the filter repaints it.
+        let bottom = (0..PAGE_CAPTURE_WIDTH)
+            .map(|x| pixel(&rgba, PAGE_CAPTURE_WIDTH, x, PAGE_CAPTURE_HEIGHT - 1))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            bottom.len(),
+            1,
+            "{label}: the frame below the page is one untouched colour"
+        );
+        backgrounds.insert(bottom.into_iter().next().expect("one background"));
     }
+    assert_eq!(
+        backgrounds.len(),
+        1,
+        "every frame is drawn on the same untouched background: {backgrounds:?}"
+    );
     assert_eq!(
         digests.len(),
         cases.len(),

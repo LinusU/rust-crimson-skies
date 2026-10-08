@@ -34,17 +34,25 @@
 //!   measured *box*, not as its circle/arrow/tick. Shape and text remain the
 //!   player-facing form (non-negotiable behavior 2) and are F46/F51's to draw.
 //! * **Not the row's width.** [`ObjectivePage`] records no row width and no
-//!   text extent, so the band runs from the end of the cue column to the edge
-//!   of the frame. That span is a frame choice, documented here, not a
+//!   text extent, so the band runs from the end of the cue column to the
+//!   page's right edge — the frame's edge while the page fits the frame
+//!   1:1, and uniformly short of it when [`page_scale`] scales the page
+//!   down. That span is a frame choice, documented here, not a
 //!   measurement; inventing a text width would be a guess.
+//! * **Not the scrolled page.** [`ObjectivePage`] carries no scroll state, so
+//!   the frame shows the page from its own top: `scroll_to_show` and
+//!   `max_scroll_px` are what the display does with the page, and none of
+//!   that reaches a capture.
 //! * **Not the original's appearance.** Row geometry is designed (F52-B), no
 //!   original pixel and no original option is read, and the colours below are
 //!   authored for this witness. No original executable runs here.
 //!
 //! The colour is the cue's *redundant* [`ColourRole`]: under `monochrome`
 //! every role is gone and every glyph box goes grey, while every box's
-//! position and size are unchanged. That is non-negotiable behavior 2 at the
-//! pixel level — colour never carries the row.
+//! position and size are unchanged. That is the **colour-independence half**
+//! of non-negotiable behavior 2 at the pixel level — colour never moves or
+//! resizes a row. It is not the whole of behavior 2: the shape and text
+//! alternatives the player actually reads are F46/F51's to draw (above).
 
 use std::path::Path;
 
@@ -102,15 +110,21 @@ fn page_scale(page: &ObjectivePage) -> Option<f32> {
 ///
 /// Every row that intersects the viewport contributes its band, clipped to the
 /// viewport, and its cue's glyph box, likewise clipped: the frame shows
-/// exactly the part of each row a player would see, never a row moved or
-/// resized to make it fit. A page with no visible line — every row hidden or
-/// the viewport empty — yields no box, which is what makes
-/// [`capture_objective_page`] refuse rather than write an empty picture.
+/// exactly the part of each row a player would see. A row is never moved or
+/// trimmed to make it fit, and no row is ever resized on its own — when the
+/// viewport does not fit the frame, [`page_scale`] scales **every** row
+/// together by one uniform factor instead. A page with no visible line —
+/// every row hidden or the viewport empty — yields no box, which is what
+/// makes [`capture_objective_page`] refuse rather than write an empty
+/// picture.
 ///
 /// The source rectangle is the viewport: [`PAGE_CAPTURE_WIDTH`] page pixels
 /// wide (the frame's own width; the page records no row width) by
 /// `viewport_px` down. A box's x is measured from the frame's centre and its
 /// y from the frame's top, so the page's first row lands at the frame's top.
+/// The page's right edge — and so the band's right edge, which nothing else
+/// bounds — reaches the frame's right edge only at 1:1; a scaled-down page is
+/// centred and ends short of both frame edges by the same factor.
 #[must_use]
 pub fn objective_page_boxes(page: &ObjectivePage) -> Vec<TextBox> {
     let Some(scale) = page_scale(page) else {
