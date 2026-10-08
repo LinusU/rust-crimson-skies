@@ -1827,13 +1827,16 @@ impl UnmeasuredFieldFamily {
                  another animation is a runtime predicate this module cannot decide"
             }
             Self::PlacementRecords => {
-                "the members that place an actor (node/position/yaw/pitch/max_speed/max_accel) are \
-                 not read here: F33-D recorded the carrier's presence and no task has decoded its \
-                 encoding, so a spawn or a route has no measured source"
+                "the placement carrier's grammar is decoded (#574) and its spawn position is bound \
+                 by the launch path (#772), but every other key's meaning stays \
+                 KeyMeaning::Unknown — no route, heading-compose, faction or motion-policy source is \
+                 measured, so a route or a driven motion still has no measured source"
             }
             Self::StoredUnit => {
-                "every length, position and speed in these records is in the original's stored unit, \
-                 which task #436 has not measured; no value may be read as metres or as knots"
+                "the stored world unit is measured as the metre (#436's owner note, #677's census), \
+                 so positions and speeds read as metres and m/s; what stays unmeasured here is \
+                 whether every numeric field of these records shares that unit — angular rates and \
+                 the accel_* tuning fields have no measured unit of their own"
             }
             Self::TickRate => {
                 "no member of these archives states a tick rate or a frame time, so no sequence \
