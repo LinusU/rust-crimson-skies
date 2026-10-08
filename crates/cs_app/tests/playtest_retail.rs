@@ -19,9 +19,10 @@
 //! * **the area is the documented subtree and nothing else.** `C1C` node slot
 //!   517 (`piratezep`) and its 792 descendants, over the measured 793 nodes /
 //!   401 mesh bindings / 8 673 stored triangles; of that stored set the #753
-//!   selection draws 295 bindings / 8 110 triangles and lists the rest undrawn
-//!   with a reason. A pinned slot holding a different record is refused by name
-//!   rather than substituted.
+//!   selection draws 293 bindings / 8 108 triangles (two fewer than main: the
+//!   #795 landing cards `sphere`/`half_cone` are listed undrawn) and lists the
+//!   rest undrawn with a reason. A pinned slot holding a different record is
+//!   refused by name rather than substituted.
 //! * **the aircraft is the whole intact `bloodhawk` airframe** (task #665): every
 //!   mesh binding of one selected LOD band plus the propeller disc, each part's
 //!   triangle count measured from the container; the full-aircraft checks live in
@@ -61,6 +62,11 @@ mod prop_spin;
 // another Bevy-linked test executable.
 #[path = "playtest_retail/area_flicker.rs"]
 mod area_flicker;
+
+// #795 (`accept_playtest_area_flat_shape_`): folded into this binary for the
+// same reason.
+#[path = "playtest_retail/flat_shape.rs"]
+mod flat_shape;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -561,9 +567,10 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
         "how many of those nodes bind a mesh the container stores geometry for"
     );
     assert_eq!(
-        area.mesh_records, 295,
+        area.mesh_records, 293,
         "and how many of those the selection draws: one intact variant of every part \
-         (#753); the rest are listed undrawn with a reason"
+         (#753), minus the two flat-colour landing cards (#795); the rest are listed \
+         undrawn with a reason"
     );
     assert_eq!(
         area.mesh_records + area.undrawn.len(),
@@ -596,7 +603,7 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
         "the triangles the area draws, rebuilt from the stored meshes"
     );
     assert_eq!(
-        area.triangles, 8_110,
+        area.triangles, 8_108,
         "the stored triangles of the drawn set, measured over the production readers"
     );
     assert!(
