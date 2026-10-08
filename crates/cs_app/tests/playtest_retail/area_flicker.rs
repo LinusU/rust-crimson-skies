@@ -46,6 +46,11 @@ fn private_dir(name: &str) -> PathBuf {
 fn scene_with(selected: bool) -> (bevy::prelude::App, PlaytestScene) {
     let config = PlaytestConfig {
         select_area_variants: selected,
+        // The contrast this test measures is the variant-selection rule alone:
+        // hold #794's decal offset off in both passes, or the keyed overlays
+        // would win their coplanar fights in the unselected pass too and the
+        // before/after pair would stop demonstrating anything.
+        decal_offset: false,
         ..PlaytestConfig::documented()
     };
     let sources =
