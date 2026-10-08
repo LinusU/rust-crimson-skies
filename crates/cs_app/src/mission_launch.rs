@@ -822,13 +822,13 @@ fn measure_textures(found: &Discovery, group_dir: &str, surface: LaunchSurface) 
     }
 }
 
-/// Which airframe and wingmate the mission assigns, from the original
+/// Which airframe and pose the mission assigns the player, from the original
 /// `aiv.zrd` through `recover_retail_start_configuration`. The records
-/// resolve; #715 then measured that no campaign mission data, no
-/// installation file and no measured directive names the player's airframe
-/// and that the pose's heading zero, handedness and frame relation were never
-/// measured, so both stay recorded unknowns and a launch must not pick
-/// either.
+/// resolve; #770's engine-state measurement then binds the campaign airframe
+/// and the metric initial pose where the installation carries the image, so
+/// the surface is satisfied exactly when both arrive [`Resolved::Known`].
+/// Whatever still does not bind is named with the configuration's own refusal
+/// — never a picked default.
 fn measure_player(
     install_root: &Path,
     plan: &MissionLaunchPlan,
@@ -843,30 +843,24 @@ fn measure_player(
         },
         Ok(configuration) => {
             let mut open = Vec::new();
-            if !matches!(configuration.airframe(), Resolved::Known(_)) {
-                open.push("the player's airframe");
+            if let Resolved::Unknown { reason, .. } = configuration.airframe() {
+                open.push(format!("the player's airframe stays unknown: {reason}"));
             }
-            if !matches!(configuration.initial_pose(), Resolved::Known(_)) {
-                open.push("the player's initial pose");
+            if let Resolved::Unknown { reason, .. } = configuration.initial_pose() {
+                open.push(format!("the player's initial pose stays unknown: {reason}"));
             }
             if open.is_empty() {
                 SurfaceVerdict::Satisfied {
                     consumer: "mission_start::MissionStartConfiguration".to_owned(),
                 }
             } else {
-                let (verb, rest) = if open.len() == 1 {
-                    ("is", open[0].to_string())
-                } else {
-                    ("are", open.join(" and "))
-                };
                 SurfaceVerdict::Unknown {
                     detail: format!(
-                        "aiv.zrd records are read and the stored position binds to metres, \
-                         but {rest} {verb} unmeasured: no campaign mission data, no \
-                         installation file and no measured directive names the player's \
-                         airframe, and the pose's heading zero, handedness and frame \
-                         relation to the world grid were not measured either \
-                         (docs/findings/2026-10-06-m01-lc-player-airframe-source.md)"
+                        "the aiv.zrd records are read and the measured engine-state source \
+                         is applied, but {} \
+                         (docs/findings/2026-10-06-m01-lc-player-airframe-source.md, \
+                         docs/findings/2026-10-08-m01-lc-campaign-airframe-engine-state.md)",
+                        open.join("; and ")
                     ),
                 }
             }
