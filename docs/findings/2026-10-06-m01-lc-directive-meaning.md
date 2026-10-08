@@ -38,7 +38,7 @@ surfaces `plan_mission_launch` (`mission_launch`, task #359) will read.
 
 | Item | Value |
 | --- | --- |
-| Executable | `$CS_GAME_DIR/crimson.decrypted.exe`, PE32, image base `0x400000` |
+| Executable | `$CS_ENGINE_IMAGE`, PE32, image base `0x400000` |
 | SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` (the same binary stages A–D read) |
 | Mission data | `zbd/c1c/m01`, control member `objectives.zrd`, read through production discovery, container and `.zrd` readers |
 | Tools | `r2`/`rabin2`/`objdump`, read-only; no bytes of the executable are committed anywhere |

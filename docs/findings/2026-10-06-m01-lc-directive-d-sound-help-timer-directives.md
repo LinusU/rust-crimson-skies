@@ -18,7 +18,7 @@ be reduced from the code alone it is recorded as **unknown**, not guessed
 
 | Item | Value |
 | --- | --- |
-| File | `$CS_GAME_DIR/crimson.decrypted.exe` |
+| File | `$CS_ENGINE_IMAGE` |
 | Format | PE32, image base `0x400000` |
 | SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` (identical to stage A's, so both stages read one binary) |
 | Address convention | virtual address (VA); in `.text`, `VA = file offset + 0x400000` |

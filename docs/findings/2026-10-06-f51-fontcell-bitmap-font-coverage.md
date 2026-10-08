@@ -33,7 +33,7 @@ here is a run of the original executable, so nothing here is `verified_original`
 
 | Item | Value |
 | --- | --- |
-| Decrypted image | `$CS_GAME_DIR/crimson.decrypted.exe` |
+| Decrypted image | `$CS_ENGINE_IMAGE` |
 | SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` |
 | Method | Kuna decompiler v1.692 plus a disassembly check, at the owner's request |
 | Addresses | virtual addresses; for VA < 0x643000 the file offset is VA − 0x400000 |

@@ -41,7 +41,7 @@ behaviour, one file, one focused path — no split needed.
 
 | Item | Value |
 | --- | --- |
-| Decrypted image | `$CS_GAME_DIR/crimson.decrypted.exe` |
+| Decrypted image | `$CS_ENGINE_IMAGE` |
 | SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` (re-computed 2026-10-06; matches the digest T352 recorded) |
 | Method | `llvm-objdump -d` over the image at the recorded addresses; the two import slots named by `r2 -c 'ii'` |
 

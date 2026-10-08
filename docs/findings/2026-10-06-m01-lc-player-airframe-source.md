@@ -9,7 +9,7 @@ owner-supplied decrypted executable. No original run happened; nothing here is
 
 * Retail data, read-only: `$CS_GAME_DIR` (`CS_CAPABILITIES=retail,gpu,audio`),
   every `ZBD/*/*/zrdr.zbd`, `ZBD/zrdr.zbd`, `ZBD/interp.zbd`, `GOSDATA/`.
-* `$CS_GAME_DIR/crimson.decrypted.exe`, sha256
+* `$CS_ENGINE_IMAGE`, sha256
   `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` — the
   owner-supplied image #390/#436 work from. Virtual addresses below `0x643000`
   are file offset `VA − 0x400000`. Read with `strings` and radare2 (`izz`, `/r`,

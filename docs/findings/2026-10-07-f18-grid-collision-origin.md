@@ -8,7 +8,7 @@ Date: 2026-10-07. Task #727 `F18-GRID-COLLISION-ORIGIN`, the follow-up #716
 ## Provenance and method
 
 Static analysis of the owner-supplied decrypted image
-`$CS_GAME_DIR/crimson.decrypted.exe` (sha256
+`$CS_ENGINE_IMAGE` (sha256
 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`), same image,
 same provenance and same address convention as
 `docs/findings/2026-10-05-f04-d-original-lookup-order.md`: addresses are virtual
@@ -348,7 +348,7 @@ is in either file: ids, digests, counts and claim labels only.
 
 ## Sources used
 
-- `$CS_GAME_DIR/crimson.decrypted.exe` (sha256 above), addresses as in
+- `$CS_ENGINE_IMAGE` (sha256 above), addresses as in
   `docs/findings/2026-10-05-f04-d-original-lookup-order.md`.
 - `docs/findings/2026-10-04-m01-lc-world-import.md` (what the grid and the
   `unk140` boxes are, and the two open questions this task answers),

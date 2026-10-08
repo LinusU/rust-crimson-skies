@@ -8,7 +8,7 @@ Date: 2026-10-06. Task #686 `F04-D-order-rof`. Follow-up of
 
 The order implemented here is the one `2026-10-05-f04-d-original-lookup-order.md`
 (section D) derived from static analysis of the owner-supplied decrypted image
-`$CS_GAME_DIR/crimson.decrypted.exe` and `GOSDATA/ASSETS/BINARIES/roffile.dll`:
+`$CS_ENGINE_IMAGE` and `GOSDATA/ASSETS/BINARIES/roffile.dll`:
 `AddNewROFDirectory` (`0x10001000`) only `push_back`s, and `MetaOpenFile`
 (`0x100016e0`) walks the registered sources in that order and takes the first
 that has the name. This task adds no new evidence about the original's code; it

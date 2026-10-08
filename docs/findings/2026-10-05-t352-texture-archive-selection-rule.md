@@ -45,7 +45,7 @@ without the rule because nothing selects an archive at all.
 
 | Item | Value |
 | --- | --- |
-| Decrypted image | `$CS_GAME_DIR/crimson.decrypted.exe` |
+| Decrypted image | `$CS_ENGINE_IMAGE` |
 | SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` |
 | Encrypted original | `crimson.icd`, SHA-256 `0e3b4724f045e0bedf7203cd40cdeb5b6e0b9a0bab78c3d04c278cb146e9833b` |
 | Method | the owner's analysis of that image with the Kuna decompiler v1.692, every branch condition checked in the disassembly |

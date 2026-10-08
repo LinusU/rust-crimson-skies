@@ -99,7 +99,7 @@ differs, a machine-readable limitation:
 
 ## Provenance
 
-* Image: `$CS_GAME_DIR/crimson.decrypted.exe`, sha256
+* Image: `$CS_ENGINE_IMAGE`, sha256
   `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` —
   the owner's decryption of `crimson.icd` (`0e3b4724…9833b`), analysed at the
   owner's request with the Kuna decompiler v1.692; the branch order was checked

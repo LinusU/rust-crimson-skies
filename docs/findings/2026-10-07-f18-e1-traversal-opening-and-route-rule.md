@@ -241,6 +241,6 @@ cargo test -p cs_app --test accept_f20_d_validation -- --include-ignored
   `crates/cs_app/src/world/triggers.rs` (`survey_retail_trigger_volumes`),
   `crates/cs_content/src/stunts.rs` (the `.zrd` scenario extractors),
   `crates/cs_formats/src/gamez/nodes.rs` (what a record stores).
-- `$CS_GAME_DIR` read-only; `$CS_GAME_DIR/crimson.decrypted.exe` sha256
+- `$CS_GAME_DIR` read-only; `$CS_ENGINE_IMAGE` sha256
   `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`
   quoted through the two findings above, not re-analysed here.

@@ -72,7 +72,7 @@ played and no original run happened, so nothing here is `verified_original`.
 ## Provenance and method
 
 Static analysis of the owner-supplied decrypted image
-`$CS_GAME_DIR/crimson.decrypted.exe` (sha256
+`$CS_ENGINE_IMAGE` (sha256
 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`), same image,
 same provenance and same address convention as
 `docs/findings/2026-10-05-f04-d-original-lookup-order.md`: addresses are virtual
@@ -375,7 +375,7 @@ set, which #771 emptied).
 
 ## Sources used
 
-- `$CS_GAME_DIR/crimson.decrypted.exe` (sha256 above): `cls_zbd.c`'s node pass
+- `$CS_ENGINE_IMAGE` (sha256 above): `cls_zbd.c`'s node pass
   (`0x4e2a54`–`0x4e2b06`, source name `0x62e354`), its copy-side rewrite
   (`0x4e37fb`–`0x4e384c`) and the inverse mapping (`0x4e19d1`–`0x4e1a1a`);
   `cls_di.c`'s candidate walk (`0x4cb579`–`0x4cb679`), `fcn.004cd960`

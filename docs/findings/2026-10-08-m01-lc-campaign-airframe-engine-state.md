@@ -11,7 +11,7 @@ bound for M01 (AGENTS.md rules 4 and 5).
 
 * Retail data, read-only: `$CS_GAME_DIR` (`CS_CAPABILITIES=retail,gpu,audio`),
   notably `ZBD/C1C/M01/zrdr.zbd` and `ZBD/interp.zbd`.
-* `$CS_GAME_DIR/crimson.decrypted.exe`, sha256
+* `$CS_ENGINE_IMAGE`, sha256
   `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` — the same
   image #390/#436/#715 worked from. Virtual addresses below `0x643000` are file
   offset `VA − 0x400000` (`.data` raw ends at VA `0x643000`; everything at
@@ -238,7 +238,7 @@ owner-supplied original run — never an invented yaw.
 # conversion site
 
 Same date, same capabilities (`retail` + static analysis of
-`$CS_GAME_DIR/crimson.decrypted.exe`, sha256 `43540fc9…`), same method
+`$CS_ENGINE_IMAGE`, sha256 `43540fc9…`), same method
 (strings, radare2 `pd`, small Python byte scans over the file). **No original
 run happened; nothing here is `verified_original`, no production code and no
 test was changed.**
@@ -410,7 +410,7 @@ Resolving: follow `[esi+0x4e4]` (or the `Object3d` triple → matrix build), or
 # and the `Object3d` rotation triple's exact world meaning
 
 Same date, same capabilities (`retail` + static analysis of
-`$CS_GAME_DIR/crimson.decrypted.exe`, sha256 `43540fc9…`, plus the retail
+`$CS_ENGINE_IMAGE`, sha256 `43540fc9…`, plus the retail
 `ZBD/interp.zbd` / `ZBD/planes.zbd`), same method (strings, radare2 `pd`,
 small Python byte scans over the file). **No original run happened; nothing
 here is `verified_original`, no production code and no test was changed.**
@@ -581,7 +581,7 @@ and §10's verdict stands unchanged.
 # Session 4 (same claim, same task): both values bound, with their sources
 
 Same date, same capabilities (`retail` + static analysis of
-`$CS_GAME_DIR/crimson.decrypted.exe`, sha256 `43540fc9…`, plus retail
+`$CS_ENGINE_IMAGE`, sha256 `43540fc9…`, plus retail
 `ZBD/*.zbd`), same method. **No original run happened; nothing here is
 `verified_original`.** This session changed production code and tests for the
 first time in this task.
@@ -608,9 +608,11 @@ refusal of §6.1 — the split is deliberate: the value does not live in
   `0x474d48`) and calls it what it is: **the profile/flight-check shape**.
   The provenance span is the deciding byte itself —
   [`CAMPAIGN_AIRFRAME_RECORD_OFFSET`] = `0x21a81c`, `+0x2c`, 204 bytes —
-  read out of this installation's own inventory by
-  `engine_state_source`, which refuses an image that is absent or that
-  hashes to anything else.
+  read out of the separately loaded owner-supplied image at
+  `$CS_ENGINE_IMAGE` by `engine_state_source` (#798: the image is not
+  installation content and is never read out of the installation's
+  inventory), which refuses an image that was not loaded from that variable
+  or that hashes to anything else.
 * **Verification, not transcription**: the retail acceptance test re-reads
   that `u32` out of the image file and compares it with
   `CAMPAIGN_AIRFRAME_ROW`, so deleting or changing the binding breaks the
@@ -752,7 +754,7 @@ implementer (`bunny-alpha-1` vs `bunny-2`), on the branch rebased onto
 commits, no file overlap).
 
 **The two deciding values were re-derived by the reviewer, not taken from the
-constants.** `$CS_GAME_DIR/crimson.decrypted.exe` hashes to
+constants.** `$CS_ENGINE_IMAGE` hashes to
 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`
 (= `cs_content::coordinates::ORIGINAL_IMAGE_SHA256`); the `u32` at file offset
 `0x21a81c + 0x2c` reads `5` and the eight bytes at `0x2040e8` read

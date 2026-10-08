@@ -55,7 +55,7 @@ happened, so nothing here is `verified_original`.
 ## One: what the image consumes an `fvol*` record for
 
 Provenance: static analysis of the owner-supplied decrypted image
-`$CS_GAME_DIR/crimson.decrypted.exe` (sha256
+`$CS_ENGINE_IMAGE` (sha256
 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`) — the same
 image and the same owner note the F04-D finding and task #390's owner note
 work from. Addresses are virtual addresses (image base `0x400000`, file offset
@@ -226,7 +226,7 @@ they are all fog volumes now.
   `mesh_index`, `info.unk140`) and `WorldPartitionGrid` — the census above was
   taken through these production readers, re-run by
   `accept_m01_lc_fvol_roles_every_container_fog_split_is_measured`.
-- The decrypted image at `$CS_GAME_DIR/crimson.decrypted.exe` (read-only,
+- The decrypted image at `$CS_ENGINE_IMAGE` (read-only,
   byte search + `capstone` disassembly + PE import directory) and the retail
   `zrdr.zbd` archives through `read_reader_archive` + `decode_zrd`.
 - `crates/cs_content/src/world.rs` (`import_world_container`,

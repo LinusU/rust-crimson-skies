@@ -6,7 +6,7 @@ Date: 2026-10-05. Task #341 `F04-D-original-order`. Follow-up of
 
 ## Provenance
 
-Static analysis of the owner-supplied decrypted image `$CS_GAME_DIR/crimson.decrypted.exe`
+Static analysis of the owner-supplied decrypted image `$CS_ENGINE_IMAGE`
 (sha256 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`, decrypted from
 `crimson.icd` sha256 `0e3b4724f045e0bedf7203cd40cdeb5b6e0b9a0bab78c3d04c278cb146e9833b`),
 done by a Claude session with the Kuna decompiler v1.692 at the owner's request (owner note of

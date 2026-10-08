@@ -48,7 +48,7 @@ an audible or visual result, and nothing self-awards `verified_original`.
 
 Same evidence as the rule it implements, not a new measurement:
 
-* Image: `$CS_GAME_DIR/crimson.decrypted.exe`, sha256
+* Image: `$CS_ENGINE_IMAGE`, sha256
   `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` —
   the owner's decryption of `crimson.icd`, analysed at the owner's request
   (owner note on Rally #589, 2026-10-05, plus its correction of the same date).

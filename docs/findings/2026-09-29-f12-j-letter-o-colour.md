@@ -192,7 +192,7 @@ and `$CS_GAME_DIR` (read-only) for every measurement.
 ## Update 2026-10-06 (task #380): resolved by code evidence
 
 The `Unknown` above is resolved from code, not from a runtime capture. The
-owner supplied a decrypted engine image (`$CS_GAME_DIR/crimson.decrypted.exe`,
+owner supplied a decrypted engine image (`$CS_ENGINE_IMAGE`,
 sha256 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`,
 decrypted from `crimson.icd` `0e3b4724…9833b`) and had it analysed
 statically; the owner accepts that code evidence for this question. Status:

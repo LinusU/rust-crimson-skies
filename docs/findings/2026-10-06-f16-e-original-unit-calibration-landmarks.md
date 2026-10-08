@@ -19,13 +19,26 @@ observed running, and nothing here is `verified_original`.
 
 | What | Value |
 | --- | --- |
-| Decrypted executable every code landmark cites | `$CS_GAME_DIR/crimson.decrypted.exe` |
+| Decrypted executable every code landmark cites | `$CS_ENGINE_IMAGE` |
 | Image SHA-256 (`ORIGINAL_IMAGE_SHA256`) | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` |
 | Installation hash (`install_sha256`) | `c14a876f4457d8710dee7986333ab636122c9549cf72b646fd69cbe7e72c5352` |
 | Content hash (`content_sha256`) | `148a24b7b0506812e8f1ee13d8d3137a05926abebbe10161994e8c4cd300c35e` |
 | Retail file the data landmark cites | `ZBD/zrdr.zbd` (`ZRD_READER_ARCHIVE`) |
 | Retail file SHA-256 (`ZRD_READER_ARCHIVE_SHA256`) | `76b510d821edd2268040d2ccb18c462ec07ad580cdba571b3066228e2cf592dd` |
 | Landmark inside it | member `anim.zrd`, `ANIMATION_DEFINITIONS/GRAVITY`, value at byte 28703 (4 bytes) |
+
+> **Installation note (#798, 2026-10-08).** The two installation digests
+> above were recorded while the owner's decrypted image still sat inside
+> `$CS_GAME_DIR`, where it was an inventoried file and therefore part of both
+> (`c14a876f…` / `148a24b7…`). The owner has moved it out for good, so
+> `accept_f16_e_the_recorded_hashes_still_describe_this_installation` now
+> re-derives `install_sha256 = b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978`
+> and `content_sha256 = a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d`
+> from the read-only tree — the same values the pre-image evidence recorded
+> (`docs/findings/missions/2026-10-08-f50-c-probe-routes.md`, its
+> "Installation note", and `2026-09-29-f14-d-retail-baseline-inventory.md`).
+> The table above keeps the values this run actually recorded. The image is
+> read from `$CS_ENGINE_IMAGE`, never from the installation.
 
 * The owner decrypted `crimson.icd` and supplied the image; the owner's note on
   #390 records the digest, and `accept_f16_e_the_recorded_hashes_still_describe_this_installation`

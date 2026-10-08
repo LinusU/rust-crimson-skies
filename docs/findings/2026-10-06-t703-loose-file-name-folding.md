@@ -42,7 +42,7 @@ chosen because it is what the code does, not because retail needs it.
 
 | Item | Value |
 | --- | --- |
-| Decrypted image | `$CS_GAME_DIR/crimson.decrypted.exe` |
+| Decrypted image | `$CS_ENGINE_IMAGE` |
 | SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` (computed 2026-10-06; matches the digest T352 and T689 recorded) |
 | Method | `llvm-objdump -d` over the image at the recorded addresses, `llvm-objdump -s`/`xxd` on the two format literals, `r2 -c 'ii'` for the import slot |
 
@@ -212,7 +212,7 @@ That is **not** independent original-reference evidence, and no agent review
 replaces the owner's human approval.
 
 **Re-derived independently (read-only, `retail` capability).** SHA-256 of
-`$CS_GAME_DIR/crimson.decrypted.exe` recomputed: `43540fc9…c37d75`, matching
+`$CS_ENGINE_IMAGE` recomputed: `43540fc9…c37d75`, matching
 T352/T689. `llvm-objdump -d` at `0x534cf0`: `movl 0x4(%esp), %eax` → the
 pointer is pushed unchanged with `0x635578` and the local buffer, then
 `calll *0xa20210`; `0x534060` has the same shape with `0x6353b0`. `xxd` at

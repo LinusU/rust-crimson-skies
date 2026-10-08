@@ -29,7 +29,7 @@ runtime capture, and nothing is `verified_original`.
 
 | item | value |
 | --- | --- |
-| decrypted image | `$CS_GAME_DIR/crimson.decrypted.exe` |
+| decrypted image | `$CS_ENGINE_IMAGE` |
 | image SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` (matches #341, #689, #703) |
 | matching module | `$CS_GAME_DIR/GOSDATA/ASSETS/BINARIES/roffile.dll` — where `MetaOpenFile` lives |
 | module SHA-256 | `1bc7b4b1adba1bf6a510e62f93473824c662acbf2a2176087b7b4b85338ba58a` (matches #341's provenance) |

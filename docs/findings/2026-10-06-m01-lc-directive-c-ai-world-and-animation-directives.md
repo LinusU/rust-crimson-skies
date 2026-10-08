@@ -17,7 +17,7 @@ and no disposition is implemented by this task — stage `M01-LC-DIRECTIVE-E`
 
 | Item | Value |
 | --- | --- |
-| File | `$CS_GAME_DIR/crimson.decrypted.exe` |
+| File | `$CS_ENGINE_IMAGE` |
 | SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` (unchanged from #679) |
 | Address convention | virtual addresses; in this region `VA = file offset + 0x400000` |
 | Tools | `r2` 6.2.0 (`pD`, `px`, `izz`), `objdump -d -M intel` over a read-only copy on an arm64 macOS host |
