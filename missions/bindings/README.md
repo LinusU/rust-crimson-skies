@@ -192,6 +192,30 @@ categories, one unresolved dependency row per required subsystem, coverage
 totals and closure reports — live in
 `crates/cs_content/src/campaign_bindings.rs`.
 
+## The whole campaign (F50-B)
+
+Stage F50-B is the one call that binds *all* of them at once instead of one
+work order at a time: `SourceContext::bind_campaign` reads the installation
+once, binds every line of `campaign-inventory.tsv` in file order through
+`SourceContext::bind`, and assembles the result over the frozen denominator
+with `assemble_campaign`. What comes back is a `BoundCampaign`: the
+`CampaignBindings` record coverage and closures are measured against,
+beside the `SourceBinding`s it was derived from (so a reader can check that
+every work order carries the one installation fingerprint the call read
+under).
+
+It produces no file here — the per-mission `M01.json` … `M24.json` records
+stay the output of `M01-A` … `M24-A`, and nothing this stage does changes
+them. What it establishes is that the campaign as a whole assembles the way
+the records promise: one record per declared work order, an identity the
+installation resolves recorded as a complete `mission_identity` cell, an
+identity it does not resolve recorded as an explicitly unknown cell that
+keeps its refusal, and a refusal (not a silent drop) for any work order the
+assembly would otherwise lose. The stage's acceptance suite is
+`crates/cs_app/tests/campaign/f50_b.rs`, and
+`docs/findings/missions/2026-10-08-f50-b-campaign-binding.md` records what it
+measured.
+
 ## What is not here yet
 
 - `M09.json`, `M11.json`, `M14.json`, `M15.json`, `M20.json`,
@@ -207,5 +231,7 @@ totals and closure reports — live in
 
 Readiness, coverage and closure are reported, never awarded: synthetic
 fixtures prove the schema and its validation only (F50 owner ruling,
-2026-09-28). Binding the rest of the identities, running the real campaign
-and collecting ordinary-play evidence stay with F50-B, F50-C and F50-D.
+2026-09-28). F50-B binds the campaign's identities from the installation and
+runs its prerequisite closures, but the campaign progression is still
+unmeasured and the campaign is still not ready; running the real campaign and
+collecting ordinary-play evidence stay with F50-C and F50-D.

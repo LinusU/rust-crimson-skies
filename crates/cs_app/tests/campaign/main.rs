@@ -10,13 +10,14 @@
 //! missing/unknown/unsupported child stays in the totals and never counts
 //! as ready, and cycle/duplicate/dangling identity failures are reported.
 //!
-//! Every value in these files is authored here: newly authored synthetic
+//! The F50-A members' values are authored here: newly authored synthetic
 //! content plus the new-engine work-order inventory committed at
-//! `missions/bindings/campaign-inventory.tsv`. No original game data, no
-//! `CS_GAME_DIR` access, no gameplay claim — synthetic fixtures prove the
+//! `missions/bindings/campaign-inventory.tsv`. The F50-A suite itself touches
+//! no original data and makes no gameplay claim — synthetic fixtures prove the
 //! schema and its validation only, never the campaign (F50 owner ruling,
-//! 2026-09-28). Binding real identities and running the real campaign stay
-//! with F50-B/C/D.
+//! 2026-09-28). Binding the campaign's real identities from the installation
+//! is `f50_b.rs`'s (stage F50-B below); running the real campaign stays with
+//! F50-C/D.
 //!
 //! `m01_a.rs` … `m08_a.rs`, `m10_a.rs`, `m12_a.rs`, `m13_a.rs`, `m16_a.rs`,
 //! `m17_a.rs`, `m18_a.rs`, `m19_a.rs`, `m21_a.rs` and `m24_a.rs` are the
@@ -60,6 +61,14 @@
 //! it keeps out of the `accept_f39_e3_` acceptance selection. Both live here so
 //! the task adds no test binary of its own: CI's runner disk cannot afford one
 //! more link per task (`docs/findings/2026-09-30-t430-rust-lld-sigbus-in-ci.md`).
+//!
+//! `f50_b.rs` is the F50-B stage: `accept_f50_b_*` tests that bind the whole
+//! declared campaign from `$CS_GAME_DIR` through
+//! `SourceContext::bind_campaign` / `assemble_campaign` and run its
+//! prerequisite closures. Its five synthetic members run in CI and its four
+//! retail members are `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
+//! `evidence_report_f50_b_*` writes that task's report and is selected by test
+//! name, so a task selection never picks it up as an acceptance test.
 
 mod closure;
 mod common;
@@ -67,6 +76,7 @@ mod coverage;
 mod evidence;
 mod f39_e3;
 mod f39_e3_evidence;
+mod f50_b;
 mod f50_e4;
 mod identity;
 mod inventory;

@@ -127,6 +127,26 @@
 //! declared title carry — the binding does not choose between them. It records
 //! the second spelling in [`SourceBinding::unknowns`] as measured, with the
 //! rows it read, and keeps `verified` false.
+//!
+//! ## The whole campaign (F50-B)
+//!
+//! `SourceContext::bind` answers for one work order; [`SourceContext::bind_campaign`]
+//! answers for the declared denominator: one read of the installation, one bind
+//! per declared work order in inventory order, and one assembly over the frozen
+//! denominator ([`assemble_campaign`]). What comes back is a [`BoundCampaign`]
+//! — the [`CampaignBindings`] record the coverage and closure reports are
+//! measured against, beside the [`SourceBinding`]s it was derived from — so
+//! profile continuity, campaign position and byte ranges stay readable without
+//! deriving the campaign twice.
+//!
+//! Two things this stage deliberately does **not** do, because neither is
+//! measured: it does not resolve a work order whose discovery title the local
+//! strings carry in neither display form (such a mission is recorded with an
+//! explicitly unresolved identity, never dropped and never guessed at), and it
+//! does not bind the campaign *progression*. The successor relation between
+//! missions lives in original scripts that have not been measured, so every
+//! assembled mission keeps [`Progression::Unknown`] and the campaign is never
+//! ready on this stage's evidence alone.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -2831,6 +2851,44 @@ impl SourceContext {
         }
         correspondences
     }
+
+    /// Binds every work order `inventory` declares to the original data this
+    /// context was read from.
+    ///
+    /// This is the whole-campaign production path of stage F50-B: one read of
+    /// the installation ([`SourceContext::read`]), one [`SourceContext::bind`]
+    /// per declared work order in inventory order, then one assembly over the
+    /// frozen denominator ([`assemble_campaign`]). It is what separates the
+    /// per-mission `M01-A` … `M24-A` stages — each answering for a single work
+    /// order — from the campaign record the F50 coverage, closure and
+    /// playthrough stages are measured against.
+    ///
+    /// Every work order is answered by *this* context, so every returned
+    /// [`SourceBinding`] carries this context's installation fingerprint:
+    /// profile continuity is a property of the call, not a hope a caller has
+    /// to check afterwards. A work order whose discovery title the local
+    /// strings carry in neither display form still produces a record, with an
+    /// explicitly unresolved identity ([`SourceBinding::to_mission_binding`])
+    /// — the denominator is never shrunk to the subset that happened to
+    /// resolve (spec F50 non-negotiable behavior 5).
+    ///
+    /// # Errors
+    ///
+    /// Everything [`SourceContext::bind`] reports for any one work order (an
+    /// unreadable program archive, or a fact that was read but cannot be
+    /// turned into an id, a claim or a provenance), then everything
+    /// [`assemble_campaign`] reports about the assembled set.
+    pub fn bind_campaign(
+        &self,
+        inventory: &CampaignInventory,
+    ) -> Result<BoundCampaign, SourceBindingError> {
+        let mut sources = Vec::with_capacity(inventory.len());
+        for (label, title) in inventory.iter() {
+            sources.push(self.bind(label.clone(), title)?);
+        }
+        let bindings = assemble_campaign(inventory, &sources)?;
+        Ok(BoundCampaign { bindings, sources })
+    }
 }
 
 /// Why a confirmed localized row selects no campaign position: the row it was
@@ -3783,6 +3841,109 @@ impl SourceBinding {
             placeholder: false,
         })
     }
+}
+
+/// One campaign bound from one installation: the record, and the source
+/// bindings it was assembled from.
+///
+/// [`SourceContext::bind_campaign`] returns both halves because they answer
+/// different questions and neither may stand in for the other. `bindings` is
+/// what coverage, closure and readiness are measured against — the frozen
+/// denominator with one [`MissionBinding`] per declared work order. `sources`
+/// is what those records were derived from: each work order's
+/// [`SourceBinding`] in declared inventory order, carrying the installation
+/// fingerprint it was read under, the campaign position its discovery title
+/// resolved to, the identities it located and the byte ranges it cites.
+///
+/// A reader that needs *where an identity came from* reads `sources`; a
+/// reader that needs *what the campaign holds* reads `bindings`. Keeping them
+/// in one value is what lets a caller assert profile continuity — every
+/// source under one installation fingerprint — without deriving the campaign
+/// a second time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundCampaign {
+    /// The campaign record over the frozen denominator.
+    pub bindings: CampaignBindings,
+    /// Every work order's source binding, in declared inventory order:
+    /// `sources[i]` is the record derived for `inventory`'s line `i`.
+    pub sources: Vec<SourceBinding>,
+}
+
+/// Assembles source-derived bindings into the campaign over `inventory`.
+///
+/// This is the assembly rule [`SourceContext::bind_campaign`] obeys, lifted
+/// into a function of its own so the rule can be exercised without an
+/// installation: the denominator is frozen first from `inventory`
+/// ([`CampaignBindings::from_inventory`]), and every supplied binding
+/// replaces its work order's placeholder exactly once
+/// ([`CampaignBindings::bind`]).
+///
+/// What this function refuses is everything that would make a declared work
+/// order *silently* lighter: a supplied binding naming a work order the
+/// inventory does not declare (an undeclared label would otherwise grow the
+/// denominator without a `declare` call), two supplied bindings naming one
+/// work order (a placeholder is bound once), and a declared work order
+/// supplied no binding at all (its placeholder would otherwise survive and
+/// read as an ordinary unresolved mission rather than as a missing input).
+///
+/// What it never inspects is whether an identity *resolved*. A source binding
+/// whose mission id, world group or program could not be located still
+/// replaces its placeholder, through [`SourceBinding::to_mission_binding`],
+/// with an explicitly unresolved identity category; the other six required
+/// categories and all [`REQUIRED_SUBSYSTEMS`] rows stay unresolved because
+/// this stage reads original data, it does not implement subsystems. A
+/// mission that cannot be bound is recorded as unbound — never dropped from
+/// the denominator, never read as complete.
+///
+/// # Errors
+///
+/// [`SourceBindingError::Inconsistent`] naming the offending work order for
+/// each refusal above, and [`SourceBindingError::Inconsistent`] when a
+/// built record fails [`MissionBinding::validate`] (carried through
+/// [`From<BindingError>`]).
+pub fn assemble_campaign(
+    inventory: &CampaignInventory,
+    sources: &[SourceBinding],
+) -> Result<CampaignBindings, SourceBindingError> {
+    let mut campaign = CampaignBindings::from_inventory(inventory)?;
+
+    let mut seen = BTreeSet::new();
+    for source in sources {
+        let label = &source.label;
+        if campaign.get(label).is_none() {
+            return Err(SourceBindingError::Inconsistent {
+                reason: format!(
+                    "source binding for {label} names a work order the declared inventory does \
+                     not declare, so assembling it would grow the denominator without a declare"
+                ),
+            });
+        }
+        if !seen.insert(label.clone()) {
+            return Err(SourceBindingError::Inconsistent {
+                reason: format!(
+                    "work order {label} was supplied more than one source binding, and a \
+                     placeholder is bound exactly once"
+                ),
+            });
+        }
+        campaign.bind(source.to_mission_binding()?)?;
+    }
+
+    for label in inventory.labels() {
+        let recorded = campaign
+            .get(label)
+            .expect("the frozen denominator records every declared work order");
+        if recorded.is_placeholder() {
+            return Err(SourceBindingError::Inconsistent {
+                reason: format!(
+                    "declared work order {label} was supplied no source binding, so it would \
+                     stay a placeholder instead of a bound record"
+                ),
+            });
+        }
+    }
+
+    Ok(campaign)
 }
 
 /// Why a category outside `mission_identity` is unresolved in a
