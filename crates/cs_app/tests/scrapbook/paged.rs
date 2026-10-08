@@ -324,6 +324,44 @@ fn accept_f47_c_refresh_reports_an_id_the_catalog_lost() {
 }
 
 #[test]
+fn accept_f47_c_select_reads_the_projection_not_a_pending_stored_state() {
+    let catalog = catalog();
+    let records = some_records();
+    let texts = session(titles_for(&catalog, "en-us", "en"));
+    let mut ui = ScrapbookUi::new(4).expect("a page of four entries");
+    ui.refresh(&catalog, &records, &texts);
+
+    // `restore` carries the ids of a stored screen state so the *next*
+    // refresh can check them against the catalog. Until that refresh runs
+    // they are not what the screen shows, so they must not decide what the
+    // player can select: `page-m2` is hidden, and `intro` is on the screen
+    // even though the restored list does not name it.
+    ui.restore(&[item("page-m2")]);
+    assert_eq!(
+        ui.saved_ids(),
+        [item("page-m2")],
+        "the restored list is the pending state, not the projection"
+    );
+    assert!(matches!(
+        ui.select(&item("page-m2")),
+        Err(SelectError::NotVisible { .. })
+    ));
+    ui.select(&item("intro")).expect("intro is on the screen");
+    assert_eq!(ui.selected_id(), Some(&item("intro")));
+    assert_eq!(
+        ui.selected().map(|page| page.id.clone()),
+        Some(item("intro")),
+        "selected_id never names an entry selected() cannot produce"
+    );
+
+    // After the refresh the screen state is the projection again, and every
+    // projected entry is selectable.
+    ui.refresh(&catalog, &records, &texts);
+    ui.select(&item("photo-b")).expect("it is projected");
+    assert_eq!(ui.selected_id(), Some(&item("photo-b")));
+}
+
+#[test]
 fn accept_f47_c_replay_launch_names_the_loading_target() {
     let catalog = catalog();
     let records = some_records();

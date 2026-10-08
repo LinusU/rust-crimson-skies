@@ -408,6 +408,12 @@ impl ScrapbookUi {
     /// Selecting a locked page is allowed — the player can look at it — and
     /// the launch is what refuses it.
     ///
+    /// The check is against the projection itself, not against
+    /// [`Self::saved_ids`]: a stored screen state carried by
+    /// [`Self::restore`] since the last refresh names ids the screen is not
+    /// showing yet, and selecting one would leave [`Self::selected_id`] naming
+    /// an entry [`Self::selected`] cannot produce.
+    ///
     /// # Errors
     ///
     /// [`SelectError`]; the selection is unchanged.
@@ -415,7 +421,7 @@ impl ScrapbookUi {
         if !self.open {
             return Err(SelectError::Closed);
         }
-        if !self.saved.contains(id) {
+        if !self.pages.iter().any(|page| &page.id == id) {
             return Err(SelectError::NotVisible { id: id.clone() });
         }
         self.selection = Some(id.clone());
