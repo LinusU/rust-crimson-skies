@@ -275,11 +275,18 @@ impl ScrapbookUi {
     /// Carries the ids a stored screen state held, so the next refresh can
     /// check them against the catalog instead of assuming they are still
     /// there.
+    ///
+    /// Until that refresh runs this is the pending state, not the projection:
+    /// [`Self::saved_ids`] answers the restored list while the pages still
+    /// show what the last refresh built, which is why [`Self::select`] reads
+    /// the projection.
     pub fn restore(&mut self, saved: &[ContentId]) {
         self.saved = saved.to_vec();
     }
 
-    /// The ids on screen, in order: what a stored screen state saves.
+    /// The ids the screen holds as its state, in order: right after a refresh
+    /// that is the projection, right after a [`Self::restore`] the restored
+    /// list awaiting that refresh.
     #[must_use]
     pub fn saved_ids(&self) -> &[ContentId] {
         &self.saved

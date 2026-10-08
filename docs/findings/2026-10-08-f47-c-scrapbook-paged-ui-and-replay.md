@@ -46,7 +46,11 @@ F47-B's persisted records into a screen, plus the replay launch.
   `LaunchError::Scope` with the offending entry, never silently reshaped.
 * **Selection semantics.** Selection is by stable id and never moves the page;
   hidden entries cannot be selected; a locked but shown entry can be selected
-  and the launch is what refuses it.
+  and the launch is what refuses it. The membership test reads the projection,
+  not the saved-id buffer: `restore` overwrites that buffer with a stored
+  screen state, and until the following `refresh` re-projects it the buffer
+  says nothing about what the screen is showing (review correction —
+  `accept_f47_c_select_reads_the_projection_not_a_pending_stored_state`).
 
 ## Known limit
 
