@@ -809,7 +809,10 @@ pub struct OriginalAirframeParameters {
     pub initial_fuel: Resolved<f64>,
     /// The resolved engine row.
     pub engine: OriginalEngine,
-    /// The parameters, in [`AIRFRAME_FIELDS`] order.
+    /// The parameters, grouped by where they came from (`dynamics` scalars,
+    /// the inertia triple, the image default, the engine row, gravity) and
+    /// looked up by field name with [`Self::value`]: the list is a set of
+    /// [`AIRFRAME_FIELDS`] entries, not an ordered one.
     pub values: Vec<OriginalFieldValue>,
 }
 
@@ -833,7 +836,9 @@ impl OriginalAirframeParameters {
 /// The global flight constants imported from the first `player.zrd` entry.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OriginalGlobalParameters {
-    /// The parameters the law consumes, in [`GLOBAL_FIELDS`] order.
+    /// The parameters the law consumes, looked up by field name with
+    /// [`Self::value`]: the list is a set of [`GLOBAL_FIELDS`] entries, not
+    /// an ordered one.
     pub values: Vec<OriginalFieldValue>,
     /// The keys that are parsed but never read by the law, with their spans.
     pub unused: Vec<OriginalFieldValue>,

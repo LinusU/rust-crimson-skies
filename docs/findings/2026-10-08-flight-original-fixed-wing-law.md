@@ -37,7 +37,12 @@ code: they live in retail data files and are imported (below).
 One step per frame, `dt <= 0.125 s`, no substeps:
 
 1. **Throttle** slews toward the command at `0.5/s`; a player burns
-   `dt * throttle * 5` fuel and freezes at `fuel <= 0`.
+   `dt * throttle * 5` fuel and freezes at `fuel <= 0`. Every later use of
+   "thrust throttle" (step 3's `T`, step 9's `a`) is this **actual** value
+   and never the stick command — otherwise the freeze would stop the fuel
+   but not the engine, and the slew would have no consumer. The reviewer
+   caught the command/actual mix-up in the thrust path and fixed it with
+   `accept_flight_original_thrust_follows_the_actual_throttle`.
 2. **Atmosphere** (`0x41aca0`), `alt_ft = y * 3.2808399`: at or below
    `6561.68 ft` (`0x463640` sets the `2000 m` switch) `k = 0.9884208`,
    `rho = 0.9544815 * 0.002377`; above it, and this is a **hard ceiling** with
@@ -49,7 +54,8 @@ One step per frame, `dt <= 0.125 s`, no substeps:
    `Tc = 0.73 * (0.12 - M'/60) * 0.5*rho*((0.84*M' + 0.112)*a_ft)^2 /
    (M' * (1.33k)^(1.41*M'))`, then
    `T = Tc * throttle * engine * S * (z.y <= 0 ? 1 + 0.13 z.y : 1) *
-   (1 + 0.24 z.y)` along the nose, where `z` is the body **+Z** axis in world
+   (1 + 0.24 z.y)` along the nose, where `throttle` is step 1's actual
+   (slewed, possibly frozen) value and `z` is the body **+Z** axis in world
    space, so a level attitude gives `x1` and a vertical climb gives
    `0.87 * 0.76 = 0.6612`. Nitro replaces the throttle with `1.8` and scales
    drag by `0.8`; engine-out sets `T = 0`.
@@ -125,6 +131,12 @@ Measured on the owner's installation (`vehicle.zrd` at 1397861 + 97917 bytes,
   "merge nested keys" and "replace the whole block" readings of the overlay
   are indistinguishable on retail bytes; the importer merges leaf paths and
   the synthetic test pins that reading.
+  A review scan of all 75 records (temporary, `vehicle.zrd` read through the
+  production reader) found `engine` present on **every** record that has a
+  `dynamics` block and always spelled as an `int` id: the `(string = name)`
+  form the task mentions does not occur in retail, so the importer's int-id
+  lookup is the path retail exercises and no retail record needs the name
+  form.
 * `engines.zrd` is 38 rows of `(id "name" factor)`; id 11 is `Bloodhawk
   Lvl-2` -> `0.62`, id 23 is `Devastator Lvl-2` -> `0.65`.
 * `player.zrd` appears **twice** (`0x59ddb0` takes the first match): entry
@@ -286,6 +298,22 @@ source records), the engine lookup (the retail test asserts ids 11/23, names
 and factors 0.62/0.65) and the lift blend (the unit test compares all three
 components of the 7 degree target against the hand-computed blend).
 
+## Review fixes (review claim of 2026-10-08)
+
+* **Thrust read the command, not the actual throttle.** `aero` used
+  `OriginalInput::throttle` (the stick) instead of step 1's slewed value, so
+  the `0.5/s` slew had no consumer in the full law and `fuel <= 0` froze the
+  throttle without stopping the engine. Fixed: `aero` takes the actual
+  throttle; `accept_flight_original_thrust_follows_the_actual_throttle` pins
+  the actual-throttle thrust, the fuel freeze and the slew-down. No other
+  assertion changes: every probe already started with the actual throttle at
+  the commanded value.
+* **Two doc comments claimed an order that did not exist**
+  (`OriginalAirframeParameters::values` "in `AIRFRAME_FIELDS` order",
+  `OriginalGlobalParameters::values` "in `GLOBAL_FIELDS` order"). Neither
+  list is produced in declaration order and the law reads it by name; the
+  comments now say so.
+
 ## Tests
 
 Prefix `accept_flight_original_`, all green locally with `CS_GAME_DIR`:
@@ -300,6 +328,7 @@ Prefix `accept_flight_original_`, all green locally with `CS_GAME_DIR`:
 | `accept_flight_original_rotation_is_twice_omega_dt` | same | no |
 | `accept_flight_original_steady_rates_match_the_torque_damping_rule` | same | no |
 | `accept_flight_original_step_bounds_and_fake_dynamics` | same | no |
+| `accept_flight_original_thrust_follows_the_actual_throttle` | same | no |
 | `accept_flight_original_parameter_records_are_refused_by_name` | same | no |
 | `accept_flight_original_synthetic_vehicle_zrd_is_kind_of_copy_then_overlay` | `cs_content/src/original_airframe.rs` | no |
 | `accept_flight_original_unresolvable_records_are_refused` | same | no |
