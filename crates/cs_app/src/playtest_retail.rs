@@ -1810,7 +1810,7 @@ fn flat_card_reason(
         }
     }
     let extent = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
-    if !extent.iter().any(|side| *side == 0.0) {
+    if !extent.contains(&0.0) {
         return None;
     }
     let mut materials = BTreeSet::new();

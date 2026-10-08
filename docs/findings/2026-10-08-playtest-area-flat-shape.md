@@ -91,9 +91,14 @@ aircraft never collided with the obstacle" (0 contacts over 6 resets).
 
 `SPAWN_FRACTION_Z` is therefore retuned to **0.75**, a designed value that
 restores the start to `z ≈ 205.8` — alongside the airship's hull, the
-relationship `steer_into_area` documents — and the launch smoke collides again.
+relationship `steer_into_area` documents — and the launch smoke collides again
+(all six `accept_playtest_retail_launch_*` tests pass). Attribution was checked,
+not assumed: the same smoke test passes on unmodified `origin/main` from a
+separate worktree on this host, so the failure was this task's card hiding
+moving the extent, not a pre-existing breakage.
 `SPAWN_FRACTION_Y` stays `0.55` (start `y ≈ −8.1`); retail mode has no ground
-and no tower, so the only contact surface is the airship itself, as
+and no tower (`playtest/mod.rs`: the synthetic ground and wall exist only
+without `RetailContent`), so the only contact surface is the airship itself, as
 `docs/PLAYTEST.md` states. The retune is a designed development value under
 the existing `playtest-retail.aircraft-pose-is-designed` claim, not a
 measurement.

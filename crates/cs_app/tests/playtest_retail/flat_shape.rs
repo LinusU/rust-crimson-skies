@@ -79,7 +79,7 @@ fn measured_flat_cards(sources: &cs_app::playtest_retail::PlaytestSources) -> Ve
             }
         }
         let extent = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
-        if !extent.iter().any(|side| *side == 0.0) {
+        if !extent.contains(&0.0) {
             continue;
         }
         let mut materials = BTreeSet::new();
