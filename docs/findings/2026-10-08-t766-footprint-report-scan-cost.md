@@ -113,6 +113,12 @@ Before/after on this worktree:
 | calls per report | 437 listings, 3 140 282 entries, 745 086 stats, 192 717 reads | **1 listing, 7453 entries, 1756 stats, 452 reads** |
 | `cargo test -p cs_xtask --test accept_t696_test_disk_footprint` | 15.4 s (8.6 s of it inside one `measure_workspace`) | **0.22-1.25 s**, 9 passed |
 
+The "after" column's per-listing figures come from a directory that had grown
+since the "before" probe was taken (7186 → 7453 entries, 1704 → 1756 sidecars,
+441 → 452 with a binary beside them: this tree had built more targets in
+between). Both columns are measured on this worktree; what the change removes
+is the 437x multiplier, not the directory's own size.
+
 ## What the suite now pins (and how it was checked)
 
 Three `accept_t696_` tests hold the bound, on the count of filesystem calls
@@ -130,9 +136,10 @@ the multiplication directly.
   `stats <= entries`, `dep_files <= entries`), where a per-target listing is
   437 x 1756 stats over 7453 entries and cannot pass.
 * `accept_t696_the_report_command_prints_the_measured_footprint`: reads the
-  listing count back out of the printed `scan:` line and requires it to be `1`,
-  for both the real directory and one that does not exist (which still costs
-  one listing and says 0 entries, 0 dep files, 0 stats).
+  bill back out of the printed `scan:` line (every count is parsed from the
+  word that names it) and requires `listings == 1`, for the real directory,
+  and `(1, 0, 0, 0)` for one that does not exist — which still costs one
+  listing and says 0 entries, 0 dep files, 0 stats.
 
 Mutation check, to confirm the tests fail when the implementation is removed: a
 temporary mutant restored the listing-per-target loop (same results, calls
