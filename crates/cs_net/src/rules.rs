@@ -1,10 +1,10 @@
 //! Mode rules the host must have resolved before a match starts (F56-A,
-//! F56-B).
+//! F56-B, F56-C).
 //!
 //! Spec: `specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stages
-//! `### F56-A`/`### F56-B` ("Each mode defines spawn/respawn, lives, time/score
-//! limits, teams, friendly fire, victory/draw conditions and disconnect
-//! policy. Unknown values remain blocked"). Shared contract:
+//! `### F56-A`/`### F56-B`/`### F56-C` ("Each mode defines spawn/respawn,
+//! lives, time/score limits, teams, friendly fire, victory/draw conditions and
+//! disconnect policy. Unknown values remain blocked"). Shared contract:
 //! `docs/contracts/UI-NETWORK.md`.
 //!
 //! A [`RuleDraft`] holds one slot per [`RuleField`]; a slot is `None` while
@@ -24,6 +24,15 @@
 //! resolver could not represent is refused at resolve time
 //! ([`RulesError::LimitTooLarge`]) rather than silently ignored.
 //!
+//! F56-C wires the producers into that path: [`RuleDraft::from_lobby`] is
+//! where a host's own options (its team grouping and late-join policy) become
+//! rule fields instead of being re-derived somewhere else, and
+//! [`LaunchPlan`] binds the map the lobby selected to the rules it resolved,
+//! so a launch cannot pair a scenario with rules that contradict its lobby.
+//! The victory condition crosses the crate boundary by wire label
+//! ([`Victory::label`]) and the limits by [`ResolverLimits`]; both are read by
+//! `cs_sim::multiplayer::session`, which owns the running match.
+//!
 //! The vocabulary (what a respawn policy or a disconnect policy *can be*) is
 //! engine design. Which value the original game uses for each mode is unknown
 //! (`docs/findings/2026-10-02-f56-a-multiplayer-catalog.md`); nothing here
@@ -32,9 +41,10 @@
 use std::fmt;
 
 use cs_types::Tick;
+use cs_types::content::ContentId;
 
 use crate::bounds::MAX_SESSION_PEERS;
-use crate::lobby::{LateJoin, MAX_TEAMS, TeamMode};
+use crate::lobby::{LateJoin, LobbyRules, MAX_TEAMS, TeamMode};
 
 /// One rule a mode must define.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -164,6 +174,28 @@ pub enum Spawn {
 pub enum Victory {
     /// The side holding the highest score wins; equal top scores draw.
     HighestScore,
+}
+
+impl Victory {
+    /// Every condition this vocabulary declares. A consumer walks this
+    /// instead of guessing, and the F56-C mirror test requires each entry to
+    /// resolve in `cs_sim`'s resolver vocabulary.
+    pub const ALL: [Victory; 1] = [Self::HighestScore];
+
+    /// The stable wire label of this condition.
+    ///
+    /// The rules crate and the `cs_sim` resolver may not depend on each other
+    /// (`docs/01-ARCHITECTURE.md`), so this label — read against
+    /// `cs_sim::multiplayer::result::VictoryRule::from_label` — is how the
+    /// victory rule a host resolved reaches the resolver that runs it: an
+    /// unknown label is refused at the wiring rather than silently resolving
+    /// to another condition. The F56-C acceptance test pins the two
+    /// vocabularies together.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::HighestScore => "highest_score",
+        }
+    }
 }
 
 /// What happens to a participant who disconnects.
@@ -337,6 +369,24 @@ pub struct MatchRules {
 }
 
 impl RuleDraft {
+    /// The draft a host starts from when its lobby already states what a mode
+    /// rule can answer (F56-C: host options).
+    ///
+    /// The lobby's team grouping and late-join policy *are* rule values, so
+    /// they fill [`RuleField::Teams`] and [`RuleField::LateJoin`] directly —
+    /// a host option cannot be silently overwritten by a guessed mode value.
+    /// The selected scenario is **not** a rule: it is the map, and it travels
+    /// beside the rules in [`LaunchPlan`]. Every other field stays `None` until
+    /// its value is known, so a draft built this way still resolves to
+    /// [`ResolveError::Blocked`] naming what the installation does not answer.
+    pub fn from_lobby(lobby: &LobbyRules) -> Self {
+        Self {
+            teams: Some(lobby.team_mode),
+            late_join: Some(lobby.late_join),
+            ..Self::default()
+        }
+    }
+
     /// The fields still unknown, in [`RuleField::ALL`] order.
     pub fn missing(&self) -> Vec<RuleField> {
         let known = [
@@ -565,6 +615,75 @@ impl MatchRules {
     }
 }
 
+/// What the host has settled when a lobby launches (F56-C: maps and host
+/// options): the scenario it selected — the map — bound to the rules that
+/// resolved from its options.
+///
+/// This is the record a match start is built from, and the reason a launch
+/// cannot name a map and a different set of rules: [`LaunchPlan::new`] takes
+/// them from *one* lobby and refuses a pairing that contradicts itself, the
+/// contract's "Content/rules mismatch rejects launch before expensive asset
+/// loading". From here the map travels as a `cs_types::content::ContentId`
+/// (resolved against `cs_content::multiplayer::SlotCatalog` by the host) and
+/// the rules travel as [`MatchRules::resolver_limits`] and
+/// [`Victory::label`] into `cs_sim::multiplayer::session`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchPlan {
+    /// The selected scenario slot: which map the match runs on.
+    scenario: ContentId,
+    /// The rules that resolved from the lobby's options.
+    rules: MatchRules,
+}
+
+impl LaunchPlan {
+    /// Binds a lobby's host options to the rules about to launch with them.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::TeamModeMismatch`] when the resolved rules group pilots
+    /// differently from the lobby (a draft built with
+    /// [`RuleDraft::from_lobby`] cannot hit this; a hand-built one can, which
+    /// is the point), and [`StartError::LateJoinNotAllowed`] when the host
+    /// opened late join for a mode that does not allow it.
+    pub fn new(lobby: &LobbyRules, rules: MatchRules) -> Result<Self, StartError> {
+        if rules.teams != lobby.team_mode {
+            return Err(StartError::TeamModeMismatch);
+        }
+        if lobby.late_join == LateJoin::Open && rules.late_join == LateJoin::Closed {
+            return Err(StartError::LateJoinNotAllowed);
+        }
+        Ok(Self {
+            scenario: lobby.scenario.clone(),
+            rules,
+        })
+    }
+
+    /// The map this launch runs on.
+    pub fn scenario(&self) -> ContentId {
+        self.scenario.clone()
+    }
+
+    /// The rules this launch runs.
+    pub fn rules(&self) -> &MatchRules {
+        &self.rules
+    }
+
+    /// The limits the `cs_sim` resolver consumes, derived once from the
+    /// rules (see [`MatchRules::resolver_limits`]).
+    pub fn resolver_limits(&self) -> ResolverLimits {
+        self.rules.resolver_limits()
+    }
+
+    /// Checks the lobby this plan launches against the mode's rules.
+    ///
+    /// # Errors
+    ///
+    /// The first [`StartError`] found; nothing launches on error.
+    pub fn validate_start(&self, request: &StartRequest) -> Result<(), StartError> {
+        self.rules.validate_start(request)
+    }
+}
+
 /// The limits of a resolved [`MatchRules`], in plain types
 /// `cs_sim::multiplayer::result::Limits` can be built from (`cs_net` cannot
 /// name that type: it may not depend on `cs_sim`). See
@@ -614,6 +733,14 @@ pub enum StartError {
         /// The mode's limit.
         limit: u32,
     },
+    /// The rules group pilots differently than the lobby they launch with: a
+    /// free-for-all mode cannot start a team lobby, nor the other way round
+    /// (engine design: content/rules mismatch must reject the launch).
+    TeamModeMismatch,
+    /// The host opened late join for a mode that does not allow a pilot to
+    /// join after launch (engine design: the mode's rule bounds the host's
+    /// option; the host may always be *stricter* and close it).
+    LateJoinNotAllowed,
 }
 
 impl fmt::Display for StartError {
@@ -624,6 +751,12 @@ impl fmt::Display for StartError {
             Self::CustomPlanesForbidden => write!(f, "the mode allows only stock planes"),
             Self::ComponentLimitExceeded { got, limit } => {
                 write!(f, "a plane carries {got} components, the limit is {limit}")
+            }
+            Self::TeamModeMismatch => {
+                f.write_str("the lobby's team grouping is not the one the mode resolves to")
+            }
+            Self::LateJoinNotAllowed => {
+                f.write_str("the host opened late join but the mode does not allow it")
             }
         }
     }
