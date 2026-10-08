@@ -113,7 +113,7 @@ fn accept_m01_lc_player_config_refuses_a_missing_or_ambiguous_player() {
 }
 
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_lc_player_config_retail_m01_binds_player_and_names_unknowns() {
     let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
     let config = recover_retail_start_configuration(&root, "zbd/c1c/m01").expect("M01 reads");

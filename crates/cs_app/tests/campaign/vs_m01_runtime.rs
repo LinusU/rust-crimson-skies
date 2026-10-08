@@ -12,7 +12,7 @@
 //! The synthetic tests exercise the two failure/verdict surfaces any
 //! installation can reach: an undiscoverable installation is refused by name,
 //! and the plan's gate reports each blocking surface with its mechanism. The
-//! retail test is `#[ignore = "requires CS_GAME_DIR"]`: it measures M01's
+//! retail test is `#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]`: it measures M01's
 //! real closure and asserts the missing mechanisms the implementation is
 //! blocked on are named, not guessed.
 
@@ -151,7 +151,7 @@ fn accept_vs_m01_runtime_the_launch_gate_names_each_blocking_surface() {
 ///   and the gate names the surfaces that must be measured before M01 can
 ///   launch.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechanism() {
     let plan = plan_mission_launch(&game_dir(), label("M01"), &discovery_title())
         .expect("the installation yields a launch plan for M01");
@@ -415,7 +415,7 @@ fn accept_vs_m01_runtime_launch_refuses_an_undeclared_mission_and_an_empty_insta
 /// unsupported reachable content: the container's unanswered records and the
 /// placed world actor's spawn are unmeasured, so no scene is faked.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_retail_launch_is_refused_with_source_diagnostics() {
     use cs_app::cli::MissionRequest;
     use cs_app::mission_launch::{MissionLaunchError, launch_mission};

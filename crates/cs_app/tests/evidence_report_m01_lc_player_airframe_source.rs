@@ -107,7 +107,7 @@ fn review_method(archives: usize, members: usize, assignments: usize, tests: usi
 }
 
 #[test]
-#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR, CS_ENGINE_IMAGE"]
 fn evidence_report_m01_lc_player_airframe_source_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");

@@ -246,7 +246,7 @@ fn decoded_members(root: &Path, container_key: &str) -> Vec<(String, ZrdValue)> 
 }
 
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_lc_player_airframe_source_retail_m01_has_no_airframe_key_and_the_scenario_does() {
     let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
 
