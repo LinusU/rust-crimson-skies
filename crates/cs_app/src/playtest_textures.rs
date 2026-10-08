@@ -13,6 +13,43 @@
 //! | archive | the highest-numbered `rtexture<N>.zbd` tier of the world group, else `texture.zbd` | [`PLAYTEST_TEXTURE_ARCHIVE_IS_DESIGNED`] |
 //! | name reading | the stored name up to its first `.`, ASCII lower case ([`NAME_READING`]) | [`PLAYTEST_TEXTURE_NAME_READING_IS_DESIGNED`] |
 //! | presentation | a plain lit `StandardMaterial`, sRGB, repeat addressing, keyed coverage as a 0.5 mask, no vertex colour | [`PLAYTEST_TEXTURE_PRESENTATION_IS_PROVISIONAL`] |
+//! | decal rule | a part whose bound texture **carries keyed coverage** is drawn with its vertices offset [`DECAL_OFFSET_M`] along their normals; nothing in the stored records marks a decal, so this is a designed rule over the alpha-plane bit | [`PLAYTEST_DECAL_OFFSET_IS_DESIGNED`] |
+//!
+//! # The decal rule (#794)
+//!
+//! The playtest's coplanar emblem/insignia layers z-fight their base surface
+//! (the `piratezep` hull's skull emblem, the Bloodhawk's wing insignia). What
+//! the stored bytes establish — measured in
+//! `docs/findings/2026-10-08-playtest-decal-zfight.md`:
+//!
+//! * the skull emblem is the **second material group** of one hull quad in
+//!   two `c1c` meshes (750, 755: material 194, `fhunter_logo2.tif`) — the
+//!   layer a per-material census attributes 99.5 % of the measured view's
+//!   flips to — with six more emblem quads on other hull meshes (material
+//!   190, `fhunter_logo4.tif`);
+//! * the wing insignia are **separate quads** coplanar with the wing's own
+//!   polygons (material 95, `blo_winglogo.tif`), like the tail and nose logos;
+//! * every one of those textures stores an **alpha plane**
+//!   (`alpha_source = Plane`), which `keyed` reads as carried coverage;
+//! * the stored wing-logo polygons already sit about 1 mm off the wing — the
+//!   separation the fight happens inside;
+//! * no measured field separates a decal from another masked surface: polygon
+//!   flags differ (`0x10` skull, `0x00`/`0x30` aircraft logos) and the record's
+//!   `unk04` correlates (`2` on most logo polygons) but does not separate them
+//!   (one logo quad per wing stores `1`), so it is recorded as unknown rather
+//!   than read as a flag.
+//!
+//! So the rule is: **a part bound to a coverage-carrying texture is a decal
+//! layer**, and before upload its vertices move `DECAL_OFFSET_M` along their
+//! normals — the classic polygon-offset mechanism, expressed in geometry. A
+//! depth-buffer bias would be the usual alternative, but it is measured inert
+//! on this path: `StandardMaterial::depth_bias` lands in wgpu's
+//! `DepthBiasState::constant`, which a `Depth32Float` buffer scales by the
+//! smallest representable increment — empirically ±10⁶ units changed not one
+//! pixel here. The offset is larger than the stored ~1 mm decal gap and far
+//! below a pixel at any measured view distance. Nothing is keyed on a mesh
+//! name; the same rule runs for the area and the aircraft because both go
+//! through [`TextureBinder`].
 //!
 //! The exact-name rule of the lookup contract resolves 10 of 4 478 retail
 //! material rows (`docs/findings/2026-09-29-f10-c-04-gamez-texture-archive-binding.md`),
@@ -62,6 +99,17 @@ pub const PLAYTEST_TEXTURE_NAME_READING_IS_DESIGNED: &str =
 /// Lighting, blending, colour space, addressing and vertex colour are provisional.
 pub const PLAYTEST_TEXTURE_PRESENTATION_IS_PROVISIONAL: &str =
     "playtest-textures.presentation-is-provisional";
+
+/// The decal rule is a designed development value, not a measured original rule.
+pub const PLAYTEST_DECAL_OFFSET_IS_DESIGNED: &str = "playtest-textures.decal-offset-is-designed";
+
+/// How far a decal-class part sits in front of the surface it is coplanar
+/// with, in metres, measured along each vertex's normal. The stored wing-logo
+/// polygons already separate themselves by about 1 mm and still fight; ten
+/// times that is far beyond every measured coplanarity error and depth
+/// rounding, and at 1 cm it is sub-pixel at the distances the decals are
+/// viewed from. Designed, not recovered.
+pub const DECAL_OFFSET_M: f32 = 0.01;
 
 /// The reading the playtest looks stored texture names up under.
 ///
@@ -329,6 +377,27 @@ pub struct BoundImage {
     pub coverage_note: Option<&'static str>,
 }
 
+/// One drawn part the decal rule covers: a material group whose bound texture
+/// carries keyed coverage. `container`, `mesh`, `group` and `texture` are the
+/// identifying record the `playtest sources` line and `report.json` list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecalGroup {
+    /// The stored mesh slot the part was sliced from.
+    pub mesh: u32,
+    /// The part's slot among that mesh's drawn material groups.
+    pub group: usize,
+    /// The stored raw material index.
+    pub material: u32,
+    /// The texture the material's stored name resolved to.
+    pub texture: String,
+    /// Triangles the part draws.
+    pub triangles: usize,
+    /// The bound material's handle: how a test reaches this exact decal layer
+    /// (to hide it for a footprint measure, say). Runtime addressing only; the
+    /// JSON report names the stored material index instead.
+    pub material_handle: Handle<StandardMaterial>,
+}
+
 /// A material that kept the neutral development material.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnresolvedMaterial {
@@ -343,7 +412,7 @@ pub struct UnresolvedMaterial {
 }
 
 /// What one container's materials resolved to.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SubjectTextures {
     /// The container key.
     pub container_key: String,
@@ -366,13 +435,16 @@ pub struct SubjectTextures {
     pub images: Vec<BoundImage>,
     /// Every material kept neutral because its texture did not resolve.
     pub unresolved: Vec<UnresolvedMaterial>,
+    /// Every drawn part the decal rule (#794) covers: a material group whose
+    /// bound texture carries keyed coverage.
+    pub decals: Vec<DecalGroup>,
 }
 
 /// The textures a scene drew, for the startup line and `report.json`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlaytestTextureReport {
-    /// The three claims the choices are filed under.
-    pub claims: [&'static str; 3],
+    /// The claims the choices are filed under.
+    pub claims: [&'static str; 4],
     /// The archive chosen, installation-relative.
     pub archive: String,
     /// Its SHA-256.
@@ -432,10 +504,26 @@ impl PlaytestTextureReport {
                     })
                     .collect::<Vec<_>>()
                     .join(",");
+                let decals = s
+                    .decals
+                    .iter()
+                    .map(|decal| {
+                        format!(
+                            "{{\"mesh\":{},\"group\":{},\"material\":{},\"texture\":\"{}\",\
+\"triangles\":{}}}",
+                            decal.mesh,
+                            decal.group,
+                            decal.material,
+                            esc(&decal.texture),
+                            decal.triangles
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
                 format!(
                     "{{\"container\":\"{}\",\"textured_materials\":{},\"neutral_materials\":{},\
 \"flat_materials\":{},\"textured_parts\":{},\"neutral_parts\":{},\"images\":{},\
-\"unresolved\":[{unresolved}]}}",
+\"decals\":[{decals}],\"unresolved\":[{unresolved}]}}",
                     esc(&s.container_key),
                     s.textured_materials,
                     s.neutral_materials,
@@ -449,7 +537,7 @@ impl PlaytestTextureReport {
             .join(",");
         format!(
             "{{\"archive\":\"{}\",\"archive_sha256\":\"{}\",\"group\":\"{}\",\"selection\":\"{}\",\
-\"name_reading\":\"{}\",\"claims\":[\"{}\",\"{}\",\"{}\"],\"subjects\":[{subjects}]}}",
+\"name_reading\":\"{}\",\"claims\":[\"{}\",\"{}\",\"{}\",\"{}\"],\"subjects\":[{subjects}]}}",
             esc(&self.archive),
             self.archive_sha256,
             esc(&self.group),
@@ -458,6 +546,7 @@ impl PlaytestTextureReport {
             self.claims[0],
             self.claims[1],
             self.claims[2],
+            self.claims[3],
         )
     }
 }
@@ -491,6 +580,10 @@ enum Binding {
     Textured {
         material: Handle<StandardMaterial>,
         key: String,
+        /// The stored texture name the material record spelled.
+        texture: String,
+        /// The bound image carries keyed coverage — the decal class of #794.
+        keyed: bool,
     },
     Neutral,
 }
@@ -499,6 +592,10 @@ enum Binding {
 pub struct TextureBinder<'a> {
     archive: &'a PlaytestTextureArchive,
     enabled: bool,
+    /// The #794 decal rule: a coverage-carrying part is drawn offset
+    /// [`DECAL_OFFSET_M`] along its normals. `false` reproduces the coplanar
+    /// baseline the flicker is measured against.
+    decal_offset: bool,
     images: BTreeMap<usize, (Handle<Image>, BoundImage)>,
     bindings: BTreeMap<(String, u32), Binding>,
     neutral: BTreeMap<String, Handle<StandardMaterial>>,
@@ -508,12 +605,14 @@ pub struct TextureBinder<'a> {
 
 impl<'a> TextureBinder<'a> {
     /// A binder over `archive`. A disabled binder binds nothing: every part is
-    /// drawn with the neutral material (the untextured baseline).
+    /// drawn with the neutral material (the untextured baseline). `decal_offset`
+    /// is the #794 rule: coverage-carrying parts move off their coplanar base.
     #[must_use]
-    pub fn new(archive: &'a PlaytestTextureArchive, enabled: bool) -> Self {
+    pub fn new(archive: &'a PlaytestTextureArchive, enabled: bool, decal_offset: bool) -> Self {
         Self {
             archive,
             enabled,
+            decal_offset,
             images: BTreeMap::new(),
             bindings: BTreeMap::new(),
             neutral: BTreeMap::new(),
@@ -602,7 +701,12 @@ impl<'a> TextureBinder<'a> {
                         subject
                             .resolved_names
                             .push(NAME_READING.project(&name.name));
-                        Binding::Textured { material, key }
+                        Binding::Textured {
+                            material,
+                            key,
+                            texture: name.name.clone(),
+                            keyed: masked,
+                        }
                     }
                 },
             },
@@ -635,7 +739,8 @@ impl<'a> TextureBinder<'a> {
     }
 
     /// Splits `world_mesh` into one part per stored material group and gives each
-    /// the material its stored index resolves to.
+    /// the material its stored index resolves to. `mesh_index` is the stored
+    /// mesh slot the report names a decal group's mesh with.
     ///
     /// A mesh whose merged buffers cannot be sliced per group (the counts the
     /// merge recorded do not add up, or it carries no UV) is drawn as **one**
@@ -646,6 +751,7 @@ impl<'a> TextureBinder<'a> {
         container: &PlaytestContainer,
         world_mesh: &WorldMesh,
         neutral: NeutralColor,
+        mesh_index: u32,
     ) -> Vec<PlaytestPart> {
         let materials = container.materials();
         let slices = slice_groups(world_mesh);
@@ -653,7 +759,7 @@ impl<'a> TextureBinder<'a> {
         let mut parts = Vec::new();
         match slices {
             Some(slices) => {
-                for (stored_material, mesh) in slices {
+                for (group, (stored_material, mesh)) in slices.into_iter().enumerate() {
                     if !seen.contains(&stored_material) {
                         seen.push(stored_material);
                         *self
@@ -668,6 +774,32 @@ impl<'a> TextureBinder<'a> {
                     } else {
                         Binding::Neutral
                     };
+                    let mut mesh = mesh;
+                    if let Binding::Textured {
+                        keyed: true,
+                        texture,
+                        material,
+                        ..
+                    } = &binding
+                    {
+                        if self.decal_offset {
+                            offset_decal_part(&mut mesh);
+                        }
+                        let decals = &mut self.subject(container).decals;
+                        if !decals
+                            .iter()
+                            .any(|d| d.mesh == mesh_index && d.group == group)
+                        {
+                            decals.push(DecalGroup {
+                                mesh: mesh_index,
+                                group,
+                                material: stored_material,
+                                texture: texture.clone(),
+                                triangles,
+                                material_handle: material.clone(),
+                            });
+                        }
+                    }
                     let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
                     parts.push(self.part(
                         app,
@@ -712,7 +844,7 @@ impl<'a> TextureBinder<'a> {
         neutral: NeutralColor,
     ) -> PlaytestPart {
         let (material, image) = match binding {
-            Binding::Textured { material, key } => {
+            Binding::Textured { material, key, .. } => {
                 self.subject(container).textured_parts += 1;
                 (material.clone(), Some(key.clone()))
             }
@@ -752,12 +884,16 @@ impl<'a> TextureBinder<'a> {
             subject.resolved_names.dedup();
             subject.unresolved_names.sort();
             subject.unresolved_names.dedup();
+            subject
+                .decals
+                .sort_by_key(|decal| (decal.mesh, decal.group));
         }
         PlaytestTextureReport {
             claims: [
                 PLAYTEST_TEXTURE_ARCHIVE_IS_DESIGNED,
                 PLAYTEST_TEXTURE_NAME_READING_IS_DESIGNED,
                 PLAYTEST_TEXTURE_PRESENTATION_IS_PROVISIONAL,
+                PLAYTEST_DECAL_OFFSET_IS_DESIGNED,
             ],
             archive: self.archive.path().to_owned(),
             archive_sha256: self.archive.sha256().to_owned(),
@@ -862,6 +998,67 @@ fn expand_texel_any(
         let texel = decoded.texel(x, y)?;
         let alpha = coverage_byte(decoded, coverage, x, y).ok()?;
         Some([*texel.first()?, *texel.get(1)?, *texel.get(2)?, alpha])
+    }
+}
+
+/// Moves a decal-class part's vertices `DECAL_OFFSET_M` along their normals so
+/// a coplanar base surface can never win the depth test over it. Stored vertex
+/// normals are used where the mesh kept them; a part without normals gets a
+/// face normal per triangle, which for these small flat quads is the surface
+/// direction. A vertex with no usable normal is left where it was.
+fn offset_decal_part(mesh: &mut Mesh) {
+    let indices: Vec<u32> = match mesh.indices() {
+        Some(Indices::U32(values)) => values.clone(),
+        Some(Indices::U16(values)) => values.iter().map(|i| u32::from(*i)).collect(),
+        None => Vec::new(),
+    };
+    let stored_normals = match mesh.attribute(Mesh::ATTRIBUTE_NORMAL) {
+        Some(VertexAttributeValues::Float32x3(values)) => Some(values.clone()),
+        _ => None,
+    };
+    let Some(VertexAttributeValues::Float32x3(positions)) =
+        mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
+    else {
+        return;
+    };
+    // Per-vertex direction: the stored normal, or the sum of the face normals
+    // of the triangles the vertex is a corner of.
+    let mut directions = vec![[0.0f32; 3]; positions.len()];
+    if let Some(normals) = &stored_normals {
+        directions.copy_from_slice(normals);
+    } else {
+        let flat: Vec<[f32; 3]> = positions.to_vec();
+        for triangle in indices.as_chunks::<3>().0 {
+            let [a, b, c] = [
+                flat[triangle[0] as usize],
+                flat[triangle[1] as usize],
+                flat[triangle[2] as usize],
+            ];
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let n = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            for index in triangle {
+                let d = &mut directions[*index as usize];
+                d[0] += n[0];
+                d[1] += n[1];
+                d[2] += n[2];
+            }
+        }
+    }
+    for (position, direction) in positions.iter_mut().zip(&directions) {
+        let len = (direction[0] * direction[0]
+            + direction[1] * direction[1]
+            + direction[2] * direction[2])
+            .sqrt();
+        if len > 1e-6 {
+            position[0] += direction[0] / len * DECAL_OFFSET_M;
+            position[1] += direction[1] / len * DECAL_OFFSET_M;
+            position[2] += direction[2] / len * DECAL_OFFSET_M;
+        }
     }
 }
 
