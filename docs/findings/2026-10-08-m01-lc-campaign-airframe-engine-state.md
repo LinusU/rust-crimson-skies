@@ -1,0 +1,232 @@
+# M01-LC-CAMPAIGN-AIRFRAME-POSE: the campaign airframe is engine state, and what is still missing
+
+Date: 2026-10-08. Task: #770 `M01-LC-CAMPAIGN-AIRFRAME-POSE`, session 1 of an
+unfinished implementation claim. Capabilities used: **`retail`** (the owner's
+installation read-only) and **static analysis** of the owner-supplied decrypted
+executable. **No original run happened; nothing here is `verified_original`**,
+and no airframe or yaw is bound for M01 (AGENTS.md rules 4 and 5).
+
+## Sources and method
+
+* Retail data, read-only: `$CS_GAME_DIR` (`CS_CAPABILITIES=retail,gpu,audio`),
+  notably `ZBD/C1C/M01/zrdr.zbd` and `ZBD/interp.zbd`.
+* `$CS_GAME_DIR/crimson.decrypted.exe`, sha256
+  `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` — the same
+  image #390/#436/#715 worked from. Virtual addresses below `0x643000` are file
+  offset `VA − 0x400000` (`.data` raw ends at VA `0x643000`; everything at
+  `VA ≥ 0x643000` — including every global named below — is zero-initialised
+  `.bss`). Read with `strings`, radare2 (`izz`, `/r`, `/x`, `pd`) and small
+  Python scans over the file; only addresses, constants and control flow are
+  recorded here, never bytes or decompiled code.
+* Prior measurements this builds on: #715 (`docs/findings/2026-10-06-m01-lc-player-airframe-source.md`),
+  #676/#634 (`docs/findings/2026-10-05-m01-lc-player-config.md`), #436's owner
+  note of 2026-10-05 (metre, +Y up, right-handed, `.zrd` angles in degrees).
+
+This note answers, with evidence, **which state assigns a campaign mission's
+player airframe** — #715's open question 1. It does **not** answer the start
+pose's heading zero direction and handedness (question 2): that conversion
+routine was not located in this session and stays unknown.
+
+## 1. The runtime `aiv.zrd` loader
+
+* `0x439540`..`0x43968e` builds the member path with `sprintf` from the chapter
+  (`0x4639d0`, e.g. `c1c`) and mission (`0x463a50`, e.g. `m01`) of the session
+  object at `0x71b480`, using the format `..\data\%s\%s\zrdr\aiv.zrd`
+  (`0x62283c`), opens it (`0x579c60`) and parses the records into the container
+  at **`0x64f620`** = `{ +0: flags, +4: record count, +8: array of record
+  pointers }`, each record `0xc` bytes (`{ +0: name, +4: name copy, +8: document
+  object }`, allocated in the loop at `0x4395dc`).
+* The container is read by the aircraft-spawn path at `0x474cbb` / `0x474cdb`
+  (record index from `[esp+0x14]`, then `record->document`), and by the
+  `params` reference resolver at `0x452ab9`..`0x452b42` (a named document field
+  `params` naming an `aiv` record: linear scan over `[record->name]` with
+  `strcmp`, then the matched record's document is stored at `obj+0x3c`).
+
+## 2. How the `player` record's airframe is chosen (the spawn site)
+
+In the spawn routine, for a record whose name compares equal to the literal
+`player` (`0x474d1b`, compared against `0x627b2c`):
+
+| address | instruction | meaning |
+| --- | --- | --- |
+| `0x474d31` | `mov ecx, 0x71b480` | the session object |
+| `0x474d36` | `call 0x4639b0` | returns `session->field_0x700 == 3` (the field is `0x71bb80`) |
+| `0x474d3d` | `je 0x474d48` | not mode 3 → the branch below |
+| `0x474d3f` | `call 0x45be70` | `mov eax, [0x718cdc]; ret` — the scenario object's field `+4` |
+| `0x474d48` | `mov esi, [0x71daec]` | **the campaign/global player-airframe index** |
+| `0x474d4f` | `call 0x426cc0` | index → row's **scene root** (`0x620c74 + i*28`) |
+| `0x474d55` | `call 0x47fcb0` | apply the scene root |
+| `0x474d5b` | `call 0x426ce0` | index → row's **model** (`0x620c78 + i*28`) |
+
+The index→row accessors `0x426ca0`/`0x426cc0`/`0x426ce0`/`0x426d00`/`0x426d20`/
+`0x426d40`/`0x426d60` are seven 20-byte functions (`lea ecx,[eax*8]; sub ecx,eax`
+→ `i*7`, then `mov eax,[ecx*4 + 0x620c70 + field*4]`), i.e. row stride `0x1c`
+with the same seven pointers #715 transcribed. The only *other* reference to the
+table base `0x620c70` in the whole image besides `0x426d80`'s walk is `0x426cad`
+(the first accessor), so **the table is read by name (0x426d80) and by index
+(accessors only)** — there is no mission→airframe map in it, confirming #715.
+
+For a record named `wingman_1` (`0x474e3e`) the same block reads the global
+`0x71db4c` and replaces the "none" value `11` with `5` (`0x474e76`..`0x474e85`);
+for `wingman_4` (`0x475016`) the global `0x71daec` (the player's own airframe) is
+used **only** when chapter/mission is `c3`/`m05` or `c4`/`m04` (`0x47502c`..
+`0x4750a4`), compared with the chapter (`0x4639d0`) and mission (`0x463a50`)
+accessors of the same session object. M01 is neither, so that override does not
+apply to it.
+
+## 3. Which mode a campaign mission runs in
+
+`0x4639b0` answers `field_0x700 == 3`; `0x4639c0` answers `== 2`. The loading
+screen selection at `0x4a19d3`..`0x4a1a17` names the modes:
+
+* mode **3** → document `ia_loading.zrd` (`0x62952c`),
+* mode **2** → document `mp_loading.zrd` (`0x62953c`),
+* otherwise → document `loading.zrd` (`0x62954c`).
+
+The mode is written as a constant immediately before `0x4638f0` (which loads
+`support\init.gw`, `support\main.gw` and `support\%s\%s.gw` for the chosen
+chapter and mission):
+
+| site | value | context |
+| --- | --- | --- |
+| `0x41728d` | 1 | after the selected plane record is applied (§4) — a mission start with the player's plane |
+| `0x41a8ac`, `0x427bde`, `0x442b2e` | 1 | other mission-start/return paths |
+| `0x41758a` | 3 | after `[0x64aba4]` (0..6) selects the mission type and `[0x64aba0]` (0..3 → 0/1/4/2) sets the scenario object's `+0` at `0x417554`..`0x417578` — the instant-action type selection |
+| `0x442b7c` | 3 | tiny setter, `0x4638f0` then `ret` |
+| `0x496c7e` | 2 | multiplayer |
+
+So **a campaign mission (mode 1) takes the player's airframe from `0x71daec`**;
+only instant action (mode 3) takes it from the scenario object, which is the
+`ia.zrd` path #715 already measured.
+
+## 4. What `0x71daec` is, and who writes it
+
+Four absolute references in the whole image (`/x ecda7100`):
+
+* `0x416eb5` — **setter**: `0x416ea0(ptr)` computes `idx = 0x416db0(ptr->field_0x2c)`
+  and stores `idx` into `0x71daec` when `idx < 11`. `0x416db0` is an identity
+  table walk over the 11 pairs at `0x61f670` (`{0,0}..{10,10}`), answering `11`
+  for any other value — so `ptr->field_0x2c` **is an airframe row index**.
+  Its two callers:
+  * `0x413a8a` — passes the fixed parameter block **`0x642fd0`** (`.data`,
+    zero-initialised, `+0x2c` = `0x642ffc`). That field is written by the menu
+    code at `0x40e45d`, `0x40e486`, `0x40ef7c`, `0x40fa46`, `0x4144af` and read
+    back at `0x40e4ac` (`push 0x642fd0; call 0x40fdf0`).
+  * `0x41712c` — passes `&records[[0x64b67c]]` where `records` is the roster at
+    **`0x64b78c`**, record stride **`0xcc` (204)**, `field_0x2c` again the
+    airframe index (`0x64b78c + 0x2c = 0x64b7b8`, read at `0x405d2b`,
+    `0x4078b1` uses the same `lea … 0x64b78c` with the `*204` scale). This call
+    sits inside the function `0x417114`..`0x41740c` that also sets mode 1 and
+    starts the chapter/mission scripts (§3), i.e. **the campaign start applies
+    the selected plane record's airframe to `0x71daec`**. The same function then
+    builds the `player` (at `0x41737b`) and `wingman_1` (at `0x4173ca`) record
+    overrides through `0x414f40`, with the wingman's airframe taken from
+    `records[[0x64b680]].field_0x2c` (`0x4173c2`).
+* `0x474d49` / `0x4750a5` — the two readers (§2).
+* `0x4b3786` — **reset default**: a parameter-reset routine spanning
+  `0x4b3750`..`0x4b37f7` writes `0x71daec = 5` alongside `0x71daf0 = -1`,
+  `0x71daf8`/`0x71dafc`/`0x71db00`/`0x71db04` = `-1.0f`, the wingman block
+  `0x71db4c`..`0x71db64`, and the flags `0x71dac8`..`0x71dae8`. It has no direct
+  `call`/`jmp` reference in `.text`, so it is reached indirectly (vtable or
+  jump table); its entry is still unlocated.
+
+Row **5** is `Devastator` / scene root `player_pfighter` / model `piratefighter`
+(the table #715 transcribed, pinned on main by `AIRFRAME_TABLE`).
+
+The instant-action path has the *same* default: the scenario setup (`0x4574d0`,
+whose only caller is `0x49ff10`; the per-method entry `0x459390` is called at
+`0x45a222` with `this = 0x718cd8`) reads `player_plane` at `0x4593e5`, resolves it
+with `0x426d80`, stores the answer at `this+4` (`0x459409`) and, when the answer
+is `11` (none), stores **`edi = 5`** (`0x4593c9` sets `edi`, `0x45940e` stores
+it). `0x718cd8` is therefore a small scenario object `{+0: mission-type index,
++4: player airframe row}` and `0x718cdc` is its field `+4`.
+
+## 5. The selection index and the profile variable
+
+`[0x64b67c]` is the index of the selected roster record:
+
+* `0x405f9c`..`0x405fbc` scans `records` (`add eax, 0xcc`) for the record whose
+  `+0` dword is `2` **and** whose `+0x2c` equals the wanted airframe index, and
+  stores the found index into `[0x64b67c]` — a "select the plane of this
+  airframe" helper;
+* `0x4094f7` stores a UI result: `[edi*4 + 0x64b67c] = 0x4101d0(arg)` (with
+  `[edi*4 + 0x6480bc] = -3` written beside it at `0x4094fe`);
+* `0x405d25` copies it into the profile variable registered as **`nPrevPlane`**:
+  the registration block at `0x402128`..`0x402141` pushes `0x6480c4` (address),
+  type `1`, and the name `nPrevPlane` (`0x61e854`), so `nPrevPlane` **is**
+  `dword [0x6480c4]`, written from `[0x64b67c]`.
+
+Roster record layout as used: `+0` type (value `2` selects a plane, `0x405fa1`),
+`+4` name (copied with `lstrcpyA` at `0x405df6`), `+0x2c` airframe row index.
+The roster is `.bss` (base `0x64b78c ≥ 0x643000`), so its **initialisation
+routine was not located in this session**; `0x4078a4` also addresses
+`records[0x19]` (25), i.e. the roster is larger than the eleven airframes.
+
+## 6. Verdict for the two open questions
+
+### 6.1 Campaign player airframe — narrowed, not yet bound
+
+**Measured:** for a campaign mission the player's airframe comes from engine
+state — the **airframe field of the selected plane record of the roster**, the
+profile/flight-check selection (`nPrevPlane` names it), applied to the global
+`0x71daec` at mission start; it is *not* the mission's data, *not* a file in the
+installation (#715's negative results stand) and *not* an instant-action
+document. Both engine paths default the same row, **5 = `Devastator`**, when no
+selection exists (`0x4b3786`; `0x45940e` for instant action).
+
+**Still unknown, therefore still `Resolved::Unknown` in production:**
+
+1. the roster's and `[0x64b67c]`'s value in a fresh, **profile-less**
+   installation: the roster initialisation routine (what `records[0].field_0x2c`
+   is before any profile or menu writes it) and the function that reaches the
+   `0x4b3750` reset were not located, so "M01 launches in a `Devastator`" is a
+   *candidate with two measured defaults*, not a measurement of M01's launch
+   (AGENTS.md rule 5). Resolving: continue this static pass (locate the roster
+   init for `0x64b78c` and the entry of `0x4b3750`), F44/F45/F48's
+   profile/flight-check shape, or #358's owner-supplied original run.
+
+### 6.2 Start pose heading zero direction and handedness — unchanged
+
+Not measured. This session did not locate the routine that turns the player
+record's field 1 (three floats) and field 2 (degrees-like heading) into a world
+orientation. What was measured and is recorded here so the next pass does not
+repeat it:
+
+* the aiv container readers (`0x64f620`): `0x4396a4` (teardown), `0x439af2`/
+  `0x439bb9` (name list building), `0x452ab9` (by-name reference), `0x474cbb`/
+  `0x474cdb` (spawn), `0x4232b1`..`0x425f33` (container registry);
+* the spawn routine around the airframe selection reads *named* fields of a
+  document (`kind_of` at `0x474ba5`) and never an obvious positional field 1/2
+  in the region `0x474b80`..`0x475340`;
+* `.. \data\cx\mxx\zrdr\aiv.zrd` also appears at `0x4384f0`/`0x439570` (the
+  sprintf buffer of §1);
+* the **zeppelin** pose parse at `0x4bda64`..`0x4bdac1` reads named `position`
+  (three floats → `obj+0x20/0x24/0x28`), `yaw` and `pitch` (degrees → radians
+  with `qword [0x6040e8]`, stored at `obj+0x2c` / `obj+0x30`) — a *different*
+  record family (the `zeppelin` records of `zeppelins.zrd`, which carry the keys
+  `node position yaw pitch max_speed …` in M01's archive), useful only as proof
+  that `.zrd` angles are degrees at load (#436) and that a shared conversion
+  helper may exist;
+* `origin`/`rotation` (three degrees→radians at `0x4528ec`..`0x452910`) belong
+  to the `zeppelin`/`open_anim` records of `placezeps.zrd`, not to `aiv`;
+* the deg→rad constant `qword [0x6040e8]` has 123 references; the ones inside
+  the spawn region (`0x47439d`…`0x4748fa`) are flight-parameter parsing
+  (`maxAOA`, `liftAOAs`, `smokescreen_stun_angle`), not the pose.
+
+Resolving: a decoded native spawn/conversion routine (continue above), or #358's
+owner-supplied original run — never an invented yaw.
+
+## 7. What changed in this session
+
+* **No production code and no tests were changed.** Neither question is answered
+  strongly enough to return `Resolved::Known` (rule 5): an airframe chosen
+  between two measured defaults, and a heading with no landmark at all.
+* This note only.
+
+## 8. Affected content and resolving work
+
+| unknown | affected content | resolving work |
+| --- | --- | --- |
+| the roster/selection value on a profile-less install (which row `0x71daec` holds for M01) | M01's and every campaign mission's player spawn; the `player_configuration` launch surface (#359) | this static pass continued (roster init at `0x64b78c`, entry of `0x4b3750`), F44/F45/F48, or #358 |
+| heading zero direction and handedness | `initial_pose()` for every mission; camera/spawn yaw | this static pass continued (§6.2) or #358 |
+| frame relation between `aiv.zrd` starts and the world grid (194/777/826 stored units outside `c1c`) | every start pose's world placement | #436's remaining work, F16-E-2's prose sync |
