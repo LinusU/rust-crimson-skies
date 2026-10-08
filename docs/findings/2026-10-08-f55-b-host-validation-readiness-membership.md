@@ -19,7 +19,7 @@ Listed before editing, per the sheet.
   ([`PacketOutcome`], [`PacketReject`]), the bounded replay guard
   (`Lobby::seen`, [`MAX_SEEN_LOBBY_PACKETS`]), and `Display`/`Error` for
   `LaunchError` (it had `Debug` only, and `PacketReject` reports it).
-- `crates/cs_net/tests/accept_f55_b_host_validation.rs` (new): 10 tests, all
+- `crates/cs_net/tests/accept_f55_b_host_validation.rs` (new): 11 tests, all
   named `accept_f55_b_*`.
 - Wiring edits: none were needed — `lobby` is already declared in
   `crates/cs_net/src/lib.rs`.
@@ -67,12 +67,16 @@ member bytes ─▶ LobbyPacket::decode ─▶ Lobby::receive
   the correct and harmless answer, whereas re-reporting `NotAMember` invites a
   retry loop. Epoch comes first because a packet from another session must not
   be interpreted at all.
+- **The guard is keyed by `(PeerId, EventId)`.** The id is minted by the
+  client, so two members can legitimately hold the same `EventId`; without
+  the sender in the key, one member's packet could swallow another's as a
+  "replay". Only a repeat *by the same member* is a replay.
 - **Only accepted packets join the replay guard.** A refused packet may be
   corrected and retried under the same id; recording failures would make the
   correction undeliverable. The guard is a bounded `VecDeque` that evicts the
-  oldest id at `MAX_SEEN_LOBBY_PACKETS` (256), the same policy as the F54-C
-  client seen-set. It is a freshness/idempotency bound, not a security
-  boundary: a peer that fills it can replay a very old id.
+  oldest entry at `MAX_SEEN_LOBBY_PACKETS` (256), the same policy as the
+  F54-C client seen-set. It is a freshness/idempotency bound, not a security
+  boundary: a peer that fills it can replay a very old id of its own.
 - **`PacketOutcome::Replayed` is a success, not an error.** Reliable delivery
   can redeliver after a retry; the contract wants application idempotency, so
   the redelivery is acknowledged and broadcasts nothing.
@@ -157,6 +161,10 @@ Sensitivity was measured, not assumed (mutation run, reverted afterwards):
   `accept_f55_b_a_replayed_packet_is_applied_once` (chat applied twice) and
   `accept_f55_b_a_replayed_launch_packet_does_not_recommit`
   (`Launch(WrongPhase { phase: InMatch })`) failed: 8 passed, 2 failed.
+- With the replay guard keyed by `EventId` alone instead of `(PeerId,
+  EventId)`, `accept_f55_b_two_members_with_the_same_packet_id_both_apply`
+  failed (`expected an applied chat, got Replayed`), which is why the sender
+  is part of the key.
 - With the implementation removed entirely the tests do not compile, because
   they call `LobbyPacket`, `Lobby::receive_bytes`, `PacketOutcome` and
   `PacketReject` production API.

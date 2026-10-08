@@ -843,8 +843,9 @@ pub struct Lobby {
     pending_acks: BTreeSet<PeerId>,
     allocator: PeerAllocator,
     /// Packet ids already applied, oldest first: the bounded replay guard of
-    /// [`Lobby::receive`].
-    seen: VecDeque<EventId>,
+    /// [`Lobby::receive`], keyed by the sender so one member's ids can never
+    /// suppress another member's packet.
+    seen: VecDeque<(PeerId, EventId)>,
 }
 
 impl Lobby {
@@ -1011,10 +1012,11 @@ impl Lobby {
     ///    [`EventId::session`] is not this lobby's session epoch ("Epoch
     ///    mismatch rejects stale packets"), refused before the payload is
     ///    interpreted.
-    /// 2. [`PacketOutcome::Replayed`] — the id was already applied. The
-    ///    reliable channel can redeliver a packet after a retry, and it is
-    ///    application idempotency, not delivery, that stops the redelivery
-    ///    from applying twice.
+    /// 2. [`PacketOutcome::Replayed`] — this member's id was already
+    ///    applied. The reliable channel can redeliver a packet after a
+    ///    retry, and it is application idempotency, not delivery, that
+    ///    stops the redelivery from applying twice. The guard is keyed by
+    ///    sender, so another member's identical id is its own packet.
     /// 3. [`PacketReject::NotAMember`] — the sender is not in the lobby.
     /// 4. Dispatch: [`Lobby::apply`] for a command (authority is checked
     ///    first there, so a client packet can never carry host authority,
@@ -1042,7 +1044,7 @@ impl Lobby {
                 found: id.session,
             });
         }
-        if self.seen.contains(&id) {
+        if self.seen.contains(&(from, id)) {
             return Ok(PacketOutcome::Replayed);
         }
         if !self.members.contains_key(&from) {
@@ -1066,7 +1068,7 @@ impl Lobby {
                 .map(PacketOutcome::Applied)
                 .map_err(PacketReject::Launch)?,
         };
-        self.remember(id);
+        self.remember(from, id);
         Ok(outcome)
     }
 
@@ -1088,16 +1090,20 @@ impl Lobby {
         self.receive(from, packet, validator)
     }
 
-    /// Records one accepted packet id, evicting the oldest when the bounded
-    /// seen-set is full.
-    fn remember(&mut self, id: EventId) {
-        if self.seen.contains(&id) {
+    /// Records one accepted packet, keyed by the sender, evicting the oldest
+    /// entry when the bounded seen-set is full.
+    ///
+    /// The key includes the sender because the id is minted by the client:
+    /// two members can legitimately hold the same `EventId`, and neither may
+    /// have its packet swallowed as the other's replay.
+    fn remember(&mut self, from: PeerId, id: EventId) {
+        if self.seen.contains(&(from, id)) {
             return;
         }
         while self.seen.len() >= MAX_SEEN_LOBBY_PACKETS {
             self.seen.pop_front();
         }
-        self.seen.push_back(id);
+        self.seen.push_back((from, id));
     }
 
     fn require_gathering(&self) -> Result<(), LobbyError> {

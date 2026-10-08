@@ -679,6 +679,37 @@ fn accept_f55_b_an_unacceptable_chat_packet_is_refused() {
     }
 }
 
+/// A second member's identical packet id is its own packet, not a replay:
+/// the guard is keyed by sender as well as by [`EventId`].
+#[test]
+fn accept_f55_b_two_members_with_the_same_packet_id_both_apply() {
+    let (mut lobby, host, a, _b, _cannon, _mg) = ready_lobby();
+    let text = ChatText::new("ready when you are").unwrap();
+    let packet_for = |peer_command: PeerRequest| LobbyPacket::Command {
+        id: packet_id(50),
+        command: LobbyCommand::Peer(peer_command),
+    };
+
+    for peer in [host, a] {
+        match send(
+            &mut lobby,
+            peer,
+            &packet_for(PeerRequest::Chat(text.clone())),
+        )
+        .unwrap()
+        {
+            PacketOutcome::Applied(applied) => {
+                assert_eq!(applied.events.len(), 1, "{peer} must not be swallowed");
+                assert!(matches!(
+                    applied.events.first(),
+                    Some(LobbyEvent::Chat { from, .. }) if *from == peer
+                ));
+            }
+            other => panic!("expected an applied chat, got {other:?}"),
+        }
+    }
+}
+
 /// Membership and readiness travel the same production entry point: a client
 /// is admitted, readies over packets, and loses readiness — with the reason —
 /// when the host bans its weapon over a packet.
