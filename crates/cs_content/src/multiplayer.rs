@@ -1,8 +1,9 @@
-//! The original multiplayer catalog (F56-A): which modes the installation
-//! names and which scenario slots it ships.
+//! The original multiplayer catalog (F56-A, F56-B): which modes the
+//! installation names, which scenario slots it ships, and the objective
+//! records each slot's `targets.zrd` declares.
 //!
-//! Spec: `specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stage
-//! `### F56-A`. Findings and what stays open:
+//! Spec: `specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stages
+//! `### F56-A`/`### F56-B`. Findings and what stays open:
 //! `docs/findings/2026-10-02-f56-a-multiplayer-catalog.md`.
 //!
 //! Two independent tables are read, both from bytes of the installation and
@@ -20,22 +21,29 @@
 //!   with the digest of its reader archive and the markers found in its bytes.
 //!   The slot's own `targets.zrd` is decoded to bind it to a [`ScenarioMode`]
 //!   (`mode`), because the objective descriptions it holds name the mode
-//!   family directly; the whole-archive markers are mixed and are kept only as
-//!   the weaker byte-level evidence they are.
+//!   family directly; the same member's records are exposed as
+//!   [`SlotObjective`]s (`objectives`, F56-B), classified by the measured
+//!   `description` keys so the possession machine can tell a carryable flag
+//!   from a base or a zeppelin. The whole-archive markers are mixed and are
+//!   kept only as the weaker byte-level evidence they are.
 //!
 //! # What is known and what is not
 //!
-//! The mode *names* and the briefing text (including the point values the
-//! briefing prints) are observed. Everything a mode must define (spawn,
-//! respawn, lives, limits, friendly fire, victory and draw, disconnect, human
-//! scaling) stays [`Resolved::Unknown`] except team play, which the name or
-//! the briefing states. A slot's `targets.zrd` binds it to one of the three
-//! measured mode families: a flag objective is Capture the Flag, a zeppelin
-//! objective is Zeppelin vs. Zeppelin, and no such objective is Deathmatch
-//! (whose two named variants the slot programs do not separate). A slot whose
-//! `targets.zrd` is absent, undecodable, not a record list or names both a flag
-//! and a zeppelin objective stays [`Resolved::Unknown`]. Every per-mode rule
-//! still gates F56-B.
+//! The mode *names*, the briefing text (including the point values the
+//! briefing prints) and the slot objective records are observed. Everything a
+//! mode must define (spawn, respawn, lives, limits, friendly fire, victory
+//! and draw, disconnect, human scaling) stays [`Resolved::Unknown`] except
+//! team play, which the name or the briefing states. A slot's `targets.zrd`
+//! binds it to one of the three measured mode families: a flag objective is
+//! Capture the Flag, a zeppelin objective is Zeppelin vs. Zeppelin, and no
+//! such objective is Deathmatch (whose two named variants the slot programs
+//! do not separate). A slot whose `targets.zrd` is absent, undecodable or not
+//! a record list leaves both `mode` and `objectives` unknown; one whose
+//! records name both a flag and a zeppelin keeps the records known and the
+//! mode unknown — never a guess. What the original does with an objective in
+//! play (possession, drop, return, delivery, its point worth) is not in this
+//! data; that is the designed machine in `cs_sim::multiplayer::objective`,
+//! gated by the still-unknown per-mode rules.
 
 use std::fmt;
 use std::io;
@@ -48,7 +56,8 @@ use cs_types::install::InstallFileRecord;
 
 use crate::config::StringRow;
 use crate::stunts::{
-    SCENARIO_TARGETS_MEMBER, TARGET_DESCRIPTION_KEY, ZrdValue, decode_zrd, zrd_field,
+    SCENARIO_TARGETS_MEMBER, TARGET_CATEGORY_KEY, TARGET_DESCRIPTION_KEY, TARGET_HELP_KEY,
+    TARGET_NODES_KEY, ZrdValue, decode_zrd, zrd_field,
 };
 
 /// The string ids of the mode-name run, both ends included.
@@ -502,6 +511,9 @@ pub const TARGET_DESCRIPTION_ZEPPELIN_ENEMY: &str = "MSG_TRGT_ZEP_ENEMY";
 /// zeppelin to defend.
 pub const TARGET_DESCRIPTION_ZEPPELIN_FRIEND: &str = "MSG_TRGT_ZEP_FRIEND";
 
+/// The `description` an objective record carries when it is a rearm base.
+pub const TARGET_DESCRIPTION_REARM_BASE: &str = "MSG_TRGT_REARM_BASE";
+
 /// The multiplayer mode family a scenario slot's decoded `targets.zrd`
 /// selects.
 ///
@@ -546,6 +558,76 @@ impl ScenarioMode {
             Self::CaptureTheFlag => &[7013],
             Self::ZeppelinVsZeppelin => &[7014],
         }
+    }
+}
+
+/// The role a [`SlotObjective`]'s `description` names among the measured keys.
+///
+/// Designed classification (F56-B): the engine's vocabulary over the
+/// `description` values the retail slots actually spell — flag base, flag,
+/// the two zeppelin sides, rearm base — so a consumer matches one enum
+/// instead of re-spelling the keys. A record with another description, or
+/// none, is [`ObjectiveKind::Other`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjectiveKind {
+    /// `MSG_TRGT_FLAGBASE` — a flag's home anchor, not itself carryable.
+    FlagBase,
+    /// `MSG_TRGT_FLAG` — the possessable objective a slot declares.
+    Flag,
+    /// `MSG_TRGT_ZEP_ENEMY` — the zeppelin to destroy.
+    ZeppelinEnemy,
+    /// `MSG_TRGT_ZEP_FRIEND` — the zeppelin to defend.
+    ZeppelinFriend,
+    /// `MSG_TRGT_REARM_BASE` — a rearm point.
+    RearmBase,
+    /// A `description` outside the measured keys, or none.
+    Other,
+}
+
+/// One objective record of a slot's decoded `targets.zrd` (F56-B).
+///
+/// The record's measured fields, spelled as the installation spells them:
+/// `description` is the localized key naming the objective's role, `nodes`
+/// the object-local names it is bound to, `help_label`/`category_label` the
+/// UI hint keys, and `directives` the record's bare (valueless) keys — the
+/// installation spells `objective` for primary targets and `other_target`
+/// for the rest. [`SlotObjective::kind`] is the designed classification of
+/// `description`, used by the mode binding and by the possession machine
+/// ([`SlotObjective::possessable`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlotObjective {
+    /// The record's position in the targets list.
+    pub index: u32,
+    /// The `description` key, when the record carries one.
+    pub description: Option<String>,
+    /// The `nodes` names, in record order.
+    pub nodes: Vec<String>,
+    /// The `help_label` key, when the record carries one.
+    pub help_label: Option<String>,
+    /// The `category_label` key, when the record carries one.
+    pub category_label: Option<String>,
+    /// The bare (valueless) keys the record carries, as spelled.
+    pub directives: Vec<String>,
+}
+
+impl SlotObjective {
+    /// The role the record's `description` key names.
+    pub fn kind(&self) -> ObjectiveKind {
+        match self.description.as_deref() {
+            Some(TARGET_DESCRIPTION_FLAG_BASE) => ObjectiveKind::FlagBase,
+            Some(TARGET_DESCRIPTION_FLAG) => ObjectiveKind::Flag,
+            Some(TARGET_DESCRIPTION_ZEPPELIN_ENEMY) => ObjectiveKind::ZeppelinEnemy,
+            Some(TARGET_DESCRIPTION_ZEPPELIN_FRIEND) => ObjectiveKind::ZeppelinFriend,
+            Some(TARGET_DESCRIPTION_REARM_BASE) => ObjectiveKind::RearmBase,
+            _ => ObjectiveKind::Other,
+        }
+    }
+
+    /// Whether the record is the kind a pilot can carry off. In the measured
+    /// vocabulary only [`ObjectiveKind::Flag`] is the possessable objective;
+    /// the other kinds anchor, attack or defend but are never held.
+    pub fn possessable(&self) -> bool {
+        self.kind() == ObjectiveKind::Flag
     }
 }
 
@@ -609,6 +691,11 @@ pub struct ScenarioSlot {
     /// The mode family the slot's decoded `targets.zrd` selects, or an explicit
     /// unknown when that member is absent or the archive does not decode.
     pub mode: Resolved<ScenarioMode>,
+    /// The objective records the slot's decoded `targets.zrd` holds, in list
+    /// order (F56-B), or an explicit unknown under the same conditions as
+    /// [`ScenarioSlot::mode`]. A decoded list is known even when the mode it
+    /// selects is not.
+    pub objectives: Resolved<Vec<SlotObjective>>,
 }
 
 /// Why slot discovery failed.
@@ -675,15 +762,57 @@ fn parse_slot_path(path: &str) -> Option<(&str, u8, &str)> {
         .then_some((group, slot, file))
 }
 
-/// An explicit unknown of the slot-mode resolution.
-fn unresolved_mode(claim_id: &ClaimId, reason: String) -> Resolved<ScenarioMode> {
+/// An explicit unknown of the slot-targets resolution.
+fn unresolved<T>(claim_id: &ClaimId, reason: String) -> Resolved<T> {
     Resolved::Unknown {
         claim_id: claim_id.clone(),
         reason,
     }
 }
 
-/// The mode a slot's own decoded `targets.zrd` selects.
+/// One `targets.zrd` record as a [`SlotObjective`].
+///
+/// The fields are the measured keys; `directives` collects the bare
+/// (valueless) child keys like `objective` and `other_target`.
+fn slot_objective(index: usize, record: &ZrdValue) -> SlotObjective {
+    let text = |key: &str| {
+        zrd_field(record, key)
+            .and_then(ZrdValue::as_text)
+            .map(str::to_owned)
+    };
+    let nodes = zrd_field(record, TARGET_NODES_KEY)
+        .and_then(ZrdValue::as_list)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|node| node.as_text().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let directives = record
+        .as_list()
+        .map(|children| {
+            children
+                .iter()
+                .filter_map(|child| match child.as_list() {
+                    Some([key]) => key.as_text().map(str::to_owned),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    SlotObjective {
+        index: index as u32,
+        description: text(TARGET_DESCRIPTION_KEY),
+        nodes,
+        help_label: text(TARGET_HELP_KEY),
+        category_label: text(TARGET_CATEGORY_KEY),
+        directives,
+    }
+}
+
+/// The objective records a slot's own decoded `targets.zrd` holds and the
+/// mode they select, from one walk of the member.
 ///
 /// The member is located through the production container discovery (the same
 /// version-one index and reader-archive readers every other reader-archive
@@ -691,72 +820,61 @@ fn unresolved_mode(claim_id: &ClaimId, reason: String) -> Resolved<ScenarioMode>
 /// recorded span is the member's span inside the archive. The classification
 /// is the measured rule: a flag objective is Capture the Flag, a zeppelin
 /// objective is Zeppelin vs. Zeppelin, and neither is Deathmatch. A slot whose
-/// `targets.zrd` is absent, does not decode, is not a record list, or names
-/// both a flag and a zeppelin objective is an explicit unknown, never a guess.
-fn resolve_slot_mode(
+/// `targets.zrd` is absent, does not decode, or is not a record list leaves
+/// both results an explicit unknown; one whose records name both a flag and a
+/// zeppelin objective still reports the decoded list and leaves only the
+/// mode unknown — never a guess.
+fn resolve_slot_targets(
     install_sha256: ContentHash,
     path: &str,
     record: &InstallFileRecord,
     bytes: &[u8],
-    claim_id: ClaimId,
-) -> Resolved<ScenarioMode> {
+    mode_claim: ClaimId,
+    objectives_claim: ClaimId,
+) -> (Resolved<ScenarioMode>, Resolved<Vec<SlotObjective>>) {
+    let miss = |reason: String| {
+        (
+            unresolved(&mode_claim, reason.clone()),
+            unresolved(&objectives_claim, reason),
+        )
+    };
     let discovery = discover_container(path, &record.relative_spelling, bytes);
     let Some(program) = discovery
         .programs()
         .iter()
         .find(|program| program.locator().member() == Some(SCENARIO_TARGETS_MEMBER))
     else {
-        return unresolved_mode(
-            &claim_id,
-            format!("the reader archive carries no {SCENARIO_TARGETS_MEMBER} member"),
-        );
+        return miss(format!(
+            "the reader archive carries no {SCENARIO_TARGETS_MEMBER} member"
+        ));
     };
     let root = match decode_zrd(program.bytes()) {
         Ok(root) => root,
         Err(error) => {
-            return unresolved_mode(
-                &claim_id,
-                format!(
-                    "{SCENARIO_TARGETS_MEMBER} does not decode ({} at byte {})",
-                    error.code(),
-                    error.offset()
-                ),
-            );
+            return miss(format!(
+                "{SCENARIO_TARGETS_MEMBER} does not decode ({} at byte {})",
+                error.code(),
+                error.offset()
+            ));
         }
     };
     let Some(records) = root.as_list() else {
-        return unresolved_mode(
-            &claim_id,
-            format!("{SCENARIO_TARGETS_MEMBER} is not a record list"),
-        );
+        return miss(format!("{SCENARIO_TARGETS_MEMBER} is not a record list"));
     };
+    let objectives: Vec<SlotObjective> = records
+        .iter()
+        .enumerate()
+        .map(|(index, record)| slot_objective(index, record))
+        .collect();
     let mut flag = false;
     let mut zeppelin = false;
-    for record in records {
-        let Some(description) =
-            zrd_field(record, TARGET_DESCRIPTION_KEY).and_then(ZrdValue::as_text)
-        else {
-            continue;
-        };
-        match description {
-            TARGET_DESCRIPTION_FLAG_BASE | TARGET_DESCRIPTION_FLAG => flag = true,
-            TARGET_DESCRIPTION_ZEPPELIN_ENEMY | TARGET_DESCRIPTION_ZEPPELIN_FRIEND => {
-                zeppelin = true;
-            }
+    for objective in &objectives {
+        match objective.kind() {
+            ObjectiveKind::FlagBase | ObjectiveKind::Flag => flag = true,
+            ObjectiveKind::ZeppelinEnemy | ObjectiveKind::ZeppelinFriend => zeppelin = true,
             _ => {}
         }
     }
-    let value = match (flag, zeppelin) {
-        (false, false) => ScenarioMode::Deathmatch,
-        (true, false) => ScenarioMode::CaptureTheFlag,
-        (false, true) => ScenarioMode::ZeppelinVsZeppelin,
-        (true, true) => {
-            return unresolved_mode(
-                &claim_id,
-                format!("{SCENARIO_TARGETS_MEMBER} names both a flag and a zeppelin objective"),
-            );
-        }
-    };
     let locator = program.locator();
     let span = match SourceSpan::new(
         install_sha256,
@@ -768,10 +886,40 @@ fn resolve_slot_mode(
     ) {
         Ok(span) => span,
         Err(error) => {
-            return unresolved_mode(&claim_id, format!("the member span is refused: {error:?}"));
+            return miss(format!("the member span is refused: {error:?}"));
         }
     };
-    known(value, claim_id, ClaimStatus::ObservedTool, &span)
+    let objectives = known(
+        objectives,
+        objectives_claim,
+        ClaimStatus::ObservedTool,
+        &span,
+    );
+    let mode = match (flag, zeppelin) {
+        (false, false) => known(
+            ScenarioMode::Deathmatch,
+            mode_claim,
+            ClaimStatus::ObservedTool,
+            &span,
+        ),
+        (true, false) => known(
+            ScenarioMode::CaptureTheFlag,
+            mode_claim,
+            ClaimStatus::ObservedTool,
+            &span,
+        ),
+        (false, true) => known(
+            ScenarioMode::ZeppelinVsZeppelin,
+            mode_claim,
+            ClaimStatus::ObservedTool,
+            &span,
+        ),
+        (true, true) => Resolved::Unknown {
+            claim_id: mode_claim,
+            reason: format!("{SCENARIO_TARGETS_MEMBER} names both a flag and a zeppelin objective"),
+        },
+    };
+    (mode, objectives)
 }
 
 /// Discovers the scenario slots among an installation's inventoried files.
@@ -828,7 +976,16 @@ pub fn discover_slots(
             .map_err(|error| SlotError::Identity(error.to_string()))?;
         let mode_claim = ClaimId::new(&format!("f56.{key}.mode"))
             .map_err(|error| SlotError::Identity(error.to_string()))?;
-        let mode = resolve_slot_mode(install_sha256, path, record, &bytes, mode_claim);
+        let objectives_claim = ClaimId::new(&format!("f56.{key}.objectives"))
+            .map_err(|error| SlotError::Identity(error.to_string()))?;
+        let (mode, objectives) = resolve_slot_targets(
+            install_sha256,
+            path,
+            record,
+            &bytes,
+            mode_claim,
+            objectives_claim,
+        );
         companions.sort();
         slots.push(ScenarioSlot {
             id,
@@ -845,6 +1002,7 @@ pub fn discover_slots(
             companions,
             markers: scan_markers(&bytes),
             mode,
+            objectives,
         });
     }
     Ok(SlotCatalog {
