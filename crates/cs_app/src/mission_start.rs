@@ -47,39 +47,84 @@
 //!   mission archive; M01's members carry it zero times.
 //!   [`scenario_player_airframe`] reads that assignment where a document has
 //!   it, and [`airframe_index`] resolves the name the way the original does;
-//! * no profile or hangar file exists in the installation, so where a
-//!   **campaign** mission gets its player's airframe is still unmeasured and
-//!   stays unknown (AGENTS.md rule 4).
+//!
+//! # What the original does assign a campaign mission (#770)
+//!
+//! #770 measures the two values #715 and #436 left open, on the same
+//! decrypted image (same digest) plus the retail data; the finding is
+//! `docs/findings/2026-10-08-m01-lc-campaign-airframe-engine-state.md`:
+//!
+//! * **The airframe is engine state, not mission data.** A campaign start
+//!   (mode 1, function `0x417114`) writes the spawn's airframe from the
+//!   profile's plane roster — `roster[[0x64b67c]]`, setter `0x41712c` — and
+//!   on a fresh, profile-less launch both the selection index (`0x411477`,
+//!   `= 0`) and the roster's first record (copied at `0x411579` from `.data`
+//!   `0x61a81c`, whose `+0x2c` is `5`) are measured, so the chain closes at
+//!   airframe row 5. Three independent engine defaults agree on it (roster
+//!   init, reset `0x4b3786`, instant action `0x45940e`), and on the campaign
+//!   path the roster is its only writer (§11.1 of the finding).
+//!   [`CAMPAIGN_AIRFRAME_ROW`] and [`CAMPAIGN_AIRFRAME_SOURCE`] spell the
+//!   claim; [`MissionStartConfiguration::airframe`] is [`Resolved::Known`]
+//!   with the image span that carries the deciding byte
+//!   ([`engine_state_source`]). What a *player's* hangar selection or
+//!   persisted registry/INI value changes is the profile/flight-check shape —
+//!   the source this binding names — not the mission, and it is recorded as
+//!   the residue of the claim rather than as an unknown in the chain.
+//! * **The start pose is the record's own value through a measured
+//!   convention.** `0x47c4e5`..`0x47c500` widen field 2, multiply it by the
+//!   image's double `0.01745329251994` (π/180) and hand the result to
+//!   `Object3d`'s `SetRotation(node, 0, yaw, 0)`, which stores it at
+//!   `class+0x1c`; `0x53bf40` composes a `(pitch, yaw, roll)` triple as
+//!   `M = Ry · Rx · Rz` with the standard right-handed matrices, so `yaw = 0`
+//!   leaves the node's local axes on the world axes and a positive yaw turns
+//!   local `+Z` toward `+X`. The behaviour landmark #436 recorded as missing
+//!   is now measured: the HUD gives the node the retail scene lookup
+//!   `FindNode compass` `SetRotation(compass, 0, −yaw, 0)` (`0x49f8ec`), so
+//!   the compass card counter-rotates against the vehicle's yaw. The value is
+//!   the record's own: [`MissionStartConfiguration::initial_pose`] is
+//!   [`Resolved::Known`], position as stored through
+//!   [`STORED_POSITION_METRES_PER_UNIT`], heading as stored through
+//!   [`stored_heading_radians`], with the conversion's bytes named by its
+//!   provenance.
 //!
 //! # What it refuses, by name
 //!
-//! * **The airframe.** No field of the record is measured to name one (#676:
-//!   the player's field 0 is the none value in every retail mission), no
-//!   campaign document carries the key the executable reads, and the
-//!   mission-language statements that may assign one are undecoded (F13-B/C,
-//!   F38). [`MissionStartConfiguration::airframe`] is a
-//!   [`Resolved::Unknown`] with that reason, for the player and for each
-//!   wingmate. Reading a number in the record as an airframe index, or the
-//!   table above as a *choice* of airframe, would be a guess (AGENTS.md
-//!   rule 4).
-//! * **The metric pose's heading.** The position unit is measured as the
-//!   metre (#436, owner note 2026-10-05), but the heading's zero direction and
-//!   handedness are not (the same note records compass zero as unmeasured), so
-//!   [`MissionStartConfiguration::initial_pose`] stays unknown, and a
-//!   `wingman_<n>` name does not say whose wingmate it is.
+//! * **The airframe, from the document alone.** [`MissionStartConfiguration::read`]
+//!   sees only `aiv.zrd`: no field of a record is measured to name an airframe
+//!   (#676), no campaign document carries the key the executable reads, and
+//!   the mission-language statements that may assign one are undecoded
+//!   (F13-B/C, F38). It therefore keeps [`MissionStartConfiguration::airframe`]
+//!   a [`Resolved::Unknown`] with [`AIRFRAME_UNKNOWN_REASON`] — for the player
+//!   and for each wingmate, whose row is its own measurement and stays
+//!   unknown. Reading a number in the record as an airframe index would be a
+//!   guess (AGENTS.md rule 4). [`recover_retail_start_configuration`] then
+//!   binds the player's from the engine state above when this installation
+//!   carries the image those bytes were read from, and otherwise names exactly
+//!   why it could not ([`EngineStateError`]).
+//! * **The metric pose, from the document alone.** The stored unit is measured
+//!   as the metre, but the record alone carries no conversion to it, so
+//!   [`MissionStartConfiguration::initial_pose`] stays unknown under
+//!   [`POSE_UNKNOWN_REASON`] until that same source is named. A `wingman_<n>`
+//!   name still does not say whose wingmate it is.
 //!
 //! Nothing here is `verified_original`: the claims are
-//! [`ClaimStatus::ObservedTool`], and the refusals are
-//! [`ClaimStatus::Unknown`].
+//! [`ClaimStatus::ObservedTool`] — static analysis of the owner-supplied image
+//! and retail data, no original run — and the refusals are
+//! [`ClaimStatus::Unknown`]. The residues the bindings carry are named in
+//! [`CAMPAIGN_AIRFRAME_SOURCE`] and in the finding: the player's own
+//! profile/flight-check plane selection, the undecoded mission language
+//! (F13-B/C, F38), the airframe model's nose axis inside the unparsed `.flt`
+//! geometry (a rendering-level question; the pose is the node's transform),
+//! and the frame relation of a stored start to the world node grid.
 
 use std::fmt;
 use std::path::Path;
 
 use cs_content::stunts::{ZrdValue, decode_zrd};
 use cs_types::asset_id::SourceSpan;
-use cs_types::content::{ContentId, Known, Provenance, Resolved};
-use cs_types::evidence::{ClaimId, ClaimStatus};
-use cs_types::install::RelativePath;
+use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
+use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
+use cs_types::install::{InstallManifest, RelativePath};
 
 /// The reader archive a mission's records live in, under the mission's key.
 const READER_ARCHIVE: &str = "zrdr.zbd";
@@ -97,14 +142,25 @@ const POSITION_FIELD: usize = 1;
 /// The field of an aircraft record that holds the heading.
 const HEADING_FIELD: usize = 2;
 
-/// The reason an airframe cannot be bound.
+/// The reason an airframe cannot be bound **from the document alone**.
 ///
 /// What #715 measured is in here, so a reader of the refusal can tell an
 /// *absent* source from an *unexamined* one: see
 /// `docs/findings/2026-10-06-m01-lc-player-airframe-source.md`.
-pub const AIRFRAME_UNKNOWN_REASON: &str = "no measured source assigns the player's airframe: no field of an aiv.zrd aircraft record names one (the player's field 0 is the none value 0xFFFFFFFF in all 53 retail missions that have a player record), no member of M01's zrdr.zbd carries the `player_plane` key the executable reads — that key is read only by the instant-action setup, from `ia.zrd`, and resolved through the executable's eleven-row airframe table — the installation holds no profile or hangar file, and the mission-language statements that may assign one are undecoded (F13-B/C, F38)";
-/// The reason a metric start pose cannot be bound.
-pub const POSE_UNKNOWN_REASON: &str = "the stored position unit is measured as the metre (#436, owner note 2026-10-05: 1 world unit = 1 metre, +Y up, right-handed, stored positions map to the canonical frame with identity axis map and scale 1.0), but the heading's zero direction and its handedness are unmeasured (the same owner note records the compass zero as not measured), so a radian start heading would be a guess; the stored values are bound as `stored_pose`, and the mission program may move the aircraft before launch (F13-B/C, F38)";
+///
+/// [`recover_retail_start_configuration`] replaces this refusal with a
+/// [`Resolved::Known`] when the installation carries the image the campaign
+/// chain was measured in; [`MissionStartConfiguration::read`] keeps it, since
+/// the document alone carries no such source.
+pub const AIRFRAME_UNKNOWN_REASON: &str = "no source in this document assigns the player's airframe: no field of an aiv.zrd aircraft record names one (the player's field 0 is the none value 0xFFFFFFFF in all 53 retail missions that have a player record), no member of M01's zrdr.zbd carries the `player_plane` key the executable reads — that key is read only by the instant-action setup, from `ia.zrd`, and resolved through the executable's eleven-row airframe table — the installation holds no profile or hangar file, and the mission-language statements that may assign one are undecoded (F13-B/C, F38)";
+/// The reason a metric start pose cannot be bound **from the document alone**.
+///
+/// The stored unit is measured (#436); what the record does not carry is the
+/// executable's convention for the heading, which
+/// [`recover_retail_start_configuration`] names when this installation holds
+/// the image it was measured in, and which [`MissionStartConfiguration::read`]
+/// has no source to name.
+pub const POSE_UNKNOWN_REASON: &str = "the stored position unit is measured as the metre (#436, owner note 2026-10-05: 1 world unit = 1 metre, +Y up, right-handed, stored positions map to the canonical frame with identity axis map and scale 1.0), but this document carries no conversion for the heading: its zero direction and its handedness live in the executable's convention, not in the record (#770 measures them there), and the mission program may move the aircraft before launch (F13-B/C, F38)";
 
 /// Metres per stored position unit.
 ///
@@ -119,10 +175,209 @@ pub const POSE_UNKNOWN_REASON: &str = "the stored position unit is measured as t
 ///
 /// Nothing here is `verified_original`: the landmark is code-derived (static)
 /// and no original run happened. The *frame relation* between a stored start
-/// position and the world grid is a separate question that stays unmeasured —
-/// M01's player start lies 194 stored units outside `c1c`'s `[-12288, 0]^2`
-/// node bounds (#676) — as do the heading's zero direction and handedness.
+/// position and the world grid stays a residue of the pose claim — M01's
+/// player start lies 194 stored units outside `c1c`'s `[-12288, 0]^2` node
+/// bounds (#676) — while the heading's zero direction and handedness are
+/// measured by #770 (see [`stored_heading_radians`]).
 pub const STORED_POSITION_METRES_PER_UNIT: f32 = 1.0;
+
+/// The owner-supplied decrypted image (#770's measurement source), as it is
+/// spelled in the installation's inventory.
+///
+/// Its digest is [`ENGINE_IMAGE_SHA256`]; [`engine_state_source`] refuses to
+/// name a span over an image that is absent or that hashes differently, so a
+/// drifted image can never back a binding about different bytes.
+pub const ENGINE_IMAGE: &str = "crimson.decrypted.exe";
+
+/// SHA-256 of [`ENGINE_IMAGE`].
+///
+/// The same digest F16-E records (`cs_content::coordinates`), so the two
+/// static-analysis surfaces cannot drift apart: this is the owner's
+/// decryption of `crimson.icd`, never a file this repository holds.
+pub const ENGINE_IMAGE_SHA256: &str = cs_content::coordinates::ORIGINAL_IMAGE_SHA256;
+
+/// The airframe row a fresh, profile-less campaign launch selects (#770).
+///
+/// Measured chain, all in [`ENGINE_IMAGE`]: startup clears the roster
+/// (`0x411420`) and sets the selection index `[0x64b67c] = 0` (`0x411477`);
+/// `0x411579` copies 204 bytes from `.data` `0x61a81c` into `roster[0]`, whose
+/// `+0x2c` byte is `5`; the campaign start (`0x417114`) passes
+/// `&roster[[0x64b67c]]` to the airframe setter (`0x41712c`), whose identity
+/// table accepts `5 < 11` and stores it where the spawn reads it (`0x474d48`).
+/// Two more engine defaults agree (`0x4b3786` reset, `0x45940e` instant
+/// action), and on the campaign path the roster is the only writer of that
+/// global (finding §11.1).
+pub const CAMPAIGN_AIRFRAME_ROW: usize = 5;
+
+/// File offset of the `.data` record `0x411579` copies into `roster[0]`
+/// (VA `0x61a81c` = offset + `0x400000`, as F16-E records for this image),
+/// and that record's length in bytes.
+///
+/// The record's `+0x2c` dword is [`CAMPAIGN_AIRFRAME_ROW`]: it is the byte the
+/// whole chain reads, so it is the span [`recover_retail_start_configuration`]
+/// names as the airframe's source.
+pub const CAMPAIGN_AIRFRAME_RECORD_OFFSET: u64 = 0x21a81c;
+/// Length in bytes of the record at [`CAMPAIGN_AIRFRAME_RECORD_OFFSET`]: one
+/// 204-byte plane-roster record.
+pub const CAMPAIGN_AIRFRAME_RECORD_LENGTH: u64 = 204;
+
+/// File offset of the sequence that turns a stored heading into the node's
+/// yaw (VA `0x47c4e5`), and that sequence's length in bytes: `fld` the record's
+/// field 2, `fmul` the image's π/180 double, `call SetRotation(node, 0, yaw, 0)`.
+pub const HEADING_CONVERSION_OFFSET: u64 = 0x7c4e5;
+/// Length in bytes of the sequence at [`HEADING_CONVERSION_OFFSET`]
+/// (`0x47c4e5`..`0x47c500`).
+pub const HEADING_CONVERSION_LENGTH: u64 = 0x1c;
+
+/// File offset of the π/180 double the sequence at
+/// [`HEADING_CONVERSION_OFFSET`] multiplies by (VA `0x6040e8`), and its
+/// length in bytes: [`STORED_HEADING_DEGREES_TO_RADIANS`] is read from here.
+pub const HEADING_DEGREES_CONSTANT_OFFSET: u64 = 0x2040e8;
+/// Length in bytes of the double at [`HEADING_DEGREES_CONSTANT_OFFSET`].
+pub const HEADING_DEGREES_CONSTANT_LENGTH: u64 = 8;
+
+/// The double the image multiplies a stored heading by (VA `0x6040e8`),
+/// measured from the file's bytes: `0.01745329251994`, i.e. π/180 written to
+/// fourteen significant digits, not the double nearest π/180.
+///
+/// The original loads the field as `f32`, multiplies by this `f64` and passes
+/// the result as `f32`; [`stored_heading_radians`] reproduces exactly that
+/// rounding, so a bound heading is the value the original puts in
+/// `class+0x1c` and not an `f32::to_radians` approximation of it.
+pub const STORED_HEADING_DEGREES_TO_RADIANS: f64 = 0.01745329251994;
+
+/// A stored heading in radians, exactly as the original converts it.
+///
+/// Widens the record's degrees to `f64`, multiplies by the image's
+/// [`STORED_HEADING_DEGREES_TO_RADIANS`] (`0x47c4ee`) and rounds back to
+/// `f32` — the value `0x47c4fa` hands to `SetRotation`, which stores it at
+/// `class+0x1c`, the middle of the `(pitch, yaw, roll)` triple `0x53bf40`
+/// composes as `M = Ry · Rx · Rz` with the right-handed matrices. So `0.0`
+/// leaves the airframe node's local axes on the world axes and a positive
+/// angle turns local `+Z` toward `+X`; the HUD's compass card, given
+/// `SetRotation(compass, 0, −yaw, 0)` at `0x49f8ec`, counter-rotates against
+/// it (the behaviour landmark #436 recorded as missing).
+#[must_use]
+pub fn stored_heading_radians(degrees: f32) -> f32 {
+    (f64::from(degrees) * STORED_HEADING_DEGREES_TO_RADIANS) as f32
+}
+
+/// The source a campaign player airframe is bound from (#770), with the
+/// residues that can still move it.
+///
+/// * **measured**: on a fresh, profile-less campaign launch the airframe is
+///   [`CAMPAIGN_AIRFRAME_ROW`] (row 5, `Devastator` / `player_pfighter` /
+///   `piratefighter`), through the chain in that constant's documentation and
+///   the finding's §9.1 and §11;
+/// * **the source**: the profile/flight-check shape — the plane roster and
+///   selection index the campaign start reads — whose deciding byte is
+///   [`CAMPAIGN_AIRFRAME_RECORD_OFFSET`] in [`ENGINE_IMAGE`];
+/// * **residues, named rather than folded in**: a player's own hangar
+///   selection or the registry/INI profile (`SOFTWARE\Microsoft\Microsoft
+///   Games\Crimson Skies\1.0`, evidence in finding §11.2) selects another row
+///   by design, and the mission-language statements that may assign one are
+///   still undecoded (F13-B/C, F38). Neither is an unknown *in the chain*:
+///   both name affected content and their resolving work, and neither makes
+///   the measured default a guess.
+///
+/// Nothing here is `verified_original`: it is static analysis of the
+/// owner-supplied image plus retail data, and no original run supplied it.
+pub const CAMPAIGN_AIRFRAME_SOURCE: &str = "profile/flight-check shape of a fresh, profile-less campaign launch: the plane roster the \
+     campaign start reads, measured in crimson.decrypted.exe (roster init 0x4113b0, selection \
+     index 0x411477, setter 0x41712c, spawn 0x474d48) with the deciding byte at the \
+     CAMPAIGN_AIRFRAME_RECORD_OFFSET record, row 5 Devastator / player_pfighter / piratefighter; \
+     a hangar or registry/INI profile selection and the undecoded mission language (F13-B/C, F38) \
+     are named residues, not guesses";
+
+/// Why the engine-state source could not be named from an installation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EngineStateError {
+    /// The installation's inventory has no [`ENGINE_IMAGE`] row.
+    ImageAbsent,
+    /// The inventory's row for [`ENGINE_IMAGE`] does not hash to
+    /// [`ENGINE_IMAGE_SHA256`]: it would be evidence about different bytes.
+    DigestMismatch {
+        /// The digest the inventory recorded.
+        found: ContentHash,
+    },
+}
+
+impl fmt::Display for EngineStateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ImageAbsent => write!(
+                formatter,
+                "the installation's inventory carries no {ENGINE_IMAGE}, the decrypted image \
+                 {CAMPAIGN_AIRFRAME_SOURCE}"
+            ),
+            Self::DigestMismatch { found } => write!(
+                formatter,
+                "the installation's {ENGINE_IMAGE} hashes to {found}, not to \
+                 {ENGINE_IMAGE_SHA256}, so it cannot back {CAMPAIGN_AIRFRAME_SOURCE}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EngineStateError {}
+
+/// The spans #770's two bindings name: the byte that decides the airframe, and
+/// the sequence that converts a stored heading into the node's yaw.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EngineStateSource {
+    /// The `.data` plane-roster record the campaign path reads (its `+0x2c`
+    /// dword is [`CAMPAIGN_AIRFRAME_ROW`]).
+    pub airframe: SourceSpan,
+    /// The `fld` / `fmul` / `call SetRotation` sequence that produces the
+    /// node's yaw from the record's stored degrees.
+    pub heading: SourceSpan,
+}
+
+/// Where the campaign airframe and the heading convention were measured, read
+/// out of the installation's own inventory.
+///
+/// The spans name [`ENGINE_IMAGE`]: [`EngineStateSource::airframe`] covers
+/// [`CAMPAIGN_AIRFRAME_RECORD_OFFSET`], the bytes the airframe chain reads, and
+/// [`EngineStateSource::heading`] covers [`HEADING_CONVERSION_OFFSET`], the
+/// sequence that converts a stored heading. Their `install_sha256` is the
+/// image's own digest, the idiom F16-E already uses for this evidence
+/// (`cs_content::coordinates::image_evidence`): the image *is* the source
+/// this claim stands on. A missing or differently-hashed image is an error,
+/// never a silent fallback to a claim about other bytes.
+///
+/// # Errors
+///
+/// [`EngineStateError::ImageAbsent`] or [`EngineStateError::DigestMismatch`].
+pub fn engine_state_source(
+    manifest: &InstallManifest,
+) -> Result<EngineStateSource, EngineStateError> {
+    let record = manifest
+        .files
+        .iter()
+        .find(|row| row.relative_spelling.logical_key() == ENGINE_IMAGE)
+        .ok_or(EngineStateError::ImageAbsent)?;
+    let expected =
+        ContentHash::from_hex(ENGINE_IMAGE_SHA256).map_err(|_| EngineStateError::ImageAbsent)?;
+    if record.sha256 != expected {
+        return Err(EngineStateError::DigestMismatch {
+            found: record.sha256,
+        });
+    }
+    let span = |offset: u64, length: u64| {
+        SourceSpan::new(expected, ENGINE_IMAGE, None, offset, length, None).map_err(|_| {
+            EngineStateError::DigestMismatch {
+                found: record.sha256,
+            }
+        })
+    };
+    Ok(EngineStateSource {
+        airframe: span(
+            CAMPAIGN_AIRFRAME_RECORD_OFFSET,
+            CAMPAIGN_AIRFRAME_RECORD_LENGTH,
+        )?,
+        heading: span(HEADING_CONVERSION_OFFSET, HEADING_CONVERSION_LENGTH)?,
+    })
+}
 
 /// The document key an instant-action scenario (`ia.zrd`) names the player's
 /// airframe with.
@@ -553,11 +808,104 @@ impl MissionStartConfiguration {
     pub const fn initial_pose(&self) -> &Resolved<StartPose> {
         &self.initial_pose
     }
+
+    /// Binds the player's airframe and initial pose from the measured
+    /// engine-state source (#770).
+    ///
+    /// `source` is [`engine_state_source`]'s answer for this installation. The
+    /// airframe becomes [`CAMPAIGN_AIRFRAME_ROW`] as
+    /// [`CAMPAIGN_AIRFRAME_SOURCE`] spells it — its provenance points at the
+    /// `.data` record that carries the deciding byte. The pose becomes the
+    /// stored pose through [`stored_heading_radians`], position through
+    /// [`STORED_POSITION_METRES_PER_UNIT`], with its provenance pointing at
+    /// the conversion sequence. Both keep the claim ids [`read`] gave them and
+    /// are [`ClaimStatus::ObservedTool`]: static analysis of the owner-supplied
+    /// image, never `verified_original`.
+    ///
+    /// A player record with no stored pose keeps [`Self::initial_pose`]
+    /// unknown: there is nothing to convert, and none is invented.
+    ///
+    /// # Errors
+    ///
+    /// [`MissionStartError::Provenance`] when a claim id, the airframe id or a
+    /// provenance cannot be built.
+    pub fn bind_engine_state(
+        &mut self,
+        source: &EngineStateSource,
+    ) -> Result<(), MissionStartError> {
+        let label = claim_label(&self.mission);
+        let provenance = |claim: &str, span: &SourceSpan| {
+            Provenance::new(
+                claim_id(&format!("{label}.{claim}"))?,
+                ClaimStatus::ObservedTool,
+                Some(span.clone()),
+            )
+            .map_err(|error| MissionStartError::Provenance(error.to_string()))
+        };
+
+        let entry = AIRFRAME_TABLE.get(CAMPAIGN_AIRFRAME_ROW).ok_or_else(|| {
+            MissionStartError::Provenance(format!(
+                "airframe row {CAMPAIGN_AIRFRAME_ROW} is outside the measured table"
+            ))
+        })?;
+        let airframe = ContentId::from_source(ContentKind::Airframe, entry.scene_root)
+            .map_err(|error| MissionStartError::Provenance(error.to_string()))?;
+        self.airframe = Resolved::Known(Known::new(
+            airframe,
+            provenance("player-airframe", &source.airframe)?,
+        ));
+
+        if let Resolved::Known(stored) = &self.stored_pose {
+            let pose = StartPose {
+                position: stored.value.position_metres(),
+                heading: stored_heading_radians(stored.value.heading),
+            };
+            self.initial_pose = Resolved::Known(Known::new(
+                pose,
+                provenance("initial-pose", &source.heading)?,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Names why the measured engine-state source could not be used, keeping
+    /// the document-only refusals from claiming that no such source exists.
+    ///
+    /// `why` is [`EngineStateError`]'s own message. Only values that are still
+    /// unknown are touched: a binding already made is never withdrawn.
+    ///
+    /// # Errors
+    ///
+    /// [`MissionStartError::Provenance`] when a claim id cannot be built.
+    pub fn refuse_engine_state(&mut self, why: &str) -> Result<(), MissionStartError> {
+        let label = claim_label(&self.mission);
+        if !self.airframe.is_known() {
+            self.airframe = unknown(
+                claim_id(&format!("{label}.player-airframe"))?,
+                &format!("{AIRFRAME_UNKNOWN_REASON} ({why})"),
+            )?;
+        }
+        if !self.initial_pose.is_known() {
+            self.initial_pose = unknown(
+                claim_id(&format!("{label}.initial-pose"))?,
+                &format!("{POSE_UNKNOWN_REASON} ({why})"),
+            )?;
+        }
+        Ok(())
+    }
 }
 
-/// Reads one installed mission's start configuration from its `aiv.zrd`.
+/// Reads one installed mission's start configuration from its `aiv.zrd`, and
+/// binds the two values the document alone cannot carry (#770).
 ///
 /// `mission` is the mission's logical key, e.g. `zbd/c1c/m01`.
+///
+/// The document gives the records and the stored pose. The player's airframe
+/// and the metric initial pose come from the measured engine state: when this
+/// installation's inventory carries [`ENGINE_IMAGE`] at [`ENGINE_IMAGE_SHA256`]
+/// ([`engine_state_source`]), they are [`Resolved::Known`] with the source
+/// span named above; otherwise [`MissionStartConfiguration::refuse_engine_state`]
+/// says exactly why, and nothing is invented in its place.
 ///
 /// # Errors
 ///
@@ -613,7 +961,12 @@ pub fn recover_retail_start_configuration(
         None,
     )
     .map_err(|error| MissionStartError::Provenance(error.to_string()))?;
-    MissionStartConfiguration::read(mission, &document, &source)
+    let mut configuration = MissionStartConfiguration::read(mission, &document, &source)?;
+    match engine_state_source(&found.manifest) {
+        Ok(engine) => configuration.bind_engine_state(&engine)?,
+        Err(error) => configuration.refuse_engine_state(&error.to_string())?,
+    }
+    Ok(configuration)
 }
 
 fn stored_pose(fields: &[ZrdValue]) -> Option<StoredStartPose> {

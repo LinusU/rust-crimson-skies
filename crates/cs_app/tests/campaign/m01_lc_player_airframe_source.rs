@@ -7,9 +7,11 @@
 //! routine, the only document key that names the player's airframe is
 //! `player_plane` and it is read only by the instant-action setup from
 //! `ia.zrd`, campaign mission data carries no such key, and the installation
-//! holds no profile or hangar file — so M01's airframe stays a named unknown
-//! (AGENTS.md rule 4) while the table, the key and the metre unit of the
-//! stored position are bound here.
+//! holds no profile or hangar file — so from the document alone M01's
+//! airframe stays a named unknown (AGENTS.md rule 4) while the table, the key
+//! and the metre unit of the stored position are bound here. #770 then binds
+//! the airframe and the metric pose from the *engine state* that decides
+//! them, in `m01_lc_campaign_airframe_pose.rs`.
 //!
 //! Nothing is `verified_original`: no original run happened.
 
@@ -18,10 +20,11 @@ use std::path::{Path, PathBuf};
 use cs_app::mission_start::{
     AIRFRAME_TABLE, AIRFRAME_UNKNOWN_REASON, PLAYER_PLANE_KEY, POSE_UNKNOWN_REASON,
     STORED_POSITION_METRES_PER_UNIT, StoredStartPose, airframe_entry, airframe_index,
-    recover_retail_start_configuration, scenario_player_airframe,
+    recover_retail_start_configuration, scenario_player_airframe, stored_heading_radians,
 };
 use cs_content::stunts::{ZrdValue, decode_zrd, zrd_field};
 use cs_types::content::Resolved;
+use cs_types::evidence::ClaimStatus;
 
 fn text(value: &str) -> ZrdValue {
     ZrdValue::Text(value.to_owned())
@@ -284,8 +287,9 @@ fn accept_m01_lc_player_airframe_source_retail_m01_has_no_airframe_key_and_the_s
         (7, "player_fury", "fury")
     );
 
-    // The start configuration itself: metres measured, airframe and heading
-    // still refused by name.
+    // The start configuration itself: metres measured (#436), and — since
+    // #770 — the airframe and the metric pose bound from the measured engine
+    // state with their sources named.
     let config = recover_retail_start_configuration(&root, "zbd/c1c/m01").expect("M01 reads");
     let Resolved::Known(stored) = config.stored_pose() else {
         panic!("M01's player record has the pose shape");
@@ -293,12 +297,15 @@ fn accept_m01_lc_player_airframe_source_retail_m01_has_no_airframe_key_and_the_s
     assert_eq!(stored.value.position_metres(), [-3694.0, 1318.0, -12482.0]);
     assert_eq!(stored.value.heading, 170.0);
 
-    let Resolved::Unknown { reason, .. } = config.airframe() else {
-        panic!("no source in M01 assigns an airframe");
+    let Resolved::Known(airframe) = config.airframe() else {
+        panic!("the campaign airframe is measured engine state");
     };
-    assert_eq!(reason, AIRFRAME_UNKNOWN_REASON);
-    let Resolved::Unknown { reason, .. } = config.initial_pose() else {
-        panic!("the heading's zero direction is still unmeasured");
+    assert_eq!(airframe.value.key(), "player_pfighter");
+    assert_eq!(airframe.provenance.class, ClaimStatus::ObservedTool);
+    let Resolved::Known(pose) = config.initial_pose() else {
+        panic!("the heading's convention is measured (#770)");
     };
-    assert_eq!(reason, POSE_UNKNOWN_REASON);
+    assert_eq!(pose.value.position, [-3694.0, 1318.0, -12482.0]);
+    assert_eq!(pose.value.heading, stored_heading_radians(170.0));
+    assert_eq!(pose.provenance.class, ClaimStatus::ObservedTool);
 }

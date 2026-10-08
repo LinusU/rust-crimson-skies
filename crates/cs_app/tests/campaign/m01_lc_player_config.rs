@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use cs_app::mission_start::{
     AIRFRAME_UNKNOWN_REASON, MissionStartConfiguration, POSE_UNKNOWN_REASON,
-    recover_retail_start_configuration,
+    recover_retail_start_configuration, stored_heading_radians,
 };
 use cs_content::stunts::ZrdValue;
 use cs_types::asset_id::SourceSpan;
@@ -132,8 +132,17 @@ fn accept_m01_lc_player_config_retail_m01_binds_player_and_names_unknowns() {
     assert_eq!(config.wingmates()[0].field_six_record, Some(3));
     assert_eq!(config.wingmates()[1].field_six_record, Some(5));
 
-    assert!(!config.airframe().is_known());
-    assert!(!config.initial_pose().is_known());
+    // #770: with this installation carrying the image the chain was measured
+    // in, the airframe and the metric pose are bound with a named source.
+    let Resolved::Known(airframe) = config.airframe() else {
+        panic!("the campaign airframe is measured engine state");
+    };
+    assert_eq!(airframe.value.key(), "player_pfighter");
+    let Resolved::Known(pose) = config.initial_pose() else {
+        panic!("the start pose is a decoded binding through a measured convention");
+    };
+    assert_eq!(pose.value.position, [-3694.0, 1318.0, -12482.0]);
+    assert_eq!(pose.value.heading, stored_heading_radians(170.0));
 
     // Measured values of M01's player record (and no airframe in field 0).
     assert_eq!(player.value.field_zero, Some(u32::MAX));

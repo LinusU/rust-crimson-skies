@@ -32,6 +32,17 @@
 //! named with an acceptance prefix, so a task selection never picks it up as
 //! an acceptance test.
 //!
+//! `m01_lc_player_airframe_source.rs`, `m01_lc_player_config.rs` and
+//! `m01_lc_campaign_airframe_pose.rs` are the M01-LC family: `accept_m01_lc_*`
+//! tests that bind a mission's records, its player's airframe and its start
+//! pose through `cs_app::mission_start`. Their retail members read
+//! `$CS_GAME_DIR` and are marked `#[ignore = "requires CS_GAME_DIR"]`, so CI
+//! skips them and the implementing and reviewing agents run them with
+//! `--include-ignored`. `m01_lc_campaign_airframe_pose_evidence.rs` is that
+//! family's evidence harness, the same kind of member as `f39_e3_evidence.rs`
+//! (selected by test name, never by an acceptance prefix, and linked into this
+//! binary rather than starting one of its own).
+//!
 //! `f50_e4.rs` is a third kind of member: work order `F50-E4` binds no mission
 //! and claims nothing about the campaign, but its `accept_f50_e4_*` tests are
 //! retail too — they read `$CS_GAME_DIR` to re-derive the localized table's row
@@ -60,6 +71,8 @@ mod f50_e4;
 mod identity;
 mod inventory;
 mod m01_a;
+mod m01_lc_campaign_airframe_pose;
+mod m01_lc_campaign_airframe_pose_evidence;
 mod m01_lc_player_airframe_source;
 mod m01_lc_player_config;
 mod m02_a;

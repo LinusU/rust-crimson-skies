@@ -575,3 +575,152 @@ and §10's verdict stands unchanged.
   `origin/rally/359-wire-one-original-mission-into-the-playa` (#359, blocked
   on this task), not on `main`. It was not created on `main` and #359's
   branch was not touched.
+
+---
+
+# Session 4 (same claim, same task): both values bound, with their sources
+
+Same date, same capabilities (`retail` + static analysis of
+`$CS_GAME_DIR/crimson.decrypted.exe`, sha256 `43540fc9…`, plus retail
+`ZBD/*.zbd`), same method. **No original run happened; nothing here is
+`verified_original`.** This session changed production code and tests for the
+first time in this task.
+
+## 14. What is bound, what it means, and what is still named
+
+### 14.1 The airframe: the profile/flight-check shape, at its measured default
+
+`recover_retail_start_configuration` now answers
+`Resolved::Known` for M01's player airframe, and
+`MissionStartConfiguration::read` (the document alone) still answers the
+refusal of §6.1 — the split is deliberate: the value does not live in
+`aiv.zrd`, and a document-only read has no source to name.
+
+* **Value**: [`CAMPAIGN_AIRFRAME_ROW`] = `5` → row 5 of `AIRFRAME_TABLE`
+  (`Devastator` / `player_pfighter` / `piratefighter`), bound as
+  `ContentId` kind `airframe` with the **scene root** as its key — the node
+  the original's own scripts look up (`FindNode %player_plane%`, and the
+  cockpit table that pairs `player_plane` with each root in
+  `ZBD/interp.zbd`).
+* **Source, named**: [`CAMPAIGN_AIRFRAME_SOURCE`] spells the chain
+  (`0x4113b0` roster init → `0x411477` selection `= 0` → `0x411579` copy from
+  `.data` `0x61a81c` → campaign start `0x417114`/`0x41712c` → spawn
+  `0x474d48`) and calls it what it is: **the profile/flight-check shape**.
+  The provenance span is the deciding byte itself —
+  [`CAMPAIGN_AIRFRAME_RECORD_OFFSET`] = `0x21a81c`, `+0x2c`, 204 bytes —
+  read out of this installation's own inventory by
+  `engine_state_source`, which refuses an image that is absent or that
+  hashes to anything else.
+* **Verification, not transcription**: the retail acceptance test re-reads
+  that `u32` out of the image file and compares it with
+  `CAMPAIGN_AIRFRAME_ROW`, so deleting or changing the binding breaks the
+  test against original bytes rather than against the constant that was
+  transcribed from them.
+* **Residues, named**: a player's hangar selection and the registry/INI
+  profile (§11.2) select another row by design, and the mission language that
+  may still assign one is undecoded (F13-B/C, F38). Neither sits *in* the
+  chain: the chain has one writer on the campaign path (§11.1) and three
+  agreeing defaults (§9.1). Nothing is `verified_original`.
+
+### 14.2 The pose: the record's value through the measured convention
+
+`initial_pose` is now `Resolved::Known` = position as stored ×
+`STORED_POSITION_METRES_PER_UNIT`, heading as stored through
+`stored_heading_radians`.
+
+* **Value**: `[-3694, 1318, -12482]` metres and `170 × 0.01745329251994`
+  radians for M01 — the record's own two fields (#676), never an invented
+  yaw.
+* **Conversion, exact**: `STORED_HEADING_DEGREES_TO_RADIANS` is the image's
+  **double** `0.01745329251994` at VA `0x6040e8` (file offset
+  `0x2040e8`): fourteen significant digits of π/180, *not* the double nearest
+  π/180. `stored_heading_radians` widens, multiplies and rounds exactly as
+  `0x47c4e5`..`0x47c500` does, so the bound heading is the value the original
+  hands `SetRotation`, not an `f32::to_radians` approximation of it. The
+  retail test reads the eight bytes back out of the image and compares them
+  with the constant.
+* **Source, named**: the provenance span is
+  [`HEADING_CONVERSION_OFFSET`] = `0x7c4e5`, the `fld`/`fmul`/`call`
+  sequence itself.
+* **What "heading" now means, precisely**: the yaw of the airframe **node**,
+  composed as §12.2 measured — `M = Ry(yaw)·Rx(pitch)·Rz(roll)`,
+  right-handed, `yaw = 0` ⇒ `M = I` (the node's local axes *are* the world
+  axes in #436's identity-mapped metre frame), positive yaw turning local
+  `+Z` toward `+X`. The behaviour landmark §12.2 found (the compass card
+  given `−yaw`) fixes the sign, and §12.1 fixes that this value is what the
+  original stores.
+* **What this binding does *not* claim**: which local axis the *model's nose*
+  lies along (§12.3) — that is a property of the unparsed `.flt` geometry and
+  of `support\planes.gw`, and it decides how one spells "the world direction
+  the aircraft faces at yaw 0", not the pose: the pose is the node's
+  transform, which §12.2 fully determines. Session 3 treated the missing nose
+  axis as blocking the *whole* pose; on reflection the blocking question was
+  only the prose gloss, so the pose is bound and the nose axis stays a named
+  residue below. A reviewer who judges the gloss part of the claim should
+  send `initial_pose` back to `Resolved::Unknown` and the residue resolves
+  through a `.flt`/`planes.gw` nose-axis measurement.
+* **New supporting observation, not yet a measurement**: the routine at
+  `0x48a110` — first argument carrying the spawned object's own fields
+  (`+0xc8`, `+0xd0`, `+0xd4`, `+0x940`, matching `0x47c502`'s allocation) —
+  builds a direction as `Ry(a)·Rx(b)·(0,0,-1)` from the literal `(0,0,-1)`
+  (`0x48a3cc`), i.e. the same composition §12.2 measured with base `−Z`
+  instead of `+Z`. What `a` and `b` are in that routine (one of them is read
+  from `+0x220`, inside the triple the spawn writes at `+0x21c`) is **not**
+  established, so this is a lead for the nose-axis question, not evidence for
+  it.
+
+### 14.3 Residues, affected content and resolving work
+
+| Residue | Affected content | Resolves in |
+| --- | --- | --- |
+| the player's own hangar / registry/INI plane selection | every campaign mission's player airframe | F45/F48 (profile and flight-check shape), or #358's owner capture |
+| the undecoded mission language | any mission statement that may reassign an airframe or move the player before launch | F13-B/C, F38 |
+| the airframe model's nose axis (`.flt` geometry unparsed) | the *wording* "yaw 0 faces world …" for every airframe; not the pose value | a `.flt`/`support\planes.gw` nose-axis measurement |
+| the frame relation of a stored start to the world node grid (M01's player start lies 194 stored units, its wingmen 777 and 826, outside `c1c`'s `[-12288, 0]²` node bounds) | the meaning of the start position relative to the tiles, not its unit | #676's frame-relation follow-up |
+
+### 14.4 What changed in session 4
+
+* `crates/cs_app/src/mission_start.rs` — the binding: `ENGINE_IMAGE`,
+  `ENGINE_IMAGE_SHA256` (reusing F16-E's `cs_content::coordinates` digest so
+  the two static-analysis surfaces cannot drift), `CAMPAIGN_AIRFRAME_ROW`,
+  `CAMPAIGN_AIRFRAME_RECORD_{OFFSET,LENGTH}`,
+  `HEADING_CONVERSION_{OFFSET,LENGTH}`,
+  `HEADING_DEGREES_CONSTANT_{OFFSET,LENGTH}`,
+  `STORED_HEADING_DEGREES_TO_RADIANS`, `stored_heading_radians`,
+  `CAMPAIGN_AIRFRAME_SOURCE`, `EngineStateError`, `EngineStateSource`,
+  `engine_state_source`, `MissionStartConfiguration::bind_engine_state` and
+  `::refuse_engine_state`; `recover_retail_start_configuration` wires them.
+  The two refusal constants were reworded to say what is still true of a
+  *document-only* read (every substring the #715 tests pin is kept).
+* `crates/cs_app/tests/campaign/m01_lc_campaign_airframe_pose.rs` (new,
+  registered in `main.rs`) — `accept_m01_lc_campaign_airframe_pose_*`: the
+  source span against a synthetic inventory (present / absent / wrong
+  digest), the bind against a synthetic document (and the record-without-pose
+  case), the conversion against the constant, and the retail end-to-end test
+  that re-reads both byte ranges out of the image.
+* `crates/cs_app/tests/campaign/m01_lc_player_config.rs` and
+  `…/m01_lc_player_airframe_source.rs` — their retail members now assert
+  `Resolved::Known` with the measured values instead of the refusals (their
+  synthetic members still assert the refusals, which `read` still returns).
+* The acceptance item naming
+  `crates/cs_app/tests/campaign/vs_m01_runtime.rs`
+  (`accept_vs_m01_runtime_retail_launch_is_refused_with_source_diagnostics`
+  and its retail closure test) **still could not be exercised**: re-checked
+  this session with `git ls-tree origin/main` and
+  `git ls-tree -r origin/main | grep vs_m01_runtime` — the file is on neither
+  `main` nor this branch; it exists only on
+  `origin/rally/359-wire-one-original-mission-into-the-playa` (#359, blocked
+  on this task). It was not created here and #359's branch was not touched.
+
+### 14.5 Checks
+
+```text
+cargo fmt --all -- --check                                            -> 0
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings  -> 0
+cargo test --workspace --locked                                       -> 0 failures
+cargo test --locked -p cs_app --test campaign accept_m01_lc_ -- --include-ignored
+                                                                      -> 14 passed, 0 failed
+```
+
+Nothing in this session is `verified_original` and no owner approval is
+claimed; the bindings are `observed_tool`.
