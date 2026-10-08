@@ -262,6 +262,14 @@ From the task, still unresolved here:
 * AI control law `0x48c220`.
 * Joystick scaling and roll sign.
 * Ground collision (the probe can end below `y = 0`; nothing stops it).
+* **AI per-airframe parameter randomisation, ±5 % (`0x4771c6`).** The static
+  analysis says the original randomises *every* parameter by ±5 % for AI
+  aircraft and never for the player; this stage imports the exact retail
+  values and applies no roll, because there is no AI spawn path here, no
+  acceptance criterion covers it and the RNG and seed were not recovered.
+  Affected content: every AI aircraft's flight parameters (the player's are
+  unaffected). Resolving task: #805 `FLIGHT-ORIGINAL-AI-RANDOMISATION`.
+  Gates: any claim that AI aircraft handle like the original's.
 
 Added while implementing:
 

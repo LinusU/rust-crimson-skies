@@ -221,6 +221,13 @@ fn evidence_report_flight_original_writes_the_acceptance_report() {
          recovered, so the branch is a declared `DynamicsKind` the caller chooses. Affected \
          content: far-AI speed behaviour. Resolving task: static analysis of the AI update at \
          `0x48c220`'s callers. Gates: any far-AI fidelity claim.",
+        "ai_parameter_randomisation: the original rolls every per-airframe parameter by +/-5 % \
+         for AI aircraft and never for the player (`0x4771c6`); this stage imports the exact \
+         retail values and applies no roll, because there is no AI spawn path in this task and \
+         the RNG and seed were not recovered. Affected content: every AI aircraft's flight \
+         parameters (the player's are unaffected). Resolving task: #805 \
+         FLIGHT-ORIGINAL-AI-RANDOMISATION. Gates: any claim that AI aircraft handle like the \
+         original's.",
         "nitro_consumption_campaign_loadout_override_joystick_scaling_ground_collision: named \
          as unknowns by the task and not invented here. Affected content: nitro endurance, \
          loadout engine overrides, control scaling and ground contact. Resolving task: the \
