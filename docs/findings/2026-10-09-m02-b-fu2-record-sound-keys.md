@@ -339,6 +339,203 @@ The committed evidence copy
 agent on the reviewed commit with its own `CS_EVIDENCE_REVIEWER` identity, per
 `docs/contracts/CLI-EVIDENCE.md`.
 
+## Review round 2 (Rally #801, after the failed landing)
+
+Reviewer: `Devin SWE-2/swe2-max-1` (SWE-2 Max), Rally review claim of
+2026-10-09T04:22Z in a separate, fresh session. **Unlike round 1, this
+reviewer is a different agent identity and a different model from the
+implementer** (`bunny-alpha-1`, opencode mimo-v2.6-flash), so this round is
+independent review in the AGENTS.md sense — still not the owner's human
+approval, and nothing here is `verified_original`.
+
+Round 1's approval at `219b5f8d` could not land: between its push and the
+landing attempt, main gained M02-B-FU1 (#800, which *closed* the
+`KILL_OBJECTIVE_WHEN_I_COMPLETE` lowering gap), M04-B and the T796 evidence
+work, and the automatic rebase conflicted. This round rebased the branch by
+hand and re-verified it.
+
+### 1. The rebase conflict, resolved
+
+`crates/cs_app/tests/campaign/evidence.rs` and `main.rs` were the conflicted
+files (main's M04-B and M02-B-FU1 harnesses now occupy the ground the branch
+was written on). The resolutions, all checked against the surrounding code:
+
+- the accidental M03-B harness deletion (round 1's finding) resolved to its
+  restored state — `RETAIL_TESTS_M03_B`, `SYNTHETIC_TESTS_M03_B`,
+  `evidence_report_m03_b_*` and `parse_m03_b_suite` are present, and the
+  late "Restore M03-B" commit on the branch became a one-line no-op;
+- M04-B's harness (`evidence_report_m04_b_*`, `RETAIL_TESTS_M04_B`,
+  `parse_m04_b_suite`) and M02-B-FU1's (`RETAIL_TESTS_M02_B_FU1`,
+  `SYNTHETIC_TESTS_M02_B_FU1`, `evidence_report_m02_b_fu1_*`,
+  `parse_m02_b_fu1_suite`) are kept whole beside this task's FU2 harness;
+- the M02-B harness's NOT-CLAIMED text carries both updates: M02-B-FU1's
+  "the record lowers completely, which is lowering evidence only" *and* this
+  task's "the five sound keys are outside `CONTROL_RECORD_KEY_VOCABULARY`
+  here — M02-B-FU2 (#801) admits them to their own measured vocabulary";
+- the `unclassified_record_keys` single-bracket fix and the whole FU2
+  harness are unchanged. `git diff origin/main..HEAD` removes nothing from
+  main beyond the lines this task's premise requires.
+
+### 2. Stale claims the rebase made false (fixed)
+
+FU1's landing falsified "M02's control record still does not lower / M02
+stays Unsupported / the campaign gate stays closed on M02's account". The
+claim is corrected in the FU2 harness's `review.method` text and doc
+comment, the M02-B harness's doc comment, and this document's unknowns — to
+"M02's record lowers completely since M02-B-FU1 (#800), which is lowering
+evidence only, not an implemented effect; the campaign gate still needs
+every row". Two *pre-existing* stale copies of the same claim on main —
+`m02_b.rs`'s module doc and `main.rs`'s M02-B paragraph — were left alone
+(not this branch's change) and filed as follow-up task #820.
+
+The `.data` row of the provenance table is also corrected: its
+section-table entry is RVA `0x219000` (VA `0x619000`), not "VA `0x219000`";
+the `file offset = VA − 0x400000` rule was and stays right. The same
+mislabel in `m02_b_fu2.rs`'s `IMAGE_BASE` comment is fixed.
+`unclassified_record_keys`' doc in `campaign_bindings.rs` now names both
+vocabularies.
+
+### 3. The measurements re-read a second time, independently
+
+This reviewer read `$CS_ENGINE_IMAGE` with a script written from this
+document's tables, before trusting the suite: SHA-256
+`43540fc9…` confirmed; the section table confirmed `.text` RVA `0x1000` /
+file `0x1000` and `.data` RVA `0x219000` / file `0x219000`; every parse site
+is `push imm32` of that key's own NUL-terminated string, `89 bb` zero
+default into the recorded field, `rel32` calls to `0x57a090` and `0x596120`,
+`89 83` handle store into the same field; each key's string VA is referenced
+exactly once in `.text`; the class chain at `0x46a97d` is
+`8b 06 48 74 1e 48 74 0f 48 75 2d` with arms landing on the three class
+sites in class order; the mission-end `cmp [esi+0xc58]` / `je 0x463c86`
+selects the lost handle with the won one falling through, the lost arm's
+`eb d3` joining the play call at `0x463c61`. The field-displacement sweep
+found two extra byte matches per `+0xc68`/`+0xc78` (`0x44dc04`, `0x56d615`,
+`0x4f8420`, `0x506189`) — each is a coincidental `rel32` call/jump operand
+or a `push` of the small constant, none is a `[base+disp32]` field read, so
+"no second reader" stands. Every assertion reproduced.
+
+### Checks run by this reviewer (rebased head)
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_m02_b_fu2_ --include-ignored` | 0 (3 tests) |
+| `cargo test --workspace --locked -- accept_m02_b_ --include-ignored` | 0 (18 tests: M02-B, M02-T3, M02-B-FU1, M02-B-FU2) |
+| `cargo test --workspace --locked -- accept_m03_b_ --include-ignored` | 0 (8 tests, still restored) |
+| `cargo test --workspace --locked -- accept_m04_b_ --include-ignored` | 0 (8 tests, main's harness intact) |
+| `cargo test --workspace --locked -- accept_m01_lc_ --include-ignored` | 101 — 157 passed, 3 failed, all three the #798 image-relocation fallout round 1 recorded (`m01_lc_campaign_airframe_pose_retail_m01_binds_from_the_measured_bytes`, `m01_lc_player_airframe_source_retail_m01_has_no_airframe_key_and_the_scenario_does`, `m01_lc_player_config_retail_m01_binds_player_and_names_unknowns`): `engine_state_source` looks the image up in the installation manifest that no longer carries it, a code path and test files this branch's diff does not touch |
+| `python3 tools/validate_evidence.py … --require-pass` | 0 |
+
+The evidence copy was regenerated again on this round's reviewed commit with
+this reviewer's `CS_EVIDENCE_REVIEWER` identity.
+
+### 4. Second rebase, onto the post-#798 main; the image read moves to `load_engine_image`
+
+While CI ran on `bf9554e0`, main gained eight more commits: #798's
+engine-image relocation (`load_engine_image` in `cs_content::coordinates`
+becomes the one reader of `$CS_ENGINE_IMAGE`, with named
+Unset/Unreadable/DigestMismatch refusals, and every existing image-reading
+test moved onto it) and M10-B's acceptance work (which touches the same
+`campaign/evidence.rs` / `campaign/main.rs` this branch extends). The rebase
+onto `32b9d823` auto-merged both shared files; the result was verified by
+hand — M10-B's harness (`evidence_report_m10_b_*`, `RETAIL_TESTS_M10_B`,
+`parse_m10_b_suite`) and this task's FU2 harness coexist, and `mod m10_b` /
+`mod m02_b_fu2` are both declared.
+
+On that base, `m02_b_fu2.rs`'s hand-rolled `CS_ENGINE_IMAGE` read plus inline
+`sha256` assert would have shipped as the tree's only non-canonical image
+reader — the same check, but a second path. The test now calls
+`load_engine_image()` and uses `EngineImage::bytes`: the digest refusal moves
+into the loader (where it is a named error, not a bare assertion), and no
+behaviour the suite pins changed — the same byte assertions re-verify the
+same measured addresses.
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_m02_b_fu2_ --include-ignored` | 0 (3 tests) |
+| `cargo test --workspace --locked -- accept_m02_b_ --include-ignored` | 0 (18 tests) |
+| `cargo test --workspace --locked -- accept_m03_b_ --include-ignored` | 0 (8 tests) |
+| `cargo test --workspace --locked -- accept_m04_b_ --include-ignored` | 0 (8 tests) |
+| `cargo test --workspace --locked -- accept_m01_lc_ --include-ignored` | 0 (202 tests — the three round-2 failures were #798's image-relocation fallout and are resolved by the landed loader work; nothing on this branch touches them) |
+| `python3 tools/validate_evidence.py … --require-pass` | 0 |
+
+The evidence copy was regenerated once more on that round's final reviewed
+commit (candidate_tree `b772a348`) with the same reviewer identity.
+
+## Review round 3 (Rally #801, landed through the stacked sibling)
+
+Reviewer: `Devin SWE-2/swe2-max-1` (SWE-2 Max), Rally review claim of
+2026-10-09T07:18Z in a separate, fresh session — the same reviewer identity
+as round 2, still independent of the implementer in the AGENTS.md sense, and
+still not the owner's human approval.
+
+Round 2's approval at `10cf265a` could not land either. While it queued,
+main gained M02-B-FU3 (#802) and then RECORD-OBJECTIVES-SOUND (#808) — whose
+branch had been built **on top of this task's stack** and therefore carried
+rebased copies of every implementation commit plus its own seven-key
+extension (`OBJECTIVES_WON_SOUND`, `OBJECTIVES_LOST_SOUND`, measured as the
+end-of-tick outcome pair). When #808 landed, this task's content reached
+main through that stack: the vocabulary, the dispositions, the suite, the
+harness and this document all landed there, reviewed in that task's rounds.
+
+What the stacked landing did **not** carry were this review's later
+corrections, because #808's branch point predates them. The round-3 rebase
+of `rally/801-…` onto the post-#808 main (`756b862e`) therefore reduced to
+exactly the residual delta — a literal fifteen-commit rebase would have
+re-fought every deliberately-diverged hunk, so the branch was rebuilt as
+`origin/main` plus these fixes, each re-verified against the merged tree:
+
+- `m02_b_fu2.rs`: the hand-rolled `CS_ENGINE_IMAGE` read plus inline
+  `sha256`/`ORIGINAL_IMAGE_SHA256` check is replaced by the canonical
+  `load_engine_image()` reader (#798's convention), and its `IMAGE_BASE`
+  comment's `.data` row is corrected to RVA `0x219000` (VA `0x619000`) as in
+  the table above;
+- `evidence.rs`: three stale claims corrected — the M02-B harness doc and
+  `review.method` now say the record lowers completely since M02-B-FU1 and
+  that the sound keys live in `CONTROL_RECORD_SOUND_KEY_VOCABULARY` (all
+  seven, naming #801 and #808), and the FU2 harness's own `review.method`
+  and doc comment stop claiming "still does not lower … stays Unsupported";
+- `campaign_bindings.rs`: `unclassified_record_keys`' doc names both
+  vocabularies;
+- `main.rs`: the `accept_m02_b_` prefix covers four suites (`m02_b`,
+  `m02_t3`, `m02_b_fu2`, `m02_b_fu3`), not three;
+- this document: the provenance table's `.data` label, the image-test row's
+  loader description, the unknowns' `OBJECTIVES_*_SOUND` bullet (admitted by
+  #808) and the "still does not lower" claim, plus these review-round
+  records.
+
+Nothing else of this branch was missing from main: `mission_control.rs`'s
+seven-key vocabulary, `m02_b.rs`'s membership assertions, the FU2 harness
+and constants, and the `unclassified_record_keys` single-array artifact all
+landed with the stack. The one verification repeated by hand this round:
+each of the five keys' `record_sound_disposition` returns `Measured` with
+its recorded consumer, field offset, parse site and consumer site on the
+merged `mission_control.rs`.
+
+### Checks run by this reviewer (merged head)
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_m02_b_fu2_ --include-ignored` | 0 (3 tests) |
+| `cargo test --workspace --locked -- accept_m02_b_ --include-ignored` | 0 (21 tests: M02-B, M02-T3, M02-B-FU1, M02-B-FU2, M02-B-FU3) |
+| `cargo test -p cs_app --test campaign --locked -- accept_m03_b_ --include-ignored` | 0 (8 tests) |
+| `cargo test --workspace --locked -- accept_m04_b_ --include-ignored` | 0 (8 tests) |
+| `cargo test --workspace --locked -- accept_m01_lc_ --include-ignored` | 0 (203 tests) |
+| `python3 tools/validate_evidence.py … --require-pass` | 0 |
+
+The evidence copy was regenerated on this round's reviewed head with the
+same reviewer identity extended to name this round; `review.identity` in the
+committed JSON records the full chain (implementer, round 1, the #808
+stack's re-runs, rounds 2–3).
+
 ## Sources
 
 `$CS_GAME_DIR` read-only through `cs_assets::install::discover`,
