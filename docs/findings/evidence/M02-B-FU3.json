@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "M02-B-FU3",
- "candidate_tree": "65e2f2fff2fb4f2bfbb0552a4ca6508a972297a3",
+ "candidate_tree": "7e310564e1c170b4d8874afe089373ec650c2b1f",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-10-09T04:06:47Z",
+ "created_at": "2026-10-09T04:12:03Z",
  "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m02_b_fu3_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-2", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
