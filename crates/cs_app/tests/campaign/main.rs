@@ -162,8 +162,11 @@
 //! lowering that decides what the engine may honour — including the complete
 //! lowering M04-B-FU1 (#806) closed the last gap for (the three `ANIM_STATE`
 //! completion-count condition sites now append their pairs and take the
-//! in-list override). Its two synthetic members run in CI and
-//! its six retail members are
+//! in-list override). M06-B-FU1 (#817) adds the `accept_m06_b_fu1_*` members,
+//! which pin those three sites' own spelled operand lists, evaluators and
+//! bound calls, and are likewise selected by the `accept_m06_b_` prefix.
+//! Its synthetic members run in CI and
+//! its retail members are
 //! `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
 //! `evidence_report_m06_b_*` writes that task's report and is selected by test
 //! name. The findings note is

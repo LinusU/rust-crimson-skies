@@ -44,7 +44,12 @@
 //! are in `docs/findings/2026-10-09-m06-b-compatibility-gaps.md` and
 //! `docs/findings/2026-10-09-m04-b-fu1-anim-state-operand-list.md`.
 //!
-//! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`; the two
+//! M06-B-FU1 (#817) adds the `accept_m06_b_fu1_*` members: two retail tests
+//! pin the three completion-count sites' own spelled operand lists, lowered
+//! evaluators, bound calls and the census's verdict, and one synthetic test
+//! carries M06's three-site spelling into CI.
+//!
+//! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`; the three
 //! synthetic tests run in CI.
 
 use std::collections::BTreeMap;
@@ -66,7 +71,7 @@ use cs_content::mission_control::{
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, objective_record, zrd_flat_fields};
 use cs_script::bindings::{ArgDomain, MAX_CALL_ARGS};
-use cs_script::ir::{AnimationState, Condition};
+use cs_script::ir::{Action, AnimationState, Condition, DirectiveOperation as IrOperation, Value};
 use cs_types::content::{ContentId, ContentKind};
 
 use crate::common::load_inventory;
@@ -1310,6 +1315,206 @@ fn accept_m06_b_m06_is_complete_and_the_campaign_stays_unready() {
     assert!(row.is_complete(), "M06's row is complete");
 }
 
+/// **M06's three `COMPLETION_COUNT` sites lower the measured way and the
+/// record completes.** (M06-B-FU1, #817)
+///
+/// `ANIM_STATE` is spelled at eight sites in two shapes: five single-pair
+/// sites of two operands and — the gap M06-B pinned — three sites of six
+/// operands, blocks 9, 11 and 41. Each is its block's first directive and
+/// spells `COMPLETION_COUNT [1]` plus the two `ANIM` descriptors of its own
+/// patrol path (`path3`, `path4`, `path5` `continue`/`accelerate`, every one
+/// wanting `RUNNING`).
+///
+/// The original's parse helper `0x4691d0` walks the whole operand list —
+/// every `ANIM`/spec pair appends and the `COMPLETION_COUNT` found inside
+/// the same list overwrites `required` — and the operand list is the
+/// evaluator's one call argument, carried as a single `Value::List`. That is
+/// the mechanism M04-B-FU1 (#806) measured in the decrypted image and
+/// lowered for every mission; this test pins M06's own three sites through
+/// it: the spelled operand lists themselves, the lowered evaluators, the
+/// bound calls and the validating program.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m06_b_fu1_the_completion_count_sites_lower_and_m06s_record_completes() {
+    let row = census().row(MISSION).unwrap();
+    let record = row.record().unwrap();
+
+    let anim = record.key("ANIM_STATE").expect("it is spelled");
+    assert_eq!((anim.blocks, anim.sites), (8, 8));
+    let mut shapes: Vec<(usize, u32)> = anim
+        .shapes
+        .iter()
+        .map(|(shape, sites)| (shape.arity(), *sites))
+        .collect();
+    shapes.sort();
+    assert_eq!(
+        shapes,
+        [(2, 5), (6, 3)],
+        "five single-pair sites and the three completion-count sites"
+    );
+
+    // The three sites are each their block's first directive and spell the
+    // record's own operand list — pinned here, never assumed.
+    let (document, _member) = read_control_member(&game_dir(), MISSION).expect("control member");
+    let blocks = blocks_of(&document);
+    for (number, path) in [(9u32, "path3"), (11, "path4"), (41, "path5")] {
+        let directives = &blocks
+            .iter()
+            .find(|(n, _)| *n == number)
+            .unwrap_or_else(|| panic!("block {number} exists"))
+            .1;
+        assert_eq!(
+            directives.first().map(|directive| directive.key.as_str()),
+            Some("ANIM_STATE"),
+            "block {number}'s ANIM_STATE is its first directive"
+        );
+        assert_eq!(
+            directives[0].args.as_deref(),
+            Some(m06_anim_state_operands(path).as_slice()),
+            "block {number} spells the {path} pair under COMPLETION_COUNT [1]"
+        );
+    }
+
+    let attempt = row.lowering_attempt().unwrap();
+    let lowered = attempt.attempt();
+
+    // Every site binds: the operand list is one argument, so a six-operand
+    // site's width is a list length, never an arity.
+    assert_eq!(lowered.calls.len() as u32, SITES);
+    assert!(
+        lowered
+            .calls
+            .iter()
+            .all(|call| matches!(call, CallOutcome::Bound)),
+        "every site binds: {:?}",
+        lowered.calls
+    );
+    assert!(
+        lowered.unbound_keys.is_empty(),
+        "the registry refused no key: {:?}",
+        lowered.unbound_keys
+    );
+
+    // The three sites' lowered evaluators: both descriptors appended and the
+    // in-list count overwriting `required` — the measured walk's result.
+    let raw = attempt.raw_program().expect("the program assembled");
+    for (index, path) in [(8usize, "path3"), (10, "path4"), (40, "path5")] {
+        let (required, pairs) = animation_evaluator(&raw.objectives[index].condition);
+        assert_eq!(
+            (required, pairs.as_slice()),
+            (
+                1,
+                &[
+                    (format!("{path}_continue"), AnimationState::Running),
+                    (format!("{path}_accelerate"), AnimationState::Running),
+                ][..]
+            ),
+            "block {}'s evaluator is the spelled {path} pair under its own count",
+            index + 1
+        );
+        let call = raw.objectives[index]
+            .calls
+            .iter()
+            .find(|call| call.name == "ANIM_STATE")
+            .expect("the site produced a call");
+        assert!(
+            matches!(call.args.as_slice(), [Value::List(items)] if items.len() == 6),
+            "block {}'s operand list is the call's one argument: {:?}",
+            index + 1,
+            call.args
+        );
+    }
+
+    // The bound actions keep the same nested list and the measured operation.
+    let program = attempt.program().expect("the program bound");
+    for index in [8usize, 10, 40] {
+        let action = program.objectives[index]
+            .actions
+            .iter()
+            .find(|action| {
+                matches!(
+                    action,
+                    Action::Directive {
+                        operation: IrOperation::AnimationStates,
+                        ..
+                    }
+                )
+            })
+            .unwrap_or_else(|| panic!("block {} bound the measured operation", index + 1));
+        let Action::Directive { args, .. } = action else {
+            unreachable!()
+        };
+        assert!(
+            matches!(args.as_slice(), [Value::List(items)] if items.len() == 6),
+            "block {}'s action carries the operand list whole: {args:?}",
+            index + 1
+        );
+    }
+
+    assert_eq!(
+        lowered.validation,
+        Some(Vec::new()),
+        "the bound program reaches MissionProgram::validate and validates"
+    );
+    let refused_conditions: Vec<(usize, &str)> = lowered
+        .conditions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, outcome)| match outcome {
+            ConditionOutcome::Refused(text) | ConditionOutcome::Unreadable(text) => {
+                Some((index, text.as_str()))
+            }
+            ConditionOutcome::Lowered => None,
+        })
+        .collect();
+    assert!(
+        refused_conditions.is_empty(),
+        "all 82 block conditions lower: {refused_conditions:?}"
+    );
+    let lowering = row.lowering().unwrap();
+    assert_eq!(
+        lowering.unmet().count(),
+        0,
+        "every lowering requirement is met"
+    );
+    assert!(lowering.complete());
+    assert!(row.is_complete());
+}
+
+/// **M06 is a complete census row; the campaign is still not ready.**
+/// (M06-B-FU1)
+///
+/// M06 joins the complete rows through the census's own verdict — a measured
+/// record, a complete lowering attempt and a validating program — never
+/// through a side channel. The campaign gate stays closed on the other
+/// missions' own gaps, so closing M06's widens nothing it should not.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m06_b_fu1_m06_is_complete_and_the_campaign_stays_unready() {
+    let census = census();
+    let row = census.row(MISSION).unwrap();
+    assert!(row.is_measured(), "the program is measured");
+    let lowering = row.lowering().unwrap();
+    assert_eq!(
+        lowering.unmet().count(),
+        0,
+        "the census's own accounting reports no unmet requirement"
+    );
+    assert!(lowering.complete(), "the lowering itself is complete");
+    assert!(
+        row.is_complete(),
+        "the row's own verdict, not a side channel"
+    );
+    assert!(
+        census.complete_missions().contains(&MISSION),
+        "M06 joins the census's complete rows"
+    );
+    assert!(
+        !census.campaign_ready(),
+        "the campaign is still not ready — other missions carry their own gaps"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Synthetic: the measured lowering, and the arms that still refuse
 // ---------------------------------------------------------------------------
@@ -1332,6 +1537,31 @@ fn anim_state_operands(pairs: usize, completion_count: Option<u32>) -> Vec<ZrdVa
         ]));
     }
     operands
+}
+
+/// One `ANIM` spec record as M06's three sites spell it:
+/// `[NAME [<name>], STATE [RUNNING]]`.
+fn anim_descriptor(name: &str) -> ZrdValue {
+    ZrdValue::List(vec![
+        text("NAME"),
+        ZrdValue::List(vec![text(name)]),
+        text("STATE"),
+        ZrdValue::List(vec![text("RUNNING")]),
+    ])
+}
+
+/// M06's six-operand `ANIM_STATE` spelling: `COMPLETION_COUNT [1]` then the
+/// path's `continue`/`accelerate` `RUNNING` descriptors — what blocks 9, 11
+/// and 41 each spell for `path3`, `path4` and `path5` (M06-B-FU1, #817).
+fn m06_anim_state_operands(path: &str) -> Vec<ZrdValue> {
+    vec![
+        text("COMPLETION_COUNT"),
+        ZrdValue::List(vec![int(1)]),
+        text("ANIM"),
+        anim_descriptor(&format!("{path}_continue")),
+        text("ANIM"),
+        anim_descriptor(&format!("{path}_accelerate")),
+    ]
 }
 
 /// The block's one animation evaluator out of a lowered condition, wherever
@@ -1598,4 +1828,72 @@ fn accept_m06_b_a_wide_kill_list_binds_and_a_wide_non_index_key_still_refuses() 
         "the record lowers with nine pairs: {:?}",
         lowered.attempt()
     );
+}
+
+/// **M06's own three-site spelling lowers on an authored record.**
+/// (M06-B-FU1)
+///
+/// The operand lists blocks 9, 11 and 41 spell — `COMPLETION_COUNT [1]` plus
+/// the path's `continue`/`accelerate` `RUNNING` descriptors — are authored
+/// here verbatim, one site per block. Each lowers to its own
+/// `AnimationStates { required: 1, … }`, each site binds its operand list as
+/// one `Value::List` argument and the program validates — the measured
+/// mechanism carried into CI, where there is no original data.
+#[test]
+fn accept_m06_b_fu1_m06s_spelling_lowers_all_three_sites() {
+    let document = control_record(vec![
+        block(
+            1,
+            vec![directive("ANIM_STATE", m06_anim_state_operands("path3"))],
+        ),
+        block(
+            2,
+            vec![directive("ANIM_STATE", m06_anim_state_operands("path4"))],
+        ),
+        block(
+            3,
+            vec![directive("ANIM_STATE", m06_anim_state_operands("path5"))],
+        ),
+    ]);
+    let record = measure_control_record(&document);
+    let lowered = lower(&document);
+    assert!(
+        record.is_complete(lowered.attempt()),
+        "the three authored sites lower and the record completes: {:?}",
+        lowered.attempt()
+    );
+    assert!(
+        lowered.attempt().unbound_keys.is_empty(),
+        "each operand list registers as one list argument"
+    );
+    assert_eq!(
+        lowered.attempt().validation,
+        Some(Vec::new()),
+        "the bound program validates"
+    );
+    let raw = lowered.raw_program().expect("the program assembled");
+    for (objective, path) in raw.objectives.iter().zip(["path3", "path4", "path5"]) {
+        let (required, pairs) = animation_evaluator(&objective.condition);
+        assert_eq!(
+            (required, pairs.as_slice()),
+            (
+                1,
+                &[
+                    (format!("{path}_continue"), AnimationState::Running),
+                    (format!("{path}_accelerate"), AnimationState::Running),
+                ][..]
+            ),
+            "the block appends its own {path} pair under its own count"
+        );
+        let call = objective
+            .calls
+            .iter()
+            .find(|call| call.name == "ANIM_STATE")
+            .expect("the site produced a call");
+        assert!(
+            matches!(call.args.as_slice(), [Value::List(items)] if items.len() == 6),
+            "the six operands reach the call as one list argument: {:?}",
+            call.args
+        );
+    }
 }
