@@ -205,7 +205,7 @@ fn accept_m02_b_fu2_m02s_five_record_sound_keys_are_measured_with_their_consumer
     let m02_sounds = [
         ControlRecordSound::PrimaryComplete,
         ControlRecordSound::SecondaryComplete,
-        ControlRecordSound::TertiarComplete,
+        ControlRecordSound::TertiaryComplete,
         ControlRecordSound::MissionWon,
         ControlRecordSound::MissionLost,
     ];
