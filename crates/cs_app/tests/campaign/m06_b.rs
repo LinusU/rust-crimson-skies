@@ -28,20 +28,21 @@
 //!   record spells is a block of this record — including the address equal to
 //!   the block count, which is what makes the record's addressing measurable
 //!   rather than assumed;
-//! * **every call binds and a program stands, but validation refuses**: the
-//!   fifteen `KILL_OBJECTIVE_WHEN_I_COMPLETE` sites (two of them twelve
-//!   targets wide) bind because M02-B-FU1 (#800) reshaped list-taking
-//!   directives while this stage was in flight — this suite was re-measured on
-//!   that landing — and the only thing `MissionProgram::validate` refuses is
-//!   the three `ANIM_STATE` sites that spell a `COMPLETION_COUNT` override
-//!   with two descriptors, which the measured single-pair condition parser
-//!   does not accept. M06 is not ready until they lower.
+//! * **the record lowers completely**: the fifteen
+//!   `KILL_OBJECTIVE_WHEN_I_COMPLETE` sites (two of them twelve targets wide)
+//!   bind because M02-B-FU1 (#800) reshaped list-taking directives, and the
+//!   three `ANIM_STATE` sites that spell a `COMPLETION_COUNT` override with
+//!   two descriptors lower because M04-B-FU1 (#806) generalized the same
+//!   mechanism to the operand list an `ANIM_STATE` evaluator reads — every
+//!   pair appends and the in-list count overwrites `required`. All 265 sites
+//!   bind, all 82 conditions lower and `MissionProgram::validate` accepts.
 //!
 //! No behaviour is invented here. The runtime halves of the sheet's
 //! priorities — the wrong actor, the wrong session, a repeated event — need
 //! ordinary play (M06-C) and stay open; nothing in this file simulates them.
-//! The remaining lowering gap is filed as a follow-up task and recorded in
-//! `docs/findings/2026-10-09-m06-b-compatibility-gaps.md`.
+//! The lowering gap this stage recorded and the shared fix that closed it
+//! are in `docs/findings/2026-10-09-m06-b-compatibility-gaps.md` and
+//! `docs/findings/2026-10-09-m04-b-fu1-anim-state-operand-list.md`.
 //!
 //! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`; the two
 //! synthetic tests run in CI.
@@ -65,6 +66,7 @@ use cs_content::mission_control::{
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, objective_record, zrd_flat_fields};
 use cs_script::bindings::MAX_CALL_ARGS;
+use cs_script::ir::{AnimationState, Condition};
 use cs_types::content::{ContentId, ContentKind};
 
 use crate::common::load_inventory;
@@ -1147,34 +1149,28 @@ fn accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
     );
 }
 
-/// **Every call binds and a program stands, but validation refuses — and the
-/// three `ANIM_STATE` sites are the whole reason.**
+/// **Every call binds, every condition lowers and M06's record completes.**
 ///
-/// * **calls**: all 265 sites bind, including the fifteen
+/// * **calls**: all 265 sites bind — the fifteen
 ///   `KILL_OBJECTIVE_WHEN_I_COMPLETE` sites (two of them twelve targets wide,
-///   past [`MAX_CALL_ARGS`] as positional operands). They bind because
-///   M02-B-FU1 (#800) reshaped list-taking directives to carry the spelled
-///   list as one `Value::List` argument *while this stage was in flight*: the
-///   suite was re-measured on that landing, `unbound_keys` is empty, and the
-///   gap pin below is the condition half only. The registry's bound itself is
-///   unchanged, which the synthetic pair at the end of this file pins on a
-///   key that takes no index list;
-/// * **conditions**: three `ANIM_STATE` sites (blocks 9, 11 and 41) spell a
-///   `COMPLETION_COUNT` override with two descriptors — six operands, inside
-///   the bound, so the key registers — but the measured condition parser takes
-///   exactly the tag `ANIM` and one spec record, so those three refuse and 79
-///   of 82 block conditions lower.
+///   past [`MAX_CALL_ARGS`] as positional operands) through M02-B-FU1's
+///   list-argument carrying (#800), and the eight `ANIM_STATE` sites through
+///   M04-B-FU1's generalization of the same mechanism (#806): the operand
+///   list an `ANIM_STATE` evaluator reads is carried as one `Value::List`
+///   argument. The registry's bound itself is unchanged, which the synthetic
+///   pair at the end of this file pins on a key that takes no index list;
+/// * **conditions**: all 82 block conditions lower — the three `ANIM_STATE`
+///   sites at blocks 9, 11 and 41 that spell a `COMPLETION_COUNT` override
+///   with two descriptors append both pairs and let the in-list count
+///   overwrite `required` to 1, the way the original's operand-list walk
+///   reads them.
 ///
-/// A `RawProgram` still stands for all 82 objectives and carries
-/// `mission/ch2-m01`; `MissionProgram::validate` then refuses it with the
-/// condition named, so `objective_condition` is unmet and `call_arguments`
-/// carries the validation refusal among its unmet fields (the accounting
-/// never reports a clean row while `validate` failed). The row is not
-/// complete. This is the condition-shape class filed as M04-B-FU1 (#806);
-/// M06's own instance is filed as M06-B-FU1 (#817).
+/// The bound program reaches `MissionProgram::validate` and validates; the
+/// row is complete. The condition-shape class this pin recorded was filed as
+/// M04-B-FU1 (#806), and M06's own instance as M06-B-FU1 (#817).
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m06_b_the_anims_state_sites_are_the_only_gap_and_validation_refuses() {
+fn accept_m06_b_every_call_binds_every_condition_lowers_and_m06s_record_completes() {
     let row = census().row(MISSION).unwrap();
     let record = row.record().unwrap();
 
@@ -1217,10 +1213,6 @@ fn accept_m06_b_the_anims_state_sites_are_the_only_gap_and_validation_refuses() 
         [(2, 5), (6, 3)],
         "five single-pair sites and the three COMPLETION_COUNT sites"
     );
-    assert!(
-        anim_shapes.iter().all(|(arity, _)| *arity <= MAX_CALL_ARGS),
-        "every ANIM_STATE shape is inside the bound, so the key registers: {anim_shapes:?}"
-    );
 
     let attempt = row.lowering_attempt().unwrap();
     let lowered = attempt.attempt();
@@ -1237,34 +1229,24 @@ fn accept_m06_b_the_anims_state_sites_are_the_only_gap_and_validation_refuses() 
         .collect();
     assert!(
         refused_calls.is_empty(),
-        "every site binds after M02-B-FU1 (#800): {refused_calls:?}"
+        "every site binds: {refused_calls:?}"
     );
     assert!(
         lowered.unbound_keys.is_empty(),
-        "the registry refused no key: the twelve-target kill binds as one list argument"
+        "the registry refused no key"
     );
     assert!(
         attempt.program().is_some(),
         "a program stands for all 82 objectives"
     );
-    let validation = lowered.validation.as_ref().expect(
-        "a program stood to be checked, so `MissionProgram::validate` ran rather than being skipped",
-    );
-    assert!(
-        !validation.is_empty(),
-        "and validate refused it instead of passing it"
-    );
-    assert!(
-        validation[0].contains("unsupported instruction")
-            && validation[0].contains("`ANIM_STATE`")
-            && validation[0].contains("OBJECTIVE9"),
-        "the refusal names the condition: {}",
-        validation[0]
+    assert_eq!(
+        lowered.validation,
+        Some(Vec::new()),
+        "the bound program reaches MissionProgram::validate and validates"
     );
 
-    let conditions = &lowered.conditions;
-    assert_eq!(conditions.len() as u32, BLOCKS);
-    let refused_conditions: Vec<(usize, &str)> = conditions
+    let refused_conditions: Vec<(usize, &str)> = lowered
+        .conditions
         .iter()
         .enumerate()
         .filter_map(|(index, outcome)| match outcome {
@@ -1274,70 +1256,62 @@ fn accept_m06_b_the_anims_state_sites_are_the_only_gap_and_validation_refuses() 
             ConditionOutcome::Lowered => None,
         })
         .collect();
-    assert_eq!(
-        refused_conditions.len(),
-        3,
-        "79 of 82 block conditions lower: {refused_conditions:?}"
+    assert!(
+        refused_conditions.is_empty(),
+        "all 82 block conditions lower: {refused_conditions:?}"
     );
-    assert_eq!(
-        refused_conditions
-            .iter()
-            .map(|(index, _)| *index + 1)
-            .collect::<Vec<_>>(),
-        [9, 11, 41],
-        "the three blocks that spell the COMPLETION_COUNT form of ANIM_STATE"
-    );
-    for (index, text) in &refused_conditions {
-        assert!(
-            text.contains("`ANIM_STATE`")
-                && text.contains("the measured shape is the tag `ANIM` and one spec record"),
-            "condition {index} refuses on ANIM_STATE's operands: {text}"
+
+    // The three override sites carry the measured evaluators: both
+    // descriptors appended, and each in-list COMPLETION_COUNT [1] overwrites
+    // `required`.
+    let raw = attempt.raw_program().expect("the program assembled");
+    for index in [8usize, 10, 40] {
+        let (required, pairs) = animation_evaluator(&raw.objectives[index].condition);
+        assert_eq!(
+            required,
+            1,
+            "block {}'s COMPLETION_COUNT [1] overwrites the two-pair count",
+            index + 1
+        );
+        assert_eq!(
+            pairs.len(),
+            2,
+            "block {} appends both its descriptors",
+            index + 1
         );
     }
 
     let lowering = row.lowering().unwrap();
-    let unmet: Vec<&str> = lowering.unmet().map(|row| row.kind.code()).collect();
     assert_eq!(
-        unmet,
-        ["objective_condition", "call_arguments"],
-        "the mission identity, all 82 objective identities and every bound call are accounted \
-         for; the only refusal is the validation error the three conditions produce"
+        lowering.unmet().count(),
+        0,
+        "every lowering requirement is met"
     );
-    let objective_condition = lowering
-        .requirements()
-        .iter()
-        .find(|row| row.kind.code() == "objective_condition")
-        .expect("the row exists");
-    assert_eq!(
-        objective_condition
-            .unmeasured_fields
-            .iter()
-            .filter(|field| field.contains("`ANIM_STATE`"))
-            .count(),
-        3,
-        "the row names the three refused sites rather than a paraphrase"
-    );
-    assert!(!lowering.complete());
-    assert!(!row.is_complete());
+    assert!(lowering.complete());
+    assert!(row.is_complete());
 }
 
-/// **M06 is not campaign-ready and the census does not hide it.**
+/// **M06 is a complete census row; the campaign is still not ready.**
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m06_b_the_mission_stays_unready_until_the_refused_sites_are_measured() {
+fn accept_m06_b_m06_is_complete_and_the_campaign_stays_unready() {
     let census = census();
-    assert!(!census.complete_missions().contains(&MISSION));
-    assert!(!census.campaign_ready());
+    assert!(
+        census.complete_missions().contains(&MISSION),
+        "M06 joins the census's complete rows"
+    );
+    assert!(
+        !census.campaign_ready(),
+        "the campaign is still not ready — other missions carry their own gaps"
+    );
     assert!(census.measured_rows().any(|row| row.mission() == MISSION));
     let row = census.row(MISSION).unwrap();
-    assert!(
-        row.is_measured(),
-        "the program is measured even though it does not lower"
-    );
+    assert!(row.is_measured(), "the program is measured");
+    assert!(row.is_complete(), "M06's row is complete");
 }
 
 // ---------------------------------------------------------------------------
-// Synthetic: the two refusal arms the retail gaps rest on
+// Synthetic: the measured lowering, and the arms that still refuse
 // ---------------------------------------------------------------------------
 
 /// An `ANIM_STATE` operand list: an optional `COMPLETION_COUNT` override, then
@@ -1360,18 +1334,34 @@ fn anim_state_operands(pairs: usize, completion_count: Option<u32>) -> Vec<ZrdVa
     operands
 }
 
-/// **A single animation pair lowers and M06's completion-count spelling is
-/// refused.**
+/// The block's one animation evaluator out of a lowered condition, wherever
+/// it sits inside the gate — `All` when it is the only evaluator, `Any`
+/// beside another kind otherwise.
+fn animation_evaluator(condition: &Condition) -> (u32, &Vec<(String, AnimationState)>) {
+    fn find(condition: &Condition) -> Option<(u32, &Vec<(String, AnimationState)>)> {
+        match condition {
+            Condition::AnimationStates {
+                required,
+                animations,
+            } => Some((*required, animations)),
+            Condition::All(items) | Condition::Any(items) => items.iter().find_map(find),
+            _ => None,
+        }
+    }
+    find(condition)
+        .unwrap_or_else(|| panic!("the block carries no animation evaluator: {condition:?}"))
+}
+
+/// **M06's completion-count spelling lowers: both pairs append and the
+/// in-list count overwrites `required`.**
 ///
-/// The condition parser's measured shape is the tag `ANIM` and one spec
-/// record. Authored that way, the block's condition lowers and the record
-/// completes; adding a `COMPLETION_COUNT` override and a second descriptor in
-/// the same list — the spelling M06's blocks 9, 11 and 41 use, six operands —
-/// is refused per site by the condition accounting, with the measured shape
-/// named. Six operands are inside [`MAX_CALL_ARGS`], so the key still
-/// registers: the refusal is the condition shape, not the host-call bound.
+/// The spelling M06's blocks 9, 11 and 41 use — a `COMPLETION_COUNT [1]`
+/// plus two `ANIM` descriptors inside the one operand list, six operands —
+/// lowers the measured way: the operand list is one call argument, so the
+/// site binds inside the bound either way; every pair appends; and the
+/// sibling count found in the same list overwrites `required`.
 #[test]
-fn accept_m06_b_a_single_animation_pair_lowers_and_a_completion_count_site_is_refused() {
+fn accept_m06_b_a_completion_count_site_lowers_with_its_override() {
     let authored = |operands: Vec<ZrdValue>| {
         control_record(vec![block(
             1,
@@ -1389,7 +1379,7 @@ fn accept_m06_b_a_single_animation_pair_lowers_and_a_completion_count_site_is_re
     let lowered = lower_control_record(mission.clone(), "zbd/synth/mission", &single, &record);
     assert!(
         record.is_complete(lowered.attempt()),
-        "one pair is the measured shape and the record completes: {:?}",
+        "one pair lowers and the record completes: {:?}",
         lowered.attempt()
     );
     assert!(
@@ -1409,31 +1399,24 @@ fn accept_m06_b_a_single_animation_pair_lowers_and_a_completion_count_site_is_re
     let record = measure_control_record(&m06_shape);
     let lowered = lower_control_record(mission, "zbd/synth/mission", &m06_shape, &record);
     assert!(
-        !record.is_complete(lowered.attempt()),
-        "M06's spelling refuses: {:?}",
-        lowered.attempt().conditions
+        record.is_complete(lowered.attempt()),
+        "M06's spelling lowers now: {:?}",
+        lowered.attempt()
     );
-    let refused: Vec<&str> = lowered
-        .attempt()
-        .conditions
-        .iter()
-        .filter_map(|outcome| match outcome {
-            ConditionOutcome::Refused(text) | ConditionOutcome::Unreadable(text) => {
-                Some(text.as_str())
-            }
-            ConditionOutcome::Lowered => None,
-        })
-        .collect();
-    assert_eq!(refused.len(), 1, "the one block refuses: {refused:?}");
-    assert!(
-        refused[0].contains("`ANIM_STATE`")
-            && refused[0].contains("the measured shape is the tag `ANIM` and one spec record"),
-        "{}",
-        refused[0]
+    let raw = lowered.raw_program().expect("the program assembled");
+    let (required, pairs) = animation_evaluator(&raw.objectives[0].condition);
+    assert_eq!(
+        required, 1,
+        "the in-list COMPLETION_COUNT overwrites the two-pair count"
+    );
+    assert_eq!(
+        pairs.len(),
+        2,
+        "both descriptors appended, in declaration order"
     );
     assert!(
         lowered.attempt().unbound_keys.is_empty(),
-        "six operands are inside the host-call bound of {MAX_CALL_ARGS}, so the key still registers"
+        "the operand list registers as one list argument"
     );
 }
 

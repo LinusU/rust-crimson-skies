@@ -131,10 +131,13 @@
 //!
 //! `m04_b.rs` is the M04-B stage: `accept_m04_b_*` tests that run the shared
 //! control-program machinery over M04's own reader archive — census,
-//! dispositions, block graph, sheet priorities and lowering — and pin the one
-//! measured gap (`ANIM_STATE`) that keeps M04's record from lowering. Its two
-//! synthetic members run in CI and its six retail members are
-//! `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
+//! dispositions, block graph, sheet priorities and lowering. M04-B pinned the
+//! one measured gap (`ANIM_STATE`) that kept M04's record from lowering;
+//! M04-B-FU1 (#806) closed it — the `accept_m04_b_fu1_*` members pin the
+//! measured operand-list walk, the one-list-argument call carrying and M04's
+//! complete lowering, and are likewise selected by the `accept_m04_b_`
+//! prefix. Its four synthetic members run in CI and its six retail members
+//! are `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
 //! `evidence_report_m04_b_*` writes that task's report and is selected by
 //! test name, so a task selection never picks it up as an acceptance test.
 //!
@@ -156,10 +159,10 @@
 //! `m06_b.rs` is the M06-B stage: `accept_m06_b_*` tests that bind M06's
 //! mission control program through `SourceContext::control_program` and hold
 //! it to the mission binding's identities, the retail control census and the
-//! lowering that decides what the engine may honour — including the measured
-//! gap that keeps M06 from being ready (every call binds, but
-//! `MissionProgram::validate` refuses the three `ANIM_STATE`
-//! completion-count condition sites). Its two synthetic members run in CI and
+//! lowering that decides what the engine may honour — including the complete
+//! lowering M04-B-FU1 (#806) closed the last gap for (the three `ANIM_STATE`
+//! completion-count condition sites now append their pairs and take the
+//! in-list override). Its two synthetic members run in CI and
 //! its six retail members are
 //! `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
 //! `evidence_report_m06_b_*` writes that task's report and is selected by test

@@ -13,14 +13,15 @@
 //! * its 29-key vocabulary is **fully disposed** — two terminal outcomes, 27
 //!   measured keys, none refused and no unclassified record key — so every gap
 //!   below is a lowering gap, not a measurement gap;
-//! * the record does **not** lower, and both requirements are unmet:
-//!   `objective_condition` (eight blocks: five `ANIM_STATE` sites that spell
-//!   two to five spec records where the condition lowering accepts one, and
-//!   three `DANGER_ZONES_COMPLETED` sites whose condition this build declines
-//!   to offer) and `call_arguments` (all nine `ANIM_STATE` call sites refuse,
-//!   because the key's ten-argument shape exceeds the registry's per-signature
-//!   bound and one over-bound signature refuses the whole key — the mechanism
-//!   M02-B-FU1/Rally #800 filed and M04-B-FU1/#806 tracks for M04);
+//! * the record still does **not** lower, and both requirements stay unmet —
+//!   but the `ANIM_STATE` half is closed: M04-B-FU1 (#806) generalized the
+//!   list-argument mechanism to the operand list an `ANIM_STATE` evaluator
+//!   reads, so all nine `ANIM_STATE` sites bind and their two-to-five-record
+//!   operand lists append into each block's one evaluator. What remains is
+//!   `objective_condition`'s three `DANGER_ZONES_COMPLETED` sites (blocks 37,
+//!   39 and 41), whose condition this build declines to offer — and
+//!   `call_arguments`, which carries validation's refusal while a bound
+//!   program stands and fails `MissionProgram::validate` on those blocks;
 //! * the sheet's three regression priorities are located in the measured
 //!   record: the moving-subject proximity evaluator (`TRAVELERS`), the
 //!   animation gates that name the trailer segments, `got_pickford` and
@@ -57,6 +58,7 @@ use cs_content::mission_control::{
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, objective_record, zrd_flat_fields};
 use cs_formats::script_raw::discover_container;
+use cs_script::ir::{AnimationState, Condition, MAX_VALUE_ITEMS};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::install::RelativePath;
 
@@ -233,21 +235,6 @@ fn addresses(args: &[ZrdValue]) -> Vec<i64> {
             _ => None,
         })
         .collect()
-}
-
-/// The zero-based objective index a refusal text names: `objective#8` is the
-/// ninth numbered block, because the census renders the record's zero-based
-/// block index.
-fn refused_objective(text: &str) -> u32 {
-    let start = text
-        .find("objective#")
-        .expect("a call refusal names its objective")
-        + "objective#".len();
-    let digits: String = text[start..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits.parse().expect("the objective index is a number")
 }
 
 /// The numbered block a condition refusal names: `OBJECTIVE13` is the block
@@ -447,21 +434,23 @@ fn accept_m07_b_the_vocabulary_is_fully_disposed_and_no_m07_key_is_refused() {
     );
 }
 
-/// **The record does not lower, and the refusals are exactly the M07-specific
-/// gaps.**
+/// **The `ANIM_STATE` gap is closed and `DANGER_ZONES_COMPLETED` is the
+/// remaining one.**
 ///
-/// Eight conditions refuse — the five `ANIM_STATE` sites that spell two to
-/// five `{ANIM, spec}` records where `cs_script::conditions::anim_state`
-/// accepts one (blocks 13, 16, 20, 30 and 60), and the three
-/// `DANGER_ZONES_COMPLETED` sites (blocks 37, 39 and 41) whose condition this
-/// build declines to offer. Nine calls refuse, all `ANIM_STATE`: the key's
-/// ten-argument shape (five spec records at block 60) exceeds the registry's
-/// per-signature bound, so the whole key fails registration and even the
-/// two-argument sites refuse. Both `objective_condition` and `call_arguments`
-/// are unmet, no program stands, and the row is not complete.
+/// All 231 sites bind — every `ANIM_STATE` site carries its operand list as
+/// one list argument, so the ten-argument shape (five spec records at block
+/// 60) registers like every other measured shape and the whole key is in the
+/// registry. 58 of 61 conditions lower: the five multi-record `ANIM_STATE`
+/// sites (blocks 13, 16, 20, 30 and 60) append every spelled pair with
+/// `required` counting them, and only the three `DANGER_ZONES_COMPLETED`
+/// sites (blocks 37, 39 and 41) still refuse — the flag evaluator this
+/// build lowers no condition for. A program stands, `MissionProgram::validate`
+/// refuses it on those three blocks, `objective_condition` is unmet with the
+/// sites named, `call_arguments` stays unmet behind the validation failure,
+/// and the row is not complete.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m07_b_the_record_does_not_lower_and_the_gaps_are_the_named_ones() {
+fn accept_m07_b_the_anim_state_gap_closes_and_danger_zones_is_the_remaining_one() {
     let row = census_row();
     let attempt = row.lowering_attempt().expect("M07 has a lowering attempt");
     let lowered = attempt.attempt();
@@ -472,85 +461,96 @@ fn accept_m07_b_the_record_does_not_lower_and_the_gaps_are_the_named_ones() {
     let (document, _) = control_document();
     let blocks = blocks_of(&document);
 
-    // Calls: every refusal is an `ANIM_STATE` site, and the refused objective
-    // indices are exactly the blocks an independent walk finds spelling the
-    // key.
-    let refused_calls: Vec<u32> = lowered
+    // Calls: no site refuses — the nine ANIM_STATE sites bind like every
+    // other site, each carrying its operand list as the one argument.
+    let refused_calls: Vec<&str> = lowered
         .calls
         .iter()
         .filter_map(|call| match call {
-            CallOutcome::Refused(text) => {
-                assert!(
-                    text.contains("unknown host call `ANIM_STATE`"),
-                    "M07's only refused calls are ANIM_STATE sites: {text}"
-                );
-                Some(refused_objective(text))
-            }
+            CallOutcome::Refused(text) => Some(text.as_str()),
             CallOutcome::Bound => None,
         })
         .collect();
+    assert!(
+        refused_calls.is_empty(),
+        "every site binds: {refused_calls:?}"
+    );
+    assert!(
+        lowered.unbound_keys.is_empty(),
+        "no key fails registration — block 60's ten-operand list is one list \
+         argument, inside the bound: {:?}",
+        lowered.unbound_keys
+    );
     let anim_blocks: Vec<u32> = sites(&blocks, "ANIM_STATE")
         .iter()
-        .map(|(number, _)| number - 1)
+        .map(|(number, _)| *number)
         .collect();
-    assert_eq!(
-        refused_calls, anim_blocks,
-        "every ANIM_STATE site refuses and no other site does"
-    );
-    assert_eq!(refused_calls.len(), 9);
-    assert_eq!(
-        lowered.unbound_keys,
-        ["`ANIM_STATE`: binding `ANIM_STATE`: too many arguments"],
-        "the registry refused ANIM_STATE at registration, on the host-call bound"
+    assert_eq!(anim_blocks.len(), 9, "M07 spells nine ANIM_STATE sites");
+    let raw = attempt.raw_program().expect("the program assembled");
+    let anim_calls: Vec<_> = raw
+        .objectives
+        .iter()
+        .flat_map(|objective| objective.calls.iter())
+        .filter(|call| call.name == "ANIM_STATE")
+        .collect();
+    assert_eq!(anim_calls.len(), 9);
+    assert!(
+        anim_calls
+            .iter()
+            .all(|call| matches!(call.args.as_slice(), [cs_script::ir::Value::List(_)])),
+        "each carries its operand list as the one argument"
     );
 
-    // Conditions: the refused blocks are the multi-record ANIM_STATE sites
-    // plus the DANGER_ZONES_COMPLETED sites, each named with its own key.
+    // Conditions: the refused blocks are exactly the three
+    // DANGER_ZONES_COMPLETED sites — every ANIM_STATE block lowers, its
+    // appended pairs counted into `required` (block 60's five below).
     let mut refused_conditions = BTreeMap::new();
     for outcome in &lowered.conditions {
         if let ConditionOutcome::Refused(text) = outcome {
-            let key = if text.contains("`ANIM_STATE`") {
-                "ANIM_STATE"
-            } else if text.contains("`DANGER_ZONES_COMPLETED`") {
-                "DANGER_ZONES_COMPLETED"
-            } else {
-                panic!("M07's refused conditions name the measured keys: {text}");
-            };
-            refused_conditions.insert(refused_block(text), key);
+            assert!(
+                text.contains("`DANGER_ZONES_COMPLETED`"),
+                "M07's only refused conditions are the danger-zones sites: {text}"
+            );
+            refused_conditions.insert(refused_block(text), "DANGER_ZONES_COMPLETED");
         }
     }
-    let mut expected = BTreeMap::new();
-    for (number, args) in sites(&blocks, "ANIM_STATE") {
-        if args.len() > 2 {
-            expected.insert(number, "ANIM_STATE");
-        }
-    }
-    for (number, _) in sites(&blocks, "DANGER_ZONES_COMPLETED") {
-        expected.insert(number, "DANGER_ZONES_COMPLETED");
-    }
+    let expected: BTreeMap<u32, &str> = sites(&blocks, "DANGER_ZONES_COMPLETED")
+        .into_iter()
+        .map(|(number, _)| (number, "DANGER_ZONES_COMPLETED"))
+        .collect();
     assert_eq!(
         refused_conditions, expected,
-        "the refused conditions are exactly the multi-record ANIM_STATE sites and the \
-         danger-zones sites"
+        "the refused conditions are exactly the danger-zones sites"
     );
-    assert_eq!(refused_conditions.len(), 8);
+    assert_eq!(refused_conditions.len(), 3);
     assert_eq!(
         lowered.conditions.len() as u32,
         BLOCKS,
         "every block was walked"
     );
 
-    assert!(
-        lowered.validation.is_none(),
-        "no program stood to be validated"
+    let (required, pairs) = animation_evaluator(&raw.objectives[59].condition);
+    assert_eq!(pairs.len(), 5, "block 60 appends all five descriptors");
+    assert_eq!(
+        required, 5,
+        "no COMPLETION_COUNT: required counts the pairs"
     );
+
+    let validation = lowered
+        .validation
+        .as_ref()
+        .expect("a program stood, so validate ran");
     assert!(
-        attempt.program().is_none(),
-        "and none is handed to the runtime"
+        !validation.is_empty(),
+        "and validate refuses the three Unknown conditions: {validation:?}"
     );
     let lowering = row.lowering().expect("the accounting exists");
     let unmet: Vec<String> = lowering.unmet().map(|r| r.kind.code().to_owned()).collect();
-    assert_eq!(unmet, ["objective_condition", "call_arguments"]);
+    assert_eq!(
+        unmet,
+        ["objective_condition", "call_arguments"],
+        "the conditions name the three sites; the calls row stays unmet behind validation"
+    );
     assert!(!row.is_complete());
     assert!(!lowering.complete());
 }
@@ -1043,22 +1043,39 @@ fn anim(name: &str) -> Vec<ZrdValue> {
     ]
 }
 
-/// **Two refusal arms of one key: the multi-record condition and the
-/// registration bound.**
+/// The block's one animation evaluator out of a lowered condition, wherever
+/// it sits inside the gate — `All` when it is the only evaluator, `Any`
+/// beside another kind otherwise.
+fn animation_evaluator(condition: &Condition) -> (u32, &Vec<(String, AnimationState)>) {
+    fn find(condition: &Condition) -> Option<(u32, &Vec<(String, AnimationState)>)> {
+        match condition {
+            Condition::AnimationStates {
+                required,
+                animations,
+            } => Some((*required, animations)),
+            Condition::All(items) | Condition::Any(items) => items.iter().find_map(find),
+            _ => None,
+        }
+    }
+    find(condition)
+        .unwrap_or_else(|| panic!("the block carries no animation evaluator: {condition:?}"))
+}
+
+/// **Every spelled record lowers into one evaluator; only an operand list
+/// the call cannot carry still refuses.**
 ///
-/// The retail record refuses `ANIM_STATE` at M07 on two independent arms. Each
-/// is reproduced on authored records: two spec records (four arguments) keep
-/// the key inside the host-call bound — the calls bind and the program
-/// assembles — but the condition refuses with the one-record-shape message,
-/// and the objective's condition lowers to `Unknown`. Five spec records (ten
-/// arguments) exceed the bound, so the key fails registration and every site
-/// refuses as an unknown host call, even a single-record one elsewhere in the
-/// record, and no program stands.
+/// M07's multi-record `ANIM_STATE` sites were the class this stage filed.
+/// The measured walk appends every `{ANIM, spec}` pair, so two records lower
+/// to two pairs with `required` counting them; five records — ten operands,
+/// past the registry's positional bound — lower and bind just the same,
+/// because the operand list is carried as one list argument. The arm that
+/// still refuses is an operand list wider than the bound on carried items:
+/// `MAX_VALUE_ITEMS` and beyond cannot fit the call's one argument, so the
+/// key's only signature is uncarriable and it refuses registration rather
+/// than truncating the spelled list.
 #[test]
-fn accept_m07_b_a_multi_record_anim_state_refuses_its_condition_and_a_bound_shape_refuses_the_key()
-{
-    // One record: the shape the engine implements today — condition lowers,
-    // call binds, program assembles.
+fn accept_m07_b_every_spelled_record_lowers_and_an_uncarriable_list_refuses() {
+    // One record: condition lowers, call binds, program assembles.
     let single = record_of(vec![(1, {
         let mut site = vec![text("ANIM_STATE")];
         site.push(ZrdValue::List(anim("trailer_seg1")));
@@ -1083,62 +1100,101 @@ fn accept_m07_b_a_multi_record_anim_state_refuses_its_condition_and_a_bound_shap
         "and validates clean"
     );
 
-    // Two records: inside the bound, so the calls bind — but the condition
-    // refuses, naming the one-record shape.
-    let double = record_of(vec![(1, {
-        let mut site = vec![text("ANIM_STATE")];
-        let mut args = anim("trailer_seg1");
-        args.extend(anim("trailer_seg2"));
-        site.push(ZrdValue::List(args));
-        site
-    })]);
-    let lowered = lower(&double);
-    assert_eq!(lowered.attempt().unbound_keys, Vec::<String>::new());
-    let refused: Vec<&str> = lowered
-        .attempt()
-        .conditions
-        .iter()
-        .filter_map(|condition| match condition {
-            ConditionOutcome::Refused(text) => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(refused.len(), 1);
-    assert!(refused[0].contains("`ANIM_STATE`"), "{}", refused[0]);
-    assert!(
-        refused[0].contains("the measured shape is the tag `ANIM` and one spec record"),
-        "{}",
-        refused[0]
-    );
-    assert!(
-        lowered.program().is_some(),
-        "the calls all bind, so the program assembles — the refusal is the condition alone"
-    );
+    // Two and five records: every spelled pair appends in order, `required`
+    // counts them, and the wide site's ten operands are the call's one list
+    // argument — the bound is not read as an arity.
+    for count in [2u32, 5] {
+        let record = record_of(vec![(1, {
+            let mut site = vec![text("ANIM_STATE")];
+            let mut args = Vec::new();
+            for index in 0..count {
+                args.extend(anim(&format!("trailer_seg{index}")));
+            }
+            site.push(ZrdValue::List(args));
+            site
+        })]);
+        let lowered = lower(&record);
+        assert_eq!(lowered.attempt().unbound_keys, Vec::<String>::new());
+        assert!(
+            lowered
+                .attempt()
+                .conditions
+                .iter()
+                .all(|condition| *condition == ConditionOutcome::Lowered),
+            "{count} records lower: {:?}",
+            lowered.attempt().conditions
+        );
+        let raw = lowered.raw_program().expect("the program assembled");
+        let (required, pairs) = animation_evaluator(&raw.objectives[0].condition);
+        assert_eq!(pairs.len(), count as usize);
+        assert_eq!(required, count);
+        let names: Vec<&str> = pairs.iter().map(|(name, _)| name.as_str()).collect();
+        let expected: Vec<String> = (0..count)
+            .map(|index| format!("trailer_seg{index}"))
+            .collect();
+        assert_eq!(names, expected, "declaration order is preserved");
+        assert!(
+            pairs
+                .iter()
+                .all(|(_, state)| *state == AnimationState::Executed)
+        );
+    }
 
-    // Five records: ten arguments, past the host-call bound, so the key
-    // refuses registration and every site refuses with it.
-    let five = record_of(vec![(1, {
+    // Past MAX_VALUE_ITEMS the operand list cannot fit the call's one list
+    // argument, so the site refuses rather than truncating — the one
+    // signature is uncarriable, the key never registers and the damaged
+    // block's condition refuses beside it.
+    let over = record_of(vec![(1, {
         let mut site = vec![text("ANIM_STATE")];
         let mut args = Vec::new();
-        for index in 0..5 {
+        for index in 0..(MAX_VALUE_ITEMS / 2 + 1) {
             args.extend(anim(&format!("trailer_seg{index}")));
         }
         site.push(ZrdValue::List(args));
         site
     })]);
-    let lowered = lower(&five);
+    let lowered = lower(&over);
     assert_eq!(
-        lowered.attempt().unbound_keys,
-        ["`ANIM_STATE`: binding `ANIM_STATE`: too many arguments"]
+        lowered.attempt().unbound_keys.len(),
+        1,
+        "the uncarriable signature refuses the key's registration: {:?}",
+        lowered.attempt().unbound_keys
+    );
+    assert!(
+        lowered.attempt().unbound_keys[0].contains("ANIM_STATE"),
+        "{}",
+        lowered.attempt().unbound_keys[0]
+    );
+    let refusals: Vec<&str> = lowered
+        .attempt()
+        .calls
+        .iter()
+        .filter_map(|call| match call {
+            CallOutcome::Refused(text) => Some(text.as_str()),
+            CallOutcome::Bound => None,
+        })
+        .collect();
+    assert_eq!(
+        refusals.len(),
+        1,
+        "the one site refuses rather than truncating: {refusals:?}"
+    );
+    // The refused conversion carries no call into the program, so the rest
+    // still assembles and binds; `validate` then refuses the damaged block's
+    // condition.
+    assert!(
+        lowered.program().is_some(),
+        "no RawCall reaches the registry, so the program stands empty-handed"
     );
     assert!(
         lowered
             .attempt()
-            .calls
-            .iter()
-            .all(|call| matches!(call, CallOutcome::Refused(_)))
+            .validation
+            .as_ref()
+            .is_some_and(|errors| !errors.is_empty()),
+        "and validate refuses the record: {:?}",
+        lowered.attempt().validation
     );
-    assert!(lowered.program().is_none());
 }
 
 /// **A danger-zones site refuses its condition, and the same block without it
