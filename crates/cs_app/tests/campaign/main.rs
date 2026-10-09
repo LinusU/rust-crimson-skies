@@ -213,6 +213,12 @@
 //! two tasks adding two suites touch two different lines of this file. Where
 //! the paragraphs above say `evidence.rs`'s `evidence_report_*`, they name
 //! that module: each harness now lives in its own `evidence/<task>.rs`.
+//!
+//! A new suite does **not** append a paragraph to the per-suite map above:
+//! that map is append-at-one-place, so two new tasks writing there would be
+//! back at the same lines. A suite describes itself in its own module doc at
+//! the top of its file, where a reader lands anyway; the map above is kept as
+//! the overview of what this binary already links.
 
 mod closure;
 mod common;
