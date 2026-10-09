@@ -52,7 +52,7 @@ The same mechanism is spelled by three measured missions:
 
 | mission | member | sites | operand shapes | what they spell |
 | --- | --- | --- | --- | --- |
-| M04 | `zbd/c1/m04` (`objectives.zrd`) | 3 | 2 operands ×1 (block 32), 18 operands ×2 (blocks 23, 37) | a `COMPLETION_COUNT [n]` plus eight `ANIM` descriptors; counts 3 and 1 |
+| M04 | `zbd/c1/m04` (`objectives.zrd`) | 3 | 2 operands ×1 (block 32), 18 operands ×2 (blocks 23, 37) | a `COMPLETION_COUNT [n]` plus eight `ANIM` descriptors; counts 1 and 3 |
 | M06 | `zbd/c2/m01` | 8 | 2 operands ×5, 6 operands ×3 (blocks 9, 11, 41) | `COMPLETION_COUNT [1]` plus two descriptors |
 | M07 | `zbd/c2/m02` | 9 | 2/4/6/8/2/6/2/10/2 operands | one to five descriptors, no `COMPLETION_COUNT` — `required` counts the pairs |
 
