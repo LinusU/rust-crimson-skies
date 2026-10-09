@@ -124,6 +124,21 @@
 //! `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
 //! `evidence_report_m04_b_*` writes that task's report and is selected by
 //! test name, so a task selection never picks it up as an acceptance test.
+//!
+//! `record_objectives_sound.rs` is the RECORD-OBJECTIVES-SOUND stage (Rally
+//! #808): `accept_record_objectives_sound_*` tests that hold the two
+//! `OBJECTIVES_*_SOUND` record keys the original's parser spells — admitted
+//! to `CONTROL_RECORD_SOUND_KEY_VOCABULARY` by this task after the M01-LC
+//! method re-read them in the owner's decrypted image — to their measured
+//! end-of-tick consumers, and that run the production control census over
+//! the whole installation to pin the measured result that no retail control
+//! member spells either key. Its synthetic member runs in CI; its retail
+//! member is `#[ignore = "requires CS_GAME_DIR"]` and its image member
+//! `#[ignore = "requires CS_ENGINE_IMAGE"]`, so CI (which has neither) skips
+//! both and the implementing and reviewing agents run them with
+//! `--include-ignored`. `evidence.rs`'s
+//! `evidence_report_record_objectives_sound_writes_the_acceptance_report` is
+//! that task's report harness, selected by test name.
 
 mod closure;
 mod common;
@@ -164,4 +179,5 @@ mod m18_a;
 mod m19_a;
 mod m21_a;
 mod m24_a;
+mod record_objectives_sound;
 mod vs_m01_runtime;
