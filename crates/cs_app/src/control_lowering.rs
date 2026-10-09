@@ -23,10 +23,12 @@
 //!   guesses — and every directive site as one [`RawCall`], args carried field
 //!   for field inside `Value::List` (nested lists stay nested; nothing is
 //!   flattened). A site of a **list-taking** directive (the measured
-//!   operations that take one list of objective indices) carries its spelled
-//!   list as *one* `Value::List` argument instead of a positional row, so the
-//!   list's length is never read as an arity and a long list stays inside the
-//!   registry's per-signature argument bound (`MAX_CALL_ARGS` is not raised).
+//!   operations that take one list of objective indices, and `ANIM_STATE`,
+//!   whose whole operand list is the argument the evaluator's descriptor walk
+//!   reads) carries its spelled list as *one* `Value::List` argument instead
+//!   of a positional row, so the list's length is never read as an arity and
+//!   a long list stays inside the registry's per-signature argument bound
+//!   (`MAX_CALL_ARGS` is not raised).
 //!
 //! Calls are bound through a [`HostBindingRegistry`] built from the record's
 //! own key dispositions: a `Measured` key registers one [`BindingSpec`] whose
@@ -171,12 +173,14 @@ pub fn lower_control_record(
         .map(ToString::to_string)
         .unwrap_or_else(|_| mission_label.to_owned());
 
-    // The keys whose measured operation takes one list of indices: their
-    // spelled list is one `Value::List` argument, not a positional row.
-    let index_list_keys: Vec<&str> = record
+    // The keys whose measured operation takes the spelled list as one
+    // argument: the call carries it as one `Value::List`, not a positional
+    // row. The condition side still sees the spelled list itself — the
+    // `ANIM_STATE` operand list is exactly what its evaluator's walk reads.
+    let list_argument_keys: Vec<&str> = record
         .keys()
         .iter()
-        .filter(|key| takes_index_list(key))
+        .filter(|key| takes_list_argument(key))
         .map(|key| key.key.as_str())
         .collect();
 
@@ -224,19 +228,17 @@ pub fn lower_control_record(
             match children.get(index + 1) {
                 Some(next) if next.as_list().is_some() => {
                     let items = next.as_list().unwrap_or_default();
-                    match convert_args(items).map(|args| {
-                        if index_list_keys.contains(&name) {
-                            vec![Value::List(args)]
-                        } else {
-                            args
-                        }
-                    }) {
+                    match convert_args(items) {
                         Ok(args) => {
                             site_map.push((site_outcomes.len(), block_index, calls.len()));
                             site_outcomes.push(None);
                             calls.push(RawCall {
                                 name: name.to_owned(),
-                                args: args.clone(),
+                                args: if list_argument_keys.contains(&name) {
+                                    vec![Value::List(args.clone())]
+                                } else {
+                                    args.clone()
+                                },
                                 span: None,
                             });
                             directives.push(BlockDirective {
@@ -472,14 +474,17 @@ fn arg_domain(arg: &MeasuredArg) -> ArgDomain {
     }
 }
 
-/// Whether a key's measured operation takes **one list of objective indices**
+/// Whether a key's measured operation takes **the spelled list as one
+/// argument** — the four index-list operations
 /// (`DirectiveOperation::WakeObjectives`, `SleepObjectives`, `KillObjectives`,
-/// `WakeObjectivesOnTransition`): the list spelled beside the key is that one
-/// argument, so its length is the list's, not an arity. Carrying it as one
-/// `Value::List` keeps a long list (M02's nine-index kill sites) inside the
-/// host-call bound without raising it. A bare site has no list and carries
-/// none.
-fn takes_index_list(key: &MeasuredDirectiveKey) -> bool {
+/// `WakeObjectivesOnTransition`), where the list spelled beside the key is
+/// the one index list, and `AnimationStates`, where the spelled list is the
+/// operand list the evaluator's descriptor walk reads — so its length is the
+/// list's, not an arity. Carrying it as one `Value::List` keeps a long list
+/// (M02's nine-index kill sites, M04's eighteen-operand animation sites)
+/// inside the host-call bound without raising it. A bare site has no list
+/// and carries none.
+fn takes_list_argument(key: &MeasuredDirectiveKey) -> bool {
     matches!(
         key.disposition(),
         DirectiveDisposition::Measured(directive) if matches!(
@@ -488,6 +493,7 @@ fn takes_index_list(key: &MeasuredDirectiveKey) -> bool {
                 | MeasuredOperation::SleepObjectives
                 | MeasuredOperation::KillObjectives
                 | MeasuredOperation::WakeObjectivesOnTransition
+                | MeasuredOperation::AnimationStates
         )
     )
 }
@@ -500,7 +506,7 @@ fn signatures_for(key: &MeasuredDirectiveKey) -> Vec<Vec<ArgDomain>> {
     for (shape, _) in &key.shapes {
         let signature = match shape {
             DirectiveShape::Bare => Vec::new(),
-            DirectiveShape::Arguments(args) if takes_index_list(key) => {
+            DirectiveShape::Arguments(args) if takes_list_argument(key) => {
                 vec![ArgDomain::List(args.iter().map(arg_domain).collect())]
             }
             DirectiveShape::Arguments(args) => args.iter().map(arg_domain).collect(),

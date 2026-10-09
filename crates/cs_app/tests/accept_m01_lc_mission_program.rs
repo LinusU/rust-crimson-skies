@@ -333,18 +333,18 @@ fn accept_m01_lc_a_bare_directive_is_not_read_as_carrying_the_next_key() {
     );
 }
 
-/// A nested argument list is measured as nested, carried as a nested
-/// `Value::List` through the bound call, and — when the descriptor it spells is
-/// not the measured `ANIM` spec grammar — refused by the condition lowerer,
-/// which names the block and the key. Flattening it into a positional
-/// `Vec<Value>` would be a format change presented as a binding — so the key's
-/// *measured* effect does not launder the shape: the disposition says what the
-/// original does and the lowering reports exactly what the attempt produced.
+/// A nested argument list is measured as nested and carried nested: the
+/// spelled operand list is one `Value::List` argument on the bound call, in
+/// declared order, never flattened into a positional `Vec<Value>` — a format
+/// change presented as a binding. The same list is what the condition walk
+/// reads: this site's operands hold no `ANIM` tag, so the measured walk
+/// appends no pair and the block's one evaluator arms with an empty list —
+/// the original's own behaviour for a selected `ANIM_STATE` with no
+/// resolvable descriptor, not a refusal.
 #[test]
 fn accept_m01_lc_a_nested_argument_shape_is_named_and_never_flattened() {
-    // `ANIM_STATE`'s measured M01 shape: the `ANIM` tag beside a spec record.
-    // This site's spec does not match the measured `NAME`/`STATE` pair
-    // grammar, so the condition lowerer refuses it by name while the call
+    // A shape M01's ANIM_STATE sites do not spell: a bare text beside a list,
+    // with no ANIM tag. The walk appends no pair (required 0), and the call
     // still binds — the nested shape is carriable either way.
     let document = control_record(vec![block(
         1,
@@ -382,39 +382,40 @@ fn accept_m01_lc_a_nested_argument_shape_is_named_and_never_flattened() {
         other => panic!("a measured key is Measured, got {other:?}"),
     }
 
-    // The call binds with the list nested — the IR carries `Value::List` — and
-    // the condition refuses the spec content, naming the block and the key.
+    // The call binds with the spelled list carried as the one list argument —
+    // the IR holds `Value::List` — and the condition lowers to the measured
+    // zero-pair evaluator.
     let attempt = lowered.attempt();
     assert_eq!(attempt.calls, [CallOutcome::Bound]);
     assert_eq!(
         lowered.raw_program().expect("assembled").objectives[0].calls[0].args,
-        [
+        [cs_script::ir::Value::List(vec![
             cs_script::ir::Value::Str("wv_tailhook".to_owned()),
             cs_script::ir::Value::List(vec![cs_script::ir::Value::Str("x".to_owned())]),
-        ],
-        "the bound call carries the nested argument verbatim"
+        ])],
+        "the bound call carries the operand list as its one argument, verbatim"
     );
     assert!(
-        matches!(&attempt.conditions[0], ConditionOutcome::Refused(field)
-            if field.contains("OBJECTIVE1") && field.contains("ANIM_STATE")),
-        "the refused spec names its block and key: {:?}",
+        matches!(&attempt.conditions[0], ConditionOutcome::Lowered),
+        "no ANIM tag means the walk arms the evaluator with no pair: {:?}",
         attempt.conditions
     );
-    let lowering = record.lowering(attempt);
-    let condition = lowering
-        .requirements()
-        .iter()
-        .find(|row| row.kind == LoweringRequirementKind::ObjectiveCondition)
-        .expect("the condition row exists");
+    let raw = lowered.raw_program().expect("the program assembled");
     assert!(
-        condition
-            .unmeasured_fields
-            .iter()
-            .any(|field| field.contains("ANIM_STATE")),
-        "the condition row names the refused evaluator: {:?}",
-        condition.unmeasured_fields
+        matches!(
+            &raw.objectives[0].condition,
+            cs_script::ir::Condition::All(items)
+                if items.iter().any(|item| matches!(item,
+                    cs_script::ir::Condition::AnimationStates { required, animations }
+                        if *required == 0 && animations.is_empty()))
+        ),
+        "the armed evaluator is the measured empty-pairs one: {:?}",
+        raw.objectives[0].condition
     );
-    assert!(!record.is_complete(attempt));
+    assert!(
+        record.is_complete(attempt),
+        "nothing refuses: the record completes"
+    );
 }
 
 /// Sites that disagree about a key's argument shape are both kept, and the
