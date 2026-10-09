@@ -393,6 +393,68 @@ tree.
 | `cargo test --locked --test campaign -- accept_m04_b_ --include-ignored` | 0 (8 tests) |
 | `python3 tools/validate_evidence.py … --require-pass` (both reports) | 0 (`structurally_valid`) |
 
+## Review round 3 (Rally #808): second landing conflict
+
+Rally's lander could not rebase the approved head `8fd7ce5f` onto `main`
+("rebase conflict with main; a reviewer must rebase it by hand") thirty
+seconds after it was approved, so this round rebased the stack by hand a
+second time, onto `origin/main` `9bd2a2a5` (M02-B-FU3 and the M01-LC
+zeppelin-attitude work had landed since).
+
+Reviewer: `bunny-alpha-2/bunny-alpha-2`, Rally review claim of
+2026-10-09T06:42Z, a fresh session with no access to any implementer's
+conversation and a different agent instance and model from both implementers
+— an agent review of code and tests only, not original-run evidence and not
+`human_play`; no agent review replaces the owner's human approval.
+
+### How the conflict was resolved
+
+The 20 commits (approved M02-B-FU2 head plus this task) replayed onto
+`origin/main`; git stopped once, in `crates/cs_app/tests/campaign/evidence.rs`
+and `main.rs`, the two files `main` had also grown. Resolving that stop by
+taking this stack's side would drop `main`'s M02-B-FU3 content, so the union
+was rebuilt explicitly and committed on top:
+
+* `main`'s delta over the previous base in those two files is **pure
+  addition** (`git diff --stat`: 296 insertions, 0 deletions — one `use`
+  line, a 282-line M02-B-FU3 block of `RETAIL_TESTS_M02_B_FU3`,
+  `SYNTHETIC_TESTS_M02_B_FU3`, `evidence_report_m02_b_fu3_*`,
+  `parse_m02_b_fu3_suite` and `address_record`, the 12-line module-doc
+  paragraph, `mod m02_b_fu3;`);
+* that delta was re-applied onto this stack's files, giving 297 insertions
+  and **0 deletions** relative to this stack's head — nothing of either side
+  was lost, and `git diff origin/main HEAD --name-only` is exactly this
+  task's ten files;
+* afterwards: no conflict marker anywhere in the tree, every `RETAIL_*` /
+  `parse_*` / `evidence_report_*` symbol defined exactly once, both suites'
+  module-doc paragraphs and `mod m02_b_fu2;` / `mod m02_b_fu3;` present, and
+  `cargo fmt --all -- --check` clean.
+
+### Evidence regenerated on this tree
+
+Both committed copies were regenerated on `candidate_tree`
+`b8aad467…` — the tree of the union commit `d39a6b60`, i.e. what `HEAD`
+carried while the suites ran and the tree before this document's own commit —
+by re-running each
+acceptance selection and its harness with `CS_EVIDENCE_REVIEWER` naming who
+re-ran it: `bunny-alpha-2/bunny-alpha-2`, the same re-run identity as round 2,
+recording that this is the same suite re-run against the twice-rebased tree,
+not a new claim about the original work. Both validate with
+`tools/validate_evidence.py --require-pass` (`structurally_valid`, exit 0).
+
+### Checks run by this reviewer (rebased head, clean tree)
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 (476 test binaries) |
+| `cargo test --workspace --locked -- accept_record_objectives_sound_ --include-ignored` | 0 (3 tests) |
+| `cargo test --workspace --locked -- accept_m02_b_ --include-ignored` | 0 (21 tests: `m02_b`, `m02_t3`, `m02_b_fu2`, `m02_b_fu3`) |
+| `cargo test --workspace --locked -- accept_m03_b_ --include-ignored` | 0 (8 tests) |
+| `cargo test --workspace --locked -- accept_m04_b_ --include-ignored` | 0 (8 tests) |
+| `python3 tools/validate_evidence.py … --require-pass` (both reports) | 0 (`structurally_valid`) |
+
 ## Sources
 
 `$CS_GAME_DIR` read-only through `cs_assets::install::discover` and
