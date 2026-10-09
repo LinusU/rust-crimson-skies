@@ -181,9 +181,11 @@ requirements are unmet (M03 had one):
      `MAX_CALL_ARGS` (8). Block 60's five-record site spells **10**
      arguments, so the whole key fails registration and all nine sites —
      including the two-argument ones — refuse as `unknown host call`. This is
-     the shape-bound gap M02-B-FU1 (#800, approved) filed; #800's fix carries
-     objective-index list directives as one list argument and does not touch
-     ANIM_STATE's tag/spec pairs, so M07 stays refused until #806 lands.
+     the shape-bound gap M02-B-FU1 (#800) filed; #800's fix, which landed on
+     main while this branch was in progress, carries objective-index list
+     directives as one list argument and does not touch ANIM_STATE's tag/spec
+     pairs — the whole `accept_m07_b_` suite re-ran green on the rebased tree
+     and M07's pins are unchanged — so M07 stays refused until #806 lands.
 2. **`DANGER_ZONES_COMPLETED` — filed here as M07-B-FU1 (#813).**
    Blocks 37, 39 and 41 spell `DANGER_ZONES_COMPLETED [dzpath8/dzpath2/dzpath3]`
    and the condition lowering refuses each with "the danger-zones flag
