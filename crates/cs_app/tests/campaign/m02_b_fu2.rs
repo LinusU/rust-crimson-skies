@@ -248,7 +248,7 @@ fn accept_m02_b_fu2_m02s_five_record_sound_keys_are_measured_with_their_consumer
             RecordSoundConsumer::ObjectiveCompletion { class: 2 },
         ),
         (
-            ControlRecordSound::TertiarComplete,
+            ControlRecordSound::TertiaryComplete,
             RecordSoundConsumer::ObjectiveCompletion { class: 3 },
         ),
         (
@@ -444,7 +444,7 @@ fn accept_m02_b_fu2_the_image_parses_and_consumes_each_sound_key_where_productio
         let key = match class {
             1 => ControlRecordSound::PrimaryComplete,
             2 => ControlRecordSound::SecondaryComplete,
-            _ => ControlRecordSound::TertiarComplete,
+            _ => ControlRecordSound::TertiaryComplete,
         };
         let Some(RecordSoundDisposition::Measured(measured)) = record_sound_disposition(key.key())
         else {

@@ -549,7 +549,7 @@ fn accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key() {
         [
             (ControlRecordSound::PrimaryComplete, 1),
             (ControlRecordSound::SecondaryComplete, 1),
-            (ControlRecordSound::TertiarComplete, 1),
+            (ControlRecordSound::TertiaryComplete, 1),
             (ControlRecordSound::MissionWon, 1),
             (ControlRecordSound::MissionLost, 1),
         ],

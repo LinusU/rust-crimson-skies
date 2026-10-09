@@ -1607,7 +1607,7 @@ pub enum ControlRecordSound {
     /// `SECONDARY_COMPLETE_SOUND` — class 2.
     SecondaryComplete,
     /// `TERTIARY_COMPLETE_SOUND` — class 3.
-    TertiarComplete,
+    TertiaryComplete,
     /// `MISSION_WON_SOUND` — the mission-end sound of the won branch.
     MissionWon,
     /// `MISSION_LOST_SOUND` — the mission-end sound of the lost branch.
@@ -1619,7 +1619,7 @@ impl ControlRecordSound {
     pub const ALL: [ControlRecordSound; 5] = [
         Self::PrimaryComplete,
         Self::SecondaryComplete,
-        Self::TertiarComplete,
+        Self::TertiaryComplete,
         Self::MissionWon,
         Self::MissionLost,
     ];
@@ -1630,7 +1630,7 @@ impl ControlRecordSound {
         match self {
             Self::PrimaryComplete => "PRIMARY_COMPLETE_SOUND",
             Self::SecondaryComplete => "SECONDARY_COMPLETE_SOUND",
-            Self::TertiarComplete => "TERTIARY_COMPLETE_SOUND",
+            Self::TertiaryComplete => "TERTIARY_COMPLETE_SOUND",
             Self::MissionWon => "MISSION_WON_SOUND",
             Self::MissionLost => "MISSION_LOST_SOUND",
         }
@@ -1643,7 +1643,7 @@ impl ControlRecordSound {
         match key {
             "PRIMARY_COMPLETE_SOUND" => Some(Self::PrimaryComplete),
             "SECONDARY_COMPLETE_SOUND" => Some(Self::SecondaryComplete),
-            "TERTIARY_COMPLETE_SOUND" => Some(Self::TertiarComplete),
+            "TERTIARY_COMPLETE_SOUND" => Some(Self::TertiaryComplete),
             "MISSION_WON_SOUND" => Some(Self::MissionWon),
             "MISSION_LOST_SOUND" => Some(Self::MissionLost),
             _ => None,
