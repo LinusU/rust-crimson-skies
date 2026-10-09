@@ -423,9 +423,10 @@ fn accept_vs_m01_runtime_retail_launch_is_refused_with_source_diagnostics() {
     };
     assert!(!plan.launchable());
     let text = error.to_string();
-    for surface in ["world_geometry"] {
-        assert!(text.contains(surface), "{surface} is named: {text}");
-    }
+    assert!(
+        text.contains("world_geometry"),
+        "world_geometry is named: {text}"
+    );
     for satisfied in ["mission_program", "mission_animations", "world_actors"] {
         assert!(
             !text.contains(&format!("  {satisfied}:")),

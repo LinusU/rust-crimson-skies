@@ -689,9 +689,7 @@ fn apply_turret_records(root: &ZrdValue, lookup: &mut AllegianceLookup<'_>) {
 fn team_int(value: &ZrdValue) -> Option<i64> {
     match value {
         ZrdValue::Int(team) => Some(i64::from(*team)),
-        ZrdValue::List(children) if children.len() == 1 => {
-            children[0].as_int().map(|team| i64::from(team))
-        }
+        ZrdValue::List(children) if children.len() == 1 => children[0].as_int().map(i64::from),
         _ => None,
     }
 }
