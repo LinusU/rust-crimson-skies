@@ -47,8 +47,16 @@ fn private_dir(name: &str) -> PathBuf {
 }
 
 fn scene_with(decal_offset: bool) -> (App, PlaytestScene) {
+    // The skull view is #753's `t4d20z0`, defined against the area's measured
+    // extent as main drew it at `1c50a74e`: with #795's landing cards still in
+    // it (their 500 m tail sets the z centre). Hiding them moves the centre
+    // 130 m forward and the same recipe then frames a different stretch of
+    // hull (measured: the emblem footprint halves and the coplanar fight does
+    // not show), so this scene keeps the cards drawn — they are untextured
+    // and carry no decal.
     let config = PlaytestConfig {
         decal_offset,
+        hide_flat_colour_cards: false,
         ..PlaytestConfig::documented()
     };
     let sources =
