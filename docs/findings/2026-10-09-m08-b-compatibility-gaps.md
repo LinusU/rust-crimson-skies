@@ -4,11 +4,15 @@ Date: 2026-10-09. Task: M08-B "Implement and regress mission-specific
 compatibility gaps" (#280, `missions/M08.md`, work order `M08-B`).
 Shared contract: `docs/contracts/SCRIPT-MISSION.md`. Capabilities used:
 `retail` (`$CS_GAME_DIR` read-only, never written) and `synthetic` (newly
-authored `.zrd` values). Implementer: **bunny-alpha-2** (Rally #280, session
-of 2026-10-09T02:22Z). Reviewer: whoever reviews the branch — the evidence
-report's `review.identity` is read at run time from `CS_EVIDENCE_REVIEWER`,
-so each agent writes its own; no agent review replaces the owner's human
-approval.
+authored `.zrd` values). Implementer: **bunny-alpha-2/bunny-alpha-2** (Rally
+#280, session of 2026-10-09T02:22Z). Reviewer:
+**bunny-alpha-1/bunny-alpha-1** (Rally review claim of 2026-10-09T05:38Z, a
+different agent instance with fresh context). That review is independent of
+the implementation, but it is an agent review of the code and the tests: it
+is not independent original-reference evidence and not original-run
+evidence, and no agent review replaces the owner's human approval. The
+evidence report's `review.identity` is read at run time from
+`CS_EVIDENCE_REVIEWER`, so each agent writes its own.
 
 The stage's minimum acceptance scenario is *"All discovered mission-specific
 behavior uses production engine systems and regression tests."* It holds for
@@ -257,6 +261,69 @@ against each other. The retail tests are `#[ignore = "requires CS_GAME_DIR"]`
 | `cargo test --workspace --locked` | 0 |
 | `cargo test --workspace --locked -- accept_m08_b_ --include-ignored` | 0 (7 tests) |
 | `python3 tools/validate_evidence.py private/evidence/M08-B/acceptance.json --artifact-root private/evidence/M08-B --require-pass` | 0 (`structurally_valid: true`) |
+
+## Review
+
+Reviewed by **bunny-alpha-1/bunny-alpha-1** on 2026-10-09 in a fresh session
+(a different agent instance from the implementer `bunny-alpha-2`), against
+`missions/M08.md` (`M08-B`), `docs/contracts/SCRIPT-MISSION.md`,
+`docs/contracts/CLI-EVIDENCE.md`, `AGENTS.md` and the diff. Review is
+independent of the implementation; it is an agent review of the code and
+tests, not independent original-reference evidence and not original-run
+evidence.
+
+- Rebased onto `origin/main` (`32b9d823`) with one conflict: `main`'s M04-B
+  doc paragraph and this stage's paragraph in
+  `crates/cs_app/tests/campaign/main.rs` were inserted at the same place.
+  Both were kept, and this stage's paragraph — which still described the
+  pre-#800 state ("**both** measured gaps", naming the host-call-bound
+  `KILL_…` sites as open) — was corrected to what the tests assert now: all
+  209 sites bind, and the eight danger-zones completion conditions (#813)
+  are the one gap that keeps M08's record from lowering. That is a doc
+  correction inside an owner path; no test or assertion changed.
+- Main moved under the branch by M04-B, M10-B and the `CS_ENGINE_IMAGE`
+  rename. Checked for interaction with this stage's pins:
+  `crates/cs_script/src/conditions.rs` still refuses
+  `DANGER_ZONES_COMPLETED` (so the gap pin holds), the branch changes no
+  `Cargo.toml`/`Cargo.lock`, and apart from that one doc paragraph no file
+  the branch touches is touched by those landings.
+- Checks on that rebased tree (2026-10-09, `0ef3046a`): `cargo fmt --all --
+  --check` (0), `cargo clippy --workspace --all-targets --all-features
+  --locked -- -D warnings` (0), `cargo test --workspace --locked` (0: 474
+  `test result: ok` lines, no failure), `cargo test --workspace --locked --
+  accept_m08_b_ --include-ignored` (0: **7 discovered, 7 executed, 7 passed,
+  0 failed, 0 ignored**, tee'd to `private/evidence/M08-B/cargo-test.log`).
+- Two mutation probes, each applied alone, run and reverted, with the
+  selection re-run green and the tree clean afterwards:
+
+  | Mutation | Result |
+  | --- | --- |
+  | `MAX_CALL_ARGS` 8 → 16 (`cs_script::bindings`) | 1 of 7 fails: `accept_m08_b_the_danger_zones_condition_is_the_gap_that_keeps_m08_unlowered` (its `10 > MAX_CALL_ARGS` proof of #800's shaping) |
+  | `control_member`'s measured rule → first member offered (`cs_content::mission_control`) | 5 of 7 fail (only the two synthetic tests pass) |
+
+  So the retail pins are the tests that notice a broken derivation, and the
+  CI-covered synthetic pair carries the two lowering mechanisms without
+  original data.
+- Evidence regenerated from that run with the recipe in the `evidence.rs`
+  header (step 1 tee, step 2 harness with `CS_EVIDENCE_REVIEWER` naming this
+  review), written to `private/evidence/M08-B/acceptance.json` and validated
+  with `tools/validate_evidence.py … --require-pass` (exit 0,
+  `structurally_valid: true`). The committed copy in
+  `docs/findings/evidence/M08-B.json` is that file; against the implementer's
+  copy only `candidate_tree` (the tree of the commit this review landed in;
+  the report copy itself is the later delta the report's `review.method`
+  declares), `created_at`, `command.cwd`, this run's `cargo-test.log`
+  artifact hash, the assertion order and `review.identity` — which now
+  names the reviewer instead of the hand-over note — differ;
+  `m08-control-program.json` hashes identically, so the second production
+  observation of M08's control program is byte-identical across the two runs.
+  `python3 -m unittest discover -s tools/tests -p 'test_evidence_review_identity.py'`
+  → 27 tests, OK (M08-B has no Rally review snapshot entry yet, so its
+  implementer/reviewer pair stays an advisory note there, as the reader
+  documents).
+- No protected path, no original data and no binary file changed: the branch
+  carries the two test files, the `mod m08_b;` + doc wiring in `main.rs`,
+  this finding and the evidence copy.
 
 ## Recorded unknowns (not guessed)
 
