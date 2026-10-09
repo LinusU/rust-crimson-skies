@@ -99,8 +99,11 @@ three, all green, with `CS_GAME_DIR` set. The full workspace suite, `cargo fmt
 * `docs/findings/evidence/T797.json` — regenerated on this branch with
   `level_off_command_47` **resolved and removed** (its harness
   `evidence_report_flight_original_playtest.rs` no longer carries the entry;
-  the other four T797 unknowns are unchanged). The T797 acceptance suite was
-  re-run green over the installation to produce the new log.
+  `#1135` had already resolved `scripted_smoke_path` the same way, so the
+  regenerated report carries the three still-open unknowns —
+  `player_spawn_speed`, `roll_axis_sign` and `law_calibration`). The T797
+  acceptance suite was re-run green over the installation to produce the new
+  log.
 
 Nothing here is `verified_original`: the law and its parameters remain static
 evidence under `OWNER-STATIC-2026-10-08`, still uncalibrated against an
