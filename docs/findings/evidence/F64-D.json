@@ -1,105 +1,19 @@
 {
-  "schema_version": 1,
-  "task_id": "F64-D",
-  "candidate_tree": "ba4b650f5b51370a6998fe3c599aa1ce07f37e61",
-  "engine": {
-    "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
-    "bevy": "0.19.1",
-    "avian": "0.7.0"
-  },
-  "created_at": "2026-10-08T16:41:42Z",
-  "command": {
-    "argv": [
-      "cargo",
-      "test",
-      "--workspace",
-      "--locked",
-      "--",
-      "accept_f64_d_",
-      "--include-ignored"
-    ],
-    "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-2",
-    "exit_code": 0
-  },
-  "source": {
-    "install_sha256": "c14a876f4457d8710dee7986333ab636122c9549cf72b646fd69cbe7e72c5352",
-    "content_sha256": "148a24b7b0506812e8f1ee13d8d3137a05926abebbe10161994e8c4cd300c35e"
-  },
-  "seed": 0,
-  "ticks": {
-    "start": 0,
-    "end": 0
-  },
-  "overrides": [],
-  "capabilities": [
-    "retail",
-    "synthetic"
-  ],
-  "tests": {
-    "discovered": 5,
-    "executed": 5,
-    "passed": 5,
-    "failed": 0,
-    "ignored": 0
-  },
-  "assertions": [
-    {
-      "id": "accept_f64_d_the_named_switch_is_the_declared_profile_setting",
-      "status": "pass",
-      "evidence": [
-        "cargo-test.log",
-        "switch-trace.json"
-      ]
-    },
-    {
-      "id": "accept_f64_d_the_switch_is_consulted_before_the_missing_layout_capability",
-      "status": "pass",
-      "evidence": [
-        "cargo-test.log",
-        "switch-trace.json"
-      ]
-    },
-    {
-      "id": "accept_f64_d_optional_save_migration_can_be_disabled_while_new_campaigns_still_work",
-      "status": "pass",
-      "evidence": [
-        "cargo-test.log",
-        "switch-trace.json"
-      ]
-    },
-    {
-      "id": "accept_f64_d_retail_the_custom_aircraft_reference_resolves_to_the_shipped_construction_screen",
-      "status": "pass",
-      "evidence": [
-        "cargo-test.log",
-        "switch-trace.json"
-      ]
-    },
-    {
-      "id": "accept_f64_d_retail_optional_saves_are_switchable_and_no_shipped_file_reaches_a_report",
-      "status": "pass",
-      "evidence": [
-        "cargo-test.log",
-        "switch-trace.json"
-      ]
-    }
-  ],
-  "artifacts": [
-    {
-      "path": "cargo-test.log",
-      "sha256": "71687f53becacb186c0ff351a69ea66793ab532bb7ca2655defafea036055bac",
-      "kind": "log"
-    },
-    {
-      "path": "switch-trace.json",
-      "sha256": "55925a9f402f1dfe529f3b57f61eea40b3f41ee89197d1961ecdc547d344a3ce",
-      "kind": "json"
-    }
-  ],
-  "unknowns": [],
-  "review": {
-    "identity": "bunny-alpha-2 reviewer run, fresh session context, rebased commit 676fe307",
-    "method": "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES includes retail); this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run of the F64-D boundary (switch-trace.json). Claim is implemented only. MEASURED: 229 inventoried files, 179 of them within the 4 MiB designed import cap and 50 refused at the proposal constructor; 1 recorded original-content references resolve to shipped members in this installation (1 resolved), and 0 shipped files match the runtime-created save/plane shapes (none ship, so no original byte layout has been read). The optional-save switch is declared once as the profile setting cs.profile.legacy_save_import with default on: one transaction through the production profile store took it from that default to a committed off that a reopened session reads back (persisted: true) while the same profile's campaign run kept working (run committed and read back: true). CONSUMER BEHAVIOUR (production code over this installation): with the switch off, 179 save-class offers were declined with enhancement_disabled naming the switch before any byte was judged; with it on, 179 fell through to no_measured_layout because this build has measured no byte layout for any class; 1 offer of the required custom-aircraft class with the switch off was answered by that same missing capability, so the switch never stands in front of a required class. Nothing was written: the probe destination is byte-for-byte unchanged and every offered source re-reads identically. FIDELITY LIMITS (unmeasured original behaviour, none claimed by this report): (1) no legacy save or custom-plane file ships and none has ever been read, so the byte layout, version field and id encoding of an original artifact remain UNKNOWN \u2014 affected content: every legacy import row (resolving task: a follow-up that captures an original-run file); (2) the original executable was never run, so nothing here says how the original game itself treats a custom aircraft or an old save \u2014 affected content: original runtime behaviour (resolving task: a capture-protocol follow-up); (3) the front-end dialog that draws these refusals and the persistence of a confirmed import are outside this stage's owner paths \u2014 affected content: the visible screen and the imported profile's storage (resolving tasks: #757 and #756). `unknowns` is empty because every measurement THIS report made resolved: the reference resolution, the setting transaction, the refusal census and the untouched destination all resolved against this installation and against production code. Each unresolved original value above is a limit on the claim rather than an unresolved row of this report; it is stated in this field so it survives in machine-readable evidence and is recorded in docs/findings/2026-10-08-f64-d-verify-custom-aircraft-and-optional-saves.md. A code/test pass alone awards at most checked, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."
-  },
-  "claim": "implemented"
+ "schema_version": 1,
+ "task_id": "F64-D",
+ "candidate_tree": "c14259c2aafd3464875eb45868cc716bda22c34a",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-09T14:20:24Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f64_d_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 5, "executed": 5, "passed": 5, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f64_d_the_named_switch_is_the_declared_profile_setting", "status": "pass", "evidence": ["cargo-test.log", "switch-trace.json"]}, {"id": "accept_f64_d_the_switch_is_consulted_before_the_missing_layout_capability", "status": "pass", "evidence": ["cargo-test.log", "switch-trace.json"]}, {"id": "accept_f64_d_optional_save_migration_can_be_disabled_while_new_campaigns_still_work", "status": "pass", "evidence": ["cargo-test.log", "switch-trace.json"]}, {"id": "accept_f64_d_retail_the_custom_aircraft_reference_resolves_to_the_shipped_construction_screen", "status": "pass", "evidence": ["cargo-test.log", "switch-trace.json"]}, {"id": "accept_f64_d_retail_optional_saves_are_switchable_and_no_shipped_file_reaches_a_report", "status": "pass", "evidence": ["cargo-test.log", "switch-trace.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "68694760b6f760eb3066d38fb3560f4a2d02bf0a56a51eacf643194d6c22cd05", "kind": "log"}, {"path": "switch-trace.json", "sha256": "19227ffab5815d513785bd9130b4482ca2406513548c0a495ba5ad4beb9bbdfd", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "bunny-alpha-2 reviewer run, fresh session context, rebased commit 676fe307 | Regeneration for Rally #804 on 2026-10-09 by bunny-alpha-2/bunny-alpha-2: this task's evidence sequence was re-run on the post-#798 tree (the engine image is no longer part of the installation inventory), so only source.install_sha256/content_sha256 and the image's location wording changed; the implementer and reviewer claims recorded above stand as they were written.", "method": "Acceptance suite run locally with the retail capability (CS_GAME_DIR set, CS_CAPABILITIES includes retail); this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run of the F64-D boundary (switch-trace.json). Claim is implemented only. MEASURED: 228 inventoried files, 178 of them within the 4 MiB designed import cap and 50 refused at the proposal constructor; 1 recorded original-content references resolve to shipped members in this installation (1 resolved), and 0 shipped files match the runtime-created save/plane shapes (none ship, so no original byte layout has been read). The optional-save switch is declared once as the profile setting cs.profile.legacy_save_import with default on: one transaction through the production profile store took it from that default to a committed off that a reopened session reads back (persisted: true) while the same profile's campaign run kept working (run committed and read back: true). CONSUMER BEHAVIOUR (production code over this installation): with the switch off, 178 save-class offers were declined with enhancement_disabled naming the switch before any byte was judged; with it on, 178 fell through to no_measured_layout because this build has measured no byte layout for any class; 1 offer of the required custom-aircraft class with the switch off was answered by that same missing capability, so the switch never stands in front of a required class. Nothing was written: the probe destination is byte-for-byte unchanged and every offered source re-reads identically. FIDELITY LIMITS (unmeasured original behaviour, none claimed by this report): (1) no legacy save or custom-plane file ships and none has ever been read, so the byte layout, version field and id encoding of an original artifact remain UNKNOWN — affected content: every legacy import row (resolving task: a follow-up that captures an original-run file); (2) the original executable was never run, so nothing here says how the original game itself treats a custom aircraft or an old save — affected content: original runtime behaviour (resolving task: a capture-protocol follow-up); (3) the front-end dialog that draws these refusals and the persistence of a confirmed import are outside this stage's owner paths — affected content: the visible screen and the imported profile's storage (resolving tasks: #757 and #756). `unknowns` is empty because every measurement THIS report made resolved: the reference resolution, the setting transaction, the refusal census and the untouched destination all resolved against this installation and against production code. Each unresolved original value above is a limit on the claim rather than an unresolved row of this report; it is stated in this field so it survives in machine-readable evidence and is recorded in docs/findings/2026-10-08-f64-d-verify-custom-aircraft-and-optional-saves.md. A code/test pass alone awards at most checked, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
 }
