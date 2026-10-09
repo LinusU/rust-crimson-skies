@@ -976,16 +976,18 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
 /// start — arm a timed self-wake, so neither latch can fire on its own clock.
 ///
 /// The address walk covers 107 spelled integers — 25 wake, 47 kill and 35 nap
-/// — and every one lies in `1..=82`. Two of them make the record's addressing
-/// **measurable rather than assumed**: block 67 spells `82`, the block count
-/// itself (an in-range value only if the spelled number is the block number,
-/// which the parse measurement says — the payload is `dec`'d into a zero-based
-/// array — while an index reading would make it a dangling `82`th index), and
-/// **nothing spells `50`** although block 50 naps `51`, so the index reading
-/// would leave M06's failure latch with no incoming edge at all. The two
-/// latches' completion edges are pinned below under the block-number reading;
-/// the contrary reading in two sibling suites is filed as **M06-B-FU3** (#819)
-/// rather than resolved here.
+/// — and every one lies in `1..=82`. The addressing itself is not assumed
+/// here: M02-B-FU3 (#802) measured the original's parse decrementing every
+/// objective address before storing it, so a spelled number **is** the block
+/// number, and `cs_sim::objectives::address` implements that rule
+/// (`[1, objectives]`, mapping to index `address - 1`). Two values of M06's
+/// record discriminate the readings and both agree with the measured rule:
+/// block 67 spells `82`, the block count itself (the last block, in range — an
+/// index reading would call it dangling), and **nothing spells `50`** although
+/// block 50 naps `51`, so the failure latch has the completion edge the
+/// block-number reading gives it. The two latches' edges are pinned below;
+/// the one sibling suite that still reads an address as an index is held by
+/// **M06-B-FU3** (#819), not edited here.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {

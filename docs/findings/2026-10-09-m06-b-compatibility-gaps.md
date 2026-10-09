@@ -165,25 +165,34 @@ fire on its own clock; 18 blocks carry no marker at all and are entered
 through a predecessor's edge. The address walk visits 107 spelled integers —
 25 wake, 47 kill, 35 nap, no gate key — and every one lies in `1..=82`.
 
-Two of them make the record's addressing **measurable rather than assumed**,
-and this stage records the discrepancy they expose instead of resolving it:
+Two values of the record make its addressing **measurable rather than
+assumed**; they were the discriminators while this stage was still in flight,
+and during that window M02-B-FU3 (#802) settled the rule by measurement:
 
 - block 67 spells `82`, the block count itself. Under the block-number reading
-  (`docs/findings/2026-10-08-m03-b-control-program-gaps.md`: the payload is
-  `dec`'d into a zero-based array at parse, so the spelled number *is* the
-  block) it is the last block and in range; under the index reading
-  (`crates/cs_app/tests/campaign/m02_b.rs` and `m04_b.rs`) index 82 would be
+  it is the last block and in range; under an index reading index 82 would sit
   past the end of an 82-element array;
 - **nothing spells `50`**, although block 50 naps `51`. Under the block-number
-  reading the failure latch has exactly one completion edge; under the index
+  reading the failure latch has exactly one completion edge; under an index
   reading its predecessor-less number would leave `INSTANTLOSS` unreachable
   and M06 with no failure path at all.
 
-Both readings cannot be right, and two merged suites assert one while two
-assert the other. This stage pins the *facts* (who spells which number, the
-range walk, the two discriminators above) under the block-number reading,
-states both readings in the test's doc comment, and files the reconciliation
-as **M06-B-FU3** (#819) rather than editing suites it does not own.
+M02-B-FU3 read the original's parse out of the decrypted executable and found
+the `dec` (`0x468c40` for the wake array, `0x468cf0` for a nap's target,
+`0x4679fc` for the dependency gate) that decrements every objective address
+before storing it — with `DEDG`'s two integers and the nap's seconds stored
+*without* it as the controls — so **a spelled address is the one-based block
+number**, exactly what M06's two discriminators require, and the engine-side
+rule now lives in `crates/cs_sim/src/objectives/address.rs` (`[1, objectives]`,
+mapping to index `address - 1`). This stage's pins therefore agree with the
+landed measurement, and the test's doc comment cites it rather than asserting
+a convention of its own.
+
+One inconsistency remains and is **not** this stage's to edit:
+`crates/cs_app/tests/campaign/m04_b.rs` still reads an address as a zero-based
+index (`incoming(target)` matches `addresses.contains(&(target - 1))`), which
+the settled rule contradicts. That is the narrowed scope of **M06-B-FU3**
+(#819); M02-B's own pin was reconciled by #802 itself.
 
 ## The M06-specific gap, and why it is not papered over
 
@@ -305,7 +314,10 @@ against each other. The retail tests are `#[ignore = "requires CS_GAME_DIR"]`
 Four mutations were applied one at a time on top of the committed branch,
 observed on `cargo test -p cs_app --test campaign accept_m06_b_ --
 --include-ignored` and reverted before the next; `git status --porcelain`
-after the last one was clean.
+after the last one was clean. They were run before this branch's two rebases,
+and neither rebase changed any of the three mutated files
+(`cs_content::mission_control`, `cs_script::bindings`,
+`cs_app::control_lowering`), so the results still describe this commit.
 
 | Mutation | Observed result |
 | --- | --- |
@@ -340,9 +352,11 @@ validated with `tools/validate_evidence.py --require-pass` and copied to
   directive carries a passenger. Where (if anywhere) that entity lives —
   another data file, an interaction record, or only a reference run — is
   **M06-B-FU2** (#818); nothing here assigns it a predicate.
-- **The objective-address reading disagrees between merged suites** (see
-  above): recorded here with both discriminators and filed as **M06-B-FU3** (#819);
-  neither sibling suite was edited.
+- **One sibling suite still reads an address as an index.** The rule itself is
+  no longer open: #802 measured the parse's decrement and this record's two
+  discriminators agree with it (above). `m04_b.rs`'s `incoming` pin does not,
+  and reconciling it is **M06-B-FU3** (#819); no suite other than this
+  stage's own was edited.
 - **The runtime halves of all three priorities are unobserved.** Whether the
   wrong actor, the wrong session or a repeated event can satisfy an engine
   threshold, a target-flag step or a passenger pickup is ordinary-play
@@ -371,6 +385,8 @@ validated with `tools/validate_evidence.py --require-pass` and copied to
 `docs/findings/2026-10-06-m01-lc-directive-c-ai-world-and-animation-directives.md`;
 `docs/findings/2026-10-08-m02-b-compatibility-gaps.md`;
 `docs/findings/2026-10-08-m03-b-control-program-gaps.md`;
+`docs/findings/2026-10-09-m02-b-fu3-out-of-range-wake-address.md`;
+`crates/cs_sim/src/objectives/address.rs`;
 `crates/cs_app/tests/campaign/m02_b.rs`;
 `crates/cs_app/tests/campaign/m03_b.rs`;
 `crates/cs_app/src/mission_control.rs`;
