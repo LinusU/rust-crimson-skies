@@ -89,7 +89,7 @@ specific to objective addresses rather than an encoding of every integer:
   `0x468d47`).
 
 So a spelled address `a` becomes record index `a − 1`: the record's own
-numbering is **one-based**. Two independent measurements agree:
+numbering is **one-based**. Three independent measurements agree:
 
 * **F39-E2's corpus closure** (`measure_block_precedence`,
   `crates/cs_app/src/objectives.rs`) found all 1706 retail targets inside the
@@ -100,6 +100,12 @@ numbering is **one-based**. Two independent measurements agree:
   `c1/m02`'s `50` sits exactly on its 50. Read one-based, every target is
   simply a block number, which is exactly what the check measured. The parse's
   `dec` above is what decides it; this only has to be consistent with it.
+* **M03-B's independent measurement, already on `main`**: every one of M03's
+  84 wake/kill/nap/gate addresses is in `1..=55` for its 55 blocks and *"the
+  spelled value is the block number"* (`docs/findings/2026-10-08-m03-b-control-program-gaps.md`,
+  pinned by `accept_m03_b_the_terminal_blocks_are_gated_and_every_address_is_in_range`
+  as `(1..=i64::from(BLOCKS)).contains(&address)`). That is the same rule this
+  task implements, measured on another mission by another stage.
 * **M02's own record**, re-read here through production code: every
   cross-objective address it spells lies in `[1, 50]`, none is `0`, and the
   address the findings name (`50`) resolves to record 49 — the block the record
@@ -310,6 +316,22 @@ So the three properties the rule claims — refuse out-of-range, resolve
 one-based, keep the count boundary in range — are each pinned by a test that
 fails when the implementation stops doing that.
 
+## Checks
+
+Run on this branch, rebased onto `origin/main` at `4003771a`:
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | **1** — exactly one test fails and it is **not this task's**: `cs_xtask`'s `accept_t430_b_ci_workflow_pins_line_tables_for_the_rust_job` requires `.github/workflows/ci.yml` to pin `CARGO_PROFILE_DEV_DEBUG: line-tables-only`, while main's `4003771a` ("Build CI test binaries without debug info") changed it to `0` + `STRIP: debuginfo`. Every other binary is green (451 `test result: ok`), and the contradiction is on main for every branch — the owner's own push run `37864407492` failed the same way and nothing has fixed it since. Filed as `CI-T430-DEBUG-PIN-CONTRADICTION` (#811); `.github/` is protected and this task does not touch it |
+| `cargo test --workspace --locked -- accept_m02_b_fu3_ --include-ignored` | 0 (3 tests: the two `cs_sim` synthetic arms and the `campaign` retail arm; recorded in the evidence report) |
+| `python3 tools/validate_evidence.py private/evidence/M02-B-FU3/acceptance.json --artifact-root private/evidence/M02-B-FU3 --require-pass` | 0 (`structurally_valid: true`) |
+
+The three mutation probes above were run between the workspace checks, each
+reverted before the next; the file was byte-identical to its saved copy after
+the last one.
+
 ## Residual unknowns (not guessed)
 
 1. **What the original observes past the count.** The walk executes
@@ -350,6 +372,8 @@ fails when the implementation stops doing that.
 `docs/findings/2026-10-06-m01-lc-directive-b-objective-lifecycle-target-semantics.md`;
 `docs/findings/2026-10-06-m01-lc-directive-a-objective-directive-parser.md`;
 `docs/findings/2026-10-03-f39-e2-block-completion-effect-precedence.md`;
+`docs/findings/2026-10-08-m03-b-control-program-gaps.md`;
 `crates/cs_app/src/objectives.rs` (`measure_block_precedence`);
 `crates/cs_app/src/control_lowering.rs`;
-`crates/cs_app/tests/campaign/m02_b.rs`.
+`crates/cs_app/tests/campaign/m02_b.rs`;
+`crates/cs_app/tests/campaign/m03_b.rs`.

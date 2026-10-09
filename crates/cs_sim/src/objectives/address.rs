@@ -35,7 +35,9 @@
 //!   is **one-based**, which is consistent with F39-E2's closure over all 1706
 //!   retail branch-effect targets (every one names a declared `OBJECTIVE<n>`
 //!   number, so none of them spells the `0` a zero-based reading would need to
-//!   reach a record's first block); the parse's `dec` is what decides it.
+//!   reach a record's first block) and with M03-B's own measurement that its
+//!   84 addresses are in `1..=55` and *"the spelled value is the block
+//!   number"*; the parse's `dec` is what decides it.
 //! * **The record holds one 0x5e4-byte record per numbered block**, appended in
 //!   document order (`0x467956` reallocates by `0x5e4` per block), and the
 //!   count field `+0xc48` is the block count (`0x469043` writes the block
