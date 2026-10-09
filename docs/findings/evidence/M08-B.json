@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M08-B",
+ "candidate_tree": "b1c7aaa20f877c3e86a65b51ef9a02a7ae9072dd",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-09T03:28:01Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m08_b_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 7, "executed": 7, "passed": 7, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m08_b_a_kill_site_over_the_host_call_bound_refuses_and_one_at_the_bound_binds", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_b_the_danger_zones_condition_refuses_while_a_measured_condition_lowers", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_b_the_measured_vocabulary_partitions_and_refuses_no_m08_key", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_b_the_block_graph_is_closed_under_the_records_own_numbering", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_b_both_lowering_gaps_are_named_and_the_campaign_gate_stays_closed", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_b_the_three_sheet_priorities_locate_in_the_measured_record", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_b_m08s_control_program_is_bound_to_the_same_identities_as_its_mission_binding", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "10b168e25525b6b3552841363aa5ed798b28bbe2514baa9002c6686defff5a9a", "kind": "log"}, {"path": "m08-control-program.json", "sha256": "11e3849d59799c021ae4d22d14497dbd86f9f4a44b0b143a4923180345f48a2e", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: bunny-alpha-2/bunny-alpha-2 (Rally #280, session of 2026-10-09T02:22Z); reviewer: bunny-alpha-2/bunny-alpha-2 — the implementing agent, running this harness at hand-over; this run is the implementer's own evidence, not a review (same agent identity as the implementer, so it is NOT independent review and no agent review replaces the owner's human approval); the branch's Rally reviewing agent writes its own report with its own CS_EVIDENCE_REVIEWER identity", "method": "acceptance suite run locally with the retail capability; every field is derived from the recorded log, production discovery of $CS_GAME_DIR and the control-program binding `SourceContext::control_program` derives from it (mission and program identities equal to the M08-A binding, the control member chosen by the measured rule over the archive's whole member set, the directive accounting of the member it spells). NOT CLAIMED: M08's control record does not lower — nineteen KILL_OBJECTIVE_WHEN_I_COMPLETE sites exceed the registry's per-signature bound and eight DANGER_ZONES_COMPLETED conditions are refused because this build lowers no predicate for them — so M08 stays Unsupported and the campaign gate stays closed; the wrong-actor, wrong-session and repeated-event halves of the sheet's three priorities are runtime observations and stay unmeasured (M08-C); no mission was played, no original executable was run and nothing is verified_original. Claim is implemented only; validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit the suite and this harness ran on; the only later delta is this report's own copy under docs/findings/evidence/ and the findings document that discusses it, neither of which the acceptance suite reads"},
+ "claim": "implemented"
+}
