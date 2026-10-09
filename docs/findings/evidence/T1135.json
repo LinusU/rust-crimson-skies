@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T1135",
+ "candidate_tree": "41fedd1643f57ecc458f2866224483f2c747a4c8",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-09T19:19:36Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_playtest_smoke_original_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_playtest_smoke_original_retail_script_reaches_the_original_area", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_playtest_smoke_original_candidate_matrix_justifies_the_spawn_and_the_script", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "e029d0af93ed713a9b7990c6a3810e6650d79fdd8a8edaa9ac425cb2e6d5259b", "kind": "log"}, {"path": "report.json", "sha256": "59df01da3be38ce896261aaf1e5de4a2fe42ca395c760d51223925114567c2b2", "kind": "json"}, {"path": "trace.jsonl", "sha256": "dc30d855420ad27d5f462f9e97ad203fee98bbc15b735df1139140c97eb559d4", "kind": "jsonl"}],
+ "unknowns": ["scripted_maneuver_provenance: #1135 re-derived the retail smoke's steer-into-area for the recovered original law and measured it reaching the original area's hull (contact at 3.93 s of the pass from the designed -0.6 spawn; `accept_playtest_smoke_original_`), but the key schedule itself — which keys, for how long — is a designed development input: the original's own scripted inputs and keyboard scaling were never recovered (#796). Affected content: the retail smoke's key schedule only, and the flight path it produces. Resolving task: an owner original run (#358 REF-OWNER-FIRST-CAPTURE) showing what the original's own scripted sequence was. Gates: any claim that the smoke's key sequence, or the path it flies, reproduces an original input sequence."],
+ "review": {"identity": "implementer: bunny-alpha-2 (Rally #1135 implement claim of 2026-10-09); reviewer: recorded by the Rally review claim that follows — per AGENTS.md an agent review is `checked` at best, is never independent original-reference evidence and never replaces the owner's human approval. The activity log records both claims.", "method": "acceptance suite run locally with the retail capability and recorded verbatim in cargo-test.log (its PLAYTEST-SMOKE-ORIGINAL* lines carry the measured spawn, the measured contact frame and the four-row candidate matrix); this harness derives every field from that log, from production discovery of $CS_GAME_DIR, from the smoke run's own report.json and trace.jsonl written by that same suite run under CS_SMOKE_ORIGINAL_OUT, from rustc and from Cargo.lock. Structure checked with tools/validate_evidence.py; --require-pass refuses while `unknowns` is non-empty, by design and never worked around."},
+ "claim": "implemented"
+}
