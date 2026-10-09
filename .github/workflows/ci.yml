@@ -25,17 +25,12 @@ jobs:
         check: [lint, test-app, test-rest]
     name: rust (${{ matrix.check }})
     env:
-      # The workspace's test binaries no longer fit the runner's disk with debug info: on Linux
-      # every binary carries its own copy of Bevy's DWARF, and with line tables cs_app's ~170 test
-      # binaries filled the test-app runner to 29 MB free on 2026-10-09, so the linker died with
-      # SIGBUS (signal 7). CI binaries carry no debug info at all: a failing assertion still names
-      # its file:line (std::panic::Location needs none), only backtraces lose their line numbers.
-      # Incremental output is never reused in CI.
+      # The workspace's test binaries no longer fit the runner's disk with full debug info: the
+      # linker dies with SIGBUS (signal 7) while writing a doctest binary. Line tables keep panics'
+      # file:line and cut the binaries to a fraction; incremental output is never reused in CI.
       CARGO_INCREMENTAL: 0
-      CARGO_PROFILE_DEV_DEBUG: 0
-      CARGO_PROFILE_TEST_DEBUG: 0
-      CARGO_PROFILE_DEV_STRIP: debuginfo
-      CARGO_PROFILE_TEST_STRIP: debuginfo
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       # The workspace's ~380 test binaries each link Bevy, so drop every preinstalled toolchain this
       # job does not use. Rust comes from rustup in ~/.rustup, and the system python3 stays.
