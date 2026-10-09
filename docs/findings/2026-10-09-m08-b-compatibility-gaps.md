@@ -325,6 +325,40 @@ evidence.
   carries the two test files, the `mod m08_b;` + doc wiring in `main.rs`,
   this finding and the evidence copy.
 
+### Landing conflict, round two (2026-10-09)
+
+The approval at `8b34faf2` could not be fast-forwarded: the lander reported
+*rebase conflict with main; a reviewer must rebase it by hand*, so the task
+came back to review. The same independent reviewer (`bunny-alpha-1`,
+a fresh session and claim, still a different agent instance from the
+implementer `bunny-alpha-2`) rebased the branch onto the moved `origin/main`
+by hand. Two owner files conflicted:
+
+- `crates/cs_app/tests/campaign/main.rs` — this stage's doc paragraph and
+  main's `record_objectives_sound.rs` paragraph had been inserted at the
+  same place. Both were kept, and a stray conflict-marker `<` left in the
+  first resolution attempt was removed before any check ran (`cargo fmt`
+  caught it).
+- `crates/cs_app/tests/campaign/evidence.rs` — this stage's M08-B constants
+  and harness had been inserted where main had since added its M02-B-FU3
+  constants, harness and `address_record`, its M02-B-FU2 harness and the
+  RECORD-OBJECTIVES-SOUND constants and harness. Resolved as a **union**:
+  main's blocks kept verbatim after `parse_m02_b_fu1_suite`, this stage's
+  M08-B block kept verbatim beside them, so the merged file is `origin/main`'s
+  `evidence.rs` plus this branch's additions only — `git diff --stat
+  origin/main...HEAD` shows 350 insertions and no deletion in it — and every
+  harness `evidence.rs` names (M02-B, M02-B-FU1, M02-B-FU2, M02-B-FU3,
+  M04-B, RECORD-OBJECTIVES-SOUND, M08-B) is present exactly once.
+
+Checks on the conflict-rebased tree: `cargo fmt --all -- --check` (0),
+`cargo clippy --workspace --all-targets --all-features --locked -- -D
+warnings` (0), `cargo test --workspace --locked` (0: 476 `test result: ok`
+lines, no failure), `cargo test --workspace --locked -- accept_m08_b_
+--include-ignored` (0: **7 discovered, 7 executed, 7 passed, 0 failed, 0
+ignored**, tee'd to `private/evidence/M08-B/cargo-test.log`). The evidence
+report was then regenerated from that run with the `evidence.rs` recipe and
+validated again, and the branch was pushed for CI on the rebased head.
+
 ## Recorded unknowns (not guessed)
 
 - **The join remains an inference** (M08-A's standing unknown): this stage
