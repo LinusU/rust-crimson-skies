@@ -67,8 +67,9 @@ needed; nothing here reads the installation). Test prefix: `accept_f58_b_`.
    swap is the F36 docking path).
 5. Input ticks sit inside `[server_tick - 64, server_tick + 64]`; outside is
    refused and absorbed.
-6. A loadout ask is judged for shape (cap, duplicates, component kinds) and
-   against the host's banned components, as the lobby already judges them.
+6. A loadout ask is judged for shape (cap, duplicates, blueprint kind,
+   component kinds) and against the host's banned components, exactly as the
+   lobby's own `check_loadout` judges them.
 7. A reconnect's `Damage` claim is refused exactly like its `Score`, `Health`,
    `Faction` and `Outcome` claims; the only state source stays the full
    authoritative snapshot.
@@ -123,3 +124,13 @@ machine does not have) is what would give them measured evidence.
 6. **`cs_sim::damage::ActorId` and `cs_types::net::ActorId` remain two
    shapes** (F29-A follow-up, unchanged here); the cs_app test converts
    between them the same way `fire_intent` does.
+7. **The intent tick window judges the packet's *newest* frame tick.** An
+   `InputBatch` is bounded at the wire layer (`MAX_INPUT_FRAMES_PER_PACKET` 8,
+   `MAX_INPUT_BATCH_SPAN_TICKS` 64, strictly increasing ticks), so with a ±64
+   window an older frame inside an accepted batch may sit up to 128 ticks
+   behind the server tick at the extreme edge. That staleness stays bounded
+   and it cannot author a shot on its own: `cs_sim::weapons::FireResolver`
+   refuses any intent whose tick is not exactly the tick it is resolving, so
+   only a frame at the resolver's own tick spawns anything. Recorded so no
+   one claims every frame of every accepted batch is individually inside the
+   window.

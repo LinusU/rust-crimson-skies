@@ -86,7 +86,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_types::Tick;
-use cs_types::content::ContentId;
+use cs_types::content::{ContentId, ContentKind};
 use cs_types::input::{Action, FlightCommand, InputFrame};
 use cs_types::net::{ActorId, PeerId, SessionId};
 
@@ -1352,10 +1352,15 @@ impl IntentValidator {
 /// layer adds is that an in-session ask cannot sidestep the host's *bans* or
 /// hand in a malformed list.
 ///
+/// Shape is judged exactly as the lobby's own `check_loadout` judges it —
+/// cap, duplicates, a blueprint id that is a blueprint, and component ids of
+/// a component kind — so this layer cannot accept a list the lobby would
+/// call malformed.
+///
 /// # Errors
 ///
-/// [`LoadoutProblem::Malformed`] for a duplicate, oversized or non-component
-/// list, [`LoadoutProblem::Banned`] for one the host forbids.
+/// [`LoadoutProblem::Malformed`] for a duplicate, oversized, non-blueprint or
+/// non-component list, [`LoadoutProblem::Banned`] for one the host forbids.
 fn check_loadout_shape_and_bans(
     loadout: &Loadout,
     banned: &BTreeSet<ContentId>,
@@ -1363,6 +1368,7 @@ fn check_loadout_shape_and_bans(
     let unique: BTreeSet<&ContentId> = loadout.components.iter().collect();
     if loadout.components.len() > MAX_LOADOUT_COMPONENTS
         || unique.len() != loadout.components.len()
+        || loadout.blueprint.kind() != ContentKind::Blueprint
         || loadout
             .components
             .iter()

@@ -303,6 +303,26 @@ fn accept_f58_b_a_loadout_ask_is_judged_against_the_phase_and_the_hosts_bans() {
         .expect_err("a duplicated component must be refused");
     assert_eq!(refusal, IntentRefusal::Loadout(LoadoutProblem::Malformed));
 
+    // ...and so is a loadout whose "blueprint" is not a blueprint at all:
+    // the intent layer judges shape exactly as the lobby's own check_loadout
+    // does, so an in-session ask cannot slip a malformed list past it. The
+    // id below is neither banned nor a component of the list, so the only
+    // thing that can refuse it is the blueprint-kind rule itself.
+    let not_a_blueprint = ClientIntent::EquipLoadout {
+        loadout: Loadout {
+            blueprint: content(ContentKind::Engine, "synthetic_merlin"),
+            components: vec![ammo.clone()],
+        },
+    };
+    let refusal = validator
+        .validate(pilot, &not_a_blueprint, &ownership, gathering)
+        .expect_err("a non-blueprint blueprint must be refused");
+    assert_eq!(
+        refusal,
+        IntentRefusal::Loadout(LoadoutProblem::Malformed),
+        "the blueprint id must be a blueprint, as the lobby already judges it"
+    );
+
     // Match state also guards input: nothing flies before the match runs.
     let input = ClientIntent::Input {
         actor: None,
