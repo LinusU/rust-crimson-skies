@@ -12,13 +12,13 @@ const RETAIL_TESTS_M06_B: &[&str] = &[
     "accept_m06_b_every_directive_m06_spells_has_a_disposition_and_none_is_refused",
     "accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operations",
     "accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
-    "accept_m06_b_the_anims_state_sites_are_the_only_gap_and_validation_refuses",
-    "accept_m06_b_the_mission_stays_unready_until_the_refused_sites_are_measured",
+    "accept_m06_b_every_call_binds_every_condition_lowers_and_m06s_record_completes",
+    "accept_m06_b_m06_is_complete_and_the_campaign_stays_unready",
 ];
 
 /// The synthetic predicate tests M06-B's report must also record.
 const SYNTHETIC_TESTS_M06_B: &[&str] = &[
-    "accept_m06_b_a_single_animation_pair_lowers_and_a_completion_count_site_is_refused",
+    "accept_m06_b_a_completion_count_site_lowers_with_its_override",
     "accept_m06_b_a_wide_kill_list_binds_and_a_wide_non_index_key_still_refuses",
 ];
 
@@ -160,13 +160,15 @@ fn evidence_report_m06_b_writes_the_acceptance_report() {
              locates the sheet's three regression priorities in the record — the engine-part \
              thresholds, the target-flag chain and the unreferenced Passenger_hangar location that \
              leaves passenger identity unbound — gates both terminal latches and walks every block \
-             address, and records the one remaining compatibility gap: every call binds (the \
+             address, and pins M06's complete lowering: every call binds (the \
              twelve-target kill sites bind through M02-B-FU1 #800's list shaping, re-measured on \
-             that landing) but MissionProgram::validate refuses the three ANIM_STATE \
-             completion-count sites, which are not the measured single-pair condition shape, so \
-             M06 is not ready. Claim is implemented only; the mission is NOT ready, the gap is \
-             filed as M06-B-FU1 and is recorded in \
-             docs/findings/2026-10-09-m06-b-compatibility-gaps.md. No mission was played, no \
+             that landing) and every condition lowers — the three ANIM_STATE \
+             completion-count sites append both their descriptors and let the in-list count \
+             overwrite `required` through M04-B-FU1 #806's generalized operand-list walk, so \
+             MissionProgram::validate accepts and M06's row is complete. Claim is implemented \
+             only; the mission is not played, the closed gap is recorded in \
+             docs/findings/2026-10-09-m06-b-compatibility-gaps.md and \
+             docs/findings/2026-10-09-m04-b-fu1-anim-state-operand-list.md. No mission was played, no \
              original executable was run and nothing is verified_original. Validated with \
              tools/validate_evidence.py --require-pass"
         ),

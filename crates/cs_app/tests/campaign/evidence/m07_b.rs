@@ -10,7 +10,7 @@ use super::*;
 const RETAIL_TESTS_M07_B: &[&str] = &[
     "accept_m07_b_the_control_program_is_the_member_that_declares_the_blocks",
     "accept_m07_b_the_vocabulary_is_fully_disposed_and_no_m07_key_is_refused",
-    "accept_m07_b_the_record_does_not_lower_and_the_gaps_are_the_named_ones",
+    "accept_m07_b_the_anim_state_gap_closes_and_danger_zones_is_the_remaining_one",
     "accept_m07_b_the_sheet_priorities_resolve_to_measured_operations",
     "accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated",
     "accept_m07_b_the_mission_stays_unready_and_the_campaign_gate_stays_closed",
@@ -18,7 +18,7 @@ const RETAIL_TESTS_M07_B: &[&str] = &[
 
 /// The synthetic predicate tests M07-B's report must also record.
 const SYNTHETIC_TESTS_M07_B: &[&str] = &[
-    "accept_m07_b_a_multi_record_anim_state_refuses_its_condition_and_a_bound_shape_refuses_the_key",
+    "accept_m07_b_every_spelled_record_lowers_and_an_uncarriable_list_refuses",
     "accept_m07_b_a_danger_zones_site_refuses_its_condition_and_the_block_without_it_lowers",
 ];
 
@@ -253,9 +253,10 @@ fn evidence_report_m07_b_writes_the_acceptance_report() {
              and program identities equal to the M07-A binding, the control member chosen by \
              the measured rule over the archive's whole member set, the directive accounting \
              of the member it spells). NOT CLAIMED: no directive is implemented by a measured \
-             effect; M07's control record does not lower — eight conditions (five multi-record \
-             ANIM_STATE sites and three DANGER_ZONES_COMPLETED sites) and all nine ANIM_STATE \
-             call sites refuse, which the suite pins — so M07 stays Unsupported and the campaign \
+             effect; M07's control record still does not lower — all nine ANIM_STATE sites now \
+             bind and their multi-record operand lists lower through M04-B-FU1 #806's shared \
+             mechanism, so the remaining refusal is the three DANGER_ZONES_COMPLETED \
+             conditions, which the suite pins — so M07 stays Unsupported and the campaign \
              gate stays closed; the runtime halves of the sheet's priorities (moving pickup, \
              forced plane swap, persistent input ownership) need ordinary-play observation \
              (M07-C); no mission was played, no original executable was run and nothing is \

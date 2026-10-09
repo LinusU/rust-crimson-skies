@@ -1,4 +1,4 @@
-//! Evidence-report harness for task M04-B: the task's own test
+//! Evidence-report harness for task M04-B-FU1: the task's own test
 //! lists and its `evidence_report_*` harness. Shared helpers,
 //! types and imports live in `super` — see
 //! `crates/cs_app/tests/campaign/evidence.rs`, which is also where
@@ -6,36 +6,47 @@
 
 use super::*;
 
-/// The retail acceptance tests M04-B's capabilities are judged on.
-const RETAIL_TESTS_M04_B: &[&str] = &[
-    "accept_m04_b_the_control_program_is_the_member_that_declares_the_blocks",
-    "accept_m04_b_every_directive_m04_spells_has_a_disposition_and_none_is_refused",
-    "accept_m04_b_the_sheet_priorities_are_located_and_resolve_to_measured_operations",
-    "accept_m04_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
+/// The retail acceptance tests M04-B-FU1's capability is judged on: M04's
+/// control record lowers completely through the measured operand-list walk,
+/// and the row is complete while the campaign gate stays closed.
+const RETAIL_TESTS_M04_B_FU1: &[&str] = &[
     "accept_m04_b_fu1_the_multi_pair_anim_state_sites_lower_and_m04s_record_completes",
     "accept_m04_b_fu1_m04_is_complete_and_the_campaign_stays_unready",
 ];
 
-/// The synthetic predicate tests M04-B's report must also record.
-const SYNTHETIC_TESTS_M04_B: &[&str] = &[
+/// The synthetic predicate tests M04-B-FU1's report must also record: the
+/// measured operand-list arms — the count override, the one-argument
+/// carrying bound, the first-site-wins selection and the inert top-level
+/// `COMPLETION_COUNT` — into CI, where there is no original data.
+const SYNTHETIC_TESTS_M04_B_FU1: &[&str] = &[
     "accept_m04_b_fu1_a_multi_pair_site_lowers_with_its_count_override",
     "accept_m04_b_fu1_only_an_uncarriable_operand_list_refuses",
     "accept_m04_b_fu1_the_first_site_arms_the_evaluator",
     "accept_m04_b_fu1_a_top_level_completion_count_is_inert_and_unbound",
 ];
 
-/// Evidence-report harness for task M04-B: M04's mission-specific
-/// compatibility gaps. Same sequence as the M03-B report; it records the
-/// `accept_m04_b_` tests and the one measured gap they pin, and claims
-/// `implemented` only.
+/// Evidence-report harness for task M04-B-FU1 (Rally #806), the follow-up
+/// that lowers `ANIM_STATE`'s measured operand-list walk and carries the
+/// whole list as one `Value::List` call argument. It follows the sequence in
+/// this module's doc with `M04-B-FU1` and `accept_m04_b_fu1_` in place of
+/// `M01-A` and `accept_m01_a_`:
 ///
-/// `CS_EVIDENCE_REVIEWER` fills `review.identity` whole, so whoever runs the
-/// harness — the implementing agent at hand-over or the reviewing agent on the
-/// rebased commit — writes its own identities and says whether the run is a
-/// review. A placeholder identity is a failure.
+/// * the acceptance-log parser selects `accept_m04_b_fu1_` tests, so the
+///   recorded assertions are this follow-up's own — the selection must be
+///   the prefix's own run (step 1 with that prefix), or the counts would
+///   describe a wider run than the assertions;
+/// * the only artifact is that log: the change is a lowering walk and a
+///   binding-shape decision, so the report cites the run that proves it
+///   rather than a derived binding;
+/// * `review.identity` is a literal naming the real Rally actors and the
+///   reviewer's context, as the module doc requires.
+///
+/// Everything else — the toolchain versions, the installation hashes, the
+/// candidate tree, the counts, the digests and the timestamps — is derived
+/// from the same real inputs as the M04-B report above.
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
-fn evidence_report_m04_b_writes_the_acceptance_report() {
+fn evidence_report_m04_b_fu1_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
     let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
@@ -66,13 +77,14 @@ fn evidence_report_m04_b_writes_the_acceptance_report() {
             log_path.display()
         )
     });
-    let suite = parse_m04_b_suite(&log);
+    let suite = parse_m04_b_fu1_suite(&log);
     assert!(
         suite.passed > 0 && !suite.assertions.is_empty(),
-        "no `accept_m04_b_` tests were recorded in {}",
+        "no `accept_m04_b_fu1_` tests were recorded in {}",
         log_path.display()
     );
-    for retail_test in RETAIL_TESTS_M04_B {
+
+    for retail_test in RETAIL_TESTS_M04_B_FU1 {
         let status = suite
             .assertions
             .iter()
@@ -80,7 +92,7 @@ fn evidence_report_m04_b_writes_the_acceptance_report() {
             .map(|(_, status)| *status)
             .unwrap_or_else(|| {
                 panic!(
-                    "{retail_test} did not run: M04-B requires capability `retail`, run step 1 \
+                    "{retail_test} did not run: M04-B-FU1 requires capability `retail`, run step 1 \
                      with `--include-ignored` and CS_GAME_DIR set"
                 )
             });
@@ -89,16 +101,14 @@ fn evidence_report_m04_b_writes_the_acceptance_report() {
             "{retail_test} must pass; got status {status}"
         );
     }
-    for synthetic_test in SYNTHETIC_TESTS_M04_B {
+    for synthetic_test in SYNTHETIC_TESTS_M04_B_FU1 {
         let status = suite
             .assertions
             .iter()
             .find(|(name, _)| name == synthetic_test)
             .map(|(_, status)| *status)
             .unwrap_or_else(|| {
-                panic!(
-                    "{synthetic_test} did not run: it pins the refusal arms the retail gap rests on"
-                )
+                panic!("{synthetic_test} did not run: it pins an arm the retail test assumes")
             });
         assert_eq!(
             status, "pass",
@@ -122,7 +132,7 @@ fn evidence_report_m04_b_writes_the_acceptance_report() {
     let report = format!(
         "{{\n\
          \x20\"schema_version\": 1,\n\
-         \x20\"task_id\": \"M04-B\",\n\
+         \x20\"task_id\": \"M04-B-FU1\",\n\
          \x20\"candidate_tree\": {},\n\
          \x20\"engine\": {},\n\
          \x20\"created_at\": {},\n\
@@ -156,17 +166,24 @@ fn evidence_report_m04_b_writes_the_acceptance_report() {
         artifact_array(&artifacts),
         jstr(&reviewer),
         jstr(
-            "acceptance suite run locally with the retail capability; every field is derived \
-             from the recorded log and production discovery of $CS_GAME_DIR. The suite pins M04's \
-             measured control program (52 blocks, 201 sites, 40 keys, fully measured vocabulary), \
-             locates the sheet's three regression priorities in the record, gates both terminal \
-             latches and walks every block address, and pins M04's complete lowering — every one \
-             of its 201 sites binds and `MissionProgram::validate` accepts, since M04-B-FU1 \
-             (#806) closed the ANIM_STATE gap the suite first recorded: the key's whole operand \
-             list is carried as one list argument and the multi-pair walk appends every spelled \
-             descriptor. Claim is implemented only; no mission was played, no \
-             original executable was run and nothing is verified_original. Validated with \
-             tools/validate_evidence.py --require-pass"
+            "acceptance suite run locally with the retail capability; the \
+             fields are derived from the recorded log and production discovery of $CS_GAME_DIR. \
+             The suite pins this task's change: an `ANIM_STATE` site's operand list is walked \
+             the measured way — every `ANIM` tag followed by a spec record appends one \
+             {name, state} pair, `required` counts the appended pairs, the first \
+             COMPLETION_COUNT found recursively inside the same list overwrites it, and the \
+             whole operand list registers and binds as ONE `Value::List` call argument — so \
+             M04's two 18-operand sites (eight descriptors at blocks 23 and 37, completion \
+             counts 1 and 3) lower, all 201 calls bind, `MissionProgram::validate` accepts and \
+             M04's census row is complete, `MAX_CALL_ARGS` staying 8. The same mechanism \
+             lowers M06's three completion-count sites (M06-B-FU1, #817) and all nine of \
+             M07's ANIM_STATE sites, whose remaining refusal is the unrelated \
+             DANGER_ZONES_COMPLETED gap. NOT CLAIMED: no directive is implemented by a \
+             measured effect, no mission was played, no original executable was run and \
+             nothing is verified_original. Claim is implemented only; validated with \
+             tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the \
+             commit the suite and this harness ran on; the only later delta is this report's \
+             own copy under docs/findings/evidence/, which no acceptance test reads"
         ),
     );
 
@@ -176,7 +193,7 @@ fn evidence_report_m04_b_writes_the_acceptance_report() {
     let written = fs::read_to_string(&out).expect("the report reads back");
     for needle in [
         "\"schema_version\": 1",
-        "\"task_id\": \"M04-B\"",
+        "\"task_id\": \"M04-B-FU1\"",
         "\"claim\": \"implemented\"",
         "\"install_sha256\"",
         "\"assertions\": [",
@@ -197,6 +214,6 @@ fn evidence_report_m04_b_writes_the_acceptance_report() {
 }
 
 /// [`parse_suite_prefixed`] with this task's test prefix.
-fn parse_m04_b_suite(log: &str) -> Suite {
-    parse_suite_prefixed(log, "accept_m04_b_")
+fn parse_m04_b_fu1_suite(log: &str) -> Suite {
+    parse_suite_prefixed(log, "accept_m04_b_fu1_")
 }
