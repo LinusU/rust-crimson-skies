@@ -396,6 +396,50 @@ different-session limitation as above), and the second production observation
 same 63 addresses, record indices and rule verdicts re-derived from the
 installation through the production rule on the rebased tree.
 
+## Review re-run after the second landing conflict (reviewer bunny-2/bunny-2, 2026-10-09)
+
+Rally's lander could not fast-forward the second approved commit `61c03979`
+either: main had moved again (from `f48fc720` up to `8a25a254`, bringing M04-B's
+compatibility-gap work, the T796 flight-law work and the `CS_ENGINE_IMAGE`
+ignore-reason naming, among others) and the automatic rebase hit a conflict
+again, so a reviewer had to rebase by hand for the second time. The overlap
+check named two files both sides changed since the old base
+(`crates/cs_app/tests/campaign/evidence.rs` and `.../campaign/main.rs`; no
+`Cargo.toml`/`Cargo.lock` moved on main), and the rebase materialised exactly
+one conflict — this time in `main.rs`, where both this task's M02-B-FU3 module
+doc paragraph and main's M04-B paragraph insert at the same spot after the
+M02-B one. The resolution keeps both paragraphs verbatim in module order
+(M02-B-FU3 before M04-B, matching the `mod` list), and `evidence.rs` merged
+cleanly this time (main's M04-B harness sits mid-file, this task's FU3 harness
+at the end; all four `m02_b`-family harnesses coexist). The task's own files
+are **byte-identical to the previously approved `ec442ed4`**: the rule module
+`crates/cs_sim/src/objectives/address.rs`, `runtime.rs`, `mod.rs`, both cs_sim
+synthetic tests and the campaign retail test `m02_b_fu3.rs` show an empty diff
+against that commit.
+
+Because this rebase was not conflict-free either, the full four checks were
+re-run once more on the rebased tree:
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | **0** — 475 green `test result` summaries, zero failures |
+| `cargo test --workspace --locked -- accept_m02_b_fu3_ --include-ignored` | 0 (3 tests: the two cs_sim synthetic arms and the campaign retail member, each also green alone with `--exact`) |
+| `python3 tools/validate_evidence.py private/evidence/M02-B-FU3/acceptance.json --artifact-root private/evidence/M02-B-FU3 --require-pass` | 0 (`structurally_valid: true`) |
+| `python3 tools/tests/test_evidence_review_identity.py` | 0 (27 OK with the regenerated report committed) |
+
+The acceptance report was regenerated on this second conflict-rebased tree by
+the same harness with the same procedure (its `candidate_tree` equals
+`git rev-parse 'HEAD^{tree}'` of the commit carrying this section, so the only
+later delta is the report's own copy; its `review.identity` names this third
+review session and records the same-agent, different-session limitation as
+above), and the second production observation `m02-b-fu3-addresses.json` came
+back **byte-identical for the fourth time** (sha256
+`50d13d718b3e9878050cd1b76c5ab94067c94252d4e4381e4845cf2fcb34adf9`) — the
+same 63 addresses, record indices and rule verdicts re-derived from the
+installation through the production rule on the rebased tree.
+
 ## Residual unknowns (not guessed)
 
 1. **What the original observes past the count.** The walk executes
