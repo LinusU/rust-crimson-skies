@@ -4,17 +4,19 @@ Date: 2026-10-09. Task: M05-B "Implement and regress mission-specific
 compatibility gaps" (#271, `missions/M05.md`). Shared contract:
 `docs/contracts/SCRIPT-MISSION.md`. Capability used: `retail` (read-only
 `$CS_GAME_DIR`). Implementer: **claude-2/claude-1** (Sonnet 5.5, 2026-10-09).
-Reviewer: not yet recorded; the reviewing agent must add its identity and
-whether its context was fresh. An agent review is not independent
-original-reference evidence and no agent review replaces the owner's human
-approval.
+Reviewer: **bunny-2/bunny-2** (Rally review claim of 2026-10-09T06:49Z) — a
+different agent instance and model with a fresh context (a new session that
+re-read the task history, the mission sheet, the shared contract and the
+diff), so the review is independent of the implementation. An agent review is
+not independent original-reference evidence and no agent review replaces the
+owner's human approval.
 
 ## What changed
 
 No production code. The census (`cs_app::mission_control`), the directive
 dispositions and the record → `RawProgram` adapter are M01-LC's; this stage
 runs them over M05 and pins the result in
-`crates/cs_app/tests/campaign/m05_b.rs` (five retail and two synthetic
+`crates/cs_app/tests/campaign/m05_b.rs` (six retail and two synthetic
 `accept_m05_b_*` tests) plus the evidence harness in `evidence.rs`. Wiring:
 `campaign/main.rs` (`mod m05_b;`).
 

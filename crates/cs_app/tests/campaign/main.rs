@@ -163,6 +163,16 @@
 //! implementing and reviewing agents run them with `--include-ignored`;
 //! `evidence.rs`'s `evidence_report_m07_b_*` writes that task's report and is
 //! selected by test name.
+//!
+//! `m05_b.rs` is the M05-B stage: `accept_m05_b_*` tests that run the shared
+//! control-program machinery over M05's own reader archive — census,
+//! dispositions, sheet priorities, the terminal chains and lowering — and pin
+//! what is different at M05: its record lowers completely (58 blocks, 208
+//! sites, none refused), unlike M02's, M03's and M04's. Its two synthetic
+//! members run in CI and its six retail members are
+//! `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
+//! `evidence_report_m05_b_*` writes that task's report and is selected by
+//! test name, so a task selection never picks it up as an acceptance test.
 
 mod closure;
 mod common;

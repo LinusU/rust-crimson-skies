@@ -1865,10 +1865,12 @@ fn evidence_report_m05_b_writes_the_acceptance_report() {
         artifact_array(&artifacts),
         jstr(
             "implementer: claude-2/claude-1 (Rally #271, Sonnet 5.5, session of 2026-10-09); \
-             reviewer: not yet recorded — the Rally review of this branch must name the \
-             reviewing agent and whether its context was fresh; an agent review is not \
-             independent original-reference evidence and no agent review replaces the owner's \
-             human approval"
+             reviewer: bunny-2/bunny-2 (Rally review claim of 2026-10-09T06:49Z) — a different \
+             agent instance and model with a fresh context (a new session that re-read the task \
+             history, the mission sheet, the shared contract and the diff), so this review is \
+             independent of the implementation, but it is an agent review of the code and tests, \
+             not independent original-reference evidence and not original-run evidence; no agent \
+             review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; the fields are derived \
@@ -1876,7 +1878,8 @@ fn evidence_report_m05_b_writes_the_acceptance_report() {
              M05's measured control program and its complete lowering (58 blocks, 208 sites, none refused); \
              claim is implemented only; the mission is NOT played: ordinary-play, difficulty, media and presentation rows stay with M05-C and are recorded in docs/findings/2026-10-09-m05-b-control-program.md. \
              The reviewer re-ran the whole acceptance suite with CS_GAME_DIR on the rebased \
-             commit, regenerated this report from that run and validated it with \
+             commit, re-applied the documented 58 → 57 block-count mutation, regenerated this \
+             report from that run and validated it with \
              tools/validate_evidence.py --require-pass"
         ),
     );
