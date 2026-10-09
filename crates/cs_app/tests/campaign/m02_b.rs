@@ -1079,7 +1079,7 @@ fn accept_m02_b_a_site_over_the_host_call_bound_refuses_and_one_at_the_bound_bin
     );
     assert!(
         lowered.attempt().calls.contains(&CallOutcome::Bound),
-        "the kill site produced a bound call"
+        "the IDENTITY site produced a bound call"
     );
 
     // One over the bound: the whole spec refuses registration and the site

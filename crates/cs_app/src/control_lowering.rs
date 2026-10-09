@@ -22,7 +22,11 @@
 //!   `Condition::Unknown`, which `MissionProgram::validate` refuses rather than
 //!   guesses — and every directive site as one [`RawCall`], args carried field
 //!   for field inside `Value::List` (nested lists stay nested; nothing is
-//!   flattened).
+//!   flattened). A site of a **list-taking** directive (the measured
+//!   operations that take one list of objective indices) carries its spelled
+//!   list as *one* `Value::List` argument instead of a positional row, so the
+//!   list's length is never read as an arity and a long list stays inside the
+//!   registry's per-signature argument bound (`MAX_CALL_ARGS` is not raised).
 //!
 //! Calls are bound through a [`HostBindingRegistry`] built from the record's
 //! own key dispositions: a `Measured` key registers one [`BindingSpec`] whose
