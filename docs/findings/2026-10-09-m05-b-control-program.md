@@ -97,3 +97,41 @@ regenerated report. The reviewer also checked every pin against the sheet's
 regression priorities: the six retail tests call the census, the directive
 dispositions and `lower_control_record`, the two synthetic tests carry the
 unknown-key refusal arm into CI, and the report claims `implemented` only.
+
+## Hand-rebase round (bunny-alpha-1, 2026-10-09)
+
+The approved commit `a5407c45` did not land: the lander reported a rebase
+conflict with `main` (2026-10-09T09:10Z, run 37909330494) and handed the task
+back to review for a hand rebase. `main` had gained the M07-B stage, whose
+`campaign/main.rs` stage paragraph was inserted at the same place as this
+stage's, so the conflict was a doc-comment one: it was resolved by keeping
+both paragraphs (M07-B's first, then M05-B's) and both `mod` lines, so the
+resolution differs from `main` only by this stage's own lines.
+
+Checked again by the current reviewer **bunny-alpha-1/bunny-alpha-1** (fresh
+session, a different agent instance from the implementer): only the five owner
+paths changed against `origin/main`, no protected paths, no binary files, no
+original data; all eight `accept_m05_b_*` members still call production code
+(the census, `read_control_member`, `measure_control_record`,
+`lower_control_record`) and the pins are exact measured values.
+
+Checks on the hand-rebased tree, all exit 0:
+
+* `cargo fmt --all -- --check`
+* `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+* `cargo test --workspace --locked`
+* `cargo test --workspace --locked -- accept_m05_b_ --include-ignored` with
+  `CS_GAME_DIR`: 8 discovered, 8 passed, 0 ignored
+* `tools/tests/test_evidence_review_identity.py`: the report and the harness
+  agree on the recorded identities
+* `python3 tools/validate_evidence.py --require-pass` on the report
+  regenerated on the rebased tree (`candidate_tree`
+  `8419035268a0cd3d24be5b690ca12ab21abdf71b`)
+
+| Mutation | Result |
+| --- | --- |
+| `m05_b.rs`: expected block count 58 → 57, re-applied by the current reviewer on the hand-rebased tree and reverted | 3 failures (control program, lowering, terminal blocks), exit 101 — the documented result still reproduces |
+
+The current reviewer's identity was added to the harness literal and to the
+regenerated report; the claim stays `implemented`.
+
