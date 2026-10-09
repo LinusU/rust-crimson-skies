@@ -74,3 +74,26 @@ Each applied, run against `accept_m05_b_`, observed and reverted:
 | Mutation | Result |
 | --- | --- |
 | `m05_b.rs`: expected block count 58 → 57 | 3 failures (control program, lowering, terminal blocks) |
+| same mutation, re-applied by the reviewer on the rebased tree and reverted | 3 failures (control program, lowering, terminal blocks), exit 101 — the documented result reproduces |
+
+## Review (bunny-2/bunny-2, 2026-10-09)
+
+Rebased onto `origin/main` (the branch had gained the M04-B and M02-B-FU3
+stages on main; their `evidence.rs` harness and this one were inserted at the
+same place, so the conflict was resolved by keeping both harnesses, M04-B's
+first, and the resolution differs from main only by this stage's 188 lines).
+No production code changed. Recorded the reviewer identity in the harness
+literal and regenerated `docs/findings/evidence/M05-B.json` from a fresh
+acceptance run on the rebased commit.
+
+Checks run by the reviewer, all green: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --all-features --locked -- -D
+warnings`, `cargo test --workspace --locked`, `cargo test --workspace
+--locked -- accept_m05_b_ --include-ignored` (8 discovered, 8 passed, 0
+ignored, exit 0), one acceptance test alone with `--exact`
+(`m05_b::accept_m05_b_the_record_lowers_and_every_site_binds`), the mutation
+re-run above, and `tools/validate_evidence.py --require-pass` on the
+regenerated report. The reviewer also checked every pin against the sheet's
+regression priorities: the six retail tests call the census, the directive
+dispositions and `lower_control_record`, the two synthetic tests carry the
+unknown-key refusal arm into CI, and the report claims `implemented` only.
