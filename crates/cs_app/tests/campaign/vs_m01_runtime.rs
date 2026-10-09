@@ -275,13 +275,15 @@ fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechani
         match (&report.verdict, want) {
             (SurfaceVerdict::Unsupported { mechanism, detail }, "unsupported") => {
                 assert!(!mechanism.is_empty(), "{surface:?} names its mechanism");
-                // #772's measured boundary: the carrier decoded, all three
-                // records joined their world nodes, the spawn pose bound —
-                // and the still-open fields are the named unknowns, not a
-                // guess.
+                // #772's measured boundary, with #792's attitude closing it:
+                // the carrier decoded, all three records joined their world
+                // nodes, the spawn pose bound, the attitude now composes
+                // under its own claim from the source the original applies
+                // last — and the fields still open stay named unknowns, not
+                // a guess.
                 for expected in [
                     "f34-world.zeppelin-spawn-pose",
-                    "f34-world.zeppelin-attitude-unmeasured",
+                    "f34-world.zeppelin-attitude-compose",
                     "f34-world.zeppelin-faction-absent",
                     "piratezep",
                     "placezeps.zrd",

@@ -29,16 +29,29 @@
 //!   ~517 m from the player start) — the frame the value claims is
 //!   corroborated by containment, not asserted. The residue stays named:
 //!   `placezeps.zrd`'s startup placements state *different* positions for
-//!   the same nodes, and which mechanism the original applies last is not
-//!   measured — the same class of residue `mission_start`'s `initial_pose`
-//!   carries for the mission program.
-//! * **The spawn attitude does not bind.** `yaw`/`pitch` are
-//!   degrees→radians into `obj+0x2c`/`obj+0x30` (measured at `0x4bda64`),
-//!   but how those two slots compose into the zeppelin object's world
-//!   orientation was never traced — the `M = Ry·Rx·Rz` compose #770
-//!   measured lives in `Object3d::SetRotation` at `class+0x1c`, a different
-//!   object family. `orientation` stays [`Resolved::Unknown`] under
-//!   [`ATTITUDE_UNKNOWN_CLAIM`].
+//!   the same nodes, and #792 measured that their absolute translate writes
+//!   the same slots *after* this spawn write — the node's drawn position at
+//!   startup is the startup placement's, this claim stays the record's own
+//!   spawn value, and which of the two the reimplementation's actor stands
+//!   at is #814, the follow-up #792 filed for #359's launch-surface
+//!   re-derivation.
+//! * **The spawn attitude binds under the measured compose and the measured
+//!   write order (#792).** `yaw`/`pitch` are degrees→radians into
+//!   `obj+0x2c`/`obj+0x30` (measured at `0x4bda64`); at the end of the same
+//!   load routine the object hands both to `Object3d::SetRotation` for the
+//!   node its `node` key resolved (`0x4becf8` → `0x4bf930` → `0x4bf950` →
+//!   `0x4d1a30`), which stores them at `class+0x18` (pitch) and `class+0x1c`
+//!   (yaw) with `class+0x20` clear — and #770 measured the matrix build over
+//!   those slots to be `M = Ry(r1)·Rx(r0)·Rz(r2)`, so the node's orientation
+//!   is `Ry(yaw)·Rx(pitch)`, right-handed, in #436's identity-mapped metre
+//!   frame. `placezeps.zrd`'s `OBJECT_ROTATE_STATE` writes the *same* slots
+//!   of the *same* node through the *same* setter (`0x4e8cf5` → `0x4d1a30`),
+//!   and its `ON_STARTUP` states run from the animation player's first tick
+//!   after the mission start — after the spawn write — so each record's
+//!   [`SpawnedZeppelinActor::attitude`] carries the source the original
+//!   applies last and [`SpawnedZeppelinActor::attitude_residue`] names the
+//!   one it overwrites. `orientation` is [`Resolved::Known`] under
+//!   [`SPAWN_ATTITUDE_CLAIM`].
 //! * **The faction is measured absent or unmapped.** A record that states
 //!   no `team` carries no faction (M01's three records, #793): `faction`
 //!   is [`Resolved::Unknown`] under [`FACTION_ABSENT_CLAIM`], the
@@ -77,8 +90,10 @@ use cs_content::world_actors::{
 use cs_formats::gamez::read_gamez_nodes;
 use cs_formats::io::ParseContext;
 use cs_formats::script_raw::discovery::discover_container;
+use cs_formats::zbd::placezeps::{PLACEZEPS_MEMBER, read_placezeps_member};
 use cs_formats::zbd::zeppelins::read_zeppelins_member;
 use cs_script::runtime::SessionGeneration;
+use cs_sim::world_actors::Quat;
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
@@ -106,26 +121,51 @@ pub const SESSION_TICKS_PER_SECOND: u32 = 64;
 /// The claim is the record's own value through that measured conversion —
 /// the same shape `MissionStartConfiguration::initial_pose` binds. The
 /// residue the claim does *not* cover: `placezeps.zrd`'s startup placements
-/// state different positions for the same nodes, and which mechanism the
-/// original applies last is unmeasured.
+/// state different positions for the same nodes, and #792 measured that
+/// their absolute translate writes the *same* slots (`0x4d1d50`,
+/// `class+0x54`..`+0x5c`) *after* this spawn write — so the node's drawn
+/// position at startup is the startup placement's while this claim stays
+/// the record's own spawn value, the one the object keeps at
+/// `obj+0x20`..`obj+0x28` and hands back to the node whenever its drive
+/// byte is set again. Which of the two the reimplementation's actor stands
+/// at belongs to #359's launch-surface re-derivation (#814, the follow-up
+/// #792 filed); this task settles the attitude half of that same ordering.
 pub const SPAWN_POSE_CLAIM: &str = "f34-world.zeppelin-spawn-pose";
 
-/// The claim the spawn attitude's refusal is filed under.
+/// The claim the composed spawn attitude binds under (#792).
 ///
-/// `yaw`/`pitch` are degrees→radians into the zeppelin object's `obj+0x2c`/
-/// `obj+0x30` (measured at `0x4bda64`), but how those two slots compose
-/// into a world orientation was never traced for this object family — the
-/// `M = Ry·Rx·Rz` compose #770 measured is `Object3d`'s `class+0x1c`, a
-/// different layout.
-pub const ATTITUDE_UNKNOWN_CLAIM: &str = "f34-world.zeppelin-attitude-unmeasured";
+/// Two measurements close it:
+///
+/// * **the compose** — the record's `yaw`/`pitch` reach the node as an
+///   `Object3d` rotation triple through `0x4becf8` → `0x4bf930` → `0x4bf950`
+///   → `0x4d1a30` (`class+0x18` = pitch, `class+0x1c` = yaw, `class+0x20` =
+///   0), and #770 measured the build over those slots (`0x53bf40`, inverse
+///   `0x53df30`) to be `M = Ry(r1)·Rx(r0)·Rz(r2)` — so `Ry(yaw)·Rx(pitch)`,
+///   right-handed, in the identity-mapped metre frame;
+/// * **the write order** — `placezeps.zrd`'s `OBJECT_ROTATE_STATE` writes the
+///   same slots of the same node through the same setter (`0x4e8cf5` →
+///   `0x4d1a30`), once, from the animation instance's first tick (`0x4ecd20`,
+///   registered at `0x4eda92`, dispatching at `0x4ecc7f`), while the mission
+///   start clears the zeppelin object's drive byte before the spawn
+///   (`0x4648e0`/`0x4655f0` → `0x41f250` → `0x4bd390`) and nothing on a
+///   single-player launch sets it again — so the startup state is what the
+///   node keeps, and the carrier's spawn attitude is the residue.
+///
+/// `docs/findings/2026-10-09-m01-lc-zeppelin-attitude.md` records every
+/// address and the ordering it establishes.
+pub const SPAWN_ATTITUDE_CLAIM: &str = "f34-world.zeppelin-attitude-compose";
 
-/// Why the spawn attitude stays [`Resolved::Unknown`].
-pub const ATTITUDE_UNKNOWN_REASON: &str = "the record's yaw/pitch are measured as \
-    degrees→radians written to the spawned object's +0x2c/+0x30 slots (0x4bda64, #770), but the \
-    composition of those slots into a world orientation was never traced for the zeppelin object \
-    family — the M = Ry·Rx·Rz compose measured for spawn headings is Object3d::SetRotation's \
-    class+0x1c layout, a different object — and placezeps.zrd's startup records state a different \
-    yaw for workersvoyagezep (180 vs 220), so which source the original's pose lands on is open";
+/// The claim an attitude stays open under (#792): the startup carrier
+/// `placezeps.zrd` could not be read, so which source the original applies
+/// last cannot be settled for this scope and no orientation is guessed.
+pub const ATTITUDE_PRECEDENCE_UNKNOWN_CLAIM: &str =
+    "f34-world.zeppelin-attitude-precedence-unknown";
+
+/// Why an attitude stays [`Resolved::Unknown`] when the startup carrier
+/// refuses: the spawn half is measured, the ordering over it is not.
+pub const ATTITUDE_PRECEDENCE_UNKNOWN_REASON_PREFIX: &str = "the spawn attitude composes under a measured rule, but `placezeps.zrd`, the startup \
+     placement that writes the same Object3d rotation slots after it, could not be read, so \
+     which source the original applies last is open: ";
 
 /// The claim a stated `team` spelling's faction refusal is filed under.
 ///
@@ -204,6 +244,103 @@ pub enum NodeJoin {
     Ambiguous(usize),
 }
 
+/// The attitude source the original's own write order leaves on the node
+/// last (#792).
+///
+/// Both carriers write one node's `Object3d` rotation triple through the
+/// same setter, `0x4d1a30` (`class+0x18` = `r0`, `class+0x1c` = `r1`,
+/// `class+0x20` = `r2`):
+///
+/// * the spawn writes it while the record loads (`0x4becf8` → `0x4bf930` →
+///   `0x4bf950`), from the object's `obj+0x2c`/`obj+0x30`;
+/// * `placezeps.zrd`'s `OBJECT_ROTATE_STATE` writes it from the animation
+///   instance's first tick (`0x4e8cf5` → `0x4d1a30`, dispatched at
+///   `0x4ecc7f`), which runs from the callback the start registers at
+///   `0x4eda92` — after the mission start has loaded the records.
+///
+/// Both halves are stored in radians, exactly as the original stores them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttitudeSource {
+    /// `placezeps.zrd`'s `OBJECT_ROTATE_STATE` for this `NAME`, in the
+    /// stored order — the original's `r0`, `r1`, `r2` of the `Object3d`
+    /// triple — and the later of the two writes.
+    StartupPlacement {
+        /// The three numbers the rotate parser leaves at event
+        /// `+0x10`/`+0x14`/`+0x18` (radians, #791).
+        rotation_radians: [f32; 3],
+    },
+    /// The `zeppelins.zrd` record's own `yaw`/`pitch`, converted and
+    /// clamped exactly as the load converts and clamps them
+    /// (`0x4bda9b`/`0x4bdab2`, clamp `0x4bdbc6`). This is what the original
+    /// applies when the startup carrier states no rotation for the node.
+    CarrierSpawn {
+        /// The stored `yaw`, degrees→radians (`obj+0x2c`).
+        yaw_radians: f32,
+        /// The stored `pitch`, degrees→radians (`obj+0x30`) and clamped to
+        /// the record's `min_pitch`/`max_pitch`.
+        pitch_radians: f32,
+    },
+}
+
+impl AttitudeSource {
+    /// The unit quaternion `[x, y, z, w]` this source leaves on the node,
+    /// composed by [`object3d_orientation`].
+    #[must_use]
+    pub fn orientation(&self) -> [f64; 4] {
+        match *self {
+            Self::StartupPlacement { rotation_radians } => {
+                let [r0, r1, r2] = rotation_radians.map(f64::from);
+                object3d_orientation(r0, r1, r2)
+            }
+            Self::CarrierSpawn {
+                yaw_radians,
+                pitch_radians,
+            } => object3d_orientation(f64::from(pitch_radians), f64::from(yaw_radians), 0.0),
+        }
+    }
+
+    /// The claim the composed attitude binds under, and the byte span the
+    /// value comes from: the startup carrier's `STATE` list for a startup
+    /// placement, the record's own member for a spawn attitude.
+    #[must_use]
+    pub const fn claim(&self) -> &'static str {
+        SPAWN_ATTITUDE_CLAIM
+    }
+}
+
+/// What settles a record's attitude, or why it stays open (#792).
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttitudeBinding {
+    /// The measured source the original applies last.
+    Measured(AttitudeSource),
+    /// The startup carrier could not be read, so which source applies last
+    /// cannot be settled for this scope: the reason is verbatim and no
+    /// orientation is bound.
+    Open(String),
+}
+
+/// The measured compose of an `Object3d` rotation triple into a world
+/// orientation (#770 §12.2): `M = Ry(r1)·Rx(r0)·Rz(r2)` over the right-handed
+/// matrices, the build the image performs at `0x53bf40` and inverts at
+/// `0x53df30` (`pitch = asin(−M7)`, `yaw = atan2(M6, M8)`,
+/// `roll = atan2(M1, M4)`), with `0x49f8ec`'s compass counter-rotation fixing
+/// the sign. `r0`/`r1`/`r2` are radians in the node's own slots
+/// (`class+0x18`/`+0x1c`/`+0x20`); the result is the unit quaternion
+/// `[x, y, z, w]` the world-actor runtime consumes, in #436's identity-mapped
+/// metre frame (`yaw = 0`, `pitch = 0` ⇒ identity).
+#[must_use]
+pub fn object3d_orientation(r0: f64, r1: f64, r2: f64) -> [f64; 4] {
+    let axis = |angle: f64, axis: [f64; 4]| {
+        let (sin, cos) = (angle * 0.5).sin_cos();
+        [axis[0] * sin, axis[1] * sin, axis[2] * sin, cos]
+    };
+    // `M = Ry(r1)·Rx(r0)·Rz(r2)` is the quaternion product `qy ⊗ qx ⊗ qz`.
+    Quat(axis(r1, [0.0, 1.0, 0.0, 0.0]))
+        .compose(Quat(axis(r0, [1.0, 0.0, 0.0, 0.0])))
+        .compose(Quat(axis(r2, [0.0, 0.0, 1.0, 0.0])))
+        .0
+}
+
 /// One `zeppelins.zrd` record's declared outcome: the stored pose, the
 /// subject join, and the declared actor when the join produced a subject.
 #[derive(Clone, Debug, PartialEq)]
@@ -219,6 +356,9 @@ pub struct SpawnedZeppelinActor {
     pub stored_yaw: f32,
     /// The stored `pitch` degrees.
     pub stored_pitch: f32,
+    /// The source the original applies last for this node's attitude
+    /// (#792), or why it stays open.
+    pub attitude: AttitudeBinding,
     /// The `team` spelling, verbatim, when the record states one — its
     /// mapping is unmeasured ([`FACTION_UNKNOWN_CLAIM`]); `None` is the
     /// measured-absent verdict ([`FACTION_ABSENT_CLAIM`]).
@@ -234,6 +374,46 @@ pub struct SpawnedZeppelinActor {
     pub declared: Option<ProgramActor>,
 }
 
+impl SpawnedZeppelinActor {
+    /// The attitude source the original applies last, when the ordering is
+    /// settled for this record.
+    #[must_use]
+    pub fn attitude_source(&self) -> Option<&AttitudeSource> {
+        match &self.attitude {
+            AttitudeBinding::Measured(source) => Some(source),
+            AttitudeBinding::Open(_) => None,
+        }
+    }
+
+    /// The source this record's attitude *overwrites*, named as the residue
+    /// (#792) so the losing carrier is never silently dropped: the record's
+    /// own spawn attitude when a startup rotation applies last, the startup
+    /// placement's silence (and its translate, which does apply) when the
+    /// spawn attitude is the last rotation, and the open question verbatim
+    /// when the ordering could not be settled.
+    #[must_use]
+    pub fn attitude_residue(&self) -> String {
+        match &self.attitude {
+            AttitudeBinding::Measured(AttitudeSource::StartupPlacement { .. }) => format!(
+                "the record's own spawn attitude (yaw {}°, pitch {}° of {ZEPPELIN_MEMBER}) is the \
+                 residue: it is written to the same Object3d rotation slots at the spawn \
+                 (0x4becf8 → 0x4bf930 → 0x4bf950 → 0x4d1a30) and overwritten by the startup \
+                 state on the animation instance's first tick — the carrier's value stays the \
+                 zeppelin object's own attitude (obj+0x2c/obj+0x30)",
+                self.stored_yaw, self.stored_pitch,
+            ),
+            AttitudeBinding::Measured(AttitudeSource::CarrierSpawn { .. }) => format!(
+                "{PLACEZEPS_MEMBER} states no OBJECT_ROTATE_STATE for `{}` (#791), so no startup \
+                 rotation overwrites the spawn attitude and the carrier's value is what the node \
+                 keeps; the same node's startup OBJECT_TRANSLATE_STATE does apply, to the node's \
+                 position, after this spawn write",
+                self.node
+            ),
+            AttitudeBinding::Open(reason) => reason.clone(),
+        }
+    }
+}
+
 /// How the carrier member read went.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CarrierRead {
@@ -244,6 +424,22 @@ pub enum CarrierRead {
     /// The archive or member could not be read; the reason is verbatim.
     Unreadable(String),
     /// [`read_zeppelins_member`] refused the bytes; the error is verbatim.
+    Refused(String),
+}
+
+/// How the scope's startup placements read, for the attitude ordering
+/// (#792): `placezeps.zrd` is the carrier whose `ON_STARTUP` states the
+/// original applies to the node *after* the spawn write.
+#[derive(Clone, Debug)]
+pub enum StartupRead {
+    /// The member decoded: every `OBJECT_ROTATE_STATE` it states, as the
+    /// `NAME` it addresses and the three radians the rotate parser stores.
+    Decoded(Vec<(String, [f32; 3])>),
+    /// The reader archive holds no `placezeps.zrd` member: this scope
+    /// starts no rotations, so nothing overwrites the spawn attitude.
+    Absent,
+    /// The member refused to decode; the ordering stays open verbatim
+    /// ([`ATTITUDE_PRECEDENCE_UNKNOWN_CLAIM`]).
     Refused(String),
 }
 
@@ -414,6 +610,15 @@ pub fn bind_mission_world_actors(
     };
     let carrier = CarrierRead::Decoded(member.records().len());
 
+    // The startup half of the attitude ordering (#792): the scope's own
+    // `placezeps.zrd` states the rotation the animation player applies to
+    // the same node after this spawn write. A refusal keeps every record's
+    // attitude open rather than picking a source.
+    let (startup, startup_span) = match read_startup_member(install_root, found, &archive) {
+        Ok(read) => read,
+        Err(reason) => (StartupRead::Refused(reason), None),
+    };
+
     // The subject join: the world container's canonical scene graph, the
     // same conversion the `world_geometry` surface runs. A refused graph
     // means no subject can be resolved — every record is reported with its
@@ -423,12 +628,13 @@ pub fn bind_mission_world_actors(
         .records()
         .iter()
         .enumerate()
-        .map(|(index, record)| declare_row(index, record, scene.as_ref().ok()))
+        .map(|(index, record)| declare_row(index, record, scene.as_ref().ok(), &startup))
         .collect();
 
     let program = assemble_program(
         mission_subject,
         &member_span,
+        startup_span.as_ref(),
         session_ticks_per_second,
         &rows,
     );
@@ -511,6 +717,60 @@ fn read_carrier_member(
     Ok((decoded, source))
 }
 
+/// Reads the scope's `placezeps.zrd` member: the startup rotations the
+/// mission states, and the member's own byte span for their provenance.
+///
+/// `Absent` is a *measured* absence — a scope whose startup carrier states
+/// no rotation leaves the spawn attitude as the last writer. A refusal is
+/// never read as an absence: it comes back as [`StartupRead::Refused`] so
+/// every record's attitude stays open under
+/// [`ATTITUDE_PRECEDENCE_UNKNOWN_CLAIM`].
+fn read_startup_member(
+    install_root: &Path,
+    found: &Discovery,
+    archive: &str,
+) -> Result<(StartupRead, Option<SourceSpan>), String> {
+    let Some(record) = found
+        .manifest
+        .files
+        .iter()
+        .find(|record| record.relative_spelling.logical_key() == archive)
+    else {
+        return Err(format!("{archive} is not in the discovered manifest"));
+    };
+    let bytes = read_container_bytes(install_root, record)?;
+    let discovery = discover_container(archive, &record.relative_spelling, &bytes);
+    let Some(member) = discovery.programs().iter().find(|program| {
+        program
+            .locator()
+            .member()
+            .is_some_and(|name| name.eq_ignore_ascii_case(PLACEZEPS_MEMBER))
+    }) else {
+        return Ok((StartupRead::Absent, None));
+    };
+    let decoded = read_placezeps_member(member.bytes()).map_err(|error| error.to_string())?;
+    let span = member.locator().span();
+    let source = SourceSpan::new(
+        cs_assets::install::fingerprint(&found.manifest),
+        archive,
+        Some(PLACEZEPS_MEMBER),
+        span.offset,
+        span.len,
+        None,
+    )
+    .map_err(|error| format!("the member's span refuses: {error}"))?;
+    // Every `OBJECT_ROTATE_STATE` of the member, in stored order: the `NAME`
+    // it addresses and the three radians the rotate parser leaves in the
+    // event (#791), which the executor hands to `0x4d1a30` (#792).
+    let rotations = decoded
+        .definitions()
+        .iter()
+        .filter_map(|definition| definition.sequence().rotate())
+        .map(|statement| (statement.node().to_owned(), statement.parsed()))
+        .collect();
+    Ok((StartupRead::Decoded(rotations), Some(source)))
+}
+
 /// Reads `{group_dir}/gamez.zbd` and converts it through the production
 /// `world_scene_graph_from_gamez` path — the same adapter and empty binding
 /// map `measure_geometry` uses, so the subject join is the launch surface's
@@ -554,6 +814,56 @@ fn read_container_bytes(
     std::fs::read(&host).map_err(|error| format!("cannot read {}: {error}", host.display()))
 }
 
+/// The record's own spawn attitude, converted and clamped exactly as the
+/// load converts and clamps it: degrees→radians through
+/// [`crate::mission_start::stored_heading_radians`] (the image's
+/// `0x6040e8`, `0x4bda9b`/`0x4bdab2`), `pitch` then clamped to the record's
+/// `min_pitch`/`max_pitch` the way `0x4bdbc6` clamps it before the spawn
+/// hands the pair to `SetRotation` (`0x4bf950` clamps again on the way).
+fn spawn_attitude(record: &cs_formats::zbd::zeppelins::ZeppelinRecord) -> AttitudeSource {
+    use crate::mission_start::stored_heading_radians;
+    let min = stored_heading_radians(record.min_pitch());
+    let max = stored_heading_radians(record.max_pitch());
+    let pitch = stored_heading_radians(record.pitch());
+    AttitudeSource::CarrierSpawn {
+        yaw_radians: stored_heading_radians(record.yaw()),
+        // A record that states an inverted range leaves the pitch alone
+        // rather than panicking; M01's three records state a sane one.
+        pitch_radians: if min <= max {
+            pitch.clamp(min, max)
+        } else {
+            pitch
+        },
+    }
+}
+
+/// The source the original applies last for this record's attitude (#792):
+/// the startup carrier's `OBJECT_ROTATE_STATE` for the record's `node` when
+/// the scope states one — the later of the two writes to the same
+/// `Object3d` rotation slots — and the record's own spawn attitude
+/// otherwise. A refused startup carrier settles nothing.
+fn attitude_for(
+    record: &cs_formats::zbd::zeppelins::ZeppelinRecord,
+    startup: &StartupRead,
+) -> AttitudeBinding {
+    match startup {
+        StartupRead::Refused(reason) => AttitudeBinding::Open(format!(
+            "{ATTITUDE_PRECEDENCE_UNKNOWN_REASON_PREFIX}{reason}"
+        )),
+        StartupRead::Absent => AttitudeBinding::Measured(spawn_attitude(record)),
+        StartupRead::Decoded(rotations) => {
+            match rotations.iter().find(|(node, _)| node == record.node()) {
+                Some((_, rotation_radians)) => {
+                    AttitudeBinding::Measured(AttitudeSource::StartupPlacement {
+                        rotation_radians: *rotation_radians,
+                    })
+                }
+                None => AttitudeBinding::Measured(spawn_attitude(record)),
+            }
+        }
+    }
+}
+
 /// One record's declared outcome: the stored pose kept verbatim, the `node`
 /// name joined against the canonical scene graph, and the
 /// [`DeclaredWorldActor`] when the join names a single node.
@@ -561,6 +871,7 @@ fn declare_row(
     index: usize,
     record: &cs_formats::zbd::zeppelins::ZeppelinRecord,
     scene: Option<&cs_content::scene::SceneGraph>,
+    startup: &StartupRead,
 ) -> SpawnedZeppelinActor {
     let subject = match scene {
         None => NodeJoin::Absent,
@@ -584,6 +895,7 @@ fn declare_row(
         stored_position: record.position(),
         stored_yaw: record.yaw(),
         stored_pitch: record.pitch(),
+        attitude: attitude_for(record, startup),
         team: record.team().map(str::to_owned),
         deactivated: record.deactivated(),
         subject,
@@ -593,10 +905,15 @@ fn declare_row(
 
 /// Declares one actor per row whose subject joined, with the measured pose
 /// bound and every unmeasured field an explicit unknown.
+///
+/// `startup_span` is the byte span of the scope's `placezeps.zrd` when it
+/// read: a startup-sourced attitude is provenanced from *that* member, a
+/// spawn-sourced one from the carrier's own `span` (#792).
 fn declare_actor(
     row: &SpawnedZeppelinActor,
     actor: ProgramActor,
     span: &SourceSpan,
+    startup_span: Option<&SourceSpan>,
 ) -> Option<DeclaredWorldActor> {
     let NodeJoin::Single(subject) = &row.subject else {
         return None;
@@ -607,6 +924,27 @@ fn declare_actor(
         Some(span.clone()),
     )
     .expect("observed provenance with a source span");
+    let orientation = match &row.attitude {
+        AttitudeBinding::Measured(source) => {
+            let source_span = match source {
+                AttitudeSource::StartupPlacement { .. } => {
+                    startup_span.cloned().unwrap_or_else(|| span.clone())
+                }
+                AttitudeSource::CarrierSpawn { .. } => span.clone(),
+            };
+            let provenance = Provenance::new(
+                claim(SPAWN_ATTITUDE_CLAIM),
+                cs_types::evidence::ClaimStatus::ObservedTool,
+                Some(source_span),
+            )
+            .expect("observed provenance with a source span");
+            Resolved::Known(Known::new(source.orientation(), provenance))
+        }
+        AttitudeBinding::Open(reason) => {
+            Resolved::unknown(claim(ATTITUDE_PRECEDENCE_UNKNOWN_CLAIM), reason)
+                .expect("a reason is stated")
+        }
+    };
     let [x, y, z] = row.stored_position;
     Some(DeclaredWorldActor {
         actor,
@@ -619,8 +957,7 @@ fn declare_actor(
                 [f64::from(x), f64::from(y), f64::from(z)],
                 pose_provenance,
             )),
-            orientation: Resolved::unknown(claim(ATTITUDE_UNKNOWN_CLAIM), ATTITUDE_UNKNOWN_REASON)
-                .expect("a reason is stated"),
+            orientation,
         },
         sockets: Vec::new(),
     })
@@ -635,6 +972,7 @@ fn declare_actor(
 fn assemble_program(
     mission_subject: &ContentId,
     member_span: &SourceSpan,
+    startup_span: Option<&SourceSpan>,
     session_ticks_per_second: u32,
     rows: &[SpawnedZeppelinActor],
 ) -> Option<DeclaredWorldActorProgram> {
@@ -642,7 +980,7 @@ fn assemble_program(
         .iter()
         .filter_map(|row| {
             row.declared
-                .and_then(|actor| declare_actor(row, actor, member_span))
+                .and_then(|actor| declare_actor(row, actor, member_span, startup_span))
         })
         .collect();
     if actors.is_empty() {
@@ -788,6 +1126,10 @@ mod tests {
             stored_position: [-3678.6, 1460.0, -11985.3],
             stored_yaw: 180.0,
             stored_pitch: 0.0,
+            attitude: AttitudeBinding::Measured(AttitudeSource::CarrierSpawn {
+                yaw_radians: crate::mission_start::stored_heading_radians(180.0),
+                pitch_radians: 0.0,
+            }),
             team: Some("enemy".to_owned()),
             deactivated: None,
             declared: matches!(&subject, NodeJoin::Single(_)).then(|| ProgramActor(index as u32)),
@@ -807,11 +1149,12 @@ mod tests {
     }
 
     /// **A record whose `node` joins a world node declares an actor with the
-    /// measured spawn pose bound and every unmeasured field refused by name.**
+    /// measured spawn pose and the measured attitude bound, and every still
+    /// unmeasured field refused by name.**
     /// The production declaration is what the launch surface reads: position
-    /// metres under the spawn-pose claim, `orientation` and `faction` as
-    /// explicit unknowns, and the session path still refuses — the
-    /// measurement is carried, never faked.
+    /// metres under the spawn-pose claim, the composed attitude under the
+    /// compose claim, `faction` as an explicit unknown, and the session path
+    /// still refuses — the measurement is carried, never faked.
     #[test]
     fn accept_vs_m01_runtime_spawn_declaration_binds_only_the_measured_fields() {
         let rows = vec![
@@ -824,8 +1167,14 @@ mod tests {
             // A record whose node names nothing declares no actor.
             row(2, "ghostzep", NodeJoin::Absent),
         ];
-        let program = assemble_program(&mission(), &source_span(), SESSION_TICKS_PER_SECOND, &rows)
-            .expect("the joined records assemble a program");
+        let program = assemble_program(
+            &mission(),
+            &source_span(),
+            None,
+            SESSION_TICKS_PER_SECOND,
+            &rows,
+        )
+        .expect("the joined records assemble a program");
 
         assert_eq!(
             program.actors().len(),
@@ -854,62 +1203,86 @@ mod tests {
             ClaimStatus::ObservedTool,
             "the spawn pose is claimed at observed_tool, never stronger"
         );
-        for (resolved, claim) in [
-            (format!("{orientation:?}"), ATTITUDE_UNKNOWN_CLAIM),
-            (format!("{:?}", actor.faction), FACTION_UNKNOWN_CLAIM),
-        ] {
-            assert!(resolved.contains(claim), "the field is filed under {claim}");
-        }
+        assert!(
+            format!("{:?}", actor.faction).contains(FACTION_UNKNOWN_CLAIM),
+            "the field is filed under {FACTION_UNKNOWN_CLAIM}"
+        );
+        // The composed attitude binds measured under the compose claim, at
+        // `observed_tool`, from the source the original applies last — the
+        // record's own spawn attitude here, because the fixture's row states
+        // no startup rotation.
+        let Resolved::Known(attitude) = orientation else {
+            panic!("the composed attitude binds measured");
+        };
+        assert_eq!(attitude.provenance.claim_id.as_str(), SPAWN_ATTITUDE_CLAIM);
+        assert_eq!(attitude.provenance.class, ClaimStatus::ObservedTool);
+        assert_eq!(
+            attitude.value,
+            object3d_orientation(
+                0.0,
+                f64::from(crate::mission_start::stored_heading_radians(180.0)),
+                0.0
+            ),
+            "the spawn attitude composes as Ry(yaw)·Rx(pitch) with the roll slot clear"
+        );
+        assert_eq!(
+            rows[0].attitude_source(),
+            Some(&AttitudeSource::CarrierSpawn {
+                yaw_radians: crate::mission_start::stored_heading_radians(180.0),
+                pitch_radians: 0.0,
+            }),
+            "the row carries the source the original applies last"
+        );
+        assert!(
+            rows[0].attitude_residue().contains("OBJECT_ROTATE_STATE"),
+            "the source this one does not take is still named: {}",
+            rows[0].attitude_residue()
+        );
 
         // A record that states no `team` is the measured-absent verdict, a
         // different claim from an unmapped spelling.
         let mut bare = row(3, "blackswanzep", scene_subject("world1.blackswanzep"));
         bare.team = None;
-        let bare = declare_actor(&bare, ProgramActor(3), &source_span()).expect("declares");
+        let bare = declare_actor(&bare, ProgramActor(3), &source_span(), None).expect("declares");
         assert!(format!("{:?}", bare.faction).contains(FACTION_ABSENT_CLAIM));
 
         // The open-field list names every gap the lowering would hit, not
-        // just the first: orientation and faction for each declared actor.
+        // just the first: the faction of each declared actor. The attitude
+        // is measured (#792), so it is no longer part of the list.
         let open = collect_open_fields(&program);
-        assert_eq!(open.len(), 4, "two actors x (orientation + faction)");
+        assert_eq!(open.len(), 2, "two actors x faction");
         assert!(
-            open.iter()
-                .all(|field| matches!(field.field, "orientation" | "faction")),
+            open.iter().all(|field| field.field == "faction"),
             "the open fields are exactly the unmeasured ones: {open:?}"
         );
 
         // The production lowering refuses the first unknown by name.
         let error = lower_world_actors(&program).expect_err("the unmeasured fields refuse");
         assert!(
-            matches!(error, WorldActorLowerError::UnknownValue { field, .. } if field == "orientation"),
-            "the first refusal names the attitude: {error}"
+            matches!(error, WorldActorLowerError::UnknownValue { field, .. } if field == "faction"),
+            "the first refusal names the faction: {error}"
         );
-        assert!(error.to_string().contains(ATTITUDE_UNKNOWN_CLAIM));
+        assert!(error.to_string().contains(FACTION_UNKNOWN_CLAIM));
     }
 
     /// **When the fields are measured the same production path launches a
     /// session and the actor stands at its declared spawn.**
-    /// The declared actor is rebuilt here with a designed faction and a
-    /// designed identity orientation — standing in for future measurements —
-    /// so the lowering, the launch and the anchor pose all run for real.
+    /// The declared actor is rebuilt here with a designed faction — the one
+    /// field #793 leaves open — so the lowering, the
+    /// launch and the anchor pose all run for real with the *measured*
+    /// attitude still on the actor.
     #[test]
     fn accept_vs_m01_runtime_a_measured_program_launches_and_places_the_actor() {
-        let mut actor = declare_actor(
-            &row(0, "piratezep", scene_subject("world1.piratezep")),
-            ProgramActor(0),
-            &source_span(),
-        )
-        .expect("the joined record declares");
+        let row = row(0, "piratezep", scene_subject("world1.piratezep"));
+        let expected_orientation = row
+            .attitude_source()
+            .expect("the fixture's attitude is settled")
+            .orientation();
+        let mut actor = declare_actor(&row, ProgramActor(0), &source_span(), None)
+            .expect("the joined record declares");
         actor.faction = designed(
             ContentId::from_source(ContentKind::Faction, "synthetic.raiders").expect("faction id"),
         );
-        let DeclaredMotion::Held { position_m, .. } = actor.motion.clone() else {
-            panic!("the spawn declares a held pose");
-        };
-        actor.motion = DeclaredMotion::Held {
-            position_m,
-            orientation: designed([0.0, 0.0, 0.0, 1.0]),
-        };
         let program = DeclaredWorldActorProgram::try_new(
             mission(),
             Origin::SyntheticFixture,
@@ -936,6 +1309,10 @@ mod tests {
             pose.position_m,
             [-3678.6_f32, 1460.0, -11985.3].map(f64::from),
             "the session places the actor at its measured spawn"
+        );
+        assert_eq!(
+            pose.orientation.0, expected_orientation,
+            "the session carries the composed attitude of the source that applies last"
         );
     }
 }
