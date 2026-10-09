@@ -16,13 +16,22 @@ use cs_types::input::{ActionMap, Binding, BindingSource, BindingTarget, FlightCo
 
 use crate::input::InputSession;
 
-/// The throttle the aircraft spawns with and a reset returns to: the level
-/// cruise setting the synthetic fixed-wing declares (`level_cruise` in
-/// `cs_sim::flight::synthetic`).
+/// The throttle the aircraft spawns with and a reset returns to.
+///
+/// Designed, not measured: the original game's own spawn throttle was not
+/// recovered. It is the level-cruise setting the synthetic fixed-wing declares
+/// (`level_cruise` in `cs_sim::flight::synthetic`), and over original content
+/// the original law starts and resets at the same declared cruise while its
+/// engine slews toward whatever command the session holds
+/// (`THROTTLE_SLEW_PER_S`). What that fraction is of the original's own cruise
+/// throttle is unknown, so this is a development choice and says so.
 pub const CRUISE_THROTTLE: f32 = 0.75;
 
 /// How far a held flight key deflects its axis, `0..=1`. Designed, not
-/// measured.
+/// measured, and it applies to **both** scenes: over original content the
+/// original law clamps the same deflection at its own boundary, and the
+/// original's own keyboard scaling was not recovered (#796 records joystick
+/// scaling as unknown), so nothing here is an original input rate.
 pub const KEY_DEFLECTION: f32 = 0.5;
 
 /// The playtest's action map: the designed default, with `R` freed for reset.

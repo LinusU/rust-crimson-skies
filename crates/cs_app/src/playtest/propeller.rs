@@ -5,8 +5,10 @@
 //! the presentation system that closes it, and it is deliberately **only** a
 //! presentation system: it reads the flight body's authoritative engine state
 //! ([`FlightAircraft::engine`], the spool the F24 fixed-wing advances each
-//! fixed tick from the held throttle) and writes the **propeller child's own
-//! local [`Transform`]**. It never writes the flight body's pose — the body
+//! fixed tick from the held throttle, or the original law's own actual
+//! throttle over original content, [`PlaytestOriginalFlight::engine`]) and
+//! writes the **propeller child's own local [`Transform`]**. It never writes
+//! the flight body's pose — the body
 //! belongs to the physics path alone (AGENTS rule 7, one pose owner).
 //!
 //! Three inputs, each from its own place, none invented here:
@@ -14,7 +16,7 @@
 //! | input | where it comes from |
 //! | --- | --- |
 //! | the hub axis and pivot | [`measure_propeller_hub`](crate::playtest_retail::measure_propeller_hub): measured from the drawn disc's own triangles |
-//! | the throttle / engine state | the production flight path: [`FlightAircraft::engine`] |
+//! | the throttle / engine state | the flight path the body was spawned with: [`FlightAircraft::engine`] (the synthetic scene's F24 record) or the original law's actual throttle (the retail scene's [`PlaytestOriginalFlight::engine`], task #797) |
 //! | the pause | [`PlaytestState::paused`], the same session policy the fixed clock obeys |
 //!
 //! and one designed value, the rate curve, which carries its own claim
@@ -40,6 +42,7 @@ use bevy::time::Virtual;
 use cs_sim::flight::EngineState;
 
 use super::PlaytestState;
+use super::scene::PlaytestOriginalFlight;
 use crate::physics::FlightAircraft;
 use crate::playtest_retail::{
     PLAYTEST_PROP_HUB_MEASUREMENT, PLAYTEST_PROP_SPIN_SENSE_IS_DESIGNED, PropellerHub,
@@ -206,10 +209,16 @@ impl PropellerSpin {
 /// is the one thing that decides, exactly as it does for the fixed clock. The
 /// advance itself is the virtual clock's own delta, so a paused clock moves
 /// nothing whatever this system is asked to do.
+///
+/// The engine state has two producers and this system reads whichever the body
+/// carries: the F24 [`FlightAircraft`] record the synthetic scene spawns, or
+/// the original law's own actual throttle
+/// ([`PlaytestOriginalFlight::engine`]) the retail scene spawns (task #797).
+/// A body with neither has nothing authoritative to read and is not spun.
 pub fn spin_propellers(
     time: Res<Time<Virtual>>,
     state: Res<PlaytestState>,
-    engines: Query<&FlightAircraft>,
+    engines: Query<(Option<&FlightAircraft>, Option<&PlaytestOriginalFlight>)>,
     mut spinners: Query<(&mut PropellerSpin, &ChildOf, &mut Transform)>,
 ) {
     if state.paused {
@@ -220,12 +229,17 @@ pub fn spin_propellers(
         return;
     }
     for (mut spin, child, mut transform) in &mut spinners {
-        let Ok(engine) = engines.get(child.parent()) else {
-            // Not a flight body's child: nothing authoritative to read, so
-            // nothing is spun.
+        let Ok((aircraft, original)) = engines.get(child.parent()) else {
+            // Not a spawned body: nothing authoritative to read, so nothing is
+            // spun.
             continue;
         };
-        let rate = propeller_spin_rate_rev_per_s(engine.engine());
+        let engine = match (aircraft, original) {
+            (Some(record), _) => record.engine(),
+            (_, Some(record)) => record.engine(),
+            (None, None) => continue,
+        };
+        let rate = propeller_spin_rate_rev_per_s(engine);
         if rate <= 0.0 {
             // Engine off: the angle holds, and the transform is not written.
             continue;

@@ -11,7 +11,14 @@
 //! * **Flight** is the production F24 path: [`crate::physics::spawn_flight_body`]
 //!   and [`crate::physics::FlightForcesPlugin`] run one fixed tick per
 //!   [`BASELINE_FIXED_HZ`] inside the F23 Avian adapter. The aircraft is moved
-//!   only by forces; no system here writes its `Transform`.
+//!   only by forces; no system here writes its `Transform`. **Over original
+//!   content there is one documented exception** (task #797): the retail scene
+//!   flies the original game's recovered fixed-wing law
+//!   ([`scene::PlaytestOriginalFlight`], provenance `OWNER-STATIC-2026-10-08`,
+//!   still uncalibrated against an original run #358), which integrates its own
+//!   attitude, so [`drive_original_flight`] submits the step's force *and*
+//!   writes the attitude the step integrated while the body integrates no
+//!   torque at all. The synthetic scene keeps the synthetic airframe.
 //! * **Input** is the F22 session through [`crate::input::platform::BevyInputPlugin`]:
 //!   the keyboard is read by Bevy, converted to device events, gated by the
 //!   session's focus/pause/context policy and only then read back as a
@@ -43,8 +50,8 @@ use bevy::app::{AppExit, RunFixedMainLoop, RunFixedMainLoopSystems};
 use bevy::input::ButtonInput;
 use bevy::input::keyboard::KeyCode;
 use bevy::prelude::{
-    App, Entity, FixedLast, IntoScheduleConfigs, Or, Plugin, Quat, Query, Res, ResMut, Resource,
-    Startup, Time, Transform, Update, Vec3, With, World,
+    App, Entity, FixedLast, FixedUpdate, IntoScheduleConfigs, Or, Plugin, Quat, Query, Res, ResMut,
+    Resource, Startup, Time, Transform, Update, Vec3, With, World,
 };
 use bevy::time::{Fixed, Real, TimeUpdateStrategy, Virtual};
 use cs_content::cameras::{AspectRatio, declared_synthetic_camera_modes};
@@ -62,14 +69,14 @@ use crate::input::platform::{BevyInputPlugin, PlatformInput};
 use crate::input::{InputSession, PauseReason, SessionMode};
 use crate::origin::OriginChange;
 use crate::physics::{
-    BASELINE_FIXED_HZ, ContactReports, FlightAircraft, FlightForcesPlugin, PhysicsAdapterPlugin,
-    PhysicsBodiesPlugin, PhysicsTickLedger,
+    BASELINE_FIXED_HZ, ContactReports, FlightAircraft, FlightForcesPlugin, ForceRequest,
+    ForceRequests, PhysicsAdapterPlugin, PhysicsBodiesPlugin, PhysicsTickLedger,
 };
 
 use self::command::{CRUISE_THROTTLE, flight_command, playtest_action_map};
 pub use self::retail::RetailRequest;
-use self::retail::{PlaytestAreaBody, RetailContent};
-use self::scene::{PlaytestAircraft, PlaytestGround, PlaytestObstacle};
+use self::retail::{PlaytestAreaBody, RetailContent, RetailFlight};
+use self::scene::{PlaytestAircraft, PlaytestGround, PlaytestObstacle, PlaytestOriginalFlight};
 
 /// The label shown on screen and in every artifact of the playtest.
 pub const PLAYTEST_LABEL: &str = "DEVELOPMENT PLAYTEST / SYNTHETIC SCENE / UNCALIBRATED FLIGHT";
@@ -109,6 +116,15 @@ pub enum PlaytestError {
         path: PathBuf,
         source: Box<crate::playtest_retail::PlaytestError>,
     },
+    /// The original flight parameters could not be imported for the retail
+    /// scene. There is no fallback to the synthetic airframe: a scene that
+    /// cannot state its flight law must fail, not fly something else.
+    Flight {
+        /// The installation that refused.
+        path: PathBuf,
+        /// What could not be read, imported or consumed.
+        detail: String,
+    },
     /// The smoke run could not write its artifacts.
     Io {
         path: PathBuf,
@@ -127,6 +143,12 @@ impl std::fmt::Display for PlaytestError {
             Self::Retail { path, source } => write!(
                 f,
                 "cannot fly the original assets of {} (no fallback to the synthetic scene): {source}",
+                path.display()
+            ),
+            Self::Flight { path, detail } => write!(
+                f,
+                "cannot fly the original flight law of {} (no fallback to the synthetic \
+                 airframe): {detail}",
                 path.display()
             ),
             Self::Io { path, source } => write!(f, "cannot write {}: {source}", path.display()),
@@ -195,6 +217,10 @@ pub struct PlaytestState {
     pub spawn_m: [f32; 3],
     /// The label every surface shows.
     pub label: &'static str,
+    /// Fixed ticks on which the original law refused to step (a non-finite
+    /// state or an out-of-range timestep). Zero in every run that flies; it is
+    /// counted rather than silently skipped.
+    pub original_step_errors: u64,
 }
 
 impl Default for PlaytestState {
@@ -213,6 +239,7 @@ impl Default for PlaytestState {
             telemetry: Telemetry::default(),
             spawn_m: scene::SPAWN_POSITION_M,
             label: PLAYTEST_LABEL,
+            original_step_errors: 0,
         }
     }
 }
@@ -280,6 +307,9 @@ impl Plugin for PlaytestPlugin {
             .init_resource::<PlaytestState>()
             .insert_resource(PlaytestCamera::new())
             .add_systems(Startup, setup_scene)
+            // The retail scene's original law runs on the fixed tick, before
+            // the F23 adapter drains this tick's force requests.
+            .add_systems(FixedUpdate, drive_original_flight)
             .add_systems(
                 RunFixedMainLoop,
                 apply_flight_command.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
@@ -344,6 +374,7 @@ fn apply_flight_command(
     platform: Res<PlatformInput>,
     mut state: ResMut<PlaytestState>,
     mut aircraft: Query<&mut FlightAircraft, With<PlaytestAircraft>>,
+    mut original: Query<&mut PlaytestOriginalFlight, With<PlaytestAircraft>>,
 ) {
     let command = flight_command(platform.session());
     if command != state.command {
@@ -354,6 +385,78 @@ fn apply_flight_command(
         record
             .set_command(command)
             .expect("a clamped command is valid");
+    }
+    // The retail scene's aircraft carries the original law instead of the F24
+    // record: it takes the same held command, unvalidated because the session
+    // produced it clamped and the law clamps it again at its own boundary.
+    for mut flight in &mut original {
+        flight.command = command;
+    }
+}
+
+/// One fixed tick of the original law that flies the retail playtest (task
+/// #797).
+///
+/// The law integrates pose and velocity itself, so this system does exactly
+/// what `docs/findings/2026-10-08-flight-original-fixed-wing-law.md` records as
+/// the consumer mapping and nothing more:
+///
+/// * **seed** the law from the body's authoritative `Position`, `Rotation` and
+///   `LinearVelocity`, so a contact the solver resolved is what the next step
+///   flies from (the body owns the linear pose: this is the one integrator);
+/// * **hand the acceleration back** as this tick's force,
+///   `world_force = (W / 9.82) * a`, with the body's mass declared as exactly
+///   `W / 9.82` and global gravity `ZERO`: gravity and drag are already inside
+///   `a`, so neither is added a second time;
+/// * **write the attitude the step integrated** and clear the body's angular
+///   velocity. The original rotates by `2 * |omega| * dt`, which no
+///   torque-driven rigid body reproduces, so while this law is active the law
+///   owns attitude and the body integrates no torque (`world_torque` is
+///   reported for instruments only and is never submitted).
+///
+/// A refused step (a non-finite state) is counted in
+/// [`PlaytestState::original_step_errors`] instead of being flown.
+fn drive_original_flight(
+    time: Res<Time<Fixed>>,
+    mut requests: ResMut<ForceRequests>,
+    mut state: ResMut<PlaytestState>,
+    mut aircraft: Query<(
+        Entity,
+        &mut PlaytestOriginalFlight,
+        &Position,
+        &mut Rotation,
+        &LinearVelocity,
+        &mut AngularVelocity,
+    )>,
+) {
+    let dt_s = time.timestep().as_secs_f64();
+    for (entity, mut flight, position, mut rotation, velocity, mut angular) in &mut aircraft {
+        flight.state.position_m = [
+            f64::from(position.0.x),
+            f64::from(position.0.y),
+            f64::from(position.0.z),
+        ];
+        flight.state.orientation = to_quaternion(rotation.0);
+        flight.state.velocity_mps = velocity.0.to_array().map(f64::from);
+        let input = flight.input();
+        let step = {
+            let record = &mut *flight;
+            record.model.step(&mut record.state, input, dt_s)
+        };
+        let Ok(step) = step else {
+            state.original_step_errors += 1;
+            continue;
+        };
+        let Ok(request) =
+            ForceRequest::new(entity, step.world_force.map(|value| value as f32), [0.0; 3])
+        else {
+            state.original_step_errors += 1;
+            continue;
+        };
+        requests.submit(request);
+        let [x, y, z, w] = flight.state.orientation.components();
+        rotation.0 = Quat::from_xyzw(x as f32, y as f32, z as f32, w as f32).normalize();
+        angular.0 = Vec3::ZERO;
     }
 }
 
@@ -626,6 +729,9 @@ pub fn run_playtest(request: &PlaytestRequest) -> Result<(), PlaytestError> {
     let (mut app, handle) = windowed_app(request.smoke.as_ref(), request.retail.as_ref())?;
     if let Some(content) = app.world().get_resource::<RetailContent>() {
         println!("playtest sources: {}", content.manifest_json());
+    }
+    if let Some(flight) = app.world().get_resource::<RetailFlight>() {
+        println!("playtest flight: {}", flight.json());
     }
     let exit = app.run();
     if let (Some(handle), Some(smoke_request)) = (&handle, &request.smoke) {
