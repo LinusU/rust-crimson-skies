@@ -1869,8 +1869,12 @@ fn evidence_report_m05_b_writes_the_acceptance_report() {
              agent instance and model with a fresh context (a new session that re-read the task \
              history, the mission sheet, the shared contract and the diff), so this review is \
              independent of the implementation, but it is an agent review of the code and tests, \
-             not independent original-reference evidence and not original-run evidence; no agent \
-             review replaces the owner's human approval"
+             not independent original-reference evidence and not original-run evidence; current \
+             reviewer: bunny-alpha-1/bunny-alpha-1 (fresh session of 2026-10-09, a different \
+             agent instance from the implementer, handed the review again after the landing \
+             conflict of 2026-10-09T09:10Z: it hand-rebased the branch onto main, kept both \
+             stage paragraphs in the main.rs doc conflict, re-ran the four checks and \
+             regenerated this report); no agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; the fields are derived \
@@ -1880,7 +1884,10 @@ fn evidence_report_m05_b_writes_the_acceptance_report() {
              The reviewer re-ran the whole acceptance suite with CS_GAME_DIR on the rebased \
              commit, re-applied the documented 58 → 57 block-count mutation, regenerated this \
              report from that run and validated it with \
-             tools/validate_evidence.py --require-pass"
+             tools/validate_evidence.py --require-pass; after the landing conflict of \
+             2026-10-09T09:10Z the current reviewer hand-rebased the branch onto main again, \
+             re-ran the four checks and this suite on that tree, re-applied the same mutation \
+             there and regenerated this report from that run"
         ),
     );
 
