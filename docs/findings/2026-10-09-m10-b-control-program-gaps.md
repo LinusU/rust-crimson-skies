@@ -78,3 +78,42 @@ Each applied, run against `accept_m10_b_`, observed and reverted:
 | --- | --- |
 | `cs_content::mission_control::terminal_outcome_of`: `INSTANTWIN` → `None` | 3 failures (dispositions, lowering, synthetic terminal-block binding) |
 | `m10_b.rs`: expected block count 49 → 48 | 3 failures (control program, terminal blocks, lowering) |
+
+## Review
+
+Reviewed by **bunny-alpha-2/bunny-alpha-2** on 2026-10-09 in a fresh session
+(a different agent instance and model from the implementer), against
+`missions/M10.md` (`M10-B`), `docs/contracts/SCRIPT-MISSION.md`,
+`docs/contracts/CLI-EVIDENCE.md` and the diff. Review is independent of the
+implementation; it is an agent review of the code and tests, not independent
+original-reference evidence and not original-run evidence.
+
+- Rebased onto `origin/main` (`26cc21a5`) without conflicts; the branch then
+  carried the three stage commits plus the reviewer-identity commit.
+- Checks on that rebased tree, 2026-10-09 04:29–04:40 UTC: `cargo fmt --all --
+  --check` (0), `cargo clippy --workspace --all-targets --all-features --locked
+  -- -D warnings` (0), `cargo test --workspace --locked` (0), `cargo test
+  --workspace --locked -- accept_m10_b_ --include-ignored` (0: 9 discovered, 9
+  executed, 9 passed, 0 failed, 0 ignored).
+- Evidence regenerated from that run with the recipe in the `evidence.rs`
+  header (`candidate_tree` `be666013…`, the tree of the commit tested), written
+  to `private/evidence/M10-B/acceptance.json` and validated with
+  `tools/validate_evidence.py --require-pass` (exit 0). The committed copy in
+  `docs/findings/evidence/M10-B.json` is that file; the only field changes from
+  the implementer's copy are `candidate_tree`, `created_at`, the artifact hash
+  of this run's log, the `cwd`, and `review.identity` / `review.method`, which
+  now name the reviewer instead of the hand-over placeholder.
+- Both mutations above re-applied by the reviewer and reverted, each failing
+  exactly the same 3 of the 9 tests the implementer recorded; the working tree
+  was clean afterwards.
+- `python3 -m unittest discover -s tools/tests -p 'test_evidence_review_identity.py'`
+  → 27 tests, OK (M10-B is not in a Rally review snapshot yet, so its
+  implementer/reviewer pair is an advisory note there, as the reader documents).
+- No protected path, no original data and no binary file changed; the only
+  files on the branch are the two test files, the `mod m10_b;` wiring line,
+  this finding and the evidence copy.
+
+Not fixed here, unchanged and still open: the `TRAVELERS` counting mode
+(blocks 22 and 35) and the polarity word `LEAVING` are **M10-B-FU1** (#812), and
+`M10` stays unready until they are measured.
+
