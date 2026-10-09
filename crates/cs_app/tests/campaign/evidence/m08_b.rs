@@ -11,7 +11,7 @@ const RETAIL_TESTS_M08_B: &[&str] = &[
     "accept_m08_b_m08s_control_program_is_bound_to_the_same_identities_as_its_mission_binding",
     "accept_m08_b_the_measured_vocabulary_partitions_and_refuses_no_m08_key",
     "accept_m08_b_the_block_graph_is_closed_under_the_records_own_numbering",
-    "accept_m08_b_the_danger_zones_condition_is_the_gap_that_keeps_m08_unlowered",
+    "accept_m08_b_m08s_record_lowers_completely_and_the_gate_stays_closed_on_other_rows",
     "accept_m08_b_the_three_sheet_priorities_locate_in_the_measured_record",
 ];
 
@@ -21,7 +21,7 @@ const RETAIL_TESTS_M08_B: &[&str] = &[
 /// condition — into CI, where there is no original data.
 const SYNTHETIC_TESTS_M08_B: &[&str] = &[
     "accept_m08_b_m08s_kill_shapes_bind_as_one_list_argument_and_an_over_wide_one_refuses",
-    "accept_m08_b_the_danger_zones_condition_refuses_while_a_measured_condition_lowers",
+    "accept_m08_b_a_danger_zones_condition_lowers_and_an_unreadable_one_refuses",
 ];
 
 /// Evidence-report harness for task M08-B, *The Petrol Plot*'s

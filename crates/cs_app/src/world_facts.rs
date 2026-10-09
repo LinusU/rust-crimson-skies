@@ -1,5 +1,5 @@
 //! The world-side half of [`cs_script::runtime::MissionFacts`]: the writer for
-//! `members`, `groups`, `generators` and `animations`.
+//! `members`, `groups`, `generators`, `animations` and `danger_zones`.
 //!
 //! The simulation owns the other two maps — [`cs_sim::mission::ActorFactTable`]
 //! writes `actors` and [`cs_sim::mission::BlockLifecycleTable`] writes
@@ -9,7 +9,7 @@
 //!
 //! # What the record spells, and what has to answer
 //!
-//! The lowering (`M01-LC-DIRECTIVE-LOWERING`) emits four conditions that read
+//! The lowering (`M01-LC-DIRECTIVE-LOWERING`) emits five conditions that read
 //! world state rather than program state:
 //!
 //! | Condition | Map it reads | Operand the record spells |
@@ -18,6 +18,7 @@
 //! | [`cs_script::ir::Condition::Travelers`] | `members` | a subject chain and, for an object anchor, an anchor chain |
 //! | [`cs_script::ir::Condition::EnemyGroupDepletion`] | `groups`, `generators` | a **group id** and an optional generator name |
 //! | [`cs_script::ir::Condition::AnimationStates`] | `animations` | an **animation name** per listed pair |
+//! | [`cs_script::ir::Condition::DangerZoneFlags`] | `danger_zones` | a **zone name** per listed zone |
 //!
 //! None of those maps had a writer when the lowering landed, so
 //! [`cs_script::runtime::MissionState::holds`] answered `false` for every key they read and the 24
@@ -39,8 +40,8 @@
 //! 2. **What does the world say about it this tick?** That is observation, and
 //!    it is [`WorldObservation`]'s job: the host's per-tick report of the
 //!    in-play state of the members it is holding, the living count of the
-//!    groups it tracks, the pending spawns a generator owes and the state byte
-//!    of an animation it is running.
+//!    groups it tracks, the pending spawns a generator owes, the state byte
+//!    of an animation it is running and the danger-zone flags it has set.
 //!
 //! A resolved name nobody observed this tick gets **no row at all**, which is
 //! the same fail-closed read every other unpopulated map gives
@@ -308,6 +309,9 @@ pub struct WorldObservation {
     /// Animation name → its current state byte (`UNDEFINED` 0 …
     /// `INVALID_AND_RUNNING` 6).
     animations: BTreeMap<String, u32>,
+    /// Zone names whose danger-zone flag the world has set — sticky, exactly
+    /// as the original's byte is: once reported, a name stays reported.
+    danger_zones: BTreeSet<String>,
 }
 
 impl WorldObservation {
@@ -345,6 +349,18 @@ impl WorldObservation {
         self
     }
 
+    /// Reports that the world has set one zone's danger-zone flag.
+    ///
+    /// The flag is sticky in the original (`0x446990` writes `1` and nothing
+    /// writes `0`), so a host that observed a crossing keeps reporting it —
+    /// [`WorldFactTable::facts`] takes this report as the observation for
+    /// that tick, and [`MissionFacts::absorb`] unions the sets across ticks.
+    #[must_use]
+    pub fn danger_zone(mut self, name: impl Into<String>) -> Self {
+        self.danger_zones.insert(name.into());
+        self
+    }
+
     /// The member chains this report carries.
     #[must_use]
     pub fn members(&self) -> &BTreeMap<MemberName, MemberObservation> {
@@ -368,6 +384,12 @@ impl WorldObservation {
     pub fn animations(&self) -> &BTreeMap<String, u32> {
         &self.animations
     }
+
+    /// The zone names this report carries a set danger-zone flag for.
+    #[must_use]
+    pub fn danger_zones(&self) -> &BTreeSet<String> {
+        &self.danger_zones
+    }
 }
 
 /// Every world-side operand one program's conditions spell, collected once so
@@ -389,6 +411,11 @@ pub struct WorldOperands {
     pub generators: BTreeSet<String>,
     /// Every animation name any `AnimationStates` names.
     pub animations: BTreeSet<String>,
+    /// Every zone name any `DangerZoneFlags` names, verbatim: the fact is
+    /// keyed by the zone name exactly as the record listed it, the way the
+    /// original's flag array is indexed by that list. No chain resolution
+    /// applies to it — the original compares the name itself.
+    pub danger_zones: BTreeSet<String>,
 }
 
 impl WorldOperands {
@@ -434,6 +461,9 @@ impl WorldOperands {
                 operands
                     .animations
                     .extend(animations.iter().map(|(name, _)| name.clone()));
+            }
+            Condition::DangerZoneFlags { zones, .. } => {
+                operands.danger_zones.extend(zones.iter().cloned());
             }
             Condition::All(inner) | Condition::Any(inner) => {
                 for child in inner {
@@ -529,7 +559,7 @@ impl WorldFactTable {
         self.resolver.is_some()
     }
 
-    /// The [`MissionFacts`] this table observed, carrying **only** the four
+    /// The [`MissionFacts`] this table observed, carrying **only** the five
     /// world-side maps.
     ///
     /// Row rules, in order:
@@ -548,6 +578,8 @@ impl WorldFactTable {
     ///   zeroed position: recorded absent, never invented.
     /// * **A group, generator or animation** → the reported count or state
     ///   byte, and *no row at all* when nothing reported one.
+    /// * **A zone** → its flag only when the world reported it set, and no
+    ///   row at all otherwise: an unobserved zone is the byte nobody wrote.
     ///
     /// The argument is [`WorldOperands`], the operands the program will
     /// actually ask about, so a fact nobody reads is not carried either.
@@ -588,6 +620,14 @@ impl WorldFactTable {
                 facts.animations.insert(name.clone(), *state);
             }
         }
+        // A zone name needs no resolution — the original compares the name
+        // itself — but it still needs the world to have reported the flag:
+        // unobserved means the byte nobody wrote, which answers `false`.
+        for name in &operands.danger_zones {
+            if self.observation.danger_zones.contains(name) {
+                facts.danger_zones.insert(name.clone());
+            }
+        }
         facts
     }
 }
@@ -610,14 +650,14 @@ const fn missing_member() -> MemberFact {
 ///
 /// This is the fold the two `cs_sim` tables document as the caller's job: the
 /// actor-fact table owns `actors`, the block-lifecycle table owns `objectives`
-/// and the world-side table owns the other four, and each builds its own
+/// and the world-side table owns the other five, and each builds its own
 /// [`MissionFacts`] for [`MissionFacts::absorb`] to combine. Doing it here, in
 /// one function, is what makes "the maps were folded before the tick that
 /// evaluated them" a property a caller gets by construction rather than by
 /// remembering.
 ///
 /// `session` contributes its actor observations, `blocks` the numbered blocks'
-/// lifecycle states and `world` the four world-side maps, keyed exactly as the
+/// lifecycle states and `world` the five world-side maps, keyed exactly as the
 /// record spelled them.
 #[must_use]
 pub fn compose_mission_facts(

@@ -34,16 +34,17 @@
 //!   completion conditions were refused because this build lowers no
 //!   condition for the danger-zones flag evaluator. #800 landed on `main`
 //!   while this branch was in flight and closed the first half — the
-//!   adapter now carries an objective-index list as one list argument — so
-//!   the tests pin that every one of M08's 209 sites binds *and* that the
-//!   eight danger-zones predicates are the only unmet requirement left
-//!   (#813 owns them). The record still does not lower completely, the
-//!   census row stays incomplete and the campaign gate stays closed.
+//!   adapter now carries an objective-index list as one list argument — and
+//!   M07-B-FU1 (#813) closed the second by measuring who writes those flag
+//!   bytes in the engine image, so the tests pin that every one of M08's 209
+//!   sites binds *and* that every completion condition lowers: the record
+//!   lowers completely, the census row is complete, and the campaign gate
+//!   stays closed on the rows whose gaps remain.
 //! * **The three sheet priorities are located in the measured record** as
 //!   directives, operands and block edges the record spells — never as a
 //!   timing, count or coordinate it does not. Their predicates (the wrong
 //!   actor, the wrong session, a repeated event) are runtime observations
-//!   and stay unmeasured: M08 has no runtime consumer yet and ordinary-play
+//!   and stay unmeasured: lowering says nothing about them and ordinary-play
 //!   evidence is M08-C's.
 //!
 //! Nothing here is `verified_original` (AGENTS.md rule 8): the
@@ -91,8 +92,6 @@ const KEYS: usize = 22;
 /// The sites of the kill key, every one of which binds now that the adapter
 /// carries an objective-index list as one list argument (#800).
 const KILL_SITES: u32 = 19;
-/// The completion conditions this build refuses (the danger-zones sites).
-const REFUSED_CONDITIONS: usize = 8;
 
 /// The original installation, as the environment declares it.
 fn game_dir() -> PathBuf {
@@ -843,20 +842,19 @@ fn accept_m08_b_the_block_graph_is_closed_under_the_records_own_numbering() {
     );
 }
 
-/// **The one gap that still keeps M08 from lowering is named, and the
-/// campaign gate stays closed.** M08's vocabulary is fully measured, so the
-/// refusal is not an unknown directive: eight `DANGER_ZONES_COMPLETED`
-/// completion conditions are refused because this build lowers no predicate
-/// for the danger-zones flag evaluator (#813). The other half this pin was
-/// written against — nineteen `KILL_…` sites running into the registry's
-/// per-signature argument bound — was closed on `main` by #800 while this
-/// stage was in flight: the adapter now carries an objective-index list as
-/// one list argument, so every one of M08's 209 sites binds and the kill
-/// key registers. Both halves are asserted here, so a regression in either
-/// direction fails this test.
+/// **M08's record lowers completely, and the campaign gate stays closed on the
+/// rows whose gaps remain.** M08's vocabulary is fully measured, so nothing
+/// refuses: eight `DANGER_ZONES_COMPLETED` completion conditions lower through
+/// M07-B-FU1 (#813)'s measured flag predicate (#813) — the refusal this pin was
+/// written against — and the other half, nineteen `KILL_…` sites running into
+/// the registry's per-signature argument bound, was closed on `main` by #800
+/// while this stage was in flight: the adapter now carries an objective-index
+/// list as one list argument, so every one of M08's 209 sites binds and the
+/// kill key registers. Both halves are asserted here, so a regression in
+/// either direction fails this test.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m08_b_the_danger_zones_condition_is_the_gap_that_keeps_m08_unlowered() {
+fn accept_m08_b_m08s_record_lowers_completely_and_the_gate_stays_closed_on_other_rows() {
     let binding = control_binding();
     let row = census_row();
     let lowered = row
@@ -866,22 +864,15 @@ fn accept_m08_b_the_danger_zones_condition_is_the_gap_that_keeps_m08_unlowered()
     let record = &binding.record;
 
     assert!(
-        !record.is_complete(attempt),
-        "M08's control record does not lower completely"
+        record.is_complete(attempt),
+        "M08's control record lowers completely"
     );
-    assert!(
-        !row.is_complete(),
-        "the census reports M08's row incomplete"
-    );
+    assert!(row.is_complete(), "the census reports M08's row complete");
     let lowering = record.lowering(attempt);
     let unmet: Vec<&str> = lowering.unmet().map(|row| row.kind.code()).collect();
-    assert_eq!(
-        unmet,
-        ["objective_condition", "call_arguments"],
-        "the eight danger-zones predicates are unmet twice over: as the \
-         condition row itself, and through the `MissionProgram::validate` \
-         error the unknown condition raises — no host call is refused, which \
-         is what the assertions below prove — unbound={:?} program={}",
+    assert!(
+        unmet.is_empty(),
+        "neither requirement is unmet any more: {unmet:?} (unbound={:?} program={})",
         attempt.unbound_keys,
         lowered.program().is_some()
     );
@@ -965,22 +956,13 @@ fn accept_m08_b_the_danger_zones_condition_is_the_gap_that_keeps_m08_unlowered()
         .validation
         .clone()
         .expect("the assembled program stood to be validated");
-    assert_eq!(
-        validation.len(),
-        1,
-        "validation reports exactly one unsupported instruction: {validation:?}"
-    );
     assert!(
-        validation[0].contains("DANGER_ZONES_COMPLETED")
-            && validation[0].contains("unsupported instruction"),
-        "and it is the danger-zones condition of OBJECTIVE17, not a host call: \
-         {}",
-        validation[0]
+        validation.is_empty(),
+        "validation accepts every lowered condition: {validation:?}"
     );
 
-    // The gap itself — the danger-zones completion conditions. Eight blocks
-    // refuse, every one of them the same measured evaluator, and every other
-    // block lowers.
+    // The danger-zones surface — the eight blocks OBJECTIVE17…OBJECTIVE24,
+    // which used to refuse — now lowers, and so does every other block.
     assert_eq!(
         attempt.conditions.len() as u32,
         record.blocks(),
@@ -994,26 +976,16 @@ fn accept_m08_b_the_danger_zones_condition_is_the_gap_that_keeps_m08_unlowered()
             _ => None,
         })
         .collect();
-    assert_eq!(
-        condition_refusals.len(),
-        REFUSED_CONDITIONS,
-        "exactly eight completion conditions refuse: {condition_refusals:?}"
-    );
     assert!(
-        condition_refusals
-            .iter()
-            .all(|field| field.contains("DANGER_ZONES_COMPLETED")
-                && field.contains("objective_condition")),
-        "every refusal names the danger-zones evaluator and the requirement it \
-         leaves unmet"
+        condition_refusals.is_empty(),
+        "no completion condition refuses: {condition_refusals:?}"
     );
     for number in 17..=24 {
-        assert!(
-            condition_refusals
-                .iter()
-                .any(|field| field.contains(&format!("`OBJECTIVE{number}`"))),
-            "OBJECTIVE{number} is one of the eight danger-zones blocks: \
-             {condition_refusals:?}"
+        assert_eq!(
+            attempt.conditions[number as usize - 1],
+            ConditionOutcome::Lowered,
+            "OBJECTIVE{number} is one of the eight danger-zones blocks, and its \
+             flag-count predicate lowers"
         );
     }
     let lowered_conditions = attempt
@@ -1023,22 +995,28 @@ fn accept_m08_b_the_danger_zones_condition_is_the_gap_that_keeps_m08_unlowered()
         .count();
     assert_eq!(
         lowered_conditions,
-        record.blocks() as usize - REFUSED_CONDITIONS,
-        "the other 49 completion conditions lower"
+        record.blocks() as usize,
+        "every completion condition lowers"
     );
 
-    // The gap keeps M08 out of every readiness claim, even though every host
-    // call binds and a program assembles: `MissionProgram::validate` refuses
-    // the unknown condition, so the census row stays incomplete.
+    // A complete row is a lowering claim, not a launchable mission: the gate
+    // still needs every measured row complete, and rows whose gaps remain keep
+    // it closed.
     let census = census();
     assert!(
-        !census.complete_missions().contains(&MISSION),
-        "M08 is not one of the census's complete rows"
+        census.complete_missions().contains(&MISSION),
+        "M08 is one of the census's complete rows"
     );
     assert!(
         !census.campaign_ready(),
-        "the campaign gate stays closed while M08 — a bound, fully-measured \
-         mission — cannot lower"
+        "the campaign gate stays closed while any measured row carries a gap"
+    );
+    assert!(
+        census
+            .measured_rows()
+            .filter(|row| row.mission() != MISSION)
+            .any(|row| !row.is_complete()),
+        "some other measured row is still incomplete, which is what keeps the gate closed"
     );
     assert!(
         lowering
@@ -1345,10 +1323,14 @@ fn accept_m08_b_the_three_sheet_priorities_locate_in_the_measured_record() {
 
     // Whether the wrong actor, the wrong session or a repeated event can
     // satisfy any of these transitions is runtime behaviour: nothing here
-    // simulates it, and M08 has no runtime consumer yet.
+    // simulates it, and a complete census row says nothing about it — it is
+    // a lowering claim. The runtime halves stay open for M08-C, and the
+    // campaign gate still keeps every runtime out while any measured row
+    // carries a gap.
     assert!(
-        !census().complete_missions().contains(&MISSION),
-        "no runtime may observe M08's transitions while the record cannot lower"
+        !census().campaign_ready(),
+        "M08's transitions stay unobserved: no campaign runtime may start while the \
+         campaign gate is closed"
     );
 }
 
@@ -1492,14 +1474,17 @@ fn accept_m08_b_m08s_kill_shapes_bind_as_one_list_argument_and_an_over_wide_one_
     );
 }
 
-/// **The danger-zones completion condition refuses while a measured
-/// condition lowers** — M08's second gap on authored records, so CI covers
-/// both arms without original data. The block with the unlowerable
-/// evaluator is reported under `objective_condition`; the same record with
-/// the group-depletion evaluator in its place lowers, so the refusal is the
-/// evaluator and not the shape of the authored record.
+/// **A danger-zones completion condition lowers the measured predicate while
+/// a site the parse cannot read still refuses** — M08's danger-zones surface
+/// on authored records, so CI covers both arms without original data. The
+/// measured shape (zone names beside the key) lowers and completes the
+/// authored record; the same key spelled with no list after it — the record
+/// the original's own lookup cannot read as a zone vector — is reported under
+/// `objective_condition`, and the same record with the group-depletion
+/// evaluator in its place lowers, so a refusal is the site's spelling and not
+/// the shape of the authored record.
 #[test]
-fn accept_m08_b_the_danger_zones_condition_refuses_while_a_measured_condition_lowers() {
+fn accept_m08_b_a_danger_zones_condition_lowers_and_an_unreadable_one_refuses() {
     let authored = |key: &str, args: Vec<ZrdValue>| {
         control_record(vec![block(
             1,
@@ -1511,7 +1496,76 @@ fn accept_m08_b_the_danger_zones_condition_refuses_while_a_measured_condition_lo
         )])
     };
 
+    // The measured shape: the zone-name list, and the count that defaults to
+    // its length when the block spells no `DANGER_ZONES_COMPLETION_COUNT`.
     let document = authored("DANGER_ZONES_COMPLETED", vec![zrd_text("dzpath1")]);
+    let record = measure_control_record(&document);
+    let lowered = lower(&document);
+    let attempt = lowered.attempt();
+    assert_eq!(
+        attempt.conditions,
+        [ConditionOutcome::Lowered],
+        "the measured danger-zones site lowers: {:?}",
+        attempt.conditions
+    );
+    let lowering = record.lowering(attempt);
+    let unmet: Vec<&str> = lowering.unmet().map(|row| row.kind.code()).collect();
+    assert!(
+        unmet.is_empty(),
+        "the authored record now lacks nothing: {unmet:?} (unbound={:?} validation={:?})",
+        attempt.unbound_keys,
+        attempt.validation
+    );
+    assert!(
+        record.is_complete(attempt),
+        "the same authored record with a lowered condition completes: {:?}",
+        attempt.unbound_keys
+    );
+    assert_eq!(
+        attempt
+            .calls
+            .iter()
+            .filter(|outcome| **outcome == CallOutcome::Bound)
+            .count(),
+        attempt.calls.len(),
+        "every authored site binds"
+    );
+    // The predicate itself: the zone name as spelled, threshold 1 of 1.
+    let program = lowered.program().expect("the authored record assembles");
+    let mut carried = Vec::new();
+    fn find(condition: &cs_script::ir::Condition, zones: &mut Vec<(u32, Vec<String>)>) {
+        match condition {
+            cs_script::ir::Condition::DangerZoneFlags {
+                zones: names,
+                required,
+            } => {
+                zones.push((*required, names.clone()));
+            }
+            cs_script::ir::Condition::All(items) | cs_script::ir::Condition::Any(items) => {
+                for item in items {
+                    find(item, zones);
+                }
+            }
+            _ => {}
+        }
+    }
+    find(&program.objectives[0].condition, &mut carried);
+    assert_eq!(
+        carried,
+        [(1, vec!["dzpath1".to_owned()])],
+        "the predicate carries the listed zone and the threshold its count defaults to"
+    );
+
+    // The unreadable site: the key stands with no record after it, so the
+    // original's lookup would take whatever follows as the zone vector.
+    let document = control_record(vec![block(
+        1,
+        vec![
+            directive("BEGIN_DORMANT", vec![zrd_float(-1.0)]),
+            vec![zrd_text("DANGER_ZONES_COMPLETED")],
+            directive("INSTANTWIN", vec![]),
+        ],
+    )]);
     let record = measure_control_record(&document);
     let lowered = lower(&document);
     let attempt = lowered.attempt();
@@ -1536,7 +1590,7 @@ fn accept_m08_b_the_danger_zones_condition_refuses_while_a_measured_condition_lo
         conditions[0]
     );
     assert!(
-        conditions[0].contains("lowers no condition for it"),
+        conditions[0].contains("would be a guess at its predicate"),
         "the refusal states why this build offers no predicate: {}",
         conditions[0]
     );
@@ -1560,7 +1614,7 @@ fn accept_m08_b_the_danger_zones_condition_refuses_while_a_measured_condition_lo
             .filter(|outcome| **outcome == CallOutcome::Bound)
             .count(),
         attempt.calls.len(),
-        "every authored site binds: the gap is the predicate, not the call"
+        "every authored site binds: the gap is the site's spelling, not the call"
     );
 
     // The control arm: the group-depletion evaluator is lowered by this

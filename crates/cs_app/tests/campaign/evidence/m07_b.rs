@@ -10,16 +10,16 @@ use super::*;
 const RETAIL_TESTS_M07_B: &[&str] = &[
     "accept_m07_b_the_control_program_is_the_member_that_declares_the_blocks",
     "accept_m07_b_the_vocabulary_is_fully_disposed_and_no_m07_key_is_refused",
-    "accept_m07_b_the_anim_state_gap_closes_and_danger_zones_is_the_remaining_one",
+    "accept_m07_b_every_block_lowers_including_the_three_danger_zones_sites",
     "accept_m07_b_the_sheet_priorities_resolve_to_measured_operations",
     "accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated",
-    "accept_m07_b_the_mission_stays_unready_and_the_campaign_gate_stays_closed",
+    "accept_m07_b_m07s_row_is_complete_and_the_campaign_gate_stays_closed",
 ];
 
 /// The synthetic predicate tests M07-B's report must also record.
 const SYNTHETIC_TESTS_M07_B: &[&str] = &[
     "accept_m07_b_every_spelled_record_lowers_and_an_uncarriable_list_refuses",
-    "accept_m07_b_a_danger_zones_site_refuses_its_condition_and_the_block_without_it_lowers",
+    "accept_m07_b_a_danger_zones_site_lowers_its_predicate_and_an_unreadable_one_refuses",
 ];
 
 /// Evidence-report harness for task M07-B: M07's mission-specific
@@ -93,7 +93,8 @@ fn evidence_report_m07_b_writes_the_acceptance_report() {
             .map(|(_, status)| *status)
             .unwrap_or_else(|| {
                 panic!(
-                    "{synthetic_test} did not run: it pins the refusal arms the retail gaps rest on"
+                    "{synthetic_test} did not run: it pins the mechanisms the retail record \
+                     leans on"
                 )
             });
         assert_eq!(
@@ -253,14 +254,14 @@ fn evidence_report_m07_b_writes_the_acceptance_report() {
              and program identities equal to the M07-A binding, the control member chosen by \
              the measured rule over the archive's whole member set, the directive accounting \
              of the member it spells). NOT CLAIMED: no directive is implemented by a measured \
-             effect; M07's control record still does not lower — all nine ANIM_STATE sites now \
-             bind and their multi-record operand lists lower through M04-B-FU1 #806's shared \
-             mechanism, so the remaining refusal is the three DANGER_ZONES_COMPLETED \
-             conditions, which the suite pins — so M07 stays Unsupported and the campaign \
-             gate stays closed; the runtime halves of the sheet's priorities (moving pickup, \
-             forced plane swap, persistent input ownership) need ordinary-play observation \
-             (M07-C); no mission was played, no original executable was run and nothing is \
-             verified_original. Claim is implemented only; validated with \
+             effect; M07's control record lowers completely — all nine ANIM_STATE sites bind \
+             through M04-B-FU1 #806's shared mechanism and the three DANGER_ZONES_COMPLETED \
+             conditions lower through M07-B-FU1 #813's measured flag predicate, both of which \
+             the suite pins — so M07's row is complete while the campaign gate stays closed on \
+             the rows whose gaps remain; the runtime halves of the sheet's priorities (moving \
+             pickup, forced plane swap, persistent input ownership) need ordinary-play \
+             observation (M07-C); no mission was played, no original executable was run and \
+             nothing is verified_original. Claim is implemented only; validated with \
              tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the \
              commit the suite and this harness ran on; the only later delta is this report's \
              own copy under docs/findings/evidence/ and the findings document that discusses \

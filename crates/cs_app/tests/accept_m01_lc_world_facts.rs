@@ -490,6 +490,7 @@ fn accept_m01_lc_world_facts_a_chain_that_cannot_be_pinned_stays_fail_closed() {
         groups: [7].into_iter().collect(),
         generators: ["owed".to_owned()].into_iter().collect(),
         animations: ["some_anim".to_owned()].into_iter().collect(),
+        danger_zones: std::collections::BTreeSet::new(),
     };
 
     // Observed: only the pinned chain, plus a group, a generator and an

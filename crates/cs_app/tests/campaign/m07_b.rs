@@ -13,15 +13,16 @@
 //! * its 29-key vocabulary is **fully disposed** — two terminal outcomes, 27
 //!   measured keys, none refused and no unclassified record key — so every gap
 //!   below is a lowering gap, not a measurement gap;
-//! * the record still does **not** lower, and both requirements stay unmet —
-//!   but the `ANIM_STATE` half is closed: M04-B-FU1 (#806) generalized the
+//! * the record lowers **completely** and both requirements are met: the
+//!   `ANIM_STATE` half closed with M04-B-FU1 (#806), which generalized the
 //!   list-argument mechanism to the operand list an `ANIM_STATE` evaluator
-//!   reads, so all nine `ANIM_STATE` sites bind and their two-to-five-record
-//!   operand lists append into each block's one evaluator. What remains is
-//!   `objective_condition`'s three `DANGER_ZONES_COMPLETED` sites (blocks 37,
-//!   39 and 41), whose condition this build declines to offer — and
-//!   `call_arguments`, which carries validation's refusal while a bound
-//!   program stands and fails `MissionProgram::validate` on those blocks;
+//!   reads — all nine sites bind and their two-to-five-record operand lists
+//!   append into each block's one evaluator — and the `DANGER_ZONES_`
+//!   `COMPLETED` half closed with M07-B-FU1 (#813), which measured the flag
+//!   bytes' writer in the engine image and lowers the three sites (blocks 37,
+//!   39 and 41) to the counted-flag predicate, so no condition refuses and
+//!   `MissionProgram::validate` accepts the program
+//!   (`docs/findings/2026-10-09-m07-b-fu1-danger-zones-flag-writer.md`);
 //! * the sheet's three regression priorities are located in the measured
 //!   record: the moving-subject proximity evaluator (`TRAVELERS`), the
 //!   animation gates that name the trailer segments, `got_pickford` and
@@ -34,9 +35,12 @@
 //!   blocks start dormant, and their incoming wake/kill/nap edges are pinned.
 //!
 //! No behaviour is invented here: the runtime halves of the sheet's priorities
-//! need ordinary-play observation (M07-C), the mission stays unready and the
-//! campaign gate stays closed until the named gaps are measured
-//! (`docs/findings/2026-10-09-m07-b-compatibility-gaps.md`).
+//! need ordinary-play observation (M07-C), and the campaign gate stays closed
+//! until every measured row lowers — M07's own row does, while the rows whose
+//! gaps are still open keep `campaign_ready()` false
+//! (`docs/findings/2026-10-09-m07-b-compatibility-gaps.md`, superseded on the
+//! danger-zones gap by
+//! `docs/findings/2026-10-09-m07-b-fu1-danger-zones-flag-writer.md`).
 //!
 //! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`; the two synthetic
 //! tests run in CI.
@@ -58,7 +62,10 @@ use cs_content::mission_control::{
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, objective_record, zrd_flat_fields};
 use cs_formats::script_raw::discover_container;
-use cs_script::ir::{AnimationState, Condition, MAX_VALUE_ITEMS};
+use cs_script::ir::{
+    AnimationState, Condition, DANGER_ZONE_CROSSING_TEST_UNTRACED, MAX_VALUE_ITEMS,
+};
+use cs_script::runtime::{MissionFacts, MissionState, ObjectiveLifecycle, SessionGeneration};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::install::RelativePath;
 
@@ -434,23 +441,23 @@ fn accept_m07_b_the_vocabulary_is_fully_disposed_and_no_m07_key_is_refused() {
     );
 }
 
-/// **The `ANIM_STATE` gap is closed and `DANGER_ZONES_COMPLETED` is the
-/// remaining one.**
+/// **Every block lowers: the nine `ANIM_STATE` sites bind and the three
+/// `DANGER_ZONES_COMPLETED` sites carry their counted-flag predicate.**
 ///
 /// All 231 sites bind — every `ANIM_STATE` site carries its operand list as
 /// one list argument, so the ten-argument shape (five spec records at block
 /// 60) registers like every other measured shape and the whole key is in the
-/// registry. 58 of 61 conditions lower: the five multi-record `ANIM_STATE`
+/// registry. 61 of 61 conditions lower: the five multi-record `ANIM_STATE`
 /// sites (blocks 13, 16, 20, 30 and 60) append every spelled pair with
-/// `required` counting them, and only the three `DANGER_ZONES_COMPLETED`
-/// sites (blocks 37, 39 and 41) still refuse — the flag evaluator this
-/// build lowers no condition for. A program stands, `MissionProgram::validate`
-/// refuses it on those three blocks, `objective_condition` is unmet with the
-/// sites named, `call_arguments` stays unmet behind the validation failure,
-/// and the row is not complete.
+/// `required` counting them, and the three `DANGER_ZONES_COMPLETED` sites
+/// (blocks 37, 39 and 41) lower to the flag-count predicate M07-B-FU1 (#813)
+/// measured in the engine image. A program stands, `MissionProgram::validate`
+/// accepts it, `objective_condition` and `call_arguments` are met, and the row
+/// is complete — while the campaign gate stays closed on the rows whose gaps
+/// are still open.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m07_b_the_anim_state_gap_closes_and_danger_zones_is_the_remaining_one() {
+fn accept_m07_b_every_block_lowers_including_the_three_danger_zones_sites() {
     let row = census_row();
     let attempt = row.lowering_attempt().expect("M07 has a lowering attempt");
     let lowered = attempt.attempt();
@@ -501,28 +508,21 @@ fn accept_m07_b_the_anim_state_gap_closes_and_danger_zones_is_the_remaining_one(
         "each carries its operand list as the one argument"
     );
 
-    // Conditions: the refused blocks are exactly the three
-    // DANGER_ZONES_COMPLETED sites — every ANIM_STATE block lowers, its
+    // Conditions: no block refuses. The three danger-zones sites lower to
+    // the counted-flag evaluator, and every ANIM_STATE block still lowers its
     // appended pairs counted into `required` (block 60's five below).
-    let mut refused_conditions = BTreeMap::new();
-    for outcome in &lowered.conditions {
-        if let ConditionOutcome::Refused(text) = outcome {
-            assert!(
-                text.contains("`DANGER_ZONES_COMPLETED`"),
-                "M07's only refused conditions are the danger-zones sites: {text}"
-            );
-            refused_conditions.insert(refused_block(text), "DANGER_ZONES_COMPLETED");
-        }
-    }
-    let expected: BTreeMap<u32, &str> = sites(&blocks, "DANGER_ZONES_COMPLETED")
-        .into_iter()
-        .map(|(number, _)| (number, "DANGER_ZONES_COMPLETED"))
+    let refused_conditions: Vec<&str> = lowered
+        .conditions
+        .iter()
+        .filter_map(|outcome| match outcome {
+            ConditionOutcome::Refused(text) => Some(text.as_str()),
+            _ => None,
+        })
         .collect();
-    assert_eq!(
-        refused_conditions, expected,
-        "the refused conditions are exactly the danger-zones sites"
+    assert!(
+        refused_conditions.is_empty(),
+        "every block lowers, the three danger-zones sites included: {refused_conditions:?}"
     );
-    assert_eq!(refused_conditions.len(), 3);
     assert_eq!(
         lowered.conditions.len() as u32,
         BLOCKS,
@@ -541,18 +541,17 @@ fn accept_m07_b_the_anim_state_gap_closes_and_danger_zones_is_the_remaining_one(
         .as_ref()
         .expect("a program stood, so validate ran");
     assert!(
-        !validation.is_empty(),
-        "and validate refuses the three Unknown conditions: {validation:?}"
+        validation.is_empty(),
+        "and validate accepts every lowered condition: {validation:?}"
     );
     let lowering = row.lowering().expect("the accounting exists");
     let unmet: Vec<String> = lowering.unmet().map(|r| r.kind.code().to_owned()).collect();
-    assert_eq!(
-        unmet,
-        ["objective_condition", "call_arguments"],
-        "the conditions name the three sites; the calls row stays unmet behind validation"
+    assert!(
+        unmet.is_empty(),
+        "the conditions and the calls both meet their requirements: {unmet:?}"
     );
-    assert!(!row.is_complete());
-    assert!(!lowering.complete());
+    assert!(row.is_complete());
+    assert!(lowering.complete());
 }
 
 /// **The sheet's three regression priorities, located in the measured record.**
@@ -980,22 +979,37 @@ fn accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated(
     );
 }
 
-/// **M07 is not campaign-ready and the census does not hide it.**
+/// **M07's row is complete, and the census does not call that campaign-ready.**
+///
+/// M07-B-FU1 (#813) closed the last gap in M07's own record, so the row's
+/// accounting meets every requirement — while `campaign_ready()` still needs
+/// **every** measured row complete, and rows whose gaps are still open keep
+/// the gate closed. A complete row is a lowering claim, never a launchable
+/// mission: M07's runtime halves stay open for M07-C.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m07_b_the_mission_stays_unready_and_the_campaign_gate_stays_closed() {
+fn accept_m07_b_m07s_row_is_complete_and_the_campaign_gate_stays_closed() {
     let census = census();
-    assert!(!census.complete_missions().contains(&MISSION));
+    assert!(census.complete_missions().contains(&MISSION));
     assert!(!census.campaign_ready());
     assert!(census.measured_rows().any(|row| row.mission() == MISSION));
     let row = census_row();
-    assert!(!row.is_complete());
+    assert!(row.is_complete());
     assert!(
         row.lowering()
             .expect("the accounting exists")
             .unmet()
             .next()
-            .is_some()
+            .is_none()
+    );
+    // The gate is closed by rows other than M07: some other measured row is
+    // still incomplete, so `campaign_ready()` cannot be resting on M07.
+    assert!(
+        census
+            .measured_rows()
+            .filter(|row| row.mission() != MISSION)
+            .any(|row| !row.is_complete()),
+        "another measured row still carries a gap, which is what keeps the gate closed"
     );
 }
 
@@ -1059,6 +1073,21 @@ fn animation_evaluator(condition: &Condition) -> (u32, &Vec<(String, AnimationSt
     }
     find(condition)
         .unwrap_or_else(|| panic!("the block carries no animation evaluator: {condition:?}"))
+}
+
+/// The block's one danger-zones evaluator out of a lowered condition,
+/// wherever it sits inside the gate — the threshold and the zone names as the
+/// lowering wrote them.
+fn danger_evaluator(condition: &Condition) -> (u32, &Vec<String>) {
+    fn find(condition: &Condition) -> Option<(u32, &Vec<String>)> {
+        match condition {
+            Condition::DangerZoneFlags { zones, required } => Some((*required, zones)),
+            Condition::All(items) | Condition::Any(items) => items.iter().find_map(find),
+            _ => None,
+        }
+    }
+    find(condition)
+        .unwrap_or_else(|| panic!("the block carries no danger-zones evaluator: {condition:?}"))
 }
 
 /// **Every spelled record lowers into one evaluator; only an operand list
@@ -1197,25 +1226,70 @@ fn accept_m07_b_every_spelled_record_lowers_and_an_uncarriable_list_refuses() {
     );
 }
 
-/// **A danger-zones site refuses its condition, and the same block without it
-/// lowers.**
+/// **A danger-zones site lowers the measured flag predicate, and a site the
+/// parse cannot read refuses.**
 ///
-/// The retail record refuses its three `DANGER_ZONES_COMPLETED` blocks because
-/// this build lowers no condition for the flag evaluator. Authored the same
-/// way, the refusal names that reason and the call still binds; the same block
-/// carrying the measured inactive-members evaluator instead lowers its
-/// condition. So the retail refusal is the missing predicate, not a broken
-/// record.
+/// The retail record's three `DANGER_ZONES_COMPLETED` blocks refused until
+/// M07-B-FU1 (#813) measured the flag bytes' writer in the engine image.
+/// Authored the measured way — a list of zone names and the optional
+/// `DANGER_ZONES_COMPLETION_COUNT` beside it — the site lowers to
+/// `Condition::DangerZoneFlags`, both keys bind and the program assembles and
+/// validates. A site whose record after the key is **not** the zone-name list
+/// still refuses by block and key, carrying the named reason: the original
+/// would read whatever follows as the flag array's names, and this build
+/// offers no predicate for a record it cannot read. The same block carrying
+/// the measured inactive-members evaluator instead lowers its condition, so
+/// an unreadable site is never mistaken for a broken record.
 #[test]
-fn accept_m07_b_a_danger_zones_site_refuses_its_condition_and_the_block_without_it_lowers() {
+fn accept_m07_b_a_danger_zones_site_lowers_its_predicate_and_an_unreadable_one_refuses() {
+    // The measured shape: the zone names and the flag count they need.
     let danger = record_of(vec![(
         1,
         vec![
             text("DANGER_ZONES_COMPLETED"),
-            ZrdValue::List(vec![text("dzpath8")]),
+            ZrdValue::List(vec![text("dzpath8"), text("dzpath2")]),
+            text("DANGER_ZONES_COMPLETION_COUNT"),
+            ZrdValue::List(vec![int(1)]),
         ],
     )]);
     let lowered = lower(&danger);
+    assert_eq!(
+        lowered.attempt().conditions,
+        [ConditionOutcome::Lowered],
+        "the measured shape lowers: {:?}",
+        lowered.attempt().conditions
+    );
+    assert!(
+        lowered
+            .attempt()
+            .calls
+            .iter()
+            .all(|call| *call == CallOutcome::Bound),
+        "both keys bind: they are measured and registered: {:?}",
+        lowered.attempt().calls
+    );
+    assert_eq!(lowered.attempt().calls.len(), 2, "one call per site");
+    let program = lowered.program().expect("the record assembles");
+    assert!(
+        lowered
+            .attempt()
+            .validation
+            .as_ref()
+            .is_some_and(Vec::is_empty),
+        "and validates clean"
+    );
+    let (required, zones) = danger_evaluator(&program.objectives[0].condition);
+    assert_eq!(
+        zones,
+        &["dzpath8".to_owned(), "dzpath2".to_owned()],
+        "the predicate carries the zone names as spelled, in order"
+    );
+    assert_eq!(required, 1, "the spelled flag count is the threshold");
+
+    // A site with no list after the key: the parse reads the record that
+    // follows as the zone vector, which this build cannot state.
+    let bare = record_of(vec![(1, vec![text("DANGER_ZONES_COMPLETED")])]);
+    let lowered = lower(&bare);
     let refused: Vec<&str> = lowered
         .attempt()
         .conditions
@@ -1227,17 +1301,27 @@ fn accept_m07_b_a_danger_zones_site_refuses_its_condition_and_the_block_without_
         .collect();
     assert_eq!(refused.len(), 1, "{:?}", lowered.attempt().conditions);
     assert!(
-        refused[0].contains(
-            "the danger-zones flag evaluator is measured but this build lowers no condition \
-             for it"
-        ),
-        "{}",
+        refused[0].contains("`DANGER_ZONES_COMPLETED`"),
+        "the refusal names the key: {}",
         refused[0]
     );
     assert_eq!(
-        lowered.attempt().calls,
-        [CallOutcome::Bound],
-        "the call binds: the key is measured and registered"
+        refused_block(refused[0]),
+        1,
+        "the refusal names the block: {}",
+        refused[0]
+    );
+    assert!(
+        refused[0].contains("would be a guess at its predicate"),
+        "the refusal says why: {}",
+        refused[0]
+    );
+    assert!(
+        !lowered
+            .attempt()
+            .conditions
+            .contains(&ConditionOutcome::Lowered),
+        "an unreadable site never lowers"
     );
 
     let inactive = record_of(vec![(
@@ -1260,4 +1344,227 @@ fn accept_m07_b_a_danger_zones_site_refuses_its_condition_and_the_block_without_
         lowered.attempt().conditions
     );
     assert!(lowered.program().is_some());
+}
+
+// ---------------------------------------------------------------------------
+// M07-B-FU1: the danger-zones predicate, lowered from the measured flag
+// ---------------------------------------------------------------------------
+
+/// The block's own lifecycle gate, wherever it sits inside the lowered
+/// condition — the pass-2 admission the original tests before any evaluator
+/// runs (finding B).
+fn carries_awake_gate(condition: &Condition, index: u32) -> bool {
+    match condition {
+        Condition::ObjectiveAwake { index: found } => *found == index,
+        Condition::All(items) | Condition::Any(items) => {
+            items.iter().any(|item| carries_awake_gate(item, index))
+        }
+        _ => false,
+    }
+}
+
+/// **The three danger-zones blocks carry the measured flag-count predicate and
+/// evaluate it fail-closed.**
+///
+/// `docs/findings/2026-10-09-m07-b-fu1-danger-zones-flag-writer.md` measures
+/// the whole mechanism in the engine image: the once-per-block parse (`0x465ec0`)
+/// strdups each listed zone name and zeroes one flag byte per name, the
+/// pass-2 evaluator (`0x469ab0`) counts the nonzero bytes and fires at
+/// `count >= threshold` with the threshold defaulting to the listed count,
+/// and the single runtime writer (`0x446990`) stores `1` and never `0`.
+/// Everything below is derived from the record itself, never repeated from it:
+/// the zone names each block carries, the default threshold, the block's own
+/// lifecycle gate, the named residual unknown of the producer's world test,
+/// and the evaluation — no flags recorded, no completion; the block's own
+/// zones recorded, one per site with a threshold equal to their count, a
+/// completion; a zone the record does not list, never a completion.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m07_b_fu1_the_danger_zones_predicate_is_the_measured_flag_count() {
+    let row = census_row();
+    let lowered = row.lowering_attempt().expect("M07 has a lowering attempt");
+    let raw = lowered.raw_program().expect("the program assembled");
+    let program = lowered.program().expect("the program stands");
+
+    let (document, _) = control_document();
+    let blocks = blocks_of(&document);
+    let danger_sites = sites(&blocks, "DANGER_ZONES_COMPLETED");
+    assert_eq!(danger_sites.len(), 3, "M07 spells three danger-zones sites");
+    assert!(
+        sites(&blocks, "DANGER_ZONES_COMPLETION_COUNT").is_empty(),
+        "M07 spells no flag count, so every threshold defaults to the listed zone count"
+    );
+
+    let mut carried: Vec<(usize, Vec<String>)> = Vec::new();
+    for (number, args) in &danger_sites {
+        let zones: Vec<String> = args
+            .iter()
+            .map(|value| match value {
+                ZrdValue::Text(name) => name.clone(),
+                other => panic!("block {number} spells {other:?} where a zone name is measured"),
+            })
+            .collect();
+        assert!(!zones.is_empty(), "block {number} lists at least one zone");
+        let index = usize::try_from(*number).expect("a block number fits") - 1;
+        let (required, lowered_zones) = danger_evaluator(&raw.objectives[index].condition);
+        assert_eq!(
+            lowered_zones, &zones,
+            "block {number} carries the zone names exactly as the record spells them, in order"
+        );
+        assert_eq!(
+            required,
+            zones.len() as u32,
+            "block {number}: no spelled count, so the threshold is the zone count"
+        );
+        assert!(
+            carries_awake_gate(&raw.objectives[index].condition, index as u32),
+            "block {number} still carries its own lifecycle gate"
+        );
+        carried.push((index, zones));
+    }
+
+    // What sets a flag is the producer's world test, which is untraced: the
+    // condition carries it as a named residual unknown and never inside the
+    // predicate.
+    let residuals = raw.objectives[carried[0].0].condition.residual_unknowns();
+    assert_eq!(
+        residuals,
+        [DANGER_ZONE_CROSSING_TEST_UNTRACED],
+        "the danger-zones condition carries exactly the named residual unknown"
+    );
+
+    // The predicate itself: fail-closed without flags, complete with the
+    // block's own zones, and blind to a zone the record did not list. The
+    // block's own lifecycle gate is admitted in every fact table, so what
+    // separates the four cases below is the flags alone.
+    fn facts_for(index: usize, zones: &[String]) -> MissionFacts {
+        let mut facts = MissionFacts::default();
+        facts
+            .objectives
+            .insert(index as u32, ObjectiveLifecycle::Awake);
+        facts.danger_zones.extend(zones.iter().cloned());
+        facts
+    }
+    let validated = program
+        .clone()
+        .validate()
+        .expect("M07's program validates clean");
+    let state = MissionState::new(&validated, SessionGeneration(1));
+    for (index, zones) in &carried {
+        let condition = &program.objectives[*index].condition;
+        assert!(
+            !state.holds(condition, &facts_for(*index, &[])),
+            "block {} completes on no recorded flag",
+            index + 1
+        );
+        assert!(
+            !state.holds(condition, &facts_for(*index, &["dzpath9".to_owned()])),
+            "block {} completes on a zone it never listed",
+            index + 1
+        );
+        assert!(
+            state.holds(condition, &facts_for(*index, zones)),
+            "block {} completes once every listed zone carries its flag",
+            index + 1
+        );
+        assert!(
+            !state.holds(condition, &facts_for(*index, &zones[..zones.len() - 1])),
+            "block {} needs its whole threshold, not one zone short",
+            index + 1
+        );
+    }
+}
+
+/// **The flag-count threshold defaults to the zone count, and the first site
+/// of each key is the one the parse reads.**
+///
+/// Both rules are the parse's own: `0x465ec0` runs once per block, so each of
+/// its `0x57a090` lookups takes the first occurrence of its key in the block's
+/// depth-first order — a later spelling of either key is inert, exactly as a
+/// second `ANIM_STATE` site is — and an absent `DANGER_ZONES_COMPLETION_COUNT`
+/// leaves `+0x568` at the listed count. The three shapes lower, bind and
+/// validate; a threshold nobody spelled is a default, never a refusal.
+#[test]
+fn accept_m07_b_fu1_the_threshold_defaults_to_the_zone_count_and_the_first_site_wins() {
+    /// Lowers one authored record and hands back its one evaluator.
+    fn single(record: &ZrdValue) -> (u32, Vec<String>) {
+        let lowered = lower(record);
+        assert_eq!(
+            lowered.attempt().conditions,
+            [ConditionOutcome::Lowered],
+            "the measured shape lowers: {:?}",
+            lowered.attempt().conditions
+        );
+        assert!(
+            lowered
+                .attempt()
+                .calls
+                .iter()
+                .all(|call| *call == CallOutcome::Bound),
+            "every site binds: {:?}",
+            lowered.attempt().calls
+        );
+        let program = lowered.program().expect("the record assembles");
+        assert!(
+            lowered
+                .attempt()
+                .validation
+                .as_ref()
+                .is_some_and(Vec::is_empty),
+            "and validates clean"
+        );
+        let (required, zones) = danger_evaluator(&program.objectives[0].condition);
+        (required, zones.clone())
+    }
+
+    // No count spelled: the threshold is the listed zone count.
+    let (required, zones) = single(&record_of(vec![(1, {
+        let mut site = vec![text("DANGER_ZONES_COMPLETED")];
+        site.push(ZrdValue::List(vec![
+            text("dzpath1"),
+            text("dzpath2"),
+            text("dzpath3"),
+        ]));
+        site
+    })]));
+    assert_eq!(zones, ["dzpath1", "dzpath2", "dzpath3"]);
+    assert_eq!(required, 3, "absent count: the threshold is the zone count");
+
+    // A spelled count is the threshold it spells.
+    let (required, zones) = single(&record_of(vec![(
+        1,
+        vec![
+            text("DANGER_ZONES_COMPLETED"),
+            ZrdValue::List(vec![text("dzpath1"), text("dzpath2")]),
+            text("DANGER_ZONES_COMPLETION_COUNT"),
+            ZrdValue::List(vec![int(1)]),
+        ],
+    )]));
+    assert_eq!(zones.len(), 2, "both zones are carried");
+    assert_eq!(required, 1, "the spelled count is the threshold");
+
+    // A second spelling of either key is never reached by the once-per-block
+    // lookup: the first site's zones and the first count stand.
+    let (required, zones) = single(&record_of(vec![(
+        1,
+        vec![
+            text("DANGER_ZONES_COMPLETED"),
+            ZrdValue::List(vec![text("dzpath1")]),
+            text("DANGER_ZONES_COMPLETED"),
+            ZrdValue::List(vec![text("dzpath2"), text("dzpath3")]),
+            text("DANGER_ZONES_COMPLETION_COUNT"),
+            ZrdValue::List(vec![int(2)]),
+            text("DANGER_ZONES_COMPLETION_COUNT"),
+            ZrdValue::List(vec![int(3)]),
+        ],
+    )]));
+    assert_eq!(
+        zones,
+        ["dzpath1"],
+        "the first zone-name site is the one the parse reads"
+    );
+    assert_eq!(
+        required, 2,
+        "the first flag-count site is the one the parse reads"
+    );
 }

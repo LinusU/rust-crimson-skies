@@ -271,6 +271,23 @@ pub const DEDG_MEMBER_FIELD_REWRITES: &str = "the original's DEDG evaluator rewr
      counted member during evaluation; what they feed is untraced world state, so the rewrite is \
      a host effect with its own residual unknown and is never part of this condition";
 
+/// The residual unknown `DANGER_ZONES_COMPLETED` carries into
+/// [`Condition::DangerZoneFlags`]: the flag **writer's** world test is not
+/// read.
+///
+/// The flag byte itself is fully measured — one byte per listed zone, zeroed
+/// at parse, written to `1` (never back to `0`) by the one writer in the
+/// image — and so is the evaluator that counts the nonzero bytes. What that
+/// writer waits for is not: it runs inside the named-zone object's update
+/// (`0x446990`), behind a per-entry geometric test (`0x446930` → `0x55d6c0`)
+/// and a two-flagged-entry gate this build does not interpret. Which crossing
+/// sets a flag is therefore world state, carried here as a named residual —
+/// never as a refusal, and never inside the predicate.
+pub const DANGER_ZONE_CROSSING_TEST_UNTRACED: &str = "the world test the danger-zone flag writer gates on — the per-entry geometric result \
+     (0x446930 -> 0x55d6c0) and its two-flagged-entry gate inside the named-zone object's update \
+     (0x446990) — is untraced, so which crossing sets a flag is world state outside the measured \
+     bound; the flag byte, its sticky write and the evaluator reading it are measured";
+
 /// A side-effect-free boolean expression.
 ///
 /// Evaluation reads only its own operands and the [`crate::runtime::MissionFacts`]
@@ -384,6 +401,34 @@ pub enum Condition {
         /// The animations and the state each one wants, in declaration order.
         animations: Vec<(String, AnimationState)>,
     },
+    /// `DANGER_ZONES_COMPLETED` with its `DANGER_ZONES_COMPLETION_COUNT`:
+    /// true when at least `required` of the listed zones carry their flag.
+    ///
+    /// Measured in the engine image (finding
+    /// `2026-10-09-m07-b-fu1-danger-zones-flag-writer`): the once-per-block
+    /// parse (`0x465ec0`) strdups each listed zone name into `+0x570` and
+    /// allocates `+0x56c` flag bytes at `+0x574`, **zeroing** each one, with
+    /// `+0x568` taken from the block's first `DANGER_ZONES_COMPLETION_COUNT`
+    /// and defaulting to the listed count; the pass-2 evaluator (`0x469ab0`,
+    /// called after `INACTIVE*` and before `ANIM_STATE`) answers `false` when
+    /// `+0x56c == 0` and otherwise counts the nonzero flag bytes and fires at
+    /// `count >= +0x568` (signed, so a threshold at or below 0 fires on the
+    /// first armed tick). The only runtime writer (`0x446990`) stores `1` and
+    /// never `0`, so a flag, once set, stays set for the mission's life — this
+    /// condition therefore reads a sticky set of zone names from the facts and
+    /// a zone nobody recorded crossing is **not** counted, fail-closed like
+    /// every other world-shaped arm. An empty list is the unarmed evaluator
+    /// (`+0x56c == 0`), which the lowering never emits, and this condition
+    /// answers `false` for it so an unpopulated fact table completes nothing.
+    ///
+    /// The residual [`DANGER_ZONE_CROSSING_TEST_UNTRACED`] names what sets a
+    /// flag; it never enters this predicate.
+    DangerZoneFlags {
+        /// The zone names, in the order the block spelled them.
+        zones: Vec<String>,
+        /// How many of them must carry their flag.
+        required: u32,
+    },
     Not(Box<Condition>),
     All(Vec<Condition>),
     Any(Vec<Condition>),
@@ -409,6 +454,7 @@ impl Condition {
         match self {
             Self::InactiveMembers { .. } => unknowns.push(IN_PLAY_BIT_WRITERS_UNTRACED),
             Self::EnemyGroupDepletion { .. } => unknowns.push(DEDG_MEMBER_FIELD_REWRITES),
+            Self::DangerZoneFlags { .. } => unknowns.push(DANGER_ZONE_CROSSING_TEST_UNTRACED),
             Self::Travelers { .. } | Self::AnimationStates { .. } | Self::ObjectiveAwake { .. } => {
             }
             Self::Const(_)
@@ -1162,6 +1208,9 @@ impl Ctx<'_> {
             ),
             Condition::AnimationStates { animations, .. } => {
                 self.condition_operands([animations.len()], trace)
+            }
+            Condition::DangerZoneFlags { zones, .. } => {
+                self.condition_operands([zones.len()], trace)
             }
             Condition::EnemyGroupDepletion { .. } => Ok(()),
             Condition::Travelers {

@@ -74,6 +74,15 @@ const ANIM_STATE_KEY: &str = "ANIM_STATE";
 /// `0x57a1b0` is called on the found list, not on the record).
 const ANIM_STATE_COUNT_KEY: &str = "COMPLETION_COUNT";
 
+/// The measured zone-name key `0x465ec0` looks up once per block: its
+/// follower is the zone-name list, its count the flag array's length.
+const DANGER_ZONES_KEY: &str = "DANGER_ZONES_COMPLETED";
+
+/// The measured flag-count key `0x465ec0` looks up once per block, after the
+/// zone-name list: its first child payload is the threshold the evaluator
+/// compares the nonzero flag bytes against.
+const DANGER_ZONES_COUNT_KEY: &str = "DANGER_ZONES_COMPLETION_COUNT";
+
 /// The stable code of the lowering requirement a refusal blocks —
 /// `LoweringRequirementKind::ObjectiveCondition::code()` on the measurement
 /// side, mirrored here so [`ConditionRefusal::field`] renders a row the
@@ -477,6 +486,14 @@ pub fn lower_block_condition(
             animations,
         }
     });
+    // `DANGER_ZONES_COMPLETED` is selected the same measured way, by a helper
+    // the parse runs **once per block** (`0x465ec0`): both of its `0x57a090`
+    // lookups — the zone-name list and the `DANGER_ZONES_COMPLETION_COUNT`
+    // threshold beside it — take the first occurrence of their key in the
+    // block's own depth-first order, so the whole evaluator is computed here,
+    // before the loop, and a later spelling of either key is never reached:
+    // inert, exactly as a second `ANIM_STATE` site is.
+    let danger_evaluator = danger_zones(block, directives)?;
 
     for directive in directives {
         let key = directive.key.as_str();
@@ -607,20 +624,13 @@ pub fn lower_block_condition(
                     evaluators.push(condition);
                 }
             }
-            // `ANIM_STATE`: the evaluator the parse's single lookup selects
-            // is computed before the loop (`anim_evaluator`). A second
-            // `ANIM_STATE` directive is never reached by that lookup, so it
-            // contributes nothing — not appended pairs and not a refusal.
-            "ANIM_STATE" => {}
-            "DANGER_ZONES_COMPLETED" | "DANGER_ZONES_COMPLETION_COUNT" => {
-                return Err(ConditionRefusal::NoConditionFor {
-                    block: block.to_owned(),
-                    key: key.to_owned(),
-                    detail: "the danger-zones flag evaluator is measured but this build lowers no \
-                             condition for it, and offering one would be a guess at its predicate"
-                        .to_owned(),
-                });
-            }
+            // `ANIM_STATE` and both danger-zones keys are consumed by the
+            // once-per-block site searches above (`anim_evaluator`,
+            // `danger_evaluator`): the parse's own lookups take the FIRST
+            // occurrence of each key in the block's depth-first order, so a
+            // later spelling is never reached — inert, not a second
+            // evaluator and not a refusal.
+            "ANIM_STATE" | "DANGER_ZONES_COMPLETED" | "DANGER_ZONES_COMPLETION_COUNT" => {}
             "COUNTER" | "TEST_COMPLETE" => {
                 return Err(ConditionRefusal::NoConditionFor {
                     block: block.to_owned(),
@@ -651,6 +661,13 @@ pub fn lower_block_condition(
         // when the key is absent (`+0x55c` defaults to `+0x560`).
         let threshold = threshold.unwrap_or(members.len() as u32);
         evaluators.push(Condition::InactiveMembers { members, threshold });
+    }
+    // Pass-2 order in the image is INACTIVE, DANGER_ZONES, ANIM_STATE
+    // (`0x46a872`…`0x46a895`); the disjunction below is order-insensitive, so
+    // the evaluator list keeps that reading order for a reader comparing the
+    // two.
+    if let Some(evaluator) = danger_evaluator {
+        evaluators.push(evaluator);
     }
     if let Some(evaluator) = anim_evaluator {
         evaluators.push(evaluator);
@@ -695,6 +712,160 @@ fn arity_error(
             }
         ),
     }
+}
+
+/// The block's `DANGER_ZONES_COMPLETED` evaluator, armed the way the parse
+/// arms it (`0x465ec0`, run **once per block**).
+///
+/// Both lookups that helper performs — the zone-name list and the
+/// `DANGER_ZONES_COMPLETION_COUNT` beside it — are the record lookup
+/// `0x57a090`, so each selects the **first** occurrence of its key in the
+/// block's depth-first order and reads the record right after it. That gives
+/// three outcomes:
+///
+/// * `None` when the block spells no `DANGER_ZONES_COMPLETED` text, and
+///   `None` again when the selected site's own operand list is empty: either
+///   way `+0x56c == 0`, the unarmed evaluator the fallthrough gate admits;
+/// * a **refusal** when the selected site's follower is not a value list, a
+///   listed name is not text, or — with zones armed — the selected threshold
+///   site does not read as one int. The original then reads whatever follows
+///   the matched text as the zone vector or as the flag-count payload, so no
+///   predicate this build can state is measured for that record;
+/// * `Some(condition)` otherwise: one flag byte per listed name, zeroed at
+///   parse, counted nonzero against a threshold that defaults to the listed
+///   count (measured in the engine image — see
+///   [`crate::ir::Condition::DangerZoneFlags`]).
+///
+/// M07 spells three sites (blocks 37, 39, 41); the installation spells the
+/// key in 31 blocks across seven readers (T463/T464).
+fn danger_zones(
+    block: &str,
+    directives: &[BlockDirective],
+) -> Result<Option<Condition>, ConditionRefusal> {
+    let Some(site) = key_site(directives, DANGER_ZONES_KEY) else {
+        return Ok(None);
+    };
+    let Some(operands) = site else {
+        return Err(ConditionRefusal::NoConditionFor {
+            block: block.to_owned(),
+            key: DANGER_ZONES_KEY.to_owned(),
+            detail: "the parse reads the record right after the key as this site's zone-name list \
+                     and this site spelled no list after the key, so that read would take the \
+                     record that follows as the flag array's names — a spelling no measured site \
+                     uses, and offering one would be a guess at its predicate"
+                .to_owned(),
+        });
+    };
+    let mut zones = Vec::new();
+    for operand in operands {
+        let Value::Str(name) = operand else {
+            return Err(ConditionRefusal::BadOperands {
+                block: block.to_owned(),
+                key: DANGER_ZONES_KEY.to_owned(),
+                detail: format!(
+                    "the measured shape is a list of zone names, one per flag byte the parse \
+                     strdups, and this site spells {}",
+                    value_label(operand)
+                ),
+            });
+        };
+        zones.push(name.clone());
+    }
+    if zones.is_empty() {
+        // `+0x56c == 0`: the evaluator answers false before it reads a flag
+        // byte or the threshold, so no evaluator is armed.
+        return Ok(None);
+    }
+    let required = match key_site(directives, DANGER_ZONES_COUNT_KEY) {
+        // The measured default: `+0x568` falls back to the listed count.
+        None => zones.len() as u32,
+        Some(None) => {
+            return Err(ConditionRefusal::BadOperands {
+                block: block.to_owned(),
+                key: DANGER_ZONES_COUNT_KEY.to_owned(),
+                detail: "the parse reads the record right after the key as the flag-count list \
+                         and this site spelled no list after it, so what the evaluator would \
+                         compare against is unreadable"
+                    .to_owned(),
+            });
+        }
+        Some(Some(counts)) => {
+            let [Value::Int(count)] = counts else {
+                return Err(ConditionRefusal::BadOperands {
+                    block: block.to_owned(),
+                    key: DANGER_ZONES_COUNT_KEY.to_owned(),
+                    detail: format!(
+                        "the measured shape is one int in the key's own list and this site \
+                         spells {}",
+                        if counts.is_empty() {
+                            "an empty argument list".to_owned()
+                        } else {
+                            counts
+                                .iter()
+                                .map(value_label)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        }
+                    ),
+                });
+            };
+            // Measured: the evaluator compares the nonzero flag count with
+            // `setge`, so every threshold at or below 0 fires on the first
+            // armed tick — which is exactly what a threshold of 0 says, and
+            // a negative count is not a count this build stores.
+            (*count).max(0) as u32
+        }
+    };
+    Ok(Some(Condition::DangerZoneFlags { zones, required }))
+}
+
+/// The first `key` text in the block's depth-first order — the selection the
+/// record lookup `0x57a090` applies — and the record immediately after it.
+///
+/// `None` when the block spells no such text; `Some(None)` when the text it
+/// found is followed by no value list (the lookup hands the parse whatever
+/// record comes next, list or not); `Some(Some(operands))` for the measured
+/// `Text, List` pair.
+fn key_site<'a>(directives: &'a [BlockDirective], key: &str) -> Option<Option<&'a [Value]>> {
+    for directive in directives {
+        if directive.key == key {
+            return Some(match &directive.args {
+                DirectiveArguments::List(operands) => Some(operands.as_slice()),
+                DirectiveArguments::Bare | DirectiveArguments::NotAList(_) => None,
+            });
+        }
+        if let DirectiveArguments::List(args) = &directive.args
+            && let Some(site) = nested_key_site(args, key)
+        {
+            return Some(site);
+        }
+    }
+    None
+}
+
+/// The first `key` text inside an operand list, searched depth-first — the
+/// same first match the recursive half of `0x57a090` applies to a list child.
+/// `Some(Some(operands))` when the text's own follower is a list (the
+/// selected site); `Some(None)` when it is not; `None` when the list holds no
+/// such text at all.
+fn nested_key_site<'a>(items: &'a [Value], key: &str) -> Option<Option<&'a [Value]>> {
+    for (index, item) in items.iter().enumerate() {
+        match item {
+            Value::Str(text) if text == key => {
+                return Some(match items.get(index + 1) {
+                    Some(Value::List(operands)) => Some(operands.as_slice()),
+                    _ => None,
+                });
+            }
+            Value::List(children) => {
+                if let Some(found) = nested_key_site(children, key) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// One member chain: every argument is text, so `[base]` and
@@ -953,48 +1124,10 @@ fn point_of(
 /// the operand list the descriptor walk consumes. A site after the first is
 /// never reached.
 fn anim_state_site(directives: &[BlockDirective]) -> Option<&[Value]> {
-    for directive in directives {
-        if directive.key == ANIM_STATE_KEY {
-            return match &directive.args {
-                DirectiveArguments::List(operands) => Some(operands),
-                // The record after the key is a scalar or the next key's own
-                // text — not a list — so no evaluator is armed.
-                DirectiveArguments::Bare | DirectiveArguments::NotAList(_) => None,
-            };
-        }
-        if let DirectiveArguments::List(args) = &directive.args
-            && let Some(site) = nested_anim_state(args)
-        {
-            return site;
-        }
-    }
-    None
-}
-
-/// The first `ANIM_STATE` text inside an operand list, searched depth-first
-/// — the same first-match the record-level lookup `0x57a090` applies to a
-/// list child. `Some(Some(operands))` when the text's own follower is a list
-/// (the selected site); `Some(None)` when it is not (the match consumed the
-/// lookup and no evaluator is armed, whatever later spellings exist);
-/// `None` when the list holds no such text at all.
-fn nested_anim_state(items: &[Value]) -> Option<Option<&[Value]>> {
-    for (index, item) in items.iter().enumerate() {
-        match item {
-            Value::Str(text) if text == ANIM_STATE_KEY => {
-                return Some(match items.get(index + 1) {
-                    Some(Value::List(operands)) => Some(operands.as_slice()),
-                    _ => None,
-                });
-            }
-            Value::List(children) => {
-                if let Some(found) = nested_anim_state(children) {
-                    return Some(found);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    // `Some(None)` — the first `ANIM_STATE` text is followed by no list —
+    // collapses to "no evaluator armed", the measured reading; the danger-zones
+    // site search keeps the same tri-state because its own reading refuses.
+    key_site(directives, ANIM_STATE_KEY).flatten()
 }
 
 /// The `ANIM_STATE` operand list, walked the measured way (`0x4691d0`).

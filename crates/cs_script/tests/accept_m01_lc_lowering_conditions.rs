@@ -279,6 +279,7 @@ fn leaves(condition: &Condition) -> Vec<&'static str> {
         Condition::EnemyGroupDepletion { .. } => vec!["enemy_group_depletion"],
         Condition::Travelers { .. } => vec!["travelers"],
         Condition::AnimationStates { .. } => vec!["animation_states"],
+        Condition::DangerZoneFlags { .. } => vec!["danger_zone_flags"],
         Condition::Not(inner) => leaves(inner),
         Condition::All(items) | Condition::Any(items) => {
             let mut collected = Vec::new();

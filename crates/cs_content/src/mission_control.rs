@@ -985,8 +985,12 @@ pub fn measured_directive(key: &str) -> Option<MeasuredDirective> {
                       danger-zone flag bytes are nonzero",
             evidence: &[FINDING_A, FINDING_B],
             unknowns: &[
-                "the +0x570 field beside the count and the flag array — parser-side storage \
-                 whose use is untraced",
+                "the world test the flag writer gates on — the zone object's per-entry geometric \
+                 result (0x446930 -> 0x55d6c0) and its two-flagged-entry gate inside 0x446990 — \
+                 is untraced, so which crossing sets a flag byte is world state outside the \
+                 measured bound; the byte itself, its sticky write and the evaluator reading it \
+                 are measured (M07-B-FU1 #813), and +0x570 is the zone-name pointer array the \
+                 parse fills rather than an untraced field",
             ],
         },
         "DANGER_ZONES_COMPLETION_COUNT" => MeasuredDirective {

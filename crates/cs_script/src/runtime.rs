@@ -931,6 +931,16 @@ pub struct MissionFacts {
     /// 0, `DORMANT` 1, `RUNNING` 2, `EXECUTED` 3, `INVALID` 4, `CORRUPT` 5,
     /// `INVALID_AND_RUNNING` 6).
     pub animations: BTreeMap<String, u32>,
+    /// Zone names whose danger-zone flag byte the world has set, keyed by the
+    /// name exactly as the record spelled it.
+    ///
+    /// The flag is sticky in the original: the parse (`0x465ec0`) zeroes one
+    /// byte per listed zone and the single writer in the image (`0x446990`)
+    /// stores `1` and never `0` again, so a name once recorded stays recorded
+    /// for the mission's life — which is why this is a set rather than a
+    /// per-tick report. A zone nobody recorded crossing is absent, and
+    /// [`crate::ir::Condition::DangerZoneFlags`] does not count it.
+    pub danger_zones: BTreeSet<String>,
 }
 
 impl MissionFacts {
@@ -949,6 +959,10 @@ impl MissionFacts {
         self.groups.extend(other.groups);
         self.generators.extend(other.generators);
         self.animations.extend(other.animations);
+        // A set, so folding is union by construction: an earlier tick's
+        // recorded zone can never be un-recorded by a later one, which is the
+        // sticky flag the original stores.
+        self.danger_zones.extend(other.danger_zones);
     }
 }
 
@@ -2563,6 +2577,24 @@ impl MissionState {
                             .get(name)
                             .is_some_and(|current| *current == state.code())
                     })
+                    .count() as u32
+                    >= *required
+            }
+            Condition::DangerZoneFlags { zones, required } => {
+                // Measured (`0x469ab0`): with `+0x56c == 0` the evaluator
+                // answers false before it counts, so an unarmed (empty)
+                // site never fires — even at a threshold of 0. The lowering
+                // does not emit one; the arm exists so an unpopulated fact
+                // table still completes nothing.
+                if zones.is_empty() {
+                    return false;
+                }
+                // A zone the facts do not carry is one nobody recorded
+                // crossing: the original's flag byte starts at 0 and only its
+                // single writer sets it, so an unobserved zone counts unset.
+                zones
+                    .iter()
+                    .filter(|zone| facts.danger_zones.contains(*zone))
                     .count() as u32
                     >= *required
             }

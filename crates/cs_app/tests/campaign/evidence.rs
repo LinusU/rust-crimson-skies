@@ -124,6 +124,7 @@ mod m06_b;
 mod m06_b_fu1;
 mod m07_a;
 mod m07_b;
+mod m07_b_fu1;
 mod m08_a;
 mod m08_b;
 mod m10_a;
