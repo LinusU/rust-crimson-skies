@@ -55,8 +55,11 @@ exists, `call_arguments` is the one unmet requirement and M03 is not ready:
    silently ignores the `WAKEUP_` spelling is **unknown**. The two sites have
    two shapes and no majority is taken. Filed as **M03-B-FU1** (#803).
 2. **`SET_AI_NET`** (block 10): ten `{actor, net}` pairs exceed the host-call
-   argument bound, so the registry refuses the key. This is the shape-bound gap
-   already filed as **M02-B-FU1** (#800); not duplicated.
+   argument bound, so the registry refuses the key. This was the shape-bound
+   gap filed as **M02-B-FU1** (#800); #800's owner-authored acceptance covers
+   M02's objective-index lists only, so the `SET_AI_NET` arm was carved out
+   as **M03-B-FU2** (#810) during #800's review — it is not duplicated here,
+   and it still gates this record until it lands.
 
 ## Not claimed
 

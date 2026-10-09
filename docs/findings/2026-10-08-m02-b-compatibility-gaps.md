@@ -23,7 +23,8 @@ One compatibility gap is **measured and pinned, not worked around**: eight of
 M02's directive sites refuse to bind against the host-call registry's
 per-signature argument bound, so M02's control record does not lower and the
 mission stays Unsupported. That fix belongs to the lowering subsystem and is
-filed as #800 (`M02-B-FU1`); this stage names it exactly.
+filed as #800 (`M02-B-FU1`); this stage names it exactly. *Closed by #800 on
+2026-10-09 — the gap section below carries the dated note.*
 
 Nothing here is `verified_original` (AGENTS.md rule 8): the
 work-order ↔ mission join remains M02-A's inference, directive *effects* are
@@ -151,6 +152,22 @@ no timing, count or coordinate the record does not spell:
 
 ## The measured compatibility gap, and why it is not papered over
 
+> **Closed by #800 (`M02-B-FU1`), 2026-10-09.** The follow-up measured the
+> same evidence the row below records and decided the question this note
+> left open: the list spelled beside a list-taking objective directive
+> (`WAKE_OBJECTIVE`, `WAKE_OBJECTIVE_WHEN_I_COMPLETE`,
+> `SLEEP_OBJECTIVE_WHEN_I_COMPLETE`, `KILL_OBJECTIVE_WHEN_I_COMPLETE`,
+> `WAKE_OBJECTIVE_WHEN_I_SLEEP` — the measured operations `WakeObjectives`,
+> `SleepObjectives`, `KillObjectives`, `WakeObjectivesOnTransition`) is
+> carried as **one** `Value::List` argument, so its length is the list's and
+> not an arity; `MAX_CALL_ARGS` stays 8. M02's record now lowers completely
+> and its census row is complete through the census's own verdict. The gap
+> pin below became `accept_m02_b_fu1_the_kill_sites_lower_through_one_list_argument_and_m02_lowers`
+> in that change, and the positional over-bound refusal arm it used to carry
+> stayed in `accept_m02_b_a_site_over_the_host_call_bound_refuses_and_one_at_the_bound_binds`
+> on the positional key `IDENTITY`. The rest of this section is the record of
+> the gap as this stage measured it.
+
 M02's directive vocabulary is **fully measured**: 36 of 36 keys carry a
 stage A–D disposition, none is Unmeasured. Yet the record does not lower:
 
@@ -188,24 +205,26 @@ make; this stage records the evidence and does not pre-decide it.
 
 - `crates/cs_content/src/campaign_bindings.rs` — the production binding
   (types, errors, `SourceContext::control_program`).
-- `crates/cs_app/tests/campaign/m02_b.rs` — the eight acceptance tests.
+- `crates/cs_app/tests/campaign/m02_b.rs` — the eight acceptance tests (nine
+  after #800 renamed the gap pin and added its own synthetic arm).
 - `crates/cs_app/tests/campaign/evidence.rs` — the evidence harness and the
   task's test lists.
 - `crates/cs_app/tests/campaign/main.rs` — wiring only.
 - `docs/findings/evidence/M02-B.json` — the committed copy of the acceptance
   report (the artifacts it hashes stay in `private/evidence/M02-B/`).
 
-## Test inventory (`accept_m02_b_*`, 8 tests)
+## Test inventory (`accept_m02_b_*`, 8 tests as landed; 9 after #800)
 
 | Test | What it pins |
 | --- | --- |
 | `accept_m02_b_m02s_control_program_is_bound_to_the_same_identities_as_its_mission_binding` (retail) | the control binding and M02-A's mission binding name one mission (`mission/ch1-m02`) and one program (`script/c1-m02-zrdr`); the archive's length and digest re-derive from disk; exactly one member declares numbered blocks and it is the member the binding names; the member's span lies inside the archive and its digest re-derives from the member's own bytes; a longer member exists and the control member is not the first, so size and position are not the rule; the census read through its own discovery path names the same container, the same member and the same record |
 | `accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key` (retail) | 50 blocks / 190 sites / 36 keys; sites sum to the record total; the partition is exactly 2 implemented + 34 measured + 0 unmeasured; every measured key names operation, effect and evidence; the outcome keys are bare and answer only for their own names; the five measured record fields each occur once; the five record-level sound keys are named and stay outside the vocabulary |
 | `accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_invented` (retail) | an independent production re-walk of the control member sees every block; every cross-objective address is in range except the one measured dangling address (`OBJECTIVE13` → 50); one success latch woken by exactly one block; two failure latches; five remaining-target thresholds each no larger than their block's member lists; the target-flag and inactive-member vocabularies are spelled; the census and the binding agree on one measurement |
-| `accept_m02_b_the_lowering_gap_is_named_and_the_campaign_gate_stays_closed` (retail) | M02 does not lower; `call_arguments` is the only unmet row; exactly one key refuses registration and the refusal names `KILL_OBJECTIVE_WHEN_I_COMPLETE` and "too many arguments"; exactly 8 sites refuse, all naming the key; every other site binds; every condition lowers; no program stood to validate; the kill key's longest measured shape exceeds `MAX_CALL_ARGS`; M02 is not a complete census row and the campaign gate stays closed |
+| `accept_m02_b_fu1_the_kill_sites_lower_through_one_list_argument_and_m02_lowers` (retail; renamed from `accept_m02_b_the_lowering_gap_is_named_and_the_campaign_gate_stays_closed` by #800) | M02's control record lowers completely: no unbound key, no unmet row, every site bound through a measured signature, every completion condition lowered, the bound program validating; the kill key still disagrees in shape and still spells a shape over `MAX_CALL_ARGS`, but registers one single-list signature per measured shape and every one of its eight sites carries its index list as one `Value::List` argument; the census row is complete and M02 joins the complete rows only through the census's own verdict |
 | `accept_m02_b_the_control_rule_refuses_an_archive_without_or_with_two_control_members` (synthetic) | the rule refuses an archive with no block-carrying member (naming the container and the member count) and one with two (naming both, sorted), and chooses the single carrier from its own record |
 | `accept_m02_b_the_vocabulary_partition_is_exact_on_an_authored_record` (synthetic) | on an authored record: bare outcome implements, covered key measures, unknown key stays unmeasured, sites sum, an unclassified record key is named not read, a measured record field is counted |
-| `accept_m02_b_a_site_over_the_host_call_bound_refuses_and_one_at_the_bound_binds` (synthetic) | the refusal mechanism at the bound: 8-argument site binds and completes; 9-argument site refuses the key's registration, refuses its record and leaves the key out of the registry |
+| `accept_m02_b_a_site_over_the_host_call_bound_refuses_and_one_at_the_bound_binds` (synthetic) | the refusal mechanism at the bound, on the positional key `IDENTITY` since #800: 8-argument site binds and completes; 9-argument site refuses the key's registration, refuses its record and leaves the key out of the registry — the bound is not raised by the follow-up |
+| `accept_m02_b_fu1_a_long_index_list_binds_as_one_list_argument` (synthetic, added by #800) | a nine-index `KILL_OBJECTIVE_WHEN_I_COMPLETE` site lowers where nine positional arguments would refuse: one single-list signature for the one measured shape, the indices arriving as one list in order; a list wider than `MAX_VALUE_ITEMS` still refuses by site, never truncating |
 | `accept_m02_b_a_disagreeing_key_keeps_every_shape_and_a_text_follower_is_the_next_key` (synthetic) | a key whose sites disagree keeps both shapes with their site counts (`[text,int]`, `[text,int,text]`); a text follower is the next directive's key, so the outcome site is bare; three authored sites are counted exactly |
 
 Every test calls production code
@@ -257,8 +276,12 @@ only this note.
   carry the stage A–D findings' static readings; a host operation for them
   is future work, and only the two outcome spellings are implemented
   (as `Lowering::Finish`).
-- **M02's control record does not lower** — the measured gap above. M02
-  stays `Unsupported`; the campaign gate stays closed; the fix is #800.
+- **M02's control record does not lower** — the measured gap above, **closed
+  by #800 (`M02-B-FU1`) on 2026-10-09**: the kill sites' index lists are
+  carried as one list argument and M02's row is complete. Lowering evidence
+  only — no directive effect is implemented, so M02 is still not ready; the
+  campaign gate stays closed on the rows that remain incomplete (M03's
+  refused sites among them).
 - **The five record-level sound keys are uninterpreted** — their consumer
   in the original is unmeasured; filed as #801.
 - **The out-of-range wake address's behaviour is unmeasured** — filed as
