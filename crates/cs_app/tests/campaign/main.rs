@@ -202,6 +202,7 @@
 //! members are `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
 //! `evidence_report_m08_b_*` writes that task's report and is selected by
 //! test name.
+//!
 //! # Adding a suite here
 //!
 //! Every suite is one file beside this one plus one `mod` line in the sorted
