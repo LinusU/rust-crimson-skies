@@ -486,6 +486,12 @@ impl WorldOperands {
 
     /// The operand count as one `(members, groups, generators, animations)`
     /// tuple, for pinning a mission's shape in a test.
+    ///
+    /// `danger_zones` is deliberately not part of this pin: the reports that
+    /// publish this tuple name the four maps they spell, while the zone names
+    /// themselves are collected and carried as [`WorldOperands::danger_zones`]
+    /// for [`WorldFactTable::facts`] to read — a mission whose zones matter
+    /// pins them by name, not by this count.
     #[must_use]
     pub fn tuple(&self) -> (usize, usize, usize, usize) {
         (
