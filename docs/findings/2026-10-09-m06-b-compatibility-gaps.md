@@ -5,19 +5,23 @@ compatibility gaps" (#274, `missions/M06.md`, work order `M06-B`).
 Shared contract: `docs/contracts/SCRIPT-MISSION.md`. Capabilities used:
 `retail` (`$CS_GAME_DIR` read-only, never written) and `synthetic` (newly
 authored `.zrd` records). Implementer: **opencode-1/opencode-1** (Rally #274,
-session of 2026-10-09). No reviewer yet; the implementer's own run is not
-independent review and no agent review replaces the owner's human approval.
+session of 2026-10-09). Reviewer: **bunny-alpha-2/bunny-alpha-2** (Rally review
+claim of 2026-10-09), a different agent instance and model with a fresh context
+that had not worked on this implementation — an agent review of the code, the
+tests and the regenerated evidence, not original-run or human-play evidence,
+and no agent review replaces the owner's human approval.
 
 ## Review identity
 
 The evidence harness (`evidence_report_m06_b_writes_the_acceptance_report`)
 reads `CS_EVIDENCE_REVIEWER` at run time and fills `review.identity` whole, so
 the committed `docs/findings/evidence/M06-B.json` cannot contain a hand-over
-placeholder: whoever runs the harness writes its own identities. This
-implementer's run is recorded as exactly that — the implementing agent at
-hand-over, not a review — and the Rally reviewing agent regenerates the report
-on the rebased commit with its own `CS_EVIDENCE_REVIEWER` value, saying whether
-its context was fresh. M06-B adds no Rally review facts to
+placeholder: whoever runs the harness writes its own identities. The report
+committed here is the **reviewing** agent's own regeneration on the rebased
+commit — **bunny-alpha-2/bunny-alpha-2**, Rally review claim of 2026-10-09, a
+fresh context that had not worked on this implementation — replacing the
+implementer's hand-over run, and `review.identity` names both with the context
+statement. M06-B adds no Rally review facts to
 `docs/findings/2026-10-02-m16-a-fu2-rally-review-snapshot.json`: that file
 records merge events that do not exist yet, and an entry written before the
 review would be writing a review fact that has not happened.
@@ -326,6 +330,14 @@ and neither rebase changed any of the three mutated files
 | `cs_content::mission_control::control_member`: the `objective_blocks_of(member) > 0` filter accepts every member | **6 of 8 fail** — every retail test, because the whole census refuses `zbd/c2/m01/zrdr.zbd` as ambiguous the moment the rule stops choosing. The two synthetic tests, which author their own records, are unaffected |
 | `cs_app::control_lowering::takes_index_list`: drop `KillObjectives` from the or-pattern (M02-B-FU1's mechanism, removed) | **2 fail** — the gap pin (the twelve-target kill sites refuse again: `unbound_keys` names `KILL_OBJECTIVE_WHEN_I_COMPLETE: … too many arguments`) and the synthetic kill arm, which reports the same refusal on an authored record |
 
+The reviewing agent re-ran two of those four probes on the rebased tree
+(2026-10-09), one at a time with the mutation reverted before the next, and
+reproduced the documented counts exactly: `terminal_outcome_of` → `None` failed
+the same 2 of 8 (the gap pin and the vocabulary test), and `takes_index_list`
+without `KillObjectives` failed the same 2 (the gap pin and the synthetic kill
+arm). `git status --porcelain` was empty afterwards and `HEAD^{tree}` was
+unchanged.
+
 ## Checks
 
 | Command | Exit |
@@ -335,10 +347,18 @@ and neither rebase changed any of the three mutated files
 | `cargo test --workspace --locked -- accept_m06_b_ --include-ignored` | 0 (8 tests: 6 retail and 2 synthetic) |
 | `cargo test --workspace --locked` | 0 |
 
+The reviewing agent re-ran the same four commands on the rebased tree
+(2026-10-09) with the same exits — the task selection again discovered,
+executed and passed 8 of 8 — plus each of the eight tests alone with
+`cargo test --locked --test campaign <name> -- --exact --include-ignored`
+(all 0), and re-ran the two mutation probes recorded above.
+
 The acceptance run that the evidence report records is the same task
 selection, tee'd into `private/evidence/M06-B/cargo-test.log`; the report is
 validated with `tools/validate_evidence.py --require-pass` and copied to
-`docs/findings/evidence/M06-B.json`.
+`docs/findings/evidence/M06-B.json`. The committed copy is the reviewing
+agent's regeneration: `candidate_tree` is the rebased tree it was tested on
+and `review.identity` is the reviewer's own value.
 
 ## Recorded unknowns (not guessed)
 
