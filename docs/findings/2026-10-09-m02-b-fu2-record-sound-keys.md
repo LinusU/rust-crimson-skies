@@ -268,6 +268,74 @@ After the last probe the file was restored from a copy taken before the first
   so a non-`[text]` value would be *counted with its measured shape* instead;
   no retail record measured here spells one.
 
+## Review round 1 (Rally #801)
+
+Reviewer: `bunny-alpha-1/bunny-alpha-1`, Rally review claim of
+2026-10-09T01:09Z in a separate, fresh session. **The reviewing agent is the
+same Rally agent identity that implemented this task, so this review is not
+independent evidence** (AGENTS.md: a review by the same agent that implemented
+the work is not independent evidence); the reviewer's session context was
+fresh, and no agent review replaces the owner's human approval. What the
+review changed:
+
+### 1. The branch had silently dropped M03-B's wiring and evidence harness (fixed)
+
+`crates/cs_app/tests/campaign/main.rs` no longer declared `mod m03_b;`, and
+`crates/cs_app/tests/campaign/evidence.rs` no longer held
+`RETAIL_TESTS_M03_B`, `SYNTHETIC_TESTS_M03_B`,
+`evidence_report_m03_b_writes_the_acceptance_report` or `parse_m03_b_suite`.
+`m03_b.rs` was still on the disk, so nothing looked amiss: all six retail and
+two synthetic `accept_m03_b_*` tests and M03-B's report harness simply ceased
+to exist as far as `cargo test` was concerned, and neither this task's
+selection nor its workspace run could notice the loss. Both were restored
+exactly as `origin/main` has them (commit *Restore M03-B's campaign wiring and
+evidence harness*), and `cargo test --workspace --locked -- accept_m03_b_
+--include-ignored` runs the restored suite green again. A scan of
+`git diff origin/main...HEAD` for removed `fn accept_`, `#[test]`, `mod` and
+`*_TESTS` lines found no other deletion.
+
+### 2. `ControlRecordSound::TertiarComplete` did not spell the key it named (fixed)
+
+The variant that stands for `TERTIARY_COMPLETE_SOUND` was spelled
+`TertiarComplete`, which is not a word; renamed to `TertiaryComplete` before
+the vocabulary becomes API other crates match on. The key string itself, the
+variant order and every measurement are unchanged.
+
+### 3. The measurements were re-read out of the image by an independent script (confirmed)
+
+Besides running this task's own image test, the reviewer read
+`$CS_ENGINE_IMAGE` with a script written from this document's table alone: the
+image hashes to `43540fc9…`; each of the five parse sites is a `push imm32` of
+that key's own NUL-terminated string, writes the zero default into the recorded
+`field_offset`, calls `0x57a090` and `0x596120` by `rel32` and stores the
+handle into the same field; each key's string VA is referenced exactly once in
+`.text` (by its own parse site); each consumer site is a `mov` from the
+recorded field, base `ebx` (`0x83`) in `CZMission::Update` and `esi` (`0x86`)
+at mission end; the class chain at `0x46a97d` is `8b 06 48 74 1e 48 74 0f 48
+75 2d`, whose arms land on the three class consumer sites in class order; and
+the mission-end `cmp [esi+0xc58]` / `je 0x463c86` selects the lost handle with
+the won one falling through, the lost arm joining the play call at `0x463c61`.
+Every assertion reproduced.
+
+### Checks run by the reviewer (rebased head, clean tree)
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_m02_b_fu2_ --include-ignored` | 0 (3 tests) |
+| `cargo test --workspace --locked -- accept_m03_b_ --include-ignored` | 0 (8 tests, restored by this review) |
+| `cargo test --workspace --locked -- accept_m01_lc_ --include-ignored` | 101 — 161 passed, 3 failed, and the three are #798's, not this task's: `m01_lc_campaign_airframe_pose_retail_m01_binds_from_the_measured_bytes` (`ImageAbsent`), `m01_lc_player_config_retail_m01_binds_player_and_names_unknowns` and `m01_lc_player_airframe_source_retail_m01_has_no_airframe_key_and_the_scenario_does` (both `the campaign airframe is measured engine state`) all reach `mission_start::engine_state_source`, which looks the image up in the installation inventory that no longer carries it since the owner moved `crimson.decrypted.exe` out of `$CS_GAME_DIR` (Rally #798, in review, names that file as one of its sites); this branch touches neither `mission_start` nor the install manifest. Every census and record-field test in the selection passed — `accept_m01_lc_lowering_adapter_the_census_reports_complete_rows_and_keeps_the_gate`, `accept_m01_lc_directive_d_the_block_site_key_census_and_identity_classes_match_the_document` and all 19 `accept_m01_lc_mission_program_*` including `…_record_fields_are_classified_and_an_unknown_key_stays_unclassified` |
+| `cargo test --workspace --locked -- accept_m02_b_ --include-ignored` | 0 (17 tests: M02-B's own plus this task's three) |
+| `python3 -m unittest discover -s tools/tests -p 'test_evidence_review_identity.py'` | 0 (27 tests) |
+| `python3 tools/validate_evidence.py … --require-pass` | 0 |
+
+The committed evidence copy
+(`docs/findings/evidence/M02-B-FU2.json`) was regenerated by the reviewing
+agent on the reviewed commit with its own `CS_EVIDENCE_REVIEWER` identity, per
+`docs/contracts/CLI-EVIDENCE.md`.
+
 ## Sources
 
 `$CS_GAME_DIR` read-only through `cs_assets::install::discover`,
