@@ -65,7 +65,7 @@ use cs_content::mission_control::{
 };
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, objective_record, zrd_flat_fields};
-use cs_script::bindings::MAX_CALL_ARGS;
+use cs_script::bindings::{ArgDomain, MAX_CALL_ARGS};
 use cs_script::ir::{AnimationState, Condition};
 use cs_types::content::{ContentId, ContentKind};
 
@@ -1421,7 +1421,7 @@ fn accept_m06_b_a_completion_count_site_lowers_with_its_override() {
 }
 
 /// **A twelve-target kill binds as one list argument; a wide key that takes no
-/// index list still refuses.**
+/// list argument still refuses.**
 ///
 /// M06's retail record leans on both halves. Its widest
 /// `KILL_OBJECTIVE_WHEN_I_COMPLETE` site spells twelve targets — twelve
@@ -1429,11 +1429,18 @@ fn accept_m06_b_a_completion_count_site_lowers_with_its_override() {
 /// (#800) carries a list-taking directive's spelled list as one `Value::List`
 /// argument; authored the same way here, the record lowers completely. The
 /// bound itself was never raised, so a key whose measured operation takes no
-/// index list still refuses its whole registration when its sites are wide
-/// enough: `SET_AI_NET` with nine `{actor, net}` pairs refuses, its site
-/// refuses with it and the key never enters the registry. Both arms run in CI
-/// without original data, and whichever follow-up widens either mechanism must
-/// update both pins in its own change — never delete them to get green.
+/// list argument still refuses its whole registration when its sites are wide
+/// enough: a positional `IDENTITY` site of [`MAX_CALL_ARGS`] + 1 arguments
+/// refuses, its site refuses with it and the key never enters the registry.
+/// Both arms run in CI without original data, and whichever follow-up widens
+/// either mechanism must update both pins in its own change — never delete
+/// them to get green.
+///
+/// M03-B-FU2 (#810) is that follow-up for `SET_AI_NET`: it gave the
+/// `{actor, net}` pair list the same one-list-argument shape, so this arm's
+/// refusal moved from `SET_AI_NET` to the positional `IDENTITY` exactly as
+/// M02-B-FU1 kept it, and `SET_AI_NET`'s own pin — nine pairs now binding as
+/// one list argument — is asserted beside it.
 #[test]
 fn accept_m06_b_a_wide_kill_list_binds_and_a_wide_non_index_key_still_refuses() {
     let kill_record = |targets: usize| {
@@ -1477,7 +1484,74 @@ fn accept_m06_b_a_wide_kill_list_binds_and_a_wide_non_index_key_still_refuses() 
         "the kill site bound"
     );
 
-    // The bound is unchanged for a key that takes no index list.
+    // The bound is unchanged for a key whose measured operation takes no list
+    // argument. This arm spelled `SET_AI_NET` until M03-B-FU2 (#810) gave its
+    // pair list the one-list-argument shape; the positional `IDENTITY` keeps
+    // the refusal, exactly as M02-B-FU1 left it when the objective-index
+    // lists moved.
+    let positional_record = |args: usize| {
+        let mut spelled = Vec::new();
+        for arg in 0..args {
+            spelled.push(int(arg as u32));
+        }
+        control_record(vec![block(
+            1,
+            vec![
+                directive("BEGIN_DORMANT", vec![ZrdValue::Float(-1.0)]),
+                directive("DEDG", vec![int(1), int(0)]),
+                directive("IDENTITY", spelled),
+            ],
+        )])
+    };
+
+    let at_bound = positional_record(MAX_CALL_ARGS);
+    let lowered = lower(&at_bound);
+    assert!(
+        lowered.attempt().unbound_keys.is_empty(),
+        "{MAX_CALL_ARGS} positional arguments are at the bound of {MAX_CALL_ARGS} and register: {:?}",
+        lowered.attempt().unbound_keys
+    );
+
+    let over_bound = positional_record(MAX_CALL_ARGS + 1);
+    let lowered = lower(&over_bound);
+    assert_eq!(
+        lowered.attempt().unbound_keys.len(),
+        1,
+        "the over-bound signature refuses the key's registration"
+    );
+    assert!(
+        lowered.attempt().unbound_keys[0].contains("IDENTITY")
+            && lowered.attempt().unbound_keys[0].contains("too many arguments"),
+        "{}",
+        lowered.attempt().unbound_keys[0]
+    );
+    let refusals: Vec<&str> = lowered
+        .attempt()
+        .calls
+        .iter()
+        .filter_map(|call| match call {
+            CallOutcome::Refused(text) => Some(text.as_str()),
+            CallOutcome::Bound => None,
+        })
+        .collect();
+    assert_eq!(refusals.len(), 1, "{refusals:?}");
+    assert!(
+        refusals[0].contains("unknown host call `IDENTITY`"),
+        "{}",
+        refusals[0]
+    );
+    assert!(
+        lowered.registry().get("IDENTITY").is_none(),
+        "the over-bound key is not in the registry"
+    );
+    assert!(
+        !measure_control_record(&over_bound).is_complete(lowered.attempt()),
+        "an over-bound site refuses its whole record, never a narrowed binding"
+    );
+
+    // `SET_AI_NET` since M03-B-FU2 (#810): its pair list is one list
+    // argument, so nine pairs register where nine positional operands would
+    // refuse, and the record lowers with them.
     let net_record = |pairs: usize| {
         let mut spelled = Vec::new();
         for pair in 0..pairs {
@@ -1496,48 +1570,32 @@ fn accept_m06_b_a_wide_kill_list_binds_and_a_wide_non_index_key_still_refuses() 
         )])
     };
 
-    let at_bound = net_record(MAX_CALL_ARGS);
-    let lowered = lower(&at_bound);
+    let widened = net_record(MAX_CALL_ARGS + 1);
+    let record = measure_control_record(&widened);
+    let lowered = lower(&widened);
     assert!(
         lowered.attempt().unbound_keys.is_empty(),
-        "{MAX_CALL_ARGS} pair operands are at the bound of {MAX_CALL_ARGS} and register: {:?}",
+        "{MAX_CALL_ARGS} + 1 pairs are one list argument, so the key registers: {:?}",
         lowered.attempt().unbound_keys
     );
-
-    let over_bound = net_record(MAX_CALL_ARGS + 1);
-    let lowered = lower(&over_bound);
-    assert_eq!(
-        lowered.attempt().unbound_keys.len(),
-        1,
-        "the over-bound signature refuses the key's registration"
+    let spec = lowered
+        .registry()
+        .get("SET_AI_NET")
+        .expect("the pair list registers the key");
+    assert!(
+        spec.signatures
+            .iter()
+            .all(|signature| matches!(signature.as_slice(), [ArgDomain::List(_)])),
+        "one list argument per measured shape: {:?}",
+        spec.signatures
     );
     assert!(
-        lowered.attempt().unbound_keys[0].contains("SET_AI_NET")
-            && lowered.attempt().unbound_keys[0].contains("too many arguments"),
-        "{}",
-        lowered.attempt().unbound_keys[0]
-    );
-    let refusals: Vec<&str> = lowered
-        .attempt()
-        .calls
-        .iter()
-        .filter_map(|call| match call {
-            CallOutcome::Refused(text) => Some(text.as_str()),
-            CallOutcome::Bound => None,
-        })
-        .collect();
-    assert_eq!(refusals.len(), 1, "{refusals:?}");
-    assert!(
-        refusals[0].contains("unknown host call `SET_AI_NET`"),
-        "{}",
-        refusals[0]
+        lowered.attempt().calls.contains(&CallOutcome::Bound),
+        "the `SET_AI_NET` site bound"
     );
     assert!(
-        lowered.registry().get("SET_AI_NET").is_none(),
-        "the over-bound key is not in the registry"
-    );
-    assert!(
-        !measure_control_record(&over_bound).is_complete(lowered.attempt()),
-        "an over-bound site refuses its whole record, never a narrowed binding"
+        record.is_complete(lowered.attempt()),
+        "the record lowers with nine pairs: {:?}",
+        lowered.attempt()
     );
 }

@@ -215,7 +215,10 @@ fn accept_m01_lc_lowering_adapter_m01_lowers_into_a_validated_raw_program() {
     // Nested lists arrive nested: a measured `SET_AI_NET`/`ANIM_STATE`-shape
     // site carries a `Value::List` argument, never a flattened positional row.
     // The objective-index directives carry their one index list as a single
-    // `Value::List` argument (task M02-B-FU1); they are counted apart.
+    // `Value::List` argument (task M02-B-FU1) and are counted apart below;
+    // since task M03-B-FU2 (#810) `SET_AI_NET`'s `{actor, net}` pair list is
+    // one `Value::List` argument as well, and its three sites are pinned
+    // beside the index lists.
     const INDEX_LIST_KEYS: [&str; 5] = [
         "WAKE_OBJECTIVE",
         "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
@@ -250,6 +253,23 @@ fn accept_m01_lc_lowering_adapter_m01_lowers_into_a_validated_raw_program() {
             [Value::List(items)] if items.iter().all(|item| matches!(item, Value::Int(_)))
         )),
         "each carries its indices as one list of integers: {index_lists:?}"
+    );
+    // `SET_AI_NET` carries its pair list the same way (M03-B-FU2 / #810): M01
+    // spells three sites, and each one argument holds every `{actor, net}`
+    // pair of that site.
+    let net_lists: Vec<&[Value]> = all_calls()
+        .filter(|call| call.name == "SET_AI_NET")
+        .map(|call| call.args.as_slice())
+        .collect();
+    assert_eq!(net_lists.len(), 3, "M01's `SET_AI_NET` directive sites");
+    assert!(
+        net_lists.iter().all(|args| matches!(
+            args,
+            [Value::List(items)] if items
+                .iter()
+                .all(|item| matches!(item, Value::List(pair) if pair.len() == 2))
+        )),
+        "each carries its pairs as one list argument: {net_lists:?}"
     );
 
     let program = lowered.program().expect("every call bound");
@@ -289,9 +309,10 @@ fn accept_m01_lc_lowering_adapter_m01_lowers_into_a_validated_raw_program() {
                 Action::Directive {
                     operation: DirectiveOperation::AssignNet,
                     args,
-                } if args.iter().any(|arg| matches!(arg, Value::List(_)))
+                } if matches!(args.as_slice(), [Value::List(_)])
             )),
-        "a nested `SET_AI_NET` site arrives as a directive action with its list intact"
+        "a nested `SET_AI_NET` site arrives as a directive action carrying its pair list \
+         as one argument"
     );
     assert!(
         row.is_complete() && record.is_complete(attempt),
@@ -587,7 +608,9 @@ fn accept_m01_lc_lowering_adapter_a_measured_record_lowers_and_reports_complete(
 /// A nested list argument stays a `Value::List` end to end: the `RawCall`
 /// carries it, the registry binds it, and the lowered action hands it to the
 /// host still nested — the IR has carried lists since stage .01, so no shape is
-/// flattened or refused for nesting alone.
+/// flattened or refused for nesting alone. Since task M03-B-FU2 (#810) the
+/// whole spelled pair list is *one* such argument: a one-pair site and a
+/// two-pair site are both a single-argument call whose list holds the pairs.
 #[test]
 fn accept_m01_lc_lowering_adapter_a_nested_argument_stays_nested_through_the_bound_call() {
     let document = control_record(vec![block(
@@ -613,16 +636,25 @@ fn accept_m01_lc_lowering_adapter_a_nested_argument_stays_nested_through_the_bou
     let calls = &raw.objectives[0].calls;
     assert_eq!(
         calls[0].args,
-        [Value::List(vec![
+        [Value::List(vec![Value::List(vec![
             Value::Str("alpha".to_owned()),
             Value::Str("bravo".to_owned()),
-        ])],
-        "the nested argument arrives nested, not flattened"
+        ])])],
+        "the single pair arrives as one list argument, nested"
     );
     assert_eq!(
-        calls[1].args.len(),
-        2,
-        "two nested arguments stay two arguments"
+        calls[1].args,
+        [Value::List(vec![
+            Value::List(vec![
+                Value::Str("alpha".to_owned()),
+                Value::Str("bravo".to_owned()),
+            ]),
+            Value::List(vec![
+                Value::Str("delta".to_owned()),
+                Value::Str("echo".to_owned()),
+            ]),
+        ])],
+        "two pairs are two children of the one list argument, neither flattened"
     );
     assert_eq!(
         attempt.calls,

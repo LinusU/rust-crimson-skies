@@ -23,12 +23,13 @@
 //!   guesses — and every directive site as one [`RawCall`], args carried field
 //!   for field inside `Value::List` (nested lists stay nested; nothing is
 //!   flattened). A site of a **list-taking** directive (the measured
-//!   operations that take one list of objective indices, and `ANIM_STATE`,
-//!   whose whole operand list is the argument the evaluator's descriptor walk
-//!   reads) carries its spelled list as *one* `Value::List` argument instead
-//!   of a positional row, so the list's length is never read as an arity and
-//!   a long list stays inside the registry's per-signature argument bound
-//!   (`MAX_CALL_ARGS` is not raised).
+//!   operations that take one list of operands: the objective-index lists of
+//!   `WAKE`/`SLEEP`/`KILL_OBJECTIVE…`, `ANIM_STATE`, whose whole operand list
+//!   is the argument the evaluator's descriptor walk reads, and `SET_AI_NET`'s
+//!   list of `{actor, net}` pairs) carries its spelled list as *one*
+//!   `Value::List` argument instead of a positional row, so the list's length
+//!   is never read as an arity and a long list stays inside the registry's
+//!   per-signature argument bound (`MAX_CALL_ARGS` is not raised).
 //!
 //! Calls are bound through a [`HostBindingRegistry`] built from the record's
 //! own key dispositions: a `Measured` key registers one [`BindingSpec`] whose
@@ -475,15 +476,29 @@ fn arg_domain(arg: &MeasuredArg) -> ArgDomain {
 }
 
 /// Whether a key's measured operation takes **the spelled list as one
-/// argument** — the four index-list operations
-/// (`DirectiveOperation::WakeObjectives`, `SleepObjectives`, `KillObjectives`,
-/// `WakeObjectivesOnTransition`), where the list spelled beside the key is
-/// the one index list, and `AnimationStates`, where the spelled list is the
-/// operand list the evaluator's descriptor walk reads — so its length is the
-/// list's, not an arity. Carrying it as one `Value::List` keeps a long list
-/// (M02's nine-index kill sites, M04's eighteen-operand animation sites)
-/// inside the host-call bound without raising it. A bare site has no list
-/// and carries none.
+/// argument**: the list spelled beside the key is that one argument, so its
+/// length is the list's, never an arity. Carrying it as one `Value::List`
+/// keeps a long list inside the host-call bound without raising it.
+///
+/// Three measured families spell it:
+///
+/// * the four objective-index operations
+///   (`DirectiveOperation::WakeObjectives`, `SleepObjectives`,
+///   `KillObjectives`, `WakeObjectivesOnTransition`), where the list spelled
+///   beside the key is the one index list — M02's nine-index kill sites then
+///   stay inside the bound;
+/// * `AnimationStates` (`ANIM_STATE`), where the spelled list is the operand
+///   list the evaluator's descriptor walk reads (M04's eighteen-operand
+///   animation sites); and
+/// * `DirectiveOperation::AssignNet` (`SET_AI_NET`), whose sites spell
+///   `[[text,text], …]` — the census measured the shapes
+///   `[[text,text]]` and `[[text,text],[text,text]]`, so what grows from one
+///   site to the next is the number of `{actor, net}` pairs, not an argument
+///   count, and the original stores the operand list as a count beside the
+///   pair array (`docs/findings/2026-10-06-m01-lc-directive-a-objective-directive-parser.md`).
+///   M03's ten-pair site is the shape that needs it (M03-B-FU2 / #810).
+///
+/// A bare site has no list and carries none.
 fn takes_list_argument(key: &MeasuredDirectiveKey) -> bool {
     matches!(
         key.disposition(),
@@ -494,6 +509,7 @@ fn takes_list_argument(key: &MeasuredDirectiveKey) -> bool {
                 | MeasuredOperation::KillObjectives
                 | MeasuredOperation::WakeObjectivesOnTransition
                 | MeasuredOperation::AnimationStates
+                | MeasuredOperation::AssignNet
         )
     )
 }

@@ -13,17 +13,21 @@
 //! * 38 of its 40 directive keys have a measured effect, two are terminal
 //!   outcomes and **one** (`WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`) is refused,
 //!   because its two sites spell two argument shapes;
-//! * the record does **not** lower: three sites refuse (the two refused wake
-//!   sites and one `SET_AI_NET` site that exceeds the host-call bound), so no
-//!   `MissionProgram` stands and the mission is not ready;
+//! * the record does **not** lower: two sites refuse (the two refused wake
+//!   sites), so no `MissionProgram` stands and the mission is not ready. The
+//!   third refusal this stage opened with — `SET_AI_NET`'s ten-pair site, whose
+//!   `{actor, net}` pairs ran past the host-call bound — now binds as one
+//!   `Value::List` argument (M03-B-FU2 / #810, pinned by the
+//!   `accept_m03_b_fu2_*` tests below);
 //! * the sheet's three priorities (grouped objectives, world damage state,
 //!   completion ordering) are present in the record and resolve to measured
 //!   operations, and the completion chain that reaches `INSTANTWIN` is pinned
 //!   address by address.
 //!
-//! No behaviour is invented here: the two unmeasured pieces are filed as
-//! follow-up tasks (see `docs/findings/2026-10-08-m03-b-control-program-gaps.md`)
-//! and the mission stays unready until they are measured.
+//! No behaviour is invented here: the unmeasured key that still refuses is
+//! filed as a follow-up task (M03-B-FU1, see
+//! `docs/findings/2026-10-08-m03-b-control-program-gaps.md`) and the mission
+//! stays unready until it is measured.
 //!
 //! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`; the two synthetic
 //! tests run in CI.
@@ -42,6 +46,8 @@ use cs_content::mission_control::{
 };
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, objective_record, zrd_flat_fields};
+use cs_script::bindings::{ArgDomain, MAX_CALL_ARGS};
+use cs_script::ir::Value;
 use cs_types::content::{ContentId, ContentKind};
 
 /// The census row label of the mission.
@@ -233,17 +239,17 @@ fn accept_m03_b_every_directive_m03_spells_has_a_disposition_and_one_is_refused(
     assert_eq!(sites, SITES, "no site is dropped from the accounting");
 }
 
-/// **The record does not lower, and the reason is three named sites.**
+/// **The record does not lower, and the reason is two named sites.**
 ///
 /// Two refused `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` sites (blocks 13 and 14,
-/// 1-based) and the `SET_AI_NET` site of block 10, whose ten `{actor, net}`
-/// pairs exceed the host-call argument bound. All 310 other sites bind and all
-/// 55 conditions lower, yet no program stands: `validation` is `None`, the
-/// `call_arguments` requirement is the only unmet one, and the row is not
-/// complete.
+/// 1-based) and nothing else: the `SET_AI_NET` site of block 10 now carries
+/// its ten `{actor, net}` pairs as one `Value::List` argument and binds
+/// (M03-B-FU2 / #810). All 311 other sites bind and all 55 conditions lower,
+/// yet no program stands: `validation` is `None`, the `call_arguments`
+/// requirement is the only unmet one, and the row is not complete.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m03_b_the_record_does_not_lower_and_exactly_three_sites_refuse() {
+fn accept_m03_b_the_record_does_not_lower_and_exactly_two_sites_refuse() {
     let row = census().row(MISSION).unwrap();
     let attempt = row.lowering_attempt().unwrap();
     let lowered = attempt.attempt();
@@ -265,26 +271,21 @@ fn accept_m03_b_the_record_does_not_lower_and_exactly_three_sites_refuse() {
             CallOutcome::Bound => None,
         })
         .collect();
-    assert_eq!(refusals.len(), 3);
+    assert_eq!(refusals.len(), 2, "{refusals:?}");
     assert!(
         refusals[0]
-            .1
-            .contains("objective#9 call 3: unknown host call `SET_AI_NET`")
-    );
-    assert!(
-        refusals[1]
             .1
             .contains("objective#12 call 3: unknown host call `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`")
     );
     assert!(
-        refusals[2]
+        refusals[1]
             .1
             .contains("objective#13 call 4: unknown host call `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`")
     );
-    assert_eq!(
-        lowered.unbound_keys,
-        ["`SET_AI_NET`: binding `SET_AI_NET`: too many arguments"],
-        "the registry refused SET_AI_NET at registration, on the host-call bound"
+    assert!(
+        lowered.unbound_keys.is_empty(),
+        "no key refuses registration: SET_AI_NET's ten-pair list is one argument now: {:?}",
+        lowered.unbound_keys
     );
     assert!(
         lowered.validation.is_none(),
@@ -300,6 +301,88 @@ fn accept_m03_b_the_record_does_not_lower_and_exactly_three_sites_refuse() {
     assert_eq!(unmet, ["call_arguments"]);
     assert!(!row.is_complete());
     assert!(!lowering.complete());
+}
+
+/// **M03's ten-pair `SET_AI_NET` site binds through one `Value::List`
+/// argument.** (M03-B-FU2 / #810.) The site's operand list *is* its list of
+/// `{actor, net}` pairs, so it is carried as a single argument: the key
+/// registers one single-arity list signature instead of the ten-argument row
+/// [`MAX_CALL_ARGS`] (8) refuses, the site binds, and `unbound_keys` names no
+/// key. The record still refuses only at `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`
+/// (M03-B-FU1 / #803), and readiness stays the census's own verdict.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m03_b_fu2_the_ten_pair_net_site_binds_through_one_list_argument() {
+    let row = census().row(MISSION).unwrap();
+    let lowered = row.lowering_attempt().expect("M03 has a lowering attempt");
+    let attempt = lowered.attempt();
+
+    let raw = lowered
+        .raw_program()
+        .expect("the record assembled a program");
+    let nets: Vec<_> = raw
+        .objectives
+        .iter()
+        .flat_map(|objective| objective.calls.iter())
+        .filter(|call| call.name == "SET_AI_NET")
+        .collect();
+    assert_eq!(nets.len(), 1, "block 10 is M03's only `SET_AI_NET` site");
+    assert_eq!(
+        nets[0].args.len(),
+        1,
+        "the ten pairs are one argument, not a positional row: {:?}",
+        nets[0].args
+    );
+    let Value::List(pairs) = &nets[0].args[0] else {
+        panic!("the single argument is a list: {:?}", nets[0].args);
+    };
+    assert_eq!(pairs.len(), 10, "M03 spells ten `{{actor, net}}` pairs");
+    assert!(
+        pairs.iter().all(|pair| matches!(
+            pair,
+            Value::List(pair)
+                if pair.len() == 2 && pair.iter().all(|field| matches!(field, Value::Str(_)))
+        )),
+        "each pair stays a two-name list inside the one list argument: {pairs:?}"
+    );
+
+    let spec = lowered
+        .registry()
+        .get("SET_AI_NET")
+        .expect("the pair list registers the key");
+    assert!(
+        spec.signatures
+            .iter()
+            .all(|signature| matches!(signature.as_slice(), [ArgDomain::List(_)])),
+        "one list argument per measured shape, an arity inside MAX_CALL_ARGS ({MAX_CALL_ARGS}): {:?}",
+        spec.signatures
+    );
+
+    let refused: Vec<&str> = attempt
+        .calls
+        .iter()
+        .filter_map(|outcome| match outcome {
+            CallOutcome::Refused(reason) => Some(reason.as_str()),
+            CallOutcome::Bound => None,
+        })
+        .collect();
+    assert_eq!(refused.len(), 2, "{refused:?}");
+    assert!(
+        refused
+            .iter()
+            .all(|reason| reason.contains("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE")),
+        "only the two refused wake sites are left: {refused:?}"
+    );
+    assert!(
+        attempt.unbound_keys.is_empty(),
+        "`SET_AI_NET` no longer names an unbound key: {:?}",
+        attempt.unbound_keys
+    );
+
+    assert!(
+        !census().complete_missions().contains(&MISSION),
+        "M03 stays unready through the census's own verdict until M03-B-FU1 lands"
+    );
 }
 
 /// **The sheet's three priorities are in the record and resolve to measured
@@ -546,11 +629,18 @@ fn accept_m03_b_a_key_with_two_shapes_is_refused_and_no_program_assembles() {
     );
 }
 
-/// **A `SET_AI_NET` site with ten pairs is refused on the host-call bound; one
-/// pair binds.** The same key at two sizes, so the refusal is the size and not
-/// the spelling.
+/// **`SET_AI_NET`'s pair list is one list argument, and the host-call bound
+/// still stands for a positional key.** (M03-B-FU2 / #810.)
+///
+/// The same key at one, two, ten and twenty pairs — ten pairs are past
+/// [`MAX_CALL_ARGS`] (8) as a positional row — all bind through a
+/// single-argument list signature, the pairs arriving whole and in order. The
+/// refusal arm M02-B-FU1 kept for `IDENTITY` is moved here unchanged, so a key
+/// whose measured operation takes no list argument still refuses its whole
+/// registration over the bound: the bound is never raised, only the shape
+/// carried.
 #[test]
-fn accept_m03_b_a_net_assignment_past_the_host_call_bound_refuses_and_a_small_one_binds() {
+fn accept_m03_b_fu2_a_net_assignment_carries_one_list_and_the_positional_bound_still_refuses() {
     let pairs = |count: usize| -> ZrdValue {
         ZrdValue::List(
             (0..count)
@@ -558,21 +648,94 @@ fn accept_m03_b_a_net_assignment_past_the_host_call_bound_refuses_and_a_small_on
                 .collect(),
         )
     };
-    let small = record_of(vec![(1, vec![text("SET_AI_NET"), pairs(1)])]);
+    let spelled = |count: usize| -> Vec<Value> {
+        (0..count)
+            .map(|n| {
+                Value::List(vec![
+                    Value::Str(format!("actor{n}")),
+                    Value::Str("net".to_owned()),
+                ])
+            })
+            .collect()
+    };
+
+    // M03's own shape, ten pairs: one list argument, one bound call.
+    let ten = record_of(vec![(1, vec![text("SET_AI_NET"), pairs(10)])]);
+    let lowered = lower(&ten);
     assert!(
-        lower(&small).attempt().unbound_keys.is_empty(),
-        "one pair is inside the host-call bound"
-    );
-    let big = record_of(vec![(1, vec![text("SET_AI_NET"), pairs(10)])]);
-    let lowered = lower(&big);
-    assert!(lowered.program().is_none());
-    assert!(
-        lowered
-            .attempt()
-            .unbound_keys
-            .iter()
-            .any(|key| key.contains("SET_AI_NET") && key.contains("too many arguments")),
-        "{:?}",
+        lowered.attempt().unbound_keys.is_empty(),
+        "ten pairs are inside the host-call bound as one argument: {:?}",
         lowered.attempt().unbound_keys
+    );
+    assert_eq!(lowered.attempt().calls, [CallOutcome::Bound]);
+    let raw = lowered.raw_program().expect("the program assembled");
+    assert_eq!(
+        raw.objectives[0].calls[0].args,
+        [Value::List(spelled(10))],
+        "the ten pairs arrive as one list argument, in order"
+    );
+    let spec = lowered
+        .registry()
+        .get("SET_AI_NET")
+        .expect("the pair list registers the key");
+    assert!(
+        spec.signatures
+            .iter()
+            .all(|signature| matches!(signature.as_slice(), [ArgDomain::List(_)])),
+        "one list argument per measured shape: {:?}",
+        spec.signatures
+    );
+    assert!(
+        lowered.program().is_some(),
+        "every call bound, so a program stands"
+    );
+
+    // The same key at every width the corpus and the archive can spell: the
+    // width is the list's, never an arity, so nothing runs at the bound.
+    for count in [1usize, 2, 10, 20] {
+        let document = record_of(vec![(1, vec![text("SET_AI_NET"), pairs(count)])]);
+        let lowered = lower(&document);
+        assert!(
+            lowered.attempt().unbound_keys.is_empty(),
+            "{count} pairs: {:?}",
+            lowered.attempt().unbound_keys
+        );
+        assert_eq!(lowered.attempt().calls, [CallOutcome::Bound]);
+        assert_eq!(
+            lowered.raw_program().expect("assembled").objectives[0].calls[0].args,
+            [Value::List(spelled(count))],
+            "{count} pairs carry as one list argument"
+        );
+    }
+
+    // The bound itself never moved: a positional key one argument over it
+    // refuses its whole registration, and its site refuses with it.
+    let over = record_of(vec![(
+        1,
+        vec![
+            text("IDENTITY"),
+            ZrdValue::List((0..=MAX_CALL_ARGS).map(|n| int(n as u32)).collect()),
+        ],
+    )]);
+    let lowered = lower(&over);
+    assert_eq!(
+        lowered.attempt().unbound_keys.len(),
+        1,
+        "the over-bound positional signature refuses the key's registration: {:?}",
+        lowered.attempt().unbound_keys
+    );
+    assert!(
+        lowered.attempt().unbound_keys[0].contains("IDENTITY")
+            && lowered.attempt().unbound_keys[0].contains("too many arguments"),
+        "{}",
+        lowered.attempt().unbound_keys[0]
+    );
+    assert!(
+        lowered.registry().get("IDENTITY").is_none(),
+        "the over-bound key is not in the registry"
+    );
+    assert!(
+        lowered.program().is_none(),
+        "and no program stands while it refuses"
     );
 }
