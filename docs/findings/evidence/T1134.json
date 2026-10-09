@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T1134",
+ "candidate_tree": "5dcb3a9eddc35f31ffe70da6b18cab1f33e4162d",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-09T21:36:59Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_flight_original_levelop_", "--include-ignored", "--nocapture"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 3, "executed": 3, "passed": 3, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_flight_original_levelop_input_slot_and_designed_bindings", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_flight_original_levelop_bound_key_toggles_the_retail_level_off", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "be996e4fedf1332fd98fb2a3832a98eb87c43bd10d2844c49b039f0971686b61", "kind": "log"}, {"path": "playtest-flight.json", "sha256": "06b3f147009cf6bcf8f62c1738d48c71952b78d06c50b95ab7b05bc9bb036164", "kind": "json"}],
+ "unknowns": ["level_off_binding_chord: the original toggles command 47 with the Shift+L chord; the F22 action map has no chord sources and Left Shift is already the playtest's throttle step-up, so the playtest binds the bare letter `L` — a designed slot for the original command, not a reproduction of the original's chord, and the original's own default binding remains unmeasured (native data, F22-H unknown #1). Affected content: the retail playtest's Level-Off key. Resolving task: none needed for the toggle itself; a chord-capable action map or an owner run (#358) would be needed to bind Shift+L as the original does. Gates: any claim that the playtest's Level-Off key matches the original's chord.", "level_off_calibration: the assist's torque path is part of the statically recovered law (OWNER-STATIC-2026-10-08) and is still uncalibrated against an original run (#358); what was measured here is that the wired toggle drives that law, not that the original levels off at the same rate. Affected content: any handling claim about the Level-Off assist. Resolving task: an owner original run compared against this law. Gates: any verified_original claim about Level-Off behaviour."],
+ "review": {"identity": "implementer: bunny-2 (Rally #1134 implement claim of 2026-10-09); reviewer: recorded by the Rally review claim that follows — per AGENTS.md an agent review is `checked` at best, is never independent original-reference evidence and never replaces the owner's human approval. The activity log records both claims.", "method": "acceptance suite run locally with the retail capability and recorded verbatim in cargo-test.log (its PLAYTEST-LEVELOFF lines carry the measured bank angles); this harness derives every field from that log, from production discovery of $CS_GAME_DIR, from a fresh run of the playtest's own production flight import (playtest-flight.json, `cs_app::playtest::retail::read_flight`, whose flight statement now reports level_off_toggle_wired true), from rustc and from Cargo.lock. Structure checked with tools/validate_evidence.py; the two unknowns it carries are the unmeasured original chord and the uncalibrated assist rate, each stated with what it gates."},
+ "claim": "implemented"
+}
