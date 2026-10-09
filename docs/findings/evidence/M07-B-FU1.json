@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M07-B-FU1",
+ "candidate_tree": "55952820ccc591eb73460b5084df2a92980645f5",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-09T21:49:39Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m07_b_fu1_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m07_b_fu1_the_threshold_defaults_to_the_zone_count_and_the_first_site_wins", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m07_b_fu1_the_danger_zones_predicate_is_the_measured_flag_count", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "f6e2bc661f038960d3c7c2a3c7351b8efc39abc36bd9f9a94ae034fc6b80a95a", "kind": "log"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: bunny-alpha-1/bunny-alpha-1 (Rally #813 implement claim, session of 2026-10-09); reviewer: the agent that claims the Rally review of #813 writes its own identity into this report when it regenerates it on the reviewed commit — this copy is the implementer's own run, and no agent review replaces the owner's human approval", "method": "acceptance suite run locally with the retail capability; the fields are derived from the recorded log and production discovery of $CS_GAME_DIR. The suite pins this task's change: the `DANGER_ZONES_COMPLETED` predicate is the engine image's own flag evaluator — the once-per-block parse (0x465ec0) strdups each listed zone name and zeroes one flag byte per name, the pass-2 evaluator (0x469ab0) counts the nonzero bytes and fires at count >= threshold with the threshold defaulting to the listed count, and the single runtime writer (0x446990) stores 1 and never 0 — so M07's three sites (blocks 37, 39, 41) lower to a sticky set-of-zones count that answers false without recorded flags, true once the block's own zones are recorded and false for a zone the record never listed, M07's census row completes and the campaign gate stays closed on the rows whose gaps remain; the M08-B suite's pins were updated in the same change. NOT CLAIMED: the producer's world test (0x446930 -> 0x55d6c0 and its two-flagged-entry gate) is untraced and carried as a named residual unknown, no directive is implemented by a measured effect, no mission was played, no original executable was run and nothing is verified_original. Claim is implemented only; validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit the suite and this harness ran on; the only later delta is this report's own copy under docs/findings/evidence/, which no acceptance test reads"},
+ "claim": "implemented"
+}
