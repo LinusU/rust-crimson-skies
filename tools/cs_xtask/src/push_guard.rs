@@ -93,7 +93,7 @@ impl std::error::Error for PushGuardError {}
 
 /// Every fact about the branch a push would start from, read from git.
 ///
-/// All four fields come from `git` itself, so the guard never parses
+/// Every field comes from `git` itself, so the guard never parses
 /// `.git/config` or re-implements config precedence.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PushState {
@@ -144,12 +144,9 @@ impl Report {
 pub fn read_state(repo: &Path, branch_override: Option<&str>) -> Result<PushState, PushGuardError> {
     let branch = match branch_override {
         Some(name) => Some(name.to_owned()),
-        None => match git_output(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])? {
-            Some(output) => Some(output),
-            // symbolic-ref exits 1 on a detached HEAD: not an error, the
-            // answer is "there is no branch".
-            None => None,
-        },
+        // `symbolic-ref --quiet` exits 1 silently on a detached HEAD: not
+        // an error, the answer is "there is no branch".
+        None => git_output(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])?,
     };
     let push_default = git_config_get(repo, "push.default")?;
     let (upstream_remote, upstream_merge) = match &branch {
