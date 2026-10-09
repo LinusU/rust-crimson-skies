@@ -186,6 +186,19 @@
 //! `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
 //! `evidence_report_m05_b_*` writes that task's report and is selected by
 //! test name, so a task selection never picks it up as an acceptance test.
+//!
+//! `m08_b.rs` is the M08-B stage: `accept_m08_b_*` tests that bind M08's
+//! mission control program through `SourceContext::control_program` and hold
+//! it to the mission binding's identities, the retail control census, the
+//! block graph its directives spell and the lowering that decides what the
+//! engine may honour. #800's list-argument lowering closed the host-call gap
+//! while this stage was in flight, so the tests pin that all 209 sites bind
+//! and that the eight danger-zones completion conditions this build lowers no
+//! predicate for (#813) are the one remaining gap that keeps M08's record
+//! from lowering. Its two synthetic members run in CI and its five retail
+//! members are `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
+//! `evidence_report_m08_b_*` writes that task's report and is selected by
+//! test name.
 
 mod closure;
 mod common;
@@ -219,6 +232,7 @@ mod m06_b;
 mod m07_a;
 mod m07_b;
 mod m08_a;
+mod m08_b;
 mod m10_a;
 mod m10_b;
 mod m12_a;
