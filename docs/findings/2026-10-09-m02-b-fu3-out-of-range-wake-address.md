@@ -332,6 +332,33 @@ The three mutation probes above were run between the workspace checks, each
 reverted before the next; the file was byte-identical to its saved copy after
 the last one.
 
+## Review re-run (reviewer bunny-2/bunny-2, 2026-10-09)
+
+The reviewing agent (same agent name and model as the implementer, a different
+session with fresh context — recorded honestly, not independent-model review)
+rebased the branch onto `origin/main` at `20c4efa3` (main's `decd471f` revert
+plus `20c4efa3` restored `CARGO_PROFILE_DEV_DEBUG: line-tables-only` in
+`.github/workflows/ci.yml`, so the `CI-T430-DEBUG-PIN-CONTRADICTION` (#811)
+contradiction no longer exists on main) and re-ran every check on the rebased
+tree:
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | **0** — fully green now that main is fixed, including the T430 binary |
+| `cargo test --workspace --locked -- accept_m02_b_fu3_ --include-ignored` | 0 (3 tests), each also passing alone with `--exact` |
+| `python3 tools/validate_evidence.py private/evidence/M02-B-FU3/acceptance.json --artifact-root private/evidence/M02-B-FU3 --require-pass` | 0 |
+
+The reviewer regenerated the acceptance report on the rebased commit with
+`CS_EVIDENCE_REVIEWER` naming the reviewer; it validates, and its second
+production observation `m02-b-fu3-addresses.json` is **byte-identical**
+(sha256 `50d13d718b3e9878050cd1b76c5ab94067c94252d4e4381e4845cf2fcb34adf9`)
+to the implementer's run's — the same 63 addresses, record indices and rule
+verdicts re-derived independently from the installation. One mutation probe was
+re-applied by the reviewer (clamp instead of refuse): the synthetic refusal arm
+failed, and the file was reverted byte-identical.
+
 ## Residual unknowns (not guessed)
 
 1. **What the original observes past the count.** The walk executes
