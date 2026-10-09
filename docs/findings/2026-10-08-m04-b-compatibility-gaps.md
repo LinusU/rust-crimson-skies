@@ -34,11 +34,14 @@ production systems (`SourceContext::control_program`,
 `cs_formats::script_raw::discover_container`, `cs_content::stunts::decode_zrd`,
 `cs_content::mission_control`, `cs_app::mission_control`,
 `cs_app::control_lowering`) and regresses it with eight `accept_m04_b_*` tests.
-One compatibility gap is **measured and pinned, not worked around**:
-`ANIM_STATE` is refused in both halves of the lowering, so M04's control
-record does not lower and the mission stays Unsupported. That fix belongs to
-the condition parser and the lowering subsystem and is filed as **M04-B-FU1**
-(#806); this stage names it exactly.
+One compatibility gap was left **measured and pinned, not worked around**:
+`ANIM_STATE` was refused in both halves of the lowering, so M04's control
+record did not lower and the mission stayed Unsupported. The fix was filed
+as **M04-B-FU1** (#806) — and it **landed**: the operand-list walk this
+document's fix-direction section described is what was implemented, M04 now
+lowers completely, and the suite was re-pinned in that same change. The
+follow-up record is
+`docs/findings/2026-10-09-m04-b-fu1-anim-state-operand-list.md`.
 
 Nothing here is `verified_original` (AGENTS.md rule 8): the work-order ↔
 mission join remains M04-A's inference, directive *effects* are the stage A–D
@@ -73,8 +76,8 @@ run:
 | Record | 52 numbered blocks (`OBJECTIVE1`…`OBJECTIVE52`, no gaps), 201 directive sites, 40 distinct keys |
 | Vocabulary partition | 2 terminal keys (`INSTANTWIN` ×1 site, `INSTANTLOSS` ×1 site, both bare), **38 measured** keys, 0 unmeasured, 0 refusals, 0 unclassified record-level keys |
 | Record-level fields | `MISSION_TIMER`, `PLAYER_INIT` and the three empty animation lists — each once |
-| Lowering attempt | 198 of 201 sites bind; 3 refuse; 50 of 52 conditions lower, 2 refuse; no program assembles |
-| Census context | 53 mission-scoped readers, 40 with control programs; M04 among the rows that are **not** complete; `campaign_ready()` false |
+| Lowering attempt | since #806: **201 of 201 sites bind, all 52 conditions lower, the program validates** — before it, 198 of 201 bound (all three `ANIM_STATE` sites refused) and 50 of 52 conditions lowered, with no program assembled |
+| Census context | 53 mission-scoped readers, 40 with control programs; M04's row **complete** since #806; `campaign_ready()` false on other missions' gaps |
 | Cross-check | `SourceContext::control_program("M04", "The Sinister Sub")` and `survey_mission_control_programs` agree on the container, its digest, the member, its span and the whole record |
 
 The 15 members, in archive order, each with the block count that qualified or
@@ -169,8 +172,9 @@ a 90-second delay). Block 42's `TICK_DEPENDS_ON_OBJ [40]` is a *gate on block
 
 M04's directive vocabulary is **fully measured**: 40 of 40 keys carry a stage
 A–D disposition, none is Unmeasured, no block refused to decode and no
-record-level key sits outside the vocabulary. Yet the record does not lower.
-The single key responsible is `ANIM_STATE`, spelled at three sites:
+record-level key sits outside the vocabulary. When this suite was written
+the record did not lower. The single key responsible was `ANIM_STATE`,
+spelled at three sites:
 
 | block | operands | spelling |
 | --- | --- | --- |
@@ -178,48 +182,54 @@ The single key responsible is `ANIM_STATE`, spelled at three sites:
 | 32 | 2 | `ANIM [NAME [hooked_to_klondike], STATE [EXECUTED]]` |
 | 37 | 18 | `COMPLETION_COUNT [3]` + the same eight descriptors |
 
-Two distinct refusals, both measured by the suite:
+Two distinct refusals, both measured by the suite — **both closed by
+M04-B-FU1 (#806)**:
 
-1. **Condition half.** `cs_script::conditions::anim_state` accepts exactly two
-   operands — the tag `ANIM` and one spec record — which is the shape M01's
-   three sites happen to spell. Blocks 23 and 37 spell 18 operands, so both
-   refuse with the measured shape named, `objective_condition` is unmet, and
-   only 50 of the 52 blocks lower.
-2. **Call half.** `cs_app::control_lowering` registers one `BindingSpec`
-   signature per measured shape, and
-   `cs_script::bindings::HostBindingRegistry::register` refuses any signature
-   longer than `MAX_CALL_ARGS` (8). `ANIM_STATE`'s two shapes are 18 and 2
-   operands, so the whole key fails registration, all three sites refuse as
-   `unknown host call`, and `call_arguments` is unmet.
+1. **Condition half (closed).** `cs_script::conditions::anim_state` accepted
+   exactly two operands — the tag `ANIM` and one spec record — which is the
+   shape M01's three sites happen to spell. Blocks 23 and 37 spell 18
+   operands, so both refused with the measured shape named,
+   `objective_condition` was unmet, and only 50 of the 52 blocks lowered.
+   #806 lowered the measured operand-list walk, so all three sites now carry
+   `AnimationStates` evaluators: blocks 23 and 37 hold all eight descriptors
+   with `required` 1 and 3 from their `COMPLETION_COUNT` overrides, block 32
+   the one `EXECUTED` pair.
+2. **Call half (closed).** `cs_app::control_lowering` registered one
+   `BindingSpec` signature per measured shape, and
+   `cs_script::bindings::HostBindingRegistry::register` refused any signature
+   longer than `MAX_CALL_ARGS` (8). `ANIM_STATE`'s 18-operand shape failed
+   registration, so all three sites refused as `unknown host call` and
+   `call_arguments` was unmet. #806 generalized M02-B-FU1's list-argument
+   carrying to `AnimationStates`: the operand list is the call's one
+   `Value::List` argument, all three sites bind and `MAX_CALL_ARGS` stays 8.
 
-No `MissionProgram` assembles, `MissionProgram::validate` is never reached,
-the census reports M04's row incomplete and `campaign_ready()` stays false.
-That is the contract's honest reading — an unlowerable program is
-`Unsupported`, never a guessed one — so nothing in this stage loosens it.
+No `MissionProgram` assembled, `MissionProgram::validate` was never reached,
+the census reported M04's row incomplete and `campaign_ready()` stayed false
+— the contract's honest reading at the time.
 
-**The direction the fix likely takes, with its evidence.** The stage A–D
-findings measured the original's parse helper for this key
+**The fix landed as M04-B-FU1 (#806).** The stage A–D findings measured the
+original's parse helper for this key
 (`docs/findings/2026-10-06-m01-lc-directive-c-ai-world-and-animation-directives.md`,
 `ANIM_STATE`): at `0x4691d0` it **walks the value list** for a tag-3 `ANIM`
 followed by a tag-4 spec record, appends *every* pair it finds and increments
 `required` once per pair; after the walk it reads a `COMPLETION_COUNT` out of
 that same list and the integer **overwrites** `required`. M04's spelling is
-what that measured walk describes. The engine's single-pair shape was derived
-from M01, whose three sites all spell exactly one pair, and
-`conditions.rs` says so in its own doc comment. That is evidence, not a
-decision: the sibling lookup's scope and the multi-pair append must be
-confirmed against the original before anything changes. Filed as **M04-B-FU1**
-(#806), which also states that the call half shares the mechanism already
-filed as M02-B-FU1 (#800) — coordinate rather than duplicate, and re-check M04
-after #800 lands because #800's acceptance is M02-scoped.
+what that measured walk describes; the engine's single-pair shape was derived
+from M01, whose three sites all spell exactly one pair. #806 re-read the
+helper and the sibling lookup's scope in the decrypted image — confirmed —
+and implemented exactly this: the multi-pair append, the in-list override,
+the first-site selection and the list-carried call, with `MAX_CALL_ARGS`
+unchanged. The follow-up record is
+`docs/findings/2026-10-09-m04-b-fu1-anim-state-operand-list.md`.
 
-The two synthetic tests carry both refusal arms on authored records so CI
-covers them without original data: a single-pair site lowers and completes
-while the same key with a `COMPLETION_COUNT` override and a second descriptor
-is refused per site; and an `ANIM_STATE` site at the bound of 8 operands
-registers while one operand over it refuses the key's whole registration. The
-follow-up that changes either bound must update both pins in its own change —
-never delete them to get green.
+The synthetic tests now carry the measured arms on authored records so CI
+covers them without original data: multi-pair sites lower with the count
+override, the operand list binds as one call argument inside the bound, the
+first `ANIM_STATE` site alone arms the evaluator, a top-level
+`COMPLETION_COUNT` stays inert, and only an operand list past
+`MAX_VALUE_ITEMS` still refuses — at the key's registration, never
+truncated. The pins moved in the same change that widened the mechanism —
+never deleted to get green.
 
 ## Not claimed
 
@@ -243,7 +253,7 @@ measured keys, never dropped.
 - `docs/findings/evidence/M04-B.json` — the committed copy of the acceptance
   report (the artifacts it hashes stay in `private/evidence/M04-B/`).
 
-## Test inventory (`accept_m04_b_*`, 8 tests)
+## Test inventory (`accept_m04_b_*`, 10 tests — the four M04-B pins, the six the follow-up rewrote)
 
 | Test | What it pins |
 | --- | --- |
@@ -251,10 +261,12 @@ measured keys, never dropped.
 | `accept_m04_b_every_directive_m04_spells_has_a_disposition_and_none_is_refused` (retail) | the partition is exactly 2 terminal + 38 measured + 0 unmeasured; the sites sum to 201; both outcome keys answer for their own name and are spelled `Bare` |
 | `accept_m04_b_the_sheet_priorities_are_located_and_resolve_to_measured_operations` (retail) | the three priorities' keys resolve to the measured operations; `TRAVELERS`' two boundaries with their actors and radii; the four `START_TAXI` vehicle names; the two `WAKE_ANIM` targets; `SET_HELP_LABEL … MSG_OBJ_DEFEND` over both carriers; the seven `DEDG` pairs; both `INACTIVE_COMPLETION_COUNT` thresholds against twelve-member lists that all hang off `piratezep`; `TRAVELERS`' three unknowns are still carried |
 | `accept_m04_b_the_terminal_blocks_are_gated_and_every_address_is_in_range` (retail) | `INSTANTWIN` in block 32 and `INSTANTLOSS` in block 41 and nowhere else, both `BEGIN_DORMANT -1`; only blocks 1 and 2 arm a timed self-wake and neither latch is among them; blocks without a dormant marker; the address walk's per-key totals (24/7/23/4 = 58) with no out-of-range address; each latch's in-degree is exactly one completion edge; block 42's gate is a gate, not a wake |
-| `accept_m04_b_anims_state_is_the_only_gap_and_the_record_does_not_lower` (retail) | `ANIM_STATE`'s 3 sites in two shapes (18 operands ×2, 2 ×1) with 18 past `MAX_CALL_ARGS`; 198 of 201 calls bind and the three refusals name objective#22/#31/#36; the one unbound key names the bound; 50 of 52 conditions lower and the two refusals name blocks 23 and 37 with the measured shape; no program, no validation; `objective_condition` and `call_arguments` are the only unmet rows; the row is incomplete |
-| `accept_m04_b_the_mission_stays_unready_until_anims_state_is_measured` (retail) | M04 is not a complete census row, the campaign gate stays closed, and the row is still reported as measured |
-| `accept_m04_b_a_single_animation_pair_lowers_and_a_multi_pair_site_is_refused` (synthetic) | on authored records: one pair is the measured shape and the record completes; a `COMPLETION_COUNT` override plus a second descriptor in the same list is refused per site with the measured shape named; four operands are inside the host-call bound, so the refusal is the shape |
-| `accept_m04_b_an_anim_state_site_past_the_host_call_bound_refuses_the_whole_key` (synthetic) | the refusal mechanism at the bound: 8 operands register and their sites bind; 10 operands refuse the key's registration, refuse its site and leave the key out of the registry |
+| `accept_m04_b_fu1_the_multi_pair_anim_state_sites_lower_and_m04s_record_completes` (retail, #806) | `ANIM_STATE`'s 3 sites in two shapes (2 operands ×1, 18 ×2); all 201 calls bind with no unbound key; all 52 conditions lower — blocks 23 and 37 hold eight descriptors with `required` 1 and 3 from the in-list `COMPLETION_COUNT`, block 32 the one `EXECUTED` pair; `MissionProgram::validate` accepts and the row is complete |
+| `accept_m04_b_fu1_m04_is_complete_and_the_campaign_stays_unready` (retail, #806) | M04 is a complete census row, the campaign gate still stays closed on other missions' gaps, and the row is still reported as measured |
+| `accept_m04_b_fu1_a_multi_pair_site_lowers_with_its_count_override` (synthetic, #806) | on authored records: the `COMPLETION_COUNT` + two-descriptor spelling lowers the measured way — both pairs appended in order, the count overwriting `required`, the operand list binding as one call argument |
+| `accept_m04_b_fu1_only_an_uncarriable_operand_list_refuses` (synthetic, #806) | an operand list past `MAX_CALL_ARGS` binds as one list argument; a list past `MAX_VALUE_ITEMS` is uncarriable, so the key refuses registration rather than truncating and the damaged block's condition refuses beside it |
+| `accept_m04_b_fu1_the_first_site_arms_the_evaluator` (synthetic, #806) | the measured first-match selection: the first `ANIM_STATE` text's operand list arms the block's one evaluator and a second site contributes nothing — not pairs and not a refusal |
+| `accept_m04_b_fu1_a_top_level_completion_count_is_inert_and_unbound` (synthetic, #806) | a block-level `COMPLETION_COUNT` directive is never read into the animation evaluator (the parse only looks the key up inside the selected operand list) and its own call still refuses as an unmeasured key |
 
 Every test calls production code (`SourceContext::control_program`,
 `survey_mission_control_programs`, `read_control_member`,
@@ -275,7 +287,7 @@ after the last one was clean.
 | Mutation | Observed result |
 | --- | --- |
 | `cs_content::mission_control::terminal_outcome_of`: `INSTANTWIN` → `None` | **2 of 8 fail** — the vocabulary test (the outcomes map loses `INSTANTWIN: Succeeded`) and the gap test (the success latch stops being a terminal key, so it no longer binds as `Lowering::Finish` and the bound-call count moves off 198) |
-| `cs_script::bindings::MAX_CALL_ARGS` 8 → 32 (the follow-up's direction) | **1 fails** — the gap pin: no shape is over the bound any more, so `longest > MAX_CALL_ARGS` breaks. The synthetic bound test *adapts* to the new constant and still passes, which is exactly the pair #806 must update together; its refusal arm is what keeps the mechanism covered either way |
+| `cs_script::bindings::MAX_CALL_ARGS` 8 → 32 (the follow-up's direction) | **1 fails** — the gap pin: no shape is over the bound any more, so `longest > MAX_CALL_ARGS` breaks. The synthetic bound test *adapts* to the new constant and still passes — #806 updated that pair by keeping the constant and moving the width into one list argument instead, and the refusal arm now lives at `MAX_VALUE_ITEMS` |
 | `cs_content::mission_control::control_member`: the `objective_blocks_of(member) > 0` filter accepts every member | **6 of 8 fail** — every retail test, because the whole census refuses `zbd/c1/ia1/zrdr.zbd` as ambiguous the moment the rule stops choosing. The two synthetic tests, which author their own records, are unaffected |
 
 ## Checks
@@ -299,8 +311,9 @@ validated with `tools/validate_evidence.py --require-pass` and copied to
 - **The join remains an inference** (M04-A's standing unknown): this stage
   consumes it through `SourceContext::control_program` and adds no second
   evidence for the mapping itself.
-- **`ANIM_STATE` does not lower** — the measured gap above. M04 stays
-  `Unsupported`; the campaign gate stays closed; the fix is #806.
+- **`ANIM_STATE` did not lower** — the measured gap above, closed by
+  M04-B-FU1 (#806) through the generalized operand-list walk this document's
+  fix-direction section described; M04's row is complete since that landing.
 - **The runtime halves of all three priorities are unobserved.** Whether the
   wrong actor, the wrong session or a repeated event can satisfy a reveal, a
   launch interruption or the protected-carrier thresholds is ordinary-play

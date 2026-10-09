@@ -18,9 +18,11 @@ regresses it through the production systems M02-B and M03-B already exercise
 (`cs_app::mission_control`, `cs_content::mission_control`,
 `cs_content::campaign_bindings::SourceContext::control_program`,
 `cs_app::control_lowering`, `cs_script::conditions`) with eight
-`accept_m07_b_*` tests. Two lowering gaps keep M07's record from lowering; one
-is the ANIM_STATE mechanism already filed as **M04-B-FU1 (#806)** and
-**M02-B-FU1 (#800)**, the other is filed here as **M07-B-FU1 (#813)**.
+`accept_m07_b_*` tests. Two lowering gaps kept M07's record from lowering:
+the ANIM_STATE mechanism filed as **M04-B-FU1 (#806)** — landed, with M07's
+sites re-checked and re-pinned in that change as the scope note on #806
+required — and the danger-zones condition filed here as **M07-B-FU1 (#813)**,
+which is the one gap that remains.
 
 Nothing here is `verified_original` (AGENTS.md rule 8): the work-order ↔
 mission join remains M07-A's inference, directive *effects* are the M01-LC
@@ -42,8 +44,8 @@ re-derived by the acceptance tests on each run:
 | Vocabulary partition | 2 implemented keys (`INSTANTWIN` ×1 site, `INSTANTLOSS` ×1 site, both bare), 27 measured keys, **0 unmeasured**, 0 refusals | `MeasuredControlRecord::{implemented, measured, unmeasured}` |
 | Record-level fields | `MISSION_TIMER` ×1, `PLAYER_INIT` ×1, the three empty animation lists ×1 each | `record_fields()` |
 | Unclassified record keys | none | — |
-| Lowering attempt | 61 objectives, 231 calls; **9 refused calls** (all `ANIM_STATE`), **8 refused conditions** (5 `ANIM_STATE`, 3 `DANGER_ZONES_COMPLETED`); `validation` `None`; no program | `lower_control_record` through the census row |
-| Unmet requirements | `objective_condition`, `call_arguments` — **two**, where M03 had one | `ControlLowering::unmet()` |
+| Lowering attempt | 61 objectives, 231 calls; since #806: **0 refused calls** (every `ANIM_STATE` site binds its operand list as one argument) and **3 refused conditions** (the `DANGER_ZONES_COMPLETED` sites; before #806 it was 9 refused calls and 8 refused conditions); a program stands and `validate` refuses it on the three blocks | `lower_control_record` through the census row |
+| Unmet requirements | `objective_condition` (the three danger-zones sites), `call_arguments` (it carries validate's refusal while a bound program stands) — **two**, where M03 had one | `ControlLowering::unmet()` |
 | Census context | 53 mission-scoped readers, 40 with control programs; M07 among the rows that are **not** complete; `campaign_ready()` false | `survey_mission_control_programs` |
 
 The 19 members, in archive order, each with the block count that qualified or
@@ -162,30 +164,26 @@ disposition, none is Unmeasured, no block is unreadable and no record key
 falls outside the vocabulary. Yet the record does not lower, and two
 requirements are unmet (M03 had one):
 
-1. **`ANIM_STATE` — the M04-B-FU1 / M02-B-FU1 mechanism, with M07's numbers.**
-   The key's disposition is Measured (`AnimationStates`), but two independent
-   arms refuse it:
-   - *Conditions.* `cs_script::conditions::anim_state` accepts exactly the tag
-     `ANIM` and **one** spec record. M07 spells 1, 2, 3, 4 and 5 spec records
-     at its nine sites (blocks 9, 13, 16, 20, 26, 30, 31, 60, 61), so the five
-     multi-record blocks (13, 16, 20, 30, 60) refuse `objective_condition`.
-     The original's parse helper at `0x4691d0` walks **N** `ANIM`/spec pairs
-     into one `{required, count, records}` header
+1. **`ANIM_STATE` — the M04-B-FU1 mechanism, closed at M07 by #806.** The
+   key's disposition is Measured (`AnimationStates`); when this suite was
+   written, two independent arms refused it:
+   - *Conditions (closed).* `cs_script::conditions::anim_state` accepted
+     exactly the tag `ANIM` and **one** spec record. M07 spells 1, 2, 3, 4
+     and 5 spec records at its nine sites (blocks 9, 13, 16, 20, 26, 30, 31,
+     60, 61), so the five multi-record blocks (13, 16, 20, 30, 60) refused
+     `objective_condition`. The original's parse helper at `0x4691d0` walks
+     **N** `ANIM`/spec pairs into one `{required, count, records}` header
      (`docs/findings/2026-10-06-m01-lc-directive-c-ai-world-and-animation-directives.md`),
-     so M07's spelling is the measured original shape and the engine's
-     one-record shape was derived from M01, whose sites all spell one. This is
-     exactly the gap M04-B-FU1 (#806) is filed against at M04; a note on that
-     task records M07's numbers so it is re-checked there when the fix lands.
-   - *Calls.* `cs_app::control_lowering` registers one `BindingSpec` signature
-     per measured shape, and the registry refuses any signature longer than
-     `MAX_CALL_ARGS` (8). Block 60's five-record site spells **10**
-     arguments, so the whole key fails registration and all nine sites —
-     including the two-argument ones — refuse as `unknown host call`. This is
-     the shape-bound gap M02-B-FU1 (#800) filed; #800's fix, which landed on
-     main while this branch was in progress, carries objective-index list
-     directives as one list argument and does not touch ANIM_STATE's tag/spec
-     pairs — the whole `accept_m07_b_` suite re-ran green on the rebased tree
-     and M07's pins are unchanged — so M07 stays refused until #806 lands.
+     so M07's spelling was always the measured original shape; #806 lowered
+     that walk and all nine sites' conditions lower now.
+   - *Calls (closed).* The registry's per-signature `MAX_CALL_ARGS` (8) bound
+     refused block 60's ten-argument shape, so the whole key failed
+     registration and all nine sites refused as `unknown host call`. #806
+     generalized M02-B-FU1's list-argument carrying to `AnimationStates`:
+     the operand list is the call's one `Value::List` argument and every
+     site binds, `MAX_CALL_ARGS` unchanged. M07's numbers were re-checked on
+     the #806 branch exactly as the scope note required — see
+     `docs/findings/2026-10-09-m04-b-fu1-anim-state-operand-list.md`.
 2. **`DANGER_ZONES_COMPLETED` — filed here as M07-B-FU1 (#813).**
    Blocks 37, 39 and 41 spell `DANGER_ZONES_COMPLETED [dzpath8/dzpath2/dzpath3]`
    and the condition lowering refuses each with "the danger-zones flag
@@ -198,15 +196,16 @@ requirements are unmet (M03 had one):
    #813 must make before offering a predicate.
 
 The synthetic tests carry both mechanisms on authored records, so CI covers
-the refusal arms without original data: a single-record `ANIM_STATE` site
-lowers and assembles, a two-record site keeps the calls bound but refuses the
-condition, and a five-record site refuses the key's registration; a
-`DANGER_ZONES_COMPLETED` site refuses with its named reason while the same
-block with the measured inactive-members evaluator lowers. The follow-ups that
-change these (#806, #813) must update the pins in their own change — never
-delete them to get green.
+the arms without original data: a multi-record `ANIM_STATE` site lowers with
+every pair appended in order (only an operand list past `MAX_VALUE_ITEMS`
+still refuses, at the key's registration), and a `DANGER_ZONES_COMPLETED`
+site refuses with its named reason while the same block with the measured
+inactive-members evaluator lowers. Both follow-ups' pin updates landed in
+their own changes — never deleted to get green: #806 rewrote the anim_state
+arm, and #813's arm stands unchanged.
 
-The census reports M07's row incomplete and `campaign_ready()` stays false.
+The census reports M07's row incomplete and `campaign_ready()` stays false —
+on the danger-zones gap alone now.
 That is the contract's honest reading — an unlowerable program is
 `Unsupported`, never a guessed one — so nothing in this stage loosens it.
 
@@ -225,11 +224,11 @@ That is the contract's honest reading — an unlowerable program is
 | --- | --- |
 | `accept_m07_b_the_control_program_is_the_member_that_declares_the_blocks` (retail) | the control binding and M07-A's mission binding name one mission (`mission/ch2-m02`) and one program (`script/c2-m02-zrdr`); the archive's length and digest re-derive from disk; exactly one of the 19 members declares numbered blocks and it is the member the binding names; the member's span lies inside the archive and its digest re-derives from the member's own bytes; a longer member exists and the control member is the eighth, so size and position are not the rule; the census and the work-order join agree on the archive and the record; an independent walk reproduces the member table, the block count, the site count and the whole measurement |
 | `accept_m07_b_the_vocabulary_is_fully_disposed_and_no_m07_key_is_refused` (retail) | 61 blocks / 231 sites / 29 keys; sites sum to the record total; the partition is exactly 2 implemented + 27 measured + 0 unmeasured; both outcome keys are bare and answer for their names; the five record fields each occur once; no block refusal and no unclassified record key |
-| `accept_m07_b_the_record_does_not_lower_and_the_gaps_are_the_named_ones` (retail) | the mission id and the 61 objectives lower; every refused call names `ANIM_STATE`, and the refused objective indices equal the blocks an independent walk finds spelling the key (nine); `ANIM_STATE` is the one registration refusal and it says "too many arguments"; the eight refused conditions are exactly the multi-record `ANIM_STATE` blocks (13, 16, 20, 30, 60) and the `DANGER_ZONES_COMPLETED` blocks (37, 39, 41), each named with its own key; `objective_condition` and `call_arguments` are the only unmet requirements; no program stands and the row is not complete |
+| `accept_m07_b_the_anim_state_gap_closes_and_danger_zones_is_the_remaining_one` (retail) | the mission id and the 61 objectives lower; no call refuses — all nine `ANIM_STATE` sites bind, each carrying its operand list as the call's one list argument, block 60's ten operands included; the three refused conditions are exactly the `DANGER_ZONES_COMPLETED` blocks (37, 39, 41); block 60's evaluator carries five pairs with `required` counting them; a program stands, `validate` refuses it on the three blocks, `objective_condition` and `call_arguments` are the unmet requirements and the row is not complete |
 | `accept_m07_b_the_sheet_priorities_resolve_to_measured_operations` (retail) | all 27 measured keys resolve to the operation the shared findings measured; the complete 29-key vocabulary is pinned; the two `TRAVELERS` sites have distinct subjects and otherwise one shape, one anchor, one radius; the nine `ANIM_STATE` sites' per-block spec counts, every state `EXECUTED`, and the exact name multiset (five trailer segments, `got_pickford`, `hooked_to_klondike`); the three pickup-carrying members declare no blocks |
 | `accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated` (retail) | 102 cross-objective addresses (50 wake, 39 kill, 13 nap), every one in `1..=61`; no dependency gate; exactly two terminal blocks, both bare and dormant with no timed wake; the loss block's single nap incoming and the win block's wake/kill incoming pinned edge by edge; the four `IDENTITY` sites' classes and slots; the seven `DEDG` sites' groups and counts |
 | `accept_m07_b_the_mission_stays_unready_and_the_campaign_gate_stays_closed` (retail) | M07 is not among the complete missions, the campaign gate is closed, M07 is a measured row, and the row's own accounting has unmet requirements |
-| `accept_m07_b_a_multi_record_anim_state_refuses_its_condition_and_a_bound_shape_refuses_the_key` (synthetic) | the three refusal arms: one record lowers and assembles; two records keep the calls bound and refuse the condition with the one-record message; five records refuse the key's registration ("too many arguments") and every site refuses |
+| `accept_m07_b_every_spelled_record_lowers_and_an_uncarriable_list_refuses` (synthetic) | the measured arms: one record lowers and assembles; two and five records lower with every pair appended in declaration order, `required` counting them, the ten-operand site binding as one list argument; a list past `MAX_VALUE_ITEMS` is uncarriable, so the key refuses registration rather than truncating and the damaged block's condition refuses beside it |
 | `accept_m07_b_a_danger_zones_site_refuses_its_condition_and_the_block_without_it_lowers` (synthetic) | a `DANGER_ZONES_COMPLETED` site refuses its condition with the named reason while its call binds; the same block with the measured inactive-members evaluator lowers and the program assembles |
 
 Every test calls production code (`SourceContext::control_program`,
@@ -250,7 +249,7 @@ mutation was observed on the full `accept_m07_b_` selection:
 
 | Mutation | Observed result |
 | --- | --- |
-| `cs_script::conditions::anim_state`'s arity guard loosened from `!= 2` to `< 2 or odd` (accepting multi-record sites silently) | **2 of 8 fail**: the synthetic ANIM_STATE arm test and the retail gap pin — the five multi-record blocks lower with only their first record and the refused-condition set changes |
+| `cs_script::conditions::anim_state`'s arity guard loosened from `!= 2` to `< 2 or odd` (accepting multi-record sites silently) | **2 of 8 fail**: the synthetic ANIM_STATE arm test and the retail gap pin — the five multi-record blocks lower with only their first record and the refused-condition set changes (superseded by #806: the walk now appends every record the measured way, so the probe's premise is gone — its intent, that a multi-record site must never truncate, is what the new synthetic arm pins) |
 | the `DANGER_ZONES_COMPLETED` refusal arm removed from `lower_record` | **2 of 8 fail**: the synthetic danger-zones arm test and the retail gap pin — the three blocks lower with no measured predicate behind them |
 | `cs_content::mission_control::control_member`'s rule accepts every member (`> 0` → `>= 0`) | **6 of 8 fail**: every retail test that touches the binding — the archive becomes ambiguous and the rule refuses it |
 | the test constant `BLOCKS` changed 61 → 60 | **3 of 8 fail**: the identities, gap and graph tests — the pinned block count is a real pin |
@@ -274,9 +273,10 @@ mutation was observed on the full `accept_m07_b_` selection:
   carry the M01-LC findings' static readings; a host operation for them is
   future work, and only the two outcome spellings are implemented (as
   `Lowering::Finish`).
-- **M07's control record does not lower** — the two measured gaps above. M07
-  stays `Unsupported`; the campaign gate stays closed; the fixes are #806
-  (ANIM_STATE, shared with M04) and #813 (danger-zones conditions).
+- **M07's control record does not lower** — the one measured gap above. M07
+  stays `Unsupported`; the campaign gate stays closed; the fix is #813
+  (danger-zones conditions). The ANIM_STATE half closed with #806
+  (ANIM_STATE, shared with M04 and M06), re-pinned in that change.
 - **Runtime predicates are unobserved.** No original executable was run; the
   wrong-actor / wrong-session / repeated-event halves of the sheet's
   priorities and the failure/success precedence between the terminal blocks'

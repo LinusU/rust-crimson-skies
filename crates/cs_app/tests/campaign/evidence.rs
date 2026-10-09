@@ -1536,14 +1536,16 @@ const RETAIL_TESTS_M04_B: &[&str] = &[
     "accept_m04_b_every_directive_m04_spells_has_a_disposition_and_none_is_refused",
     "accept_m04_b_the_sheet_priorities_are_located_and_resolve_to_measured_operations",
     "accept_m04_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
-    "accept_m04_b_anims_state_is_the_only_gap_and_the_record_does_not_lower",
-    "accept_m04_b_the_mission_stays_unready_until_anims_state_is_measured",
+    "accept_m04_b_fu1_the_multi_pair_anim_state_sites_lower_and_m04s_record_completes",
+    "accept_m04_b_fu1_m04_is_complete_and_the_campaign_stays_unready",
 ];
 
 /// The synthetic predicate tests M04-B's report must also record.
 const SYNTHETIC_TESTS_M04_B: &[&str] = &[
-    "accept_m04_b_a_single_animation_pair_lowers_and_a_multi_pair_site_is_refused",
-    "accept_m04_b_an_anim_state_site_past_the_host_call_bound_refuses_the_whole_key",
+    "accept_m04_b_fu1_a_multi_pair_site_lowers_with_its_count_override",
+    "accept_m04_b_fu1_only_an_uncarriable_operand_list_refuses",
+    "accept_m04_b_fu1_the_first_site_arms_the_evaluator",
+    "accept_m04_b_fu1_a_top_level_completion_count_is_inert_and_unbound",
 ];
 
 /// Evidence-report harness for task M04-B: M04's mission-specific
@@ -1682,12 +1684,11 @@ fn evidence_report_m04_b_writes_the_acceptance_report() {
              from the recorded log and production discovery of $CS_GAME_DIR. The suite pins M04's \
              measured control program (52 blocks, 201 sites, 40 keys, fully measured vocabulary), \
              locates the sheet's three regression priorities in the record, gates both terminal \
-             latches and walks every block address, and records the one compatibility gap: \
-             ANIM_STATE's 18-operand shape is past the host-call bound and its two multi-pair \
-             sites are not the measured single-pair condition shape, so M04's record does not \
-             lower. Claim is implemented only; the mission is NOT ready, the gap is filed as \
-             M04-B-FU1 (#806) and is recorded in \
-             docs/findings/2026-10-08-m04-b-compatibility-gaps.md. No mission was played, no \
+             latches and walks every block address, and pins M04's complete lowering — every one \
+             of its 201 sites binds and `MissionProgram::validate` accepts, since M04-B-FU1 \
+             (#806) closed the ANIM_STATE gap the suite first recorded: the key's whole operand \
+             list is carried as one list argument and the multi-pair walk appends every spelled \
+             descriptor. Claim is implemented only; no mission was played, no \
              original executable was run and nothing is verified_original. Validated with \
              tools/validate_evidence.py --require-pass"
         ),
@@ -1729,13 +1730,13 @@ const RETAIL_TESTS_M06_B: &[&str] = &[
     "accept_m06_b_every_directive_m06_spells_has_a_disposition_and_none_is_refused",
     "accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operations",
     "accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
-    "accept_m06_b_the_anims_state_sites_are_the_only_gap_and_validation_refuses",
-    "accept_m06_b_the_mission_stays_unready_until_the_refused_sites_are_measured",
+    "accept_m06_b_every_call_binds_every_condition_lowers_and_m06s_record_completes",
+    "accept_m06_b_m06_is_complete_and_the_campaign_stays_unready",
 ];
 
 /// The synthetic predicate tests M06-B's report must also record.
 const SYNTHETIC_TESTS_M06_B: &[&str] = &[
-    "accept_m06_b_a_single_animation_pair_lowers_and_a_completion_count_site_is_refused",
+    "accept_m06_b_a_completion_count_site_lowers_with_its_override",
     "accept_m06_b_a_wide_kill_list_binds_and_a_wide_non_index_key_still_refuses",
 ];
 
@@ -1877,13 +1878,15 @@ fn evidence_report_m06_b_writes_the_acceptance_report() {
              locates the sheet's three regression priorities in the record — the engine-part \
              thresholds, the target-flag chain and the unreferenced Passenger_hangar location that \
              leaves passenger identity unbound — gates both terminal latches and walks every block \
-             address, and records the one remaining compatibility gap: every call binds (the \
+             address, and pins M06's complete lowering: every call binds (the \
              twelve-target kill sites bind through M02-B-FU1 #800's list shaping, re-measured on \
-             that landing) but MissionProgram::validate refuses the three ANIM_STATE \
-             completion-count sites, which are not the measured single-pair condition shape, so \
-             M06 is not ready. Claim is implemented only; the mission is NOT ready, the gap is \
-             filed as M06-B-FU1 and is recorded in \
-             docs/findings/2026-10-09-m06-b-compatibility-gaps.md. No mission was played, no \
+             that landing) and every condition lowers — the three ANIM_STATE \
+             completion-count sites append both their descriptors and let the in-list count \
+             overwrite `required` through M04-B-FU1 #806's generalized operand-list walk, so \
+             MissionProgram::validate accepts and M06's row is complete. Claim is implemented \
+             only; the mission is not played, the closed gap is recorded in \
+             docs/findings/2026-10-09-m06-b-compatibility-gaps.md and \
+             docs/findings/2026-10-09-m04-b-fu1-anim-state-operand-list.md. No mission was played, no \
              original executable was run and nothing is verified_original. Validated with \
              tools/validate_evidence.py --require-pass"
         ),
@@ -8542,7 +8545,7 @@ fn parse_record_objectives_sound_suite(log: &str) -> Suite {
 const RETAIL_TESTS_M07_B: &[&str] = &[
     "accept_m07_b_the_control_program_is_the_member_that_declares_the_blocks",
     "accept_m07_b_the_vocabulary_is_fully_disposed_and_no_m07_key_is_refused",
-    "accept_m07_b_the_record_does_not_lower_and_the_gaps_are_the_named_ones",
+    "accept_m07_b_the_anim_state_gap_closes_and_danger_zones_is_the_remaining_one",
     "accept_m07_b_the_sheet_priorities_resolve_to_measured_operations",
     "accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated",
     "accept_m07_b_the_mission_stays_unready_and_the_campaign_gate_stays_closed",
@@ -8550,7 +8553,7 @@ const RETAIL_TESTS_M07_B: &[&str] = &[
 
 /// The synthetic predicate tests M07-B's report must also record.
 const SYNTHETIC_TESTS_M07_B: &[&str] = &[
-    "accept_m07_b_a_multi_record_anim_state_refuses_its_condition_and_a_bound_shape_refuses_the_key",
+    "accept_m07_b_every_spelled_record_lowers_and_an_uncarriable_list_refuses",
     "accept_m07_b_a_danger_zones_site_refuses_its_condition_and_the_block_without_it_lowers",
 ];
 
@@ -8785,9 +8788,10 @@ fn evidence_report_m07_b_writes_the_acceptance_report() {
              and program identities equal to the M07-A binding, the control member chosen by \
              the measured rule over the archive's whole member set, the directive accounting \
              of the member it spells). NOT CLAIMED: no directive is implemented by a measured \
-             effect; M07's control record does not lower — eight conditions (five multi-record \
-             ANIM_STATE sites and three DANGER_ZONES_COMPLETED sites) and all nine ANIM_STATE \
-             call sites refuse, which the suite pins — so M07 stays Unsupported and the campaign \
+             effect; M07's control record still does not lower — all nine ANIM_STATE sites now \
+             bind and their multi-record operand lists lower through M04-B-FU1 #806's shared \
+             mechanism, so the remaining refusal is the three DANGER_ZONES_COMPLETED \
+             conditions, which the suite pins — so M07 stays Unsupported and the campaign \
              gate stays closed; the runtime halves of the sheet's priorities (moving pickup, \
              forced plane swap, persistent input ownership) need ordinary-play observation \
              (M07-C); no mission was played, no original executable was run and nothing is \
@@ -8828,4 +8832,216 @@ fn evidence_report_m07_b_writes_the_acceptance_report() {
 /// [`parse_suite_prefixed`] with this task's test prefix.
 fn parse_m07_b_suite(log: &str) -> Suite {
     parse_suite_prefixed(log, "accept_m07_b_")
+}
+
+/// The retail acceptance tests M04-B-FU1's capability is judged on: M04's
+/// control record lowers completely through the measured operand-list walk,
+/// and the row is complete while the campaign gate stays closed.
+const RETAIL_TESTS_M04_B_FU1: &[&str] = &[
+    "accept_m04_b_fu1_the_multi_pair_anim_state_sites_lower_and_m04s_record_completes",
+    "accept_m04_b_fu1_m04_is_complete_and_the_campaign_stays_unready",
+];
+
+/// The synthetic predicate tests M04-B-FU1's report must also record: the
+/// measured operand-list arms — the count override, the one-argument
+/// carrying bound, the first-site-wins selection and the inert top-level
+/// `COMPLETION_COUNT` — into CI, where there is no original data.
+const SYNTHETIC_TESTS_M04_B_FU1: &[&str] = &[
+    "accept_m04_b_fu1_a_multi_pair_site_lowers_with_its_count_override",
+    "accept_m04_b_fu1_only_an_uncarriable_operand_list_refuses",
+    "accept_m04_b_fu1_the_first_site_arms_the_evaluator",
+    "accept_m04_b_fu1_a_top_level_completion_count_is_inert_and_unbound",
+];
+
+/// Evidence-report harness for task M04-B-FU1 (Rally #806), the follow-up
+/// that lowers `ANIM_STATE`'s measured operand-list walk and carries the
+/// whole list as one `Value::List` call argument. It follows the sequence in
+/// this module's doc with `M04-B-FU1` and `accept_m04_b_fu1_` in place of
+/// `M01-A` and `accept_m01_a_`:
+///
+/// * the acceptance-log parser selects `accept_m04_b_fu1_` tests, so the
+///   recorded assertions are this follow-up's own — the selection must be
+///   the prefix's own run (step 1 with that prefix), or the counts would
+///   describe a wider run than the assertions;
+/// * the only artifact is that log: the change is a lowering walk and a
+///   binding-shape decision, so the report cites the run that proves it
+///   rather than a derived binding;
+/// * `review.identity` is a literal naming the real Rally actors and the
+///   reviewer's context, as the module doc requires.
+///
+/// Everything else — the toolchain versions, the installation hashes, the
+/// candidate tree, the counts, the digests and the timestamps — is derived
+/// from the same real inputs as the M04-B report above.
+#[test]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
+fn evidence_report_m04_b_fu1_writes_the_acceptance_report() {
+    let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
+    let candidate_tree = env_var("CS_CANDIDATE_TREE");
+    let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !argv.is_empty(),
+        "CS_EVIDENCE_ARGV must hold the acceptance command (space-separated)"
+    );
+    let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
+        .parse()
+        .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+    let reviewer = env_var("CS_EVIDENCE_REVIEWER");
+    let game_dir = PathBuf::from(env_var("CS_GAME_DIR"));
+
+    let head_tree = git(&["rev-parse", "HEAD^{tree}"]);
+    assert_eq!(
+        candidate_tree, head_tree,
+        "CS_CANDIDATE_TREE must be `git rev-parse 'HEAD^{{tree}}'` of the tested commit; \
+         old reports cannot be reused for new code"
+    );
+
+    let log_path = evidence_dir.join("cargo-test.log");
+    let log = fs::read_to_string(&log_path).unwrap_or_else(|error| {
+        panic!(
+            "cannot read the acceptance log {}: {error} (step 1 must tee its output there)",
+            log_path.display()
+        )
+    });
+    let suite = parse_m04_b_fu1_suite(&log);
+    assert!(
+        suite.passed > 0 && !suite.assertions.is_empty(),
+        "no `accept_m04_b_fu1_` tests were recorded in {}",
+        log_path.display()
+    );
+
+    for retail_test in RETAIL_TESTS_M04_B_FU1 {
+        let status = suite
+            .assertions
+            .iter()
+            .find(|(name, _)| name == retail_test)
+            .map(|(_, status)| *status)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{retail_test} did not run: M04-B-FU1 requires capability `retail`, run step 1 \
+                     with `--include-ignored` and CS_GAME_DIR set"
+                )
+            });
+        assert_eq!(
+            status, "pass",
+            "{retail_test} must pass; got status {status}"
+        );
+    }
+    for synthetic_test in SYNTHETIC_TESTS_M04_B_FU1 {
+        let status = suite
+            .assertions
+            .iter()
+            .find(|(name, _)| name == synthetic_test)
+            .map(|(_, status)| *status)
+            .unwrap_or_else(|| {
+                panic!("{synthetic_test} did not run: it pins an arm the retail test assumes")
+            });
+        assert_eq!(
+            status, "pass",
+            "{synthetic_test} must pass; got status {status}"
+        );
+    }
+
+    let found = discover(&game_dir)
+        .expect("production discovery must read the original installation for the evidence record");
+    let install_sha256 = fingerprint(&found.manifest).to_hex();
+    let content_sha256 = content_fingerprint(&found.manifest).to_hex();
+
+    let artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
+
+    let engine = Engine {
+        rust: rustc_version(),
+        bevy: locked_version("bevy"),
+        avian: locked_version("avian3d"),
+    };
+
+    let report = format!(
+        "{{\n\
+         \x20\"schema_version\": 1,\n\
+         \x20\"task_id\": \"M04-B-FU1\",\n\
+         \x20\"candidate_tree\": {},\n\
+         \x20\"engine\": {},\n\
+         \x20\"created_at\": {},\n\
+         \x20\"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n\
+         \x20\"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+         \x20\"seed\": 0,\n\
+         \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
+         \x20\"overrides\": [],\n\
+         \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
+         \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
+         \x20\"assertions\": [{}],\n\
+         \x20\"artifacts\": [{}],\n\
+         \x20\"unknowns\": [],\n\
+         \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
+         \x20\"claim\": \"implemented\"\n\
+         }}\n",
+        jstr(&candidate_tree),
+        engine_json(&engine),
+        jstr(&iso_utc_now()),
+        str_array(&argv),
+        jstr(&git(&["rev-parse", "--show-toplevel"])),
+        exit_code,
+        jstr(&install_sha256),
+        jstr(&content_sha256),
+        suite.discovered,
+        suite.executed,
+        suite.passed,
+        suite.failed,
+        suite.ignored,
+        assertion_array(&suite.assertions),
+        artifact_array(&artifacts),
+        jstr(&reviewer),
+        jstr(
+            "acceptance suite run locally with the retail capability; the \
+             fields are derived from the recorded log and production discovery of $CS_GAME_DIR. \
+             The suite pins this task's change: an `ANIM_STATE` site's operand list is walked \
+             the measured way — every `ANIM` tag followed by a spec record appends one \
+             {name, state} pair, `required` counts the appended pairs, the first \
+             COMPLETION_COUNT found recursively inside the same list overwrites it, and the \
+             whole operand list registers and binds as ONE `Value::List` call argument — so \
+             M04's two 18-operand sites (eight descriptors at blocks 23 and 37, completion \
+             counts 1 and 3) lower, all 201 calls bind, `MissionProgram::validate` accepts and \
+             M04's census row is complete, `MAX_CALL_ARGS` staying 8. The same mechanism \
+             lowers M06's three completion-count sites (M06-B-FU1, #817) and all nine of \
+             M07's ANIM_STATE sites, whose remaining refusal is the unrelated \
+             DANGER_ZONES_COMPLETED gap. NOT CLAIMED: no directive is implemented by a \
+             measured effect, no mission was played, no original executable was run and \
+             nothing is verified_original. Claim is implemented only; validated with \
+             tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the \
+             commit the suite and this harness ran on; the only later delta is this report's \
+             own copy under docs/findings/evidence/, which no acceptance test reads"
+        ),
+    );
+
+    let out = evidence_dir.join("acceptance.json");
+    fs::write(&out, &report).unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
+
+    let written = fs::read_to_string(&out).expect("the report reads back");
+    for needle in [
+        "\"schema_version\": 1",
+        "\"task_id\": \"M04-B-FU1\"",
+        "\"claim\": \"implemented\"",
+        "\"install_sha256\"",
+        "\"assertions\": [",
+        "\"artifacts\": [",
+    ] {
+        assert!(
+            written.contains(needle),
+            "the written report is missing {needle:?}:\n{written}"
+        );
+    }
+    assert!(
+        suite.failed == 0 && exit_code == 0,
+        "the acceptance run failed (exit {exit_code}, {} failed): the report was written \
+         honestly and must NOT validate; fix the tests first",
+        suite.failed
+    );
+    println!("wrote {}", out.display());
+}
+
+/// [`parse_suite_prefixed`] with this task's test prefix.
+fn parse_m04_b_fu1_suite(log: &str) -> Suite {
+    parse_suite_prefixed(log, "accept_m04_b_fu1_")
 }
