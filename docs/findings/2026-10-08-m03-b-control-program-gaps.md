@@ -12,6 +12,12 @@ regenerated the evidence report from that run and validated it with
 and tests, not independent original-reference evidence, and no agent review
 replaces the owner's human approval.
 
+*Updated 2026-10-09 by M03-B-FU2 (#810, implementer bunny-alpha-1): the
+`SET_AI_NET` arm below is closed, the refusal count moved from three sites to
+two, and the gap section records why. Everything else here — the archive, the
+counts, the dispositions and the priorities — is the measurement M03-B made
+and was not re-derived.*
+
 ## What changed
 
 No production code. The census (`cs_app::mission_control`), the directive
@@ -46,20 +52,32 @@ Their keys resolve to the operations the M01-LC findings measured.
 
 ## The M03-specific gaps (why the record does not lower)
 
-Three of 313 sites refuse, so `validation` is `None`, no `MissionProgram`
+Two of 313 sites refuse, so `validation` is `None`, no `MissionProgram`
 exists, `call_arguments` is the one unmet requirement and M03 is not ready:
 
 1. **`WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`** (block 13 `[14,15]`, block 14 `[49]`).
    Spelled by no other mission. The measured parser keys are `WAKE_OBJECTIVE`
    and `WAKE_OBJECTIVE_WHEN_I_COMPLETE`; whether the original accepts or
    silently ignores the `WAKEUP_` spelling is **unknown**. The two sites have
-   two shapes and no majority is taken. Filed as **M03-B-FU1** (#803).
-2. **`SET_AI_NET`** (block 10): ten `{actor, net}` pairs exceed the host-call
-   argument bound, so the registry refuses the key. This was the shape-bound
-   gap filed as **M02-B-FU1** (#800); #800's owner-authored acceptance covers
-   M02's objective-index lists only, so the `SET_AI_NET` arm was carved out
-   as **M03-B-FU2** (#810) during #800's review — it is not duplicated here,
-   and it still gates this record until it lands.
+   two shapes and no majority is taken. Filed as **M03-B-FU1** (#803) and still
+   open.
+2. **`SET_AI_NET`** (block 10) — **closed by M03-B-FU2 (#810)**. Its ten
+   `{actor, net}` pairs exceeded the host-call argument bound because the
+   adapter spelled them as a positional row, so `HostBindingRegistry::register`
+   refused the whole spec and the site refused as `unknown host call`. The
+   census's own measurement decides it the other way: `SET_AI_NET`'s measured
+   shapes are `[[text,text]]` and `[[text,text],[text,text]]`, so what grows
+   from site to site is the number of pairs, not an argument count, and the
+   original stores the operand list as a count beside the pair array
+   (`docs/findings/2026-10-06-m01-lc-directive-a-objective-directive-parser.md`,
+   `+0x398`/`+0x3a0..`, cap 10 — M03's ten pairs are exactly that cap). The
+   adapter now carries that list as one `Value::List` argument, so the key
+   registers, the site binds and `unbound_keys` names nothing; `MAX_CALL_ARGS`
+   is untouched, and a positional key over it still refuses (the synthetic arm
+   moved to `IDENTITY`). This was the shape-bound gap filed as **M02-B-FU1**
+   (#800), whose owner-authored acceptance covered M02's objective-index lists
+   only, so the `SET_AI_NET` arm was carved out here as **M03-B-FU2** (#810)
+   during #800's review. The record's remaining refusal is item 1 alone.
 
 ## Not claimed
 

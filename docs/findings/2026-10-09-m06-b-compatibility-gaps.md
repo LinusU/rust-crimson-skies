@@ -277,10 +277,14 @@ without original data: a single animation pair lowers and completes and
 M06's `COMPLETION_COUNT` + two-descriptor spelling now lowers the measured
 way (both pairs appended, the in-list count overwriting `required`, the site
 binding as one list argument); and a twelve-target kill list binds as one
-argument while `SET_AI_NET` with nine pairs — a key that takes no index list
-— still refuses the key's whole registration on the unchanged bound. Both
-pins were updated in the same change that widened the mechanism — never
-deleted to get green.
+argument while a positional `IDENTITY` site of nine arguments — a key whose
+measured operation takes no list argument — still refuses the key's whole
+registration on the unchanged bound. Both pins were updated in the same
+change that widened the mechanism — never deleted to get green.
+**M03-B-FU2 (#810, 2026-10-09) was that follow-up for `SET_AI_NET`**: it
+gave the `{actor, net}` pair list the one-list-argument shape, so the refusal
+arm moved from `SET_AI_NET` to `IDENTITY` (where M02-B-FU1 had kept it) and
+`SET_AI_NET` at nine pairs now binds — both halves pinned in that same test.
 
 ## Not claimed
 
@@ -316,7 +320,7 @@ the measured keys, never dropped.
 | `accept_m06_b_every_call_binds_every_condition_lowers_and_m06s_record_completes` (retail) | `KILL`'s three shapes (1×8, 3×5, 12×2) with the twelve-operand one past `MAX_CALL_ARGS`, and every call binds with no unbound key; all 82 conditions lower — blocks 9, 11 and 41 carry `AnimationStates{required: 1, pairs: 2}` through #806's walk — the program validates and the row is complete |
 | `accept_m06_b_m06_is_complete_and_the_campaign_stays_unready` (retail) | M06 is a complete census row, the campaign gate still stays closed on other missions' gaps, and the row is still reported as measured |
 | `accept_m06_b_a_completion_count_site_lowers_with_its_override` (synthetic) | on authored records: one pair lowers and the record completes; M06's `COMPLETION_COUNT [1]` + two-descriptor spelling lowers the measured way — both pairs appended, the in-list count overwriting `required`, the operand list binding as one call argument |
-| `accept_m06_b_a_wide_kill_list_binds_and_a_wide_non_index_key_still_refuses` (synthetic) | on authored records: a twelve-target kill list binds as one argument and the record completes (the mechanism #800 gave M06); `SET_AI_NET` at 8 pairs registers and at 9 refuses the key's registration, its site refuses and the key is absent from the registry — the bound itself never moved |
+| `accept_m06_b_a_wide_kill_list_binds_and_a_wide_non_index_key_still_refuses` (synthetic) | on authored records: a twelve-target kill list binds as one argument and the record completes (the mechanism #800 gave M06); a positional `IDENTITY` at 8 arguments registers and at 9 refuses the key's registration, its site refuses and the key is absent from the registry — the bound itself never moved; and, since M03-B-FU2 (#810) re-pinned this test, `SET_AI_NET` at nine pairs registers as one list argument with a `[List]` signature and its record completes (the arm named `SET_AI_NET` before #810) |
 
 Every test calls production code (`SourceContext::control_program`,
 `SourceContext::bind`, `survey_mission_control_programs`,
@@ -343,7 +347,7 @@ and neither rebase changed any of the three mutated files
 | `cs_content::mission_control::terminal_outcome_of`: `INSTANTWIN` → `None` | **2 of 8 fail** — the vocabulary test (the outcomes map loses `INSTANTWIN: Succeeded` and the key is no longer spelled `Bare`) and the gap pin (the success latch stops being a terminal key, so it no longer binds to `Lowering::Finish` and the bound-call count moves off 265) |
 | `cs_script::bindings::MAX_CALL_ARGS` 8 → 32 | **1 fails** — the gap pin's `longest > MAX_CALL_ARGS` assertion: no shape is over the bound any more. The synthetic pair *adapts* to the new constant and still passes, which is exactly the pair M06-B-FU1 (#817) must update together; its refusal arm keeps the mechanism covered either way |
 | `cs_content::mission_control::control_member`: the `objective_blocks_of(member) > 0` filter accepts every member | **6 of 8 fail** — every retail test, because the whole census refuses `zbd/c2/m01/zrdr.zbd` as ambiguous the moment the rule stops choosing. The two synthetic tests, which author their own records, are unaffected |
-| `cs_app::control_lowering::takes_index_list` (renamed `takes_list_argument` by #806): drop `KillObjectives` from the or-pattern (M02-B-FU1's mechanism, removed) | **2 fail** — the gap pin (the twelve-target kill sites refuse again: `unbound_keys` names `KILL_OBJECTIVE_WHEN_I_COMPLETE: … too many arguments`) and the synthetic kill arm, which reports the same refusal on an authored record |
+| `cs_app::control_lowering::takes_index_list` (renamed `takes_list_argument` by #806): drop `KillObjectives` from the or-pattern (M02-B-FU1's mechanism, removed) | **2 fail** — the gap pin (the twelve-target kill sites refuse again: `unbound_keys` names `KILL_OBJECTIVE_WHEN_I_COMPLETE: … too many arguments`) and the synthetic kill arm, which reports the same refusal on an authored record. M03-B-FU2 (#810) then added `AssignNet` to the same or-pattern; the same mutation on `takes_list_argument` drops `KillObjectives` the same way |
 
 The reviewing agent re-ran two of those four probes on the rebased tree
 (2026-10-09), one at a time with the mutation reverted before the next, and
