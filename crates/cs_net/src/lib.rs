@@ -46,8 +46,16 @@
 //! F58-A adds [`validation`] and [`recovery`]: the threat model, the session
 //! epoch/replay gate and the peer-to-actor ownership table ([`validation`]),
 //! and the reconnect, fresh-epoch, one-pilot-per-aircraft and award-once rules
-//! ([`recovery`]). The rate/resource caps (F58-B) and the runtime
-//! disconnect/recovery flow (F58-C) build on them.
+//! ([`recovery`]). The runtime disconnect/recovery flow (F58-C) builds on
+//! them.
+//!
+//! F58-B adds the intent layer on top of that gate: [`validation::ClientIntent`]
+//! (every ask a client may make, including the `Claim*` ones that author
+//! server-owned truth and are refused outright), [`validation::IntentValidator`]
+//! with its per-peer [`validation::RateBudget`] measured in *server* ticks
+//! ([`validation::RateLimits`]), and [`validation::MatchStage`], the host's
+//! phase, clock and banned components. [`validation::IntentRefusal`] names the
+//! bounded reason and says whether the peer is absorbed or disconnected.
 //!
 //! F54-B adds the pinned transport: [`codec`], the bounded wire format every
 //! F54-A record travels in, and [`transport`], the `renet2`/`renet2_netcode`
@@ -55,7 +63,7 @@
 //! rejection before launch, and runs every session packet through the
 //! [`validation::SessionGate`] before it can authorize fire requests.
 //!
-//! Not here yet: the F58-B rate caps, the F58-C disconnect/recovery flow, and
+//! Not here yet: the F58-C disconnect/recovery flow, and
 //! the `cs_app`/`cs_sim` binding that drives a session from a Bevy schedule and
 //! a simulation ledger. The F57-B interpolation buffer and bounded local
 //! prediction consume the snapshot this crate hands them rather than extending

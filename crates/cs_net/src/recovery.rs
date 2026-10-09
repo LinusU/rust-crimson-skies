@@ -16,7 +16,8 @@
 //! * [`SessionGenerations`] mints a **fresh** epoch for every session. It is
 //!   monotonic and never reuses an id, so a packet stamped with the epoch the
 //!   client last knew is stale under [`crate::validation`]'s rule 1.
-//! * [`ClientClaim`] is state a returning client may offer. None of it is ever
+//! * [`ClientClaim`] is state a returning client may offer — score, damage,
+//!   health, faction, outcome, aircraft and rewards. None of it is ever
 //!   applied: [`decide_recovery`] lists every claim as refused and résumés the
 //!   client from [`ResumeState::FullAuthoritativeSnapshot`] alone.
 //! * [`PilotBindings`] is the one-pilot-per-aircraft table. A reconnect may
@@ -148,16 +149,23 @@ impl RecoveryKind {
 
 /// State a returning or late client offers.
 ///
-/// The contract is explicit that none of this is accepted: score, health,
-/// faction and outcome are server-owned, and a reconnect cannot bind to
-/// another pilot's aircraft. Every variant exists so the server can name it in
-/// the refusal list instead of silently trusting it.
+/// The contract is explicit that none of this is accepted: score, damage,
+/// health, faction and outcome are server-owned, and a reconnect cannot bind
+/// to another pilot's aircraft. Every variant exists so the server can name it
+/// in the refusal list instead of silently trusting it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClientClaim {
     /// A score the client says it has.
     Score {
         /// The claimed point total.
         points: i64,
+    },
+    /// Damage the client says it already dealt.
+    Damage {
+        /// The aircraft it says it damaged.
+        target: ActorId,
+        /// The structure it says it removed.
+        amount: u32,
     },
     /// A remaining-structure fraction the client says it has.
     Health {
@@ -188,6 +196,7 @@ impl ClientClaim {
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Score { .. } => "score",
+            Self::Damage { .. } => "damage",
             Self::Health { .. } => "health",
             Self::Faction { .. } => "faction",
             Self::Outcome => "outcome",
