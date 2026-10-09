@@ -9,6 +9,22 @@ authored `.zrd` records). Implementer: **bunny-alpha-2/bunny-alpha-2** (Rally
 run is not independent review and no agent review replaces the owner's human
 approval.
 
+approval.
+
+## Review identity
+
+The evidence harness (`evidence_report_m04_b_writes_the_acceptance_report`)
+reads `CS_EVIDENCE_REVIEWER` at run time and fills `review.identity` whole, so
+the committed `docs/findings/evidence/M04-B.json` cannot contain a hand-over
+placeholder: whoever runs the harness writes its own identities. This
+implementer's run is recorded as exactly that — the implementing agent at
+hand-over, not a review — and the Rally reviewing agent regenerates the report
+on the rebased commit with its own `CS_EVIDENCE_REVIEWER` value, saying whether
+its context was fresh. M04-B adds no Rally review facts to
+`docs/findings/2026-10-02-m16-a-fu2-rally-review-snapshot.json`: that file
+records merge events that do not exist yet, and an entry written before the
+review would be writing a review fact that has not happened.
+
 The stage's minimum acceptance scenario is *"All discovered mission-specific
 behavior uses production engine systems and regression tests."* It holds for
 everything this note measures: M04's discovered mission-specific behavior is
@@ -251,11 +267,32 @@ them); the two synthetic ones run in CI.
 
 ## Mutation probes
 
-*(recorded below once run)*
+Three mutations were applied one at a time, each on top of the committed
+branch, observed on `cargo test -p cs_app --test campaign accept_m04_b_ --
+--include-ignored` and reverted before the next; `git status --porcelain`
+after the last one was clean.
+
+| Mutation | Observed result |
+| --- | --- |
+| `cs_content::mission_control::terminal_outcome_of`: `INSTANTWIN` → `None` | **2 of 8 fail** — the vocabulary test (the outcomes map loses `INSTANTWIN: Succeeded`) and the gap test (the success latch stops being a terminal key, so it no longer binds as `Lowering::Finish` and the bound-call count moves off 198) |
+| `cs_script::bindings::MAX_CALL_ARGS` 8 → 32 (the follow-up's direction) | **1 fails** — the gap pin: no shape is over the bound any more, so `longest > MAX_CALL_ARGS` breaks. The synthetic bound test *adapts* to the new constant and still passes, which is exactly the pair #806 must update together; its refusal arm is what keeps the mechanism covered either way |
+| `cs_content::mission_control::control_member`: the `objective_blocks_of(member) > 0` filter accepts every member | **6 of 8 fail** — every retail test, because the whole census refuses `zbd/c1/ia1/zrdr.zbd` as ambiguous the moment the rule stops choosing. The two synthetic tests, which author their own records, are unaffected |
 
 ## Checks
 
-*(recorded below once run)*
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked -- accept_m04_b_ --include-ignored` | 0 (8 tests: this stage's 6 retail and 2 synthetic members) |
+| `cargo test --workspace --locked` | 0 |
+
+The three mutation probes above were run between the workspace checks, each
+reverted before the next; `git status --porcelain` after the last one was
+clean. The acceptance run that the evidence report records is the same task
+selection, tee'd into `private/evidence/M04-B/cargo-test.log`; the report is
+validated with `tools/validate_evidence.py --require-pass` and copied to
+`docs/findings/evidence/M04-B.json`.
 
 ## Recorded unknowns (not guessed)
 
