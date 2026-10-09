@@ -56,6 +56,18 @@ fn accept_m01_lc_zeppelin_placement_position_retail_records_bind_the_last_writte
     let placezeps = member(PLACEZEPS_MEMBER);
     let member_offset = placezeps.locator().span().offset;
     let startup = read_placezeps_member(placezeps.bytes()).expect("decodes");
+    // The premise the binding is checked under: only an `ON_STARTUP`
+    // definition's statements write at mission start (activation byte
+    // `+0xa1 == 4`, #792 §2) — any other spelling would unsettle the
+    // ordering instead of feeding it.
+    for definition in startup.definitions() {
+        assert_eq!(
+            definition.activation(),
+            "ON_STARTUP",
+            "definition {} runs at startup",
+            definition.index()
+        );
+    }
     let startup_translates: Vec<(&str, [f32; 3], u64, u64)> = startup
         .definitions()
         .iter()

@@ -541,18 +541,31 @@ pub enum CarrierRead {
     Refused(String),
 }
 
+/// The `ACTIVATION` spelling the original starts at mission start:
+/// `0x51e390` stores `4` for the keyword `ON_STARTUP` into a definition's
+/// activation byte `+0xa1`, and `0x522fd0` starts every definition whose
+/// byte is `4` (`0x52309b`, #792 §2). No other spelling is measured into
+/// the startup ordering.
+const ON_STARTUP_ACTIVATION: &str = "ON_STARTUP";
+
 /// One `placezeps.zrd` state statement the startup ordering measures over
 /// (#792's rotations, #814's translates): the `NAME` it addresses, the
-/// numbers the executor hands the `Object3d` setter, the `STATE` list's own
-/// byte span for a bound value's provenance, and the statement keys the
-/// placement grammar leaves unmodelled — a flagged statement does not
-/// apply its bare triple, so it settles no pose.
+/// `ACTIVATION` spelling of the definition carrying it, the numbers the
+/// executor hands the `Object3d` setter, the `STATE` list's own byte span
+/// for a bound value's provenance, and the statement keys the placement
+/// grammar leaves unmodelled. Only an `ON_STARTUP` definition's statement
+/// is a measured startup write — a statement under any other activation
+/// settles no pose — and a flagged statement does not apply its bare
+/// triple either.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StartupStatement {
     /// Which state statement this is.
     pub kind: StateKind,
     /// The `NAME` the statement addresses.
     pub node: String,
+    /// The `ACTIVATION` spelling of the definition carrying the statement,
+    /// verbatim.
+    pub activation: String,
     /// The three numbers as the executable stores them in the event —
     /// radians for a rotate, the triple as parsed for a translate (#791).
     pub values: [f32; 3],
@@ -569,7 +582,9 @@ pub struct StartupStatement {
 #[derive(Clone, Debug)]
 pub enum StartupRead {
     /// The member decoded: every `OBJECT_ROTATE_STATE` and
-    /// `OBJECT_TRANSLATE_STATE` it states, in stored order.
+    /// `OBJECT_TRANSLATE_STATE` it states, in stored order, each with its
+    /// definition's `ACTIVATION` spelling — only `ON_STARTUP` writes are
+    /// the startup ordering this enum measures.
     Decoded(Vec<StartupStatement>),
     /// The reader archive holds no `placezeps.zrd` member: this scope
     /// starts no placements, so nothing overwrites the spawn pose.
@@ -899,26 +914,32 @@ fn read_startup_member(
     )
     .map_err(|error| format!("the member's span refuses: {error}"))?;
     // Every state statement of the member, in stored order: the `NAME` it
-    // addresses, the numbers the parser leaves in the event (radians for a
-    // rotate, the triple as stored for a translate, #791) — which the
-    // executors hand to `0x4d1a30`/`0x4d1d50` (#792, #814) — the `STATE`
-    // list's own archive span for a bound value's provenance, and the keys
-    // the grammar leaves unmodelled: `RELATIVE`/`AT_NODE` change what an
-    // executor applies, so a flagged statement settles no pose.
+    // addresses, the `ACTIVATION` spelling of the definition carrying it
+    // (only `ON_STARTUP` is measured into the startup ordering — a statement
+    // under any other spelling settles no pose), the numbers the parser
+    // leaves in the event (radians for a rotate, the triple as stored for a
+    // translate, #791) — which the executors hand to `0x4d1a30`/`0x4d1d50`
+    // (#792, #814) — the `STATE` list's own archive span for a bound
+    // value's provenance, and the keys the grammar leaves unmodelled:
+    // `RELATIVE`/`AT_NODE` change what an executor applies, so a flagged
+    // statement settles no pose.
     let statements = decoded
         .definitions()
         .iter()
         .flat_map(|definition| {
+            let activation = definition.activation();
             let sequence = definition.sequence();
             [sequence.translate(), sequence.rotate()]
                 .into_iter()
                 .flatten()
+                .map(move |statement| (activation, statement))
         })
-        .map(|statement| {
+        .map(|(activation, statement)| {
             let range = statement.state_range();
             StartupStatement {
                 kind: statement.kind(),
                 node: statement.node().to_owned(),
+                activation: activation.to_owned(),
                 values: statement.parsed(),
                 state_span: SourceSpan::new(
                     fingerprint,
@@ -1006,74 +1027,129 @@ fn spawn_attitude(record: &cs_formats::zbd::zeppelins::ZeppelinRecord) -> Attitu
     }
 }
 
-/// The source the original applies last for this record's attitude (#792):
-/// the startup carrier's `OBJECT_ROTATE_STATE` for the record's `node` when
-/// the scope states one — the later of the two writes to the same
-/// `Object3d` rotation slots — and the record's own spawn attitude
-/// otherwise. A refused startup carrier settles nothing.
-fn attitude_for(
-    record: &cs_formats::zbd::zeppelins::ZeppelinRecord,
-    startup: &StartupRead,
-) -> AttitudeBinding {
+/// The statements of `kind` writing `node`, split at the measured
+/// boundary: the writes an `ON_STARTUP` definition makes — the only
+/// activation `0x522fd0` starts at mission start (`+0xa1 == 4`,
+/// [`ON_STARTUP_ACTIVATION`]) — and the writes under any other spelling,
+/// which the startup ordering does not cover.
+fn startup_writes<'a>(
+    statements: &'a [StartupStatement],
+    kind: StateKind,
+    node: &str,
+) -> (Vec<&'a StartupStatement>, Vec<&'a StartupStatement>) {
+    statements
+        .iter()
+        .filter(|statement| statement.kind == kind && statement.node == node)
+        .partition(|statement| statement.activation == ON_STARTUP_ACTIVATION)
+}
+
+/// The source the original applies last for a node's attitude (#792): the
+/// startup carrier's `OBJECT_ROTATE_STATE` for the `node` when exactly one
+/// `ON_STARTUP` definition states one *without* keys the grammar leaves
+/// unmodelled — the later of the two writes to the same `Object3d`
+/// rotation slots — and the record's own spawn attitude otherwise. A
+/// refused startup carrier settles nothing; neither does a statement under
+/// an activation outside `ON_STARTUP`, a flagged rotate — `AT_NODE`, the
+/// second flag and `RELATIVE` each change what `0x4e8b80` applies — or
+/// several startup rotations for one node, whose order among themselves is
+/// not measured.
+fn attitude_for(node: &str, spawn: AttitudeSource, startup: &StartupRead) -> AttitudeBinding {
     match startup {
         StartupRead::Refused(reason) => AttitudeBinding::Open(format!(
             "{ATTITUDE_PRECEDENCE_UNKNOWN_REASON_PREFIX}{reason}"
         )),
-        StartupRead::Absent => AttitudeBinding::Measured(spawn_attitude(record)),
+        StartupRead::Absent => AttitudeBinding::Measured(spawn),
         StartupRead::Decoded(statements) => {
-            match statements.iter().find(|statement| {
-                statement.kind == StateKind::Rotate && statement.node == record.node()
-            }) {
-                Some(statement) => AttitudeBinding::Measured(AttitudeSource::StartupPlacement {
-                    rotation_radians: statement.values,
-                }),
-                None => AttitudeBinding::Measured(spawn_attitude(record)),
+            let (writes, deferred) = startup_writes(statements, StateKind::Rotate, node);
+            if let [first, ..] = deferred.as_slice() {
+                return AttitudeBinding::Open(format!(
+                    "the startup carrier states an OBJECT_ROTATE_STATE for `{node}` under the \
+                     activation `{}` — only `ON_STARTUP` definitions are measured to start at \
+                     mission start (`+0xa1 == 4`, `0x522fd0`), so whether that write lands inside \
+                     the startup ordering is open and no attitude is guessed",
+                    first.activation
+                ));
+            }
+            match writes.as_slice() {
+                [] => AttitudeBinding::Measured(spawn),
+                [statement] if statement.unmodelled.is_empty() => {
+                    AttitudeBinding::Measured(AttitudeSource::StartupPlacement {
+                        rotation_radians: statement.values,
+                    })
+                }
+                [statement] => AttitudeBinding::Open(format!(
+                    "the startup carrier states an OBJECT_ROTATE_STATE for `{node}`, but the \
+                     statement carries keys the placement grammar leaves unmodelled ({}) — \
+                     `AT_NODE`, the second flag and `RELATIVE` each change what `0x4e8b80` \
+                     applies, so a flagged rotate's bare STATE triple is not the applied \
+                     attitude and none is guessed",
+                    statement.unmodelled.join(", ")
+                )),
+                many => AttitudeBinding::Open(format!(
+                    "the startup carrier states {} OBJECT_ROTATE_STATEs for `{node}` — the \
+                     measured order settles every spawn write before every startup write, not \
+                     one startup write against another, so which lands last is open and no \
+                     attitude is guessed",
+                    many.len()
+                )),
             }
         }
     }
 }
 
-/// The source the original applies last for this record's position (#814):
-/// the startup carrier's `OBJECT_TRANSLATE_STATE` for the record's `node`
-/// when the scope states one *without* keys the grammar leaves unmodelled —
-/// the later of the two writes to the same `Object3d` position slots — and
-/// the record's own spawn position otherwise. A refused startup carrier
-/// settles nothing, and neither does a flagged translate: `RELATIVE` and
-/// `AT_NODE` change what `0x4e8de0` applies, so its bare `STATE` triple is
-/// not the applied position and none is guessed.
-fn position_for(
-    record: &cs_formats::zbd::zeppelins::ZeppelinRecord,
-    startup: &StartupRead,
-) -> PositionBinding {
+/// The source the original applies last for a node's position (#814): the
+/// startup carrier's `OBJECT_TRANSLATE_STATE` for the `node` when exactly
+/// one `ON_STARTUP` definition states one *without* keys the grammar
+/// leaves unmodelled — the later of the two writes to the same `Object3d`
+/// position slots — and the record's own spawn position otherwise. A
+/// refused startup carrier settles nothing; neither does a statement under
+/// an activation outside `ON_STARTUP`, a flagged translate — `RELATIVE`
+/// and `AT_NODE` change what `0x4e8de0` applies — or several startup
+/// translates for one node, whose order among themselves is not measured.
+fn position_for(node: &str, carrier_position: [f32; 3], startup: &StartupRead) -> PositionBinding {
     match startup {
         StartupRead::Refused(reason) => PositionBinding::Open(format!(
             "{POSITION_PRECEDENCE_UNKNOWN_REASON_PREFIX}{reason}"
         )),
         StartupRead::Absent => PositionBinding::Measured(PositionSource::CarrierSpawn {
-            position_m: record.position(),
+            position_m: carrier_position,
         }),
         StartupRead::Decoded(statements) => {
-            match statements.iter().find(|statement| {
-                statement.kind == StateKind::Translate && statement.node == record.node()
-            }) {
-                Some(statement) if statement.unmodelled.is_empty() => {
+            let (writes, deferred) = startup_writes(statements, StateKind::Translate, node);
+            if let [first, ..] = deferred.as_slice() {
+                return PositionBinding::Open(format!(
+                    "the startup carrier states an OBJECT_TRANSLATE_STATE for `{node}` under the \
+                     activation `{}` — only `ON_STARTUP` definitions are measured to start at \
+                     mission start (`+0xa1 == 4`, `0x522fd0`), so whether that write lands inside \
+                     the startup ordering is open and no position is guessed",
+                    first.activation
+                ));
+            }
+            match writes.as_slice() {
+                [] => PositionBinding::Measured(PositionSource::CarrierSpawn {
+                    position_m: carrier_position,
+                }),
+                [statement] if statement.unmodelled.is_empty() => {
                     PositionBinding::Measured(PositionSource::StartupPlacement {
                         position_m: statement.values,
                         state_span: statement.state_span.clone(),
                     })
                 }
-                Some(statement) => PositionBinding::Open(format!(
-                    "the startup carrier states an OBJECT_TRANSLATE_STATE for `{}`, but the \
+                [statement] => PositionBinding::Open(format!(
+                    "the startup carrier states an OBJECT_TRANSLATE_STATE for `{node}`, but the \
                      statement carries keys the placement grammar leaves unmodelled ({}) — the \
                      write order over the node's position slots is measured (#792), the applied \
                      position of a flagged translate is not its bare STATE triple, and none is \
                      guessed",
-                    record.node(),
                     statement.unmodelled.join(", ")
                 )),
-                None => PositionBinding::Measured(PositionSource::CarrierSpawn {
-                    position_m: record.position(),
-                }),
+                many => PositionBinding::Open(format!(
+                    "the startup carrier states {} OBJECT_TRANSLATE_STATEs for `{node}` — the \
+                     measured order settles every spawn write before every startup write, not \
+                     one startup write against another, so which lands last is open and no \
+                     position is guessed",
+                    many.len()
+                )),
             }
         }
     }
@@ -1110,8 +1186,8 @@ fn declare_row(
         stored_position: record.position(),
         stored_yaw: record.yaw(),
         stored_pitch: record.pitch(),
-        attitude: attitude_for(record, startup),
-        position: position_for(record, startup),
+        attitude: attitude_for(record.node(), spawn_attitude(record), startup),
+        position: position_for(record.node(), record.position(), startup),
         team: record.team().map(str::to_owned),
         deactivated: record.deactivated(),
         subject,
@@ -1640,5 +1716,116 @@ mod tests {
         };
         assert_eq!(claim_id.as_str(), POSITION_PRECEDENCE_UNKNOWN_CLAIM);
         assert_eq!(reason, "the member refused: truncated");
+    }
+
+    fn startup_statement(
+        kind: StateKind,
+        node: &str,
+        activation: &str,
+        unmodelled: &[&str],
+    ) -> StartupStatement {
+        StartupStatement {
+            kind,
+            node: node.to_owned(),
+            activation: activation.to_owned(),
+            values: [-3584.0, 1360.0, -8704.0],
+            state_span: SourceSpan::new(
+                cs_types::evidence::ContentHash::from_hex(&"a".repeat(64)).expect("test hash"),
+                "zbd/c1c/m01/zrdr.zbd",
+                Some(PLACEZEPS_MEMBER),
+                49_213 + 446,
+                32,
+                None,
+            )
+            .expect("the STATE range spans"),
+            unmodelled: unmodelled.iter().map(|key| (*key).to_owned()).collect(),
+        }
+    }
+
+    /// **A flagged, deferred or competing startup write settles no pose —
+    /// it stays open by name (#814).**
+    /// The measured order settles every spawn write before every
+    /// `ON_STARTUP` write and nothing else: a statement under another
+    /// activation, a statement whose flags change what the executor
+    /// applies, and a second startup write to the same node each leave the
+    /// binding `Open` rather than guess a value the original did not write.
+    #[test]
+    fn accept_m01_lc_zeppelin_placement_position_unsettled_writers_stay_open() {
+        let spawn = || AttitudeSource::CarrierSpawn {
+            yaw_radians: 0.0,
+            pitch_radians: 0.0,
+        };
+        let carrier = [-3678.6, 1460.0, -11985.3];
+
+        // One clean ON_STARTUP translate binds its triple.
+        let startup = StartupRead::Decoded(vec![startup_statement(
+            StateKind::Translate,
+            "piratezep",
+            "ON_STARTUP",
+            &[],
+        )]);
+        let PositionBinding::Measured(PositionSource::StartupPlacement { position_m, .. }) =
+            position_for("piratezep", carrier, &startup)
+        else {
+            panic!("a clean startup translate binds");
+        };
+        assert_eq!(position_m, [-3584.0, 1360.0, -8704.0]);
+
+        // A node no statement addresses keeps the carrier's own value.
+        let PositionBinding::Measured(PositionSource::CarrierSpawn { position_m }) =
+            position_for("blackswanzep", carrier, &startup)
+        else {
+            panic!("an unaddressed node keeps the spawn position");
+        };
+        assert_eq!(position_m, carrier);
+
+        // A flagged translate does not apply its bare STATE triple.
+        let startup = StartupRead::Decoded(vec![startup_statement(
+            StateKind::Translate,
+            "piratezep",
+            "ON_STARTUP",
+            &["RELATIVE"],
+        )]);
+        let PositionBinding::Open(reason) = position_for("piratezep", carrier, &startup) else {
+            panic!("a flagged translate settles nothing");
+        };
+        assert!(reason.contains("RELATIVE"), "{reason}");
+
+        // A statement under an activation the ordering does not measure is
+        // not a startup write, whatever it states.
+        let startup = StartupRead::Decoded(vec![startup_statement(
+            StateKind::Translate,
+            "piratezep",
+            "OBJECTIVE13",
+            &[],
+        )]);
+        let PositionBinding::Open(reason) = position_for("piratezep", carrier, &startup) else {
+            panic!("a deferred translate settles nothing");
+        };
+        assert!(reason.contains("OBJECTIVE13"), "{reason}");
+
+        // Two startup writes to one node have no measured order between
+        // them; neither is picked.
+        let startup = StartupRead::Decoded(vec![
+            startup_statement(StateKind::Translate, "piratezep", "ON_STARTUP", &[]),
+            startup_statement(StateKind::Translate, "piratezep", "ON_STARTUP", &[]),
+        ]);
+        let PositionBinding::Open(reason) = position_for("piratezep", carrier, &startup) else {
+            panic!("competing startup writes settle nothing");
+        };
+        assert!(reason.contains("2 OBJECT_TRANSLATE_STATEs"), "{reason}");
+
+        // The rotate half follows the same rule: `0x4e8b80` reads the same
+        // flag word, so a flagged rotate settles no attitude either.
+        let startup = StartupRead::Decoded(vec![startup_statement(
+            StateKind::Rotate,
+            "piratezep",
+            "ON_STARTUP",
+            &["AT_NODE"],
+        )]);
+        let AttitudeBinding::Open(reason) = attitude_for("piratezep", spawn(), &startup) else {
+            panic!("a flagged rotate settles nothing");
+        };
+        assert!(reason.contains("AT_NODE"), "{reason}");
     }
 }

@@ -64,7 +64,12 @@ So a statement carrying no `AT_NODE` and no `RELATIVE` applies its bare
 statement's applied position is *not* the bare triple — `AT_NODE` re-bases
 it on another node, `RELATIVE` accumulates — so the binder refuses to bind
 one (`PositionBinding::Open`), the row's reason naming the unmodelled keys
-verbatim.
+verbatim. The same boundary holds on the two axes around it: only an
+`ON_STARTUP` definition's statement is a measured startup write
+(`+0xa1 == 4`, `0x522fd0`) — a statement under any other activation leaves
+the binding open, as does a second startup write to the same node, whose
+order against the first is not measured — and the rotate half applies the
+identical rule, since `0x4e8b80` reads the same flag word.
 
 ## 2. The setter and the slots both writers share
 
@@ -130,11 +135,14 @@ where a carrier-binding keeps z −11 985.3, −9 120 or 4 767.6.
     `Open`), `POSITION_PRECEDENCE_UNKNOWN_CLAIM` and
     `POSITION_PRECEDENCE_UNKNOWN_REASON_PREFIX`;
   * `StartupRead::Decoded` now carries `StartupStatement`s — kind, `NAME`,
-    the parsed triple, the `STATE` list's own `SourceSpan` and the
-    statement's unmodelled keys — one shape serving #792's rotations and
-    this task's translates;
+    the carrying definition's `ACTIVATION` spelling, the parsed triple, the
+    `STATE` list's own `SourceSpan` and the statement's unmodelled keys —
+    one shape serving #792's rotations and this task's translates;
   * `position_for` picks the source under the measured order; a refused
-    carrier or a flagged translate settles nothing and stays open;
+    carrier, a flagged translate, a statement under an activation outside
+    `ON_STARTUP` or several startup translates to one node settle nothing
+    and stay open — and `attitude_for` holds #792's rotate half to the same
+    boundary;
   * `SpawnedZeppelinActor::{position, position_source, position_residue}`
     and `declare_actor` binding `position_m` `Resolved::Known` under the
     spawn-pose claim, provenanced from the `STATE` span for a startup
@@ -153,7 +161,8 @@ where a carrier-binding keeps z −11 985.3, −9 120 or 4 767.6.
 
 | residue | affected content | resolves in |
 | --- | --- | --- |
-| a **flagged translate** (`AT_NODE`, `RELATIVE`, any key the placement grammar leaves unmodelled) does not apply its bare `STATE` triple; M01's three carry none, but the binder refuses the value rather than guess one | any scope whose `placezeps.zrd` flags a translate | `PLACEMENT_FIELDS_CLAIM`'s unmodelled-key work (#791's member census) |
+| a **flagged statement** (`AT_NODE`, `RELATIVE`, any key the placement grammar leaves unmodelled) does not apply its bare `STATE` triple; M01's carry none, but the binder refuses the value rather than guess one — on both halves: a flagged rotate leaves the attitude open the same way | any scope whose `placezeps.zrd` flags a translate or rotate | `PLACEMENT_FIELDS_CLAIM`'s unmodelled-key work (#791's member census) |
+| a statement under an **activation outside `ON_STARTUP`**, or **several startup statements** of one kind for one node | the startup ordering settles nothing for that node — the write order between startup writes is not measured | any scope whose `placezeps.zrd` states one | the activation vocabulary past `ON_STARTUP` (`0x51e390`'s keyword table) and the instance dispatch order |
 | the **animation-start reset** (`0x4edc50` zeroes the target node's position and rotation when instance flag `0x100` is set) | a third writer at animation-start time; on the measured order it precedes the record (re)load at `0x4655c0`, so it cannot disturb the startup pose | unchanged from #792 §6 — decoding `0x4db0c0` and the list at `0x9fd160` |
 | selector `0xff38` (`−200`) at `event+0x1e` re-bases the triple on a stored instance vector (`[edi+0x7c]`..`+0x88`) | the meaning of that stored vector | the `AT_NODE`/base-selector half of `0x5075b0`'s statement parse |
 | who drives the actor after startup (`targets`, `deactivated`, the drive byte `+4`, the undecoded mission program) | whether the spawn position is re-applied mid-mission | unchanged from `2026-10-08-m01-lc-world-actor-spawn.md`; the mission scripts (F13-B/C, F38) and #359 |
