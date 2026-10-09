@@ -104,7 +104,7 @@ fn fixture(name: &str) -> Fixture {
     fs::create_dir_all(&work).expect("the fixture work dir must be creatable");
 
     git_ok(
-        &origin.parent().expect("origin has a parent"),
+        origin.parent().expect("origin has a parent"),
         &["init", "--bare", "-q", "origin.git"],
     );
     git_ok(&work, &["init", "-q"]);
