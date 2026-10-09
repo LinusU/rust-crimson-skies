@@ -469,6 +469,39 @@ across four runs and four rebases; only `candidate_tree`, `created_at`,
 `command.cwd`, the log's hash, the assertion order and `review.identity`
 differ.
 
+### Round four, second push: main moved again (2026-10-09)
+
+CI on `ee3db465` completed *success* (jobs `pack`, `rust lint`,
+`rust test-rest`, `rust test-app` all green), but `origin/main` had moved
+underneath it — M06-B landed as `55057ba3`, touching the same two owner
+files — so landing it then would have run into the same conflict a fifth
+time. The branch was rebased a second time in this round, by hand, onto
+`55057ba3`. That rebase applied **without conflicts** (main's `m06_b.rs`
+paragraph sits apart from this stage's) and the result was verified:
+`git diff --stat origin/main...HEAD` still shows `evidence.rs` as 350
+insertions and no deletion over main, exactly one `evidence_report_*`
+function added over main's, each of the three doc paragraphs (`m06_b`,
+`m05_b`, `m08_b`) present once, `mod m08_b;` present once, and no conflict
+markers.
+
+The commits this rebase brought in **do** touch files this branch changes
+(`evidence.rs`, `main.rs`), so the owner's lighter rebase check does not
+apply and the full four checks were re-run on the new tree (`f61eca5e`):
+`cargo fmt --all -- --check` (0), `cargo clippy --workspace --all-targets
+--all-features --locked -- -D warnings` (0), `cargo test --workspace
+--locked` (0: **480** `test result: ok` lines, no failure),
+`cargo test --workspace --locked -- accept_m08_b_ --include-ignored` (0:
+**7 discovered, 7 executed, 7 passed, 0 failed, 0 ignored**, tee'd to
+`private/evidence/M08-B/cargo-test.log`). M06-B's landing changed no
+production file (tests and `docs/findings/` only), so this stage's two pins
+are untouched by it.
+
+The evidence report was regenerated from that run — `candidate_tree`
+`f61eca5e…`, `created_at` 2026-10-09T12:07Z, `cargo-test.log` hash
+`774a7997…` — and validated again (`structurally_valid: true`, exit 0); the
+`m08-control-program.json` artifact still hashes to `3134ddc3…`, byte
+identical across every run of this stage's harness.
+
 ## Recorded unknowns (not guessed)
 
 - **The join remains an inference** (M08-A's standing unknown): this stage
