@@ -202,6 +202,16 @@
 //! members are `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
 //! `evidence_report_m08_b_*` writes that task's report and is selected by
 //! test name.
+//! # Adding a suite here
+//!
+//! Every suite is one file beside this one plus one `mod` line in the sorted
+//! list below, and every task's evidence harness is one file in `evidence/`
+//! plus one sorted `mod` line in `evidence.rs` (see that file's module doc,
+//! "Where a new task's evidence goes"). Nothing else is registered by hand —
+//! libtest collects the `#[test]` functions wherever they are declared — so
+//! two tasks adding two suites touch two different lines of this file. Where
+//! the paragraphs above say `evidence.rs`'s `evidence_report_*`, they name
+//! that module: each harness now lives in its own `evidence/<task>.rs`.
 
 mod closure;
 mod common;
