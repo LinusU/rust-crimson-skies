@@ -66,6 +66,73 @@ fn frame_of(seconds: f64) -> u32 {
 /// Simulated seconds one pass of [`script`] takes.
 pub const CYCLE_SECONDS: u32 = 20;
 
+/// Seconds into a pass at which `R` resets the aircraft.
+///
+/// The reset is what gives the steer window its clean start: everything before
+/// it (the pitch, roll, yaw, throttle, pause and focus checks) has been flown
+/// from the spawn, and the reset puts the aircraft back on it. [`RETAIL_STEER`]'s
+/// windows are declared in these same pass seconds, so a test that flies the
+/// maneuver from its own reset counts from this instant too.
+pub const RESET_SECONDS: f64 = 10.5;
+
+/// One key of the retail steer-into-area maneuver, as a window inside a pass.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SteerHold {
+    /// The key held for the whole window.
+    pub key: KeyCode,
+    /// Seconds after the pass start when the key goes down.
+    pub from: f64,
+    /// Seconds after the pass start when the key comes back up.
+    pub to: f64,
+}
+
+/// The retail steer-into-area maneuver: **rudder only, `D` held from 10.7 s to
+/// 16.0 s of every pass** — 0.2 s after [`RESET_SECONDS`] until 5.5 s after it,
+/// so the turn starts on the fresh spawn and the key is up before the pass
+/// resets again.
+///
+/// Re-derived for the recovered original flight law (#1135). #649's maneuver
+/// (`D` for 1.8 s, then `E` for 2.5 s) was tuned on the synthetic fixed-wing,
+/// where banking turns the aircraft; under the original law the same keys do
+/// something else entirely, and this task measured both before choosing:
+///
+/// * **The rudder builds heading; the roll buys none.** Every candidate is
+///   sampled at 2.0 s (the end of #649's yaw hold) and at 3.0 s. At 2.0 s all
+///   of them sit at 19.0°–19.5° of heading with their wings level. One second
+///   later the rows still holding `D` have kept turning — **26.74°, +7.5°**,
+///   wings level (−0.6°) — while the rows holding `E` instead carry **85.3° of
+///   bank and no heading at all** (19.45° → 19.37°). The recovered law steers
+///   its velocity at the nose (`lift_target`, `cs_sim`), so what turns this
+///   aircraft is a nose led off the velocity by the rudder; a bank — which is
+///   what #649's synthetic-tuned pairing relied on — adds no heading of its own
+///   under this law, and the roll that was supposed to help only stops the turn.
+/// * **The turn must reach the hull before the hull tapers away.** The area
+///   spans `x ∈ [−53.2, 53.1]` m and `z ∈ [−222.9, 348.7]` m and the aircraft
+///   flies −Z from `z ≈ 206`, so a turn that starts or stops late crosses the
+///   hull's `x` range aft of the skin — which is exactly the miss #797 measured
+///   over a whole 60 s run with #649's keys from the designed start.
+///
+/// Measured over the first 6 s of the pass's 9 s steer window, with the pass's
+/// own key schedule (see `accept_playtest_smoke_original_` and
+/// `docs/findings/2026-10-09-1135-retail-smoke-script.md`), first contact per
+/// candidate:
+///
+/// | spawn `x` fraction | #649's `D`+`E` | this maneuver |
+/// | --- | --- | --- |
+/// | `−0.6` (the designed value) | no contact | contact at 3.93 s |
+/// | `−0.35` (#797's retune) | contact at 3.32 s | contact at 3.25 s |
+///
+/// The window ends 1.57 s after the first contact from the farthest designed
+/// start, so the key is still down when the aircraft arrives and comes up
+/// before the pass resets. `KeyCode::KeyD` is the playtest's yaw-right binding
+/// (`command.rs`); the deflection it produces is the designed `KEY_DEFLECTION`,
+/// not a recovered original input rate.
+pub const RETAIL_STEER: [SteerHold; 1] = [SteerHold {
+    key: KeyCode::KeyD,
+    from: 10.7,
+    to: 16.0,
+}];
+
 /// How many whole passes of the script a run of `seconds` holds: a 2-minute run
 /// is six passes, each with its pauses and its two resets.
 #[must_use]
@@ -75,9 +142,10 @@ pub const fn cycles(seconds: u32) -> u32 {
 
 /// The scripted sequence as `(frame, step)`, sorted by frame.
 ///
-/// `steer_into_area` holds yaw-right through the second half of every pass, which
-/// is how the original-assets run reaches the area's own collider (the aircraft
-/// spawns alongside it); the synthetic wall is dead ahead and needs no steering.
+/// `steer_into_area` flies [`RETAIL_STEER`] through the second half of every
+/// pass, which is how the original-assets run reaches the area's own collider
+/// (the aircraft spawns off its port side and turns onto it); the synthetic
+/// wall is dead ahead and needs no steering.
 ///
 /// | seconds | action |
 /// | --- | --- |
@@ -90,7 +158,8 @@ pub const fn cycles(seconds: u32) -> u32 {
 /// | 8.0 / 9.0 | `Esc` pauses, `Esc` resumes |
 /// | 9.5 / 10.0 | window focus lost (pauses), regained (resumes) |
 /// | 10.5 | `R` reset |
-/// | 10.5 – 19.5 | neutral: the aircraft flies into the wall |
+/// | 10.5 – 19.5 | **synthetic:** neutral, the aircraft flies into the wall |
+/// | 10.7 – 16.0 | **retail:** hold `D` (yaw right) — [`RETAIL_STEER`] |
 /// | 19.5 | `R` reset again |
 ///
 /// The pass repeats every [`CYCLE_SECONDS`] for as long as the run lasts.
@@ -120,11 +189,12 @@ fn pass(steps: &mut Vec<(u32, Step)>, at: f64, steer_into_area: bool) {
     hold(KeyCode::KeyF, 7.2, 7.3);
     hold(KeyCode::Escape, 8.0, 8.1);
     hold(KeyCode::Escape, 9.0, 9.1);
-    hold(KeyCode::KeyR, 10.5, 10.6);
+    hold(KeyCode::KeyR, RESET_SECONDS, RESET_SECONDS + 0.1);
     hold(KeyCode::KeyR, 19.5, 19.6);
     if steer_into_area {
-        hold(KeyCode::KeyD, 10.7, 12.5);
-        hold(KeyCode::KeyE, 12.5, 15.0);
+        for steer in RETAIL_STEER {
+            hold(steer.key, steer.from, steer.to);
+        }
     }
     steps.push((frame_of(at + 9.5), Step::Focus(false)));
     steps.push((frame_of(at + 10.0), Step::Focus(true)));

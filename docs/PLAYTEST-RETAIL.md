@@ -49,8 +49,10 @@ the original's player spawn speed was never recovered — no start speed here ca
 claim to be the original's. The original's Level-Off assist (Shift+L, command
 47) is in the law but has no input-layer slot, so it stays off (follow-up
 **#1134**). #649's scripted smoke path was steered onto the hull by #797's
-spawn retune (see the spawn row below); re-deriving the script itself for this
-law is follow-up **#1135**.
+spawn retune; **#1135** re-derived the script itself for this law — the rudder
+turn `RETAIL_STEER`, rudder only — and the spawn went back to its designed
+`−0.6` (see the spawn row below and
+`docs/findings/2026-10-09-1135-retail-smoke-script.md`).
 
 ## What is rendered
 
@@ -97,7 +99,7 @@ a constant in `playtest_retail.rs`.
 | object identity | `playtest.node-<stored slot>` (the slot, for #629's reason: the container stores 34 records named `g27816` in one group) | — |
 | gameplay surface | an explicit **unknown** carrying `cs_content::world::WORLD_SURFACE_UNMEASURED` | #629's claim |
 | world boundary | an explicit **unknown**; no invisible wall | #629's claim |
-| spawn | `min + (−0.35·width, 0.55·height, 0.75·depth)` of the measured extent → `(−90.40, −8.11, 205.80)`; the `x` fraction was `−0.6` until #797 retuned it (measured: at `−0.6` the scripted smoke's steer-into-area reaches the hull only where it has tapered away, and never collides) | `playtest-retail.aircraft-pose-is-designed` |
+| spawn | `min + (−0.6·width, 0.55·height, 0.75·depth)` of the measured extent → `(−116.97, −8.11, 205.79)`; the width fraction is the **designed `−0.6` again**: #797 measured that #649's synthetic-tuned steer-into-area could not reach the hull from it under the original law (zero contacts over a whole 60 s run) and retuned the fraction to `−0.35`, and #1135 re-derived the maneuver instead (`RETAIL_STEER`, rudder only, measured contact at 3.93 s from `−0.6`) and restored `−0.6`. The measured matrix is in `docs/findings/2026-10-09-1135-retail-smoke-script.md` and is asserted by `accept_playtest_smoke_original_` | `playtest-retail.aircraft-pose-is-designed` |
 | aircraft nose | `nose_mapping`'s yaw landing the **measured** stored nose (`−Z`, `STORED_AIRCRAFT_NOSE_AXIS`: the container's tail surfaces compose aft of the cockpit in all eleven scene airframes) onto the runtime's forward axis (`−Z`) — the identity, so nothing is turned. Measured axis, designed mapping (#709) | same |
 | propeller spin rate | 1 rev/s at idle rising linearly to 6 rev/s at full throttle, read from the flight model's **engine spool**; `0` while the engine is stopped, frozen while paused; only the propeller child's own local `Transform` is written, never the flight body's pose (#710) | `playtest-retail.propeller-spin-rate-is-designed` |
 | propeller spin sense | the measured disc normal oriented **aft** (away from the measured `−Z` nose) with the right-hand rule about it. The axis and pivot themselves are **measured** from the disc's own 16 triangles, not chosen: see "The propeller spin" below (#710) | `playtest-retail.propeller-spin-sense-is-designed` |
@@ -115,8 +117,8 @@ as metres, so the framing holds for a different aircraft:
 
 | view | eye, as an offset from the spawn | target | why |
 | --- | --- | --- | --- |
-| `chase` | `(−1.8·length, +0.7·height, +0.6·length)` = `(−109.51, −5.96, 212.16)` | the spawn | **abeam, outboard.** Behind the aircraft it would show a 2 m cross-section (measured: 807 aircraft pixels); outboard, because an inboard eye puts the *camera* between the aircraft and the area and frames only sky (measured: refused as `NoEnvironment`) |
-| `quarter` | `(−1.4·length, +1.2·height, −1.6·length)` = `(−105.26, −4.43, 188.80)` | the spawn | the same placement from higher and further forward, so the second aircraft frame is a different angle rather than the same one twice |
+| `chase` | `(−1.8·length, +0.7·height, +0.6·length)` = `(−136.08, −5.96, 212.16)` | the spawn | **abeam, outboard.** Behind the aircraft it would show a 2 m cross-section (measured: 807 aircraft pixels); outboard, because an inboard eye puts the *camera* between the aircraft and the area and frames only sky (measured: refused as `NoEnvironment`) |
+| `quarter` | `(−1.4·length, +1.2·height, −1.6·length)` = `(−131.83, −4.43, 188.80)` | the spawn | the same placement from higher and further forward, so the second aircraft frame is a different angle rather than the same one twice |
 | `overview` | `centre + (−0.42·span_x, +0.36·span_y + 3·height, +1.0·span_z)` = `(−44.66, 46.04, 634.48)` | the area's centre | frames the **area**: the whole airship with the aircraft a measured speck in front of it. The z offset is a full span (#795's review), so the eye stands half a span **beyond** the extent's aft face: at the earlier `+0.5·span` it sat exactly on that plane, which once the landing cards no longer inflated the extent left the eye inside the hull's silhouette and the outboard spawn occluded (measured: 0 aircraft pixels) |
 
 ### The propeller spin (task #710, `PLAYTEST-PROP-SPIN`)

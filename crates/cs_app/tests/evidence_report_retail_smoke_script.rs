@@ -1,40 +1,43 @@
-//! Evidence-report harness for task #797 (FLIGHT-ORIGINAL-PLAYTEST):
+//! Evidence-report harness for task #1135 (FLIGHT-ORIGINAL-RETAIL-SMOKE-SCRIPT):
 //! `docs/contracts/CLI-EVIDENCE.md`, schema `schemas/evidence.schema.json`.
 //!
-//! This test is deliberately **not** named `accept_flight_original_playtest_*`:
+//! This test is deliberately **not** named `accept_playtest_smoke_original_*`:
 //! it is not part of the acceptance suite, and it fails loudly when its inputs
 //! are missing instead of passing vacuously. Run from the workspace root, after
 //! the acceptance suite, exactly as:
 //!
 //! 1. ```sh
-//!    cargo test --workspace --locked -- accept_flight_original_playtest_ --include-ignored \
-//!      --nocapture 2>&1 | tee private/evidence/T797/cargo-test.log
+//!    mkdir -p private/evidence/T1135
+//!    CS_SMOKE_ORIGINAL_OUT="$PWD/private/evidence/T1135/smoke" \
+//!    cargo test --workspace --locked -- accept_playtest_smoke_original_ --include-ignored \
+//!      --nocapture 2>&1 | tee private/evidence/T1135/cargo-test.log
 //!    ```
-//!    (the `--nocapture` is what puts the `PLAYTEST-ORIGINAL-*` measured
-//!    values in the log; pass the pipeline's cargo status to this harness as
-//!    `CS_EVIDENCE_EXIT_CODE`.)
+//!    (the path is absolute because a test binary's working directory is its
+//!    *package* root, not the workspace root; the `--nocapture` is what puts the
+//!    `PLAYTEST-SMOKE-ORIGINAL*` measured lines in the log and what makes the
+//!    run's own `report.json` and `trace.jsonl` land in the evidence directory;
+//!    pass the pipeline's cargo status to this harness as `CS_EVIDENCE_EXIT_CODE`.)
 //! 2. ```sh
-//!    CS_EVIDENCE_DIR=private/evidence/T797 \
+//!    CS_EVIDENCE_DIR=private/evidence/T1135 \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_flight_original_playtest_ --include-ignored" \
+//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_playtest_smoke_original_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
-//!      cargo test --locked -p cs_app --test evidence_report_flight_original_playtest -- --ignored
+//!      cargo test --locked -p cs_app --test evidence_report_retail_smoke_script -- --ignored
 //!    ```
 //! 3. ```sh
-//!    python3 tools/validate_evidence.py private/evidence/T797/acceptance.json \
-//!      --artifact-root private/evidence/T797
+//!    python3 tools/validate_evidence.py private/evidence/T1135/acceptance.json \
+//!      --artifact-root private/evidence/T1135
 //!    ```
-//!    The report records this task's open issues in `unknowns`, which is exactly
-//!    what `--require-pass` refuses; run it with `--require-pass` to see that
-//!    refusal, and never delete an unknown to make the strict check pass
-//!    (AGENTS.md, owner directive 2026-10-01).
-//! 4. Commit a copy of `acceptance.json` as `docs/findings/evidence/T797.json`.
+//!    The report records this task's one open provenance issue in `unknowns`,
+//!    which is exactly what `--require-pass` refuses; run it with
+//!    `--require-pass` to see that refusal, and never delete an unknown to make
+//!    the strict check pass (AGENTS.md, owner directive 2026-10-01).
+//! 4. Commit a copy of `acceptance.json` as `docs/findings/evidence/T1135.json`.
 //!
 //! Every field is derived from real inputs: the recorded test log, production
-//! discovery of `$CS_GAME_DIR`, a fresh run of the playtest's own production
-//! flight import over the installation, `rustc --version` and `Cargo.lock`.
-//! Nothing is typed in by hand except the review/unknowns text, which states
-//! what it is.
+//! discovery of `$CS_GAME_DIR`, the smoke run's own `report.json` and
+//! `trace.jsonl`, `rustc --version` and `Cargo.lock`. Nothing is typed in by
+//! hand except the review/unknowns text, which states what it is.
 
 use std::collections::VecDeque;
 use std::fs;
@@ -42,18 +45,26 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cs_app::playtest::retail::{RetailRequest, read_flight};
 use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 
-const TASK_ID: &str = "T797";
-const PREFIX: &str = "accept_flight_original_playtest_";
-/// The one prefixed test that can only pass over the installation, so the
-/// `retail` capability in the report is backed by a run and not by a name.
-const RETAIL_PREFIX: &str = "accept_flight_original_playtest_retail_body";
+const TASK_ID: &str = "T1135";
+const PREFIX: &str = "accept_playtest_smoke_original_";
+/// The prefixed test that reads the installation, so the `retail` capability in
+/// the report is backed by a run and not by a name.
+const RETAIL_PREFIX: &str = "accept_playtest_smoke_original_retail_script";
+/// The measured line the candidate matrix prints: the report refuses to be
+/// written without it, so a log from a run that never flew the matrix cannot
+/// back an evidence record.
+const MEASUREMENT: &str = "PLAYTEST-SMOKE-ORIGINAL-MATRIX";
+/// The smoke's own artifacts, written by step 1 through `CS_SMOKE_ORIGINAL_OUT`.
+const SMOKE_ARTIFACTS: [(&str, &str); 2] = [
+    ("smoke/report.json", "json"),
+    ("smoke/trace.jsonl", "jsonl"),
+];
 
 #[test]
-#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
-fn evidence_report_flight_original_playtest_writes_the_acceptance_report() {
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR, CS_SMOKE_ORIGINAL_OUT"]
+fn evidence_report_retail_smoke_script_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
     let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
@@ -100,73 +111,50 @@ fn evidence_report_flight_original_playtest_writes_the_acceptance_report() {
          run step 1 with --include-ignored and CS_GAME_DIR set"
     );
     assert!(
-        suite
-            .assertions
-            .iter()
-            .any(|(name, status)| name.starts_with(PREFIX)
-                && !name.starts_with(RETAIL_PREFIX)
-                && *status == "pass"),
-        "the synthetic (no-installation) tests must be present alongside the retail ones"
+        log.contains(MEASUREMENT),
+        "the log carries no {MEASUREMENT} line: the candidate matrix did not run, so this \
+         log cannot back the measured spawn/script choice"
     );
 
-    // Production discovery, by the very code the task's importer calls.
+    // Production discovery, by the very code the playtest's importer calls.
     let found = discover(&game_dir)
         .expect("production discovery must read the original installation for the evidence record");
     let install_sha256 = fingerprint(&found.manifest).to_hex();
     let content_sha256 = content_fingerprint(&found.manifest).to_hex();
-
-    // The consumer trace: the playtest's own production flight import
-    // (`cs_app::playtest::retail::read_flight`) run over the installation and
-    // written into the evidence directory, so the report is backed by the
-    // exact record the retail playtest flies and not only by test names.
-    let request = RetailRequest::new(game_dir.clone(), None, None)
-        .expect("the documented playtest selectors are valid");
-    let flight = read_flight(&request)
-        .expect("the playtest's production flight import reads the installation");
-    let flight_trace = format!(
-        "{{\n \"task_id\": {},\n \"installation\": {},\n \"flight\": {}\n}}\n",
-        jstr(TASK_ID),
-        jstr(&game_dir.display().to_string()),
-        flight.json()
-    );
-    let flight_path = evidence_dir.join("playtest-flight.json");
-    fs::write(&flight_path, &flight_trace)
-        .unwrap_or_else(|error| panic!("write {}: {error}", flight_path.display()));
 
     let engine = Engine {
         rust: rustc_version(),
         bevy: locked_version("bevy"),
         avian: locked_version("avian3d"),
     };
-    let artifacts = vec![
-        artifact(&log_path, "log", &evidence_dir),
-        artifact(&flight_path, "json", &evidence_dir),
-    ];
+    let mut artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
+    for (path, kind) in SMOKE_ARTIFACTS {
+        let source = evidence_dir.join(path);
+        assert!(
+            source.is_file(),
+            "{} is missing: run step 1 with CS_SMOKE_ORIGINAL_OUT pointing into {}",
+            path,
+            evidence_dir.display()
+        );
+        artifacts.push(artifact(&source, kind, &evidence_dir));
+    }
 
+    // One open issue, and it is a provenance limit of this deliverable rather
+    // than a defect in it: the maneuver is a designed smoke input, so nothing
+    // here claims the original ever flew this key sequence. The issue #797
+    // recorded as `scripted_smoke_path` (the script had not been re-derived for
+    // this law) is resolved by this task's measurements and is gone from
+    // `docs/findings/evidence/T797.json`.
     let unknowns = [
-        "player_spawn_speed: the original's player spawn speed was never recovered (#796), so \
-         the retail playtest starts at its own declared 55 m/s (`RETAIL_START_SPEED_M_S`) and \
-         only the cruise (`fd_speed`, 134 m/s measured) is imported data. Affected content: the \
-         retail playtest's spawn speed and any claim about how an aircraft starts. Resolving \
-         task: an owner original run (#358 REF-OWNER-FIRST-CAPTURE). Gates: any \
-         verified_original handling claim.",
-        "roll_axis_sign: the original's own roll input sign was not recovered (#796 lists \
-         'roll sign' as open), so the playtest maps `FlightInput::roll` (positive \
-         right-wing-down, the F22 contract) onto the law's roll input with a negation; measured: \
-         with the direct mapping, holding `E` banked the retail aircraft -47 deg. Affected \
-         content: the retail playtest's roll axis direction. Resolving task: static analysis of \
-         the original's input handling or an owner run. Gates: any claim that the playtest's roll \
-         axis reproduces the original's own axis direction.",
-        "level_off_command_47: the original's Level-Off assist (Shift+L, command 47) is read by \
-         the recovered law but the input layer has no slot for it, so the toggle is never set in \
-         the playtest and stays off. Affected content: the retail playtest's Level-Off assist. \
-         Resolving task: Rally #1134 FLIGHT-ORIGINAL-LEVELOFF-INPUT. Gates: any \
-         claim that the playtest exercises Level-Off.",
-        "law_calibration: the flight law itself is static evidence under OWNER-STATIC-2026-10-08 \
-         and is still uncalibrated against an original run (#358); nothing flown here is \
-         verified_original. Affected content: every handling claim about the retail playtest. \
-         Resolving task: an owner original run compared against this law. Gates: any \
-         verified_original or release_approved claim.",
+        "scripted_maneuver_provenance: #1135 re-derived the retail smoke's steer-into-area for \
+         the recovered original law and measured it reaching the original area's hull (contact \
+         at 3.93 s of the pass from the designed -0.6 spawn; `accept_playtest_smoke_original_`), \
+         but the key schedule itself — which keys, for how long — is a designed development \
+         input: the original's own scripted inputs and keyboard scaling were never recovered \
+         (#796). Affected content: the retail smoke's key schedule only, and the flight path it \
+         produces. Resolving task: an owner original run (#358 REF-OWNER-FIRST-CAPTURE) showing \
+         what the original's own scripted sequence was. Gates: any claim that the smoke's key \
+         sequence, or the path it flies, reproduces an original input sequence.",
     ];
 
     let report = format!(
@@ -181,7 +169,7 @@ fn evidence_report_flight_original_playtest_writes_the_acceptance_report() {
          \x20\"seed\": 0,\n\
          \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
          \x20\"overrides\": [],\n\
-         \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
+         \x20\"capabilities\": [\"retail\"],\n\
          \x20\"tests\": {{\"discovered\": {discovered}, \"executed\": {executed}, \"passed\": {passed}, \"failed\": {failed}, \"ignored\": {ignored}}},\n\
          \x20\"assertions\": [{assertions}],\n\
          \x20\"artifacts\": [{artifacts}],\n\
@@ -211,19 +199,20 @@ fn evidence_report_flight_original_playtest_writes_the_acceptance_report() {
             .collect::<Vec<_>>()
             .join(", "),
         identity = jstr(
-            "implementer: bunny-2 (Rally #797 implement claim of 2026-10-09); reviewer: \
+            "implementer: bunny-alpha-2 (Rally #1135 implement claim of 2026-10-09); reviewer: \
              recorded by the Rally review claim that follows — per AGENTS.md an agent review is \
              `checked` at best, is never independent original-reference evidence and never \
              replaces the owner's human approval. The activity log records both claims.",
         ),
         method = jstr(
             "acceptance suite run locally with the retail capability and recorded verbatim in \
-             cargo-test.log (its PLAYTEST-ORIGINAL-* lines carry the measured values); this \
-             harness derives every field from that log, from production discovery of \
-             $CS_GAME_DIR, from a fresh run of the playtest's own production flight import \
-             (playtest-flight.json, `cs_app::playtest::retail::read_flight`), from rustc and \
-             from Cargo.lock. Structure checked with tools/validate_evidence.py; --require-pass \
-             refuses while `unknowns` is non-empty, by design and never worked around.",
+             cargo-test.log (its PLAYTEST-SMOKE-ORIGINAL* lines carry the measured spawn, the \
+             measured contact frame and the four-row candidate matrix); this harness derives \
+             every field from that log, from production discovery of $CS_GAME_DIR, from the \
+             smoke run's own report.json and trace.jsonl written by that same suite run under \
+             CS_SMOKE_ORIGINAL_OUT, from rustc and from Cargo.lock. Structure checked with \
+             tools/validate_evidence.py; --require-pass refuses while `unknowns` is non-empty, \
+             by design and never worked around.",
         ),
     );
 
@@ -259,13 +248,13 @@ fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
         panic!(
             "{name} is not set: this harness only runs through the sequence in its module doc \
-             (crates/cs_app/tests/evidence_report_flight_original_playtest.rs)"
+             (crates/cs_app/tests/evidence_report_retail_smoke_script.rs)"
         )
     })
 }
 
 /// Cargo runs a test binary with its working directory set to the *package*
-/// root, so a path like `private/evidence/T796` written relative to the
+/// root, so a path like `private/evidence/T1135` written relative to the
 /// workspace root in the module doc must be re-anchored here.
 fn workspace_path(as_described: &str) -> PathBuf {
     let path = PathBuf::from(as_described);
@@ -336,7 +325,7 @@ struct Suite {
 }
 
 /// Extracts the libtest summaries and the per-test results of the
-/// `accept_flight_original_` tests from a recorded `cargo test` output.
+/// `accept_playtest_smoke_original_` tests from a recorded `cargo test` output.
 fn parse_suite(log: &str) -> Suite {
     let mut suite = Suite::default();
     let mut pending: VecDeque<String> = VecDeque::new();
@@ -474,10 +463,10 @@ fn assertion_array(assertions: &[(String, &'static str)]) -> String {
 fn artifact_array(artifacts: &[(String, String, String)]) -> String {
     let items: Vec<String> = artifacts
         .iter()
-        .map(|(name, digest, kind)| {
+        .map(|(path, digest, kind)| {
             format!(
                 "{{\"path\": {}, \"sha256\": {digest:?}, \"kind\": {kind:?}}}",
-                jstr(name)
+                jstr(path)
             )
         })
         .collect();
@@ -489,8 +478,8 @@ fn str_array(items: &[String]) -> String {
     format!("[{}]", quoted.join(", "))
 }
 
-/// A JSON string literal: quoted and escaped, so no report field can break
-/// out of its string.
+/// A JSON string literal: quoted and escaped, so no report field can break out
+/// of its string.
 fn jstr(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
@@ -511,8 +500,8 @@ fn jstr(value: &str) -> String {
     out
 }
 
-/// RFC 3339 with whole seconds and `Z`, which `datetime.fromisoformat`
-/// accepts after the validator's `Z` → `+00:00` replacement.
+/// RFC 3339 with whole seconds and `Z`, which `datetime.fromisoformat` accepts
+/// after the validator's `Z` → `+00:00` replacement.
 fn iso_utc_now() -> String {
     let epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -522,8 +511,8 @@ fn iso_utc_now() -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
-/// Howard Hinnant's `civil_from_days`: days since 1970-01-01 to a UTC
-/// calendar date, because `std` has no date formatting.
+/// Howard Hinnant's `civil_from_days`: days since 1970-01-01 to a UTC calendar
+/// date, because `std` has no date formatting.
 fn civil_from_unix(seconds: i64) -> (i64, u32, u32, u32, u32, u32) {
     let days = seconds.div_euclid(86_400);
     let rest = seconds.rem_euclid(86_400);
@@ -532,22 +521,18 @@ fn civil_from_unix(seconds: i64) -> (i64, u32, u32, u32, u32, u32) {
     let day_of_era = z.rem_euclid(146_097);
     let year_of_era =
         (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year_of_day = year_of_era + era * 400;
+    let year = year_of_era + era * 400;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_prime = (5 * day_of_year + 2) / 153;
     let day = (day_of_year - (153 * month_prime + 2) / 5 + 1) as u32;
     let month = (if month_prime < 10 {
         month_prime + 3
     } else {
-        (month_prime - 10) / 12 + 1
+        month_prime - 9
     }) as u32;
-    let year = if month <= 2 {
-        year_of_day - 1
-    } else {
-        year_of_day
-    };
+    let year = (if month <= 2 { year - 1 } else { year }) as u32;
     let second = (rest % 60) as u32;
     let minute = ((rest / 60) % 60) as u32;
-    let hour = (rest / 3600) as u32;
-    (year, month, day, hour, minute, second)
+    let hour = ((rest / 3600) % 24) as u32;
+    (i64::from(year), month, day, hour, minute, second)
 }

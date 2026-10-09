@@ -362,20 +362,31 @@ pub const AIRCRAFT_CONTAINER_KEY: &str = "zbd/planes.zbd";
 // -------------------------------------------------------- the designed values --
 
 /// Where the aircraft starts along the area's width, as a fraction of it from
-/// its minimum: `−0.35`, so the start is 0.35 of the area's own width (about
-/// 37 m) off its port side — outside the geometry, with room to fly towards it
+/// its minimum: `−0.6`, so the start is 0.6 of the area's own width (about
+/// 64 m) off its port side — outside the geometry, with room to fly towards it
 /// and away from it.
 ///
-/// A **designed** value, retuned by #797 alongside #795's `z` retune below. At
-/// `−0.6` the start sits 64 m off the port side, and with the original flight
-/// law (#797) the scripted smoke's steer-into-area maneuver builds its heading
-/// over about 4 s after the reset, so the aircraft reaches the hull's own `x`
-/// range only about 350 m of flight later — where the hull has tapered away —
-/// and never touches it (measured: the launch smoke reported zero obstacle
-/// contacts for a whole 60 s run). At `−0.35` the same maneuver crosses the
-/// hull's skin while it is still amidships, and the launch smoke collides
-/// again (measured on `accept_playtest_retail_launch_scripted_smoke_...`).
-pub const SPAWN_FRACTION_X: f64 = -0.35;
+/// A **designed** value, and the scene's own placement again. It was `−0.6`
+/// from #649 until #797 retuned it to `−0.35`, because #649's scripted
+/// steer-into-area (`D` then `E`) had been tuned on the synthetic fixed-wing
+/// and, under the recovered original law, reached the hull only where it has
+/// tapered away: measured, zero obstacle contacts over a whole 60 s run. #1135
+/// re-derived the maneuver itself for this law ([`RETAIL_STEER`](crate::playtest::smoke::RETAIL_STEER),
+/// rudder only) and this constant went back to the designed `−0.6`.
+///
+/// Measured over the pass's 9 s window, both fractions contact with the
+/// re-derived maneuver, and the designed one is the farther start:
+///
+/// | spawn `x` fraction | #649's `D`+`E` | `RETAIL_STEER` (#1135) |
+/// | --- | --- | --- |
+/// | `−0.6` (designed) | no contact in the window | contact at 3.93 s |
+/// | `−0.35` (#797's retune) | contact at 3.32 s | contact at 3.25 s |
+///
+/// So the maneuver does the steering and the scene keeps its own placement,
+/// rather than a scene knob being moved to compensate for a script. See
+/// `docs/findings/2026-10-09-1135-retail-smoke-script.md` for the matrix and
+/// `accept_playtest_smoke_original_` for the tests that fly it.
+pub const SPAWN_FRACTION_X: f64 = -0.6;
 /// The start's height, as a fraction of the area's height from its minimum.
 pub const SPAWN_FRACTION_Y: f64 = 0.55;
 

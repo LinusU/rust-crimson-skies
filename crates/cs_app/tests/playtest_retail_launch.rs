@@ -12,6 +12,10 @@
 //! tests into this binary for the same reason #666, #709, #710, #753, #795 and
 //! #794 did: CI's runner disk is nearly full, and that task's retail half reads
 //! the installation this binary already reads.
+//!
+//! Task #1135 (FLIGHT-ORIGINAL-RETAIL-SMOKE-SCRIPT) folds its
+//! `accept_playtest_smoke_original_` tests in for the same reason: they drive
+//! this binary's retail scene and its scripted smoke.
 
 use std::path::PathBuf;
 
@@ -26,12 +30,14 @@ use cs_app::playtest::retail::{
     self, PlaytestAreaBody, RETAIL_START_SPEED_M_S, RetailContent, RetailFlight, RetailRequest,
 };
 use cs_app::playtest::scene::{PlaytestAircraft, PlaytestOriginalFlight};
-use cs_app::playtest::smoke::{SMOKE_FRAME_HZ, SmokePlugin};
+use cs_app::playtest::smoke::{RESET_SECONDS, RETAIL_STEER, SMOKE_FRAME_HZ, SmokePlugin};
 use cs_app::playtest::{
     PlaytestCameraMarker, PlaytestError, PlaytestRequest, PlaytestState, SmokeRequest,
     headless_app_with, run_playtest,
 };
-use cs_app::playtest_retail::PLAYTEST_LABEL;
+use cs_app::playtest_retail::{
+    PLAYTEST_LABEL, SPAWN_FRACTION_X, SPAWN_FRACTION_Y, SPAWN_FRACTION_Z,
+};
 use cs_content::original_airframe::import_retail_airframe;
 use cs_sim::flight::OriginalAirframe;
 
@@ -711,5 +717,338 @@ fn accept_flight_original_playtest_vertical_nose_from_500_m_gains_altitude() {
         altitude > 500.0 + 50.0,
         "a full-throttle vertical climb from 500 m gained only {} m in 5 s",
         altitude - 500.0
+    );
+}
+
+// ----------------------------- the re-derived retail smoke script (#1135) --
+
+/// #649's steer-into-area, verbatim: yaw right for 1.8 s and then roll right
+/// for 2.5 s, counted from the pass's reset. It was tuned on the synthetic
+/// fixed-wing, where banking turns the aircraft. Kept here as the measured
+/// "before" of this task's matrix, not because it flies under the original law.
+const STEER_649: [(KeyCode, f64, f64); 2] = [(KeyCode::KeyD, 0.2, 2.0), (KeyCode::KeyE, 2.0, 4.5)];
+
+/// How long one candidate flies, seconds. The pass's steer window is 9 s long
+/// and every contact this task measured lands inside its first 4 s, so 6 s
+/// separates a hit from a miss with room to spare on both sides.
+const CANDIDATE_SECONDS: f64 = 6.0;
+
+/// Writes one key event and lets the frame it belongs to consume it, the same
+/// way the smoke's own script injects its keys.
+fn send_key(app: &mut App, key_code: KeyCode, state: ButtonState) {
+    app.world_mut().write_message(KeyboardInput {
+        key_code,
+        logical_key: Key::Unidentified(NativeKey::Unidentified),
+        state,
+        text: None,
+        repeat: false,
+        window: Entity::PLACEHOLDER,
+    });
+    app.update();
+}
+
+/// One sample line of the production smoke's `trace.jsonl`:
+/// `(frame, obstacle_contacts)`.
+fn trace_sample(line: &str) -> Option<(u32, u64)> {
+    let field = |name: &str| -> Option<u64> {
+        let at = line.find(&format!("\"{name}\":"))? + name.len() + 3;
+        let rest = &line[at..];
+        rest[..rest.find([',', '}'])?].trim().parse().ok()
+    };
+    Some((field("frame")? as u32, field("obstacle_contacts")?))
+}
+
+/// What one candidate measured: whether it touched the hull, and what the
+/// aircraft's attitude was at the two instants every candidate shares.
+struct Measured {
+    /// Frame of the first obstacle contact, if any.
+    first_contact: Option<u32>,
+    /// Contact episodes by the end of the window.
+    contacts: u64,
+    /// `(heading, bank)` in degrees at 2.0 s (when #649's yaw hold ends) and at
+    /// 3.0 s (one second into its roll) — both before the first contact any
+    /// candidate recorded, so this is the maneuver's attitude and not a crash's.
+    attitude: [(f32, f32); 2],
+}
+
+/// The sample instants [`fly_candidate`] reads, seconds from the candidate start.
+const SAMPLE_AT: [f64; 2] = [2.0, 3.0];
+
+/// Flies one candidate on the retail scene's own production path.
+///
+/// The aircraft is placed at `spawn` — exactly the pose `spawn_pose` would give
+/// it at that fraction of the measured extent, so the spawn fraction is this
+/// run's declared initial condition rather than an instruction to the
+/// simulation — and then `keys` (`(key, down s, up s)` seconds from that
+/// instant) go through the same message path a human's keys take.
+fn fly_candidate(app: &mut App, spawn: Vec3, keys: &[(KeyCode, f64, f64)]) -> Measured {
+    // Nothing the previous candidate held may still be down...
+    for key in [
+        KeyCode::KeyS,
+        KeyCode::KeyQ,
+        KeyCode::KeyE,
+        KeyCode::KeyD,
+        KeyCode::KeyF,
+        KeyCode::ShiftLeft,
+    ] {
+        send_key(app, key, ButtonState::Released);
+    }
+    // ... and nothing it collided with may still be counted: the pose is set
+    // and the counters cleared inside one frame, so no contact can start
+    // between them.
+    {
+        let world = app.world_mut();
+        let mut query = world
+            .query_filtered::<(&mut Position, &mut Rotation, &mut LinearVelocity), With<PlaytestAircraft>>();
+        let (mut position, mut rotation, mut velocity) =
+            query.single_mut(world).expect("one aircraft");
+        position.0 = spawn;
+        rotation.0 = Quat::IDENTITY;
+        velocity.0 = Vec3::new(0.0, 0.0, -(RETAIL_START_SPEED_M_S as f32));
+    }
+    {
+        let mut state = app.world_mut().resource_mut::<PlaytestState>();
+        state.obstacle_contacts = 0;
+        state.first_obstacle_contact_tick = None;
+    }
+    let mut first_contact = None;
+    let mut attitude = [(0.0_f32, 0.0_f32); 2];
+    for frame in 0..(CANDIDATE_SECONDS * SMOKE_FRAME_HZ) as u32 {
+        let at = f64::from(frame) / SMOKE_FRAME_HZ;
+        for (key, down, up) in keys {
+            if (at - *down).abs() < 1.0 / SMOKE_FRAME_HZ {
+                send_key(app, *key, ButtonState::Pressed);
+            }
+            if (at - *up).abs() < 1.0 / SMOKE_FRAME_HZ {
+                send_key(app, *key, ButtonState::Released);
+            }
+        }
+        app.update();
+        let state = app.world().resource::<PlaytestState>();
+        if state.obstacle_contacts > 0 {
+            first_contact.get_or_insert(frame);
+        }
+        for (slot, second) in SAMPLE_AT.iter().enumerate() {
+            if frame == (second * SMOKE_FRAME_HZ) as u32 {
+                attitude[slot] = (state.telemetry.heading_deg, state.telemetry.roll_deg);
+            }
+        }
+    }
+    let contacts = app.world().resource::<PlaytestState>().obstacle_contacts;
+    Measured {
+        first_contact,
+        contacts,
+        attitude,
+    }
+}
+
+/// **Under the recovered original flight law the retail smoke's steer-into-area
+/// is the rudder turn [`RETAIL_STEER`], and it reaches the original area from
+/// the scene's own designed spawn (`SPAWN_FRACTION_X = -0.6`).**
+///
+/// This is the whole production path of the claim: the retail headless playtest
+/// with the original area installed, driven by the smoke's own scripted keys (a
+/// 20 s run is one full pass — the response checks, the pause, the focus loss
+/// and then the steer window), evaluated by the smoke's own checks. The contact
+/// is read back out of the `trace.jsonl` that run wrote, and the assertion that
+/// matters is that it happens *while `RETAIL_STEER` still holds the key*: a
+/// maneuver that arrives late, or a spawn moved to compensate for one that does
+/// not turn, fails here.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_playtest_smoke_original_retail_script_reaches_the_original_area() {
+    // The evidence run points this at its own private evidence directory (the
+    // same pattern the windowed test uses for `CS_PLAYTEST_RETAIL_OUT`), so the
+    // report can hash this run's own `report.json` and `trace.jsonl`.
+    let outside = std::env::var("CS_SMOKE_ORIGINAL_OUT");
+    let temporary = outside.is_err();
+    let dir = outside.map_or_else(
+        |_| std::env::temp_dir().join(format!("cs_playtest_smoke_original_{}", std::process::id())),
+        PathBuf::from,
+    );
+    let plugin = SmokePlugin::headless(SmokeRequest {
+        seconds: 20,
+        capture_dir: dir.clone(),
+    });
+    let handle = plugin.handle();
+    let mut app = retail_app(|app| {
+        app.add_plugins(plugin);
+    });
+    let mut outcome = None;
+    for _ in 0..(20.0 * SMOKE_FRAME_HZ) as u32 + 600 {
+        app.update();
+        if let Some(done) = handle.take() {
+            outcome = Some(done);
+            break;
+        }
+    }
+    let report = outcome.expect("the run ends").expect("artifacts written");
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(report.resets, 2, "one pass of two resets");
+    assert!(
+        report.obstacle_contacts >= 1,
+        "the re-derived maneuver reaches the original area"
+    );
+
+    // The spawn fraction the run flew: production's own constants against the
+    // scene's own measured extent, so the documented spawn row cannot drift
+    // from the pose the aircraft actually starts at.
+    let content = app.world().resource::<RetailContent>();
+    let bounds = content.area.bounds;
+    let extent = [
+        bounds.max()[0] - bounds.min()[0],
+        bounds.max()[1] - bounds.min()[1],
+        bounds.max()[2] - bounds.min()[2],
+    ];
+    let spawn = app.world().resource::<PlaytestState>().spawn_m;
+    for (axis, fraction) in [SPAWN_FRACTION_X, SPAWN_FRACTION_Y, SPAWN_FRACTION_Z]
+        .into_iter()
+        .enumerate()
+    {
+        let designed = (bounds.min()[axis] + fraction * extent[axis]) as f32;
+        assert!(
+            (spawn[axis] - designed).abs() < 1.0e-3,
+            "axis {axis}: the run spawned at {}, the designed fraction gives {designed}",
+            spawn[axis]
+        );
+    }
+    assert_eq!(
+        SPAWN_FRACTION_X, -0.6,
+        "the designed width fraction #1135 restored: #797's -0.35 was a scene knob doing \
+         a script's job"
+    );
+
+    // The measured contact, from the production trace the same run wrote.
+    let trace = std::fs::read_to_string(dir.join("trace.jsonl")).expect("trace.jsonl");
+    let contact = trace
+        .lines()
+        .filter_map(trace_sample)
+        .find(|(_, contacts)| *contacts > 0)
+        .expect("the trace records the contact");
+    let contact_s = f64::from(contact.0) / SMOKE_FRAME_HZ;
+    let steer = RETAIL_STEER[0];
+    assert!(
+        contact_s > steer.from && contact_s < steer.to,
+        "contact at {contact_s:.2} s is outside RETAIL_STEER's {} s .. {} s hold",
+        steer.from,
+        steer.to
+    );
+    println!(
+        "PLAYTEST-SMOKE-ORIGINAL spawn_x_fraction={SPAWN_FRACTION_X} spawn=({:.4}, {:.4}, \
+         {:.4}) bounds_min=({:.4}, {:.4}, {:.4}) steer={:?} {}..{} s contacts={} \
+         first_contact_frame={} first_contact_s={contact_s:.2}",
+        spawn[0],
+        spawn[1],
+        spawn[2],
+        bounds.min()[0],
+        bounds.min()[1],
+        bounds.min()[2],
+        steer.key,
+        steer.from,
+        steer.to,
+        report.obstacle_contacts,
+        contact.0,
+    );
+    if temporary {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// **The measured matrix behind the two choices: which spawn fraction and which
+/// maneuver reach the hull, and which do not.**
+///
+/// Four candidates on one scene, each flown from its own declared initial
+/// condition through the production input path for the pass's steer window:
+///
+/// | steer | spawn `x` fraction | measured |
+/// | --- | --- | --- |
+/// | `STEER_649` (`D` then `E`) | `-0.6` (designed) | no contact — the miss #797 retuned the spawn for |
+/// | `STEER_649` (`D` then `E`) | `-0.35` (#797) | contact |
+/// | [`RETAIL_STEER`] (rudder) | `-0.6` (designed) | contact — **the shipped pair** |
+/// | [`RETAIL_STEER`] (rudder) | `-0.35` (#797) | contact |
+///
+/// Both fractions work with the re-derived maneuver, so the designed `-0.6` is
+/// what ships: the script does the steering the scene's placement asks for,
+/// instead of the placement being moved to compensate for the script. Every row
+/// is asserted as measured, so a change that makes the old pair work again, or
+/// the new pair miss, has to update this note and
+/// `docs/findings/2026-10-09-1135-retail-smoke-script.md` with it.
+///
+/// Each row also prints the heading and the bank at 2.0 s (the end of #649's
+/// yaw hold) and at 3.0 s, which is the re-derivation's own evidence: the rows
+/// that roll reach 85° of bank and **no** heading in that second, while the
+/// rows still on the rudder keep turning with their wings level.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_playtest_smoke_original_candidate_matrix_justifies_the_spawn_and_the_script() {
+    let mut app = retail_app(|_| {});
+    app.update();
+    let bounds = app.world().resource::<RetailContent>().area.bounds;
+    let extent = [
+        bounds.max()[0] - bounds.min()[0],
+        bounds.max()[1] - bounds.min()[1],
+        bounds.max()[2] - bounds.min()[2],
+    ];
+    let spawn_at = |fraction: f64| {
+        Vec3::new(
+            (bounds.min()[0] + fraction * extent[0]) as f32,
+            (bounds.min()[1] + SPAWN_FRACTION_Y * extent[1]) as f32,
+            (bounds.min()[2] + SPAWN_FRACTION_Z * extent[2]) as f32,
+        )
+    };
+    // The shipped maneuver, counted from this run's own reset the way `pass()`
+    // counts it from the smoke's.
+    let shipped: Vec<(KeyCode, f64, f64)> = RETAIL_STEER
+        .iter()
+        .map(|hold| (hold.key, hold.from - RESET_SECONDS, hold.to - RESET_SECONDS))
+        .collect();
+    let matrix = [
+        ("#649 D+E", -0.6, &STEER_649[..]),
+        ("#649 D+E", -0.35, &STEER_649[..]),
+        ("RETAIL_STEER", -0.6, &shipped[..]),
+        ("RETAIL_STEER", -0.35, &shipped[..]),
+    ];
+    let mut measured = Vec::new();
+    for (name, fraction, keys) in matrix {
+        let spawn = spawn_at(fraction);
+        let outcome = fly_candidate(&mut app, spawn, keys);
+        println!(
+            "PLAYTEST-SMOKE-ORIGINAL-MATRIX steer={name} spawn_x_fraction={fraction} \
+             spawn_x={:.1} contacts={} first_contact_frame={:?} first_contact_s={} \
+             heading_2s={:.2} bank_2s={:.2} heading_3s={:.2} bank_3s={:.2}",
+            spawn.x,
+            outcome.contacts,
+            outcome.first_contact,
+            outcome.first_contact.map_or_else(
+                || "none".to_owned(),
+                |frame| { format!("{:.2}", f64::from(frame) / SMOKE_FRAME_HZ) }
+            ),
+            outcome.attitude[0].0,
+            outcome.attitude[0].1,
+            outcome.attitude[1].0,
+            outcome.attitude[1].1,
+        );
+        measured.push(outcome.contacts);
+    }
+    assert_eq!(
+        measured[0], 0,
+        "row 1: #649's steer from the designed -0.6 never touched the hull — that is the \
+         miss #797 measured over a whole 60 s run and retuned the spawn for"
+    );
+    assert!(
+        measured[1] >= 1,
+        "row 2: #649's steer still reaches the hull from #797's -0.35"
+    );
+    assert!(
+        measured[2] >= 1,
+        "row 3: the re-derived rudder turn reaches the hull from the designed -0.6"
+    );
+    assert!(
+        measured[3] >= 1,
+        "row 4: the re-derived rudder turn reaches the hull from -0.35 too"
+    );
+    assert_eq!(
+        SPAWN_FRACTION_X, -0.6,
+        "the shipped fraction is the farthest candidate the matrix measured"
     );
 }
