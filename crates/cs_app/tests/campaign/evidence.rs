@@ -7114,7 +7114,7 @@ fn address_record(install_sha256: &str) -> String {
             for address in args {
                 let resolved = resolve_objective_address(i64::from(*address), count);
                 let (record_index, rule) = match &resolved {
-                    Ok(symbol) => (symbol.0.to_string(), "in_range".to_owned()),
+                    Ok(symbol) => (symbol.0.to_string(), jstr("in_range")),
                     Err(_) => ("null".to_owned(), jstr(OUT_OF_RANGE_OBJECTIVE_ADDRESS)),
                 };
                 entries.push(format!(
