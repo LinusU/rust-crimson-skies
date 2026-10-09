@@ -88,7 +88,7 @@ const SITES: u32 = 265;
 /// The distinct directive keys of the control member.
 const KEYS: usize = 26;
 
-/// The four named locations `location.zrd` spells, in member order. The third
+/// The four named locations `location.zrd` spells, in member order. The second
 /// is the archive's only passenger-named string.
 const LOCATIONS: [&str; 4] = ["Airport_terminal", "Passenger_hangar", "Crops", "Coast"];
 
@@ -583,10 +583,11 @@ fn accept_m06_b_every_directive_m06_spells_has_a_disposition_and_none_is_refused
 ///   beside the barge and gate chains that use the same evaluator with a
 ///   single member each, and the target-list entry the engine part draws;
 /// * **multi-step interaction**: the target-flag chain that walks `propane` →
-///   `sprucegoose` → `tugandbarge01..04` across blocks 4…25 (each step
-///   removing the previous objects and adding the next), the 35 nap re-wakes
-///   that clear a completed flag so a step can complete again, and the eight
-///   `SET_AI_NET` re-pointings of the patrol boats and firebrands;
+///   `sprucegoose` → `tugandbarge01..04` across blocks 4, 8, 13, 17, 21 and
+///   25 (each step adds the next object, and the later ones also remove the
+///   objects the earlier steps added), the 35 nap re-wakes that clear a
+///   completed flag so a step can complete again, and the eight `SET_AI_NET`
+///   re-pointings of the patrol boats and firebrands;
 /// * **passenger identity**: **no directive, target or actor names a
 ///   passenger.** The archive's only passenger-named string is the
 ///   `Passenger_hangar` location node, which no other member and no directive
@@ -983,8 +984,8 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
 /// **nothing spells `50`** although block 50 naps `51`, so the index reading
 /// would leave M06's failure latch with no incoming edge at all. The two
 /// latches' completion edges are pinned below under the block-number reading;
-/// the contrary reading in two sibling suites is filed as a follow-up rather
-/// than resolved here.
+/// the contrary reading in two sibling suites is filed as **M06-B-FU3** (#819)
+/// rather than resolved here.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
@@ -1168,7 +1169,7 @@ fn accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
 /// carries the validation refusal among its unmet fields (the accounting
 /// never reports a clean row while `validate` failed). The row is not
 /// complete. This is the condition-shape class filed as M04-B-FU1 (#806);
-/// M06's own instance is filed as M06-B-FU1.
+/// M06's own instance is filed as M06-B-FU1 (#817).
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m06_b_the_anims_state_sites_are_the_only_gap_and_validation_refuses() {
