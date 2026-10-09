@@ -2361,6 +2361,155 @@ mod tests {
         assert!(reason.contains("team 7"), "{reason}");
     }
 
+    /// An authored `.zrd` text node — #574's grammar, every byte written
+    /// here, never read from the installation.
+    fn zrd_text(value: &str) -> Vec<u8> {
+        let mut out = 3u32.to_le_bytes().to_vec();
+        out.extend((value.len() as u32).to_le_bytes());
+        out.extend(value.as_bytes());
+        out
+    }
+
+    /// An authored `.zrd` float node.
+    fn zrd_float(value: f32) -> Vec<u8> {
+        [2u32.to_le_bytes(), value.to_bits().to_le_bytes()].concat()
+    }
+
+    /// An authored `.zrd` integer node.
+    fn zrd_int(value: u32) -> Vec<u8> {
+        [1u32.to_le_bytes(), value.to_le_bytes()].concat()
+    }
+
+    /// An authored `.zrd` list: the measured word is the child count plus
+    /// one (#574's grammar).
+    fn zrd_list(children: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = 4u32.to_le_bytes().to_vec();
+        out.extend((children.len() as u32 + 1).to_le_bytes());
+        for child in children {
+            out.extend(child);
+        }
+        out
+    }
+
+    /// One authored record: the sixteen keys `ZeppelinKey::required` demands
+    /// plus, when the fixture states one, a `team` spelling.
+    fn authored_record(node: &str, team: Option<&str>) -> Vec<u8> {
+        let one_float = |value: f32| zrd_list(&[zrd_float(value)]);
+        let pairs: Vec<(&str, Vec<u8>)> = vec![
+            ("node", zrd_list(&[zrd_text(node)])),
+            (
+                "position",
+                zrd_list(&[zrd_float(1.0), zrd_float(2.0), zrd_float(3.0)]),
+            ),
+            ("yaw", one_float(90.0)),
+            ("pitch", one_float(0.0)),
+            ("max_speed", one_float(5.0)),
+            ("max_accel", one_float(4.47)),
+            ("accel_pitch", one_float(0.5)),
+            ("accel_yaw", one_float(0.5)),
+            ("max_rate_yaw", one_float(5.0)),
+            ("max_rate_pitch", one_float(5.0)),
+            ("min_pitch", one_float(-30.0)),
+            ("max_pitch", one_float(30.0)),
+            ("net", zrd_list(&[zrd_text("TestNet")])),
+            (
+                "healthy",
+                zrd_list(&[zrd_list(&[zrd_text("gasbag1"), zrd_text("panels")])]),
+            ),
+            ("num_healthy_required", zrd_list(&[zrd_int(2)])),
+            ("engines", zrd_list(&[zrd_text("engine1")])),
+        ];
+        let mut children: Vec<Vec<u8>> = Vec::with_capacity(pairs.len() * 2 + 2);
+        for (key, value) in &pairs {
+            children.push(zrd_text(key));
+            children.push(value.clone());
+        }
+        if let Some(team) = team {
+            children.push(zrd_text("team"));
+            children.push(zrd_list(&[zrd_text(team)]));
+        }
+        zrd_list(&children)
+    }
+
+    /// The fixture's record named `node`.
+    fn fixture_record<'a>(
+        decoded: &'a cs_formats::zbd::zeppelins::ZeppelinMember,
+        node: &str,
+    ) -> &'a cs_formats::zbd::zeppelins::ZeppelinRecord {
+        decoded
+            .records()
+            .iter()
+            .find(|record| record.node() == node)
+            .unwrap_or_else(|| panic!("{node} is in the authored fixture"))
+    }
+
+    /// **A stated `team` spelling is the loader's own vocabulary, and a
+    /// spelling it does not know keeps the resolver's value (#1155).**
+    /// The three recognized spellings bind exactly the ints the image writes
+    /// for them (`ally`→1 at `0x4830c0`, `enemy`→2 at `0x45c260`,
+    /// `neutral`→0 at `0x4a3f80`); an unrecognized spelling and a record
+    /// that states no `team` both fall through to `0x4bef90`'s resolver
+    /// (`0x4bda1d`), which nothing here can walk — so neither ever becomes a
+    /// guessed faction. Every byte of the member is authored in this file.
+    #[test]
+    fn accept_m01_lc_zeppelin_allegiance_a_stated_team_is_the_loaders_vocabulary() {
+        let fixtures = [
+            ("allyzep", Some("ally")),
+            ("enemyzep", Some("enemy")),
+            ("neutralzep", Some("neutral")),
+            ("boguszep", Some("bogus")),
+            ("barezep", None),
+        ];
+        let records: Vec<Vec<u8>> = fixtures
+            .iter()
+            .map(|(node, team)| authored_record(node, *team))
+            .collect();
+        let member = zrd_list(&[zrd_list(&records)]);
+        let decoded = read_zeppelins_member(&member).expect("the authored member decodes");
+        assert_eq!(decoded.records().len(), fixtures.len());
+
+        // The recognized spellings override the resolver outright, each to
+        // the int its own branch writes in the image.
+        for (node, spelling, want) in [
+            ("allyzep", "ally", 1_i64),
+            ("enemyzep", "enemy", 2),
+            ("neutralzep", "neutral", 0),
+        ] {
+            let record = fixture_record(&decoded, node);
+            assert_eq!(record.team(), Some(spelling), "{node} states its team");
+            match allegiance_for(record, None, None) {
+                AllegianceBinding::Measured { team, source } => {
+                    assert_eq!(team, want, "{node}: {spelling} -> {team}");
+                    assert_eq!(
+                        source,
+                        AllegianceSource::TeamSpelling,
+                        "{node} binds the stated spelling, not the resolver"
+                    );
+                }
+                other => panic!("{node} binds its stated team, not {other:?}"),
+            }
+        }
+
+        // An unrecognized spelling is kept verbatim by the decoder and then
+        // ignored by the loader (`0x4bda1d`): the resolver decides, and with
+        // no node array to walk nothing is claimed — never a guessed faction.
+        for node in ["boguszep", "barezep"] {
+            let record = fixture_record(&decoded, node);
+            assert_eq!(
+                record.team(),
+                (node == "boguszep").then_some("bogus"),
+                "{node}'s `team` is carried verbatim"
+            );
+            match allegiance_for(record, None, None) {
+                AllegianceBinding::Open(reason) => assert!(
+                    reason.contains("node array could not be read"),
+                    "{node} keeps the resolver's value, which nothing here walks: {reason}"
+                ),
+                other => panic!("{node} never becomes a guessed faction: {other:?}"),
+            }
+        }
+    }
+
     /// **The position binds the source the original applies last, and an
     /// unsettled one stays open by name (#814).**
     /// A startup placement binds the `STATE` triple under the spawn-pose
