@@ -870,7 +870,7 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
     def test_accept_m16_a_fu4_the_reader_covers_the_whole_family(self):
         """The reader must open the real harness files, not a list somebody maintained."""
         expected = {
-            'crates/cs_app/tests/campaign/evidence.rs': ('M01-A', 'literal'),
+            'crates/cs_app/tests/campaign/evidence/m01_a.rs': ('M01-A', 'literal'),
             # A report table entry: one format call, one harness per `task_id`.
             'crates/cs_app/tests/accept_f20_d_validation.rs': ('M01-LC-ANIM-RECORDS', 'literal'),
             'crates/cs_app/tests/evidence_report_m01_lc_audio_device.rs':
@@ -1079,7 +1079,7 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
                              ['crates/demo/tests/evidence.rs'])
             self.assertEqual(read_harnesses(root)['X99-A']['shape'], 'literal')
             self.assertEqual(self.harnesses['M01-A']['source'],
-                             'crates/cs_app/tests/campaign/evidence.rs',
+                             'crates/cs_app/tests/campaign/evidence/m01_a.rs',
                              'the reader found nothing in this checkout either')
 
     # -- M16-A-FU5 (#484): the three reports that named only one agent --------
