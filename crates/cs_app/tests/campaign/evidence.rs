@@ -7344,7 +7344,7 @@ fn evidence_report_record_objectives_sound_writes_the_acceptance_report() {
             "the evidence run itself must measure zero spellers; {key} is spelled by {missions:?}"
         );
         spelling.push(format!(
-            "{{\"key\": {}, \"missions\": [{}]}}",
+            "{{\"key\": {}, \"missions\": {}}}",
             jstr(key),
             str_array(&missions)
         ));
@@ -7386,7 +7386,7 @@ fn evidence_report_record_objectives_sound_writes_the_acceptance_report() {
         "{{\n\
          \x20\"task_id\": \"RECORD-OBJECTIVES-SOUND\",\n\
          \x20\"install_sha256\": {},\n\
-         \x20\"census\": {{\"rows\": {}, \"measured\": {}, \"absent\": [{}]}},\n\
+         \x20\"census\": {{\"rows\": {}, \"measured\": {}, \"absent\": {}}},\n\
          \x20\"missions_spelling\": [{}],\n\
          \x20\"sounds\": [{}]\n\
          }}\n",
