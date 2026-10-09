@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M10-B",
+ "candidate_tree": "35f2f32edaf67f35cded37c9aec2a6e3dda37577",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-09T03:27:55Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m10_b_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-4", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 9, "executed": 9, "passed": 9, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m10_b_a_numeric_travelers_subject_refuses_and_a_named_one_lowers", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m10_b_a_kill_of_a_terminal_block_binds_like_any_other_address", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m10_b_the_terminal_blocks_are_gated_and_every_address_is_in_range", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m10_b_the_two_refused_conditions_are_the_travelers_counting_sites", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m10_b_the_record_does_not_lower_and_exactly_two_conditions_refuse", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m10_b_every_directive_m10_spells_is_measured_or_terminal", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m10_b_the_mission_stays_unready_until_the_counting_mode_is_measured", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m10_b_the_sheet_priorities_resolve_to_measured_operations", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m10_b_the_control_program_is_the_member_that_declares_the_blocks", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "2b58ead7937d151404c7c6e44bbb51f98329b198f486b38b2820b67c0f4db7c6", "kind": "log"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: claude-2/claude-2 (Rally #286, Sonnet 5.5, session of 2026-10-09); no reviewer yet. The implementer's own run is not independent review and not independent original-reference evidence; no agent review replaces the owner's human approval", "method": "acceptance suite run locally with the retail capability; the fields are derived from the recorded log and production discovery of $CS_GAME_DIR. The suite pins M10's measured control program (49 blocks, 232 sites, every call binds) and the two TRAVELERS counting-mode conditions that keep it from lowering to a valid program; claim is implemented only; the mission is NOT ready: the open gap (TRAVELERS counting mode, blocks 22 and 35) is recorded in docs/findings/2026-10-09-m10-b-control-program-gaps.md"},
+ "claim": "implemented"
+}
