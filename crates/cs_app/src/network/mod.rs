@@ -22,6 +22,10 @@
 //! F58-A adds [`recovery`]: the host-side receive boundary that admits a
 //! decoded client packet through the session identity gate and turns an
 //! admitted fire packet into the F27 requests weapon acceptance consumes.
+//! F58-B extends it with the intent layer: [`recovery::SessionReceiver`]'s
+//! `validate_intent`/`receive_validated` judge every ask against the
+//! server-owned actors, loadouts, rate budget, tick window and match phase,
+//! and refuse a client-authored damage/score claim outright.
 
 pub mod physics;
 pub mod recovery;

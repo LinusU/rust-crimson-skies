@@ -26,12 +26,35 @@
 //! independently refuses an intent whose session is not its own, so the
 //! property holds at the resolver too.
 //!
-//! F58-B extends this with intent validation and rate/resource caps; F58-C
-//! wires it to the pinned transport. This stage defines the typed boundary and
-//! nothing more. No original networked behavior is asserted.
+//! F58-A defines the typed boundary and nothing more; F58-B extends it with
+//! intent validation and rate/resource caps, and F58-C wires it to the pinned
+//! transport.
+//!
+//! # The intent path (F58-B)
+//!
+//! [`SessionReceiver::receive_validated`] is the same packet path plus the
+//! intent layer: an admitted input packet becomes a
+//! [`cs_net::validation::ClientIntent`] and is judged by
+//! [`cs_net::validation::IntentValidator`] against the host's
+//! [`cs_net::validation::MatchStage`] — server-owned truth, server-owned
+//! actors, loadouts, the rate budget, the tick window and the match phase.
+//! A refused intent authorizes nothing: the fire list comes back empty and
+//! the bounded [`cs_net::validation::IntentRefusal`] says whether to absorb
+//! the peer or disconnect it.
+//!
+//! [`SessionReceiver::validate_intent`] is that judge for one ask at a time,
+//! which is where "the client requests damage/score directly and the server
+//! rejects it" is answered: both asks name a server-owned domain and are
+//! refused before any state moves.
+//!
+//! No original networked behavior is asserted; every cap and window here is
+//! newly authored engine design.
 
 use cs_net::message::{ClientMessage, ClientPayload};
-use cs_net::validation::{Admission, FireRequest, SessionGate, SessionViolation, fire_requests};
+use cs_net::validation::{
+    Admission, ClientIntent, FireRequest, IntentRefusal, IntentValidator, IntentVerdict,
+    MatchStage, RateBudget, SessionGate, SessionViolation, fire_requests,
+};
 use cs_sim::weapons::{FireIntent, FireIntentId};
 use cs_types::net::{ActorId, PeerId, SessionId};
 
@@ -47,14 +70,16 @@ use cs_types::net::{ActorId, PeerId, SessionId};
 #[derive(Clone, Debug)]
 pub struct SessionReceiver {
     gate: SessionGate,
+    validator: IntentValidator,
 }
 
 impl SessionReceiver {
-    /// A receiver for the live session `session`.
+    /// A receiver for the live session `session`, at the designed rate limits.
     #[must_use]
     pub fn new(session: SessionId) -> Self {
         Self {
             gate: SessionGate::new(session),
+            validator: IntentValidator::designed(),
         }
     }
 
@@ -135,6 +160,97 @@ impl SessionReceiver {
     /// pilot through them.
     pub fn reopen(&mut self, session: SessionId) {
         self.gate = SessionGate::new(session);
+        // A fresh epoch starts every rate window over as well: the new
+        // connection's peers are new identities with no charges behind them.
+        self.validator.reopen();
+    }
+
+    /// The intent validator (its rate budget is what [`Self::budget`] reads).
+    #[must_use]
+    pub fn intent_validator(&self) -> &IntentValidator {
+        &self.validator
+    }
+
+    /// The live rate budget.
+    #[must_use]
+    pub fn budget(&self) -> &RateBudget {
+        self.validator.budget()
+    }
+
+    /// Judges one ask from `peer` against the server-owned facts of `stage`.
+    ///
+    /// This is the F58 minimum acceptance scenario: a client asking for
+    /// damage or score directly is refused with
+    /// [`IntentRefusal::ClientAuthoredTruth`] before anything else runs, and
+    /// no state moves either way.
+    ///
+    /// # Errors
+    ///
+    /// The [`IntentRefusal`] naming the check that refused it. The function
+    /// applies nothing; it only says what the server may do.
+    pub fn validate_intent(
+        &mut self,
+        peer: PeerId,
+        intent: &ClientIntent,
+        stage: MatchStage<'_>,
+    ) -> Result<(), IntentRefusal> {
+        self.validator
+            .validate(peer, intent, self.gate.ownership(), stage)
+    }
+
+    /// The packet path plus the intent layer: admit the packet, then judge the
+    /// ask it carries.
+    ///
+    /// A packet the identity gate refuses, or one that is not input, yields no
+    /// verdict ([`ValidatedInbound::verdict`] is `None`) and is handled exactly
+    /// as [`Self::receive`] handles it. An admitted input packet yields a
+    /// [`ClientIntent::Input`] naming the aircraft this peer owns and the
+    /// packet's newest frame tick; when the validator refuses that intent the
+    /// fire list is emptied, so a refused ask authorizes no request at all.
+    #[must_use]
+    pub fn receive_validated(
+        &mut self,
+        peer: PeerId,
+        message: &ClientMessage,
+        stage: MatchStage<'_>,
+    ) -> ValidatedInbound {
+        let inbound = self.receive(peer, message);
+        if !inbound.accepted() || !matches!(message.payload, ClientPayload::Input(_)) {
+            return ValidatedInbound {
+                inbound,
+                verdict: None,
+            };
+        }
+        let tick = match &message.payload {
+            ClientPayload::Input(batch) => batch.frames.last().map(|frame| frame.frame_tick()),
+            ClientPayload::Leave => None,
+        };
+        let Some(tick) = tick else {
+            return ValidatedInbound {
+                inbound,
+                verdict: None,
+            };
+        };
+        let intent = ClientIntent::Input {
+            actor: self.gate.ownership().actor_of(peer),
+            tick,
+        };
+        match self
+            .validator
+            .validate(peer, &intent, self.gate.ownership(), stage)
+        {
+            Ok(()) => ValidatedInbound {
+                inbound,
+                verdict: Some(IntentVerdict::Accepted(intent)),
+            },
+            Err(reason) => ValidatedInbound {
+                inbound: Inbound {
+                    admission: inbound.admission,
+                    fires: Vec::new(),
+                },
+                verdict: Some(IntentVerdict::Refused { intent, reason }),
+            },
+        }
     }
 }
 
@@ -166,6 +282,53 @@ impl Inbound {
     #[must_use]
     pub fn fires(&self) -> &[FireRequest] {
         &self.fires
+    }
+}
+
+/// One packet through the identity gate **and** the intent layer (F58-B).
+///
+/// `verdict` is `None` when there was no intent to judge — the packet was
+/// refused by the gate, or it was not input. When it is
+/// [`Some(IntentVerdict::Refused { .. })]`, `inbound.fires` is empty: a
+/// refused ask authorizes no request, so nothing downstream can act on it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedInbound {
+    /// The identity-gate result.
+    pub inbound: Inbound,
+    /// The intent verdict, when the packet carried one.
+    pub verdict: Option<IntentVerdict>,
+}
+
+impl ValidatedInbound {
+    /// Whether the identity gate admitted the packet.
+    #[must_use]
+    pub const fn admitted(&self) -> bool {
+        self.inbound.accepted()
+    }
+
+    /// The intent verdict, when the packet carried one.
+    #[must_use]
+    pub const fn verdict(&self) -> Option<&IntentVerdict> {
+        match &self.verdict {
+            Some(verdict) => Some(verdict),
+            None => None,
+        }
+    }
+
+    /// The intent refusal, when the validator refused the ask.
+    #[must_use]
+    pub const fn refusal(&self) -> Option<&IntentRefusal> {
+        match &self.verdict {
+            Some(IntentVerdict::Refused { reason, .. }) => Some(reason),
+            _ => None,
+        }
+    }
+
+    /// The fire requests this packet authorized; always empty when the
+    /// validator refused the ask.
+    #[must_use]
+    pub fn fires(&self) -> &[FireRequest] {
+        self.inbound.fires()
     }
 }
 
