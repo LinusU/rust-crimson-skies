@@ -198,14 +198,25 @@ fn accept_m02_b_fu2_m02s_five_record_sound_keys_are_measured_with_their_consumer
         },
         "the record-level field keys are exactly the shape-measured vocabulary"
     );
+    // M02 spells five of the seven vocabulary keys: the two
+    // `OBJECTIVES_*_SOUND` keys RECORD-OBJECTIVES-SOUND (#808) admitted are
+    // spelled by no retail record, so the vocabulary is a superset of what a
+    // single mission can carry and the check is which five M02 spells.
+    let m02_sounds = [
+        ControlRecordSound::PrimaryComplete,
+        ControlRecordSound::SecondaryComplete,
+        ControlRecordSound::TertiarComplete,
+        ControlRecordSound::MissionWon,
+        ControlRecordSound::MissionLost,
+    ];
     assert_eq!(
         sounds,
         {
-            let mut expected = CONTROL_RECORD_SOUND_KEY_VOCABULARY;
+            let mut expected: Vec<&str> = m02_sounds.iter().map(|sound| sound.key()).collect();
             expected.sort_unstable();
             expected
         },
-        "the record-level sound keys M02 spells are exactly the measured sound vocabulary"
+        "the record-level sound keys M02 spells are exactly its five measured keys"
     );
     assert!(
         unclassified.is_empty(),
@@ -215,8 +226,8 @@ fn accept_m02_b_fu2_m02s_five_record_sound_keys_are_measured_with_their_consumer
     // The production measurement reports the same partition.
     assert_eq!(
         record.record_fields().len(),
-        CONTROL_RECORD_KEY_VOCABULARY.len() + CONTROL_RECORD_SOUND_KEY_VOCABULARY.len(),
-        "the measured record fields are the two vocabularies together"
+        CONTROL_RECORD_KEY_VOCABULARY.len() + m02_sounds.len(),
+        "the measured record fields are the shape vocabulary and M02's five sound keys"
     );
     let sound_rows = record.record_sounds();
     let spelled: Vec<(&str, u32)> = sound_rows
@@ -225,9 +236,9 @@ fn accept_m02_b_fu2_m02s_five_record_sound_keys_are_measured_with_their_consumer
         .collect();
     assert_eq!(
         spelled,
-        CONTROL_RECORD_SOUND_KEY_VOCABULARY
+        m02_sounds
             .iter()
-            .map(|key| (*key, 1))
+            .map(|key| (key.key(), 1))
             .collect::<Vec<_>>(),
         "each sound key is counted once, in the vocabulary's parse order"
     );
@@ -319,11 +330,11 @@ fn accept_m02_b_fu2_m02s_five_record_sound_keys_are_measured_with_their_consumer
         .collect();
     assert_eq!(
         shapes,
-        CONTROL_RECORD_SOUND_KEY_VOCABULARY
+        m02_sounds
             .iter()
-            .map(|key| (*key, "[text]".to_owned()))
+            .map(|key| (key.key(), "[text]".to_owned()))
             .collect::<Vec<_>>(),
-        "each sound key carries exactly one text value: the sound-group name"
+        "each sound key M02 spells carries exactly one text value: the sound-group name"
     );
 }
 
@@ -400,9 +411,11 @@ fn accept_m02_b_fu2_the_image_parses_and_consumes_each_sound_key_where_productio
         );
         let base = byte_at(&image, consume + 1);
         let expected_base = match measured.consumer {
-            // `CZMission::Update` keeps `this` in ebx; the mission-end routine
-            // keeps it in esi.
-            RecordSoundConsumer::ObjectiveCompletion { .. } => 0x83,
+            // `CZMission::Update` keeps `this` in ebx — the objective-class
+            // chain and the end-of-tick outcome block both read through it;
+            // the mission-end routine keeps it in esi.
+            RecordSoundConsumer::ObjectiveCompletion { .. }
+            | RecordSoundConsumer::ObjectivesOutcome { .. } => 0x83,
             RecordSoundConsumer::MissionEnd => 0x86,
         };
         assert_eq!(
@@ -515,10 +528,10 @@ fn accept_m02_b_fu2_the_image_parses_and_consumes_each_sound_key_where_productio
 /// other, in CI, without original data.** A key added to the vocabulary
 /// without a measurement would be `Refused` and is caught here; a spelling the
 /// table answers for outside the vocabulary would be read from its name and is
-/// caught here too. The two real original record-level sound keys this task
-/// does *not* admit — `OBJECTIVES_WON_SOUND` and `OBJECTIVES_LOST_SOUND`,
-/// which M02 does not spell — are part of the second arm: they stay outside
-/// every vocabulary, so they are counted and named, never interpreted.
+/// caught here too. When this test was written the vocabulary held M02's five
+/// and the two `OBJECTIVES_*_SOUND` keys were the "real but unadmitted" arm;
+/// RECORD-OBJECTIVES-SOUND (#808) has since admitted them — the arm now stands
+/// on a key no original spells.
 #[test]
 fn accept_m02_b_fu2_the_sound_vocabulary_is_entirely_measured_and_answers_for_nothing_else() {
     let mut measured_count = 0;
@@ -555,9 +568,6 @@ fn accept_m02_b_fu2_the_sound_vocabulary_is_entirely_measured_and_answers_for_no
         "RESTORE_ANIMS",
         "EXECUTE_ANIMS",
         "INVALIDATE_ANIMS",
-        // The two original sound keys this task does not admit.
-        "OBJECTIVES_WON_SOUND",
-        "OBJECTIVES_LOST_SOUND",
         // And a key no original spells.
         "A_SOUND_KEY_NOBODY_HAS_MEASURED",
     ] {
@@ -568,8 +578,9 @@ fn accept_m02_b_fu2_the_sound_vocabulary_is_entirely_measured_and_answers_for_no
         );
     }
 
-    // The consumers partition the five keys the way the original does: three
-    // objective completions with the classes 1..3, two mission ends.
+    // The consumers partition the seven keys the way the original does: three
+    // objective completions with the classes 1..3, two mission ends, and two
+    // objectives outcomes — one won, one lost (RECORD-OBJECTIVES-SOUND, #808).
     let classes: Vec<u8> = CONTROL_RECORD_SOUND_KEY_VOCABULARY
         .iter()
         .filter_map(|key| {
@@ -594,5 +605,23 @@ fn accept_m02_b_fu2_the_sound_vocabulary_is_entirely_measured_and_answers_for_no
             .count(),
         2,
         "the two mission handles are consumed at mission end"
+    );
+    let mut outcome_won = 0;
+    let mut outcome_lost = 0;
+    for key in CONTROL_RECORD_SOUND_KEY_VOCABULARY {
+        if let Some(RecordSoundDisposition::Measured(measured)) = record_sound_disposition(key)
+            && let RecordSoundConsumer::ObjectivesOutcome { won } = measured.consumer
+        {
+            if won {
+                outcome_won += 1;
+            } else {
+                outcome_lost += 1;
+            }
+        }
+    }
+    assert_eq!(
+        (outcome_won, outcome_lost),
+        (1, 1),
+        "the two objectives handles are consumed by the end-of-tick outcome block"
     );
 }

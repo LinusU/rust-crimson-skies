@@ -521,12 +521,22 @@ fn accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key() {
     // The record-level keys: the five measured fields, and the five M02
     // sound keys, which M02-B-FU2 admitted to their own vocabulary after
     // measuring what the original does with each — so nothing M02 spells
-    // outside the numbered blocks is left unclassified.
+    // outside the numbered blocks is left unclassified. The sound vocabulary
+    // is larger than M02's five: RECORD-OBJECTIVES-SOUND (#808) admitted the
+    // two `OBJECTIVES_*_SOUND` keys no retail record spells, so the check is
+    // membership per spelled key, not a count against the whole vocabulary.
     let all: Vec<(ControlRecordField, u32)> = record.record_fields().to_vec();
     assert_eq!(
         all.len(),
-        CONTROL_RECORD_KEY_VOCABULARY.len() + CONTROL_RECORD_SOUND_KEY_VOCABULARY.len(),
-        "M02 classifies every record-level key it spells through one of the two vocabularies"
+        10,
+        "M02 spells ten record-level keys: the five shape fields and its five sound keys"
+    );
+    assert!(
+        all.iter().all(|(field, _)| {
+            CONTROL_RECORD_KEY_VOCABULARY.contains(&field.key())
+                || CONTROL_RECORD_SOUND_KEY_VOCABULARY.contains(&field.key())
+        }),
+        "every record-level key M02 spells is classified through one of the two vocabularies"
     );
     let fields: Vec<(ControlRecordField, u32)> = all
         .iter()
