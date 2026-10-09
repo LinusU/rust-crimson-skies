@@ -15,17 +15,20 @@
 //! title must show for this work:
 //!
 //! ```text
-//! ORIGINAL ASSETS / DEVELOPMENT FREE FLIGHT / PROVISIONAL TUNING
+//! ORIGINAL ASSETS / DEVELOPMENT FREE FLIGHT / PROVISIONAL TUNING / ORIGINAL
+//! FLIGHT LAW (OWNER-STATIC-2026-10-08, UNCALIBRATED AGAINST AN ORIGINAL RUN #358)
 //! ```
 //!
 //! **Never** `M01`, never "faithful", never "campaign". The geometry and the
 //! aircraft are the owner's original bytes read through the production readers;
 //! the world scale, the handedness, the spawn, the camera, the lighting, the
 //! collision classification and the material are **designed development choices**
-//! this module names and `docs/PLAYTEST-RETAIL.md` records. `retail` is read
-//! access to the owner's files: **no original run happened**, so nothing here is
-//! `verified_original` and nothing here is a claim about how the 2000 engine
-//! loaded, streamed, drew or collided with a world.
+//! this module names and `docs/PLAYTEST-RETAIL.md` records. The flight law is
+//! the original game's own, recovered statically under `OWNER-STATIC-2026-10-08`
+//! (#796, task #797) and **still uncalibrated against an original run** (#358).
+//! `retail` is read access to the owner's files: **no original run happened**,
+//! so nothing here is `verified_original` and nothing here is a claim about how
+//! the 2000 engine loaded, streamed, drew or collided with a world.
 //!
 //! # The gap this closes
 //!
@@ -227,8 +230,15 @@ use crate::world::spawn::{
 /// bytes, read through the production readers. `DEVELOPMENT FREE FLIGHT` — the
 /// product is a flyable scene, not a mission. `PROVISIONAL TUNING` — the scale,
 /// handedness, spawn, camera, lighting, collision classification and material
-/// are designed development values.
-pub const PLAYTEST_LABEL: &str = "ORIGINAL ASSETS / DEVELOPMENT FREE FLIGHT / PROVISIONAL TUNING";
+/// are designed development values. `ORIGINAL FLIGHT LAW ...` — the aircraft is
+/// flown by the original game's recovered fixed-wing law and its imported
+/// `pbloodhawk` parameters (task #797), recovered by static analysis of the
+/// owner's decrypted image under **`OWNER-STATIC-2026-10-08`** (#796) and
+/// therefore **still uncalibrated against an original run** (#358): it is
+/// never `verified_original`.
+pub const PLAYTEST_LABEL: &str = "ORIGINAL ASSETS / DEVELOPMENT FREE FLIGHT / PROVISIONAL TUNING / \
+                                  ORIGINAL FLIGHT LAW (OWNER-STATIC-2026-10-08, UNCALIBRATED \
+                                  AGAINST AN ORIGINAL RUN #358)";
 
 // ------------------------------------------------------------------ claims --
 
@@ -352,9 +362,20 @@ pub const AIRCRAFT_CONTAINER_KEY: &str = "zbd/planes.zbd";
 // -------------------------------------------------------- the designed values --
 
 /// Where the aircraft starts along the area's width, as a fraction of it from
-/// its minimum: `−0.6`, so the start is 0.6 of the area's own width off its port
-/// side — outside the geometry, with room to fly towards it and away from it.
-pub const SPAWN_FRACTION_X: f64 = -0.6;
+/// its minimum: `−0.35`, so the start is 0.35 of the area's own width (about
+/// 37 m) off its port side — outside the geometry, with room to fly towards it
+/// and away from it.
+///
+/// A **designed** value, retuned by #797 alongside #795's `z` retune below. At
+/// `−0.6` the start sits 64 m off the port side, and with the original flight
+/// law (#797) the scripted smoke's steer-into-area maneuver builds its heading
+/// over about 4 s after the reset, so the aircraft reaches the hull's own `x`
+/// range only about 350 m of flight later — where the hull has tapered away —
+/// and never touches it (measured: the launch smoke reported zero obstacle
+/// contacts for a whole 60 s run). At `−0.35` the same maneuver crosses the
+/// hull's skin while it is still amidships, and the launch smoke collides
+/// again (measured on `accept_playtest_retail_launch_scripted_smoke_...`).
+pub const SPAWN_FRACTION_X: f64 = -0.35;
 /// The start's height, as a fraction of the area's height from its minimum.
 pub const SPAWN_FRACTION_Y: f64 = 0.55;
 

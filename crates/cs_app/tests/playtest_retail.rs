@@ -193,8 +193,10 @@ fn accept_playtest_retail_every_designed_value_is_recorded_under_its_own_claim()
 
     // The label a screenshot, a log line and a window title must all carry.
     assert_eq!(
-        PLAYTEST_LABEL, "ORIGINAL ASSETS / DEVELOPMENT FREE FLIGHT / PROVISIONAL TUNING",
-        "the visible label is the owner's, verbatim"
+        PLAYTEST_LABEL,
+        "ORIGINAL ASSETS / DEVELOPMENT FREE FLIGHT / PROVISIONAL TUNING / ORIGINAL FLIGHT LAW \
+         (OWNER-STATIC-2026-10-08, UNCALIBRATED AGAINST AN ORIGINAL RUN #358)",
+        "the visible label is the owner's, verbatim, plus the #797 flight-law statement"
     );
     for forbidden in ["M01", "faithful", "campaign", "verified_original"] {
         assert!(

@@ -372,8 +372,12 @@ WINDOWED PLAYTEST (development, not original)
         The same flight loop over ORIGINAL assets read from the installation at
         <dir> (read-only): one documented area of the c1c world with colliders
         derived from its drawn triangles, and the original bloodhawk fuselage
-        mesh as the player aircraft, labelled ORIGINAL ASSETS / DEVELOPMENT
-        FREE FLIGHT / PROVISIONAL TUNING. A missing or unusable <dir> exits
+        mesh as the player aircraft, flown by the original fixed-wing law and
+        its imported pbloodhawk parameters (OWNER-STATIC-2026-10-08, static
+        evidence still uncalibrated against an original run #358), labelled
+        ORIGINAL ASSETS / DEVELOPMENT FREE FLIGHT / PROVISIONAL TUNING /
+        ORIGINAL FLIGHT LAW (OWNER-STATIC-2026-10-08, UNCALIBRATED AGAINST AN
+        ORIGINAL RUN #358). A missing or unusable <dir> exits
         non-zero; it never falls back to the synthetic scene
     --playtest --smoke-seconds <n> [--capture-dir <dir>]
         Run the scripted, deterministic smoke (n >= 20 simulated seconds) in

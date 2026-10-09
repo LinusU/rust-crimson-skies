@@ -20,7 +20,9 @@ cargo run --locked -p cs_app --bin cs -- --playtest --cs-path "$CS_GAME_DIR" --w
 ```
 
 Window title and banner: **ORIGINAL ASSETS / DEVELOPMENT FREE FLIGHT /
-PROVISIONAL TUNING**. You fly the whole intact original `bloodhawk`
+PROVISIONAL TUNING / ORIGINAL FLIGHT LAW (OWNER-STATIC-2026-10-08,
+UNCALIBRATED AGAINST AN ORIGINAL RUN #358)**. You fly the whole intact original
+`bloodhawk`
 (`ZBD/planes.zbd`: 16 mesh bindings, 927 triangles: fuselage, wings, ailerons,
 elevators, rudder, canopy, pilot and the propeller disc, which spins with the
 engine) beside one original airship
@@ -31,20 +33,46 @@ contact and the aircraft stops. `R` resets the aircraft only (the area is
 never respawned). `--aircraft bloodhawk` is the only documented aircraft and the
 default; `c1c` is the only documented world. Any other id is refused.
 
+The aircraft is flown by the **original 2000 PC game's own fixed-wing law**,
+recovered by static analysis of the owner's decrypted image under
+**`OWNER-STATIC-2026-10-08`** (#796) and driven with the parameters imported
+from `ZBD/zrdr.zbd`: `pbloodhawk` in `vehicle.zrd` (`kind_of` chain
+`basic_airplane -> player_airplane -> pbloodhawk`), engine id 11 (`0.62`) in
+`engines.zrd`, `nom_gravity 20` in `player.zrd`. It is **still uncalibrated
+against an original run** (#358), so nothing it does is `verified_original`.
+The cruise those parameters decide is the imported `fd_speed` (135 m/s; full
+throttle level flight settles at 134 m/s, measured by the acceptance test). The
+**start** speed is the playtest's own declared 55 m/s, because the original's
+player spawn speed was never recovered — no start speed here can claim to be
+the original's. The aircraft starts level below the 2000 m density ceiling, at
+cruise throttle.
+
 An explicit `--cs-path` that is missing, is not an installation, or lacks
-`ZBD/C1C/gamez.zbd` / `ZBD/planes.zbd` exits non-zero with the reason and
-**never** falls back to the synthetic scene. Plain `--playtest` stays synthetic.
-On start the command prints `playtest sources: {...}` (installation fingerprint,
-the sha-256 of both containers, the aircraft's drawn/undrawn bindings, and a
-`textures` object: the chosen archive, its sha-256, the claims, and per container
-the textured and neutral material counts and every unresolved material); a smoke
-run records the same object in
-`report.json`.
+`ZBD/C1C/gamez.zbd` / `ZBD/planes.zbd` / `ZBD/zrdr.zbd` exits non-zero with the
+reason and **never** falls back to the synthetic scene. Plain `--playtest` stays
+synthetic. On start the command prints `playtest sources: {...}` (installation
+fingerprint, the sha-256 of both containers, the aircraft's drawn/undrawn
+bindings, and a `textures` object: the chosen archive, its sha-256, the claims,
+and per container the textured and neutral material counts and every unresolved
+material) and `playtest flight: {...}` (the imported record, its chain, the
+engine row, `fd_speed`, `veh_weight`, `ref_area`, `gravity`, the start speed and
+the provenance label with `verified_original: false`); a smoke run records the
+`playtest sources` object in `report.json`.
 
 What is provisional (all labelled, none original behaviour):
 
-* Flight is the synthetic fixed-wing tuning, not the Bloodhawk's. It has no
-  attitude stability and its velocity follows the nose only slowly.
+* **Flight over original content is the recovered original law with the
+  imported Bloodhawk parameters, and it is uncalibrated** (#797): the equations
+  are static analysis of the decrypted image and the numbers are read from the
+  installation, but no original executable has ever been run against them
+  (#358). Over original content the playtest starts and resets at its declared
+  55 m/s start and cruises at the record's imported `fd_speed` (134 m/s
+  measured under full throttle); without original content the scene is the
+  synthetic fixed-wing tuning below, which has no attitude stability and whose
+  velocity follows the nose only slowly.
+* The original's **Level-Off** assist (Shift+L, command 47) is in the law but
+  is **not bound**: the input layer has no slot for it, so the toggle stays off.
+  Filed as follow-up **#1134**.
 * The aircraft's collider is **one box** measured from the composed extent of the
   drawn set (wingspan included), centred on the flight body; the parts do not
   collide individually.
