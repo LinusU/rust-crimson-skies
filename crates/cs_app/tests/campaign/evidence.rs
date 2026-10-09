@@ -75,7 +75,9 @@ use cs_content::campaign_bindings::{
     CampaignInventory, JoinAgreement, JoinCorroboration, MissionLabel, ProbeInterruption,
     SourceBinding, SourceContext, TitleBlock, blocks_correspond, probe_routes,
 };
-use cs_sim::objectives::address::{OUT_OF_RANGE_OBJECTIVE_ADDRESS, resolve_objective_address};
+use cs_content::mission_control::{
+    CONTROL_RECORD_SOUND_KEY_VOCABULARY, RecordSoundDisposition, record_sound_disposition,
+};
 use cs_types::content::ContentId;
 
 /// The retail acceptance tests this task's capabilities are judged on.
@@ -6370,6 +6372,26 @@ const SYNTHETIC_TESTS_M02_B: &[&str] = &[
     "accept_m02_b_a_disagreeing_key_keeps_every_shape_and_a_text_follower_is_the_next_key",
 ];
 
+/// The retail acceptance test M02-B-FU2's `retail` capability is judged on:
+/// M02's record-level sound keys measured through the production binding.
+const RETAIL_TESTS_M02_B_FU2: &[&str] =
+    &["accept_m02_b_fu2_m02s_five_record_sound_keys_are_measured_with_their_consumers"];
+
+/// The engine-image acceptance test M02-B-FU2's static code reading is
+/// judged on: production's parse sites, field offsets and consumer sites read
+/// back out of `$CS_ENGINE_IMAGE`. The image is the owner-supplied decrypted
+/// executable (SHA-256 `43540fc9…`), read-only and never committed; the test
+/// is `#[ignore = "requires CS_ENGINE_IMAGE"]` like the retail member is
+/// `#[ignore = "requires CS_GAME_DIR"]`, so step 1 needs both set.
+const IMAGE_TESTS_M02_B_FU2: &[&str] =
+    &["accept_m02_b_fu2_the_image_parses_and_consumes_each_sound_key_where_production_says"];
+
+/// The synthetic predicate test M02-B-FU2's report must also record: it runs
+/// in CI without any original data and holds the vocabulary to the
+/// disposition table.
+const SYNTHETIC_TESTS_M02_B_FU2: &[&str] =
+    &["accept_m02_b_fu2_the_sound_vocabulary_is_entirely_measured_and_answers_for_nothing_else"];
+
 /// Evidence-report harness for task M02-B, the mission-specific
 /// compatibility stage of *The Bomber Heist* (Rally #262). It follows the
 /// sequence in this module's doc with `M02-B` and `accept_m02_b_` in place
@@ -6878,52 +6900,44 @@ fn parse_m02_b_fu1_suite(log: &str) -> Suite {
     parse_suite_prefixed(log, "accept_m02_b_fu1_")
 }
 
-/// The retail acceptance test M02-B-FU3's `retail` capability is judged on:
-/// M02's own cross-objective addresses, re-read from the installation,
-/// resolved through the production rule.
-const RETAIL_TESTS_M02_B_FU3: &[&str] =
-    &["accept_m02_b_fu3_m02s_wake_addresses_resolve_inside_its_block_count"];
-
-/// The synthetic predicate tests the rule itself is judged on: they run in CI
-/// without original data and carry the in-range boundary and the out-of-range
-/// refusal, so the refusal arm cannot rot behind `#[ignore]`.
-const SYNTHETIC_TESTS_M02_B_FU3: &[&str] = &[
-    "accept_m02_b_fu3_an_address_inside_the_record_resolves_to_its_one_based_record_index",
-    "accept_m02_b_fu3_an_address_past_the_block_count_is_refused_never_clamped",
-];
-
-/// Evidence-report harness for task M02-B-FU3, the follow-up that measured
-/// what the original does with a cross-objective address past the record's
-/// block count and decided the engine rule for it (Rally #802). It follows the
-/// sequence in this module's doc with `M02-B-FU3` and `accept_m02_b_fu3_` in
-/// place of `M01-A` and `accept_m01_a_`, and differs in two ways from the
-/// M02-B report above:
+/// Evidence-report harness for task M02-B-FU2, the follow-up that measures
+/// the five record-level sound keys M02's control record spells and admits
+/// them to `cs_content::mission_control`'s record vocabulary (Rally #801). It
+/// follows the sequence in this module's doc with `M02-B-FU2` and
+/// `accept_m02_b_fu2_` in place of `M01-A` and `accept_m01_a_`, and differs in
+/// four ways from the M02-A report above:
 ///
-/// * the acceptance-log parser selects `accept_m02_b_fu3_` — a prefix no other
-///   suite shares, so the recorded assertions are exactly this task's three
-///   tests: the retail measurement over M02's record and the two synthetic
-///   arms of the rule (`cs_sim`'s suite and `campaign`'s retail member are
-///   separate binaries, and one log carries both);
-/// * the artifact beside the report is the **address record** re-derived from
-///   the installation: the control binding's identities, spans and digests
-///   plus every cross-objective address M02 spells with the block, the key,
-///   the record index the rule resolves it to and the rule's verdict — ids,
-///   numbers and the rule's own name, never original text and never a byte of
-///   the document.
+/// * the acceptance-log parser selects `accept_m02_b_fu2_` tests, so the
+///   recorded assertions are this follow-up's own;
+/// * the artifact beside the report is the **measured record-sound
+///   vocabulary**: for each of the five keys its consumer, class, mission
+///   field offset, parse site, consumer site, summary, evidence documents and
+///   residual unknowns, plus the sites and value shape M02's record spells
+///   beside it — dispositions, addresses and counts only, never original
+///   bytes or sound names;
+/// * the run must carry **three** members: the retail binding test, the
+///   engine-image test that reads `$CS_ENGINE_IMAGE` at production's recorded
+///   addresses (step 1 needs `CS_GAME_DIR` *and* `CS_ENGINE_IMAGE` set), and
+///   the synthetic CI test;
+/// * `CS_EVIDENCE_REVIEWER` fills `review.identity` whole (the runtime
+///   identity shape `jstr(&reviewer)` reads), so the report can never carry a
+///   hand-over placeholder: the runner supplies the full identity text — the
+///   implementing agent's own run names the implementer and says the run is
+///   the implementer's evidence and not a review, and the reviewing agent's
+///   run names itself.
 ///
-/// `review.identity` is read whole from `CS_EVIDENCE_REVIEWER` (the runtime
-/// shape the reader above documents), so the report names whoever actually
-/// ran the harness and can never carry a hand-over placeholder.
+/// The report records what M02-B-FU2 does *not* claim: a measured disposition
+/// is static code evidence, not a licence — no sound is played, the handle's
+/// sound identity stays runtime state, M02's control record still does not
+/// lower (the KILL_OBJECTIVE_WHEN_I_COMPLETE gap is #800's), no mission was
+/// played, no original executable was run and nothing is `verified_original`.
 ///
-/// The report records what this task does *not* claim: the original's own
-/// behaviour for an address that reaches its wake walk past the count is a
-/// **static code reading** with an allocator-dependent outcome left unknown,
-/// no original program was run, no mission was played, the wake/sleep/kill
-/// directive family still has no consumer in this build, and nothing is
-/// `verified_original`.
+/// Everything else — the toolchain versions, the installation hashes, the
+/// candidate tree, the counts, the digests and the timestamps — is derived
+/// from the same real inputs as the M01-A report.
 #[test]
-#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
-fn evidence_report_m02_b_fu3_writes_the_acceptance_report() {
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR, CS_ENGINE_IMAGE"]
+fn evidence_report_m02_b_fu2_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
     let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
@@ -6954,29 +6968,31 @@ fn evidence_report_m02_b_fu3_writes_the_acceptance_report() {
             log_path.display()
         )
     });
-    let suite = parse_m02_b_fu3_suite(&log);
+    let suite = parse_m02_b_fu2_suite(&log);
     assert!(
         suite.passed > 0 && !suite.assertions.is_empty(),
-        "no `accept_m02_b_fu3_` tests were recorded in {}",
+        "no `accept_m02_b_fu2_` tests were recorded in {}",
         log_path.display()
     );
-
-    // Capability coverage is checked, never assumed: `retail` is declared only
-    // because the retail member below is in this log and passed; `synthetic`
-    // because the two unignored arms of the rule did too.
-    for retail_test in RETAIL_TESTS_M02_B_FU3 {
-        let status = recorded_status(&suite, retail_test);
-        assert_eq!(
-            status, "pass",
-            "{retail_test} must pass; got status {status}"
-        );
-    }
-    for synthetic_test in SYNTHETIC_TESTS_M02_B_FU3 {
-        let status = recorded_status(&suite, synthetic_test);
-        assert_eq!(
-            status, "pass",
-            "{synthetic_test} must pass; got status {status}"
-        );
+    for (tests, capability) in [
+        (RETAIL_TESTS_M02_B_FU2, "retail"),
+        (IMAGE_TESTS_M02_B_FU2, "the owner-supplied engine image"),
+        (SYNTHETIC_TESTS_M02_B_FU2, "synthetic"),
+    ] {
+        for task_test in tests {
+            let status = suite
+                .assertions
+                .iter()
+                .find(|(name, _)| name == task_test)
+                .map(|(_, status)| *status)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{task_test} did not run: M02-B-FU2 needs {capability}, run step 1 with \
+                         `--include-ignored` and CS_GAME_DIR / CS_ENGINE_IMAGE set"
+                    )
+                });
+            assert_eq!(status, "pass", "{task_test} must pass; got status {status}");
+        }
     }
 
     let found = discover(&game_dir)
@@ -6984,13 +7000,104 @@ fn evidence_report_m02_b_fu3_writes_the_acceptance_report() {
     let install_sha256 = fingerprint(&found.manifest).to_hex();
     let content_sha256 = content_fingerprint(&found.manifest).to_hex();
 
-    // The address record itself, re-derived from the installation beside the
-    // report and referenced by digest.
-    let record_path = evidence_dir.join("m02-b-fu3-addresses.json");
-    fs::write(&record_path, address_record(&install_sha256))
-        .unwrap_or_else(|error| panic!("write {}: {error}", record_path.display()));
+    // The measured record-sound vocabulary, written beside the report and
+    // referenced by digest: dispositions, addresses and counts, never the
+    // sound names the record spells.
+    let toplevel = git(&["rev-parse", "--show-toplevel"]);
+    let inventory = CampaignInventory::load(
+        &Path::new(&toplevel).join("missions/bindings/campaign-inventory.tsv"),
+    )
+    .unwrap_or_else(|error| {
+        panic!("read missions/bindings/campaign-inventory.tsv from {toplevel}: {error}")
+    });
+    let title = inventory
+        .iter()
+        .find(|(work_order, _)| work_order.as_str() == "M02")
+        .map(|(_, title)| title.clone())
+        .expect("the declared inventory has an M02 work order");
+    let context =
+        SourceContext::read(&game_dir).expect("production source context reads the installation");
+    let control = context
+        .control_program(
+            MissionLabel::new("M02").expect("M02 is a valid label"),
+            &title,
+        )
+        .expect("M02's control program binds through the measured rule");
+    assert_eq!(
+        context.install_sha256(),
+        install_sha256,
+        "the control binding was derived under a different installation fingerprint than discovery reports"
+    );
+    let sounds: Vec<String> = CONTROL_RECORD_SOUND_KEY_VOCABULARY
+        .iter()
+        .map(|key| {
+            let Some(RecordSoundDisposition::Measured(measured)) = record_sound_disposition(key)
+            else {
+                panic!("{key} is a vocabulary key and is measured, not refused");
+            };
+            let sites = control
+                .record
+                .record_sounds()
+                .iter()
+                .find(|(field, _)| field.key() == *key)
+                .map(|(_, sites)| *sites);
+            let shape = control
+                .record
+                .record_sound_shapes()
+                .iter()
+                .find(|(field, _)| field == key)
+                .map(|(_, shape)| shape.label());
+            let evidence: Vec<String> = measured.evidence.iter().map(|item| jstr(item)).collect();
+            let unknowns: Vec<String> = measured.unknowns.iter().map(|item| jstr(item)).collect();
+            format!(
+                "{{\"key\": {}, \"sites\": {}, \"shape\": {}, \"consumer\": {}, \"class\": {}, \
+                 \"field_offset\": {}, \"parse_site\": {}, \"consumer_site\": {}, \"summary\": {}, \
+                 \"evidence\": [{}], \"unknowns\": [{}]}}",
+                jstr(key),
+                sites.map_or_else(|| "null".to_owned(), |sites| sites.to_string()),
+                shape.map_or_else(|| "null".to_owned(), |shape| jstr(&shape)),
+                jstr(measured.consumer.code()),
+                measured
+                    .consumer
+                    .class()
+                    .map_or_else(|| "null".to_owned(), |class| class.to_string()),
+                measured.field_offset,
+                measured.parse_site,
+                measured.consumer_site,
+                jstr(measured.summary),
+                evidence.join(", "),
+                unknowns.join(", "),
+            )
+        })
+        .collect();
+    let sounds_path = evidence_dir.join("m02-b-fu2-record-sounds.json");
+    let sounds_json = format!(
+        "{{\n\
+         \x20\"task_id\": \"M02-B-FU2\",\n\
+         \x20\"install_sha256\": {},\n\
+         \x20\"mission\": {},\n\
+         \x20\"program_id\": {},\n\
+         \x20\"control_member\": {},\n\
+         \x20\"control_sha256\": {},\n\
+         \x20\"record\": {{\"blocks\": {}, \"sites\": {}, \"vocabulary\": {}, \
+         \"unclassified_record_keys\": [{}]}},\n\
+         \x20\"sounds\": [{}]\n\
+         }}\n",
+        jstr(context.install_sha256()),
+        jstr(control.mission.as_str()),
+        jstr(control.program_id.as_str()),
+        jstr(&control.control_member),
+        jstr(&control.control_sha256),
+        control.record.blocks(),
+        control.record.sites(),
+        control.record.vocabulary(),
+        str_array(control.unclassified_record_keys()),
+        sounds.join(", "),
+    );
+    fs::write(&sounds_path, sounds_json)
+        .unwrap_or_else(|error| panic!("write {}: {error}", sounds_path.display()));
     let mut artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
-    artifacts.push(artifact(&record_path, "json", &evidence_dir));
+    artifacts.push(artifact(&sounds_path, "json", &evidence_dir));
 
     let engine = Engine {
         rust: rustc_version(),
@@ -7001,7 +7108,7 @@ fn evidence_report_m02_b_fu3_writes_the_acceptance_report() {
     let report = format!(
         "{{\n\
          \x20\"schema_version\": 1,\n\
-         \x20\"task_id\": \"M02-B-FU3\",\n\
+         \x20\"task_id\": \"M02-B-FU2\",\n\
          \x20\"candidate_tree\": {},\n\
          \x20\"engine\": {},\n\
          \x20\"created_at\": {},\n\
@@ -7035,26 +7142,27 @@ fn evidence_report_m02_b_fu3_writes_the_acceptance_report() {
         artifact_array(&artifacts),
         jstr(&reviewer),
         jstr(
-            "acceptance suite run locally with the retail and synthetic capabilities; this \
-             harness derives every field from the recorded log, production discovery of \
-             $CS_GAME_DIR and the control binding plus the decoded control member that \
-             `m02_b_fu3.rs` re-reads from the archive (m02-b-fu3-addresses.json: every \
-             cross-objective address M02 spells, the record index the production rule resolves \
-             it to and the rule's verdict). MEASURED FROM THE OWNER'S DECRYPTED EXECUTABLE \
-             (static code evidence, sha256 43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75, \
-             no original program run): the parse decrements every objective address into a \
-             zero-based record index (0x468c40, 0x468cf0, 0x4679fc) while non-address integers \
-             are stored unchanged (0x467a21), the record holds one 0x5e4-byte record per numbered \
-             block with the count at +0xc48 (0x467956, 0x469043), and the wake walk 0x469af0 \
-             checks no address at all - no clamp, no ignore, no log. NOT CLAIMED: what the \
-             original *observes* when an address past the count reaches that walk depends on the \
-             memory after the array and stays unknown; M02's own address 50 resolves inside its \
-             50 blocks as record 49; the wake/sleep/kill directive family still has no consumer \
-             in this build, so the rule is the objective lifecycle's resolver and refusal for \
-             that executor to use; no mission was played and nothing is verified_original. Claim \
-             is implemented only; validated with tools/validate_evidence.py --require-pass. \
-             `candidate_tree` is the tree of the commit the suite ran on; the only later delta \
-             is this report's own copy under docs/findings/evidence/, whose bytes are this file"
+            "acceptance suite re-run locally with the retail capability and the owner-supplied \
+             engine image; this harness derives every field from the recorded log, production \
+             discovery of $CS_GAME_DIR and the control-program binding \
+             `SourceContext::control_program` derives from it, and the dispositions come from \
+             `cs_content::mission_control::record_sound_disposition` — five keys, each measured \
+             with its consumer, its mission-object field, its parse site and its consumer site. \
+             The image member re-reads $CS_ENGINE_IMAGE (the owner-supplied decrypted executable, \
+             sha256 43540fc9…) at those addresses and re-derives both selectors — the \
+             objective-class dec/je chain and the mission-end won flag — from the instruction \
+             bytes: static code reading only, no original run. NOT CLAIMED: no sound is played \
+             here and the handle's sound identity stays runtime state; M02's control record still \
+             does not lower (KILL_OBJECTIVE_WHEN_I_COMPLETE exceeds the registry's per-signature \
+             bound, M02-B-FU1 / #800), so M02 stays Unsupported and the campaign gate stays \
+             closed; the two original record keys this task does not admit \
+             (OBJECTIVES_WON/LOST_SOUND) stay outside every vocabulary and are counted as \
+             unclassified wherever they are spelled; no mission was played, no original \
+             executable was run and nothing is verified_original. Claim is implemented only; \
+             validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the \
+             tree of the commit the suite and this harness ran on; the only later delta is this \
+             report's own copy under docs/findings/evidence/ and the findings document that \
+             discusses it, neither of which the acceptance suite reads"
         ),
     );
 
@@ -7064,7 +7172,7 @@ fn evidence_report_m02_b_fu3_writes_the_acceptance_report() {
     let written = fs::read_to_string(&out).expect("the report reads back");
     for needle in [
         "\"schema_version\": 1",
-        "\"task_id\": \"M02-B-FU3\"",
+        "\"task_id\": \"M02-B-FU2\"",
         "\"claim\": \"implemented\"",
         "\"install_sha256\"",
         "\"assertions\": [",
@@ -7084,78 +7192,9 @@ fn evidence_report_m02_b_fu3_writes_the_acceptance_report() {
     println!("wrote {}", out.display());
 }
 
-/// [`parse_suite_prefixed`] with this task's own prefix. The prefix is unique
-/// to M02-B-FU3: `cs_sim`'s two synthetic arms and `campaign`'s one retail
-/// member both carry it, and no other suite's test names do.
-fn parse_m02_b_fu3_suite(log: &str) -> Suite {
-    parse_suite_prefixed(log, "accept_m02_b_fu3_")
-}
-
-/// The second production observation beside the report: M02's cross-objective
-/// addresses, re-read from the installation through the same production
-/// binding and decode the acceptance test uses, each resolved by the
-/// production rule.
-///
-/// Carries ids, byte spans, digests, counts, directive key names and the
-/// rule's own verdict — never a byte of the document and never display text.
-fn address_record(install_sha256: &str) -> String {
-    let binding = crate::m02_b_fu3::control_binding();
-    let document = crate::m02_b_fu3::control_document();
-    let blocks = crate::m02_b_fu3::blocks_with_addresses(&document);
-    let count = blocks.len() as u32;
-    assert_eq!(
-        count,
-        binding.record.blocks(),
-        "the address record and the measured record see the same block count"
-    );
-    let mut entries = Vec::new();
-    for block in &blocks {
-        for (key, args) in &block.addresses {
-            for address in args {
-                let resolved = resolve_objective_address(i64::from(*address), count);
-                let (record_index, rule) = match &resolved {
-                    Ok(symbol) => (symbol.0.to_string(), jstr("in_range")),
-                    Err(_) => ("null".to_owned(), jstr(OUT_OF_RANGE_OBJECTIVE_ADDRESS)),
-                };
-                entries.push(format!(
-                    "{{\"block\": {}, \"key\": {}, \"address\": {}, \"record_index\": {}, \
-                     \"rule\": {}}}",
-                    block.number,
-                    jstr(key),
-                    address,
-                    record_index,
-                    rule
-                ));
-            }
-        }
-    }
-    format!(
-        "{{\n\
-         \x20\"task_id\": \"M02-B-FU3\",\n\
-         \x20\"install_sha256\": {},\n\
-         \x20\"mission\": {},\n\
-         \x20\"program\": {},\n\
-         \x20\"container\": {},\n\
-         \x20\"container_length\": {},\n\
-         \x20\"container_sha256\": {},\n\
-         \x20\"member\": {},\n\
-         \x20\"member_offset\": {},\n\
-         \x20\"member_length\": {},\n\
-         \x20\"member_sha256\": {},\n\
-         \x20\"blocks\": {},\n\
-         \x20\"addresses\": [{}]\n\
-         }}\n",
-        jstr(install_sha256),
-        jstr(binding.mission.as_str()),
-        jstr(binding.program_id.as_str()),
-        jstr(&binding.program_asset),
-        binding.program_length,
-        jstr(&binding.program_sha256),
-        jstr(&binding.control_member),
-        binding.control_offset,
-        binding.control_length,
-        jstr(&binding.control_sha256),
-        count,
-        entries.join(",\n    ")
-    )
+/// [`parse_suite_prefixed`] with this task's test prefix, so the recorded
+/// assertions are M02-B-FU2's own and not the `accept_m02_b_` suites that
+/// share the parent selection.
+fn parse_m02_b_fu2_suite(log: &str) -> Suite {
+    parse_suite_prefixed(log, "accept_m02_b_fu2_")
 }

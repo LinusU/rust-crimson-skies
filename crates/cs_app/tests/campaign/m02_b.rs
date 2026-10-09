@@ -54,9 +54,10 @@ use cs_app::mission_control::survey_mission_control_programs;
 use cs_assets::install::sha256;
 use cs_content::campaign_bindings::{MissionLabel, SourceContext};
 use cs_content::mission_control::{
-    AnimList, CONTROL_RECORD_KEY_VOCABULARY, CallOutcome, ConditionOutcome, ControlMemberError,
-    ControlRecordField, DecodedMember, DirectiveDisposition, control_member,
-    measure_control_record, objective_blocks_of, terminal_outcome_of,
+    AnimList, CONTROL_RECORD_KEY_VOCABULARY, CONTROL_RECORD_SOUND_KEY_VOCABULARY, CallOutcome,
+    ConditionOutcome, ControlMemberError, ControlRecordField, ControlRecordSound, DecodedMember,
+    DirectiveDisposition, RecordSoundConsumer, RecordSoundDisposition, control_member,
+    measure_control_record, objective_blocks_of, record_sound_disposition, terminal_outcome_of,
 };
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, decode_zrd, objective_record, zrd_flat_fields};
@@ -103,7 +104,11 @@ fn m02_title() -> String {
 }
 
 /// M02's control binding, derived fresh through production code.
-fn control_binding() -> cs_content::campaign_bindings::MissionControlBinding {
+///
+/// `pub(crate)` for the M02-B-FU2 seam (`m02_b_fu2.rs`, Rally #801): the
+/// follow-up suite binds the same mission through the same production path
+/// rather than inventing a second one.
+pub(crate) fn control_binding() -> cs_content::campaign_bindings::MissionControlBinding {
     context()
         .control_program(m02(), &m02_title())
         .expect("M02's control program binds through the measured rule")
@@ -126,7 +131,10 @@ fn census_row() -> &'static cs_app::mission_control::RetailControlRow {
 /// The control member's decoded document, re-read from the archive through
 /// production discovery — an independent walk from the binding's, so the
 /// graph assertions below cannot be satisfied by the binding's own output.
-fn control_document() -> (ZrdValue, Vec<(String, u64, u64, u32)>) {
+///
+/// `pub(crate)` for the M02-B-FU2 seam (`m02_b_fu2.rs`, Rally #801), which
+/// walks the record-level keys independently of `measure_control_record`.
+pub(crate) fn control_document() -> (ZrdValue, Vec<(String, u64, u64, u32)>) {
     let binding = control_binding();
     let bytes = std::fs::read(game_dir().join(&binding.program_asset))
         .expect("M02's reader archive reads from disk");
@@ -510,10 +518,21 @@ fn accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key() {
         "in M02 every bare key spells an outcome"
     );
 
-    // The record-level fields: the five measured keys, and the five M02
-    // sound keys the vocabulary does not cover — counted, named, never
-    // interpreted.
-    let fields: Vec<(ControlRecordField, u32)> = record.record_fields().to_vec();
+    // The record-level keys: the five measured fields, and the five M02
+    // sound keys, which M02-B-FU2 admitted to their own vocabulary after
+    // measuring what the original does with each — so nothing M02 spells
+    // outside the numbered blocks is left unclassified.
+    let all: Vec<(ControlRecordField, u32)> = record.record_fields().to_vec();
+    assert_eq!(
+        all.len(),
+        CONTROL_RECORD_KEY_VOCABULARY.len() + CONTROL_RECORD_SOUND_KEY_VOCABULARY.len(),
+        "M02 classifies every record-level key it spells through one of the two vocabularies"
+    );
+    let fields: Vec<(ControlRecordField, u32)> = all
+        .iter()
+        .copied()
+        .filter(|(field, _)| !matches!(field, ControlRecordField::Sound(_)))
+        .collect();
     assert_eq!(
         fields,
         [
@@ -526,22 +545,49 @@ fn accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key() {
         "M02's record carries the five measured record fields, each once"
     );
     assert_eq!(
-        binding.unclassified_record_keys(),
+        record.record_sounds(),
         [
-            "MISSION_LOST_SOUND",
-            "MISSION_WON_SOUND",
-            "PRIMARY_COMPLETE_SOUND",
-            "SECONDARY_COMPLETE_SOUND",
-            "TERTIARY_COMPLETE_SOUND",
+            (ControlRecordSound::PrimaryComplete, 1),
+            (ControlRecordSound::SecondaryComplete, 1),
+            (ControlRecordSound::TertiarComplete, 1),
+            (ControlRecordSound::MissionWon, 1),
+            (ControlRecordSound::MissionLost, 1),
         ],
-        "M02 adds five record-level sound keys outside the measured record \
-         vocabulary; the binding names them instead of reading them"
+        "M02's record spells each of the five record-level sound keys once, in \
+         the vocabulary's parse order"
     );
-    for key in binding.unclassified_record_keys() {
+    assert!(
+        binding.unclassified_record_keys().is_empty(),
+        "M02 spells no record-level key outside the two measured vocabularies, so the \
+         record-level refusal list is empty rather than silently shorter: {:?}",
+        binding.unclassified_record_keys()
+    );
+    for (key, _) in record.record_sounds() {
+        let spelled = key.key();
         assert!(
-            !CONTROL_RECORD_KEY_VOCABULARY.contains(&key.as_str()),
-            "{key} is outside the measured record vocabulary by definition"
+            CONTROL_RECORD_SOUND_KEY_VOCABULARY.contains(&spelled),
+            "{spelled} is in the measured sound vocabulary"
         );
+        assert!(
+            !CONTROL_RECORD_KEY_VOCABULARY.contains(&spelled),
+            "{spelled} is a sound key, not one of the shape-measured fields"
+        );
+        match record_sound_disposition(spelled) {
+            Some(RecordSoundDisposition::Measured(measured)) => {
+                assert!(
+                    !measured.summary.is_empty()
+                        && !measured.evidence.is_empty()
+                        && !measured.unknowns.is_empty(),
+                    "{spelled}: a measured disposition names the effect, the evidence and the \
+                     residual unknowns"
+                );
+                assert!(
+                    measured.field_offset != 0 && measured.parse_site != 0,
+                    "{spelled}: the measurement carries the addresses it was read at"
+                );
+            }
+            other => panic!("{spelled} must be measured, not {other:?}"),
+        }
     }
 }
 
@@ -979,8 +1025,8 @@ fn accept_m02_b_the_control_rule_refuses_an_archive_without_or_with_two_control_
 
 /// **The vocabulary partition is exact on an authored record: an outcome key
 /// is implemented, a covered key is measured, an unknown key stays
-/// unmeasured, a record-level key outside the vocabulary is counted and
-/// named, and the sites add up.** Every arm runs on production
+/// unmeasured, a record-level key outside both record vocabularies is
+/// counted and named, and the sites add up.** Every arm runs on production
 /// `measure_control_record`, so the retail partition above cannot pass on a
 /// walk that drops or invents sites.
 #[test]
@@ -990,6 +1036,10 @@ fn accept_m02_b_the_vocabulary_partition_is_exact_on_an_authored_record() {
         (
             "MISSION_WON_SOUND".to_owned(),
             zrd_list(vec![zrd_text("group")]),
+        ),
+        (
+            "A_RECORD_KEY_NOBODY_HAS_MEASURED".to_owned(),
+            zrd_list(vec![zrd_int(1)]),
         ),
         block(1, vec![directive("INSTANTWIN", vec![])]),
         block(
@@ -1035,9 +1085,32 @@ fn accept_m02_b_the_vocabulary_partition_is_exact_on_an_authored_record() {
         "measured + implemented + unmeasured partitions the vocabulary"
     );
     assert_eq!(
+        record.record_sounds(),
+        [(ControlRecordSound::MissionWon, 1)],
+        "a record-level sound key is counted by its own vocabulary, not dropped"
+    );
+    assert!(
+        record
+            .record_sound_shapes()
+            .iter()
+            .any(|(key, shape)| key == "MISSION_WON_SOUND" && shape.label() == "[text]"),
+        "the authored sound key's shape is measured: {:?}",
+        record.record_sound_shapes()
+    );
+    match record_sound_disposition("MISSION_WON_SOUND") {
+        Some(RecordSoundDisposition::Measured(measured)) => assert!(
+            measured.consumer == RecordSoundConsumer::MissionEnd
+                && measured.field_offset == 0xc78
+                && !measured.summary.is_empty()
+                && !measured.evidence.is_empty(),
+            "the sound key's measured disposition names its consumer and effect"
+        ),
+        other => panic!("MISSION_WON_SOUND must be measured, not {other:?}"),
+    }
+    assert_eq!(
         record.unclassified_record_keys(),
-        ["MISSION_WON_SOUND"],
-        "a record-level key outside the vocabulary is named, never read"
+        ["A_RECORD_KEY_NOBODY_HAS_MEASURED"],
+        "a record-level key outside both vocabularies is named, never read"
     );
     assert!(
         record

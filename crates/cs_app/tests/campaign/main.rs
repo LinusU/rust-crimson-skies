@@ -101,18 +101,21 @@
 //! `accept_m02_b_` selection), so a task selection runs both suites and both
 //! must pass.
 //!
-//! `m02_b_fu3.rs` is the M02-B-FU3 follow-up of Rally #802: the retail half of
-//! the cross-objective address rule, asserting that every address M02 spells
-//! resolves inside its block count under the measured one-based addressing and
-//! that M02's own `50` names its last record while one past the count refuses
-//! by name. Its member is retail (`#[ignore = "requires CS_GAME_DIR"]`); the
-//! synthetic half of the same rule lives with the rule itself in `cs_sim`'s
-//! `accept_m02_b_fu3_objective_address`, so CI carries the refusal arm.
-//! `evidence.rs`'s `evidence_report_m02_b_fu3_*` writes that task's report and
-//! is selected by test name, so no task selection picks it up as an acceptance
-//! test. The `accept_m02_b_` prefix therefore covers three suites (`m02_b`,
-//! `m02_t3`, `m02_b_fu3`) and all of them must pass.
-//!
+//! `m02_b_fu2.rs` is that stage's follow-up, M02-B-FU2 (Rally #801):
+//! `accept_m02_b_fu2_*` tests that hold the five record-level sound keys M02
+//! spells to their new measured dispositions in
+//! `cs_content::mission_control` — each key's consumer, field, parse site and
+//! the unknowns it leaves — and read the owner's decrypted image at
+//! `$CS_ENGINE_IMAGE` to check production's addresses against the original's
+//! instructions. Its synthetic member runs in CI; its retail member is
+//! `#[ignore = "requires CS_GAME_DIR"]` and its image member
+//! `#[ignore = "requires CS_ENGINE_IMAGE"]`, so CI (which has neither) skips
+//! both and the implementing and reviewing agents run them with
+//! `--include-ignored`. `evidence.rs`'s
+//! `evidence_report_m02_b_fu2_writes_the_acceptance_report` is that task's
+//! report harness, selected by test name so no acceptance selection picks it
+//! up. It reuses `m02_b.rs`'s `control_binding` / `control_document` seam, so
+//! the suite binds M02 once.
 //! `m04_b.rs` is the M04-B stage: `accept_m04_b_*` tests that run the shared
 //! control-program machinery over M04's own reader archive — census,
 //! dispositions, block graph, sheet priorities and lowering — and pin the one
@@ -140,10 +143,9 @@ mod m01_lc_player_airframe_source;
 mod m01_lc_player_config;
 mod m02_a;
 mod m02_b;
-mod m02_b_fu3;
+mod m02_b_fu2;
 mod m02_t3;
 mod m03_a;
-mod m03_b;
 mod m04_a;
 mod m04_b;
 mod m05_a;
