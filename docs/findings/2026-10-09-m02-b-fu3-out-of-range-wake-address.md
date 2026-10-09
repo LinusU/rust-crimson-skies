@@ -359,6 +359,43 @@ verdicts re-derived independently from the installation. One mutation probe was
 re-applied by the reviewer (clamp instead of refuse): the synthetic refusal arm
 failed, and the file was reverted byte-identical.
 
+## Review re-run after the landing conflict (reviewer bunny-2/bunny-2, 2026-10-09)
+
+Rally's lander could not fast-forward the approved commit `ec442ed4`: main had
+moved (with M02-B-FU1's lowering work among others, up to `f48fc720`) and the
+automatic rebase hit exactly one conflict, so a reviewer had to rebase by hand.
+The conflict was where the overlap check said it would be — both M02-B-FU1
+(#800) and this task append their evidence harness to the end of
+`crates/cs_app/tests/campaign/evidence.rs` — and nowhere else: of every file
+either side changed since the old base `20c4efa3`, only that file is on both
+lists, and no `Cargo.toml`/`Cargo.lock` moved on main. The resolution keeps
+both tasks' additions verbatim and coexisting (main's `M02-B-FU1` constants,
+harness and suite parser; this task's `M02-B-FU3` constants, harness, suite
+parser and `address_record`); the branch replayed cleanly on top.
+
+Because that rebase was not conflict-free, the full four checks were re-run on
+the rebased tree (the lighter re-push set does not apply):
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | **0** — 472 green `test result` summaries, zero failures |
+| `cargo test --workspace --locked -- accept_m02_b_fu3_ --include-ignored` | 0 (3 tests; each also green alone with `--exact`) |
+| `python3 tools/validate_evidence.py private/evidence/M02-B-FU3/acceptance.json --artifact-root private/evidence/M02-B-FU3 --require-pass` | 0 (`structurally_valid: true`) |
+| `python3 tools/tests/test_evidence_review_identity.py` | 0 (27 OK with the regenerated report committed) |
+
+The acceptance report was regenerated on the rebased tree by the same harness
+(its `candidate_tree` equals `git rev-parse 'HEAD^{tree}'` of the commit it ran
+on — the commit that carries this findings section, so the only later delta is
+this report's own copy, exactly as the harness's method text says; its
+`review.identity` names this second review session and records the same-agent,
+different-session limitation as above), and the second production observation
+`m02-b-fu3-addresses.json` came back **byte-identical** again (sha256
+`50d13d718b3e9878050cd1b76c5ab94067c94252d4e4381e4845cf2fcb34adf9`) — the
+same 63 addresses, record indices and rule verdicts re-derived from the
+installation through the production rule on the rebased tree.
+
 ## Residual unknowns (not guessed)
 
 1. **What the original observes past the count.** The walk executes
