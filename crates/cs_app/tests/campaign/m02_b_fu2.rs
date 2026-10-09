@@ -42,10 +42,8 @@
 //! `--include-ignored`.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 
-use cs_assets::install::sha256;
-use cs_content::coordinates::ORIGINAL_IMAGE_SHA256;
+use cs_content::coordinates::load_engine_image;
 use cs_content::mission_control::{
     CONTROL_RECORD_KEY_VOCABULARY, CONTROL_RECORD_SOUND_KEY_VOCABULARY, ControlRecordSound,
     RecordSoundConsumer, RecordSoundDisposition, record_sound_disposition,
@@ -59,25 +57,12 @@ use crate::m02_b::{control_binding, control_document};
 /// measurements are written in: `VA = file offset + 0x400000`.
 ///
 /// Measured on `$CS_ENGINE_IMAGE` (PE32, image base `0x400000`) by walking its
-/// section table: `.text` is `VA 0x401000` at file `0x1000` and `.data` is
-/// `VA 0x219000` at file `0x219000`, so for the two sections this stage reads
-/// — the code in `.text`, the key strings in `.data` — the RVA equals the file
-/// offset. Every address below is a virtual address, converted by this
-/// constant alone.
+/// section table: `.text` is RVA `0x1000` (VA `0x401000`) at file `0x1000` and
+/// `.data` is RVA `0x219000` (VA `0x619000`) at file `0x219000`, so for the two
+/// sections this stage reads — the code in `.text`, the key strings in `.data`
+/// — the RVA equals the file offset. Every address below is a virtual address,
+/// converted by this constant alone.
 const IMAGE_BASE: u32 = 0x40_0000;
-
-/// The owner's decrypted executable, as the environment declares it.
-fn engine_image() -> Vec<u8> {
-    let path = PathBuf::from(std::env::var("CS_ENGINE_IMAGE").unwrap_or_else(|_| {
-        panic!(
-            "CS_ENGINE_IMAGE is not set: M02-B-FU2 measures the original's code in the \
-             owner-supplied decrypted image; run this suite with `--include-ignored` and \
-             CS_ENGINE_IMAGE pointing at it (AGENTS.md, Environment)"
-        )
-    }));
-    std::fs::read(&path)
-        .unwrap_or_else(|error| panic!("the engine image {} reads: {error}", path.display()))
-}
 
 /// The image bytes as `u32` little-endian at `offset`, checked against the
 /// file so a bad address is a named failure rather than a slice panic.
@@ -349,12 +334,13 @@ fn accept_m02_b_fu2_m02s_five_record_sound_keys_are_measured_with_their_consumer
 #[test]
 #[ignore = "requires CS_ENGINE_IMAGE"]
 fn accept_m02_b_fu2_the_image_parses_and_consumes_each_sound_key_where_production_says() {
-    let image = engine_image();
-    assert_eq!(
-        sha256(&image).to_hex(),
-        ORIGINAL_IMAGE_SHA256,
-        "the image is the one every measurement here was read from"
-    );
+    // `load_engine_image` reads `$CS_ENGINE_IMAGE` and refuses an unset
+    // variable, an unreadable file and bytes that do not hash to the
+    // measured image (#798), so `image` below is always the executable every
+    // address in the table was read from.
+    let image = load_engine_image()
+        .unwrap_or_else(|error| panic!("{error}"))
+        .bytes;
 
     // Every key: the parser's `push <string>` names this key, stores a zero
     // default, looks the child up by name, resolves that name to a handle and
