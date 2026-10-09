@@ -27,15 +27,18 @@
 //! record: 57 numbered blocks, 209 directive sites, 22 distinct keys, the
 //! block graph those spell, and the two lowering gaps measured below.
 //!
-//! * **Two compatibility gaps are measured and pinned, not worked around.**
-//!   `KILL_OBJECTIVE_WHEN_I_COMPLETE` is refused by the host-call registry's
-//!   per-signature bound (the shared gap filed as #800) at 19 sites, and
-//!   eight `DANGER_ZONES_COMPLETED` completion conditions are refused
-//!   because this build lowers no condition for the danger-zones flag
-//!   evaluator. Both unmet rows are named here, so neither the follow-up
-//!   that changes them nor a regression can land without updating this pin.
-//!   The record does not lower, the census row stays incomplete and the
-//!   campaign gate stays closed.
+//! * **The lowering is pinned on both sides of the gap it was written
+//!   against.** When this stage measured M08, its 19
+//!   `KILL_OBJECTIVE_WHEN_I_COMPLETE` sites refused against the host-call
+//!   registry's per-signature bound and eight `DANGER_ZONES_COMPLETED`
+//!   completion conditions were refused because this build lowers no
+//!   condition for the danger-zones flag evaluator. #800 landed on `main`
+//!   while this branch was in flight and closed the first half — the
+//!   adapter now carries an objective-index list as one list argument — so
+//!   the tests pin that every one of M08's 209 sites binds *and* that the
+//!   eight danger-zones predicates are the only unmet requirement left
+//!   (#813 owns them). The record still does not lower completely, the
+//!   census row stays incomplete and the campaign gate stays closed.
 //! * **The three sheet priorities are located in the measured record** as
 //!   directives, operands and block edges the record spells — never as a
 //!   timing, count or coordinate it does not. Their predicates (the wrong
@@ -69,6 +72,7 @@ use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, decode_zrd, objective_record, zrd_flat_fields};
 use cs_formats::script_raw::discover_container;
 use cs_script::bindings::MAX_CALL_ARGS;
+use cs_script::ir::Value;
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::install::RelativePath;
 
@@ -84,8 +88,9 @@ const BLOCKS: u32 = 57;
 const SITES: u32 = 209;
 /// The distinct directive keys of the control member.
 const KEYS: usize = 22;
-/// The sites the host-call bound refuses (the `KILL_…` sites).
-const REFUSED_SITES: usize = 19;
+/// The sites of the kill key, every one of which binds now that the adapter
+/// carries an objective-index list as one list argument (#800).
+const KILL_SITES: u32 = 19;
 /// The completion conditions this build refuses (the danger-zones sites).
 const REFUSED_CONDITIONS: usize = 8;
 
@@ -467,8 +472,8 @@ fn accept_m08_b_m08s_control_program_is_bound_to_the_same_identities_as_its_miss
 }
 
 /// **M08's directive vocabulary partitions exactly and refuses no key.**
-/// This is what makes both gaps pinned below *lowering* gaps and not
-/// unknown directives: every key M08 spells carries a measured disposition
+/// This is what makes the gap pinned below a *lowering* gap and not an
+/// unknown directive: every key M08 spells carries a measured disposition
 /// or is one of the two terminal outcome spellings, no block is unreadable,
 /// and — unlike M02 — no record-level key falls outside the measured record
 /// vocabulary.
@@ -838,16 +843,20 @@ fn accept_m08_b_the_block_graph_is_closed_under_the_records_own_numbering() {
     );
 }
 
-/// **Both lowering gaps are named, and the campaign gate stays closed.**
-/// M08's vocabulary is fully measured, so neither refusal is an unknown
-/// directive: nineteen `KILL_…` sites run into the registry's per-signature
-/// argument bound (#800's shared gap) and eight danger-zones completion
-/// conditions are refused because this build lowers no predicate for the
-/// danger-zones flag evaluator. Both unmet rows are pinned, so the
-/// follow-ups that clear them must update this test in the same change.
+/// **The one gap that still keeps M08 from lowering is named, and the
+/// campaign gate stays closed.** M08's vocabulary is fully measured, so the
+/// refusal is not an unknown directive: eight `DANGER_ZONES_COMPLETED`
+/// completion conditions are refused because this build lowers no predicate
+/// for the danger-zones flag evaluator (#813). The other half this pin was
+/// written against — nineteen `KILL_…` sites running into the registry's
+/// per-signature argument bound — was closed on `main` by #800 while this
+/// stage was in flight: the adapter now carries an objective-index list as
+/// one list argument, so every one of M08's 209 sites binds and the kill
+/// key registers. Both halves are asserted here, so a regression in either
+/// direction fails this test.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m08_b_both_lowering_gaps_are_named_and_the_campaign_gate_stays_closed() {
+fn accept_m08_b_the_danger_zones_condition_is_the_gap_that_keeps_m08_unlowered() {
     let binding = control_binding();
     let row = census_row();
     let lowered = row
@@ -869,25 +878,21 @@ fn accept_m08_b_both_lowering_gaps_are_named_and_the_campaign_gate_stays_closed(
     assert_eq!(
         unmet,
         ["objective_condition", "call_arguments"],
-        "the mission identity and the 57 objective identities lower; the \
-         danger-zones conditions and the over-bound kill sites are the two \
-         unmet requirements"
+        "the eight danger-zones predicates are unmet twice over: as the \
+         condition row itself, and through the `MissionProgram::validate` \
+         error the unknown condition raises — no host call is refused, which \
+         is what the assertions below prove — unbound={:?} program={}",
+        attempt.unbound_keys,
+        lowered.program().is_some()
     );
 
-    // Gap 1 — the host-call bound. One refusal for the whole key, because a
-    // signature longer than the bound refuses the spec rather than narrowing
-    // what the name accepts.
-    assert_eq!(
-        attempt.unbound_keys.len(),
-        1,
-        "exactly one key failed registration: {:?}",
-        attempt.unbound_keys
-    );
+    // The host-call half is closed: no key refuses registration and every
+    // site carries a bound verdict — including the 19 kill sites whose lists
+    // are the longest the record spells.
     assert!(
-        attempt.unbound_keys[0].contains("KILL_OBJECTIVE_WHEN_I_COMPLETE")
-            && attempt.unbound_keys[0].contains("too many arguments"),
-        "the refusal names the kill key and the bound it exceeded: {}",
-        attempt.unbound_keys[0]
+        attempt.unbound_keys.is_empty(),
+        "no key refuses registration: {:?}",
+        attempt.unbound_keys
     );
     let refused: Vec<&str> = attempt
         .calls
@@ -897,16 +902,9 @@ fn accept_m08_b_both_lowering_gaps_are_named_and_the_campaign_gate_stays_closed(
             CallOutcome::Bound => None,
         })
         .collect();
-    assert_eq!(
-        refused.len(),
-        REFUSED_SITES,
-        "the kill key's {REFUSED_SITES} sites all refuse: {refused:?}"
-    );
     assert!(
-        refused
-            .iter()
-            .all(|reason| reason.contains("KILL_OBJECTIVE_WHEN_I_COMPLETE")),
-        "every refusal names the kill key"
+        refused.is_empty(),
+        "every site binds, so nothing refuses: {refused:?}"
     );
     assert_eq!(
         attempt.calls.len() as u32,
@@ -918,18 +916,22 @@ fn accept_m08_b_both_lowering_gaps_are_named_and_the_campaign_gate_stays_closed(
             .calls
             .iter()
             .filter(|outcome| **outcome == CallOutcome::Bound)
-            .count(),
-        record.sites() as usize - REFUSED_SITES,
-        "every non-kill site binds"
+            .count() as u32,
+        record.sites(),
+        "all {} sites bind",
+        record.sites()
     );
     let kill = record
         .key("KILL_OBJECTIVE_WHEN_I_COMPLETE")
         .expect("M08 spells the kill key");
+    assert_eq!(
+        kill.sites, KILL_SITES,
+        "the kill key carries M08's {KILL_SITES} sites"
+    );
     assert!(
         kill.agreed_shape().is_none(),
-        "the kill key's sites disagree about their shape — that is why the \
-         lowering registers one signature per shape and why one long shape \
-         refuses them all"
+        "the kill key's sites spell six shapes, so the lowering registers one \
+         signature per shape"
     );
     let longest = kill
         .shapes
@@ -937,27 +939,48 @@ fn accept_m08_b_both_lowering_gaps_are_named_and_the_campaign_gate_stays_closed(
         .map(|(shape, _)| shape.arity())
         .max()
         .expect("the kill key has shapes");
+    assert_eq!(
+        longest, 10,
+        "M08's longest kill list is the ten-index one OBJECTIVE28…OBJECTIVE33 spell"
+    );
     assert!(
         longest > MAX_CALL_ARGS,
-        "the longest kill signature ({longest} arguments) exceeds the registry's \
-         per-signature bound of {MAX_CALL_ARGS}"
+        "that length ({longest}) is over MAX_CALL_ARGS ({MAX_CALL_ARGS}), which is \
+         exactly why #800's list-argument shaping is what lets these sites bind"
     );
-    let sites_over_bound: u32 = kill
-        .shapes
-        .iter()
-        .filter(|(shape, _)| shape.arity() > MAX_CALL_ARGS)
-        .map(|(_, sites)| *sites)
-        .sum();
+    let spec = lowered
+        .registry()
+        .get("KILL_OBJECTIVE_WHEN_I_COMPLETE")
+        .expect("the kill key registers now that its lists are one argument");
+    assert!(
+        spec.signatures.iter().all(|signature| signature.len() == 1),
+        "every measured kill shape registers as a single-argument signature: {:?}",
+        spec.signatures
+    );
+    assert!(
+        lowered.program().is_some(),
+        "a MissionProgram assembles from M08's calls and conditions alike"
+    );
+    let validation = attempt
+        .validation
+        .clone()
+        .expect("the assembled program stood to be validated");
     assert_eq!(
-        sites_over_bound, 7,
-        "the over-bound kill shapes are M08's ten-argument lists (six sites, \
-         OBJECTIVE28…OBJECTIVE33) and its nine-argument one (OBJECTIVE43): \
-         {sites_over_bound}"
+        validation.len(),
+        1,
+        "validation reports exactly one unsupported instruction: {validation:?}"
+    );
+    assert!(
+        validation[0].contains("DANGER_ZONES_COMPLETED")
+            && validation[0].contains("unsupported instruction"),
+        "and it is the danger-zones condition of OBJECTIVE17, not a host call: \
+         {}",
+        validation[0]
     );
 
-    // Gap 2 — the danger-zones completion conditions. Eight blocks refuse,
-    // every one of them the same measured evaluator, and every other block
-    // lowers.
+    // The gap itself — the danger-zones completion conditions. Eight blocks
+    // refuse, every one of them the same measured evaluator, and every other
+    // block lowers.
     assert_eq!(
         attempt.conditions.len() as u32,
         record.blocks(),
@@ -1004,14 +1027,9 @@ fn accept_m08_b_both_lowering_gaps_are_named_and_the_campaign_gate_stays_closed(
         "the other 49 completion conditions lower"
     );
 
-    // No program stood to be validated: the attempt refuses before it.
-    assert!(attempt.validation.is_none(), "no program stood to validate");
-    assert!(
-        lowered.program().is_none(),
-        "no MissionProgram assembles while any site refuses"
-    );
-
-    // Both gaps keep M08 out of every readiness claim.
+    // The gap keeps M08 out of every readiness claim, even though every host
+    // call binds and a program assembles: `MissionProgram::validate` refuses
+    // the unknown condition, so the census row stays incomplete.
     let census = census();
     assert!(
         !census.complete_missions().contains(&MISSION),
@@ -1401,15 +1419,18 @@ fn lower(document: &ZrdValue) -> cs_app::control_lowering::LoweredControlRecord 
     )
 }
 
-/// **A kill site over the host-call bound refuses and one at the bound
-/// binds** — the mechanism behind M08's nineteen refused sites, proved on
-/// authored records so CI carries the arm the retail installation reaches
-/// only through M08's own ten-argument kill lists. The follow-up that
-/// changes the bound (#800) owns this pin.
+/// **M08's six kill shapes each arrive as one list argument and bind, and an
+/// index list wider than a value can hold refuses.** The retail test
+/// observes that result on the installation; this carries the mechanism into
+/// CI: an authored record spelling the shapes M08 spells (1, 5, 6, 7, 9 and
+/// 10 indices) registers the key, lowers every site and assembles its
+/// program, while a list past `MAX_VALUE_ITEMS` refuses the record and
+/// nothing truncates. This is the arm #800's list-argument shaping left
+/// standing, pinned from M08's side.
 #[test]
-fn accept_m08_b_a_kill_site_over_the_host_call_bound_refuses_and_one_at_the_bound_binds() {
+fn accept_m08_b_m08s_kill_shapes_bind_as_one_list_argument_and_an_over_wide_one_refuses() {
     let authored = |count: u32| {
-        let args: Vec<ZrdValue> = (0..count).map(zrd_int).collect();
+        let args: Vec<ZrdValue> = (1..=count).map(zrd_int).collect();
         control_record(vec![block(
             1,
             vec![
@@ -1419,45 +1440,55 @@ fn accept_m08_b_a_kill_site_over_the_host_call_bound_refuses_and_one_at_the_boun
         )])
     };
 
-    // At the bound: the site binds and the record lowers completely.
-    let document = authored(MAX_CALL_ARGS as u32);
-    let record = measure_control_record(&document);
-    let lowered = lower(&document);
-    assert!(
-        record.is_complete(lowered.attempt()),
-        "a kill site at the bound of {MAX_CALL_ARGS} arguments binds: {:?}",
-        lowered.attempt().unbound_keys
-    );
-    assert!(
-        lowered.attempt().calls.contains(&CallOutcome::Bound),
-        "the kill site produced a bound call"
-    );
-
-    // One over — M08's own ten-argument shape — the whole spec refuses
-    // registration and the site refuses with it.
-    let document = authored(MAX_CALL_ARGS as u32 + 1);
-    let record = measure_control_record(&document);
-    let lowered = lower(&document);
-    assert_eq!(
-        lowered.attempt().unbound_keys.len(),
-        1,
-        "the over-bound signature refuses the key's registration"
-    );
-    assert!(
-        lowered.attempt().unbound_keys[0].contains("too many arguments"),
-        "the refusal names the bound: {}",
-        lowered.attempt().unbound_keys[0]
-    );
-    assert!(
-        !record.is_complete(lowered.attempt()),
-        "an over-bound site refuses its whole record, never a narrowed binding"
-    );
-    assert!(
-        lowered
+    for count in [1u32, 5, 6, 7, 9, 10] {
+        let document = authored(count);
+        let record = measure_control_record(&document);
+        let lowered = lower(&document);
+        assert!(
+            record.is_complete(lowered.attempt()),
+            "M08's {count}-index kill shape binds and lowers: {:?}",
+            lowered.attempt().unbound_keys
+        );
+        let raw = lowered.raw_program().expect("the program assembled");
+        assert_eq!(
+            raw.objectives[0].calls[1].args,
+            [Value::List(
+                (1..=count).map(|n| Value::Int(n as i32)).collect()
+            )],
+            "the {count} indices arrive as one list, in order"
+        );
+        let spec = lowered
             .registry()
             .get("KILL_OBJECTIVE_WHEN_I_COMPLETE")
-            .is_none(),
-        "the over-bound key is not in the registry"
+            .expect("the kill key registers");
+        assert_eq!(
+            spec.signatures.len(),
+            1,
+            "one measured shape in this record"
+        );
+        assert_eq!(
+            spec.signatures[0].len(),
+            1,
+            "and it is a single-argument (one list) signature"
+        );
+    }
+
+    // A list wider than a value can be refuses; nothing truncates.
+    let document = authored(cs_script::ir::MAX_VALUE_ITEMS as u32 + 1);
+    let record = measure_control_record(&document);
+    let lowered = lower(&document);
+    assert!(
+        !record.is_complete(lowered.attempt()),
+        "an over-wide index list refuses its record"
+    );
+    assert!(
+        lowered.raw_program().is_some_and(|raw| {
+            raw.objectives[0]
+                .calls
+                .iter()
+                .all(|call| call.name != "KILL_OBJECTIVE_WHEN_I_COMPLETE")
+        }),
+        "the refused site is dropped by name rather than clamped"
     );
 }
 

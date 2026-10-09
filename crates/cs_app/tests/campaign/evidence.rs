@@ -7303,15 +7303,16 @@ const RETAIL_TESTS_M08_B: &[&str] = &[
     "accept_m08_b_m08s_control_program_is_bound_to_the_same_identities_as_its_mission_binding",
     "accept_m08_b_the_measured_vocabulary_partitions_and_refuses_no_m08_key",
     "accept_m08_b_the_block_graph_is_closed_under_the_records_own_numbering",
-    "accept_m08_b_both_lowering_gaps_are_named_and_the_campaign_gate_stays_closed",
+    "accept_m08_b_the_danger_zones_condition_is_the_gap_that_keeps_m08_unlowered",
     "accept_m08_b_the_three_sheet_priorities_locate_in_the_measured_record",
 ];
 
 /// The synthetic predicate tests M08-B's report must also record: they carry
-/// both measured gap arms (the over-bound kill site and the refused
-/// danger-zones condition) into CI, where there is no original data.
+/// the two mechanisms the retail record leans on — the list-argument
+/// lowering of a long kill index list, and the refused danger-zones
+/// condition — into CI, where there is no original data.
 const SYNTHETIC_TESTS_M08_B: &[&str] = &[
-    "accept_m08_b_a_kill_site_over_the_host_call_bound_refuses_and_one_at_the_bound_binds",
+    "accept_m08_b_m08s_kill_shapes_bind_as_one_list_argument_and_an_over_wide_one_refuses",
     "accept_m08_b_the_danger_zones_condition_refuses_while_a_measured_condition_lowers",
 ];
 
@@ -7601,10 +7602,11 @@ fn evidence_report_m08_b_writes_the_acceptance_report() {
              binding `SourceContext::control_program` derives from it (mission and program \
              identities equal to the M08-A binding, the control member chosen by the measured \
              rule over the archive's whole member set, the directive accounting of the member it \
-             spells). NOT CLAIMED: M08's control record does not lower — nineteen \
-             KILL_OBJECTIVE_WHEN_I_COMPLETE sites exceed the registry's per-signature bound and \
-             eight DANGER_ZONES_COMPLETED conditions are refused because this build lowers no \
-             predicate for them — so M08 stays Unsupported and the campaign gate stays closed; \
+             spells). NOT CLAIMED: M08's control record does not lower completely — every one of \
+             its 209 host calls binds (the list-argument lowering #800 landed while this stage \
+             was in flight), but eight DANGER_ZONES_COMPLETED completion conditions are refused \
+             because this build lowers no predicate for them (#813) — so M08 stays Unsupported \
+             and the campaign gate stays closed; \
              the wrong-actor, wrong-session and repeated-event halves of the sheet's three \
              priorities are runtime observations and stay unmeasured (M08-C); no mission was \
              played, no original executable was run and nothing is verified_original. Claim is \
