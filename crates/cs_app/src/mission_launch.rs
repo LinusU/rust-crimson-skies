@@ -1084,14 +1084,15 @@ fn measure_actor_readers(
                     detail.push_str(&format!("; never declared: {}", undeclared.join(", ")));
                 }
                 detail.push_str(&format!(
-                    "; the carrier's spawn pose converts under {SPAWN_POSE_CLAIM} and each \
-                     record's attitude composes under {SPAWN_ATTITUDE_CLAIM} from the source the \
-                     original applies last, the source it overwrites named as the residue (#792); \
-                     the scope's {placements} placezeps.zrd placement declarations bind their node \
-                     join and translate/rotate states (measured, #791) and what that member still \
-                     leaves open stays refused under {PLACEMENT_FIELDS_CLAIM}; {MOTION_RESIDUE} \
-                     (docs/findings/2026-10-08-m01-lc-world-actor-spawn.md and \
-                     docs/findings/2026-10-09-m01-lc-zeppelin-attitude.md)"
+                    "; each record's position binds under {SPAWN_POSE_CLAIM} and its attitude \
+                     composes under {SPAWN_ATTITUDE_CLAIM} from the source the original applies \
+                     last, the source each overwrites named as the residue (#792's order, #814's \
+                     position); the scope's {placements} placezeps.zrd placement declarations bind \
+                     their node join and translate/rotate states (measured, #791) and what that \
+                     member still leaves open stays refused under {PLACEMENT_FIELDS_CLAIM}; \
+                     {MOTION_RESIDUE} (docs/findings/2026-10-08-m01-lc-world-actor-spawn.md, \
+                     docs/findings/2026-10-09-m01-lc-zeppelin-attitude.md and \
+                     docs/findings/2026-10-09-m01-lc-zeppelin-placement-position.md)"
                 ));
                 SurfaceVerdict::Unsupported {
                     mechanism: "world-actor spawn semantics".to_owned(),
