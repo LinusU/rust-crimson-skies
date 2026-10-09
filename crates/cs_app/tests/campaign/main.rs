@@ -153,6 +153,19 @@
 //! `evidence_report_record_objectives_sound_writes_the_acceptance_report` is
 //! that task's report harness, selected by test name.
 //!
+//! `m06_b.rs` is the M06-B stage: `accept_m06_b_*` tests that bind M06's
+//! mission control program through `SourceContext::control_program` and hold
+//! it to the mission binding's identities, the retail control census and the
+//! lowering that decides what the engine may honour — including the measured
+//! gap that keeps M06 from being ready (every call binds, but
+//! `MissionProgram::validate` refuses the three `ANIM_STATE`
+//! completion-count condition sites). Its two synthetic members run in CI and
+//! its six retail members are
+//! `#[ignore = "requires CS_GAME_DIR"]`; `evidence.rs`'s
+//! `evidence_report_m06_b_*` writes that task's report and is selected by test
+//! name. The findings note is
+//! `docs/findings/2026-10-09-m06-b-compatibility-gaps.md`.
+//!
 //! `m07_b.rs` is the M07-B stage: `accept_m07_b_*` tests that measure M07's
 //! mission control program through the retail control census and
 //! `SourceContext::control_program`, and pin what the sheet's regression
@@ -202,6 +215,7 @@ mod m04_b;
 mod m05_a;
 mod m05_b;
 mod m06_a;
+mod m06_b;
 mod m07_a;
 mod m07_b;
 mod m08_a;
