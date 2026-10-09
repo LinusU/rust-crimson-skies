@@ -1,17 +1,20 @@
-//! #793: the measured faction verdict of M01's three `zeppelins.zrd` records.
+//! #793: the measured faction verdict of M01's three `zeppelins.zrd`
+//! records, as #1155 re-measured it.
 //!
 //! The retail case reads `ZBD/C1C/M01/zrdr.zbd` through production discovery
 //! and asserts that no record states a `team`, that the mission's `net.zrd`
-//! holds no text (so no net→faction table), and that the declared actors
-//! carry the measured-absent claim rather than the unmapped-spelling one.
+//! holds no text (so no net→faction table) — and that the declared actors
+//! take their faction from #1155's measured allegiance resolver instead:
+//! every faction is `Resolved::Known` under `f34-world.zeppelin-allegiance`,
+//! never the retired `f34-world.zeppelin-faction-absent` verdict.
 
 use cs_app::mission_world_actors::{
-    FACTION_ABSENT_CLAIM, FACTION_UNKNOWN_CLAIM, ZEPPELIN_MEMBER, bind_mission_world_actors,
+    ALLEGIANCE_RESOLVED_CLAIM, ZEPPELIN_MEMBER, bind_mission_world_actors,
 };
 use cs_assets::install;
 use cs_formats::script_raw::discovery::discover_container;
 use cs_formats::zbd::zeppelins::{ZeppelinKey, read_zeppelins_member};
-use cs_types::content::{ContentId, ContentKind};
+use cs_types::content::{ContentId, ContentKind, Resolved};
 
 const ARCHIVE: &str = "zbd/c1c/m01/zrdr.zbd";
 
@@ -47,7 +50,7 @@ fn holds_text(bytes: &[u8], at: &mut usize) -> bool {
 
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m01_lc_zeppelin_faction_retail_records_carry_no_faction() {
+fn accept_m01_lc_zeppelin_faction_records_state_no_team_and_the_binding_binds_a_faction() {
     let root = std::path::PathBuf::from(
         std::env::var("CS_GAME_DIR").expect("a retail test needs CS_GAME_DIR to be set"),
     );
@@ -89,19 +92,35 @@ fn accept_m01_lc_zeppelin_faction_retail_records_carry_no_faction() {
     assert!(!holds_text(net, &mut at), "net.zrd holds no text node");
     assert_eq!(at, net.len(), "net.zrd decodes with no byte left over");
 
-    // The production binding files every declared actor's faction as absent.
+    // The production binding binds every declared actor's faction from the
+    // measured allegiance resolver (#1155): no faction stays open, and each
+    // one is filed under the allegiance claim rather than the retired
+    // measured-absent verdict.
     let subject = ContentId::from_source(ContentKind::Mission, "ch1-m01").expect("id");
     let bound = bind_mission_world_actors(&root, &found, "zbd/c1c/m01", "zbd/c1c", &subject, 64);
     assert_eq!(bound.rows().len(), 3);
     assert!(bound.rows().iter().all(|row| row.team.is_none()));
-    let factions: Vec<_> = bound
-        .open_fields()
-        .iter()
-        .filter(|field| field.field == "faction")
-        .collect();
-    assert_eq!(factions.len(), 3, "each declared actor reports its faction");
-    for field in factions {
-        assert_eq!(field.claim_id.as_str(), FACTION_ABSENT_CLAIM);
-        assert_ne!(field.claim_id.as_str(), FACTION_UNKNOWN_CLAIM);
+    assert!(
+        bound
+            .open_fields()
+            .iter()
+            .all(|field| field.field != "faction"),
+        "no record's faction stays open: {:?}",
+        bound.open_fields()
+    );
+    let program = bound.program().expect("the records assemble a program");
+    assert_eq!(program.actors().len(), 3);
+    for actor in program.actors() {
+        let Resolved::Known(known) = &actor.faction else {
+            panic!(
+                "{} binds a measured faction: {:?}",
+                actor.subject, actor.faction
+            );
+        };
+        assert_eq!(
+            known.provenance.claim_id.as_str(),
+            ALLEGIANCE_RESOLVED_CLAIM,
+            "the faction is filed under the measured allegiance claim"
+        );
     }
 }

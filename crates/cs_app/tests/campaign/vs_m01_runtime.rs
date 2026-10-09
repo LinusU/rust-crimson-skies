@@ -146,8 +146,11 @@ fn accept_vs_m01_runtime_the_launch_gate_names_each_blocking_surface() {
 ///   `mission_environment`, #718's `MissionAnimationPlayer` for **both**
 ///   animation carriers, whose rows this plan starts, and #715/#770's
 ///   `MissionStartConfiguration` for `player_configuration`;
-/// * what is left names its gap — the container's two unanswered records
-///   and the placed world actor's spawn — the plan is **not** launchable
+/// * the placed world actors satisfy their surface — the carrier decoded,
+///   all three records joined, and #1155 bound the allegiance the lowering
+///   needs, so the production session launches (#772/#792/#814/#1155);
+/// * what is left names its gap — the container's two unanswered records —
+///   the plan is **not** launchable
 ///   and the gate names the surfaces that must be measured before M01 can
 ///   launch.
 #[test]
@@ -269,37 +272,24 @@ fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechani
         );
     }
 
-    // Every remaining required surface names its gap; the whole plan refuses.
-    for (surface, want) in [(LaunchSurface::WorldActors, "unsupported")] {
-        let report = plan.surface(surface).expect("the surface is reported");
-        match (&report.verdict, want) {
-            (SurfaceVerdict::Unsupported { mechanism, detail }, "unsupported") => {
-                assert!(!mechanism.is_empty(), "{surface:?} names its mechanism");
-                // #772's measured boundary, with #792's attitude and #814's
-                // position closing their halves of it: the carrier decoded,
-                // all three records joined their world nodes, the pose
-                // binds under its own claims from the source the original
-                // applies last — and the fields still open stay named
-                // unknowns, not a guess.
-                for expected in [
-                    "f34-world.zeppelin-spawn-pose",
-                    "f34-world.zeppelin-attitude-compose",
-                    "f34-world.zeppelin-faction-absent",
-                    "piratezep",
-                    "placezeps.zrd",
-                ] {
-                    assert!(
-                        detail.contains(expected),
-                        "{surface:?} names {expected}: {detail}"
-                    );
-                }
-            }
-            (SurfaceVerdict::Unknown { detail }, "unknown") => {
-                assert!(!detail.is_empty(), "{surface:?} names its question");
-            }
-            (verdict, want) => panic!("{surface:?} is {want}: {}", verdict.describe()),
-        }
-    }
+    // The world-actor surface is satisfied: the carrier decoded, all three
+    // records joined their world nodes, the pose and attitude bind under
+    // their own claims (#792, #814) and the allegiance binds the measured
+    // resolver outcome (#1155), so the production lowering and
+    // `WorldActorSession::launch` run and a session exists.
+    let actors = plan
+        .surface(LaunchSurface::WorldActors)
+        .expect("the surface is reported");
+    let SurfaceVerdict::Satisfied { consumer } = &actors.verdict else {
+        panic!(
+            "the world actors lower and launch: {}",
+            actors.verdict.describe()
+        );
+    };
+    assert!(
+        consumer.contains("WorldActorSession launched 3 of 3 decoded world actors"),
+        "the session launched for every decoded record: {consumer}"
+    );
     assert!(
         !plan.launchable(),
         "M01 does not launch until the named mechanisms exist"
@@ -338,9 +328,10 @@ fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechani
     let named: BTreeSet<&str> = plan.gaps().map(|report| report.surface.label()).collect();
     assert_eq!(
         named,
-        BTreeSet::from(["world_geometry", "world_actors"]),
+        BTreeSet::from(["world_geometry"]),
         "the gate names exactly the surfaces no production consumer owns yet, and \
-         nothing the landed stages satisfied"
+         nothing the landed stages satisfied (the world actors' last open field, \
+         their allegiance, bound in #1155)"
     );
 
     // Nothing read wrote to the installation and every examined archive
@@ -414,8 +405,9 @@ fn accept_vs_m01_runtime_launch_refuses_an_undeclared_mission_and_an_empty_insta
 
 /// **On the retail installation M01 is refused with every gap spelled out and
 /// nothing is started.** The refusal is the launch's acceptance behavior for
-/// unsupported reachable content: the container's unanswered records and the
-/// placed world actor's spawn are unmeasured, so no scene is faked.
+/// unsupported reachable content: the container's unanswered records are
+/// unmeasured, so no scene is faked. The world actors are no longer a gap —
+/// #1155 bound their allegiance and the session launches.
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_retail_launch_is_refused_with_source_diagnostics() {
@@ -431,10 +423,10 @@ fn accept_vs_m01_runtime_retail_launch_is_refused_with_source_diagnostics() {
     };
     assert!(!plan.launchable());
     let text = error.to_string();
-    for surface in ["world_geometry", "world_actors"] {
+    for surface in ["world_geometry"] {
         assert!(text.contains(surface), "{surface} is named: {text}");
     }
-    for satisfied in ["mission_program", "mission_animations"] {
+    for satisfied in ["mission_program", "mission_animations", "world_actors"] {
         assert!(
             !text.contains(&format!("  {satisfied}:")),
             "{satisfied} is satisfied and so is not a gap: {text}"
