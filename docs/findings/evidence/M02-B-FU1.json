@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M02-B-FU1",
+ "candidate_tree": "ef5d54b0eaf39c7bfa960bdfd2bb478706161a4e",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-09T01:49:41Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m02_b_fu1_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m02_b_fu1_a_long_index_list_binds_as_one_list_argument", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m02_b_fu1_the_kill_sites_lower_through_one_list_argument_and_m02_lowers", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "dbfe11c912ee48c202b1cb515aa95379e991e1d0b3d24d78ca742b57602ee1c2", "kind": "log"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: claude-2/claude-2 (Rally #800, task.started of 2026-10-08T22:18Z); reviewer: opencode-1/opencode-1 (Rally review claim of 2026-10-09T00:15Z) — a different agent instance and model with a fresh context, so this review is independent of the implementation, but it is an agent review of the code and tests, not independent original-reference evidence and not original-run evidence; no agent review replaces the owner's human approval", "method": "acceptance suite run locally with the retail capability on the rebased commit; the fields are derived from the recorded log and production discovery of $CS_GAME_DIR. The suite pins this task's change: the list spelled beside a list-taking objective directive (the measured operations WakeObjectives, SleepObjectives, KillObjectives and WakeObjectivesOnTransition) is carried as ONE `Value::List` argument, so M02's nine-index KILL_OBJECTIVE_WHEN_I_COMPLETE site binds through a single-argument signature, `MAX_CALL_ARGS` stays 8, and M02's control record lowers completely — every site bound through a measured signature, the bound program validating, and the census row complete through the census's own verdict. NOT CLAIMED: no directive is implemented by a measured effect, no mission was played, no original executable was run and nothing is verified_original; SET_AI_NET's over-bound pair list (M03 block 10) is a separate gap owned by M03-B-FU2 (#810), not closed here. Claim is implemented only; validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit the suite and this harness ran on; the only later delta is this report's own copy under docs/findings/evidence/, which no acceptance test reads"},
+ "claim": "implemented"
+}
