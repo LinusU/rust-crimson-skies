@@ -5,7 +5,11 @@ keys and admit them to the record vocabulary" (Rally #801,
 `missions/M02.md`, work order `M02-B`). Shared contract:
 `docs/contracts/SCRIPT-MISSION.md`. Capabilities used: `retail` (`$CS_GAME_DIR`
 read-only, never written) and the owner-supplied decrypted engine image
-(`$CS_ENGINE_IMAGE`, read-only, never committed).
+(`$CS_ENGINE_IMAGE`, read-only, never committed). Evidence report:
+`private/evidence/M02-B-FU2/acceptance.json` (validated with
+`tools/validate_evidence.py --require-pass`), committed as
+`docs/findings/evidence/M02-B-FU2.json`; its artifacts are the acceptance log
+and `m02-b-fu2-record-sounds.json`, both under `private/`.
 
 **Everything about the original program below is static code evidence** from
 disassembling the owner's decrypted executable. The original program was never
@@ -165,10 +169,19 @@ sounding is not evidence of a recorded loss.
 - `crates/cs_app/tests/campaign/m02_b_fu2.rs` — this task's three
   `accept_m02_b_fu2_*` tests, below.
 - `crates/cs_app/tests/campaign/evidence.rs` — the test lists and
-  `evidence_report_m02_b_fu2_writes_the_acceptance_report`. One clause of
-  M02-B's own report text is corrected with it: it claimed the five keys "stay
-  outside the measured vocabulary", which after this task is true only of
-  `CONTROL_RECORD_KEY_VOCABULARY`, so it now says exactly that and names #801.
+  `evidence_report_m02_b_fu2_writes_the_acceptance_report`, which writes
+  `private/evidence/M02-B-FU2/{cargo-test.log,m02-b-fu2-record-sounds.json,
+  acceptance.json}` and is validated with
+  `tools/validate_evidence.py --require-pass`; the committed copy is
+  `docs/findings/evidence/M02-B-FU2.json`. Two text changes ride along:
+  one clause of M02-B's own report text is corrected (it claimed the five
+  keys "stay outside the measured vocabulary", which after this task is true
+  only of `CONTROL_RECORD_KEY_VOCABULARY`, so it now says exactly that and
+  names #801), and both harnesses — M02-B's and this task's — stop wrapping
+  `str_array`'s already-bracketed output in a second pair of brackets, which
+  wrote an empty `unclassified_record_keys` as `[[]]` (M02's five keys were
+  written as a nested array the same way; no committed artifact carried
+  either, since those lists live in the `private/` artifact).
 - Wiring only (AGENTS rule 1): `crates/cs_app/tests/campaign/main.rs` (one
   `mod m02_b_fu2;` and a doc paragraph), `crates/cs_app/tests/campaign/m02_b.rs`
   (`control_binding` / `control_document` widened to `pub(crate)` for the
