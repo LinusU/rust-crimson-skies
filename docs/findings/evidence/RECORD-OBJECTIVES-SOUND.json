@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "RECORD-OBJECTIVES-SOUND",
+ "candidate_tree": "17be194000289fee800b1772b73255ad82e52d17",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-09T03:09:16Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_record_objectives_sound_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 3, "executed": 3, "passed": 3, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_record_objectives_sound_the_two_keys_are_measured_with_their_outcome_consumer", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_record_objectives_sound_the_image_gates_and_consumes_both_keys_at_end_of_tick", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_record_objectives_sound_no_retail_control_member_spells_either_key", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "530c2cbf9b212c8b4036d1e78912cc823b7260d41f83a3e43c2c087e9ae6c5dc", "kind": "log"}, {"path": "record-objectives-sound-census.json", "sha256": "806c18662f53ef139d24a085de26b91e89bf5c7993ac90346cbd9cb001180437", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: swe2-max-1/swe2-max-1 (Rally #808); reviewer: swe2-max-1/swe2-max-1 — the implementing agent, running this harness at hand-over; this run is the implementer's own evidence, not a review (same agent identity as the implementer, so it is NOT independent review and no agent review replaces the owner's human approval); the branch's Rally reviewing agent writes its own report with its own CS_EVIDENCE_REVIEWER identity", "method": "acceptance suite re-run locally with the retail capability and the owner-supplied engine image; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR and the production census `cs_app::mission_control::survey_mission_control_programs` derives from it, and the dispositions come from `cs_content::mission_control::record_sound_disposition` — two keys, each measured with its end-of-tick outcome consumer, its mission-object field, its parse site and its consumer site. The image member re-reads $CS_ENGINE_IMAGE (the owner-supplied decrypted executable, sha256 43540fc9…) at those addresses and re-derives the selector — the lost-flag-first branch order, the null-handle skips and the shared play call — from the instruction bytes: static code reading only, no original run. The retail member re-measures the whole installation through the production census and finds zero control members spelling either key, so the admission completes the parser's known vocabulary without changing any retail mission's classified content. NOT CLAIMED: no sound is played here and the handle's sound identity stays runtime state; playing an objectives handle is not the recorded mission outcome (F37-D-FU2); no mission was played, no original executable was run and nothing is verified_original. Claim is implemented only; validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit the suite and this harness ran on; the only later delta is this report's own copy under docs/findings/evidence/ and the findings document that discusses it, neither of which the acceptance suite reads"},
+ "claim": "implemented"
+}
