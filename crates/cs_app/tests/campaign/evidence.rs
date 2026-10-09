@@ -1284,10 +1284,13 @@ fn evidence_report_m10_b_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: claude-2/claude-2 (Rally #286, Sonnet 5.5, session of 2026-10-09); no \
-             reviewer yet. The implementer's own run is not independent review and not \
-             independent original-reference evidence; no agent review replaces the owner's human \
-             approval"
+            "implementer: claude-2/claude-2 (Rally #286, Sonnet 5.5, session of 2026-10-09); \
+             reviewer: bunny-alpha-2/bunny-alpha-2 (Rally review claim of 2026-10-09T04:22Z) — a \
+             different agent instance and model with a fresh context (a new session that re-read \
+             the task history, the mission sheet, the shared contract and the diff), so this \
+             review is independent of the implementation, but it is an agent review of the code \
+             and tests, not independent original-reference evidence and not original-run \
+             evidence; no agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; the fields are derived \
@@ -1296,7 +1299,10 @@ fn evidence_report_m10_b_writes_the_acceptance_report() {
              TRAVELERS counting-mode conditions that keep it from lowering to a valid program; \
              claim is implemented only; the mission is NOT ready: the open gap (TRAVELERS counting \
              mode, blocks 22 and 35) is recorded in \
-             docs/findings/2026-10-09-m10-b-control-program-gaps.md"
+             docs/findings/2026-10-09-m10-b-control-program-gaps.md. The reviewer re-ran the \
+             whole acceptance suite with CS_GAME_DIR on the rebased commit, re-applied the two \
+             documented mutations, regenerated this report from that run and validated it with \
+             tools/validate_evidence.py --require-pass"
         ),
     );
 

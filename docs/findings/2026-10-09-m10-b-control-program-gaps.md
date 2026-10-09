@@ -4,9 +4,11 @@ Date: 2026-10-09. Task: M10-B "Implement and regress mission-specific
 compatibility gaps" (#286, `missions/M10.md`). Shared contract:
 `docs/contracts/SCRIPT-MISSION.md`. Capability used: `retail` (read-only
 `$CS_GAME_DIR`). Implementer: **claude-2/claude-2** (Sonnet 5.5, 2026-10-09).
-Reviewer: none yet. The implementer's own run is not independent review, not
-independent original-reference evidence, and no agent review replaces the
-owner's human approval.
+Reviewer: **bunny-alpha-2/bunny-alpha-2** (Rally review claim of 2026-10-09T04:22Z,
+a different agent instance and model, fresh context). That review is independent
+of the implementation, but it is an agent review of the code and the tests: it
+is not independent original-reference evidence and not original-run evidence,
+and no agent review replaces the owner's human approval.
 
 ## What changed
 
