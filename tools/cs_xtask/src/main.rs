@@ -1,6 +1,6 @@
 //! `cs_xtask` — the workspace's reproducible testing and packaging gates.
 //!
-//! Seven commands, all local (the owner's F00-C note keeps task-specific
+//! Every command is local (the owner's F00-C note keeps task-specific
 //! discovery out of CI):
 //!
 //! * `test-select --prefix <prefix>` runs the task's positive test selection
@@ -31,6 +31,10 @@
 //! * `corpus manifest` prints the declared F62-A corpus contract as JSON and
 //!   `corpus audit` checks the synthetic/private separation rules against the
 //!   real tracked file list ([`corpus`]).
+//! * `push-guard` resolves — offline, from git's own configuration — the
+//!   remote refs a `git push` from this branch would update and refuses any
+//!   push whose destination is `refs/heads/main` ([`push_guard`], task
+//!   #1170).
 //!
 //! Exit codes: 0 gate passed, 1 the gate failed, 2 the request itself was
 //! invalid. Failures are printed on stderr, never returned as success.
@@ -45,6 +49,7 @@ use cs_xtask::ci;
 use cs_xtask::corpus;
 use cs_xtask::footprint;
 use cs_xtask::package;
+use cs_xtask::push_guard;
 use cs_xtask::target_dir;
 use cs_xtask::test_select;
 use cs_xtask::transient;
@@ -115,10 +120,22 @@ COMMANDS
         (the read-only original installation or a private corpus dir), each
         private selector is enumerated and fingerprinted; without it the
         private suite is reported unavailable rather than passed.
+    push-guard [--workspace-root <dir>] [--branch <name>]
+        Resolve, from git's own configuration and without touching the
+        network, the remote refs a `git push` from this branch would update
+        (bare `git push` or `git push -u [remote] <branch>` — the forms
+        agents use), and refuse the push when any destination is
+        refs/heads/main. A stale branch.<name>.merge left behind by
+        `git checkout --no-track -B` plus push.default=upstream rewrites the
+        destination of `git push -u origin <name>` to main (task #1170);
+        push.default=current, or an explicit HEAD:refs/heads/<name>
+        refspec, does not.
 
 OPTIONS
     --prefix <prefix>       Task test prefix, e.g. accept_f00_c_
     --workspace-root <dir>  Workspace to run in (default: current directory)
+    --branch <name>         push-guard only: judge this branch instead of the
+                            checked-out one
     --target-dir <dir>      report-test-disk only: the target directory whose
                             debug/deps holds the built test binaries (default:
                             $CARGO_TARGET_DIR or <workspace root>/target)
@@ -136,6 +153,7 @@ struct Options {
     workspace_root: PathBuf,
     manifest: Option<PathBuf>,
     target_dir: Option<PathBuf>,
+    branch: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -162,6 +180,7 @@ fn main() -> ExitCode {
         "verify-target-dir" => run_verify_target_dir(&args[1..]),
         "verify-package" => run_verify_package(&args[1..]),
         "corpus" => run_corpus(&args[1..]),
+        "push-guard" => run_push_guard(&args[1..]),
         other => {
             eprintln!("cs-xtask: unknown command {other:?}");
             eprint!("{USAGE}");
@@ -171,19 +190,22 @@ fn main() -> ExitCode {
 }
 
 /// Parses `--prefix`, `--workspace-root`, `--manifest`, `--target-dir` and
-/// rejects anything else. The three booleans gate `--prefix`, `--manifest` and
-/// `--target-dir` to the one subcommand each belongs to, so a typo aimed at
-/// another subcommand is an error rather than a silently ignored flag.
+/// `--branch` and rejects anything else. The four booleans gate `--prefix`,
+/// `--manifest`, `--target-dir` and `--branch` to the one subcommand each
+/// belongs to, so a typo aimed at another subcommand is an error rather than
+/// a silently ignored flag.
 fn parse_options(
     args: &[String],
     allow_prefix: bool,
     allow_manifest: bool,
     allow_target_dir: bool,
+    allow_branch: bool,
 ) -> Result<Options, String> {
     let mut prefix = None;
     let mut workspace_root = PathBuf::from(".");
     let mut manifest = None;
     let mut target_dir = None;
+    let mut branch = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -217,6 +239,16 @@ fn parse_options(
                 target_dir = Some(PathBuf::from(value));
                 index += 2;
             }
+            "--branch" if allow_branch => {
+                if branch.is_some() {
+                    return Err("--branch was given twice".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--branch needs a value".to_string());
+                };
+                branch = Some(value.clone());
+                index += 2;
+            }
             "--workspace-root" => {
                 let Some(value) = args.get(index + 1) else {
                     return Err("--workspace-root needs a value".to_string());
@@ -232,6 +264,7 @@ fn parse_options(
         workspace_root,
         manifest,
         target_dir,
+        branch,
     })
 }
 
@@ -248,7 +281,7 @@ fn require_workspace(root: &Path) -> Result<(), String> {
 }
 
 fn run_test_select(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, true, false, false) {
+    let options = match parse_options(args, true, false, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -284,7 +317,7 @@ fn run_test_select(args: &[String]) -> ExitCode {
 }
 
 fn run_verify_ci(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false, false, false) {
+    let options = match parse_options(args, false, false, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -308,7 +341,7 @@ fn run_verify_ci(args: &[String]) -> ExitCode {
 /// Runs the platform bootstrap gate: required workspace members with real
 /// manifests, frozen pins, intact CI gates — all four checks must pass.
 fn run_verify_bootstrap(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false, false, false) {
+    let options = match parse_options(args, false, false, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -345,7 +378,7 @@ fn run_verify_bootstrap(args: &[String]) -> ExitCode {
 /// Runs the CI build-footprint gate (task #430): the profiles CI links under
 /// must not emit full DWARF.
 fn run_verify_ci_budget(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false, false, false) {
+    let options = match parse_options(args, false, false, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -377,7 +410,7 @@ does not emit full DWARF for CI's dev, test and bench profiles",
 /// cost — one listing of the `deps` directory, however many targets the plan
 /// holds — so a run on a loaded host states where its time went (task #766).
 fn run_report_test_disk(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false, false, true) {
+    let options = match parse_options(args, false, false, true, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -466,7 +499,7 @@ fn run_report_test_disk(args: &[String]) -> ExitCode {
 
 /// Runs the per-worktree target-directory gate (task #383).
 fn run_verify_target_dir(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false, false, false) {
+    let options = match parse_options(args, false, false, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -592,6 +625,53 @@ fn count_private_selectors() -> usize {
         .count()
 }
 
+/// Runs the push-destination guard (task #1170): which remote refs a push
+/// from this branch would update, resolved offline from git's own
+/// configuration, and a loud refusal when any of them is `refs/heads/main`.
+fn run_push_guard(args: &[String]) -> ExitCode {
+    let options = match parse_options(args, false, false, false, true) {
+        Ok(options) => options,
+        Err(error) => return usage_error(&error),
+    };
+    // No `require_workspace` here: push-guard judges a git repository, not a
+    // cargo workspace, and demanding a Cargo.toml beside .git would only
+    // exclude the scratch repos its fixtures — and its reproductions — use.
+    // A root git cannot resolve is still a loud gate failure, from git's own
+    // message.
+
+    let report = match push_guard::check(&options.workspace_root, options.branch.as_deref()) {
+        Ok(report) => report,
+        Err(error) => return gate_failed(&error.to_string()),
+    };
+
+    let subject = report.branch.as_deref().unwrap_or("(detached HEAD)");
+    println!(
+        "push-guard: branch {subject} on remote {}, push.default={}",
+        report.remote, report.push_default
+    );
+    if report.destinations.is_empty() {
+        println!("push-guard: a push would update no remote ref from configuration alone");
+    }
+    for destination in &report.destinations {
+        println!("push-guard: a push would update: {destination}");
+    }
+    for note in &report.notes {
+        println!("push-guard: note: {note}");
+    }
+    if report.is_allowed() {
+        println!(
+            "push-guard: OK — none of the destinations is {}",
+            push_guard::PROTECTED_REF
+        );
+        ExitCode::from(EXIT_OK)
+    } else {
+        for refusal in &report.refusals {
+            eprintln!("cs-xtask: push-guard refused: {refusal}");
+        }
+        ExitCode::from(EXIT_GATE_FAILED)
+    }
+}
+
 fn usage_error(message: &str) -> ExitCode {
     eprintln!("cs-xtask: {message}");
     ExitCode::from(EXIT_USAGE)
@@ -600,7 +680,7 @@ fn usage_error(message: &str) -> ExitCode {
 /// Runs the release-contents gate (F61-A): read a candidate manifest and fail
 /// when it may not be released.
 fn run_verify_package(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false, true, false) {
+    let options = match parse_options(args, false, true, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };

@@ -34,11 +34,16 @@
 //! * [`transient`] retries a read or spawn that loses its file for the
 //!   moment a writer is replacing it — the `NotFound` a concurrent cargo on
 //!   the same target directory can put under a check (task #610).
+//! * [`push_guard`] resolves, from git's own configuration and without
+//!   touching the network, which remote refs a push from the current branch
+//!   would update, and refuses any push whose destination is
+//!   `refs/heads/main` — the stale-`branch.<name>.merge` rewrite that pushed
+//!   a task branch to main on 2026-10-09 (task #1170).
 //!
 //! The `cs_xtask` binary exposes `test-select`, `verify-ci`,
 //! `verify-bootstrap`, `verify-ci-budget`, `report-test-disk`,
-//! `verify-target-dir`, `verify-package` and `corpus`; coverage commands arrive
-//! with later tooling tasks.
+//! `verify-target-dir`, `verify-package`, `corpus` and `push-guard`;
+//! coverage commands arrive with later tooling tasks.
 
 pub mod bootstrap;
 pub mod budget;
@@ -47,6 +52,7 @@ pub mod corpus;
 pub mod footprint;
 pub mod package;
 pub mod pins;
+pub mod push_guard;
 pub mod target_dir;
 pub mod test_select;
 pub mod transient;
