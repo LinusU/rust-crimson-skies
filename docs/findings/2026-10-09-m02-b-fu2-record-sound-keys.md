@@ -33,7 +33,7 @@ of the seven** — the two M02 does not spell (`OBJECTIVES_WON_SOUND`,
 | Format | PE32, image base `0x400000` |
 | Size | 2 580 480 bytes |
 | SHA-256 | `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75` — byte-identical to the directive family's image, so both readings describe one binary, and equal to `cs_content::coordinates::ORIGINAL_IMAGE_SHA256`, which the acceptance test re-hashes on every run |
-| Address convention | virtual address (VA); the section table measures `.text` at `VA 0x401000` = file `0x1000` and `.data` at `VA 0x219000` = file `0x219000`, so for both sections this note reads, `file offset = VA − 0x400000` |
+| Address convention | virtual address (VA); the section table measures `.text` at RVA `0x1000` (VA `0x401000`) = file `0x1000` and `.data` at RVA `0x219000` (VA `0x619000`) = file `0x219000`, so for both sections this note reads, `file offset = VA − 0x400000` |
 | Parser | the mission-file parse block of `0x466b70` (`mov ebx, ecx` = mission object, `xor edi, edi`), the same routine finding A measured |
 | Name → handle | `0x596120(name)` — re-read here: returns 0 when the global table pointer `[0x639c7c]` or the name is null, otherwise walks the list at `[0x9ad6dc]` comparing per node through `0x596af0`, falling back to `0x599a50(name)` |
 | Record lookup | `0x57a090(name, container)` — the named-child lookup the parse calls for every record key |
@@ -177,7 +177,8 @@ sounding is not evidence of a recorded loss.
   one clause of M02-B's own report text is corrected (it claimed the five
   keys "stay outside the measured vocabulary", which after this task is true
   only of `CONTROL_RECORD_KEY_VOCABULARY`, so it now says exactly that and
-  names #801), and both harnesses — M02-B's and this task's — stop wrapping
+  names #801 — and, after #808, that task as well), and both harnesses —
+  M02-B's and this task's — stop wrapping
   `str_array`'s already-bracketed output in a second pair of brackets, which
   wrote an empty `unclassified_record_keys` as `[[]]` (M02's five keys were
   written as a nested array the same way; no committed artifact carried
@@ -194,7 +195,7 @@ sounding is not evidence of a recorded loss.
 | Test | Kind | What it pins |
 | --- | --- | --- |
 | `accept_m02_b_fu2_m02s_five_record_sound_keys_are_measured_with_their_consumers` | retail (`CS_GAME_DIR`) | an independent re-walk of the decoded member classifies its ten record-level keys into exactly the two vocabularies and leaves nothing unclassified; the production measurement reports the same partition with each sound key counted once, in parse order; every disposition is `Measured`, names its consumer (classes 1/2/3 and mission end), cites this finding, carries residual unknowns and distinct addresses; every sound key's measured value shape is `[text]` |
-| `accept_m02_b_fu2_the_image_parses_and_consumes_each_sound_key_where_production_says` | engine image (`CS_ENGINE_IMAGE`) | the image hashes to the recorded digest; at each `parse_site`: `push imm32` of the key's own NUL-terminated string, zero default into `field_offset`, `0x57a090` named-child lookup, `0x596120` name→handle, handle stored into `field_offset`; at each `consumer_site`: the field is read back through the measured addressing mode; both selectors re-derived from the instruction bytes (class chain arms = the three consumer sites in class order; won-flag `je` target = `MISSION_LOST_SOUND`'s site, fall-through = `MISSION_WON_SOUND`'s, and the lost arm joins the play call) |
+| `accept_m02_b_fu2_the_image_parses_and_consumes_each_sound_key_where_production_says` | engine image (`CS_ENGINE_IMAGE`) | the image is read through `cs_content::coordinates::load_engine_image`, which refuses an unset variable, an unreadable file and bytes that do not hash to the recorded digest (#798); at each `parse_site`: `push imm32` of the key's own NUL-terminated string, zero default into `field_offset`, `0x57a090` named-child lookup, `0x596120` name→handle, handle stored into `field_offset`; at each `consumer_site`: the field is read back through the measured addressing mode; both selectors re-derived from the instruction bytes (class chain arms = the three consumer sites in class order; won-flag `je` target = `MISSION_LOST_SOUND`'s site, fall-through = `MISSION_WON_SOUND`'s, and the lost arm joins the play call) |
 | `accept_m02_b_fu2_the_sound_vocabulary_is_entirely_measured_and_answers_for_nothing_else` | synthetic (CI) | every vocabulary key answers `Some(Measured)` with a stable consumer code and different parse/consumer sites — a vocabulary key without a measurement would answer `Refused` and fail here; `MISSION_TIMER`, the four other shape-measured fields, `OBJECTIVES_WON_SOUND`, `OBJECTIVES_LOST_SOUND` and a key no original spells all answer `None`; the consumers partition as 3 classes + 2 mission ends |
 
 Every test calls production code (`record_sound_disposition`,
@@ -245,18 +246,20 @@ After the last probe the file was restored from a copy taken before the first
 - **The presentation class names.** The dispatch reads an integer `1`/`2`/`3`
   out of the objective's class field; calling them PRIMARY/SECONDARY/TERTIARY is
   finding B's reading of `IDENTITY`, carried as a reading.
-- **`OBJECTIVES_WON_SOUND` and `OBJECTIVES_LOST_SOUND` are not admitted.** They
-  are the other two of the original's seven mission-level sound keys (fields
-  `+0xc70`/`+0xc74`, consumers at `0x46afd2`/`0x46af9f` per finding D). M02
-  spells neither, this task's five are M02's five, so admitting two keys no
-  mission in scope spells would widen the slice; they stay outside every
-  vocabulary and are therefore counted and named (never read) wherever a record
-  does spell them. Filed as a follow-up task.
+- **`OBJECTIVES_WON_SOUND` and `OBJECTIVES_LOST_SOUND` were this task's
+  follow-up, since measured and admitted.** They are the other two of the
+  original's seven mission-level sound keys (fields `+0xc70`/`+0xc74`,
+  consumers at `0x46afd2`/`0x46af9f` per finding D). M02 spells neither and
+  this task's five are M02's five, so admitting them stayed outside this
+  slice; RECORD-OBJECTIVES-SOUND (#808) then measured the pair — an
+  end-of-tick outcome consumer — and admitted both to
+  `CONTROL_RECORD_SOUND_KEY_VOCABULARY`, which now carries all seven.
 - **No engine operation plays these keys.** `Measured` is a statement about the
-  original, not support: nothing in this change lowers or emits a sound, and
-  M02's record still does not lower — the `KILL_OBJECTIVE_WHEN_I_COMPLETE`
-  host-call-bound gap is #800 (`M02-B-FU1`). M02 stays `Unsupported` and the
-  campaign gate stays closed.
+  original, not support: nothing in this change lowers or emits a sound.
+  M02's record has lowered completely since `M02-B-FU1` (#800) carried the
+  `KILL_OBJECTIVE_WHEN_I_COMPLETE` index lists as one list argument each —
+  that is a lowering result, not an implemented effect, and the campaign
+  gate still needs every row.
 - **No original run, and nothing `verified_original`.** Every claim above is
   static code evidence from one byte sequence (`43540fc9…`), read twice — once
   by the directive family on 2026-10-06, once here — from two different paths.
