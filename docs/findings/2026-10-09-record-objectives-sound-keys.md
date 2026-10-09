@@ -351,6 +351,48 @@ The committed evidence copy
 reviewing agent on the rebased commit with its own `CS_EVIDENCE_REVIEWER`
 identity, per `docs/contracts/CLI-EVIDENCE.md`.
 
+## Review round 2 (Rally #808): hand-rebase after the landing conflict
+
+Rally's lander could not rebase the approved head `0644071b` onto `main`
+("rebase conflict with main; a reviewer must rebase it by hand"), so this
+round replayed the whole stack by hand — the approved M02-B-FU2 head
+`219b5f8d` plus this task's commits — onto `origin/main`.
+
+Conflicts all landed in `crates/cs_app/tests/campaign/evidence.rs` and
+`main.rs`, where `main` and this stack had both grown the same harness list.
+Each conflict was resolved by keeping **both** sides: `main`'s M03-B, M04-B
+and M02-B-FU1 report harnesses and module-doc paragraphs stay, and this
+stack's M02-B-FU2 and RECORD-OBJECTIVES-SOUND harnesses and paragraphs stay.
+Nothing from either side was dropped — `main`'s `RETAIL_TESTS_M03_B` /
+`RETAIL_TESTS_M04_B` / `RETAIL_TESTS_M02_B_FU1` blocks and `mod m03_b;`,
+`mod m04_b;` are all still present, and both new suites' harnesses,
+constants and `parse_*_suite` helpers are all present exactly once. No
+protected path is touched; the branch's delta over `origin/main` is exactly
+the M02-B-FU2 stack plus this task.
+
+The two committed evidence copies were regenerated on the rebased tree
+(`candidate_tree` `b1732901…`, regenerated a second time after `main` moved under the rebase) by re-running each acceptance selection and
+its harness with `CS_EVIDENCE_REVIEWER` naming who re-ran it: this round's
+re-run is `bunny-alpha-2/bunny-alpha-2` (fresh session, different agent
+instance and model from both implementers), and the identity says it is a
+re-run of the same suite against the rebased tree, not a new claim about the
+original work. `docs/findings/evidence/M02-B-FU2.json` needed the same
+regeneration because this rebase, not #801's review, is what invalidated its
+tree.
+
+### Checks run by this reviewer (rebased head, clean tree)
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_record_objectives_sound_ --include-ignored` | 0 (3 tests) |
+| `cargo test --locked --test campaign -- accept_m02_b_ --include-ignored` | 0 (18 tests) |
+| `cargo test --locked --test campaign -- accept_m03_b_ --include-ignored` | 0 (8 tests) |
+| `cargo test --locked --test campaign -- accept_m04_b_ --include-ignored` | 0 (8 tests) |
+| `python3 tools/validate_evidence.py … --require-pass` (both reports) | 0 (`structurally_valid`) |
+
 ## Sources
 
 `$CS_GAME_DIR` read-only through `cs_assets::install::discover` and
