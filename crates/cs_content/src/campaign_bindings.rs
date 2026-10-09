@@ -4491,9 +4491,10 @@ impl MissionControlBinding {
             .collect()
     }
 
-    /// The record-level keys outside
-    /// [`crate::mission_control::CONTROL_RECORD_KEY_VOCABULARY`] — fields the
-    /// measurement counts but does not interpret, each a named unknown.
+    /// The record-level keys outside both
+    /// [`crate::mission_control::CONTROL_RECORD_KEY_VOCABULARY`] and
+    /// [`crate::mission_control::CONTROL_RECORD_SOUND_KEY_VOCABULARY`] — keys
+    /// the measurement counts but does not interpret, each a named unknown.
     #[must_use]
     pub fn unclassified_record_keys(&self) -> &[String] {
         self.record.unclassified_record_keys()

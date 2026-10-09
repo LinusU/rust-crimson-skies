@@ -126,8 +126,8 @@
 //! `accept_m02_b_fu3_objective_address`, so CI carries the refusal arm.
 //! `evidence.rs`'s `evidence_report_m02_b_fu3_*` writes that task's report and
 //! is selected by test name, so no task selection picks it up as an acceptance
-//! test. The `accept_m02_b_` prefix therefore covers three suites (`m02_b`,
-//! `m02_t3`, `m02_b_fu3`) and all of them must pass.
+//! test. The `accept_m02_b_` prefix therefore covers four suites (`m02_b`,
+//! `m02_t3`, `m02_b_fu2`, `m02_b_fu3`) and all of them must pass.
 //!
 //! `m04_b.rs` is the M04-B stage: `accept_m04_b_*` tests that run the shared
 //! control-program machinery over M04's own reader archive — census,

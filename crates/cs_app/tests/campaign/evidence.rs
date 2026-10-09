@@ -6416,10 +6416,10 @@ const SYNTHETIC_TESTS_M02_B_FU2: &[&str] =
 ///   agent's run names itself.
 ///
 /// The report records what M02-B does *not* claim: no directive is
-/// implemented by a measured effect, M02's control record does not lower
-/// (the kill sites exceed the host-call bound, pinned by the suite), no
-/// mission was played, no original executable was run and nothing is
-/// `verified_original`.
+/// implemented by a measured effect, M02's control record lowers completely
+/// only since M02-B-FU1 (#800) — a lowering result, not an implemented
+/// effect — no mission was played, no original executable was run and
+/// nothing is `verified_original`.
 ///
 /// Everything else — the toolchain versions, the installation hashes, the
 /// candidate tree, the counts, the digests and the timestamps — is derived
@@ -6650,8 +6650,11 @@ fn evidence_report_m02_b_writes_the_acceptance_report() {
              member it spells). NOT CLAIMED: no directive is implemented by a measured effect; \
              M02's control record lowers completely (its KILL_OBJECTIVE_WHEN_I_COMPLETE index \
              lists are carried as one list argument each, task M02-B-FU1), which is lowering \
-             evidence only, not an implemented effect; the five record-level \
-             sound keys stay outside the measured vocabulary; no mission was played, no original \
+             evidence only, not an implemented effect; the record-level \
+             sound keys are outside CONTROL_RECORD_KEY_VOCABULARY — M02-B-FU2 (#801) and \
+             RECORD-OBJECTIVES-SOUND (#808) measured and admitted all seven to \
+             CONTROL_RECORD_SOUND_KEY_VOCABULARY with their consumers; no mission was played, no \
+             original \
              executable was run and nothing is verified_original. Claim is implemented only; \
              validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the \
              tree of the commit the suite and this harness ran on; the only later delta is this \
@@ -7211,9 +7214,10 @@ fn address_record(install_sha256: &str) -> String {
 ///
 /// The report records what M02-B-FU2 does *not* claim: a measured disposition
 /// is static code evidence, not a licence — no sound is played, the handle's
-/// sound identity stays runtime state, M02's control record still does not
-/// lower (the KILL_OBJECTIVE_WHEN_I_COMPLETE gap is #800's), no mission was
-/// played, no original executable was run and nothing is `verified_original`.
+/// sound identity stays runtime state, M02's control record lowers only since
+/// M02-B-FU1 (#800), a lowering result and not an implemented effect, no
+/// mission was played, no original executable was run and nothing is
+/// `verified_original`.
 ///
 /// Everything else — the toolchain versions, the installation hashes, the
 /// candidate tree, the counts, the digests and the timestamps — is derived
@@ -7435,10 +7439,10 @@ fn evidence_report_m02_b_fu2_writes_the_acceptance_report() {
              sha256 43540fc9…) at those addresses and re-derives both selectors — the \
              objective-class dec/je chain and the mission-end won flag — from the instruction \
              bytes: static code reading only, no original run. NOT CLAIMED: no sound is played \
-             here and the handle's sound identity stays runtime state; M02's control record still \
-             does not lower (KILL_OBJECTIVE_WHEN_I_COMPLETE exceeds the registry's per-signature \
-             bound, M02-B-FU1 / #800), so M02 stays Unsupported and the campaign gate stays \
-             closed; the two original record keys this task did not admit \
+             here and the handle's sound identity stays runtime state; M02's control record \
+             lowers completely since M02-B-FU1 (#800), which is lowering evidence only, not an \
+             implemented effect — the campaign gate still needs every row; the two original \
+             record keys this task did not admit \
              (OBJECTIVES_WON/LOST_SOUND) were since measured and admitted by \
              RECORD-OBJECTIVES-SOUND (#808) — no retail record spells either; no mission was \
              played, no original \
