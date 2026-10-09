@@ -30,7 +30,7 @@ manifest:
 | `install_sha256` | `b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978` |
 | `content_sha256` | `a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d` |
 
-151 of the 155 committed reports carry exactly this pair (one more,
+152 of the 156 committed reports carry exactly this pair (one more,
 F52-D, carries `null`/`null` — a report measured over no installation).
 The three outliers below carry the same `install_sha256` but a different
 `content_sha256` — which cannot come from one run over one manifest, since
@@ -39,7 +39,7 @@ both fingerprints are pure functions of it.
 ## Which writer produced each report (name and path)
 
 The committed-harness reader in
-`tools/tests/test_evidence_review_identity.py` discovers **140** Rust
+`tools/tests/test_evidence_review_identity.py` discovers **141** Rust
 evidence harnesses under `crates/` and `tools/`; **none** resolves to
 F05-D, F12-J or T351, and `git log -S` finds that no committed harness
 ever existed for them. 15 committed reports have no committed harness at
