@@ -23,8 +23,10 @@ and was not re-derived.*
 No production code. The census (`cs_app::mission_control`), the directive
 dispositions and the record → `RawProgram` adapter are M01-LC's; this stage
 runs them over M03 and pins the result in `crates/cs_app/tests/campaign/m03_b.rs`
-(six retail and two synthetic `accept_m03_b_*` tests) plus the evidence harness
-in `evidence.rs`. Wiring: `campaign/main.rs` (`mod m03_b;`).
+(six retail and two synthetic `accept_m03_b_*` tests at M03-B; seven retail and
+two synthetic since M03-B-FU2 (#810) added its ten-pair retail pin and re-pinned
+the synthetic net arm) plus the evidence harness in `evidence.rs`. Wiring:
+`campaign/main.rs` (`mod m03_b;`).
 
 ## Measured
 
