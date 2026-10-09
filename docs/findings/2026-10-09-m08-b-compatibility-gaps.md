@@ -404,6 +404,71 @@ The earlier reviews' mutation results still stand: no production file
 changed in any of the three rebases, only the doc paragraph, the harness
 placement and the findings/evidence copies moved.
 
+### Landing conflict, round four (2026-10-09)
+
+The approval at `27743251` could not be fast-forwarded either — the lander
+reported *rebase conflict with main; a reviewer must rebase it by hand* a
+third time — so the task came back to review a fourth time. This round's
+reviewer is **bunny-alpha-2/bunny-alpha-2** (Rally review claim of
+2026-10-09T10:50Z): the **same agent name as the implementer**, in a fresh
+session and a fresh context, but therefore **not an independent review** —
+it is recorded here and in the report's `review.identity` exactly that way.
+The independent reviews remain rounds one and two (`bunny-alpha-1`, different
+agent instance) and round three (`Devin SWE-2`, different agent instance *and*
+model); none of them is original-run or original-reference evidence, and no
+agent review replaces the owner's human approval.
+
+The branch was rebased by hand onto the moved `origin/main` (`549ef7e4`,
+which had landed M05-B since round three's `09b2618c`). One owner file
+conflicted:
+
+- `crates/cs_app/tests/campaign/main.rs` — this stage's doc paragraph and
+  main's new `m05_b.rs` paragraph had been inserted at the same place. Both
+  were kept (M05-B's first, then M08-B's); nothing else in the file differs
+  from `origin/main`.
+- `crates/cs_app/tests/campaign/evidence.rs` auto-merged again: verified to
+  be `origin/main`'s file plus this branch's additions only — `git diff
+  --stat origin/main...HEAD` shows 350 insertions and no deletion — and the
+  branch still adds exactly one `evidence_report_*` function over main's
+  (`evidence_report_m08_b_writes_the_acceptance_report`), each harness present
+  exactly once.
+
+Main's new M05-B landing touches only `crates/cs_app/tests/campaign/` and
+`docs/findings/`; it changes no production file and no `Cargo.toml` /
+`Cargo.lock`. The two pins this stage's retail test leans on were re-read on
+that main and hold: `crates/cs_script/src/conditions.rs` still returns
+`NoConditionFor` for `DANGER_ZONES_COMPLETED` ("this build lowers no
+condition for it"), and `MAX_CALL_ARGS` is still `8`.
+
+Checks on the fourth conflict-rebased tree (`1141b3de`): `cargo fmt --all --
+--check` (0), `cargo clippy --workspace --all-targets --all-features
+--locked -- -D warnings` (0), `cargo test --workspace --locked` (0: **480**
+`test result: ok` lines, no failure), `cargo test --workspace --locked --
+accept_m08_b_ --include-ignored` (0: **7 discovered, 7 executed, 7 passed,
+0 failed, 0 ignored**, tee'd to `private/evidence/M08-B/cargo-test.log`).
+One mutation probe was run in this round, on the rebased tree, alone and
+then reverted (tree clean afterwards, selection re-run green):
+
+  | Mutation | Result |
+  | --- | --- |
+  | `control_member`'s measured rule → first member offered (`crates/cs_content/src/mission_control.rs`) | 5 of 7 fail — the five retail tests; only the two synthetic tests pass |
+
+  which reproduces round one's probe on today's main and proves the retail
+  pins still notice a broken derivation.
+
+The evidence report was regenerated from that run with the `evidence.rs`
+recipe (`CS_EVIDENCE_REVIEWER` naming all four agents of record and marking
+round four as *not* independent) and validated with
+`tools/validate_evidence.py … --require-pass` (exit 0,
+`structurally_valid: true`): `candidate_tree` `1141b3de…` (the rebased tree
+the suite ran on), `created_at` 2026-10-09T11:26Z, `command.cwd` this
+review's worktree, `cargo-test.log` hash `d33c24bb…`. The
+`m08-control-program.json` artifact still hashes to `3134ddc3…`, so the
+second production observation of M08's control program is byte-identical
+across four runs and four rebases; only `candidate_tree`, `created_at`,
+`command.cwd`, the log's hash, the assertion order and `review.identity`
+differ.
+
 ## Recorded unknowns (not guessed)
 
 - **The join remains an inference** (M08-A's standing unknown): this stage
