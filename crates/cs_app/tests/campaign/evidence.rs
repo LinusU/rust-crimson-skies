@@ -6571,7 +6571,7 @@ fn evidence_report_m02_b_writes_the_acceptance_report() {
          \x20\"members\": [{}],\n\
          \x20\"record\": {{\"blocks\": {}, \"sites\": {}, \"vocabulary\": {}, \
          \"implemented\": [{}], \"measured\": {}, \"unmeasured\": [{}], \
-         \"unclassified_record_keys\": [{}], \"refusals\": {}}}\n\
+         \"unclassified_record_keys\": {}, \"refusals\": {}}}\n\
          }}\n",
         jstr(context.install_sha256()),
         jstr(control.mission.as_str()),
@@ -7080,7 +7080,7 @@ fn evidence_report_m02_b_fu2_writes_the_acceptance_report() {
          \x20\"control_member\": {},\n\
          \x20\"control_sha256\": {},\n\
          \x20\"record\": {{\"blocks\": {}, \"sites\": {}, \"vocabulary\": {}, \
-         \"unclassified_record_keys\": [{}]}},\n\
+         \"unclassified_record_keys\": {}}},\n\
          \x20\"sounds\": [{}]\n\
          }}\n",
         jstr(context.install_sha256()),
