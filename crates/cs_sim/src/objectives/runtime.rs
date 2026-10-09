@@ -131,6 +131,7 @@ use cs_types::content::ContentId;
 
 use crate::damage::LifecycleKind;
 
+use super::address::AddressRefusal;
 use super::bailout::{
     BailoutConfirmation, BailoutRefusal, MissionTransition, MissionTransitions, TransitionOutcome,
 };
@@ -758,6 +759,14 @@ pub enum RuntimeError {
     EffectArgument { kind: CompletionEffectKind },
     /// A trigger movement was refused; see [`TriggerError`].
     Trigger(TriggerError),
+    /// A cross-objective address named an objective past the record's block
+    /// count; see [`AddressRefusal`] and the named rule
+    /// [`crate::objectives::address::OUT_OF_RANGE_OBJECTIVE_ADDRESS`].
+    ///
+    /// Refused, not clamped: the address the record spelled is carried whole
+    /// so the report says which address was past which record, and no
+    /// neighbouring objective is moved in its place.
+    Address(AddressRefusal),
 }
 
 impl fmt::Display for RuntimeError {
@@ -819,6 +828,7 @@ impl fmt::Display for RuntimeError {
                 if kind.carries_argument() { "no" } else { "a" }
             ),
             Self::Trigger(error) => write!(f, "trigger movement refused: {error}"),
+            Self::Address(refusal) => write!(f, "{refusal}"),
         }
     }
 }
@@ -828,6 +838,12 @@ impl std::error::Error for RuntimeError {}
 impl From<TriggerError> for RuntimeError {
     fn from(error: TriggerError) -> Self {
         Self::Trigger(error)
+    }
+}
+
+impl From<AddressRefusal> for RuntimeError {
+    fn from(refusal: AddressRefusal) -> Self {
+        Self::Address(refusal)
     }
 }
 

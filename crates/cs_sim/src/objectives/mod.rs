@@ -42,6 +42,17 @@
 //!   [`terminal::TerminalPrecedence`] that resolves a tick's conflicting
 //!   requests, and the [`terminal::TerminalLatch`] that holds one answer.
 //!
+//! # `M02-B-FU3` — the cross-objective address rule
+//!
+//! - [`address`]: [`address::resolve_objective_address`], which decides what a
+//!   spelled cross-objective address names and, above the record's block count,
+//!   refuses it under the named rule
+//!   [`address::OUT_OF_RANGE_OBJECTIVE_ADDRESS`] — never clamped to a live
+//!   objective, never ignored, never silently accepted. The measurement behind
+//!   it (the original's parse decrements the address; its wake walk checks
+//!   nothing) is in
+//!   `docs/findings/2026-10-09-m02-b-fu3-out-of-range-wake-address.md`.
+//!
 //! # Stage F39-E5 — completion effects
 //!
 //! - [`runtime::CompletionEffect`] / [`runtime::CompletionEffectKind`]: what
@@ -73,6 +84,7 @@
 //! The mission wiring — the authored content form, the Bevy producers and the
 //! UI and dialogue consumers — is F39-C.
 
+pub mod address;
 pub mod bailout;
 pub mod counters;
 pub mod runtime;
