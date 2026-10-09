@@ -31,6 +31,10 @@ jobs:
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      # The cargo test commands below also drop the line tables of every dependency
+      # (`profile.dev.package."*".debug=false`): on Linux each test binary links its own copy of
+      # Bevy's DWARF, and cs_app's ~170 test binaries filled the test-app runner to 29 MB free on
+      # 2026-10-09 (ld SIGBUS, #809). The workspace's own crates keep their line tables (T430).
     steps:
       # The workspace's ~380 test binaries each link Bevy, so drop every preinstalled toolchain this
       # job does not use. Rust comes from rustup in ~/.rustup, and the system python3 stays.
@@ -79,11 +83,11 @@ jobs:
 
       - name: cargo test (cs_app)
         if: steps.workspace.outputs.present == 'true' && matrix.check == 'test-app'
-        run: cargo test -p cs_app --locked
+        run: cargo test -p cs_app --locked --config 'profile.dev.package."*".debug=false'
 
       - name: cargo test (every other member)
         if: steps.workspace.outputs.present == 'true' && matrix.check == 'test-rest'
-        run: cargo test --workspace --locked --exclude cs_app
+        run: cargo test --workspace --locked --exclude cs_app --config 'profile.dev.package."*".debug=false'
 
       - name: Disk after the checks
         if: always()
