@@ -203,8 +203,9 @@ pub enum TravelersAnchor {
 /// the parser's `_stricmp` maps `RUNNING` → 2, `EXECUTED` → 3, `INVALID` → 4,
 /// and any other token leaves the state 0, which drops the pair).
 ///
-/// Only these three tokens are measured spellings. A site that names anything
-/// else is a refusal, never a fourth invented state.
+/// Only these three tokens are measured spellings: a site that names anything
+/// else loses that pair at parse (the state stays 0 and the pair is dropped),
+/// never a fourth invented state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AnimationState {
     Running,
@@ -373,10 +374,10 @@ pub enum Condition {
     /// are in their wanted state.
     ///
     /// Measured (finding C): `required` is the number of appended pairs and a
-    /// sibling `COMPLETION_COUNT` overwrites it; this condition carries the
-    /// pair count, and a block that spells the (unmeasured) sibling is
-    /// refused instead. An animation the facts do not carry is not in the
-    /// wanted state — fail-closed for completion.
+    /// `COMPLETION_COUNT` inside the same operand list overwrites it; this
+    /// condition carries whichever of the two the site spelled. An animation
+    /// the facts do not carry is not in the wanted state — fail-closed for
+    /// completion.
     AnimationStates {
         /// How many listed animations must match.
         required: u32,

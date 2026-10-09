@@ -1080,9 +1080,10 @@ fn accept_m01_lc_lowering_conditions_operand_bounds_count_the_lists_they_bound()
 
 /// AC1/AC4: the record holds one slot per evaluator kind, so a second `DEDG`
 /// or `TRAVELERS` spelling refuses by block and key instead of becoming a
-/// disjunction the original's single evaluator cannot produce — while
-/// `ANIM_STATE`, whose header appends every pair, lowers to **one** condition
-/// whose required count is the total pair count.
+/// disjunction the original's single evaluator cannot produce. `ANIM_STATE`
+/// is slotted the same way but silently: the parse's single depth-first
+/// lookup selects the **first** `ANIM_STATE` site, so a second directive is
+/// never read — no appended pairs, no refusal.
 #[test]
 fn accept_m01_lc_lowering_conditions_one_slot_per_evaluator_kind() {
     let dedg = BlockDirective::new("DEDG", vec![Value::Int(4), Value::Int(1)]);
@@ -1114,8 +1115,9 @@ fn accept_m01_lc_lowering_conditions_one_slot_per_evaluator_kind() {
     .expect_err("a second TRAVELERS overwrites the record's one slot");
     assert_eq!(refusal.key(), "TRAVELERS");
 
-    // Two ANIM_STATE directives are measured to append into the block's one
-    // header: one evaluator, required = both pairs.
+    // Two ANIM_STATE directives: the parse's single lookup reads the FIRST
+    // site and never reaches the second — one evaluator whose pairs are the
+    // first site's only, not an appended total and not a refusal.
     let anim = |name: &str, state: &str| {
         BlockDirective::new(
             "ANIM_STATE",
@@ -1143,16 +1145,16 @@ fn accept_m01_lc_lowering_conditions_one_slot_per_evaluator_kind() {
         animations,
     }) = items.get(1)
     else {
-        panic!("the appended pairs lower to one animation evaluator: {condition:?}");
+        panic!("the selected site lowers to one animation evaluator: {condition:?}");
     };
-    assert_eq!(*required, 2, "required counts every appended pair");
+    assert_eq!(
+        *required, 1,
+        "required counts the first site's one appended pair"
+    );
     assert_eq!(
         animations,
-        &vec![
-            ("first".to_owned(), AnimationState::Running),
-            ("second".to_owned(), AnimationState::Executed),
-        ],
-        "both directives' pairs, in declaration order"
+        &vec![("first".to_owned(), AnimationState::Running)],
+        "the first site is the selected site; the second is never read"
     );
 
     let mut facts = MissionFacts::default();
@@ -1162,15 +1164,202 @@ fn accept_m01_lc_lowering_conditions_one_slot_per_evaluator_kind() {
         .insert("first".to_owned(), AnimationState::Running.code());
     let state = evaluator();
     assert!(
-        !state.holds(&condition, &facts),
-        "one of two appended pairs does not reach a required count of two"
+        state.holds(&condition, &facts),
+        "the first site's pair alone satisfies its required count of one"
     );
     facts
         .animations
         .insert("second".to_owned(), AnimationState::Executed.code());
     assert!(
         state.holds(&condition, &facts),
-        "both appended pairs satisfy the required count"
+        "the second directive's pair was never appended, so its state changes nothing"
+    );
+}
+
+/// AC1/AC4: the `ANIM_STATE` evaluator reads its operand list the measured
+/// way — every `ANIM`/spec pair appends, `required` counts the appended
+/// pairs, a `COMPLETION_COUNT` inside the same list overwrites it, and the
+/// children the walk cannot pair are dropped exactly as the original drops
+/// them rather than refused.
+#[test]
+fn accept_m01_lc_lowering_conditions_anim_state_walks_its_own_operand_list() {
+    let spec = |name: &str, state: &str| {
+        ls(vec![
+            s("NAME"),
+            ls(vec![s(name)]),
+            s("STATE"),
+            ls(vec![s(state)]),
+        ])
+    };
+    let animations_of = |condition: &Condition| -> (u32, Vec<(String, AnimationState)>) {
+        let Condition::All(items) = condition else {
+            panic!("the gate and the evaluator lower to an All: {condition:?}");
+        };
+        let Some(Condition::AnimationStates {
+            required,
+            animations,
+        }) = items.get(1)
+        else {
+            panic!("the selected site lowers to one evaluator: {condition:?}");
+        };
+        (*required, animations.clone())
+    };
+
+    // M04's measured shape: eight descriptors plus a COMPLETION_COUNT inside
+    // the one operand list — every pair appends, and the count overwrites
+    // `required` rather than naming a ninth pair.
+    let mut operands = vec![s("COMPLETION_COUNT"), ls(vec![Value::Int(3)])];
+    for index in 0..8 {
+        operands.push(s(ANIM_STATE_TAG));
+        operands.push(spec(&format!("anim{index}"), "INVALID"));
+    }
+    let condition = lower(
+        "OBJECTIVE23",
+        22,
+        vec![BlockDirective::new("ANIM_STATE", operands)],
+    );
+    let (required, animations) = animations_of(&condition);
+    assert_eq!(required, 3, "the sibling count overwrites the pair total");
+    assert_eq!(
+        animations.len(),
+        8,
+        "every one of the eight descriptors appended"
+    );
+    assert_eq!(animations[7].0, "anim7", "the pairs keep declaration order");
+    assert_eq!(
+        animations[7].1,
+        AnimationState::Invalid,
+        "the tokens map through the measured state vocabulary"
+    );
+
+    // The count is read from inside the operand list only: a top-level
+    // `COMPLETION_COUNT` beside the site is a different record member and
+    // the evaluator never looks at it.
+    let condition = lower(
+        "OBJECTIVE24",
+        23,
+        vec![
+            BlockDirective::new(
+                "ANIM_STATE",
+                vec![s(ANIM_STATE_TAG), spec("only", "RUNNING")],
+            ),
+            BlockDirective::new("COMPLETION_COUNT", vec![Value::Int(9)]),
+        ],
+    );
+    let (required, _) = animations_of(&condition);
+    assert_eq!(
+        required, 1,
+        "the block-level count is outside the operand list — inert here"
+    );
+
+    // The walk drops what it cannot pair: a STATE token outside the measured
+    // vocabulary loses its pair, a NAME-less spec loses its pair, an ANIM
+    // text with no spec follower pairs with nothing, and children that are
+    // not ANIM tags are skipped — all while the surviving pairs still count.
+    let condition = lower(
+        "OBJECTIVE25",
+        24,
+        vec![BlockDirective::new(
+            "ANIM_STATE",
+            vec![
+                s(ANIM_STATE_TAG),
+                spec("kept", "EXECUTED"),
+                s(ANIM_STATE_TAG),
+                spec("dropped", "CORRUPT"),
+                s(ANIM_STATE_TAG),
+                ls(vec![s("STATE"), ls(vec![s("RUNNING")])]),
+                Value::Int(7),
+                s(ANIM_STATE_TAG),
+            ],
+        )],
+    );
+    let (required, animations) = animations_of(&condition);
+    assert_eq!(
+        animations,
+        vec![("kept".to_owned(), AnimationState::Executed)],
+        "one pair survives; the unmapable, the nameless and the tag without a \
+         spec all drop"
+    );
+    assert_eq!(required, 1, "required counts the appended pairs only");
+
+    // A first `ANIM_STATE` text followed by no list arms no evaluator at
+    // all — the gate alone, exactly the record's no-evaluator spelling.
+    let condition = lower("OBJECTIVE26", 25, vec![BlockDirective::bare("ANIM_STATE")]);
+    assert_eq!(condition, Condition::ObjectiveAwake { index: 25 });
+}
+
+/// AC1/AC4: the parse's depth-first lookup reaches an `ANIM_STATE` text
+/// nested inside an earlier directive's operand list before it ever reaches
+/// a later top-level directive — the selected site is the nested one's
+/// follower, whatever the directives are keyed as.
+#[test]
+fn accept_m01_lc_lowering_conditions_anim_state_site_is_depth_first() {
+    let spec = |name: &str, state: &str| {
+        ls(vec![
+            s("NAME"),
+            ls(vec![s(name)]),
+            s("STATE"),
+            ls(vec![s(state)]),
+        ])
+    };
+
+    // An earlier directive's operand list holds a nested `ANIM_STATE` text
+    // whose own follower is a list: the lookup selects that list, and the
+    // later top-level `ANIM_STATE` directive is never read.
+    let condition = lower(
+        "OBJECTIVE27",
+        26,
+        vec![
+            BlockDirective::new(
+                "SOME_KEY",
+                vec![
+                    s("inner"),
+                    ls(vec![
+                        s("ANIM_STATE"),
+                        ls(vec![s(ANIM_STATE_TAG), spec("nested", "RUNNING")]),
+                    ]),
+                ],
+            ),
+            BlockDirective::new(
+                "ANIM_STATE",
+                vec![s(ANIM_STATE_TAG), spec("outer", "EXECUTED")],
+            ),
+        ],
+    );
+    let Condition::All(items) = &condition else {
+        panic!("the gate and the evaluator lower to an All: {condition:?}");
+    };
+    let Some(Condition::AnimationStates {
+        required,
+        animations,
+    }) = items.get(1)
+    else {
+        panic!("the nested site lowers to one evaluator: {condition:?}");
+    };
+    assert_eq!(*required, 1);
+    assert_eq!(
+        animations,
+        &vec![("nested".to_owned(), AnimationState::Running)],
+        "the nested text's follower is the selected operand list"
+    );
+
+    // A nested `ANIM_STATE` text whose own follower is no list consumes the
+    // lookup: the top-level directive after it still arms nothing.
+    let condition = lower(
+        "OBJECTIVE28",
+        27,
+        vec![
+            BlockDirective::new("SOME_KEY", vec![s("ANIM_STATE"), Value::Int(4)]),
+            BlockDirective::new(
+                "ANIM_STATE",
+                vec![s(ANIM_STATE_TAG), spec("outer", "EXECUTED")],
+            ),
+        ],
+    );
+    assert_eq!(
+        condition,
+        Condition::ObjectiveAwake { index: 27 },
+        "the first match had no operand list — no evaluator is armed"
     );
 }
 
@@ -1264,10 +1453,6 @@ fn accept_m01_lc_lowering_conditions_refusals_name_the_block_and_the_key() {
         ),
         (vec![BlockDirective::bare("COUNTER")], "COUNTER"),
         (
-            vec![BlockDirective::bare("COMPLETION_COUNT")],
-            "COMPLETION_COUNT",
-        ),
-        (
             vec![BlockDirective::new(
                 "TRAVELERS",
                 vec![s("player"), s("DEPARTING"), s("anchor"), Value::Float(10.0)],
@@ -1285,21 +1470,6 @@ fn accept_m01_lc_lowering_conditions_refusals_name_the_block_and_the_key() {
                 ],
             )],
             "TRAVELERS",
-        ),
-        (
-            vec![BlockDirective::new(
-                "ANIM_STATE",
-                vec![
-                    s("ANIM"),
-                    ls(vec![
-                        s("NAME"),
-                        ls(vec![s("anim")]),
-                        s("STATE"),
-                        ls(vec![s("CORRUPT")]),
-                    ]),
-                ],
-            )],
-            "ANIM_STATE",
         ),
     ];
 

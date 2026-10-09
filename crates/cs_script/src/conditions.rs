@@ -24,10 +24,11 @@
 //! * an armed evaluator becomes the block's predicate; two **different
 //!   kinds** would be [`Condition::Any`] (the original's "first true wins");
 //!   a second spelling of the *same* kind refuses instead, because the record
-//!   holds one slot per kind and overwrites it at parse — except
-//!   `ANIM_STATE`, whose header appends every pair and counts them all into
-//!   `required`, which [`lower_block_condition`] accumulates into one
-//!   condition;
+//!   holds one slot per kind and overwrites it at parse. `ANIM_STATE` is
+//!   slotted the same way, silently: the parse runs its helper once per
+//!   block and the helper's lookup takes the **first** `ANIM_STATE` text in
+//!   the record's depth-first order, so a second site is never reached
+//!   rather than refused;
 //! * a block with **no** armed evaluator is the gate alone — measured: "an
 //!   objective with no armed condition completes on the first tick it is
 //!   awake". That is a lifecycle state, never a `Condition::Const(_)`.
@@ -63,8 +64,15 @@ pub const TRAVELERS_APPROACHING: &str = "APPROACHING";
 /// compare before the spec record (finding C).
 pub const ANIM_STATE_TAG: &str = "ANIM";
 
-/// The two measured spec keys inside an `ANIM_STATE` descriptor (finding C).
-const ANIM_STATE_SPEC_KEYS: [&str; 2] = ["NAME", "STATE"];
+/// The `ANIM_STATE` key text itself: the string the parse's single
+/// depth-first lookup matches anywhere in the block's record (finding C).
+const ANIM_STATE_KEY: &str = "ANIM_STATE";
+
+/// The `COMPLETION_COUNT` key text: read recursively inside the found
+/// `ANIM_STATE` operand list only — the parse never looks it up on the
+/// block, so a top-level spelling of the same key is inert (finding C:
+/// `0x57a1b0` is called on the found list, not on the record).
+const ANIM_STATE_COUNT_KEY: &str = "COMPLETION_COUNT";
 
 /// The stable code of the lowering requirement a refusal blocks —
 /// `LoweringRequirementKind::ObjectiveCondition::code()` on the measurement
@@ -451,12 +459,24 @@ pub fn lower_block_condition(
     // `TRAVELERS` spelling overwrites the first's fields at parse (finding B),
     // so the original evaluates one evaluator of each kind, never both. A
     // block that spells either key twice is refused rather than OR'd into a
-    // disjunction the original cannot produce. `ANIM_STATE` is the measured
-    // exception — its header *appends* every pair and counts them into
-    // `required` — so its pairs accumulate below.
+    // disjunction the original cannot produce.
     let mut dedg_spelled = false;
     let mut travelers_spelled = false;
-    let mut animations: Vec<(String, AnimationState)> = Vec::new();
+    // `ANIM_STATE` is slotted the same way — one evaluator per block — but by
+    // a different measured route: the parse helper runs once (finding C,
+    // `0x4691d0`) and its `0x57a090` lookup takes the FIRST `ANIM_STATE` text
+    // in the record's depth-first order — a top-level directive key or a
+    // text nested inside an earlier directive's operand list — and reads the
+    // list right after it. A second `ANIM_STATE` site is never reached, and
+    // a first text followed by no list arms no evaluator at all.
+    let anim_evaluator = anim_state_site(directives).map(|operands| {
+        let (animations, override_count) = anim_state(operands);
+        let required = override_count.unwrap_or(animations.len() as u32);
+        Condition::AnimationStates {
+            required,
+            animations,
+        }
+    });
 
     for directive in directives {
         let key = directive.key.as_str();
@@ -587,12 +607,11 @@ pub fn lower_block_condition(
                     evaluators.push(condition);
                 }
             }
-            // Measured (finding C): every `ANIM_STATE` directive appends its
-            // pairs to the block's single `{required, count, records}` header
-            // and increments `required` once per appended pair, so several
-            // directives are **one** evaluator whose required count is the
-            // total pair count — not a disjunction of per-directive tests.
-            "ANIM_STATE" => animations.extend(anim_state(block, directive)?),
+            // `ANIM_STATE`: the evaluator the parse's single lookup selects
+            // is computed before the loop (`anim_evaluator`). A second
+            // `ANIM_STATE` directive is never reached by that lookup, so it
+            // contributes nothing — not appended pairs and not a refusal.
+            "ANIM_STATE" => {}
             "DANGER_ZONES_COMPLETED" | "DANGER_ZONES_COMPLETION_COUNT" => {
                 return Err(ConditionRefusal::NoConditionFor {
                     block: block.to_owned(),
@@ -612,20 +631,14 @@ pub fn lower_block_condition(
                         .to_owned(),
                 });
             }
-            "COMPLETION_COUNT" => {
-                return Err(ConditionRefusal::UnknownChangesPredicate {
-                    block: block.to_owned(),
-                    key: key.to_owned(),
-                    detail: "ANIM_STATE's required count is overwritten by a sibling \
-                             COMPLETION_COUNT (finding C), so the count this block would test is \
-                             not the one the record spells"
-                        .to_owned(),
-                });
-            }
             // Everything else is a completion, wake or transition effect, an
             // outcome class or presentation data: measured stages of the
             // pipeline, and none of them is a predicate — finding B's pass-2
-            // evaluator list is the complete one.
+            // evaluator list is the complete one. A top-level
+            // `COMPLETION_COUNT` belongs here too: the parse only looks that
+            // key up *inside* the ANIM_STATE operand list (`0x57a1b0` on the
+            // found list), so a block-level spelling is inert and the call
+            // accounting, not this module, owns its verdict.
             _ => {}
         }
     }
@@ -639,13 +652,8 @@ pub fn lower_block_condition(
         let threshold = threshold.unwrap_or(members.len() as u32);
         evaluators.push(Condition::InactiveMembers { members, threshold });
     }
-    if !animations.is_empty() {
-        // Measured (finding C): `required` is the number of appended pairs,
-        // counted across every `ANIM_STATE` directive of the block.
-        evaluators.push(Condition::AnimationStates {
-            required: animations.len() as u32,
-            animations,
-        });
+    if let Some(evaluator) = anim_evaluator {
+        evaluators.push(evaluator);
     }
 
     Ok(match evaluators.len() {
@@ -934,115 +942,160 @@ fn point_of(
     Ok(components)
 }
 
-/// `ANIM_STATE ["ANIM", ["NAME", [name], "STATE", [token]]]` → the animation
-/// pairs this directive **appends** to the block's one header.
+/// The operand list the block's one `ANIM_STATE` evaluator reads, or `None`
+/// when the block's first `ANIM_STATE` text is followed by no list — the
+/// measured lookup then finds no evaluator and the key contributes nothing.
 ///
-/// Measured (finding C): the descriptor is a tag-3 `ANIM` followed by a spec
-/// record; `NAME` and `STATE` are read out of it, the state token maps
-/// `RUNNING`/`EXECUTED`/`INVALID` to 2/3/4, and the header's `required` is
-/// incremented once per appended pair — across every `ANIM_STATE` directive of
-/// the block. Every M01 site spells exactly one pair; the
-/// `COMPLETION_COUNT` sibling that could overwrite `required` is refused by
-/// its own key.
-fn anim_state(
-    block: &str,
-    directive: &BlockDirective,
-) -> Result<Vec<(String, AnimationState)>, ConditionRefusal> {
-    let args = directive.operands(block)?;
-    let refuse = |detail: String| ConditionRefusal::BadOperands {
-        block: block.to_owned(),
-        key: directive.key.clone(),
-        detail,
-    };
-    if args.len() != 2 {
-        return Err(arity_error(
-            block,
-            directive,
-            args,
-            "the tag `ANIM` and one spec record",
-        ));
-    }
-    match &args[0] {
-        Value::Str(tag) if tag == ANIM_STATE_TAG => {}
-        Value::Str(tag) => {
-            return Err(refuse(format!(
-                "the only measured descriptor tag is `{ANIM_STATE_TAG}` and this site spells {tag:?}"
-            )));
-        }
-        other => {
-            return Err(refuse(format!(
-                "the descriptor tag is the text `{ANIM_STATE_TAG}` and this site spells {}",
-                value_label(other)
-            )));
-        }
-    }
-    let Value::List(spec) = &args[1] else {
-        return Err(refuse(format!(
-            "the spec is a list and this site spells {}",
-            value_label(&args[1])
-        )));
-    };
-    if spec.is_empty() || spec.len() % 2 != 0 {
-        return Err(refuse(format!(
-            "the spec holds {} element(s); the measured shape is key/value pairs",
-            spec.len()
-        )));
-    }
-    let mut name: Option<String> = None;
-    let mut state: Option<AnimationState> = None;
-    for pair in spec.chunks(2) {
-        let Some(Value::Str(spec_key)) = pair.first() else {
-            return Err(refuse("the spec key is not text".to_owned()));
-        };
-        let Some(value) = pair.get(1) else {
-            return Err(refuse("the spec ends mid-pair".to_owned()));
-        };
-        let Value::List(wrapped) = value else {
-            return Err(refuse(format!(
-                "the spec value is a one-element list and this site spells {}",
-                value_label(value)
-            )));
-        };
-        let Some(Value::Str(text)) = wrapped.first() else {
-            return Err(refuse("the spec value holds no text".to_owned()));
-        };
-        if wrapped.len() != 1 {
-            return Err(refuse(format!(
-                "the spec value holds {} elements; the measured shape is one",
-                wrapped.len()
-            )));
-        }
-        if spec_key == "NAME" {
-            if name.is_some() {
-                return Err(refuse("the spec spells NAME twice".to_owned()));
-            }
-            name = Some(text.clone());
-        } else if spec_key == "STATE" {
-            if state.is_some() {
-                return Err(refuse("the spec spells STATE twice".to_owned()));
-            }
-            let Some(mapped) = AnimationState::from_token(text) else {
-                return Err(ConditionRefusal::UnknownChangesPredicate {
-                    block: block.to_owned(),
-                    key: directive.key.clone(),
-                    detail: "the parser maps only RUNNING, EXECUTED and INVALID to a state and \
-                             drops every other token; a token outside that vocabulary has no \
-                             measured meaning here"
-                        .to_owned(),
-                });
+/// Measured (finding C): the parse calls the helper `0x4691d0` once per
+/// block, so the **first** `ANIM_STATE` text in the record's depth-first
+/// order is the site — a top-level directive key or a text nested inside an
+/// earlier directive's operand list — and the record immediately after it is
+/// the operand list the descriptor walk consumes. A site after the first is
+/// never reached.
+fn anim_state_site(directives: &[BlockDirective]) -> Option<&[Value]> {
+    for directive in directives {
+        if directive.key == ANIM_STATE_KEY {
+            return match &directive.args {
+                DirectiveArguments::List(operands) => Some(operands),
+                // The record after the key is a scalar or the next key's own
+                // text — not a list — so no evaluator is armed.
+                DirectiveArguments::Bare | DirectiveArguments::NotAList(_) => None,
             };
-            state = Some(mapped);
-        } else {
-            return Err(refuse(format!(
-                "the spec key {spec_key:?} is outside the measured {:?} vocabulary",
-                ANIM_STATE_SPEC_KEYS
-            )));
+        }
+        if let DirectiveArguments::List(args) = &directive.args
+            && let Some(site) = nested_anim_state(args)
+        {
+            return site;
         }
     }
-    let (Some(name), Some(state)) = (name, state) else {
-        return Err(refuse(
-            "the spec does not spell both a NAME and a STATE".to_owned(),
-        ));
+    None
+}
+
+/// The first `ANIM_STATE` text inside an operand list, searched depth-first
+/// — the same first-match the record-level lookup `0x57a090` applies to a
+/// list child. `Some(Some(operands))` when the text's own follower is a list
+/// (the selected site); `Some(None)` when it is not (the match consumed the
+/// lookup and no evaluator is armed, whatever later spellings exist);
+/// `None` when the list holds no such text at all.
+fn nested_anim_state(items: &[Value]) -> Option<Option<&[Value]>> {
+    for (index, item) in items.iter().enumerate() {
+        match item {
+            Value::Str(text) if text == ANIM_STATE_KEY => {
+                return Some(match items.get(index + 1) {
+                    Some(Value::List(operands)) => Some(operands.as_slice()),
+                    _ => None,
+                });
+            }
+            Value::List(children) => {
+                if let Some(found) = nested_anim_state(children) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The `ANIM_STATE` operand list, walked the measured way (`0x4691d0`).
+///
+/// The walk reads the list's own children in order: a tag-3 `ANIM` followed
+/// by a tag-4 spec record appends one `{name, state}` pair — `NAME` and
+/// `STATE` are read out of the spec by the flat lookup `0x57a0f0` (first
+/// match wins) — and the header's `required` counts one per appended pair.
+/// The original appends only when the resolved handle **and** the state are
+/// non-zero: a spec that yields no name text or a state token outside the
+/// measured `RUNNING`/`EXECUTED`/`INVALID` vocabulary is dropped the same
+/// way here, while a spelled name that resolves to no animation is kept —
+/// the handle lookup is a runtime property of the world build, and the
+/// evaluator treats an animation the facts do not carry as not in its wanted
+/// state rather than guessing which pairs the original dropped. Every other
+/// child is skipped.
+///
+/// After the walk the first `COMPLETION_COUNT` text inside the same list —
+/// searched recursively — overwrites `required` when its follower resolves
+/// an integer. Returns the appended pairs and that override; the caller
+/// defaults `required` to the pair count.
+fn anim_state(operands: &[Value]) -> (Vec<(String, AnimationState)>, Option<u32>) {
+    let mut animations = Vec::new();
+    let mut index = 0;
+    while index < operands.len() {
+        if matches!(&operands[index], Value::Str(tag) if tag == ANIM_STATE_TAG)
+            && let Some(Value::List(spec)) = operands.get(index + 1)
+        {
+            if let (Some(name), Some(state)) = (spec_value(spec, "NAME"), spec_value(spec, "STATE"))
+                && let Some(state) = AnimationState::from_token(state)
+            {
+                animations.push((name.to_owned(), state));
+            }
+            index += 2;
+            continue;
+        }
+        index += 1;
+    }
+    (animations, completion_count(operands))
+}
+
+/// A spec record's `key` value the way the flat lookup `0x57a0f0` resolves
+/// it: the first `key` text's follower — the string itself for a text
+/// follower, or the list's first text child for a list follower. `None` for
+/// any other spelling, which drops the pair the spec belongs to.
+fn spec_value<'a>(spec: &'a [Value], key: &str) -> Option<&'a str> {
+    let position = spec
+        .iter()
+        .position(|item| matches!(item, Value::Str(text) if text == key))?;
+    match spec.get(position + 1)? {
+        Value::Str(text) => Some(text),
+        Value::List(items) => match items.first() {
+            Some(Value::Str(text)) => Some(text),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The `COMPLETION_COUNT` override inside one operand list: the integer the
+/// first `COMPLETION_COUNT` text's follower resolves, in the list's own
+/// depth-first order. Returns `None` when the list holds no such text or the
+/// first one's follower resolves no integer — the lookup `0x57a1b0` stops at
+/// the first match either way, so no later occurrence is searched.
+fn completion_count(operands: &[Value]) -> Option<u32> {
+    completion_count_in(operands).flatten()
+}
+
+/// The tri-state `COMPLETION_COUNT` search: `Some(Some(count))` — a text
+/// whose follower resolved `count`; `Some(None)` — a text whose follower
+/// resolved no integer (the search stops at this first match);
+/// `None` — no `COMPLETION_COUNT` text inside at all.
+fn completion_count_in(items: &[Value]) -> Option<Option<u32>> {
+    for (index, item) in items.iter().enumerate() {
+        match item {
+            Value::Str(text) if text == ANIM_STATE_COUNT_KEY => {
+                return Some(items.get(index + 1).and_then(count_int));
+            }
+            Value::List(children) => {
+                if let Some(found) = completion_count_in(children) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The integer a `COMPLETION_COUNT` follower resolves: the int itself, or a
+/// list's first int child — the two shapes `0x57a1b0` writes. A negative
+/// count clamps to 0: the original's `matches >= required` test is then
+/// always true, and a `required` of 0 carries the same truth.
+fn count_int(value: &Value) -> Option<u32> {
+    let int = match value {
+        Value::Int(n) => *n,
+        Value::List(items) => match items.first() {
+            Some(Value::Int(n)) => *n,
+            _ => return None,
+        },
+        _ => return None,
     };
-    Ok(vec![(name, state)])
+    Some(int.max(0) as u32)
 }
