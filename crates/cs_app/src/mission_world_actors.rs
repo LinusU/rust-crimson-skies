@@ -19,22 +19,25 @@
 //!   *meanings* stay `KeyMeaning::Unknown` — the grammar is measured; what
 //!   each field does to the original is not, except where the executable
 //!   measurement below narrows it.
-//! * **The spawn position binds.** The owner-supplied decrypted image reads
-//!   the record's named `position` (three floats) into the spawned object's
-//!   position slots `obj+0x20`..`obj+0x28` (`0x4bda64`..`0x4bdac1`, #770),
-//!   and the stored unit is the metre with the identity axis map (#436's
-//!   owner note, #677's census): each [`SpawnedZeppelinActor`] declares
-//!   `position_m` [`Resolved::Known`] under [`SPAWN_POSE_CLAIM`]. M01's
-//!   three records sit inside `c1c`'s measured node extent (`piratezep`
-//!   ~517 m from the player start) — the frame the value claims is
-//!   corroborated by containment, not asserted. The residue stays named:
-//!   `placezeps.zrd`'s startup placements state *different* positions for
-//!   the same nodes, and #792 measured that their absolute translate writes
-//!   the same slots *after* this spawn write — the node's drawn position at
-//!   startup is the startup placement's, this claim stays the record's own
-//!   spawn value, and which of the two the reimplementation's actor stands
-//!   at is #814, the follow-up #792 filed for #359's launch-surface
-//!   re-derivation.
+//! * **The spawn position binds under the measured write order (#814).**
+//!   The owner-supplied decrypted image reads the record's named `position`
+//!   (three floats) into the spawned object's position slots
+//!   `obj+0x20`..`obj+0x28` (`0x4bda64`..`0x4bdac1`, #770), and the stored
+//!   unit is the metre with the identity axis map (#436's owner note,
+//!   #677's census). At the end of the same load routine the object hands
+//!   the triple to `Object3d`'s position setter for the node its `node` key
+//!   resolved (`0x4becf8` → `0x4bf930` → `0x4bf9b0` → `0x4d1d50`), which
+//!   stores it at `class+0x54`..`+0x5c`. `placezeps.zrd`'s
+//!   `OBJECT_TRANSLATE_STATE` writes the *same* slots of the *same* node
+//!   through the *same* setter (`0x4e8de0` → `0x4d1d50`), and its
+//!   `ON_STARTUP` states run from the animation player's first tick after
+//!   the mission start — after the spawn write — so each record's
+//!   [`SpawnedZeppelinActor::position`] carries the source the original
+//!   applies last and [`SpawnedZeppelinActor::position_residue`] names the
+//!   one it overwrites. `position_m` is [`Resolved::Known`] under
+//!   [`SPAWN_POSE_CLAIM`]. M01's three records sit inside `c1c`'s measured
+//!   node extent — the frame the value claims is corroborated by
+//!   containment, not asserted.
 //! * **The spawn attitude binds under the measured compose and the measured
 //!   write order (#792).** `yaw`/`pitch` are degrees→radians into
 //!   `obj+0x2c`/`obj+0x30` (measured at `0x4bda64`); at the end of the same
@@ -90,7 +93,7 @@ use cs_content::world_actors::{
 use cs_formats::gamez::read_gamez_nodes;
 use cs_formats::io::ParseContext;
 use cs_formats::script_raw::discovery::discover_container;
-use cs_formats::zbd::placezeps::{PLACEZEPS_MEMBER, read_placezeps_member};
+use cs_formats::zbd::placezeps::{PLACEZEPS_MEMBER, StateKind, read_placezeps_member};
 use cs_formats::zbd::zeppelins::read_zeppelins_member;
 use cs_script::runtime::SessionGeneration;
 use cs_sim::world_actors::Quat;
@@ -113,23 +116,28 @@ pub const ZEPPELIN_MEMBER: &str = "zeppelins.zrd";
 /// designed contract of the reimplementation, not an original measurement.
 pub const SESSION_TICKS_PER_SECOND: u32 = 64;
 
-/// The claim the measured spawn pose binds under.
+/// The claim the spawn position binds under (#814).
 ///
 /// `0x4bda64`..`0x4bdac1` of the owner-supplied image reads the record's
 /// named `position` into the spawned object's `obj+0x20`..`obj+0x28` (#770);
 /// the stored unit is the metre with the identity axis map (#436, #677).
-/// The claim is the record's own value through that measured conversion —
-/// the same shape `MissionStartConfiguration::initial_pose` binds. The
-/// residue the claim does *not* cover: `placezeps.zrd`'s startup placements
-/// state different positions for the same nodes, and #792 measured that
-/// their absolute translate writes the *same* slots (`0x4d1d50`,
-/// `class+0x54`..`+0x5c`) *after* this spawn write — so the node's drawn
-/// position at startup is the startup placement's while this claim stays
-/// the record's own spawn value, the one the object keeps at
-/// `obj+0x20`..`obj+0x28` and hands back to the node whenever its drive
-/// byte is set again. Which of the two the reimplementation's actor stands
-/// at belongs to #359's launch-surface re-derivation (#814, the follow-up
-/// #792 filed); this task settles the attitude half of that same ordering.
+/// Two writers then reach the node's `Object3d` position slots
+/// `class+0x54`..`+0x5c` through the same setter `0x4d1d50`: the spawn's
+/// apply (`0x4becf8` → `0x4bf930` → `0x4bf9b0`, inside the mission-start
+/// call stack) and `placezeps.zrd`'s startup `OBJECT_TRANSLATE_STATE`
+/// (`0x4e8de0`, dispatched from the animation instance's first tick — the
+/// later write on #792's measured order). The claim is the value that
+/// order leaves on the node: the startup translate's absolute triple for
+/// a node the member states one for (provenanced from the statement's
+/// `STATE` span), the record's own `position` for a node it does not —
+/// and the losing source stays named on the row
+/// ([`SpawnedZeppelinActor::position_residue`]). The carrier's value still
+/// lives at `obj+0x20`..`obj+0x28` and is handed back to the node only if
+/// the object's drive byte is set again, which nothing on a single-player
+/// launch does (#792 §3).
+///
+/// `docs/findings/2026-10-09-m01-lc-zeppelin-placement-position.md` records
+/// the re-verified addresses and the values M01 binds.
 pub const SPAWN_POSE_CLAIM: &str = "f34-world.zeppelin-spawn-pose";
 
 /// The claim the composed spawn attitude binds under (#792).
@@ -165,6 +173,21 @@ pub const ATTITUDE_PRECEDENCE_UNKNOWN_CLAIM: &str =
 /// refuses: the spawn half is measured, the ordering over it is not.
 pub const ATTITUDE_PRECEDENCE_UNKNOWN_REASON_PREFIX: &str = "the spawn attitude composes under a measured rule, but `placezeps.zrd`, the startup \
      placement that writes the same Object3d rotation slots after it, could not be read, so \
+     which source the original applies last is open: ";
+
+/// The claim a position stays open under (#814): which value the original
+/// applies last could not be settled for this scope — the startup carrier
+/// `placezeps.zrd` could not be read, or its translate for the node carries
+/// a key the placement grammar leaves unmodelled (`RELATIVE`, `AT_NODE`,
+/// …), so the applied position is not the bare `STATE` triple and none is
+/// guessed.
+pub const POSITION_PRECEDENCE_UNKNOWN_CLAIM: &str =
+    "f34-world.zeppelin-position-precedence-unknown";
+
+/// Why a position stays [`Resolved::Unknown`] when the startup carrier
+/// refuses: the spawn half is measured, the ordering over it is not.
+pub const POSITION_PRECEDENCE_UNKNOWN_REASON_PREFIX: &str = "the spawn position converts under a measured rule, but `placezeps.zrd`, the startup \
+     placement that writes the same Object3d position slots after it, could not be read, so \
      which source the original applies last is open: ";
 
 /// The claim a stated `team` spelling's faction refusal is filed under.
@@ -319,6 +342,57 @@ pub enum AttitudeBinding {
     Open(String),
 }
 
+/// The position source the original's own write order leaves on the node
+/// last (#814).
+///
+/// Both carriers write one node's `Object3d` position triple through the
+/// same setter, `0x4d1d50` (`class+0x54` = x, `class+0x58` = y,
+/// `class+0x5c` = z):
+///
+/// * the spawn writes it while the record loads (`0x4becf8` → `0x4bf930` →
+///   `0x4bf9b0`), from the object's `obj+0x20`..`obj+0x28`;
+/// * `placezeps.zrd`'s `OBJECT_TRANSLATE_STATE` writes it from the
+///   animation instance's first tick (`0x4e8de0` → `0x4d1d50`, dispatched
+///   at `0x4ecc7f`), which runs after the mission start has loaded the
+///   records.
+///
+/// Both halves are metres in the stored order — the translate executor
+/// feeds the event's `+0x10`/`+0x14`/`+0x18` straight to the setter's x,
+/// y, z with no axis swap (#791).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PositionSource {
+    /// `placezeps.zrd`'s `OBJECT_TRANSLATE_STATE` for this `NAME` — the
+    /// later of the two writes. Only a statement carrying no keys the
+    /// grammar leaves unmodelled reaches this variant: `RELATIVE` and
+    /// `AT_NODE` change what `0x4e8de0` applies, so a flagged statement's
+    /// bare triple is not the applied position.
+    StartupPlacement {
+        /// The three numbers the translate executor hands `0x4d1d50`, in
+        /// stored order — the absolute triple, since the statement
+        /// states no `RELATIVE`/`AT_NODE`.
+        position_m: [f32; 3],
+        /// The statement's `STATE` list, spanned inside the reader
+        /// archive: the provenance the bound value is filed under.
+        state_span: SourceSpan,
+    },
+    /// The `zeppelins.zrd` record's own `position` — what the original
+    /// applies when the startup carrier states no translate for the node.
+    CarrierSpawn {
+        /// The stored `position` triple (`obj+0x20`..`obj+0x28`), metres.
+        position_m: [f32; 3],
+    },
+}
+
+/// What settles a record's position, or why it stays open (#814).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PositionBinding {
+    /// The measured source the original applies last.
+    Measured(PositionSource),
+    /// The ordering or the applied value could not be settled for this
+    /// scope: the reason is verbatim and no position is bound.
+    Open(String),
+}
+
 /// The measured compose of an `Object3d` rotation triple into a world
 /// orientation (#770 §12.2): `M = Ry(r1)·Rx(r0)·Rz(r2)` over the right-handed
 /// matrices, the build the image performs at `0x53bf40` and inverts at
@@ -359,6 +433,9 @@ pub struct SpawnedZeppelinActor {
     /// The source the original applies last for this node's attitude
     /// (#792), or why it stays open.
     pub attitude: AttitudeBinding,
+    /// The source the original applies last for this node's position
+    /// (#814), or why it stays open.
+    pub position: PositionBinding,
     /// The `team` spelling, verbatim, when the record states one — its
     /// mapping is unmeasured ([`FACTION_UNKNOWN_CLAIM`]); `None` is the
     /// measured-absent verdict ([`FACTION_ABSENT_CLAIM`]).
@@ -412,6 +489,43 @@ impl SpawnedZeppelinActor {
             AttitudeBinding::Open(reason) => reason.clone(),
         }
     }
+
+    /// The position source the original applies last, when the ordering is
+    /// settled for this record.
+    #[must_use]
+    pub fn position_source(&self) -> Option<&PositionSource> {
+        match &self.position {
+            PositionBinding::Measured(source) => Some(source),
+            PositionBinding::Open(_) => None,
+        }
+    }
+
+    /// The source this record's position *overwrites*, named as the
+    /// residue (#814) so the losing carrier is never silently dropped: the
+    /// record's own spawn position when a startup translate applies last,
+    /// the startup carrier's silence when the spawn position is the last
+    /// write, and the open question verbatim when it could not be settled.
+    #[must_use]
+    pub fn position_residue(&self) -> String {
+        match &self.position {
+            PositionBinding::Measured(PositionSource::StartupPlacement { .. }) => format!(
+                "the record's own spawn position ({:?} of {ZEPPELIN_MEMBER}) is the residue: it \
+                 is written to the same Object3d position slots at the spawn (0x4becf8 → \
+                 0x4bf930 → 0x4bf9b0 → 0x4d1d50, class+0x54..+0x5c) and overwritten by the \
+                 startup translate on the animation instance's first tick — the carrier's value \
+                 stays the zeppelin object's own position (obj+0x20..obj+0x28), handed back to \
+                 the node only if the object's drive byte is set again",
+                self.stored_position,
+            ),
+            PositionBinding::Measured(PositionSource::CarrierSpawn { .. }) => format!(
+                "{PLACEZEPS_MEMBER} states no OBJECT_TRANSLATE_STATE for `{}` (#791), so no \
+                 startup translate overwrites the spawn position and the carrier's value is what \
+                 the node keeps",
+                self.node
+            ),
+            PositionBinding::Open(reason) => reason.clone(),
+        }
+    }
 }
 
 /// How the carrier member read went.
@@ -427,19 +541,42 @@ pub enum CarrierRead {
     Refused(String),
 }
 
-/// How the scope's startup placements read, for the attitude ordering
-/// (#792): `placezeps.zrd` is the carrier whose `ON_STARTUP` states the
-/// original applies to the node *after* the spawn write.
+/// One `placezeps.zrd` state statement the startup ordering measures over
+/// (#792's rotations, #814's translates): the `NAME` it addresses, the
+/// numbers the executor hands the `Object3d` setter, the `STATE` list's own
+/// byte span for a bound value's provenance, and the statement keys the
+/// placement grammar leaves unmodelled — a flagged statement does not
+/// apply its bare triple, so it settles no pose.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StartupStatement {
+    /// Which state statement this is.
+    pub kind: StateKind,
+    /// The `NAME` the statement addresses.
+    pub node: String,
+    /// The three numbers as the executable stores them in the event —
+    /// radians for a rotate, the triple as parsed for a translate (#791).
+    pub values: [f32; 3],
+    /// The statement's `STATE` list, spanned inside the reader archive.
+    pub state_span: SourceSpan,
+    /// Keys of the statement outside `NAME` and `STATE`, verbatim.
+    pub unmodelled: Vec<String>,
+}
+
+/// How the scope's startup placements read, for the pose ordering (#792's
+/// attitude half, #814's position half): `placezeps.zrd` is the carrier
+/// whose `ON_STARTUP` states the original applies to the node *after* the
+/// spawn write.
 #[derive(Clone, Debug)]
 pub enum StartupRead {
-    /// The member decoded: every `OBJECT_ROTATE_STATE` it states, as the
-    /// `NAME` it addresses and the three radians the rotate parser stores.
-    Decoded(Vec<(String, [f32; 3])>),
+    /// The member decoded: every `OBJECT_ROTATE_STATE` and
+    /// `OBJECT_TRANSLATE_STATE` it states, in stored order.
+    Decoded(Vec<StartupStatement>),
     /// The reader archive holds no `placezeps.zrd` member: this scope
-    /// starts no rotations, so nothing overwrites the spawn attitude.
+    /// starts no placements, so nothing overwrites the spawn pose.
     Absent,
     /// The member refused to decode; the ordering stays open verbatim
-    /// ([`ATTITUDE_PRECEDENCE_UNKNOWN_CLAIM`]).
+    /// ([`ATTITUDE_PRECEDENCE_UNKNOWN_CLAIM`],
+    /// [`POSITION_PRECEDENCE_UNKNOWN_CLAIM`]).
     Refused(String),
 }
 
@@ -572,10 +709,11 @@ impl MissionWorldActors {
 /// `node` joins a single world node into a [`DeclaredWorldActorProgram`],
 /// then lowers and launches it through the production session path.
 ///
-/// Nothing is invented: `position_m` binds measured under
-/// [`SPAWN_POSE_CLAIM`], `orientation` and `faction` arrive
-/// [`Resolved::Unknown`] under their own claims, and `open_fields` names
-/// every open field regardless of which refusal the lowering hits first.
+/// Nothing is invented: `position_m` and `orientation` bind measured
+/// under [`SPAWN_POSE_CLAIM`] and [`SPAWN_ATTITUDE_CLAIM`] from the source
+/// the original applies last, `faction` arrives [`Resolved::Unknown`]
+/// under its own claim, and `open_fields` names every open field
+/// regardless of which refusal the lowering hits first.
 ///
 /// `session_ticks_per_second` is the host's designed session cadence —
 /// [`SESSION_TICKS_PER_SECOND`] is what the launch surface passes.
@@ -610,10 +748,10 @@ pub fn bind_mission_world_actors(
     };
     let carrier = CarrierRead::Decoded(member.records().len());
 
-    // The startup half of the attitude ordering (#792): the scope's own
-    // `placezeps.zrd` states the rotation the animation player applies to
-    // the same node after this spawn write. A refusal keeps every record's
-    // attitude open rather than picking a source.
+    // The startup half of the pose ordering (#792's attitude, #814's
+    // position): the scope's own `placezeps.zrd` states the placements the
+    // animation player applies to the same node after this spawn write. A
+    // refusal keeps every record's pose open rather than picking a source.
     let (startup, startup_span) = match read_startup_member(install_root, found, &archive) {
         Ok(read) => read,
         Err(reason) => (StartupRead::Refused(reason), None),
@@ -717,14 +855,14 @@ fn read_carrier_member(
     Ok((decoded, source))
 }
 
-/// Reads the scope's `placezeps.zrd` member: the startup rotations the
-/// mission states, and the member's own byte span for their provenance.
+/// Reads the scope's `placezeps.zrd` member: the startup state statements
+/// the mission states, and the member's own byte span for their provenance.
 ///
 /// `Absent` is a *measured* absence — a scope whose startup carrier states
-/// no rotation leaves the spawn attitude as the last writer. A refusal is
+/// no placement leaves the spawn pose as the last writer. A refusal is
 /// never read as an absence: it comes back as [`StartupRead::Refused`] so
-/// every record's attitude stays open under
-/// [`ATTITUDE_PRECEDENCE_UNKNOWN_CLAIM`].
+/// every record's attitude and position stay open under their precedence
+/// claims.
 fn read_startup_member(
     install_root: &Path,
     found: &Discovery,
@@ -750,8 +888,9 @@ fn read_startup_member(
     };
     let decoded = read_placezeps_member(member.bytes()).map_err(|error| error.to_string())?;
     let span = member.locator().span();
+    let fingerprint = cs_assets::install::fingerprint(&found.manifest);
     let source = SourceSpan::new(
-        cs_assets::install::fingerprint(&found.manifest),
+        fingerprint,
         archive,
         Some(PLACEZEPS_MEMBER),
         span.offset,
@@ -759,16 +898,46 @@ fn read_startup_member(
         None,
     )
     .map_err(|error| format!("the member's span refuses: {error}"))?;
-    // Every `OBJECT_ROTATE_STATE` of the member, in stored order: the `NAME`
-    // it addresses and the three radians the rotate parser leaves in the
-    // event (#791), which the executor hands to `0x4d1a30` (#792).
-    let rotations = decoded
+    // Every state statement of the member, in stored order: the `NAME` it
+    // addresses, the numbers the parser leaves in the event (radians for a
+    // rotate, the triple as stored for a translate, #791) — which the
+    // executors hand to `0x4d1a30`/`0x4d1d50` (#792, #814) — the `STATE`
+    // list's own archive span for a bound value's provenance, and the keys
+    // the grammar leaves unmodelled: `RELATIVE`/`AT_NODE` change what an
+    // executor applies, so a flagged statement settles no pose.
+    let statements = decoded
         .definitions()
         .iter()
-        .filter_map(|definition| definition.sequence().rotate())
-        .map(|statement| (statement.node().to_owned(), statement.parsed()))
+        .flat_map(|definition| {
+            let sequence = definition.sequence();
+            [sequence.translate(), sequence.rotate()]
+                .into_iter()
+                .flatten()
+        })
+        .map(|statement| {
+            let range = statement.state_range();
+            StartupStatement {
+                kind: statement.kind(),
+                node: statement.node().to_owned(),
+                values: statement.parsed(),
+                state_span: SourceSpan::new(
+                    fingerprint,
+                    archive,
+                    Some(PLACEZEPS_MEMBER),
+                    span.offset + range.start,
+                    range.end - range.start,
+                    None,
+                )
+                .expect("a STATE range inside the member spans"),
+                unmodelled: statement
+                    .unknown_fields()
+                    .iter()
+                    .map(|field| field.key.clone())
+                    .collect(),
+            }
+        })
         .collect();
-    Ok((StartupRead::Decoded(rotations), Some(source)))
+    Ok((StartupRead::Decoded(statements), Some(source)))
 }
 
 /// Reads `{group_dir}/gamez.zbd` and converts it through the production
@@ -851,14 +1020,60 @@ fn attitude_for(
             "{ATTITUDE_PRECEDENCE_UNKNOWN_REASON_PREFIX}{reason}"
         )),
         StartupRead::Absent => AttitudeBinding::Measured(spawn_attitude(record)),
-        StartupRead::Decoded(rotations) => {
-            match rotations.iter().find(|(node, _)| node == record.node()) {
-                Some((_, rotation_radians)) => {
-                    AttitudeBinding::Measured(AttitudeSource::StartupPlacement {
-                        rotation_radians: *rotation_radians,
+        StartupRead::Decoded(statements) => {
+            match statements.iter().find(|statement| {
+                statement.kind == StateKind::Rotate && statement.node == record.node()
+            }) {
+                Some(statement) => AttitudeBinding::Measured(AttitudeSource::StartupPlacement {
+                    rotation_radians: statement.values,
+                }),
+                None => AttitudeBinding::Measured(spawn_attitude(record)),
+            }
+        }
+    }
+}
+
+/// The source the original applies last for this record's position (#814):
+/// the startup carrier's `OBJECT_TRANSLATE_STATE` for the record's `node`
+/// when the scope states one *without* keys the grammar leaves unmodelled —
+/// the later of the two writes to the same `Object3d` position slots — and
+/// the record's own spawn position otherwise. A refused startup carrier
+/// settles nothing, and neither does a flagged translate: `RELATIVE` and
+/// `AT_NODE` change what `0x4e8de0` applies, so its bare `STATE` triple is
+/// not the applied position and none is guessed.
+fn position_for(
+    record: &cs_formats::zbd::zeppelins::ZeppelinRecord,
+    startup: &StartupRead,
+) -> PositionBinding {
+    match startup {
+        StartupRead::Refused(reason) => PositionBinding::Open(format!(
+            "{POSITION_PRECEDENCE_UNKNOWN_REASON_PREFIX}{reason}"
+        )),
+        StartupRead::Absent => PositionBinding::Measured(PositionSource::CarrierSpawn {
+            position_m: record.position(),
+        }),
+        StartupRead::Decoded(statements) => {
+            match statements.iter().find(|statement| {
+                statement.kind == StateKind::Translate && statement.node == record.node()
+            }) {
+                Some(statement) if statement.unmodelled.is_empty() => {
+                    PositionBinding::Measured(PositionSource::StartupPlacement {
+                        position_m: statement.values,
+                        state_span: statement.state_span.clone(),
                     })
                 }
-                None => AttitudeBinding::Measured(spawn_attitude(record)),
+                Some(statement) => PositionBinding::Open(format!(
+                    "the startup carrier states an OBJECT_TRANSLATE_STATE for `{}`, but the \
+                     statement carries keys the placement grammar leaves unmodelled ({}) — the \
+                     write order over the node's position slots is measured (#792), the applied \
+                     position of a flagged translate is not its bare STATE triple, and none is \
+                     guessed",
+                    record.node(),
+                    statement.unmodelled.join(", ")
+                )),
+                None => PositionBinding::Measured(PositionSource::CarrierSpawn {
+                    position_m: record.position(),
+                }),
             }
         }
     }
@@ -896,6 +1111,7 @@ fn declare_row(
         stored_yaw: record.yaw(),
         stored_pitch: record.pitch(),
         attitude: attitude_for(record, startup),
+        position: position_for(record, startup),
         team: record.team().map(str::to_owned),
         deactivated: record.deactivated(),
         subject,
@@ -907,8 +1123,10 @@ fn declare_row(
 /// bound and every unmeasured field an explicit unknown.
 ///
 /// `startup_span` is the byte span of the scope's `placezeps.zrd` when it
-/// read: a startup-sourced attitude is provenanced from *that* member, a
-/// spawn-sourced one from the carrier's own `span` (#792).
+/// read: a startup-sourced attitude is provenanced from *that* member and a
+/// startup-sourced position from the statement's own `STATE` span it
+/// carries, while either spawn-sourced half is provenanced from the
+/// carrier's own `span` (#792, #814).
 fn declare_actor(
     row: &SpawnedZeppelinActor,
     actor: ProgramActor,
@@ -918,12 +1136,28 @@ fn declare_actor(
     let NodeJoin::Single(subject) = &row.subject else {
         return None;
     };
-    let pose_provenance = Provenance::new(
-        claim(SPAWN_POSE_CLAIM),
-        cs_types::evidence::ClaimStatus::ObservedTool,
-        Some(span.clone()),
-    )
-    .expect("observed provenance with a source span");
+    let position_m = match &row.position {
+        PositionBinding::Measured(source) => {
+            let (value, source_span) = match source {
+                PositionSource::StartupPlacement {
+                    position_m,
+                    state_span,
+                } => (*position_m, state_span.clone()),
+                PositionSource::CarrierSpawn { position_m } => (*position_m, span.clone()),
+            };
+            let provenance = Provenance::new(
+                claim(SPAWN_POSE_CLAIM),
+                cs_types::evidence::ClaimStatus::ObservedTool,
+                Some(source_span),
+            )
+            .expect("observed provenance with a source span");
+            Resolved::Known(Known::new(value.map(f64::from), provenance))
+        }
+        PositionBinding::Open(reason) => {
+            Resolved::unknown(claim(POSITION_PRECEDENCE_UNKNOWN_CLAIM), reason)
+                .expect("a reason is stated")
+        }
+    };
     let orientation = match &row.attitude {
         AttitudeBinding::Measured(source) => {
             let source_span = match source {
@@ -945,7 +1179,6 @@ fn declare_actor(
                 .expect("a reason is stated")
         }
     };
-    let [x, y, z] = row.stored_position;
     Some(DeclaredWorldActor {
         actor,
         subject: subject.clone(),
@@ -953,10 +1186,7 @@ fn declare_actor(
         faction: faction_for_team(row.team.as_deref()),
         objective: None,
         motion: DeclaredMotion::Held {
-            position_m: Resolved::Known(Known::new(
-                [f64::from(x), f64::from(y), f64::from(z)],
-                pose_provenance,
-            )),
+            position_m,
             orientation,
         },
         sockets: Vec::new(),
@@ -1129,6 +1359,9 @@ mod tests {
             attitude: AttitudeBinding::Measured(AttitudeSource::CarrierSpawn {
                 yaw_radians: crate::mission_start::stored_heading_radians(180.0),
                 pitch_radians: 0.0,
+            }),
+            position: PositionBinding::Measured(PositionSource::CarrierSpawn {
+                position_m: [-3678.6, 1460.0, -11985.3],
             }),
             team: Some("enemy".to_owned()),
             deactivated: None,
@@ -1314,5 +1547,98 @@ mod tests {
             pose.orientation.0, expected_orientation,
             "the session carries the composed attitude of the source that applies last"
         );
+    }
+
+    /// **The position binds the source the original applies last, and an
+    /// unsettled one stays open by name (#814).**
+    /// A startup placement binds the `STATE` triple under the spawn-pose
+    /// claim provenanced from the statement's own span; an open binding is
+    /// declared `Resolved::Unknown` under the precedence claim, verbatim.
+    #[test]
+    fn accept_m01_lc_zeppelin_placement_position_binding_picks_the_last_writer_or_stays_open() {
+        let span = source_span();
+        let state_span = SourceSpan::new(
+            cs_types::evidence::ContentHash::from_hex(&"a".repeat(64)).expect("test hash"),
+            "zbd/c1c/m01/zrdr.zbd",
+            Some(PLACEZEPS_MEMBER),
+            49_213 + 446,
+            32,
+            None,
+        )
+        .expect("the STATE range spans");
+
+        // A startup translate that applies last binds its absolute triple,
+        // provenanced from the STATE list's own bytes — never the carrier's
+        // span.
+        let mut startup = row(0, "piratezep", scene_subject("world1.piratezep"));
+        startup.position = PositionBinding::Measured(PositionSource::StartupPlacement {
+            position_m: [-3584.0, 1360.0, -8704.0],
+            state_span: state_span.clone(),
+        });
+        let actor = declare_actor(&startup, ProgramActor(0), &span, None).expect("declares");
+        let DeclaredMotion::Held { position_m, .. } = &actor.motion else {
+            panic!("a held pose");
+        };
+        let Resolved::Known(known) = position_m else {
+            panic!("the applied position binds measured");
+        };
+        assert_eq!(known.value, [-3584.0_f32, 1360.0, -8704.0].map(f64::from));
+        assert_eq!(known.provenance.claim_id.as_str(), SPAWN_POSE_CLAIM);
+        assert_eq!(known.provenance.class, ClaimStatus::ObservedTool);
+        assert_eq!(
+            known.provenance.source.as_ref().map(SourceSpan::offset),
+            Some(state_span.offset()),
+            "the startup value is provenanced from the STATE span"
+        );
+        assert!(
+            startup.position_residue().contains("spawn position"),
+            "the residue names the spawn position it overwrites: {}",
+            startup.position_residue()
+        );
+
+        // A carrier spawn binds the record's own triple, provenanced from
+        // the carrier's member, with the startup carrier's silence named.
+        let carrier = row(1, "blackswanzep", scene_subject("world1.blackswanzep"));
+        let actor = declare_actor(&carrier, ProgramActor(1), &span, None).expect("declares");
+        let DeclaredMotion::Held { position_m, .. } = &actor.motion else {
+            panic!("a held pose");
+        };
+        let Resolved::Known(known) = position_m else {
+            panic!("the carrier's own position binds measured");
+        };
+        assert_eq!(
+            known.value,
+            carrier.stored_position.map(f64::from),
+            "the spawn position is what the node keeps"
+        );
+        assert_eq!(
+            known.provenance.source.as_ref().map(SourceSpan::offset),
+            Some(span.offset())
+        );
+        assert!(
+            carrier
+                .position_residue()
+                .contains("OBJECT_TRANSLATE_STATE"),
+            "the residue names the startup carrier's silence: {}",
+            carrier.position_residue()
+        );
+
+        // An unsettled ordering declares no position: the field stays an
+        // explicit unknown under the precedence claim, verbatim.
+        let mut open = row(
+            2,
+            "workersvoyagezep",
+            scene_subject("world1.workersvoyagezep"),
+        );
+        open.position = PositionBinding::Open("the member refused: truncated".to_owned());
+        let actor = declare_actor(&open, ProgramActor(2), &span, None).expect("declares");
+        let DeclaredMotion::Held { position_m, .. } = &actor.motion else {
+            panic!("a held pose");
+        };
+        let Resolved::Unknown { claim_id, reason } = position_m else {
+            panic!("an open position binds nothing");
+        };
+        assert_eq!(claim_id.as_str(), POSITION_PRECEDENCE_UNKNOWN_CLAIM);
+        assert_eq!(reason, "the member refused: truncated");
     }
 }
