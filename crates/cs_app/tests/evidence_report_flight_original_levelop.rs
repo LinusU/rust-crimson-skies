@@ -1,34 +1,31 @@
-//! Evidence-report harness for task #797 (FLIGHT-ORIGINAL-PLAYTEST):
+//! Evidence-report harness for task #1134 (FLIGHT-ORIGINAL-LEVELOFF-INPUT):
 //! `docs/contracts/CLI-EVIDENCE.md`, schema `schemas/evidence.schema.json`.
 //!
-//! This test is deliberately **not** named `accept_flight_original_playtest_*`:
-//! it is not part of the acceptance suite, and it fails loudly when its inputs
-//! are missing instead of passing vacuously. Run from the workspace root, after
-//! the acceptance suite, exactly as:
+//! This test is deliberately **not** named `accept_flight_original_levelop_*`:
+//! it is not part of the acceptance suite and fails loudly when its inputs are
+//! missing instead of passing vacuously. Run from the workspace root, after the
+//! acceptance suite, exactly as:
 //!
 //! 1. ```sh
-//!    cargo test --workspace --locked -- accept_flight_original_playtest_ --include-ignored \
-//!      --nocapture 2>&1 | tee private/evidence/T797/cargo-test.log
+//!    cargo test --workspace --locked -- accept_flight_original_levelop_ \
+//!      --include-ignored --nocapture 2>&1 \
+//!      | tee private/evidence/T1134/cargo-test.log
 //!    ```
-//!    (the `--nocapture` is what puts the `PLAYTEST-ORIGINAL-*` measured
-//!    values in the log; pass the pipeline's cargo status to this harness as
+//!    (the `--nocapture` is what puts the `PLAYTEST-LEVELOFF` measured values
+//!    in the log; pass the pipeline's cargo status to this harness as
 //!    `CS_EVIDENCE_EXIT_CODE`.)
 //! 2. ```sh
-//!    CS_EVIDENCE_DIR=private/evidence/T797 \
+//!    CS_EVIDENCE_DIR=private/evidence/T1134 \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_flight_original_playtest_ --include-ignored" \
+//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_flight_original_levelop_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
-//!      cargo test --locked -p cs_app --test evidence_report_flight_original_playtest -- --ignored
+//!      cargo test --locked -p cs_app --test evidence_report_flight_original_levelop -- --ignored
 //!    ```
 //! 3. ```sh
-//!    python3 tools/validate_evidence.py private/evidence/T797/acceptance.json \
-//!      --artifact-root private/evidence/T797
+//!    python3 tools/validate_evidence.py private/evidence/T1134/acceptance.json \
+//!      --artifact-root private/evidence/T1134
 //!    ```
-//!    The report records this task's open issues in `unknowns`, which is exactly
-//!    what `--require-pass` refuses; run it with `--require-pass` to see that
-//!    refusal, and never delete an unknown to make the strict check pass
-//!    (AGENTS.md, owner directive 2026-10-01).
-//! 4. Commit a copy of `acceptance.json` as `docs/findings/evidence/T797.json`.
+//! 4. Commit a copy of `acceptance.json` as `docs/findings/evidence/T1134.json`.
 //!
 //! Every field is derived from real inputs: the recorded test log, production
 //! discovery of `$CS_GAME_DIR`, a fresh run of the playtest's own production
@@ -45,15 +42,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cs_app::playtest::retail::{RetailRequest, read_flight};
 use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 
-const TASK_ID: &str = "T797";
-const PREFIX: &str = "accept_flight_original_playtest_";
+const TASK_ID: &str = "T1134";
+const PREFIX: &str = "accept_flight_original_levelop_";
 /// The one prefixed test that can only pass over the installation, so the
 /// `retail` capability in the report is backed by a run and not by a name.
-const RETAIL_PREFIX: &str = "accept_flight_original_playtest_retail_body";
+const RETAIL_PREFIX: &str = "accept_flight_original_levelop_bound_key_toggles";
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
-fn evidence_report_flight_original_playtest_writes_the_acceptance_report() {
+fn evidence_report_flight_original_levelop_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
     let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
@@ -117,17 +114,23 @@ fn evidence_report_flight_original_playtest_writes_the_acceptance_report() {
 
     // The consumer trace: the playtest's own production flight import
     // (`cs_app::playtest::retail::read_flight`) run over the installation and
-    // written into the evidence directory, so the report is backed by the
-    // exact record the retail playtest flies and not only by test names.
+    // written into the evidence directory. Its `playtest flight` statement now
+    // carries `"level_off_toggle_wired":true` and the `key.l` binding — the
+    // production JSON of the very wiring this task added.
     let request = RetailRequest::new(game_dir.clone(), None, None)
         .expect("the documented playtest selectors are valid");
     let flight = read_flight(&request)
         .expect("the playtest's production flight import reads the installation");
+    let flight_json = flight.json();
+    assert!(
+        flight_json.contains("\"level_off_toggle_wired\":true"),
+        "the flight statement must report the Level-Off toggle as wired: {flight_json}"
+    );
     let flight_trace = format!(
         "{{\n \"task_id\": {},\n \"installation\": {},\n \"flight\": {}\n}}\n",
         jstr(TASK_ID),
         jstr(&game_dir.display().to_string()),
-        flight.json()
+        flight_json
     );
     let flight_path = evidence_dir.join("playtest-flight.json");
     fs::write(&flight_path, &flight_trace)
@@ -143,34 +146,22 @@ fn evidence_report_flight_original_playtest_writes_the_acceptance_report() {
         artifact(&flight_path, "json", &evidence_dir),
     ];
 
-    // `level_off_command_47` was resolved by Rally #1134
-    // (FLIGHT-ORIGINAL-LEVELOFF-INPUT): the input layer gained a
-    // `FlightCommand::LevelOff` slot, the playtest binds it to `L`, and the
-    // bound key toggles `OriginalState.level_off` on the retail playtest body
-    // (`accept_flight_original_levelop_*`). Rally #1135
-    // (FLIGHT-ORIGINAL-RETAIL-SMOKE-SCRIPT) resolved `scripted_smoke_path` by
-    // re-deriving the retail smoke's steer for the original law. The T797
-    // report is regenerated without either unknown; the remaining three below
-    // are still open.
     let unknowns = [
-        "player_spawn_speed: the original's player spawn speed was never recovered (#796), so \
-         the retail playtest starts at its own declared 55 m/s (`RETAIL_START_SPEED_M_S`) and \
-         only the cruise (`fd_speed`, 134 m/s measured) is imported data. Affected content: the \
-         retail playtest's spawn speed and any claim about how an aircraft starts. Resolving \
-         task: an owner original run (#358 REF-OWNER-FIRST-CAPTURE). Gates: any \
-         verified_original handling claim.",
-        "roll_axis_sign: the original's own roll input sign was not recovered (#796 lists \
-         'roll sign' as open), so the playtest maps `FlightInput::roll` (positive \
-         right-wing-down, the F22 contract) onto the law's roll input with a negation; measured: \
-         with the direct mapping, holding `E` banked the retail aircraft -47 deg. Affected \
-         content: the retail playtest's roll axis direction. Resolving task: static analysis of \
-         the original's input handling or an owner run. Gates: any claim that the playtest's roll \
-         axis reproduces the original's own axis direction.",
-        "law_calibration: the flight law itself is static evidence under OWNER-STATIC-2026-10-08 \
-         and is still uncalibrated against an original run (#358); nothing flown here is \
-         verified_original. Affected content: every handling claim about the retail playtest. \
-         Resolving task: an owner original run compared against this law. Gates: any \
-         verified_original or release_approved claim.",
+        "level_off_binding_chord: the original toggles command 47 with the Shift+L chord; the \
+         F22 action map has no chord sources and Left Shift is already the playtest's throttle \
+         step-up, so the playtest binds the bare letter `L` — a designed slot for the original \
+         command, not a reproduction of the original's chord, and the original's own default \
+         binding remains unmeasured (native data, F22-H unknown #1). Affected content: the \
+         retail playtest's Level-Off key. Resolving task: none needed for the toggle itself; a \
+         chord-capable action map or an owner run (#358) would be needed to bind Shift+L as the \
+         original does. Gates: any claim that the playtest's Level-Off key matches the original's \
+         chord.",
+        "level_off_calibration: the assist's torque path is part of the statically recovered law \
+         (OWNER-STATIC-2026-10-08) and is still uncalibrated against an original run (#358); \
+         what was measured here is that the wired toggle drives that law, not that the original \
+         levels off at the same rate. Affected content: any handling claim about the Level-Off \
+         assist. Resolving task: an owner original run compared against this law. Gates: any \
+         verified_original claim about Level-Off behaviour.",
     ];
 
     let report = format!(
@@ -215,19 +206,21 @@ fn evidence_report_flight_original_playtest_writes_the_acceptance_report() {
             .collect::<Vec<_>>()
             .join(", "),
         identity = jstr(
-            "implementer: bunny-2 (Rally #797 implement claim of 2026-10-09); reviewer: \
+            "implementer: bunny-2 (Rally #1134 implement claim of 2026-10-09); reviewer: \
              recorded by the Rally review claim that follows — per AGENTS.md an agent review is \
              `checked` at best, is never independent original-reference evidence and never \
              replaces the owner's human approval. The activity log records both claims.",
         ),
         method = jstr(
             "acceptance suite run locally with the retail capability and recorded verbatim in \
-             cargo-test.log (its PLAYTEST-ORIGINAL-* lines carry the measured values); this \
+             cargo-test.log (its PLAYTEST-LEVELOFF lines carry the measured bank angles); this \
              harness derives every field from that log, from production discovery of \
              $CS_GAME_DIR, from a fresh run of the playtest's own production flight import \
-             (playtest-flight.json, `cs_app::playtest::retail::read_flight`), from rustc and \
-             from Cargo.lock. Structure checked with tools/validate_evidence.py; --require-pass \
-             refuses while `unknowns` is non-empty, by design and never worked around.",
+             (playtest-flight.json, `cs_app::playtest::retail::read_flight`, whose flight \
+             statement now reports level_off_toggle_wired true), from rustc and from Cargo.lock. \
+             Structure checked with tools/validate_evidence.py; the two unknowns it carries are \
+             the unmeasured original chord and the uncalibrated assist rate, each stated with \
+             what it gates.",
         ),
     );
 
@@ -263,13 +256,13 @@ fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
         panic!(
             "{name} is not set: this harness only runs through the sequence in its module doc \
-             (crates/cs_app/tests/evidence_report_flight_original_playtest.rs)"
+             (crates/cs_app/tests/evidence_report_flight_original_levelop.rs)"
         )
     })
 }
 
 /// Cargo runs a test binary with its working directory set to the *package*
-/// root, so a path like `private/evidence/T796` written relative to the
+/// root, so a path like `private/evidence/T1134` written relative to the
 /// workspace root in the module doc must be re-anchored here.
 fn workspace_path(as_described: &str) -> PathBuf {
     let path = PathBuf::from(as_described);
@@ -340,7 +333,7 @@ struct Suite {
 }
 
 /// Extracts the libtest summaries and the per-test results of the
-/// `accept_flight_original_` tests from a recorded `cargo test` output.
+/// `accept_flight_original_levelop_` tests from a recorded `cargo test` output.
 fn parse_suite(log: &str) -> Suite {
     let mut suite = Suite::default();
     let mut pending: VecDeque<String> = VecDeque::new();
@@ -527,7 +520,7 @@ fn iso_utc_now() -> String {
 }
 
 /// Howard Hinnant's `civil_from_days`: days since 1970-01-01 to a UTC
-/// calendar date, because `std` has no date formatting.
+/// calendar day, because `std` has no date formatting.
 fn civil_from_unix(seconds: i64) -> (i64, u32, u32, u32, u32, u32) {
     let days = seconds.div_euclid(86_400);
     let rest = seconds.rem_euclid(86_400);
