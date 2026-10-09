@@ -5,13 +5,16 @@ compatibility gaps" (#280, `missions/M08.md`, work order `M08-B`).
 Shared contract: `docs/contracts/SCRIPT-MISSION.md`. Capabilities used:
 `retail` (`$CS_GAME_DIR` read-only, never written) and `synthetic` (newly
 authored `.zrd` values). Implementer: **bunny-alpha-2/bunny-alpha-2** (Rally
-#280, session of 2026-10-09T02:22Z). Reviewer:
-**bunny-alpha-1/bunny-alpha-1** (Rally review claim of 2026-10-09T05:38Z, a
-different agent instance with fresh context). That review is independent of
-the implementation, but it is an agent review of the code and the tests: it
-is not independent original-reference evidence and not original-run
-evidence, and no agent review replaces the owner's human approval. The
-evidence report's `review.identity` is read at run time from
+#280, session of 2026-10-09T02:22Z). Reviewers:
+**bunny-alpha-1/bunny-alpha-1** (Rally review claims of 2026-10-09T05:38Z
+and of 2026-10-09T08:22Z — the second round resolved the first landing
+conflict) and **Devin SWE-2/swe2-max-1** (Rally review claim of
+2026-10-09T09:52Z — the third round resolved the second landing conflict),
+each a different agent instance with fresh context. Those reviews are
+independent of the implementation, but they are agent reviews of the code
+and the tests: they are not independent original-reference evidence and not
+original-run evidence, and no agent review replaces the owner's human
+approval. The evidence report's `review.identity` is read at run time from
 `CS_EVIDENCE_REVIEWER`, so each agent writes its own.
 
 The stage's minimum acceptance scenario is *"All discovered mission-specific
@@ -358,6 +361,48 @@ lines, no failure), `cargo test --workspace --locked -- accept_m08_b_
 ignored**, tee'd to `private/evidence/M08-B/cargo-test.log`). The evidence
 report was then regenerated from that run with the `evidence.rs` recipe and
 validated again, and the branch was pushed for CI on the rebased head.
+
+### Landing conflict, round three (2026-10-09)
+
+The approval at `a94c48f4` could not be fast-forwarded either: the lander
+reported *rebase conflict with main; a reviewer must rebase it by hand* a
+second time, so the task came back to review again. A third reviewer —
+**Devin SWE-2/swe2-max-1** (Rally review claim of 2026-10-09T09:52Z, a
+different agent instance and model from both the implementer
+`bunny-alpha-2` and the earlier reviewer `bunny-alpha-1`, in a fresh
+session and claim) — rebased the branch by hand onto the moved
+`origin/main` (`09b2618c`, which had landed M02-B-FU2, M07-B and F58-B
+since `756b862e`). This time only one owner file conflicted:
+
+- `crates/cs_app/tests/campaign/main.rs` — this stage's doc paragraph and
+  main's new `m07_b.rs` paragraph had been inserted at the same place. Both
+  were kept (M07-B's first, then M08-B's); nothing else in the file differs
+  from `origin/main`.
+- `crates/cs_app/tests/campaign/evidence.rs` auto-merged this round: the
+  branch's M08-B block still sits between `parse_m02_b_fu1_suite` and
+  main's M02-B-FU3 block, and the merged file remains `origin/main`'s
+  `evidence.rs` plus this branch's additions only — `git diff --stat
+  origin/main...HEAD` shows 350 insertions and no deletion, and the branch
+  adds exactly one `evidence_report_*` function over main's 31
+  (`evidence_report_m08_b_writes_the_acceptance_report`).
+
+Checks on the third conflict-rebased tree (`635cf5bf`): `cargo fmt --all --
+--check` (0), `cargo clippy --workspace --all-targets --all-features
+--locked -- -D warnings` (0), `cargo test --workspace --locked` (0: 480
+`test result: ok` lines, no failure), `cargo test --workspace --locked --
+accept_m08_b_ --include-ignored` (0: **7 discovered, 7 executed, 7 passed,
+0 failed, 0 ignored**, tee'd to `private/evidence/M08-B/cargo-test.log`).
+The evidence report was regenerated from that run with the `evidence.rs`
+recipe (`CS_EVIDENCE_REVIEWER` naming all three agents of record) and
+validated again with `tools/validate_evidence.py … --require-pass` (exit 0,
+`structurally_valid: true`). The `m08-control-program.json` artifact hashes
+identically to the earlier rounds (`3134ddc3…`), so the second production
+observation of M08's control program is byte-identical across three
+rebases; only `candidate_tree`, `created_at`, `command.cwd`, the
+`cargo-test.log` artifact hash and `review.identity` differ in the report.
+The earlier reviews' mutation results still stand: no production file
+changed in any of the three rebases, only the doc paragraph, the harness
+placement and the findings/evidence copies moved.
 
 ## Recorded unknowns (not guessed)
 
