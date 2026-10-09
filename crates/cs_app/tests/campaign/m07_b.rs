@@ -241,7 +241,8 @@ fn addresses(args: &[ZrdValue]) -> Vec<i64> {
 fn refused_objective(text: &str) -> u32 {
     let start = text
         .find("objective#")
-        .expect("a call refusal names its objective")+ "objective#".len();
+        .expect("a call refusal names its objective")
+        + "objective#".len();
     let digits: String = text[start..]
         .chars()
         .take_while(char::is_ascii_digit)
@@ -285,8 +286,7 @@ fn accept_m07_b_the_control_program_is_the_member_that_declares_the_blocks() {
     assert_eq!(binding.program_id.as_str(), "script/c2-m02-zrdr");
     assert_eq!(binding.program_asset, "ZBD/C2/M02/zrdr.zbd");
     assert_eq!(
-        binding.program_sha256,
-        "6154e4ea47b0a5261ef047e4a6dd2732973e868858fbba7761ebb5f83f580a5d",
+        binding.program_sha256, "6154e4ea47b0a5261ef047e4a6dd2732973e868858fbba7761ebb5f83f580a5d",
         "the reader archive is the program M07-A bound"
     );
 
@@ -367,7 +367,12 @@ fn accept_m07_b_the_control_program_is_the_member_that_declares_the_blocks() {
         members,
         row.members
             .iter()
-            .map(|member| (member.name.clone(), member.offset, member.len, member.objective_blocks))
+            .map(|member| (
+                member.name.clone(),
+                member.offset,
+                member.len,
+                member.objective_blocks
+            ))
             .collect::<Vec<_>>(),
         "the independent walk enumerates the same members at the same spans"
     );
@@ -573,7 +578,11 @@ fn accept_m07_b_the_record_does_not_lower_and_the_gaps_are_the_named_ones() {
 fn accept_m07_b_the_sheet_priorities_resolve_to_measured_operations() {
     let record = census_row().record().expect("M07 has a control program");
     let operation = |key: &str| -> DirectiveOperation {
-        match record.key(key).unwrap_or_else(|| panic!("{key} is missing")).disposition() {
+        match record
+            .key(key)
+            .unwrap_or_else(|| panic!("{key} is missing"))
+            .disposition()
+        {
             DirectiveDisposition::Measured(measured) => measured.operation,
             other => panic!("{key} is not measured: {other:?}"),
         }
@@ -598,10 +607,7 @@ fn accept_m07_b_the_sheet_priorities_resolve_to_measured_operations() {
     assert_eq!(operation("START_TAXI"), DirectiveOperation::ReleaseTaxi);
     assert_eq!(operation("SET_AI_TEAM"), DirectiveOperation::AssignTeam);
     assert_eq!(operation("WAKE_ANIM"), DirectiveOperation::WakeAnimation);
-    assert_eq!(
-        operation("WAKEUP_ENEMIES"),
-        DirectiveOperation::WakeEnemies
-    );
+    assert_eq!(operation("WAKEUP_ENEMIES"), DirectiveOperation::WakeEnemies);
     assert_eq!(
         operation("COMPLETED_STOPPOINT"),
         DirectiveOperation::AdvanceStopPoint
@@ -661,11 +667,7 @@ fn accept_m07_b_the_sheet_priorities_resolve_to_measured_operations() {
 
     // The complete vocabulary: what the record spells, in full, so a key that
     // appears, disappears or is renamed fails here.
-    let mut keys: Vec<String> = record
-        .keys()
-        .iter()
-        .map(|key| key.key.clone())
-        .collect();
+    let mut keys: Vec<String> = record.keys().iter().map(|key| key.key.clone()).collect();
     keys.sort();
     assert_eq!(
         keys,
@@ -734,7 +736,10 @@ fn accept_m07_b_the_sheet_priorities_resolve_to_measured_operations() {
             && anchor.iter().all(|v| matches!(v, ZrdValue::Float(_)))),
         "the anchor is a three-float point"
     );
-    assert!(matches!(first[3], ZrdValue::Float(_)), "the radius is a float");
+    assert!(
+        matches!(first[3], ZrdValue::Float(_)),
+        "the radius is a float"
+    );
 
     // The animation gates: which blocks, how many spec records each, and the
     // names and states the record spells.
@@ -744,7 +749,17 @@ fn accept_m07_b_the_sheet_priorities_resolve_to_measured_operations() {
         .collect();
     assert_eq!(
         anim,
-        [(9, 1), (13, 2), (16, 3), (20, 4), (26, 1), (30, 3), (31, 1), (60, 5), (61, 1)],
+        [
+            (9, 1),
+            (13, 2),
+            (16, 3),
+            (20, 4),
+            (26, 1),
+            (30, 3),
+            (31, 1),
+            (60, 5),
+            (61, 1)
+        ],
         "M07 is the first measured mission whose ANIM_STATE sites spell up to five records"
     );
     let mut names: BTreeMap<String, usize> = BTreeMap::new();
@@ -859,7 +874,8 @@ fn accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated(
     let mut terminal: Vec<(u32, &str)> = Vec::new();
     for (number, directives) in &blocks {
         for directive in directives {
-            if let Some(outcome) = cs_content::mission_control::terminal_outcome_of(&directive.key) {
+            if let Some(outcome) = cs_content::mission_control::terminal_outcome_of(&directive.key)
+            {
                 assert!(directive.args.is_none(), "the outcome site is bare");
                 terminal.push((
                     *number,
@@ -899,11 +915,7 @@ fn accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated(
     };
     assert_eq!(
         incoming(25),
-        [(
-            24,
-            "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(),
-            vec![25]
-        )],
+        [(24, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![25])],
         "the loss block is reached only through one nap"
     );
     assert_eq!(
@@ -978,7 +990,13 @@ fn accept_m07_b_the_mission_stays_unready_and_the_campaign_gate_stays_closed() {
     assert!(census.measured_rows().any(|row| row.mission() == MISSION));
     let row = census_row();
     assert!(!row.is_complete());
-    assert!(row.lowering().expect("the accounting exists").unmet().next().is_some());
+    assert!(
+        row.lowering()
+            .expect("the accounting exists")
+            .unmet()
+            .next()
+            .is_some()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,7 +1055,8 @@ fn anim(name: &str) -> Vec<ZrdValue> {
 /// refuses as an unknown host call, even a single-record one elsewhere in the
 /// record, and no program stands.
 #[test]
-fn accept_m07_b_a_multi_record_anim_state_refuses_its_condition_and_a_bound_shape_refuses_the_key() {
+fn accept_m07_b_a_multi_record_anim_state_refuses_its_condition_and_a_bound_shape_refuses_the_key()
+{
     // One record: the shape the engine implements today — condition lowers,
     // call binds, program assembles.
     let single = record_of(vec![(1, {
@@ -1135,7 +1154,10 @@ fn accept_m07_b_a_multi_record_anim_state_refuses_its_condition_and_a_bound_shap
 fn accept_m07_b_a_danger_zones_site_refuses_its_condition_and_the_block_without_it_lowers() {
     let danger = record_of(vec![(
         1,
-        vec![text("DANGER_ZONES_COMPLETED"), ZrdValue::List(vec![text("dzpath8")])],
+        vec![
+            text("DANGER_ZONES_COMPLETED"),
+            ZrdValue::List(vec![text("dzpath8")]),
+        ],
     )]);
     let lowered = lower(&danger);
     let refused: Vec<&str> = lowered
