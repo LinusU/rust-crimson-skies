@@ -6,10 +6,12 @@ Shared contract: `docs/contracts/SCRIPT-MISSION.md`. Capabilities used:
 `retail` (`$CS_GAME_DIR` read-only, never written) and `synthetic` (newly
 authored `.zrd` records). Implementer: **opencode-1/opencode-1** (Rally #274,
 session of 2026-10-09). Reviewer: **bunny-alpha-2/bunny-alpha-2** (Rally review
-claim of 2026-10-09), a different agent instance and model with a fresh context
-that had not worked on this implementation — an agent review of the code, the
-tests and the regenerated evidence, not original-run or human-play evidence,
-and no agent review replaces the owner's human approval.
+claim of 2026-10-09), a different agent instance in a separate session with a
+fresh context that had not worked on this implementation — same model family
+as the implementer, so a fresh-context agent review rather than
+independent-model evidence — of the code, the tests and the regenerated
+evidence, not original-run or human-play evidence, and no agent review
+replaces the owner's human approval.
 
 ## Review identity
 
@@ -25,6 +27,11 @@ statement. M06-B adds no Rally review facts to
 `docs/findings/2026-10-02-m16-a-fu2-rally-review-snapshot.json`: that file
 records merge events that do not exist yet, and an entry written before the
 review would be writing a review fact that has not happened.
+
+The same review claim regenerated the report a second time on 2026-10-09,
+after Rally's landing attempt failed on a rebase conflict and the branch was
+hand-rebased onto main: `candidate_tree` then names that hand-rebased tree and
+`review.identity` records both review rounds and their limits.
 
 The stage's minimum acceptance scenario is *"All discovered mission-specific
 behavior uses production engine systems and regression tests."* It holds for
@@ -352,6 +359,19 @@ The reviewing agent re-ran the same four commands on the rebased tree
 executed and passed 8 of 8 — plus each of the eight tests alone with
 `cargo test --locked --test campaign <name> -- --exact --include-ignored`
 (all 0), and re-ran the two mutation probes recorded above.
+
+Rally's first landing attempt of the approved `427c4717` failed with *"rebase
+conflict with main; a reviewer must rebase it by hand"*. A fresh review
+session of the same claim hand-rebased the branch onto main — which had since
+gained M07-B and the M02-B-FU2 rounds — where the only conflict was the
+`crates/cs_app/tests/campaign/main.rs` module-doc paragraph, resolved by
+keeping **both** stage paragraphs (M06-B's and M07-B's); the incoming commits
+touched no `Cargo.toml` or `Cargo.lock` and no file outside this stage's owner
+paths overlap except that shared module doc and `evidence.rs`, whose M06-B and
+M07-B lists auto-merged intact. On that hand-rebased tree all four commands
+above were re-run (fmt 0, clippy 0, workspace test 0, task selection 8/8) and
+this report was regenerated from the tee'd acceptance log with
+`candidate_tree` equal to that tree.
 
 The acceptance run that the evidence report records is the same task
 selection, tee'd into `private/evidence/M06-B/cargo-test.log`; the report is
