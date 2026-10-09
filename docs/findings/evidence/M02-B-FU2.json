@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M02-B-FU2",
+ "candidate_tree": "8b19f671e8f64cf856a4ea80d36b8982c701aba2",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-09T00:43:16Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m02_b_fu2_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 3, "executed": 3, "passed": 3, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m02_b_fu2_the_sound_vocabulary_is_entirely_measured_and_answers_for_nothing_else", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m02_b_fu2_the_image_parses_and_consumes_each_sound_key_where_production_says", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m02_b_fu2_m02s_five_record_sound_keys_are_measured_with_their_consumers", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "fdc29460fa8c16eb9a5858621829758e24bc0ac08f06a95df1d8d882e94ab6b4", "kind": "log"}, {"path": "m02-b-fu2-record-sounds.json", "sha256": "81eb440232d3f932ba42bb6632aafc8f1816dc5c22543724f90aeef8fc21438f", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: bunny-alpha-1/bunny-alpha-1 (Rally #801, session of 2026-10-08T22:49Z); reviewer: bunny-alpha-1/bunny-alpha-1 — the implementing agent, running this harness at hand-over; this run is the implementer's own evidence, not a review (same agent identity as the implementer, so it is NOT independent review and no agent review replaces the owner's human approval); the branch's Rally reviewing agent writes its own report with its own CS_EVIDENCE_REVIEWER identity", "method": "acceptance suite re-run locally with the retail capability and the owner-supplied engine image; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR and the control-program binding `SourceContext::control_program` derives from it, and the dispositions come from `cs_content::mission_control::record_sound_disposition` — five keys, each measured with its consumer, its mission-object field, its parse site and its consumer site. The image member re-reads $CS_ENGINE_IMAGE (the owner-supplied decrypted executable, sha256 43540fc9…) at those addresses and re-derives both selectors — the objective-class dec/je chain and the mission-end won flag — from the instruction bytes: static code reading only, no original run. NOT CLAIMED: no sound is played here and the handle's sound identity stays runtime state; M02's control record still does not lower (KILL_OBJECTIVE_WHEN_I_COMPLETE exceeds the registry's per-signature bound, M02-B-FU1 / #800), so M02 stays Unsupported and the campaign gate stays closed; the two original record keys this task does not admit (OBJECTIVES_WON/LOST_SOUND) stay outside every vocabulary and are counted as unclassified wherever they are spelled; no mission was played, no original executable was run and nothing is verified_original. Claim is implemented only; validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit the suite and this harness ran on; the only later delta is this report's own copy under docs/findings/evidence/ and the findings document that discusses it, neither of which the acceptance suite reads"},
+ "claim": "implemented"
+}
