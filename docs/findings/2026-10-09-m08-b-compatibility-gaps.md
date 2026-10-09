@@ -19,10 +19,13 @@ through production systems (`SourceContext::control_program`,
 `cs_formats::script_raw::discover_container`, `cs_content::stunts::decode_zrd`,
 `cs_content::mission_control`, `cs_app::mission_control`,
 `cs_app::control_lowering`) and regresses it with seven `accept_m08_b_*`
-tests. **Two** compatibility gaps are measured and pinned, not worked
-around; both are already filed by their discoverers, and neither is
-duplicated here (see below). M08's control record does **not** lower, so the
-mission stays Unsupported and the campaign gate stays closed.
+tests. **One** compatibility gap remains and is pinned, not worked around;
+it was already filed by its discoverer and is not duplicated here (see
+below). M08's control record does **not** lower completely, so the mission
+stays Unsupported and the campaign gate stays closed. The second gap this
+stage was written against — the host-call bound — was closed on `main` by
+#800 *while this branch was in flight*, so the pins were rewritten against
+the landed behaviour and now assert both halves.
 
 Nothing here is `verified_original` (AGENTS.md rule 8): the
 work-order ↔ mission join remains M08-A's inference, directive *effects* are
@@ -44,7 +47,7 @@ re-derived by the acceptance tests on each run:
 | Vocabulary partition | 2 implemented keys (`INSTANTWIN` ×1 site, `INSTANTLOSS` ×1 site, both bare), 20 measured keys, **0 unmeasured**, 0 block refusals | `MeasuredControlRecord::{implemented, measured, unmeasured}` |
 | Record-level fields | `MISSION_TIMER`, `PLAYER_INIT` and the three empty animation lists — each once | `record_fields()` |
 | Unclassified record keys | *none* — unlike M02's five sound keys, every record-level key M08 spells is in `CONTROL_RECORD_KEY_VOCABULARY` | `unclassified_record_keys()` |
-| Lowering attempt | mission `mission/ch2-m03`; 57 objectives; 209 call verdicts — 190 bound, **19 refused**; 57 condition verdicts — 49 lowered, **8 refused**; `validation` `None`; no program | `cs_app::control_lowering::lower_control_record` through the census row |
+| Lowering attempt | mission `mission/ch2-m03`; 57 objectives; 209 call verdicts — **all 209 bound**, no key refuses registration; 57 condition verdicts — 49 lowered, **8 refused**; a `RawProgram` and a `MissionProgram` assemble, and `validate` reports exactly one unsupported instruction (the `OBJECTIVE17` danger-zones condition) | `cs_app::control_lowering::lower_control_record` through the census row |
 | Census context | 40 measured rows of the mission-scoped readers; M08 among the rows that are **not** complete; `campaign_ready()` false | `survey_mission_control_programs` |
 
 The 13 members, in archive order, each with the block count that qualified or
@@ -80,7 +83,8 @@ fails a test.
   `evidence_report_m08_b_writes_the_acceptance_report` harness plus this
   task's test lists, and a second production observation written beside the
   report (`m08-control-program.json`: identities, spans, digests, member
-  accounting, directive counts, the lowering's verdicts and both gaps). It is
+  accounting, directive counts, the lowering's verdicts and the gap that
+  remains). It is
   deliberately not prefixed `accept_m08_b_`, so a task selection never picks
   it up as an acceptance test.
 - Wiring only (AGENTS rule 1): `crates/cs_app/tests/campaign/main.rs` (one
@@ -152,45 +156,50 @@ nap (the nap re-wakes its target after the spelled seconds). Nothing here
 claims what those edges *do* at runtime: the wrong-actor, wrong-session and
 repeated-event halves of all three priorities need ordinary play (M08-C).
 
-## The two measured compatibility gaps (already filed, not duplicated)
+## The lowering gap that remains, and the one that closed underneath this stage
 
 M08's directive vocabulary is **fully measured**: 22 of 22 keys carry a
-M01-LC disposition, none is Unmeasured, and no block is unreadable. Yet the
-record does not lower, and `objective_condition` and `call_arguments` are
-both unmet:
+M01-LC disposition, none is Unmeasured, and no block is unreadable. When
+this stage first measured the record, two mechanisms kept it from lowering
+and both were pinned. **#800 (`M02-B-FU1`) landed on `main` while this
+branch was in flight and closed the first one**, so the pins were rewritten
+against the landed behaviour rather than left describing a gap that no
+longer exists:
 
-1. **`KILL_OBJECTIVE_WHEN_I_COMPLETE`, 19 refused sites.** The key's sites
-   spell six shapes (1, 5, 6, 7, 9 and 10 integers); the lowering adapter
-   registers one `BindingSpec` signature per measured shape and
-   `cs_script::bindings::HostBindingRegistry::register` refuses any
-   signature longer than `MAX_CALL_ARGS` (8), so the whole key fails
-   registration and all 19 sites refuse as `unknown host call`. The
-   over-bound shapes are the ten-argument lists of `OBJECTIVE28`…
+1. **Closed: `KILL_OBJECTIVE_WHEN_I_COMPLETE`, 19 sites.** Measured on this
+   installation before #800 landed, the key's six shapes (1, 5, 6, 7, 9 and
+   10 integers) ran against the registry's per-signature argument bound
+   (`MAX_CALL_ARGS`, 8): the ten-argument lists of `OBJECTIVE28`…
    `OBJECTIVE33` (six sites) and the nine-argument list of `OBJECTIVE43`
-   (one site) — seven sites in total. This is the shared gap already filed as
-   **#800 (`M02-B-FU1`)**; this stage pins M08's 19 sites so the fix cannot
-   land without updating this test. Not duplicated.
-2. **`DANGER_ZONES_COMPLETED`, 8 refused completion conditions.**
+   (one site) refused the whole spec, all 19 sites refused as
+   `unknown host call` and `call_arguments` was unmet. #800's change (*carry
+   objective-index directive lists as one list argument*) means every one of
+   M08's 209 sites now binds, no key refuses registration and the program
+   assembles. The retail test asserts that state — an empty
+   `unbound_keys`, zero refused sites, the kill key registered with
+   single-argument signatures, the ten-index shape still measured as the
+   longest — so a regression in either direction fails it, and the synthetic
+   test carries the mechanism (M08's six shapes, plus the over-wide refusal
+   arm) into CI. Not duplicated: #800 owns the mechanism, M02-B-FU1's own
+   suite pins it from M02's side.
+2. **Open: `DANGER_ZONES_COMPLETED`, 8 refused completion conditions.**
    `OBJECTIVE17`…`OBJECTIVE24` — the whole danger-zone chain — are the eight
    blocks whose conditions this build refuses:
    *"the danger-zones flag evaluator is measured but this build lowers no
    condition for it, and offering one would be a guess at its predicate"*
    (`crates/cs_script/src/conditions.rs`). The directive itself is measured
    (`DirectiveOperation::DangerZoneFlags`), so this is a lowering gap, not an
-   unknown directive; the other 49 conditions lower. It is already filed as
-   **#813 (`M07-B-FU1`)** by the M07-B stage. Not duplicated.
+   unknown directive; the other 49 conditions lower. The refusal surfaces
+   twice in the accounting: as the `objective_condition` row itself, and as
+   the single `MissionProgram::validate` error the unknown condition raises
+   (which is what makes `call_arguments` unmet) — the test names both and
+   proves no host call is refused. It is already filed as **#813
+   (`M07-B-FU1`)** by the M07-B stage. Not duplicated.
 
-In both cases the census reports M08's row incomplete and `campaign_ready()`
-stays false — the contract's honest reading. Nothing in this stage loosens
-it, lowers an unmeasured directive to a no-op or clamps an address.
-
-The synthetic tests carry both arms into CI, where there is no original data:
-an authored kill site at the bound of 8 arguments binds while one over it
-refuses the key's registration and its record, and an authored
-`DANGER_ZONES_COMPLETED` block refuses its condition while the same record
-with `DEDG` in its place lowers and completes. The follow-ups that change
-either mechanism (#800, #813) must update these pins in their own change —
-never delete them to get green.
+In either state the census reports M08's row incomplete and
+`campaign_ready()` stays false — the contract's honest reading. Nothing in
+this stage loosens it, lowers an unmeasured directive to a no-op or clamps an
+address.
 
 ## The cross-objective address rule, and this stage's arithmetic
 
@@ -225,9 +234,9 @@ can be replaced by a call to that resolver; the assertions stay.
 | `accept_m08_b_m08s_control_program_is_bound_to_the_same_identities_as_its_mission_binding` (retail) | the control binding and M08-A's mission binding name one mission (`mission/ch2-m03`, campaign position 7) and one program (`script/c2-m03-zrdr`); the archive's length and digest re-derive from disk; exactly one of the 13 members declares numbered blocks and it is the member the rule named (`objectives.zrd`); the member's span lies inside the archive and its digest re-derives from the member's own bytes; a longer member exists and the control member is not the first, so size and position are not the rule; the census — a third derivation through its own discovery path — names the same container, the same digest, the same member and the same record; a document re-read through discovery carries the same 57 blocks |
 | `accept_m08_b_the_measured_vocabulary_partitions_and_refuses_no_m08_key` (retail) | 57 blocks / 209 sites / 22 keys; sites sum to the record total; the partition is exactly 2 implemented + 20 measured + 0 unmeasured; every measured key names operation, effect and evidence; the outcome keys are the only bare spellings; the five measured record fields each occur once; no unclassified record key; and the whole sorted 22-key vocabulary, so an added or dropped key fails here |
 | `accept_m08_b_the_block_graph_is_closed_under_the_records_own_numbering` (retail) | the independent walk sees 57 blocks numbered 1…57 with no gaps; the three cross-objective keys are the only ones spelled; the walk's 151 addresses equal the measurement's; every address lies in `1..=57` (min 2, max 57), so every edge resolves to a declared block; one success latch (`OBJECTIVE8`) woken by exactly one block (`OBJECTIVE7`); one failure latch (`OBJECTIVE49`) with no wake edge and six nap sources (`OBJECTIVE28`…`OBJECTIVE33`); the census and the binding agree on one measurement |
-| `accept_m08_b_both_lowering_gaps_are_named_and_the_campaign_gate_stays_closed` (retail) | M08 does not lower; exactly `objective_condition` and `call_arguments` are unmet; one key refuses registration and the refusal names `KILL_OBJECTIVE_WHEN_I_COMPLETE` and "too many arguments"; exactly 19 sites refuse, all naming the key, and the other 190 bind; the kill key's longest shape exceeds `MAX_CALL_ARGS` and exactly 7 sites spell an over-bound one; exactly 8 condition verdicts refuse, every one naming `DANGER_ZONES_COMPLETED` and `OBJECTIVE17`…`OBJECTIVE24`, with the other 49 lowered; no program stood to validate; M08 is not a complete census row and the campaign gate stays closed |
+| `accept_m08_b_the_danger_zones_condition_is_the_gap_that_keeps_m08_unlowered` (retail) | M08 does not lower completely; `objective_condition` and `call_arguments` are the two unmet rows and the test names what each one carries; no key refuses registration and all 209 sites bind, including the kill key's 19; the kill key's longest measured shape is the ten-index list (over `MAX_CALL_ARGS`, which is why #800's shaping is what binds it) and its signatures are single-argument; the program assembles and `validate` reports exactly one unsupported instruction, the `OBJECTIVE17` danger-zones condition; exactly 8 condition verdicts refuse, every one naming `DANGER_ZONES_COMPLETED` and `OBJECTIVE17`…`OBJECTIVE24`, with the other 49 lowered; M08 is not a complete census row and the campaign gate stays closed |
 | `accept_m08_b_the_three_sheet_priorities_locate_in_the_measured_record` (retail) | the six team pairs and six net pairs of `OBJECTIVE3` and the 17 `DEDG` sites (logistics state); the eight-zone chain and its eight-target handover, the 190-second timed alternative and the two-way kill between the pair (alternative objective paths); the stoppoint record, the hook-point target and the single `TRAVELERS` operands (protected transfer); and the negative half — no key of the pinned vocabulary names an interaction, docking, pickup, boarding, transfer or authorisation directive |
-| `accept_m08_b_a_kill_site_over_the_host_call_bound_refuses_and_one_at_the_bound_binds` (synthetic) | the refusal mechanism at the bound: an 8-argument kill site binds and completes; a 9-argument one refuses the key's registration, refuses its record and leaves the key out of the registry |
+| `accept_m08_b_m08s_kill_shapes_bind_as_one_list_argument_and_an_over_wide_one_refuses` (synthetic) | M08's six kill shapes (1, 5, 6, 7, 9, 10 indices) each register, arrive as one `Value::List` argument in order and complete their record; the over-wide list refuses the record and the site is dropped by name, never truncated |
 | `accept_m08_b_the_danger_zones_condition_refuses_while_a_measured_condition_lowers` (synthetic) | the condition refusal: an authored `DANGER_ZONES_COMPLETED` block refuses under `objective_condition` (naming the evaluator and "lowers no condition for it") with all its calls bound, while the same record with `DEDG` in its place lowers and completes |
 
 Every test calls production code (`SourceContext::control_program`,
@@ -259,11 +268,12 @@ against each other. The retail tests are `#[ignore = "requires CS_GAME_DIR"]`
   carry the M01-LC findings' static readings; a host operation for them is
   future work, and only the two outcome spellings are implemented (as
   `Lowering::Finish`).
-- **M08's control record does not lower** — the two measured gaps above.
-  M08 stays `Unsupported`; the campaign gate stays closed; the fixes are
-  **#800** (host-call bound) and **#813** (danger-zones condition). Both were
-  already filed when this stage measured them, so no duplicate task was
-  created.
+- **M08's control record does not lower completely** — the danger-zones
+  gap above. M08 stays `Unsupported`; the campaign gate stays closed; the
+  fix is **#813** (danger-zones condition), already filed when this stage
+  measured it, so no duplicate task was created. The other gap this stage
+  pinned (the host-call bound) was closed by **#800** on `main` while this
+  branch was in flight, and the pins now assert the landed behaviour.
 - **The runtime predicates of all three priorities are unobserved.** No
   original executable was run; the wrong-actor / wrong-session /
   repeated-event halves of logistics state, alternative objective paths and
@@ -302,5 +312,6 @@ against each other. The retail tests are `#[ignore = "requires CS_GAME_DIR"]`
 `crates/cs_app/src/mission_control.rs`;
 `crates/cs_app/src/control_lowering.rs`;
 `crates/cs_script/src/conditions.rs`;
-Rally tasks #800 (`M02-B-FU1`), #802 (`M02-B-FU3`), #807 (`M02-B-FU4`),
-#812 (`M10-B-FU1`), #813 (`M07-B-FU1`).
+Rally tasks #800 (`M02-B-FU1`, landed on `main` as
+`f2c74585 Carry objective-index directive lists as one list argument`), #802
+(`M02-B-FU3`), #807 (`M02-B-FU4`), #812 (`M10-B-FU1`), #813 (`M07-B-FU1`).
