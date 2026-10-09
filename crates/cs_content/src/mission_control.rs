@@ -55,7 +55,7 @@
 //! classified by exactly two constants — [`CONTROL_RECORD_KEY_VOCABULARY`]'s
 //! five shape-only fields (counted by [`MeasuredControlRecord::record_fields`],
 //! whose [`ControlRecordField::support`] refuses to read a meaning out of a
-//! shape) and [`CONTROL_RECORD_SOUND_KEY_VOCABULARY`]'s five sound keys
+//! shape) and [`CONTROL_RECORD_SOUND_KEY_VOCABULARY`]'s seven sound keys
 //! (counted beside them as [`ControlRecordField::Sound`] by the same walk,
 //! reported by [`MeasuredControlRecord::record_sounds`]), whose **effect** is
 //! measured: [`record_sound_disposition`] names the consumer that
@@ -174,7 +174,7 @@ pub const CONTROL_MEMBER: &str = crate::stunts::SCENARIO_OBJECTIVES_MEMBER;
 /// [`ControlRecordField::support`] says so for each.
 ///
 /// It is **one of the two** measured record-key vocabularies, not the whole
-/// record vocabulary: the five sound keys below carry their own
+/// record vocabulary: the seven sound keys below carry their own
 /// [`CONTROL_RECORD_SOUND_KEY_VOCABULARY`] with an effect measurement rather
 /// than a shape measurement. A record key neither constant names is counted in
 /// [`MeasuredControlRecord::unclassified_record_keys`] and never read.
@@ -189,15 +189,16 @@ pub const CONTROL_RECORD_KEY_VOCABULARY: [&str; 5] = [
 /// The measured record-level **sound** keys a mission's control record carries
 /// **outside** its numbered objective blocks.
 ///
-/// Measured over M02 (`ZBD/C1/M02/zrdr.zbd`'s `objectives.zrd`), whose record
-/// spells all five, each once, and over the original's parser in
-/// `$CS_ENGINE_IMAGE` — the same decrypted image the M01-LC directive findings
-/// read, re-read for this task at its owner-supplied path (SHA-256
-/// `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`).
-/// Each key's value is a sound-group **name** the parser resolves to a handle
-/// through the runtime name-to-handle lookup, and
-/// [`record_sound_disposition`] states where the original consumes that
-/// handle and what the measurement still leaves unknown.
+/// The original's parser spells **seven**: M02's record
+/// (`ZBD/C1/M02/zrdr.zbd`'s `objectives.zrd`) spells five of them, each once,
+/// and `OBJECTIVES_WON_SOUND`/`OBJECTIVES_LOST_SOUND` — admitted by
+/// RECORD-OBJECTIVES-SOUND (#808), whose finding re-read them in
+/// `$CS_ENGINE_IMAGE` — are spelled by **no** control member in the owner's
+/// installation (measured: the census walks every mission's record-level keys
+/// and reports zero sites for both). Each key's value is a sound-group
+/// **name** the parser resolves to a handle through the runtime name-to-handle
+/// lookup, and [`record_sound_disposition`] states where the original consumes
+/// that handle and what the measurement still leaves unknown.
 ///
 /// Unlike [`CONTROL_RECORD_KEY_VOCABULARY`]'s five, these keys are **not**
 /// shape-only: their effect is measured. They are still not *supported* — no
@@ -205,10 +206,12 @@ pub const CONTROL_RECORD_KEY_VOCABULARY: [&str; 5] = [
 /// (AGENTS.md rule 8). Listed in the order the original's parser spells them
 /// (`0x466ced` … `0x466dfb`), which is also the order
 /// [`MeasuredControlRecord::record_sounds`] reports.
-pub const CONTROL_RECORD_SOUND_KEY_VOCABULARY: [&str; 5] = [
+pub const CONTROL_RECORD_SOUND_KEY_VOCABULARY: [&str; 7] = [
     "PRIMARY_COMPLETE_SOUND",
     "SECONDARY_COMPLETE_SOUND",
     "TERTIARY_COMPLETE_SOUND",
+    "OBJECTIVES_WON_SOUND",
+    "OBJECTIVES_LOST_SOUND",
     "MISSION_WON_SOUND",
     "MISSION_LOST_SOUND",
 ];
@@ -589,6 +592,7 @@ const FINDING_C: &str = "2026-10-06-m01-lc-directive-c-ai-world-and-animation-di
 const FINDING_D: &str = "2026-10-06-m01-lc-directive-d-sound-help-timer-directives";
 const FINDING_F37_FU2: &str = "2026-10-07-f37-d-fu2-mission-terminal-precedence-and-tick-ordering";
 const FINDING_M02_FU2: &str = "2026-10-09-m02-b-fu2-record-sound-keys";
+const FINDING_OBJECTIVES_SOUND: &str = "2026-10-09-record-objectives-sound-keys";
 
 /// Which stage of an objective's life a measured directive feeds — where the
 /// original consumes the fields the directive's arguments are parsed into.
@@ -1445,7 +1449,7 @@ impl DirectiveDisposition {
 /// blocks.
 ///
 /// One enum over **both** record vocabularies: the five shape-measured fields
-/// ([`CONTROL_RECORD_KEY_VOCABULARY`]) and the five sound keys
+/// ([`CONTROL_RECORD_KEY_VOCABULARY`]) and the seven sound keys
 /// ([`CONTROL_RECORD_SOUND_KEY_VOCABULARY`]), because both are mission-object
 /// fields the record writes. [`Self::support`] is what tells them apart — a
 /// shape-only measurement for the first family, a measured effect and a named
@@ -1462,7 +1466,7 @@ pub enum ControlRecordField {
     /// as three **empty** lists, so a mission that restores, runs and
     /// invalidates no animation by name at mission start.
     AnimList(AnimList),
-    /// One of the five record-level sound keys: a sound-group **name** the
+    /// One of the seven record-level sound keys: a sound-group **name** the
     /// original resolves to a handle at parse and plays at a measured moment.
     /// Its effect is measured — [`record_sound_disposition`] names the
     /// consumer — where the other three variants are shape-only.
@@ -1506,7 +1510,7 @@ impl ControlRecordField {
 
     /// The field a key names, or `None` for a key outside both record
     /// vocabularies — [`CONTROL_RECORD_KEY_VOCABULARY`]'s five and
-    /// [`CONTROL_RECORD_SOUND_KEY_VOCABULARY`]'s five.
+    /// [`CONTROL_RECORD_SOUND_KEY_VOCABULARY`]'s seven.
     ///
     /// A **name match**, not a reading: matching the key tells a caller which
     /// documented field the value belongs to and nothing about what the value
@@ -1588,7 +1592,7 @@ impl ControlRecordField {
 // The record-level sound keys
 // ---------------------------------------------------------------------------
 
-/// One of the five measured record-level sound keys.
+/// One of the seven measured record-level sound keys.
 ///
 /// A **name match**, like [`ControlRecordField::from_key`], plus everything
 /// the measurement established for that name: [`record_sound_disposition`]
@@ -1608,6 +1612,12 @@ pub enum ControlRecordSound {
     SecondaryComplete,
     /// `TERTIARY_COMPLETE_SOUND` — class 3.
     TertiaryComplete,
+    /// `OBJECTIVES_WON_SOUND` — the objectives-outcome sound of the won
+    /// branch at end of tick.
+    ObjectivesWon,
+    /// `OBJECTIVES_LOST_SOUND` — the objectives-outcome sound of the lost
+    /// branch at end of tick.
+    ObjectivesLost,
     /// `MISSION_WON_SOUND` — the mission-end sound of the won branch.
     MissionWon,
     /// `MISSION_LOST_SOUND` — the mission-end sound of the lost branch.
@@ -1616,10 +1626,12 @@ pub enum ControlRecordSound {
 
 impl ControlRecordSound {
     /// Every measured record-level sound key, in parse order.
-    pub const ALL: [ControlRecordSound; 5] = [
+    pub const ALL: [ControlRecordSound; 7] = [
         Self::PrimaryComplete,
         Self::SecondaryComplete,
         Self::TertiaryComplete,
+        Self::ObjectivesWon,
+        Self::ObjectivesLost,
         Self::MissionWon,
         Self::MissionLost,
     ];
@@ -1631,6 +1643,8 @@ impl ControlRecordSound {
             Self::PrimaryComplete => "PRIMARY_COMPLETE_SOUND",
             Self::SecondaryComplete => "SECONDARY_COMPLETE_SOUND",
             Self::TertiaryComplete => "TERTIARY_COMPLETE_SOUND",
+            Self::ObjectivesWon => "OBJECTIVES_WON_SOUND",
+            Self::ObjectivesLost => "OBJECTIVES_LOST_SOUND",
             Self::MissionWon => "MISSION_WON_SOUND",
             Self::MissionLost => "MISSION_LOST_SOUND",
         }
@@ -1644,6 +1658,8 @@ impl ControlRecordSound {
             "PRIMARY_COMPLETE_SOUND" => Some(Self::PrimaryComplete),
             "SECONDARY_COMPLETE_SOUND" => Some(Self::SecondaryComplete),
             "TERTIARY_COMPLETE_SOUND" => Some(Self::TertiaryComplete),
+            "OBJECTIVES_WON_SOUND" => Some(Self::ObjectivesWon),
+            "OBJECTIVES_LOST_SOUND" => Some(Self::ObjectivesLost),
             "MISSION_WON_SOUND" => Some(Self::MissionWon),
             "MISSION_LOST_SOUND" => Some(Self::MissionLost),
             _ => None,
@@ -1651,14 +1667,17 @@ impl ControlRecordSound {
     }
 }
 
-/// Where the original consumes one of the five record-level sound handles.
+/// Where the original consumes one of the seven record-level sound handles.
 ///
-/// Two consumers and no third: the mission-end routine, which selects between
-/// the two mission handles by the mission's own won flag, and the completion
-/// tail of `CZMission::Update`, which selects between the three class handles
-/// by the completing objective's presentation class. Both readings are static
-/// disassembly of `$CS_ENGINE_IMAGE` (findings D and this task's), never an
-/// observed play.
+/// Three consumers and no fourth: the mission-end routine, which selects
+/// between the two mission handles by the mission's own won flag; the
+/// completion tail of `CZMission::Update`, which selects between the three
+/// class handles by the completing objective's presentation class; and the
+/// end-of-tick outcome block of the same `Update`, which selects between the
+/// two objectives handles by testing the mission's **lost** flag first and
+/// then its won flag. All readings are static disassembly of
+/// `$CS_ENGINE_IMAGE` (the M01-LC directive findings, F37-D-FU2/FU5 and this
+/// task's), never an observed play.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RecordSoundConsumer {
     /// The mission-end routine: the won flag (mission `+0xc58`) selects which
@@ -1675,6 +1694,22 @@ pub enum RecordSoundConsumer {
         /// (`1`, `2` or `3`).
         class: u8,
     },
+    /// The end-of-tick outcome block of `CZMission::Update` (`0x46af76`),
+    /// reached on a tick that settled the mission's outcome — the flag
+    /// getters it calls are the mission's own `+0xc5c`/`+0xc58`: the **lost**
+    /// flag is tested first, and when it is set the branch reads `+0xc74`
+    /// after ending the mission through `0x463c30`; only when the lost flag
+    /// is clear does the **won** flag's test run, and its branch reads
+    /// `+0xc70` the same way. A null handle plays nothing, a tick with
+    /// neither flag reads neither field, and once the mission-end call has
+    /// set `+0xc54` the same `Update` returns before reaching this block.
+    /// Both `OBJECTIVES_*_SOUND` handles are read here and nowhere else.
+    ObjectivesOutcome {
+        /// Which flag's branch reads the field: `true` — the won flag's
+        /// (tested second, so only when the lost flag is clear), `false` —
+        /// the lost flag's (tested first).
+        won: bool,
+    },
 }
 
 impl RecordSoundConsumer {
@@ -1684,15 +1719,17 @@ impl RecordSoundConsumer {
         match self {
             Self::MissionEnd => "mission_end",
             Self::ObjectiveCompletion { .. } => "objective_completion",
+            Self::ObjectivesOutcome { .. } => "objectives_outcome",
         }
     }
 
     /// The presentation class this consumer is dispatched on, or `None` for
-    /// the mission-end consumer, which selects on the won flag instead.
+    /// the consumers that select on a mission flag instead — mission end on
+    /// the won flag, the end-of-tick block on the lost flag first.
     #[must_use]
     pub const fn class(self) -> Option<u8> {
         match self {
-            Self::MissionEnd => None,
+            Self::MissionEnd | Self::ObjectivesOutcome { .. } => None,
             Self::ObjectiveCompletion { class } => Some(class),
         }
     }
@@ -1734,7 +1771,7 @@ pub struct MeasuredRecordSound {
 ///
 /// Three answers and no fourth, matching [`DirectiveDisposition`]'s rule: a
 /// measured effect with its residual unknowns, an explicit refusal naming
-/// why, and — as the function's `None` — "this is not one of the five keys".
+/// why, and — as the function's `None` — "this is not one of the seven keys".
 /// There is deliberately no "probably" and no name-derived effect: a key's
 /// spelling is not evidence of what it does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1769,7 +1806,7 @@ impl RecordSoundDisposition {
 /// The measured disposition of one record-level sound key, or `None` when
 /// `key` is outside [`CONTROL_RECORD_SOUND_KEY_VOCABULARY`].
 ///
-/// `None` means "not one of the five", never "unmeasured": a record-level key
+/// `None` means "not one of the seven", never "unmeasured": a record-level key
 /// no vocabulary names is counted in
 /// [`MeasuredControlRecord::unclassified_record_keys`] instead, which is where
 /// the record-level refusal lives.
@@ -1823,6 +1860,55 @@ pub fn record_sound_disposition(key: &str) -> Option<RecordSoundDisposition> {
                  name-to-handle lookup, and no shipped file declares a name's sound",
                 "the class's own name is a reading: the dispatch reads the objective's class \
                  field as the integer 3, which finding B measures as IDENTITY TERTIARY",
+            ],
+        },
+        "OBJECTIVES_WON_SOUND" => MeasuredRecordSound {
+            consumer: RecordSoundConsumer::ObjectivesOutcome { won: true },
+            field_offset: 0xc70,
+            parse_site: 0x466d74,
+            consumer_site: 0x46afd2,
+            summary: "at the end of the tick that settles the mission's outcome, when the won \
+                      flag is set and the lost flag — tested first — is clear, the mission-end \
+                      call runs and then the handle resolved at parse plays through the mission \
+                      sound manager; a null handle plays nothing and the lost branch never reads \
+                      this field",
+            evidence: &[
+                FINDING_B,
+                FINDING_D,
+                FINDING_F37_FU2,
+                FINDING_OBJECTIVES_SOUND,
+            ],
+            unknowns: &[
+                "what sound the name resolves to — the handle comes from the runtime \
+                 name-to-handle lookup, and no shipped file declares a name's sound",
+                "reaching this arm needs the won flag set with the lost flag clear; the flags' \
+                 writers — the outcome tally over `+0x554`'s WON/LOST classes and the instant \
+                 outcome classes — belong to findings A/B and F37-D-FU2, and which branch ran \
+                 does not decide the recorded result",
+            ],
+        },
+        "OBJECTIVES_LOST_SOUND" => MeasuredRecordSound {
+            consumer: RecordSoundConsumer::ObjectivesOutcome { won: false },
+            field_offset: 0xc74,
+            parse_site: 0x466da1,
+            consumer_site: 0x46af9f,
+            summary: "at the end of the tick that settles the mission's outcome, when the lost \
+                      flag is set — it is tested before the won flag — the mission-end call runs \
+                      and then the handle resolved at parse plays through the mission sound \
+                      manager; a null handle plays nothing and the won branch never reads this \
+                      field",
+            evidence: &[
+                FINDING_B,
+                FINDING_D,
+                FINDING_F37_FU2,
+                FINDING_OBJECTIVES_SOUND,
+            ],
+            unknowns: &[
+                "what sound the name resolves to — the handle comes from the runtime \
+                 name-to-handle lookup, and no shipped file declares a name's sound",
+                "playing here does not imply a recorded loss: when both mission flags are set \
+                 this branch still runs — the lost flag is tested first — while the recorded \
+                 result stays success and the end call picks the won handle (finding F37-D-FU2)",
             ],
         },
         "MISSION_WON_SOUND" => MeasuredRecordSound {
@@ -2036,11 +2122,11 @@ impl MeasuredControlRecord {
     /// Record keys outside the numbered blocks that
     /// [`ControlRecordField::from_key`] does not name — outside both record
     /// vocabularies, [`CONTROL_RECORD_KEY_VOCABULARY`]'s five fields and
-    /// [`CONTROL_RECORD_SOUND_KEY_VOCABULARY`]'s five sound keys — the
+    /// [`CONTROL_RECORD_SOUND_KEY_VOCABULARY`]'s seven sound keys — the
     /// record-level refusal: counted, named and never read.
     ///
     /// Measured in M01: none. Measured in M02: none since
-    /// `CONTROL_RECORD_SOUND_KEY_VOCABULARY` admitted its five sound keys.
+    /// `CONTROL_RECORD_SOUND_KEY_VOCABULARY` admitted the sound keys.
     /// Carried so a mission that grows a key outside both vocabularies shows up
     /// in the census as an **unclassified** key rather than being absorbed into
     /// a documented field or dropped.
