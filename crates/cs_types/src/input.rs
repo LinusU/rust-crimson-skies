@@ -272,6 +272,8 @@ pub enum Key {
     G,
     /// `T`.
     T,
+    /// `L`.
+    L,
     /// The space bar.
     Space,
     /// Left shift.
@@ -323,6 +325,7 @@ impl Key {
         Self::B,
         Self::G,
         Self::T,
+        Self::L,
         Self::Space,
         Self::LeftShift,
         Self::LeftControl,
@@ -358,6 +361,7 @@ impl Key {
             Self::B => "b",
             Self::G => "g",
             Self::T => "t",
+            Self::L => "l",
             Self::Space => "space",
             Self::LeftShift => "left_shift",
             Self::LeftControl => "left_control",
@@ -714,6 +718,10 @@ pub enum FlightCommand {
     ThrottleIdle,
     /// Set throttle to full.
     ThrottleFull,
+    /// Toggle the Level-Off assist: the original's command 47, whose original
+    /// binding is Shift+L. A toggle, not a hold — the assist levels the wings
+    /// while the stick is hands-off (`cs_sim::flight::original`).
+    LevelOff,
 }
 
 impl FlightCommand {
@@ -737,6 +745,7 @@ impl FlightCommand {
         Self::ThrottleStepDown,
         Self::ThrottleIdle,
         Self::ThrottleFull,
+        Self::LevelOff,
     ];
 
     /// The continuous axes, in a stable order.
@@ -769,6 +778,7 @@ impl FlightCommand {
             Self::ThrottleStepDown => "throttle_step_down",
             Self::ThrottleIdle => "throttle_idle",
             Self::ThrottleFull => "throttle_full",
+            Self::LevelOff => "level_off",
         }
     }
 
@@ -1678,6 +1688,14 @@ impl ActionMap {
             Binding {
                 source: S::Key(Key::B),
                 target: Command(FlightCommand::FlapStep),
+            },
+            // The Level-Off assist toggle. The original's own binding for it is
+            // Shift+L (command 47); this map has no chord sources, so the
+            // letter alone carries it here — a designed slot, not a
+            // reproduction of the original's chord.
+            Binding {
+                source: S::Key(Key::L),
+                target: Command(FlightCommand::LevelOff),
             },
             // Eject sits on the number row, away from the flight cluster and
             // the fire keys: a mis-press must not cost the aircraft.

@@ -16,6 +16,9 @@
 //! Task #1135 (FLIGHT-ORIGINAL-RETAIL-SMOKE-SCRIPT) folds its
 //! `accept_playtest_smoke_original_` tests in for the same reason: they drive
 //! this binary's retail scene and its scripted smoke.
+//!
+//! Task #1134 (FLIGHT-ORIGINAL-LEVELOFF-INPUT) folds its
+//! `accept_flight_original_levelop_` tests in for the same reason.
 
 use std::path::PathBuf;
 
@@ -25,7 +28,10 @@ use bevy::input::keyboard::{Key, KeyCode, KeyboardInput, NativeKey};
 use bevy::math::{Quat, Vec3};
 use bevy::prelude::{App, Entity, With};
 use cs_app::cli::{self, CliRequest};
+use cs_app::input::platform::key_from_bevy;
+use cs_app::input::{DeviceEvent, FrameInput, InputSession, SessionMode};
 use cs_app::physics::FlightAircraft;
+use cs_app::playtest::command::playtest_action_map;
 use cs_app::playtest::retail::{
     self, PlaytestAreaBody, RETAIL_START_SPEED_M_S, RetailContent, RetailFlight, RetailRequest,
 };
@@ -39,7 +45,12 @@ use cs_app::playtest_retail::{
     PLAYTEST_LABEL, SPAWN_FRACTION_X, SPAWN_FRACTION_Y, SPAWN_FRACTION_Z,
 };
 use cs_content::original_airframe::import_retail_airframe;
+use cs_sim::control::LocalSeatId;
 use cs_sim::flight::OriginalAirframe;
+use cs_types::Tick;
+use cs_types::input::{
+    Action, BindingSource, DeviceClass, DeviceId, FlightCommand, InputContext, Key as BindingKey,
+};
 
 fn args(list: &[&str]) -> Vec<String> {
     list.iter().map(|a| (*a).to_owned()).collect()
@@ -69,9 +80,15 @@ fn count<T: bevy::prelude::Component>(app: &mut App) -> usize {
 }
 
 fn tap_r(app: &mut App) {
+    tap_key(app, KeyCode::KeyR)
+}
+
+/// Presses and releases one key through the same message path the window
+/// writes, one `app.update()` per state change.
+fn tap_key(app: &mut App, key: KeyCode) {
     for state in [ButtonState::Pressed, ButtonState::Released] {
         app.world_mut().write_message(KeyboardInput {
-            key_code: KeyCode::KeyR,
+            key_code: key,
             logical_key: Key::Unidentified(NativeKey::Unidentified),
             state,
             text: None,
@@ -588,8 +605,8 @@ fn accept_flight_original_playtest_retail_body_flies_the_imported_parameters() {
     );
     // The spawned state is the documented one: level, cruise throttle, the
     // imported fuel load (the spawn's own two fixed ticks of cruise have
-    // already burned a fraction of it), Level-Off off (no input slot for the
-    // original's command 47).
+    // already burned a fraction of it), Level-Off off — the assist starts off
+    // and only the bound `L` key toggles it (#1134).
     let imported_fuel = parameters
         .initial_fuel
         .clone()
@@ -601,7 +618,7 @@ fn accept_flight_original_playtest_retail_body_flies_the_imported_parameters() {
         flight.state.fuel
     );
     assert!((flight.state.throttle - 0.75).abs() < 1.0e-6, "cruise");
-    assert!(!flight.state.level_off, "command 47 has no input slot");
+    assert!(!flight.state.level_off, "the assist starts off at spawn");
     assert_eq!(
         app.world().resource::<PlaytestState>().original_step_errors,
         0
@@ -1050,5 +1067,240 @@ fn accept_playtest_smoke_original_candidate_matrix_justifies_the_spawn_and_the_s
     assert_eq!(
         SPAWN_FRACTION_X, -0.6,
         "the shipped fraction is the farthest candidate the matrix measured"
+    );
+}
+
+// --------------------------------------- the Level-Off input slot (#1134) ---
+
+/// The input layer has a slot for the original's Level-Off assist (command 47)
+/// and the playtest's action map binds it to `L`, with the rest of the map's
+/// bindings untouched.
+///
+/// The whole path is production code: the designed default map, the playtest's
+/// derived map, the Bevy key lowering and a real [`InputSession`] pumping a
+/// keyboard report through the collector, the context gate and the control
+/// buffer's input boundary. This test needs no installation and runs in CI.
+#[test]
+fn accept_flight_original_levelop_input_slot_and_designed_bindings() {
+    // The vocabulary slot exists and is an edge command, not an axis.
+    assert!(
+        FlightCommand::ALL.contains(&FlightCommand::LevelOff),
+        "the command vocabulary carries the Level-Off slot"
+    );
+    assert!(!FlightCommand::LevelOff.is_continuous());
+    assert_eq!(FlightCommand::LevelOff.label(), "level_off");
+    assert_eq!(
+        FlightCommand::from_label("level_off"),
+        Some(FlightCommand::LevelOff)
+    );
+
+    // The Bevy seam lowers `L` onto the engine key the map binds.
+    assert_eq!(key_from_bevy(KeyCode::KeyL), Some(BindingKey::L));
+    assert_eq!(BindingKey::L.label(), "l");
+
+    // The playtest map binds `L` to the toggle in the flight context, and the
+    // bindings around it are the documented ones: Left Shift still steps the
+    // throttle up and `R` is still unbound (it is the playtest's reset key).
+    let map = playtest_action_map();
+    assert_eq!(
+        map.resolve(InputContext::Flight, BindingSource::Key(BindingKey::L)),
+        Some(Action::Flight(FlightCommand::LevelOff)),
+        "the playtest binds L to the original Level-Off command"
+    );
+    assert_eq!(
+        map.resolve(
+            InputContext::Flight,
+            BindingSource::Key(BindingKey::LeftShift)
+        ),
+        Some(Action::Flight(FlightCommand::ThrottleStepUp)),
+        "Left Shift remains the playtest's throttle step-up"
+    );
+    assert_eq!(
+        map.resolve(InputContext::Flight, BindingSource::Key(BindingKey::R)),
+        None,
+        "R stays unbound in flight: it is the playtest's reset meta key"
+    );
+    // Text entry still gates it like every other flight command.
+    assert_eq!(
+        map.resolve(InputContext::TextEntry, BindingSource::Key(BindingKey::L)),
+        None,
+        "a text field can never toggle the assist"
+    );
+
+    // End to end through the production input session: a keyboard report that
+    // holds `L` delivers exactly one Level-Off edge to the consumer, and the
+    // release delivers nothing.
+    let keyboard = DeviceId::stable(DeviceClass::Keyboard, "levelop.fixture/0")
+        .expect("a stable fixture identity");
+    let mut session = InputSession::new(
+        playtest_action_map(),
+        LocalSeatId(0),
+        SessionMode::SinglePlayer,
+        Tick(0),
+    );
+    session
+        .collector_mut()
+        .connect_device(keyboard.clone())
+        .expect("the fixture keyboard connects");
+    let press = DeviceEvent::KeyboardFrame {
+        device: keyboard.clone(),
+        keys: vec![BindingKey::L],
+    };
+    let outcome = session
+        .pump_frame(FrameInput::Devices(&[press]), 1)
+        .expect("the fixture frame applies");
+    assert!(
+        outcome.is_clean(),
+        "the press arrives without a fault: {:?}",
+        outcome.faults
+    );
+    assert_eq!(
+        outcome.delivered,
+        vec![Action::Flight(FlightCommand::LevelOff)],
+        "the bound key delivers the toggle to the consumer exactly once"
+    );
+    let release = DeviceEvent::KeyboardFrame {
+        device: keyboard.clone(),
+        keys: vec![],
+    };
+    let outcome = session
+        .pump_frame(FrameInput::Devices(&[release]), 1)
+        .expect("the fixture frame applies");
+    assert!(
+        outcome.delivered.is_empty(),
+        "releasing L must not toggle again: {:?}",
+        outcome.delivered
+    );
+}
+
+/// **The bound key toggles the original law's Level-Off assist on the retail
+/// playtest body, and with the assist on and the stick hands-off a banked
+/// aircraft rolls its wings level.**
+///
+/// The toggle runs through the whole production chain: the Bevy keyboard →
+/// `key_from_bevy` → the playtest action map → the `InputSession` boundary →
+/// `apply_flight_command` → `OriginalState.level_off` → the recovered law's
+/// torque path. The off contrasts show the leveling is the assist's doing:
+/// with the toggle off the bank persists, and with it on but the stick
+/// deflected the gate suppresses the assist and the aircraft banks away
+/// instead.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_flight_original_levelop_bound_key_toggles_the_retail_level_off() {
+    let mut app = retail_app(|_| {});
+    app.update();
+    let level_off = |app: &mut App| -> bool {
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&PlaytestOriginalFlight, With<PlaytestAircraft>>();
+        query
+            .single(app.world())
+            .expect("the retail scene spawns exactly one aircraft on the original law")
+            .state
+            .level_off
+    };
+
+    // The assist starts off, and each press of `L` flips it once.
+    assert!(!level_off(&mut app), "the assist starts off at spawn");
+    tap_key(&mut app, KeyCode::KeyL);
+    assert!(
+        level_off(&mut app),
+        "one press of L toggles the original Level-Off assist on"
+    );
+    tap_key(&mut app, KeyCode::KeyL);
+    assert!(!level_off(&mut app), "the second press toggles it back off");
+    tap_key(&mut app, KeyCode::KeyL);
+    assert!(level_off(&mut app), "and the third on again");
+
+    // `R` reset returns to the known flyable state: the assist starts off.
+    tap_r(&mut app);
+    run(&mut app, 0.5);
+    assert_eq!(count::<PlaytestOriginalFlight>(&mut app), 1);
+    assert!(
+        !level_off(&mut app),
+        "the reset body starts with the assist off again"
+    );
+
+    // The flight JSON states the toggle is wired.
+    let flight_json = app.world().resource::<RetailFlight>().json();
+    assert!(
+        flight_json.contains("\"level_off_toggle_wired\":true"),
+        "the playtest flight statement must report the toggle as wired: {flight_json}"
+    );
+
+    // Hands off with the assist on, a 30-degree bank rolls near level within
+    // three seconds; the same bank with the assist off persists.
+    let bank = |app: &mut App| -> f32 {
+        app.world()
+            .resource::<PlaytestState>()
+            .telemetry
+            .roll_deg
+            .abs()
+    };
+
+    let spawn = spawn_position(&mut app);
+    let start_bank = 30.0_f32.to_radians();
+    let rolled = Quat::from_axis_angle(Vec3::NEG_Z, start_bank);
+    set_initial_condition(
+        &mut app,
+        Vec3::new(spawn.x, 300.0, spawn.z),
+        rolled,
+        Vec3::new(0.0, 0.0, -RETAIL_START_SPEED_M_S as f32),
+        false,
+    );
+    tap_key(&mut app, KeyCode::KeyL); // assist on
+    assert!(level_off(&mut app));
+    run(&mut app, 3.0);
+    let on_hands_off = bank(&mut app);
+    assert_eq!(
+        app.world().resource::<PlaytestState>().original_step_errors,
+        0
+    );
+    println!(
+        "PLAYTEST-LEVELOFF bank_deg_on={on_hands_off:.4} (start {:.4})",
+        start_bank.to_degrees()
+    );
+    assert!(
+        on_hands_off < 5.0,
+        "with the assist on and the stick hands-off the 30-degree bank must \
+         roll level, got {on_hands_off} deg"
+    );
+
+    tap_key(&mut app, KeyCode::KeyL); // assist off
+    assert!(!level_off(&mut app));
+    set_initial_condition(
+        &mut app,
+        Vec3::new(spawn.x, 300.0, spawn.z),
+        rolled,
+        Vec3::new(0.0, 0.0, -RETAIL_START_SPEED_M_S as f32),
+        false,
+    );
+    run(&mut app, 3.0);
+    let off_hands_off = bank(&mut app);
+    println!("PLAYTEST-LEVELOFF bank_deg_off={off_hands_off:.4}");
+    assert!(
+        off_hands_off > 15.0,
+        "with the assist off the same bank must persist, got {off_hands_off} deg"
+    );
+
+    // Assist on but the stick deflected: the gate suppresses the assist and
+    // the roll command banks the aircraft away instead of leveling it.
+    tap_key(&mut app, KeyCode::KeyL); // assist on
+    assert!(level_off(&mut app));
+    set_initial_condition(
+        &mut app,
+        Vec3::new(spawn.x, 300.0, spawn.z),
+        rolled,
+        Vec3::new(0.0, 0.0, -RETAIL_START_SPEED_M_S as f32),
+        false,
+    );
+    hold(&mut app, KeyCode::KeyE);
+    run(&mut app, 1.5);
+    let on_stick = bank(&mut app);
+    println!("PLAYTEST-LEVELOFF bank_deg_on_stick={on_stick:.4}");
+    assert!(
+        on_stick > 15.0,
+        "with the stick deflected the assist must not level the wings: \
+         got {on_stick} deg"
     );
 }

@@ -1689,6 +1689,110 @@ mod tests {
         );
     }
 
+    /// The Level-Off assist's torque path (command 47) runs **only** while the
+    /// toggle is on and the stick is hands-off (#1134): from one banked state,
+    /// the on/off steps differ with the stick centered and are bit-identical
+    /// with the stick deflected, and only the hands-off on case rolls the
+    /// wings back toward level.
+    #[test]
+    fn accept_flight_original_levelop_torque_path_runs_only_when_on_and_hands_off() {
+        let model = OriginalFlightModel::full(airframe(), globals());
+        // A 30-degree bank, flying at cruise with the velocity on the nose, so
+        // the only wing-leveling term under test is the assist (the bank
+        // coupling acts in every case alike and is not what the contrast
+        // measures).
+        let banked = Quaternion::from_axis_angle(
+            cs_types::space::UnitVec3::FORWARD,
+            cs_types::space::Radians(0.5),
+        )
+        .expect("a banked attitude is a unit quaternion");
+        let at = || {
+            let mut state = OriginalState::at(0.0, banked, 1.0, 1e9);
+            state.velocity_mps = scale(nose_direction(banked), 134.0);
+            state
+        };
+        let bank_of = |state: &OriginalState| -> f64 {
+            angle_between(rotate_vector(BODY_UP, state.orientation), [0.0, 1.0, 0.0])
+        };
+        let hands_off = OriginalInput {
+            throttle: 1.0,
+            is_player: true,
+            ..OriginalInput::default()
+        };
+        let deflect = OriginalInput {
+            roll: 0.5,
+            ..hands_off
+        };
+
+        // Hands off, the toggle changes the step: the assist contributes.
+        let mut off = at();
+        off.level_off = false;
+        let mut on = at();
+        on.level_off = true;
+        let off_step = model
+            .step(&mut off, hands_off, 0.01)
+            .expect("the declared step is valid");
+        let on_step = model
+            .step(&mut on, hands_off, 0.01)
+            .expect("the declared step is valid");
+        assert_ne!(
+            off_step.world_torque, on_step.world_torque,
+            "with the stick centered the assist must add its leveling torque"
+        );
+
+        // Stick deflected, the toggle changes nothing: the gate suppresses the
+        // assist, so the two steps are bit-identical.
+        let mut off = at();
+        off.level_off = false;
+        let mut on = at();
+        on.level_off = true;
+        let off_step = model
+            .step(&mut off, deflect, 0.01)
+            .expect("the declared step is valid");
+        let on_step = model
+            .step(&mut on, deflect, 0.01)
+            .expect("the declared step is valid");
+        assert_eq!(
+            off_step.world_torque, on_step.world_torque,
+            "a deflected stick must suppress the assist entirely"
+        );
+        let mut on_state = on;
+        on_state.level_off = off.level_off;
+        assert_eq!(
+            off, on_state,
+            "and leave the states identical too, not only this step's torque"
+        );
+
+        // Over three simulated seconds the hands-off on case levels its
+        // 30-degree bank while the off case keeps it (the slow bank coupling
+        // alone does not level the wings in the window).
+        let settle = |level_off: bool| -> f64 {
+            let mut state = at();
+            state.level_off = level_off;
+            for _ in 0..300 {
+                model
+                    .step(&mut state, hands_off, 0.01)
+                    .expect("the declared step is valid");
+            }
+            bank_of(&state).to_degrees()
+        };
+        let on_bank = settle(true);
+        let off_bank = settle(false);
+        println!(
+            "LEVELOFF-GATE bank_deg_on={on_bank:.4} bank_deg_off={off_bank:.4} \
+             start_deg={}",
+            bank_of(&at()).to_degrees()
+        );
+        assert!(
+            on_bank < 5.0,
+            "the assist must roll the 30-degree bank level hands-off, got {on_bank} deg"
+        );
+        assert!(
+            off_bank > 15.0,
+            "without the assist the bank must persist over the same window, got {off_bank} deg"
+        );
+    }
+
     /// Thrust follows the **actual** slewed throttle of step 1, never the
     /// command: the command is only the value the actual one chases, and the
     /// freeze at `fuel <= 0` is what stops the engine.

@@ -210,6 +210,7 @@ pub const fn key_from_bevy(key: KeyCode) -> Option<Key> {
         KeyCode::KeyB => Key::B,
         KeyCode::KeyG => Key::G,
         KeyCode::KeyT => Key::T,
+        KeyCode::KeyL => Key::L,
         KeyCode::Space => Key::Space,
         KeyCode::ShiftLeft => Key::LeftShift,
         KeyCode::ControlLeft => Key::LeftControl,

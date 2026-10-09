@@ -61,6 +61,7 @@ use cs_sim::damage::ActorId;
 use cs_sim::flight::FlightInput;
 use cs_sim::time::TickRate;
 use cs_types::Tick;
+use cs_types::input::{Action, FlightCommand};
 use cs_types::net::SessionId;
 use cs_types::space::{Quaternion, WorldPosition};
 
@@ -370,6 +371,13 @@ fn setup_scene(world: &mut World) {
 /// Hands the session's held command to the aircraft once per frame, before the
 /// fixed loop runs, so every fixed tick of the frame flies the command the
 /// input policy produced.
+///
+/// The one edge command the playtest consumes is
+/// [`FlightCommand::LevelOff`](cs_types::input::FlightCommand::LevelOff): each
+/// delivered press toggles the original law's Level-Off assist
+/// (`OriginalState.level_off`) once, so two presses in one frame cancel out and
+/// a paused or unfocused session — which runs no input boundary and so delivers
+/// nothing — cannot flip it.
 fn apply_flight_command(
     platform: Res<PlatformInput>,
     mut state: ResMut<PlaytestState>,
@@ -389,8 +397,17 @@ fn apply_flight_command(
     // The retail scene's aircraft carries the original law instead of the F24
     // record: it takes the same held command, unvalidated because the session
     // produced it clamped and the law clamps it again at its own boundary.
+    let toggles = platform
+        .report()
+        .delivered
+        .iter()
+        .filter(|action| **action == Action::Flight(FlightCommand::LevelOff))
+        .count();
     for mut flight in &mut original {
         flight.command = command;
+        if toggles % 2 == 1 {
+            flight.state.level_off = !flight.state.level_off;
+        }
     }
 }
 

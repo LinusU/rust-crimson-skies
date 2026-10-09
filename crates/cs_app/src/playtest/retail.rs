@@ -262,8 +262,7 @@ impl RetailFlight {
             "{{\"record\":\"{}\",\"chain\":[{}],\"engine\":{{\"id\":{},\"name\":\"{}\",\"factor\":{}}},\
 \"fd_speed_m_s\":{},\"veh_weight\":{},\"ref_area\":{},\"gravity\":{},\"start_speed_m_s\":{},\
 \"provenance\":\"{}\",\"verified_original\":false,\"calibrated_against_an_original_run\":false,\
-\"level_off_toggle_wired\":false,\"level_off_resolving_task\":\"Rally #1134 \
-FLIGHT-ORIGINAL-LEVELOFF-INPUT: the input layer has no slot for command 47\"}}",
+\"level_off_toggle_wired\":true,\"level_off_binding\":\"key.l\"}}",
             self.record,
             self.inheritance_chain
                 .iter()

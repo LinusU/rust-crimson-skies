@@ -27,7 +27,7 @@ const FAR_PLANE_M: f32 = 40_000.0;
 
 /// The on-screen controls reminder.
 pub const CONTROLS_TEXT: &str = "W/S pitch   Q/E roll   A/D yaw   Left Shift / F throttle up / down   1 idle   4 full\n\
-R reset   Esc pause / resume   F10 quit (or close the window)";
+L Level-Off (original law)   R reset   Esc pause / resume   F10 quit (or close the window)";
 
 /// Adds the scene meshes, lights, window camera and HUD.
 #[derive(Clone, Copy, Debug, Default)]

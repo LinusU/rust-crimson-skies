@@ -47,8 +47,12 @@ level flight settles at 134 m/s, measured by the acceptance test). The **start**
 speed is the playtest's own declared 55 m/s (`RETAIL_START_SPEED_M_S`), because
 the original's player spawn speed was never recovered — no start speed here can
 claim to be the original's. The original's Level-Off assist (Shift+L, command
-47) is in the law but has no input-layer slot, so it stays off (follow-up
-**#1134**). #649's scripted smoke path was steered onto the hull by #797's
+47) now has an input-layer slot and is bound to `L` in the playtest (#1134):
+each press toggles the law's `OriginalState.level_off`, which levels the wings
+only while the stick is hands-off. The playtest binds the plain letter because
+`Left Shift` is already its throttle step-up and the action map has no chord
+sources — a designed slot for the original command, not the original's chord.
+#649's scripted smoke path was steered onto the hull by #797's
 spawn retune; **#1135** re-derived the script itself for this law — the rudder
 turn `RETAIL_STEER`, rudder only — and the spawn went back to its designed
 `−0.6` (see the spawn row below and

@@ -342,13 +342,13 @@ fn accept_f22_h_the_comparison_covers_every_declared_command() {
     cited.dedup();
     assert_eq!(
         cited.len(),
-        32,
-        "the project maps 32 original command labels"
+        33,
+        "the project maps 33 original command labels"
     );
     assert_eq!(
         ORIGINAL_ONLY_COMMANDS.len(),
-        33,
-        "33 original command labels have no project counterpart"
+        32,
+        "32 original command labels have no project counterpart"
     );
     for name in ORIGINAL_ONLY_COMMANDS {
         assert!(

@@ -124,9 +124,9 @@ impl PlaytestOriginalFlight {
                 angular_momentum_world: [0.0; 3],
                 throttle: f64::from(CRUISE_THROTTLE),
                 fuel: retail.fuel,
-                // The original's Level-Off toggle is Shift+L (command 47); the
-                // input layer has no slot for it, so the toggle starts (and
-                // stays) off. Follow-up: Rally #1134.
+                // The original's Level-Off toggle (Shift+L, command 47): it
+                // starts off, and the playtest's `L` binding toggles it through
+                // `FlightCommand::LevelOff` (#1134).
                 level_off: false,
             },
             command: FlightInput {

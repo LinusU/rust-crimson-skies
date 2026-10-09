@@ -5,11 +5,17 @@
 //! changes the playtest's own meta keys need: `R` resets the playtest, so the
 //! default's `R` throttle step is moved to `Left Shift`. Everything else
 //! (`W`/`S` pitch, `Q`/`E` roll, `A`/`D` yaw, `F` throttle down, `1`/`4` idle
-//! and full throttle) is the shipped default, except that a held flight key
-//! deflects the stick only [`KEY_DEFLECTION`] of the way: the uncalibrated
-//! synthetic airframe pitched 80 degrees in two seconds at full deflection, which
-//! is not flyable from a keyboard. Designed, not original: the original game's
-//! bindings and its keyboard feel remain unknown.
+//! and full throttle, `L` Level-Off) is the shipped default, except that a held
+//! flight key deflects the stick only [`KEY_DEFLECTION`] of the way: the
+//! uncalibrated synthetic airframe pitched 80 degrees in two seconds at full
+//! deflection, which is not flyable from a keyboard. Designed, not original:
+//! the original game's bindings and its keyboard feel remain unknown.
+//!
+//! The original's Level-Off assist (command 47) is bound to Shift+L in the
+//! original; the playtest binds the F22 default's plain `L` instead, because
+//! `Left Shift` is already this map's throttle step-up and the action map has
+//! no chord sources — a designed slot for the original command, not a
+//! reproduction of the original's chord.
 
 use cs_sim::flight::FlightInput;
 use cs_types::input::{ActionMap, Binding, BindingSource, BindingTarget, FlightCommand, Key};

@@ -284,7 +284,7 @@ pub const CTL_SCRIPT_KEY_CONSTANTS: [&str; 10] = [
 /// without classifying it against the original, and the evidence column is
 /// asserted to partition [`COMMAND_LABELS`] together with
 /// [`ORIGINAL_ONLY_COMMANDS`].
-pub const COMPARISON: [(&str, &str, &[&str]); 25] = [
+pub const COMPARISON: [(&str, &str, &[&str]); 26] = [
     ("pitch", "observed", &["MSG_NOSE_UP", "MSG_NOSE_DOWN"]),
     ("roll", "observed", &["MSG_ROLL_LEFT", "MSG_ROLL_RIGHT"]),
     ("yaw", "observed", &["MSG_RUDDER_LEFT", "MSG_RUDDER_RIGHT"]),
@@ -345,6 +345,11 @@ pub const COMPARISON: [(&str, &str, &[&str]); 25] = [
     ("throttle_step_down", "observed", &["MSG_DEC_THROTTLE"]),
     ("throttle_idle", "observed", &["MSG_THROTTLE_0"]),
     ("throttle_full", "observed", &["MSG_THROTTLE_8"]),
+    // The original's Level-Off assist (command 47) ships the named command
+    // label `MSG_LEVEL_TOG` (11061), so the new slot is `observed` rather
+    // than absent; `MSG_LEVEL_TOG` leaves `ORIGINAL_ONLY_COMMANDS` for the
+    // cited set, keeping the measured 65-label partition exact.
+    ("level_off", "observed", &["MSG_LEVEL_TOG"]),
     ("confirm", "runtime_only", &[]),
     ("cancel", "runtime_only", &[]),
     ("navigate_up", "runtime_only", &[]),
@@ -355,9 +360,10 @@ pub const COMPARISON: [(&str, &str, &[&str]); 25] = [
 ];
 
 /// The named original command labels with no counterpart in the project's
-/// declared vocabulary. This is the other half of the measured set: 33 of the
-/// 65 command labels are original-only.
-pub const ORIGINAL_ONLY_COMMANDS: [&str; 33] = [
+/// declared vocabulary. This is the other half of the measured set: 32 of the
+/// 65 command labels are original-only (`MSG_LEVEL_TOG` left this set when
+/// task #1134 gave the vocabulary a `level_off` slot).
+pub const ORIGINAL_ONLY_COMMANDS: [&str; 32] = [
     "MSG_CMD_CYCLE_MODE",
     "MSG_CMD_INTERP",
     "MSG_CMD_TARGET_NOTHING",
@@ -388,7 +394,6 @@ pub const ORIGINAL_ONLY_COMMANDS: [&str; 33] = [
     "MSG_CMD_COLLISION_TOGGLE",
     "MSG_CMD_LAUNCH_AUTO_LAND",
     "MSG_CMD_DISPLAY_SCORES",
-    "MSG_LEVEL_TOG",
     "MSG_CHAT_ALL",
     "MSG_CHAT_TEAM",
 ];

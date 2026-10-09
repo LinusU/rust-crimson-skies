@@ -70,9 +70,14 @@ What is provisional (all labelled, none original behaviour):
   measured under full throttle); without original content the scene is the
   synthetic fixed-wing tuning below, which has no attitude stability and whose
   velocity follows the nose only slowly.
-* The original's **Level-Off** assist (Shift+L, command 47) is in the law but
-  is **not bound**: the input layer has no slot for it, so the toggle stays off.
-  Filed as follow-up **#1134**.
+* The original's **Level-Off** assist (Shift+L, command 47) is wired (#1134):
+  `FlightCommand::LevelOff` carries the toggle into the law's
+  `OriginalState.level_off`, bound to **`L`** in the playtest (the original's
+  chord Shift+L is not reproduced: `Left Shift` is already the throttle
+  step-up here and the action map has no chord sources). The assist levels the
+  wings only while it is on **and** the stick is hands-off; it starts off and
+  `R` reset returns to off. The binding is a designed slot for the original
+  command, not a measurement of the original's chord.
 * The aircraft's collider is **one box** measured from the composed extent of the
   drawn set (wingspan included), centred on the flight body; the parts do not
   collide individually.
@@ -158,6 +163,7 @@ or reset. Nobody has played this by hand yet; that is for you.
 | `A` / `D` | yaw left / right |
 | `Left Shift` / `F` | throttle step up / down |
 | `1` / `4` | throttle idle / full |
+| `L` | Level-Off assist toggle (original law only) |
 | `R` | reset to the known flyable state |
 | `Esc` | pause / resume |
 | `F10` | quit (closing the window also quits) |
