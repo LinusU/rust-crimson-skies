@@ -152,6 +152,17 @@
 //! `--include-ignored`. `evidence.rs`'s
 //! `evidence_report_record_objectives_sound_writes_the_acceptance_report` is
 //! that task's report harness, selected by test name.
+//!
+//! `m07_b.rs` is the M07-B stage: `accept_m07_b_*` tests that measure M07's
+//! mission control program through the retail control census and
+//! `SourceContext::control_program`, and pin what the sheet's regression
+//! priorities (moving pickup, forced plane swap, persistent input ownership)
+//! look like in the measured record, together with the lowering verdict that
+//! decides what the engine may honour. Its retail members read `$CS_GAME_DIR`
+//! and are `#[ignore = "requires CS_GAME_DIR"]`, so CI skips them and the
+//! implementing and reviewing agents run them with `--include-ignored`;
+//! `evidence.rs`'s `evidence_report_m07_b_*` writes that task's report and is
+//! selected by test name.
 
 mod closure;
 mod common;
@@ -181,6 +192,7 @@ mod m04_b;
 mod m05_a;
 mod m06_a;
 mod m07_a;
+mod m07_b;
 mod m08_a;
 mod m10_a;
 mod m10_b;
