@@ -252,6 +252,85 @@ Both were reverted and the eleven-test selection was rerun green afterwards.
 - The join remains M17-A's inference (`ClaimStatus::Inferred`); no campaign
   definition record or original run was observed.
 
+## Review (bunny-2/bunny-2, 2026-10-10)
+
+Reviewer: **bunny-2/bunny-2** (Rally #307 review claim of 2026-10-10, OpenCode
+Space Bunny Free, `opencode-go/mimo-v2.6-Flash`), a separate session that began
+from the task history, the submitted summary, `missions/M17.md`, the contract
+and the branch diff — not from the implementation. Implementer:
+**bunny-2/bunny-2** (same Rally agent name and model, implement claim submitted
+at `3d8de5c4`), so this review is **not independent evidence** in the AGENTS.md
+sense: it is a fresh-context re-derivation plus a full re-run of every check. A
+Rally merge awards `checked` only, no agent review replaces the owner's human
+approval, and nothing here is `verified_original` or `release_approved`.
+
+What the reviewer verified on the branch:
+
+* only owner paths changed — `crates/cs_app/tests/campaign/` (`m17_b.rs`,
+  `evidence/m17_b.rs` and the two `mod` lines) and `docs/findings/`; no
+  protected path, no `missions/bindings/M17.json`, no production crate, no
+  binary file, no original data;
+* every retail test drives production code (`survey_mission_control_programs`,
+  `read_control_member`, `SourceContext::control_program`, `SourceContext::bind`,
+  `survey_retail_trigger_volumes`, `recover_retail_start_configuration`,
+  `discover` + `discover_container` + `decode_zrd`, `measure_control_record`,
+  `lower_control_record`, `MissionProgram::validate`) and the two synthetic
+  tests carry the refusal arms (a non-finite warp coordinate, an unmeasured
+  directive key) into CI unignored;
+* the prefix resolves to exactly eleven names in one binary, each of the eleven
+  passes when run alone with `--exact --include-ignored` (the module-qualified
+  `m17_b::<name>`; the bare suffix alone matches nothing, which the first
+   `--exact` attempt of this review recorded), no test is skipped, weakened or
+  `#[ignore]`d beyond the repository's `requires CS_GAME_DIR` convention, and
+  no lint was relaxed;
+* the sheet's three priorities are each pinned against measured record data,
+  and the claims the sheet says must not be assumed — that the wrong actor, the
+  wrong session or a repeated event cannot satisfy a block — are honestly left
+  unmeasured for M17-C rather than asserted;
+* every recorded unknown names its resolving task (`M17-B-FU1` #1256 for the
+  record-only names, `M17-C` for the runtime halves and the failure causes),
+  `claim` stays `implemented`, and the committed report copy is byte-identical
+  to the harness-written `private/evidence/M17-B/acceptance.json`.
+
+**Change made during review:** none to test or production code — the suite as
+submitted needed no fix. The review-authored changes are this section and the
+regenerated evidence report.
+
+Mutation checks the reviewer ran and reverted (both fail as required):
+
+| Mutation | Result |
+| --- | --- |
+| `crates/cs_app/src/mission_start.rs` `CAMPAIGN_AIRFRAME_ROW` `5` → `6` | `accept_m17_b_no_directive_writes_the_player_and_the_airframe_is_the_campaign_chains` FAILED at `m17_b.rs:983` (`airframe/player_fbrand` against the pinned `airframe/player_pfighter`), exit 101 |
+| `crates/cs_app/src/control_lowering.rs` `zrd_to_value`'s `if f.is_finite()` → `if true` | `accept_m17_b_a_warp_site_binds_at_its_measured_shape_and_refuses_a_value_the_ir_cannot_carry` FAILED at `m17_b.rs:2049` (the refusal then named `NaN outside -inf..=inf` instead of `not finite`), exit 101 |
+
+Both mutations were reverted and the tree is clean; each shows the test reads
+production code rather than its own constants.
+
+Checks run by the reviewer after the rebase, all green:
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 (495 `test result: ok`, no failure) |
+| `cargo test --workspace --locked -- accept_m17_b_ --include-ignored` | 0 (11 discovered, 11 executed, 11 passed, 0 failed — the log of record, `private/evidence/M17-B/cargo-test.log`) |
+| eleven × `cargo test --locked -p cs_app --test campaign m17_b::<name> -- --exact --include-ignored` | 0 (11/11, `private/evidence/M17-B/exact-runs.log`) |
+| `python3 -m unittest discover -s tools/tests -p 'test_evidence_review_identity.py'` | 0 (27 tests) |
+| `python3 tools/validate_evidence.py private/evidence/M17-B/acceptance.json --artifact-root private/evidence/M17-B --require-pass` | 0 on the reviewer's regenerated report |
+
+**Rebase.** `main` advanced during this review (to `2f2fbd80`, the M16-B merge).
+The rebase applied without conflicts, but the incoming commits touch
+`crates/cs_app/tests/campaign/main.rs` and `…/evidence.rs`, which this branch
+changes too, so the owner's 2026-10-01 lighter check set did not apply: all four
+checks were re-run in full after the rebase, and the selection still runs
+exactly the eleven `accept_m17_b_` tests while filtering M16-B's new tests in
+the same binary. The first post-rebase check run was cut short when its session
+ended and is **not** the run of record; every check in the table above was run
+to completion afterwards on the final rebased tree. The acceptance run and the
+evidence report belong to that tree — the report's `candidate_tree` is the tree
+of the commit that carries this note, since the only later commit is the report
+copy itself.
+
 ## Sources
 
 `$CS_GAME_DIR` read-only through `cs_assets::install::discover`,
