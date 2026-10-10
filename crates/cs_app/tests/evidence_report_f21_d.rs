@@ -8,11 +8,16 @@
 //! exactly as:
 //!
 //! 1. ```sh
-//!    cargo test --workspace --locked -- accept_f21_d_ --include-ignored \
+//!    CS_EVIDENCE_DIR=private/evidence/F21-D \
+//!      cargo test --workspace --locked -- accept_f21_d_ --include-ignored \
 //!      2>&1 | tee private/evidence/F21-D/cargo-test.log
 //!    ```
 //!    (record the pipeline's exit status — it is passed to this harness as
-//!    `CS_EVIDENCE_EXIT_CODE`.)
+//!    `CS_EVIDENCE_EXIT_CODE`.) `CS_EVIDENCE_DIR` must be set **in this step**,
+//!    while the acceptance suite runs: the retail coverage test only derives
+//!    its `view-cockpit-coverage.json` census into that directory when the
+//!    variable is set, so without it step 2 finds a directory holding nothing
+//!    but the log.
 //! 2. ```sh
 //!    CS_EVIDENCE_DIR=private/evidence/F21-D \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
@@ -21,9 +26,11 @@
 //!    CS_GAME_DIR="$CS_GAME_DIR" \
 //!      cargo test --locked -p cs_app --test evidence_report_f21_d -- --ignored
 //!    ```
-//!    (`CS_EVIDENCE_DIR` makes the retail coverage test write its derived
-//!    census into the evidence directory, so the artifact the report hashes is
-//!    this run's own.)
+//!    (`CS_EVIDENCE_DIR` tells this harness where step 1's run left the
+//!    artifacts it must read, hash and re-check, so the census and captures
+//!    this report hashes are this run's own; `CS_EVIDENCE_ARGV` stays the
+//!    acceptance command's bare argv, because an environment prefix is not
+//!    part of a command's argv.)
 //! 3. ```sh
 //!    python3 tools/validate_evidence.py private/evidence/F21-D/acceptance.json \
 //!      --artifact-root private/evidence/F21-D --require-pass
