@@ -11,6 +11,46 @@ This note records two measurements the task's own description asserts differentl
 before any `mission_session` code was written, because both change what that code is allowed to
 claim.
 
+## Amendment (2026-10-10, owner decision): item 7 is the measured control lowering
+
+After the block below, the owner decided (Rally #1214, 2026-10-10, "option 2. Amend acceptance
+item 7"): **M01's declared objective program for preparation is the measured control/directive
+program** — `mission_control::survey_mission_control_programs` → the mission's row → `lowering()` →
+`complete()` → `lowering_attempt().program()` — the same program the `mission_objectives` launch
+surface is already judged by (`crates/cs_app/src/mission_launch.rs:908-921`). Item 7 now means
+"that program lowers completely", not `ObjectiveRecovery::program()`. The section 1 measurement
+above stands unchanged and is the reason the amendment exists; the `ObjectiveRecovery` path stays in
+`objectives.rs` untouched, its tests (`accept_m01_lc_objectives_recovery`) untouched, and measuring
+it remains #1219's job — explicitly **not** a prerequisite of #1214.
+
+Applied by `bunny-alpha-1` the same day, inside #1214's owner paths:
+
+* `crates/cs_app/src/mission_session/content.rs` — `MissionContent` no longer carries a
+  `LoweredObjectives` field and `prepare` no longer calls `recover_retail_objectives`/`lower_program`;
+  the `control` field is documented as the single declared objective program. The
+  `MissionSessionError::Objectives` variant is removed (nothing constructs it); the `Control` variant
+  now carries both the script-host and the objective-source refusal.
+* `crates/cs_app/tests/campaign/vs_m01_rt_content.rs` — the retail member flipped from asserting the
+  `Objectives` refusal to asserting `accept_vs_m01_runtime_content_m01_prepares_every_record`: the
+  world definition imports objects and uploads meshes, the start airframe (`player_pfighter`) and
+  pose are `Known`, `pdevastator` imports with a positive fuel load, the weather session starts at
+  tick zero, the world-actor binding is satisfied with its three measured actors, the animation join
+  binds M01's scope and group, the control lowering produces a program with declared objectives, and
+  the sound walk finds an archive.
+
+Consequences for the dependents, stated precisely (the owner's note asks for this):
+
+* **#1215 / #1217**: `ObjectiveSession::launch` (`crates/cs_app/src/objectives.rs:1316`) still takes
+  a `LoweredObjectives`, which only `objectives::lower_program` produces from a
+  `DeclaredObjectiveProgram` — a type no original mission yields today. `MissionContent::control` is
+  a `cs_script::ir::MissionProgram` from the control lowering, a different type. The per-tick host
+  must either bridge from that lowered program **where the measured semantics carry it** (never a
+  synthesized objective) or block naming this exact mechanism as missing. #1214 supplies no
+  `LoweredObjectives` and claims no bridge.
+
+Nothing in this amendment is `verified_original`; no original executable ran.
+
+
 ## 1. M01's `ObjectiveRecovery::program()` refuses, so item 7 of #1214 cannot succeed
 
 ### What the task asks for
@@ -161,6 +201,9 @@ Consequences:
   verdict change needs its own task/branch to land independently.
 
 ## What was built, and what still cannot be claimed
+
+*(State at the time of the block below, before the owner's amendment above; kept verbatim as the
+measurement record. The amendment supersedes "Item 7 is not met".)*
 
 `crates/cs_app/src/mission_session/` implements the whole stage:
 `MissionContent::prepare(install_root, plan)` (and the module entry
