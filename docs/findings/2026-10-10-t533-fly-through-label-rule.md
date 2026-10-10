@@ -235,6 +235,23 @@ records remains unmeasured, as stated above.
   `cargo test --workspace --locked -- accept_f42_d_ --include-ignored` = 0
   (17 discovered, 17 passed).
 
+Review rerun (2026-10-10, same agent identity in a fresh review session, on the
+branch rebased onto `origin/main` with the review's two documentation commits):
+`cargo fmt --all -- --check` = 0,
+`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+= 0, `cargo test --workspace --locked` = 0 (4 385 passed, 0 failed, 794
+ignored), `cargo test --workspace --locked -- accept_t533_ --include-ignored` =
+0 (3 discovered, 3 executed, 3 passed, the retail test included) and
+`cargo test --workspace --locked -- accept_f42_d_ --include-ignored` = 0. The
+review also mutated `is_fly_through_labelled` to the strict AND rule and watched
+both unignored task tests fail before reverting, and corroborated the corpus
+numbers over `$CS_GAME_DIR` independently with a byte-level occurrence scan of
+every reader archive: **64** `MSG_OBJ_DZ` and **67** `MSG_OBJ_FLYTHROUGH`
+occurrences, no archive carrying the category label without the help label, and
+exactly `ZBD/C1/M02`, `ZBD/C4/M03` and `ZBD/C5/M02` carrying the help label
+without the category. The committed evidence report was regenerated on the
+reviewed tree and revalidated with `tools/validate_evidence.py --require-pass`.
+
 ## Sources used
 
 - `specs/F42-stunts-fame-photos-and-optional-achievement-events.md` (F42-D) and
