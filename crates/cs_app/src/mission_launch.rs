@@ -55,7 +55,8 @@ use crate::animation::mission::{
 use crate::animation::survey::CarrierKind;
 use crate::mission_animations::MissionAnimationPlayer;
 use crate::mission_world_actors::{
-    MOTION_RESIDUE, SPAWN_ATTITUDE_CLAIM, SPAWN_POSE_CLAIM, ZEPPELIN_MEMBER,
+    ALLEGIANCE_OPEN_CLAIM, ALLEGIANCE_RESOLVED_CLAIM, MOTION_RESIDUE, OpenField,
+    SPAWN_ATTITUDE_CLAIM, SPAWN_POSE_CLAIM, TARGETS_MEMBER, TURRET_MEMBER, ZEPPELIN_MEMBER,
 };
 
 /// The surfaces an original-mission launch must account for, in report
@@ -1044,56 +1045,25 @@ fn measure_actor_readers(
                     .filter(|row| row.declared.is_some())
                     .map(|row| row.node.clone())
                     .collect();
-                let mut detail = format!(
-                    "the carrier decodes {} records; {} declare actors ({}) against the \
-                     world container's scene graph, but the program does not lower: ",
-                    records,
-                    declared.len(),
-                    declared.join(", "),
+                let undeclared: Vec<String> = spawned
+                    .rows()
+                    .iter()
+                    .filter(|row| row.declared.is_none())
+                    .map(|row| format!("{} ({:?})", row.node, row.subject))
+                    .collect();
+                let detail = world_actor_gap_detail(
+                    *records,
+                    &declared,
+                    spawned
+                        .lower_error()
+                        .map(|error| error as &dyn fmt::Display),
+                    spawned
+                        .launch_error()
+                        .map(|error| error as &dyn fmt::Display),
+                    spawned.open_fields(),
+                    &undeclared,
+                    placements,
                 );
-                if let Some(error) = spawned.lower_error() {
-                    detail.push_str(&format!("the production lowering refuses with {error}"));
-                }
-                if let Some(error) = spawned.launch_error() {
-                    detail.push_str(&format!("; the session launch refuses with {error}"));
-                }
-                if !spawned.open_fields().is_empty() {
-                    let fields: Vec<String> = spawned
-                        .open_fields()
-                        .iter()
-                        .map(|open| {
-                            format!(
-                                "{}{} ({})",
-                                open.actor
-                                    .map(|actor| format!("{actor}."))
-                                    .unwrap_or_default(),
-                                open.field,
-                                open.claim_id.as_str()
-                            )
-                        })
-                        .collect();
-                    detail.push_str(&format!("; still open: {}", fields.join(", ")));
-                }
-                if spawned.rows().iter().any(|row| row.declared.is_none()) {
-                    let undeclared: Vec<String> = spawned
-                        .rows()
-                        .iter()
-                        .filter(|row| row.declared.is_none())
-                        .map(|row| format!("{} ({:?})", row.node, row.subject))
-                        .collect();
-                    detail.push_str(&format!("; never declared: {}", undeclared.join(", ")));
-                }
-                detail.push_str(&format!(
-                    "; each record's position binds under {SPAWN_POSE_CLAIM} and its attitude \
-                     composes under {SPAWN_ATTITUDE_CLAIM} from the source the original applies \
-                     last, the source each overwrites named as the residue (#792's order, #814's \
-                     position); the scope's {placements} placezeps.zrd placement declarations bind \
-                     their node join and translate/rotate states (measured, #791) and what that \
-                     member still leaves open stays refused under {PLACEMENT_FIELDS_CLAIM}; \
-                     {MOTION_RESIDUE} (docs/findings/2026-10-08-m01-lc-world-actor-spawn.md, \
-                     docs/findings/2026-10-09-m01-lc-zeppelin-attitude.md and \
-                     docs/findings/2026-10-09-m01-lc-zeppelin-placement-position.md)"
-                ));
                 SurfaceVerdict::Unsupported {
                     mechanism: "world-actor spawn semantics".to_owned(),
                     detail,
@@ -1106,6 +1076,86 @@ fn measure_actor_readers(
         assets,
         verdict,
     }
+}
+
+/// The `detail` a not-satisfied `world_actors` surface reports once the
+/// carrier decoded: the decoded record count, the declared actors, every
+/// production refusal, every still-open field with its claim id and every
+/// never-declared row, then the explanatory tail that names each claim and
+/// its findings — the spawn pose ([`SPAWN_POSE_CLAIM`]), the composed
+/// attitude ([`SPAWN_ATTITUDE_CLAIM`]), the `placezeps.zrd` placements
+/// ([`PLACEMENT_FIELDS_CLAIM`]), the carrier's own residue
+/// ([`MOTION_RESIDUE`]), and the allegiance the original's loader resolves
+/// ([`ALLEGIANCE_RESOLVED_CLAIM`], refused under [`ALLEGIANCE_OPEN_CLAIM`]
+/// when the measured path cannot settle, #1155).
+///
+/// This is exactly the text [`measure_actor_readers`] reports; it is `pub`
+/// so an acceptance test can build the detail without an original
+/// installation. No retail mission reaches this branch today — M01's own
+/// `world_actors` surface is `Satisfied` — so without this the tail could
+/// only be checked by hand.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn world_actor_gap_detail(
+    records: usize,
+    declared: &[String],
+    lower_error: Option<&dyn fmt::Display>,
+    launch_error: Option<&dyn fmt::Display>,
+    open_fields: &[OpenField],
+    undeclared: &[String],
+    placements: usize,
+) -> String {
+    let mut detail = format!(
+        "the carrier decodes {records} records; {} declare actors ({}) against the \
+         world container's scene graph, but the program does not lower: ",
+        declared.len(),
+        declared.join(", "),
+    );
+    if let Some(error) = lower_error {
+        detail.push_str(&format!("the production lowering refuses with {error}"));
+    }
+    if let Some(error) = launch_error {
+        detail.push_str(&format!("; the session launch refuses with {error}"));
+    }
+    if !open_fields.is_empty() {
+        let fields: Vec<String> = open_fields
+            .iter()
+            .map(|open| {
+                format!(
+                    "{}{} ({})",
+                    open.actor
+                        .map(|actor| format!("{actor}."))
+                        .unwrap_or_default(),
+                    open.field,
+                    open.claim_id.as_str()
+                )
+            })
+            .collect();
+        detail.push_str(&format!("; still open: {}", fields.join(", ")));
+    }
+    if !undeclared.is_empty() {
+        detail.push_str(&format!("; never declared: {}", undeclared.join(", ")));
+    }
+    detail.push_str(&format!(
+        "; each record's position binds under {SPAWN_POSE_CLAIM} and its attitude \
+         composes under {SPAWN_ATTITUDE_CLAIM} from the source the original applies \
+         last, the source each overwrites named as the residue (#792's order, #814's \
+         position); the scope's {placements} placezeps.zrd placement declarations bind \
+         their node join and translate/rotate states (measured, #791) and what that \
+         member still leaves open stays refused under {PLACEMENT_FIELDS_CLAIM}; \
+         {MOTION_RESIDUE} (docs/findings/2026-10-08-m01-lc-world-actor-spawn.md, \
+         docs/findings/2026-10-09-m01-lc-zeppelin-attitude.md and \
+         docs/findings/2026-10-09-m01-lc-zeppelin-placement-position.md)"
+    ));
+    detail.push_str(&format!(
+        "; a record's faction binds the allegiance the original's loader resolved \
+         (#1155) under {ALLEGIANCE_RESOLVED_CLAIM}, and a record whose allegiance \
+         cannot settle — a node the {TARGETS_MEMBER} gate could match, an unmodelled \
+         {TURRET_MEMBER} NODES element, a team int outside the measured vocabulary — \
+         stays refused under {ALLEGIANCE_OPEN_CLAIM} \
+         (docs/findings/2026-10-09-m01-lc-zeppelin-allegiance.md)"
+    ));
+    detail
 }
 
 /// The animation carriers (`mis_anim.zbd` in the mission directory,
