@@ -217,6 +217,15 @@ Synthetic, run in CI without original data:
 | `cargo test --workspace --locked -- accept_m17_b_ --include-ignored` | 0 (11 tests) |
 | `python3 tools/validate_evidence.py private/evidence/M17-B/acceptance.json --artifact-root private/evidence/M17-B --require-pass` | 0 |
 
+## Mutation checks run and reverted (both fail as required)
+
+| Mutation | Result |
+| --- | --- |
+| `crates/cs_app/src/mission_start.rs` `CAMPAIGN_AIRFRAME_ROW` `5` → `6` (production) | `accept_m17_b_no_directive_writes_the_player_and_the_airframe_is_the_campaign_chains` FAILED at the production-derived airframe (`airframe/player_fbrand` against the pinned `airframe/player_pfighter`), exit 101 |
+| `crates/cs_app/tests/campaign/m17_b.rs` block 6's zone `dzpath13` → `dzpath14` | `accept_m17_b_the_search_triggers_are_the_four_always_awake_danger_zone_blocks` FAILED at `OBJECTIVE6`'s zone list, exit 101 |
+
+Both were reverted and the eleven-test selection was rerun green afterwards.
+
 ## Recorded unknowns (not guessed)
 
 - **`bhatbrigand_13` and `bhatbrigand_14`** — `SET_AI_NET` operands of blocks
