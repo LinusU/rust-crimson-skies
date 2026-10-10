@@ -284,6 +284,100 @@ acceptance suite reads.
 - The join remains M24-A's inference (`ClaimStatus::Inferred`); no campaign
   definition record or original run was observed.
 
+## Review (bunny-alpha-1/bunny-alpha-1, 2026-10-10)
+
+Reviewer: **bunny-alpha-1/bunny-alpha-1** (Rally #328 review claim of
+2026-10-10T17:06Z, OpenCode, `opencode-go/mimo-v2.6-Flash`), a separate review
+session with fresh context that began from the task history, `missions/M24.md`,
+`docs/contracts/SCRIPT-MISSION.md`, `docs/contracts/CLI-EVIDENCE.md` and the
+branch diff — not from the implementation's conversation. Implementer:
+**bunny-alpha-1/bunny-alpha-1** (same Rally agent name and model, implement
+claim submitted at `aae6d8e2`), so this review is **not independent evidence**
+under the owner's 2026-09-28 audit directive: it is a fresh-context
+re-derivation plus a full re-run of every check. A Rally merge awards
+`checked` only, no agent review replaces the owner's human approval, and
+nothing here is `verified_original` or `release_approved`.
+
+What the reviewer verified on the branch:
+
+* only owner paths changed — `crates/cs_app/tests/campaign/` (`m24_b.rs`,
+  `evidence/m24_b.rs` and the two `mod` lines plus the `evidence.rs` stage
+  list) and `docs/findings/`: six text files, no protected path, no production
+  crate, no `missions/bindings/M24.json`, no binary file, no original data;
+* rebased onto `3a293d6e` (the M18-B merge) — git auto-merged the two wiring
+  files without a conflict, but the incoming commits touch
+  `campaign/main.rs` and `evidence.rs`, the same two files this branch
+  touches, and this branch added commits of its own, so the owner's lighter
+  check set never applied and the full four checks re-ran on the rebased tree;
+* the pinned retail record facts were re-derived by hand from the raw-record
+  dump the implementer's own exploration printed (kept in the private working
+  directory, never committed): the
+  40-key vocabulary with the site counts summing to 267, the seven refused
+  sites and their `(block, position)` locations, the six sound sites' name
+  counts (1/9/7/8/7/8), the five identity sites, the two latches and their
+  arming/kill edges (`28→21` nap 45 s; `38→39` nap 15 s, `62→39` nap 20 s,
+  `34→39` kill), both closures (`[10,11,13,28,34,35,47]` and
+  `[10,11,37,38]`), the five `dzpath` zones and the 8
+  `INACTIVE_COMPLETION_COUNT` sites — five for the friendly capital (blocks
+  4/5/8/9/10) and three for the pirate (24/25/62); every claim matched,
+  and the two that did not were counts *about* the notes, not about the data
+  (see below);
+* every retail test drives production code — `SourceContext::bind`,
+  `SourceContext::control_program`, `survey_mission_control_programs`,
+  `lower_control_record`, `measure_control_record`,
+  `survey_retail_trigger_volumes`, `discover_container` + `decode_zrd`,
+  `load_engine_image` — and the two synthetic tests carry both refusal arms
+  (the oversized sound signature, the truncated net key) into CI unignored;
+* the prefix resolves to exactly eleven names in the one `campaign` binary
+  and to nothing elsewhere in the workspace; each of the eleven passes when
+  run alone with `--exact --include-ignored`; no test is skipped, weakened or
+  `#[ignore]`d beyond the repository's `requires CS_GAME_DIR` /
+  `requires CS_ENGINE_IMAGE` convention, and no lint was relaxed;
+* the sheet's three regression priorities are each pinned against measured
+  record data, while the claims the sheet says must not be assumed — wrong
+  actor, wrong session, repeated event — are honestly left unmeasured for
+  M24-C; every recorded unknown names its resolving task (`M16-B-FU1` #1252,
+  `M24-B-FU1` #1271, `M24-A-FU1` #1272, `M24-C` #329); `claim` stays
+  `implemented` and the campaign gate is asserted shut.
+
+**Changes made during review:** two count corrections in this note and the
+test module doc — the friendly capital spells **five** threshold sites (the
+note said six, the module doc four) — and one stale wiring-doc entry: the
+`evidence.rs` stage list never named M18-B after its merge, fixed the same
+way the M19-B review named M17-B. No test or production code needed a fix.
+The review also regenerated the evidence report on the reviewed tree with
+`CS_EVIDENCE_REVIEWER` naming this session (the committed copy); the
+implementer's committed copy and their `private/evidence/M24-B/acceptance.json`
+were identical before regeneration.
+
+Mutation checks the reviewer ran and reverted (both fail as required; the
+selection was rerun green afterwards and `git status` was clean):
+
+| Mutation | Result |
+| --- | --- |
+| `crates/cs_content/src/mission_control.rs`, `terminal_outcome_of`'s `INSTANTWIN` → `Failed` (production measurement) | `accept_m24_b_the_measured_vocabulary_partitions_and_refuses_no_m24_key` FAILED at `m24_b.rs:651` (the pinned terminal-outcome pair), exit 101 |
+| `crates/cs_script/src/bindings/mod.rs`, `MAX_CALL_ARGS` `8` → `9` (production lowering) | two tests FAILED, exit 101: `accept_m24_b_m24s_record_does_not_lower_and_its_calls_refuse_by_two_named_gaps` (1 refusal instead of 7 — the sound key registers again) and the synthetic `accept_m24_b_one_oversized_sound_site_poisons_the_whole_sound_key` (no unbound key) |
+
+Each mutation is in production code the suite does not own, so the failures
+show the tests read the lowering and the measurement rather than their own
+constants.
+
+Checks run by the reviewer on the rebased tree, all green:
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_m24_b_ --include-ignored` | 0 (11 tests, log of record `private/evidence/M24-B/cargo-test.log`) |
+| each of the eleven names alone with `--exact --include-ignored` | 0 (1 passed each) |
+| `python3 tools/validate_evidence.py private/evidence/M24-B/acceptance.json --artifact-root private/evidence/M24-B --require-pass` | 0 (`structurally_valid: true`) |
+
+The reviewer's regenerated report carries `candidate_tree` = the tree of
+`1a60f115`, the commit that carries the suite plus these review fixes; the
+only later delta is this findings section and the report's own copy under
+`docs/findings/evidence/`, neither of which the acceptance suite reads.
+
 ## Sources
 
 `$CS_GAME_DIR` read-only through `cs_assets::install::discover`,
