@@ -248,7 +248,8 @@ it follows `docs/contracts/CLI-EVIDENCE.md`:
 The report committed here is the **reviewing** agent's own regeneration on the
 reviewed commit — **bunny-alpha-1/bunny-alpha-1**, Rally #818 review claim of
 2026-10-10, a separate session with a fresh context — replacing the
-implementer's hand-over run. `review.identity` names both with the context
+implementer's hand-over run (and regenerated once more on the rebased tree in
+the second round below). `review.identity` names both with the context
 statement and says plainly that the same agent name and model implemented the
 work, so this is a fresh-context agent review rather than independent-model
 evidence. The claim is `implemented`, never `checked` or `verified_original`.
@@ -264,8 +265,8 @@ work against the task's acceptance criteria and AGENTS.md:
   M06's archive spells it nowhere) was asserted **twice** in
   `accept_m06_b_fu2_no_shipped_record_binds_a_passenger_entity_for_m06`, a
   leftover of the two commits that split M06's own node names from its
-  siblings'; the second copy was removed (commit `ac81dd33`), no assertion's
-  meaning changed;
+  siblings'; the second copy was removed (pre-rebase commit `ac81dd33`, the
+  commit after the rebase `19098c97`), no assertion's meaning changed;
 * everything else checked out: the four tests exercise production code
   (`discover_container`, `decode_zrd`, `zrd_flat_fields`, `read_gamez_nodes`,
   `survey_mission_control_programs`, `load_engine_image`, `sha256`), the
@@ -278,6 +279,34 @@ work against the task's acceptance criteria and AGENTS.md:
   the task selection again 4 of 4) and regenerated this task's acceptance
   report on that tree with its own reviewer identity, validated by
   `tools/validate_evidence.py --require-pass`.
+
+### Second round (2026-10-10): the hand rebase after the landing conflict
+
+The first `complete_review` was approved and queued, and the landing attempt
+failed with *rebase conflict with main; a reviewer must rebase it by hand* —
+`main` had advanced with M06-B-FU3's work, which added its own evidence
+harness to the same table this stage extends. The reviewer (again
+**bunny-alpha-1/bunny-alpha-1**, a fresh session, same agent name and model, so
+still not independent evidence) rebased all nine commits onto `origin/main`
+(`305b4dea`) by hand:
+
+* exactly one conflict, in `crates/cs_app/tests/campaign/evidence.rs`: main's
+  `mod m06_b_fu3;` and this branch's `mod m06_b_fu2;` landed on the same line
+  of the module table. Resolved by keeping **both**, in the table's alphabetical
+  order (`m06_b_fu1`, `m06_b_fu2`, `m06_b_fu3`) — nothing else in that file
+  moved, and `crates/cs_app/tests/campaign/main.rs` merged cleanly;
+* because the rebase had a conflict, the owner directive of 2026-10-01's
+  lighter re-push check does not apply, so the **full four checks** were run
+  again on the rebased tree (all exit 0, the task selection again 4 of 4);
+* the acceptance report was regenerated on the rebased tree
+  (`candidate_tree` = `14f52f74…`, the tree of the rebased head) so the
+  committed report describes the tree that is actually reviewed, and validated
+  again with `tools/validate_evidence.py --require-pass`.
+
+No measurement changed: `main`'s new commits touch the objective-address
+convention (`objaddr.rs`, `m02_b.rs`, `m04_b.rs`, `m06_b.rs` and their findings
+notes), which none of this stage's assertions read. The rebase brought no
+`Cargo.toml` or `Cargo.lock` change.
 
 ## Checks
 
