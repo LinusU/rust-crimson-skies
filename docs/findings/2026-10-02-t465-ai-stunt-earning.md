@@ -231,6 +231,13 @@ decision over content this task did not audit, and the risk is now recorded here
 and as a follow-up task rather than silently resolved in another task's
 measurement.
 
+*(Resolved by #533 — `docs/findings/2026-10-10-t533-fly-through-label-rule.md`:
+the reimplementation uses the **union**, so both survey readings
+(`fly_through_objectives()` and `fly_through_labelled_objectives()`) now count
+**67**, the strict selector no longer exists, and #463's selector was changed
+rather than left unchanged. The **64** above stays as what the strict rule
+measured over this corpus.)*
+
 ## What is **not** measured, and is therefore not a field
 
 - **The zone-crossing predicate itself** — whether a crossing is detected at all
@@ -283,6 +290,9 @@ unmeasured.
   carry the help label and no category label). Affected content: those three
   records and every downstream stunt count built on the stricter selector.
   Resolving task: #533 (`T465-flythrough-selector`), filed by this task.
+  *(Resolved by #533: the union of the two measured labels, re-measured at 67
+  by either reading over this installation — see
+  `docs/findings/2026-10-10-t533-fly-through-label-rule.md`.)*
 
 ## What was built
 
