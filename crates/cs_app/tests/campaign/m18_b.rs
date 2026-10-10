@@ -1920,7 +1920,9 @@ fn accept_m18_b_the_production_animation_binding_reads_m18s_own_scope() {
         ("call_destroy_the_cargozep", "zep_dock.zrd"),
     ] {
         assert!(
-            member_texts(CONTAINER, member).iter().any(|text| text == name),
+            member_texts(CONTAINER, member)
+                .iter()
+                .any(|text| text == name),
             "{member} declares {name}"
         );
     }
