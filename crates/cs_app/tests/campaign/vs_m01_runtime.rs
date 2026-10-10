@@ -23,6 +23,7 @@ use cs_app::mission_launch::{
     LaunchPlanError, LaunchSurface, MemberVerdict, MissionLaunchPlan, SurfaceReport,
     SurfaceVerdict, plan_mission_launch,
 };
+use cs_content::world::WORLD_AXIS_CONVENTION_MEASURED;
 use cs_types::content::{ContentId, ContentKind};
 
 use crate::common::{label, load_inventory};
@@ -128,7 +129,7 @@ fn accept_vs_m01_runtime_the_launch_gate_names_each_blocking_surface() {
     );
 }
 
-/// **Retail: M01's real launch closure names every missing mechanism.**
+/// **Retail: M01's real launch closure is satisfied end to end.**
 ///
 /// [`plan_mission_launch`] reads the installation through the same campaign
 /// binding the M01-A stage asserted — `mission/ch1-m01`, `world/c1c`,
@@ -144,15 +145,15 @@ fn accept_vs_m01_runtime_the_launch_gate_names_each_blocking_surface() {
 ///   lowering (#717) for `mission_program` and `mission_objectives`, the
 ///   audible device (#635) for `mission_audio`, `read_mission_weather` for
 ///   `mission_environment`, #718's `MissionAnimationPlayer` for **both**
-///   animation carriers, whose rows this plan starts, and #715/#770's
-///   `MissionStartConfiguration` for `player_configuration`;
+///   animation carriers, whose rows this plan starts, #715/#770's
+///   `MissionStartConfiguration` for `player_configuration`, and the world
+///   import (#629/#677/#716/#727/#771) for `world_geometry`, whose report
+///   leaves no record without a measured collision answer;
 /// * the placed world actors satisfy their surface — the carrier decoded,
 ///   all three records joined, and #1155 bound the allegiance the lowering
 ///   needs, so the production session launches (#772/#792/#814/#1155);
-/// * what is left names its gap — the container's two unanswered records —
-///   the plan is **not** launchable
-///   and the gate names the surfaces that must be measured before M01 can
-///   launch.
+/// * every surface satisfied means the plan **is** launchable and the gate
+///   names no gap.
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechanism() {
@@ -229,25 +230,31 @@ fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechani
         aircraft.verdict.describe()
     );
 
-    // The world container converts and imports; what it still lacks is the
-    // container's own silence about two records, named as unknown, never
-    // defaulted. Everything #677, #716 and #727 measured is measured now.
+    // The world container converts and imports through the measured path:
+    // #677's unit census, #716's fog-volume measurement, #727's grid
+    // collision origin and #771's residual roles together leave no record
+    // without an answer, so the surface is `Satisfied` and names the
+    // measurement the verdict is read off.
     let geometry = plan
         .surface(LaunchSurface::WorldGeometry)
         .expect("the surface is reported");
-    let SurfaceVerdict::Unknown { detail } = &geometry.verdict else {
+    let SurfaceVerdict::Satisfied { consumer } = &geometry.verdict else {
         panic!(
-            "the grid-named fog volumes keep their role open: {}",
+            "the container leaves no record without a measured collision answer: {}",
             geometry.verdict.describe()
         );
     };
     assert!(
-        detail.contains("WorldDefinition") && detail.contains("grid-named"),
-        "the measured import and the open question are both named: {detail}"
+        consumer.contains("import_world_container") && consumer.contains("axis"),
+        "the measured import and its axis convention are named: {consumer}"
     );
     assert!(
-        detail.contains("ObservedTool") && detail.contains("axis"),
-        "the axis convention is reported as the measurement it is: {detail}"
+        consumer.contains(WORLD_AXIS_CONVENTION_MEASURED),
+        "the axis claim the verdict reads is cited: {consumer}"
+    );
+    assert!(
+        consumer.contains("objects with an `Unknown` collision role: 0"),
+        "the zero residual is stated, not omitted: {consumer}"
     );
 
     // Weather binds, the audible device consumes the sound archives, the
@@ -291,8 +298,11 @@ fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechani
         "the session launched for every decoded record: {consumer}"
     );
     assert!(
-        !plan.launchable(),
-        "M01 does not launch until the named mechanisms exist"
+        plan.launchable(),
+        "every surface satisfied means the gate passes: {:?}",
+        plan.gaps()
+            .map(|report| format!("{}: {}", report.surface.label(), report.verdict.describe()))
+            .collect::<Vec<_>>()
     );
 
     // The whole measured closure, spelled out for the finding.
@@ -326,12 +336,11 @@ fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechani
     }
 
     let named: BTreeSet<&str> = plan.gaps().map(|report| report.surface.label()).collect();
-    assert_eq!(
-        named,
-        BTreeSet::from(["world_geometry"]),
-        "the gate names exactly the surfaces no production consumer owns yet, and \
-         nothing the landed stages satisfied (the world actors' last open field, \
-         their allegiance, bound in #1155)"
+    assert!(
+        named.is_empty(),
+        "the gate names no gap: every landed stage satisfied its surface — the \
+         last open fields were the world actors' allegiance (#1155) and the \
+         container's residual records (#771): {named:?}"
     );
 
     // Nothing read wrote to the installation and every examined archive
@@ -403,35 +412,23 @@ fn accept_vs_m01_runtime_launch_refuses_an_undeclared_mission_and_an_empty_insta
     assert!(matches!(empty, MissionLaunchError::Plan(_)), "{empty}");
 }
 
-/// **On the retail installation M01 is refused with every gap spelled out and
-/// nothing is started.** The refusal is the launch's acceptance behavior for
-/// unsupported reachable content: the container's unanswered records are
-/// unmeasured, so no scene is faked. The world actors are no longer a gap —
-/// #1155 bound their allegiance and the session launches.
+/// **On the retail installation the gate passes and the refusal is the
+/// composition seam, never a guessed scene.** With every surface satisfied the
+/// launch stops exactly at the one thing still missing — the windowed mission
+/// composition this stage builds — reported as [`MissionLaunchError::NoRuntime`],
+/// and it is never a `Blocked` plan: no surface is named as missing.
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
-fn accept_vs_m01_runtime_retail_launch_is_refused_with_source_diagnostics() {
+fn accept_vs_m01_runtime_retail_launch_reaches_the_composition_seam() {
     use cs_app::cli::MissionRequest;
     use cs_app::mission_launch::{MissionLaunchError, launch_mission};
     let error = launch_mission(&MissionRequest {
         cs_path: game_dir(),
         mission: "M01".to_owned(),
     })
-    .expect_err("M01 does not launch until its closure is satisfied");
-    let MissionLaunchError::Blocked(plan) = &error else {
-        panic!("the refusal names the plan: {error}");
-    };
-    assert!(!plan.launchable());
-    let text = error.to_string();
+    .expect_err("a launchable plan still stops at the unbuilt composition");
     assert!(
-        text.contains("world_geometry"),
-        "world_geometry is named: {text}"
+        matches!(error, MissionLaunchError::NoRuntime),
+        "the refusal is the composition seam, not a surface gap: {error}"
     );
-    for satisfied in ["mission_program", "mission_animations", "world_actors"] {
-        assert!(
-            !text.contains(&format!("  {satisfied}:")),
-            "{satisfied} is satisfied and so is not a gap: {text}"
-        );
-    }
-    assert!(text.contains("docs/findings/"), "sources are cited: {text}");
 }
