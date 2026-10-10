@@ -223,6 +223,31 @@ and `zrd_flat_fields`, `cs_formats::gamez::read_gamez_nodes`,
 `cs_assets::install::sha256`). The retail and image members are
 `#[ignore]`d without their variable; the synthetic member runs in CI.
 
+## Evidence
+
+This task needs the `retail` capability (and the owner's decrypted image), so
+it follows `docs/contracts/CLI-EVIDENCE.md`:
+
+1. `cargo test --workspace --locked -- accept_m06_b_fu2_ --include-ignored`
+   tee'd into `private/evidence/M06-B-FU2/cargo-test.log` (exit 0, 4 of 4);
+2. `evidence_report_m06_b_fu2_writes_the_acceptance_report`
+   (`crates/cs_app/tests/campaign/evidence/m06_b_fu2.rs`, selected by test
+   name so no acceptance selection picks it up) writes
+   `private/evidence/M06-B-FU2/acceptance.json` from that log, the candidate
+   tree, the toolchain and production discovery of `$CS_GAME_DIR` — nothing in
+   it is typed by hand;
+3. `python3 tools/validate_evidence.py private/evidence/M06-B-FU2/acceptance.json
+   --artifact-root private/evidence/M06-B-FU2 --require-pass` → structurally
+   valid, one artifact (the log), exit 0;
+4. the report is committed as `docs/findings/evidence/M06-B-FU2.json`.
+
+The report's `review.identity` is the implementer's own hand-over value: the
+Rally #818 review claim had not run when it was written, and it says so
+instead of naming a reviewer that did not review. The reviewing agent
+regenerates the report on the reviewed commit with its own identity, as
+M06-B's and M06-B-FU1's reports did. The claim is `implemented`, never
+`checked` or `verified_original`.
+
 ## Checks
 
 | Command | Exit |
