@@ -993,8 +993,9 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
 /// index reading would call it dangling), and **nothing spells `50`** although
 /// block 50 naps `51`, so the failure latch has the completion edge the
 /// block-number reading gives it. The two latches' edges are pinned below;
-/// the one sibling suite that still reads an address as an index is held by
-/// **M06-B-FU3** (#819), not edited here.
+/// the sibling suites that had read an address as an index (M02-B, M04-B)
+/// were reconciled to the same measured convention by **M06-B-FU3** (#819),
+/// which also pins the conversion itself under `accept_objaddr_`.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
