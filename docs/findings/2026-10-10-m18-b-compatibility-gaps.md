@@ -284,6 +284,77 @@ and every check below was re-run to green afterwards.
 - The join remains M18-A's inference (`ClaimStatus::Inferred`); no campaign
   definition record or original run was observed.
 
+## Review (bunny-alpha-2/bunny-alpha-2, 2026-10-10)
+
+Reviewer: **bunny-alpha-2/bunny-alpha-2** (Rally #310 review claim of
+2026-10-10T14:57Z, OpenCode, `opencode-go/mimo-v2.6-Flash`), a separate review
+session that began from the task history, `missions/M18.md`,
+`docs/contracts/SCRIPT-MISSION.md`, `docs/contracts/CLI-EVIDENCE.md` and the
+branch diff — not from the implementation's conversation. Implementer:
+**bunny-alpha-2/bunny-alpha-2** (same Rally agent name and model, implement
+claim submitted at `ec484ccd`), so this review is **not independent evidence**
+in the AGENTS.md sense: it is a fresh-context re-derivation plus a full re-run
+of every check. A Rally merge awards `checked` only, no agent review replaces
+the owner's human approval, and nothing here is `verified_original` or
+`release_approved`.
+
+What the reviewer verified on the branch:
+
+* only owner paths changed — `crates/cs_app/tests/campaign/` (`m18_b.rs`,
+  `evidence/m18_b.rs` and the two `mod` lines) and `docs/findings/`: six text
+  files, no protected path, no production crate, no
+  `missions/bindings/M18.json`, no binary file, no original data;
+* rebased onto `fae48695` (M17-B) without a conflict; the incoming commits
+  touch `campaign/main.rs` and `evidence.rs`, the same two files this branch
+  touches, so the owner's lighter check set never applied and the full four
+  checks re-ran on the rebased tree;
+* every retail test drives production code — `survey_mission_control_programs`,
+  `read_control_member`, `SourceContext::control_program`,
+  `SourceContext::bind`, `bind_mission_animation`, `discover` +
+  `discover_container` + `decode_zrd`, `measure_control_record`,
+  `lower_control_record`, `MissionProgram::validate` — and the three synthetic
+  tests carry the refusal arms (the counting-mode `TRAVELERS`, the dependency
+  gate's index, an unmeasured `SET_FACTION`) into CI unignored;
+* the prefix resolves to exactly fifteen names in one binary and to nothing
+  elsewhere in the workspace, each passes when run alone with
+  `--exact --include-ignored`, no test is skipped, weakened or `#[ignore]`d
+  beyond the repository's `requires CS_GAME_DIR` convention, and no lint was
+  relaxed;
+* the sheet's three regression priorities are each pinned against measured
+  record data, while the claims the sheet says must not be assumed — wrong
+  actor, wrong session, repeated event — are honestly left unmeasured for
+  M18-C; every recorded unknown names its resolving task (`M18-B-FU1` #1254,
+  `M18-B-FU2` #1255, `M18-C` #311), `claim` stays `implemented`, and the
+  committed report copy was byte-identical to the implementer's
+  `private/evidence/M18-B/acceptance.json`.
+
+**Change made during review:** none to test or production code — the suite as
+submitted needed no fix. The review-authored changes are this section and the
+regenerated evidence report.
+
+Mutation checks the reviewer ran and reverted (all fail as required, `git
+status` clean afterwards):
+
+| Mutation | Result |
+| --- | --- |
+| `crates/cs_script/src/conditions.rs`, the gate's measured `child0 − 1` → `child0` (production lowering) | both gate tests FAILED, exit 101: `…release_dependencies_are_two_gates_that_lower_as_wake_conjuncts` at `m18_b.rs:858` (`Awake{23} ∧ Awake{23}` instead of `Awake{23} ∧ Awake{22}`) and the synthetic `…a_dependency_gate_lowers_as_the_dependency_wake_conjunct` at `m18_b.rs:2122` (`Awake{0} ∧ Awake{2}` instead of `…∧ Awake{1}`) |
+| `crates/cs_content/src/mission_control.rs`, `terminal_outcome_of`'s `INSTANTWIN` → `Failed` | `…every_directive_m18_spells_has_a_disposition_and_none_is_refused` FAILED at `m18_b.rs:619` (`{"INSTANTLOSS": Failed, "INSTANTWIN": Failed}` against the pinned pair), exit 101 |
+
+Each mutation is in production code the suite does not own, so the failures show
+the tests read the lowering and the measurement rather than their own constants.
+
+Checks run by the reviewer on the rebased tree, all green:
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 (495 `test result: ok`, no failure) |
+| `cargo test --workspace --locked -- accept_m18_b_ --include-ignored` | 0 (15 discovered, 15 executed, 15 passed, 0 failed — the log of record, `private/evidence/M18-B/cargo-test.log`) |
+| 15 × `cargo test --locked -p cs_app --test campaign m18_b::<name> -- --exact --include-ignored` | 0 (15/15, `private/evidence/M18-B/exact-runs.log`) |
+| `python3 -m unittest discover -s tools/tests -p 'test_evidence_review_identity.py'` | 0 (27 tests) |
+| `python3 tools/validate_evidence.py private/evidence/M18-B/acceptance.json --artifact-root private/evidence/M18-B --require-pass` | 0 on the reviewer's regenerated report |
+
 ## Sources
 
 `$CS_GAME_DIR` read-only through `cs_assets::install::discover`,
