@@ -9,7 +9,8 @@
 //! The composition owns exactly one timeline: `physics::BASELINE_FIXED_HZ`,
 //! the fixed rate `PhysicsTickLedger` commits and
 //! [`MissionContent::tick_rate`] starts the environment session on. The
-//! composed entry hands that committed tick to
+//! composition's per-tick entry — `mission_session::mission_host_tick`,
+//! Rally #1278 — hands that committed tick to
 //! `WorldActorSession::step(to: tick)`, so the world-actor set is stepped
 //! once per composed tick while its own `dt_seconds()` is
 //! `1 / ticks_per_second`. The two numbers therefore have to be the same
@@ -24,6 +25,9 @@
 //!   exactly twelve metres across one real second of composed ticks. Under
 //!   the measured divergence (a 64 Hz session stepped 120 times a second) it
 //!   travelled 22.5 m — 1.875× its authored speed.
+//!
+//! #1278's entry lands on its own branch; neither member needs it, because
+//! what they pin is the rate relationship any such entry steps at.
 //!
 //! Both are synthetic: they build a declared world-actor program in memory
 //! and drive production code

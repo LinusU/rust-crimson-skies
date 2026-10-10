@@ -128,8 +128,9 @@ pub const ZEPPELIN_MEMBER: &str = "zeppelins.zrd";
 /// The session cadence a lowered world-actor program is stepped at: the
 /// **composition's own fixed timeline**, [`crate::physics::BASELINE_FIXED_HZ`].
 ///
-/// The composed per-tick entry takes its tick from `PhysicsTickLedger` and
-/// hands that tick straight to `WorldActorSession::step`, so the session is
+/// The composition's per-tick entry — `mission_session::mission_host_tick`,
+/// added by Rally #1278 — takes its tick from `PhysicsTickLedger` and hands
+/// that tick straight to `WorldActorSession::step`, so the session is
 /// stepped once per committed fixed tick — and one step advances a route
 /// follower by `speed_m_s / ticks_per_second` metres
 /// (`cs_sim::world_actors::runtime::WorldActorSet::dt_seconds`). Declaring a
