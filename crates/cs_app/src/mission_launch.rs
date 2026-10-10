@@ -406,9 +406,10 @@ pub enum MissionLaunchError {
     /// The plan names surfaces no production consumer satisfies; every gap is
     /// spelled out. No scene was started.
     Blocked(Box<MissionLaunchPlan>),
-    /// Every surface is satisfied but this build has no windowed mission
-    /// composition to hand them to.
-    NoRuntime,
+    /// Every surface is satisfied but the windowed composition itself
+    /// refused — no `NoRuntime` arm exists (Rally #1215): the composition
+    /// is built, and its own reader's diagnostics are carried verbatim.
+    Composition(crate::mission_session::MissionCompositionError),
 }
 
 impl fmt::Display for MissionLaunchError {
@@ -432,11 +433,7 @@ impl fmt::Display for MissionLaunchError {
                 }
                 Ok(())
             }
-            Self::NoRuntime => write!(
-                f,
-                "every launch surface is satisfied but the windowed mission \
-                 composition is not built"
-            ),
+            Self::Composition(error) => write!(f, "{error}"),
         }
     }
 }
@@ -447,8 +444,8 @@ impl std::error::Error for MissionLaunchError {}
 /// orders' own identities; the binding confirms them against the install).
 const DECLARED_MISSIONS: &[(&str, &str)] = &[("M01", "The Lost Treasure")];
 
-/// Plans the requested mission and, when the closure is satisfied, would hand
-/// it to the windowed composition. A plan with any unsatisfied surface is
+/// Plans the requested mission and, when the closure is satisfied, runs it in
+/// the windowed composition (#1215). A plan with any unsatisfied surface is
 /// refused with its diagnostics: nothing is spawned, drawn or played.
 pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), MissionLaunchError> {
     let (label, title) = DECLARED_MISSIONS
@@ -462,7 +459,8 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
     if !plan.launchable() {
         return Err(MissionLaunchError::Blocked(Box::new(plan)));
     }
-    Err(MissionLaunchError::NoRuntime)
+    crate::mission_session::run_windowed(&request.cs_path, &plan)
+        .map_err(MissionLaunchError::Composition)
 }
 
 /// Measures one surface: reads the archives it covers and judges the

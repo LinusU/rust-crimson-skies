@@ -170,6 +170,28 @@ pub struct PlaytestRequests {
     pub reset: bool,
 }
 
+/// Replaces the aircraft (and the world spawn) the playtest's scene setup
+/// and `R` reset use, for a composition that brings its own world and its
+/// own player body — the mission composition (#1215).
+///
+/// This is the one additive seam between `crate::mission_session` and the
+/// playtest core: with the resource absent, `setup_scene` and
+/// `perform_reset` behave exactly as they always did (`--playtest` is
+/// byte-identical); with it present, both spawn through this function
+/// instead, the synthetic world is never spawned, and the mission's own
+/// world (loaded through the residency path before the app runs) is the
+/// only world in the scene.
+#[derive(Resource, Clone, Copy)]
+pub struct AircraftSpawner(pub fn(&mut World) -> Result<Entity, scene::SceneError>);
+
+/// The one spawner the scene uses: the composition's replacement when a
+/// mission installed one, the playtest's own aircraft otherwise.
+fn scene_aircraft_spawner(world: &World) -> fn(&mut World) -> Result<Entity, scene::SceneError> {
+    world
+        .get_resource::<AircraftSpawner>()
+        .map_or(scene::spawn_aircraft, |spawner| spawner.0)
+}
+
 /// The aircraft readout the HUD and the traces use, read from the body.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Telemetry {
@@ -360,11 +382,15 @@ pub fn headless_app_with(configure: impl FnOnce(&mut App)) -> App {
 
 fn setup_scene(world: &mut World) {
     // Over original content the area is already spawned (and recorded as
-    // `RetailContent`); the synthetic ground and wall exist only without it.
-    if !world.contains_resource::<RetailContent>() {
+    // `RetailContent`); over a mission composition the mission's own world
+    // is already resident. The synthetic ground and wall exist only without
+    // either.
+    if !world.contains_resource::<RetailContent>() && !world.contains_resource::<AircraftSpawner>()
+    {
         scene::spawn_world(world).expect("the playtest world is valid");
     }
-    scene::spawn_aircraft(world).expect("the playtest aircraft is valid");
+    let spawn = scene_aircraft_spawner(world);
+    spawn(world).expect("the scene's aircraft is valid");
     world.spawn((PlaytestCameraMarker, Transform::default()));
 }
 
@@ -519,7 +545,8 @@ fn perform_reset(world: &mut World) {
     for entity in old {
         world.despawn(entity);
     }
-    scene::spawn_aircraft(world).expect("the playtest aircraft is valid");
+    let spawn = scene_aircraft_spawner(world);
+    spawn(world).expect("the scene's aircraft is valid");
     world
         .resource_mut::<PlatformInput>()
         .session_mut()

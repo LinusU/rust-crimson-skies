@@ -203,16 +203,19 @@ fn attach_aircraft(
     mut commands: Commands,
     aircraft: Query<Entity, Added<PlaytestAircraft>>,
     retail: Option<Res<RetailContent>>,
+    mission: Option<Res<super::AircraftSpawner>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     for entity in &aircraft {
         // The body has no mesh of its own; its parts inherit its visibility.
         commands.entity(entity).insert(Visibility::Inherited);
-        if retail.is_some() {
-            // The original airframe's parts are children of the body from the
-            // moment the scene spawns it (`scene::spawn_aircraft`), so the
-            // headless and windowed apps hold the same entities.
+        if retail.is_some() || mission.is_some() {
+            // Over original content the airframe's parts are children of the
+            // body from the moment the scene spawns it, and over a mission
+            // composition the player airframe's visual is a separate stage
+            // (#1216) — the playtest's synthetic parts are never drawn over
+            // an original mission's body.
             continue;
         }
         let yellow = materials.add(StandardMaterial {

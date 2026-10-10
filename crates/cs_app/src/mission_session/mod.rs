@@ -52,10 +52,19 @@
 //! Nothing here spawns, draws, opens a window or runs a tick. The windowed
 //! composition (VS-M01-RT-WINDOW, #1215) is the caller: it gates on
 //! [`crate::mission_launch::MissionLaunchPlan::launchable`] and then asks this
-//! module for the content.
+//! module for the content — through [`compose::stage_for`], which turns the
+//! prepared content into a [`compose::MissionStage`], and
+//! [`compose::build_windowed`] / [`compose::build_headless`], the two faces
+//! of the composition itself.
 
+mod compose;
 mod content;
 
+pub use compose::{
+    MissionComposition, MissionCompositionError, MissionPlayerBody, MissionPlayerStart,
+    MissionStage, StageItem, StageMount, build_headless, build_windowed, run_windowed, stage_for,
+    teardown,
+};
 pub use content::{
     MissionContent, MissionFlight, MissionSessionError, SoundArchive, prepare_mission_content,
     root_seed_from,
