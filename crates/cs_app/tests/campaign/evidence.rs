@@ -4,7 +4,11 @@
 //! M02-B, M03-B, M04-B, M06-B and M08-B, for the whole-campaign binding stage
 //! F50-B and for the per-mission probe-route stage F50-C
 //! (`docs/contracts/CLI-EVIDENCE.md`, schema
-//! `schemas/evidence.schema.json`).
+//! `schemas/evidence.schema.json`), and — as the *reissue* harnesses of Rally
+//! #1174 `EVIDENCE-CONTENT-DIGEST-OUTLIERS-REPAIR` — for F05-D, F12-J and
+//! T351, the three committed reports that recorded a task-scoped digest in
+//! `source.content_sha256`, a field whose contract meaning is the canonical
+//! whole-installation fingerprint.
 //!
 //! These tests are deliberately **not** named `accept_m01_a_*` …
 //! `accept_m08_a_*` … `accept_m10_a_*` … `accept_m16_a_*` … `accept_m17_a_*` …
@@ -81,6 +85,25 @@
 //! own line, so two branches adding two tasks do not collide here. A new
 //! acceptance suite adds its own `<task>.rs` next to this file and one sorted
 //! `mod` line in `main.rs`, the same way.
+//!
+//! # The #1174 reissue harnesses
+//!
+//! `evidence/f05_d.rs`, `evidence/f12_j.rs` and `evidence/t351.rs` reissue
+//! three reports that already exist, so they share the helpers this file
+//! holds alongside the ones above: [`tabled_assertions`] and
+//! [`full_test_status`] read each row's status out of the recorded log by its
+//! full test id, and [`cs_inspect_binary`] / [`run_cs_inspect`] run the
+//! production `cs-inspect` commands that write their artifacts — one process
+//! per report, because a second `rof` command in this process would carry the
+//! process-wide session generation and could not reproduce the bytes the CLI
+//! writes standalone. Unlike the mission stages, whose `assertions` are the
+//! leaf test names the log parser records, these three reports keep the
+//! **full** test ids their original reports spelled — two of T351's five tests
+//! share a leaf name, so a leaf-keyed table could not tell them apart — and
+//! each row carries the evidence entries the original record cited. The status
+//! of every row is read from the recorded log by its full id, the counts stay
+//! the log parser's, and a row the log does not contain is a loud failure
+//! rather than a report that quietly records a test that did not run.
 
 use std::collections::VecDeque;
 use std::fs;
@@ -102,6 +125,8 @@ use cs_types::content::ContentId;
 
 // One module per task's evidence, in sorted order: a new task
 // adds one `mod` line here and its own `evidence/<task>.rs`.
+mod f05_d;
+mod f12_j;
 mod f50_b;
 mod f50_c;
 mod f50_e4;
@@ -141,6 +166,7 @@ mod m19_a;
 mod m21_a;
 mod m24_a;
 mod record_objectives_sound;
+mod t351;
 
 /// The recorded status of one test, or a loud failure naming the missing run.
 fn recorded_status(suite: &Suite, name: &str) -> &'static str {
@@ -379,6 +405,121 @@ fn record(suite: &mut Suite, name: String, status: &'static str) {
         return;
     }
     suite.assertions.push((name, status));
+}
+
+/// The production `cs-inspect` binary this sequence builds in its step 0,
+/// located next to this test binary (`target/debug/deps/<test>` →
+/// `target/debug/cs-inspect`).
+///
+/// The artifacts these harnesses record are the CLI's own reports, so the
+/// CLI has to be the thing that writes them: a second `rof` command inside
+/// the test process would carry the process-wide session generation and could
+/// not reproduce the bytes a real `cs-inspect` run writes.
+fn cs_inspect_binary() -> PathBuf {
+    let mut binary = std::env::current_exe().expect("this test binary has a path");
+    binary.pop(); // `deps/`
+    binary.pop(); // the target profile directory
+    let binary = binary.join("cs-inspect");
+    assert!(
+        binary.is_file(),
+        "{} is missing: run `cargo build -p cs_inspect --locked` first (step 0 of the \
+         evidence sequence)",
+        binary.display()
+    );
+    binary
+}
+
+/// One `cs-inspect` run, asserted to have written `out` with exit code 0.
+fn run_cs_inspect(binary: &Path, args: &[&str], out: &Path, what: &str) {
+    let run = Command::new(binary)
+        .args(args)
+        .output()
+        .unwrap_or_else(|error| panic!("{} runs: {error}", binary.display()));
+    assert!(
+        run.status.success(),
+        "cs-inspect {what} failed with {:?}: {}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        out.is_file(),
+        "cs-inspect {what} did not write {}: {}",
+        out.display(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+/// The status of one **full** test id (`module::path::leaf`) in the recorded
+/// log, `None` when the log does not name it.
+///
+/// [`parse_suite_prefixed`] keys its assertions by the leaf name, because that
+/// is what a task's selection selects; the #1174 reissue reports keep the full
+/// ids their original reports spelled, and two of T351's tests share a leaf,
+/// so those rows are looked up by the id the log actually prints. The status
+/// may sit on the same line as the test or, when the test printed output, on
+/// the line that completes it — the two shapes [`parse_suite_prefixed`]
+/// already understands.
+fn full_test_status(log: &str, full_id: &str) -> Option<&'static str> {
+    let needle = format!("test {full_id} ... ");
+    let start = log.find(&needle)?;
+    let tail = &log[start + needle.len()..];
+    let line_end = tail.find('\n').unwrap_or(tail.len());
+    let head = tail[..line_end].trim_end();
+    if head.starts_with("ok") {
+        return Some("pass");
+    }
+    if head.starts_with("FAILED") {
+        return Some("fail");
+    }
+    if head.starts_with("ignored") {
+        return Some("ignored");
+    }
+    let complete = tail[line_end..]
+        .lines()
+        .map(str::trim_start)
+        .find(|line| matches!(*line, "ok" | "FAILED" | "ignored"));
+    complete.map(|line| match line {
+        "FAILED" => "fail",
+        "ignored" => "ignored",
+        _ => "pass",
+    })
+}
+
+/// The report's `assertions` array from a task's own table: every row's full
+/// test id, its status read from the recorded log and the evidence entries
+/// that row cites (always including the log itself).
+///
+/// A row the log does not name, or names as ignored, fails here rather than
+/// being written with a status nothing recorded.
+fn tabled_assertions(log: &str, table: &[(&str, &[&str])]) -> String {
+    let items: Vec<String> = table
+        .iter()
+        .map(|&(full_id, evidence)| {
+            let status = match full_test_status(log, full_id) {
+                None => panic!(
+                    "{full_id} is not in the recorded acceptance log: step 1 must record the \
+                     task's own selection with `--include-ignored`"
+                ),
+                Some("ignored") => panic!(
+                    "{full_id} is ignored in the recorded log: run step 1 with \
+                     `--include-ignored` and CS_GAME_DIR set"
+                ),
+                Some(status) => status,
+            };
+            let mut cited: Vec<String> = vec!["cargo-test.log".to_owned()];
+            for entry in evidence {
+                if !cited.iter().any(|seen| seen.as_str() == *entry) {
+                    cited.push((*entry).to_owned());
+                }
+            }
+            format!(
+                "{{\"id\": {}, \"status\": {status:?}, \"evidence\": {}}}",
+                jstr(full_id),
+                str_array(&cited)
+            )
+        })
+        .collect();
+    items.join(", ")
 }
 
 // ------------------------------------------------------------- artifacts ---
