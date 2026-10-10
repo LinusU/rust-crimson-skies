@@ -282,3 +282,29 @@ measured one, not an assumed one.
 **No original data is committed.** The numbers here are counts, offsets, spans
 and digests; no extracted `.zrd`, no string table, no mesh and no screenshot is
 in the repository, and every private output went to `private/`, outside it.
+
+## Update (task #533, 2026-10-10)
+
+Task #533 decided the fly-through selector's label rule in favour of the
+**union** of the two measured labels: `scenario_fly_through_targets` now selects
+a record when its `category_label` is `MSG_OBJ_DZ` **or** its `help_label` is
+`MSG_OBJ_FLYTHROUGH`. What that changes and confirms in this document, with the
+affected records named:
+
+* **§3's corpus is confirmed unchanged**: the eight instant-action scenarios
+  author **54** fly-through targets, **45** of them `stunt_flying`, with the
+  same per-world table and the same resolved boxes — every instant-action
+  labelled record carries both labels, so the stricter rule and the union read
+  the same rows. This document's review section said "the retail corpus carries
+  no target with only one of them"; that was measured over the eight
+  instant-action scenarios and stays true of them, and over the whole
+  installation three campaign records carry only the help label (see below).
+* **The selector's rule, as this document's review section described it ("the
+  union … the retail corpus carries no target with only one of them"), is now
+  the implemented rule** for the whole installation. The three records the old
+  `?`-on-`category_label` selector dropped are `ZBD/C1/M02`'s `MSG_OBJ_ZEPHANGER`
+  at `h3_marker`, `ZBD/C4/M03`'s `MSG_TRGT_DEVILSHORN` at `dz2` and
+  `ZBD/C5/M02`'s `MSG_TRGT_PHQ` at `dz1`.
+
+The decision, its evidence and the re-measured counts are in
+`docs/findings/2026-10-10-t533-fly-through-label-rule.md`.

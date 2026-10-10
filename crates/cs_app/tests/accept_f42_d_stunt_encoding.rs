@@ -14,8 +14,10 @@
 //!   and a `dzones` list binding a scenario-local label to the world node it
 //!   stands for;
 //! * the same scenario's `targets.zrd` declares one objective per target, and a
-//!   fly-through danger-zone target carries `category_label = MSG_OBJ_DZ`,
-//!   `help_label = MSG_OBJ_FLYTHROUGH` and `nodes = [<label>]`.
+//!   fly-through danger-zone target is labelled by **either** half of the
+//!   measured pair — `category_label = MSG_OBJ_DZ` or
+//!   `help_label = MSG_OBJ_FLYTHROUGH` (task #533's rule) — with
+//!   `nodes = [<label>]`.
 //!
 //! The unignored tests author every byte (the `.zrd` grammar, a reader archive,
 //! a world container) and run the production decoder, the production discovery
@@ -378,8 +380,10 @@ fn accept_f42_d_the_zrd_grammar_is_the_measured_count_minus_one_tree() {
 }
 
 /// The extraction reads the scenario mode and the label bindings, and selects
-/// fly-through targets by their own category/help pair rather than by position,
-/// so an ordinary objective in the same file is never mistaken for a stunt gate.
+/// fly-through targets by their own category/help labels rather than by
+/// position, so an ordinary objective in the same file is never mistaken for a
+/// stunt gate. Task #533's rule — **either** label suffices — is pinned on the
+/// authored help-only and both-label shapes at the end of this test.
 #[test]
 fn accept_f42_d_the_scenario_extraction_reads_the_mode_bindings_and_only_fly_through_targets() {
     let scenario = decode_zrd(&scenario_document(
@@ -418,8 +422,9 @@ fn accept_f42_d_the_scenario_extraction_reads_the_mode_bindings_and_only_fly_thr
             "MSG_DESC_2",
             &["zeppelin"],
         ),
-        // A fly-through named only by its help key: still selected, because the
-        // selector reads both halves of the measured pair.
+        // A fly-through named by a non-matching category and the fly-through
+        // help label: still selected, because the rule reads either half of the
+        // measured pair.
         target_document(
             "MSG_OBJ_OTHER",
             FLY_THROUGH_HELP_LABEL,
@@ -435,10 +440,87 @@ fn accept_f42_d_the_scenario_extraction_reads_the_mode_bindings_and_only_fly_thr
         "the zeppelin objective is not a stunt gate"
     );
     assert_eq!(selected[0].zone_label, "dz1");
-    assert_eq!(selected[0].category_label, FLY_THROUGH_CATEGORY_LABEL);
-    assert_eq!(selected[0].help_label, FLY_THROUGH_HELP_LABEL);
+    assert_eq!(
+        selected[0].category_label.as_deref(),
+        Some(FLY_THROUGH_CATEGORY_LABEL)
+    );
+    assert_eq!(
+        selected[0].help_label.as_deref(),
+        Some(FLY_THROUGH_HELP_LABEL)
+    );
     assert_eq!(selected[0].description, "MSG_OBJ_DESCRIPTION_1");
     assert_eq!(selected[1].zone_label, "dz2");
+
+    // Task #533's label rule, on the two authored shapes the acceptance
+    // criteria name: a record with **only** the help label (the shape of the
+    // three campaign records #463's stricter selector dropped) and a record
+    // with **both** labels (the shape of every instant-action record). Both are
+    // fly-through targets under the chosen rule; inverting the rule — requiring
+    // the category label — drops the first and fails this test.
+    //
+    // `target_document` always writes both keys, so the help-only and
+    // label-less records are authored directly: a **missing key** is what makes
+    // the first record help-only.
+    let help_only = zrd_list(vec![
+        zrd_list(vec![
+            zrd_text("description"),
+            zrd_text("MSG_TRGT_HELP_ONLY"),
+        ]),
+        zrd_list(vec![
+            zrd_text("nodes"),
+            zrd_list(vec![zrd_text("h3_marker")]),
+        ]),
+        zrd_list(vec![
+            zrd_text("help_label"),
+            zrd_text(FLY_THROUGH_HELP_LABEL),
+        ]),
+    ]);
+    let both = zrd_list(vec![
+        zrd_list(vec![zrd_text("description"), zrd_text("MSG_TRGT_BOTH")]),
+        zrd_list(vec![zrd_text("nodes"), zrd_list(vec![zrd_text("dz1")])]),
+        zrd_list(vec![
+            zrd_text("category_label"),
+            zrd_text(FLY_THROUGH_CATEGORY_LABEL),
+        ]),
+        zrd_list(vec![
+            zrd_text("help_label"),
+            zrd_text(FLY_THROUGH_HELP_LABEL),
+        ]),
+    ]);
+    let neither = zrd_list(vec![
+        zrd_list(vec![zrd_text("description"), zrd_text("MSG_TRGT_NONE")]),
+        zrd_list(vec![zrd_text("nodes"), zrd_list(vec![zrd_text("ctf_1")])]),
+        zrd_list(vec![zrd_text("category_label"), zrd_text("MSG_OBJ_OTHER")]),
+        zrd_list(vec![zrd_text("help_label"), zrd_text("MSG_OBJ_DESTROY")]),
+    ]);
+    let shapes =
+        decode_zrd(&zrd_list(vec![help_only, both, neither])).expect("the shape records decode");
+    let selected = scenario_fly_through_targets(&shapes);
+    assert_eq!(
+        selected.len(),
+        2,
+        "the help-only record and the both-label record are fly-through targets; the \
+         record with neither label is not"
+    );
+    assert_eq!(selected[0].zone_label, "h3_marker");
+    assert_eq!(
+        selected[0].category_label, None,
+        "the help-only record carries no category label, and the rule keeps it"
+    );
+    assert_eq!(
+        selected[0].help_label.as_deref(),
+        Some(FLY_THROUGH_HELP_LABEL)
+    );
+    assert_eq!(selected[1].zone_label, "dz1");
+    assert_eq!(
+        selected[1].category_label.as_deref(),
+        Some(FLY_THROUGH_CATEGORY_LABEL),
+        "the both-label record keeps both halves"
+    );
+    assert_eq!(
+        selected[1].help_label.as_deref(),
+        Some(FLY_THROUGH_HELP_LABEL)
+    );
 }
 
 // -------------------------------------------------- the survey over a file ----
@@ -559,8 +641,12 @@ fn accept_f42_d_the_survey_joins_each_scenario_target_to_the_measured_world_box(
     for gate in survey.gates() {
         assert_eq!(gate.world(), &world, "the scenario is set in c5");
         assert_eq!(gate.mission_type(), STUNT_MISSION_TYPE);
-        assert_eq!(gate.category_label(), FLY_THROUGH_CATEGORY_LABEL);
-        assert_eq!(gate.help_label(), FLY_THROUGH_HELP_LABEL);
+        assert_eq!(
+            gate.category_label(),
+            Some(FLY_THROUGH_CATEGORY_LABEL),
+            "the instant-action corpus always carries the category label"
+        );
+        assert_eq!(gate.help_label(), Some(FLY_THROUGH_HELP_LABEL));
         // Provenance: the container key, its file digest and the member's own
         // span, so each number can be traced back to the bytes.
         assert_eq!(gate.span().container(), "zbd/c5/ia1/zrdr.zbd");
@@ -714,8 +800,13 @@ fn accept_f42_d_retail_every_fly_through_target_resolves_to_its_measured_world_b
     assert_eq!(survey.unresolved_gates().count(), 0);
 
     for gate in survey.gates() {
-        assert_eq!(gate.category_label(), FLY_THROUGH_CATEGORY_LABEL);
-        assert_eq!(gate.help_label(), FLY_THROUGH_HELP_LABEL);
+        assert_eq!(
+            gate.category_label(),
+            Some(FLY_THROUGH_CATEGORY_LABEL),
+            "every instant-action fly-through record carries the category label (task #533 \
+             re-measured: all 54 do)"
+        );
+        assert_eq!(gate.help_label(), Some(FLY_THROUGH_HELP_LABEL));
         assert!(
             gate.span().member() == SCENARIO_TARGETS_MEMBER,
             "every row's provenance is the targets member: {}",

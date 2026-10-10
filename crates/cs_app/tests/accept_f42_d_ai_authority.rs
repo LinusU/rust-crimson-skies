@@ -440,13 +440,14 @@ fn accept_f42_d_ai_the_objective_record_inventory_is_complete_and_finds_an_actor
         ],
         "the whole vocabulary, sorted, with each key counted per record"
     );
-    assert_eq!(scenario_fly_through_targets(&targets).len(), 1);
+    // Task #533's label rule: the selector reads either measured label, so the
+    // help-only third record is selected too — the shape of the three campaign
+    // records #463's stricter selector dropped.
+    assert_eq!(scenario_fly_through_targets(&targets).len(), 2);
     assert_eq!(team_scoped_objectives(&targets), 1);
 
-    // The looser reading: a record labelled by either measured label. The
-    // stricter selector above needs a `category_label`, which the third record
-    // does not carry, so the two readings differ by exactly one here — the shape
-    // of the three campaign records that differ in the measured installation.
+    // The label-only reading counts the same records here: every labelled
+    // record in this fixture names a node.
     assert_eq!(fly_through_labelled_objectives(&targets), 2);
 
     // The measured corpus's six keys contain no authority key; the authored one
@@ -783,14 +784,14 @@ fn accept_f42_d_ai_the_survey_measures_the_authority_surface_of_every_reader() {
     );
     assert_eq!(
         survey.fly_through_objectives(),
-        2,
-        "one fly-through target per reader that declares one"
+        3,
+        "one fly-through target per declaring record — under task #533's rule the \
+         help-labelled record counts too"
     );
     assert_eq!(
         survey.fly_through_labelled_objectives(),
         3,
-        "the gated record carries only the help label, so the looser reading sees one more - the \
-         shape of the three campaign records that differ in the measured installation"
+        "the two readings agree here: every labelled record in this fixture names a node"
     );
     assert_eq!(survey.team_scoped_objectives(), 1);
     assert_eq!(survey.objective_blocks(), 3);
@@ -989,7 +990,11 @@ const RETAIL_INSTALL_SHA256: &str =
 /// Measured over the owner's installation: **62** reader archives walked, **53**
 /// of them carrying **332** objective records whose complete key vocabulary is
 /// six keys and **none** of them names an earning authority. **67** of the
-/// records are labelled fly-through danger-zone targets (67 by either label, 64 by#463's stricter selector), **46** are team-scoped. The
+/// records are labelled fly-through danger-zone targets — task #533's label
+/// rule (either measured label) and the label-only reading both count **67**,
+/// because the rule is the union of the two labels and every labelled record
+/// names a node; the **3** records that carry only the help label are campaign
+/// missions named below. **46** are team-scoped. The
 /// objective state machines declare **1 338** numbered blocks, of which **31**
 /// carry the original's own stunt completion condition (`DANGER_ZONES_COMPLETED`
 /// — zone names, no subject) and **75** carry the one actor-scoped condition
@@ -1010,31 +1015,41 @@ fn accept_f42_d_ai_retail_no_measured_file_names_the_actor_that_earns_a_stunt() 
     );
     assert_eq!(survey.len(), 62, "every reader archive in the installation");
     assert_eq!(survey.objective_records(), 332);
-    assert_eq!(survey.fly_through_objectives(), 64);
+    assert_eq!(
+        survey.fly_through_objectives(),
+        67,
+        "task #533's rule: either measured label counts, so the three campaign records \
+         #463's stricter selector dropped are included"
+    );
     assert_eq!(
         survey.fly_through_labelled_objectives(),
         67,
-        "three campaign records carry the fly-through help label and no category label"
+        "the label-only reading agrees: every labelled record names a node"
     );
-    // Those three are named, so the difference is traceable rather than a total:
-    // #463's selector needs a `category_label`, and these records carry none.
-    let only_labelled: Vec<&str> = survey
-        .rows()
-        .iter()
-        .filter_map(|row| {
-            let corpus = row.objectives()?;
-            (corpus.fly_through_labelled() > corpus.fly_through()).then_some(row.container())
-        })
-        .collect();
-    assert_eq!(
-        only_labelled,
-        vec![
-            "zbd/c1/m02/zrdr.zbd",
-            "zbd/c4/m03/zrdr.zbd",
-            "zbd/c5/m02/zrdr.zbd"
-        ],
-        "the three readers whose help-labelled fly-through records #463's selector drops"
-    );
+    // The three help-only records are named, so the rule's effect is traceable
+    // rather than a total: each of their readers carries exactly one labelled
+    // record, and task #533's rule counts it.
+    for container in [
+        // C1/M02's MSG_OBJ_ZEPHANGER at h3_marker, C4/M03's MSG_TRGT_DEVILSHORN
+        // at dz2, C5/M02's MSG_TRGT_PHQ at dz1 — each carries only the help
+        // label, and each is wired into its mission's objective machine.
+        "zbd/c1/m02/zrdr.zbd",
+        "zbd/c4/m03/zrdr.zbd",
+        "zbd/c5/m02/zrdr.zbd",
+    ] {
+        let row = survey
+            .rows()
+            .iter()
+            .find(|row| row.container() == container)
+            .unwrap_or_else(|| panic!("{container} is a measured row"));
+        let corpus = row.objectives().expect("the reader declares objectives");
+        assert_eq!(
+            (corpus.fly_through(), corpus.fly_through_labelled()),
+            (1, 1),
+            "{container}'s single fly-through record carries only the help label, and \
+             task #533's rule counts it"
+        );
+    }
     assert_eq!(survey.team_scoped_objectives(), 46);
     assert_eq!(survey.objective_blocks(), 1_338);
 

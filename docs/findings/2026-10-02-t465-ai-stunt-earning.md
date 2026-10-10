@@ -401,3 +401,32 @@ without reading this branch's Rust. Three real defects were found and fixed:
 **No original data is committed.** The numbers here are counts, offsets, spans
 and digests; no extracted `.zrd`, no string table, no mesh and no screenshot is
 in the repository, and every private output went to `private/`, outside it.
+
+## Update (task #533, 2026-10-10)
+
+Task #533 resolved the "Known limitations" bullet this document filed ("The
+fly-through selector's label rule is undecided … Resolving task: #533"): the
+reimplementation now uses the **union** of the two measured labels — a record is
+a fly-through target when its `category_label` is `MSG_OBJ_DZ` **or** its
+`help_label` is `MSG_OBJ_FLYTHROUGH`. What that changes and confirms in this
+document, with the affected records named:
+
+* **§1's sentence is corrected in meaning**: "**67** of the records are
+  fly-through danger-zone targets by either measured label and **64** by #463's
+  stricter selector" — 64 was the old selector's count and the strict rule no
+  longer exists. The selector now counts **67**, equal to the label-only
+  reading, because every labelled record names a node. The three records that
+  made the difference are `ZBD/C1/M02`'s `MSG_OBJ_ZEPHANGER` at `h3_marker`,
+  `ZBD/C4/M03`'s `MSG_TRGT_DEVILSHORN` at `dz2` and `ZBD/C5/M02`'s
+  `MSG_TRGT_PHQ` at `dz1`; each is wired into its mission's objective machine
+  (`ADD_OBJECTIVE_TARGET`/`REMOVE_OBJECTIVE_TARGET`, and `TRAVELERS`
+  conditions on C5/M02's `dz1`) exactly like the both-label campaign records.
+* **Every other measured number in this document is confirmed unchanged**: the
+  62 reader archives, 332 objective records, the six-key vocabulary
+  (146/294 category/help), 46 team-scoped records, 1 338 blocks, 31
+  `DANGER_ZONES_COMPLETED` and 75 `TRAVELERS` conditions with their subject
+  census, and all eight scenarios' declared aircraft — the label rule touches
+  only the fly-through count, and only over campaign readers.
+
+The decision, its evidence and the re-measured counts are in
+`docs/findings/2026-10-10-t533-fly-through-label-rule.md`.
