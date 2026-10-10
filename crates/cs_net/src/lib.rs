@@ -63,9 +63,21 @@
 //! rejection before launch, and runs every session packet through the
 //! [`validation::SessionGate`] before it can authorize fire requests.
 //!
-//! Not here yet: the F58-C disconnect/recovery flow, and
-//! the `cs_app`/`cs_sim` binding that drives a session from a Bevy schedule and
-//! a simulation ledger. The F57-B interpolation buffer and bounded local
+//! F58-C adds the disconnect and clean host-loss vocabulary on top of that:
+//! [`recovery::DisconnectCause`] is the bounded reason a peer left (its own
+//! farewell, a dead link, an abuse cut-off naming the refusal, the host being
+//! gone) with [`recovery::DisconnectCause::wire_reason`] mapping it onto the
+//! wire's reason where the wire can express it, [`recovery::DepartureLedger`]
+//! settles each peer's departure exactly once and is bounded by the session's
+//! peer-id space, and [`recovery::Settlement`] is what a duplicate report
+//! gets. The runtime wiring of that flow — receive path, teardown, retry — is
+//! `cs_app::network::recovery::RecoveryFlow`.
+//!
+//! Not here yet: the `cs_app`/`cs_sim` binding that drives a session from a
+//! Bevy schedule and a simulation ledger, and the [`lifecycle`] pump passing a
+//! [`validation::MatchStage`] (the F58-B rate caps and tick window) — neither
+//! is an F58-C owner path, and both are recorded as follow-ups rather than
+//! reached into. The F57-B interpolation buffer and bounded local
 //! prediction consume the snapshot this crate hands them rather than extending
 //! it.
 //!

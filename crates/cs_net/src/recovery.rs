@@ -8,10 +8,10 @@
 //! not replace application idempotency because reconnect/retry can replay
 //! requests").
 //!
-//! # What this stage is
+//! # What F58-A defines
 //!
-//! The typed inputs, outputs and rules of resuming a match, with no runtime
-//! wiring (F58-C owns that):
+//! The typed inputs, outputs and rules of resuming a match, with the runtime
+//! wiring built on top of them by F58-C (see the section below):
 //!
 //! * [`SessionGenerations`] mints a **fresh** epoch for every session. It is
 //!   monotonic and never reuses an id, so a packet stamped with the epoch the
@@ -32,12 +32,37 @@
 //! does not pretend seamless recovery. [`HostLoss`] is re-exported only to
 //! name that boundary in the decision types.
 //!
+//! # What F58-C adds
+//!
+//! The disconnect and clean host-loss vocabulary, plus the once-only guard the
+//! settlement runs behind:
+//!
+//! * [`DisconnectCause`] is the bounded reason a peer left — its own farewell,
+//!   a dead link, an abuse cut-off naming the refusal that cut it, or the host
+//!   being gone. [`DisconnectCause::wire_reason`] maps it onto
+//!   [`crate::message::DisconnectReason`] for the consumer that tells the
+//!   client, and deliberately returns `None` for abuse: the wire has no abuse
+//!   arm yet, and naming another reason would be a falsehood (task #815 owns
+//!   that arm).
+//! * [`DepartureLedger`] settles **each peer's departure once**: the first
+//!   report is [`Settlement::Applied`], every later report of the same peer is
+//!   [`Settlement::Duplicate`] and applies nothing. Its records are bounded by
+//!   [`crate::bounds::MAX_SESSION_PEERS`] — the session's own peer-id space —
+//!   so a flood of departure notices cannot grow it, and a ledger that is
+//!   full refuses by name instead of growing.
+//!
+//! `cs_app::network::recovery::RecoveryFlow` is where these are wired to their
+//! producers (the receive path and the transport's dead-link report) and their
+//! consumers (the gate teardown, the authoritative match state, the client's
+//! return to the menu).
+//!
 //! All values are newly authored engine design: no original reconnect,
 //! late-join or reward behavior has been measured, and none is asserted.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
+use cs_types::Tick;
 use cs_types::net::{ActorId, PeerId, SessionId};
 
 use crate::bounds::MAX_SESSION_PEERS;
@@ -543,5 +568,272 @@ impl RewardLedger {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.awarded.is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The disconnect and clean host-loss flow (F58-C)
+// ---------------------------------------------------------------------------
+
+/// Why a peer left the live session: the bounded vocabulary the disconnect
+/// flow reports to its consumers — the transport that hangs the connection
+/// up, the client it tells, the log it writes.
+///
+/// Every cause is a designed reason of the new engine; no original
+/// disconnect, timeout or abuse behavior has been measured and none is
+/// asserted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DisconnectCause {
+    /// The client sent its own farewell (the wire's `ClientPayload::Leave`).
+    Voluntary,
+    /// The link stopped answering. No packet carries this: it is the
+    /// transport's dead-connection report, and the flow settles it the same
+    /// way it settles a farewell.
+    Timeout,
+    /// The session cut the peer off for abuse. `reason` is the bounded label
+    /// of the refusal that said so — `SessionViolation::label()` or
+    /// `IntentRefusal::label()` — never a free-form message, so the reason a
+    /// caller reports cannot grow with the traffic that triggered it.
+    Abusive {
+        /// The bounded refusal label.
+        reason: &'static str,
+    },
+    /// The host is gone and the host-loss policy ended the match (spec
+    /// non-negotiable 3: the match ends cleanly and clients return to menu).
+    HostLoss,
+}
+
+impl DisconnectCause {
+    /// The stable label used in reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Voluntary => "voluntary",
+            Self::Timeout => "timeout",
+            Self::Abusive { .. } => "abusive",
+            Self::HostLoss => "host_loss",
+        }
+    }
+
+    /// Whether this cause is an abuse cut-off.
+    #[must_use]
+    pub const fn is_abuse(self) -> bool {
+        matches!(self, Self::Abusive { .. })
+    }
+
+    /// The reason the client is told on the wire, when the wire can express
+    /// it.
+    ///
+    /// `None` for [`DisconnectCause::Abusive`]: `message::DisconnectReason`
+    /// is still `Voluntary | Timeout | SessionEnded` and has no abuse arm, so
+    /// the peer is hung up without a reason packet rather than told a
+    /// different one. Task #815 owns that arm; nothing here maps abuse onto
+    /// `SessionEnded`.
+    #[must_use]
+    pub const fn wire_reason(self) -> Option<crate::message::DisconnectReason> {
+        use crate::message::DisconnectReason;
+        match self {
+            Self::Voluntary => Some(DisconnectReason::Voluntary),
+            Self::Timeout => Some(DisconnectReason::Timeout),
+            Self::HostLoss => Some(DisconnectReason::SessionEnded),
+            Self::Abusive { .. } => None,
+        }
+    }
+}
+
+impl fmt::Display for DisconnectCause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Voluntary => write!(f, "the peer asked to leave"),
+            Self::Timeout => write!(f, "the peer stopped responding"),
+            Self::Abusive { reason } => write!(f, "cut off for abuse: {reason}"),
+            Self::HostLoss => write!(f, "the host is gone"),
+        }
+    }
+}
+
+/// One recorded departure: the cause the **first** report named and the server
+/// tick it was settled at.
+///
+/// The tick is what makes the settlement's own `EventId` stable: a later
+/// report of the same peer can be told apart from the settlement it
+/// duplicates without re-running it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DepartureRecord {
+    /// Why the peer left, as first reported.
+    pub cause: DisconnectCause,
+    /// The server tick the departure was first reported at.
+    pub tick: Tick,
+}
+
+/// What reporting one peer's departure did: the once-only guard every
+/// settlement runs behind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settlement {
+    /// The first report: the settlement applies now, at `tick`.
+    Applied {
+        /// The server tick this departure was first reported at.
+        tick: Tick,
+    },
+    /// A repeat report — a retransmitted farewell, a second notice of the
+    /// same dead link, an abuse cut-off the client already saw: the peer was
+    /// settled at `tick` and **nothing** is applied again.
+    Duplicate {
+        /// The server tick the first report settled this departure at.
+        tick: Tick,
+    },
+}
+
+impl Settlement {
+    /// Whether this report is the one that settles.
+    #[must_use]
+    pub const fn applied(self) -> bool {
+        matches!(self, Self::Applied { .. })
+    }
+
+    /// The tick the departure was first reported at.
+    #[must_use]
+    pub const fn tick(self) -> Tick {
+        match self {
+            Self::Applied { tick } | Self::Duplicate { tick } => tick,
+        }
+    }
+}
+
+impl fmt::Display for Settlement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Applied { tick } => write!(f, "settled at tick {}", tick.0),
+            Self::Duplicate { tick } => {
+                write!(f, "already settled at tick {}; nothing applied", tick.0)
+            }
+        }
+    }
+}
+
+/// The host's once-only record of departed peers.
+///
+/// This is the guard behind "the authoritative state resolves once"
+/// (F58 acceptance AC03): a peer's departure is settled the first time it is
+/// reported, and every later report of that peer is
+/// [`Settlement::Duplicate`] and applies nothing — so a farewell that the
+/// transport also reports as a dead link cannot settle the same state twice.
+///
+/// State is bounded by [`crate::bounds::MAX_SESSION_PEERS`], which is exactly
+/// the number of peer ids [`crate::compat::PeerAllocator`] will ever issue in
+/// one session (it never recycles), so the ledger cannot hold more records
+/// than the session can have members, and a flood of departure notices for
+/// unknown peers is refused by name instead of growing it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DepartureLedger {
+    settled: BTreeMap<PeerId, DepartureRecord>,
+}
+
+/// Why a departure could not be recorded: the bounded-state refusal of the
+/// once-only guard, separate from [`RecoveryError`] because it says nothing
+/// about epochs or recovery decisions — only that this ledger will not grow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DepartureError {
+    /// The ledger already holds [`crate::bounds::MAX_SESSION_PEERS`] records
+    /// and refuses to track another peer rather than grow.
+    LedgerFull {
+        /// [`crate::bounds::MAX_SESSION_PEERS`].
+        max: usize,
+    },
+}
+
+impl fmt::Display for DepartureError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LedgerFull { max } => {
+                write!(
+                    f,
+                    "the departure ledger already holds its maximum of {max} peers"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for DepartureError {}
+
+impl DepartureLedger {
+    /// An empty ledger: no departure has been settled.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The recorded departure, when `peer` was already settled.
+    #[must_use]
+    pub fn get(&self, peer: PeerId) -> Option<DepartureRecord> {
+        self.settled.get(&peer).copied()
+    }
+
+    /// Whether `peer` was already settled.
+    #[must_use]
+    pub fn is_settled(&self, peer: PeerId) -> bool {
+        self.settled.contains_key(&peer)
+    }
+
+    /// Checks that `peer` *could* be recorded, without recording it.
+    ///
+    /// A caller that tears state down or settles something first runs this
+    /// first, so a ledger that is full refuses while the session is still
+    /// exactly as it was, instead of half-applied and unrecorded.
+    ///
+    /// # Errors
+    ///
+    /// [`DepartureError::LedgerFull`] when the ledger already holds
+    /// [`crate::bounds::MAX_SESSION_PEERS`] records and `peer` is not one of
+    /// them.
+    pub fn check(&self, peer: PeerId) -> Result<(), DepartureError> {
+        if self.settled.contains_key(&peer) {
+            return Ok(());
+        }
+        if self.settled.len() >= MAX_SESSION_PEERS {
+            return Err(DepartureError::LedgerFull {
+                max: MAX_SESSION_PEERS,
+            });
+        }
+        Ok(())
+    }
+
+    /// Records `peer`'s departure at `tick`.
+    ///
+    /// A peer that is already recorded returns
+    /// [`Settlement::Duplicate`] with its original tick and changes nothing,
+    /// so recording is idempotent for the caller as well.
+    ///
+    /// # Errors
+    ///
+    /// [`DepartureError::LedgerFull`] when the ledger already holds
+    /// [`crate::bounds::MAX_SESSION_PEERS`] records and `peer` is not one of
+    /// them. Nothing is inserted, so the map cannot grow past its bound
+    /// either.
+    pub fn record(
+        &mut self,
+        peer: PeerId,
+        cause: DisconnectCause,
+        tick: Tick,
+    ) -> Result<Settlement, DepartureError> {
+        self.check(peer)?;
+        if let Some(record) = self.settled.get(&peer) {
+            return Ok(Settlement::Duplicate { tick: record.tick });
+        }
+        self.settled.insert(peer, DepartureRecord { cause, tick });
+        Ok(Settlement::Applied { tick })
+    }
+
+    /// How many departures have been settled. Never above
+    /// [`crate::bounds::MAX_SESSION_PEERS`].
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.settled.len()
+    }
+
+    /// Whether no departure has been settled.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.settled.is_empty()
     }
 }

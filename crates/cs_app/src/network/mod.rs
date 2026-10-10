@@ -26,6 +26,17 @@
 //! `validate_intent`/`receive_validated` judge every ask against the
 //! server-owned actors, loadouts, rate budget, tick window and match phase,
 //! and refuse a client-authored damage/score claim outright.
+//!
+//! F58-C adds [`recovery::RecoveryFlow`]: the disconnect, reconnect and clean
+//! host-loss flow over that boundary. Its producer is the receive path
+//! (`departure_cause`/`receive_and_depart`), its consumers are the peer
+//! teardown and the authoritative state the peer still held (`depart` drops
+//! what it carried, once), the mission's in-flight interactions and the
+//! clients' return to the menu (`host_lost`), and the retry
+//! (`recover` reopens the boundary on the fresh epoch). What it does *not*
+//! wire — the pinned transport's own pump, which still admits packets without
+//! a [`cs_net::validation::MatchStage`] — is named in
+//! [`recovery`]'s module docs and filed as a follow-up.
 
 pub mod physics;
 pub mod recovery;
