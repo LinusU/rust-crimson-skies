@@ -42,16 +42,22 @@ fn accept_m01_lc_zeppelin_allegiance_m01_binds_measured_factions_and_launches() 
     let bound = bind_mission_world_actors(&root, &found, "zbd/c1c/m01", "zbd/c1c", &subject, 64);
 
     // Each record's allegiance is the measured resolver outcome and names
-    // its source: the `ai.zrd` turret binding on a node inside its own
-    // subtree (`ctur1`, `utur1`, `ctur2` — records 38, 31, 28 of the
-    // shared member's `TURRET` list).
+    // its source. Two of the three bind the `ai.zrd` turret binding on a
+    // node inside their own subtree (`ctur1`, `ctur2` — records 38 and 28
+    // of the shared member's `TURRET` list); the third meets a marked node
+    // first (#1177).
     let expected = [
-        ("piratezep", 1_i64, "ctur1"),
-        ("workersvoyagezep", 2, "utur1"),
-        ("blackswanzep", 2, "ctur2"),
+        ("piratezep", 1_i64, Some("ctur1")),
+        // #1177 measured the gate: `0x4a2be0` collects every bit-31 node
+        // and `0x4a2e00` stages its `+0x8d` record, so `0x4bef90` reports
+        // the staged lane of the `panels` node at walk position 42 — which
+        // precedes `utur1` at position 77 — and that lane reads 2, the
+        // `enemy` #1155 measured through the turret table.
+        ("workersvoyagezep", 2, None),
+        ("blackswanzep", 2, Some("ctur2")),
     ];
     assert_eq!(bound.rows().len(), expected.len(), "M01 places three");
-    for (row, (node, team, bound_node)) in bound.rows().iter().zip(expected) {
+    for (row, (node, team, turret_node)) in bound.rows().iter().zip(expected) {
         assert_eq!(row.node, node);
         assert!(
             row.team.is_none(),
@@ -64,14 +70,25 @@ fn accept_m01_lc_zeppelin_allegiance_m01_binds_measured_factions_and_launches() 
                 source,
             } => {
                 assert_eq!(*measured, team, "{}'s resolver outcome", row.node);
-                match source {
-                    cs_app::mission_world_actors::AllegianceSource::TurretBinding {
-                        bound_node: bound,
-                        ..
-                    } => {
-                        assert_eq!(bound, bound_node, "{}'s binding node", row.node);
+                match (turret_node, source) {
+                    (
+                        Some(want),
+                        cs_app::mission_world_actors::AllegianceSource::TurretBinding {
+                            bound_node,
+                            ..
+                        },
+                    ) => assert_eq!(bound_node, want, "{}'s binding node", row.node),
+                    (None, cs_app::mission_world_actors::AllegianceSource::MarkedNode { node }) => {
+                        assert_eq!(
+                            node, "panels",
+                            "{} binds the staged lane of a marked node",
+                            row.node
+                        );
                     }
-                    other => panic!("{} binds through the turret table, not {other:?}", row.node),
+                    other => panic!(
+                        "{} binds through the measured source its walk reaches first, not {other:?}",
+                        row.node
+                    ),
                 }
             }
             other => panic!("{}'s allegiance is measured: {other:?}", row.node),
@@ -118,10 +135,12 @@ fn accept_m01_lc_zeppelin_allegiance_m01_binds_measured_factions_and_launches() 
     );
 
     // … and every bound faction is filed under the allegiance claim with
-    // the provenance of the member its turret binding came from.
+    // the provenance of the member its own source was read from (#1177):
+    // the shared `ai.zrd` for a turret binding, the world container for a
+    // staged `+0x8d` lane.
     let program = bound.program().expect("the records assemble a program");
     assert_eq!(program.actors().len(), 3);
-    for actor in program.actors() {
+    for (actor, row) in program.actors().iter().zip(bound.rows()) {
         let Resolved::Known(known) = &actor.faction else {
             panic!(
                 "{} binds a measured faction: {:?}",
@@ -144,12 +163,39 @@ fn accept_m01_lc_zeppelin_allegiance_m01_binds_measured_factions_and_launches() 
             .source
             .as_ref()
             .expect("the faction names its source span");
-        assert_eq!(source.member_key(), Some(TURRET_MEMBER));
-        assert_eq!(
-            source.container_path(),
-            "zbd/zrdr.zbd",
-            "the turret table comes from the shared member the loader \
-             reads before `zeppelins.zrd`"
-        );
+        match &row.allegiance {
+            cs_app::mission_world_actors::AllegianceBinding::Measured {
+                source: cs_app::mission_world_actors::AllegianceSource::TurretBinding { .. },
+                ..
+            } => {
+                assert_eq!(source.member_key(), Some(TURRET_MEMBER));
+                assert_eq!(
+                    source.container_path(),
+                    "zbd/zrdr.zbd",
+                    "the turret table comes from the shared member the loader \
+                     reads before `zeppelins.zrd`"
+                );
+            }
+            cs_app::mission_world_actors::AllegianceBinding::Measured {
+                source: cs_app::mission_world_actors::AllegianceSource::MarkedNode { node },
+                ..
+            } => {
+                assert_eq!(
+                    node, "panels",
+                    "the staged lane is read out of a marked node's `unk040`"
+                );
+                assert_eq!(
+                    source.member_key(),
+                    None,
+                    "the node array is the container's own bytes, not a member"
+                );
+                assert_eq!(
+                    source.container_path(),
+                    "zbd/c1c/gamez.zbd",
+                    "the lane's provenance is the world container that stores `unk040`"
+                );
+            }
+            other => panic!("{} names a measured source: {other:?}", row.node),
+        }
     }
 }

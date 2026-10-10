@@ -55,24 +55,25 @@
 //!   applies last and [`SpawnedZeppelinActor::attitude_residue`] names the
 //!   one it overwrites. `orientation` is [`Resolved::Known`] under
 //!   [`SPAWN_ATTITUDE_CLAIM`].
-//! * **The faction binds the measured allegiance (#1155).** A record that
-//!   states no `team` is *not* allegiance-less: while the record loads, the
-//!   original stores the outcome of its scene-graph resolver at `zep+0xe0`
-//!   (`0x4bf080` → `0x4bef90`, called from `0x4bd96a` and stored at
-//!   `zep+0xe0` by `0x4bd977`) — a staged
-//!   `targets.zrd` record for a marked node first, then the `ai.zrd` turret
-//!   binding table (`0x4ac170` → `0x71d910`, loaded before
+//! * **The faction binds the measured allegiance (#1155, #1177).** A record
+//!   that states no `team` is *not* allegiance-less: while the record loads,
+//!   the original stores the outcome of its scene-graph resolver at
+//!   `zep+0xe0` (`0x4bf080` → `0x4bef90`, called from `0x4bd96a` and stored
+//!   at `zep+0xe0` by `0x4bd977`) — a staged `+0x8d` record first, then the
+//!   `ai.zrd` turret binding table (`0x4ac170` → `0x71d910`, loaded before
 //!   `zeppelins.zrd`), then the children depth-first, first nonzero wins,
-//!   else `0`. A recognized `team` spelling then overrides it
-//!   (`enemy`→2, `ally`→1, `neutral`→0). `faction` is [`Resolved::Known`]
-//!   under [`ALLEGIANCE_RESOLVED_CLAIM`] with the vocabulary's own spelling
+//!   else `0`. A recognized `team` spelling then overrides it (`enemy`→2,
+//!   `ally`→1, `neutral`→0). `faction` is [`Resolved::Known`] under
+//!   [`ALLEGIANCE_RESOLVED_CLAIM`] with the vocabulary's own spelling
 //!   (`neutral`/`ally`/`enemy`), or [`Resolved::Unknown`] under
 //!   [`ALLEGIANCE_OPEN_CLAIM`] when the measured path cannot settle — a
-//!   gated marked node, an unreadable carrier, an unmodelled `NODES`
-//!   element. M01's three team-less records resolve to `piratezep` → 1
-//!   (`ally`), `workersvoyagezep` → 2 (`enemy`) and `blackswanzep` → 2
-//!   (`enemy`); `docs/findings/2026-10-09-m01-lc-zeppelin-allegiance.md`
-//!   records every measured address.
+//!   staged lane outside the vocabulary, an unreadable carrier, an
+//!   unmodelled `NODES` element. M01's three team-less records resolve to
+//!   `piratezep` → 1 (`ally`), `workersvoyagezep` → 2 (`enemy`) and
+//!   `blackswanzep` → 2 (`enemy`); `docs/findings/2026-10-09-m01-lc-
+//!   zeppelin-allegiance.md` records every measured address, and its #1177
+//!   section records how a staged record's gate byte and team lane are
+//!   written.
 //! * **The motion is `Held` by shape, not by claim.** The carrier states no
 //!   route polyline, keyframe schedule, velocity or carrier — a fixed pose
 //!   at spawn is the only [`DeclaredMotion`] variant whose fields the record
@@ -210,17 +211,56 @@ pub const POSITION_PRECEDENCE_UNKNOWN_REASON_PREFIX: &str = "the spawn position 
 /// `0x71d910` table `0x4bef90` consults.
 pub const TURRET_MEMBER: &str = "ai.zrd";
 
-/// The member whose `nodes` elements stage the `+0x8d` allegiance records
-/// `0x4bef90` checks before the turret table (#1155): `0x4a2e00` builds one
-/// only for a node whose stored `unk040` carries the mark bit *and* which a
-/// `nodes` element matches.
+/// The member `0x4a2be0` reads to name the nodes it collects (#1155, #1177).
+///
+/// The collector resolves it at `0x4a2c00` and keeps the matched record's
+/// name beside each node it collects — but that match never decides *whether*
+/// a `+0x8d` record is staged. Both paths out of the match reach the `V3`
+/// insert (`0x4a2d50` on the matched path, `0x4a2d57`/`0x4a2d5d` on the
+/// chain's end, all landing at `0x4a2d63` → `0x4a2d8c`), so the mark bit
+/// alone gates staging and this member only supplies the stored name
+/// (`0x4a2570`'s second argument, which no reader of `[rec+0x8d]`/`[rec+8]`
+/// consults).
 pub const TARGETS_MEMBER: &str = "targets.zrd";
 
-/// Bit 31 of a stored node's `unk040` word — the mark `0x4a2e00` requires
-/// before it stages a `+0x8d` allegiance record for a `targets.zrd`-matched
-/// node. The word's low 2-bit lanes carry the per-side ints the record's
-/// `+8` is extracted from.
-const ALLEGIANCE_MARKED: u32 = 0x8000_0000;
+/// Bit 31 of a stored node's `unk040` word — the mark `0x4a2be0` tests at
+/// `0x4a2cf1` before it collects the node into the list `0x4a2e00` walks
+/// (`0x4a2e24`), and therefore the only condition on which `0x4a2e00` stages
+/// a `+0x8d` record: its write (`0x4a2ec9`) is unconditional over that list.
+pub const ALLEGIANCE_MARKED: u32 = 0x8000_0000;
+
+/// The lane of a marked node's `unk040` word that `0x4a2e00` stores at
+/// `[rec+8]` (#1177).
+///
+/// `0x4a2e3e`..`0x4a2e4b` reads `[node+0x28]`, shifts it right by
+/// `2*[0x71c0a0] - 2` (the shift is loaded at `0x4a2e18` and formed at
+/// `0x4a2e2a` with `lea eax,[eax+eax-2]` — it is *not* an unset caller-stack
+/// slot), keeps the low two bits (`and edx,3`) and stores them verbatim
+/// through `0x453740`; `0x4a2570` writes that int at `[rec+8]` (`0x4a259f`).
+/// The same formula is formed again at `0x4a3306`.
+///
+/// **No instruction in the image writes `0x71c0a0`.** The whole file holds
+/// five references to that address and every one of them is a load
+/// (`0x41952b`, `0x4a1465`, `0x4a1f5a`, `0x4a2e18`, `0x4a32f1`), while this
+/// build writes globals by absolute displacement (`mov dword ptr
+/// [0x71c470],0` at `0x464803`, `mov dword ptr [0x71c098],esi` at `0x41a88d`);
+/// the address also sits past `.data`'s raw bytes (section RVA `0x219000`,
+/// raw size `0x2a000`, so everything above `0x643000` is zero-filled at
+/// load). The shift this build therefore computes is `2*0-2`, and x86 masks a
+/// 32-bit `shr` count to five bits: **30**, so the staged team is `unk040`'s
+/// bits 30..31.
+///
+/// The residue this leaves is recorded in
+/// `docs/findings/2026-10-09-m01-lc-zeppelin-allegiance.md`: a module outside
+/// this image writing `0x71c0a0` at run time would move the lane, and no
+/// such writer is measurable here.
+pub const STAGED_TEAM_LANE_SHIFT: u32 = 30;
+
+/// The team int `0x4a2e00` stages for a marked node (#1177): the two-bit lane
+/// at [`STAGED_TEAM_LANE_SHIFT`] of the node's stored `unk040`.
+fn staged_team(unk040: u32) -> i64 {
+    i64::from((unk040 >> STAGED_TEAM_LANE_SHIFT) & 3)
+}
 
 /// The claim a faction binds under when the measured allegiance path
 /// resolves it (#1155).
@@ -281,6 +321,17 @@ pub enum AllegianceSource {
         turret_record: usize,
         /// The bound node's name inside the zeppelin's subtree.
         bound_node: String,
+    },
+    /// The walk met a marked node whose staged `+0x8d` record gated the
+    /// answer (#1177): `0x4a2be0` collected the node at `0x4a2cf1`,
+    /// `0x4a2e00` wrote `[rec+0x8d] = 1` at `0x4a2ec9` and `[rec+8]` from
+    /// the node's own `unk040` lane (`0x4a2e3e`..`0x4a2e4b`, stored at
+    /// `0x4a259f`), so `0x4bef90` reports it before it consults `0x71d910`.
+    /// The provenance is the world container's node array — the member that
+    /// stores the word the lane was read from.
+    MarkedNode {
+        /// The marked node the walk met first.
+        node: String,
     },
     /// The resolver's terminal zero (`0x4bef90`'s last step): no `+0x8d`
     /// record gated in, no turret binding anywhere under the node — the
@@ -384,30 +435,9 @@ fn read_scope_member(
     }
 }
 
-/// How the `targets.zrd` gate carrier read (#1155): the elements a `+0x8d`
-/// record can be staged by.
-enum TargetsRead {
-    /// `targets.zrd` decoded: the `nodes` element paths across every record,
-    /// plus a count of elements outside the measured `text`/`[text, …]`
-    /// shapes — which cannot be evaluated against a marked node.
-    Decoded {
-        /// Bottom-up paths: an element's last pattern against the node
-        /// itself, the rest against its ancestors in order (`0x4a2400`).
-        paths: Vec<Vec<String>>,
-        /// Elements outside the measured shapes.
-        unmodelled: usize,
-    },
-    /// No archive carries `targets.zrd`: nothing stages a `+0x8d` record —
-    /// the gate is provably inert.
-    Absent,
-    /// The member refused: whether a `+0x8d` record would gate is open.
-    Refused(String),
-}
-
-/// The allegiance inputs one scope's records resolve against (#1155): the
-/// `ai.zrd` turret bindings applied to the world container's node array,
-/// and the `targets.zrd` `nodes` gate for the `+0x8d` records `0x4bef90`
-/// consults first.
+/// The allegiance inputs one scope's records resolve against (#1155, #1177):
+/// the `ai.zrd` turret bindings applied to the world container's node array,
+/// which `0x4bef90` consults after a staged `+0x8d` record has not gated.
 struct AllegianceLookup<'a> {
     /// The container's nodes by stored index — the resolver's walk domain
     /// and the mount lookup's space (`0x4d11e0` iterates every node).
@@ -418,8 +448,6 @@ struct AllegianceLookup<'a> {
     turret: HashMap<u32, (i64, usize)>,
     /// How `ai.zrd` read — the binding table's carrier.
     ai_refused: Option<String>,
-    /// How `targets.zrd` read — the `+0x8d` gate's carrier.
-    targets: TargetsRead,
     /// The span `ai.zrd` decoded from, when it did — the provenance a
     /// resolver-bound faction files under.
     ai_span: Option<SourceSpan>,
@@ -453,56 +481,34 @@ impl AllegianceLookup<'_> {
     /// One node of the resolver walk: the `+0x8d` check, the unconditional
     /// turret lookup, then the children — `0x4bef90`'s own order.
     fn visit(&self, node: &RawNode) -> Result<(i64, Option<AllegianceSource>), String> {
-        // Step 1: a `+0x8d` record exists only for a marked node a
-        // `targets.zrd` element matches — and when one does, its team lane is
-        // read off a caller-stack slot `0x4a2e00` never writes (the shift at
-        // `0x4a2e45` sources `[esp+0x1c]` unset), so the outcome is not
-        // measurable and nothing downstream is claimed.
+        // Step 1 (#1177): `0x4a2be0` collects every node whose stored
+        // `unk040` carries the mark (`0x4a2cf1`) — a `targets.zrd` `nodes`
+        // match only picks the name kept beside it, because both paths land
+        // on the `0x71d358` insert (`0x4a2d50` on the match, `0x4a2d57`/
+        // `0x4a2d5d` on the chain's end, insert at `0x4a2d63`..`0x4a2d8c`) —
+        // and `0x4a2e00` stages a `+0x8d` record for each of them at
+        // `0x4a2ec9`, carrying `[rec+8] = (unk040 >> lane) & 3`
+        // (`0x4a2e3e`..`0x4a2e4b`, stored by `0x4a2570` at `0x4a259f`).
+        // `0x4bef90` reports that lane before it consults the turret table,
+        // so a marked node the walk reaches decides the answer here.
         if node.info.unk040 & ALLEGIANCE_MARKED != 0 {
-            match &self.targets {
-                TargetsRead::Decoded { paths, unmodelled } => {
-                    for path in paths {
-                        if self.path_matches(path, node) {
-                            return Err(format!(
-                                "`{}` is allegiance-marked (unk040 {:#010x}) and a `nodes` \
-                                 element of {TARGETS_MEMBER} matches it, so `0x4a2e00` stages a \
-                                 `+0x8d` record for it — whose team lane reads an uninitialized \
-                                 caller-stack slot and is not measurable",
-                                node.name, node.info.unk040,
-                            ));
-                        }
-                        if path
-                            .last()
-                            .is_some_and(|leaf| wildcard_name(leaf, &node.name))
-                        {
-                            return Err(format!(
-                                "`{}` is allegiance-marked (unk040 {:#010x}) and a `nodes` \
-                                 element of {TARGETS_MEMBER} names it at the leaf without its \
-                                 ancestor chain matching — whether `0x4a2400`'s walk would gate \
-                                 it is not measurable",
-                                node.name, node.info.unk040,
-                            ));
-                        }
-                    }
-                    if *unmodelled > 0 {
-                        return Err(format!(
-                            "`{}` is allegiance-marked (unk040 {:#010x}) and {TARGETS_MEMBER} \
-                             carries {unmodelled} `nodes` elements outside the measured shapes, \
-                             so whether one gates it is unmeasurable",
-                            node.name, node.info.unk040,
-                        ));
-                    }
-                }
-                TargetsRead::Refused(reason) => {
-                    return Err(format!(
-                        "`{}` is allegiance-marked (unk040 {:#010x}) and {TARGETS_MEMBER} \
-                         cannot be evaluated ({reason}), so whether a `+0x8d` record gates it \
-                         is unmeasurable",
-                        node.name, node.info.unk040,
-                    ));
-                }
-                TargetsRead::Absent => {}
+            let staged = staged_team(node.info.unk040);
+            if team_key(staged).is_none() {
+                return Err(format!(
+                    "`{}` is allegiance-marked (unk040 {:#010x}), so `0x4a2be0` collects it at \
+                     `0x4a2cf1` and `0x4a2e00` stages a `+0x8d` record at `0x4a2ec9` whose team \
+                     lane `[rec+8]` reads {staged} (`0x4a2e3e`..`0x4a2e4b`, stored at \
+                     `0x4a259f`) — outside the measured `neutral`/`ally`/`enemy` vocabulary, so \
+                     no faction is guessed",
+                    node.name, node.info.unk040,
+                ));
             }
+            return Ok((
+                staged,
+                Some(AllegianceSource::MarkedNode {
+                    node: node.name.clone(),
+                }),
+            ));
         }
         // Step 2: a `0x71d910` turret binding carries its team verbatim —
         // even `0`, which this node still reports to its caller.
@@ -538,6 +544,12 @@ impl AllegianceLookup<'_> {
     /// `0x4a2400` bottom-up chain: the element's last pattern against the
     /// node, the one before against its parent, and so on upward, each under
     /// `0x4abea0`'s wildcard rule.
+    ///
+    /// #1177 measured that this match never gates a staged record — it only
+    /// selects the name `0x4a2be0` keeps beside the node — so nothing in the
+    /// resolver consults it any more; the walk keeps it because the carrier
+    /// read that produced it is still measured and named.
+    #[cfg(test)]
     fn path_matches(&self, path: &[String], node: &RawNode) -> bool {
         let mut current = Some(node);
         for pattern in path.iter().rev() {
@@ -556,9 +568,11 @@ impl AllegianceLookup<'_> {
     }
 }
 
-/// Builds the scope's allegiance lookup (#1155): applies `ai.zrd`'s `TURRET`
-/// records to the container's nodes the way `0x4ac170` → `0x4a9df0` does,
-/// and collects `targets.zrd`'s `nodes` gate elements.
+/// Builds the scope's allegiance lookup (#1155, #1177): applies `ai.zrd`'s
+/// `TURRET` records to the container's nodes the way `0x4ac170` → `0x4a9df0`
+/// does. `targets.zrd` is not read here — #1177 measured that the `nodes`
+/// match it carries chooses only the name `0x4a2be0` stores beside a collected
+/// node, never whether `0x4a2e00` stages its `+0x8d` record.
 fn build_allegiance_lookup<'a>(
     install_root: &Path,
     found: &Discovery,
@@ -571,7 +585,6 @@ fn build_allegiance_lookup<'a>(
         nodes: by_index,
         turret: HashMap::new(),
         ai_refused: None,
-        targets: TargetsRead::Absent,
         ai_span: None,
         unmodelled: Vec::new(),
     };
@@ -582,29 +595,6 @@ fn build_allegiance_lookup<'a>(
         }
         MemberRead::Absent => {}
         MemberRead::Refused(reason) => lookup.ai_refused = Some(reason),
-    }
-    match read_scope_member(install_root, found, archives, TARGETS_MEMBER) {
-        MemberRead::Decoded(root, _) => {
-            // Every record's `nodes` list contributes its elements; the
-            // record bodies are `[key, value]` pairs, which `zrd_field`
-            // reads.
-            let mut paths = Vec::new();
-            let mut unmodelled = 0;
-            for record in root.as_list().unwrap_or(&[]) {
-                let Some(nodes) = zrd_field(record, "nodes").and_then(ZrdValue::as_list) else {
-                    continue;
-                };
-                for element in nodes {
-                    match nodes_path(element) {
-                        Some(path) => paths.push(path),
-                        None => unmodelled += 1,
-                    }
-                }
-            }
-            lookup.targets = TargetsRead::Decoded { paths, unmodelled };
-        }
-        MemberRead::Absent => {}
-        MemberRead::Refused(reason) => lookup.targets = TargetsRead::Refused(reason),
     }
     lookup
 }
@@ -1316,8 +1306,9 @@ pub fn bind_mission_world_actors(
     // means no subject can be resolved — every record is reported with its
     // join outcome rather than placed on a guessed node. The raw node array
     // comes back alongside it for the allegiance resolver (#1155), which
-    // reads `ai.zrd`'s turret bindings and `targets.zrd`'s gate through the
-    // scope's archives in the original's mission/group/shared mount order.
+    // reads `ai.zrd`'s turret bindings through the scope's archives in the
+    // original's mission/group/shared mount order; the container's own span
+    // comes with it as the provenance of a staged `+0x8d` lane (#1177).
     let scene = read_world_scene(install_root, found, group_dir);
     let archives = [
         archive.clone(),
@@ -1327,7 +1318,7 @@ pub fn bind_mission_world_actors(
     let allegiance = scene
         .as_ref()
         .ok()
-        .map(|(_, nodes)| build_allegiance_lookup(install_root, found, &archives, nodes));
+        .map(|(_, nodes, _)| build_allegiance_lookup(install_root, found, &archives, nodes));
     let rows: Vec<SpawnedZeppelinActor> = member
         .records()
         .iter()
@@ -1345,12 +1336,16 @@ pub fn bind_mission_world_actors(
     let allegiance_span = allegiance
         .as_ref()
         .and_then(|lookup| lookup.ai_span.clone());
+    let world_span = scene.as_ref().ok().and_then(|(_, _, span)| span.clone());
 
     let program = assemble_program(
         mission_subject,
         &member_span,
         startup_span.as_ref(),
-        allegiance_span.as_ref(),
+        AllegianceSpans {
+            turret: allegiance_span.as_ref(),
+            world: world_span.as_ref(),
+        },
         session_ticks_per_second,
         &rows,
     );
@@ -1529,12 +1524,21 @@ fn read_startup_member(
 /// map `measure_geometry` uses, so the subject join is the launch surface's
 /// own measurement. The raw node array comes back alongside it: the
 /// allegiance resolver's walk domain (#1155), which the converted graph
-/// does not carry.
+/// does not carry — and with it the container's own byte span, the
+/// provenance a staged `+0x8d` lane is filed under (#1177), because that
+/// lane is read out of a node's stored `unk040` in this member.
 fn read_world_scene(
     install_root: &Path,
     found: &Discovery,
     group_dir: &str,
-) -> Result<(cs_content::scene::SceneGraph, GameZNodes), String> {
+) -> Result<
+    (
+        cs_content::scene::SceneGraph,
+        GameZNodes,
+        Option<SourceSpan>,
+    ),
+    String,
+> {
     let key = format!("{group_dir}/gamez.zbd");
     let record = found
         .manifest
@@ -1543,6 +1547,15 @@ fn read_world_scene(
         .find(|record| record.relative_spelling.logical_key() == key)
         .ok_or_else(|| format!("no {key} in the discovered installation"))?;
     let bytes = read_container_bytes(install_root, record)?;
+    let span = SourceSpan::new(
+        cs_assets::install::fingerprint(&found.manifest),
+        &key,
+        None,
+        0,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        None,
+    )
+    .ok();
     let mut context = ParseContext::with_defaults(&key);
     let nodes = read_gamez_nodes(&mut context, &bytes)
         .map_err(|error| format!("the node array refuses: {error}"))?;
@@ -1559,7 +1572,7 @@ fn read_world_scene(
     let graph = world_scene_graph_from_gamez(&container, &nodes, &[], &adapter, &bindings)
         .map(|scene| scene.graph().clone())
         .map_err(|error| format!("{error}"))?;
-    Ok((graph, nodes))
+    Ok((graph, nodes, span))
 }
 
 fn read_container_bytes(
@@ -1728,13 +1741,17 @@ fn position_for(node: &str, carrier_position: [f32; 3], startup: &StartupRead) -
 fn declare_row(
     index: usize,
     record: &cs_formats::zbd::zeppelins::ZeppelinRecord,
-    scene: Option<&(cs_content::scene::SceneGraph, GameZNodes)>,
+    scene: Option<&(
+        cs_content::scene::SceneGraph,
+        GameZNodes,
+        Option<SourceSpan>,
+    )>,
     startup: &StartupRead,
     allegiance: Option<&AllegianceLookup<'_>>,
 ) -> SpawnedZeppelinActor {
     let subject = match scene {
         None => NodeJoin::Absent,
-        Some((graph, _)) => {
+        Some((graph, _, _)) => {
             let matches: Vec<&cs_content::scene::SceneNode> = graph
                 .nodes()
                 .iter()
@@ -1757,7 +1774,7 @@ fn declare_row(
         attitude: attitude_for(record.node(), spawn_attitude(record), startup),
         position: position_for(record.node(), record.position(), startup),
         team: record.team().map(str::to_owned),
-        allegiance: allegiance_for(record, scene.map(|(_, nodes)| nodes), allegiance),
+        allegiance: allegiance_for(record, scene.map(|(_, nodes, _)| nodes), allegiance),
         deactivated: record.deactivated(),
         subject,
         declared,
@@ -1775,12 +1792,22 @@ fn declare_row(
 /// `ai.zrd` span when it decoded — a resolver-bound faction is provenanced
 /// from the turret table it resolved through; a `team`-keyed faction is
 /// provenanced from the carrier's own record (#1155).
+/// Where each measured allegiance source's bytes live (#1155, #1177).
+#[derive(Clone, Copy, Default)]
+struct AllegianceSpans<'a> {
+    /// `ai.zrd` — the `0x71d910` turret binding table's carrier.
+    turret: Option<&'a SourceSpan>,
+    /// The world container — the member that stores each marked node's
+    /// `unk040` word, whose lane a staged `+0x8d` record carries (#1177).
+    world: Option<&'a SourceSpan>,
+}
+
 fn declare_actor(
     row: &SpawnedZeppelinActor,
     actor: ProgramActor,
     span: &SourceSpan,
     startup_span: Option<&SourceSpan>,
-    allegiance_span: Option<&SourceSpan>,
+    allegiance: AllegianceSpans<'_>,
 ) -> Option<DeclaredWorldActor> {
     let NodeJoin::Single(subject) = &row.subject else {
         return None;
@@ -1833,8 +1860,13 @@ fn declare_actor(
             Some(spelling) => {
                 let source_span = match source {
                     AllegianceSource::TeamSpelling => span.clone(),
+                    // The lane comes out of the node's own `unk040`, so the
+                    // provenance is the container that stores it (#1177).
+                    AllegianceSource::MarkedNode { .. } => {
+                        allegiance.world.cloned().unwrap_or_else(|| span.clone())
+                    }
                     AllegianceSource::TurretBinding { .. } | AllegianceSource::NoBinding => {
-                        allegiance_span.cloned().unwrap_or_else(|| span.clone())
+                        allegiance.turret.cloned().unwrap_or_else(|| span.clone())
                     }
                 };
                 let provenance = Provenance::new(
@@ -1890,16 +1922,15 @@ fn assemble_program(
     mission_subject: &ContentId,
     member_span: &SourceSpan,
     startup_span: Option<&SourceSpan>,
-    allegiance_span: Option<&SourceSpan>,
+    allegiance: AllegianceSpans<'_>,
     session_ticks_per_second: u32,
     rows: &[SpawnedZeppelinActor],
 ) -> Option<DeclaredWorldActorProgram> {
     let actors: Vec<DeclaredWorldActor> = rows
         .iter()
         .filter_map(|row| {
-            row.declared.and_then(|actor| {
-                declare_actor(row, actor, member_span, startup_span, allegiance_span)
-            })
+            row.declared
+                .and_then(|actor| declare_actor(row, actor, member_span, startup_span, allegiance))
         })
         .collect();
     if actors.is_empty() {
@@ -2011,6 +2042,10 @@ fn collect_open_fields(program: &DeclaredWorldActorProgram) -> Vec<OpenField> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cs_formats::gamez::{
+        GAMEZ_HEADER_BYTES, GameZHeader, NODE_TYPE_OBJECT3D, NodeKind, RawNodeInfo, RawObject3dData,
+    };
+    use cs_formats::zbd::{GAMEZ_SIGNATURE, GAMEZ_VERSION};
     use cs_sim::world_actors::runtime::WorldActorKind;
     use cs_types::content::Known;
     use cs_types::evidence::ClaimStatus;
@@ -2106,7 +2141,7 @@ mod tests {
             &mission(),
             &source_span(),
             None,
-            None,
+            AllegianceSpans::default(),
             SESSION_TICKS_PER_SECOND,
             &rows,
         )
@@ -2197,8 +2232,14 @@ mod tests {
             team: 0,
             source: AllegianceSource::NoBinding,
         };
-        let bare =
-            declare_actor(&bare, ProgramActor(3), &source_span(), None, None).expect("declares");
+        let bare = declare_actor(
+            &bare,
+            ProgramActor(3),
+            &source_span(),
+            None,
+            AllegianceSpans::default(),
+        )
+        .expect("declares");
         let Resolved::Known(neutral) = &bare.faction else {
             panic!("the resolver's zero binds `neutral`");
         };
@@ -2246,8 +2287,14 @@ mod tests {
             .attitude_source()
             .expect("the fixture's attitude is settled")
             .orientation();
-        let actor = declare_actor(&row, ProgramActor(0), &source_span(), None, None)
-            .expect("the joined record declares");
+        let actor = declare_actor(
+            &row,
+            ProgramActor(0),
+            &source_span(),
+            None,
+            AllegianceSpans::default(),
+        )
+        .expect("the joined record declares");
         let Resolved::Known(allegiance) = &actor.faction else {
             panic!("the measured allegiance binds a faction");
         };
@@ -2309,8 +2356,9 @@ mod tests {
         let mut open = row(0, "piratezep", scene_subject("world1.piratezep"));
         open.team = None;
         open.allegiance = AllegianceBinding::Open(
-            "`ctur1` is allegiance-marked and a `nodes` element of targets.zrd gates it, \
-             whose team lane is not measurable"
+            "`gunback` is allegiance-marked (unk040 0xc0000000), so `0x4a2be0` collects it at \
+             `0x4a2cf1` and `0x4a2e00` stages a `+0x8d` record at `0x4a2ec9` whose team lane \
+             `[rec+8]` reads 3 — outside the measured vocabulary"
                 .to_owned(),
         );
         let rows = [open];
@@ -2318,7 +2366,7 @@ mod tests {
             &mission(),
             &source_span(),
             None,
-            None,
+            AllegianceSpans::default(),
             SESSION_TICKS_PER_SECOND,
             &rows,
         )
@@ -2352,8 +2400,14 @@ mod tests {
                 bound_node: "utur1".to_owned(),
             },
         };
-        let odd = declare_actor(&odd, ProgramActor(1), &source_span(), None, None)
-            .expect("the joined record declares");
+        let odd = declare_actor(
+            &odd,
+            ProgramActor(1),
+            &source_span(),
+            None,
+            AllegianceSpans::default(),
+        )
+        .expect("the joined record declares");
         let Resolved::Unknown { claim_id, reason } = &odd.faction else {
             panic!("team 7 is outside the vocabulary: {:?}", odd.faction);
         };
@@ -2441,6 +2495,241 @@ mod tests {
             .iter()
             .find(|record| record.node() == node)
             .unwrap_or_else(|| panic!("{node} is in the authored fixture"))
+    }
+
+    /// The store's asserted node profile for a gate fixture: the shape the
+    /// production reader emits for a record that stores nothing unusual,
+    /// with the fields the gate reads spelled by each call.
+    fn gate_zero() -> RawNodeInfo {
+        RawNodeInfo {
+            flags: 0,
+            unk040: 0,
+            unk044: 0,
+            zone_id: 0,
+            node_type: 0,
+            data_ptr: 0,
+            mesh_index: -1,
+            environment_data: 0,
+            action_priority: 1,
+            action_callback: 0,
+            area_partition: [0; 4],
+            parent_count: 0,
+            children_count: 0,
+            parent_array_ptr: 0,
+            children_array_ptr: 0,
+            unk096: 0,
+            unk100: 0,
+            unk104: 0,
+            unk108: 0,
+            unk112: 0,
+            unk116: [[0.0; 3]; 2],
+            unk140: [[0.0; 3]; 2],
+            unk164: [[0.0; 3]; 2],
+            unk188: 0,
+            unk192: 0,
+            unk196: 0,
+            unk200: 0,
+            unk204: 0,
+        }
+    }
+
+    /// One node of a gate fixture: the stored shape with only `unk040` and
+    /// the child slots varied, because those are what `0x4a2be0` tests and
+    /// what `0x4bef90` walks.
+    fn gate_node(index: u32, name: &str, unk040: u32, children: &[u32]) -> RawNode {
+        RawNode {
+            index,
+            name: name.to_owned(),
+            node_index: 0x0200_0000 | index,
+            info: RawNodeInfo {
+                flags: 0x0180_0000,
+                unk040,
+                zone_id: 255,
+                node_type: NODE_TYPE_OBJECT3D,
+                data_ptr: 1,
+                mesh_index: -1,
+                action_priority: 1,
+                children_count: u16::try_from(children.len()).unwrap_or(u16::MAX),
+                area_partition: [-1, -1, 0, 0],
+                unk196: 160,
+                ..gate_zero()
+            },
+            kind: NodeKind::Object3d(RawObject3dData {
+                flags: 0,
+                rotation: [0.0; 3],
+                scale: [1.0; 3],
+                matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                translation: [0.0; 3],
+            }),
+            data_offset: 1,
+            data_bytes: 148,
+            parent: None,
+            children: children.to_vec(),
+        }
+    }
+
+    /// A world container holding exactly the fixture's nodes — the walk
+    /// domain `0x4bef90` is measured over.
+    fn gate_world(nodes: Vec<RawNode>) -> GameZNodes {
+        GameZNodes {
+            header: GameZHeader {
+                signature: GAMEZ_SIGNATURE,
+                version: GAMEZ_VERSION,
+                unk08: 0,
+                texture_count: 0,
+                textures_offset: GAMEZ_HEADER_BYTES as u32,
+                materials_offset: 0,
+                meshes_offset: 0,
+                node_array_size: nodes.len() as u32,
+                light_index: 0,
+                nodes_offset: 0,
+            },
+            nodes,
+            info_offset: 0,
+            info_end: 0,
+            data_offset: 0,
+            data_end: 0,
+            findings: Vec::new(),
+        }
+    }
+
+    /// The production lookup over a fixture world with no `ai.zrd` read —
+    /// so anything the walk returns comes from the gate or the resolver's
+    /// own terminal zero, never from a turret binding.
+    fn gate_lookup(world: &GameZNodes) -> AllegianceLookup<'_> {
+        AllegianceLookup {
+            nodes: world.nodes.iter().map(|node| (node.index, node)).collect(),
+            turret: HashMap::new(),
+            ai_refused: None,
+            ai_span: None,
+            unmodelled: Vec::new(),
+        }
+    }
+
+    /// **A marked node the walk meets stages the lane `0x4a2e00` measured
+    /// for it, and a lane outside the vocabulary refuses by name (#1177).**
+    ///
+    /// `0x4a2be0` collects a node on its mark bit alone (`0x4a2cf1` — a
+    /// `targets.zrd` `nodes` match only chooses the stored name, because
+    /// both paths land on the `0x71d358` insert), `0x4a2e00` writes
+    /// `[rec+0x8d] = 1` at `0x4a2ec9` and `[rec+8]` from the node's own
+    /// `unk040` lane (`0x4a2e3e`..`0x4a2e4b`, stored at `0x4a259f`), and
+    /// `0x4bef90` reports that lane before it consults the turret table.
+    /// Remove that handling and this test fails: the walk would fall
+    /// through to the resolver's terminal zero instead of the staged lane.
+    #[test]
+    fn accept_m01_lc_zeppelin_gate_a_marked_node_stages_its_measured_lane() {
+        let world = gate_world(vec![
+            gate_node(0, "zeppelin", 0, &[1]),
+            // Marked (bit 31) whose staged lane reads 0b10 = 2, the
+            // vocabulary's `enemy`.
+            gate_node(1, "hull", 0x8040_0000, &[2]),
+            gate_node(2, "gunback", 0, &[]),
+        ]);
+        let start = world
+            .nodes
+            .iter()
+            .find(|node| node.name == "zeppelin")
+            .expect("the fixture names its start");
+        assert_eq!(
+            gate_lookup(&world)
+                .resolve(start)
+                .expect("the staged lane settles the walk"),
+            (
+                2,
+                Some(AllegianceSource::MarkedNode {
+                    node: "hull".to_owned(),
+                }),
+            ),
+            "the walk reports `0x4a2e00`'s staged lane before the turret table; without the \
+             gate handling it would fall through to the resolver's terminal zero",
+        );
+
+        // The control: the same walk over an unmarked container reaches
+        // `0x4bef90`'s terminal zero — the gate is what changed, nothing
+        // else in the path.
+        let plain = gate_world(vec![
+            gate_node(0, "zeppelin", 0, &[1]),
+            gate_node(1, "hull", 0, &[]),
+        ]);
+        let plain_start = plain
+            .nodes
+            .iter()
+            .find(|node| node.name == "zeppelin")
+            .unwrap();
+        assert_eq!(
+            gate_lookup(&plain).resolve(plain_start).expect("settles"),
+            (0, None),
+            "an unmarked subtree still ends at the resolver's terminal zero",
+        );
+
+        // A lane outside `neutral`/`ally`/`enemy` refuses by name, with the
+        // addresses the refusal is measured from.
+        let refused = gate_world(vec![
+            gate_node(0, "zeppelin", 0, &[1]),
+            gate_node(1, "panels", 0xC000_0000, &[]),
+        ]);
+        let refused_start = refused
+            .nodes
+            .iter()
+            .find(|node| node.name == "zeppelin")
+            .unwrap();
+        let reason = gate_lookup(&refused)
+            .resolve(refused_start)
+            .expect_err("a lane outside the vocabulary refuses");
+        for evidence in [
+            "`0x4a2cf1`",
+            "`0x4a2ec9`",
+            "`0x4a2e3e`..`0x4a2e4b`",
+            "`0x4a259f`",
+            "panels",
+        ] {
+            assert!(
+                reason.contains(evidence),
+                "the refusal carries its evidence ({evidence}): {reason}"
+            );
+        }
+    }
+
+    /// **`0x4a2400` matches an element's chain bottom-up: the last pattern
+    /// against the node itself, the ones before it against its ancestors,
+    /// each under `0x4abea0`'s one-digit wildcard rule (#1177).**
+    /// #1155 measured the walk; this keeps the matcher's own semantics
+    /// pinned now that the gate no longer consults it.
+    #[test]
+    fn accept_m01_lc_zeppelin_gate_the_nodes_matcher_walks_bottom_up() {
+        let mut world = gate_world(vec![
+            gate_node(0, "world", 0, &[1]),
+            gate_node(1, "piratezep", 0, &[2]),
+            gate_node(2, "ctur1", 0, &[]),
+        ]);
+        world.nodes[1].parent = Some(0);
+        world.nodes[2].parent = Some(1);
+        let lookup = gate_lookup(&world);
+        let leaf = world
+            .nodes
+            .iter()
+            .find(|node| node.name == "ctur1")
+            .expect("the fixture names its leaf");
+        let chain =
+            |patterns: &[&str]| patterns.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+
+        assert!(
+            lookup.path_matches(&chain(&["piratezep", "ctur1"]), leaf),
+            "the element's last pattern takes the node, the earlier one its ancestor"
+        );
+        assert!(
+            lookup.path_matches(&chain(&["piratezep", "ctur*"]), leaf),
+            "`*` consumes exactly one digit of the name it stands for"
+        );
+        assert!(
+            !lookup.path_matches(&chain(&["ctur1", "piratezep"]), leaf),
+            "the chain is bottom-up: the order it is stated in is not the order it walks"
+        );
+        assert!(
+            !lookup.path_matches(&chain(&["rock_zeppelin", "ctur1"]), leaf),
+            "an ancestor pattern that names a different node does not match"
+        );
     }
 
     /// **A stated `team` spelling is the loader's own vocabulary, and a
@@ -2536,7 +2825,14 @@ mod tests {
             position_m: [-3584.0, 1360.0, -8704.0],
             state_span: state_span.clone(),
         });
-        let actor = declare_actor(&startup, ProgramActor(0), &span, None, None).expect("declares");
+        let actor = declare_actor(
+            &startup,
+            ProgramActor(0),
+            &span,
+            None,
+            AllegianceSpans::default(),
+        )
+        .expect("declares");
         let DeclaredMotion::Held { position_m, .. } = &actor.motion else {
             panic!("a held pose");
         };
@@ -2560,7 +2856,14 @@ mod tests {
         // A carrier spawn binds the record's own triple, provenanced from
         // the carrier's member, with the startup carrier's silence named.
         let carrier = row(1, "blackswanzep", scene_subject("world1.blackswanzep"));
-        let actor = declare_actor(&carrier, ProgramActor(1), &span, None, None).expect("declares");
+        let actor = declare_actor(
+            &carrier,
+            ProgramActor(1),
+            &span,
+            None,
+            AllegianceSpans::default(),
+        )
+        .expect("declares");
         let DeclaredMotion::Held { position_m, .. } = &actor.motion else {
             panic!("a held pose");
         };
@@ -2592,7 +2895,14 @@ mod tests {
             scene_subject("world1.workersvoyagezep"),
         );
         open.position = PositionBinding::Open("the member refused: truncated".to_owned());
-        let actor = declare_actor(&open, ProgramActor(2), &span, None, None).expect("declares");
+        let actor = declare_actor(
+            &open,
+            ProgramActor(2),
+            &span,
+            None,
+            AllegianceSpans::default(),
+        )
+        .expect("declares");
         let DeclaredMotion::Held { position_m, .. } = &actor.motion else {
             panic!("a held pose");
         };
