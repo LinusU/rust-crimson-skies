@@ -65,12 +65,15 @@
 //! composition installs in the fixed-tick schedule. That module *does* run
 //! ticks — one per committed fixed tick, in the documented order — and every
 //! record it cannot drive is named as a [`host::MissionHostRefusal`] rather
-//! than replaced.
+//! than replaced. A settled run ends through [`terminal::MissionTerminal`]:
+//! one terminal from either source, one exit, and the one report line the run
+//! writes.
 
 mod compose;
 mod content;
 mod host;
 mod player_visual;
+mod terminal;
 
 pub use compose::{
     MissionComposition, MissionCompositionError, MissionPlayerBody, MissionPlayerStart,
@@ -92,3 +95,4 @@ pub use player_visual::{
     MISSION_PLAYER_PROP_NODE_SLOT, MissionPlayerVisual, PlayerAirframeSource, build_player_visual,
     spawn_player_visual,
 };
+pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};

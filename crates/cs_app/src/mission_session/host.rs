@@ -58,13 +58,31 @@
 //! `INSTANTWIN`/`INSTANTLOSS` directives and never from a request this host
 //! raises.
 //!
+//! # Ending a run
+//!
+//! A run ends on **one** terminal, from either of the two sources the
+//! [`super::terminal`] module names, funnelled by
+//! [`MissionHost::settle`]: the F39 objective session's own
+//! `SessionTick::outcome` first (the source this stage names), then the
+//! control program's own terminal state. The sequence, in this order: the
+//! host stops stepping ([`MissionHostStepError::Settled`]; a settled run
+//! advances nothing), the objective session's cue queue is drained (the count
+//! on the [`MissionTerminal`] is what the session still owned, so cues the
+//! player will never hear are named rather than dropped), the audio session's
+//! pending queues are resolved, and the one report line is written. The
+//! composed entry then sends [`MissionTerminal::exit`]'s `AppExit` as a
+//! message, so the windowed run ends and the headless test can read it.
+//!
 //! # What is not claimed
 //!
 //! No original executable ran; `retail` is read access to the owner's
-//! installation. Nothing here is `verified_original`. The composed entry
-//! stops a run on nothing yet: a terminal outcome and a restart belong to
-//! VS-M01-RT-MISSION-HOST `.02` and `.03`, so this stage neither exits nor
-//! reloads anything.
+//! installation. Nothing here is `verified_original`. A **restart** still
+//! belongs to VS-M01-RT-MISSION-HOST `.03`, so this stage reloads nothing, and
+//! M01 itself cannot reach a terminal headlessly: both of its `Finish` blocks
+//! start dormant behind the `-1` sentinel and every wake path needs world
+//! facts a headless run does not have (a measured property of the content —
+//! #1278's fact 7 — not a defect), so terminal behaviour is proven on a
+//! synthetic stage whose program really does settle.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -75,17 +93,19 @@ use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{App, FixedPostUpdate, Resource, World};
 use bevy::time::{Fixed, Time};
 use cs_script::ir::MissionProgram;
-use cs_script::runtime::{SessionGeneration, TickError};
+use cs_script::runtime::{EventKind, SessionGeneration, TerminalState, TickError};
 use cs_sim::mission::{BlockLifecycleTable, LaunchRefused, MissionSession, MissionTick};
-use cs_sim::objectives::runtime::{RuntimeLimits, TickInput};
-use cs_sim::objectives::terminal::TerminalPrecedence;
+use cs_sim::objectives::runtime::{ObjectiveEventKind, RuntimeLimits, TickInput};
+use cs_sim::objectives::terminal::{TerminalOutcome, TerminalPrecedence};
 use cs_sim::visibility::TimelineError;
 use cs_sim::world_actors::runtime::WorldActorError;
 use cs_types::Tick;
 use cs_types::net::SessionId;
 
 use super::compose::MissionStage;
+use super::terminal::{MissionTerminal, MissionTerminalSource};
 use crate::animation::mission::{MissionAnimationBinding, StartupAnimation};
+use crate::audio::AudioSession;
 use crate::environment::EnvironmentSession;
 use crate::mission_animations::{
     MissionAnimationPlayer, MissionAnimationStepRefusal, PlayerError, TickReport,
@@ -172,6 +192,17 @@ pub enum MissionHostRefusal {
         /// What the table is empty of, and whose job filling it is.
         detail: String,
     },
+    /// Mission-bound audio loops were still bound when the run ended.
+    ///
+    /// `cs_sim::audio_events::EmitterStopReason` measures no mission-end
+    /// reason, so they are reported rather than stopped under a reason they
+    /// did not have. The composition this stage builds starts no mission-bound
+    /// emitter, so the count is 0 today; the variant exists so that a future
+    /// composition which does start one has to name the loops it left bound.
+    MissionAudioStillBound {
+        /// How many loops the router still held.
+        count: usize,
+    },
 }
 
 impl fmt::Display for MissionHostRefusal {
@@ -188,6 +219,11 @@ impl fmt::Display for MissionHostRefusal {
             Self::BlockLifecycles { detail } => {
                 write!(f, "the block lifecycles: {detail}")
             }
+            Self::MissionAudioStillBound { count } => write!(
+                f,
+                "the mission audio: {count} loop(s) were still bound when the run ended, and \
+                 EmitterStopReason measures no mission-end reason to stop them under"
+            ),
         }
     }
 }
@@ -303,6 +339,9 @@ pub enum MissionHostStepError {
     Composed(MissionAnimationStepRefusal),
     /// The control program refused the tick.
     Script(TickError),
+    /// This host has already settled on a terminal outcome: a settled run
+    /// answers "already settled" and advances nothing.
+    Settled,
 }
 
 impl fmt::Display for MissionHostStepError {
@@ -320,6 +359,11 @@ impl fmt::Display for MissionHostStepError {
                 f,
                 "the control program refuses a tick that does not advance: last {}, given {}",
                 last.0, given.0
+            ),
+            Self::Settled => write!(
+                f,
+                "the mission host has already settled on a terminal outcome, so a settled run \
+                 advances nothing"
             ),
         }
     }
@@ -391,6 +435,7 @@ pub struct MissionHost {
     generation: SessionGeneration,
     served: SessionId,
     stepped: Option<Tick>,
+    settled: Option<MissionTerminal>,
 }
 
 impl MissionHost {
@@ -477,6 +522,7 @@ impl MissionHost {
             generation,
             served,
             stepped: None,
+            settled: None,
         })
     }
 
@@ -505,6 +551,9 @@ impl MissionHost {
         world: &mut World,
         elapsed: Duration,
     ) -> Result<MissionHostTick, MissionHostStepError> {
+        if self.settled.is_some() {
+            return Err(MissionHostStepError::Settled);
+        }
         let tick = {
             let Some(ledger) = world.get_resource::<PhysicsTickLedger>() else {
                 return Err(MissionHostStepError::Timeline);
@@ -581,6 +630,111 @@ impl MissionHost {
             objectives: composed.mission.tick,
             script,
         })
+    }
+
+    /// Runs the terminal sequence over one stepped tick, when either of the
+    /// two sources has settled the run, and keeps the terminal on the host.
+    ///
+    /// **Two sources, one funnel.** The F39 objective session's own
+    /// [`SessionTick::outcome`] is consulted first — the source this stage
+    /// names, and the one an original mission's declared conditions, timers
+    /// and count reactions would settle through — and then the control
+    /// program's own terminal state (`MissionTick::terminal`, which for M01
+    /// is its measured `INSTANTWIN`/`INSTANTLOSS` lowering). The record that
+    /// settles first ends the run, and [`MissionTerminal::source`] says which.
+    /// Nothing here *raises* an outcome: the designed conservative
+    /// `TerminalPrecedence` is reserved by
+    /// `docs/contracts/SCRIPT-MISSION.md` for synthetic tests, so this host
+    /// never fills `TickInput::terminal_requests` for a retail-derived
+    /// program.
+    ///
+    /// The sequence, in order:
+    ///
+    /// 1. the host is marked settled, so [`Self::step`] answers
+    ///    [`MissionHostStepError::Settled`] and a settled run advances
+    ///    nothing;
+    /// 2. the objective session's cue queue is drained — the count on the
+    ///    terminal is what the session **still owned**, so cues the player
+    ///    will never hear are named rather than dropped;
+    /// 3. the audio session's pending queues are resolved
+    ///    (`AudioSession::drain`/`drain_radio`), and whatever loops are
+    ///    still bound are counted and named under
+    ///    [`MissionHostRefusal::MissionAudioStillBound`] — the router's
+    ///    `EmitterStopReason` measures no mission-end reason, so they are
+    ///    reported rather than stopped under a reason they did not have;
+    /// 4. the one report line the run writes is produced and printed.
+    ///
+    /// Returns the terminal the first call settled, and `None` on every later
+    /// call and on a tick neither source settled.
+    pub fn settle(
+        &mut self,
+        world: &mut World,
+        produced: &MissionHostTick,
+    ) -> Option<MissionTerminal> {
+        if self.settled.is_some() {
+            return None;
+        }
+        let (outcome, source, requested_by) = if let Some(outcome) = produced.objectives.outcome {
+            (
+                outcome,
+                MissionTerminalSource::Objectives,
+                produced.objectives.tick.events.iter().find_map(|event| {
+                    matches!(event.kind, ObjectiveEventKind::OutcomeSettled { .. })
+                        .then_some(event.key.source)
+                }),
+            )
+        } else if produced.script.terminal == TerminalState::Running {
+            return None;
+        } else {
+            (
+                outcome_of(produced.script.terminal),
+                MissionTerminalSource::ControlProgram,
+                produced.script.events.iter().find_map(|event| {
+                    matches!(event.kind, EventKind::TerminalRequested(_))
+                        .then_some(event.key.source)
+                }),
+            )
+        };
+
+        // 1./2. The cue queue: the count is what the session still owned.
+        //       (Step 1 is the assignment at the end of this function, which
+        //       is what makes `step` answer "already settled" from now on.)
+        let undrained_cues = self.objectives.pending_cues();
+        let _never_heard = self.objectives.drain_cues();
+
+        // 3. The audio session's pending queues, and what is still bound.
+        let mut audio_loops_bound = 0;
+        if let Some(mut audio) = world.get_resource_mut::<AudioSession>() {
+            let _outcomes = audio.drain();
+            let _radio = audio.drain_radio();
+            audio_loops_bound = audio.router.active_loop_count();
+        }
+        if audio_loops_bound > 0 {
+            self.refusals
+                .push(MissionHostRefusal::MissionAudioStillBound {
+                    count: audio_loops_bound,
+                });
+        }
+
+        // 4. The one line, from the terminal's own record of it.
+        let terminal = MissionTerminal::new(
+            outcome,
+            source,
+            produced.tick,
+            self.generation,
+            requested_by,
+            undrained_cues,
+            audio_loops_bound,
+        );
+        println!("{}", terminal.report_line);
+        self.settled = Some(terminal.clone());
+        Some(terminal)
+    }
+
+    /// The settled terminal, once the run has ended on one.
+    #[must_use]
+    pub const fn terminal(&self) -> Option<&MissionTerminal> {
+        self.settled.as_ref()
     }
 
     /// The tick this host last stepped, when it has stepped one.
@@ -688,6 +842,26 @@ fn offer_startup_rows(animation: &mut MissionAnimationPlayer, binding: &MissionA
     }
 }
 
+/// The outcome a settled control-program terminal state maps to.
+///
+/// `Succeeded` is the declared success. `Failed` and `Aborted` are both
+/// failures: `Aborted` is not a mission outcome this engine reaches from a
+/// record, and a run that somehow carries one must exit nonzero rather than
+/// be swallowed as the success it was not
+/// (`docs/contracts/CLI-EVIDENCE.md`). `Unsupported` is reached only through
+/// a launch refusal, so it cannot arrive from evaluation; it is mapped to
+/// failure for the same reason. `Running` is not an outcome and is never
+/// passed here by the funnel.
+fn outcome_of(state: TerminalState) -> TerminalOutcome {
+    match state {
+        TerminalState::Succeeded => TerminalOutcome::Success,
+        TerminalState::Failed | TerminalState::Aborted | TerminalState::Unsupported => {
+            TerminalOutcome::Failure
+        }
+        TerminalState::Running => TerminalOutcome::Failure,
+    }
+}
+
 /// The composed per-tick entry: one step of the mission host per committed
 /// fixed tick.
 ///
@@ -702,6 +876,14 @@ fn offer_startup_rows(animation: &mut MissionAnimationPlayer, binding: &MissionA
 /// already stands for that tick. A world with no fixed clock or no host runs
 /// nothing at all, which is the "no session, no host" rule the rest of the
 /// composition follows.
+///
+/// A **settled** host runs nothing at all either: the entry checks
+/// [`MissionHost::terminal`] before stepping, so a run that already ended on
+/// one terminal never advances another tick and never writes a second
+/// terminal. When the step it did run settles the host, the entry sends the
+/// terminal's [`MissionExit`](super::terminal::MissionExit) as an
+/// [`AppExit`](bevy::app::AppExit) message, so the windowed run ends and the
+/// headless test reads the very message the process would exit with.
 pub fn mission_host_tick(world: &mut World) {
     let Some(elapsed) = world
         .get_resource::<Time<Fixed>>()
@@ -717,7 +899,7 @@ pub fn mission_host_tick(world: &mut World) {
     };
     if world
         .get_resource::<MissionHost>()
-        .is_some_and(|host| host.last_tick() == Some(tick))
+        .is_some_and(|host| host.terminal().is_some() || host.last_tick() == Some(tick))
     {
         return;
     }
@@ -725,7 +907,13 @@ pub fn mission_host_tick(world: &mut World) {
         return;
     };
     let answer = host.step(world, elapsed);
+    if let Ok(produced) = &answer {
+        host.settle(world, produced);
+    }
     let tick = host.last_tick().unwrap_or(tick);
+    if let Some(terminal) = host.terminal() {
+        world.write_message(terminal.exit.app_exit());
+    }
     world.insert_resource(host);
     world.insert_resource(MissionHostReport { tick, answer });
 }

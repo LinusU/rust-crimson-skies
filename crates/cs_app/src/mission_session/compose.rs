@@ -50,8 +50,9 @@
 //! * The mission host runs the stage's records per committed tick
 //!   (VS-M01-RT-MISSION-HOST, #1217): this stage prepares them, leaves them
 //!   on [`MissionHostSeed`] and launches them through [`add_composition`].
-//!   A terminal outcome and a restart are still open (#1217's `.02` and
-//!   `.03`), so neither half runs yet.
+//!   A run that settles now ends cleanly with the exit its outcome maps to
+//!   (#1217's `.02`, Rally #1279); a **restart** is still open (#1217's
+//!   `.03`), so nothing is reloaded yet.
 //! * No mission-bound audio source is started, so teardown stops none; the
 //!   sound archives travel on [`super::MissionContent`] for the host stage.
 //! * `R` restarts the player body at the mission's start pose with a fresh
@@ -865,6 +866,12 @@ pub fn teardown(app: &mut App) {
 /// Runs `cs --mission`: composes the window over the satisfied plan and
 /// blocks until it closes. On exit the composition is torn down, so a
 /// process that returns here leaves nothing loaded.
+///
+/// A mission that settles writes the [`AppExit`] its outcome maps to from
+/// inside the composed entry, together with the terminal's one report line,
+/// so this function's [`Ok`] is exactly the `0` a successful run exits with
+/// and its [`MissionCompositionError::Exit`] is the nonzero code a failure or
+/// an extraction exits with.
 ///
 /// # Errors
 ///
