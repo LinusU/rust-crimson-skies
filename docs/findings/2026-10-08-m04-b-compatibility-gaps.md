@@ -153,8 +153,19 @@ Both terminal blocks start dormant with no timed wake (`BEGIN_DORMANT -1`):
 
 | latch | block | named by | edges into it |
 | --- | --- | --- | --- |
-| `INSTANTWIN` | 32 | block 44 `NAP_OBJECTIVE_WHEN_I_COMPLETE [31]` | 1 |
-| `INSTANTLOSS` | 41 | block 20 `WAKE_OBJECTIVE_WHEN_I_COMPLETE [22, 40, 50]` | 1 |
+| `INSTANTWIN` | 32 | block 31 `NAP_OBJECTIVE_WHEN_I_COMPLETE [32, …]` | 1 |
+| `INSTANTLOSS` | 41 | block 27 `NAP_OBJECTIVE_WHEN_I_COMPLETE [41, …]` | 1 |
+
+> **Corrected by M06-B-FU3 (#819), 2026-10-10.** This table previously read
+> the spelled integer as a zero-based record index (`target − 1`), which
+> attributed each latch's edge to the site spelling the *preceding* number:
+> it listed block 44's `NAP [31]` for `INSTANTWIN` and block 20's
+> `WAKE [22, 40, 50]` for `INSTANTLOSS`. Under the measured convention
+> (M02-B-FU3 / #802: the spelled integer is the one-based block number,
+> `dec`'d to an index at parse) the true edges are the ones above — both
+> latches are reached through naps, and block 20's wake is unrelated to the
+> failure latch. See
+> `2026-10-10-m06-b-fu3-objective-address-convention.md`.
 
 No other block ends the mission. Blocks 7, 23, 26, 30 and 33 carry no
 `BEGIN_DORMANT` at all (they are entered through a predecessor's edge).
@@ -162,11 +173,12 @@ No other block ends the mission. Blocks 7, 23, 26, 30 and 33 carry no
 The address walk visits 58 spelled addresses — 24 wake, 7 kill, 23 nap and 4
 `TICK_DEPENDS_ON_OBJ` gate addresses — and **every one lies in `1..=52`**.
 The walk reads the nap's children the way the measured effect splits them:
-child0 is the targeted block index and child1 is the re-wake delay in seconds,
-so a nap contributes exactly one address. Reading the delay as an address
-would report a dangling block the record never addresses (block 19 naps with
-a 90-second delay). Block 42's `TICK_DEPENDS_ON_OBJ [40]` is a *gate on block
-42* from the failure latch's block, not a wake of it, and the test says so.
+child0 is the targeted block's number and child1 is the re-wake delay in
+seconds, so a nap contributes exactly one address. Reading the delay as an
+address would report a dangling block the record never addresses (block 19
+naps with a 90-second delay). Block 42's `TICK_DEPENDS_ON_OBJ [40]` is a
+*gate on block 40* — the block `OBJECTIVE20` wakes — not on the failure
+latch, and the test says so.
 
 ## The M04-specific gap, and why it is not papered over
 
@@ -260,7 +272,7 @@ measured keys, never dropped.
 | `accept_m04_b_the_control_program_is_the_member_that_declares_the_blocks` (retail) | the container's length and digest re-derive from disk; exactly one of the 15 members declares numbered blocks and it is the one the rule picked, the eighth member, with longer members beside it; the record is 52/201/40; an independent walk sees blocks 1..=52 and 201 sites with no refusal and no unclassified record key; the production control binding names the same mission, program, container, digest, member, span and record; the member's own digest re-derives from its bytes |
 | `accept_m04_b_every_directive_m04_spells_has_a_disposition_and_none_is_refused` (retail) | the partition is exactly 2 terminal + 38 measured + 0 unmeasured; the sites sum to 201; both outcome keys answer for their own name and are spelled `Bare` |
 | `accept_m04_b_the_sheet_priorities_are_located_and_resolve_to_measured_operations` (retail) | the three priorities' keys resolve to the measured operations; `TRAVELERS`' two boundaries with their actors and radii; the four `START_TAXI` vehicle names; the two `WAKE_ANIM` targets; `SET_HELP_LABEL … MSG_OBJ_DEFEND` over both carriers; the seven `DEDG` pairs; both `INACTIVE_COMPLETION_COUNT` thresholds against twelve-member lists that all hang off `piratezep`; `TRAVELERS`' three unknowns are still carried |
-| `accept_m04_b_the_terminal_blocks_are_gated_and_every_address_is_in_range` (retail) | `INSTANTWIN` in block 32 and `INSTANTLOSS` in block 41 and nowhere else, both `BEGIN_DORMANT -1`; only blocks 1 and 2 arm a timed self-wake and neither latch is among them; blocks without a dormant marker; the address walk's per-key totals (24/7/23/4 = 58) with no out-of-range address; each latch's in-degree is exactly one completion edge; block 42's gate is a gate, not a wake |
+| `accept_m04_b_the_terminal_blocks_are_gated_and_every_address_is_in_range` (retail) | `INSTANTWIN` in block 32 and `INSTANTLOSS` in block 41 and nowhere else, both `BEGIN_DORMANT -1`; only blocks 1 and 2 arm a timed self-wake and neither latch is among them; blocks without a dormant marker; the address walk's per-key totals (24/7/23/4 = 58) with no out-of-range address; each latch's in-degree is exactly one completion edge — block 31's nap of 32 and block 27's nap of 41, reconciled from the zero-based misreading by #819; nothing gates on the failure latch, and block 42's gate targets block 40 |
 | `accept_m04_b_fu1_the_multi_pair_anim_state_sites_lower_and_m04s_record_completes` (retail, #806) | `ANIM_STATE`'s 3 sites in two shapes (2 operands ×1, 18 ×2); all 201 calls bind with no unbound key; all 52 conditions lower — blocks 23 and 37 hold eight descriptors with `required` 1 and 3 from the in-list `COMPLETION_COUNT`, block 32 the one `EXECUTED` pair; `MissionProgram::validate` accepts and the row is complete |
 | `accept_m04_b_fu1_m04_is_complete_and_the_campaign_stays_unready` (retail, #806) | M04 is a complete census row, the campaign gate still stays closed on other missions' gaps, and the row is still reported as measured |
 | `accept_m04_b_fu1_a_multi_pair_site_lowers_with_its_count_override` (synthetic, #806) | on authored records: the `COMPLETION_COUNT` + two-descriptor spelling lowers the measured way — both pairs appended in order, the count overwriting `required`, the operand list binding as one call argument |
