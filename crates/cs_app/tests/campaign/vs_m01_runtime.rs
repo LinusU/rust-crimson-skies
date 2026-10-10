@@ -12,9 +12,11 @@
 //! The synthetic tests exercise the two failure/verdict surfaces any
 //! installation can reach: an undiscoverable installation is refused by name,
 //! and the plan's gate reports each blocking surface with its mechanism. The
-//! retail test is `#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]`: it measures M01's
-//! real closure and asserts the missing mechanisms the implementation is
-//! blocked on are named, not guessed.
+//! retail tests are `#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]`:
+//! they measure M01's real closure end to end — every surface satisfied, the
+//! gate naming no gap, and the launch stopping exactly at the composition
+//! seam. The `world_geometry` verdict itself, and the zero-gap plan it is part
+//! of, are `vs_m01_geometry_verdict.rs`'s members.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

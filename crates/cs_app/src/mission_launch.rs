@@ -649,7 +649,12 @@ fn measure_geometry(
 /// that accessor measures an **overlap** (how many grid-named records the
 /// original's fog consumer keys), not something no stage has answered, and
 /// every record it covers now resolves role `None`.
-fn geometry_verdict(report: &WorldImportReport) -> SurfaceVerdict {
+///
+/// The campaign suite drives this directly
+/// (`crates/cs_app/tests/campaign/vs_m01_geometry_verdict.rs`) because the
+/// verdict is the whole of what the `world_geometry` surface reports; the
+/// retail half of that suite reads it back through [`plan_mission_launch`].
+pub fn geometry_verdict(report: &WorldImportReport) -> SurfaceVerdict {
     let unresolved = report.objects_unresolved_collision();
     let unindexed = report.objects_unindexed_unresolved();
     let grid_named = unresolved.saturating_sub(unindexed);
