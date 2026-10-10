@@ -268,6 +268,7 @@ mod m05_b;
 mod m06_a;
 mod m06_b;
 mod m06_b_fu2;
+mod m06_b_fu4;
 mod m07_a;
 mod m07_b;
 mod m08_a;
