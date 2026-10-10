@@ -1373,6 +1373,65 @@ pub fn read_playtest_sources(
     })
 }
 
+/// What an airframe's drawn visual is read from when the caller's world is
+/// already loaded: `zbd/planes.zbd` and the group's texture archive — the two
+/// members of [`PlaytestSources`] the aircraft half of this module uses,
+/// without the world container [`read_playtest_sources`] also reads.
+///
+/// The mission composition reads the world through its own residency path
+/// and needs only this half for the player's airframe
+/// (VS-M01-RT-PLAYER-AIRFRAME-VISUAL, #1216).
+#[derive(Clone, Debug)]
+pub struct AircraftSources {
+    installation: String,
+    aircraft: PlaytestContainer,
+    textures: std::sync::Arc<PlaytestTextureArchive>,
+}
+
+impl AircraftSources {
+    /// The installation fingerprint production discovery measured.
+    #[must_use]
+    pub fn installation(&self) -> &str {
+        &self.installation
+    }
+
+    /// The container the aircraft is read from.
+    #[must_use]
+    pub const fn aircraft(&self) -> &PlaytestContainer {
+        &self.aircraft
+    }
+
+    /// The texture archive the aircraft's materials are looked up in.
+    #[must_use]
+    pub fn textures(&self) -> &PlaytestTextureArchive {
+        &self.textures
+    }
+}
+
+/// Reads the airframe container and the texture archive out of an
+/// installation, through the same production discovery pass
+/// [`read_playtest_sources`] runs — one [`install::discover`], one
+/// [`read_container`] and one [`PlaytestTextureArchive::open`], never a
+/// second parser.
+///
+/// # Errors
+///
+/// The same variants [`read_playtest_sources`] documents, minus the world
+/// container's read.
+pub fn read_aircraft_sources(
+    install_root: &Path,
+    world_group: &str,
+) -> Result<AircraftSources, PlaytestError> {
+    let found = install::discover(install_root)?;
+    let aircraft = read_container(&found, "planes", AIRCRAFT_CONTAINER_KEY)?;
+    let textures = PlaytestTextureArchive::open(install_root, &found, world_group)?;
+    Ok(AircraftSources {
+        installation: install::fingerprint(&found.manifest).to_string(),
+        aircraft,
+        textures: std::sync::Arc::new(textures),
+    })
+}
+
 /// Reads one container out of an already-inventoried installation.
 ///
 /// The path comes from the manifest's own `relative_spelling`, not a re-joined
@@ -3056,47 +3115,52 @@ pub fn spawn_playtest_scene(
     place_capture_scene(app, sources, config, content)
 }
 
-/// Steps 1–3 of [`spawn_playtest_scene`] and the aircraft mesh upload, without
-/// the aircraft entity, the camera or the lights: the original area spawned
-/// into `app` as world records with mesh-derived colliders, and the aircraft's
-/// mesh uploaded as an engine asset.
+/// The drawn half of one airframe subtree: the parts a caller spawns under
+/// its own parent, the measured propeller spin spec, and the report of what
+/// the selection drew and refused.
 ///
-/// The free-flight playtest (`cs --playtest --cs-path`) builds on this: it owns
-/// the aircraft as a flight body and the camera as the chase rig, so it must not
-/// get the capture scene's static aircraft entity or capture camera.
+/// [`spawn_playtest_content`] runs this for the playtest scene's airframe;
+/// the mission composition runs the same code for M01's player airframe
+/// (VS-M01-RT-PLAYER-AIRFRAME-VISUAL, #1216) — one selection rule, one mesh
+/// upload path, one textured-piece cut.
+pub struct AircraftVisual {
+    /// One drawable part per drawn binding, in the graph's preorder.
+    pub parts: Vec<AircraftPartAsset>,
+    /// The drawn propeller's measured spin spec when the drawn set holds the
+    /// pinned propeller node. The free-flight playtest spins it; a caller
+    /// without a spin system draws it where the spawn put it.
+    pub propeller: Option<PropellerSpinSpec>,
+    /// What the airframe read: the selection, the drawn parts and every
+    /// binding it did not draw, with its reason.
+    pub report: PlaytestAircraftReport,
+}
+
+/// The aircraft half of [`spawn_playtest_content`], callable on its own:
+/// builds the `SceneGraph` over the airframe container, resolves the pinned
+/// [`select_aircraft_parts`] selection (`config`'s `aircraft_*` fields),
+/// uploads each drawn mesh through the F17-B adapter and cuts it into
+/// textured (or neutral) pieces ready for [`AircraftPartAsset::spawn`].
+///
+/// Nothing here spawns an entity: the caller decides the parent — the
+/// playtest's static aircraft entity, or the mission composition's player
+/// body. The caller also owns the `TextureBinder`, so one binder can serve
+/// the caller's other meshes beside the airframe's; [`TextureBinder::finish`]
+/// is the caller's to call.
 ///
 /// # Errors
 ///
-/// The refusals [`spawn_playtest_scene`] documents for steps 1–3.
-pub fn spawn_playtest_content(
+/// [`PlaytestError::AircraftNode`] when the root name resolves to no root, a
+/// pinned slot holds the wrong name, no drawn mesh builds or the LOD rule
+/// refuses; [`PlaytestError::World`] when the composed extent or a part's
+/// transform is refused.
+pub fn build_aircraft_visual(
     app: &mut App,
-    sources: &PlaytestSources,
+    aircraft: &PlaytestContainer,
+    binder: &mut TextureBinder,
     config: &PlaytestConfig,
-) -> Result<PlaytestContent, PlaytestError> {
+) -> Result<AircraftVisual, PlaytestError> {
     let adapter = playtest_adapter()?;
-    let (graph, root) = area_graph(sources.world(), config.area_node_slot, &adapter)?;
-    let root_name = graph
-        .node(&root)
-        .map(|node| node.name().to_owned())
-        .unwrap_or_default();
-    if root_name != config.area_node_name {
-        return Err(PlaytestError::AreaNode {
-            slot: config.area_node_slot,
-            found: Some(root_name),
-        });
-    }
-    let node_count = graph.subtree(&root).len();
-    let area_selection = select_area_parts(
-        &graph,
-        &root,
-        config.area_lod_distance_m,
-        config.select_area_variants,
-        config.hide_flat_colour_cards,
-        sources.world(),
-    )?;
-
-    // -- the aircraft, read before anything is spawned ----------------------
-    let planes = aircraft_graph(sources.aircraft(), &adapter)?;
+    let planes = aircraft_graph(aircraft, &adapter)?;
     let airframe =
         planes
             .root(&config.aircraft_root_name)
@@ -3130,7 +3194,7 @@ pub fn spawn_playtest_content(
                 continue;
             }
         };
-        let render = match render_of(sources.aircraft(), binding.index) {
+        let render = match render_of(aircraft, binding.index) {
             Ok(render) => render,
             Err(error) => {
                 undrawn.push(refuse(format!("the stored mesh would not build: {error}")));
@@ -3176,6 +3240,114 @@ pub fn spawn_playtest_content(
         aircraft_bounds.max()[1] - aircraft_bounds.min()[1],
         aircraft_bounds.max()[2] - aircraft_bounds.min()[2],
     ];
+
+    let mut aircraft_parts: Vec<AircraftPartAsset> = Vec::new();
+    let mut part_reports: Vec<AircraftPartReport> = Vec::new();
+    for (node, id) in &built {
+        let uploaded = aircraft_meshes
+            .get(id)
+            .ok_or_else(|| PlaytestError::World {
+                reason: format!(
+                    "the aircraft mesh {} is not registered after being uploaded",
+                    id.key()
+                ),
+            })?;
+        let handle: Handle<Mesh> = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(uploaded.mesh().clone());
+        let pieces = binder.parts(
+            app,
+            aircraft,
+            uploaded,
+            NeutralColor(AIRCRAFT_MATERIAL_COLOR),
+            node.mesh().map_or(0, |binding| binding.index),
+        );
+        let local = crate::scene::NodeVisualTransform::from_canonical(node.visual_transform())
+            .map_err(|error| PlaytestError::World {
+                reason: format!("aircraft node {} would not convert: {error}", node.index()),
+            })?
+            .global()
+            .compute_transform();
+        aircraft_parts.push(AircraftPartAsset {
+            node_slot: node.index(),
+            node_name: node.name().to_owned(),
+            mesh: handle,
+            pieces,
+            local,
+        });
+        part_reports.push(AircraftPartReport {
+            node_slot: node.index(),
+            node_name: node.name().to_owned(),
+            mesh_index: node.mesh().map_or(0, |binding| binding.index),
+            mesh: id.clone(),
+            triangles: uploaded.triangles(),
+            groups: uploaded.group_count(),
+            fingerprint: uploaded.fingerprint(),
+            composed_translation_m: node.world_transform().translation(),
+        });
+    }
+    let report = PlaytestAircraftReport {
+        container_key: aircraft.container_key().to_owned(),
+        root_name: config.aircraft_root_name.clone(),
+        intact_node_slot: config.aircraft_intact_node_slot,
+        intact_node_name: config.aircraft_intact_node_name.clone(),
+        lod_distance_m: config.aircraft_lod_distance_m,
+        selected_lod: selection
+            .selected_lod
+            .map(|node| (node.index(), node.name().to_owned())),
+        lod_coverage: selection.coverage,
+        hidden_lods: selection.hidden_lods,
+        parts: part_reports,
+        undrawn,
+        airframe_bindings: selection.airframe_bindings,
+        extent_m: aircraft_extent,
+    };
+    Ok(AircraftVisual {
+        parts: aircraft_parts,
+        propeller,
+        report,
+    })
+}
+
+/// Steps 1–3 of [`spawn_playtest_scene`] and the aircraft mesh upload, without
+/// the aircraft entity, the camera or the lights: the original area spawned
+/// into `app` as world records with mesh-derived colliders, and the aircraft's
+/// mesh uploaded as an engine asset.
+///
+/// The free-flight playtest (`cs --playtest --cs-path`) builds on this: it owns
+/// the aircraft as a flight body and the camera as the chase rig, so it must not
+/// get the capture scene's static aircraft entity or capture camera.
+///
+/// # Errors
+///
+/// The refusals [`spawn_playtest_scene`] documents for steps 1–3.
+pub fn spawn_playtest_content(
+    app: &mut App,
+    sources: &PlaytestSources,
+    config: &PlaytestConfig,
+) -> Result<PlaytestContent, PlaytestError> {
+    let adapter = playtest_adapter()?;
+    let (graph, root) = area_graph(sources.world(), config.area_node_slot, &adapter)?;
+    let root_name = graph
+        .node(&root)
+        .map(|node| node.name().to_owned())
+        .unwrap_or_default();
+    if root_name != config.area_node_name {
+        return Err(PlaytestError::AreaNode {
+            slot: config.area_node_slot,
+            found: Some(root_name),
+        });
+    }
+    let node_count = graph.subtree(&root).len();
+    let area_selection = select_area_parts(
+        &graph,
+        &root,
+        config.area_lod_distance_m,
+        config.select_area_variants,
+        config.hide_flat_colour_cards,
+        sources.world(),
+    )?;
 
     // -- the area's records --------------------------------------------------
     let provenance = sources.world().provenance()?;
@@ -3314,53 +3486,14 @@ pub fn spawn_playtest_content(
         }
     }
 
-    // -- the aircraft --------------------------------------------------------
-    let mut aircraft_parts: Vec<AircraftPartAsset> = Vec::new();
-    let mut part_reports: Vec<AircraftPartReport> = Vec::new();
-    for (node, id) in &built {
-        let uploaded = aircraft_meshes
-            .get(id)
-            .ok_or_else(|| PlaytestError::World {
-                reason: format!(
-                    "the aircraft mesh {} is not registered after being uploaded",
-                    id.key()
-                ),
-            })?;
-        let handle: Handle<Mesh> = app
-            .world_mut()
-            .resource_mut::<Assets<Mesh>>()
-            .add(uploaded.mesh().clone());
-        let pieces = binder.parts(
-            app,
-            sources.aircraft(),
-            uploaded,
-            NeutralColor(AIRCRAFT_MATERIAL_COLOR),
-            node.mesh().map_or(0, |binding| binding.index),
-        );
-        let local = crate::scene::NodeVisualTransform::from_canonical(node.visual_transform())
-            .map_err(|error| PlaytestError::World {
-                reason: format!("aircraft node {} would not convert: {error}", node.index()),
-            })?
-            .global()
-            .compute_transform();
-        aircraft_parts.push(AircraftPartAsset {
-            node_slot: node.index(),
-            node_name: node.name().to_owned(),
-            mesh: handle,
-            pieces,
-            local,
-        });
-        part_reports.push(AircraftPartReport {
-            node_slot: node.index(),
-            node_name: node.name().to_owned(),
-            mesh_index: node.mesh().map_or(0, |binding| binding.index),
-            mesh: id.clone(),
-            triangles: uploaded.triangles(),
-            groups: uploaded.group_count(),
-            fingerprint: uploaded.fingerprint(),
-            composed_translation_m: node.world_transform().translation(),
-        });
-    }
+    // -- the aircraft's drawn parts ------------------------------------------
+    // One selection-and-build path serves both this scene and the mission
+    // composition's player visual (#1216): [`build_aircraft_visual`].
+    let AircraftVisual {
+        parts: aircraft_parts,
+        propeller,
+        report: aircraft,
+    } = build_aircraft_visual(app, sources.aircraft(), &mut binder, config)?;
     let textures = binder.finish();
     // The area's records keep their whole-mesh `Mesh3d` (the collider is derived
     // from it) but carry **no** material of their own, so the engine does not
@@ -3395,22 +3528,6 @@ pub fn spawn_playtest_content(
         bounds,
         refused,
         gaps,
-    };
-    let aircraft = PlaytestAircraftReport {
-        container_key: sources.aircraft().container_key().to_owned(),
-        root_name: config.aircraft_root_name.clone(),
-        intact_node_slot: config.aircraft_intact_node_slot,
-        intact_node_name: config.aircraft_intact_node_name.clone(),
-        lod_distance_m: config.aircraft_lod_distance_m,
-        selected_lod: selection
-            .selected_lod
-            .map(|node| (node.index(), node.name().to_owned())),
-        lod_coverage: selection.coverage,
-        hidden_lods: selection.hidden_lods,
-        parts: part_reports,
-        undrawn,
-        airframe_bindings: selection.airframe_bindings,
-        extent_m: aircraft_extent,
     };
     Ok(PlaytestContent {
         definition,
