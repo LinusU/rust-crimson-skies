@@ -28,7 +28,10 @@
 //!   where each name is declared: every other actor the record names resolves
 //!   in a member of the archive, while `britkestrel_1` is declared by
 //!   **no archive in the installation** — that gap is recorded, not worked
-//!   around;
+//!   around — and the whole record is covered, not only the seventeen-name
+//!   table: of the 63 distinct texts its sites spell, all but three
+//!   (`britkestrel_1` and the two `MSG_…` operands of the `IDENTITY` sites)
+//!   are declared somewhere outside the control member that spells them;
 //! * **optional versus mandatory outcome** is the two latches: `INSTANTLOSS`
 //!   (block 7) and `INSTANTWIN` (block 16), each dormant with no timed wake and
 //!   each named by exactly one nap, with disjoint prerequisite closures; the 20
@@ -96,6 +99,10 @@ const BLOCKS: u32 = 38;
 const SITES: u32 = 178;
 /// The distinct directive keys of the control member.
 const KEYS: usize = 36;
+/// The distinct text nodes the record's directive sites spell — actors, engine
+/// and state chains, keywords, sound and message operands. Full-coverage claims
+/// below are measured against this count.
+const NAMED_TEXTS: usize = 63;
 
 fn game_dir() -> PathBuf {
     PathBuf::from(std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {
@@ -381,6 +388,47 @@ fn declarations_of(name: &str) -> Vec<(String, String)> {
     hits.sort();
     hits.dedup();
     hits
+}
+
+/// Every distinct `.zrd` text node the whole installation declares **outside**
+/// M13's control member, collected in one pass.
+///
+/// [`declarations_of`] decodes every reader container once per name, which is
+/// right for the one or two names a test asks about. The full-coverage
+/// assertion below asks the same question of every one of the
+/// [`NAMED_TEXTS`] texts the record spells, so it pays the walk once and
+/// skips the site that spells them — that is what keeps "the installation
+/// declares this name" and "only this record mentions it" apart.
+fn installation_texts_outside_control() -> BTreeSet<String> {
+    let found = discover(&game_dir()).expect("production discovery reads the installation");
+    let mut texts = Vec::new();
+    for record in &found.manifest.files {
+        let spelling = record.relative_spelling.as_str();
+        if !spelling.to_lowercase().ends_with(".zbd") {
+            continue;
+        }
+        let Ok(relative) = RelativePath::new(&spelling.to_lowercase()) else {
+            continue;
+        };
+        let bytes = std::fs::read(found.manifest.host_root.join(spelling))
+            .unwrap_or_else(|error| panic!("read {spelling}: {error}"));
+        let discovery = discover_container(&relative.logical_key(), &relative, &bytes);
+        for program in discovery.programs() {
+            let Some(member) = program.locator().member() else {
+                continue;
+            };
+            if spelling.eq_ignore_ascii_case(CONTAINER) && member == CONTROL_MEMBER {
+                continue;
+            }
+            let Ok(document) = decode_zrd(program.bytes()) else {
+                continue;
+            };
+            walk_texts(&document, &mut texts);
+        }
+    }
+    texts.sort();
+    texts.dedup();
+    texts.into_iter().collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -974,6 +1022,13 @@ fn accept_m13_b_the_damage_ladder_and_the_dependency_gates_are_record_data() {
 ///
 /// Nothing here guesses what the original does with an undeclared name; the
 /// gap is measured and filed (`docs/findings/2026-10-10-m13-b-compatibility-gaps.md`).
+///
+/// The table is representative, so the last block below closes it: every one of
+/// the [`NAMED_TEXTS`] distinct texts the record spells is declared somewhere
+/// outside M13's control member, except a measured set of three — the
+/// `SET_AI_NET` actor and the two `MSG_…` operands of the `IDENTITY` sites.
+/// That assertion is what makes the test's name true for *every* actor and
+/// operand the record names, not only the seventeen the table walks.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data_but_one() {
@@ -1088,6 +1143,30 @@ fn accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data_but_on
     assert!(
         !world.iter().any(|text| text == "britkestrel_1"),
         "the node index does not declare the actor"
+    );
+
+    // Full coverage: the seventeen names above are a table, not the whole
+    // record, so ask the same question of every text the record spells. All
+    // but three are declared somewhere outside the control member that spells
+    // them; that exception set is measured over the installation, not chosen —
+    // the `SET_AI_NET` actor of block 25 and the two `MSG_…` operands the
+    // `IDENTITY` sites of blocks 15 and 16 spell.
+    assert_eq!(
+        named.len(),
+        NAMED_TEXTS,
+        "the record spells this many distinct texts, so the check below covers all of them"
+    );
+    let declared_elsewhere = installation_texts_outside_control();
+    let record_only: Vec<&str> = named
+        .iter()
+        .filter(|name| !declared_elsewhere.contains(name.as_str()))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        record_only,
+        ["MSG_BRF_HAM3_OBJ1", "MSG_BRF_HAM3_OBJ2", "britkestrel_1"],
+        "every text the record spells has a declaration outside M13's control member, except \
+         these three"
     );
 }
 
