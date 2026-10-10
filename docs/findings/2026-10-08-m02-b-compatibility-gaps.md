@@ -142,13 +142,28 @@ no timing, count or coordinate the record does not spell:
   thresholds; the independent re-walk asserts each threshold is a positive
   count no larger than the member lists its own block spells — "destroy N of
   M" is record data, not a guess.
-- **The block graph is closed except for one measured dangling address.**
+- **The block graph is closed; every spelled address is in range.**
   M02's block `OBJECTIVE13` spells `WAKE_OBJECTIVE_WHEN_I_COMPLETE [14, 50]`
-  while the record declares 50 blocks (indices 0…49): zero-based index 50 is
-  past the record's own end. It is the only out-of-range address in the
-  mission. What the original does with it — ignore, clamp, log, or
-  something else — is **unmeasured**; the test pins the fact and the engine's
-  behaviour is filed as #802 (`M02-B-FU3`). The test never silently clamps.
+  and the record declares 50 blocks numbered 1…50: under the measured
+  convention the spelled integer is the *one-based block number*, so `50`
+  names `OBJECTIVE50`, the last block, and no address points past the
+  record's own end. What the original does with a genuinely out-of-range
+  address — none exists in M02 — is **unmeasured**; the engine-side rule
+  (`cs_sim::objectives::address`) refuses it by name and the test never
+  silently clamps.
+
+  > **Corrected by M02-B-FU3 (#802) and M06-B-FU3 (#819), 2026-10-10.** This
+  > bullet previously read the spelled integer as a *zero-based record
+  > index*, called `50` dangling and left "what the original does with it"
+  > open as #802. #802 measured the parse's `dec` at `0x468c40`/`0x468cf0`/
+  > `0x4679fc` — the spelled value is the block number, decremented at
+  > storage — so the address was never dangling, and #819 reconciled the
+  > test to the convention. See
+  > `2026-10-09-m02-b-fu3-out-of-range-wake-address.md` for the measurement
+  > and `2026-10-10-m06-b-fu3-objective-address-convention.md` for the
+  > reconciliation. The same misreading also under-counted the success
+  > latch's edge: block 15 is named by `OBJECTIVE14`'s
+  > `NAP_OBJECTIVE_WHEN_I_COMPLETE [15, 22.0]` — a nap, not a wake.
 
 ## The measured compatibility gap, and why it is not papered over
 
@@ -219,7 +234,7 @@ make; this stage records the evidence and does not pre-decide it.
 | --- | --- |
 | `accept_m02_b_m02s_control_program_is_bound_to_the_same_identities_as_its_mission_binding` (retail) | the control binding and M02-A's mission binding name one mission (`mission/ch1-m02`) and one program (`script/c1-m02-zrdr`); the archive's length and digest re-derive from disk; exactly one member declares numbered blocks and it is the member the binding names; the member's span lies inside the archive and its digest re-derives from the member's own bytes; a longer member exists and the control member is not the first, so size and position are not the rule; the census read through its own discovery path names the same container, the same member and the same record |
 | `accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key` (retail) | 50 blocks / 190 sites / 36 keys; sites sum to the record total; the partition is exactly 2 implemented + 34 measured + 0 unmeasured; every measured key names operation, effect and evidence; the outcome keys are bare and answer only for their own names; the five measured record fields each occur once; the five record-level sound keys are named and stay outside the vocabulary |
-| `accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_invented` (retail) | an independent production re-walk of the control member sees every block; every cross-objective address is in range except the one measured dangling address (`OBJECTIVE13` → 50); one success latch woken by exactly one block; two failure latches; five remaining-target thresholds each no larger than their block's member lists; the target-flag and inactive-member vocabularies are spelled; the census and the binding agree on one measurement |
+| `accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_invented` (retail) | an independent production re-walk of the control member sees every block; every cross-objective address is in range under the measured one-based rule (`OBJECTIVE13` → 50 names `OBJECTIVE50`; reconciled from the zero-based misreading by #819); one success latch napped by exactly one block (OBJECTIVE14); two failure latches (OBJECTIVE24 named by block 3's kill and block 19's nap, OBJECTIVE36 by block 7's nap); five remaining-target thresholds each no larger than their block's member lists; the target-flag and inactive-member vocabularies are spelled; the census and the binding agree on one measurement |
 | `accept_m02_b_fu1_the_kill_sites_lower_through_one_list_argument_and_m02_lowers` (retail; renamed from `accept_m02_b_the_lowering_gap_is_named_and_the_campaign_gate_stays_closed` by #800) | M02's control record lowers completely: no unbound key, no unmet row, every site bound through a measured signature, every completion condition lowered, the bound program validating; the kill key still disagrees in shape and still spells a shape over `MAX_CALL_ARGS`, but registers one single-list signature per measured shape and every one of its eight sites carries its index list as one `Value::List` argument; the census row is complete and M02 joins the complete rows only through the census's own verdict |
 | `accept_m02_b_the_control_rule_refuses_an_archive_without_or_with_two_control_members` (synthetic) | the rule refuses an archive with no block-carrying member (naming the container and the member count) and one with two (naming both, sorted), and chooses the single carrier from its own record |
 | `accept_m02_b_the_vocabulary_partition_is_exact_on_an_authored_record` (synthetic) | on an authored record: bare outcome implements, covered key measures, unknown key stays unmeasured, sites sum, an unclassified record key is named not read, a measured record field is counted |
