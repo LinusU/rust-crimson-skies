@@ -10,9 +10,9 @@
 //!   is refused with the path or logical key the reader failed at — never a
 //!   partially filled `MissionContent`, never a default (AGENTS.md rules 4
 //!   and 5). The synthetic member drives that path in CI.
-//! * **Against the owner's installation, the read runs to its end.** The
-//!   retail member runs `prepare` over M01's real plan and asserts where it
-//!   stops.
+//! * **Against the owner's installation, the read runs the whole list and
+//!   names where it stops.** The retail member runs `prepare` over M01's real
+//!   plan and asserts that stop.
 //!
 //! # Where it stops today, and why
 //!
@@ -110,11 +110,11 @@ fn accept_vs_m01_runtime_content_an_unreadable_installation_is_refused_with_its_
 ///
 /// The variant alone is the evidence: preparation reads the objective recovery
 /// last, so `Objectives` means the world container imported, the start
-/// airframe and pose resolved `Known`, the campaign flight record imported,
-/// the weather session started, the three world actors launched, the animation
-/// join bound, the control lowering completed and the sound walk found an
-/// archive — a refusal in any of those would have been reported under its own
-/// variant instead.
+/// airframe and pose resolved `Known`, the campaign flight record imported
+/// with its fuel load, the weather session started, the world-actor binding
+/// launched its session, the animation join bound, the control lowering
+/// completed and the sound walk found an archive — a refusal in any of those
+/// would have been reported under its own variant instead.
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_content_m01_prepares_every_record_but_the_objectives_program() {
