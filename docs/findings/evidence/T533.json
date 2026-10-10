@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "T533",
- "candidate_tree": "3068343e5d23f800e5ae730e266094e81b8cbf0e",
+ "candidate_tree": "1cc0ac5b46657719e2923ae92e81a971c033d6a2",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-10-10T22:20:41Z",
+ "created_at": "2026-10-10T22:24:58Z",
  "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_t533_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-1", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
@@ -12,7 +12,7 @@
  "capabilities": ["retail", "synthetic"],
  "tests": {"discovered": 3, "executed": 3, "passed": 3, "failed": 0, "ignored": 0},
  "assertions": [{"id": "accept_t533_flythrough_label_rule_either_label_selects_a_record", "status": "pass", "evidence": ["cargo-test.log", "label-rule-census.json"]}, {"id": "accept_t533_flythrough_label_rule_the_survey_counts_help_only_records", "status": "pass", "evidence": ["cargo-test.log", "label-rule-census.json"]}, {"id": "accept_t533_flythrough_label_rule_retail_the_whole_corpus_under_the_chosen_rule", "status": "pass", "evidence": ["cargo-test.log", "label-rule-census.json"]}],
- "artifacts": [{"path": "cargo-test.log", "sha256": "823394aa72a1c94b943b68044a377dd32b2b0482c8e4c06541cc0a3b20060fe7", "kind": "log"}, {"path": "label-rule-census.json", "sha256": "26439c7ef8e7fc7648dd1ee77fb483866d82fde2a3c8a042ecb722a88b578242", "kind": "json"}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "295f00272ed68a9f4ac31ffecf92e033ee5dfe4abf8b3e5f262faeec0ddfe032", "kind": "log"}, {"path": "label-rule-census.json", "sha256": "3a3b5a1887555ad10009f333a70a527da8ec3d62ce56a2b4aa661db5f1f47b25", "kind": "json"}],
  "unknowns": [],
  "review": {"identity": "bunny-alpha-1 (implementing agent, fresh session)", "method": "Acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run of cs_app::stunts::survey_retail_stunt_authority over every reader archive of the installation (label-rule-census.json): per reader, the objective-record count, the count task #533's label rule (either measured label) selects and the count the label-only reading selects, plus the three help-only campaign records named by container, description and node. Claim is implemented only: the label RULE is decided and measured, but no original run happened, so nothing here is evidence of the original's runtime behaviour — whether the original's engine awarded a stunt for these three campaign objectives is unrecorded, and RETAIL here is read access to files. LIMITS OF WHAT WAS MEASURED, each outside this task's scope and recorded in docs/findings/2026-10-10-t533-fly-through-label-rule.md: (1) the campaign dzones.zrd bindings (objective_numbers, disable, nosnapshot) remain unmeasured — task #513 owns that member's framing; (2) the zone-crossing predicate, direction and clearance rules, the payout, the repeat policy and the linked photo remain unmeasured (F42-A/#464); (3) which aircraft a zone crossing credits remains unmeasured (#465); (4) the three help-only records are wired into their missions' objective machines (ADD/REMOVE_OBJECTIVE_TARGET, and TRAVELERS on C5/M02's dz1) — that is a statement about the data, not about runtime behaviour. Validated with tools/validate_evidence.py --require-pass."},
  "claim": "implemented"
