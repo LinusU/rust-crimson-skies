@@ -160,12 +160,49 @@ Consequences:
   (#1214–#1218) merge, and those subtasks branch from `main`, which does not have the fix. The
   verdict change needs its own task/branch to land independently.
 
-## What was not done
+## What was built, and what still cannot be claimed
 
-No `crates/cs_app/src/mission_session/` code was written and no `accept_vs_m01_runtime_content_*`
-test exists yet. Writing them before the two questions above are answered would either commit a
-test that asserts a refusal the acceptance describes as a success, or drop item 7 from a task whose
-acceptance enumerates it — both are decisions for the owner, not for the implementer
-(AGENTS.md rules 4 and 5).
+`crates/cs_app/src/mission_session/` implements the whole stage:
+`MissionContent::prepare(install_root, plan)` (and the module entry
+`mission_session::prepare_mission_content`) reads all nine records the task
+lists — world container → import → uploaded meshes → `WorldInstance`, player
+start, campaign flight record, weather session, world-actor binding, animation
+join, control lowering, sound archives, objective recovery — each through the
+named production reader, each refusal a `MissionSessionError` variant carrying
+that reader's own message and its source key.
 
-#1214 was blocked with this note attached; the follow-up work is filed as separate tasks.
+**Measured on the owner's installation** (`cargo test --workspace --locked --
+accept_vs_m01_runtime_content_ --include-ignored`, 2 tests, both passing):
+
+* `accept_vs_m01_runtime_content_an_unreadable_installation_is_refused_with_its_source`
+  — an empty directory is refused with the source it failed at.
+* `accept_vs_m01_runtime_content_m01_prepares_every_record_but_the_objectives_program`
+  — M01's real plan runs through preparation and stops at an `Objectives`
+  refusal whose text is the recovery's own. Because preparation asks the
+  objective recovery **last**, that variant is the proof that the world
+  imported, the start airframe and pose arrived `Known`, `pdevastator`
+  imported with its fuel load, the weather session started, the world actors
+  launched, the animation join bound, the control lowering completed and the
+  sound walk found an archive — a refusal in any of those would have been
+  reported under its own variant.
+
+So items 1-6, 8 and 9 are done and measured. Item 7 is not, and cannot be
+until one of the two routes above is chosen. The task's acceptance — "asserting
+M01's content prepares … objectives program lowers" — is therefore **not met**,
+and no test in this branch claims it is.
+
+Checks run on this branch, after rebasing onto `origin/main` `0155e295` (Rust
+dev profile, from the repository root):
+
+| check | result |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 — 491 `test result` lines, 0 failed (run on `ad879fee` + this branch, before the rebase; the four commits the rebase brought in touch none of this branch's files, so the owner's 2026-10-01 re-push rule applies and CI re-runs it on the pushed commit) |
+| `cargo test --workspace --locked -- accept_vs_m01_runtime_content_ --include-ignored` | 0 — 2 passed (the retail member runs 549 s) |
+
+#1214 was handed back **blocked** with this note attached, not submitted for
+review: an acceptance criterion production cannot satisfy is a decision for the
+owner, not something an implementer quietly rewrites (AGENTS.md rules 4 and 5).
+The follow-up work is filed as #1219 (the objective recovery) and #1220 (the
+stale `world_geometry` verdict on `main`).
