@@ -1,23 +1,32 @@
 //! Rally #1157 `EVIDENCE-CONTENT-DIGEST-OUTLIERS`: three committed
-//! acceptance reports carry a `content_sha256` that production discovery
-//! does not reproduce.
-//!
-//! `source.content_sha256` is the installation's canonical-content
-//! fingerprint — `cs_assets::install::content_fingerprint` over **every**
-//! manifest row (`docs/contracts/CLI-EVIDENCE.md`: "installation/
-//! canonical-content hash"). Every committed report carries it except
-//! three: F05-D, F12-J and T351 each recorded a *task-scoped* digest of
-//! only the content their stage exercised, written by private harnesses
-//! that were never committed and no longer exist
+//! acceptance reports carried a `content_sha256` that production discovery
+//! does not reproduce — a *task-scoped* digest of only the content their
+//! stage exercised, written by private harnesses that were never committed
 //! (`docs/findings/2026-10-10-evidence-content-digest-outliers.md`).
 //!
-//! These tests are the sentinel that keeps the anomaly bounded to those
-//! three reports until Rally #1174 repairs them: the first runs anywhere
-//! and fails on a new outlier or on a repair that forgets to update the
-//! allowlist; the two retail runs re-derive the canonical fingerprints
-//! and each scoped value through production code, proving the recorded
-//! values are scoped digests rather than install drift — and that the
-//! field they sit in means something else.
+//! Rally #1174 `EVIDENCE-CONTENT-DIGEST-OUTLIERS-REPAIR` repaired all three
+//! by reissuing them through the committed harnesses
+//! `crates/cs_app/tests/campaign/evidence/{f05_d,f12_j,t351}.rs`, which
+//! derive `source.content_sha256` from production `discover` +
+//! `content_fingerprint`, keep `review.identity` byte-unchanged and append
+//! the regeneration facts to `review.method`. The allowlist of outliers is
+//! therefore **empty**, and that is what this file pins:
+//!
+//! * the first test runs anywhere and fails on any report whose content
+//!   fingerprint is not this installation's canonical one, so a scoped
+//!   digest can never come back — including by reverting one of the three
+//!   reissued reports;
+//! * the second re-measures the pair through production discovery and
+//!   compares every report against it;
+//! * the third re-derives each of the three documented scoped digests from
+//!   the installation through the production readers, so the findings
+//!   document's record stays reproducible, and fails if any committed report
+//!   still carries one of them;
+//! * the two `..._repair_` tests are the repair's own acceptance: the three
+//!   reissued reports carry the canonical fingerprint, record their
+//!   regeneration, keep their original reviewer and name the committed
+//!   harness that writes them — and, with `CS_GAME_DIR`, carry exactly the
+//!   fingerprint production discovery answers for this installation.
 
 use std::path::PathBuf;
 
@@ -28,10 +37,12 @@ const CANONICAL_INSTALL: &str = "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75c
 /// `cs_assets::install::content_fingerprint` over the manifest.
 const CANONICAL_CONTENT: &str = "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d";
 
-/// The three reports that record a task-scoped digest in
-/// `source.content_sha256`, with the value each committed. #1174's repair
-/// removes entries from this table; anything else changing it is drift.
-const OUTLIERS: [(&str, &str); 3] = [
+/// The three reports #1174 reissued, with the task-scoped digest each one
+/// carried before the repair. The value is the *record* of the divergence —
+/// what each private writer computed — kept here so the findings document's
+/// measurement stays re-derivable and so a report that starts carrying it
+/// again is recognisable. No committed report may carry any of them.
+const REISSUED: [(&str, &str); 3] = [
     (
         "F05-D",
         "869f5afcfa632f19c9cfef7a4a1fa1024471a15b7747fab373513a61b50cd23e",
@@ -43,6 +54,35 @@ const OUTLIERS: [(&str, &str); 3] = [
     (
         "T351",
         "e1f7274c663055d3c83fe1401e63d51e493ef51fcd6d3d2d4468dfb2ffdc488f",
+    ),
+];
+
+/// `(task id, the reviewer fact the original report recorded)` — the
+/// regeneration must never rewrite who reviewed a report, so the repair's
+/// own test pins each identity to the agent the original review named.
+const ORIGINAL_REVIEWER: [(&str, &str); 3] = [
+    ("F05-D", "bunny-1/bunny-1"),
+    ("F12-J", "devin-1 (SWE-2)"),
+    ("T351", "bunny-1/bunny-1"),
+];
+
+/// Where each reissued report's committed writer lives, relative to the
+/// workspace root, and the harness test it declares.
+const HARNESS: [(&str, &str, &str); 3] = [
+    (
+        "F05-D",
+        "crates/cs_app/tests/campaign/evidence/f05_d.rs",
+        "evidence_report_f05_d_writes_the_acceptance_report",
+    ),
+    (
+        "F12-J",
+        "crates/cs_app/tests/campaign/evidence/f12_j.rs",
+        "evidence_report_f12_j_writes_the_acceptance_report",
+    ),
+    (
+        "T351",
+        "crates/cs_app/tests/campaign/evidence/t351.rs",
+        "evidence_report_t351_writes_the_acceptance_report",
     ),
 ];
 
@@ -102,6 +142,8 @@ struct ReportSource {
     name: String,
     install_sha256: Option<String>,
     content_sha256: Option<String>,
+    review: String,
+    method: String,
 }
 
 fn report_sources() -> Vec<ReportSource> {
@@ -120,21 +162,31 @@ fn report_sources() -> Vec<ReportSource> {
                 .expect("a report has a file name")
                 .to_string_lossy()
                 .into_owned();
+            let task_id = report_string_field(&text, "task_id")
+                .unwrap_or_else(|| panic!("{name}: no task_id"));
+            let review = report_string_field(&text, "identity")
+                .unwrap_or_else(|| panic!("{name}: no review.identity"));
+            let method = report_string_field(&text, "method")
+                .unwrap_or_else(|| panic!("{name}: no review.method"));
             ReportSource {
-                task_id: report_string_field(&text, "task_id")
-                    .unwrap_or_else(|| panic!("{name}: no task_id")),
+                task_id,
                 name,
                 install_sha256: report_string_field(&text, "install_sha256"),
                 content_sha256: report_string_field(&text, "content_sha256"),
+                review,
+                method,
             }
         })
         .collect()
 }
 
-/// Compare one report's `source` pair against a measured installation:
-/// the install fingerprint must match exactly, and the content fingerprint
-/// must match unless the report is one of `OUTLIERS` carrying its recorded
-/// scoped value. Returns an offender line or `None`.
+/// Compare one report's `source` pair against a measured installation: the
+/// install fingerprint must match exactly and the content fingerprint must
+/// be this installation's canonical one. Returns an offender line or `None`.
+///
+/// There is no allowlist any more: #1174 repaired every committed report, so
+/// any other content fingerprint — a scoped digest, a stale value, a value
+/// from another installation — is an offender a reader cannot explain.
 fn check_report(
     report: &ReportSource,
     install_sha256: &str,
@@ -151,50 +203,35 @@ fn check_report(
         .content_sha256
         .as_ref()
         .expect("a report with an install fingerprint carries a content fingerprint");
-    if content == content_sha256 {
-        // A canonical value where the allowlist still records an outlier
-        // means a repair landed without updating this sentinel.
-        return OUTLIERS
+    (content != content_sha256).then(|| {
+        let scoped = REISSUED
             .iter()
-            .any(|(task_id, _)| *task_id == report.task_id)
-            .then(|| {
-                format!(
-                    "{}: now carries the canonical {content_sha256} — remove it from OUTLIERS",
-                    report.name
-                )
-            });
-    }
-    match OUTLIERS
-        .iter()
-        .find(|(task_id, _)| *task_id == report.task_id)
-    {
-        Some((_, recorded)) if content == recorded => None,
-        Some((_, recorded)) => Some(format!(
-            "{}: the recorded outlier is {recorded}, but the report carries {content}",
-            report.name
-        )),
-        None => Some(format!(
-            "{}: content_sha256 {content} is neither this installation's {content_sha256} \
-             nor a recorded outlier — a report must carry the canonical fingerprint",
-            report.name
-        )),
-    }
+            .find(|(_, recorded)| content.as_str() == *recorded)
+            .map(|(task_id, _)| format!(
+                " — this is the task-scoped digest {task_id} carried before Rally #1174 reissued \
+                 it, so the repair has been reverted"
+            ))
+            .unwrap_or_default();
+        format!(
+            "{name}: content_sha256 {content} is not this installation's {content_sha256}{scoped}",
+            name = report.name
+        )
+    })
 }
 
-/// The outlier set is exactly the three recorded reports: a report that
-/// carries the canonical installation fingerprint but a different content
-/// fingerprint is either one of them (with its recorded value) or a new
-/// outlier this sentinel exists to catch. Runs anywhere — the constants
-/// are the measured values the retail half re-derives.
+/// Every committed report whose `source` was measured over an installation
+/// carries exactly the pair production discovery answers: #1174 repaired the
+/// three outliers, so nothing may disagree with them any more.
 #[test]
-fn accept_evidence_content_digest_outliers_the_outlier_set_is_exactly_the_three_recorded_reports() {
+fn accept_evidence_content_digest_outliers_every_committed_report_carries_the_canonical_content_fingerprint()
+ {
     let mut offenders = Vec::new();
     let mut seen = Vec::new();
     for report in report_sources() {
         if let Some(offender) = check_report(&report, CANONICAL_INSTALL, CANONICAL_CONTENT) {
             offenders.push(offender);
         }
-        if OUTLIERS
+        if REISSUED
             .iter()
             .any(|(task_id, _)| *task_id == report.task_id)
         {
@@ -203,12 +240,13 @@ fn accept_evidence_content_digest_outliers_the_outlier_set_is_exactly_the_three_
     }
     assert_eq!(
         seen.len(),
-        OUTLIERS.len(),
-        "each recorded outlier still has its committed report: {seen:?}"
+        REISSUED.len(),
+        "the three reissued reports are still committed: {seen:?}"
     );
     assert!(
         offenders.is_empty(),
-        "reports whose fingerprints a reader cannot explain:\n  {}",
+        "reports whose fingerprints a reader cannot explain (a scoped digest is never \
+         acceptable here — its own harness must reissue the report):\n  {}",
         offenders.join("\n  ")
     );
 }
@@ -222,8 +260,8 @@ fn game_dir() -> PathBuf {
 }
 
 /// The same bound, measured: production discovery answers the canonical
-/// fingerprints, every non-outlier report agrees with them, and the three
-/// outliers still carry exactly their recorded scoped values.
+/// fingerprints and every report measured over an installation agrees with
+/// them — the reissued three included.
 #[test]
 #[ignore = "requires CS_GAME_DIR: the installation fingerprint is measured over the original"]
 fn accept_evidence_content_digest_outliers_production_fingerprints_reproduce_the_committed_reports()
@@ -258,14 +296,17 @@ fn accept_evidence_content_digest_outliers_production_fingerprints_reproduce_the
     );
 }
 
-/// Each outlier's recorded value is re-derived as exactly the scoped
-/// digest its own `review.method` (and the #1157 findings) describe —
-/// never the canonical fingerprint. This is what proves the divergence is
-/// a scoped computation and not stale data: the same installation bytes
-/// answer `install_sha256` and the scoped value deterministically.
+/// The three documented scoped digests still re-derive from the installation
+/// through production code — exactly as
+/// `docs/findings/2026-10-10-evidence-content-digest-outliers.md` records
+/// them — and **no** committed report carries any of them any more. This is
+/// what proves #1157's divergence was a scoped computation that #1174
+/// repaired, rather than stale data or installation drift: the same
+/// installation bytes answer the canonical fingerprint and the three scoped
+/// values deterministically.
 #[test]
 #[ignore = "requires CS_GAME_DIR: the scoped digests are re-derived over the original"]
-fn accept_evidence_content_digest_outliers_each_outlier_is_its_documented_scoped_digest() {
+fn accept_evidence_content_digest_outliers_each_documented_scoped_digest_still_re_derives() {
     use cs_assets::install::{content_fingerprint, discover, sha256};
     use cs_assets::rof::mount_rof;
     use cs_assets::vfs::MountBuilder;
@@ -294,7 +335,7 @@ fn accept_evidence_content_digest_outliers_each_outlier_is_its_documented_scoped
     lines.sort();
     let f05_d = sha256(lines.concat().as_bytes()).to_hex();
     assert_eq!(lines.len(), 2, "two containers, sorted: {lines:?}");
-    assert_eq!(f05_d, OUTLIERS[0].1, "the F05-D scoped digest re-derives");
+    assert_eq!(f05_d, REISSUED[0].1, "the F05-D scoped digest re-derives");
     assert_ne!(f05_d, canonical, "a scoped digest is not the canonical one");
 
     // Both member digests below come out of the production ROF mount:
@@ -325,7 +366,7 @@ fn accept_evidence_content_digest_outliers_each_outlier_is_its_documented_scoped
         raw.extend_from_slice(sha256(&read.data).as_bytes());
     }
     let f12_j = sha256(&raw).to_hex();
-    assert_eq!(f12_j, OUTLIERS[1].1, "the F12-J scoped digest re-derives");
+    assert_eq!(f12_j, REISSUED[1].1, "the F12-J scoped digest re-derives");
     assert_ne!(f12_j, canonical, "a scoped digest is not the canonical one");
 
     // T351: SHA-256 of `"<member spelling> <stored sha256>\n"` lines over
@@ -351,6 +392,109 @@ fn accept_evidence_content_digest_outliers_each_outlier_is_its_documented_scoped
         lines.len()
     );
     let t351 = sha256(lines.concat().as_bytes()).to_hex();
-    assert_eq!(t351, OUTLIERS[2].1, "the T351 scoped digest re-derives");
+    assert_eq!(t351, REISSUED[2].1, "the T351 scoped digest re-derives");
     assert_ne!(t351, canonical, "a scoped digest is not the canonical one");
+
+    // And not one committed report still carries a scoped value: they are
+    // records of a computation, never a report's `content_sha256`.
+    let mut carriers = Vec::new();
+    for report in report_sources() {
+        let Some(content) = report.content_sha256.as_ref() else {
+            continue;
+        };
+        let Some((task_id, scoped)) = REISSUED
+            .iter()
+            .find(|(_, scoped)| content.as_str() == *scoped)
+        else {
+            continue;
+        };
+        carriers.push(format!(
+            "{}: carries the scoped digest {scoped} that {task_id} recorded",
+            report.name
+        ));
+    }
+    assert!(
+        carriers.is_empty(),
+        "Rally #1174 repaired these reports; a scoped digest is back:\n  {}",
+        carriers.join("\n  ")
+    );
+}
+
+/// The repair itself, anywhere: the three reissued reports carry the
+/// canonical content fingerprint, record the regeneration that produced them,
+/// keep the reviewer the original review named and name the committed harness
+/// that writes them — so the reports can never again exist only as
+/// hand-written JSON.
+#[test]
+fn accept_evidence_content_digest_outliers_repair_the_three_reissued_reports_carry_the_canonical_fingerprint_and_name_their_committed_harness()
+ {
+    let sources = report_sources();
+    for (task_id, harness, test) in HARNESS {
+        let report = sources
+            .iter()
+            .find(|report| report.task_id == task_id)
+            .unwrap_or_else(|| panic!("{task_id}: the reissued report is committed"));
+        assert_eq!(
+            report.content_sha256.as_deref(),
+            Some(CANONICAL_CONTENT),
+            "{task_id}: a reissued report must carry the canonical content fingerprint"
+        );
+        let reviewer = ORIGINAL_REVIEWER
+            .iter()
+            .find(|(key, _)| *key == task_id)
+            .map(|(_, reviewer)| *reviewer)
+            .expect("the reviewer table names this task");
+        assert!(
+            report.review.contains(reviewer),
+            "{task_id}: the regeneration rewrote review.identity, which must stay \
+             byte-unchanged with {reviewer} named in it"
+        );
+        assert!(
+            report.method.contains("Regeneration for Rally #1174"),
+            "{task_id}: review.method does not record the regeneration that reissued it"
+        );
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(harness);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let task_marker = format!("\\\"task_id\\\": \\\"{task_id}\\\"");
+        assert!(
+            source.contains(&task_marker),
+            "{}: does not spell {task_marker}, so it is not the writer of {task_id}",
+            path.display()
+        );
+        assert!(
+            source.contains(test),
+            "{}: does not declare the {test} harness",
+            path.display()
+        );
+    }
+}
+
+/// The repair, measured: the fingerprint the three reissued reports carry is
+/// the one production discovery answers for this installation right now, not
+/// a constant the reports and this test could agree on together.
+#[test]
+#[ignore = "requires CS_GAME_DIR: the fingerprint is measured over the original"]
+fn accept_evidence_content_digest_outliers_repair_production_discovery_answers_the_fingerprint_the_three_reports_carry()
+ {
+    use cs_assets::install::{content_fingerprint, discover};
+
+    let found = discover(&game_dir()).expect("production discovery reads the installation");
+    let measured = content_fingerprint(&found.manifest).to_hex();
+
+    let sources = report_sources();
+    for (task_id, _, _) in HARNESS {
+        let report = sources
+            .iter()
+            .find(|report| report.task_id == task_id)
+            .unwrap_or_else(|| panic!("{task_id}: the reissued report is committed"));
+        assert_eq!(
+            report.content_sha256.as_deref(),
+            Some(measured.as_str()),
+            "{task_id}: production discovery answers {measured} for this installation"
+        );
+    }
 }
