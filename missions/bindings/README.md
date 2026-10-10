@@ -73,7 +73,13 @@ directory is original game data — no assets, scripts or extracted bytes.
   out of chapter 1. Its world group, `world/c2`, is shared with four
   campaign missions and chapter 2's fifth mission lives in the separate `c2b`
   directory (see `docs/findings/2026-10-01-m06-a-source-binding.md`). Same five
-  resolved critical dependencies, same unverified status.
+  resolved critical dependencies, same unverified status. M06-B-FU4 (Rally
+  #1184) regenerated this record through production code once
+  `campaign_bindings` gained a mission-scoped unknown table keyed by work
+  order: the record's last `unknowns` entry is M06's measured
+  passenger-identity limitation (M06-B-FU2), which reaches this record alone —
+  the shared checklist every other mission carries is unchanged (see
+  `docs/findings/2026-10-10-m06-b-fu4-mission-scoped-binding-unknowns.md`).
 - `M07.json` — the M07 binding output (stage M07-A), generated and pinned the
   same way by `accept_m07_a_the_committed_record_is_what_the_installation_derives`.
   No production code changed for it either: M07 is the seventh campaign
