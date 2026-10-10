@@ -170,6 +170,56 @@ Checks run on the branch: `cargo fmt --all -- --check`,
 `cargo test --workspace --locked` (4338 passed, 0 failed) and
 `cargo test --workspace --locked -- accept_f58_c_ --include-ignored` (8 passed).
 
+Checks rerun by the reviewer after the additions below (same four commands, all
+exit 0): `cargo fmt --all -- --check` clean; clippy `-D warnings` clean;
+`cargo test --workspace --locked` — 495 `test result: ok` blocks, **4342 passed,
+0 failed**, 0 `FAILED`; and the task selection — **10 `accept_f58_c_` tests
+discovered, 10 passed** (3 `cs_net` + 5 `cs_app` at submission, +2 from this
+review). The difference from the 4338 above is the rebase onto `5b2fad4f` (main's
+`crates/cs_app/tests/campaign/*` evidence tests) plus the two tests added here.
+
+## Review additions (2026-10-10, reviewer `bunny-2`)
+
+The review added one failure-case test, corrected one doc claim and recorded one
+more limitation. No rule of the stage changed.
+
+- **New test file** `crates/cs_app/tests/accept_f58_c_full_ledger_refuses_before_teardown.rs`
+  (2 tests, task prefix): the flow-level half of rule 2 above, which had no test
+  through the flow. With the ledger full, `RecoveryFlow::depart` refuses with
+  `FlowError::Ledger(DepartureError::LedgerFull { max: 32 })` **while the live
+  peer is still a member and still owns its aircraft** — the bound is paid before
+  the teardown — and a full ledger still answers a duplicate report with
+  `Settlement::Duplicate` (keeping the first cause and tick) instead of an error.
+  Its sensitivity is probe 6 below.
+- **Doc correction** in `RecoveryFlow::receive_and_depart`: the `# Errors`
+  paragraph claimed "the packet's own result is in `SettledInbound::inbound`
+  either way", which is false on the error path (`Result::Err` carries no packet
+  result). It now states what is true and why nothing is lost: only a packet that
+  asks for a departure can fail there, and such a packet authorizes no work of
+  its own (a farewell is not input, a refused intent has already emptied its fire
+  list, a packet the gate refused never had one), so only the admission verdict
+  goes unreported.
+- **Limitation 9 (new; filed as #1238, `F58-C-followup-host-loss-policy`).**
+  `host_lost` ends the match unconditionally and `recover` then forces
+  `RecoveryPolicy::match_running` false; neither receives the mode's
+  `cs_net::lobby::HostLoss` policy. `HostLoss::EndSession` is exactly what spec
+  non-negotiable 3 asks for, but `HostLoss::PauseThenEnd { ticks }` is already
+  implemented by `Lobby::remove_peer` (the lobby goes to `Phase::HostPaused` and
+  closes unless the host returns), so the lobby and this flow would disagree
+  about one event once both are wired — and neither is wired to a runtime today
+  (no app pumps a `ServerSession`, #592). Affected content: any multiplayer
+  mode whose lobby form selects `PauseThenEnd`. Recorded, not guessed; #1238 owns
+  the ruling and the implementation.
+- Follow-up tasks #1221, #1222 and #1223 were verified to exist before this
+  section was written; the new one is #1238.
+
+**Probe 6 (reviewer, on the working tree at `634de6e6`):** the pre-teardown
+`DepartureLedger::check` call in `RecoveryFlow::depart` removed — 1 test failed,
+`accept_f58_c_a_full_ledger_refuses_before_anything_is_torn_down`: the refusal
+still arrived (the `record` bound caught it), but only *after* the teardown, so
+peer 1 was no longer a gate member and no longer owned its aircraft. Restored
+with `git checkout --`; the tree was clean afterwards.
+
 ## Evidence boundary
 
 No original data, no original executable, no network beyond synthetic fixtures on
