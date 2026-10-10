@@ -1419,17 +1419,3 @@ fn accept_m04_b_fu1_a_top_level_completion_count_is_inert_and_unbound() {
         refusals[0]
     );
 }
-
-#[test]
-#[ignore = "requires CS_GAME_DIR"]
-fn scratch_dump_m04_detail() {
-    let (document, _member) = read_control_member(&game_dir(), MISSION).expect("control member");
-    let blocks = blocks_of(&document);
-    for want in [20u32, 27, 31, 32, 40, 41, 42, 44] {
-        let (_, directives) = blocks.iter().find(|(n, _)| *n == want).unwrap();
-        println!("OBJECTIVE{want}:");
-        for d in directives {
-            println!("   {} {:?}", d.key, d.args);
-        }
-    }
-}

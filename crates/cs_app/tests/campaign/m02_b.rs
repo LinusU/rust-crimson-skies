@@ -1363,17 +1363,3 @@ fn accept_m02_b_a_disagreeing_key_keeps_every_shape_and_a_text_follower_is_the_n
         "the three authored sites are counted exactly"
     );
 }
-
-#[test]
-#[ignore = "requires CS_GAME_DIR"]
-fn scratch_dump_m02_detail() {
-    let (document, _) = control_document();
-    let blocks = blocks_of(&document);
-    for want in [7u32, 13, 14, 15, 19, 24, 36, 50] {
-        let block = &blocks[(want - 1) as usize];
-        println!("{}:", block.key);
-        for (key, args) in &block.sites {
-            println!("   {key} {args:?}");
-        }
-    }
-}
