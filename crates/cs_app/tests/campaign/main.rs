@@ -302,5 +302,6 @@ mod record_objectives_sound;
 mod vs_m01_geometry_verdict;
 mod vs_m01_rt_content;
 mod vs_m01_rt_host;
+mod vs_m01_rt_player_visual;
 mod vs_m01_rt_window;
 mod vs_m01_runtime;
