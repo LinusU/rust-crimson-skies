@@ -4,7 +4,7 @@
 //! [`cs_app::mission_session::build_headless`] composes the same systems the
 //! `--mission` window runs; the composed entry
 //! ([`cs_app::mission_session::mission_host_tick`]) is what this suite holds
-//! to the stage. Two things have to be proved:
+//! to the stage. Three things have to be proved:
 //!
 //! * **Every record answers for itself.** The synthetic stage composes and
 //!   steps, and the report the composed entry writes carries what each record
@@ -19,13 +19,20 @@
 //! * **M01's real program runs through the same entry.** Against the owner's
 //!   installation, M01's stage composes headlessly and the composed step
 //!   answers with the produced state above plus the named F39 refusal — the
-//!   objective declarations no original mission yields today. It is
+//!   objective declarations no original mission yields today. It also holds
+//!   the host to the join's startup rows, the one thing only a stage that
+//!   carries an animation join exercises. It is
 //!   `#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]`, so CI skips it
 //!   and the implementing and reviewing agents run it with
 //!   `--include-ignored`.
+//! * **Every absence is reachable.** The first member holds the host to the
+//!   missing-join refusal of a stage that carries no animation join; a third
+//!   member withholds the world-actor program too, and holds it to the
+//!   missing-program refusal while the other three records keep answering for
+//!   the same tick. Both members run in CI.
 //!
-//! Both members fail if the composed entry is removed: the report resource is
-//! written by that entry and by nothing else, so deleting the step or the
+//! Every member fails if the composed entry is removed: the report resource
+//! is written by that entry and by nothing else, so deleting the step or the
 //! system it is installed from leaves no report to assert on.
 //!
 //! What is **not** claimed: no original executable ran, nothing here is
@@ -234,9 +241,76 @@ fn accept_vs_m01_runtime_host_01_synthetic_stage_drives_every_record_through_one
         "the undeclared block lifecycles must be named"
     );
     assert!(
+        host.refusals()
+            .iter()
+            .any(|refusal| matches!(refusal, MissionHostRefusal::AnimationJoin { .. })),
+        "this stage carries no animation join, so the host must say that no startup row was \
+         offered rather than silently stepping an empty player"
+    );
+    assert_eq!(
+        (
+            host.animation().running_count(),
+            host.animation().finished_count()
+        ),
+        (0, 0),
+        "a stage with no animation join must have started no record"
+    );
+    assert!(
         host.objectives().program().objectives.is_empty(),
         "a synthetic stage with no declared objectives must never be handed synthesized ones"
     );
+
+    teardown(&mut app);
+}
+
+/// **A scope that lowered no world-actor program is named, and the composed
+/// entry still answers for every other record.**
+///
+/// This is the one absence on the host's list with no other seat: neither
+/// acceptance stage above lacks a world-actor program, so without this member
+/// [`MissionHostRefusal::WorldActors`] and the `None` half of
+/// [`MissionHostTick::world_actors`] could only be reached by reading the
+/// code. The stage is the very one `vs_m01_rt_window.rs` builds, with only the
+/// seed's world-actor program withheld.
+#[test]
+fn accept_vs_m01_runtime_host_01_a_scope_without_a_world_actor_program_is_named() {
+    let scratch = Scratch::new("host-no-actors");
+    let mut stage = synthetic_stage(scratch.path());
+    stage.host.world_actors = None;
+    let mut app = build_headless(&stage).expect("the synthetic stage composes without actors");
+    step(&mut app, "the no-world-actor composition");
+
+    let report = report_of(&app, "the no-world-actor composition");
+    let host = app.world().resource::<MissionHost>();
+    let produced: &MissionHostTick = report.answer.as_ref().unwrap_or_else(|error| {
+        panic!("the composed step refused: {error}");
+    });
+
+    assert!(
+        produced.world_actors.is_none(),
+        "a scope that lowered no world-actor program must answer with no world-actor tick"
+    );
+    assert!(
+        host.world_actors().is_none(),
+        "no world-actor session may be launched from a scope that lowered no program"
+    );
+    assert!(
+        host.refusals()
+            .iter()
+            .any(|refusal| matches!(refusal, MissionHostRefusal::WorldActors { .. })),
+        "the missing world-actor program must be named, not silently skipped"
+    );
+
+    // The absence of one record is not a step that did nothing: the other
+    // three still answered for this composed tick.
+    assert!(
+        produced.environment_ticks > 0,
+        "the environment must still commit ticks, got {}",
+        produced.environment_ticks
+    );
+    assert_eq!(produced.animation.tick(), report.tick);
+    assert_eq!(produced.objectives.tick.tick, report.tick);
+    assert_eq!(produced.script.tick, report.tick);
 
     teardown(&mut app);
 }
@@ -294,6 +368,25 @@ fn accept_vs_m01_runtime_host_01_retail_m01_runs_its_real_program_through_the_co
 
     assert_eq!(produced.animation.tick(), report.tick);
     assert_eq!(host.animation().advanced_through(), Some(report.tick));
+    // The join's startup rows were offered to the record player by the
+    // composed entry itself, grouped by event and at the host's own rate.
+    // `plan.launchable()` above proved that at least one of M01's
+    // mission-carrier rows is playable by this very consumer, so a player that
+    // holds neither a running nor a finished record was offered nothing.
+    assert!(
+        host.animation().running_count() + host.animation().finished_count() > 0,
+        "the composed entry must offer M01's startup rows to its record player: {} running, {} \
+         finished, {} refused",
+        host.animation().running_count(),
+        host.animation().finished_count(),
+        host.animation().refused_count()
+    );
+    assert!(
+        host.refusals()
+            .iter()
+            .all(|refusal| !matches!(refusal, MissionHostRefusal::AnimationJoin { .. })),
+        "M01's stage carries an animation join, so no missing-join refusal may be raised"
+    );
     assert_eq!(
         produced.markers.raised().len(),
         host.markers().applied().len(),

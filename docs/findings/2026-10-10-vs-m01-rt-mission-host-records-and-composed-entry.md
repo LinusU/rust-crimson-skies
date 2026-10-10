@@ -226,6 +226,57 @@ stage — the suite-sharing seam `f50_c.rs` already uses.
 | `cargo test --workspace --locked -- accept_vs_m01_runtime_host_01_ --include-ignored` | 0 — 2 passed (1 synthetic in CI, 1 retail over `$CS_GAME_DIR` + `$CS_ENGINE_IMAGE`, 541 s) |
 | `cargo test -p cs_app --test campaign -- accept_vs_m01_runtime_window_` | 0 — 2 passed, 1 ignored without `CS_GAME_DIR` |
 
+## Review (bunny-alpha-2, 2026-10-10)
+
+**Implementer:** `bunny-alpha-2` (the session that opened #1278 and submitted
+`03d16ffe`). **Reviewer:** `bunny-alpha-2` — the same agent name and model in a
+**fresh session** with no context carried over from the implementation. Rally
+does not enforce reviewer assignment, and this review is therefore **not
+independent evidence** under AGENTS.md's reviewing rule; the owner should treat
+it accordingly and may want a different instance for the fidelity-adjacent
+claims.
+
+What the reviewer checked and did:
+
+* `cargo fmt --all -- --check` → 0; `cargo clippy --workspace --all-targets
+  --all-features --locked -- -D warnings` → 0; `cargo test --workspace --locked`
+  → 0 (495 `test result: ok`, none failed); the task selection
+  `cargo test --workspace --locked -- accept_vs_m01_runtime_host_01_
+  --include-ignored` → 0 (**3 passed**: the two CI members and the retail
+  member over `$CS_GAME_DIR` + `$CS_ENGINE_IMAGE`, 573 s). All four ran on the
+  tree this review was committed from; the only later change is this paragraph.
+* **Mutation checks** (each made, run, then reverted to a clean tree):
+  removing `install_mission_host(app)` from `add_composition` makes
+  `..._synthetic_stage_drives_every_record_through_one_composed_tick` fail with
+  "the composed entry wrote no MissionHostReport"; stubbing stage 2 of
+  `MissionHost::step` to answer `None` for the world-actor record makes the
+  same member fail with "the synthetic stage lowers a world-actor program, so
+  one answers". The acceptance members therefore bite on both the system and
+  the per-record produced state, not merely on a resource that exists.
+* **Coverage added** (all inside `crates/cs_app/tests/campaign/vs_m01_rt_host.rs`,
+  no production change): the synthetic member now also holds the host to
+  `MissionHostRefusal::AnimationJoin` and to a record player that started
+  nothing; the retail member now also holds it to the join's startup rows
+  actually being offered (`running_count() + finished_count() > 0` — the
+  `plan.launchable()` gate above it already proved at least one mission-carrier
+  row is playable by this consumer) and to the absence of a missing-join
+  refusal on a stage that carries a join; and a third member
+  `..._a_scope_without_a_world_actor_program_is_named` withholds the
+  world-actor program from the very same synthetic stage so that
+  `MissionHostRefusal::WorldActors` and the `None` half of
+  `MissionHostTick::world_actors` are reached by a run rather than by reading
+  the code, while environment, animation, objectives and script still answer
+  for the same tick. Every one of the five refusal variants now has a member
+  that raises it.
+* Protected paths: none touched by this branch (`git diff --name-only
+  origin/main...HEAD` lists only `crates/cs_app/src/mission_session/**`,
+  `crates/cs_app/tests/campaign/**` and this file). No binary, no
+  `Cargo.toml`/`Cargo.lock`, no wiring edit outside the owner paths.
+* The two follow-ups the implementation filed instead of fixing outside its
+  owner paths exist and are well specified: #1281 `VS-M01-RT-HOST-CADENCE`
+  (the 120 Hz vs 64 Hz world-actor divergence) and #1282
+  `VS-M01-RT-HOST-BLOCK-LIFECYCLES` (the missing `BEGIN_DORMANT` reader).
+
 ## What is not claimed
 
 No original executable ran; `retail` is read access to the owner's installation.
