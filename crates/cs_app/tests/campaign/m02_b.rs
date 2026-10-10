@@ -173,11 +173,13 @@ pub(crate) fn control_document() -> (ZrdValue, Vec<(String, u64, u64, u32)>) {
 }
 
 /// One numbered block of a decoded control record, as the graph walk below
-/// reads it: its key, its record order (the zero-based index cross-objective
-/// directives address) and its directive sites in spelling order.
+/// reads it: its key, its authored `OBJECTIVE<N>` number (the one-based block
+/// number a cross-objective directive spells — the original's parse
+/// decrements it to a record index, measured by M02-B-FU3 / #802) and its
+/// directive sites in spelling order.
 struct Block {
     key: String,
-    index: u32,
+    number: u32,
     /// `(directive key, argument values beside it)`; an empty argument vec
     /// is the measured bare spelling.
     sites: Vec<(String, Vec<ZrdValue>)>,
@@ -192,12 +194,11 @@ fn blocks_of(document: &ZrdValue) -> Vec<Block> {
         let Some(number) = objective_block_number(key) else {
             continue;
         };
-        let index = blocks.len() as u32;
         let mut sites = Vec::new();
         let Some(children) = value.as_list() else {
             blocks.push(Block {
                 key: format!("OBJECTIVE{number}"),
-                index,
+                number,
                 sites,
             });
             continue;
@@ -232,7 +233,7 @@ fn blocks_of(document: &ZrdValue) -> Vec<Block> {
         }
         blocks.push(Block {
             key: format!("OBJECTIVE{number}"),
-            index,
+            number,
             sites,
         });
     }
@@ -619,12 +620,13 @@ fn accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_in
         "the independent walk sees every numbered block the measurement counted"
     );
 
-    // The graph is closed except for one measured dangling address: every
-    // index a cross-objective directive addresses is either a block this
-    // record declares (zero-based record order, the measured addressing
-    // rule) or one the record spells past its own end — which is a fact
-    // about the original data, not a decoding error, and what the original
-    // does with such an address is unmeasured.
+    // The graph is closed under the measured addressing rule: every integer a
+    // cross-objective directive spells is the one-based number of a block this
+    // record declares (M02-B-FU3 / #802 measured the original's parse
+    // decrementing it to the record index), so none points past the record's
+    // own end — `OBJECTIVE13`'s spelled 50 names `OBJECTIVE50`, the last
+    // block, and only looked dangling under the zero-based reading this walk
+    // previously applied.
     let directed_keys = [
         "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
         "KILL_OBJECTIVE_WHEN_I_COMPLETE",
@@ -639,26 +641,33 @@ fn accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_in
             if !directed_keys.contains(&key.as_str()) {
                 continue;
             }
-            for arg in args {
-                let Some(index) = arg.as_int() else {
-                    continue;
-                };
-                if (index as usize) < blocks.len() {
-                    edges.push((block.index, key.to_owned(), index));
+            let spelled: Vec<u32> = if key == "NAP_OBJECTIVE_WHEN_I_COMPLETE" {
+                args.first()
+                    .into_iter()
+                    .filter_map(ZrdValue::as_int)
+                    .collect()
+            } else {
+                args.iter().filter_map(ZrdValue::as_int).collect()
+            };
+            for address in spelled {
+                if (1..=blocks.len() as u32).contains(&address) {
+                    edges.push((block.number, key.to_owned(), address));
                 } else {
-                    dangling.push((block.index, key.to_owned(), index));
+                    dangling.push((block.number, key.to_owned(), address));
                 }
             }
         }
     }
-    assert_eq!(
-        dangling,
-        [(12, "WAKE_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), 50)],
-        "M02's record spells exactly one cross-objective address past its 50 \
-         blocks: block OBJECTIVE13 wakes zero-based index 50. The measured rule \
-         says a directive addresses a block by its zero-based index, so this is \
-         the original's own out-of-range address; the engine's behaviour for it \
-         is unmeasured and recorded in the findings, never silently clamped here"
+    assert!(
+        dangling.is_empty(),
+        "every cross-objective address M02 spells is the one-based number of a \
+         block the record declares — `OBJECTIVE13`'s 50 included, which names \
+         `OBJECTIVE50`, the last block, not a position past it: {dangling:?}"
+    );
+    assert!(
+        edges.contains(&(13, "WAKE_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), 50)),
+        "OBJECTIVE13's spelled 50 is a real edge to OBJECTIVE50 — the \
+         discriminating address the zero-based reading reported as dangling"
     );
     assert!(
         !edges.is_empty(),
@@ -668,7 +677,8 @@ fn accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_in
     // **Success versus destruction.** The mission's success latch is the one
     // block that spells the bare INSTANTWIN; its failure causes are the two
     // bare INSTANTLOSS blocks. The latch is not free-running: exactly one
-    // block wakes it, so nothing can satisfy it before that block completes.
+    // completion edge names its block number, so nothing can satisfy it
+    // before that block completes.
     let win: Vec<&Block> = blocks
         .iter()
         .filter(|block| block.sites.iter().any(|(key, _)| key == "INSTANTWIN"))
@@ -690,31 +700,60 @@ fn accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_in
         1,
         "the measurement counts the same one site"
     );
-    let wakeups: Vec<u32> = edges
+    let wakeups: Vec<(u32, &str)> = edges
         .iter()
-        .filter(|(_, key, index)| key == "WAKE_OBJECTIVE_WHEN_I_COMPLETE" && *index == latch.index)
-        .map(|(from, _, _)| *from)
+        .filter(|(_, _, address)| *address == latch.number)
+        .map(|(from, key, _)| (*from, key.as_str()))
         .collect();
     assert_eq!(
-        wakeups.len(),
-        1,
-        "the success latch is woken by exactly one block ({:?}), so before that \
-         block completes the latch cannot fire — the wrong-actor and wrong-session \
-         halves of the sheet's priority need a runtime to observe and stay \
-         unmeasured here",
-        wakeups
+        wakeups,
+        [(14, "NAP_OBJECTIVE_WHEN_I_COMPLETE")],
+        "the success latch's only completion edge is OBJECTIVE14's \
+         `NAP_OBJECTIVE_WHEN_I_COMPLETE [15, 22.0]` — block 15 is re-woken the \
+         spelled 22 seconds after block 14 completes, the `woken by exactly \
+         one other block` fact reached through a nap, not a wake; the \
+         wrong-actor and wrong-session halves of the sheet's priority need a \
+         runtime to observe and stay unmeasured here"
     );
-    let loss: Vec<&str> = blocks
+    let loss: Vec<&Block> = blocks
         .iter()
         .filter(|block| block.sites.iter().any(|(key, _)| key == "INSTANTLOSS"))
-        .map(|block| block.key.as_str())
         .collect();
     assert_eq!(
         loss.len(),
         2,
         "M02 spells two failure latches ({}), matching the measurement's two \
          INSTANTLOSS sites",
-        loss.join(", ")
+        loss.iter()
+            .map(|block| block.key.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let incoming = |target: u32| -> Vec<(u32, &str)> {
+        edges
+            .iter()
+            .filter(|(_, _, address)| *address == target)
+            .map(|(from, key, _)| (*from, key.as_str()))
+            .collect()
+    };
+    assert_eq!(
+        incoming(24),
+        [
+            (3, "KILL_OBJECTIVE_WHEN_I_COMPLETE"),
+            (19, "NAP_OBJECTIVE_WHEN_I_COMPLETE")
+        ],
+        "OBJECTIVE24's INSTANTLOSS is named by OBJECTIVE3's nine-target kill \
+         and by OBJECTIVE19's nap of it"
+    );
+    assert_eq!(
+        incoming(36),
+        [(7, "NAP_OBJECTIVE_WHEN_I_COMPLETE")],
+        "OBJECTIVE36's INSTANTLOSS is named by OBJECTIVE7's nap alone"
+    );
+    assert_eq!(
+        loss.iter().map(|block| block.number).collect::<Vec<_>>(),
+        vec![24, 36],
+        "the failure latches are OBJECTIVE24 and OBJECTIVE36"
     );
 
     // **Remaining-target failure.** The inactive-completion-count blocks are
@@ -1323,4 +1362,18 @@ fn accept_m02_b_a_disagreeing_key_keeps_every_shape_and_a_text_follower_is_the_n
         3,
         "the three authored sites are counted exactly"
     );
+}
+
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn scratch_dump_m02_detail() {
+    let (document, _) = control_document();
+    let blocks = blocks_of(&document);
+    for want in [7u32, 13, 14, 15, 19, 24, 36, 50] {
+        let block = &blocks[(want - 1) as usize];
+        println!("{}:", block.key);
+        for (key, args) in &block.sites {
+            println!("   {key} {args:?}");
+        }
+    }
 }
