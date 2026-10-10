@@ -291,6 +291,7 @@ mod m17_a;
 mod m17_b;
 mod m18_a;
 mod m19_a;
+mod m19_b;
 mod m21_a;
 mod m24_a;
 mod objaddr;
