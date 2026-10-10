@@ -296,6 +296,7 @@ mod m19_b;
 mod m21_a;
 mod m21_b;
 mod m24_a;
+mod m24_b;
 mod objaddr;
 mod record_objectives_sound;
 mod vs_m01_geometry_verdict;

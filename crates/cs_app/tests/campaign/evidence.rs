@@ -1,8 +1,8 @@
 //! Evidence-report harnesses for the per-mission binding stages M01-A,
 //! M02-A, M03-A, M04-A, M05-A, M06-A, M07-A, M08-A, M10-A, M12-A, M13-A, M16-A,
 //! M17-A, M18-A, M19-A, M21-A, M24-A, for the mission-compatibility stages
-//! M02-B, M03-B, M04-B, M06-B, M08-B, M10-B, M12-B, M13-B, M16-B, M17-B and
-//! M19-B, for the whole-campaign binding stage
+//! M02-B, M03-B, M04-B, M06-B, M08-B, M10-B, M12-B, M13-B, M16-B, M17-B,
+//! M19-B and M24-B, for the whole-campaign binding stage
 //! F50-B and for the per-mission probe-route stage F50-C
 //! (`docs/contracts/CLI-EVIDENCE.md`, schema
 //! `schemas/evidence.schema.json`), and — as the *reissue* harnesses of Rally
@@ -174,6 +174,7 @@ mod m19_b;
 mod m21_a;
 mod m21_b;
 mod m24_a;
+mod m24_b;
 mod record_objectives_sound;
 mod t351;
 
