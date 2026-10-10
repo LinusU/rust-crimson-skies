@@ -8,11 +8,17 @@
 //! exactly as:
 //!
 //! 1. ```sh
-//!    cargo test --workspace --locked -- accept_f45_d_ --include-ignored \
+//!    CS_EVIDENCE_DIR=private/evidence/F45-D \
+//!      cargo test --workspace --locked -- accept_f45_d_ --include-ignored \
 //!      2>&1 | tee private/evidence/F45-D/cargo-test.log
 //!    ```
 //!    (record the pipeline's exit status — it is passed to this harness as
-//!    `CS_EVIDENCE_EXIT_CODE`.)
+//!    `CS_EVIDENCE_EXIT_CODE`; run the pipeline with `pipefail` so that
+//!    status is cargo's, not `tee`'s.) `CS_EVIDENCE_DIR` must be set **in
+//!    this step**, while the acceptance suite runs: the retail tests only
+//!    derive `front-end-screens.json` and the GPU tests only write their
+//!    `f45-d-*.png` captures into it when it is set, so without it step 2
+//!    finds a directory holding nothing but the log.
 //! 2. ```sh
 //!    CS_EVIDENCE_DIR=private/evidence/F45-D \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
@@ -21,9 +27,11 @@
 //!    CS_GAME_DIR="$CS_GAME_DIR" \
 //!      cargo test --locked -p cs_app --test ui -- evidence_report_f45_d --ignored
 //!    ```
-//!    (`CS_EVIDENCE_DIR` is what makes the two retail tests write their
-//!    derived inventory and their captures into this directory, so the
-//!    artifacts this report hashes are this run's own.)
+//!    (here `CS_EVIDENCE_DIR` tells this harness where step 1's run left the
+//!    artifacts it must read, hash and re-check, so the artifacts this report
+//!    hashes are this run's own; `CS_EVIDENCE_ARGV` stays the acceptance
+//!    command's argv, because an environment prefix is not part of a
+//!    command's argv.)
 //! 3. ```sh
 //!    python3 tools/validate_evidence.py private/evidence/F45-D/acceptance.json \
 //!      --artifact-root private/evidence/F45-D --require-pass
