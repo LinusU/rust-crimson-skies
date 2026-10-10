@@ -172,6 +172,7 @@ mod m18_b;
 mod m19_a;
 mod m19_b;
 mod m21_a;
+mod m21_b;
 mod m24_a;
 mod record_objectives_sound;
 mod t351;
