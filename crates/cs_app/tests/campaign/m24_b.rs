@@ -29,10 +29,11 @@
 //! * **The capital battle transition is a three-zeppelin chain.** Two
 //!   `COMPLETED_ZEPCANNONS` sites (blocks 14 and 15) arm when `dantezep`
 //!   closes to 2000 about `piratezep` and `blackswanzep`; the friendly
-//!   `dantezep` falls through four measured thresholds — five gasbag panels
+//!   `dantezep` falls through five measured thresholds — five gasbag panels
 //!   at counts 1/2/3, fourteen engine nodes at counts 7/12 — and its fall
-//!   block (OBJECTIVE10, the record's first PRIMARY) retires the capital's
-//!   objective-target flag, plays the fall sound and kills ten blocks; the
+//!   block (OBJECTIVE10, the record's first PRIMARY, the three-panel
+//!   threshold itself) retires the capital's objective-target flag, plays
+//!   the fall sound and kills ten blocks; the
 //!   enemy `piratezep` retreats exactly when a second of its six gasbag
 //!   panels no longer carries the in-play bit (`SET_AI_NET` onto
 //!   `M4PZRetreat`); the final `blackswanzep` is woken with its turrets and

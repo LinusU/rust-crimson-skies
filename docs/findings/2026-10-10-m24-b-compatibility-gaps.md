@@ -67,12 +67,13 @@ and 3 are the player's own 2000/1500 approach gates on `dantezep`. Blocks 14
 and 15 are the transition proper: `TRAVELERS dantezep APPROACHING
 {piratezep, blackswanzep} 2000 1` beside `COMPLETED_ZEPCANNONS
 [[dantezep,1],[<zep>,1]]` — the measured +0xc cannon write on both
-zeppelins. The friendly capital falls through six spelled thresholds: five
+zeppelins. The friendly capital falls through five spelled thresholds: five
 gasbag panels at counts 1 and 2 (blocks 4/5), fourteen chained engine nodes
 (`reng11…leng42`, `healthy`) at counts 7 and 12 (blocks 8/9), then
-OBJECTIVE10 — the record's first PRIMARY — at three panels, which retires
-`dantezep`'s objective-target flag, plays the fall sound, wakes the gasbag
-animation and `WAKEUP_GENERATOR dantezep 1`, and kills ten blocks. The enemy
+OBJECTIVE10 — the record's first PRIMARY, the three-panel gasbag threshold
+itself — which retires `dantezep`'s objective-target flag, plays the fall
+sound and kills ten blocks; its half-second nap of OBJECTIVE11 wakes the
+gasbag animation and `WAKEUP_GENERATOR dantezep 1`. The enemy
 `piratezep`'s six gasbag panels are watched at thresholds 1/2/3 (blocks
 24/25/62, all always awake); the two-panel completion points it at the
 retreat net `M4PZRetreat`. The final `blackswanzep` is woken with its
