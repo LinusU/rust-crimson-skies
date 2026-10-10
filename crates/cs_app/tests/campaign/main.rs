@@ -267,5 +267,6 @@ mod m18_a;
 mod m19_a;
 mod m21_a;
 mod m24_a;
+mod objaddr;
 mod record_objectives_sound;
 mod vs_m01_runtime;
