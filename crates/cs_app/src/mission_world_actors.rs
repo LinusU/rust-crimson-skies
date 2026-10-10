@@ -125,11 +125,30 @@ use crate::world_actors::{
 /// The reader member that carries a scope's placed world actors (#574).
 pub const ZEPPELIN_MEMBER: &str = "zeppelins.zrd";
 
-/// The session cadence the launch path steps a lowered program at — the
-/// same 64 Hz [`crate::synthetic::TICK_HZ`] states and
-/// `MissionAnimationPlayer::new` is handed in `mission_launch.rs`. It is a
-/// designed contract of the reimplementation, not an original measurement.
-pub const SESSION_TICKS_PER_SECOND: u32 = 64;
+/// The session cadence a lowered world-actor program is stepped at: the
+/// **composition's own fixed timeline**, [`crate::physics::BASELINE_FIXED_HZ`].
+///
+/// The composed per-tick entry takes its tick from `PhysicsTickLedger` and
+/// hands that tick straight to `WorldActorSession::step`, so the session is
+/// stepped once per committed fixed tick — and one step advances a route
+/// follower by `speed_m_s / ticks_per_second` metres
+/// (`cs_sim::world_actors::runtime::WorldActorSet::dt_seconds`). Declaring a
+/// slower cadence than the host steps at therefore runs every follower fast
+/// by `host_hz / session_hz`: at 64 against a 120 Hz host that is 1.875× its
+/// authored speed, which is the divergence task #1281 measured and closes.
+///
+/// `crate::mission_session::MissionContent::tick_rate` starts the
+/// environment session of the same composition on the same rate, so every
+/// session the composition owns shares one timeline and a record's `Tick`
+/// means the same instant everywhere. It is a designed contract of the
+/// reimplementation, **not** an original measurement: the original's
+/// world-actor cadence is still unmeasured
+/// (`docs/findings/2026-10-01-f31-c-original-routes-and-moving-frames.md`),
+/// and this constant claims only that the reimplementation's own host and
+/// session agree. The decision, the workspace readings it weighs and the
+/// failing-before/passing-after measurement are recorded in
+/// `docs/findings/2026-10-10-vs-m01-rt-host-cadence.md`.
+pub const SESSION_TICKS_PER_SECOND: u32 = crate::physics::BASELINE_FIXED_HZ;
 
 /// The claim the spawn position binds under (#814).
 ///
