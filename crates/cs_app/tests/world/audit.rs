@@ -1844,8 +1844,8 @@ fn synthetic_fly_through_gate(
     let target = ScenarioFlyThroughTarget {
         zone_label: label.to_owned(),
         description: "MSG_OBJ_DESCRIPTION_1".to_owned(),
-        category_label: "MSG_OBJ_DZ".to_owned(),
-        help_label: "MSG_OBJ_FLYTHROUGH".to_owned(),
+        category_label: Some("MSG_OBJ_DZ".to_owned()),
+        help_label: Some("MSG_OBJ_FLYTHROUGH".to_owned()),
     };
     RetailStuntGate::new(
         id,

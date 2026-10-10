@@ -681,8 +681,11 @@ impl std::error::Error for StuntError {}
 //     label (`dz1`, `sghangar`, …) to the world node it stands for
 //     (`dzpath1`, …);
 //   * the same scenario's `targets.zrd` declares one target per objective, and
-//     a fly-through danger-zone target carries `category_label = MSG_OBJ_DZ`
-//     and `help_label = MSG_OBJ_FLYTHROUGH` with `nodes = [<label>]`.
+//     a fly-through danger-zone target is labelled by **either** half of the
+//     measured pair: `category_label = MSG_OBJ_DZ` or
+//     `help_label = MSG_OBJ_FLYTHROUGH`, with `nodes = [<label>]` (task #533's
+//     rule; the instant-action corpus always carries both, three campaign
+//     records carry only the help label).
 //
 // Both members are `.zrd` documents: a small typed tree (`u32` tag then a
 // payload) whose grammar F09 measured against every reader-archive member of
@@ -710,10 +713,23 @@ pub const SCENARIO_TARGETS_MEMBER: &str = "targets.zrd";
 /// declare it).
 pub const STUNT_MISSION_TYPE: &str = "stunt_flying";
 
-/// The `category_label` every measured fly-through danger-zone target carries.
+/// The `category_label` that marks a fly-through danger-zone target when the
+/// record carries a category at all.
+///
+/// Measured over the owner's installation (task #533): **64** of the **67**
+/// fly-through records carry this category; the other **3** carry only
+/// [`FLY_THROUGH_HELP_LABEL`] and no `category_label` key at all, so a selector
+/// that requires this field drops three original campaign objectives.
 pub const FLY_THROUGH_CATEGORY_LABEL: &str = "MSG_OBJ_DZ";
 
-/// The `help_label` every measured fly-through danger-zone target carries.
+/// The `help_label` that marks a fly-through danger-zone target.
+///
+/// Measured over the owner's installation (task #533): **67** of the **67**
+/// fly-through records carry this help label — it is the near-universal half of
+/// the measured label pair (`help_label` appears in 294 of 331 objective
+/// records, `category_label` in only 146), and the 3 records that carry it
+/// without a category are campaign objectives wired into their missions'
+/// objective machines like every both-label record.
 pub const FLY_THROUGH_HELP_LABEL: &str = "MSG_OBJ_FLYTHROUGH";
 
 /// The `ia.zrd` field that names the scenario mode.
@@ -1045,19 +1061,38 @@ pub struct ScenarioFlyThroughTarget {
     pub zone_label: String,
     /// The localized description key.
     pub description: String,
-    /// The localized category key; measured `MSG_OBJ_DZ`.
-    pub category_label: String,
-    /// The localized help key; measured `MSG_OBJ_FLYTHROUGH`.
-    pub help_label: String,
+    /// The localized category key, when the record carries one; measured
+    /// `MSG_OBJ_DZ`. **Optional** (task #533): 3 campaign records carry the
+    /// fly-through help label and no `category_label` key at all.
+    pub category_label: Option<String>,
+    /// The localized help key; measured `MSG_OBJ_FLYTHROUGH` on every record
+    /// the installation labels a fly-through target.
+    pub help_label: Option<String>,
 }
 
 /// The fly-through danger-zone targets a scenario's `targets.zrd` declares.
 ///
-/// A target is selected by its own `category_label`/`help_label` pair, not by
-/// position, so a non-danger-zone objective (a zeppelin, a target building) is
-/// never mistaken for a stunt gate. The returned `zone_label` is the first node
-/// in the target's `nodes` list; a target that names no node is skipped rather
-/// than given an empty name a consumer could not resolve.
+/// A target is selected by **either half** of the measured label pair — its
+/// `category_label` is `MSG_OBJ_DZ` **or** its `help_label` is
+/// `MSG_OBJ_FLYTHROUGH` — not by position, so a non-danger-zone objective (a
+/// zeppelin, a target building) is never mistaken for a stunt gate.
+///
+/// Task #533 chose this union over #463's stricter both-labels rule, measured
+/// over the owner's installation: the help label is on **67 of 67** labelled
+/// records while the category label is on 64 (it is absent from 185 of 331
+/// objective records altogether, so requiring it drops content the campaign
+/// authored), and the **3** records it drops (`ZBD/C1/M02`'s `MSG_OBJ_ZEPHANGER`
+/// at `h3_marker`, `ZBD/C4/M03`'s `MSG_TRGT_DEVILSHORN` at `dz2`, `ZBD/C5/M02`'s
+/// `MSG_TRGT_PHQ` at `dz1`) are wired into their missions' objective machines
+/// (`ADD_OBJECTIVE_TARGET`/`REMOVE_OBJECTIVE_TARGET`, and `TRAVELERS`
+/// conditions on C5/M02's `dz1`) exactly like the both-label campaign records.
+/// The looser rule changes nothing in the instant-action corpus: all 54 of its
+/// labelled records carry both labels. See
+/// `docs/findings/2026-10-10-t533-fly-through-label-rule.md`.
+///
+/// The returned `zone_label` is the first node in the target's `nodes` list; a
+/// target that names no node is skipped rather than given an empty name a
+/// consumer could not resolve.
 #[must_use]
 pub fn scenario_fly_through_targets(targets: &ZrdValue) -> Vec<ScenarioFlyThroughTarget> {
     let Some(entries) = targets.as_list() else {
@@ -1066,9 +1101,7 @@ pub fn scenario_fly_through_targets(targets: &ZrdValue) -> Vec<ScenarioFlyThroug
     entries
         .iter()
         .filter_map(|entry| {
-            let category = zrd_field(entry, TARGET_CATEGORY_KEY)?.as_text()?;
-            let help_label = zrd_field(entry, TARGET_HELP_KEY)?.as_text()?;
-            if category != FLY_THROUGH_CATEGORY_LABEL && help_label != FLY_THROUGH_HELP_LABEL {
+            if !is_fly_through_labelled(entry) {
                 return None;
             }
             let nodes = zrd_field(entry, TARGET_NODES_KEY)?.as_list()?;
@@ -1077,11 +1110,16 @@ pub fn scenario_fly_through_targets(targets: &ZrdValue) -> Vec<ScenarioFlyThroug
                 .and_then(ZrdValue::as_text)
                 .unwrap_or_default()
                 .to_owned();
+            let label = |key: &'static str| {
+                zrd_field(entry, key)
+                    .and_then(ZrdValue::as_text)
+                    .map(str::to_owned)
+            };
             Some(ScenarioFlyThroughTarget {
                 zone_label,
                 description,
-                category_label: category.to_owned(),
-                help_label: help_label.to_owned(),
+                category_label: label(TARGET_CATEGORY_KEY),
+                help_label: label(TARGET_HELP_KEY),
             })
         })
         .collect()
@@ -1163,8 +1201,8 @@ pub struct RetailStuntGate {
     zone_label: String,
     world_zone: Option<String>,
     description: String,
-    category_label: String,
-    help_label: String,
+    category_label: Option<String>,
+    help_label: Option<String>,
     span: StuntEncodingSpan,
     geometry: Option<RetailTriggerVolume>,
 }
@@ -1224,16 +1262,20 @@ impl RetailStuntGate {
         &self.description
     }
 
-    /// The measured category key (`MSG_OBJ_DZ`).
+    /// The measured category key (`MSG_OBJ_DZ`), when the record carries one.
+    ///
+    /// Optional since task #533's label rule: 3 campaign records carry the
+    /// fly-through help label and no `category_label` at all.
     #[must_use]
-    pub fn category_label(&self) -> &str {
-        &self.category_label
+    pub fn category_label(&self) -> Option<&str> {
+        self.category_label.as_deref()
     }
 
-    /// The measured help key (`MSG_OBJ_FLYTHROUGH`).
+    /// The measured help key (`MSG_OBJ_FLYTHROUGH`), when the record carries
+    /// one. Every labelled record in the measured installation does.
     #[must_use]
-    pub fn help_label(&self) -> &str {
-        &self.help_label
+    pub fn help_label(&self) -> Option<&str> {
+        self.help_label.as_deref()
     }
 
     /// Where the target's declaration's bytes are.
@@ -1598,13 +1640,15 @@ pub fn objective_record_count(targets: &ZrdValue) -> u32 {
 /// Whether one objective record is **labelled** a fly-through danger-zone
 /// target, reading either measured label.
 ///
-/// This is the looser of the two readings and is deliberately kept beside
-/// [`scenario_fly_through_targets`], whose selector additionally requires a
-/// `category_label`. Measured over the whole installation the two disagree by
-/// **three** records — all of them campaign-mission objectives that carry
-/// `help_label = MSG_OBJ_FLYTHROUGH` and no `category_label` at all (C1/M02's
-/// `h3_marker`, C4/M03's `dz2`, C5/M02's `dz1`) — so a survey that reported only
-/// the stricter count would under-report the original's stunt records by three.
+/// This is the label rule task #533 chose for the reimplementation and it is
+/// exactly the rule [`scenario_fly_through_targets`] applies (the selector
+/// additionally requires the record to name a node). Measured over the whole
+/// installation the two labels agree on **67** records, of which **64** carry
+/// both labels and **3** carry only the help label — all campaign-mission
+/// objectives (`C1/M02`'s `h3_marker`, `C4/M03`'s `dz2`, `C5/M02`'s `dz1`)
+/// wired into their missions' objective machines like every both-label record.
+/// A survey that required the category label would under-report the original's
+/// own stunt records by those three.
 #[must_use]
 pub fn is_fly_through_labelled(record: &ZrdValue) -> bool {
     let category = zrd_field(record, TARGET_CATEGORY_KEY).and_then(ZrdValue::as_text);
@@ -2229,18 +2273,20 @@ impl RetailObjectiveCorpus {
         self.count
     }
 
-    /// How many are fly-through danger-zone targets (task #463's selector, which
-    /// requires a `category_label` as well as the help label).
+    /// How many are fly-through danger-zone targets (task #533's label rule:
+    /// the record carries either measured label **and** names a node).
     #[must_use]
     pub const fn fly_through(&self) -> u32 {
         self.fly_through
     }
 
     /// How many carry **either** measured fly-through label, whether or not the
-    /// record also carries the other one.
+    /// record also carries the other one and whether or not it names a node.
     ///
-    /// Measured over the whole installation this is three records higher than
-    /// [`Self::fly_through`]; see [`is_fly_through_labelled`].
+    /// Since task #533's label rule this differs from [`Self::fly_through`] only
+    /// for a labelled record that names no node; measured over the owner's
+    /// installation the two are equal (67), because all 67 labelled records
+    /// name one. See [`is_fly_through_labelled`].
     #[must_use]
     pub const fn fly_through_labelled(&self) -> u32 {
         self.fly_through_labelled
@@ -2520,7 +2566,8 @@ impl RetailStuntAuthoritySurvey {
             .sum()
     }
 
-    /// Every measured fly-through danger-zone objective (task #463's selector).
+    /// Every measured fly-through danger-zone objective (task #533's label
+    /// rule: either measured label, plus a node to name).
     #[must_use]
     pub fn fly_through_objectives(&self) -> u32 {
         self.rows
@@ -2533,11 +2580,11 @@ impl RetailStuntAuthoritySurvey {
     /// Every objective record that carries **either** measured fly-through
     /// label.
     ///
-    /// Measured over the owner's installation: three more than
-    /// [`Self::fly_through_objectives`], because three campaign-mission records
-    /// carry `help_label = MSG_OBJ_FLYTHROUGH` and no `category_label`. A
-    /// consumer that reported only the stricter count would under-report the
-    /// original's own stunt records.
+    /// Since task #533's label rule this equals [`Self::fly_through_objectives`]
+    /// over the owner's installation (67): the rule the selector applies is the
+    /// union of the two labels, and every labelled record names a node. The
+    /// count is kept as its own measurement so a future labelled record that
+    /// names no node stays visible. See [`is_fly_through_labelled`].
     #[must_use]
     pub fn fly_through_labelled_objectives(&self) -> u32 {
         self.rows
