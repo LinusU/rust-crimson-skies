@@ -4,10 +4,14 @@ Date: 2026-10-10. Task: M12-B "Implement and regress mission-specific
 compatibility gaps" (#292, `missions/M12.md`). Shared contract:
 `docs/contracts/SCRIPT-MISSION.md`. Capability used: `retail` (read-only
 `$CS_GAME_DIR`). Implementer: **swe2-max-1/swe2-max-1** (Devin SWE-2 Max,
-Rally #292 implement claim, sessions of 2026-10-10). Reviewer: recorded by
-the reviewer in the `complete_review` notes — this document and the report
-were written by the implementer, so they are not independent evidence and no
-agent review replaces the owner's human approval.
+Rally #292 implement claim, sessions of 2026-10-10). Reviewer:
+**swe2-max-1/swe2-max-1** (Devin SWE-2 Max, Rally #292 review claim of
+2026-10-10T09:23Z) — a different session of the same agent and model, run
+with a fresh context that re-read the task history, the mission sheet, the
+shared contract and the diff; an agent review of the code and tests, not
+independent of the implementer's model, not independent original-reference
+evidence and not original-run evidence; no agent review replaces the
+owner's human approval.
 
 ## What changed
 

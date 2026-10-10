@@ -323,7 +323,11 @@ fn evidence_report_m12_b_writes_the_acceptance_report() {
              implemented only; validated with tools/validate_evidence.py --require-pass. \
              `candidate_tree` is the tree of the commit the suite and this harness ran on; the \
              only later delta is this report's own copy under docs/findings/evidence/ and the \
-             findings document that discusses it, neither of which the acceptance suite reads"
+             findings document that discusses it, neither of which the acceptance suite reads. \
+             The reviewer re-ran the whole acceptance suite with CS_GAME_DIR on the reviewed \
+             commit, re-applied the two documented mutations, regenerated this report from that \
+             run with CS_EVIDENCE_REVIEWER naming the reviewer that really ran and validated it \
+             with tools/validate_evidence.py --require-pass"
         ),
     );
 
