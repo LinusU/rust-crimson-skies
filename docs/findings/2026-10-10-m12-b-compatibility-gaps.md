@@ -112,3 +112,48 @@ Each applied, run against `accept_m12_b_`, observed and reverted:
 | --- | --- |
 | `cs_content::mission_control::terminal_outcome_of`: `INSTANTWIN` → `None` | 3 failures (vocabulary partition, lowering "every site binds", synthetic wildcard/win-latch: `INSTANTWIN` becomes an unknown host call) |
 | `m12_b.rs`: expected block count 52 → 51 | 3 failures (vocabulary blocks, block-graph numbering `1..=52`, lowering condition-verdict count) |
+
+## Review
+
+Reviewed by **swe2-max-1/swe2-max-1** on 2026-10-10 in a fresh session (a
+different session of the same agent name and model as the implementer), against
+`missions/M12.md` (`M12-B`), `docs/contracts/SCRIPT-MISSION.md`,
+`docs/contracts/CLI-EVIDENCE.md` and the diff. The review re-derived every
+claim independently of the implementing session; it is an agent review of the
+code and tests, not independent original-reference evidence and not
+original-run evidence.
+
+- The branch sat on the latest `origin/main` (`2c0a72ef`) already, so the
+  rebase was a no-op; the branch then carried the four stage commits plus the
+  reviewer-identity commit.
+- Checks on the reviewed tree (`6b3f7380`, tree `ba264c37`), 2026-10-10
+  ~09:30–09:45 UTC: `cargo fmt --all -- --check` (0), `cargo clippy --workspace
+  --all-targets --all-features --locked -- -D warnings` (0), `cargo test
+  --workspace --locked` (0: 495 harnesses, no failures), `cargo test
+  --workspace --locked -- accept_m12_b_ --include-ignored` (0: 8 discovered, 8
+  executed, 8 passed, 0 failed, 0 ignored).
+- Both mutations above re-applied by the reviewer and reverted, each failing
+  exactly the same 3 of the 8 tests the implementer recorded, on the same
+  assertions; the working tree was clean afterwards.
+- Evidence regenerated from that run with the recipe in the `evidence.rs`
+  header plus `CS_EVIDENCE_REVIEWER` naming the reviewer (`candidate_tree`
+  `ba264c37`, the tree of the commit tested), written to
+  `private/evidence/M12-B/acceptance.json` and validated with
+  `tools/validate_evidence.py --artifact-root private/evidence/M12-B
+  --require-pass` (exit 0). The committed copy in
+  `docs/findings/evidence/M12-B.json` is that file; the only field changes from
+  the implementer's copy are `candidate_tree`, `created_at`, the artifact hash
+  of this run's log, and `review.identity` / `review.method`, which now name
+  the reviewer instead of the hand-over placeholder.
+- `python3 -m unittest discover -s tools/tests -p
+  'test_evidence_review_identity.py'` → 27 tests, OK (M12-B is not in a Rally
+  review snapshot yet, so its implementer/reviewer pair is an advisory note
+  there, as the reader documents).
+- No protected path, no original data and no binary file changed; the branch
+  touches only `crates/cs_app/tests/campaign/` (the suite, the harness and the
+  two `mod` wiring lines) and `docs/findings/` (this finding and the evidence
+  copy).
+
+Not fixed here, unchanged and still open: OBJECTIVE36's `TRAVELERS` counting
+mode is the shared unimplemented gap **M10-B-FU1** (#812) tracks, and M12 stays
+unready until it is measured.
