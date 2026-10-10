@@ -114,6 +114,18 @@ listed under Unknowns, not guessed here.
 
 ### Outcome, identity and dependency
 
+> **Spelled-value convention (settled by M02-B-FU3, #802; reconciled across
+> the M02–M06 suites by M06-B-FU3, #819).** Where a cell below says a payload
+> is "`dec`'d", the operation is the x86 `dec` instruction: the spelled
+> integer is the objective's **one-based block number** (`1` = the first
+> `OBJECTIVE<N>` block), and the parse stores it as the zero-based record
+> index `value − 1`. Measured at `0x468c40` (wake-array store loop),
+> `0x468cf0` (nap target) and `0x4679fc` (`TICK_DEPENDS_ON_OBJ`), with
+> `DEDG`'s integers at `0x467a21` and a nap's seconds stored un-decremented
+> as controls — `docs/findings/2026-10-09-m02-b-fu3-out-of-range-wake-address.md`.
+> Tests that had read a spelled integer as the index itself misattributed
+> every edge to the block one number lower.
+
 | Key | M01 shape(s) | Parse site | Args read | Record fields |
 | --- | --- | --- | --- | --- |
 | `INSTANTWIN` | bare | `0x468b95` | presence only | `+0x554 = 3` (instant-win class) |

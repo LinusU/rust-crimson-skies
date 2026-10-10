@@ -348,7 +348,11 @@ child's `MSG_*` label is ever re-read from the retained document
 ### Objective-to-objective state directives
 
 All parse their integer children with `dec` into **zero-based** `−1`-terminated
-index arrays. `WAKE_OBJECTIVE` and `WAKE_OBJECTIVE_WHEN_I_COMPLETE` are
+index arrays: the spelled integer is the target's one-based block number and
+the `dec` stores it as record index `value − 1` — the decrement instruction,
+measured by M02-B-FU3 (#802) and applied to addresses only (`DEDG`'s integers
+and a nap's seconds are stored un-decremented). `WAKE_OBJECTIVE` and
+`WAKE_OBJECTIVE_WHEN_I_COMPLETE` are
 aliases writing the same `+0x1c` array (measured in A's map at `0x468c0f`/
 `0x468c26`); M01 spells only the `_WHEN_I_COMPLETE` spelling, `[int]`×16,
 `[int,int]`×2, `[int,int,int]`×1, `[int,int,int,int]`×1.
