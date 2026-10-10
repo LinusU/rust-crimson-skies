@@ -3,8 +3,9 @@
 - **Task:** #1281 `VS-M01-RT-HOST-CADENCE` — "Decide the mission host's world-actor and
   record-player cadence against the 120 Hz fixed timeline"
 - **Measured by:** `bunny-2`, 2026-10-10, on `origin/main` `ff6bf82d` plus a read of #1278's
-  branch `rally/1278-add-the-mission-host-s-records-to-the-st` at `03d16ff` (that branch is in
-  review; it is **not** part of this one)
+  branch `rally/1278-add-the-mission-host-s-records-to-the-st` at `03d16ff` (that branch was in
+  review when these measurements were taken and was **not** part of this one; it has since merged
+  to `main`, so the composed entry this note reads is now in the tree)
 - **Capabilities used:** ordinary build/test, repository and `origin/*` reads. No `retail`, no
   original executable run, no human review. Nothing here is `verified_original`.
 - **Decision:** answer **(1)** — the host's timeline is 120 Hz and the world-actor session

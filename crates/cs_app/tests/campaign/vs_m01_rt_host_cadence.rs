@@ -26,8 +26,10 @@
 //!   the measured divergence (a 64 Hz session stepped 120 times a second) it
 //!   travelled 22.5 m — 1.875× its authored speed.
 //!
-//! #1278's entry lands on its own branch; neither member needs it, because
-//! what they pin is the rate relationship any such entry steps at.
+//! Neither member drives that entry itself: #1278's `vs_m01_rt_host` suite
+//! holds the entry to the stage and asserts the session reaches the host
+//! tick. What these two pin is the *rate* relationship every such step is
+//! measured against — the number the entry's tick is counted in.
 //!
 //! Both are synthetic: they build a declared world-actor program in memory
 //! and drive production code
