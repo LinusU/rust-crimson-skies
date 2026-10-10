@@ -641,6 +641,18 @@
 //! out, because a member whose bytes decode is not a member that plays and
 //! an undecoded program stays `Unsupported` per
 //! `docs/contracts/SCRIPT-MISSION.md`.
+//!
+//! [`mission_session`] is the content-preparation stage that follows it
+//! (VS-M01-RT-CONTENT, #1214): [`mission_session::MissionContent::prepare`]
+//! reads every record the windowed composition will consume — the world
+//! container's import, meshes and load record, the player's start airframe
+//! and pose, the measured flight law, the weather session, the world-actor
+//! binding, the animation join, the lowered objectives and control programs
+//! and the scope's sound archives — out of one satisfied
+//! [`mission_launch::MissionLaunchPlan`], through the same production readers
+//! the launch closure judges. It opens no window, spawns nothing and runs no
+//! tick; every refusal is a [`mission_session::MissionSessionError`] carrying
+//! the reader's own message and its source key.
 
 pub mod accessibility;
 pub mod ai;
@@ -669,6 +681,7 @@ pub mod mission_animations;
 pub mod mission_control;
 pub mod mission_launch;
 pub mod mission_markers;
+pub mod mission_session;
 pub mod mission_start;
 pub mod mission_world_actors;
 pub mod network;
