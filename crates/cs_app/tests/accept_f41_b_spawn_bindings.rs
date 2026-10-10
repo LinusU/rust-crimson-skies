@@ -14,7 +14,7 @@
 //!
 //! * the aircraft enters through the production [`spawn_flight_body`] path
 //!   (the same call the scene and the mission's player spawn use), and
-//! * the world's emitter is the entity the production [`ReadyBundle::attach`]
+//! * the world's emitter is the entity the production `ReadyBundle::attach`
 //!   handoff spawned for the delivered environment loop.
 //!
 //! Everything else is production: the real plugin and its registered

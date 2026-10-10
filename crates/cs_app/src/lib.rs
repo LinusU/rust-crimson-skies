@@ -538,6 +538,9 @@
 //! the generation-stamped [`audio::AudioEmitterBinding`] tying an entity to its
 //! session-qualified emitter, bus and asset. F41-B adds [`audio::sync_emitter_loops`],
 //! which starts, swaps and stops loops as those bindings spawn and despawn;
+//! [`audio::bind_spawned_emitters`], the spawn path that attaches those
+//! bindings — and, on an aircraft, the engine voice marker — to what the
+//! world's spawn paths created, one session-qualified id per emitter entity;
 //! [`audio::smooth_engine_voices`], which smooths engine pitch and volume from
 //! the flight model's fixed-tick throttle spool; [`audio::mix_session`] and the
 //! [`audio::device_lost`] / [`audio::device_restored`] pair, the consumer that

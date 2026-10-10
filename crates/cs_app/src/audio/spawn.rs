@@ -354,6 +354,14 @@ pub fn bind_spawned_emitters(world: &mut World) {
     // load is skipped without a refusal — the handoff already names the
     // replaced load once (`AudioHandoffRefusal::ReplacedLoads`), and this
     // system would otherwise re-log it every frame for every stale item.
+    //
+    // No `Added` filter here, deliberately: an entity delivered before its
+    // session existed has already spent its add tick by the time a session is
+    // there to bind it (the system returns early, and its last-run tick still
+    // advances), so a not-yet-bound scan is what makes delivery order not
+    // matter. It costs one pass over the delivered item entities — one more
+    // beside the three `insert_audio_session` already makes over the same
+    // query.
     let mut world_items: Vec<(Entity, ContentId)> = Vec::new();
     let installed: Option<LoadIdentity> = world
         .get_resource::<AudioHandoffLog>()
