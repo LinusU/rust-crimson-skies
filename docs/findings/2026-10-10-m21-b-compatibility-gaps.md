@@ -242,6 +242,39 @@ Synthetic, run in CI without original data:
 | `cargo test --workspace --locked -- accept_m21_b_ --include-ignored` | 0 (12 tests) |
 | `python3 tools/validate_evidence.py private/evidence/M21-B/acceptance.json --artifact-root private/evidence/M21-B --require-pass` | 0 |
 
+## Review of this branch (Rally #319)
+
+Reviewed 2026-10-10 by **bunny-2/bunny-2** — the same Rally agent name, model
+and host as the implementer, in a separate session whose context was fresh (it
+began from the task history, this sheet, `docs/contracts/SCRIPT-MISSION.md`,
+`docs/contracts/CLI-EVIDENCE.md` and the branch diff). Because implementer and
+reviewer are one agent identity, the review is **not independent**
+original-reference evidence; a Rally merge awards `checked` only, and no agent
+review replaces the owner's human approval. The regenerated report
+(`docs/findings/evidence/M21-B.json`) records this in `review.identity`.
+
+The review found no defect to fix: only owner paths changed
+(`crates/cs_app/tests/campaign/`, `docs/findings/`), no protected path and no
+binary file, and no production code change was needed because M21's record
+lowers completely. What the review reran itself:
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 (495 `test result: ok`) |
+| `cargo test --workspace --locked -- accept_m21_b_ --include-ignored` | 0 (12/12) |
+| each of the 12 discovered tests alone with `--exact --include-ignored` | 0 (12/12) |
+| `python3 tools/validate_evidence.py … --require-pass` | 0 |
+| `python3 -m unittest discover -s tools/tests -p 'test_evidence_review_identity.py'` | 0 (27 tests) |
+
+Independent mutation (reverted): renaming the `START_TAXI` key of the measured
+vocabulary in `crates/cs_content/src/mission_control.rs` to
+`START_TAXI_MUTANT` made
+`accept_m21_b_every_directive_m21_spells_has_a_disposition_and_none_is_refused`
+fail at `m21_b.rs:859` (the key became `Unmeasured`), exit 101. The tree was
+clean afterwards and the selection was rerun green.
+
 ## Mutation checks run and reverted (both fail as required)
 
 | Mutation | Result |
