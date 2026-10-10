@@ -151,6 +151,25 @@ below.
    (F58-B finding 3, unchanged here), and `ClientIntent` remains a server-side
    vocabulary the wire cannot express (F58-B finding 4).
 
+## Test sensitivity
+
+Five probes, each applied to the named function, the task selection run, and the
+file restored with `git checkout --` afterwards (the tree was clean at `dd640f5f`
+after every probe). Every probe knocked out at least one `accept_f58_c_` test:
+
+| Implementation removed | Tests that failed |
+| --- | --- |
+| `RecoveryFlow::depart`'s duplicate-report early-out | 1 — `…_a_disconnect_while_carrying_resolves_the_objective_once`: the second report came back as `Applied`/`Timeout` instead of `Duplicate`/`Voluntary` ("the cause of record is the first report's") |
+| `RecoveryFlow::host_lost`'s ended-match early-out | 1 — `…_host_loss_ends_the_match_once_and_sends_every_client_to_menu` ("the match ends once": `Applied { tick: 21 }` instead of `Duplicate { tick: 20 }`) |
+| the objective-settlement block in `depart` | 3 — all of `accept_f58_c_disconnect_settles_carried_objectives`: `dropped` came back empty, and the refused-tick test stopped erroring because nothing is submitted to be refused |
+| the teardown (`release_actor` + `forget_peer`) in `depart` | 3 — the same three: the binding was still `Some(aircraft)` and the peer still a gate member |
+| `DepartureLedger::record`'s duplicate guard | 2 — `accept_f58_c_each_peer_departs_once_and_a_duplicate_report_settles_nothing` ("a duplicate must not settle again") and `…_the_departure_ledger_is_bounded_by_the_peer_id_space` (the full-ledger duplicate answered `Applied`) |
+
+Checks run on the branch: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`,
+`cargo test --workspace --locked` (4338 passed, 0 failed) and
+`cargo test --workspace --locked -- accept_f58_c_ --include-ignored` (8 passed).
+
 ## Evidence boundary
 
 No original data, no original executable, no network beyond synthetic fixtures on
