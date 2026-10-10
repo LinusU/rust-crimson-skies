@@ -27,7 +27,6 @@ use crate::mission_start::{MissionStartConfiguration, recover_retail_start_confi
 use crate::mission_world_actors::{
     CarrierRead, MissionWorldActors, SESSION_TICKS_PER_SECOND, bind_mission_world_actors,
 };
-use crate::objectives::{LoweredObjectives, lower_program, recover_retail_objectives};
 use crate::physics::BASELINE_FIXED_HZ;
 use crate::world::{WorldMeshes, retail};
 
@@ -124,9 +123,20 @@ pub struct MissionContent {
     pub world_actors: MissionWorldActors,
     /// The scope's animation join: startup rows, placements and carriers.
     pub animation: MissionAnimationBinding,
-    /// The mission's authored objectives, lowered for the objective session.
-    pub objectives: LoweredObjectives,
-    /// The lowered control program the script host runs.
+    /// The mission's declared objective program and the lowered control
+    /// program the script host runs — one value, not two.
+    ///
+    /// Since the owner's amendment of 2026-10-10 (Rally #1214), the measured
+    /// control/directive lowering **is** this mission's declared objective
+    /// program: the same program the `mission_objectives` launch surface is
+    /// judged by, and the only original mission program that lowers today.
+    /// The separate `crate::objectives::ObjectiveRecovery` path (→
+    /// `DeclaredObjectiveProgram` → `lower_program`) stays in that module,
+    /// measured by #1219; it refuses for every original mission today and is
+    /// not consulted here. The per-tick host that still needs
+    /// `LoweredObjectives` (`ObjectiveSession::launch`) bridges from this
+    /// program or blocks naming the missing mechanism — never a synthesized
+    /// objective (owner note, 2026-10-10).
     pub control: MissionProgram,
     /// The sound-family archives in the mission's scope.
     pub sound_archives: Vec<SoundArchive>,
@@ -212,15 +222,9 @@ pub enum MissionSessionError {
         /// The animation reader's own message.
         reason: String,
     },
-    /// The objectives could not be recovered or would not lower.
-    Objectives {
-        /// The mission directory key.
-        mission: String,
-        /// The recovery's or the lowering's own message.
-        reason: String,
-    },
     /// The control program could not be surveyed, has no row, or its lowering
-    /// is incomplete.
+    /// is incomplete — including the mission's declared objective program,
+    /// which is this lowering (owner amendment, 2026-10-10).
     Control {
         /// The mission directory key.
         mission: String,
@@ -293,9 +297,6 @@ impl fmt::Display for MissionSessionError {
             Self::Animation { scope, reason } => {
                 write!(formatter, "{scope}: the animation join refuses: {reason}")
             }
-            Self::Objectives { mission, reason } => {
-                write!(formatter, "{mission}: the objectives refuse: {reason}")
-            }
             Self::Control { mission, reason } => {
                 write!(
                     formatter,
@@ -360,12 +361,6 @@ impl MissionContent {
             })?;
         let control = prepare_control(install_root, plan)?;
         let sound_archives = prepare_sound_archives(install_root, &found, plan)?;
-        // The objective recovery is asked **last**: `ObjectiveRecovery::program`
-        // refuses for every original mission today (its own doc says "always
-        // today"), so reading it last keeps that refusal from masking a reader
-        // behind it — an `Objectives` refusal means every other record of this
-        // list is already in hand.
-        let objectives = prepare_objectives(install_root, plan)?;
 
         Ok(Self {
             world,
@@ -376,7 +371,6 @@ impl MissionContent {
             environment,
             world_actors,
             animation,
-            objectives,
             control,
             sound_archives,
         })
@@ -659,31 +653,15 @@ fn world_actor_refusal(actors: &MissionWorldActors) -> String {
     detail
 }
 
-/// Objectives: the declared program the recovery yields, lowered.
-fn prepare_objectives(
-    install_root: &Path,
-    plan: &MissionLaunchPlan,
-) -> Result<LoweredObjectives, MissionSessionError> {
-    let recovery = recover_retail_objectives(install_root, &plan.mission_dir).map_err(|error| {
-        MissionSessionError::Objectives {
-            mission: plan.mission_dir.clone(),
-            reason: error.to_string(),
-        }
-    })?;
-    let program = recovery
-        .program()
-        .map_err(|error| MissionSessionError::Objectives {
-            mission: plan.mission_dir.clone(),
-            reason: error.to_string(),
-        })?;
-    lower_program(&program).map_err(|error| MissionSessionError::Objectives {
-        mission: plan.mission_dir.clone(),
-        reason: error.to_string(),
-    })
-}
-
-/// Script host: the mission's control row, its complete lowering and the
-/// program that lowering produced.
+/// Script host and objectives: the mission's control row, its complete
+/// lowering and the program that lowering produced.
+///
+/// Since the owner's amendment of 2026-10-10 (Rally #1214), this lowering is
+/// also the mission's declared objective program — the source the
+/// `mission_objectives` launch surface is judged by. It is asked after the
+/// world-actor binding and before the sound walk, like every other record on
+/// the list; nothing is asked "last to prove the rest", because no reader here
+/// refuses unconditionally.
 fn prepare_control(
     install_root: &Path,
     plan: &MissionLaunchPlan,

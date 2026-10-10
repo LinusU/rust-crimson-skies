@@ -27,8 +27,12 @@
 //! 5. **World actors** — [`crate::mission_world_actors::bind_mission_world_actors`],
 //!    kept whole so the composition spawns from its own session.
 //! 6. **Animations** — [`crate::animation::mission::bind_mission_animation`].
-//! 7. **Objectives** — [`crate::objectives::recover_retail_objectives`] →
-//!    `program()` → [`crate::objectives::lower_program`].
+//! 7. **Objectives** — the mission's declared objective program is the
+//!    measured control/directive lowering of item 8 (owner amendment of
+//!    2026-10-10): it must lower **completely** before content exists. The
+//!    separate [`crate::objectives`] recovery (→ `DeclaredObjectiveProgram` →
+//!    `lower_program`) stays in that module, measured by Rally #1219; it
+//!    refuses for every original mission today and is not consulted here.
 //! 8. **Script host** — [`crate::mission_control::survey_mission_control_programs`]
 //!    → the mission's row → its lowering → the lowered program.
 //! 9. **Audio** — the sound-family archives in the mission's scope, classified
