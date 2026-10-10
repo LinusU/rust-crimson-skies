@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M06-B-FU4",
+ "candidate_tree": "6b9cac9a371e5f52b679f7649bda02e9ba28ed50",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-10T05:57:55Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m06_b_fu4_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m06_b_fu4_a_mission_scoped_unknown_reaches_only_the_work_order_it_was_measured_for", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m06_b_fu4_m06s_record_names_the_passenger_identity_limitation_and_m01s_does_not", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "10b10fd6f646018890649918317855ccdba0542942ac717498f70cd3b9e885af", "kind": "log"}, {"path": "m06-binding.json", "sha256": "bb354e063a00b7b679791364b072b48551877abcae0684ec1abd5a023db77032", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: opencode-go/mimo-v2.6-flash (Rally #1184 implement claim of 2026-10-10, agent bunny-alpha-1); reviewer: not yet run - the reviewing agent regenerates this report on the reviewed commit, and any agent review is fresh-context review, never independent-model evidence; no agent review replaces the owner's human approval", "method": "acceptance suite run locally with the retail capability; the fields are derived from the recorded log, production discovery of $CS_GAME_DIR and the binding `SourceContext::read` + `SourceContext::bind` derive from it (all five critical dependencies resolved; the new mission-scoped entry is carried in missions/bindings/M06.json, regenerated through production code). This task adds the mission-scoped unknown mechanism to cs_content::campaign_bindings: the shared SOURCE_BINDING_UNKNOWNS stays global, and M06's passenger-identity verdict — the shipped data binds no passenger or extraction entity to the mission, measured by M06-B-FU2 — is keyed by work order, so it reaches M06's record alone while M01 (whose startup fires the crew animation call_add_jack, declared by the library's passengers.zrd driving the world node apassengers) receives none. The entry names the limitation, the reason and what settles it: an original reference run under M06-C or the owner's ruling. NOT CLAIMED: nothing is verified_original, no original executable was run, and the global checklist is unchanged for every other mission. Claim is implemented only; validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit the suite and this harness ran on; the only later delta is this report's own copy under docs/findings/evidence/, which no acceptance test reads"},
+ "claim": "implemented"
+}
