@@ -68,13 +68,16 @@ use?
 indistinguishable, over the instant-action corpus, from the union rule — every
 instant-action record carries both labels — so a test that only exercised
 instant-action shapes could not tell the two rules apart, and the campaign
-records the strict rule drops would vanish silently from every downstream count
-(the catalog's stunt rows, F18's opening audit, the reward survey). That is why
+records the strict rule drops would vanish silently from the two
+whole-installation consumers (the earning-authority survey and the
+reward/repeat survey). The catalog's stunt rows and F18's opening audit read
+only instant-action scenarios, so they were never affected — which is why the
+instant-action measurements of both predecessors stand unchanged. That is why
 the acceptance test authors a record with **only** the help label and a record
 with **both** labels and asserts both are selected: inverting the rule to
 require the category label drops the first and fails the test (verified: both
 inversion directions — strict AND, and category-only — fail all three task
-tests).
+tests, as does a selector-only skip of category-less records).
 
 ## The decision: the union of the two labels
 
