@@ -121,7 +121,7 @@ project data.
   the mix. `AudioBindLog` records every attachment (entity, emitter, asset,
   bus, role) and every refusal, at most once per session rather than once per
   frame.
-- Tests: `crates/cs_app/tests/accept_f41_b_spawn_bindings.rs`, 7 scenarios,
+- Tests: `crates/cs_app/tests/accept_f41_b_spawn_bindings.rs`, 9 scenarios,
   prefix `accept_f41_b_`. **No fixture spawns a binding**: the aircraft enters
   through the production `spawn_flight_body`, the world's emitter is the
   entity the production handoff spawned, and every loop asserted on the
@@ -129,11 +129,34 @@ project data.
   through this path:
   `accept_f41_b_destroyed_aircraft_ends_loop_and_replacement_binds`; throttle
   scenario: `accept_f41_b_spawn_path_engine_voice_follows_the_aircraft_throttle`.
-  One pre-existing assertion was *sharpened*, not relaxed:
+  Two scenarios were added at review:
+  - `accept_f41_b_spawn_path_prefers_the_delivered_engine_record`, whose
+    test-local catalog declares a *second* engine loop sorting before the
+    delivered one and never delivered, so "delivered first" and "declared
+    first" name different records. The shared synthetic catalog holds exactly
+    one engine loop, so without it neither rule could be told apart from the
+    other — the assertion also pins the declared-first candidate, so a catalog
+    change that made the two rules agree again fails the test instead of
+    passing it for the wrong reason.
+  - `accept_f41_b_spawn_path_binds_a_body_flying_the_original_law`, which
+    spawns a body carrying **only** `PlaytestOriginalFlight` — the shape
+    `spawn_original_flight_body` and the mission's `spawn_player` produce —
+    and shows it bound, sounding, and following the law's own actual
+    throttle. Before it, nothing in the suite read the second engine
+    authority this task added.
+- Sensitivity, measured by breaking the implementation and rerunning the
+  suite, then reverting: unregistering `bind_spawned_emitters` fails 8 of the
+  9 scenarios above (and the sharpened wiring assertion below), dropping
+  `EngineVoiceFollow` from the aircraft binding fails 3, and resolving the
+  binding's asset from the declared catalog alone fails exactly the
+  delivered-first scenario.
+- One pre-existing assertion was *sharpened*, not relaxed:
   `accept_f41_b_undelivered_sound_is_refused_by_name` used to assert global
   silence while the load delivered the environment loop — which this path now
   correctly plays — and now asserts that the refused engine asset reaches no
-  device voice at all while exactly the delivered loop sounds.
+  device voice at all while exactly the delivered loop sounds. Its hand-built
+  emitter now takes serial 2 rather than the serial the spawn path mints for
+  that world's emitter, so no fixture puts two entities on one emitter id.
 
 ## Still not done / still unmeasured (gates fidelity claims)
 
