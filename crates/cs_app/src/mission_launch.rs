@@ -11,13 +11,12 @@
 //! is still missing, or the question no stage has answered yet.
 //!
 //! A member whose bytes decode is not a member that plays. `decode_zrd` reads
-//! every `.zrd` document of the mission reader cleanly, and the
-//! `MissionProgram` surface still reports `Unsupported`: nothing in
-//! `cs_script` or `cs_content` turns an original reader member into a
-//! runnable `MissionProgram`, and `lower_program` refuses
-//! `DeclaredSupport::Original` by design. The closure records that instead of
-//! simulating a mission around it — `docs/contracts/SCRIPT-MISSION.md` keeps
-//! an undecoded program an `Unsupported` mission, never a guessed one.
+//! every `.zrd` document of the mission reader cleanly, and that alone is not
+//! a runnable program: `MissionProgram` reads `Satisfied` only since #717's
+//! lowering gave M01's directives an implemented disposition apiece, and a
+//! directive that is still unmeasured keeps its surface `Unsupported` —
+//! `docs/contracts/SCRIPT-MISSION.md` keeps an unmeasured program an
+//! `Unsupported` mission, never a guessed one.
 //!
 //! [`MissionLaunchPlan::launchable`] is the gate the runner will read: a
 //! launch whose plan names an `Unsupported` or `Unknown` surface exits
@@ -623,25 +622,52 @@ fn measure_geometry(
 /// [`WorldImportReport`] rather than restated.
 ///
 /// The vertex unit, the axis convention and every collision role the
-/// container *states* were measured by #677, #716 and #727, so this surface
-/// is satisfied exactly when the import applied the measured axis
-/// convention **and** left no record without an answer. A grid-named
-/// `fvol*` volume ([`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`]) and a
-/// mesh-bearing unindexed record ([`UNINDEXED_ROLE_UNMEASURED`]) are both
-/// records the container states nothing about: the launch would be placing
-/// them by default, so they stay an open question.
+/// container *states* were measured by #677, #716, #727 and #771, so this
+/// surface is satisfied exactly when the import applied the measured axis
+/// convention **and** left no record without an answer. Each open term is
+/// one of the report's own counters — never a restated string:
+///
+/// * [`WorldImportReport::objects_unresolved_collision`] counts every
+///   imported object whose collision role is still `Unknown`. Its
+///   documented identity is [`WorldImportReport::objects_unindexed_unresolved`]
+///   plus any grid-named `fvol*` record that stores the intersection
+///   narrow-phase flag ([`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`]), so the
+///   residual below is exactly the grid-named half, and neither counter
+///   double-names a record.
+/// * [`WorldImportReport::objects_unindexed_unresolved`] is the
+///   mesh-bearing unindexed half ([`UNINDEXED_ROLE_UNMEASURED`]).
+/// * A grid record that binds no mesh is open only when it *does* store a
+///   box: [`WorldImportReport::partition_records_stores_no_geometry`] is the
+///   answered half — the store gives those records nothing a collider or a
+///   drawing could come from — so the open count is the arithmetic that
+///   accessor documents.
+/// * The axis class must be the installation-backed observation.
+///
+/// Before #771 landed, this verdict read
+/// [`WorldImportReport::partition_records_fog_volume`] as an open question;
+/// that accessor measures an **overlap** (how many grid-named records the
+/// original's fog consumer keys), not something no stage has answered, and
+/// every record it covers now resolves role `None`.
 fn geometry_verdict(report: &WorldImportReport) -> SurfaceVerdict {
-    let fog = report.partition_records_fog_volume();
+    let unresolved = report.objects_unresolved_collision();
     let unindexed = report.objects_unindexed_unresolved();
+    let grid_named = unresolved.saturating_sub(unindexed);
     let meshless = report
         .partition_records()
-        .saturating_sub(report.partition_records_with_mesh());
+        .saturating_sub(report.partition_records_with_mesh())
+        .saturating_sub(report.partition_records_stores_no_geometry());
     let axis_measured = matches!(report.axis_class(), ClaimStatus::ObservedTool);
     let mut open: Vec<String> = Vec::new();
-    if fog > 0 {
+    if grid_named > 0 {
+        let noun = if grid_named == 1 { "record" } else { "records" };
+        let that = if grid_named == 1 {
+            "that stores"
+        } else {
+            "that store"
+        };
         open.push(format!(
-            "the collision role of the {fog} grid-named `fvol*` volume records \
-             ({GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED})"
+            "the collision role of the {grid_named} grid-named `fvol*` volume {noun} {that} \
+             the intersection narrow-phase flag ({GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED})"
         ));
     }
     if unindexed > 0 {
@@ -674,11 +700,16 @@ fn geometry_verdict(report: &WorldImportReport) -> SurfaceVerdict {
         SurfaceVerdict::Satisfied {
             consumer: format!(
                 "world::retail::read_world_container + import_world_container ({} partition \
-                 cells, {} objects, axis `{}` under {})",
+                 cells, {} objects, axis `{}` under {}; objects with an `Unknown` collision \
+                 role: {}, unindexed geometry-bearing records unresolved: {}, grid records \
+                 storing no geometry: {})",
                 report.partition_cells(),
                 report.objects(),
                 report.axis_map(),
-                WORLD_AXIS_CONVENTION_MEASURED
+                WORLD_AXIS_CONVENTION_MEASURED,
+                unresolved,
+                unindexed,
+                report.partition_records_stores_no_geometry()
             ),
         }
     } else {
@@ -686,9 +717,10 @@ fn geometry_verdict(report: &WorldImportReport) -> SurfaceVerdict {
             detail: format!(
                 "the container imports to a WorldDefinition ({} partition cells, {} \
                  objects) with the `{}` axis map applied as {:?} under {}, and every \
-                 `fvol*` record classified as fog (#716); what no stage has answered \
-                 is {} \
+                 unindexed `fvol*` record is classified as fog and resolves role `None` \
+                 (#716, #771); what no stage has answered is {} \
                  (docs/findings/2026-10-07-m01-lc-fvol-roles-and-axis-convention.md, \
+                 docs/findings/2026-10-08-m01-lc-world-residual-roles.md, \
                  docs/findings/2026-10-07-f18-grid-collision-origin.md)",
                 report.partition_cells(),
                 report.objects(),
