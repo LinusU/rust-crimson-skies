@@ -36,6 +36,12 @@ The three outliers below carry the same `install_sha256` but a different
 `content_sha256` — which cannot come from one run over one manifest, since
 both fingerprints are pure functions of it.
 
+*Those counts are #1157's measurement of the state it found on
+2026-10-10, not a live count: Rally #1174 has since reissued the three
+reports (see `Resolution`), so every committed report measured over an
+installation now carries the pair, and the report directory has grown
+since as other tasks landed.*
+
 ## Which writer produced each report (name and path)
 
 The committed-harness reader in
@@ -62,9 +68,9 @@ writer computed, not just that its output still differs.
 
 All re-derivation below ran on 2026-10-10 over the production data
 (`cs-inspect` reports and `install::discover`/`mount_rof` outputs). The
-`accept_evidence_content_digest_outliers_each_outlier_is_its_documented_scoped_digest`
-test re-derives the same three values in code through the production
-readers.
+`accept_evidence_content_digest_outliers_each_documented_scoped_digest_still_re_derives`
+test (renamed by #1174, which reissued the reports) re-derives the same
+three values in code through the production readers.
 
 | Report | Recorded `content_sha256` | Re-derived computation | Result |
 | --- | --- | --- | --- |
