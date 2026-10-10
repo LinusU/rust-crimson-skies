@@ -56,7 +56,7 @@ use crate::animation::survey::CarrierKind;
 use crate::mission_animations::MissionAnimationPlayer;
 use crate::mission_world_actors::{
     ALLEGIANCE_OPEN_CLAIM, ALLEGIANCE_RESOLVED_CLAIM, MOTION_RESIDUE, OpenField,
-    SPAWN_ATTITUDE_CLAIM, SPAWN_POSE_CLAIM, TARGETS_MEMBER, TURRET_MEMBER, ZEPPELIN_MEMBER,
+    SPAWN_ATTITUDE_CLAIM, SPAWN_POSE_CLAIM, TURRET_MEMBER, ZEPPELIN_MEMBER,
 };
 
 /// The surfaces an original-mission launch must account for, in report
@@ -1087,7 +1087,9 @@ fn measure_actor_readers(
 /// ([`PLACEMENT_FIELDS_CLAIM`]), the carrier's own residue
 /// ([`MOTION_RESIDUE`]), and the allegiance the original's loader resolves
 /// ([`ALLEGIANCE_RESOLVED_CLAIM`], refused under [`ALLEGIANCE_OPEN_CLAIM`]
-/// when the measured path cannot settle, #1155).
+/// when the measured path cannot settle — an unreadable [`TURRET_MEMBER`]
+/// carrier, a staged `+0x8d` team lane outside the measured vocabulary or
+/// an unmodelled `NODES` element (#1155, #1177)).
 ///
 /// This is exactly the text [`measure_actor_readers`] reports; it is `pub`
 /// so an acceptance test can build the detail without an original
@@ -1149,10 +1151,11 @@ pub fn world_actor_gap_detail(
     ));
     detail.push_str(&format!(
         "; a record's faction binds the allegiance the original's loader resolved \
-         (#1155) under {ALLEGIANCE_RESOLVED_CLAIM}, and a record whose allegiance \
-         cannot settle — a node the {TARGETS_MEMBER} gate could match, an unmodelled \
-         {TURRET_MEMBER} NODES element, a team int outside the measured vocabulary — \
-         stays refused under {ALLEGIANCE_OPEN_CLAIM} \
+         (#1155, #1177) under {ALLEGIANCE_RESOLVED_CLAIM}, and a record whose \
+         allegiance cannot settle — an unreadable {TURRET_MEMBER} carrier, a staged \
+         `+0x8d` team lane outside the measured `neutral`/`ally`/`enemy` vocabulary, \
+         an unmodelled {TURRET_MEMBER} NODES element — stays refused under \
+         {ALLEGIANCE_OPEN_CLAIM} \
          (docs/findings/2026-10-09-m01-lc-zeppelin-allegiance.md)"
     ));
     detail

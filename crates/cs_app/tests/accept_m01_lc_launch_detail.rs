@@ -21,7 +21,7 @@ use cs_app::animation::mission::PLACEMENT_FIELDS_CLAIM;
 use cs_app::mission_launch::world_actor_gap_detail;
 use cs_app::mission_world_actors::{
     ALLEGIANCE_OPEN_CLAIM, ALLEGIANCE_RESOLVED_CLAIM, MOTION_RESIDUE, OpenField,
-    SPAWN_ATTITUDE_CLAIM, SPAWN_POSE_CLAIM,
+    SPAWN_ATTITUDE_CLAIM, SPAWN_POSE_CLAIM, TARGETS_MEMBER,
 };
 use cs_types::evidence::ClaimId;
 
@@ -69,6 +69,14 @@ fn accept_m01_lc_launch_detail_names_the_allegiance_claim_and_its_finding() {
     assert!(
         detail.contains(ALLEGIANCE_FINDING),
         "the tail cites the #1155 finding: {detail}"
+    );
+
+    // #1177 retired the `targets.zrd` gate (its `nodes` match only picks a
+    // stored name, it never gates a staged record), so the tail must not
+    // offer it to a reader as a reason a faction could stay unsettled.
+    assert!(
+        !detail.contains(TARGETS_MEMBER),
+        "the tail does not name the retired targets gate: {detail}"
     );
 
     // The addition is an addition: every sentence the tail already had is
