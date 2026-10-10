@@ -49,16 +49,27 @@
 //! `MissionContent`. Nothing here is `verified_original`; the flight law's
 //! provenance label travels on [`MissionFlight`] and says what it is.
 //!
-//! Nothing here spawns, draws, opens a window or runs a tick. The windowed
-//! composition (VS-M01-RT-WINDOW, #1215) is the caller: it gates on
+//! Preparation itself spawns nothing, draws nothing, opens no window and runs
+//! no tick. The windowed composition (VS-M01-RT-WINDOW, #1215) is the caller:
+//! it gates on
 //! [`crate::mission_launch::MissionLaunchPlan::launchable`] and then asks this
 //! module for the content — through [`compose::stage_for`], which turns the
 //! prepared content into a [`compose::MissionStage`], and
 //! [`compose::build_windowed`] / [`compose::build_headless`], the two faces
 //! of the composition itself.
+//!
+//! The `host` submodule is the stage those records were prepared for
+//! (VS-M01-RT-MISSION-HOST, #1217): [`host::MissionHostSeed`] is what [`compose::stage_for`] leaves on
+//! the stage, [`host::MissionHost`] launches it as one session, and
+//! [`host::mission_host_tick`] is the one composed per-tick entry the
+//! composition installs in the fixed-tick schedule. That module *does* run
+//! ticks — one per committed fixed tick, in the documented order — and every
+//! record it cannot drive is named as a [`host::MissionHostRefusal`] rather
+//! than replaced.
 
 mod compose;
 mod content;
+mod host;
 
 pub use compose::{
     MissionComposition, MissionCompositionError, MissionPlayerBody, MissionPlayerStart,
@@ -68,4 +79,9 @@ pub use compose::{
 pub use content::{
     MissionContent, MissionFlight, MissionSessionError, SoundArchive, prepare_mission_content,
     root_seed_from,
+};
+pub use host::{
+    MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport, MissionHostSeed,
+    MissionHostStepError, MissionHostTick, host_session_id, install_mission_host,
+    mint_host_generation, mission_host_tick, no_declared_objectives,
 };

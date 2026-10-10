@@ -19,36 +19,46 @@
 //!   `--include-ignored`.
 //!
 //! What is **not** claimed here: the player's airframe mesh is not drawn
-//! (VS-M01-RT-PLAYER-AIRFRAME-VISUAL, #1216), the mission host does not run
-//! the control program per tick (VS-M01-RT-MISSION-HOST, #1217), and the
-//! flight law is the statically recovered one — never `verified_original`,
-//! never calibrated against an original run (#358).
+//! (VS-M01-RT-PLAYER-AIRFRAME-VISUAL, #1216), and what the mission host
+//! produces per tick (VS-M01-RT-MISSION-HOST, #1217) is measured by
+//! `vs_m01_rt_host.rs` over the very stage this file builds — the synthetic
+//! stage also carries the [`MissionHostSeed`](cs_app::mission_session::MissionHostSeed)
+//! the composed entry drives, so one stage serves both suites. The flight law
+//! is the statically recovered one — never `verified_original`, never
+//! calibrated against an original run (#358).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use avian3d::prelude::{LinearVelocity, Position, Rotation};
 use bevy::prelude::{Entity, Quat, With};
+use cs_app::environment::{EnvironmentSession, RunSeeds};
 use cs_app::loading::LoadTarget;
 use cs_app::mission_launch::{MissionLaunchPlan, plan_mission_launch};
+use cs_app::mission_markers::MissionMarkerBindings;
 use cs_app::mission_session::{
-    MissionFlight, MissionPlayerBody, MissionPlayerStart, MissionStage, StageItem, StageMount,
-    build_headless, stage_for, teardown,
+    MissionContent, MissionFlight, MissionHostRefusal, MissionHostSeed, MissionPlayerBody,
+    MissionPlayerStart, MissionStage, StageItem, StageMount, build_headless,
+    no_declared_objectives, stage_for, teardown,
 };
 use cs_app::mission_start::StartPose;
 use cs_app::playtest::scene::PlaytestOriginalFlight;
 use cs_app::playtest::{AircraftSpawner, fixed_ticks};
 use cs_app::world::{HARBOR_OBJECT_HANGAR, harbor_meshes, harbor_world, residency, world_instance};
+use cs_app::world_actors::LoweredWorldActors;
+use cs_app::world_facts::MemberResolver;
 use cs_content::world::WorldDefinition;
+use cs_script::ir::{Condition, IR_VERSION, MissionProgram, Objective, SymbolId};
 use cs_sim::flight::original::PROVENANCE_LABEL;
 use cs_sim::flight::{OriginalAirframe, OriginalFlightModel, OriginalGlobals};
 use cs_types::asset_id::{PrecedenceClass, WorldGroup};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ContentHash;
 
-use crate::common::label;
+use crate::common::{cid, label};
 
 /// The original installation, as the environment declares it.
-fn game_dir() -> PathBuf {
+pub(crate) fn game_dir() -> PathBuf {
     PathBuf::from(std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {
         panic!(
             "CS_GAME_DIR is not set: VS-M01-RT-WINDOW needs the retail capability; run this \
@@ -61,10 +71,10 @@ fn game_dir() -> PathBuf {
 /// A scratch tree that removes itself on drop — every synthetic member's
 /// fixture installation, container file and private cache live under one
 /// directory and vanish with it.
-struct Scratch(PathBuf);
+pub(crate) struct Scratch(PathBuf);
 
 impl Scratch {
-    fn new(label: &str) -> Self {
+    pub(crate) fn new(label: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "cs_vs_m01_rt_window_{label}_{}",
             std::process::id()
@@ -74,7 +84,7 @@ impl Scratch {
         Self(root)
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -138,10 +148,84 @@ fn synthetic_flight() -> MissionFlight {
     }
 }
 
+/// The synthetic stage's environment: the fixture clear-sky definition on the
+/// composition's own fixed timeline, seeded from a run parameter this file
+/// declares. Nothing about it is original weather (F19's fixture is labelled
+/// designed).
+fn synthetic_environment() -> EnvironmentSession {
+    let definition = cs_app::environment::fixture::clear_sky_environment()
+        .expect("the fixture sky is well formed");
+    EnvironmentSession::new(
+        definition,
+        MissionContent::tick_rate(),
+        RunSeeds::from_root(1),
+    )
+    .expect("the fixture environment clock starts")
+}
+
+/// The synthetic stage's declared control program: one objective whose
+/// condition is `true`, so the composed entry's script half completes it on
+/// its first tick and the answer a test reads back can only come from the
+/// program itself. Authored here as synthetic content — never a reading of
+/// any original mission's record.
+fn synthetic_control_program() -> MissionProgram {
+    MissionProgram {
+        version: IR_VERSION,
+        mission: cid(ContentKind::Mission, "synthetic-mission-host"),
+        variables: Vec::new(),
+        objectives: vec![Objective {
+            id: SymbolId(0),
+            content: cid(ContentKind::Objective, "synthetic-mission-host-objective"),
+            condition: Condition::Const(true),
+            actions: Vec::new(),
+            span: None,
+        }],
+    }
+}
+
+/// The synthetic stage's world-actor program: the harbor scope declares no
+/// zeppelin, route or gate record, so the program is real but carries no
+/// actors. It launches the production session — which then steps to the host
+/// tick through [`cs_app::world_actors::WorldActorSession::step`] — and says
+/// nothing about retail content.
+fn synthetic_world_actors() -> LoweredWorldActors {
+    LoweredWorldActors {
+        ticks_per_second: cs_app::mission_world_actors::SESSION_TICKS_PER_SECOND,
+        actors: Vec::new(),
+        subjects: BTreeMap::new(),
+        sockets: BTreeMap::new(),
+        support: Vec::new(),
+        pickups: Vec::new(),
+        transitions: Vec::new(),
+    }
+}
+
+/// The records the synthetic stage hands the mission host: the fixture
+/// environment, the empty-but-real world-actor program, no animation join
+/// (the fixture installation holds no `startanims.zrd`), the synthetic
+/// control program, no objective declarations and no cue table.
+fn synthetic_host_seed() -> MissionHostSeed {
+    MissionHostSeed {
+        environment: synthetic_environment(),
+        world_actors: Some(synthetic_world_actors()),
+        animation: None,
+        control: synthetic_control_program(),
+        sound_archives: Vec::new(),
+        objectives: no_declared_objectives(),
+        markers: MissionMarkerBindings::default(),
+        resolver: MemberResolver::from_hierarchy([("harbor".to_owned(), None)]),
+        refusals: vec![MissionHostRefusal::ObjectiveDeclarations {
+            detail: "this synthetic stage declares no objective records of its own, so the F39 \
+                     recovery is never asked for one"
+                .to_owned(),
+        }],
+    }
+}
+
 /// A synthetic stage over the production harbor world: one announced load
 /// item whose host bytes are a scratch file, so the whole LoadingSession
 /// announce/attach path runs exactly as the retail composition runs it.
-fn synthetic_stage(scratch: &Path) -> MissionStage {
+pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
     let definition: WorldDefinition =
         harbor_world().expect("the synthetic harbor world is well formed");
     let instance = world_instance(&definition, None, &[HARBOR_OBJECT_HANGAR], &[])
@@ -189,6 +273,7 @@ fn synthetic_stage(scratch: &Path) -> MissionStage {
         cache_root: scratch.join("cache"),
         installation: ContentHash::from_hex(&"5a".repeat(32))
             .expect("the synthetic installation hash is valid"),
+        host: synthetic_host_seed(),
     }
 }
 

@@ -29,6 +29,7 @@ use crate::mission_world_actors::{
 };
 use crate::physics::BASELINE_FIXED_HZ;
 use crate::world::{WorldMeshes, retail};
+use crate::world_facts::MemberResolver;
 
 /// Row 5 of the measured airframe table: the scene root the campaign start
 /// recovery binds for M01, and the `vehicle.zrd` record that row maps to.
@@ -140,6 +141,14 @@ pub struct MissionContent {
     pub control: MissionProgram,
     /// The sound-family archives in the mission's scope.
     pub sound_archives: Vec<SoundArchive>,
+    /// The chain resolver the world fact fold answers through, read from the
+    /// very container [`Self::world`] was imported from.
+    ///
+    /// It is the production constructor [`MemberResolver::from_container`]
+    /// over the container `prepare_world` already opened, so a later stage
+    /// never has to re-read the world to learn how a member chain resolves
+    /// (VS-M01-RT-MISSION-HOST, Rally #1278).
+    pub resolver: MemberResolver,
 }
 
 /// Why a mission's content could not be prepared.
@@ -347,7 +356,7 @@ impl MissionContent {
                 reason: error.to_string(),
             })?;
 
-        let (world, meshes, instance) = prepare_world(install_root, plan)?;
+        let (world, meshes, instance, resolver) = prepare_world(install_root, plan)?;
         let start = prepare_start(install_root, plan)?;
         let flight = prepare_flight(install_root, &start)?;
         let environment = prepare_environment(plan, &found)?;
@@ -373,6 +382,7 @@ impl MissionContent {
             animation,
             control,
             sound_archives,
+            resolver,
         })
     }
 
@@ -400,11 +410,12 @@ pub fn prepare_mission_content(
     MissionContent::prepare(install_root, plan)
 }
 
-/// World: the container, its import and this mission's load record.
+/// World: the container, its import, this mission's load record and the
+/// member-chain resolver the world fact fold answers through.
 fn prepare_world(
     install_root: &Path,
     plan: &MissionLaunchPlan,
-) -> Result<(ImportedWorld, WorldMeshes, WorldInstance), MissionSessionError> {
+) -> Result<(ImportedWorld, WorldMeshes, WorldInstance, MemberResolver), MissionSessionError> {
     let group = plan.group_dir.trim_start_matches("zbd/");
     let key = format!("{}/gamez.zbd", plan.group_dir);
     let container =
@@ -477,7 +488,12 @@ fn prepare_world(
         world: key,
         reason: error.to_string(),
     })?;
-    Ok((imported, meshes, instance))
+    // The member-chain resolver the world fact fold answers through: the
+    // production constructor over the very container this function just read,
+    // so the resolver and the definition it resolves against can never come
+    // from different content.
+    let resolver = MemberResolver::from_container(&container);
+    Ok((imported, meshes, instance, resolver))
 }
 
 /// Player start: the airframe and the metric initial pose, both known.

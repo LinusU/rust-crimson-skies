@@ -5,7 +5,8 @@
 //! from the prepared [`super::MissionContent`] by [`stage_for`] — the world
 //! definition, its engine meshes, this mission's load record, the measured
 //! start pose and the flight law, plus the one announced load this
-//! composition runs through the F15 machinery. [`build_windowed`] turns a
+//! composition runs through the F15 machinery and the [`MissionHostSeed`]
+//! the mission host drives every committed tick. [`build_windowed`] turns a
 //! stage into the real window (renderer, wall-clock fixed loop);
 //! [`build_headless`] turns the same stage into the app the acceptance tests
 //! drive. The two differ only in their plugin sets — the composition, the
@@ -44,9 +45,11 @@
 //! * The player's airframe mesh is not drawn (VS-M01-RT-PLAYER-AIRFRAME-VISUAL,
 //!   #1216): the body's collider is the playtest's declared development box,
 //!   and no child mesh is attached to it.
-//! * The mission host does not run `content.control` per tick
-//!   (VS-M01-RT-MISSION-HOST, #1217); this stage prepares it and leaves it
-//!   on the stage record.
+//! * The mission host runs the stage's records per committed tick
+//!   (VS-M01-RT-MISSION-HOST, #1217): this stage prepares them, leaves them
+//!   on [`MissionHostSeed`] and launches them through [`add_composition`].
+//!   A terminal outcome and a restart are still open (#1217's `.02` and
+//!   `.03`), so neither half runs yet.
 //! * No mission-bound audio source is started, so teardown stops none; the
 //!   sound archives travel on [`super::MissionContent`] for the host stage.
 //! * `R` restarts the player body at the mission's start pose with a fresh
@@ -84,9 +87,15 @@ use crate::loading::{
     LoadingSession, SessionIo,
 };
 use crate::mission_launch::MissionLaunchPlan;
+use crate::mission_markers::MissionMarkerBindings;
 use crate::mission_session::MissionFlight;
+use crate::mission_session::host::{
+    MissionHost, MissionHostRefusal, MissionHostSeed, host_session_id, install_mission_host,
+    mint_host_generation, no_declared_objectives,
+};
 use crate::mission_start::StartPose;
 use crate::mission_world_actors::object3d_orientation;
+use crate::objectives::LoweredObjectives;
 use crate::physics::{BodyMode, BodySpec, spawn_body};
 use crate::playtest::retail::RETAIL_START_SPEED_M_S;
 use crate::playtest::scene::{
@@ -185,6 +194,11 @@ pub struct MissionStage {
     pub cache_root: PathBuf,
     /// The installation fingerprint the session binds under.
     pub installation: ContentHash,
+    /// The records the mission host drives every committed tick: the five the
+    /// announced-load stage used to drop, the declared control program, the
+    /// objective program, the cue table, the chain resolver and every absence
+    /// the stage already knows about (VS-M01-RT-MISSION-HOST, #1217).
+    pub host: MissionHostSeed,
 }
 
 /// Why a mission composition could not be built or could not run.
@@ -221,6 +235,8 @@ pub enum MissionCompositionError {
     /// The player body could not be spawned through the production physics
     /// path.
     Player(String),
+    /// The mission host's records could not be launched as a session.
+    Host(crate::mission_session::MissionHostLaunchError),
     /// The app exited with an error.
     Exit(String),
 }
@@ -244,6 +260,7 @@ impl fmt::Display for MissionCompositionError {
             Self::Handoff(reason) => write!(f, "the ready bundle refuses to attach: {reason}"),
             Self::World(error) => write!(f, "the mission's world refuses to load: {error}"),
             Self::Player(reason) => write!(f, "the mission's player body refuses: {reason}"),
+            Self::Host(error) => write!(f, "the mission host refuses: {error}"),
             Self::Exit(reason) => write!(f, "the mission window exited with an error: {reason}"),
         }
     }
@@ -378,6 +395,23 @@ pub fn stage_for(
         bytes,
     };
 
+    let mut refusals = Vec::new();
+    let host = MissionHostSeed {
+        environment: content.environment.clone(),
+        world_actors: content.world_actors.lowered().cloned(),
+        animation: Some(content.animation.clone()),
+        control: content.control.clone(),
+        sound_archives: content.sound_archives.clone(),
+        objectives: declared_objectives(install_root, plan, &mut refusals),
+        // M01's `mission_markers` ships no cue table on purpose: nobody has
+        // declared a cue → signal row for an original mission, so the marker
+        // consumer refuses every gameplay cue by name instead of resolving it
+        // against a table this stage would have to invent.
+        markers: MissionMarkerBindings::default(),
+        resolver: content.resolver.clone(),
+        refusals,
+    };
+
     Ok(MissionStage {
         target,
         mount: StageMount {
@@ -398,7 +432,48 @@ pub fn stage_for(
         label: MISSION_COMPOSITION_LABEL.to_owned(),
         cache_root: Path::new(DEFAULT_MISSION_CACHE_DIR).to_path_buf(),
         installation,
+        host,
     })
+}
+
+/// The objective program this stage's session launches from, and the refusal
+/// that names what the F39 reader would not produce.
+///
+/// The reader is `crate::objectives::recover_retail_objectives` →
+/// `ObjectiveRecovery::program()`, called here so the detail a run reports is
+/// **the reader's own message** and not a summary of it. Today that call
+/// refuses unconditionally for every original mission — the 358 fields of 58
+/// blocks are unrecovered and Rally #1219 owns that measurement
+/// (`docs/findings/2026-10-10-vs-m01-rt-content-objectives-program-refuses-
+/// and-plan-premises.md`) — so the stage carries
+/// [`no_declared_objectives`] and records why.
+///
+/// The `Ok` arms are the forward path: when the recovery does lower a
+/// declared program, the stage carries **that** program and raises no
+/// refusal, because silently running an empty session where a declared one
+/// exists would be the same invention the refusal is there to prevent.
+fn declared_objectives(
+    install_root: &Path,
+    plan: &MissionLaunchPlan,
+    refusals: &mut Vec<MissionHostRefusal>,
+) -> LoweredObjectives {
+    let mut refuse = |detail: String| {
+        refusals.push(MissionHostRefusal::ObjectiveDeclarations { detail });
+        no_declared_objectives()
+    };
+    let recovery =
+        match crate::objectives::recover_retail_objectives(install_root, &plan.mission_dir) {
+            Ok(recovery) => recovery,
+            Err(error) => return refuse(error.to_string()),
+        };
+    let declared = match recovery.program() {
+        Ok(declared) => declared,
+        Err(refusal) => return refuse(refusal.to_string()),
+    };
+    match crate::objectives::lower_program(&declared) {
+        Ok(lowered) => lowered,
+        Err(error) => refuse(error.to_string()),
+    }
 }
 
 /// The heading-to-orientation compose, through the production
@@ -566,6 +641,15 @@ fn add_composition(
         state.label = Box::leak(stage.label.clone().into_boxed_str());
         state.spawn_m = stage.start.position;
     }
+
+    // 4. The mission host: every record the stage carries, launched as one
+    //    session, and the one composed per-tick entry that advances it in the
+    //    fixed-tick schedule after the same tick's physics step.
+    let generation = mint_host_generation();
+    let host = MissionHost::launch(stage, generation, host_session_id(generation))
+        .map_err(MissionCompositionError::Host)?;
+    app.insert_resource(host);
+    install_mission_host(app);
     Ok(())
 }
 
@@ -731,6 +815,8 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<AircraftSpawner>();
     world.remove_resource::<ExpectedLoad>();
+    world.remove_resource::<MissionHost>();
+    world.remove_resource::<crate::mission_session::MissionHostReport>();
 }
 
 /// Runs `cs --mission`: composes the window over the satisfied plan and
