@@ -24,11 +24,10 @@
 //!   campaign readers carry a help-only record each, and the instant-action
 //!   corpus is unchanged at 54 with both labels on every record.
 //!
-//! The unignored tests author every byte (the `.zrd` grammar, a reader archive,
-//! a world container) and run the production decoder, the production discovery
-//! and the production survey, so the rule is falsifiable in CI. The
-//! `#[ignore]`d test reads the owner's installation through the same
-//! production entry points.
+//! The unignored tests author every byte (the `.zrd` grammar and a reader
+//! archive) and run the production decoder, the production discovery and the
+//! production survey, so the rule is falsifiable in CI. The `#[ignore]`d test
+//! reads the owner's installation through the same production entry points.
 //!
 //! Nothing here is `verified_original`: no original run happened, and reading
 //! the installation's files is not evidence of how the game behaves.
