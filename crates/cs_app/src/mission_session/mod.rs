@@ -4,19 +4,21 @@
 //! A windowed mission composition needs one value that holds every record the
 //! composition will consume, read before any window, Bevy app or ECS spawn
 //! exists: [`MissionContent`]. [`MissionContent::prepare`] is that read. It
-//! takes a satisfied [`MissionLaunchPlan`] (the measured closure
-//! [`crate::mission_launch`] already judged) and, for each surface, calls the
+//! takes a satisfied [`crate::mission_launch::MissionLaunchPlan`] (the
+//! measured closure [`crate::mission_launch`] already judged) and, for each
+//! surface, calls the
 //! **production reader that owns the surface** exactly as the launch plan
 //! itself does — never a second parser, never a fallback and never an
 //! invented default:
 //!
 //! 1. **World** — [`crate::world::retail::read_world_container`], then
 //!    [`cs_content::world::ImportedWorld`] through the same
-//!    [`SourceAdapter`]/[`Origin`] pair the launch closure uses, then the
-//!    container's uploaded meshes and a [`WorldInstance`] for this mission's
-//!    population.
+//!    [`cs_content::coordinates::SourceAdapter`]/[`cs_types::content::Origin`]
+//!    pair the launch closure uses, then the container's uploaded meshes and a
+//!    [`cs_content::world::WorldInstance`] for this mission's population.
 //! 2. **Player start** — [`crate::mission_start::recover_retail_start_configuration`];
-//!    the airframe and the initial pose must both arrive [`Resolved::Known`].
+//!    the airframe and the initial pose must both arrive
+//!    [`cs_types::content::Resolved::Known`].
 //! 3. **Player flight law** — the measured campaign airframe's flight record,
 //!    imported through [`cs_content::original_airframe`] and the same chain
 //!    [`crate::playtest::retail::read_flight`] runs.
