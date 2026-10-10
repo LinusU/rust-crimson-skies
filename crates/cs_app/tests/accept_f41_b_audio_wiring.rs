@@ -317,7 +317,11 @@ fn accept_f41_b_undelivered_sound_is_refused_by_name() {
         .clone()
         .expect("a session is installed");
     assert_eq!(installed.specs, 1);
-    world.spawn_engine_emitter(1, Some([0.0, 0.0, 0.0]));
+    // Serial 1 is already spent: the spawn path (#531) bound the delivered
+    // environment loop to the world's emitter in the frame above, so this
+    // hand-built emitter takes the next serial rather than sharing one emitter
+    // id with a binding production minted.
+    world.spawn_engine_emitter(2, Some([0.0, 0.0, 0.0]));
     world.app.update();
     assert!(
         matches!(
