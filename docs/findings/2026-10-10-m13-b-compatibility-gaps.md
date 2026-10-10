@@ -5,9 +5,11 @@ compatibility gaps" (#295, `missions/M13.md`, work order `M13-B`). Shared
 contract: `docs/contracts/SCRIPT-MISSION.md`. Capabilities used: `retail`
 (`$CS_GAME_DIR` read-only, never written), `synthetic` (newly authored `.zrd`
 records). Implementer: **bunny-2/bunny-2** (Rally #295, session of
-2026-10-10). No reviewer yet: the implementer's own run is not independent
-review, an agent review never replaces the owner's human approval, and nothing
-here is `verified_original` (AGENTS.md rule 8).
+2026-10-10). The review round of 2026-10-10 is recorded at the end of this
+note: it was run by the same agent name and model in a separate, fresh-context
+session, so it is not independent review, an agent review never replaces the
+owner's human approval, and nothing here is `verified_original`
+(AGENTS.md rule 8).
 
 The stage's minimum acceptance scenario is *"All discovered mission-specific
 behavior uses production engine systems and regression tests."* It holds for
@@ -127,6 +129,21 @@ filed as a follow-up below. Note the contrast with M06-B-FU2's *absence* result:
 there, the mission's data simply did not mention the mechanic; here the data
 mentions the actor and no file declares it.
 
+**Coverage behind that claim (review round).** The same whole-installation
+walk was extended from the seventeen-name table to *every* text the record
+spells: 63 distinct texts across the 178 sites. All but three are declared
+outside M13's control member. The three are `britkestrel_1` and — as message
+operands, not actors — `MSG_BRF_HAM3_OBJ1` and `MSG_BRF_HAM3_OBJ2`, the `MSG_…`
+operands of the `IDENTITY` sites at blocks 15 and 16, which no other `.zrd`
+member of the installation spells (`IDENTITY`'s other operand, `PRIMARY`, is
+declared by 24 records elsewhere, so the key itself is not what makes them
+record-only). This stage draws no conclusion about resources that are not
+`.zrd` data: the walk decodes `.zrd` members only, and
+`2026-10-06-m01-lc-directive-meaning.md` measures the `IDENTITY` `MSG_…`
+operand as never read by the measured parse. The count and the exception set
+are pinned by `accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data_but_one`,
+so a name that stops resolving anywhere fails the suite.
+
 ## What is not claimed
 
 `verified` stays `false` and every checklist entry M13-A left unknown is still
@@ -154,7 +171,11 @@ Retail, all `#[ignore = "requires CS_GAME_DIR"]`:
    engine chains, the four nap delays, dormancy, both gates lowered, ladder
    conditions and the failure latch's wake-only condition.
 5. `…_every_actor_the_record_names_resolves_in_the_shipped_data_but_one` — the
-   actor/node declaration table, and the record really spells every name in it.
+   actor/node declaration table, and the record really spells every name in it;
+   then, because a table is a sample, a one-pass index of every `.zrd` text of
+   the installation that asserts all **63** distinct texts the record spells
+   are declared outside the control member except three measured ones
+   (`MSG_BRF_HAM3_OBJ1`, `MSG_BRF_HAM3_OBJ2`, `britkestrel_1`).
 6. `…_the_ai_net_actor_is_declared_by_no_archive_in_the_installation` — the
    whole-installation decode scan, both names.
 7. `…_the_terminal_blocks_are_gated_and_every_address_is_in_range` — latches,
@@ -213,6 +234,60 @@ Synthetic, run in CI without original data:
   data). Resolving task: **M13-B-FU2**.
 - The join remains M13-A's inference (`ClaimStatus::Inferred`); no campaign
   definition record or original run was observed.
+
+## Review (bunny-2/bunny-2, 2026-10-10)
+
+Reviewer: **bunny-2/bunny-2** (Rally #295 review claim of 2026-10-10, OpenCode
+Space Bunny Free, `opencode-go/mimo-v2.6-Flash`), a separate session that began
+from the task history, the submitted summary, `missions/M13.md`, the contract
+and the branch diff — not from the implementation. Implementer: **bunny-2/bunny-2**
+(same Rally agent name and model, implement claim submitted at `fe2f62ad`), so
+this review is **not independent evidence** in the AGENTS.md sense: it is a
+fresh-context re-derivation plus a full re-run of every check. A Rally merge
+awards `checked` only, no agent review replaces the owner's human approval, and
+nothing here is `verified_original` or `release_approved`.
+
+What the reviewer verified on the branch:
+
+* only owner paths changed — `crates/cs_app/tests/campaign/` (test, evidence
+  harness, two `mod` lines) and `docs/findings/`; no protected path, no
+  `missions/bindings/M13.json`, no `campaign_bindings.rs`, no production crate,
+  no binary file;
+* every retail test drives production code (`survey_mission_control_programs`,
+  `read_control_member`, `SourceContext::control_program`, `SourceContext::bind`,
+  `discover` + `discover_container` + `decode_zrd`, `measure_control_record`,
+  `lower_control_record`, `MissionProgram::validate`) and the three synthetic
+  tests carry the refusal arms (counting-mode `TRAVELERS`, unknown
+  `SET_FACTION`, nap-delay-is-not-an-address) into CI unignored;
+* no test was skipped, weakened or `#[ignore]`d beyond the repository's
+  `requires CS_GAME_DIR` convention, and no lint was relaxed;
+* the sheet's three priorities are each pinned against measured record data,
+  and the two claims the sheet says must not be assumed — that the wrong actor
+  cannot satisfy a block and that a repeated event cannot — are honestly left
+  unmeasured for M13-C rather than asserted.
+
+**Change made during review.** The actor-resolution test asserted a
+seventeen-name table while its name said *every* actor the record names. The
+record spells **63** distinct texts, so the test now builds one installation
+index (one pass over the same `.zrd` walk `declarations_of` does per name) and
+asserts that all 63 are declared outside M13's control member except the three
+measured record-only ones. No production code changed; the test name, the
+evidence harness list and the suite's prefix are unchanged.
+
+Mutation checks the reviewer ran and reverted (both fail as required):
+
+| Mutation | Result |
+| --- | --- |
+| `m13_b.rs` ladder thresholds `[3, 5, 7, 10]` → `[3, 5, 7, 11]` | `accept_m13_b_the_damage_ladder_and_the_dependency_gates_are_record_data` FAILED, exit 101 |
+| `m13_b.rs` record-only list drops `MSG_BRF_HAM3_OBJ1` | `accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data_but_one` FAILED at the new full-coverage assertion, exit 101 |
+
+Checks run by the reviewer after the change, all green: `cargo fmt --all --
+--check`, `cargo clippy --workspace --all-targets --all-features --locked --
+-D warnings`, `cargo test --workspace --locked`,
+`cargo test --workspace --locked -- accept_m13_b_ --include-ignored` (13
+discovered, 13 executed, 13 passed, 0 failed, exit 0), and
+`tools/validate_evidence.py … --require-pass` on the reviewer's regenerated
+report.
 
 ## Sources
 
