@@ -287,4 +287,5 @@ mod m21_a;
 mod m24_a;
 mod objaddr;
 mod record_objectives_sound;
+mod vs_m01_rt_content;
 mod vs_m01_runtime;
