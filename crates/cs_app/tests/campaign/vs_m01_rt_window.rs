@@ -269,6 +269,10 @@ pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
             heading: 1.0,
         },
         flight: synthetic_flight(),
+        // The synthetic stage has no installation to read `zbd/planes.zbd`
+        // from: the player body spawns without a visual, as it did before
+        // #1216.
+        player_aircraft: None,
         label: "SYNTHETIC MISSION COMPOSITION".to_owned(),
         cache_root: scratch.join("cache"),
         installation: ContentHash::from_hex(&"5a".repeat(32))

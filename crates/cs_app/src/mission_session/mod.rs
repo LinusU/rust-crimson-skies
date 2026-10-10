@@ -70,6 +70,7 @@
 mod compose;
 mod content;
 mod host;
+mod player_visual;
 
 pub use compose::{
     MissionComposition, MissionCompositionError, MissionPlayerBody, MissionPlayerStart,
@@ -84,4 +85,10 @@ pub use host::{
     MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport, MissionHostSeed,
     MissionHostStepError, MissionHostTick, host_session_id, install_mission_host,
     mint_host_generation, mission_host_tick, no_declared_objectives,
+};
+pub use player_visual::{
+    MISSION_PLAYER_AIRCRAFT_ROOT_NAME, MISSION_PLAYER_INTACT_NODE_NAME,
+    MISSION_PLAYER_INTACT_NODE_SLOT, MISSION_PLAYER_LOD_DISTANCE_M, MISSION_PLAYER_PROP_NODE_NAME,
+    MISSION_PLAYER_PROP_NODE_SLOT, MissionPlayerVisual, PlayerAirframeSource, build_player_visual,
+    spawn_player_visual,
 };

@@ -42,9 +42,11 @@
 //!
 //! What this stage does **not** claim, each named rather than papered over:
 //!
-//! * The player's airframe mesh is not drawn (VS-M01-RT-PLAYER-AIRFRAME-VISUAL,
-//!   #1216): the body's collider is the playtest's declared development box,
-//!   and no child mesh is attached to it.
+//! * The player's airframe visual is the measured intact selection of
+//!   `player_pfighter`/`piratefighter` (VS-M01-RT-PLAYER-AIRFRAME-VISUAL,
+//!   #1216), drawn under the body by [`super::spawn_player_visual`] through
+//!   the playtest's own selection-and-build path; the body's collider stays
+//!   the playtest's declared development box.
 //! * The mission host runs the stage's records per committed tick
 //!   (VS-M01-RT-MISSION-HOST, #1217): this stage prepares them, leaves them
 //!   on [`MissionHostSeed`] and launches them through [`add_composition`].
@@ -69,7 +71,7 @@ use std::path::{Path, PathBuf};
 
 use avian3d::prelude::{AngularVelocity, NoAutoMass, PhysicsPlugins, Rotation};
 use bevy::app::{App, AppExit};
-use bevy::prelude::{Entity, Or, Quat, Resource, Transform, Vec3, With, World};
+use bevy::prelude::{Entity, Or, Quat, Resource, Transform, Vec3, Visibility, With, World};
 use cs_assets::cache::{CacheBudget, CacheDirectory, CacheStore};
 use cs_assets::vfs::{ContentSession, MountBuilder, SessionBuilder};
 use cs_content::world::{WorldDefinition, WorldInstance};
@@ -82,6 +84,9 @@ use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::ContentHash;
 use cs_types::space::Quaternion;
 
+use super::player_visual::{
+    MissionPlayerVisual, PlayerAirframeSource, build_player_visual, spawn_player_visual,
+};
 use crate::loading::{
     Criticality, ExpectedLoad, LoadItem, LoadRequest, LoadState, LoadTarget, LoadedItemBinding,
     LoadingSession, SessionIo,
@@ -105,12 +110,13 @@ use crate::playtest::{AircraftSpawner, PlaytestPlugin, PlaytestState};
 use crate::world::WorldMeshes;
 use crate::world::residency::{load_world, unload_world};
 
-/// The label every surface of the mission composition shows while the
-/// player-airframe visual is pending (#1216). The composition draws no
-/// player mesh of its own, so a plain marker states what is flying and what
-/// is not — never a claim the composition cannot back.
+/// The label every surface of the mission composition shows: what is
+/// measured (the mission, the world and the player airframe's intact
+/// selection, #1216) and what is designed (the propeller and LOD picks —
+/// the original's rules for both are unmeasured), stated on screen the way
+/// the playtest labels its own designed choices.
 pub const MISSION_COMPOSITION_LABEL: &str =
-    "ORIGINAL MISSION M01 / ORIGINAL WORLD / PLAYER AIRFRAME VISUAL PENDING";
+    "ORIGINAL MISSION M01 / ORIGINAL WORLD / PLAYER AIRFRAME MEASURED / PROP+LOD PICKS DESIGNED";
 
 /// Where the composition keeps its private cache by default: the
 /// Git-ignored `private/` tree beside the working directory, the same
@@ -188,6 +194,11 @@ pub struct MissionStage {
     pub start: StartPose,
     /// The flight law the player's body flies.
     pub flight: MissionFlight,
+    /// The player airframe's drawn source — `zbd/planes.zbd` and the group's
+    /// texture archive — when the stage reads one from an installation
+    /// (#1216). The synthetic acceptance stages set `None` and spawn the
+    /// body alone.
+    pub player_aircraft: Option<PlayerAirframeSource>,
     /// The label every surface shows.
     pub label: String,
     /// The private cache root, outside the installation.
@@ -232,6 +243,9 @@ pub enum MissionCompositionError {
     Handoff(String),
     /// The world could not become resident.
     World(crate::world::WorldLoadError),
+    /// The player airframe's sources or drawn visual refused through the
+    /// production selection-and-build path.
+    AirframeVisual(String),
     /// The player body could not be spawned through the production physics
     /// path.
     Player(String),
@@ -259,6 +273,9 @@ impl fmt::Display for MissionCompositionError {
             Self::Driver(reason) => write!(f, "the mission load driver refuses: {reason}"),
             Self::Handoff(reason) => write!(f, "the ready bundle refuses to attach: {reason}"),
             Self::World(error) => write!(f, "the mission's world refuses to load: {error}"),
+            Self::AirframeVisual(reason) => {
+                write!(f, "the mission's player airframe visual refuses: {reason}")
+            }
             Self::Player(reason) => write!(f, "the mission's player body refuses: {reason}"),
             Self::Host(error) => write!(f, "the mission host refuses: {error}"),
             Self::Exit(reason) => write!(f, "the mission window exited with an error: {reason}"),
@@ -429,6 +446,13 @@ pub fn stage_for(
         instance: content.instance.clone(),
         start,
         flight: content.flight.clone(),
+        // The player airframe's visual source: `zbd/planes.zbd` under this
+        // installation plus the world group's texture archive, read through
+        // the same production discovery the playtest runs.
+        player_aircraft: Some(PlayerAirframeSource::read(
+            install_root,
+            plan.group_dir.trim_start_matches("zbd/"),
+        )?),
         label: MISSION_COMPOSITION_LABEL.to_owned(),
         cache_root: Path::new(DEFAULT_MISSION_CACHE_DIR).to_path_buf(),
         installation,
@@ -612,6 +636,15 @@ fn add_composition(
     load_world(app, &stage.world, &stage.instance, &stage.meshes)
         .map_err(MissionCompositionError::World)?;
 
+    // 2b. The player airframe's drawn visual, when the stage carries its
+    //     source: the measured intact selection built through the same
+    //     production path the playtest's airframe goes through. Synthetic
+    //     stages carry none and spawn the body alone.
+    if let Some(source) = &stage.player_aircraft {
+        let visual = build_player_visual(app, source)?;
+        app.insert_resource(visual);
+    }
+
     // 3. The player spawn recipe and the playtest seam that uses it: the
     //    Startup spawns the body, and `R` restarts it from the same
     //    recipe.
@@ -768,6 +801,9 @@ pub fn spawn_player(world: &mut World) -> Result<Entity, SceneError> {
     // rotation into `Rotation` when it prepares the body, and a heading
     // that exists on only one of the two is overwritten before the first
     // tick flies it.
+    // The body is the render parent of its drawn airframe parts; a parent
+    // without `Visibility` makes Bevy warn (B0004) for every part on each
+    // (re)spawn — the same reason `playtest::scene::spawn_aircraft` sets it.
     world.entity_mut(entity).insert((
         NoAutoMass,
         record,
@@ -776,7 +812,13 @@ pub fn spawn_player(world: &mut World) -> Result<Entity, SceneError> {
         AngularVelocity::ZERO,
         PlaytestAircraft,
         MissionPlayerBody,
+        Visibility::Inherited,
     ));
+    // The measured airframe visual travels on the body: one child entity per
+    // drawn binding, so `R` restart and teardown take it with the body and
+    // never leave a second copy. A stage that carried no airframe source
+    // spawns the body alone.
+    spawn_player_visual(world, entity);
     if let Ok(mut composition) = world.query::<&mut MissionComposition>().single_mut(world) {
         composition.player = entity;
     }
@@ -813,6 +855,7 @@ pub fn teardown(app: &mut App) {
     }
     world.remove_resource::<MissionComposition>();
     world.remove_resource::<MissionPlayerStart>();
+    world.remove_resource::<MissionPlayerVisual>();
     world.remove_resource::<AircraftSpawner>();
     world.remove_resource::<ExpectedLoad>();
     world.remove_resource::<MissionHost>();
