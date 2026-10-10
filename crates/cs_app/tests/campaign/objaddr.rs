@@ -84,8 +84,11 @@ pub(crate) struct Site {
 }
 
 /// Walks a decoded control record into its numbered blocks' address sites,
-/// reading the grammar independently of the census: a text key, then its
-/// argument list if the next child is a list.
+/// reading the grammar the census measured: a text key, then its argument —
+/// a list, a bare end (a text follower or the block's own end), or the
+/// `not_a_list` scalar, which the site keeps as its one-element argument so
+/// the walk accounts for it rather than silently dropping the rest of the
+/// block.
 pub(crate) fn walk(document: &ZrdValue) -> Vec<Site> {
     let mut sites = Vec::new();
     for (key, value) in zrd_flat_fields(objective_record(document)) {
@@ -100,14 +103,16 @@ pub(crate) fn walk(document: &ZrdValue) -> Vec<Site> {
             let Some(name) = children[cursor].as_text() else {
                 break;
             };
-            cursor += 1;
-            let args = match children.get(cursor).and_then(ZrdValue::as_list) {
-                Some(list) => {
-                    cursor += 1;
-                    list.to_vec()
+            let (args, advance) = match children.get(cursor + 1) {
+                Some(next) if next.as_list().is_some() => {
+                    (next.as_list().unwrap_or_default().to_vec(), 2)
                 }
-                None => Vec::new(),
+                // A text follower is the next directive's key.
+                Some(next) if next.as_text().is_some() => (Vec::new(), 1),
+                Some(scalar) => (vec![scalar.clone()], 2),
+                None => (Vec::new(), 1),
             };
+            cursor += advance;
             if ADDRESS_KEYS.contains(&name) {
                 sites.push(Site {
                     block: number,
