@@ -127,7 +127,7 @@ const CREW_NODE: &str = "apassengers";
 /// The world nodes M06's own directives, targets and evaluator member lists
 /// name, each of which must resolve in the chapter world exactly once — the
 /// contrast that shows the mission addresses what it uses.
-const MISSION_NODES: [&str; 14] = [
+const MISSION_NODES: [&str; 15] = [
     "sprucegoose",
     "propane",
     "kkgate",
@@ -468,9 +468,11 @@ fn accept_m06_b_fu2_the_image_spells_location_zrd_as_teleport_data() {
 ///   crew aboard through that mechanism.
 /// * **the chapter world's nodes.** `ZBD/C2/gamez.zbd` carries exactly one
 ///   `apassengers` and one `passall` node, and the world nodes M06's own
-///   directives and targets name (`sprucegoose`, `propane`, `kkgate`,
-///   `sghangar`, `tugandbarge01..04`) each resolve exactly once — so the
-///   mission addresses what it uses, and it addresses neither passenger node.
+///   directives, targets and evaluator member lists name (`sprucegoose`,
+///   `propane`, `kkgate`, `tugandbarge01..04`, `g_engine1..8`) each resolve
+///   exactly once — so the mission addresses what it uses, and it addresses
+///   neither passenger node. The sibling missions' `sghangar` resolves once
+///   too, and M06's archive spells it nowhere.
 /// * **the message table.** Of the census's mission-scoped archives, exactly
 ///   one carries `MSG_OBJ_PASSENGERHANGER`, and it is chapter one's instant
 ///   action; M06's own archive references fifteen message ids and none of them
@@ -602,6 +604,34 @@ fn accept_m06_b_fu2_no_shipped_record_binds_a_passenger_entity_for_m06() {
         count_of("passall"),
         1,
         "the world carries exactly one passenger-crowd node, which nothing in M06 names"
+    );
+    // The neighbouring node the sibling missions name resolves too — and M06's
+    // own archive spells it nowhere, which is the other half of the split: the
+    // mission names the world nodes it uses and nothing else.
+    assert_eq!(
+        count_of(SIBLING_ONLY_NODE),
+        1,
+        "the world carries exactly one {SIBLING_ONLY_NODE}, the node the siblings name"
+    );
+    let archive = std::fs::read(game_dir().join(CONTAINER)).expect("M06's reader archive reads");
+    assert!(
+        find(&archive, SIBLING_ONLY_NODE.as_bytes()).is_none(),
+        "M06's archive spells no {SIBLING_ONLY_NODE}: the sibling missions' node is not this \
+         mission's content"
+    );
+    // The sibling missions' node resolves in the same world, and M06's archive
+    // spells it nowhere — the counter-example that keeps the list above about
+    // M06's own names rather than about the chapter's.
+    assert_eq!(
+        count_of(SIBLING_ONLY_NODE),
+        1,
+        "the world carries exactly one {SIBLING_ONLY_NODE}, which the sibling missions name"
+    );
+    let archive = std::fs::read(game_dir().join(CONTAINER)).expect("M06's reader archive reads");
+    assert!(
+        find(&archive, SIBLING_ONLY_NODE.as_bytes()).is_none(),
+        "M06's archive spells no {SIBLING_ONLY_NODE}: the sibling missions' node is not this \
+         mission's"
     );
     for member in ["objectives.zrd", "targets.zrd", "aiv.zrd", "location.zrd"] {
         let texts = member_texts(CONTAINER, member);
