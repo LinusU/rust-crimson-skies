@@ -172,6 +172,21 @@
 //! name. The findings note is
 //! `docs/findings/2026-10-09-m06-b-compatibility-gaps.md`.
 //!
+//! `m06_b_fu2.rs` is the M06-B-FU2 follow-up of Rally #818:
+//! `accept_m06_b_fu2_*` tests that answer where — if anywhere — M06's
+//! passenger/extraction entity lives, by measuring the installation instead of
+//! inferring a mechanic from the discovery cue. `location.zrd` turns out to be
+//! the mission's teleport-destination list (byte-identical to the sibling
+//! mission's copy; its consumer is the image's Teleport feature), the
+//! installation's passenger vocabulary is shared crew cosmetics
+//! (`passengers.zrd` driving the world node `apassengers`) and instant-action
+//! zeppelin classes, and nothing in M06's data binds any of it. Its synthetic
+//! member runs in CI; its two retail members are
+//! `#[ignore = "requires CS_GAME_DIR"]` and
+//! `#[ignore = "requires CS_ENGINE_IMAGE"]`, so the implementer and reviewer
+//! run them with `--include-ignored`. The findings note is
+//! `docs/findings/2026-10-10-m06-b-fu2-passenger-identity-binding.md`.
+//!
 //! `m07_b.rs` is the M07-B stage: `accept_m07_b_*` tests that measure M07's
 //! mission control program through the retail control census and
 //! `SourceContext::control_program`, and pin what the sheet's regression
@@ -252,6 +267,7 @@ mod m05_a;
 mod m05_b;
 mod m06_a;
 mod m06_b;
+mod m06_b_fu2;
 mod m07_a;
 mod m07_b;
 mod m08_a;
