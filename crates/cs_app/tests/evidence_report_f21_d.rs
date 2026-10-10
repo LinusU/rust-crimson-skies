@@ -14,10 +14,11 @@
 //!    ```
 //!    (record the pipeline's exit status — it is passed to this harness as
 //!    `CS_EVIDENCE_EXIT_CODE`.) `CS_EVIDENCE_DIR` must be set **in this step**,
-//!    while the acceptance suite runs: the retail coverage test only derives
-//!    its `view-cockpit-coverage.json` census into that directory when the
-//!    variable is set, so without it step 2 finds a directory holding nothing
-//!    but the log.
+//!    while the acceptance suite runs: the retail coverage test derives its
+//!    `view-cockpit-coverage.json` census into that directory only while the
+//!    variable is set — the log and the `f21-d-*.png` captures land there
+//!    either way — so without it step 2 finds the directory holding no census
+//!    and panics on the missing artifact.
 //! 2. ```sh
 //!    CS_EVIDENCE_DIR=private/evidence/F21-D \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \

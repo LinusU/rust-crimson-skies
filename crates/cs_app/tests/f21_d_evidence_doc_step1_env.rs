@@ -5,9 +5,10 @@
 //! `CS_EVIDENCE_DIR` is set — that is, while step 1 of the documented
 //! sequence runs; the harness of step 2 only reads, hashes and re-checks what
 //! step 1 left behind (the `f21-d-*.png` captures are written to the same
-//! directory). A step 1 without that prefix therefore leaves the evidence
-//! directory holding nothing but the log, and step 2 fails with "cannot read
-//! …/view-cockpit-coverage.json … step 1 must set CS_EVIDENCE_DIR so the
+//! directory whether or not it is set). A step 1 without that prefix
+//! therefore leaves the evidence directory holding the log and the captures
+//! but no census, and step 2 fails with "cannot read
+//! …/view-cockpit-coverage.json: …; step 1 must set CS_EVIDENCE_DIR so the
 //! retail coverage test writes its derived census" while the documented step
 //! 1 says nothing of the sort.
 //!
