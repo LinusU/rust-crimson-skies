@@ -25,21 +25,24 @@
 //! mixes to. Every value is newly authored synthetic fixture content: no test
 //! reads `CS_GAME_DIR`, and no original audio was involved.
 //!
-//! Sensitivity — each one measured by breaking the implementation and
-//! rerunning the suite, then reverting:
+//! Sensitivity — each one measured by breaking the implementation, rerunning
+//! the suite and reverting:
 //!
-//! * unregistering `bind_spawned_emitters` leaves every scenario below with no
-//!   binding at all;
-//! * dropping `EngineVoiceFollow` from the aircraft binding freezes the engine
-//!   voice at a constant level;
+//! * unregistering `bind_spawned_emitters` fails every scenario below that
+//!   asserts a binding — 8 of the 9, all but the role-vocabulary one — and
+//!   the sharpened assertion in `accept_f41_b_audio_wiring.rs`;
+//! * dropping `EngineVoiceFollow` from the aircraft binding fails the three
+//!   scenarios that need it: the throttle follow and the two that assert the
+//!   marker is attached;
 //! * resolving the aircraft's asset from the declared catalog alone (ignoring
 //!   what the load delivered) names the earlier declared record and fails
 //!   `accept_f41_b_spawn_path_prefers_the_delivered_engine_record`, whose
 //!   catalog is built so the two rules name different records;
 //! * reading `FlightAircraft` alone as the engine authority — the shape
-//!   `smooth_engine_voices` had before this task — leaves the original-law
-//!   body's voice at its initial level and fails
-//!   `accept_f41_b_spawn_path_binds_a_body_flying_the_original_law`.
+//!   `smooth_engine_voices` had before this task — creates no voice for the
+//!   original-law body, so its level stays at the `VoiceLevel::UNITY`
+//!   fallback and
+//!   `accept_f41_b_spawn_path_binds_a_body_flying_the_original_law` fails.
 
 use bevy::ecs::entity::Entity;
 use bevy::ecs::world::World;
