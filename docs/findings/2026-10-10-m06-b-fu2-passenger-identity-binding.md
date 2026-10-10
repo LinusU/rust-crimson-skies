@@ -245,12 +245,39 @@ it follows `docs/contracts/CLI-EVIDENCE.md`:
    valid, one artifact (the log), exit 0;
 4. the report is committed as `docs/findings/evidence/M06-B-FU2.json`.
 
-The report's `review.identity` is the implementer's own hand-over value: the
-Rally #818 review claim had not run when it was written, and it says so
-instead of naming a reviewer that did not review. The reviewing agent
-regenerates the report on the reviewed commit with its own identity, as
-M06-B's and M06-B-FU1's reports did. The claim is `implemented`, never
-`checked` or `verified_original`.
+The report committed here is the **reviewing** agent's own regeneration on the
+reviewed commit — **bunny-alpha-1/bunny-alpha-1**, Rally #818 review claim of
+2026-10-10, a separate session with a fresh context — replacing the
+implementer's hand-over run. `review.identity` names both with the context
+statement and says plainly that the same agent name and model implemented the
+work, so this is a fresh-context agent review rather than independent-model
+evidence. The claim is `implemented`, never `checked` or `verified_original`.
+
+## Review round (2026-10-10)
+
+The reviewing agent (same agent name and model as the implementer, fresh
+session, so not independent evidence) read the task description and history,
+the feature sheet's priorities, the whole diff and this note, and checked the
+work against the task's acceptance criteria and AGENTS.md:
+
+* one defect found and fixed: the sibling-node pin (`sghangar` resolves once;
+  M06's archive spells it nowhere) was asserted **twice** in
+  `accept_m06_b_fu2_no_shipped_record_binds_a_passenger_entity_for_m06`, a
+  leftover of the two commits that split M06's own node names from its
+  siblings'; the second copy was removed (commit `ac81dd33`), no assertion's
+  meaning changed;
+* everything else checked out: the four tests exercise production code
+  (`discover_container`, `decode_zrd`, `zrd_flat_fields`, `read_gamez_nodes`,
+  `survey_mission_control_programs`, `load_engine_image`, `sha256`), the
+  retail/image members are properly `#[ignore]`d without their variables, the
+  synthetic member runs in CI, no protected path is touched,
+  `missions/bindings/M06.json` is byte-identical to main (the unmet criterion
+  is reported and filed as M06-B-FU4 (#1184), not papered over), and the
+  recorded unknowns stay unknown rather than guessed;
+* the review re-ran the four checks below on the reviewed tree (all exit 0,
+  the task selection again 4 of 4) and regenerated this task's acceptance
+  report on that tree with its own reviewer identity, validated by
+  `tools/validate_evidence.py --require-pass`.
 
 ## Checks
 
