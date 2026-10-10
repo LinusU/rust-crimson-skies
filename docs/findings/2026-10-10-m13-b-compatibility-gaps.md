@@ -289,6 +289,17 @@ discovered, 13 executed, 13 passed, 0 failed, exit 0), and
 `tools/validate_evidence.py … --require-pass` on the reviewer's regenerated
 report.
 
+**Rebase rounds.** `main` advanced twice while this review ran — first to
+`852d1dd0` (M12-B), then to `390796d7` (the M01 objective-source amendment).
+Both rebases applied without conflicts, but both incoming sets touch
+`crates/cs_app/tests/campaign/main.rs`, which this branch changes too, so the
+owner's 2026-10-01 lighter check set did not apply: all four checks were
+re-run in full after each rebase, and the selection still runs exactly the
+thirteen `accept_m13_b_` tests while filtering the new stages' tests in the
+same binary. The run recorded above and the evidence report belong to the
+final rebased tree — the report's `candidate_tree` is the tree of the last
+content commit, since the only later commit is the report copy itself.
+
 ## Sources
 
 `$CS_GAME_DIR` read-only through `cs_assets::install::discover`,
