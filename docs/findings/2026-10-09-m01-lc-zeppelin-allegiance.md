@@ -261,12 +261,13 @@ lane this build reads.
   deleted or weakened — the expectations moved to the newly measured
   behavior, and the refusals they guarded still refuse by name.
 * `cargo test --workspace --locked -- accept_m01_lc_zeppelin_gate_
-  --include-ignored` (#1177) → discovers 2 tests (1 retail, 1 unit), both
-  pass. The unit test drives `AllegianceLookup::resolve` over an authored
+  --include-ignored` (#1177) → discovers 3 tests (1 retail, 2 unit), all
+  pass. One unit test drives `AllegianceLookup::resolve` over an authored
   world — a marked node's staged lane decides the answer, an unmarked one
   still ends at the resolver's terminal zero, and a lane of 3 refuses with
   `0x4a2cf1`/`0x4a2ec9`/`0x4a2e3e`/`0x4a259f` in the reason — so it fails
-  when the gate handling is removed. The retail test keeps M01's
+  when the gate handling is removed; the second pins `0x4a2400`'s bottom-up
+  chain, which the gate no longer consults. The retail test keeps M01's
   `ally`/`enemy`/`enemy` with `open_fields` free of `faction`, and asserts
   the container-wide lane and the walk-order table above.
 * #1155's retail test now states `workersvoyagezep`'s measured source as

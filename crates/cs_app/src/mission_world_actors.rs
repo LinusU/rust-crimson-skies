@@ -233,10 +233,11 @@ pub const ALLEGIANCE_MARKED: u32 = 0x8000_0000;
 /// `[rec+8]` (#1177).
 ///
 /// `0x4a2e3e`..`0x4a2e4b` reads `[node+0x28]`, shifts it right by
-/// `2*[0x71c0a0] - 2` (the shift is loaded at `0x4a2e18` and formed at
-/// `0x4a2e2a` with `lea eax,[eax+eax-2]` — it is *not* an unset caller-stack
-/// slot), keeps the low two bits (`and edx,3`) and stores them verbatim
-/// through `0x453740`; `0x4a2570` writes that int at `[rec+8]` (`0x4a259f`).
+/// `2*[0x71c0a0] - 2` (the selector is loaded at `0x4a2e18`, the shift is
+/// formed at `0x4a2e1f` with `lea eax,[eax+eax-2]`, spilled at `0x4a2e2a`
+/// and read back at `0x4a2e41` — it is *not* an unset caller-stack slot),
+/// keeps the low two bits (`and edx,3`) and stores them verbatim through
+/// `0x453740`; `0x4a2570` writes that int at `[rec+8]` (`0x4a259f`).
 /// The same formula is formed again at `0x4a3306`.
 ///
 /// **No instruction in the image writes `0x71c0a0`.** The whole file holds
@@ -546,9 +547,9 @@ impl AllegianceLookup<'_> {
     /// `0x4abea0`'s wildcard rule.
     ///
     /// #1177 measured that this match never gates a staged record — it only
-    /// selects the name `0x4a2be0` keeps beside the node — so nothing in the
-    /// resolver consults it any more; the walk keeps it because the carrier
-    /// read that produced it is still measured and named.
+    /// selects the name `0x4a2be0` keeps beside the node — so no production
+    /// path consults it any more. It is kept under `#[cfg(test)]` so the
+    /// measurement of `0x4a2400` this walk encodes stays pinned by a test.
     #[cfg(test)]
     fn path_matches(&self, path: &[String], node: &RawNode) -> bool {
         let mut current = Some(node);
@@ -1781,18 +1782,9 @@ fn declare_row(
     }
 }
 
-/// Declares one actor per row whose subject joined, with the measured pose
-/// bound and every unmeasured field an explicit unknown.
-///
-/// `startup_span` is the byte span of the scope's `placezeps.zrd` when it
-/// read: a startup-sourced attitude is provenanced from *that* member and a
-/// startup-sourced position from the statement's own `STATE` span it
-/// carries, while either spawn-sourced half is provenanced from the
-/// carrier's own `span` (#792, #814). `allegiance_span` is the scope's
-/// `ai.zrd` span when it decoded — a resolver-bound faction is provenanced
-/// from the turret table it resolved through; a `team`-keyed faction is
-/// provenanced from the carrier's own record (#1155).
-/// Where each measured allegiance source's bytes live (#1155, #1177).
+/// Where each measured allegiance source's bytes live (#1155, #1177):
+/// `declare_actor` files a resolved faction under the span of the member
+/// that actually stored the value it bound, never under the carrier's.
 #[derive(Clone, Copy, Default)]
 struct AllegianceSpans<'a> {
     /// `ai.zrd` — the `0x71d910` turret binding table's carrier.
@@ -1802,6 +1794,18 @@ struct AllegianceSpans<'a> {
     world: Option<&'a SourceSpan>,
 }
 
+/// Declares one actor per row whose subject joined, with the measured pose
+/// bound and every unmeasured field an explicit unknown.
+///
+/// `startup_span` is the byte span of the scope's `placezeps.zrd` when it
+/// read: a startup-sourced attitude is provenanced from *that* member and a
+/// startup-sourced position from the statement's own `STATE` span it
+/// carries, while either spawn-sourced half is provenanced from the
+/// carrier's own `span` (#792, #814). `allegiance` carries both spans a
+/// resolver-bound faction is provenanced from: the `ai.zrd` span when it
+/// decoded, for a turret binding, and the world container's own span, for
+/// the staged `+0x8d` lane of a marked node (#1155, #1177); a `team`-keyed
+/// faction is provenanced from the carrier's own record.
 fn declare_actor(
     row: &SpawnedZeppelinActor,
     actor: ProgramActor,
