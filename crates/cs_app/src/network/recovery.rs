@@ -631,8 +631,12 @@ impl RecoveryFlow {
     ///
     /// # Errors
     ///
-    /// [`FlowError`] from the settlement; the packet's own result is in
-    /// [`SettledInbound::inbound`] either way.
+    /// [`FlowError`] from the settlement, which carries no packet result: on
+    /// the error path [`SettledInbound`] is not returned. Nothing is lost
+    /// with it — only a packet that asks for a departure can fail here, and
+    /// such a packet authorizes no work of its own (a farewell is not input,
+    /// a refused intent has already emptied its fire list, and a packet the
+    /// gate refused never had one), so only the admission verdict is dropped.
     pub fn receive_and_depart(
         &mut self,
         peer: PeerId,
