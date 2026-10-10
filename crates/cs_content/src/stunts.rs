@@ -726,7 +726,7 @@ pub const FLY_THROUGH_CATEGORY_LABEL: &str = "MSG_OBJ_DZ";
 ///
 /// Measured over the owner's installation (task #533): **67** of the **67**
 /// fly-through records carry this help label — it is the near-universal half of
-/// the measured label pair (`help_label` appears in 294 of 331 objective
+/// the measured label pair (`help_label` appears in 294 of the 332 objective
 /// records, `category_label` in only 146), and the 3 records that carry it
 /// without a category are campaign objectives wired into their missions'
 /// objective machines like every both-label record.
@@ -1079,7 +1079,7 @@ pub struct ScenarioFlyThroughTarget {
 ///
 /// Task #533 chose this union over #463's stricter both-labels rule, measured
 /// over the owner's installation: the help label is on **67 of 67** labelled
-/// records while the category label is on 64 (it is absent from 185 of 331
+/// records while the category label is on 64 (it is absent from 186 of the 332
 /// objective records altogether, so requiring it drops content the campaign
 /// authored), and the **3** records it drops (`ZBD/C1/M02`'s `MSG_OBJ_ZEPHANGER`
 /// at `h3_marker`, `ZBD/C4/M03`'s `MSG_TRGT_DEVILSHORN` at `dz2`, `ZBD/C5/M02`'s
