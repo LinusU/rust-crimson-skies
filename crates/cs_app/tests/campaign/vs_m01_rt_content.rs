@@ -127,7 +127,7 @@ fn accept_vs_m01_runtime_content_m01_prepares_every_record() {
         plan.group_dir
     );
     assert!(
-        content.meshes.len() > 0,
+        !content.meshes.is_empty(),
         "M01's world must upload the meshes its definition names"
     );
 
