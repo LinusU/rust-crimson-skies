@@ -3466,6 +3466,18 @@ pub fn spawn_playtest_content(
         provenance.clone(),
     )?;
 
+    // -- the aircraft's drawn parts ------------------------------------------
+    // One selection-and-build path serves both this scene and the mission
+    // composition's player visual (#1216): [`build_aircraft_visual`]. It runs
+    // before anything is spawned, exactly as the aircraft's read did before
+    // the extraction: a pinned root or node the container does not hold must
+    // refuse by name without leaving a half-spawned area behind.
+    let AircraftVisual {
+        parts: aircraft_parts,
+        propeller,
+        report: aircraft,
+    } = build_aircraft_visual(app, sources.aircraft(), &mut binder, config)?;
+
     // -- spawn ---------------------------------------------------------------
     let mut spawned = SpawnedWorld::of(&world);
     let mut refused: Vec<(WorldObjectId, String)> = Vec::new();
@@ -3486,14 +3498,6 @@ pub fn spawn_playtest_content(
         }
     }
 
-    // -- the aircraft's drawn parts ------------------------------------------
-    // One selection-and-build path serves both this scene and the mission
-    // composition's player visual (#1216): [`build_aircraft_visual`].
-    let AircraftVisual {
-        parts: aircraft_parts,
-        propeller,
-        report: aircraft,
-    } = build_aircraft_visual(app, sources.aircraft(), &mut binder, config)?;
     let textures = binder.finish();
     // The area's records keep their whole-mesh `Mesh3d` (the collider is derived
     // from it) but carry **no** material of their own, so the engine does not
