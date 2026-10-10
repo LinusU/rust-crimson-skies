@@ -158,7 +158,7 @@ fn accept_vs_m01_runtime_the_launch_gate_names_each_blocking_surface() {
 ///   names no gap.
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
-fn accept_vs_m01_runtime_retail_m01_s_launch_closure_names_every_missing_mechanism() {
+fn accept_vs_m01_runtime_retail_m01_s_launch_closure_is_satisfied_end_to_end() {
     let plan = plan_mission_launch(&game_dir(), label("M01"), &discovery_title())
         .expect("the installation yields a launch plan for M01");
 

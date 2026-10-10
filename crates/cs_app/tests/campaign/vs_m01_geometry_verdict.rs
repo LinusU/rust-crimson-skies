@@ -285,7 +285,8 @@ fn accept_vs_m01_geometry_verdict_retail_m01_s_plan_reports_zero_gaps_and_is_lau
     let gaps: Vec<&str> = plan.gaps().map(|report| report.surface.label()).collect();
     assert!(
         gaps.is_empty(),
-        "the plan reports zero gaps, never `Blocked` and never `NoRuntime`: {gaps:?}"
+        "the plan reports zero gaps — every surface is satisfied, so the gate names \
+         nothing to measure: {gaps:?}"
     );
     assert!(
         plan.launchable(),

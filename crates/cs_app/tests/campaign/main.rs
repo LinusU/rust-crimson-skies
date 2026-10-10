@@ -72,9 +72,14 @@
 //!
 //! `vs_m01_runtime.rs` is the fourth kind: `VS-M01-RUNTIME` measures M01's
 //! launch dependency closure through `cs_app::mission_launch`, the plan layer
-//! the `--mission` path will gate on. Its retail test is ignored without
-//! `CS_GAME_DIR` like the rest, and its verdicts assert the mechanisms the
-//! launch is blocked on are named rather than guessed.
+//! the `--mission` path will gate on. Its retail members are ignored without
+//! `CS_GAME_DIR` like the rest; since #771's residual counters landed (#1220)
+//! they measure the closure satisfied end to end — every surface, no gap, the
+//! launch stopping at the composition seam — while its synthetic member still
+//! hands the gate a plan with gaps to report by name. Beside it,
+//! `vs_m01_geometry_verdict.rs` (#1220) drives the one verdict that reading
+//! changed — `mission_launch::geometry_verdict` — directly: a synthetic
+//! member that runs in CI and a retail member ignored without `CS_GAME_DIR`.
 //!
 //! `f50_c.rs` is the F50-C stage: `accept_f50_c_*` tests that plan the
 //! per-mission probe routes over that bound campaign
