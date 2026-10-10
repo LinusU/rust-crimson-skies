@@ -1522,10 +1522,11 @@ fn accept_m16_b_the_four_comment_words_are_not_in_the_measured_directive_table()
             std::str::from_utf8(word).unwrap_or_else(|error| panic!("the table is ASCII: {error}"))
         })
         .collect();
-    assert!(
-        entries.len() >= 80,
-        "the measured table carries its strings: {}",
-        entries.len()
+    assert_eq!(
+        entries.len(),
+        87,
+        "the measured table carries its 87 strings, the last truncated at the \
+         extent's end"
     );
 
     // Every key of M16's vocabulary that lives in this table is present —
